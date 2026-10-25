@@ -2,7 +2,8 @@
 //! scene the worker can draw passes; each way one can't is refused, naming its field.
 
 use silico_protocol::{
-    Camera, EDGE_BIT, InvalidParameter, MAX_RENDER_SIDE, Mesh, Projection, RenderBody, RenderScene,
+    Camera, EDGE_BIT, InvalidParameter, MAX_FIELD_OF_VIEW, MAX_RENDER_COORDINATE, MAX_RENDER_SIDE,
+    MIN_FIELD_OF_VIEW, Mesh, Projection, RenderBody, RenderScene,
 };
 
 /// A way to break a camera or a mesh, and what its refusal names.
@@ -80,12 +81,15 @@ fn a_scene_the_worker_can_draw_passes_at_its_limits() {
     s.camera.up = [0.0, 1e-9, -1.0];
     s.check().unwrap();
     s.camera.projection = Projection::Perspective {
-        field_of_view: 179.999_999,
+        field_of_view: MAX_FIELD_OF_VIEW,
     };
     s.check().unwrap();
     s.camera.projection = Projection::Perspective {
-        field_of_view: 1e-300,
+        field_of_view: MIN_FIELD_OF_VIEW,
     };
+    s.check().unwrap();
+    // An eye as far out as a scene's point may be.
+    s.camera.eye = [-MAX_RENDER_COORDINATE, 0.5, MAX_RENDER_COORDINATE];
     s.check().unwrap();
     // A face with no triangles (a sliver OCCT couldn't mesh) and an edge of one point.
     let mut s = scene();
@@ -115,6 +119,8 @@ fn a_camera_that_cant_make_a_view_is_refused_naming_its_field() {
     let cases: Vec<CameraCase> = vec![
         (|c| c.eye[0] = f64::NAN, "camera.eye"),
         (|c| c.eye[2] = f64::INFINITY, "camera.eye"),
+        (|c| c.eye[2] = 1.000_000_000_001e12, "camera.eye"),
+        (|c| c.target[0] = -1e13, "camera.target"),
         (|c| c.target[1] = f64::NAN, "camera.target"),
         (|c| c.up[2] = f64::NEG_INFINITY, "camera.up"),
         (|c| c.eye = c.target, "camera.eye"),
@@ -132,6 +138,38 @@ fn a_camera_that_cant_make_a_view_is_refused_naming_its_field() {
         (
             |c| c.projection = Projection::Orthographic { view_height: 0.0 },
             "camera.view_height",
+        ),
+        (
+            |c| {
+                c.projection = Projection::Orthographic {
+                    view_height: 9.999e-7,
+                }
+            },
+            "camera.view_height",
+        ),
+        (
+            |c| {
+                c.projection = Projection::Orthographic {
+                    view_height: 1.0001e12,
+                }
+            },
+            "camera.view_height",
+        ),
+        (
+            |c| {
+                c.projection = Projection::Perspective {
+                    field_of_view: 179.9991,
+                }
+            },
+            "camera.field_of_view",
+        ),
+        (
+            |c| {
+                c.projection = Projection::Perspective {
+                    field_of_view: 9.99e-7,
+                }
+            },
+            "camera.field_of_view",
         ),
         (
             |c| c.projection = Projection::Orthographic { view_height: -1.0 },
@@ -204,7 +242,14 @@ fn a_mesh_the_worker_couldnt_index_or_draw_is_refused_naming_what_breaks() {
             |m| m.normals.pop().map(|_| ()).unwrap_or(()),
             "3 normals for 4 positions",
         ),
-        (|m| m.positions[2][1] = f64::NAN, "position 2 isn't finite"),
+        (
+            |m| m.positions[2][1] = f64::NAN,
+            "position 2 must be finite",
+        ),
+        (
+            |m| m.positions[1][0] = 1.000_000_000_001e12,
+            "position 1 must be finite and within 1000000000000 mm",
+        ),
         (|m| m.normals[3][0] = f32::INFINITY, "normal 3 isn't finite"),
         (
             |m| m.triangles[1][2] = 4,
@@ -224,7 +269,7 @@ fn a_mesh_the_worker_couldnt_index_or_draw_is_refused_naming_what_breaks() {
         ),
         (
             |m| m.edge_points[4][2] = f64::NAN,
-            "edge point 4 isn't finite",
+            "edge point 4 must be finite",
         ),
         (
             |m| m.edge_point_counts = vec![2, 1, 1],

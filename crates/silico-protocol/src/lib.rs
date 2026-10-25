@@ -54,8 +54,9 @@ pub use refusal::{
     OUT_OF_MEMORY, Operation, Refusal, Returned, Role, Trouble,
 };
 pub use render::{
-    Camera, EDGE_BIT, MAX_RENDER_SIDE, MIN_UP_ACROSS_VIEW, PixelId, Projection, RenderBody,
-    RenderScene,
+    Camera, EDGE_BIT, Frame, MAX_FIELD_OF_VIEW, MAX_RENDER_COORDINATE, MAX_RENDER_SIDE,
+    MIN_FIELD_OF_VIEW, MIN_UP_ACROSS_VIEW, MIN_VIEW_HEIGHT, MIN_VIEW_HEIGHT_OF_REACH, PixelId,
+    Projection, RenderBody, RenderScene,
 };
 pub use sketch::{
     Algorithm, DragBegin, Geometry, MAX_DRAG_UNKNOWNS, MAX_JACOBIAN_ENTRIES,
@@ -677,6 +678,10 @@ pub enum FailureKind {
     /// The worker ran short of something (memory): not the values' fault, so the same
     /// request may succeed later.
     ResourceExhausted,
+    /// The worker lacks what it needs to do any such operation on this machine (the render
+    /// worker, an adapter to draw on): not the values' fault, and it won't change by asking
+    /// again.
+    Unavailable,
 }
 
 /// A shape as it crosses the worker boundary: OCCT's binary B-rep (with its checksum), and

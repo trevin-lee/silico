@@ -23,6 +23,7 @@ tracing.workspace = true
 # none).
 silico-core.workspace = true
 libm.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

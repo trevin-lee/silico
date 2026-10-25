@@ -19,6 +19,26 @@ pub const EDGE_BIT: u32 = 0x8000_0000;
 /// image's rotation about the view is lost in rounding.
 pub const MIN_UP_ACROSS_VIEW: f64 = 1e-9;
 
+/// The farthest from the origin, in mm, any point of a scene may be (the eye, the target,
+/// a position), and the tallest an orthographic view may be: what f32 draws with room to
+/// spare, a million times a document's largest length.
+pub const MAX_RENDER_COORDINATE: f64 = 1e12;
+
+/// The least an orthographic view's height may be, in mm: a nanometre.
+pub const MIN_VIEW_HEIGHT: f64 = 1e-6;
+
+/// The least an orthographic view's height may be against how far the scene reaches from
+/// the target: deeper, the scene's far points land past where f32 clips them exactly, and
+/// pixels go missing (lavapipe drew a 40 mm face whole at 1e-4 of its reach, not at 1e-5).
+pub const MIN_VIEW_HEIGHT_OF_REACH: f64 = 1e-5;
+
+/// The narrowest and widest a perspective view's angle may be, in degrees: narrower, what
+/// it sees lands past where f32 clips it exactly (as [`MIN_VIEW_HEIGHT_OF_REACH`]; an
+/// orthographic view is the one for so close a look); wider, its half-angle rounds past a
+/// right angle.
+pub const MIN_FIELD_OF_VIEW: f64 = 1e-3;
+pub const MAX_FIELD_OF_VIEW: f64 = 179.999;
+
 /// A scene for the render worker: the bodies in view, the camera, and the image's size.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RenderScene {
@@ -98,26 +118,63 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
+/// The camera's frame, unit vectors in f64: from the target toward the eye (`back`), up in
+/// the image (`up`, the given up made perpendicular to the view), and to the image's right
+/// (`right`, `up × back`); and the eye's distance from the target.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Frame {
+    pub back: [f64; 3],
+    pub up: [f64; 3],
+    pub right: [f64; 3],
+    pub distance: f64,
+}
+
+/// `v`'s length and direction, scaled first by its largest part, so neither overflows nor
+/// underflows for any finite `v`; none for zero.
+fn length_and_unit(v: [f64; 3]) -> Option<(f64, [f64; 3])> {
+    let largest = v.iter().fold(0.0f64, |m, c| m.max(c.abs()));
+    if !positive(largest) {
+        return None;
+    }
+    let w = v.map(|c| c / largest);
+    let length = dot(w, w).sqrt();
+    Some((largest * length, w.map(|c| c / length)))
+}
+
 impl Camera {
-    /// Whether the camera's numbers can make a view: each finite, the eye apart from the
-    /// target, the up with a part across the view of at least [`MIN_UP_ACROSS_VIEW`] of its
-    /// length, and the projection's number in range. Named as M4.1's request names them.
+    /// Whether the camera's numbers can make a view, named as M4.1's request names them:
+    /// - the eye and the target finite and within [`MAX_RENDER_COORDINATE`], and apart;
+    /// - the up finite, with a part across the view of at least [`MIN_UP_ACROSS_VIEW`] of
+    ///   its length (its length is otherwise free: only its direction counts);
+    /// - an orthographic view's height from [`MIN_VIEW_HEIGHT`] to [`MAX_RENDER_COORDINATE`];
+    /// - a perspective view's angle from [`MIN_FIELD_OF_VIEW`] to [`MAX_FIELD_OF_VIEW`].
+    ///
+    /// The bounds are what a renderer drawing in f32 can draw, well past any document's
+    /// lengths (1e6 mm at most).
     pub fn check(&self) -> Result<(), InvalidParameter> {
-        for (parameter, v) in [
-            ("camera.eye", self.eye),
-            ("camera.target", self.target),
-            ("camera.up", self.up),
-        ] {
-            if !finite3(v) {
+        self.frame().map(|_| ())
+    }
+
+    /// The camera's [`Frame`], if it passes [`Camera::check`]: one computation for the check
+    /// and the renderer, so they can't disagree.
+    pub fn frame(&self) -> Result<Frame, InvalidParameter> {
+        for (parameter, v) in [("camera.eye", self.eye), ("camera.target", self.target)] {
+            if !v.iter().all(|c| c.abs() <= MAX_RENDER_COORDINATE) {
                 return Err(invalid(
                     parameter,
-                    format!("{parameter} {v:?} isn't finite"),
+                    format!(
+                        "{parameter} {v:?} must be finite and within {MAX_RENDER_COORDINATE} mm of the origin"
+                    ),
                 ));
             }
         }
-        let view = sub(self.target, self.eye);
-        let view_length = dot(view, view).sqrt();
-        if !positive(view_length) {
+        if !finite3(self.up) {
+            return Err(invalid(
+                "camera.up",
+                format!("camera.up {:?} isn't finite", self.up),
+            ));
+        }
+        let Some((distance, back)) = length_and_unit(sub(self.eye, self.target)) else {
             return Err(invalid(
                 "camera.eye",
                 format!(
@@ -125,42 +182,61 @@ impl Camera {
                     self.eye, self.target
                 ),
             ));
-        }
-        let up_length = dot(self.up, self.up).sqrt();
-        // The up's part across the view: |up × view| / |view|, which keeps its precision
-        // where the up is nearly along the view.
-        let c = cross(self.up, view);
-        let across = dot(c, c).sqrt() / view_length;
-        if !positive(up_length) || across < MIN_UP_ACROSS_VIEW * up_length {
+        };
+        // The up's part across the view, of its length: |û × back|, which keeps its
+        // precision where the up is nearly along the view.
+        let across = length_and_unit(self.up).and_then(|(_, up)| {
+            let c = cross(up, back);
+            let across = dot(c, c).sqrt();
+            (across >= MIN_UP_ACROSS_VIEW).then_some(up)
+        });
+        let Some(up) = across else {
             return Err(invalid(
                 "camera.up",
                 format!(
-                    "camera.up {:?} must have a part across the view, from camera.eye to camera.target",
+                    "camera.up {:?} must have a part across the view, from camera.eye to camera.target, of at least {MIN_UP_ACROSS_VIEW} of its length",
                     self.up
                 ),
             ));
-        }
+        };
+        // Made perpendicular to the view: its length is the part across, at least
+        // MIN_UP_ACROSS_VIEW, so it divides safely.
+        let along = dot(up, back);
+        let perpendicular = [
+            up[0] - along * back[0],
+            up[1] - along * back[1],
+            up[2] - along * back[2],
+        ];
+        let length = dot(perpendicular, perpendicular).sqrt();
+        let up = perpendicular.map(|c| c / length);
         match self.projection {
             Projection::Orthographic { view_height } => {
-                if !positive(view_height) {
+                if !(MIN_VIEW_HEIGHT..=MAX_RENDER_COORDINATE).contains(&view_height) {
                     return Err(invalid(
                         "camera.view_height",
-                        format!("camera.view_height {view_height} must be finite and positive"),
+                        format!(
+                            "camera.view_height {view_height:?} must be from {MIN_VIEW_HEIGHT} to {MAX_RENDER_COORDINATE} mm"
+                        ),
                     ));
                 }
             }
             Projection::Perspective { field_of_view } => {
-                if !(field_of_view > 0.0 && field_of_view < 180.0) {
+                if !(MIN_FIELD_OF_VIEW..=MAX_FIELD_OF_VIEW).contains(&field_of_view) {
                     return Err(invalid(
                         "camera.field_of_view",
                         format!(
-                            "camera.field_of_view {field_of_view} must be more than 0 and less than 180 degrees"
+                            "camera.field_of_view {field_of_view:?} must be from {MIN_FIELD_OF_VIEW} to {MAX_FIELD_OF_VIEW} degrees"
                         ),
                     ));
                 }
             }
         }
-        Ok(())
+        Ok(Frame {
+            back,
+            up,
+            right: cross(up, back),
+            distance,
+        })
     }
 }
 
@@ -182,6 +258,7 @@ impl RenderScene {
         }
         self.camera.check()?;
         let mut last = 0;
+        let mut reach = 0.0f64;
         for (i, body) in self.bodies.iter().enumerate() {
             if body.body <= last {
                 return Err(invalid(
@@ -194,6 +271,22 @@ impl RenderScene {
             }
             last = body.body;
             body.check(i)?;
+            let mesh = &body.mesh;
+            for p in mesh.positions.iter().chain(&mesh.edge_points) {
+                let d = sub(*p, self.camera.target);
+                reach = reach.max(dot(d, d).sqrt());
+            }
+        }
+        if let Projection::Orthographic { view_height } = self.camera.projection {
+            let least = reach * MIN_VIEW_HEIGHT_OF_REACH;
+            if view_height < least {
+                return Err(invalid(
+                    "camera.view_height",
+                    format!(
+                        "camera.view_height {view_height:?} is too small to draw the bodies in view, which reach {reach:?} mm from camera.target: at least {least:?}, or a camera.target nearer them"
+                    ),
+                ));
+            }
         }
         Ok(())
     }
@@ -210,8 +303,11 @@ impl RenderBody {
                 mesh.positions.len()
             )));
         }
-        if let Some(p) = mesh.positions.iter().position(|p| !finite3(*p)) {
-            return Err(bad(format!("position {p} isn't finite")));
+        let within = |p: &[f64; 3]| p.iter().all(|c| c.abs() <= MAX_RENDER_COORDINATE);
+        if let Some(p) = mesh.positions.iter().position(|p| !within(p)) {
+            return Err(bad(format!(
+                "position {p} must be finite and within {MAX_RENDER_COORDINATE} mm of the origin"
+            )));
         }
         if let Some(n) = mesh
             .normals
@@ -236,8 +332,10 @@ impl RenderBody {
                 mesh.triangles.len()
             )));
         }
-        if let Some(p) = mesh.edge_points.iter().position(|p| !finite3(*p)) {
-            return Err(bad(format!("edge point {p} isn't finite")));
+        if let Some(p) = mesh.edge_points.iter().position(|p| !within(p)) {
+            return Err(bad(format!(
+                "edge point {p} must be finite and within {MAX_RENDER_COORDINATE} mm of the origin"
+            )));
         }
         let counted: u64 = mesh.edge_point_counts.iter().map(|&c| u64::from(c)).sum();
         if counted != mesh.edge_points.len() as u64 {

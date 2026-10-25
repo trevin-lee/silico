@@ -54,7 +54,8 @@ impl State {
                 let renderer = match &mut self.renderer {
                     Some(renderer) => renderer,
                     None => {
-                        let adapter = crate::adapter(self.policy).map_err(internal)?;
+                        let adapter = crate::adapter(self.policy)
+                            .map_err(|cause| Failure::new(Refusal::NoAdapter { cause }))?;
                         tracing::info!(adapter = adapter.get_info().name, "render context");
                         self.renderer
                             .insert(Renderer::new(&adapter).map_err(internal)?)

@@ -1620,6 +1620,14 @@ fn failure_error_with_edge_names(
             .with_cause(why),
             silico_protocol::OUT_OF_MEMORY,
         ),
+        FailureKind::Unavailable => (
+            Error::new(
+                ErrorCode::WorkerUnavailable,
+                format!("the {} can't do {op} on this machine", kind.noun()),
+            )
+            .with_cause(described.message),
+            "set up the machine as the cause says, or ask for something else",
+        ),
         FailureKind::UnknownOp | FailureKind::Internal => (
             Error::new(
                 ErrorCode::Internal,

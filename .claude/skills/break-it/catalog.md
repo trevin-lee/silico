@@ -244,3 +244,12 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A kernel identity that hashes only the executable: libraries it loads at run time (OCCT's dylibs through an rpath symlink) change results without changing the identity; a worker binary replaced under a running pool is relaunched under the old identity
 - Directory sizes summed from file lengths: sparse files cost no disk, so a few hundred planted at the file system's longest (APFS: 2^55 bytes) sum past `u64::MAX`; a plain `+=` panics in debug and wraps in release
 - Bounds kept by "scan, evict, then write" across threads: entries other threads are writing aren't on disk to evict, so N puts at once leave N entries; bound every entry above half the bound and run parallel leaves
+
+## Rendering
+
+- Camera numbers a check takes in f64 that the renderer's f32 can't hold: an up or eye-to-target distance whose f32 square overflows or underflows (above about 1.8e19, below about 1e-19), a view height or field of view under f32's smallest normal, a position or target past 3.4e38: look_at returns None and a fallback identity view is drawn as Ok, the projection is NaN and the image blank, or the renderer refuses a mesh as an internal error
+- Angles whose f32 rounding crosses a singularity: a field of view within 1e-5° of 180° rounds past π in f32, the half-angle's tangent changes sign, and the image is drawn turned half a turn
+- Thresholds set in f64 for a value the renderer uses in f32 (an up's part across the view at 1e-9, against f32's 6e-8 rounding of an oblique direction): the image's roll comes from rounding noise
+- Clip planes taken from the camera's own numbers, not the scene (a perspective near plane at 1e-4 of the eye-to-target distance): a target far along the ray clips a part close to the eye; an orthographic eye far along its ray (1e9) moves the image by its f32 rounding and leaves the depth buffer no precision
+- Lighting done in linear light through a colour type whose `* f32` scales alpha too (ecolor's `Rgba`), then converted to a premultiplied 8-bit colour: every vertex not lit at full strength is darker than the formula; check a face at the ambient light by hand, not only one square to the eye
+- A missing GPU or rasterizer refused as an internal error ("a bug in Silico") instead of as data the core maps to `worker_unavailable`: run the test binary as its own child with its environment cleared and `VK_ICD_FILENAMES` pointed at nothing (a conda Vulkan loader finds its own prefix's drivers even with a cleared environment)

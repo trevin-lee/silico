@@ -602,6 +602,9 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             png: vec![0x89, b'P', b'N', b'G', 0, 255],
             ids: Some(vec![[0, 0], [u32::MAX, EDGE_BIT | 7]]),
         }),
+        Err(Failure::new(Refusal::NoAdapter {
+            cause: "no CPU adapter".to_owned(),
+        })),
         Err(Failure::new(Refusal::TestOperation { op: String::new() })),
         Err(Failure::new(Refusal::FpTrapsOn {
             mask: 0x200,
@@ -635,12 +638,13 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
                 FailureKind::UnknownOp => 8,
                 FailureKind::Internal => 9,
                 FailureKind::ResourceExhausted => 12,
+                FailureKind::Unavailable => 19,
             },
         })
         .collect();
     assert_eq!(
         indices,
-        (0..19).collect(),
+        (0..20).collect(),
         "a reply or failure kind has no case"
     );
     results

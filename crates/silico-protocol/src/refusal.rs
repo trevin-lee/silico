@@ -137,6 +137,10 @@ pub enum Refusal {
     /// An export's mesh of more `triangles`, in all, than the `limit` an export may have
     /// ([`crate::MAX_EXPORT_TRIANGLES`]).
     TooManyTriangles { triangles: u64, limit: u64 },
+    /// The render worker found no adapter its policy lets it draw on: under the default,
+    /// no CPU adapter (Mesa's lavapipe, its compiled-in paths gone, or none built in).
+    /// `cause` names what it looked for and what it found.
+    NoAdapter { cause: String },
 }
 
 /// What OCCT gave back nothing of.
@@ -311,6 +315,7 @@ impl Refusal {
             | Refusal::SolverThrew
             | Refusal::Internal { .. } => FailureKind::Internal,
             Refusal::OutOfMemory => FailureKind::ResourceExhausted,
+            Refusal::NoAdapter { .. } => FailureKind::Unavailable,
         }
     }
 
@@ -631,6 +636,14 @@ impl Refusal {
                      origin",
                     format_number(2.0 * rounding)
                 )),
+            ),
+            Refusal::NoAdapter { cause } => (
+                format!("the render worker found nothing it may draw on: {cause}"),
+                Some(
+                    "build Silico in its pixi environment, which brings Mesa's lavapipe, or \
+                     let the render worker use a GPU"
+                        .to_owned(),
+                ),
             ),
             Refusal::TooManyTriangles { triangles, limit } => (
                 format!(
@@ -1008,6 +1021,9 @@ mod tests {
                 triangles: 10_000_001,
                 limit: 10_000_000,
             },
+            Refusal::NoAdapter {
+                cause: "no CPU adapter; found [\"Apple M4 Pro\"]".to_owned(),
+            },
         ]
     }
 
@@ -1080,7 +1096,8 @@ mod tests {
         // (invalid_input, new: failed, of_kind: invalid result or internal), not from
         // `kind()`.
         use FailureKind::{
-            Internal, InvalidInput, InvalidResult, KernelFailed, ResourceExhausted, UnknownOp,
+            Internal, InvalidInput, InvalidResult, KernelFailed, ResourceExhausted, Unavailable,
+            UnknownOp,
         };
         let kinds = [
             KernelFailed,      // NoShape
@@ -1119,6 +1136,7 @@ mod tests {
             InvalidInput,      // SweepFlat
             InvalidInput,      // RoundingPastTolerance
             InvalidInput,      // TooManyTriangles
+            Unavailable,       // NoAdapter
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), kinds.len());
@@ -1168,6 +1186,7 @@ mod tests {
             Some("axis"),       // SweepFlat
             Some("tolerance"),  // RoundingPastTolerance
             Some("tolerance"),  // TooManyTriangles
+            None,               // NoAdapter
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), parameters.len());

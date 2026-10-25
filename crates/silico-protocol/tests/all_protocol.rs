@@ -14,6 +14,8 @@ mod adversarial_export;
 mod adversarial_parts;
 #[path = "adversarial_profile.rs"]
 mod adversarial_profile;
+#[path = "adversarial_render.rs"]
+mod adversarial_render;
 #[path = "adversarial_sweep.rs"]
 mod adversarial_sweep;
 #[path = "frames.rs"]

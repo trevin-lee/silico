@@ -81,7 +81,7 @@ impl Renderer {
         let ctx = &mut self.ctx;
         ctx.begin_frame();
         let camera = &scene.camera;
-        let view = View::of(camera, scene);
+        let view = View::of(camera, scene)?;
         let mut instances = Vec::new();
         let mut lines = LineDrawableBuilder::new(ctx);
         lines.enable_alpha_blending();
@@ -144,16 +144,18 @@ impl Renderer {
     }
 }
 
-/// The camera as re_renderer takes it, about the target (positions are drawn relative to
-/// it, in f64, then converted to f32: a part far from the origin keeps its precision).
+/// The camera as re_renderer takes it. Positions are drawn about a reference point,
+/// subtracted in f64 before they're f32: the target for an orthographic view, the eye for a
+/// perspective one, so what's drawn keeps its precision however far it is from the origin.
 struct View {
     view_from_world: macaw::IsoTransform,
     projection: ViewProjection,
-    /// The eye, about the target.
-    eye: [f64; 3],
-    /// For an orthographic camera, the direction to the eye (the headlight's, everywhere).
-    toward_eye: Option<[f64; 3]>,
-    target: [f64; 3],
+    reference: [f64; 3],
+    /// For a perspective view, the eye; for an orthographic one, none: its light comes
+    /// from the view's direction everywhere.
+    eye: Option<[f64; 3]>,
+    /// From the target toward the eye.
+    back: [f64; 3],
 }
 
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -164,80 +166,91 @@ fn length(a: [f64; 3]) -> f64 {
     (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
 }
 
-fn unit(a: [f64; 3]) -> [f64; 3] {
-    let l = length(a);
-    [a[0] / l, a[1] / l, a[2] / l]
-}
-
 fn vec3(a: [f64; 3]) -> glam::Vec3 {
-    // f32 on purpose: re_renderer draws in f32, after the target is subtracted in f64.
+    // f32 on purpose: re_renderer draws in f32, after the reference is subtracted in f64.
     #[allow(clippy::cast_possible_truncation)]
     glam::Vec3::new(a[0] as f32, a[1] as f32, a[2] as f32)
 }
 
 impl View {
-    fn of(camera: &Camera, scene: &RenderScene) -> View {
-        let target = camera.target;
-        let eye = sub(camera.eye, target);
-        let distance = length(eye);
-        let view_from_world =
-            macaw::IsoTransform::look_at_rh(vec3(eye), glam::Vec3::ZERO, vec3(camera.up))
-                .unwrap_or(macaw::IsoTransform::IDENTITY);
-        // The farthest point of the scene from the eye, for an orthographic far plane.
-        let farthest = scene
-            .bodies
-            .iter()
-            .flat_map(|b| b.mesh.positions.iter().chain(&b.mesh.edge_points))
-            .map(|p| length(sub(sub(*p, target), eye)))
-            .fold(distance, f64::max);
-        #[allow(clippy::cast_possible_truncation)]
-        let (projection, toward_eye) = match camera.projection {
-            Projection::Orthographic { view_height } => (
-                ViewProjection::Orthographic {
-                    camera_mode: OrthographicCameraMode::NearPlaneCenter,
-                    vertical_world_size: view_height as f32,
-                    far_plane_distance: (farthest * 1.01 + 1.0) as f32,
-                },
-                Some(unit(eye)),
-            ),
-            Projection::Perspective { field_of_view } => (
-                ViewProjection::Perspective {
-                    vertical_fov: field_of_view.to_radians() as f32,
-                    near_plane_distance: (distance * 1e-4) as f32,
-                    aspect_ratio: scene.width as f32 / scene.height as f32,
-                },
-                None,
-            ),
+    fn of(camera: &Camera, scene: &RenderScene) -> Result<View, String> {
+        let frame = camera.frame().map_err(|e| e.message)?;
+        let points = || {
+            scene
+                .bodies
+                .iter()
+                .flat_map(|b| b.mesh.positions.iter().chain(&b.mesh.edge_points))
         };
-        View {
-            view_from_world,
-            projection,
-            eye,
-            toward_eye,
-            target,
-        }
+        let (back, up) = (vec3(frame.back), vec3(frame.up));
+        #[allow(clippy::cast_possible_truncation)]
+        let view = match camera.projection {
+            Projection::Orthographic { view_height } => {
+                // Only the eye's direction counts: the camera is set past every point of the
+                // scene, so nothing is cut off behind the eye (FreeCAD fits its clipping
+                // planes to the scene, too), and the far plane past the scene's other side.
+                let reach = points()
+                    .map(|p| length(sub(*p, camera.target)))
+                    .fold(0.0, f64::max);
+                let margin = (reach * 0.01).max(1.0);
+                let at = back * (reach + margin) as f32;
+                View {
+                    view_from_world: macaw::IsoTransform::look_at_rh(at, glam::Vec3::ZERO, up)
+                        .ok_or("the camera's frame is degenerate")?,
+                    projection: ViewProjection::Orthographic {
+                        camera_mode: OrthographicCameraMode::NearPlaneCenter,
+                        vertical_world_size: view_height as f32,
+                        far_plane_distance: (2.0 * (reach + margin)) as f32,
+                    },
+                    reference: camera.target,
+                    eye: None,
+                    back: frame.back,
+                }
+            }
+            Projection::Perspective { field_of_view } => {
+                // The near plane from what's in view, not from where the target is along
+                // the ray: a millionth of the farthest point's distance (reverse-z keeps the
+                // depth precise from there out).
+                let reach = points()
+                    .map(|p| length(sub(*p, camera.eye)))
+                    .fold(frame.distance, f64::max);
+                View {
+                    view_from_world: macaw::IsoTransform::look_at_rh(glam::Vec3::ZERO, -back, up)
+                        .ok_or("the camera's frame is degenerate")?,
+                    projection: ViewProjection::Perspective {
+                        vertical_fov: field_of_view.to_radians() as f32,
+                        near_plane_distance: (reach * 1e-6) as f32,
+                        aspect_ratio: scene.width as f32 / scene.height as f32,
+                    },
+                    reference: camera.eye,
+                    eye: Some(camera.eye),
+                    back: frame.back,
+                }
+            }
+        };
+        Ok(view)
     }
 
-    /// A position about the target, as drawn.
+    /// A position about the reference, as drawn.
     fn place(&self, p: [f64; 3]) -> glam::Vec3 {
-        vec3(sub(p, self.target))
+        vec3(sub(p, self.reference))
     }
 
     /// The headlight's share of a vertex's light, from its normal: the ambient, and the
     /// rest by Lambert's law toward the eye.
     fn light(&self, p: [f64; 3], normal: [f32; 3]) -> f32 {
-        let toward = self
-            .toward_eye
-            .unwrap_or_else(|| unit(sub(self.eye, sub(p, self.target))));
-        let n = [
-            f64::from(normal[0]),
-            f64::from(normal[1]),
-            f64::from(normal[2]),
-        ];
-        let lambert = (n[0] * toward[0] + n[1] * toward[1] + n[2] * toward[2]).max(0.0);
+        let toward = match self.eye {
+            None => self.back,
+            Some(eye) => {
+                let d = sub(eye, p);
+                let l = length(d);
+                if l > 0.0 { d.map(|c| c / l) } else { self.back }
+            }
+        };
+        let n = normal.map(f64::from);
+        let lambert = (n[0] * toward[0] + n[1] * toward[1] + n[2] * toward[2]).clamp(0.0, 1.0);
         #[allow(clippy::cast_possible_truncation)]
         let lambert = lambert as f32;
-        AMBIENT + (1.0 - AMBIENT) * lambert.min(1.0)
+        AMBIENT + (1.0 - AMBIENT) * lambert
     }
 }
 
@@ -282,10 +295,17 @@ fn faces(
                     let i = usize::try_from(v).unwrap_or(0);
                     let p = mesh.positions[i];
                     let light = view.light(p, mesh.normals[i]);
-                    let mut c = albedo * light;
+                    // In linear light: the albedo scaled by the light, half blue if
+                    // highlighted, then sRGB (an Rgba's alpha must stay 1, or the
+                    // conversion premultiplies in sRGB).
+                    let mut c = [albedo.r(), albedo.g(), albedo.b()].map(|a| a * light);
                     if lit {
-                        c = c * (1.0 - HIGHLIGHT_STRENGTH) + blue * HIGHLIGHT_STRENGTH;
+                        let b = [blue.r(), blue.g(), blue.b()];
+                        for k in 0..3 {
+                            c[k] = c[k] * (1.0 - HIGHLIGHT_STRENGTH) + b[k] * HIGHLIGHT_STRENGTH;
+                        }
                     }
+                    let c = Rgba::from_rgb(c[0], c[1], c[2]);
                     positions.push(view.place(p));
                     let c = Color32::from(c);
                     colors.push(re_renderer::Rgba32Unmul::from_rgba_unmul_array([
