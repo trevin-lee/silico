@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::{ElementKind, ElementRef, Refusal};
+
 /// What [`crate::Op::Distance`] found: the least distance between the two elements as
 /// bounded (never their infinite carriers), a pair of points where it's met, `from` on the
 /// first element and `to` on the second, and how many pairs OCCT found it met at.
@@ -15,6 +17,27 @@ pub struct Distance {
     pub from: [f64; 3],
     pub to: [f64; 3],
     pub solutions: u32,
+}
+
+/// Why a distance between `first` and `second` can't be asked, if it can't: one is a
+/// solid, which a distance isn't between in M4.5, or numbered 0, which numbers nothing
+/// (elements are numbered from 1); the first's reason before the second's. The core's
+/// request, the worker, and the fake kernel each refuse by it, in one set of words.
+pub fn check_distance(first: ElementRef, second: ElementRef) -> Result<(), Refusal> {
+    for (element, parameter) in [(first, "first"), (second, "second")] {
+        let message = if element.kind == ElementKind::Solid {
+            format!("{parameter} must be a face, an edge, or a vertex, not a solid")
+        } else if element.index == 0 {
+            format!("elements are numbered from 1, so {parameter} can't be 0")
+        } else {
+            continue;
+        };
+        return Err(Refusal::InvalidParameter {
+            parameter: parameter.to_owned(),
+            message,
+        });
+    }
+    Ok(())
 }
 
 /// The pair of `pairs` (each from the first element to the second) whose two points, as an

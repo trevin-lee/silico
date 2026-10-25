@@ -61,7 +61,8 @@ fn a_boxs_bottom_and_top_are_its_height_apart_their_witness_its_first_corners() 
     assert_eq!(d.distance, 30.0);
     assert_eq!(d.from, [0.0, 0.0, 0.0]);
     assert_eq!(d.to, [0.0, 0.0, 30.0]);
-    assert!(d.solutions >= 1);
+    // A pair at each of the four corners.
+    assert_eq!(d.solutions, 4);
     // Swapped: the points swap, and nothing else.
     let back = distance(&shape, ElementRef::face(6), None, ElementRef::face(5)).unwrap();
     assert_eq!(back.distance, 30.0);
@@ -188,9 +189,10 @@ fn an_element_its_shape_hasnt_or_a_solid_is_refused_naming_which() {
     let missing = distance(&shape, ElementRef::face(1), None, ElementRef::face(7)).unwrap_err();
     assert_eq!(
         missing.refusal(),
-        &Refusal::InvalidParameter {
+        &Refusal::ElementMissing {
             parameter: "second".to_owned(),
-            message: "second is Face7, and its shape has 6 faces".to_owned(),
+            element: ElementRef::face(7),
+            count: 6,
         }
     );
     let zero = distance(&shape, edge(0), None, edge(1)).unwrap_err();
@@ -198,7 +200,7 @@ fn an_element_its_shape_hasnt_or_a_solid_is_refused_naming_which() {
         zero.refusal(),
         &Refusal::InvalidParameter {
             parameter: "first".to_owned(),
-            message: "first is Edge0, and its shape has 12 edges".to_owned(),
+            message: "elements are numbered from 1, so first can't be 0".to_owned(),
         }
     );
     // Of the other shape, counted on it: a sphere has one face.
@@ -212,9 +214,10 @@ fn an_element_its_shape_hasnt_or_a_solid_is_refused_naming_which() {
     .unwrap_err();
     assert_eq!(
         other.refusal(),
-        &Refusal::InvalidParameter {
+        &Refusal::ElementMissing {
             parameter: "second".to_owned(),
-            message: "second is Face2, and its shape has 1 face".to_owned(),
+            element: ElementRef::face(2),
+            count: 1,
         }
     );
     let solid = ElementRef {
@@ -256,10 +259,55 @@ fn through_a_worker_the_distance_is_the_bridges_and_a_refusal_is_data() {
     assert_eq!(error.parameter(), Some("second"));
     assert_eq!(
         error.message(),
-        "second is Face9, and its shape has 6 faces"
+        "second, face 9, doesn't exist: its shape has faces 1 to 6"
     );
     // The worker lives on.
     let request =
         KernelRequest::distance(&data(&a), ElementRef::face(5), None, ElementRef::face(6)).unwrap();
     assert_eq!(worker.run(request).unwrap().distance, 10.0);
+}
+
+#[test]
+fn circles_centres_apart_are_their_gap_apart_as_freecads_circle_test_has_them() {
+    // FreeCAD's testCircleCircle: circles of radius 1 centred at (0, 0, 0) and (3, 4, 0),
+    // centres 5 apart, so 5 − 1 − 1 = 3 apart where they're nearest, on the line between
+    // the centres: (0.6, 0.8, 0) and (2.4, 3.2, 0). Each the bottom rim of a cylinder.
+    let rim = |at: [f64; 3]| {
+        let cylinder = moved(
+            &make(&Primitive::Cylinder {
+                radius: 1.0,
+                height: 1.0,
+            })
+            .unwrap(),
+            at,
+        );
+        let d = describe_whole(&cylinder).unwrap();
+        let bottom = d
+            .edges
+            .iter()
+            .position(|e| matches!(e.curve, EdgeCurve::Circle { .. }) && e.start[2] == 0.0)
+            .unwrap();
+        (cylinder, edge(u32::try_from(bottom + 1).unwrap()))
+    };
+    let (a, a_rim) = rim([0.0, 0.0, 0.0]);
+    let (b, b_rim) = rim([3.0, 4.0, 0.0]);
+    let d = distance(&a, a_rim, Some(&b), b_rim).unwrap();
+    assert!((d.distance - 3.0).abs() < 1e-9, "{}", d.distance);
+    assert_point("from", d.from, [0.6, 0.8, 0.0]);
+    assert_point("to", d.to, [2.4, 3.2, 0.0]);
+}
+
+#[test]
+fn corners_of_two_shapes_are_measured_across_them() {
+    // FreeCAD's testTwoBoxesMovedByContainers, without containers: a 10 mm cube, and
+    // another moved 50 along x; the first's corner at the origin and the second's at
+    // (50, 0, 0) are 50 apart.
+    let a = cube(10.0);
+    let b = moved(&a, [50.0, 0.0, 0.0]);
+    let origin = vertex_at(&a, [0.0, 0.0, 0.0]);
+    let there = vertex_at(&b, [50.0, 0.0, 0.0]);
+    let d = distance(&a, vertex(origin), Some(&b), vertex(there)).unwrap();
+    assert_eq!(d.distance, 50.0);
+    assert_eq!(d.from, [0.0, 0.0, 0.0]);
+    assert_eq!(d.to, [50.0, 0.0, 0.0]);
 }

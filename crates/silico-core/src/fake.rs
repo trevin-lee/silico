@@ -799,33 +799,27 @@ fn distance(
     second_counts: &ElementCounts,
     second: ElementRef,
 ) -> Result<Reply, Error> {
+    // As a worker refuses them, worded as the worker client words a worker's refusal.
+    let refused = |refusal| {
+        Err(crate::worker::failure_error(
+            "Distance",
+            silico_protocol::Failure::new(refusal),
+        ))
+    };
+    if let Err(refusal) = silico_protocol::check_distance(first, second) {
+        return refused(refusal);
+    }
     for (element, counts, parameter) in [
         (first, first_counts, "first"),
         (second, second_counts, "second"),
     ] {
-        let total = match element.kind {
-            ElementKind::Face => counts.faces,
-            ElementKind::Edge => counts.edges,
-            ElementKind::Vertex => counts.vertices,
-            ElementKind::Solid => 0,
-        };
-        if element.index == 0 || element.index > total {
-            // As a worker's refusal, worded as the worker client words one.
-            let refusal = silico_protocol::Refusal::InvalidParameter {
+        let count = counts.of(element.kind);
+        if element.index > count {
+            return refused(silico_protocol::Refusal::ElementMissing {
                 parameter: parameter.to_owned(),
-                message: format!(
-                    "{parameter} is {element}, and its shape has {total} {}",
-                    if total == 1 {
-                        one_of(element.kind)
-                    } else {
-                        element.kind.plural()
-                    }
-                ),
-            };
-            return Err(crate::worker::failure_error(
-                "Distance",
-                silico_protocol::Failure::new(refusal),
-            ));
+                element,
+                count,
+            });
         }
     }
     let at = |element: ElementRef| [f64::from(element.index), 0.0, 0.0];
@@ -835,16 +829,6 @@ fn distance(
         to: at(second),
         solutions: 1,
     }))
-}
-
-/// The word for one element of `kind`, for "its shape has 1 face".
-fn one_of(kind: ElementKind) -> &'static str {
-    match kind {
-        ElementKind::Face => "face",
-        ElementKind::Edge => "edge",
-        ElementKind::Vertex => "vertex",
-        ElementKind::Solid => "solid",
-    }
 }
 
 /// The fake's description of a shape whose counts are `counts`: its `kind`'s elements from

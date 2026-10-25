@@ -503,12 +503,27 @@ DistanceOut distance(const Shape &first_shape, Kind first_kind, uint32_t first,
     return out;
   }
   out.found = true;
+  const TopoDS_Shape &a = firsts(static_cast<int>(first));
+  const TopoDS_Shape &b = seconds(static_cast<int>(second));
+  // OCCT's search isn't symmetric in its two shapes: the other way round it can find other
+  // pairs. So it's given the two elements in one order, by their own B-reps (each with its
+  // place), whatever order they came in, and its pairs are put back in the request's: the
+  // same two elements give the same answer either way round, and nothing else decides it.
+  const auto bytes = [](const TopoDS_Shape &element) {
+    std::ostringstream text(std::ios::binary);
+    BinTools::Write(element, text, false, false, BinTools_FormatVersion_CURRENT);
+    if (!text) {
+      throw Standard_Failure("writing an element's B-rep failed");
+    }
+    return std::move(text).str();
+  };
+  const bool reversed = bytes(b) < bytes(a);
   // One thread, as FreeCAD runs it, so its solutions come the same way every run; OCCT's
   // default precision.
   BRepExtrema_DistShapeShape extrema;
   extrema.SetMultiThread(Standard_False);
-  extrema.LoadS1(firsts(static_cast<int>(first)));
-  extrema.LoadS2(seconds(static_cast<int>(second)));
+  extrema.LoadS1(reversed ? b : a);
+  extrema.LoadS2(reversed ? a : b);
   extrema.Perform();
   if (!extrema.IsDone()) {
     return out;
@@ -516,8 +531,10 @@ DistanceOut distance(const Shape &first_shape, Kind first_kind, uint32_t first,
   out.done = true;
   out.value = extrema.Value();
   for (int i = 1; i <= extrema.NbSolution(); ++i) {
-    out.pairs.push_back(point3(extrema.PointOnShape1(i).XYZ()));
-    out.pairs.push_back(point3(extrema.PointOnShape2(i).XYZ()));
+    const gp_Pnt &on_a = reversed ? extrema.PointOnShape2(i) : extrema.PointOnShape1(i);
+    const gp_Pnt &on_b = reversed ? extrema.PointOnShape1(i) : extrema.PointOnShape2(i);
+    out.pairs.push_back(point3(on_a.XYZ()));
+    out.pairs.push_back(point3(on_b.XYZ()));
   }
   return out;
 }

@@ -1015,70 +1015,41 @@ pub fn describe(
 /// hasn't; and if OCCT finds no distance.
 ///
 /// OCCT's search isn't symmetric: given the two elements the other way round, it can find
-/// other pairs, and so another witness, and a distance an ulp off. So it's always given them
-/// in one order, the lesser first (by their shapes' B-reps, then by kind and number), and its
-/// answer is swapped back: swapping the elements swaps the witness's points and nothing
-/// else.
+/// other pairs, and so another witness, and a distance an ulp off. So the bridge gives them
+/// to it in one order, by the elements' own B-reps, and puts its pairs back in the
+/// request's: swapping the elements swaps the witness's points and nothing else, and
+/// nothing but the two elements (not the rest of their shapes, nor their numbers) decides
+/// the answer.
 pub fn distance(
     shape: &Shape,
     first: silico_protocol::ElementRef,
     other: Option<&Shape>,
     second: silico_protocol::ElementRef,
 ) -> Result<silico_protocol::Distance, KernelError> {
-    let kind = |element: silico_protocol::ElementRef, parameter: &str| match element.kind {
-        ElementKind::Face => Ok(ffi::Kind::Face),
-        ElementKind::Edge => Ok(ffi::Kind::Edge),
-        ElementKind::Vertex => Ok(ffi::Kind::Vertex),
-        ElementKind::Solid => Err(KernelError::new(Refusal::InvalidParameter {
-            parameter: parameter.to_owned(),
-            message: format!("{parameter} must be a face, an edge, or a vertex, not a solid"),
-        })),
+    silico_protocol::check_distance(first, second).map_err(KernelError::new)?;
+    let kind = |element: silico_protocol::ElementRef| match element.kind {
+        ElementKind::Face => ffi::Kind::Face,
+        ElementKind::Edge => ffi::Kind::Edge,
+        ElementKind::Vertex => ffi::Kind::Vertex,
+        // Refused above; the bridge refuses one too.
+        ElementKind::Solid => ffi::Kind::Solid,
     };
-    let first_kind = kind(first, "first")?;
-    let second_kind = kind(second, "second")?;
-    let second_shape = other.unwrap_or(shape);
-    let reversed = match other {
-        None => (second.kind, second.index) < (first.kind, first.index),
-        Some(other) => {
-            let (a, b) = (to_brep(shape)?, to_brep(other)?);
-            (b.as_slice(), second.kind, second.index) < (a.as_slice(), first.kind, first.index)
-        }
-    };
-    // The first's totals and pairs as OCCT gives them, the second's after.
-    let mut out = if reversed {
-        let mut out = ffi::distance(
-            second_shape.get()?,
-            second_kind,
-            second.index,
-            shape.get()?,
-            first_kind,
-            first.index,
-        )?;
-        std::mem::swap(&mut out.first_total, &mut out.second_total);
-        out
-    } else {
-        ffi::distance(
-            shape.get()?,
-            first_kind,
-            first.index,
-            second_shape.get()?,
-            second_kind,
-            second.index,
-        )?
-    };
+    let (first_kind, second_kind) = (kind(first), kind(second));
+    let out = ffi::distance(
+        shape.get()?,
+        first_kind,
+        first.index,
+        other.unwrap_or(shape).get()?,
+        second_kind,
+        second.index,
+    )?;
     if !out.found {
-        let missing = |element: silico_protocol::ElementRef, total: u32, parameter: &str| {
-            (element.index == 0 || element.index > total).then(|| {
-                KernelError::new(Refusal::InvalidParameter {
+        let missing = |element: silico_protocol::ElementRef, count: u32, parameter: &str| {
+            (element.index > count).then(|| {
+                KernelError::new(Refusal::ElementMissing {
                     parameter: parameter.to_owned(),
-                    message: format!(
-                        "{parameter} is {element}, and its shape has {total} {}",
-                        if total == 1 {
-                            one_of(element.kind)
-                        } else {
-                            element.kind.plural()
-                        }
-                    ),
+                    element,
+                    count,
                 })
             })
         };
@@ -1097,14 +1068,25 @@ pub fn distance(
         ));
     }
     let point = |p: &ffi::Point3| [p.x, p.y, p.z];
-    let pairs: Vec<[[f64; 3]; 2]> = std::mem::take(&mut out.pairs)
+    let pairs: Vec<[[f64; 3]; 2]> = out
+        .pairs
         .chunks_exact(2)
-        .map(|pair| {
-            let (a, b) = (point(&pair[0]), point(&pair[1]));
-            if reversed { [b, a] } else { [a, b] }
-        })
+        .map(|pair| [point(&pair[0]), point(&pair[1])])
         .collect();
-    let Some([from, to]) = silico_protocol::witness(&pairs) else {
+    // OCCT keeps only the pairs within its precision of its distance, but its filter skips
+    // the pair after each it drops, so one further off can stay: the witness is chosen
+    // among those within it (all of them, if somehow none is).
+    let apart = |[a, b]: &[[f64; 3]; 2]| {
+        let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+    };
+    let near: Vec<[[f64; 3]; 2]> = pairs
+        .iter()
+        .filter(|pair| (apart(pair) - out.value).abs() <= silico_protocol::LENGTH_TOLERANCE)
+        .copied()
+        .collect();
+    let among = if near.is_empty() { &pairs } else { &near };
+    let Some([from, to]) = silico_protocol::witness(among) else {
         return Err(KernelError::caused(
             Refusal::DistanceNotDone,
             Some("BRepExtrema_DistShapeShape: done, with no solution".to_owned()),
@@ -1116,16 +1098,6 @@ pub fn distance(
         to,
         solutions: u32::try_from(pairs.len()).unwrap_or(u32::MAX),
     })
-}
-
-/// The word for one element of `kind`, for "its shape has 1 face".
-fn one_of(kind: ElementKind) -> &'static str {
-    match kind {
-        ElementKind::Face => "face",
-        ElementKind::Edge => "edge",
-        ElementKind::Vertex => "vertex",
-        ElementKind::Solid => "solid",
-    }
 }
 
 /// Every one of `shape`'s faces, edges, and vertices described, a batch of at most

@@ -592,21 +592,11 @@ impl KernelRequest<Distance> {
         other: Option<&ShapeData>,
         second: ElementRef,
     ) -> Result<Self, Error> {
-        for (element, parameter) in [(first, "first"), (second, "second")] {
-            if element.kind == ElementKind::Solid {
-                return Err(Error::new(
-                    ErrorCode::InvalidInput,
-                    format!("{parameter} must be a face, an edge, or a vertex, not a solid"),
-                )
-                .with_parameter(parameter));
-            }
-            if element.index == 0 {
-                return Err(Error::new(
-                    ErrorCode::InvalidInput,
-                    format!("elements are numbered from 1, so {parameter} can't be 0"),
-                )
-                .with_parameter(parameter));
-            }
+        if let Err(refusal) = silico_protocol::check_distance(first, second) {
+            return Err(crate::worker::failure_error(
+                "Distance",
+                Failure::new(refusal),
+            ));
         }
         let op = Op::Distance {
             shape: shape.clone(),

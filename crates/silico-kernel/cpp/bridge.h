@@ -106,8 +106,10 @@ DescribeOut describe(const Shape &shape, Kind kind, uint32_t first, uint32_t cou
 // The least distance between the element of `first_kind` numbered `first` (from 1, in
 // TopExp::MapShapes order) of `first_shape` and the one of `second_kind` numbered `second`
 // of `second_shape`, as bounded: BRepExtrema_DistShapeShape on one thread, at OCCT's default
-// precision, with every pair of points where it found it met, in OCCT's order. If either
-// number isn't an element's, `found` is false and only the totals are set.
+// precision, with every pair of points where it found it met (on the first, then on the
+// second), in OCCT's order. OCCT is given the two in one order, by their own B-reps, so the
+// answer doesn't depend on which came first. If either number isn't an element's, `found`
+// is false and only the totals are set.
 DistanceOut distance(const Shape &first_shape, Kind first_kind, uint32_t first,
                      const Shape &second_shape, Kind second_kind, uint32_t second);
 

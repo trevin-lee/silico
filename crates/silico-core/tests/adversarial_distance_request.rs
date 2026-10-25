@@ -160,19 +160,19 @@ fn the_fake_refuses_elements_at_the_ends_of_their_numbers_naming_which() {
             ElementRef::face(u32::MAX),
             ElementRef::face(1),
             "first",
-            "first is Face4294967295, and its shape has 6 faces",
+            "first, face 4294967295, doesn't exist: its shape has faces 1 to 6",
         ),
         (
             ElementRef::face(1),
             ElementRef::edge(u32::MAX),
             "second",
-            "second is Edge4294967295, and its shape has 12 edges",
+            "second, edge 4294967295, doesn't exist: its shape has edges 1 to 12",
         ),
         (
             vertex(u32::MAX),
             vertex(u32::MAX),
             "first",
-            "first is Vertex4294967295, and its shape has 8 vertices",
+            "first, vertex 4294967295, doesn't exist: its shape has vertices 1 to 8",
         ),
     ] {
         let e = run(
@@ -205,7 +205,10 @@ fn the_fake_refuses_elements_at_the_ends_of_their_numbers_naming_which() {
     )
     .unwrap_err();
     assert_eq!(e.parameter(), Some("second"));
-    assert_eq!(e.message(), "second is Edge4, and its shape has 3 edges");
+    assert_eq!(
+        e.message(),
+        "second, edge 4, doesn't exist: its shape has edges 1 to 3"
+    );
     let d = run(
         &kernel,
         KernelRequest::distance(

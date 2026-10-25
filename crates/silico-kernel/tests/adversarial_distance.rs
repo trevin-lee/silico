@@ -123,10 +123,11 @@ fn refused(shape: &Shape, first: ElementRef, other: Option<&Shape>, second: Elem
         .clone()
 }
 
-fn invalid(parameter: &str, message: &str) -> Refusal {
-    Refusal::InvalidParameter {
+fn missing(parameter: &str, element: ElementRef, count: u32) -> Refusal {
+    Refusal::ElementMissing {
         parameter: parameter.to_owned(),
-        message: message.to_owned(),
+        element,
+        count,
     }
 }
 
@@ -148,43 +149,17 @@ fn elements_numbered_past_the_count_or_u32_max_are_refused_naming_which() {
         10.0
     );
     for (first, second, want) in [
-        (
-            face(7),
-            face(1),
-            invalid("first", "first is Face7, and its shape has 6 faces"),
-        ),
-        (
-            face(1),
-            edge(13),
-            invalid("second", "second is Edge13, and its shape has 12 edges"),
-        ),
-        (
-            vertex(9),
-            vertex(1),
-            invalid("first", "first is Vertex9, and its shape has 8 vertices"),
-        ),
-        (
-            face(u32::MAX),
-            face(1),
-            invalid(
-                "first",
-                "first is Face4294967295, and its shape has 6 faces",
-            ),
-        ),
+        (face(7), face(1), missing("first", face(7), 6)),
+        (face(1), edge(13), missing("second", edge(13), 12)),
+        (vertex(9), vertex(1), missing("first", vertex(9), 8)),
+        (face(u32::MAX), face(1), missing("first", face(u32::MAX), 6)),
         (
             face(1),
             vertex(u32::MAX),
-            invalid(
-                "second",
-                "second is Vertex4294967295, and its shape has 8 vertices",
-            ),
+            missing("second", vertex(u32::MAX), 8),
         ),
         // Both out of range: the first is named.
-        (
-            face(7),
-            edge(13),
-            invalid("first", "first is Face7, and its shape has 6 faces"),
-        ),
+        (face(7), edge(13), missing("first", face(7), 6)),
     ] {
         assert_eq!(
             refused(&shape, first, None, second),
@@ -197,7 +172,7 @@ fn elements_numbered_past_the_count_or_u32_max_are_refused_naming_which() {
     let ball = sphere(1.0);
     assert_eq!(
         refused(&shape, face(1), Some(&ball), edge(12)),
-        invalid("second", "second is Edge12, and its shape has 3 edges")
+        missing("second", edge(12), 3)
     );
 }
 
@@ -208,15 +183,15 @@ fn a_compound_of_nothing_has_no_element_to_measure() {
     let shape = cube(10.0);
     assert_eq!(
         refused(&shape, face(1), Some(&empty), face(1)),
-        invalid("second", "second is Face1, and its shape has 0 faces")
+        missing("second", face(1), 0)
     );
     assert_eq!(
         refused(&empty, vertex(1), Some(&shape), face(1)),
-        invalid("first", "first is Vertex1, and its shape has 0 vertices")
+        missing("first", vertex(1), 0)
     );
     assert_eq!(
         refused(&empty, edge(1), None, edge(1)),
-        invalid("first", "first is Edge1, and its shape has 0 edges")
+        missing("first", edge(1), 0)
     );
 }
 
@@ -738,7 +713,10 @@ fn a_worker_asked_for_a_distance_on_garbage_says_so_and_goes_on() {
     let err = worker.run(request).unwrap_err();
     assert_eq!(err.code(), ErrorCode::InvalidInput);
     assert_eq!(err.parameter(), Some("second"));
-    assert_eq!(err.message(), "second is Face1, and its shape has 0 faces");
+    assert_eq!(
+        err.message(),
+        "second, face 1, doesn't exist: its shape has no faces"
+    );
     // (0, 0, 0) to (10, 10, 0): √200.
     let request = KernelRequest::distance(&good, vertex(2), None, vertex(8)).unwrap();
     assert_near(
@@ -805,6 +783,23 @@ fn the_fakes_refusals_read_as_a_workers() {
         let from_worker = worker.run(ask(&real_box)).unwrap_err();
         assert_eq!(parts(&from_fake), parts(&from_worker), "{first} {second}");
     }
+    // A shape with one element of the kind: a sphere's one face, its second asked for.
+    let ball = Primitive::Sphere { radius: 1.0 };
+    let fake_ball = on_fake(&fake, KernelRequest::make(ball).unwrap()).unwrap();
+    let real_ball = worker.make(ball).unwrap();
+    let from_fake = on_fake(
+        &fake,
+        KernelRequest::distance(&fake_box, face(1), Some(&fake_ball), face(2)).unwrap(),
+    )
+    .unwrap_err();
+    let from_worker = worker
+        .run(KernelRequest::distance(&real_box, face(1), Some(&real_ball), face(2)).unwrap())
+        .unwrap_err();
+    assert_eq!(parts(&from_fake), parts(&from_worker));
+    assert_eq!(
+        from_worker.message(),
+        "second, face 2, doesn't exist: its shape has faces 1 to 1"
+    );
 }
 
 // ---- The witness's order ----
@@ -892,4 +887,42 @@ proptest! {
             pair_bits(&[chosen[1], chosen[0]])
         );
     }
+}
+
+/// A vertex at (`x`, 0, 0), as FreeCAD writes one (`Part.Vertex(x, 0, 0)`).
+fn vertex_at(x: &str) -> Shape {
+    let text = format!(
+        "\nCASCADE Topology V1, (c) Matra-Datavision\nLocations 0\nCurve2ds 0\nCurves 0\n\
+         Polygon3D 0\nPolygonOnTriangulations 0\nSurfaces 0\nTriangulations 0\n\nTShapes 1\n\
+         Ve\n1e-07\n{x} 0 0\n0 0\n\n1101101\n*\n\n+1 0 \n"
+    );
+    from_text_brep(text.as_bytes()).unwrap()
+}
+
+#[test]
+fn a_distance_past_what_a_number_holds_is_not_done_and_the_worker_lives_on() {
+    // Two vertices at x = 1e308 and x = -1e308, each a finite point: 2e308 apart, which no
+    // f64 holds. OCCT keeps only solutions less than its running least distance, which
+    // starts at the largest finite number, so it keeps none and isn't done: an infinite
+    // distance is never sent, and the request is refused as OCCT's (kernel_failed), with
+    // its cause, never a worker's lie (protocol_error).
+    let (far, other) = (vertex_at("1e+308"), vertex_at("-1e+308"));
+    let here = distance(&far, vertex(1), Some(&other), vertex(1)).unwrap_err();
+    assert_eq!(here.refusal(), &Refusal::DistanceNotDone);
+    let mut worker = kernel::kernel();
+    let request =
+        KernelRequest::distance(&data(&far), vertex(1), Some(&data(&other)), vertex(1)).unwrap();
+    let error = worker.run(request).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::KernelFailed, "{error}");
+    assert_eq!(error.message(), "Distance failed");
+    assert_eq!(error.cause(), Some("BRepExtrema_DistShapeShape: not done"));
+    assert_eq!(
+        error.suggestion(),
+        Some("report it with the document: the kernel couldn't measure this pair")
+    );
+    // The worker lives on.
+    let (three, seven) = (vertex_at("3"), vertex_at("7"));
+    let request =
+        KernelRequest::distance(&data(&three), vertex(1), Some(&data(&seven)), vertex(1)).unwrap();
+    assert_eq!(worker.run(request).unwrap().distance, 4.0);
 }

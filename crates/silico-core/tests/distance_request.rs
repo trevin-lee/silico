@@ -106,7 +106,7 @@ fn the_fakes_distance_is_how_far_apart_the_elements_numbers_are() {
     assert_eq!(refused.parameter(), Some("second"));
     assert_eq!(
         refused.message(),
-        "second is Vertex9, and its shape has 8 vertices"
+        "second, vertex 9, doesn't exist: its shape has vertices 1 to 8"
     );
 }
 
