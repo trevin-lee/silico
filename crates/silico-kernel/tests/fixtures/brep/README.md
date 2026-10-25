@@ -65,6 +65,10 @@ BinTools::Write(box, out, false, false, BinTools_FormatVersion_CURRENT);
   by OCCT 7.9.3 (`BRepTools::Write`) from:
 
   ```cpp
+  TopTools_IndexedMapOfShape edges;
+  TopExp::MapShapes(curves_and_surfaces, TopAbs_EDGE, edges);
+  TopoDS_Edge edge4 = TopoDS::Edge(edges(4));
+  double first, last;
   Handle(Geom_Curve) c = BRep_Tool::Curve(edge4, first, last);
   gp_Pnt a = c->Value(first), b = c->Value(last);
   TopoDS_Wire w = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(c, first, last),
