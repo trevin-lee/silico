@@ -198,7 +198,7 @@ fn a_solve_that_moves_a_point_or_a_radius_is_drift_naming_each() {
     assert_eq!(e.code(), ErrorCode::Drift);
     assert_eq!(e.feature(), Some(fixture::FEATURE));
     assert_eq!(e.elements(), ["pb000000", "ca000000"]);
-    assert_eq!(e.parameter(), Some("pb000000"));
+    assert_eq!(e.parameter(), Some("points.pb000000.x"));
     assert!(
         e.message().contains("pb000000 x 10 → 11.5")
             && e.message().contains("ca000000 radius 5 → 6")
@@ -210,6 +210,19 @@ fn a_solve_that_moves_a_point_or_a_radius_is_drift_naming_each() {
         "{:?}",
         e.suggestion()
     );
+}
+
+#[test]
+fn a_solve_that_moves_only_a_radius_is_drift_naming_the_circles_radius() {
+    // The test above moves pb000000 too, which comes first: here the radius alone, so
+    // drift's field is the circle's.
+    let errors = drift(HORIZONTAL, |v| v[CA_RADIUS] = 6.0);
+    let [e] = &errors[..] else {
+        panic!("{errors:?}")
+    };
+    assert_eq!(e.elements(), ["ca000000"]);
+    assert_eq!(e.parameter(), Some("circles.ca000000.radius"));
+    assert!(e.message().contains("ca000000 radius 5 → 6"), "{e}");
 }
 
 #[test]
@@ -253,6 +266,7 @@ fn a_reference_dimension_stored_otherwise_than_measured_is_drift_and_a_save_writ
         panic!("{errors:?}")
     };
     assert_eq!(e.elements(), ["r0000001", "r0000002"]);
+    assert_eq!(e.parameter(), Some("constraints.r0000001.value"));
     assert!(
         e.message().contains("r0000001 value 3 → 10")
             && e.message().contains("r0000002 value 0 → 90"),
@@ -329,6 +343,7 @@ fn a_solve_that_moves_only_a_y_is_drift() {
         panic!("a y-only move isn't drift: {errors:?}")
     };
     assert_eq!(e.elements(), ["pc000000"]);
+    assert_eq!(e.parameter(), Some("points.pc000000.y"));
     assert!(e.message().contains("pc000000 y 10 → 10.5"), "{e}");
     let sketches = FakeSketches::new();
     moving(&sketches, |v| v[PC_Y] = 10.5);
@@ -657,6 +672,7 @@ fn a_point_line_distance_stored_on_the_other_side_is_drift_saying_both_sides() {
         panic!("{errors:?}")
     };
     assert_eq!(e.elements(), ["r0000001"], "{e}");
+    assert_eq!(e.parameter(), Some("constraints.r0000001.side"));
     assert!(
         e.message().contains("r0000001 value 10 right → 10 left"),
         "{e}"

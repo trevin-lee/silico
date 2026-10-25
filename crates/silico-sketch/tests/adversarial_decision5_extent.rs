@@ -521,7 +521,7 @@ fn tiny_line(len: f64, angle: f64) -> Checked {
 fn too_small_to_draw(len: f64, angle: f64) {
     let refused = saves::checked(&tiny_line_text(len, angle)).unwrap_err();
     assert!(
-        refused.contains("parameter: Some(\"lines.0.to\")")
+        refused.contains("parameter: Some(\"lines.n0000001.to\")")
             && refused.contains(&format!("line n0000001 is {len:e} mm long")),
         "{len:e}: {refused}"
     );

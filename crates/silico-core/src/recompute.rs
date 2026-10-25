@@ -393,8 +393,8 @@ impl Model {
                 (&feature.operation, outcome)
             {
                 let moved = crate::sketch::moved(stored, &solution.written(stored));
-                if let Some((first, _)) = moved.first() {
-                    let said: Vec<&str> = moved.iter().take(5).map(|(_, s)| s.as_str()).collect();
+                if let Some(first) = moved.first() {
+                    let said: Vec<&str> = moved.iter().take(5).map(|m| m.said.as_str()).collect();
                     let more = if moved.len() > 5 { ", …" } else { "" };
                     errors.push(
                         Error::new(
@@ -407,8 +407,8 @@ impl Model {
                             ),
                         )
                         .with_feature(feature.id.as_str())
-                        .with_elements(moved.iter().map(|(id, _)| id.as_str()))
-                        .with_parameter(first.as_str())
+                        .with_elements(moved.iter().map(|m| m.id.as_str()))
+                        .with_parameter(first.field.as_str())
                         .with_suggestion(SKETCH_DRIFT),
                     );
                 }
