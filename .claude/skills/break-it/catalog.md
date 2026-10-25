@@ -169,6 +169,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Many concurrent calls, calls made during recompute, cancellation partway through an operation
 - Element references by stale, misspelled, or made-up names
 - Calls in the wrong order (editing before opening a document, committing a transaction that was never started)
+- Strict request readers that keep every refusal and list only the first hundred: an 8 MB list of 4 million bad members holds 4 million errors (a 1.4 GB peak); count past the listed ones
+- Schemas generated from `Option` fields (schemars) leave them out of `required` though the response always has them; `#[schemars(required)]` drops their `null` instead
 
 ## Kernel worker and IPC
 

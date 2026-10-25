@@ -21,6 +21,7 @@ use crate::recompute::{Model, Recompute, RunOutcome};
 
 mod edit;
 mod session;
+pub mod wire;
 
 pub use session::{
     Added, Begun, Committed, FieldSet, MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead,
@@ -34,8 +35,8 @@ const API_VERSION: u32 = 1;
 
 /// What `version` answers: the API's version, the document format's and naming scheme's,
 /// and the limits (the design's section 6) of the commands built so far, as data. Each
-/// later step adds its own command's limits as it comes (responses' bytes and elements
-/// listed with M4.4, renders with M4.6, logs with M4.7, exports with M4.8).
+/// later step adds its own command's limits as it comes (elements listed with M4.4, renders
+/// with M4.6, logs with M4.7, exports with M4.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Version {
     pub api: u32,
@@ -53,6 +54,8 @@ pub struct Limits {
     pub request_bytes: usize,
     /// How deeply a request's (or a document's) values may nest.
     pub request_depth: usize,
+    /// A response's text, in bytes.
+    pub response_bytes: usize,
     /// The errors and warnings listed, the rest counted.
     pub listed: usize,
     /// The sessions open in one process.
@@ -74,6 +77,7 @@ pub const VERSION: Version = Version {
         document_bytes: document::json::MAX_DOCUMENT_LEN,
         request_bytes: document::json::MAX_INPUT_LEN,
         request_depth: document::json::MAX_DEPTH,
+        response_bytes: wire::MAX_RESPONSE_LEN,
         listed: document::PROBLEMS_LISTED,
         sessions: MAX_SESSIONS,
         published_reads: MAX_PUBLISHED_READS,
@@ -514,6 +518,18 @@ fn bodies(document: &Document) -> Vec<&document::FeatureId> {
         .collect()
 }
 
+/// A number's text as a whole number: digits only, with no leading zero but `0` itself, and
+/// at most `u64::MAX`; none for anything else. A request's whole numbers and a session's ID
+/// are read so.
+fn whole_number(text: &str) -> Option<u64> {
+    let digits = !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    let leading_zero = text.len() > 1 && text.starts_with('0');
+    if !digits || leading_zero {
+        return None;
+    }
+    text.parse().ok()
+}
+
 /// `text` in double quotes, its quotes, backslashes, and control and invisible characters
 /// escaped, so a name or note can't break the outline's lines or hide in them; and a client
 /// printing other text (a file's name) can do the same.
@@ -524,13 +540,7 @@ pub fn quoted(text: &str) -> String {
         match c {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
-            // Controls, the line and paragraph separators, every character Unicode draws
-            // as nothing, and every space but the plain one, which would look like it.
-            c if c.is_control()
-                || matches!(c, '\u{2028}' | '\u{2029}')
-                || (c.is_whitespace() && c != ' ')
-                || document::json::invisible(c) =>
-            {
+            c if document::json::unseen(c) => {
                 let _ = write!(out, "\\u{{{:x}}}", c as u32);
             }
             c => out.push(c),

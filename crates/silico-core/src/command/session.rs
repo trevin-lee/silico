@@ -83,6 +83,15 @@ impl SessionId {
     pub const fn number(self) -> u64 {
         self.0
     }
+
+    /// The ID `text` writes, `s1`, `s2`, ...: `s` and a whole number from 1, with no
+    /// leading zeros; none for anything else. A request names its session so
+    /// (`command::wire`).
+    pub fn parse(text: &str) -> Option<SessionId> {
+        super::whole_number(text.strip_prefix('s')?)
+            .filter(|&n| n >= 1)
+            .map(SessionId)
+    }
 }
 
 impl fmt::Display for SessionId {
@@ -115,6 +124,16 @@ impl Revision {
     /// Its number, as a response writes it: 1 at `open`, then one more for each change.
     pub const fn number(self) -> u64 {
         self.0
+    }
+
+    /// The revision numbered `number`, as a request names one: none for 0, which no
+    /// revision is.
+    pub const fn from_number(number: u64) -> Option<Revision> {
+        if number == 0 {
+            None
+        } else {
+            Some(Revision(number))
+        }
     }
 }
 
@@ -183,6 +202,19 @@ pub const MAX_PUBLISHED_READS: usize = 8;
 pub enum ModelChoice {
     Current,
     Published,
+}
+
+impl ModelChoice {
+    /// Every choice, in the order a refusal lists them.
+    pub const ALL: [ModelChoice; 2] = [ModelChoice::Current, ModelChoice::Published];
+
+    /// As a request and a response write it: `current` or `published`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ModelChoice::Current => "current",
+            ModelChoice::Published => "published",
+        }
+    }
 }
 
 /// The newest model a session's rebuilds published, and the revision it's the model of (the

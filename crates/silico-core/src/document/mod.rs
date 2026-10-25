@@ -12,7 +12,9 @@ mod reach;
 mod sketch;
 mod sketch_gate;
 mod validate;
-mod write;
+pub(crate) mod write;
+
+pub(crate) use decode::{angle_suggestion, field_name, length_suggestion, shown_number};
 
 pub(crate) use decode::optional_members;
 pub use fingerprint::{Difference, Fingerprint, MEASURE_DECIMALS, Measure};
@@ -175,15 +177,27 @@ fn smaller(feature: &Feature) -> &'static str {
 /// The JSON Schema of a document (draft 2020-12), as agents get it. The reader is the
 /// authority where a schema can't say enough: a seventh decimal, a key written twice.
 pub fn schema() -> Result<String, Error> {
+    schema_text(&schema_value_of::<Document>(), "the document")
+}
+
+/// The JSON Schema of `T` (draft 2020-12), every object's keys sorted: the document's, and
+/// the command API's (`command::wire::snapshot_value`).
+pub(crate) fn schema_value_of<T: schemars::JsonSchema>() -> serde_json::Value {
     let schema = SchemaSettings::draft2020_12()
         .into_generator()
-        .into_root_schema_for::<Document>();
-    serde_json::to_string_pretty(&sorted(schema.as_value()))
+        .into_root_schema_for::<T>();
+    sorted(schema.as_value())
+}
+
+/// `schema` as the protected snapshots hold it: its keys sorted, pretty, with a trailing
+/// newline. `what` names it for the error a schema that couldn't be written gives.
+pub(crate) fn schema_text(schema: &serde_json::Value, what: &str) -> Result<String, Error> {
+    serde_json::to_string_pretty(&sorted(schema))
         .map(|text| text + "\n")
         .map_err(|e| {
             Error::new(
                 ErrorCode::Internal,
-                "the document schema couldn't be written",
+                format!("{what}'s schema couldn't be written"),
             )
             .with_cause(e.to_string())
             .with_suggestion(crate::worker::SILICO_BUG)

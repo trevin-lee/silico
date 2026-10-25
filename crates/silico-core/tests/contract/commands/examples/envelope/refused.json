@@ -1,0 +1,9 @@
+{
+  "ok": false,
+  "session": {"id": "s1", "path": "bracket.silico", "revision": 4, "transaction": true, "reloaded": false},
+  "model": null,
+  "errors": [
+    {"code": "invalid_input", "message": "a transaction is already open in this session", "feature": null, "elements": [], "elements_total": 0, "parameter": "session", "cause": null, "suggestion": "commit or roll back the open transaction, then begin again", "candidates": []}
+  ],
+  "total": 1
+}
