@@ -27,10 +27,10 @@ impl<P: Clients + 'static> Sessions<P> {
         after: Option<Cursor>,
         limit: u32,
     ) -> Running<Listed> {
-        self.read_model(session, model, move |built, read| {
+        self.read_model(session, "elements", model, move |read| {
             list(
-                built,
-                read.revision,
+                read.model(),
+                read.model_read().revision,
                 feature.as_ref(),
                 after.as_ref(),
                 limit,
@@ -46,7 +46,9 @@ impl<P: Clients + 'static> Sessions<P> {
         model: ModelChoice,
         filter: Query,
     ) -> Running<Queried> {
-        self.read_model(session, model, move |built, _| query(built, &filter))
+        self.read_model(session, "query", model, move |read| {
+            query(read.model(), &filter)
+        })
     }
 }
 
@@ -423,17 +425,20 @@ pub fn entries(model: &Model, id: &FeatureId) -> Result<Vec<Entry>, Problems> {
         Some(FeatureOutcome::Built { built, .. }) => built,
     };
     let Some(description) = built.description() else {
-        return Err(match built.measure_refused() {
-            Some(refused) => refused.clone(),
-            None => Error::new(
-                ErrorCode::KernelFailed,
-                format!("{id}'s solid couldn't be measured, so its elements aren't known"),
-            )
-            .with_suggestion("check the document again: its rebuild measures it again"),
-        }
-        .with_feature(id.as_str())
-        .with_parameter("feature")
-        .into());
+        // Why: its description refused or failed, or, before that, its summary.
+        return Err(
+            match built.description_refused().or(built.measure_refused()) {
+                Some(refused) => refused.clone(),
+                None => Error::new(
+                    ErrorCode::KernelFailed,
+                    format!("{id}'s solid couldn't be described, so its elements aren't known"),
+                )
+                .with_suggestion("check the document again: its rebuild describes it again"),
+            }
+            .with_feature(id.as_str())
+            .with_parameter("feature")
+            .into(),
+        );
     };
     let Some(map) = model.element_map(id) else {
         return Err(fault(id, "its solid built, but its elements couldn't be named").into());

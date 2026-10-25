@@ -169,7 +169,7 @@ fn a_cursor_of_another_revision_is_a_conflict_said_with_every_other_reason() {
         .unwrap()
         .next
         .unwrap();
-    let later = Revision::OPENED.next();
+    let later = Revision::OPENED.next().unwrap();
     let refused = list(&model, later, None, Some(&stale), 0).unwrap_err();
     assert_eq!(
         codes(&refused),

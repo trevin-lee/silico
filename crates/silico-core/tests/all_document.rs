@@ -56,6 +56,8 @@ mod fingerprint;
 mod refused_from_a_partial_cache;
 #[path = "session.rs"]
 mod session;
+#[path = "session_elements.rs"]
+mod session_elements;
 #[path = "session_rebuild.rs"]
 mod session_rebuild;
 #[path = "session_tracing.rs"]
