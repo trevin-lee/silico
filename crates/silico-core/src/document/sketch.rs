@@ -42,20 +42,25 @@ impl Sketch {
     /// sorts them (stably). So a sketch read from a file whose lists aren't in ID order is
     /// the sketch its canonical text reads as, as two texts that write it are one document.
     pub fn canonically_eq(&self, other: &Sketch) -> bool {
-        fn sorted<'a, T>(items: &'a [T], id: &impl Fn(&T) -> &ElementId) -> Vec<&'a T> {
-            let mut sorted: Vec<&T> = items.iter().collect();
-            sorted.sort_by(|x, y| id(x).cmp(id(y)));
-            sorted
-        }
+        // Taken apart whole, so a field added to a sketch is a compile error here until
+        // it's compared too.
+        let Sketch {
+            plane,
+            points,
+            lines,
+            circles,
+            arcs,
+            constraints,
+        } = self;
         fn same<T: PartialEq>(a: &[T], b: &[T], id: impl Fn(&T) -> &ElementId) -> bool {
-            a.len() == b.len() && sorted(a, &id) == sorted(b, &id)
+            a.len() == b.len() && in_id_order(a, &id) == in_id_order(b, &id)
         }
-        self.plane == other.plane
-            && same(&self.points, &other.points, |p| &p.id)
-            && same(&self.lines, &other.lines, |l| &l.id)
-            && same(&self.circles, &other.circles, |c| &c.id)
-            && same(&self.arcs, &other.arcs, |a| &a.id)
-            && same(&self.constraints, &other.constraints, |c| &c.id)
+        *plane == other.plane
+            && same(points, &other.points, |p| &p.id)
+            && same(lines, &other.lines, |l| &l.id)
+            && same(circles, &other.circles, |c| &c.id)
+            && same(arcs, &other.arcs, |a| &a.id)
+            && same(constraints, &other.constraints, |c| &c.id)
     }
 
     /// The IDs of the elements of `kind`, in the order held.
@@ -68,6 +73,14 @@ impl Sketch {
             ElementKind::Constraint => self.constraints.iter().map(|c| &c.id).collect(),
         }
     }
+}
+
+/// A sketch list's members in ID order, as the file writes them: stable, so members sharing
+/// an ID (which the gate refuses) keep their order.
+pub(super) fn in_id_order<T>(items: &[T], id: impl Fn(&T) -> &ElementId) -> Vec<&T> {
+    let mut sorted: Vec<&T> = items.iter().collect();
+    sorted.sort_by(|a, b| id(a).cmp(id(b)));
+    sorted
 }
 
 /// The dotted paths of a sketch's members, as every error's `parameter` names them
