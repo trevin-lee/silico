@@ -89,21 +89,36 @@ fn the_box_from_the_front_shows_its_front_face_over_its_projection_on_lavapipe()
 
 #[test]
 fn a_restart_that_lost_lavapipes_variables_fails_naming_one_rather_than_restarting_again() {
-    // As if the restart's variables were stripped on the way (macOS strips DYLD_* from a
-    // child of a protected program): the marker is there, the variables aren't.
-    let out = Command::new(env!("CARGO_BIN_EXE_silico-render-probe"))
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("SILICO_RENDER_RESTARTED", "1")
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(1));
-    assert_eq!(
-        String::from_utf8_lossy(&out.stderr),
-        "silico-render-probe: restarted with lavapipe's variables, but VK_ICD_FILENAMES \
-         didn't reach the restart\n"
-    );
-    assert!(out.stdout.is_empty());
+    // As if the restart's variables were stripped on the way. macOS strips only DYLD_*
+    // from a child of a protected program, so the others arrive and the loader's path is
+    // the one named; with all of them gone, the first is.
+    let library_path = if cfg!(target_os = "macos") {
+        "DYLD_FALLBACK_LIBRARY_PATH"
+    } else {
+        "LD_LIBRARY_PATH"
+    };
+    let kept = [
+        ("VK_ICD_FILENAMES", silico_render::lavapipe::ICD),
+        ("LP_NUM_THREADS", silico_render::lavapipe::THREADS),
+    ];
+    for (arrived, missing) in [(&kept[..], library_path), (&[][..], "VK_ICD_FILENAMES")] {
+        let out = Command::new(env!("CARGO_BIN_EXE_silico-render-probe"))
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .envs(arrived.iter().copied())
+            .env("SILICO_RENDER_RESTARTED", "1")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{missing}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            format!(
+                "silico-render-probe: restarted with lavapipe's variables, but {missing} \
+                 didn't reach the restart\n"
+            )
+        );
+        assert!(out.stdout.is_empty(), "{missing}");
+    }
 }
 
 #[test]
