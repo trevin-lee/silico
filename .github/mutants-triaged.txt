@@ -13,7 +13,10 @@
 crates/silico-core/src/document/validate.rs | bytes_key | replace | with ^ | #84
 crates/silico-core/src/document/validate.rs | validate | replace > with >= | #84
 crates/silico-core/src/document/validate.rs | validate | replace > with >= | #84
+crates/silico-core/src/export.rs | checked | delete ! | #123
 crates/silico-core/src/export.rs | checked | replace < with <= | #123
+crates/silico-core/src/export.rs | checked | replace < with > | #123
+crates/silico-core/src/export.rs | printable | delete ! | #123
 crates/silico-core/src/fake.rs | Measured::swept | replace == with != | #84
 crates/silico-core/src/profile.rs | between | replace && with || | #95
 crates/silico-core/src/profile.rs | between | replace - with + | #95

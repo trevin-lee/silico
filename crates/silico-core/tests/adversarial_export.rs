@@ -644,12 +644,13 @@ fn a_vertex_past_32_bits_is_refused_even_with_no_edge_to_check() {
 fn a_report_with_a_value_that_isnt_finite_or_an_element_numbered_0_is_refused() {
     // The council's tests lens: validate's finiteness and numbering checks are all that
     // keep NaN geometry from being exported.
-    let corruptions: [fn(&mut ExportMesh); 12] = [
+    let corruptions: [fn(&mut ExportMesh); 13] = [
         |m| m.nodes[0][0] = f64::NAN,
         |m| m.nodes[5][2] = f64::INFINITY,
         |m| m.edge_deflections[0] = f64::NAN,
         |m| m.edge_deflections[0] = -1.0,
         |m| m.deflection = f64::NAN,
+        |m| m.deflection = 0.0,
         |m| m.face_numbers[0] = 0,
         |m| m.edge_vertices[0][1] = 0,
         // A face's tolerance, one per face, a finite length.

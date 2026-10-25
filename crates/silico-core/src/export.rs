@@ -656,14 +656,16 @@ fn same_shape(mesh: &ExportMesh, unraised: &ExportMesh) -> Result<(), Error> {
 /// tolerance is half of `least` or less; none if it's past the largest an export takes.
 /// The worker meshes with the tolerance less the rounding its bounding box allows for, the
 /// same at every tolerance, and known here as `tolerance` less `deflection`: that is the
-/// rounding to within an ulp of the tolerance, and the worker's own subtraction rounds by
-/// half an ulp of the tolerance it's given, so both are allowed for, with an ulp to spare
-/// for this test's own rounding. An ulp is far under a nanometre at every tolerance an
-/// export takes (1.5e-8 mm at 1e8), so a nanometre more always clears them.
+/// rounding to within an ulp of the tolerance, no more than an ulp of the one suggested
+/// (which is past it), and the worker's own subtraction rounds by half an ulp of the
+/// tolerance it's given, so two ulps of the suggestion are allowed for both (a model of the
+/// arithmetic needs one, over 1.2 million cases at nanometre steps). An ulp is far under a
+/// nanometre at every tolerance an export takes (1.5e-8 mm at 1e8), so a nanometre more
+/// always clears them.
 fn unraising_tolerance(least: f64, tolerance: f64, deflection: f64) -> Option<f64> {
     let margin = tolerance - deflection;
     let ulp = |x: f64| x.next_up() - x;
-    let enough = |at: f64| at - margin - 2.0 * ulp(at) - ulp(tolerance) >= least;
+    let enough = |at: f64| at - margin - 2.0 * ulp(at) >= least;
     let mut nanometres = ((least + margin) * 1e6).ceil();
     if !enough(nanometres / 1e6) {
         nanometres += 1.0;
