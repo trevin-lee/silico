@@ -29,16 +29,58 @@ fn model() -> Arc<Model> {
     }
 }
 
-/// The hole's elements: the cut's solid described, named by its map.
+/// The hole's elements: the cut's solid as its rebuild described it, named by its map.
 fn the_holes_elements() -> Vec<Element> {
     let model = model();
     let hole = FeatureId::new("m3tq8v0z").unwrap();
-    let Some(FeatureOutcome::Built { built, .. }) = model.outcome(&hole) else {
-        panic!("the cut didn't build")
-    };
-    let mut worker = KernelWorker::start_worker(Path::new(WORKER)).unwrap();
-    let description = worker.describe(&built.shape).unwrap();
+    let description = model.description(&hole).unwrap().clone();
     elements(model.element_map(&hole).unwrap(), description).unwrap()
+}
+
+#[test]
+fn each_features_solid_is_described_by_its_rebuild_as_a_worker_describes_it() {
+    // The rebuild describes each feature's solid before publishing (a batch at a time, on
+    // its pool); a worker of its own asked for the same shape afterwards gives the same
+    // description, value for value.
+    let model = model();
+    let mut worker = KernelWorker::start_worker(Path::new(WORKER)).unwrap();
+    for feature in ["k7f2qx3m", "a91cw0de", "m3tq8v0z"] {
+        let id = FeatureId::new(feature).unwrap();
+        let Some(FeatureOutcome::Built { built, .. }) = model.outcome(&id) else {
+            panic!("{feature} didn't build")
+        };
+        let described = model.description(&id).unwrap();
+        assert_eq!(
+            described,
+            &worker.describe(&built.shape).unwrap(),
+            "{feature}"
+        );
+        let summary = built.summary().unwrap();
+        assert_eq!(
+            [
+                described.faces.len(),
+                described.edges.len(),
+                described.vertices.len()
+            ],
+            [summary.faces, summary.edges, summary.vertices].map(|n| n as usize),
+            "{feature}"
+        );
+    }
+    // The block: six planes, 200, 400, and 800 mm² twice each, by hand.
+    let block = model
+        .description(&FeatureId::new("k7f2qx3m").unwrap())
+        .unwrap();
+    let mut areas: Vec<f64> = block.faces.iter().map(|f| f.area).collect();
+    areas.sort_by(f64::total_cmp);
+    for (got, want) in areas.iter().zip([200.0, 200.0, 400.0, 400.0, 800.0, 800.0]) {
+        assert!((got - want).abs() <= 1e-9 * want, "{areas:?}");
+    }
+    assert!(
+        block
+            .faces
+            .iter()
+            .all(|f| matches!(f.surface, Surface::Plane { .. }))
+    );
 }
 
 fn named<'a>(listed: &'a [Element], name: &str) -> &'a Element {

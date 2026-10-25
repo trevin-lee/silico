@@ -134,6 +134,7 @@ fn every_op() -> Vec<Op> {
         Op::Debug(DebugOp::Misbehave(Misbehavior::BadHistory)),
         Op::Debug(DebugOp::Misbehave(Misbehavior::HistoryForNoInputs)),
         Op::Debug(DebugOp::Misbehave(Misbehavior::ForgedRefusal)),
+        Op::Debug(DebugOp::Misbehave(Misbehavior::EndlessDescription)),
         Op::Debug(DebugOp::ThrowBadAlloc),
         Op::Solve(SketchSystem {
             values: vec![0.0, 0.5, 10.0, -0.25, 10.0],
@@ -348,11 +349,12 @@ fn every_op() -> Vec<Op> {
             Op::Debug(DebugOp::ThrowBadAlloc) => 39,
             Op::Describe { .. } => 40,
             Op::ExportMesh { .. } => 41,
-            Op::Render(_) => 42,
-            Op::Classify { .. } => 43,
+            Op::Debug(DebugOp::Misbehave(Misbehavior::EndlessDescription)) => 42,
+            Op::Render(_) => 43,
+            Op::Classify { .. } => 44,
         })
         .collect();
-    assert_eq!(indices, (0..44).collect(), "an operation has no case");
+    assert_eq!(indices, (0..45).collect(), "an operation has no case");
     ops
 }
 
@@ -1069,6 +1071,7 @@ fn every_op_has_its_own_name() {
             "DebugMisbehaveBadHistory",
             "DebugMisbehaveHistoryForNoInputs",
             "DebugMisbehaveForgedRefusal",
+            "DebugMisbehaveEndlessDescription",
             "DebugThrowBadAlloc",
             "Solve",
             "DragBegin",

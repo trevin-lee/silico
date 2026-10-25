@@ -5,8 +5,9 @@
 
 use silico_kernel::{test_ops, worker};
 use silico_protocol::{
-    DebugOp, DressingKind, EdgeTrouble, Failure, Generation, Mesh, Misbehavior, Op, Refusal, Reply,
-    RequestId, Trouble,
+    DebugOp, Description, DressingKind, EdgeCurve, EdgeDescription, EdgeTrouble, ElementKind,
+    FaceDescription, Failure, Generation, Mesh, Misbehavior, Op, Refusal, Reply, RequestId,
+    Surface, Trouble,
 };
 
 fn main() -> std::process::ExitCode {
@@ -29,6 +30,12 @@ fn main() -> std::process::ExitCode {
             }))
         }
         _ if misbehavior == Some(Misbehavior::WrongReply) => Ok(Reply::Done),
+        Op::Describe {
+            kind, first, count, ..
+        } if misbehavior == Some(Misbehavior::EndlessDescription) => Ok(Reply::Described {
+            total: u32::MAX,
+            description: endless(kind, first, count),
+        }),
         Op::Fillet { .. } if misbehavior == Some(Misbehavior::ForgedRefusal) => {
             Err(Failure::new(Refusal::EdgesRefused {
                 dressing: DressingKind::Fillet,
@@ -68,6 +75,44 @@ fn main() -> std::process::ExitCode {
         }
         other => worker::handle(other),
     })
+}
+
+/// `count` sound elements of `kind` from `first` (each at its own number along x), as
+/// [`Misbehavior::EndlessDescription`] sends them.
+fn endless(kind: ElementKind, first: u32, count: u32) -> Description {
+    let at = |n: u32, y: f64| [f64::from(n), y, 0.0];
+    let numbers = first..first.saturating_add(count);
+    let mut description = Description {
+        faces: Vec::new(),
+        edges: Vec::new(),
+        vertices: Vec::new(),
+    };
+    match kind {
+        ElementKind::Face => {
+            description.faces = numbers
+                .map(|n| FaceDescription {
+                    surface: Surface::Other,
+                    area: 1.0,
+                    centroid: at(n, 0.0),
+                })
+                .collect();
+        }
+        ElementKind::Edge => {
+            description.edges = numbers
+                .map(|n| EdgeDescription {
+                    curve: EdgeCurve::Other,
+                    length: 1.0,
+                    start: at(n, 0.0),
+                    end: at(n, 1.0),
+                    middle: at(n, 0.5),
+                })
+                .collect();
+        }
+        ElementKind::Vertex | ElementKind::Solid => {
+            description.vertices = numbers.map(|n| at(n, 0.0)).collect();
+        }
+    }
+    description
 }
 
 /// The test operations other than `Misbehave`: those every test worker shares, then the

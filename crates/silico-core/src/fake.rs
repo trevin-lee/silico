@@ -33,7 +33,8 @@
 //! turn, as if no edge were square to it (each edge's start its face's seam, each vertex's
 //! itself; the face reported nothing); its measures are its own model's too (below). It
 //! answers making primitives and faces, moving shapes, booleans, sweeps of faces,
-//! summaries, and echoes; anything else is refused as an internal error.
+//! summaries, descriptions (symbolic: each element stands for its number, `described`), and
+//! echoes; anything else is refused as an internal error.
 //!
 //! The real kernel writes some primitives (a cylinder, a torus) differently when it makes
 //! them than once it has read them back, so their bytes change once, on the first operation
@@ -45,7 +46,8 @@
 //! it. A test of such a refusal gives it with [`FakeKernel::refuse`].
 //!
 //! Tests can hold requests until they're released ([`FakeKernel::hold`]), to see what runs
-//! at once or to supersede a request while it runs, and have requests refused.
+//! at once or to supersede a request while it runs, have requests refused, and have them
+//! answered as a worker at fault would ([`FakeKernel::answer_instead`]).
 //!
 //! It has clients ([`Clients`]): the kernel's own ([`ClientId::KERNEL`]), and each
 //! [`FakeClient`] it gives, each with its own generations, its waiting requests served in
@@ -58,8 +60,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use silico_protocol::{
-    Algorithm, PointPlace, Reply, ShapeSummary, SketchSystem, SolveStatus, Solved, Tag,
-    area_and_perimeter, loop_area,
+    Algorithm, Description, EdgeCurve, EdgeDescription, FaceDescription, PointPlace, Reply,
+    ShapeSummary, SketchSystem, SolveStatus, Solved, Surface, Tag, area_and_perimeter, loop_area,
 };
 
 use crate::kernel::{
@@ -118,6 +120,7 @@ pub struct Hold {
 
 type Picks = dyn Fn(&Op) -> bool + Send + Sync;
 type Refuses = dyn Fn(&Op) -> Option<Error> + Send + Sync;
+type Answers = dyn Fn(&Op) -> Option<Reply> + Send + Sync;
 
 struct Shared {
     state: Mutex<State>,
@@ -136,6 +139,7 @@ struct State {
     most_running: usize,
     holds: Vec<HoldRule>,
     refusals: Vec<Arc<Refuses>>,
+    answers: Vec<Arc<Answers>>,
 }
 
 struct HoldRule {
@@ -156,6 +160,7 @@ impl FakeKernel {
                 most_running: 0,
                 holds: Vec::new(),
                 refusals: Vec::new(),
+                answers: Vec::new(),
             }),
             work: Condvar::new(),
             changed: Condvar::new(),
@@ -232,6 +237,15 @@ impl FakeKernel {
     /// locked, so it mustn't call the kernel), with that error, after it starts.
     pub fn refuse(&self, refuses: impl Fn(&Op) -> Option<Error> + Send + Sync + 'static) {
         lock(&self.shared.state).refusals.push(Arc::new(refuses));
+    }
+
+    /// Answers every request `answers` returns a reply for (called with the kernel's state
+    /// locked, so it mustn't call the kernel) with that reply instead of the fake's own,
+    /// after it starts, unless a rule of [`FakeKernel::refuse`]'s refuses it: read as a
+    /// worker's reply is, so a test can send what a worker at fault would (a description
+    /// whose total isn't its summary's, say). The first rule given that answers is taken.
+    pub fn answer_instead(&self, answers: impl Fn(&Op) -> Option<Reply> + Send + Sync + 'static) {
+        lock(&self.shared.state).answers.push(Arc::new(answers));
     }
 
     /// Refuses each request from now on that `refuses` gives a failure for, as a kernel
@@ -425,12 +439,12 @@ impl Drop for Hold {
 /// A queued request, its result's type hidden.
 trait Task: ClientTask + Send {
     fn op(&self) -> &Op;
-    /// Answers the request (with `refusal`, if a rule gave one), reads the answer as a
-    /// worker's is read, in the span it was submitted in, and ends it: under the lock
-    /// `advance` takes, as the pool does, it stops counting as running and its outcome is
-    /// sent, superseded if its client has started a newer generation or is retired. Once
+    /// Answers the request (with `given`, if a rule gave a refusal or a reply), reads the
+    /// answer as a worker's is read, in the span it was submitted in, and ends it: under the
+    /// lock `advance` takes, as the pool does, it stops counting as running and its outcome
+    /// is sent, superseded if its client has started a newer generation or is retired. Once
     /// `advance` returns, no result of the client's older generations can still arrive.
-    fn run(self: Box<Self>, refusal: Option<Error>, shared: &Shared);
+    fn run(self: Box<Self>, given: Option<Result<Reply, Error>>, shared: &Shared);
     /// Ends a request that started without running it, under the lock, as `run` does.
     fn stop(self: Box<Self>, shared: &Shared);
     /// Sends [`Outcome::Superseded`] for a request that never started.
@@ -461,7 +475,7 @@ impl<T: Send + 'static> Task for Submitted<T> {
         self.request.op()
     }
 
-    fn run(self: Box<Self>, refusal: Option<Error>, shared: &Shared) {
+    fn run(self: Box<Self>, given: Option<Result<Reply, Error>>, shared: &Shared) {
         let Submitted {
             client,
             generation,
@@ -476,10 +490,7 @@ impl<T: Send + 'static> Task for Submitted<T> {
                 generation = generation.0
             )
             .entered();
-            let reply = match refusal {
-                Some(error) => Err(error),
-                None => answer(request.op()),
-            };
+            let reply = given.unwrap_or_else(|| answer(request.op()));
             request.answer(reply)
         });
         let mut state = lock(&shared.state);
@@ -570,8 +581,17 @@ fn serve(shared: &Shared) {
                     .unwrap_or_else(|| Some(rule_panicked("refusal", task.op())))
             })
         });
+        let given = match refusal {
+            Some(error) => Some(Err(error)),
+            None => state.answers.iter().find_map(|answers| {
+                caught(|| answers(task.op())).map_or_else(
+                    || Some(Err(rule_panicked("answer", task.op()))),
+                    |reply| reply.map(Ok),
+                )
+            }),
+        };
         drop(state);
-        task.run(refusal, shared);
+        task.run(given, shared);
     }
 }
 
@@ -764,6 +784,12 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             };
             Ok(Reply::Classified { place })
         }
+        Op::Describe {
+            shape,
+            kind,
+            first,
+            count,
+        } => described(&Symbolic::read(shape)?.counts(), *kind, *first, *count),
         Op::Echo { data } => Ok(Reply::Echo { data: data.clone() }),
         other => Err(Error::new(
             ErrorCode::Internal,
@@ -826,6 +852,56 @@ fn fake_mesh(made: &Symbolic, deflection: f64, at_least_the_floor: bool) -> Resu
         }),
         false => Reply::Mesh(mesh),
     })
+}
+
+/// The fake's description of a shape whose counts are `counts`: its `kind`'s elements from
+/// `first`, `count` of them or as many as there are, each standing for its number `n` alone
+/// (a face of type other, area 1, centred at (n, 0, 0); an edge of type other from (n, 0,
+/// 0) to (n, 1, 0), 1 long; a vertex at (n, 0, 0)), and the kind's total. Enough for a
+/// test of what's done with a description; a real worker's geometry is tested on a real
+/// worker.
+fn described(
+    counts: &ElementCounts,
+    kind: ElementKind,
+    first: u32,
+    count: u32,
+) -> Result<Reply, Error> {
+    let total = match kind {
+        ElementKind::Face => counts.faces,
+        ElementKind::Edge => counts.edges,
+        ElementKind::Vertex => counts.vertices,
+        ElementKind::Solid => {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "the fake kernel describes faces, edges, and vertices, not solids",
+            ));
+        }
+    };
+    let numbers = first..=total.min(first.saturating_add(count).saturating_sub(1));
+    let at = |n: u32, y: f64| [f64::from(n), y, 0.0];
+    let mut description = Description {
+        faces: Vec::new(),
+        edges: Vec::new(),
+        vertices: Vec::new(),
+    };
+    for n in numbers {
+        match kind {
+            ElementKind::Face => description.faces.push(FaceDescription {
+                surface: Surface::Other,
+                area: 1.0,
+                centroid: at(n, 0.0),
+            }),
+            ElementKind::Edge => description.edges.push(EdgeDescription {
+                curve: EdgeCurve::Other,
+                length: 1.0,
+                start: at(n, 0.0),
+                end: at(n, 1.0),
+                middle: at(n, 0.5),
+            }),
+            ElementKind::Vertex | ElementKind::Solid => description.vertices.push(at(n, 0.0)),
+        }
+    }
+    Ok(Reply::Described { total, description })
 }
 
 /// The fake's sweep of `faces`, which must be faces a fake kernel made from regions, as the

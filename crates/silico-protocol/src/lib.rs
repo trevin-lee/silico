@@ -27,7 +27,7 @@ pub use chamfer::ChamferSize;
 pub use classify::{MAX_CLASSIFY_COORDINATE, PointPlace, check_classify_point};
 pub use describe::{
     DESCRIBE_BATCH, Description, EdgeCurve, EdgeDescription, FaceDescription, Quantity, Surface,
-    What, describe_in_batches,
+    What, batches, describe_in_batches,
 };
 pub use export::{
     DEFAULT_EXPORT_TOLERANCE, ExportMesh, MAX_EXPORT_TOLERANCE, MAX_EXPORT_TRIANGLES,
@@ -361,6 +361,10 @@ pub enum Misbehavior {
     /// A refusal of every fillet as one of edge 7, whichever edges it lists: a refusal
     /// that doesn't fit its request.
     ForgedRefusal,
+    /// Every batch of a description answered with as many sound elements of its kind as it
+    /// asks for, the kind's total `u32::MAX`: a worker that, unchecked against the shape's
+    /// summary, would have its client ask batch after batch without end.
+    EndlessDescription,
 }
 
 /// How [`DebugOp::ReplyOutOfTurn`]'s extra reply is wrong.
@@ -389,6 +393,9 @@ impl DebugOp {
                 "DebugMisbehaveHistoryForNoInputs"
             }
             DebugOp::Misbehave(Misbehavior::ForgedRefusal) => "DebugMisbehaveForgedRefusal",
+            DebugOp::Misbehave(Misbehavior::EndlessDescription) => {
+                "DebugMisbehaveEndlessDescription"
+            }
             DebugOp::ThrowBadAlloc => "DebugThrowBadAlloc",
         }
     }
