@@ -302,9 +302,10 @@ fn a_sessions_check_gives_drift_of_a_stored_fingerprint() {
 /// crashes on every request stops alike.
 const BOX_AND_BALL: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "a91cw0de", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5}]}"#;
 
-/// What a kept crash or timeout advises (decision 32): a new revision, never the worker's
-/// "try again", which reading again wouldn't do.
-const KEPT: &str = "edit the document to try again: this revision keeps the fault, so reading it again won't try again; if the same feature faults again, report it with the document";
+/// What a kept fault's suggestion says after the worker's own (decision 32): reading the
+/// revision again won't run it again, and closing the session and opening it again is the
+/// retry that leaves no trace (until M4.3's `fresh`).
+const KEPT: &str = "this revision keeps the fault, so reading it again won't run it again: close the session and open the document again to retry (M4.3's check with fresh will do it in place)";
 
 /// The fault `response`'s model read gives: its code, feature, message, and suggestion.
 fn fault<T>(response: &Response<T>) -> (ErrorCode, Option<String>, String, Option<String>) {
@@ -339,7 +340,7 @@ fn a_kernel_fault_is_given_once_beside_the_checks_result_and_kept_for_the_revisi
             ErrorCode::WorkerCrashed,
             Some("k7f2qx3m".to_owned()),
             "crashed".to_owned(),
-            Some(KEPT.to_owned())
+            Some(format!("try again; {KEPT}"))
         )
     );
     // The box and the ball, each asked once.
@@ -350,6 +351,37 @@ fn a_kernel_fault_is_given_once_beside_the_checks_result_and_kept_for_the_revisi
     assert_eq!(f.kernel.calls().len(), 2);
     assert_eq!(second.model, first.model);
     assert_eq!(second.result, first.result);
+}
+
+#[test]
+fn the_fault_given_is_the_first_the_timeline_met_in_a_measure_or_a_failure() {
+    // The box, its fingerprint stored, is measured, and the measure times out; the ball,
+    // after it, crashes the worker. The fault given is the box's, met first in timeline
+    // order, though it's a measure's and the ball's a failure.
+    let stored = BOX_AND_BALL.replace(
+        "\"height\": 10}",
+        "\"height\": 10, \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}}",
+    );
+    assert_ne!(stored, BOX_AND_BALL);
+    let f = fixture();
+    f.kernel.refuse(|op| match op {
+        Op::Summarize { .. } => Some(silico_core::Error::new(
+            ErrorCode::WorkerTimeout,
+            "timed out",
+        )),
+        Op::MakePrimitive(Primitive::Sphere { .. }) => {
+            Some(silico_core::Error::new(ErrorCode::WorkerCrashed, "crashed"))
+        }
+        _ => None,
+    });
+    let s = f.open(&f.file("a.silico", &stored));
+    let checked = answer(f.sessions.check(&s));
+    assert!(checked.result.as_ref().unwrap().is_empty(), "{checked:?}");
+    let (code, feature, message, _) = fault(&checked);
+    assert_eq!(
+        (code, feature.as_deref(), message.as_str()),
+        (ErrorCode::WorkerTimeout, Some("k7f2qx3m"), "timed out")
+    );
 }
 
 #[test]
@@ -384,10 +416,7 @@ fn a_sketch_solver_that_cant_be_had_is_one_fault_naming_no_feature() {
             ErrorCode::WorkerUnavailable,
             None,
             "SILICO_SKETCH_WORKER names /nowhere, which isn't a file".to_owned(),
-            Some(
-                "once a worker can be had (the log says why none could), edit the document to try again: this revision keeps the fault, so reading it again won't try again"
-                    .to_owned()
-            )
+            Some(format!("name the sketch worker's executable; {KEPT}"))
         )
     );
     assert_eq!(
@@ -594,6 +623,11 @@ fn a_check_whose_recompute_failed_is_refused_with_why_once_and_the_next_rebuilds
     assert_eq!(first.model, None);
     assert_eq!(refusal(&first), panicked);
     assert_eq!(solves.load(Ordering::SeqCst), 1);
+    // `status` says it faulted (the design's `faulted`, a bug's failure as a fault's).
+    assert_eq!(
+        sessions.status(&s).result.unwrap().rebuild.state,
+        command::RebuildState::Faulted
+    );
     // A published read doesn't start it again (it would fail again, each frame): it says
     // why there's nothing.
     for _ in 0..3 {
@@ -653,7 +687,7 @@ fn volume(
 ) -> Result<(Option<Measure>, ModelRead), command::Problems> {
     Ok((
         read.model().fingerprint(&id("k7f2qx3m")).map(|f| f.volume),
-        read.model_read(),
+        read.model_read().clone(),
     ))
 }
 
@@ -704,7 +738,7 @@ fn a_published_read_runs_beside_a_waiting_current_one_and_gives_the_newest_model
     let current = f
         .sessions
         .read_model(&a, "probe", ModelChoice::Current, |read| {
-            Ok(read.model_read())
+            Ok(read.model_read().clone())
         });
     assert!(f.kernel.wait_running(1, HANG));
     // Queued behind nothing: answered while the current read waits on the session's rebuild.
@@ -713,7 +747,7 @@ fn a_published_read_runs_beside_a_waiting_current_one_and_gives_the_newest_model
     let published = f
         .sessions
         .read_model(&a, "probe", ModelChoice::Published, |read| {
-            Ok(read.model_read())
+            Ok(read.model_read().clone())
         });
     let Ok(early) = published.wait_timeout(HANG) else {
         hold.release();
@@ -924,7 +958,7 @@ fn blocked_reads(
                 let _ = started.send(());
                 // Until `release` drops: no message is ever sent.
                 let _ = released.lock().unwrap().recv();
-                Ok(read.model_read())
+                Ok(read.model_read().clone())
             })
         })
         .collect();

@@ -7,8 +7,8 @@
 //! are the design's messages, the fake kernel's holds and call record, and the file's bytes.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
@@ -404,4 +404,107 @@ fn close_waits_for_the_command_ahead_of_it_and_cancels_nothing() {
     hold.release();
     assert!(answer(check).result.unwrap().is_empty());
     answer(close).result.unwrap();
+}
+
+#[test]
+fn an_edit_cancelled_while_its_commit_rebuilds_stops_that_rebuild() {
+    // An edit outside a transaction rebuilds its candidate for its commit, which status
+    // gives as the current revision's rebuild running; a cancel stops it, its box let go
+    // without the test releasing its hold, and, the commit's own, it leaves no end behind.
+    let f = opened();
+    let (_hold, edit) = f.running_held(|| f.longer());
+    assert_eq!(f.rebuild(), RebuildState::Running);
+    assert!(
+        f.sessions
+            .cancel(&f.id, "set_field")
+            .result
+            .unwrap()
+            .stopped
+    );
+    assert_eq!(refusal(&answer(edit)), cancelled("set_field"));
+    assert!(
+        f.kernel.wait_idle(HANG),
+        "the cancelled edit's box still runs"
+    );
+    assert_eq!(f.rebuild(), RebuildState::None);
+    assert_eq!((f.revision(), f.file()), (Revision::OPENED, BOX.to_owned()));
+}
+
+#[test]
+fn cancel_stops_every_read_of_its_name_and_its_refusal_names_each_command_running() {
+    let f = opened();
+    assert!(answer(f.sessions.check(&f.id)).result.unwrap().is_empty());
+    // Two published reads of one name, each waiting for a go.
+    let (go, wait) = mpsc::channel::<()>();
+    let wait = Arc::new(Mutex::new(wait));
+    let (started, was_started) = mpsc::channel::<()>();
+    let read = || {
+        let (wait, started) = (Arc::clone(&wait), started.clone());
+        f.sessions
+            .read_model(&f.id, "distance", ModelChoice::Published, move |read| {
+                started.send(()).unwrap();
+                wait.lock().unwrap().recv().unwrap();
+                Ok(read.model_read().revision)
+            })
+    };
+    let (one, two) = (read(), read());
+    was_started.recv_timeout(HANG).unwrap();
+    was_started.recv_timeout(HANG).unwrap();
+    // And the queued command, an edit whose commit's box is held.
+    let (hold, edit) = f.running_held(|| f.longer());
+    // A name none has: the queued command, then each read, as status lists them.
+    let refused = f.sessions.cancel(&f.id, "x");
+    let problems = refused.result.unwrap_err();
+    let error = &problems.errors()[0];
+    assert_eq!(
+        (error.message(), error.candidates()),
+        (
+            "no x is running in session s1: set_field, distance, distance are",
+            &[
+                "set_field".to_owned(),
+                "distance".to_owned(),
+                "distance".to_owned()
+            ][..]
+        )
+    );
+    // One cancel stops both reads, and not the edit.
+    assert_eq!(
+        f.sessions.cancel(&f.id, "distance").result.unwrap(),
+        Cancelled {
+            command: "distance".to_owned(),
+            stopped: true
+        }
+    );
+    go.send(()).unwrap();
+    go.send(()).unwrap();
+    assert_eq!(refusal(&answer(one)), cancelled("distance"));
+    assert_eq!(refusal(&answer(two)), cancelled("distance"));
+    hold.release();
+    assert!(answer(edit).result.unwrap().commit.unwrap().written);
+}
+
+#[test]
+fn status_says_none_of_a_revision_nothing_rebuilt_or_whose_document_the_gate_refused() {
+    let f = opened();
+    assert_eq!(f.rebuild(), RebuildState::None);
+    let flat = f.path.with_file_name("flat.silico");
+    std::fs::write(&flat, BOX.replace("\"length\": 40", "\"length\": 0")).unwrap();
+    let s = answer(f.sessions.open(&flat, false)).session.unwrap().id;
+    // Its check gives the gate's problems, and rebuilds nothing.
+    assert!(!answer(f.sessions.check(&s)).result.unwrap().is_empty());
+    let status = f.sessions.status(&s).result.unwrap();
+    assert!(!status.gated);
+    assert_eq!(status.rebuild.state, RebuildState::None);
+    // The design's words for each.
+    assert_eq!(
+        [
+            RebuildState::None,
+            RebuildState::Running,
+            RebuildState::Done,
+            RebuildState::Faulted,
+            RebuildState::Stopped
+        ]
+        .map(RebuildState::as_str),
+        ["none", "running", "done", "faulted", "stopped"]
+    );
 }

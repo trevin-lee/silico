@@ -77,7 +77,7 @@ impl<C: Kernel + 'static> Rebuilds<C> {
     /// The rebuild labelled `label` stopped, if it's still the one running, for a command
     /// that was waiting on it and was cancelled (decision 34): through the pool's superseded
     /// path, as a newer generation's would, and running no more from here, its end said as
-    /// cancelled ([`How::Cancelled`]; a candidate's is its commit's alone), so the command's
+    /// cancelled ([`Ending::Cancelled`]; a candidate's is its commit's alone), so the command's
     /// answer never comes before what `status` says of it.
     fn stop_waited(&mut self, label: &Label) {
         if self
@@ -89,14 +89,14 @@ impl<C: Kernel + 'static> Rebuilds<C> {
             self.engine.cancel();
             self.running = None;
             if !label.candidate {
-                self.end(label.revision(), How::Cancelled);
+                self.end(label.revision(), Ending::Cancelled);
             }
         }
     }
 
     /// `revision`'s rebuild ended as `how`, without publishing: kept unless a newer
     /// revision's end is, so one of an older revision that ends late never hides it.
-    fn end(&mut self, revision: Revision, how: How) {
+    fn end(&mut self, revision: Revision, how: Ending) {
         if self
             .ended
             .as_ref()
@@ -204,39 +204,41 @@ pub(super) struct Kept {
     pub(super) started: bool,
 }
 
-/// How a revision's rebuild ended without publishing a model (the plan's `ended`), until
-/// another rebuild starts.
+/// How a revision's rebuild ended without publishing a model, until another rebuild starts.
 pub(super) struct Ended {
     revision: Revision,
-    how: How,
+    how: Ending,
 }
 
-/// How a rebuild ended without publishing.
-pub(super) enum How {
-    /// A newer one started first: whoever needs its model starts it again.
+/// How a rebuild ended without publishing. Each is kept as any end is ([`Rebuilds::end`]):
+/// over the end of its own revision or an older one, never a newer one's.
+pub(super) enum Ending {
+    /// A newer one started first: whoever needs its model starts it again. One of an older
+    /// revision, ending late, never hides a newer revision's failure or stop.
     Superseded,
     /// The command waiting on it was cancelled (decision 34): the next queued command that
     /// needs its model starts it again; a published read doesn't (the app's next frame
-    /// would undo the stop).
+    /// would undo the stop). `status` says `stopped`.
     Cancelled,
     /// Its recompute failed (a bug), and why: said once, to the command waiting on it or
     /// the next to need its model; one after that rebuilds it. A published read never
-    /// starts it again (it would fail again, each frame), and refuses with `why`.
-    Stopped { why: Error, said: bool },
+    /// starts it again (it would fail again, each frame), and refuses with `why`. `status`
+    /// says `faulted`, as of a model that holds a kernel fault.
+    Failed { why: Error, said: bool },
 }
 
 impl Ended {
     /// Why `revision`'s recompute failed, if its rebuild ended so.
     fn failed(&self, revision: Revision) -> Option<&Error> {
         match &self.how {
-            How::Stopped { why, .. } if self.revision == revision => Some(why),
-            How::Stopped { .. } | How::Superseded | How::Cancelled => None,
+            Ending::Failed { why, .. } if self.revision == revision => Some(why),
+            Ending::Failed { .. } | Ending::Superseded | Ending::Cancelled => None,
         }
     }
 
     /// Whether `revision`'s rebuild was cancelled.
     fn cancelled(&self, revision: Revision) -> bool {
-        self.revision == revision && matches!(self.how, How::Cancelled)
+        self.revision == revision && matches!(self.how, Ending::Cancelled)
     }
 }
 
@@ -282,7 +284,7 @@ impl<C: Kernel + 'static> Session<C> {
             // A failure of this revision's, said once; the read after that rebuilds it.
             if let Some(Ended {
                 revision: of,
-                how: How::Stopped { why, said },
+                how: Ending::Failed { why, said },
             }) = &mut rebuilds.ended
                 && *of == revision
                 && !*said
@@ -583,31 +585,25 @@ pub(super) fn published_answer<T>(
     }
 }
 
-/// A kernel fault as the model read gives it (the envelope's `model.fault`, decision 32): kept
-/// as the revision's outcome, so its suggestion says how to try again (a new revision; with
-/// M4.3, `check` with `fresh` too), never the worker's own "try again", which reading again
-/// wouldn't do. A worker that couldn't be had says nothing of the feature that asked for it,
-/// so it names none.
-pub(super) fn kept_fault(fault: &Error) -> Error {
-    const KEPT: &str = "this revision keeps the fault, so reading it again won't try again";
-    let fault = fault.clone();
-    match fault.code() {
-        ErrorCode::WorkerUnavailable => fault.without_feature().with_suggestion(format!(
-            "once a worker can be had (the log says why none could), edit the document to try again: {KEPT}"
-        )),
-        ErrorCode::ResourceExhausted => fault.with_suggestion(format!(
-            "free what's short, then edit the document to try again: {KEPT}"
-        )),
-        _ => fault.with_suggestion(format!(
-            "edit the document to try again: {KEPT}; if the same feature faults again, report it with the document"
-        )),
-    }
-}
-
-/// Whether `model` holds a kernel fault: a failure that says nothing about the document,
-/// which a rebuild may not meet again ([`Model::fault`]).
-pub(in crate::command) fn faulted(model: &Model) -> bool {
-    model.fault().is_some()
+/// A kernel fault as the model read gives it (the envelope's `model.fault`, decision 32), and
+/// as a command that needs a faulted feature's solid is refused with it: kept as the
+/// revision's outcome, so its suggestion, the worker's own kept, goes on to say that reading
+/// it again won't try again, and how to: closing the session and opening it again leaves no
+/// trace (until M4.3's `check` with `fresh` does it in place). A worker that couldn't be had
+/// says nothing of the feature that asked for it, so it names none.
+pub(in crate::command) fn kept_fault(fault: &Error) -> Error {
+    const KEPT: &str = "this revision keeps the fault, so reading it again won't run it again: \
+                        close the session and open the document again to retry (M4.3's check \
+                        with fresh will do it in place)";
+    let fault = match fault.code() {
+        ErrorCode::WorkerUnavailable => fault.clone().without_feature(),
+        _ => fault.clone(),
+    };
+    let suggestion = match fault.suggestion() {
+        Some(own) => format!("{own}; {KEPT}"),
+        None => KEPT.to_owned(),
+    };
+    fault.with_suggestion(suggestion)
 }
 
 /// The refusal of a published read with nothing published yet, its rebuild started or
@@ -686,10 +682,10 @@ pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Lab
         // comes to.
         Ok(RunOutcome::Superseded) => {
             if !label.cancelled.load(Ordering::SeqCst) {
-                rebuilds.end(revision, How::Superseded);
+                rebuilds.end(revision, Ending::Superseded);
             }
         }
-        Err(why) => rebuilds.end(revision, How::Stopped { why, said: false }),
+        Err(why) => rebuilds.end(revision, Ending::Failed { why, said: false }),
     }
     drop(rebuilds);
     session.rebuilt.notify_all();

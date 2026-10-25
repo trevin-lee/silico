@@ -188,8 +188,9 @@ pub(super) fn cancelled(command: &str) -> Error {
 }
 
 /// The refusal of a `cancel` of `command` in session `session`, which isn't running there:
-/// what is (the queued command, then the published reads, each name once) said and given as
-/// candidates, so a cancel that came late never stops the next command (decision 34).
+/// what is (the queued command, then each published read, as `status` lists them) said and
+/// given as candidates, so a cancel that came late never stops the next command (decision
+/// 34).
 pub(super) fn not_running(
     session: super::SessionId,
     command: &str,

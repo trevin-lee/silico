@@ -508,7 +508,11 @@ fn a_summary_that_isnt_finite_is_refused_as_check_refuses_it_never_dropped() {
         (
             ErrorCode::ProtocolError,
             Some("bbbbbbbb"),
-            Some("start a new kernel worker")
+            // The worker's own advice, then that the revision keeps the fault, as
+            // `elements` gives it for the same solid.
+            Some(
+                "start a new kernel worker; this revision keeps the fault, so reading it again won't run it again: close the session and open the document again to retry (M4.3's check with fresh will do it in place)"
+            )
         ),
         "{}",
         error.message()

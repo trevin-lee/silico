@@ -1,4 +1,4 @@
-use super::cancel::{Ticket, cancelled};
+use super::cancel::{Interrupt, Ticket, Why, cancelled};
 use super::holding::Holding;
 use super::rebuilds::*;
 use super::transaction::*;
@@ -148,7 +148,7 @@ fn at_two(
 fn volume(read: Read<'_>) -> Result<(Measure, ModelRead), Problems> {
     let feature = &read.model().document().features[0].id;
     let fingerprint = read.model().fingerprint(feature).unwrap();
-    Ok((fingerprint.volume, read.model_read()))
+    Ok((fingerprint.volume, read.model_read().clone()))
 }
 
 #[test]
@@ -1160,7 +1160,7 @@ fn a_commit_saves_around_a_kernel_fault_given_once_beside_its_result() {
         (ErrorCode::WorkerCrashed, Some("b0000001".to_owned()))
     );
     assert!(!response.session.as_ref().unwrap().transaction);
-    let committed = response.result.unwrap();
+    let committed = response.result.clone().unwrap();
     assert!(committed.written);
     assert!(committed.refingerprinted.is_empty());
     the_blocks_drift(&committed.problems);
@@ -1180,6 +1180,18 @@ fn a_commit_saves_around_a_kernel_fault_given_once_beside_its_result() {
         *f.session().held.read().carried,
         BTreeSet::from([id("b0000001"), id("f0000001")])
     );
+    // The save wrote no solve, so its model, fault and all, is the saved revision's: a
+    // check of it asks the kernel nothing, and gives the same fault.
+    let saved = response.session.unwrap().revision;
+    let asked = f.kernel.calls().len();
+    let checked = f.sessions.check(&f.id).wait();
+    assert_eq!(f.kernel.calls().len(), asked);
+    assert_eq!(checked.model.as_ref().unwrap().revision, saved);
+    assert_eq!(
+        the_fault(&checked),
+        (ErrorCode::WorkerCrashed, Some("b0000001".to_owned()))
+    );
+    the_blocks_drift(&checked.result.unwrap());
 }
 
 #[test]
@@ -1196,7 +1208,7 @@ fn a_format_saves_around_a_kernel_fault_accepting_the_drift_it_can() {
         the_fault(&response),
         (ErrorCode::WorkerTimeout, Some("b0000001".to_owned()))
     );
-    let formatted = response.result.unwrap();
+    let formatted = response.result.clone().unwrap();
     assert!(formatted.written);
     assert_eq!(formatted.refingerprinted, [id("k7f2qx3m")]);
     assert_eq!(formatted.accepted, [id("k7f2qx3m")]);
@@ -1209,6 +1221,19 @@ fn a_format_saves_around_a_kernel_fault_accepting_the_drift_it_can() {
             Measure::from_millionths(9_000_000_000)
         ]
     );
+    // As a commit's: the model, the block's drift accepted, is the saved revision's, so a
+    // check of it asks the kernel nothing and finds no drift.
+    let saved = response.session.unwrap().revision;
+    assert_eq!(saved, Revision(2));
+    let asked = f.kernel.calls().len();
+    let checked = f.sessions.check(&f.id).wait();
+    assert_eq!(f.kernel.calls().len(), asked);
+    assert_eq!(checked.model.as_ref().unwrap().revision, saved);
+    assert_eq!(
+        the_fault(&checked),
+        (ErrorCode::WorkerTimeout, Some("b0000001".to_owned()))
+    );
+    assert!(checked.result.unwrap().is_empty());
 }
 
 #[test]
@@ -1255,10 +1280,11 @@ fn sketch_and_box(x: &str) -> String {
 }
 
 #[test]
-fn a_one_edit_commits_fault_is_the_saved_revisions_even_when_it_writes_a_solve() {
-    // As above, but the save writes the sketch's solve (pb at 12 solves to 13), after which
-    // a fault-free candidate's model isn't the saved revision's: a faulted one is, or the
-    // saved revision's first read would meet the fault again.
+fn a_one_edit_commits_model_isnt_the_saved_revisions_once_it_writes_a_solve_fault_or_not() {
+    // As above, but the save writes the sketch's solve (pb at 12 solves to 13): the saved
+    // document is solved from the values it wrote, so the candidate's model, fault and all,
+    // isn't the saved revision's, as a fault-free one isn't, and the saved revision's first
+    // read rebuilds it, meeting the fault again.
     let sketches = crate::fake::FakeSketches::new();
     sketches.answer(|system| {
         let mut solved = crate::fake::FakeSketches::as_sent(system);
@@ -1284,15 +1310,16 @@ fn a_one_edit_commits_fault_is_the_saved_revisions_even_when_it_writes_a_solve()
     assert_eq!(pb_x(&f.file(), "s0000001"), 13.0);
     let (asked, solved) = (f.kernel.calls().len(), sketches.requests().len());
     let checked = f.sessions.check(&f.id).wait();
+    // Rebuilt: the box asked for again, and the sketch solved again from 13.
     assert_eq!(
         (f.kernel.calls().len(), sketches.requests().len()),
-        (asked, solved)
+        (asked + 1, solved + 1)
     );
     assert_eq!(
         the_fault(&checked),
         (ErrorCode::WorkerCrashed, Some("k7f2qx3m".to_owned()))
     );
-    // The solve the save wrote is the model's: no drift of it.
+    // The solve the save wrote holds: no drift of it.
     assert!(checked.result.unwrap().is_empty());
 }
 
@@ -2232,4 +2259,161 @@ fn each_change_of_what_the_session_holds_is_past_a_cancel() {
     session.shut(&stop).unwrap();
     assert!(session.closed());
     settled(&stop);
+}
+
+#[test]
+fn a_kept_fault_keeps_the_workers_own_suggestion_and_says_how_to_try_again() {
+    // Decision 32: reading the revision again won't run it again, so the suggestion says
+    // so after the worker's own, and names the retry that leaves no trace.
+    const KEPT: &str = "this revision keeps the fault, so reading it again won't run it again: close the session and open the document again to retry (M4.3's check with fresh will do it in place)";
+    let said = |error: &Error| {
+        (
+            error.code(),
+            error.message().to_owned(),
+            error.feature().map(str::to_owned),
+            error.suggestion().map(str::to_owned),
+        )
+    };
+    let crashed = Error::new(ErrorCode::WorkerCrashed, "the worker crashed")
+        .with_feature("f0000001")
+        .with_suggestion("change the operation's values, or report it with the document");
+    assert_eq!(
+        said(&kept_fault(&crashed)),
+        (
+            ErrorCode::WorkerCrashed,
+            "the worker crashed".to_owned(),
+            Some("f0000001".to_owned()),
+            Some(format!(
+                "change the operation's values, or report it with the document; {KEPT}"
+            ))
+        )
+    );
+    // A worker that couldn't be had says nothing of the feature that asked for one.
+    let unavailable = Error::new(ErrorCode::WorkerUnavailable, "no worker")
+        .with_feature("f0000001")
+        .with_suggestion("restart Silico");
+    assert_eq!(
+        said(&kept_fault(&unavailable)),
+        (
+            ErrorCode::WorkerUnavailable,
+            "no worker".to_owned(),
+            None,
+            Some(format!("restart Silico; {KEPT}"))
+        )
+    );
+    // With no suggestion of its own, the note alone.
+    let short = Error::new(ErrorCode::ResourceExhausted, "out of memory").with_feature("f0000001");
+    assert_eq!(
+        said(&kept_fault(&short)),
+        (
+            ErrorCode::ResourceExhausted,
+            "out of memory".to_owned(),
+            Some("f0000001".to_owned()),
+            Some(KEPT.to_owned())
+        )
+    );
+}
+
+#[test]
+fn a_rebuild_a_cancel_stopped_stays_stopped_once_its_watcher_has_ended() {
+    // The watcher records the stopped run's end, superseded, after the check has answered:
+    // joined here, so what it recorded is what status and the published read see.
+    let f = opened(BOX);
+    let _hold = f.kernel.hold(is_box);
+    let check = f.sessions.check(&f.id);
+    assert!(f.kernel.wait_running(1, WAIT));
+    assert!(f.sessions.cancel(&f.id, "check").result.unwrap().stopped);
+    assert_eq!(
+        check.wait().result.unwrap_err().errors(),
+        [cancelled("check")]
+    );
+    let watchers = std::mem::replace(&mut lock(&f.session().rebuilds).watchers, Threads::new());
+    assert!(!watchers.running.is_empty());
+    watchers.join();
+    assert_eq!(
+        f.sessions.status(&f.id).result.unwrap().rebuild.state,
+        RebuildState::Stopped
+    );
+    let published = f.sessions.published(&f.id).result.unwrap_err();
+    assert_eq!(
+        published.errors()[0].message(),
+        "session s1 has published no model yet: its rebuild was cancelled"
+    );
+    assert_eq!(f.made(is_box), 1);
+}
+
+#[test]
+fn a_command_cancelled_after_its_sessions_reload_says_it_reloaded() {
+    // The reload is the session's own work, not the command's: it stands, and the
+    // command's `cancelled` answer gives the new revision and says it reloaded.
+    let f = opened(BOX);
+    let outside = BOX.replace("\"Block\"", "\"Plate\"");
+    std::fs::write(&f.path, &outside).unwrap();
+    let (go, wait) = mpsc::channel::<()>();
+    let (started, was_started) = mpsc::channel::<()>();
+    let running = f.sessions.queued(&f.id, "probe", move |_, _, _| {
+        started.send(()).unwrap();
+        wait.recv().unwrap();
+        Ok(7)
+    });
+    was_started.recv_timeout(WAIT).unwrap();
+    assert!(f.sessions.cancel(&f.id, "probe").result.unwrap().stopped);
+    go.send(()).unwrap();
+    let response = running.wait();
+    assert_eq!(response.result.unwrap_err().errors(), [cancelled("probe")]);
+    let session = response.session.unwrap();
+    assert_eq!((session.revision, session.reloaded), (Revision(2), true));
+    assert_eq!(&**f.session().held.read().text, outside.as_bytes());
+}
+
+/// A stand-in for what a cancel or a close interrupts (M4.5's read client): each why it's
+/// told, in order.
+struct Told(Mutex<Vec<Why>>);
+
+impl Interrupt for Told {
+    fn interrupt(&self, why: Why) {
+        lock(&self.0).push(why);
+    }
+}
+
+impl Told {
+    fn new() -> Arc<Self> {
+        Arc::new(Told(Mutex::new(Vec::new())))
+    }
+
+    fn whys(&self) -> Vec<Why> {
+        lock(&self.0).clone()
+    }
+
+    fn weak(self: &Arc<Self>) -> Weak<dyn Interrupt> {
+        Arc::downgrade(self) as Weak<dyn Interrupt>
+    }
+}
+
+#[test]
+fn a_sessions_close_interrupts_its_reads_as_closed_and_each_counted_after_at_once() {
+    let f = opened(BOX);
+    let session = f.session();
+    let unanswered = Arc::clone(&lock(&session.reads).unanswered);
+    let running = probe();
+    let _counted = Counted::count(&unanswered, &running);
+    let before = Told::new();
+    // Given twice, told once.
+    running.interrupt_with(before.weak());
+    running.interrupt_with(before.weak());
+    assert!(before.whys().is_empty());
+    session.close();
+    assert_eq!(before.whys(), [Why::Closed]);
+    // Closed isn't cancelled: the read answers as of a session that closed.
+    assert!(!running.cancelled());
+    // Sticky: a read counted after the close is closed at once, so what it adds is told at
+    // once.
+    let late = probe();
+    let _late = Counted::count(&unanswered, &late);
+    let after = Told::new();
+    late.interrupt_with(after.weak());
+    assert_eq!(after.whys(), [Why::Closed]);
+    // A cancel says it was cancelled.
+    assert!(running.cancel());
+    assert_eq!(before.whys(), [Why::Closed, Why::Cancelled]);
 }

@@ -90,7 +90,8 @@ struct Saving {
 }
 
 /// What a save writes ([`Session::write`]): its text, the model it was formatted from, what
-/// the edits it saves reach, and whether that model, rebound, is the saved revision's too.
+/// the edits it saves reach, and whether that model, rebound, is the saved revision's too
+/// (the save wrote no sketch's solve).
 struct Save<'a> {
     text: Arc<Vec<u8>>,
     model: &'a Model,
@@ -502,14 +503,7 @@ impl<C: Kernel + 'static> Session<C> {
             ));
         }
         let saved = Arc::new(formatted.text.into_bytes());
-        // A candidate's model is the saved revision's too, unless the save wrote a sketch's
-        // solve, which a rebuild of the saved document would solve again from; but one that
-        // holds a kernel fault is the saved revision's whatever it wrote, since the saved
-        // revision is the first its fault is the outcome of, and a rebuild of it would meet
-        // the fault again (decision 32: a fault is never paid twice for one state). Its
-        // sketches' solves are those the save wrote, so its drift is none of theirs.
-        let publish = through == Through::Candidate
-            && (formatted.resolved.is_empty() || model.fault().is_some());
+        let publish = formatted.resolved.is_empty();
         let written = self.write(
             stop,
             Save {
@@ -651,7 +645,7 @@ impl<C: Kernel + 'static> Session<C> {
                     text: Arc::new(saved),
                     model: &model,
                     reach: &reach,
-                    publish: false,
+                    publish: formatted.resolved.is_empty(),
                 },
                 Saver::Format,
                 claim,
@@ -678,8 +672,11 @@ impl<C: Kernel + 'static> Session<C> {
     /// revision whose text is the one saved, carrying the features of `save.reach` whose
     /// records `save.model` couldn't write, and any transaction ended. With `save.publish`,
     /// the model rebound to the saved document ([`Model::rebound`]) is published as the new
-    /// revision's, in the same step: for a save that wrote only fingerprints, whose document
-    /// a rebuild would build from the steps the model took. The document saved, as the gate
+    /// revision's, in the same step: for a save (a commit, an edit's, or `format`'s) that
+    /// wrote only fingerprints, whose document a rebuild would build from the steps the model
+    /// took, so a kernel fault it holds is the saved revision's outcome too, never met again
+    /// for it (decision 32). One that wrote a sketch's solve doesn't publish it: the saved
+    /// document's rebuild solves from the values it wrote. The document saved, as the gate
     /// found it, which the session now holds. Refused, nothing changed, as the save is, a
     /// conflict with what `saver` advises; or, `cancelled`, if the command was stopped
     /// before the save began (past it, a cancel comes too late, and the command answers with

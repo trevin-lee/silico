@@ -96,7 +96,7 @@ use crate::{Error, ErrorCode};
 use cancel::{Interrupt, Ticket, Why, not_running};
 use edits::{as_committed, not_given_back};
 use holding::Holding;
-pub(super) use rebuilds::faulted;
+pub(super) use rebuilds::kept_fault;
 use rebuilds::{Rebuilds, Unbuilt, published_answer};
 use registry::{
     Book, CacheOpener, Registry, Release, SketchStarter, Started, claim, reclaim, serve, start,
@@ -498,12 +498,12 @@ impl<P: Clients + 'static> Sessions<P> {
             .filter(|ticket| ticket.command() == command)
             .collect();
         let result = if named.is_empty() {
-            let mut running: Vec<&'static str> = Vec::new();
-            for name in queued.iter().chain(&reads).map(|ticket| ticket.command()) {
-                if !running.contains(&name) {
-                    running.push(name);
-                }
-            }
+            // Each, as `status` lists them.
+            let running: Vec<&'static str> = queued
+                .iter()
+                .chain(&reads)
+                .map(|ticket| ticket.command())
+                .collect();
             Err(Problems::from(not_running(found.id, command, &running)))
         } else {
             // Every one stopped, none passed over once one is.

@@ -208,7 +208,9 @@ fn a_model_that_holds_a_fault_gives_no_cursor_and_refuses_one_as_a_conflict() {
     );
     assert_eq!(
         refused.errors()[0].suggestion(),
-        Some("check again, then list from the start")
+        Some(
+            "list from the start with a larger limit, or each body by its feature, whose pages go on; a new revision, or the document opened again in a new session, rebuilds it without the fault"
+        )
     );
     // The current model is the revision's, kept, fault and all: the same page, no cursor,
     // and nothing asked of the kernel.
@@ -266,5 +268,68 @@ fn a_model_that_holds_a_fault_gives_no_cursor_and_refuses_one_as_a_conflict() {
     assert_eq!(
         codes(&stale),
         [(ErrorCode::Conflict, Some("after".to_owned()))]
+    );
+}
+
+/// [`FUSED`] and a second fuse, `eeeeeeee`, of the first and another box: built only if the
+/// first is.
+const FUSED_TWICE: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "a91cw0de", "type": "box", "v": 1, "name": "Pin", "position": [50, 0, 0], "length": 1, "width": 1, "height": 1}, {"id": "ffffffff", "type": "fuse", "v": 1, "name": "Both", "base": "k7f2qx3m", "tool": "a91cw0de"}, {"id": "b0000002", "type": "box", "v": 1, "name": "Post", "position": [80, 0, 0], "length": 1, "width": 1, "height": 1}, {"id": "eeeeeeee", "type": "fuse", "v": 1, "name": "All", "base": "ffffffff", "tool": "b0000002"}]}"#;
+
+#[test]
+fn elements_of_a_feature_a_fault_stopped_say_the_revision_keeps_it_and_how_to_retry() {
+    // The worker crashes on every fuse: the first fuse fails with the fault, the second is
+    // blocked on it. Elements of the first are refused with the fault, its suggestion that
+    // reading again won't run it again; of the second, pointing at the model's fault, not at
+    // `check`, which doesn't list it.
+    let f = fixture();
+    f.kernel.refuse(|op| {
+        matches!(
+            op,
+            Op::Boolean {
+                op: BooleanOp::Fuse,
+                ..
+            }
+        )
+        .then(|| silico_core::Error::new(ErrorCode::WorkerCrashed, "crashed"))
+    });
+    let s = f.open("fused.silico", FUSED_TWICE);
+    let elements = |feature: &str| {
+        let response = answer(f.sessions.elements(
+            &s,
+            ModelChoice::Current,
+            Some(FeatureId::new(feature).unwrap()),
+            None,
+            10,
+        ));
+        let problems = response.result.unwrap_err();
+        assert_eq!(problems.total(), 1, "{problems:?}");
+        let error = &problems.errors()[0];
+        (
+            error.code(),
+            error.feature().map(str::to_owned),
+            error.suggestion().map(str::to_owned),
+        )
+    };
+    assert_eq!(
+        elements("ffffffff"),
+        (
+            ErrorCode::WorkerCrashed,
+            Some("ffffffff".to_owned()),
+            Some(
+                "this revision keeps the fault, so reading it again won't run it again: close the session and open the document again to retry (M4.3's check with fresh will do it in place)"
+                    .to_owned()
+            )
+        )
+    );
+    assert_eq!(
+        elements("eeeeeeee"),
+        (
+            ErrorCode::InvalidInput,
+            Some("eeeeeeee".to_owned()),
+            Some(
+                "nothing to mend: ffffffff met a kernel fault, which the response's model.fault gives; close the session and open the document again to try again"
+                    .to_owned()
+            )
+        )
     );
 }

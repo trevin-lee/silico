@@ -137,8 +137,7 @@ impl ModelRead {
 }
 
 /// What a read given to [`Sessions::read_model`] is handed: the model, what was read, and
-/// whether it was stopped (decision 34). Its kernel client (decision 33) comes with M4.5,
-/// here, without changing a read's signature.
+/// whether it was stopped (decision 34).
 pub struct Read<'a> {
     pub(super) model: &'a Model,
     pub(super) read: ModelRead,
@@ -152,8 +151,8 @@ impl Read<'_> {
     }
 
     /// Which model it is: the response's `model`.
-    pub fn model_read(&self) -> ModelRead {
-        self.read.clone()
+    pub fn model_read(&self) -> &ModelRead {
+        &self.read
     }
 
     /// Whether the read was cancelled (`cancel`, or its handle's [`Running::cancel`]): it
@@ -441,8 +440,9 @@ pub struct Rebuild {
 /// What's become of a revision's rebuild (the design's `status`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RebuildState {
-    /// Not started (no command has needed its model, or one stopped it was superseded), or
-    /// the gate refused the document, so there's nothing to rebuild.
+    /// Not started: no command has needed its model, or its rebuild was superseded, or an
+    /// edit's commit was cancelled while its rebuild ran; or the gate refused the document,
+    /// so there's nothing to rebuild.
     None,
     /// Running: the revision's, or, for an edit made outside a transaction, its commit's.
     Running,

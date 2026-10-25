@@ -194,37 +194,22 @@ impl FakeKernel {
     /// Waits up to `timeout` until at least `count` requests are running at once: whether
     /// they were. A request has stopped running once its outcome is sent.
     pub fn wait_running(&self, count: usize, timeout: Duration) -> bool {
-        // No deadline: a timeout too long to add to now is forever.
-        let deadline = Instant::now().checked_add(timeout);
-        let mut state = lock(&self.shared.state);
-        while state.running < count {
-            state = match deadline {
-                Some(deadline) => {
-                    let left = deadline.saturating_duration_since(Instant::now());
-                    if left.is_zero() {
-                        return false;
-                    }
-                    self.shared
-                        .changed
-                        .wait_timeout(state, left)
-                        .map_or_else(|e| e.into_inner().0, |(state, _)| state)
-                }
-                None => self
-                    .shared
-                    .changed
-                    .wait(state)
-                    .unwrap_or_else(PoisonError::into_inner),
-            };
-        }
-        true
+        self.wait_until(|running| running >= count, timeout)
     }
 
     /// Waits up to `timeout` until no request is running: whether none was. A held request
     /// stops running once it's superseded, its hold still in place.
     pub fn wait_idle(&self, timeout: Duration) -> bool {
+        self.wait_until(|running| running == 0, timeout)
+    }
+
+    /// Waits up to `timeout` until `done` holds of how many requests are running: whether
+    /// it did.
+    fn wait_until(&self, done: impl Fn(usize) -> bool, timeout: Duration) -> bool {
+        // No deadline: a timeout too long to add to now is forever.
         let deadline = Instant::now().checked_add(timeout);
         let mut state = lock(&self.shared.state);
-        while state.running > 0 {
+        while !done(state.running) {
             state = match deadline {
                 Some(deadline) => {
                     let left = deadline.saturating_duration_since(Instant::now());
