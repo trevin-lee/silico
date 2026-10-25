@@ -58,6 +58,8 @@ mod fingerprint;
 mod reach;
 #[path = "refused_from_a_partial_cache.rs"]
 mod refused_from_a_partial_cache;
+#[path = "render_command.rs"]
+mod render_command;
 #[path = "session.rs"]
 mod session;
 #[path = "session_rebuild.rs"]

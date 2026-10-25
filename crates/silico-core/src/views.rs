@@ -123,7 +123,20 @@ impl NamedView {
     /// height 1.1 times the larger of the box's corners' extent along `up` and their extent
     /// along the image's right (`up × direction`) times `height / width`. So the bodies fill
     /// the image with a twentieth of it to spare on each side of the tighter direction.
-    pub fn camera(self, [low, high]: [[f64; 3]; 2], width: u32, height: u32) -> Camera {
+    pub fn camera(self, bounds: [[f64; 3]; 2], width: u32, height: u32) -> Camera {
+        self.fit(bounds, width, height).0
+    }
+
+    /// [`camera`](Self::camera), and which of the image's sides bound the fit, `"height"`
+    /// or `"width"`: the side whose pixels a view's pixel is, so fewer of them make it
+    /// coarser (the extent along `up` over `height`, or along the right over `width`; the
+    /// height where they're equal).
+    pub fn fit(
+        self,
+        [low, high]: [[f64; 3]; 2],
+        width: u32,
+        height: u32,
+    ) -> (Camera, &'static str) {
         let dir = self.direction();
         let up = self.up();
         let right = cross(up, dir);
@@ -147,6 +160,11 @@ impl NamedView {
         let extent_up = along_up.1 - along_up.0;
         let extent_right = (along_right.1 - along_right.0) * f64::from(height) / f64::from(width);
         let view_height = 1.1 * extent_up.max(extent_right);
+        let side = if extent_up >= extent_right {
+            "height"
+        } else {
+            "width"
+        };
         let half_diagonal = {
             let d = [high[0] - low[0], high[1] - low[1], high[2] - low[2]];
             dot(d, d).sqrt() / 2.0
@@ -156,12 +174,15 @@ impl NamedView {
             target[1] + dir[1] * 2.0 * half_diagonal,
             target[2] + dir[2] * 2.0 * half_diagonal,
         ];
-        Camera {
-            projection: Projection::Orthographic { view_height },
-            eye,
-            target,
-            up,
-        }
+        (
+            Camera {
+                projection: Projection::Orthographic { view_height },
+                eye,
+                target,
+                up,
+            },
+            side,
+        )
     }
 }
 
@@ -262,6 +283,25 @@ mod tests {
     use silico_protocol::{Camera, Projection};
 
     const BLOCK: [[f64; 3]; 2] = [[0.0, 0.0, 0.0], [40.0, 20.0, 10.0]];
+
+    #[test]
+    fn the_side_that_bounds_a_fit_is_the_one_whose_extent_over_its_pixels_is_larger() {
+        // The block, top_front_right at 800 x 600: 32.660 along up, against 42.426 × 0.75 =
+        // 31.820 along the right: the height. From the front: 10 along up (z), against 40 ×
+        // 0.75 = 30 along the right (x): the width. A cube from the front, square: equal, the
+        // height.
+        assert_eq!(NamedView::TopFrontRight.fit(BLOCK, 800, 600).1, "height");
+        assert_eq!(NamedView::Front.fit(BLOCK, 800, 600).1, "width");
+        // 40 wide at 3200 pixels: 30 × 600/3200 is under 10, so the height.
+        assert_eq!(NamedView::Front.fit(BLOCK, 3200, 600).1, "height");
+        let cube = [[0.0; 3], [10.0; 3]];
+        assert_eq!(NamedView::Front.fit(cube, 300, 300).1, "height");
+        assert_eq!(NamedView::Front.fit(cube, 300, 301).1, "width");
+        assert_eq!(
+            NamedView::Front.fit(BLOCK, 800, 600).0,
+            NamedView::Front.camera(BLOCK, 800, 600)
+        );
+    }
 
     #[test]
     fn the_designs_example_is_the_blocks_top_front_right_at_800_by_600() {

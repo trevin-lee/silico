@@ -253,10 +253,16 @@ fn png_rules<'a>(
     }
 }
 
-/// `path` refused naming `to`, its message saying `says`; nothing written there.
+/// `path` refused naming `to`, its message saying `says`, by the check before a write and by
+/// the write alike; nothing written there.
 fn refused_output(path: &std::path::Path, rules: &silico_core::file::Output, says: &str) {
     let before = std::fs::read(path).ok();
+    let checked = silico_core::file::check_output(path, rules).unwrap_err();
     let e = silico_core::file::write_output(path, b"PNG", rules).unwrap_err();
+    assert_eq!(
+        (checked.message(), checked.parameter()),
+        (e.message(), e.parameter())
+    );
     assert_eq!(e.code(), ErrorCode::InvalidInput, "{e}");
     assert_eq!(e.parameter(), Some("to"), "{e}");
     assert!(e.message().contains(says), "{e}");
@@ -267,8 +273,12 @@ fn refused_output(path: &std::path::Path, rules: &silico_core::file::Output, say
 fn a_png_is_written_whole_where_asked_and_its_canonical_path_given() {
     let dir = Scratch::new("output-new");
     let path = dir.0.join("view.png");
+    // Checked first, it's where it will be written, and nothing is written yet.
+    let checked = silico_core::file::check_output(&path, &png_rules(None, &[], false)).unwrap();
+    assert!(!path.exists());
     let wrote =
         silico_core::file::write_output(&path, b"PNG bytes", &png_rules(None, &[], false)).unwrap();
+    assert_eq!(checked, wrote);
     assert_eq!(wrote, std::fs::canonicalize(&path).unwrap());
     assert_eq!(std::fs::read(&path).unwrap(), b"PNG bytes");
     // Nothing left beside it.

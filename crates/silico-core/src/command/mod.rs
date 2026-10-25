@@ -19,6 +19,7 @@ use crate::document::{
 use crate::kernel::Kernel;
 use crate::recompute::{Model, Recompute, RunOutcome};
 
+pub mod render;
 mod session;
 
 pub use session::{

@@ -358,6 +358,24 @@ pub struct Output<'a> {
 /// replaced keeps its permissions). Whole, to a new file beside it renamed into place, as
 /// [`save`] writes, so a write cut short leaves what was there.
 pub fn write_output(path: &Path, bytes: &[u8], rules: &Output) -> Result<PathBuf, Error> {
+    let (target, replaced) = output_target(path, rules)?;
+    write_beside(&target, replaced.as_ref(), bytes)?;
+    Ok(target)
+}
+
+/// Where [`write_output`] would write `path`, refused as it refuses, writing nothing: for a
+/// command to refuse a path before the work whose result it writes (a render). The path is
+/// checked again as it's written, as what's there may change between.
+pub fn check_output(path: &Path, rules: &Output) -> Result<PathBuf, Error> {
+    Ok(output_target(path, rules)?.0)
+}
+
+/// The path `path` writes to, through any links, and the file it would replace, if one; or
+/// why `rules` refuse it.
+fn output_target(
+    path: &Path,
+    rules: &Output,
+) -> Result<(PathBuf, Option<std::fs::Metadata>), Error> {
     let refuse = |why: String, suggestion: &str| {
         Error::new(
             ErrorCode::InvalidInput,
@@ -467,8 +485,7 @@ pub fn write_output(path: &Path, bytes: &[u8], rules: &Output) -> Result<PathBuf
         Ok(meta) => Some(meta),
         Err(_) => None,
     };
-    write_beside(&target, replaced.as_ref(), bytes)?;
-    Ok(target)
+    Ok((target, replaced))
 }
 
 /// `bytes` written to `target` through a new file beside it renamed into place, with the

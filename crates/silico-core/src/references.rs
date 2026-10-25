@@ -129,7 +129,9 @@ pub(crate) fn resolve(
             continue;
         }
         let candidates = match &name {
-            Ok(name) => index.get_or_insert_with(|| Index::of(map)).candidates(name),
+            Ok(name) => index
+                .get_or_insert_with(|| Index::of(map, ElementKind::Edge))
+                .candidates(name),
             Err(_) => Vec::new(),
         };
         broken.push(
@@ -163,22 +165,40 @@ pub(crate) fn resolve(
     }
 }
 
-/// A map's stable edges, each with the elements its name is made from, and each such
-/// element's edges: so a broken name's candidates cost what its own elements' edges do.
+/// The elements of `kind` a broken `name` most likely meant, across `maps` (a read's
+/// bodies): as a fillet's broken edge's candidates are found, in each map, then the most
+/// shared first across them all, then by name; at most [`CANDIDATES`].
+pub(crate) fn likeliest(maps: &[&ElementMap], name: &Name, kind: ElementKind) -> Vec<String> {
+    let mut scored: Vec<(usize, Arc<Name>)> = maps
+        .iter()
+        .flat_map(|map| Index::of(map, kind).scored(name))
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored.dedup_by(|a, b| a.1 == b.1);
+    scored
+        .into_iter()
+        .take(CANDIDATES)
+        .map(|(_, name)| name.to_string())
+        .collect()
+}
+
+/// A map's stable elements of a kind, each with the elements its name is made from, and
+/// each such element's elements of the kind: so a broken name's candidates cost what its own
+/// elements' do.
 struct Index {
     edges: Vec<Arc<Name>>,
     by_leaf: std::collections::BTreeMap<Name, Vec<usize>>,
 }
 
 impl Index {
-    fn of(map: &ElementMap) -> Index {
+    fn of(map: &ElementMap, kind: ElementKind) -> Index {
         let mut index = Index {
             edges: Vec::new(),
             by_leaf: std::collections::BTreeMap::new(),
         };
         for (element, names) in map.iter() {
             let Some(name) = names.first() else { continue };
-            if element.kind != ElementKind::Edge || map.is_unstable(name) {
+            if element.kind != kind || map.is_unstable(name) {
                 continue;
             }
             let at = index.edges.len();
@@ -194,6 +214,17 @@ impl Index {
     /// elements `name` is made from (a hole moved: the rims generated from the same faces),
     /// most first, then by name; at most [`CANDIDATES`].
     fn candidates(&self, name: &Name) -> Vec<String> {
+        let mut scored = self.scored(name);
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        scored
+            .into_iter()
+            .take(CANDIDATES)
+            .map(|(_, edge)| edge.to_string())
+            .collect()
+    }
+
+    /// Each element sharing any of the elements `name` is made from, with how many.
+    fn scored(&self, name: &Name) -> Vec<(usize, Arc<Name>)> {
         let mut shared: std::collections::BTreeMap<usize, usize> =
             std::collections::BTreeMap::new();
         for leaf in leaves(name) {
@@ -201,15 +232,9 @@ impl Index {
                 *shared.entry(at).or_default() += 1;
             }
         }
-        let mut scored: Vec<(usize, &Arc<Name>)> = shared
+        shared
             .into_iter()
-            .filter_map(|(at, count)| self.edges.get(at).map(|edge| (count, edge)))
-            .collect();
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
-        scored
-            .into_iter()
-            .take(CANDIDATES)
-            .map(|(_, edge)| edge.to_string())
+            .filter_map(|(at, count)| self.edges.get(at).map(|edge| (count, Arc::clone(edge))))
             .collect()
     }
 }

@@ -2394,6 +2394,43 @@ mod tests {
 
 // --- Sketches ---------------------------------------------------------------------------
 
+/// A renderer for the core's tests (docs/design/m4.6-render.md, Tests, the boundary rule):
+/// every scene it's sent recorded, in order, each answered at once with a stand-in PNG that
+/// says the scene's size (`PNG 40x30`, not an image), or with the error it's told to give.
+#[derive(Default)]
+pub struct FakeRenderer {
+    sent: Mutex<Vec<silico_protocol::RenderScene>>,
+    failing: Mutex<Option<Error>>,
+}
+
+impl FakeRenderer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Every scene sent so far.
+    pub fn sent(&self) -> Vec<silico_protocol::RenderScene> {
+        lock(&self.sent).clone()
+    }
+
+    /// Answers every render from now on with `error`, as a worker that failed would.
+    pub fn fail_with(&self, error: Error) {
+        *lock(&self.failing) = Some(error);
+    }
+}
+
+impl crate::command::render::Renderer for FakeRenderer {
+    fn render(&self, scene: silico_protocol::RenderScene) -> crate::render::RenderTicket {
+        let png = format!("PNG {}x{}", scene.width, scene.height).into_bytes();
+        lock(&self.sent).push(scene);
+        let outcome = match lock(&self.failing).clone() {
+            Some(error) => Err(error),
+            None => Ok(crate::render::Rendered { png, ids: None }),
+        };
+        crate::render::RenderTicket::answered(crate::render::RenderOutcome::Done(outcome))
+    }
+}
+
 /// An in-memory sketch solver for tests: the [`SketchSolver`] core tests run recomputes
 /// with, so they need no sketch worker and can see what was asked of it. Unless told how to
 /// answer ([`FakeSketches::answer`]), it answers every sketch with the values it was sent,
