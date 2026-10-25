@@ -1986,7 +1986,7 @@ fn published_answer<T>(
 
 /// Whether `model` holds a kernel fault: a failure that says nothing about the document,
 /// which a rebuild may not meet again.
-fn faulted(model: &Model) -> bool {
+pub(super) fn faulted(model: &Model) -> bool {
     // As `check` finds one, in a feature's failure or a measure its drift needed, so the
     // two never differ (decision 32 changes both, there).
     super::check(model).is_err()

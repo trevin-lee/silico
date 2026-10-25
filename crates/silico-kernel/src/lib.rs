@@ -1092,7 +1092,8 @@ pub fn distance(
 
 /// Every one of `shape`'s faces, edges, and vertices described, a batch of at most
 /// [`DESCRIBE_BATCH`](silico_protocol::DESCRIBE_BATCH) after another, joined
-/// ([`silico_protocol::describe_in_batches`], as the core asks a worker).
+/// ([`silico_protocol::describe_in_batches`]: in the kernel's own process, with no summary to
+/// plan from, where the core plans its batches from one, `silico_protocol::batches`).
 pub fn describe_whole(shape: &Shape) -> Result<silico_protocol::Description, KernelError> {
     silico_protocol::describe_in_batches(
         |kind, first, count| describe(shape, kind, first, count),

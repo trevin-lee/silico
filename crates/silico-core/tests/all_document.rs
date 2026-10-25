@@ -18,6 +18,8 @@ mod commands;
 mod example;
 #[path = "common/lateness.rs"]
 mod lateness;
+#[path = "common/entries.rs"]
+mod listing;
 #[path = "common/model.rs"]
 mod model;
 #[path = "common/references.rs"]
@@ -62,6 +64,8 @@ mod refused_from_a_partial_cache;
 mod session;
 #[path = "session_edits.rs"]
 mod session_edits;
+#[path = "session_elements.rs"]
+mod session_elements;
 #[path = "session_rebuild.rs"]
 mod session_rebuild;
 #[path = "session_tracing.rs"]

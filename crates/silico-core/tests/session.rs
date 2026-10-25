@@ -879,6 +879,11 @@ fn version_gives_the_designs_numbers_and_limits() {
     assert_eq!(limits.listed, 100);
     assert_eq!(limits.sessions, 16);
     assert_eq!(limits.published_reads, 8);
+    assert_eq!(limits.elements, 1000);
+    assert_eq!(limits.query, 1000);
+    // One range for each of the seven measures (area, length, radius, diameter, major and
+    // minor radius, half-angle).
+    assert_eq!(limits.query_measures, 7);
     assert_eq!(limits.kernel_seconds, 60);
     assert_eq!(limits.sketch_seconds, 300);
 }

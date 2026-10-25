@@ -11,9 +11,13 @@
 mod cached;
 #[path = "../../silico-core/tests/common/example.rs"]
 mod example;
+#[path = "../../silico-core/tests/common/model.rs"]
+mod model;
 
 #[path = "adversarial_cache.rs"]
 mod adversarial_cache;
+#[path = "adversarial_entries.rs"]
+mod adversarial_entries;
 #[path = "adversarial_fake_kernel.rs"]
 mod adversarial_fake_kernel;
 #[path = "adversarial_fingerprint.rs"]
@@ -24,6 +28,8 @@ mod adversarial_recompute;
 mod cache;
 #[path = "elements.rs"]
 mod elements;
+#[path = "entries.rs"]
+mod entries;
 #[path = "fake_kernel.rs"]
 mod fake_kernel;
 #[path = "fingerprint.rs"]

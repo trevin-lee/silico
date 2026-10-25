@@ -15,6 +15,8 @@ mod describing;
 mod example;
 #[path = "common/lateness.rs"]
 mod lateness;
+#[path = "common/entries.rs"]
+mod listing;
 #[path = "common/model.rs"]
 mod model;
 #[path = "common/recompute.rs"]
@@ -26,6 +28,8 @@ mod sweeps;
 
 #[path = "adversarial_described.rs"]
 mod adversarial_described;
+#[path = "adversarial_entries.rs"]
+mod adversarial_entries;
 #[path = "adversarial_measure_refusal.rs"]
 mod adversarial_measure_refusal;
 #[path = "adversarial_recompute.rs"]
@@ -34,6 +38,8 @@ mod adversarial_recompute;
 mod adversarial_validate;
 #[path = "described.rs"]
 mod described;
+#[path = "entries.rs"]
+mod entries;
 #[path = "measure_refusal.rs"]
 mod measure_refusal;
 #[path = "name_parse.rs"]
