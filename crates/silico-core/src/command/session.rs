@@ -483,6 +483,45 @@ impl<C: Kernel + 'static> Session<C> {
         }
     }
 
+    /// The design's published read of the session at `revision`, whose document is
+    /// `checked`: the newest model published of `revision` or an older one, never waiting;
+    /// `revision`'s rebuild started if nothing of it, or newer, is published or running, and
+    /// its recompute hasn't failed (a failure isn't started again each frame, but left for
+    /// `check` to say once and rebuild). Refused with that failure, or, with nothing
+    /// published, naming `model`.
+    fn published_read(
+        self: &Arc<Self>,
+        revision: Revision,
+        checked: &Checked,
+    ) -> Result<Published, Problems> {
+        let mut rebuilds = lock(&self.rebuilds);
+        let failed = rebuilds
+            .failed
+            .as_ref()
+            .filter(|failed| failed.revision == revision)
+            .map(|failed| failed.why.clone());
+        if failed.is_none()
+            && rebuilds.running != Some(revision)
+            && rebuilds
+                .published
+                .as_ref()
+                .is_none_or(|published| published.revision < revision)
+            && !self.closed()
+        {
+            self.start_unless_newer(&mut rebuilds, revision, checked)?;
+        }
+        match rebuilds
+            .published
+            .as_ref()
+            .filter(|published| published.revision <= revision)
+        {
+            Some(published) => Ok(published.clone()),
+            None => Err(Problems::from(
+                failed.unwrap_or_else(|| nothing_published(self.id)),
+            )),
+        }
+    }
+
     /// The session as it is now.
     fn info(&self) -> SessionInfo {
         self.info_of(&lock(&self.held))
@@ -828,48 +867,13 @@ impl<P: Clients + 'static> Sessions<P> {
                 };
             }
         };
-        let mut rebuilds = lock(&found.rebuilds);
-        // This revision's recompute failed (a bug): not started again each frame, its
-        // failure left for `check` to say once and rebuild.
-        let failed = rebuilds
-            .failed
-            .as_ref()
-            .filter(|failed| failed.revision == revision)
-            .map(|failed| failed.why.clone());
-        if failed.is_none()
-            && rebuilds.running != Some(revision)
-            && rebuilds
-                .published
-                .as_ref()
-                .is_none_or(|published| published.revision < revision)
-            && !found.closed()
-            && let Err(problems) = found.start_unless_newer(&mut rebuilds, revision, checked)
-        {
-            return Response {
-                session: Some(info),
-                model: None,
-                result: Err(problems),
-            };
-        }
-        match rebuilds
-            .published
-            .as_ref()
-            .filter(|published| published.revision <= revision)
-        {
-            Some(published) => Response {
-                session: Some(info),
-                model: Some(ModelRead {
-                    revision: published.revision,
-                }),
-                result: Ok(published.clone()),
-            },
-            None => Response {
-                session: Some(info),
-                model: None,
-                result: Err(Problems::from(
-                    failed.unwrap_or_else(|| nothing_published(found.id)),
-                )),
-            },
+        let read = found.published_read(revision, checked);
+        Response {
+            session: Some(info),
+            model: read.as_ref().ok().map(|published| ModelRead {
+                revision: published.revision,
+            }),
+            result: read,
         }
     }
 
@@ -1379,6 +1383,53 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(rebuilds.running, None);
+    }
+
+    #[test]
+    fn a_rebuild_is_refused_only_under_a_newer_revisions() {
+        let kernel = FakeKernel::new(1).unwrap();
+        let (session, _jobs) = session(&kernel);
+        let _hold = kernel.hold(|_| true);
+        let mut rebuilds = lock(&session.rebuilds);
+        // Revision 2's rebuild running (as recorded): revision 1's isn't started under it.
+        rebuilds.running = Some(Revision(2));
+        assert!(
+            !session
+                .start_unless_newer(&mut rebuilds, Revision(1), &checked(BOX))
+                .unwrap()
+        );
+        assert_eq!(rebuilds.running, Some(Revision(2)));
+        // Its own revision's running: started (as a check after a fault starts it again).
+        rebuilds.running = Some(Revision(1));
+        assert!(
+            session
+                .start_unless_newer(&mut rebuilds, Revision(1), &checked(BOX))
+                .unwrap()
+        );
+        assert_eq!(rebuilds.running, Some(Revision(1)));
+        drop(rebuilds);
+        assert!(kernel.wait_running(1, WAIT));
+    }
+
+    #[test]
+    fn a_published_read_starts_its_revisions_rebuild_only_while_an_older_is_published() {
+        let kernel = FakeKernel::new(1).unwrap();
+        let (session, _jobs) = session(&kernel);
+        let first = session.model(Revision(1), &checked(BOX)).unwrap();
+        // At revision 1, with revision 1 published: that model, and nothing started.
+        let read = session.published_read(Revision(1), &checked(BOX)).unwrap();
+        assert_eq!(read.revision, Revision(1));
+        assert!(Arc::ptr_eq(&read.model, &first));
+        assert_eq!(lock(&session.rebuilds).running, None);
+        // At revision 2, with only revision 1 published: revision 1's model, at once, and
+        // revision 2's rebuild started (held, so it's seen running).
+        let _hold = kernel.hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
+        let read = session
+            .published_read(Revision(2), &checked(SPHERE))
+            .unwrap();
+        assert_eq!(read.revision, Revision(1));
+        assert!(Arc::ptr_eq(&read.model, &first));
+        assert_eq!(lock(&session.rebuilds).running, Some(Revision(2)));
     }
 
     #[test]
