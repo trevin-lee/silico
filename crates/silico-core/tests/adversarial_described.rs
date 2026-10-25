@@ -484,6 +484,64 @@ fn a_small_solids_batches_are_sent_one_at_a_time() {
     );
 }
 
+/// 80 boxes and 20 tori, apart, fused one after another: by hand, 80 × 12 + 20 × 2 = 1,000
+/// edges, exactly a batch, beside 500 faces and 660 vertices.
+fn a_batch_of_edges_exactly() -> String {
+    let mut features = Vec::new();
+    for i in 0..100 {
+        let x = i * 30;
+        features.push(if i < 80 {
+            format!(
+                r#"    {{"id": "p{i:07}", "type": "box", "v": 1, "name": "Box", "position": [{x}, 0, 0], "length": 10, "width": 10, "height": 10}}"#
+            )
+        } else {
+            format!(
+                r#"    {{"id": "p{i:07}", "type": "torus", "v": 1, "name": "Ring", "position": [{x}, 0, 0], "radius1": 10, "radius2": 2}}"#
+            )
+        });
+    }
+    for i in 1..100 {
+        let base = if i == 1 {
+            "p0000000".to_owned()
+        } else {
+            format!("f{:07}", i - 1)
+        };
+        features.push(format!(
+            r#"    {{"id": "f{i:07}", "type": "fuse", "v": 1, "name": "Fuse", "base": "{base}", "tool": "p{i:07}"}}"#
+        ));
+    }
+    format!(
+        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n{}\n  ]\n}}\n",
+        features.join(",\n")
+    )
+}
+
+#[test]
+fn a_solid_of_exactly_a_batch_of_a_kind_is_sent_one_batch_at_a_time() {
+    // At the bound: 1,000 edges is one batch, so the last fusion's three batches go one
+    // after another, as a small solid's do; a thousand and one would be two, and four at
+    // once (the test below).
+    let engine = Recompute::new(FakeKernel::new(8).unwrap());
+    let last = |op: &Op| {
+        matches!(op, Op::Describe { shape, .. }
+            if FakeKernel::counts(shape).is_some_and(|c| c.edges == 1000 && c.faces == 500))
+    };
+    let hold = engine.kernel().hold(last);
+    let run = engine.start(checked(&a_batch_of_edges_exactly()));
+    assert_eq!(settled(engine.kernel(), last, 1), 1);
+    hold.release();
+    match run.wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(model))) => {
+            assert_eq!(
+                lengths(model.description(&id("f0000099")).unwrap()),
+                [500, 1000, 660]
+            );
+        }
+        Ok(other) => panic!("not published: {other:?}"),
+        Err(_) => panic!("the recompute didn't finish in {WAIT:?}"),
+    }
+}
+
 #[test]
 fn a_solids_batches_are_sent_four_at_a_time_and_joined_in_order() {
     // 256 boxes fused: 1,536 faces, 3,072 edges, and 2,048 vertices, by hand, so nine
