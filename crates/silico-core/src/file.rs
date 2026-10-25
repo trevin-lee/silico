@@ -373,13 +373,23 @@ pub fn check_output(path: &Path, rules: &Output) -> Result<PathBuf, Error> {
 /// The path `path` writes to, through any links, and the file it would replace, if one; or
 /// why `rules` refuse it.
 fn output_target(
-    path: &Path,
+    given: &Path,
     rules: &Output,
 ) -> Result<(PathBuf, Option<std::fs::Metadata>), Error> {
+    // Relative to the workspace when there's one (M4.1 section 2), as given in messages.
+    let path = given;
+    let joined;
+    let path = match rules.workspace {
+        Some(root) if given.is_relative() => {
+            joined = root.join(given);
+            joined.as_path()
+        }
+        _ => path,
+    };
     let refuse = |why: String, suggestion: &str| {
         Error::new(
             ErrorCode::InvalidInput,
-            format!("{} {}: {why}", rules.field, shown_path(path)),
+            format!("{} {}: {why}", rules.field, shown_path(given)),
         )
         .with_parameter(rules.field)
         .with_suggestion(suggestion)
@@ -503,9 +513,15 @@ fn write_beside(
         .ok_or_else(|| unwritable("it has no file name"))?;
     let mut created = None;
     for n in 0..TRIES {
+        // Beside it, named for it, unless that would pass a file name's 255 bytes.
+        let suffix = format!(".part-{}", std::process::id());
         let mut partial_name = OsString::from(".");
-        partial_name.push(name);
-        partial_name.push(format!(".part-{}", std::process::id()));
+        if name.len() + suffix.len() + 8 <= 255 {
+            partial_name.push(name);
+        } else {
+            partial_name.push("silico-output");
+        }
+        partial_name.push(suffix);
         if n > 0 {
             partial_name.push(format!("-{n}"));
         }

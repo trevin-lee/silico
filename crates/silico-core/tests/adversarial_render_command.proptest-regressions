@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 60057a67278317e4525a4cc4b7cc174c907fb1c2ec7a2e31be703620752cd84b # shrinks to c = Camera { projection: Orthographic { view_height: 1e-6 }, eye: [0.0, 0.0, 0.0], target: [0.0, 0.0, 1000000000000.0], up: [12407780.962029574, 56681815.41849138, -1000000000000.0] }

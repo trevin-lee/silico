@@ -159,15 +159,18 @@ impl NamedView {
         }
         let extent_up = along_up.1 - along_up.0;
         let extent_right = (along_right.1 - along_right.0) * f64::from(height) / f64::from(width);
-        let view_height = 1.1 * extent_up.max(extent_right);
+        let half_diagonal = {
+            let d = [high[0] - low[0], high[1] - low[1], high[2] - low[2]];
+            dot(d, d).sqrt() / 2.0
+        };
+        // Never under what the render draws of the box's reach from its centre (its half
+        // diagonal: a rod seen end on), with a hundredth to spare.
+        let least = half_diagonal * silico_protocol::MIN_VIEW_HEIGHT_OF_REACH * 1.01;
+        let view_height = (1.1 * extent_up.max(extent_right)).max(least);
         let side = if extent_up >= extent_right {
             "height"
         } else {
             "width"
-        };
-        let half_diagonal = {
-            let d = [high[0] - low[0], high[1] - low[1], high[2] - low[2]];
-            dot(d, d).sqrt() / 2.0
         };
         let eye = [
             target[0] + dir[0] * 2.0 * half_diagonal,
@@ -192,13 +195,29 @@ impl NamedView {
 /// check.
 pub fn half_pixel(camera: &Camera, height: u32) -> Option<f64> {
     let frame = camera.frame().ok()?;
+    half_pixel_at(camera, height, frame.distance)
+}
+
+/// Half a pixel of `camera`'s image, `height` pixels high, in mm, at `distance` from a
+/// perspective eye (an orthographic view's is the same at any): a body is meshed to half
+/// a pixel at its nearest point, where its pixels are finest. None for a camera that fails
+/// its check.
+pub fn half_pixel_at(camera: &Camera, height: u32, distance: f64) -> Option<f64> {
+    camera.frame().ok()?;
     let view_height = match camera.projection {
         Projection::Orthographic { view_height } => view_height,
         Projection::Perspective { field_of_view } => {
-            2.0 * frame.distance * libm::tan(field_of_view.to_radians() / 2.0)
+            2.0 * distance * libm::tan(field_of_view.to_radians() / 2.0)
         }
     };
     Some(view_height / f64::from(height) / 2.0)
+}
+
+/// How far `point` is from the box `[low, high]`: 0 inside it.
+pub fn distance_to_box(point: [f64; 3], [low, high]: [[f64; 3]; 2]) -> f64 {
+    let gap = |k: usize| (low[k] - point[k]).max(point[k] - high[k]).max(0.0);
+    let d = [gap(0), gap(1), gap(2)];
+    dot(d, d).sqrt()
 }
 
 /// Whether `camera`'s view, `width` by `height` pixels, may see any of a tight box,

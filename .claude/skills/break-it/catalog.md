@@ -249,6 +249,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Keys hashing parts joined by a separator the parts may contain (a newline in a kernel identity or platform): two different keys hash the same bytes
 - A kernel identity that hashes only the executable: libraries it loads at run time (OCCT's dylibs through an rpath symlink) change results without changing the identity; a worker binary replaced under a running pool is relaunched under the old identity
 - Directory sizes summed from file lengths: sparse files cost no disk, so a few hundred planted at the file system's longest (APFS: 2^55 bytes) sum past `u64::MAX`; a plain `+=` panics in debug and wraps in release
+- A file name at the file system's longest (255 bytes): a temporary file beside it named after it (`.NAME.part-PID`) is past the limit, so a valid path the check took fails at the write, after the work
+- A relative path with a workspace that isn't the working directory: resolved against the process's directory, it's refused as outside the workspace or written where the workspace's rules don't hold
 - Bounds kept by "scan, evict, then write" across threads: entries other threads are writing aren't on disk to evict, so N puts at once leave N entries; bound every entry above half the bound and run parallel leaves
 
 ## Rendering
@@ -259,3 +261,6 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Clip planes taken from the camera's own numbers, not the scene (a perspective near plane at 1e-4 of the eye-to-target distance): a target far along the ray clips a part close to the eye; an orthographic eye far along its ray (1e9) moves the image by its f32 rounding and leaves the depth buffer no precision
 - Lighting done in linear light through a colour type whose `* f32` scales alpha too (ecolor's `Rgba`), then converted to a premultiplied 8-bit colour: every vertex not lit at full strength is darker than the formula; check a face at the ambient light by hand, not only one square to the eye
 - A missing GPU or rasterizer refused as an internal error ("a bug in Silico") instead of as data the core maps to `worker_unavailable`: run the test binary as its own child with its environment cleared and `VK_ICD_FILENAMES` pointed at nothing (a conda Vulkan loader finds its own prefix's drivers even with a cleared environment)
+- A body far deeper along a named view than across it (a 1 x 500,000 x 1 rod seen end-on): a view fitted to its extent across is under the renderer's least zoom for the scene's reach, and a check meant for given cameras answers the core's own view as Silico's bug
+- A body built but never measured (its summary refused or failed): code that culls, fits, or checks the eye by the body's box leaves it out of every view, so a camera on it draws nothing as Ok and an eye inside it is taken
+- A value the command normalizes, passed back as answered (a camera's up already of unit length and perpendicular): renormalizing in f64 isn't a fixed point, so the answer changes in its last bits every round trip

@@ -44,6 +44,8 @@ mod adversarial_document;
 mod adversarial_fingerprint;
 #[path = "adversarial_references.rs"]
 mod adversarial_references;
+#[path = "adversarial_render_command.rs"]
+mod adversarial_render_command;
 #[path = "adversarial_type_words.rs"]
 mod adversarial_type_words;
 #[path = "cache_bound.rs"]

@@ -26,7 +26,7 @@ use crate::naming::{ElementMap, Maker, Name};
 use crate::pool::{Outcome, Pending};
 use crate::recompute::{Built, FeatureOutcome, Key, Model};
 use crate::render::{RenderClient, RenderOutcome, RenderTicket};
-use crate::views::{NAMED_VIEWS, NamedView, half_pixel, sees};
+use crate::views::{NAMED_VIEWS, NamedView, distance_to_box, half_pixel, half_pixel_at, sees};
 use crate::worker::SILICO_BUG;
 use crate::{Error, ErrorCode};
 
@@ -153,6 +153,22 @@ pub fn render<K: Kernel>(
     let (camera, fit_side) = match asked {
         Asked::Given(camera) => (perpendicular(&camera), None),
         Asked::Named(view) => {
+            // Fitted to every body's box: one that couldn't be measured has none to fit.
+            if let Some(unmeasured) = bodies.iter().find(|b| b.bounds.is_none()) {
+                return Err(Problems::from(
+                    Error::new(
+                        ErrorCode::InvalidInput,
+                        format!(
+                            "view {} fits the bodies by their boxes, and {}'s solid couldn't be measured for one",
+                            view.name(),
+                            unmeasured.id
+                        ),
+                    )
+                    .with_feature(unmeasured.id.as_str())
+                    .with_parameter("view")
+                    .with_suggestion("give a camera on the bodies, or check the model's measures"),
+                ));
+            }
             let Some(bounds) = joined(bodies.iter().filter_map(|b| b.bounds)) else {
                 return Err(Problems::from(
                     Error::new(
@@ -186,15 +202,27 @@ pub fn render<K: Kernel>(
     };
     let kept: Vec<&Body> = bodies
         .iter()
+        // A body with no box (its measure failed) can't be shown out of view: it's kept.
         .filter(|b| {
-            b.bounds.is_some_and(|bounds| {
+            b.bounds.is_none_or(|bounds| {
                 sees(&camera, request.width, request.height, bounds).unwrap_or(true)
             })
         })
         .collect();
-    within_caps(&kept)?;
+    within_caps(
+        kept.iter()
+            .filter_map(|b| b.built.summary())
+            .map(|s| (s.faces, s.edges)),
+    )?;
     eye_outside(&camera, &bodies, on)?;
     let meshes = meshed(&camera, request.height, &kept, on)?;
+    // Again by the meshes: a body unmeasured wasn't counted before.
+    within_caps(meshes.iter().map(|m| {
+        (
+            u32::try_from(m.face_triangles.len()).unwrap_or(u32::MAX),
+            u32::try_from(m.edge_point_counts.len()).unwrap_or(u32::MAX),
+        )
+    }))?;
     let taken = camera.clone();
     let scene = RenderScene {
         bodies: kept
@@ -216,6 +244,12 @@ pub fn render<K: Kernel>(
                     .with_parameter(parameter)
                     .with_suggestion("change the value the message names")
             }
+            parameter if parameter.starts_with("camera.") => Error::new(
+                ErrorCode::InvalidInput,
+                format!("the view fitted can't draw the bodies: {}", invalid.message),
+            )
+            .with_parameter("view")
+            .with_suggestion("give a camera on the bodies"),
             parameter => Error::new(
                 ErrorCode::Internal,
                 "the core built a scene the render worker can't draw",
@@ -451,18 +485,15 @@ fn highlighted(model: &Model, bodies: &[Body], highlight: &[String]) -> Result<V
     }
 }
 
-/// Refuses bodies in view with more faces or edges than a render draws, counted from their
-/// B-reps before any is meshed.
-fn within_caps(kept: &[&Body]) -> Result<(), Problems> {
-    let count = |of: fn(&silico_protocol::ShapeSummary) -> u32| {
-        kept.iter()
-            .filter_map(|b| b.built.summary())
-            .map(|s| u64::from(of(s)))
-            .sum::<u64>()
-    };
+/// Refuses bodies in view with more faces or edges than a render draws, by each body's
+/// counts: their B-reps' before any is meshed, and their meshes' after.
+fn within_caps(counts: impl Iterator<Item = (u32, u32)>) -> Result<(), Problems> {
+    let (faces, edges) = counts.fold((0u64, 0u64), |(f, e), (bf, be)| {
+        (f + u64::from(bf), e + u64::from(be))
+    });
     for (what, count, most) in [
-        ("faces", count(|s| s.faces), MAX_RENDER_FACES),
-        ("edges", count(|s| s.edges), MAX_RENDER_EDGES),
+        ("faces", faces, MAX_RENDER_FACES),
+        ("edges", edges, MAX_RENDER_EDGES),
     ] {
         if count > most as u64 {
             return Err(Problems::from(
@@ -494,9 +525,10 @@ fn eye_outside<K: Kernel>(
     let eye = camera.eye;
     let asked: Vec<(&Body, Pending<bool>)> = bodies
         .iter()
+        // A body with no box (its measure failed) is asked too.
         .filter(|b| {
             b.bounds
-                .is_some_and(|[low, high]| (0..3).all(|k| low[k] <= eye[k] && eye[k] <= high[k]))
+                .is_none_or(|[low, high]| (0..3).all(|k| low[k] <= eye[k] && eye[k] <= high[k]))
         })
         .map(|b| {
             let request = KernelRequest::classify(&b.built.shape, eye);
@@ -504,7 +536,7 @@ fn eye_outside<K: Kernel>(
         })
         .collect();
     for (body, pending) in asked {
-        if done(pending.wait())? {
+        if done(pending.wait()).map_err(|p| naming(p, body.id))? {
             return Err(Problems::from(
                 Error::new(
                     ErrorCode::InvalidInput,
@@ -527,7 +559,7 @@ fn meshed<K: Kernel>(
     kept: &[&Body],
     on: &RenderOn<'_, K>,
 ) -> Result<Vec<std::sync::Arc<Mesh>>, Problems> {
-    let Some(level) = half_pixel(camera, height).and_then(mesh_level) else {
+    if half_pixel(camera, height).is_none() {
         return Err(Problems::from(
             Error::new(
                 ErrorCode::Internal,
@@ -535,6 +567,16 @@ fn meshed<K: Kernel>(
             )
             .with_suggestion(SILICO_BUG),
         ));
+    }
+    // Half a pixel at the body's nearest point to the eye (its box's; none is at the eye),
+    // its power of two; at no distance, the finest there is, which meshes at the floor.
+    let level = |b: &Body| {
+        let distance = b
+            .bounds
+            .map_or(0.0, |bounds| distance_to_box(camera.eye, bounds));
+        half_pixel_at(camera, height, distance)
+            .and_then(mesh_level)
+            .unwrap_or(f64::MIN_POSITIVE)
     };
     enum Got {
         Kept(std::sync::Arc<Mesh>),
@@ -543,7 +585,7 @@ fn meshed<K: Kernel>(
     let got: Vec<Got> = kept
         .iter()
         .map(|b| {
-            let deflection = on.meshes.deflection_for(&b.key, level);
+            let deflection = on.meshes.deflection_for(&b.key, level(b));
             match on.meshes.get(&b.key, deflection) {
                 Some(mesh) => Got::Kept(mesh),
                 None => Got::Asked(
@@ -560,7 +602,10 @@ fn meshed<K: Kernel>(
         .zip(got)
         .map(|(b, got)| match got {
             Got::Kept(mesh) => Ok(mesh),
-            Got::Asked(asked, pending) => Ok(on.meshes.put(&b.key, asked, done(pending.wait())?)),
+            Got::Asked(asked, pending) => {
+                let made = done(pending.wait()).map_err(|p| naming(p, b.id))?;
+                Ok(on.meshes.put(&b.key, asked, made))
+            }
         })
         .collect()
 }
@@ -687,12 +732,24 @@ fn frame_bound(scene: &RenderScene) -> u64 {
 /// `camera`, its up made perpendicular to the view and of unit length, by its frame: the
 /// camera a result gives, which passed back draws the same.
 fn perpendicular(camera: &Camera) -> Camera {
-    match camera.frame() {
-        Ok(frame) => Camera {
-            up: frame.up,
+    // The frame's up, taken again until the frame gives it back to within 1e-12 a part (its
+    // own rounding: an up nearly along the view loses digits to the projection), and that up
+    // kept as it is: so an answer passed back is answered to the bit.
+    let mut up = camera.up;
+    for _ in 0..4 {
+        let with = Camera {
+            up,
             ..camera.clone()
-        },
-        Err(_) => camera.clone(),
+        };
+        match with.frame() {
+            Ok(frame) if (0..3).all(|k| (frame.up[k] - up[k]).abs() <= 1e-12) => break,
+            Ok(frame) => up = frame.up,
+            Err(_) => break,
+        }
+    }
+    Camera {
+        up,
+        ..camera.clone()
     }
 }
 
@@ -704,6 +761,21 @@ fn a_kind(kind: ElementKind) -> &'static str {
         ElementKind::Vertex => "a vertex",
         ElementKind::Solid => "a solid",
     }
+}
+
+/// `problems`, each naming `feature` if it names none: a body's kernel request's.
+fn naming(problems: Problems, feature: &FeatureId) -> Problems {
+    let total = problems.total();
+    let errors: Vec<Error> = problems
+        .errors()
+        .iter()
+        .map(|e| match e.feature() {
+            Some(_) => e.clone(),
+            None => e.clone().with_feature(feature.as_str()),
+        })
+        .collect();
+    let listed = errors.len() as u64;
+    Problems::with_unlisted(errors, total - listed)
 }
 
 #[cfg(test)]

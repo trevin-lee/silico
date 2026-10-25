@@ -501,3 +501,22 @@ fn a_render_the_renderer_fails_is_its_error() {
     let e = refused(bench.render(&view("front", 100, 100)));
     assert_eq!(e.code(), ErrorCode::WorkerTimeout);
 }
+
+#[test]
+fn a_perspective_view_meshes_each_body_at_half_a_pixel_where_it_is_nearest_the_eye() {
+    // Found by /break-it: half a pixel was taken at the target's distance, so a target far
+    // past the part meshed it far coarser than its pixels. The eye 100 mm in front of the
+    // box (its nearest face y = 0), 40° high at 100 pixels: half a pixel there is 100 ×
+    // tan 20° / 100 = 0.364, so 2⁻². The target a kilometre past it would have given 2¹¹.
+    let bench = Bench::of(EXAMPLE);
+    let far_target = Camera {
+        projection: Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        eye: [20.0, -100.0, 5.0],
+        target: [20.0, 1e6, 5.0],
+        up: [0.0, 0.0, 1.0],
+    };
+    bench.render(&camera(far_target, 100, 100)).unwrap();
+    assert_eq!(bench.meshed(), [0.25]);
+}
