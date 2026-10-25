@@ -52,6 +52,7 @@ fn the_case_file_holds_every_case_of_the_design() {
         "groove_both_sides_180",
         "groove_both_sides_near_270",
         "groove_both_sides_mirrored_360",
+        "cylinder_revolved_onto_a_box",
     ] {
         assert!(names.contains(name), "{name} is missing");
     }
@@ -63,13 +64,18 @@ fn the_case_file_holds_every_case_of_the_design() {
         4 + 18,
         "the ported pockets and each pocket form"
     );
-    assert_eq!(count("torus_"), 42);
+    assert_eq!(
+        count("torus_"),
+        42 + 3,
+        "the design's torus segments, and the M3 close's three about the x axis"
+    );
     assert_eq!(
         count("groove_"),
         2 + 24 + 10,
         "the ported groove, each groove and its cylinder, and the five grooves of regions either side of their axis (council round 2) and their cylinders"
     );
-    assert_eq!(cases.cases.len(), 124);
+    // And the M3 close's four revolves (three tori about the x axis, a cylinder onto a box).
+    assert_eq!(cases.cases.len(), 124 + 4);
 }
 
 #[test]
@@ -474,10 +480,10 @@ fn every_expected_value_is_checked() {
 
 #[test]
 fn silicos_kernel_faults_are_lost_and_its_refusals_and_blocks_failed() {
-    // A worker that crashed or hung, or a fault of the kernel's own, never finished the
-    // case: lost, which never agrees with FreeCAD, even with its refusal. A refusal of the
-    // model (a value out of range, the kernel failing on it) is a failure, as FreeCAD's
-    // own refusals are; so is a feature not built for one that failed before it.
+    // A worker that crashed, hung, or couldn't be had, or a fault of the kernel's own, never
+    // finished the case: lost, which never agrees with FreeCAD, even with its refusal. A
+    // refusal of the model (a value out of range, the kernel failing on it) is a failure, as
+    // FreeCAD's own refusals are; so is a feature not built for one that failed before it.
     use silico_core::{Error, ErrorCode};
     use silico_oracle::features::Ours;
     for code in [
@@ -486,6 +492,7 @@ fn silicos_kernel_faults_are_lost_and_its_refusals_and_blocks_failed() {
         ErrorCode::ProtocolError,
         ErrorCode::ResourceExhausted,
         ErrorCode::Internal,
+        ErrorCode::WorkerUnavailable,
     ] {
         let outcome = Ours::Failed(Error::new(code, "faulted")).outcome();
         assert!(matches!(outcome, Outcome::Lost(_)), "{code:?}: {outcome:?}");

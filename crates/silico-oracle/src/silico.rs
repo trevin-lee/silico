@@ -278,6 +278,7 @@ mod tests {
                 ErrorCode::ProtocolError,
                 ErrorCode::Internal,
                 ErrorCode::ResourceExhausted,
+                ErrorCode::WorkerUnavailable,
             ]
         );
     }

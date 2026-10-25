@@ -888,3 +888,28 @@ fn the_bodies_an_open_gives_are_the_solids_no_later_feature_uses() {
     assert_eq!(opened.features, Some(3));
     assert_eq!(opened.bodies, [FeatureId::new("m3tq8v0z").unwrap()]);
 }
+
+#[test]
+fn version_gives_the_designs_numbers_and_limits() {
+    // As docs/design/m4.1-command-api.md's `version` example and its section 6 give them.
+    let version = silico_core::command::VERSION;
+    assert_eq!((version.api, version.format, version.naming), (1, 1, 5));
+    let limits = version.limits;
+    assert_eq!(limits.document_bytes, 16_777_216);
+    assert_eq!(limits.request_bytes, 67_108_864);
+    assert_eq!(limits.request_depth, 64);
+    assert_eq!(limits.listed, 100);
+    assert_eq!(limits.sessions, 16);
+    assert_eq!(limits.published_reads, 8);
+    assert_eq!(limits.kernel_seconds, 60);
+    assert_eq!(limits.sketch_seconds, 300);
+}
+
+#[test]
+fn a_revision_is_followed_by_one_more() {
+    // The design's section 3: 1 at open, one more for each change of the document.
+    assert_eq!(Revision::OPENED.number(), 1);
+    let two = Revision::OPENED.next().unwrap();
+    assert_eq!(two.number(), 2);
+    assert_eq!(two.next().unwrap().number(), 3);
+}

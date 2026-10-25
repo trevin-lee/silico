@@ -205,7 +205,7 @@ fn a_worker_whose_executable_changes_as_it_starts_isnt_used() {
     let mut w = SketchWorker::start_worker(&exe).unwrap();
     let refused = w.pid();
     let e = solve(&checked(&small()), &feature(), &mut w).unwrap_err();
-    assert_eq!(e.code(), ErrorCode::WorkerCrashed, "{e}");
+    assert_eq!(e.code(), ErrorCode::WorkerUnavailable, "{e}");
     assert!(e.message().contains("changed since it started"), "{e}");
     assert!(e.message().contains(&exe.display().to_string()), "{e}");
     // And the worker refused is gone (stopped and reaped), not left running.
@@ -241,7 +241,7 @@ fn a_worker_whose_executable_was_replaced_isnt_started_again_and_one_put_back_is
         stopped,
         "a worker was started from the other build"
     );
-    assert_eq!(e.code(), ErrorCode::WorkerCrashed, "{e}");
+    assert_eq!(e.code(), ErrorCode::WorkerUnavailable, "{e}");
     assert!(e.message().contains("changed since it started"), "{e}");
     assert!(
         e.suggestion().is_some_and(|s| s.contains("restart")),
@@ -266,7 +266,7 @@ fn a_worker_whose_executable_was_replaced_isnt_started_again_and_one_put_back_is
     std::fs::remove_file(&exe).unwrap();
     w.distrust();
     let e = solve(&doc, &feature(), &mut w).unwrap_err();
-    assert_eq!(e.code(), ErrorCode::WorkerCrashed, "{e}");
+    assert_eq!(e.code(), ErrorCode::WorkerUnavailable, "{e}");
     assert!(e.message().contains(&exe.display().to_string()), "{e}");
     assert!(e.suggestion().is_some(), "{e:?}");
     let _ = std::fs::remove_dir_all(&dir);
@@ -528,6 +528,9 @@ fn a_worker_that_dies_after_its_solve_began_isnt_replaced_out_of_its_stoppers_re
     // impossible chain) while a newer recompute waited. Once a solve has begun, it starts
     // no worker: a dead one fails it as a crash, and the next solve's start replaces it.
     let mut w = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    // Solved once first, so it had started: its death is a crash (killed before its first
+    // frame, it would be worker_unavailable).
+    solve(&checked(&small()), &feature(), &mut w).unwrap();
     let stopper = w.stopper().unwrap().unwrap();
     let old = w.pid();
     std::process::Command::new("kill")

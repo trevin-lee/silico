@@ -543,12 +543,16 @@ fn a_worker_that_cant_start_is_a_structured_error() {
     let err = Worker::spawn(Path::new("/nonexistent/silico-kernel-worker"))
         .err()
         .unwrap();
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
 }
 
 #[test]
 fn a_worker_killed_while_idle_is_reported_on_the_next_call() {
+    // Answered once first, so it had started: its death is a crash (worker_crashed). Killed
+    // at once, it could be killed before its first frame, which is worker_unavailable (the
+    // test below).
     let mut w = worker();
+    echo(&mut w, vec![1], TIMEOUT).unwrap();
     let pid = w.pid();
     assert!(
         Command::new("kill")
@@ -559,6 +563,27 @@ fn a_worker_killed_while_idle_is_reported_on_the_next_call() {
     );
     let err = echo(&mut w, vec![], TIMEOUT).unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert!(err.cause().unwrap().contains("SIGKILL"), "{err}");
+}
+
+#[test]
+fn a_worker_killed_before_its_first_frame_is_unavailable_not_crashed() {
+    // The M3 review's start-code decision: a process that ends before it says it started
+    // was never a worker of this build, whatever ended it (here a SIGKILL from outside, as a
+    // dyld abort or an exit at launch end one); worker_unavailable, with the crash's cause.
+    // A stand-in that never sends its first frame makes the order certain.
+    let exe = script("never-started", "exec sleep 600");
+    let mut w = Worker::spawn(&exe).unwrap();
+    let pid = w.pid();
+    assert!(
+        Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let err = echo(&mut w, vec![], TIMEOUT).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     assert!(err.cause().unwrap().contains("SIGKILL"), "{err}");
 }
 
@@ -782,8 +807,11 @@ fn wait_until_exited(pid: u32) {
 
 #[test]
 fn a_request_to_a_worker_that_has_exited_is_a_crash() {
-    // The worker is gone before the request is written, so the write itself fails.
+    // The worker is gone before the request is written, so the write itself fails. It
+    // answered once first, so it had started: a crash (killed before its first frame, it
+    // would be worker_unavailable).
     let mut w = worker();
+    echo(&mut w, vec![1], TIMEOUT).unwrap();
     let pid = w.pid();
     assert!(
         Command::new("kill")
@@ -1194,7 +1222,15 @@ fn every_failure_says_what_to_try() {
             "check Silico's install",
         ),
     ] {
-        assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{what}: {err}");
+        // A worker that ended before its first frame was never one of this build: it can't
+        // be had. Every other ran, and crashed.
+        let unstarted = ["a worker that crashed as it started", "an exit of its own"];
+        let want = if unstarted.contains(&what) {
+            ErrorCode::WorkerUnavailable
+        } else {
+            ErrorCode::WorkerCrashed
+        };
+        assert_eq!(err.code(), want, "{what}: {err}");
         assert!(err.suggestion().unwrap().starts_with(says), "{what}: {err}");
     }
     let mut w = KernelWorker::start_worker(Path::new(WORKER)).unwrap();

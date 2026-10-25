@@ -14,7 +14,7 @@ use tracing::span::{Attributes, Id};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
-/// Each `read`, `create`, and `gate` span entered: its name, and the thread it was entered on.
+/// Each `read`, `create`, `gate`, and `rebuild` span entered: its name, and the thread it was entered on.
 type Seen = Arc<Mutex<Vec<(&'static str, String)>>>;
 
 /// Each `session_command` span made: its ancestors' names, nearest first.
@@ -36,7 +36,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Entered {
 
     fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(id) else { return };
-        if matches!(span.name(), "read" | "gate" | "create") {
+        if matches!(span.name(), "read" | "gate" | "create" | "rebuild") {
             let thread = std::thread::current().name().unwrap_or("").to_owned();
             self.0.lock().unwrap().push((span.name(), thread));
         }
@@ -67,6 +67,9 @@ fn an_opens_read_and_gate_run_on_its_sessions_thread_and_each_command_under_its_
     // was in before.
     let text = sessions.text(&s1, None).wait();
     assert!(text.result.is_ok(), "{text:?}");
+    // A check rebuilds the document, on the session's thread too.
+    let check = sessions.check(&s1).wait();
+    assert!(check.result.is_ok(), "{check:?}");
     // A document made, as `create` makes it, on its session's thread too.
     let made = sessions.open(dir.path().join("new.silico"), true).wait();
     assert!(made.result.unwrap().created);
@@ -77,6 +80,10 @@ fn an_opens_read_and_gate_run_on_its_sessions_thread_and_each_command_under_its_
         [
             ("read", "session-s1".to_owned()),
             ("gate", "session-s1".to_owned()),
+            ("rebuild", "session-s1".to_owned()),
+            // The recompute it started runs under it, on its own thread, so its steps trace
+            // back to the session's rebuild.
+            ("rebuild", "recompute-1".to_owned()),
             ("create", "session-s2".to_owned()),
             ("gate", "session-s2".to_owned())
         ]
@@ -85,6 +92,6 @@ fn an_opens_read_and_gate_run_on_its_sessions_thread_and_each_command_under_its_
     // span ended with it.
     assert_eq!(
         *commands.lock().unwrap(),
-        [vec!["client_open"], vec![], vec![]]
+        [vec!["client_open"], vec![], vec![], vec![]]
     );
 }
