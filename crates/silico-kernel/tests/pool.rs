@@ -263,8 +263,8 @@ fn a_pool_on_demand_starts_as_many_workers_as_requests_run_at_once_and_no_more()
 #[test]
 fn a_pool_on_demand_whose_worker_cant_start_fails_the_request_and_starts_on() {
     // A worker that can't be run: the pool opens (it starts none), and each request fails
-    // as a start that crashed does, rather than waiting; made runnable, the next request
-    // starts it and runs.
+    // as one whose worker can't be had (`worker_unavailable`), rather than waiting; made
+    // runnable, the next request starts it and runs.
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("pool-on-demand-unrunnable-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -273,7 +273,7 @@ fn a_pool_on_demand_whose_worker_cant_start_fails_the_request_and_starts_on() {
     let pool = KernelPool::start_on_demand(&exe, 2).unwrap();
     for _ in 0..2 {
         let err = done(pool.submit(Generation(1), sleep(0))).unwrap_err();
-        assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+        assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     }
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1235,7 +1235,7 @@ fn a_pool_that_cant_start_starts_nothing() {
     let err = KernelPool::start_workers(Path::new("/nonexistent/silico-kernel-worker"), 3)
         .err()
         .unwrap();
-    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     let err = KernelPool::start_workers(Path::new(WORKER), 0)
         .err()
         .unwrap();
@@ -1263,7 +1263,7 @@ fn a_pool_whose_later_workers_cant_start_stops_its_first_ones() {
         match KernelPool::start_workers(&exe, SLOTS) {
             Ok(pool) => drop(pool),
             Err(e) => {
-                assert_eq!(e.code(), ErrorCode::WorkerCrashed, "{e}");
+                assert_eq!(e.code(), ErrorCode::WorkerUnavailable, "{e}");
                 wait_no_children("after a failed start");
                 return;
             }

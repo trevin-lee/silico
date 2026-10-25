@@ -266,12 +266,35 @@ impl SketchSolver for SketchWorker {
             // A solve begun with a stopper starts no worker: a new one would be out of the
             // stopper's reach, and run on after a stop (council, robustness, round 3). One
             // gone fails the solve as a crash; the next solve's start replaces it.
-            if self.worker.is_stopped() || self.worker.has_exited() {
+            if self.worker.is_stopped() {
                 return Err(Error::new(
                     ErrorCode::WorkerCrashed,
                     "the sketch worker ended during the solve",
                 )
                 .with_suggestion("solve again: the next solve starts another worker"));
+            }
+            if self.worker.has_exited() {
+                // Read what it sent before it ended first: whether it said it started decides
+                // the code, as a call to it would (`Worker::crashed`). One that never did was
+                // never a worker of this build, whenever the solve comes (break-it).
+                self.worker
+                    .drain_replies(std::time::Instant::now() + crate::worker::EXIT_GRACE);
+                return Err(if self.worker.has_started() {
+                    Error::new(
+                        ErrorCode::WorkerCrashed,
+                        "the sketch worker ended during the solve",
+                    )
+                    .with_suggestion("solve again: the next solve starts another worker")
+                } else {
+                    Error::new(
+                        ErrorCode::WorkerUnavailable,
+                        "the sketch worker ended before it started",
+                    )
+                    .with_suggestion(
+                        "check Silico's install: the sketch worker ends as it starts, so no \
+                         solve can run until it's fixed (see its log)",
+                    )
+                });
             }
         } else {
             self.ready()?;

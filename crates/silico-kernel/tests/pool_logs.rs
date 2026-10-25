@@ -116,13 +116,14 @@ fn assert_superseded_logged(seen: &[Logged], level: Level, text: &str, code: &st
     assert!(e.spans.contains(&"recompute_feature"), "{e:#?}");
 }
 
-/// A worker that, given a request, notes it by writing `marker`, then sleeps without
-/// replying until it's killed: so a test knows its request is running.
+/// A worker that says it started (its first frame, empty, as a worker's is), then, given a
+/// request, notes it by writing `marker`, then sleeps without replying until it's killed: so
+/// a test knows its request is running, on a worker that had started.
 fn marking_worker(marker: &Path) -> PathBuf {
     scripts::script(
         "marks-its-request",
         &format!(
-            "head -c 1 <&3 >/dev/null\n: > '{}'\nexec sleep 30",
+            "printf '\\0\\0\\0\\0' >&3\nhead -c 1 <&3 >/dev/null\n: > '{}'\nexec sleep 30",
             marker.display()
         ),
     )
@@ -248,10 +249,12 @@ fn a_superseded_failure_is_logged_at_warn_unless_the_pool_stopped_it() {
     // the failure is the worker's, at warn. The worker reads the start of a request and
     // exits, leaving a process that holds its log pipe open for five seconds; the pool waits
     // up to two for the last log lines before it reports the crash. So the advance, once the
-    // worker is dead and reaped, lands before its request has ended.
+    // worker is dead and reaped, lands before its request has ended. It says it started
+    // first, as a worker does, so its death is a crash (worker_crashed), not a start that
+    // failed.
     let dies = scripts::script(
         "dies-holding-its-log",
-        "sleep 5 3>&- &\nhead -c 1 <&3 >/dev/null\nexit 3",
+        "printf '\\0\\0\\0\\0' >&3\nsleep 5 3>&- &\nhead -c 1 <&3 >/dev/null\nexit 3",
     );
     // Started now: its worker's ID is read before the request.
     let pool = KernelPool::start_workers(&dies, 1).unwrap();

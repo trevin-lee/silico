@@ -372,7 +372,7 @@ fn every_reference_kind_stored_otherwise_is_drift_and_saved_as_measured() {
 }
 
 /// The fake, but readying it for its first solve fails as readying a started sketch worker
-/// can: its executable changed since it started (`worker_crashed`, already the solver's
+/// can: its executable changed since it started (`worker_unavailable`, already the solver's
 /// fault). A worker that can't be found at all fails earlier, starting: the starter's test.
 struct FailsToStartOnce {
     sketches: FakeSketches,
@@ -388,7 +388,7 @@ impl silico_core::sketch::SketchSolver for FailsToStartOnce {
         if !self.failed {
             self.failed = true;
             return Err(silico_core::Error::new(
-                ErrorCode::WorkerCrashed,
+                ErrorCode::WorkerUnavailable,
                 "the sketch worker /bin/worker changed since it started",
             ));
         }
@@ -411,7 +411,7 @@ fn a_solver_that_couldnt_be_readied_is_tried_again_and_its_fault_passed_on_as_it
     let text = sketch("10", HORIZONTAL);
     match model(&engine, &text).outcome(&feature()) {
         Some(FeatureOutcome::Failed(e)) => {
-            assert_eq!(e.code(), ErrorCode::WorkerCrashed, "{e}");
+            assert_eq!(e.code(), ErrorCode::WorkerUnavailable, "{e}");
             assert_eq!(
                 e.message(),
                 "the sketch worker /bin/worker changed since it started"
@@ -462,10 +462,11 @@ fn a_superseded_solve_runs_its_grace_before_its_stopped() {
 
 #[test]
 fn a_sketch_worker_that_cant_be_started_is_the_solvers_fault_and_started_again_next_time() {
-    // Round 2's architecture and quality lenses: a missing or misnamed worker comes as
+    // Round 2's architecture and quality lenses: a missing or misnamed worker came as
     // invalid_input from finding it, which blamed the sketch (check exited 1, fmt wrote the
-    // file). It's the solver's fault, as a kernel's failure to start is: check fails as the
-    // client's own failure. And it isn't kept (round 2's tests lens: the start path itself
+    // file). Finding it now says worker_unavailable (the M3 review's start-code decision),
+    // a fault of the solver's, as a kernel's failure to start is: passed on as it is, with
+    // the feature named, and check fails as the client's own failure. And it isn't kept (round 2's tests lens: the start path itself
     // was untested): the next recompute starts the solver again.
     let sketches = FakeSketches::new();
     let mut tries = 0;
@@ -474,7 +475,7 @@ fn a_sketch_worker_that_cant_be_started_is_the_solvers_fault_and_started_again_n
         tries += 1;
         if tries == 1 {
             Err(silico_core::Error::new(
-                ErrorCode::InvalidInput,
+                ErrorCode::WorkerUnavailable,
                 "SILICO_SKETCH_WORKER names /nowhere, which isn't a file",
             )
             .with_suggestion("name the sketch worker's executable"))
@@ -486,18 +487,20 @@ fn a_sketch_worker_that_cant_be_started_is_the_solvers_fault_and_started_again_n
     let first = model(&engine, &text);
     match first.outcome(&feature()) {
         Some(FeatureOutcome::Failed(e)) => {
-            assert_eq!(e.code(), ErrorCode::WorkerCrashed, "{e}");
+            assert_eq!(e.code(), ErrorCode::WorkerUnavailable, "{e}");
             assert!(e.code().is_kernel_fault());
             assert_eq!(
-                e.cause(),
-                Some("SILICO_SKETCH_WORKER names /nowhere, which isn't a file")
+                e.message(),
+                "SILICO_SKETCH_WORKER names /nowhere, which isn't a file"
             );
+            assert_eq!(e.cause(), None, "{e:?}");
+            assert_eq!(e.feature(), Some(feature().as_str()), "{e:?}");
             assert_eq!(e.suggestion(), Some("name the sketch worker's executable"));
         }
         other => panic!("{other:?}"),
     }
     let fault = command::check(&first).unwrap_err();
-    assert_eq!(fault.code(), ErrorCode::WorkerCrashed);
+    assert_eq!(fault.code(), ErrorCode::WorkerUnavailable);
     assert!(command::format(&first).is_err(), "nothing is written");
     assert!(matches!(
         model(&engine, &text).outcome(&feature()),

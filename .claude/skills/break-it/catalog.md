@@ -196,6 +196,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A worker executable replaced by a FIFO, or a symlink to `/dev/zero`, under a running pool or as its worker starts: whatever hashes or reads the executable blocks opening the FIFO (a slot thread, a reply thread, a pool drop that joins them) or reads without end
 - An executable rewritten in place with another build of the same size, its modification time put back (`cp -p`, `rsync --inplace -t`): a size, time, and inode stamp calls it unchanged; only its change time (`st_ctime`) shows it
 - A worker found untrusted (a start check failed) and then given a long request: time the call; a refusal read only once the reply comes waits out the request
+- Error codes decided by a fact (said it started or not) that an earlier check pre-empts (a solve that finds its worker already exited and calls it a crash): the same binary that exits at launch gets two codes by timing; call it at once and 300 ms late, and compare
+- A code split on one fact while its advice is still keyed on another (started or not, against how it ended): a kill from outside before the first frame is "no retry helps" by its code and "try the request again" by its advice
+- A launcher that backgrounds a child (holding the socket) and exits before its first frame: the call waits out its whole timeout, reported as a hang, not as the exit it was
 
 ## Recompute and scheduling
 

@@ -614,8 +614,8 @@ fn fmt_of_a_document_its_fingerprints_would_take_past_the_limit_leaves_it_and_sa
 
 #[test]
 fn a_kernel_that_crashes_is_exit_2_not_a_problem_with_the_document() {
-    // BREAKS: a worker that exits as soon as it starts makes every feature fail with
-    // worker_crashed, and `check` calls that a problem with the document: exit 1 and
+    // BREAKS: a worker that exits as soon as it starts makes every feature fail (now with
+    // worker_unavailable: it ended before its first frame), and `check` calls that a problem with the document: exit 1 and
     // `{"ok": false}`, so an agent "fixes" a sound document; `fmt` prints the crash and
     // exits 0, after rewriting the file without the fingerprints it promised. The binary's
     // contract: 1 is "a document has problems", 2 is "a kernel that couldn't start".
@@ -623,7 +623,7 @@ fn a_kernel_that_crashes_is_exit_2_not_a_problem_with_the_document() {
     let file = scratch.file("part.silico", EXAMPLE);
     let dies = script(&scratch, "dies", "exit 3");
     let out = run_with(&scratch, &dies, &[os("check"), os("part.silico")]);
-    assert!(out.stderr.contains("worker_crashed"), "{}", out.stderr);
+    assert!(out.stderr.contains("worker_unavailable"), "{}", out.stderr);
     assert_eq!(out.code(), Some(2), "check: {}", out.stderr);
     let out = run_with(&scratch, &dies, &[os("fmt"), os("part.silico")]);
     assert_eq!(out.code(), Some(2), "fmt: {}", out.stderr);
@@ -669,6 +669,74 @@ fn a_missing_kernel_is_exit_2_saying_what_to_fix() {
         "{}",
         out.stderr
     );
+}
+
+/// One sketch, a line, and nothing built from it: what it asks of Silico is the sketch
+/// worker's solve, not the kernel's.
+const SKETCH: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "features": [
+    {"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 10, "y": 0, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+#[test]
+fn a_worker_that_cant_be_had_is_worker_unavailable_exit_2_and_the_file_left_as_it_is() {
+    // The M3 review's start-code decision: a worker named as a directory, a path with
+    // nothing at it, or a file that can't be run can't be had (worker_unavailable), for the
+    // kernel and the sketch worker alike. It's Silico's install, not the document: check,
+    // check --json, and fmt exit 2, saying so, and the file is left as it is.
+    let scratch = Scratch::new("unavailable");
+    let directory = scratch.0.join("a-directory");
+    std::fs::create_dir(&directory).unwrap();
+    let missing = scratch.0.join("missing");
+    // Written as any file is: readable, not executable.
+    let not_runnable = scratch.file("not-runnable", "#!/bin/sh\nexit 0\n");
+    for (variable, text) in [
+        ("SILICO_KERNEL_WORKER", EXAMPLE),
+        ("SILICO_SKETCH_WORKER", SKETCH),
+    ] {
+        for (what, path) in [
+            ("a directory", &directory),
+            ("missing", &missing),
+            ("not runnable", &not_runnable),
+        ] {
+            let file = scratch.file("part.silico", text);
+            for args in [&["check"][..], &["check", "--json"], &["fmt"]] {
+                let mut c = command(
+                    &scratch,
+                    &worker(),
+                    &args
+                        .iter()
+                        .map(|a| os(a))
+                        .chain([os("part.silico")])
+                        .collect::<Vec<_>>(),
+                );
+                c.env(variable, path);
+                let out = run::output(c);
+                let (stdout, stderr) = (
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr),
+                );
+                let case = format!("{variable} {what}, {args:?}");
+                assert_eq!(out.status.code(), Some(2), "{case}: {stderr}");
+                if args.contains(&"--json") {
+                    let line: serde_json::Value = serde_json::from_str(stdout.trim())
+                        .unwrap_or_else(|e| panic!("{case}: {e}: {stdout}"));
+                    assert_eq!(line["ok"], false, "{case}: {line}");
+                    assert_eq!(
+                        line["error"]["code"], "worker_unavailable",
+                        "{case}: {line}"
+                    );
+                } else {
+                    assert!(stderr.contains("worker_unavailable"), "{case}: {stderr}");
+                }
+                assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "{case}");
+            }
+        }
+    }
 }
 
 // --- What it says ---------------------------------------------------------------------

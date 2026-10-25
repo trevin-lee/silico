@@ -761,23 +761,10 @@ struct SolvedFirst {
 }
 
 /// A failure of the sketch solver, not the sketch: as the kernel's own failures, a fault
-/// a client reports as its own (`check` and `fmt` exit 2), not the document's. A missing
-/// or misnamed worker comes as `invalid_input` from finding it, which would blame the sketch
-/// (the council: `check` exited 1, and `fmt` wrote the file); it's kept as the cause.
+/// a client reports as its own (`check` and `fmt` exit 2), not the document's. It keeps its
+/// own code (a worker that can't be had is `worker_unavailable`, from finding or starting
+/// it), and names the feature it was solving.
 fn solver_failure(error: Error, feature: &FeatureId) -> SketchOutcome {
-    let error = if error.code().is_kernel_fault() {
-        error
-    } else {
-        let mut wrapped = Error::new(
-            ErrorCode::WorkerCrashed,
-            "the sketch worker couldn't be started",
-        )
-        .with_cause(error.message().to_owned());
-        if let Some(suggestion) = error.suggestion() {
-            wrapped = wrapped.with_suggestion(suggestion.to_owned());
-        }
-        wrapped
-    };
     SketchOutcome::SolverFailed(error.with_feature(feature.as_str()))
 }
 

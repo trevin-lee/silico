@@ -17,6 +17,8 @@ mod scripts;
 
 #[path = "adversarial_worker_logs.rs"]
 mod adversarial_worker_logs;
+#[path = "adversarial_worker_start.rs"]
+mod adversarial_worker_start;
 #[path = "idle.rs"]
 mod idle;
 #[path = "pool_backoff.rs"]

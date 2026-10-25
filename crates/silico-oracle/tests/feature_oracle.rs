@@ -474,10 +474,10 @@ fn every_expected_value_is_checked() {
 
 #[test]
 fn silicos_kernel_faults_are_lost_and_its_refusals_and_blocks_failed() {
-    // A worker that crashed or hung, or a fault of the kernel's own, never finished the
-    // case: lost, which never agrees with FreeCAD, even with its refusal. A refusal of the
-    // model (a value out of range, the kernel failing on it) is a failure, as FreeCAD's
-    // own refusals are; so is a feature not built for one that failed before it.
+    // A worker that crashed, hung, or couldn't be had, or a fault of the kernel's own, never
+    // finished the case: lost, which never agrees with FreeCAD, even with its refusal. A
+    // refusal of the model (a value out of range, the kernel failing on it) is a failure, as
+    // FreeCAD's own refusals are; so is a feature not built for one that failed before it.
     use silico_core::{Error, ErrorCode};
     use silico_oracle::features::Ours;
     for code in [
@@ -486,6 +486,7 @@ fn silicos_kernel_faults_are_lost_and_its_refusals_and_blocks_failed() {
         ErrorCode::ProtocolError,
         ErrorCode::ResourceExhausted,
         ErrorCode::Internal,
+        ErrorCode::WorkerUnavailable,
     ] {
         let outcome = Ours::Failed(Error::new(code, "faulted")).outcome();
         assert!(matches!(outcome, Outcome::Lost(_)), "{code:?}: {outcome:?}");

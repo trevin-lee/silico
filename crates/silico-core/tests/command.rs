@@ -427,9 +427,9 @@ fn formatting_says_which_solids_it_couldnt_measure_and_keeps_their_fingerprints(
 
 #[test]
 fn every_kernel_fault_is_the_commands_failure_not_the_documents() {
-    // A worker that crashed or hung, a reply that couldn't be read, a shortage, or a bug:
-    // none says anything about the document, so check and format fail with it, building
-    // or measuring alike.
+    // A worker that crashed, hung, or couldn't be had, a reply that couldn't be read, a
+    // shortage, or a bug: none says anything about the document, so check and format fail
+    // with it, building or measuring alike.
     let saved = formatted(EXAMPLE).text;
     for code in [
         ErrorCode::WorkerCrashed,
@@ -437,6 +437,7 @@ fn every_kernel_fault_is_the_commands_failure_not_the_documents() {
         ErrorCode::ProtocolError,
         ErrorCode::ResourceExhausted,
         ErrorCode::Internal,
+        ErrorCode::WorkerUnavailable,
     ] {
         let building = move |op: &Op| {
             matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. }))

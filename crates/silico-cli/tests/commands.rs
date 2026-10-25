@@ -647,13 +647,17 @@ fn a_sketch_edited_by_hand_is_drift_until_fmt_writes_its_solve_and_then_nothing_
 fn a_sketch_worker_that_cant_be_found_is_exit_2_and_nothing_is_written() {
     // Round 2's architecture and quality lenses: SILICO_SKETCH_WORKER naming no file blamed
     // the sketch (exit 1, and fmt wrote the file); it's the solver's failure, as the
-    // kernel's is: exit 2, and the file as it was.
+    // kernel's is: exit 2 (worker_unavailable: it can't be had), and the file as it was.
     let scratch = Scratch::new("no-sketch-worker");
     let file = scratch.file(RECTANGLE);
     let run = |args: &[&str]| silico_with(&scratch, args, &file, Path::new("/nowhere"));
     let out = run(&["check"]);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    assert!(stderr(&out).contains("worker_crashed"), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("worker_unavailable"),
+        "{}",
+        stderr(&out)
+    );
     let out = run(&["fmt"]);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), RECTANGLE);

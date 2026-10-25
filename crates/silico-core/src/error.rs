@@ -49,7 +49,9 @@ error_codes! {
     InvalidInput = "invalid_input",
     /// The geometry kernel refused or failed an operation.
     KernelFailed = "kernel_failed",
-    /// A worker process crashed while handling a request.
+    /// A worker process that had started (it had said so, as the build Silico started with)
+    /// crashed, hung up, or was stopped while handling a request. One that never got that
+    /// far is [`ErrorCode::WorkerUnavailable`].
     WorkerCrashed = "worker_crashed",
     /// A worker process didn't reply in time and was stopped.
     WorkerTimeout = "worker_timeout",
@@ -85,17 +87,24 @@ error_codes! {
     /// revision the session isn't at, or a cursor of another revision. Rolling back, or
     /// reading again, resolves it; it's neither the document's problem nor the kernel's.
     Conflict = "conflict",
+    /// No worker of this build could be had for the request: its executable missing,
+    /// unreadable, not runnable, or another build than Silico started with, or its process
+    /// ended before its first frame. Silico's install or environment, never the request's or
+    /// the document's: no edit helps, and no retry until it's fixed or Silico restarted,
+    /// unless the worker was stopped from outside as it started, as its suggestion then says.
+    WorkerUnavailable = "worker_unavailable",
 }
 
 impl ErrorCode {
     /// Whether the code is the kernel's own trouble, which says nothing about what was
-    /// asked of it: a worker that crashed or hung, a reply that couldn't be read, a
-    /// shortage, or a bug in Silico. A command reports one as its own failure (it couldn't
+    /// asked of it: a worker that crashed, hung, or couldn't be had, a reply that couldn't
+    /// be read, a shortage, or a bug in Silico. A command reports one as its own failure (it couldn't
     /// run), not as a problem of the document, and the oracle as a case it couldn't
     /// finish. Every code answers here, so a new code has to say.
     pub fn is_kernel_fault(self) -> bool {
         match self {
             ErrorCode::WorkerCrashed
+            | ErrorCode::WorkerUnavailable
             | ErrorCode::WorkerTimeout
             | ErrorCode::ProtocolError
             | ErrorCode::ResourceExhausted
