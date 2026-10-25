@@ -20,6 +20,8 @@ mod sweeps;
 
 #[path = "adversarial_axis_regions.rs"]
 mod adversarial_axis_regions;
+#[path = "adversarial_distance_request.rs"]
+mod adversarial_distance_request;
 #[path = "adversarial_export.rs"]
 mod adversarial_export;
 #[path = "adversarial_export_unraised.rs"]
