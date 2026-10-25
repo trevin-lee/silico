@@ -68,6 +68,8 @@ mod session_edits;
 mod session_elements;
 #[path = "session_rebuild.rs"]
 mod session_rebuild;
+#[path = "session_reload.rs"]
+mod session_reload;
 #[path = "session_tracing.rs"]
 mod session_tracing;
 #[path = "session_transactions.rs"]

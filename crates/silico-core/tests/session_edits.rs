@@ -311,29 +311,45 @@ fn ten_edits_in_a_transaction_rebuild_nothing_and_the_first_check_rebuilds_once(
 #[test]
 fn a_refused_commit_of_an_edit_outside_a_transaction_leaves_the_session_as_it_was() {
     let f = opened(BLOCK);
+    // The file changed while the edit's commit rebuilds (a change before the command is
+    // reloaded first, docs/design/m4.1-command-api.md decision 2): found by its save.
+    let hold = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+    let running = f.sessions.set_field(
+        &f.id,
+        Revision::OPENED,
+        id("k7f2qx3m"),
+        "length".to_owned(),
+        value("41"),
+    );
+    assert!(f.kernel.wait_running(1, crate::sessions::HANG));
     std::fs::write(&f.path, "edited elsewhere").unwrap();
-    let response = f.set("k7f2qx3m", "length", "41");
+    hold.release();
+    let response = answer(running);
     let session = response.session.as_ref().unwrap();
     assert_eq!(
-        (session.revision, session.transaction),
-        (Revision::OPENED, false)
+        (session.revision, session.transaction, session.reloaded),
+        (Revision::OPENED, false, false)
     );
-    // Found before the edit's rebuild: nothing was built, and no model is read.
+    // No model is read: the candidate's isn't the session's.
     assert_eq!(response.model, None);
-    assert!(f.kernel.calls().is_empty(), "{:?}", f.kernel.calls());
     let error = the_error(&response);
     assert_eq!(
         (error.code(), error.parameter()),
         (ErrorCode::Conflict, Some("path"))
     );
     assert_eq!(f.file(), "edited elsewhere");
-    assert_eq!(f.text(), BLOCK);
-    assert_eq!(f.revision(), Revision::OPENED);
-    // And nothing of the edit is published: the session's published model, once it has
-    // one, is revision 1's.
-    let published = answer(f.sessions.check(&f.id));
-    assert_eq!(published.model.unwrap().revision, Revision::OPENED);
-    assert!(published.result.unwrap().is_empty());
+    assert_eq!(
+        f.sessions.status(&f.id).session.unwrap().revision,
+        Revision::OPENED
+    );
+    // And nothing of the edit is published: the session's published model is none yet
+    // (the candidate's isn't), and the next command reloads the file.
+    assert!(f.sessions.published(&f.id).result.is_err());
+    let text = answer(f.sessions.text(&f.id, None));
+    assert!(text.session.unwrap().reloaded);
+    assert_eq!(text.result.unwrap(), "edited elsewhere");
 }
 
 #[test]
