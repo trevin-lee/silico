@@ -10,7 +10,7 @@ use super::session::faulted;
 use super::{ModelChoice, Problems, Revision, Running, SessionId, Sessions};
 use crate::document::{Angle, FeatureId, Length, Measure};
 pub use crate::elements::{Alias, AxisToken, ElementType, Entry, EntryAxis};
-use crate::kernel::{Clients, ElementKind};
+use crate::kernel::{Clients, ElementKind, ShapeSummary};
 use crate::naming::{Maker, Name};
 use crate::recompute::{Built, FeatureOutcome, Model};
 use crate::{Error, ErrorCode};
@@ -81,7 +81,11 @@ fn solid<'m>(model: &'m Model, id: &FeatureId, asked: bool) -> Result<&'m [Entry
         // summary.
         None => Err(named(
             asked,
-            match built.why_undescribed().or(built.measure_refused()) {
+            match built
+                .why_undescribed()
+                .or(built.measure_refused())
+                .or(model.unmeasured(id))
+            {
                 Some(refused) => refused.clone(),
                 None => Error::new(
                     ErrorCode::KernelFailed,
@@ -148,6 +152,31 @@ pub(crate) fn built<'m>(
         .into()),
         Some(FeatureOutcome::Built { built, .. }) => Ok(built),
     }
+}
+
+/// The feature `id`'s built solid's summary, or why it has none, as `check` says it: the
+/// kernel's refusal of its values, or a worker's failure to measure it; naming the
+/// request's `feature` if `asked`, as [`built`] does. Every read of a solid's measures
+/// (`mass_properties`) refuses one alike.
+pub(crate) fn summarized<'m>(
+    model: &'m Model,
+    id: &FeatureId,
+    asked: bool,
+) -> Result<&'m ShapeSummary, Problems> {
+    let built = built(model, id, asked)?;
+    if let Some(summary) = built.summary() {
+        return Ok(summary);
+    }
+    let why = match built.measure_refused().or(model.unmeasured(id)) {
+        Some(why) => why.clone(),
+        // A recompute measures every solid it builds, or keeps why it couldn't.
+        None => Error::new(
+            ErrorCode::Internal,
+            format!("{id}'s solid built, but it's neither measured nor said why not"),
+        )
+        .with_suggestion(crate::worker::SILICO_BUG),
+    };
+    Err(named(asked, why.with_feature(id.as_str())).into())
 }
 
 /// The entries a call reads: the feature `feature`'s solid's, or, for none, each body's

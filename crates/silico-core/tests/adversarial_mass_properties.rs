@@ -3,7 +3,7 @@
 //! that are tiny, inside out, or empty as a worker says them, centres past what a length
 //! holds, results of extreme values held to the committed snapshot, and reads of a session
 //! closed, unknown, flooded, and rebuilt from its cache. Expected values come from the
-//! design (docs/design/m4.1-command-api.md, section 7: "precise to a relative 1e-9"), the
+//! design (docs/design/m4.1-command-api.md, section 7: written to the millionth), the
 //! snapshot's own descriptions, by-hand volumes (l × w × h), the protocol's `summary_fault`
 //! ("a summary no shape has"), and `check`'s word for the same summary.
 
@@ -492,6 +492,31 @@ fn a_worker_summary_whose_box_is_past_a_length_is_refused_as_check_refuses_it() 
 }
 
 #[test]
+fn a_summary_that_isnt_finite_is_refused_as_check_refuses_it_never_dropped() {
+    // Found by the tests review: a worker's NaN volume is refused as the reply's had
+    // (`protocol_error`, "start a new kernel worker"), and the solid kept unmeasured; it was
+    // answered `kernel_failed`, "couldn't be measured", the geometry blamed, where `check`
+    // says the worker's fault; and no test would have seen the body dropped instead.
+    let model = forged(box_summary(|s| s.volume = f64::NAN));
+    let check: Vec<ErrorCode> = model.drift().iter().map(|e| e.code()).collect();
+    assert_eq!(check, [ErrorCode::ProtocolError]);
+    let refused = mass_properties(&model, None).unwrap_err();
+    assert_eq!(refused.total(), 1);
+    let error = &refused.errors()[0];
+    assert_eq!(
+        (error.code(), error.feature(), error.suggestion()),
+        (
+            ErrorCode::ProtocolError,
+            Some("bbbbbbbb"),
+            Some("start a new kernel worker")
+        ),
+        "{}",
+        error.message()
+    );
+    assert_eq!(error.cause(), Some("its volume has NaN"));
+}
+
+#[test]
 fn a_centre_of_exactly_half_a_nanometre_rounds_one_way_every_time() {
     // 5e-7 mm is a half nanometre (not exact in binary); whichever way it rounds, it rounds
     // so on every read, and the result holds to the snapshot.
@@ -517,16 +542,18 @@ fn a_centre_of_exactly_half_a_nanometre_rounds_one_way_every_time() {
 fn a_session_never_opened_or_closed_is_refused_and_the_next_read_still_works() {
     let f = fixture();
     let never = SessionId::parse("s999999").unwrap();
-    let refused = answer(
-        f.sessions
-            .mass_properties(&never, ModelChoice::Current, None),
-    );
-    assert!(refused.result.is_err());
-    let refused = answer(
-        f.sessions
-            .mass_properties(&never, ModelChoice::Published, None),
-    );
-    assert!(refused.result.is_err());
+    // Each refused naming the session (the tests review: `is_err` alone took any refusal).
+    for choice in [ModelChoice::Current, ModelChoice::Published] {
+        let refused = answer(f.sessions.mass_properties(&never, choice, None));
+        let problems = refused.result.unwrap_err();
+        let error = &problems.errors()[0];
+        assert_eq!(
+            (error.code(), error.parameter()),
+            (ErrorCode::InvalidInput, Some("session")),
+            "{:?}",
+            said(&problems)
+        );
+    }
 
     let s = f.open("two.silico", TWO_BODIES);
     // A sketch, a feature it hasn't, then a good read: each answers, the last in full.
@@ -547,6 +574,13 @@ fn a_session_never_opened_or_closed_is_refused_and_the_next_read_still_works() {
         let closed = answer(f.sessions.mass_properties(&s, choice, None));
         let problems = closed.result.unwrap_err();
         assert_eq!(problems.errors().len(), 1, "{:?}", said(&problems));
+        let error = &problems.errors()[0];
+        assert_eq!(
+            (error.code(), error.parameter()),
+            (ErrorCode::InvalidInput, Some("session")),
+            "{:?}",
+            said(&problems)
+        );
     }
 }
 

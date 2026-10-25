@@ -534,6 +534,16 @@ impl Model {
         })
     }
 
+    /// Why the feature `id`'s built solid couldn't be measured, if a worker failed to (a
+    /// crash, a timeout, too little of something: not the kernel refusing its values, which
+    /// its [`Built::measure_refused`] holds), as [`drift`](Self::drift) says it.
+    pub fn unmeasured(&self, id: &FeatureId) -> Option<&Error> {
+        self.unmeasured
+            .iter()
+            .find(|(unmeasured, _)| unmeasured == id)
+            .map(|(_, error)| error)
+    }
+
     /// [`drift`](Self::drift), each error with the ID of the feature it's of, computed once
     /// for a caller that both picks features by their drift and says it.
     pub fn drifted(&self) -> Vec<(FeatureId, Error)> {

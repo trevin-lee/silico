@@ -1,11 +1,13 @@
 //! M4.5's measures (docs/design/m4.1-command-api.md, section 7; docs/ports/measure.md):
 //! `mass_properties`, a solid's volume, area, and centre of mass as M1's `measure` gives
-//! them, integrated to a relative 1e-9 and written as its feature's fingerprint holds them
-//! (to a millionth of a mm³ and mm², the centre to a nanometre), read from its rebuild's
-//! summary, so a measure never disagrees with the document and asks the kernel
-//! nothing.
+//! them (OCCT's integration, asked for a relative 1e-9: docs/ports/measure.md lists the
+//! shapes it's known to miss that on), read from its rebuild's summary, so it asks the
+//! kernel nothing: volume and area as the feature's rebuilt fingerprint holds them, as
+//! `format` writes it, to a millionth of a mm³ and mm² (a stored fingerprint that differs
+//! is `check`'s drift); the centre, which no fingerprint holds, rounded to the nanometre,
+//! as a fingerprint's box is.
 
-use super::elements::built;
+use super::elements::summarized;
 use super::{ModelChoice, Problems, Running, SessionId, Sessions};
 use crate::document::{FeatureId, Fingerprint, Length, Measure};
 use crate::kernel::Clients;
@@ -69,18 +71,7 @@ pub fn mass_properties(model: &Model, feature: Option<&FeatureId>) -> Result<Bod
 
 /// The feature `id`'s solid's mass properties, or why it has none.
 fn properties(model: &Model, id: &FeatureId, asked: bool) -> Result<MassProperties, Problems> {
-    let built = built(model, id, asked)?;
-    let Some(summary) = built.summary() else {
-        let error = match built.measure_refused() {
-            Some(refused) => refused.clone(),
-            None => Error::new(
-                ErrorCode::KernelFailed,
-                format!("{id}'s solid couldn't be measured"),
-            )
-            .with_suggestion("check the document again: its rebuild measures it again"),
-        };
-        return Err(error.with_feature(id.as_str()).into());
-    };
+    let summary = summarized(model, id, asked)?;
     // The fingerprint's own rounding, so the two never disagree.
     let fingerprint = Fingerprint::of(summary);
     let center = summary.center.map(Length::rounded);

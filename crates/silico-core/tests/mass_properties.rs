@@ -18,12 +18,7 @@ use silico_core::recompute::{FeatureOutcome, Model, Recompute};
 
 /// The fingerprint the feature `feature`'s rebuild gives, as `fmt` writes it.
 fn fingerprint(model: &Model, feature: &str) -> Fingerprint {
-    match model.outcome(&id(feature)) {
-        Some(FeatureOutcome::Built { built, .. }) => {
-            Fingerprint::of(built.summary().unwrap()).unwrap()
-        }
-        other => panic!("{feature}: {other:?}"),
-    }
+    model.fingerprint(&id(feature)).unwrap()
 }
 
 #[test]
@@ -113,6 +108,75 @@ fn a_solid_whose_summary_the_kernel_refused_is_refused_with_its_refusal_and_each
         refused.errors()
     );
     assert_eq!(refused.total(), 2);
+}
+
+#[test]
+fn a_solid_a_worker_failed_to_measure_is_refused_with_that_failure_as_check_says_it() {
+    // Found by the robustness and architecture reviews: a worker that crashed, timed out,
+    // or ran short measuring a solid (kept unmeasured, not as a refusal) was refused as
+    // `kernel_failed`, "couldn't be measured", with no cause: the kernel refusing the
+    // geometry, to an agent, where `check` says the worker's own failure.
+    for code in [
+        ErrorCode::WorkerCrashed,
+        ErrorCode::WorkerTimeout,
+        ErrorCode::ResourceExhausted,
+    ] {
+        let engine = Recompute::new(FakeKernel::new(2).unwrap());
+        engine.kernel().refuse(move |op| {
+            (op.name() == "Summarize").then(|| {
+                silico_core::Error::new(code, "the worker failed")
+                    .with_suggestion("check again: a new worker is started")
+            })
+        });
+        let model = published(&engine, checked(TWO_BODIES));
+        let check: Vec<ErrorCode> = model.drift().iter().map(|e| e.code()).collect();
+        assert_eq!(check, [code, code]);
+        let refused = mass_properties(&model, None).unwrap_err();
+        let said: Vec<(ErrorCode, Option<&str>, Option<&str>)> = refused
+            .errors()
+            .iter()
+            .map(|e| (e.code(), e.feature(), e.suggestion()))
+            .collect();
+        let advice = Some("check again: a new worker is started");
+        assert_eq!(
+            said,
+            [
+                (code, Some("aaaaaaaa"), advice),
+                (code, Some("bbbbbbbb"), advice)
+            ],
+            "{code:?}"
+        );
+    }
+}
+
+#[test]
+fn a_summary_refused_for_a_feature_the_request_named_names_its_feature_as_elements_does() {
+    // Found by the quality and robustness reviews: the refusal named the feature but not
+    // the request's `feature`, where `elements` names both for the same solid.
+    let engine = Recompute::new(FakeKernel::new(2).unwrap());
+    engine.kernel().refuse(|op| {
+        (op.name() == "Summarize").then(|| {
+            silico_core::Error::new(ErrorCode::InvalidResult, "the shape can't be measured")
+        })
+    });
+    let model = published(&engine, checked(TWO_BODIES));
+    let refused = mass_properties(&model, Some(&id("bbbbbbbb"))).unwrap_err();
+    let said: Vec<(ErrorCode, Option<&str>, Option<&str>)> = refused
+        .errors()
+        .iter()
+        .map(|e| (e.code(), e.feature(), e.parameter()))
+        .collect();
+    assert_eq!(
+        said,
+        [(ErrorCode::InvalidResult, Some("bbbbbbbb"), Some("feature"))]
+    );
+    let listed = silico_core::command::elements::entries(&model, &id("bbbbbbbb")).unwrap_err();
+    let listed: Vec<(ErrorCode, Option<&str>, Option<&str>)> = listed
+        .errors()
+        .iter()
+        .map(|e| (e.code(), e.feature(), e.parameter()))
+        .collect();
+    assert_eq!(listed, said);
 }
 
 #[test]
