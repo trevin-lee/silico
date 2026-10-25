@@ -18,8 +18,8 @@ use std::path::PathBuf;
 use silico_core::ErrorCode;
 use silico_core::command::Revision;
 use silico_core::command::elements::{
-    Cursor, ElementType, Facing, MeasureName, Order, Quantity, Queried, Query, Range, Tied, list,
-    query,
+    Alias, AxisToken, Cursor, ElementType, EntryAxis, Facing, MeasureName, Order, Quantity,
+    Queried, Query, Range, Tied, entries, list, query,
 };
 use silico_core::command::schema::schema;
 use silico_core::command::wire::elements::{ElementsRequest, QueryRequest};
@@ -36,14 +36,20 @@ fn contract(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// The committed file `name`, or, with `SILICO_CONTRACT_RECORD` set, `text` written to it
-/// first (the maintainer's to approve: the directory is protected).
-fn committed(name: &str, text: &str) -> String {
+/// The committed file `name`, read and never written.
+fn committed(name: &str) -> String {
     let path = contract(name);
-    if std::env::var_os("SILICO_CONTRACT_RECORD").is_some() {
-        std::fs::write(&path, text).unwrap();
-    }
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// The committed file `name`, or, with `SILICO_CONTRACT_RECORD` set, `text`, what the code
+/// gives, written to it first (the maintainer's to approve: the directory is protected).
+/// Only a snapshot's own test records it; every other reads it ([`committed`]).
+fn recorded(name: &str, text: &str) -> String {
+    if std::env::var_os("SILICO_CONTRACT_RECORD").is_some() {
+        std::fs::write(contract(name), text).unwrap();
+    }
+    committed(name)
 }
 
 /// The example `name` (`elements/request`), as committed.
@@ -77,7 +83,7 @@ fn parsed(text: &str) -> Node {
 /// The snapshot `of`'s `part` (`request` or `result`), or its definition `def` in it.
 fn schema_of(of: &str, part: &str, def: Option<&str>) -> serde_json::Value {
     let schema: serde_json::Value =
-        serde_json::from_str(&committed(&format!("commands/{of}.json"), "")).unwrap();
+        serde_json::from_str(&committed(&format!("commands/{of}.json"))).unwrap();
     let root = &schema[part];
     match def {
         None => root.clone(),
@@ -91,7 +97,7 @@ fn schema_of(of: &str, part: &str, def: Option<&str>) -> serde_json::Value {
 /// The error contract's shape, the envelope's `Error`.
 fn error_schema() -> serde_json::Value {
     let envelope: serde_json::Value =
-        serde_json::from_str(&committed("commands/envelope.json", "")).unwrap();
+        serde_json::from_str(&committed("commands/envelope.json")).unwrap();
     serde_json::json!({"$defs": envelope["$defs"], "$ref": "#/$defs/Error"})
 }
 
@@ -164,7 +170,7 @@ fn each_commands_schemas_are_the_committed_snapshot() {
         let text = snapshot(of).unwrap().unwrap();
         assert_eq!(
             text,
-            committed(&format!("commands/{of}.json"), &text),
+            recorded(&format!("commands/{of}.json"), &text),
             "{of}"
         );
         let value = snapshot_value(of).unwrap();
@@ -559,6 +565,28 @@ fn a_tie_too_large_to_return_is_written_as_the_design_gives_it() {
         r#"{"elements": [], "matched": 0, "tied": null, "more": 1}"#,
         "an unknown field",
     );
+    // More entries than a call returns.
+    let entry = example("entry/plane-face");
+    let entries = vec![entry.trim_end(); 1001].join(", ");
+    let too_many = format!(r#"{{"elements": [{entries}], "matched": 1001, "tied": null}}"#);
+    fails(&result, &too_many, "1001 entries");
+    let at_most = too_many.replacen(&format!("{}, ", entry.trim_end()), "", 1);
+    holds(&result, &at_most.replace("1001", "1000"), "1000 entries");
+    // A tie returned whole, past the limit.
+    let whole = Queried {
+        entries: Vec::new(),
+        matched: 12,
+        tied: Some(Tied {
+            count: 4,
+            included: true,
+        }),
+    };
+    let text = written(&whole);
+    assert_eq!(
+        text,
+        "{\n  \"elements\": [],\n  \"matched\": 12,\n  \"tied\": {\"count\": 4, \"included\": true}\n}\n"
+    );
+    holds(&result, &text, "a tie returned whole");
 }
 
 #[test]
@@ -603,11 +631,11 @@ fn the_entries_examples_hold_to_the_entrys_schema_and_a_wrong_one_doesnt() {
 #[test]
 fn schema_answers_the_document_and_each_command_as_committed() {
     let document: serde_json::Value =
-        serde_json::from_str(&committed("document-schema.json", "")).unwrap();
+        serde_json::from_str(&committed("document-schema.json")).unwrap();
     assert_eq!(schema("document").unwrap().schema, document);
     for of in COMMANDS {
         let committed: serde_json::Value =
-            serde_json::from_str(&committed(&format!("commands/{of}.json"), "")).unwrap();
+            serde_json::from_str(&committed(&format!("commands/{of}.json"))).unwrap();
         let described = schema(of).unwrap();
         assert_eq!(described.schema, committed, "{of}");
         // Written as `{"schema": S}`, S as committed.
@@ -631,11 +659,11 @@ fn schema_answers_the_document_and_each_command_as_committed() {
     }
     assert_eq!(
         schema("documents").unwrap_err().errors()[0].message(),
-        "of must be document or a command's name, got documents"
+        "of must be document or a command with a schema, got documents"
     );
     assert_eq!(
         schema("query ").unwrap_err().errors()[0].message(),
-        r#"of must be document or a command's name, got "query ""#
+        r#"of must be document or a command with a schema, got "query ""#
     );
 }
 
@@ -880,4 +908,85 @@ fn an_elements_requests_cursor_is_read_strictly() {
             "limit"
         ]
     );
+}
+
+#[test]
+fn every_field_of_an_entry_is_written_from_its_own_value() {
+    // An entry with every field set, each to a value of its own (wider than any one
+    // element's, as the writer takes each field as it is), written as the design's layout
+    // gives it: one member a line, since it holds objects.
+    let model = model_of(SKETCH_AND_BOX);
+    let mut entry = entries(&model, &id("k7f2qx3m"))
+        .unwrap()
+        .iter()
+        .find(|e| e.kind == ElementKind::Edge)
+        .unwrap()
+        .clone();
+    let name = entry.name.to_string();
+    let mm = |nm: i64| Length::from_nm(nm * 1_000_000);
+    entry.aliases = vec![Alias {
+        name: entry.name.clone(),
+        stable: true,
+    }];
+    entry.stable = false;
+    entry.r#type = ElementType::Ellipse;
+    entry.area = Some(Measure::from_millionths(1_500_000));
+    entry.length = Some(Length::from_nm(2_250_000));
+    entry.position = Some([mm(1), mm(2), mm(3)]);
+    entry.normal = Some([0.0, 0.6, -0.8]);
+    entry.centroid = Some([mm(4), mm(5), mm(6)]);
+    entry.start = Some([mm(7), mm(8), mm(9)]);
+    entry.end = Some([mm(10), mm(11), mm(12)]);
+    entry.midpoint = Some([mm(13), mm(14), mm(15)]);
+    entry.straight = Some(false);
+    entry.axis = Some(EntryAxis {
+        point: [mm(16), mm(17), mm(18)],
+        direction: [0.0, -1.0, 0.0],
+    });
+    entry.radius = Some(mm(19));
+    entry.diameter = Some(mm(38));
+    entry.major_radius = Some(mm(20));
+    entry.minor_radius = Some(mm(21));
+    entry.half_angle = Some(Angle::from_ndeg(-22_500_000_000));
+    entry.apex = Some([mm(23), mm(24), mm(25)]);
+    entry.default_x = Some(AxisToken::MinusZ);
+    let want = format!(
+        r#"{{
+  "name": "{name}",
+  "aliases": [
+    {{"name": "{name}", "stable": true}}
+  ],
+  "stable": false,
+  "feature": "k7f2qx3m",
+  "kind": "edge",
+  "type": "ellipse",
+  "area": 1.5,
+  "length": 2.25,
+  "position": [1, 2, 3],
+  "normal": [0, 0.6, -0.8],
+  "centroid": [4, 5, 6],
+  "start": [7, 8, 9],
+  "end": [10, 11, 12],
+  "midpoint": [13, 14, 15],
+  "straight": false,
+  "axis": {{"point": [16, 17, 18], "direction": [0, -1, 0]}},
+  "radius": 19,
+  "diameter": 38,
+  "major_radius": 20,
+  "minor_radius": 21,
+  "half_angle": -22.5,
+  "apex": [23, 24, 25],
+  "default_x": "-z"
+}}
+"#
+    );
+    assert_eq!(written(&entry), want);
+    holds(
+        &schema_of("elements", "result", Some("Entry")),
+        &want,
+        "every field",
+    );
+    // A vertex's kind is its own word.
+    entry.kind = ElementKind::Vertex;
+    assert!(written(&entry).contains(r#""kind": "vertex","#));
 }
