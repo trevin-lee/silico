@@ -303,7 +303,10 @@ fn an_added_features_commit_is_written_outside_a_transaction() {
         commit: Some(committed(&["b0000001"], &[])),
     };
     let value: serde_json::Value = serde_json::from_str(&written(&added)).unwrap();
-    assert_eq!(value["commit"]["refingerprinted"], serde_json::json!(["b0000001"]));
+    assert_eq!(
+        value["commit"]["refingerprinted"],
+        serde_json::json!(["b0000001"])
+    );
     assert_eq!(value["commit"]["written"], true);
     holds("add_feature", &written(&added));
 }

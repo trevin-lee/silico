@@ -1604,8 +1604,7 @@ fn a_sketch_member_set_outside_a_transaction_comes_back_where_its_solve_put_it()
         ("10".into(), "12.25".into())
     );
     assert!(
-        f.file()
-            .contains(r#""id": "pb000000", "x": 12.25, "y": 0"#),
+        f.file().contains(r#""id": "pb000000", "x": 12.25, "y": 0"#),
         "{}",
         f.file()
     );
