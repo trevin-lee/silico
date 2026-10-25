@@ -321,7 +321,7 @@ fn cursor_name(
                     ErrorCode::InvalidInput,
                     format!(
                         "the cursor's name, {}, isn't an element's name: {error}",
-                        super::quoted(&cursor.name)
+                        crate::document::json::shown(&cursor.name)
                     ),
                 )
                 .with_parameter("after")

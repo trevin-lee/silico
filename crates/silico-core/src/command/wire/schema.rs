@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 
 use super::{Json, RequestFields, ToWire, wire_shape};
 use crate::command::Problems;
-use crate::command::schema::Described;
+use crate::command::schema::SchemaAnswer;
 use crate::document::json::Node;
 
 /// A `schema` request: what to describe.
@@ -32,7 +32,7 @@ impl ToWire for SchemaRequest {
     }
 }
 
-impl ToWire for Described {
+impl ToWire for SchemaAnswer {
     fn to_wire(&self) -> Json<'_> {
         Json::object([("schema", Json::value(&self.schema))])
     }
