@@ -696,3 +696,116 @@ fn a_refusal_names_the_first_hundred_faces_and_counts_them_all() {
     assert_eq!(error.elements(), first, "{error}");
     assert_eq!(error.elements_total(), 150, "{error}");
 }
+
+#[test]
+fn a_faces_node_at_minus_0_is_one_with_its_node_at_0() {
+    // The mutants run on #123 found it untested: a face's nodes at one place are joined by
+    // their coordinates' bits, with -0 taken as 0. Face4's P1 is given a second node at
+    // (1, -0, -0), and Face4's triangle uses it while its edges use the first: joined, the
+    // mesh is the tetrahedron; apart, the triangle's sides meet no other face's.
+    let mut m = tetra();
+    let face4 = m.face_ranges()[3].clone();
+    let p1 = face4
+        .clone()
+        .find(|&n| m.nodes[n as usize] == P[1])
+        .unwrap();
+    m.nodes.push([1.0, -0.0, -0.0]);
+    m.face_nodes[3] += 1;
+    let twin = m.nodes.len() as u32 - 1;
+    let last = m.triangles.len() - 1;
+    for n in &mut m.triangles[last] {
+        if *n == p1 {
+            *n = twin;
+        }
+    }
+    m.validate().unwrap();
+    let mesh = printable(&m, None).unwrap();
+    assert_eq!(mesh.vertices().len(), 4);
+    assert_eq!(mesh.triangles().len(), 4);
+    assert_eq!(mesh.volume(), 1.0 / 6.0);
+}
+
+#[test]
+fn a_poles_nodes_are_one_vertex_though_their_coordinates_differ() {
+    // The mutants run on #123 found it untested: a degenerate edge's nodes are joined at its
+    // vertex (an edge's ends are also joined through the edges they pair on, so only a
+    // pole's inner nodes rest on it). Face4's apex, P3, is split into three nodes a
+    // nanometre apart, as OCCT leaves a pole's, with a degenerate edge through them, and
+    // Face4 fanned from P1 over them: P1 P2 P3, P1 P3 P3', P1 P3' P3''. Joined, the fan's
+    // last two triangles have no area and are left out, and the mesh is the tetrahedron;
+    // with P3' apart, its two triangles don't close.
+    let mut m = tetra();
+    let face4 = m.face_ranges()[3].clone();
+    let at =
+        |m: &ExportMesh, p: [f64; 3]| face4.clone().find(|&n| m.nodes[n as usize] == p).unwrap();
+    let (p1, p3) = (at(&m, P[1]), at(&m, P[3]));
+    let middle = m.nodes.len() as u32;
+    let end = middle + 1;
+    m.nodes.extend([[1e-9, 0.0, 1.0], [2e-9, 0.0, 1.0]]);
+    m.face_nodes[3] += 2;
+    m.triangles.extend([[p1, p3, middle], [p1, middle, end]]);
+    m.face_triangles[3] += 2;
+    // Face4's edge from P1 to P3 now ends at the fan's last node.
+    let k = (0..m.edge_faces.len())
+        .find(|&k| m.edge_faces[k] == 3 && m.edge_vertices[k] == [2, 4])
+        .unwrap();
+    let start: u32 = m.edge_node_counts[..k].iter().sum();
+    assert_eq!(m.edge_nodes[start as usize + 1], p3);
+    m.edge_nodes[start as usize + 1] = end;
+    m.edge_faces.push(3);
+    m.edge_numbers.push(7);
+    m.edge_degenerate.push(true);
+    m.edge_vertices.push([4, 4]);
+    m.edge_deflections.push(0.0);
+    m.edge_node_counts.push(3);
+    m.edge_nodes.extend([p3, middle, end]);
+    m.validate().unwrap();
+    let mesh = printable(&m, None).unwrap();
+    assert_eq!(mesh.vertices().len(), 4);
+    assert_eq!(mesh.triangles().len(), 4);
+    assert!(mesh.vertices().contains(&[0.0, 0.0, 1.0]));
+}
+
+#[test]
+fn a_joined_node_the_allowed_distance_away_is_taken_and_one_further_refused() {
+    // The mutants run on #123 found the bound untested at its edge: within the tolerance,
+    // less what rounding to 32 bits can move a vertex as far out as the part reaches (1 mm
+    // here), is within. Face2's P0 is moved along x by exactly that (a square's square root
+    // is the length exactly), then by the next length up.
+    let allowed = silico_protocol::export_deflection(0.1, 1.0).unwrap();
+    for (offset, taken) in [(allowed, true), (allowed.next_up(), false)] {
+        let mut m = tetra();
+        let p0 = m.face_ranges()[1]
+            .clone()
+            .find(|&n| m.nodes[n as usize] == P[0])
+            .unwrap();
+        m.nodes[p0 as usize] = [offset, 0.0, 0.0];
+        if taken {
+            printable(&m, None).unwrap();
+        } else {
+            refused(
+                &m,
+                ErrorCode::InvalidResult,
+                "further than the tolerance",
+                &["Face1", "Face2"],
+            );
+        }
+    }
+}
+
+#[test]
+fn a_solid_with_no_shell_is_refused() {
+    // The mutants run on #123 found it untested: a solid the worker counts with no shell
+    // (as an empty TopoDS_Solid is), beside one of two shells so the count of solids passes
+    // validate, encloses nothing and is refused, with no face to name.
+    let apart: Vec<[f64; 3]> = P.iter().map(|p| p.map(|c| c + 5.0)).collect();
+    let mut m = with_shell(&tetra(), &report(&apart, &TETRA), 0, true);
+    m.solids = 2;
+    m.validate().unwrap();
+    refused(
+        &m,
+        ErrorCode::InvalidResult,
+        "encloses no volume in all",
+        &[],
+    );
+}

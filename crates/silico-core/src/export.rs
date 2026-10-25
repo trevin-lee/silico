@@ -743,25 +743,16 @@ fn attribute(text: &str) -> Option<String> {
     Some(out)
 }
 
-/// The zip epoch, 1980-01-01, as a DOS date: day 1, month 1, year 0.
-const DOS_DATE: u16 = (1 << 5) | 1;
+/// The zip epoch, 1980-01-01, as a DOS date: day 1 in bits 0-4, month 1 in bits 5-8, and
+/// year 0 (1980) above them.
+const DOS_DATE: u16 = 0x0021;
 
 /// `entries` as a zip archive, each stored (not compressed), with no extra fields, no data
 /// descriptors, no comment, and the zip epoch as every time. Refused if it would pass a
 /// plain zip's 4 GiB.
 fn zip(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, Error> {
-    let total: u64 = entries
-        .iter()
-        .map(|(name, data)| 76 + 2 * name.len() as u64 + data.len() as u64)
-        .sum::<u64>()
-        + 22;
-    if total > MAX_ARCHIVE {
-        return Err(Error::new(
-            ErrorCode::ResourceExhausted,
-            format!("the 3MF archive would be {total} bytes, past a zip's 4 GiB"),
-        )
-        .with_suggestion("export with a coarser tolerance, or fewer parts at once"));
-    }
+    let total = archive_size(entries);
+    within_archive_limit(total)?;
     let mut out = Vec::with_capacity(total as usize);
     let mut central = Vec::new();
     for (name, data) in entries {
@@ -819,6 +810,29 @@ fn zip(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
+/// How long [`zip`] makes the archive of `entries`: per entry, a 30-byte local header and a
+/// 46-byte central directory entry, each with the name, and the data; and the 22-byte end
+/// of the central directory.
+fn archive_size(entries: &[(&str, &[u8])]) -> u64 {
+    entries
+        .iter()
+        .map(|(name, data)| 76 + 2 * name.len() as u64 + data.len() as u64)
+        .sum::<u64>()
+        + 22
+}
+
+/// Refuses an archive of `size` bytes past a plain zip's limit.
+fn within_archive_limit(size: u64) -> Result<(), Error> {
+    if size > MAX_ARCHIVE {
+        return Err(Error::new(
+            ErrorCode::ResourceExhausted,
+            format!("the 3MF archive would be {size} bytes, past a zip's 4 GiB"),
+        )
+        .with_suggestion("export with a coarser tolerance, or fewer parts at once"));
+    }
+    Ok(())
+}
+
 fn put16(out: &mut Vec<u8>, value: u16) {
     out.extend_from_slice(&value.to_le_bytes());
 }
@@ -842,6 +856,33 @@ mod tests {
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
         assert_eq!(crc32(b""), 0);
         assert_eq!(crc32(b"a"), 0xE8B7_BE43);
+    }
+
+    #[test]
+    fn an_archive_is_as_long_as_counted_by_hand() {
+        // 30 + 46 bytes of headers per entry, the name in each, the data, and 22 for the end.
+        let one: [(&str, &[u8]); 1] = [("abc", b"hello")];
+        assert_eq!(archive_size(&one), 30 + 46 + 2 * 3 + 5 + 22);
+        assert_eq!(zip(&one).unwrap().len() as u64, archive_size(&one));
+        let two: [(&str, &[u8]); 2] = [("abc", b"hello"), ("_rels/.rels", b"")];
+        assert_eq!(archive_size(&two), 76 + 6 + 5 + 76 + 22 + 22);
+        assert_eq!(zip(&two).unwrap().len() as u64, archive_size(&two));
+        // Every time is the zip epoch: 00:00 and 1980-01-01, 0x0021, in each local header
+        // (bytes 10-13) and its central directory entry (bytes 12-15).
+        let archive = zip(&one).unwrap();
+        assert_eq!(archive[10..14], [0, 0, 0x21, 0]);
+        let central = 30 + 3 + 5;
+        assert_eq!(archive[central..central + 4], 0x0201_4b50u32.to_le_bytes());
+        assert_eq!(archive[central + 12..central + 16], [0, 0, 0x21, 0]);
+    }
+
+    #[test]
+    fn an_archive_up_to_4_gib_less_a_byte_is_written_and_a_longer_one_refused() {
+        assert!(within_archive_limit(u64::from(u32::MAX)).is_ok());
+        let error = within_archive_limit(u64::from(u32::MAX) + 1).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::ResourceExhausted, "{error}");
+        assert!(error.message().contains("4294967296 bytes"), "{error}");
+        assert!(error.suggestion().is_some(), "{error}");
     }
 
     #[test]
