@@ -500,6 +500,18 @@ fn create_writes_an_empty_document_in_canonical_form_and_never_over_a_file() {
     let (code, _, parameter, _) = refusal(&nowhere);
     assert_eq!(code, ErrorCode::IoFailed);
     assert_eq!(parameter.as_deref(), Some("path"));
+    // A file the directory won't let be made (read-only): the write's own failure, not
+    // "already exists", which is only for a file that's there.
+    let locked = f.dir.path().join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o555)).unwrap();
+    let denied = answer(f.sessions.open(locked.join("new.silico"), true));
+    std::fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let (code, message, parameter, _) = refusal(&denied);
+    assert_eq!(code, ErrorCode::IoFailed, "{message}");
+    assert_eq!(parameter.as_deref(), Some("path"));
+    assert!(!message.contains("already exists"), "{message}");
+    assert!(!locked.join("new.silico").exists());
     let up = f.dir.path().join("..");
     let nameless = answer(f.sessions.open(&up, true));
     let (code, message, parameter, _) = refusal(&nameless);
