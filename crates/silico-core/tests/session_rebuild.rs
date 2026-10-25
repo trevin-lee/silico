@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
-use silico_core::command::{self, ModelRead, Response, Revision, Running, SessionId, Sessions};
+use silico_core::command::{
+    self, ModelChoice, ModelRead, Response, Revision, Running, SessionId, Sessions,
+};
 use silico_core::document::{FeatureId, Measure};
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::{Op, Primitive};
@@ -526,4 +528,132 @@ fn a_check_after_a_measure_that_faulted_tries_the_rebuild_again() {
     let faulted = answer(f.sessions.check(&a));
     assert_eq!(refusal(&faulted).0, ErrorCode::WorkerTimeout);
     clean(&answer(f.sessions.check(&a)));
+}
+
+#[test]
+fn a_current_read_waits_for_the_revisions_rebuild_and_is_handed_what_it_read() {
+    let f = fixture();
+    let a = f.open(&f.file("a.silico", BOX));
+    let hold = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+    let mut read = f
+        .sessions
+        .read_model(&a, ModelChoice::Current, |model, read| {
+            Ok((model.fingerprint(&id("k7f2qx3m")).map(|f| f.volume), read))
+        });
+    assert!(f.kernel.wait_running(1, HANG));
+    read = match read.try_take() {
+        Ok(response) => panic!("the current read didn't wait for its rebuild: {response:?}"),
+        Err(running) => running,
+    };
+    hold.release();
+    let response = answer(read);
+    let opened = ModelRead {
+        revision: Revision::OPENED,
+    };
+    assert_eq!(response.model, Some(opened));
+    let (volume, handed) = response.result.unwrap();
+    assert_eq!(volume, Some(Measure::from_millionths(8_000_000_000)));
+    assert_eq!(handed, opened);
+}
+
+#[test]
+fn a_published_read_runs_beside_a_waiting_current_one_and_gives_the_newest_model() {
+    let f = fixture();
+    let a = f.open(&f.file("a.silico", BOX));
+    let hold = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+    let current = f
+        .sessions
+        .read_model(&a, ModelChoice::Current, |_, read| Ok(read));
+    assert!(f.kernel.wait_running(1, HANG));
+    // Queued behind nothing: answered while the current read waits on the session's rebuild.
+    let lateness = Lateness::start();
+    let at = Instant::now();
+    let published = f
+        .sessions
+        .read_model(&a, ModelChoice::Published, |_, read| Ok(read));
+    let Ok(early) = published.wait_timeout(HANG) else {
+        hold.release();
+        panic!("the published read waited behind the current one");
+    };
+    let took = at.elapsed();
+    let most = allowance(Duration::from_secs(1), lateness.most());
+    assert!(
+        took < most,
+        "the published read took {took:?}, past {most:?}"
+    );
+    assert_eq!(early.model, None);
+    assert_eq!(
+        refusal(&early),
+        (
+            ErrorCode::InvalidInput,
+            "session s1 has published no model yet".to_owned(),
+            Some("model".to_owned()),
+        )
+    );
+    hold.release();
+    let opened = ModelRead {
+        revision: Revision::OPENED,
+    };
+    assert_eq!(answer(current).result.unwrap(), opened);
+    // Now published: the newest model, and the read handed its revision.
+    let late = answer(
+        f.sessions
+            .read_model(&a, ModelChoice::Published, |model, read| {
+                Ok((model.fingerprint(&id("k7f2qx3m")).map(|f| f.volume), read))
+            }),
+    );
+    assert_eq!(late.model, Some(opened));
+    let (volume, handed) = late.result.unwrap();
+    assert_eq!(volume, Some(Measure::from_millionths(8_000_000_000)));
+    assert_eq!(handed, opened);
+}
+
+#[test]
+fn a_reads_own_refusal_is_the_responses_beside_the_model_it_read() {
+    let f = fixture();
+    let a = f.open(&f.file("a.silico", BOX));
+    let stale = || {
+        command::Problems::from(silico_core::Error::new(
+            ErrorCode::Conflict,
+            "the cursor is of another revision",
+        ))
+    };
+    for choice in [ModelChoice::Current, ModelChoice::Published] {
+        // The current read first, so the published one has a model to read.
+        let response = answer(
+            f.sessions
+                .read_model(&a, choice, move |_, _| Err::<(), _>(stale())),
+        );
+        assert_eq!(response.result.unwrap_err(), stale(), "{choice:?}");
+        assert_eq!(
+            response.model,
+            Some(ModelRead {
+                revision: Revision::OPENED
+            }),
+            "{choice:?}"
+        );
+    }
+}
+
+#[test]
+fn a_read_of_a_document_the_gate_refused_is_refused_with_its_problems_unread() {
+    let flat = BOX.replace("\"length\": 40", "\"length\": 0");
+    let f = fixture();
+    let s = f.open(&f.file("flat.silico", &flat));
+    for choice in [ModelChoice::Current, ModelChoice::Published] {
+        let response = answer(f.sessions.read_model(&s, choice, |_, _| -> Result<(), _> {
+            panic!("a model was read of a document the gate refused")
+        }));
+        assert_eq!(response.model, None);
+        assert_eq!(
+            refusal(&response).1,
+            "box length must be a length above 1e-7 mm and at most 1e6 mm (a kilometre), got 0",
+            "{choice:?}"
+        );
+    }
+    assert!(f.kernel.calls().is_empty());
 }

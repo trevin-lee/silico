@@ -19,8 +19,8 @@ use crate::{Error, ErrorCode};
 mod session;
 
 pub use session::{
-    MAX_SESSIONS, ModelRead, Opened, Published, Response, Revision, Running, SessionId,
-    SessionInfo, Sessions, Status,
+    MAX_SESSIONS, ModelChoice, ModelRead, Opened, Published, Response, Revision, Running,
+    SessionId, SessionInfo, Sessions, Status,
 };
 
 /// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for

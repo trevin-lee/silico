@@ -82,6 +82,14 @@ impl Revision {
     /// A session's revision when it opens.
     pub const OPENED: Revision = Revision(1);
 
+    /// The revision after this one: each change to a session's document gives one more
+    /// (design §4). At `u64::MAX` it stays there (saturating), since a session never makes
+    /// that many changes and it mustn't panic.
+    #[must_use]
+    pub const fn next(self) -> Revision {
+        Revision(self.0.saturating_add(1))
+    }
+
     /// Its number, as a response writes it: 1 at `open`, then one more for each change.
     pub const fn number(self) -> u64 {
         self.0
@@ -121,6 +129,14 @@ pub struct Response<T> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelRead {
     pub revision: Revision,
+}
+
+/// Which model a read takes (decision 33): the current revision's, waited for, or the
+/// newest published, never waiting or queueing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelChoice {
+    Current,
+    Published,
 }
 
 /// The newest model a session's rebuilds published, and the revision it was rebuilt from
@@ -483,6 +499,38 @@ impl<C: Kernel + 'static> Session<C> {
         }
     }
 
+    /// The current revision's model, waited for ([`model`](Self::model)), and what was
+    /// read; or why there's none: the gate refused the document (its problems, the
+    /// document's, which a check gives as its result), or the model couldn't be had.
+    fn current(self: &Arc<Self>) -> Result<(Arc<Model>, ModelRead), Unbuilt> {
+        let (revision, gated) = {
+            let held = lock(&self.held);
+            (held.revision, Arc::clone(&held.gated))
+        };
+        match &*gated {
+            Gated::Checked(checked) => self
+                .model(revision, checked)
+                .map(|model| (model, ModelRead { revision }))
+                .map_err(Unbuilt::Failed),
+            refused => Err(Unbuilt::Gated(refused.problems())),
+        }
+    }
+
+    /// The published read of the session as it is now ([`published_read`](Self::published_read)),
+    /// with the session as it was read; a document the gate refused has nothing to publish,
+    /// and its read is refused with the gate's (or the reader's) problems.
+    fn published_now(self: &Arc<Self>) -> (SessionInfo, Result<Published, Problems>) {
+        let (info, revision, gated) = {
+            let held = lock(&self.held);
+            (self.info_of(&held), held.revision, Arc::clone(&held.gated))
+        };
+        let read = match &*gated {
+            Gated::Checked(checked) => self.published_read(revision, checked),
+            refused => Err(refused.problems()),
+        };
+        (info, read)
+    }
+
     /// The design's published read of the session at `revision`, whose document is
     /// `checked`: the newest model published of `revision` or an older one, never waiting;
     /// `revision`'s rebuild started if nothing of it, or newer, is published or running, and
@@ -568,6 +616,22 @@ impl<C: Kernel + 'static> Session<C> {
 
     fn closed(&self) -> bool {
         lock(&self.queue).is_none()
+    }
+}
+
+/// Why a session's current model couldn't be read.
+enum Unbuilt {
+    /// The gate refused the document: nothing is built of it, and these are its problems.
+    Gated(Problems),
+    /// The model couldn't be had: the session was dropped, or its recompute failed.
+    Failed(Problems),
+}
+
+impl Unbuilt {
+    fn problems(self) -> Problems {
+        match self {
+            Unbuilt::Gated(problems) | Unbuilt::Failed(problems) => problems,
+        }
     }
 }
 
@@ -822,20 +886,81 @@ impl<P: Clients + 'static> Sessions<P> {
     /// and the next check rebuilds, until faults are reported beside the result and kept as
     /// the revision's outcome (decision 32).
     pub fn check(&self, session: &SessionId) -> Running<Problems> {
-        self.queued(session, "check", |session, model| {
-            let (revision, gated) = {
-                let held = lock(&session.held);
-                (held.revision, Arc::clone(&held.gated))
-            };
-            match &*gated {
-                Gated::Checked(checked) => {
-                    let built = session.model(revision, checked)?;
-                    *model = Some(ModelRead { revision });
-                    super::check(&built).map_err(Problems::from)
-                }
-                refused => Ok(refused.problems()),
+        self.queued(session, "check", |session, model| match session.current() {
+            Ok((built, read)) => {
+                *model = Some(read);
+                super::check(&built).map_err(Problems::from)
             }
+            Err(Unbuilt::Gated(problems)) => Ok(problems),
+            Err(Unbuilt::Failed(problems)) => Err(problems),
         })
+    }
+
+    /// Runs `read` on the model `choice` names, off the caller's thread (decision 33).
+    /// `Current` is queued on the session and waits for its revision's rebuild, as `check`
+    /// does; `Published` runs at once on a short-lived thread of its own
+    /// (`session-sN-read`), never queued, on the newest published model, as
+    /// [`published`](Self::published) gives it: starting the current rebuild if needed,
+    /// refused naming `model` if nothing's published, and with the gate's (or the reader's)
+    /// problems for a document the gate refused. The response's `model` is the
+    /// [`ModelRead`] of the model read, and `read` is handed it too; `read`'s error is the
+    /// response's refusal. A published read's thread isn't joined: it ends with `read`.
+    pub fn read_model<T: Send + 'static>(
+        &self,
+        session: &SessionId,
+        choice: ModelChoice,
+        read: impl FnOnce(&Model, ModelRead) -> Result<T, Problems> + Send + 'static,
+    ) -> Running<T> {
+        match choice {
+            ModelChoice::Current => self.queued(session, "read", move |session, model| {
+                let (built, current) = session.current().map_err(Unbuilt::problems)?;
+                *model = Some(current);
+                read(&built, current)
+            }),
+            ModelChoice::Published => {
+                let Some(found) = self.find(session) else {
+                    return Running::answered(refused(not_open(*session)));
+                };
+                let (reply, answer) = mpsc::sync_channel(1);
+                let caller = tracing::Span::current();
+                let started = std::thread::Builder::new()
+                    .name(format!("session-{}-read", found.id))
+                    .spawn(move || {
+                        let _caller = caller.enter();
+                        let _span = tracing::info_span!(
+                            "session_command",
+                            session = %found.id,
+                            command = "read_published"
+                        )
+                        .entered();
+                        let (info, published) = found.published_now();
+                        let response = match published {
+                            Ok(published) => {
+                                let read_model = ModelRead {
+                                    revision: published.revision,
+                                };
+                                Response {
+                                    session: Some(info),
+                                    model: Some(read_model),
+                                    result: read(&published.model, read_model),
+                                }
+                            }
+                            Err(problems) => Response {
+                                session: Some(info),
+                                model: None,
+                                result: Err(problems),
+                            },
+                        };
+                        let _ = reply.send(response);
+                    });
+                match started {
+                    Ok(_) => Running { answer },
+                    Err(e) => {
+                        Running::answered(refused(crate::pool::thread_error("published read", &e)))
+                    }
+                }
+            }
+        }
     }
 
     /// The newest model `session`'s rebuilds have published (the design's published read,
@@ -852,22 +977,7 @@ impl<P: Clients + 'static> Sessions<P> {
         let Some(found) = self.find(session) else {
             return refused(not_open(*session));
         };
-        let (info, revision, gated) = {
-            let held = lock(&found.held);
-            (found.info_of(&held), held.revision, Arc::clone(&held.gated))
-        };
-        let checked = match &*gated {
-            Gated::Checked(checked) => checked,
-            // Nothing is built of a document the gate refused: what's wrong is the gate's.
-            refused => {
-                return Response {
-                    session: Some(info),
-                    model: None,
-                    result: Err(refused.problems()),
-                };
-            }
-        };
-        let read = found.published_read(revision, checked);
+        let (info, read) = found.published_now();
         Response {
             session: Some(info),
             model: read.as_ref().ok().map(|published| ModelRead {
@@ -1334,7 +1444,7 @@ mod tests {
                 resolved: PathBuf::from("a.silico"),
                 text: Arc::new(BOX.as_bytes().to_vec()),
                 gated: Arc::new(Gated::of(BOX.as_bytes())),
-                revision: Revision(1),
+                revision: Revision::OPENED,
             }),
             queue: Mutex::new(Some(sender)),
             rebuilds: Mutex::new(Rebuilds {
@@ -1359,27 +1469,29 @@ mod tests {
         let kernel = FakeKernel::new(2).unwrap();
         let (session, _jobs) = session(&kernel);
         assert_eq!(
-            built_from(&session.model(Revision(1), &checked(BOX)).unwrap()),
+            built_from(&session.model(Revision::OPENED, &checked(BOX)).unwrap()),
             "k7f2qx3m"
         );
         // Revision 2's read is never revision 1's model, published as it is.
-        let second = session.model(Revision(2), &checked(SPHERE)).unwrap();
+        let second = session
+            .model(Revision::OPENED.next(), &checked(SPHERE))
+            .unwrap();
         assert_eq!(built_from(&second), "a91cw0de");
         // A model of revision 1 arriving late (another engine's, here) leaves 2's in place.
         let other = Recompute::new(kernel.client());
         watch(
             &Arc::downgrade(&session),
-            Revision(1),
+            Revision::OPENED,
             other.start(checked(BOX)),
         );
         let published = lock(&session.rebuilds).published.clone().unwrap();
-        assert_eq!(published.revision, Revision(2));
+        assert_eq!(published.revision, Revision::OPENED.next());
         assert!(Arc::ptr_eq(&published.model, &second));
         // Nor is revision 1's rebuild started again now that 2's has published.
         let mut rebuilds = lock(&session.rebuilds);
         assert!(
             !session
-                .start_unless_newer(&mut rebuilds, Revision(1), &checked(BOX))
+                .start_unless_newer(&mut rebuilds, Revision::OPENED, &checked(BOX))
                 .unwrap()
         );
         assert_eq!(rebuilds.running, None);
@@ -1392,21 +1504,21 @@ mod tests {
         let _hold = kernel.hold(|_| true);
         let mut rebuilds = lock(&session.rebuilds);
         // Revision 2's rebuild running (as recorded): revision 1's isn't started under it.
-        rebuilds.running = Some(Revision(2));
+        rebuilds.running = Some(Revision::OPENED.next());
         assert!(
             !session
-                .start_unless_newer(&mut rebuilds, Revision(1), &checked(BOX))
+                .start_unless_newer(&mut rebuilds, Revision::OPENED, &checked(BOX))
                 .unwrap()
         );
-        assert_eq!(rebuilds.running, Some(Revision(2)));
+        assert_eq!(rebuilds.running, Some(Revision::OPENED.next()));
         // Its own revision's running: started (as a check after a fault starts it again).
-        rebuilds.running = Some(Revision(1));
+        rebuilds.running = Some(Revision::OPENED);
         assert!(
             session
-                .start_unless_newer(&mut rebuilds, Revision(1), &checked(BOX))
+                .start_unless_newer(&mut rebuilds, Revision::OPENED, &checked(BOX))
                 .unwrap()
         );
-        assert_eq!(rebuilds.running, Some(Revision(1)));
+        assert_eq!(rebuilds.running, Some(Revision::OPENED));
         drop(rebuilds);
         assert!(kernel.wait_running(1, WAIT));
     }
@@ -1415,21 +1527,26 @@ mod tests {
     fn a_published_read_starts_its_revisions_rebuild_only_while_an_older_is_published() {
         let kernel = FakeKernel::new(1).unwrap();
         let (session, _jobs) = session(&kernel);
-        let first = session.model(Revision(1), &checked(BOX)).unwrap();
+        let first = session.model(Revision::OPENED, &checked(BOX)).unwrap();
         // At revision 1, with revision 1 published: that model, and nothing started.
-        let read = session.published_read(Revision(1), &checked(BOX)).unwrap();
-        assert_eq!(read.revision, Revision(1));
+        let read = session
+            .published_read(Revision::OPENED, &checked(BOX))
+            .unwrap();
+        assert_eq!(read.revision, Revision::OPENED);
         assert!(Arc::ptr_eq(&read.model, &first));
         assert_eq!(lock(&session.rebuilds).running, None);
         // At revision 2, with only revision 1 published: revision 1's model, at once, and
         // revision 2's rebuild started (held, so it's seen running).
         let _hold = kernel.hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
         let read = session
-            .published_read(Revision(2), &checked(SPHERE))
+            .published_read(Revision::OPENED.next(), &checked(SPHERE))
             .unwrap();
-        assert_eq!(read.revision, Revision(1));
+        assert_eq!(read.revision, Revision::OPENED);
         assert!(Arc::ptr_eq(&read.model, &first));
-        assert_eq!(lock(&session.rebuilds).running, Some(Revision(2)));
+        assert_eq!(
+            lock(&session.rebuilds).running,
+            Some(Revision::OPENED.next())
+        );
     }
 
     #[test]
@@ -1445,7 +1562,7 @@ mod tests {
                 .count()
         };
         std::thread::scope(|scope| {
-            let read = scope.spawn(|| session.model(Revision(1), &checked(BOX)));
+            let read = scope.spawn(|| session.model(Revision::OPENED, &checked(BOX)));
             assert!(kernel.wait_running(1, WAIT));
             lock(&session.rebuilds).engine.cancel();
             // The box asked for again, by the read, still waiting.
@@ -1486,7 +1603,7 @@ mod tests {
         };
         let session = sessions.find(&id).unwrap();
         lock(&session.rebuilds).published = Some(Published {
-            revision: Revision(2),
+            revision: Revision::OPENED.next(),
             model: newer,
         });
         let read = sessions.published(&id);

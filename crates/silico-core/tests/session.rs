@@ -903,3 +903,11 @@ fn version_gives_the_designs_numbers_and_limits() {
     assert_eq!(limits.kernel_seconds, 60);
     assert_eq!(limits.sketch_seconds, 300);
 }
+
+#[test]
+fn a_revision_is_followed_by_one_more() {
+    // The design's section 3: 1 at open, one more for each change of the document.
+    assert_eq!(Revision::OPENED.number(), 1);
+    assert_eq!(Revision::OPENED.next().number(), 2);
+    assert_eq!(Revision::OPENED.next().next().number(), 3);
+}
