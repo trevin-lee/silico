@@ -1,11 +1,13 @@
 //! What every worker process is, whatever it links (ARCHITECTURE.md, Process model): a
 //! process the core starts, which inherits one end of a socket pair as file descriptor
 //! [`WORKER_FD`] and serves [`Request`]s on it until the core closes it, logging to stderr
-//! as JSON lines, with floating-point traps off. The kernel worker (OCCT) and the sketch
-//! worker (PlaneGCS) are each this loop and a handler.
+//! as JSON lines. The kernel worker (OCCT) and the sketch worker (PlaneGCS) are each this
+//! loop and a handler.
 //!
-//! The C++ each worker links decides how floating-point traps are read and switched off,
-//! so a worker passes them in as a [`Platform`].
+//! A worker whose output is a result keeps floating-point traps off: the C++ it links
+//! decides how they're read and switched off, so it passes them in as its [`Platform`]'s
+//! [`Traps::Checked`]. A worker whose output is no result (the render worker's pixels) says
+//! it doesn't check them, [`Traps::Unchecked`].
 
 // Takes ownership of the inherited descriptor and closes the others: `unsafe` for those
 // system calls only, the exception ARCHITECTURE.md's invariant 8 names (inherited
@@ -27,22 +29,61 @@ use silico_protocol::{
 #[cfg(feature = "test_ops")]
 pub mod test_ops;
 
-/// How a worker reads and switches off floating-point traps, through the C++ it links.
+/// What a worker is to the loop: how its floating-point traps are kept off, and what it was
+/// built from.
 pub struct Platform {
-    /// The trap-enable bits that are set: 0 when every trap is off.
-    pub fp_trap_mask: fn() -> u32,
-    /// Switches every trap off.
-    pub disable_fp_traps: fn() -> Result<(), String>,
+    /// Whether, and how, the loop reads and switches off its floating-point traps.
+    pub traps: Traps,
     /// Logged when the worker is ready, naming what it was built from (its C++ library).
     pub built_from: &'static str,
 }
 
-/// Fails if any floating-point trap is on. Checked at startup and after every request.
-pub fn check_fp_traps(platform: &Platform) -> Result<(), String> {
-    check_fp_trap_mask((platform.fp_trap_mask)())
+/// How a worker's floating-point traps are kept off (ARCHITECTURE.md, *Deterministic
+/// kernel*, 7).
+#[derive(Clone, Copy)]
+pub enum Traps {
+    /// Read and switched off through the C++ the worker links, at startup and after every
+    /// request: the rule for every worker whose output is a result (a shape and its
+    /// history, a solve, a measure, a mesh).
+    Checked {
+        /// The trap-enable bits that are set: 0 when every trap is off.
+        mask: fn() -> u32,
+        /// Switches every trap off.
+        disable: fn() -> Result<(), String>,
+    },
+    /// Not read: a worker whose output is no result (the render worker's pixels), which
+    /// *Deterministic kernel*'s rules don't bind. Logged at startup at info level (seen with
+    /// `SILICO_LOG=info`; the default shows warnings), never stubbed as a mask of 0, which
+    /// would say every trap is off rather than that none was looked at.
+    Unchecked,
 }
 
-/// The decision behind [`check_fp_traps`], on a given trap-enable mask, so it can be
+/// How the loop reads and switches traps: the only way it does, at startup and after every
+/// request. Each is none where traps aren't checked.
+impl Traps {
+    /// The trap-enable bits that are set: 0 when every trap is off.
+    pub fn mask(self) -> Option<u32> {
+        match self {
+            Traps::Checked { mask, .. } => Some(mask()),
+            Traps::Unchecked => None,
+        }
+    }
+
+    /// Fails if any floating-point trap is on.
+    pub fn check(self) -> Option<Result<(), String>> {
+        self.mask().map(check_fp_trap_mask)
+    }
+
+    /// Switches every trap off.
+    pub fn disable(self) -> Option<Result<(), String>> {
+        match self {
+            Traps::Checked { disable, .. } => Some(disable()),
+            Traps::Unchecked => None,
+        }
+    }
+}
+
+/// The decision behind [`Traps::check`], on a given trap-enable mask, so it can be
 /// tested on every platform (some Apple silicon can't switch traps on to test it for real).
 pub fn check_fp_trap_mask(mask: u32) -> Result<(), String> {
     match mask {
@@ -76,12 +117,15 @@ where
         let mut result = handle(request.id, request.generation, request.op, &mut writer);
         // Traps switched on during a request would make later results platform-
         // dependent, so the request fails, and the traps are switched back off.
-        let mask = (platform.fp_trap_mask)();
-        if let Err(problem) = check_fp_traps(platform) {
-            let fixed = (platform.disable_fp_traps)().is_ok() && check_fp_traps(platform).is_ok();
+        let traps = platform.traps;
+        if let Some(bits) = traps.mask()
+            && let Err(problem) = check_fp_trap_mask(bits)
+        {
+            let fixed = traps.disable().is_some_and(|r| r.is_ok())
+                && traps.check().is_some_and(|r| r.is_ok());
             tracing::error!("{problem} after {name}; switched off: {fixed}");
             result = Err(Failure::new(Refusal::FpTrapsOn {
-                mask,
+                mask: bits,
                 op: name.to_owned(),
             }));
         }
@@ -102,6 +146,34 @@ where
         )?;
     }
     Ok(())
+}
+
+/// The traps as a worker starts: switched off and checked off for [`Traps::Checked`] (or why
+/// not, logged as an error, and the worker refuses to run), said to be unchecked for
+/// [`Traps::Unchecked`].
+fn traps_at_start(traps: Traps) -> Result<(), String> {
+    match traps.disable() {
+        None => {
+            tracing::info!(
+                traps = "unchecked",
+                "floating-point traps aren't checked: no result is computed in this worker"
+            );
+            Ok(())
+        }
+        Some(Err(e)) => {
+            let problem = format!("couldn't switch floating-point traps off: {e}");
+            tracing::error!("{problem}");
+            Err(problem)
+        }
+        Some(Ok(())) => match traps.check() {
+            Some(Err(problem)) => {
+                let problem = format!("{problem}; refusing to run");
+                tracing::error!("{problem}");
+                Err(problem)
+            }
+            _ => Ok(()),
+        },
+    }
 }
 
 /// The socket the core passed this process, by the descriptor named in [`WORKER_FD_ENV`].
@@ -177,12 +249,7 @@ where
         .with_writer(std::io::stderr)
         .try_init();
 
-    if let Err(e) = (platform.disable_fp_traps)() {
-        tracing::error!("couldn't switch floating-point traps off: {e}");
-        return ExitCode::from(3);
-    }
-    if let Err(problem) = check_fp_traps(platform) {
-        tracing::error!("{problem}; refusing to run");
+    if traps_at_start(platform.traps).is_err() {
         return ExitCode::from(3);
     }
     let socket = match inherited_socket() {
@@ -214,7 +281,7 @@ mod tests {
         Response, TraceId, write_message,
     };
 
-    use super::{Platform, serve};
+    use super::{Platform, Traps, serve, traps_at_start};
 
     /// What a test's subscriber writes.
     #[derive(Clone, Default)]
@@ -268,8 +335,10 @@ mod tests {
     fn traps_still_on_after_switching_off_are_logged_as_not_switched_off() {
         // Switching off says it worked, but a trap bit stays set: they aren't off.
         let platform = Platform {
-            fp_trap_mask: || 0x100,
-            disable_fp_traps: || Ok(()),
+            traps: Traps::Checked {
+                mask: || 0x100,
+                disable: || Ok(()),
+            },
             built_from: "test",
         };
         let (response, log) = serve_one(&platform);
@@ -289,10 +358,12 @@ mod tests {
         // log says they're off again (the other test's positive control).
         static ON: AtomicBool = AtomicBool::new(true);
         let platform = Platform {
-            fp_trap_mask: || u32::from(ON.load(Ordering::SeqCst)),
-            disable_fp_traps: || {
-                ON.store(false, Ordering::SeqCst);
-                Ok(())
+            traps: Traps::Checked {
+                mask: || u32::from(ON.load(Ordering::SeqCst)),
+                disable: || {
+                    ON.store(false, Ordering::SeqCst);
+                    Ok(())
+                },
             },
             built_from: "test",
         };
@@ -309,5 +380,91 @@ mod tests {
             response.result
         );
         assert!(log.contains("switched off: true"), "{log}");
+    }
+
+    #[test]
+    fn an_unchecked_platform_serves_without_reading_traps() {
+        // A worker whose output is no result (the render worker): its traps aren't read, so
+        // a request is answered as handled, never refused as traps on, and nothing about
+        // traps is logged. The checked tests above are its control: the same request with a
+        // mask set is refused.
+        let platform = Platform {
+            traps: Traps::Unchecked,
+            built_from: "test",
+        };
+        let (response, log) = serve_one(&platform);
+        assert_eq!(response.result, Ok(Reply::Done));
+        assert!(!log.contains("traps"), "{log}");
+        assert_eq!(Traps::Unchecked.check(), None);
+        let checked = Traps::Checked {
+            mask: || 0x100,
+            disable: || Ok(()),
+        };
+        assert!(checked.check().is_some_and(|r| r.is_err()));
+    }
+    /// `traps_at_start` on `traps`: what it returned, and what it logged at info and above.
+    fn start_with(traps: Traps) -> (Result<(), String>, String) {
+        let log = Log::default();
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || writer.clone())
+            .finish();
+        let started = tracing::subscriber::with_default(subscriber, || traps_at_start(traps));
+        let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        (started, log)
+    }
+
+    #[test]
+    fn a_worker_starts_with_its_traps_off_or_says_they_are_unchecked_or_refuses_to_run() {
+        // Unchecked: it runs, and says so once, at info (unseen at the default warn level).
+        let (started, log) = start_with(Traps::Unchecked);
+        assert_eq!(started, Ok(()));
+        assert_eq!(log.matches("traps=\"unchecked\"").count(), 1, "{log}");
+        assert!(log.contains(" INFO "), "{log}");
+        // Checked, off: it runs, saying nothing about traps.
+        let (started, log) = start_with(Traps::Checked {
+            mask: || 0,
+            disable: || Ok(()),
+        });
+        assert_eq!(started, Ok(()));
+        assert!(!log.contains("traps"), "{log}");
+        // Checked, but they can't be switched off: it refuses to run.
+        let (started, log) = start_with(Traps::Checked {
+            mask: || 0,
+            disable: || Err("no".to_owned()),
+        });
+        assert!(started.unwrap_err().contains("couldn't switch"));
+        assert!(
+            log.contains("couldn't switch floating-point traps off: no"),
+            "{log}"
+        );
+        assert!(log.contains("ERROR"), "{log}");
+        // Checked, switched off, but still on: it refuses to run.
+        let (started, log) = start_with(Traps::Checked {
+            mask: || 0x100,
+            disable: || Ok(()),
+        });
+        assert!(started.unwrap_err().contains("refusing to run"));
+        assert!(log.contains("trap-enable bits 0x100"), "{log}");
+        assert!(log.contains("ERROR"), "{log}");
+    }
+
+    #[test]
+    fn traps_on_at_start_are_switched_off_and_the_worker_runs() {
+        // The council's tests lens: switching off comes before the check, so traps a linked
+        // library left on are switched off, and the worker runs (checked first, it would
+        // refuse to start with them on).
+        static ON: AtomicBool = AtomicBool::new(true);
+        let (started, log) = start_with(Traps::Checked {
+            mask: || u32::from(ON.load(Ordering::SeqCst)),
+            disable: || {
+                ON.store(false, Ordering::SeqCst);
+                Ok(())
+            },
+        });
+        assert_eq!(started, Ok(()), "{log}");
+        assert!(!ON.load(Ordering::SeqCst));
     }
 }

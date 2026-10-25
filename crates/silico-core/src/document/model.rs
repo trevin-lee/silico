@@ -750,6 +750,15 @@ impl Operation {
         }
     }
 
+    /// Every feature this one uses: those it consumes ([`inputs`](Self::inputs)), then the
+    /// sketch it sweeps ([`sketch`](Self::sketch)). What an edit of one of them reaches.
+    pub fn uses(&self) -> impl Iterator<Item = &FeatureId> {
+        self.inputs()
+            .into_iter()
+            .map(|(_, id)| id)
+            .chain(self.sketch())
+    }
+
     /// The elements a fillet or chamfer names, by name; none for another feature.
     pub fn edges(&self) -> &[ElementName] {
         match self {

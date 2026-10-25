@@ -489,20 +489,58 @@ impl Model {
     /// otherwise than the fingerprint stored with it (a `drift` error naming the feature
     /// and what moved); and a sketch whose solve differs from what its file holds (a
     /// `drift` error naming the sketch and, as elements, every point, circle, and reference
-    /// dimension the solve changes). A feature with no fingerprint stored isn't drift (the
-    /// next save writes one), nor is one that didn't build or solve (its failure says why).
+    /// dimension the solve changes). A feature with no fingerprint stored isn't drift (a
+    /// commit whose edits reach it, or `format`, writes one), nor is one that didn't build
+    /// or solve (its failure says why).
     pub fn drift(&self) -> Vec<Error> {
+        self.drift_except(&BTreeSet::new())
+    }
+
+    /// [`drift`](Self::drift), but none of a feature in `except` whose record a save writes
+    /// ([`records`](Self::records)): one a session's edits reached since its last save
+    /// (docs/design/m4.1-command-api.md, decision 28), whose stored fingerprint, or a
+    /// sketch's stored solve, was made from other inputs, so the rebuild isn't held to it
+    /// (the commit writes its new one), or one `format` accepts the drift of. A feature in
+    /// `except` whose record can't be written (it measures past what a fingerprint holds) is
+    /// still said, and so is a solid that couldn't be measured: nothing takes the stored
+    /// record's place.
+    pub fn drift_except(&self, except: &BTreeSet<FeatureId>) -> Vec<Error> {
+        self.drift_left(&self.drifted(), except)
+            .map(|(_, error)| error.clone())
+            .collect()
+    }
+
+    /// Of `drift` (this model's, [`drifted`](Self::drifted)), what's left with `except`
+    /// excepted, as [`drift_except`](Self::drift_except) excepts them.
+    pub(crate) fn drift_left<'a>(
+        &'a self,
+        drift: &'a [(FeatureId, Error)],
+        except: &'a BTreeSet<FeatureId>,
+    ) -> impl Iterator<Item = &'a (FeatureId, Error)> {
+        drift.iter().filter(|(id, error)| {
+            !(error.code() == ErrorCode::Drift && except.contains(id) && self.records(id))
+        })
+    }
+
+    /// [`drift`](Self::drift), each error with the ID of the feature it's of, computed once
+    /// for a caller that both picks features by their drift and says it.
+    pub fn drifted(&self) -> Vec<(FeatureId, Error)> {
         let mut errors = Vec::new();
         let mut unmeasured = self.unmeasured.iter().peekable();
         for (feature, (_, outcome)) in self.document().features.iter().zip(&self.features) {
+            if let Some((_, error)) = unmeasured.next_if(|(id, _)| *id == feature.id) {
+                errors.push((feature.id.clone(), error.clone()));
+                continue;
+            }
             if let (Operation::Sketch(stored), FeatureOutcome::Sketch(solution)) =
                 (&feature.operation, outcome)
             {
                 let moved = crate::sketch::moved(stored, &solution.written(stored));
-                if let Some((first, _)) = moved.first() {
-                    let said: Vec<&str> = moved.iter().take(5).map(|(_, s)| s.as_str()).collect();
+                if let Some(first) = moved.first() {
+                    let said: Vec<&str> = moved.iter().take(5).map(|m| m.said.as_str()).collect();
                     let more = if moved.len() > 5 { ", …" } else { "" };
-                    errors.push(
+                    errors.push((
+                        feature.id.clone(),
                         Error::new(
                             ErrorCode::Drift,
                             format!(
@@ -513,15 +551,11 @@ impl Model {
                             ),
                         )
                         .with_feature(feature.id.as_str())
-                        .with_elements(moved.iter().map(|(id, _)| id.as_str()))
-                        .with_parameter(first.as_str())
+                        .with_elements(moved.iter().map(|m| m.id.as_str()))
+                        .with_parameter(first.field.as_str())
                         .with_suggestion(SKETCH_DRIFT),
-                    );
+                    ));
                 }
-                continue;
-            }
-            if let Some((_, error)) = unmeasured.next_if(|(id, _)| *id == feature.id) {
-                errors.push(error.clone());
                 continue;
             }
             let (Some(stored), FeatureOutcome::Built { built, .. }) =
@@ -561,51 +595,97 @@ impl Model {
                 )
                 .with_parameter("fingerprint"),
             };
-            errors.push(
+            errors.push((
+                feature.id.clone(),
                 error
                     .with_feature(feature.id.as_str())
                     .with_suggestion(DRIFT),
-            );
+            ));
         }
         errors
     }
 
-    /// Its document as a save writes it: each feature's fingerprint as it rebuilt, and each
-    /// sketch as it solved (its points, circles' radii, and reference dimensions' values:
-    /// [`SketchSolution::written`]). A feature that didn't rebuild or solve, or whose solid
-    /// couldn't be measured or written, keeps what's stored with it: there's nothing to put
-    /// in its place, and a failure that passes (a worker that hung, say) mustn't lose the
+    /// Its document as `silico fmt` writes it: each feature's fingerprint as it rebuilt,
+    /// and each sketch as it solved (its points, circles' radii, and reference dimensions'
+    /// values: [`SketchSolution::written`]). A feature that didn't rebuild or solve, or whose
+    /// solid couldn't be measured or written, keeps what's stored with it: there's nothing to
+    /// put in its place, and a failure that passes (a worker that hung, say) mustn't lose the
     /// record a later rebuild is checked against.
     pub fn saved(&self) -> Document {
+        self.saved_where(|_| true)
+    }
+
+    /// Its document as [`saved`](Self::saved) writes it, but the record of only each feature
+    /// in `writes` as rebuilt; every other keeps the fingerprint, or a sketch the solve,
+    /// stored with it. A session's commit writes the features its edits reached (decision
+    /// 28), and its `format` every feature but those whose drift it isn't told to accept
+    /// (decision 31).
+    pub fn saved_for(&self, writes: &BTreeSet<FeatureId>) -> Document {
+        self.saved_where(|id| writes.contains(id))
+    }
+
+    /// Whether a save writes the record of the feature `id` as rebuilt (the one rule
+    /// [`saved_for`](Self::saved_for) writes by): a fingerprint for a feature that built and
+    /// was measured, as a fingerprint can hold it, or the solve of a sketch that solved. Not
+    /// for one that failed, was blocked, or couldn't be measured, which keeps what's stored
+    /// with it.
+    pub fn records(&self, id: &FeatureId) -> bool {
+        self.outcome(id).and_then(Record::of).is_some()
+    }
+
+    /// Its document as a save writes it, each feature `writes` takes as rebuilt, every
+    /// other as stored.
+    fn saved_where(&self, writes: impl Fn(&FeatureId) -> bool) -> Document {
         let mut document = self.document().clone();
         // The model's features are its document's, in order.
         for (feature, (_, outcome)) in document.features.iter_mut().zip(&self.features) {
-            match outcome {
-                FeatureOutcome::Built { built, .. } => {
-                    if let Some(rebuilt) = built.summary().and_then(Fingerprint::of) {
-                        feature.fingerprint = Some(rebuilt);
-                    }
-                }
-                FeatureOutcome::Sketch(solution) => {
+            if !writes(&feature.id) {
+                continue;
+            }
+            match Record::of(outcome) {
+                Some(Record::Fingerprint(rebuilt)) => feature.fingerprint = Some(rebuilt),
+                Some(Record::Solve(solution)) => {
                     if let Operation::Sketch(sketch) = &mut feature.operation {
                         *sketch = solution.written(sketch);
                     }
                 }
-                FeatureOutcome::Failed(_)
-                | FeatureOutcome::Broken { .. }
-                | FeatureOutcome::Blocked { .. } => {}
+                None => {}
             }
         }
         document
     }
 }
 
+/// What a save writes of a feature as rebuilt: its fingerprint, or a sketch's solve.
+enum Record<'a> {
+    Fingerprint(Fingerprint),
+    Solve(&'a SketchSolution),
+}
+
+impl<'a> Record<'a> {
+    /// What a save writes for a feature that came to `outcome`: none for one that failed or
+    /// was blocked, or whose solid couldn't be measured, or measures past what a fingerprint
+    /// holds.
+    fn of(outcome: &'a FeatureOutcome) -> Option<Self> {
+        match outcome {
+            FeatureOutcome::Built { built, .. } => built
+                .summary()
+                .and_then(Fingerprint::of)
+                .map(Record::Fingerprint),
+            FeatureOutcome::Sketch(solution) => Some(Record::Solve(solution)),
+            FeatureOutcome::Failed(_)
+            | FeatureOutcome::Broken { .. }
+            | FeatureOutcome::Blocked { .. } => None,
+        }
+    }
+}
+
 /// What to do about drift: most often the feature, or one it uses, was edited (by hand, or
 /// in a merge) since it was saved; otherwise the kernel's results changed.
-const DRIFT: &str = "if this feature or one it uses was edited by hand or in a merge since it was saved, save the document (or run `silico fmt`) to write its new fingerprint; if not, this is a determinism bug or a change in the kernel: find which, and once the new measures are right, save to write them";
+const DRIFT: &str = "if this feature or one it uses was edited by hand or in a merge since it was saved, run format (or silico fmt) to accept its new fingerprint; if not, this is a determinism bug or a change in the kernel: find which before accepting it";
 
 /// What to do about a sketch's drift: as for a fingerprint's ([`DRIFT`]), for a sketch.
-const SKETCH_DRIFT: &str = "if this sketch was edited by hand or in a merge since it was saved, save the document (or run `silico fmt`) to write its solved coordinates; if not, this is a determinism bug or a change in the sketch solver: find which, and once the new solve is right, save to write it";
+const SKETCH_DRIFT: &str = "if this sketch was edited by hand or in a merge since it was saved, run format (or silico fmt) to accept its new solve; if not, this is a determinism bug or a change in the sketch solver: find which before accepting it";
 
 /// What a recompute came to.
 #[derive(Debug, Clone, PartialEq)]
@@ -3547,6 +3627,28 @@ fn feature_outcome(
     }) {
         Some((key, built)) => FeatureOutcome::Built { key, built },
         None => unbuilt(),
+    }
+}
+
+#[cfg(test)]
+impl Model {
+    /// This model with feature `id`'s solid measured as `summary` says, if it built: a
+    /// test's stand-in for measures past what a fingerprint holds, which no solid the gate
+    /// admits has (a kilometre each way is 1e18 mm³, and a volume holds to 1.7e32).
+    pub(crate) fn measured_as(&self, id: &FeatureId, summary: ShapeSummary) -> Model {
+        let mut model = self.clone();
+        for (feature, outcome) in &mut model.features {
+            if feature == id
+                && let FeatureOutcome::Built { built, .. } = outcome
+            {
+                *built = Arc::new(Built::new(
+                    built.shape.clone(),
+                    built.history.clone(),
+                    Some(summary.clone()),
+                ));
+            }
+        }
+        model
     }
 }
 

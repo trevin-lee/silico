@@ -24,6 +24,8 @@ mod listing;
 mod model;
 #[path = "common/references.rs"]
 mod references;
+#[path = "common/session.rs"]
+mod sessions;
 #[path = "common/sweeps.rs"]
 mod sweeps;
 #[path = "common/within.rs"]
@@ -54,6 +56,8 @@ mod command;
 mod document;
 #[path = "fingerprint.rs"]
 mod fingerprint;
+#[path = "reach.rs"]
+mod reach;
 #[path = "refused_from_a_partial_cache.rs"]
 mod refused_from_a_partial_cache;
 #[path = "session.rs"]
@@ -64,6 +68,8 @@ mod session_elements;
 mod session_rebuild;
 #[path = "session_tracing.rs"]
 mod session_tracing;
+#[path = "session_transactions.rs"]
+mod session_transactions;
 #[path = "shared_result_checks.rs"]
 mod shared_result_checks;
 

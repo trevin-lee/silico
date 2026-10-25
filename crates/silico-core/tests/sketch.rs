@@ -340,8 +340,8 @@ fn a_coordinate_past_the_largest_float_is_refused() {
     let error = read_error(&text);
     assert_error(
         &error,
-        "points.0.x",
-        "points.0.x 1e400 is too large, at line 1",
+        "points.pa000000.x",
+        "points.pa000000.x 1e400 is too large, at line 1",
     );
 }
 
@@ -379,8 +379,8 @@ fn a_sketch_read_wrongly_is_refused_naming_its_field() {
         ),
         (
             document(&fields(&p("\"1\""), "", "", "", "")),
-            "points.0.x",
-            "points.0.x is a string, not a number in millimetres",
+            "points.pa000000.x",
+            "points.pa000000.x is a string, not a number in millimetres",
         ),
         (
             document(&fields(
@@ -390,8 +390,8 @@ fn a_sketch_read_wrongly_is_refused_naming_its_field() {
                 "",
                 "",
             )),
-            "points.0.y",
-            "points.0 has no y",
+            "points.pa000000.y",
+            "points.pa000000 has no y",
         ),
         (
             document(&fields(
@@ -401,8 +401,8 @@ fn a_sketch_read_wrongly_is_refused_naming_its_field() {
                 "",
                 "",
             )),
-            "points.0.z",
-            "points.0 has a key it can't have: \"z\"",
+            "points.pa000000.z",
+            "points.pa000000 has a key it can't have: \"z\"",
         ),
         (
             document(&fields(
@@ -412,8 +412,8 @@ fn a_sketch_read_wrongly_is_refused_naming_its_field() {
                 "",
                 "",
             )),
-            "points.0.construction",
-            "points.0.construction is a number, not true or false",
+            "points.pa000000.construction",
+            "points.pa000000.construction is a number, not true or false",
         ),
         (
             document(&fields(
@@ -434,53 +434,53 @@ fn a_sketch_read_wrongly_is_refused_naming_its_field() {
                 "",
                 "",
             )),
-            "lines.0.from",
-            "lines.0.from \"origin\" isn't a sketch element's ID",
+            "lines.na000000.from",
+            "lines.na000000.from \"origin\" isn't a sketch element's ID",
         ),
         (
             constrained(
                 r#"{"id": "k0000000", "type": "coincident", "a": "pa000000", "b": "pb000000"}"#,
             ),
-            "constraints.0.type",
+            "constraints.k0000000.type",
             "\"coincident\" isn't a constraint type",
         ),
         (
             constrained(r#"{"id": "k0000000", "type": "horizontal", "line": "x-axis"}"#),
-            "constraints.0.line",
-            "constraints.0.line \"x-axis\" isn't a sketch element's ID, origin, x_axis, or y_axis",
+            "constraints.k0000000.line",
+            "constraints.k0000000.line \"x-axis\" isn't a sketch element's ID, origin, x_axis, or y_axis",
         ),
         (
             constrained(
                 r#"{"id": "k0000000", "type": "tangent", "a": "na000000", "b": "ca000000", "side": "above"}"#,
             ),
-            "constraints.0.side",
-            "constraints.0.side \"above\" isn't one of left, right, outside, inside",
+            "constraints.k0000000.side",
+            "constraints.k0000000.side \"above\" isn't one of left, right, outside, inside",
         ),
         (
             constrained(
                 r#"{"id": "k0000000", "type": "length", "line": "na000000", "value": "=w", "driving": true}"#,
             ),
-            "constraints.0.value",
-            "constraints.0.value is a string, not a length in millimetres",
+            "constraints.k0000000.value",
+            "constraints.k0000000.value is a string, not a length in millimetres",
         ),
         (
             constrained(
                 r#"{"id": "k0000000", "type": "angle", "a": "na000000", "b": "x_axis", "value": 0.0000000001, "driving": true}"#,
             ),
-            "constraints.0.value",
-            "constraints.0.value 0.0000000001 has more than 9 decimals",
+            "constraints.k0000000.value",
+            "constraints.k0000000.value 0.0000000001 has more than 9 decimals",
         ),
         (
             constrained(r#"{"id": "k0000000", "type": "length", "line": "na000000", "value": 10}"#),
-            "constraints.0.driving",
-            "constraints.0 has no driving",
+            "constraints.k0000000.driving",
+            "constraints.k0000000 has no driving",
         ),
         (
             constrained(
                 r#"{"id": "k0000000", "type": "horizontal", "line": "na000000", "value": 10}"#,
             ),
-            "constraints.0.value",
-            "constraints.0 has a key it can't have: \"value\"",
+            "constraints.k0000000.value",
+            "constraints.k0000000 has a key it can't have: \"value\"",
         ),
     ];
     for (text, parameter, message) in cases {
@@ -497,7 +497,7 @@ fn ids_are_unique_within_a_sketch_whatever_their_kind() {
     assert_error(
         &error,
         "constraints.0.id",
-        "id na000000 is already the ID of line na000000 (lines.0)",
+        "id na000000 is already the ID of line na000000 (lines.na000000)",
     );
     // The same ID in another sketch is another element.
     let one = document(&fields(POINTS, LINE, "", "", ""));
@@ -517,8 +517,8 @@ fn a_curves_points_must_be_points_of_its_sketch() {
                 "",
                 "",
             )),
-            "lines.0.to",
-            "lines.0.to pz000000 isn't the ID of any element of this sketch",
+            "lines.na000000.to",
+            "lines.na000000.to pz000000 isn't the ID of any element of this sketch",
         ),
         (
             document(&fields(
@@ -528,8 +528,8 @@ fn a_curves_points_must_be_points_of_its_sketch() {
                 "",
                 "",
             )),
-            "circles.0.center",
-            "circles.0.center na000000 is a line, not a point",
+            "circles.ca000000.center",
+            "circles.ca000000.center na000000 is a line, not a point",
         ),
         (
             document(&fields(
@@ -539,7 +539,7 @@ fn a_curves_points_must_be_points_of_its_sketch() {
                 "",
                 "",
             )),
-            "lines.0.to",
+            "lines.na000000.to",
             "line na000000 goes from point pa000000 to itself, so it has no length",
         ),
         (
@@ -550,7 +550,7 @@ fn a_curves_points_must_be_points_of_its_sketch() {
                 r#"{"id": "aa000000", "center": "pa000000", "start": "pa000000", "end": "pc000000", "construction": false}"#,
                 "",
             )),
-            "arcs.0.start",
+            "arcs.aa000000.start",
             "arc aa000000's start is its center, point pa000000, so it has no radius",
         ),
         (
@@ -561,7 +561,7 @@ fn a_curves_points_must_be_points_of_its_sketch() {
                 r#"{"id": "aa000000", "center": "pa000000", "start": "pb000000", "end": "pb000000", "construction": false}"#,
                 "",
             )),
-            "arcs.0.end",
+            "arcs.aa000000.end",
             "arc aa000000 starts and ends at point pb000000, so it has no sweep",
         ),
     ];
@@ -589,7 +589,7 @@ fn coincident_ends_that_would_collapse_a_line_leave_it_running_from_a_point_to_i
     let error = problem(&text);
     assert_error(
         &error,
-        "lines.1.to",
+        "lines.nb000000.to",
         "line nb000000 goes from point pb000000 to itself, so it has no length",
     );
     assert!(
@@ -622,8 +622,8 @@ fn sizes_and_places_past_a_kilometre_or_at_zero_are_refused() {
     ));
     assert_error(
         &problem(&far),
-        "points.0.x",
-        "points.0.x is 1000000.0000000001 mm, farther from the sketch's origin than the 1000000 mm (a kilometre) a point may be",
+        "points.pa000000.x",
+        "points.pa000000.x is 1000000.0000000001 mm, farther from the sketch's origin than the 1000000 mm (a kilometre) a point may be",
     );
     for (radius, message) in [
         (
@@ -648,7 +648,7 @@ fn sizes_and_places_past_a_kilometre_or_at_zero_are_refused() {
             "",
             "",
         ));
-        assert_error(&problem(&text), "circles.0.radius", message);
+        assert_error(&problem(&text), "circles.ca000000.radius", message);
     }
 }
 
@@ -687,7 +687,7 @@ fn a_dimension_out_of_range_is_refused() {
     for (constraint, message) in cases {
         assert_error(
             &problem(&constrained(constraint)),
-            "constraints.0.value",
+            "constraints.k0000000.value",
             message,
         );
     }
@@ -711,63 +711,63 @@ fn every_reference_must_name_an_element_its_place_takes() {
     let cases = [
         (
             r#"{"id": "k0000000", "type": "horizontal", "line": "pz000000"}"#,
-            "constraints.0.line",
-            "constraints.0.line pz000000 isn't the ID of any element of this sketch",
+            "constraints.k0000000.line",
+            "constraints.k0000000.line pz000000 isn't the ID of any element of this sketch",
         ),
         (
             r#"{"id": "k0000000", "type": "horizontal", "line": "x_axis"}"#,
-            "constraints.0.line",
-            "constraints.0.line x_axis is an axis, but a horizontal's line is a line of this sketch",
+            "constraints.k0000000.line",
+            "constraints.k0000000.line x_axis is an axis, but a horizontal's line is a line of this sketch",
         ),
         (
             r#"{"id": "k0000000", "type": "length", "line": "ca000000", "value": 1, "driving": true}"#,
-            "constraints.0.line",
-            "constraints.0.line ca000000 is a circle, but a length's line is a line of this sketch",
+            "constraints.k0000000.line",
+            "constraints.k0000000.line ca000000 is a circle, but a length's line is a line of this sketch",
         ),
         (
             r#"{"id": "k0000000", "type": "distance", "a": "na000000", "b": "pb000000", "value": 1, "driving": true}"#,
-            "constraints.0.a",
-            "constraints.0.a na000000 is a line, but a distance's a is a point of this sketch, or origin",
+            "constraints.k0000000.a",
+            "constraints.k0000000.a na000000 is a line, but a distance's a is a point of this sketch, or origin",
         ),
         (
             r#"{"id": "k0000000", "type": "distance", "a": "x_axis", "b": "pb000000", "value": 1, "driving": true}"#,
-            "constraints.0.a",
-            "constraints.0.a x_axis is an axis, but a distance's a is a point of this sketch, or origin",
+            "constraints.k0000000.a",
+            "constraints.k0000000.a x_axis is an axis, but a distance's a is a point of this sketch, or origin",
         ),
         (
             r#"{"id": "k0000000", "type": "on", "point": "pc000000", "curve": "origin"}"#,
-            "constraints.0.curve",
-            "constraints.0.curve origin is the origin, but a on's curve is a line, circle, or arc of this sketch, x_axis, or y_axis",
+            "constraints.k0000000.curve",
+            "constraints.k0000000.curve origin is the origin, but a on's curve is a line, circle, or arc of this sketch, x_axis, or y_axis",
         ),
         (
             r#"{"id": "k0000000", "type": "radius", "curve": "na000000", "value": 1, "driving": true}"#,
-            "constraints.0.curve",
-            "constraints.0.curve na000000 is a line, but a radius's curve is a circle or arc of this sketch",
+            "constraints.k0000000.curve",
+            "constraints.k0000000.curve na000000 is a line, but a radius's curve is a circle or arc of this sketch",
         ),
         (
             r#"{"id": "k0000000", "type": "parallel", "a": "na000000", "b": "ca000000"}"#,
-            "constraints.0.b",
-            "constraints.0.b ca000000 is a circle, but a parallel's b is a line of this sketch, x_axis, or y_axis",
+            "constraints.k0000000.b",
+            "constraints.k0000000.b ca000000 is a circle, but a parallel's b is a line of this sketch, x_axis, or y_axis",
         ),
         (
             r#"{"id": "k0000000", "type": "midpoint", "point": "pc000000", "line": "aa000000"}"#,
-            "constraints.0.line",
-            "constraints.0.line aa000000 is a arc, but a midpoint's line is a line of this sketch",
+            "constraints.k0000000.line",
+            "constraints.k0000000.line aa000000 is a arc, but a midpoint's line is a line of this sketch",
         ),
         (
             r#"{"id": "k0000000", "type": "symmetric", "a": "pb000000", "b": "pc000000", "about": "ca000000"}"#,
-            "constraints.0.about",
-            "constraints.0.about ca000000 is a circle, but a symmetric's about is a line or point of this sketch, origin, x_axis, or y_axis",
+            "constraints.k0000000.about",
+            "constraints.k0000000.about ca000000 is a circle, but a symmetric's about is a line or point of this sketch, origin, x_axis, or y_axis",
         ),
         (
             r#"{"id": "k0000000", "type": "horizontal", "line": "k0000001"}, {"id": "k0000001", "type": "vertical", "line": "na000000"}"#,
-            "constraints.0.line",
-            "constraints.0.line k0000001 is a constraint, but a horizontal's line is a line of this sketch",
+            "constraints.k0000000.line",
+            "constraints.k0000000.line k0000001 is a constraint, but a horizontal's line is a line of this sketch",
         ),
         (
             r#"{"id": "k0000000", "type": "tangent_at", "a": "ca000000", "b": "aa000000", "at": "pb000000", "direction": "same"}"#,
-            "constraints.0.a",
-            "constraints.0.a ca000000 is a circle, but a tangent_at's a is a line or arc of this sketch",
+            "constraints.k0000000.a",
+            "constraints.k0000000.a ca000000 is a circle, but a tangent_at's a is a line or arc of this sketch",
         ),
     ];
     for (constraints, parameter, message) in cases {
@@ -780,42 +780,42 @@ fn a_form_that_needs_two_elements_or_a_fitting_pair_gets_them() {
     let cases = [
         (
             r#"{"id": "k0000000", "type": "parallel", "a": "na000000", "b": "na000000"}"#,
-            "constraints.0.b",
+            "constraints.k0000000.b",
             "a parallel's a and b are both na000000: it needs two different elements",
         ),
         (
             r#"{"id": "k0000000", "type": "distance", "a": "pa000000", "b": "pa000000", "value": 1, "driving": true}"#,
-            "constraints.0.b",
+            "constraints.k0000000.b",
             "a distance's a and b are both pa000000: it needs two different elements",
         ),
         (
             r#"{"id": "k0000000", "type": "symmetric", "a": "pb000000", "b": "pc000000", "about": "pb000000"}"#,
-            "constraints.0.about",
+            "constraints.k0000000.about",
             "a symmetric's about, pb000000, is one of the points it mirrors",
         ),
         (
             r#"{"id": "k0000000", "type": "equal", "a": "na000000", "b": "ca000000"}"#,
-            "constraints.0.b",
+            "constraints.k0000000.b",
             "an equal takes two lines, or two circles or arcs",
         ),
         (
             r#"{"id": "k0000000", "type": "tangent", "a": "na000000", "b": "x_axis", "side": "left"}"#,
-            "constraints.0.b",
+            "constraints.k0000000.b",
             "a tangent takes a line and a circle or arc, or two circles or arcs: two lines can't be tangent",
         ),
         (
             r#"{"id": "k0000000", "type": "tangent", "a": "na000000", "b": "ca000000", "side": "outside"}"#,
-            "constraints.0.side",
+            "constraints.k0000000.side",
             "a tangent's side for these curves is left or right",
         ),
         (
             r#"{"id": "k0000000", "type": "tangent", "a": "aa000000", "b": "ca000000", "side": "left"}"#,
-            "constraints.0.side",
+            "constraints.k0000000.side",
             "a tangent's side for these curves is outside or inside",
         ),
         (
             r#"{"id": "k0000000", "type": "tangent_at", "a": "na000000", "b": "aa000000", "at": "pc000000", "direction": "same"}"#,
-            "constraints.0.at",
+            "constraints.k0000000.at",
             "a tangent_at's at, point pc000000, isn't an end of its a, na000000",
         ),
     ];
@@ -854,7 +854,7 @@ fn a_constraint_on_the_fixed_references_alone_is_refused() {
     ] {
         assert_error(
             &problem(&constrained(constraint)),
-            "constraints.0",
+            "constraints.k0000000",
             &format!(
                 "this {what} names only the sketch's fixed references, so it constrains nothing in the sketch"
             ),
@@ -936,12 +936,279 @@ fn every_problem_in_a_sketch_is_reported_at_once_in_field_order() {
     assert_eq!(
         parameters,
         [
-            "points.0.x",
-            "lines.0.to",
+            "points.pa000000.x",
+            "lines.na000000.to",
             "constraints.0.id",
             "constraints.0.value"
         ]
     );
+}
+
+// Paths to a sketch's members (decision 15, docs/design/m4.1-command-api.md): by ID, but by
+// place for a member with no usable ID. Each ID and place below is the fixture's, by hand.
+
+#[test]
+fn the_reader_names_a_member_by_its_id_wherever_the_id_is_written() {
+    // The id written last, after the field refused: found by looking ahead in the member,
+    // not by its place (3, after POINTS's three).
+    let fourth = |member: &str| document(&fields(&format!("{POINTS}, {member}"), "", "", "", ""));
+    let cases = [
+        (
+            fourth(r#"{"x": "1", "y": 0, "construction": false, "id": "pd000000"}"#),
+            "points.pd000000.x",
+            "points.pd000000.x is a string, not a number in millimetres",
+        ),
+        (
+            fourth(r#"{"x": 0, "construction": false, "id": "pd000000"}"#),
+            "points.pd000000.y",
+            "points.pd000000 has no y",
+        ),
+        (
+            fourth(r#"{"x": 0, "y": 0, "z": 0, "construction": false, "id": "pd000000"}"#),
+            "points.pd000000.z",
+            "points.pd000000 has a key it can't have: \"z\"",
+        ),
+        (
+            constrained(
+                r#"{"type": "length", "line": "na000000", "value": "=w", "driving": true, "id": "k0000000"}"#,
+            ),
+            "constraints.k0000000.value",
+            "constraints.k0000000.value is a string, not a length in millimetres",
+        ),
+    ];
+    for (text, parameter, message) in cases {
+        assert_error(&read_error(&text), parameter, message);
+    }
+}
+
+#[test]
+fn a_member_with_no_id_is_named_by_its_place_in_its_own_list() {
+    // The second line: lines.1, its place in lines, not in the sketch (4, after the three
+    // points and the first line).
+    let second = |member: &str| document(&fields(POINTS, &format!("{LINE}, {member}"), "", "", ""));
+    let cases = [
+        (
+            second(r#"{"from": "pa000000", "to": "pc000000", "construction": false}"#),
+            "lines.1.id",
+            "lines.1 has no id",
+        ),
+        (second("7"), "lines.1", "lines.1 is a number, not an object"),
+        (second("{}"), "lines.1.id", "lines.1 has no id"),
+    ];
+    for (text, parameter, message) in cases {
+        assert_error(&read_error(&text), parameter, message);
+    }
+}
+
+#[test]
+fn a_member_whose_id_isnt_an_id_is_named_by_its_place() {
+    // Never by the text its id holds, however it's written, and wherever.
+    let second = |member: &str| document(&fields(POINTS, &format!("{LINE}, {member}"), "", "", ""));
+    let cases = [
+        (
+            second(
+                r#"{"id": "NB000000", "from": "pa000000", "to": "pc000000", "construction": false}"#,
+            ),
+            "lines.1.id",
+            "lines.1.id \"NB000000\" isn't a sketch element's ID",
+        ),
+        (
+            second(r#"{"from": "pa000000", "to": 7, "construction": false, "id": "nb00000"}"#),
+            "lines.1.id",
+            "lines.1.id \"nb00000\" isn't a sketch element's ID",
+        ),
+        (
+            second(r#"{"id": 7, "from": "pa000000", "to": "pc000000", "construction": false}"#),
+            "lines.1.id",
+            "lines.1.id is a number, not a string",
+        ),
+    ];
+    for (text, parameter, message) in cases {
+        assert_error(&read_error(&text), parameter, message);
+    }
+}
+
+#[test]
+fn a_repeated_id_names_its_first_holder_alone_and_each_later_one_by_place() {
+    // The gate. Circle pb000000 takes a point's ID: the point keeps it, the circle is
+    // circles.0. Two constraints k0000000, each of length 0: the first is
+    // constraints.k0000000, the second constraints.1, its duplicate refused at
+    // constraints.1.id.
+    let both = r#"{"id": "k0000000", "type": "length", "line": "na000000", "value": 0, "driving": true}, {"id": "k0000000", "type": "length", "line": "na000000", "value": 0, "driving": true}"#;
+    let text = document(&fields(
+        POINTS,
+        LINE,
+        &circle("pb000000", "pa000000", 0.0),
+        "",
+        both,
+    ));
+    let all = problems(&text);
+    let parameters: Vec<&str> = all.iter().filter_map(|e| e.parameter()).collect();
+    assert_eq!(
+        parameters,
+        [
+            "circles.0.id",
+            "circles.0.radius",
+            "constraints.k0000000.value",
+            "constraints.1.id",
+            "constraints.1.value"
+        ],
+        "{all:#?}"
+    );
+    assert_eq!(
+        all[0].message(),
+        "id pb000000 is already the ID of point pb000000 (points.pb000000)"
+    );
+    assert_eq!(
+        all[3].message(),
+        "id k0000000 is already the ID of constraint k0000000 (constraints.k0000000)"
+    );
+
+    // The reader, the same: a later holder refused by place, in its list or another.
+    let cases = [
+        (
+            document(&fields(
+                &format!(
+                    r#"{POINTS}, {{"id": "pa000000", "x": "1", "y": 0, "construction": false}}"#
+                ),
+                "",
+                "",
+                "",
+                "",
+            )),
+            "points.3.x",
+            "points.3.x is a string, not a number in millimetres",
+        ),
+        (
+            document(&fields(
+                POINTS,
+                r#"{"id": "pb000000", "from": "pa000000", "to": 7, "construction": false}"#,
+                "",
+                "",
+                "",
+            )),
+            "lines.0.to",
+            "lines.0.to is a number, not a string",
+        ),
+        // The first holder, refused, is by its ID.
+        (
+            document(&fields(
+                r#"{"id": "pa000000", "x": 0, "y": 0, "construction": 0}, {"id": "pa000000", "x": 0, "y": 0, "construction": false}"#,
+                "",
+                "",
+                "",
+                "",
+            )),
+            "points.pa000000.construction",
+            "points.pa000000.construction is a number, not true or false",
+        ),
+    ];
+    for (text, parameter, message) in cases {
+        assert_error(&read_error(&text), parameter, message);
+    }
+}
+
+#[test]
+fn an_array_of_anything_but_a_sketchs_members_is_named_by_place() {
+    // Objects with an id where an array holds no sketch members: a fillet's edges, a box's
+    // position. Each is named by its place, never by that id.
+    let sketch = document(&fields(POINTS, LINE, "", "", ""));
+    let with = |feature: &str| format!("{}, {feature}]}}", sketch.strip_suffix("]}").unwrap());
+    let cases = [
+        (
+            with(
+                r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "R", "base": "b0000000", "edges": ["b0000000.box.Edge1", {"id": "pa000000"}], "radius": 1}"#,
+            ),
+            "f0000001",
+            "edges.1",
+        ),
+        (
+            with(
+                r#"{"id": "b0000000", "type": "box", "v": 1, "name": "B", "position": [0, 0, {"id": "pa000000"}], "length": 1, "width": 1, "height": 1}"#,
+            ),
+            "b0000000",
+            "position.2",
+        ),
+    ];
+    for (text, feature, parameter) in cases {
+        let error = read_error(&text);
+        assert_eq!(error.code(), ErrorCode::InvalidInput, "{error:?}");
+        assert_eq!(error.feature(), Some(feature), "{error:?}");
+        assert_eq!(error.parameter(), Some(parameter), "{error:?}");
+    }
+}
+
+#[test]
+fn a_members_path_is_its_own_id_whatever_order_its_list_is_written_in() {
+    // k0000001, of length 0, written before k0000000: its path is its own ID as written,
+    // and again once the save sorts it after k0000000 (never the ID at its place).
+    let text = constrained(
+        r#"{"id": "k0000001", "type": "length", "line": "na000000", "value": 0, "driving": true}, {"id": "k0000000", "type": "horizontal", "line": "na000000"}"#,
+    );
+    assert_error(
+        &problem(&text),
+        "constraints.k0000001.value",
+        "a length's value is 0 mm",
+    );
+    let saved = write(&read(text.as_bytes()).unwrap()).unwrap();
+    assert!(
+        saved.find("k0000000").unwrap() < saved.find("k0000001").unwrap(),
+        "{saved}"
+    );
+    assert_error(
+        &problem(&saved),
+        "constraints.k0000001.value",
+        "a length's value is 0 mm",
+    );
+}
+
+#[test]
+fn the_reader_takes_the_lists_in_the_formats_order() {
+    // Circles before arcs: an arc holding a circle's ID is its later holder, by place.
+    let text = document(&fields(
+        POINTS,
+        "",
+        CIRCLE,
+        r#"{"id": "ca000000", "center": "pa000000", "start": 7, "end": "pc000000", "construction": false}"#,
+        "",
+    ));
+    assert_error(
+        &read_error(&text),
+        "arcs.0.start",
+        "arcs.0.start is a number, not a string",
+    );
+    // Points before constraints, whatever order the file writes the lists in: a
+    // constraint holding a point's ID is its later holder, by place.
+    let text = document(&format!(
+        r#""plane": "xy", "constraints": [{{"id": "pa000000", "type": "length", "line": "na000000", "value": "1", "driving": true}}], "points": [{POINTS}], "lines": [{LINE}], "circles": [], "arcs": []"#
+    ));
+    assert_error(
+        &read_error(&text),
+        "constraints.0.value",
+        "constraints.0.value is a string, not a length in millimetres",
+    );
+}
+
+#[test]
+fn the_ids_a_sketch_holds_are_its_own_for_its_paths() {
+    // A second sketch with a point pa000000, as the first sketch has: it holds the ID in
+    // its own sketch, so it's named by it, by the reader and by the gate.
+    let second = |x: &str| {
+        let one = document(&fields(POINTS, "", "", "", ""));
+        let other = format!(
+            r#"{{"id": "k7f2qx3n", "type": "sketch", "v": 1, "name": "T", "plane": "xz", "points": [{{"id": "pa000000", "x": {x}, "y": 0, "construction": false}}], "lines": [], "circles": [], "arcs": [], "constraints": []}}"#
+        );
+        format!("{}, {other}]}}", one.strip_suffix("]}").unwrap())
+    };
+    let error = read_error(&second("\"1\""));
+    assert_eq!(error.feature(), Some("k7f2qx3n"), "{error:?}");
+    assert_eq!(error.parameter(), Some("points.pa000000.x"), "{error:?}");
+    let all = problems(&second("2000000"));
+    let [error] = &all[..] else {
+        panic!("{all:#?}")
+    };
+    assert_eq!(error.feature(), Some("k7f2qx3n"), "{error:?}");
+    assert_eq!(error.parameter(), Some("points.pa000000.x"), "{error:?}");
 }
 
 #[test]

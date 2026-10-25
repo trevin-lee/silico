@@ -11,12 +11,14 @@ use std::time::Duration;
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
-use silico_core::command::{Response, Revision, Running, SessionId, Sessions};
+use silico_core::command::{Response, Revision, SessionId, Sessions};
 use silico_core::document::FeatureId;
 use silico_core::fake::{FakeClient, FakeKernel};
 use silico_core::kernel::{Clients, Generation, Kernel, KernelRequest};
 use silico_core::pool::Pending;
 use tempfile::TempDir;
+
+use crate::sessions::{HANG, answer, refusal};
 
 /// A box document, not in canonical form (keys on one line, `40.0` for 40): what `text`
 /// gives must be these bytes, not the canonical form's.
@@ -112,9 +114,6 @@ fn slow_first() -> SlowFirst {
     }
 }
 
-/// Longer than any command here takes on a loaded machine: past it, a command hangs.
-const HANG: Duration = Duration::from_secs(60);
-
 /// Sessions on a fake kernel, with documents in a scratch directory and each cache's
 /// secret outside it; and the cache directories opened, in order.
 struct Fixture {
@@ -162,29 +161,6 @@ impl Fixture {
         assert!(response.result.is_ok(), "{response:?}");
         response.session.unwrap().id
     }
-}
-
-/// The command's answer, failing if it hangs.
-fn answer<T>(running: Running<T>) -> Response<T> {
-    match running.wait_timeout(HANG) {
-        Ok(response) => response,
-        Err(_) => panic!("the command didn't answer in {HANG:?}"),
-    }
-}
-
-/// The one error a refused response gives: its code, message, parameter, and suggestion.
-fn refusal<T: std::fmt::Debug>(
-    response: &Response<T>,
-) -> (ErrorCode, String, Option<String>, Option<String>) {
-    let problems = response.result.as_ref().unwrap_err();
-    assert_eq!(problems.total(), 1, "{problems:?}");
-    let error = &problems.errors()[0];
-    (
-        error.code(),
-        error.message().to_owned(),
-        error.parameter().map(str::to_owned),
-        error.suggestion().map(str::to_owned),
-    )
 }
 
 fn not_open(id: &str) -> (ErrorCode, String, Option<String>, Option<String>) {
@@ -917,4 +893,47 @@ fn a_revision_is_followed_by_one_more() {
     let two = Revision::OPENED.next().unwrap();
     assert_eq!(two.number(), 2);
     assert_eq!(two.next().unwrap().number(), 3);
+}
+
+/// What `open` says of a path that isn't UTF-8 in `dir`, named `a`, a byte 0xff, `.silico`:
+/// the path shown with the byte as U+FFFD, as only a message may show it.
+#[cfg(unix)]
+fn not_utf8(dir: &Path) -> (ErrorCode, String, Option<String>, Option<String>) {
+    (
+        ErrorCode::InvalidInput,
+        format!(
+            "\"{}/a\u{fffd}.silico\" isn't UTF-8, so the API can't name it exactly",
+            dir.display()
+        ),
+        Some("path".to_owned()),
+        Some("rename the file, or open it through a path that is UTF-8".to_owned()),
+    )
+}
+
+#[cfg(unix)]
+#[test]
+fn a_path_that_isnt_utf8_isnt_opened_or_made_and_takes_no_session_id() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let f = fixture();
+    let path = f
+        .dir
+        .path()
+        .join(std::ffi::OsStr::from_bytes(b"a\xff.silico"));
+    // Refused before the file is looked for, so on every system, the file there or not; and
+    // with `create`, nothing is made.
+    for create in [false, true] {
+        let response = answer(f.sessions.open(&path, create));
+        assert_eq!(refusal(&response), not_utf8(f.dir.path()));
+        assert_eq!(response.session, None);
+    }
+    assert!(std::fs::symlink_metadata(&path).is_err());
+    // A file of that name, where the file system takes one (Linux's do; macOS's APFS refuses
+    // a name that isn't UTF-8, so there this part is skipped): refused all the same.
+    if std::fs::write(&path, BOX).is_ok() {
+        let response = answer(f.sessions.open(&path, false));
+        assert_eq!(refusal(&response), not_utf8(f.dir.path()));
+    }
+    // No session ID was taken: the next open is s1.
+    let opened = answer(f.sessions.open(f.file("b.silico", BOX), false));
+    assert_eq!(opened.session.unwrap().id.to_string(), "s1");
 }

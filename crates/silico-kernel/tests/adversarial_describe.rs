@@ -675,6 +675,19 @@ fn a_worker_claiming_endless_elements_is_refused_at_its_first_batch_against_the_
         Some("it says the shape has 4294967295 faces, and its summary counts 6")
     );
     assert_eq!(worker.requests_sent(), sent + 2);
+    // A test worker told nothing describes as a worker does: the box whole, 6, 12, and 8.
+    let mut plain =
+        KernelWorker::start_worker(Path::new(env!("CARGO_BIN_EXE_silico-kernel-test-worker")))
+            .unwrap();
+    let block = plain
+        .make(Primitive::Box {
+            dx: 1.0,
+            dy: 2.0,
+            dz: 3.0,
+        })
+        .unwrap();
+    let d = plain.describe(&block).unwrap();
+    assert_eq!((d.faces.len(), d.edges.len(), d.vertices.len()), (6, 12, 8));
 }
 
 // ---- Random flat solids: the divergence theorem ----
