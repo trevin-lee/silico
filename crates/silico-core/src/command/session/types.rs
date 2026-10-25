@@ -30,7 +30,7 @@ impl SessionId {
     /// leading zeros; none for anything else. A request names its session so
     /// (`command::wire`).
     pub fn parse(text: &str) -> Option<SessionId> {
-        super::whole_number(text.strip_prefix('s')?)
+        crate::command::whole_number(text.strip_prefix('s')?)
             .filter(|&n| n >= 1)
             .map(SessionId)
     }

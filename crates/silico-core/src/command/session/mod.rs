@@ -67,7 +67,7 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 
 use super::edit::{self, FeatureIds};
-use super::{Gated, Problems, bodies, check, formatted, whole_number};
+use super::{Gated, Problems};
 use crate::cache::Cache;
 use crate::document::json::Node;
 use crate::document::{self, FeatureId};
@@ -111,6 +111,10 @@ pub struct Sessions<P: Clients + 'static> {
 
 /// One open session, shared by its thread, the callers that queue its commands, and the
 /// registry.
+///
+/// Its locks, and the registry's, are taken in one order, each let go before one earlier in
+/// the order is taken: the registry's book, then a session's published reads, then its held
+/// state, then its rebuilds, then its queue. The registry's `feature_ids` is taken alone.
 struct Session<C: Kernel + 'static> {
     id: SessionId,
     held: Mutex<Held>,

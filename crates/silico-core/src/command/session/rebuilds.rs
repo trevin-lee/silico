@@ -461,7 +461,7 @@ pub(super) fn published_answer<T>(
 pub(in crate::command) fn faulted(model: &Model) -> bool {
     // As `check` finds one, in a feature's failure or a measure its drift needed, so the
     // two never differ (decision 32 changes both, there).
-    super::check(model).is_err()
+    crate::command::check(model).is_err()
 }
 
 /// The refusal of a published read with nothing published yet, its rebuild started or

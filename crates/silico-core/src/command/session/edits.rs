@@ -4,8 +4,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use super::edit::Candidate;
 use super::{Committed, Gated, ModelRead, Problems, Revision, Session, SessionId, shown};
+use crate::command::edit::Candidate;
 use crate::document::Document;
 use crate::kernel::Kernel;
 use crate::worker::lock;

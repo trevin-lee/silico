@@ -3,15 +3,12 @@
 //! the file changed says ([`Saver`]), and the reload of a file changed outside the session
 //! before a command (decision 2).
 //!
-//! A session's locks are taken in one order: its held state, then its rebuilds, then its
-//! queue (each lock let go before one earlier in that order is taken). The registry's book,
-//! and a session's published reads, come before all three.
+//! The order its locks are taken in is on [`Session`].
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use super::edit::Candidate;
 use super::rebuilds::{Kept, Rebuilds};
 use super::registry::Unclaimed;
 #[cfg(doc)]
@@ -20,6 +17,7 @@ use super::{
     Begun, Committed, Gated, ModelChoice, ModelRead, Problems, Published, Reformatted, Revision,
     RolledBack, Session, SessionId, shown,
 };
+use crate::command::edit::Candidate;
 use crate::document::json::MAX_INPUT_LEN;
 use crate::document::{self, Document, FeatureId};
 use crate::file;
@@ -460,8 +458,8 @@ impl<C: Kernel + 'static> Session<C> {
             revision,
             of: ModelChoice::Current,
         });
-        let formatted =
-            super::formatted(&model, &reach, &model.drifted()).map_err(Problems::from)??;
+        let formatted = crate::command::formatted(&model, &reach, &model.drifted())
+            .map_err(Problems::from)??;
         if unchanged {
             if through == Through::Transaction {
                 self.unwritten(&begun, revision)?;
@@ -589,7 +587,8 @@ impl<C: Kernel + 'static> Session<C> {
             .filter(|id| drifted.contains(id) && writes.contains(*id) && model.records(id))
             .cloned()
             .collect();
-        let formatted = super::formatted(&model, &writes, &drift).map_err(Problems::from)??;
+        let formatted =
+            crate::command::formatted(&model, &writes, &drift).map_err(Problems::from)??;
         let saved = formatted.text.into_bytes();
         let changed = saved != *bytes;
         let written = write && changed;

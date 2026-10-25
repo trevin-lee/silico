@@ -12,7 +12,6 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 
 #[cfg(doc)]
 use super::MAX_SESSIONS;
-use super::edit::FeatureIds;
 use super::rebuilds::Rebuilds;
 use super::threads::{Reads, Threads};
 use super::transaction::{Held, not_reloaded, of_file, put_back, too_long};
@@ -20,6 +19,7 @@ use super::{
     Gated, Job, Opened, Problems, Response, Revision, Session, SessionId, Turn, closing, shown,
 };
 use crate::cache::Cache;
+use crate::command::edit::FeatureIds;
 use crate::document::json::MAX_INPUT_LEN;
 use crate::document::{self, Document, FormatVersion, NamingScheme, Units};
 use crate::file;
@@ -269,7 +269,7 @@ fn open<P: Clients + 'static>(
         features: gated.document().ok().map(|d| d.features.len()),
         bodies: gated
             .document()
-            .map(|d| super::bodies(d).into_iter().cloned().collect())
+            .map(|d| crate::command::bodies(d).into_iter().cloned().collect())
             .unwrap_or_default(),
         problems: gated.problems(),
     };
