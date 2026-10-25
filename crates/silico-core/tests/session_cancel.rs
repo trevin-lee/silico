@@ -154,10 +154,14 @@ fn cancel_naming_the_running_check_stops_its_rebuild_and_the_check_answers_cance
     assert_eq!(status.running, None);
     assert_eq!(status.rebuild.state, RebuildState::Stopped);
     // The app's frame doesn't start it again: nothing's published, and nothing asked.
-    let published = f.sessions.published(&f.id);
+    let (code, message, parameter, _) = refusal(&f.sessions.published(&f.id));
     assert_eq!(
-        published.result.unwrap_err().errors()[0].parameter(),
-        Some("model")
+        (code, message.as_str(), parameter.as_deref()),
+        (
+            ErrorCode::InvalidInput,
+            "session s1 has published no model yet: its rebuild was cancelled",
+            Some("model")
+        )
     );
     assert_eq!(f.boxes(), 1);
     assert_eq!(f.rebuild(), RebuildState::Stopped);

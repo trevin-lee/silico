@@ -444,9 +444,11 @@ impl<C: Kernel + 'static> Session<C> {
             .filter(|published| published.revision <= revision)
         {
             Some(published) => Ok(published.clone()),
-            None => Err(Problems::from(
-                failed.unwrap_or_else(|| nothing_published(self.id)),
-            )),
+            None => Err(Problems::from(match failed {
+                Some(failed) => failed,
+                None if stopped => stopped_unpublished(self.id),
+                None => nothing_published(self.id),
+            })),
         }
     }
 
@@ -599,6 +601,17 @@ pub(super) fn nothing_published(id: SessionId) -> Error {
         "read the current model, which waits for its rebuild, or the published one again \
          once the rebuild this read started is done",
     )
+}
+
+/// The refusal of a published read with nothing published, its revision's rebuild
+/// cancelled: started again by a read of the current model, never by a published read.
+fn stopped_unpublished(id: SessionId) -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!("session {id} has published no model yet: its rebuild was cancelled"),
+    )
+    .with_parameter("model")
+    .with_suggestion("read the current model, which starts the rebuild again and waits for it")
 }
 
 /// Waits for a rebuild, `run`, then records what it came to in `session`'s rebuilds and
