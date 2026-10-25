@@ -373,6 +373,48 @@ fn a_value_past_what_a_length_holds_refuses_the_read_naming_the_feature() {
 // `elements`
 
 #[test]
+fn a_cursors_long_bad_name_is_refused_short_and_cut() {
+    // A name that isn't one, a megabyte long, is said cut short, as the reader cuts every
+    // string it echoes: the parameter says where it is in full.
+    let model = model_of(TWO_BODIES);
+    for name in [
+        "x".repeat(1 << 20),
+        format!("aaaaaaaa.box.Face1{}", " ".repeat(1 << 20)),
+    ] {
+        let cursor = Cursor {
+            revision: Revision::OPENED,
+            feature: id("aaaaaaaa"),
+            name,
+        };
+        let refused = list(&model, Revision::OPENED, None, Some(&cursor), 10).unwrap_err();
+        let error = &refused.errors()[0];
+        assert_eq!(error.code(), ErrorCode::InvalidInput);
+        assert_eq!(error.parameter(), Some("after"));
+        assert!(
+            error.message().len() < 600,
+            "{} bytes",
+            error.message().len()
+        );
+        assert!(error.message().contains("\"…"), "{}", error.message());
+    }
+    // A short one whole, its control character escaped.
+    let cursor = Cursor {
+        revision: Revision::OPENED,
+        feature: id("aaaaaaaa"),
+        name: "Face\u{1b}".to_owned(),
+    };
+    let refused = list(&model, Revision::OPENED, None, Some(&cursor), 10).unwrap_err();
+    assert_eq!(refused.errors()[0].code(), ErrorCode::InvalidInput);
+    assert!(
+        refused.errors()[0]
+            .message()
+            .starts_with(r#"the cursor's name, "Face\u{1b}", isn't an element's name: "#),
+        "{}",
+        refused.errors()[0].message()
+    );
+}
+
+#[test]
 fn a_cursor_naming_an_entry_the_listing_hasnt_is_refused_naming_after() {
     let model = model_of(TWO_BODIES);
     let whole = list(&model, Revision::OPENED, None, None, ENTRIES_AT_MOST).unwrap();
@@ -1297,43 +1339,3 @@ const SKETCH_ONLY: &str = r#"{
   ]
 }
 "#;
-
-#[test]
-fn a_cursors_long_bad_name_is_refused_short_and_cut() {
-    // A name that isn't one, a megabyte long, is said cut short, as the reader cuts every
-    // string it echoes: the parameter says where it is in full.
-    let model = model_of(TWO_BODIES);
-    for name in [
-        "x".repeat(1 << 20),
-        format!("aaaaaaaa.box.Face1{}", " ".repeat(1 << 20)),
-    ] {
-        let cursor = Cursor {
-            revision: Revision::OPENED,
-            feature: id("aaaaaaaa"),
-            name,
-        };
-        let refused = list(&model, Revision::OPENED, None, Some(&cursor), 10).unwrap_err();
-        let error = &refused.errors()[0];
-        assert_eq!(error.parameter(), Some("after"));
-        assert!(
-            error.message().len() < 600,
-            "{} bytes",
-            error.message().len()
-        );
-        assert!(error.message().contains("\"…"), "{}", error.message());
-    }
-    // A short one whole, its control character escaped.
-    let cursor = Cursor {
-        revision: Revision::OPENED,
-        feature: id("aaaaaaaa"),
-        name: "Face\u{1b}".to_owned(),
-    };
-    let refused = list(&model, Revision::OPENED, None, Some(&cursor), 10).unwrap_err();
-    assert!(
-        refused.errors()[0]
-            .message()
-            .starts_with(r#"the cursor's name, "Face\u{1b}", isn't an element's name: "#),
-        "{}",
-        refused.errors()[0].message()
-    );
-}

@@ -1,6 +1,7 @@
 //! M4.4's `schema` (docs/design/m4.1-command-api.md, section 7): the document's JSON
 //! Schema, or a command's request and result schemas, as the protected snapshots in
-//! `tests/contract/` hold them, so every client reads the shapes MCP's `tools/list` gives.
+//! `tests/contract/` hold them, so every client reads the shapes of a call's arguments and
+//! of its result.
 
 use super::Problems;
 use super::wire;
@@ -44,7 +45,7 @@ pub fn schema(of: &str) -> Result<SchemaAnswer, Problems> {
             ),
         )
         .with_parameter("of")
-        .with_suggestion("give document, or one of the candidates")
+        .with_suggestion("give one of the candidates")
         .with_candidates(
             std::iter::once("document")
                 .chain(wire::COMMANDS)
