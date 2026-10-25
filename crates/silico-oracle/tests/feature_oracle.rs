@@ -52,6 +52,7 @@ fn the_case_file_holds_every_case_of_the_design() {
         "groove_both_sides_180",
         "groove_both_sides_near_270",
         "groove_both_sides_mirrored_360",
+        "cylinder_revolved_onto_a_box",
     ] {
         assert!(names.contains(name), "{name} is missing");
     }
@@ -63,13 +64,18 @@ fn the_case_file_holds_every_case_of_the_design() {
         4 + 18,
         "the ported pockets and each pocket form"
     );
-    assert_eq!(count("torus_"), 42);
+    assert_eq!(
+        count("torus_"),
+        42 + 3,
+        "the design's torus segments, and the M3 close's three about the x axis"
+    );
     assert_eq!(
         count("groove_"),
         2 + 24 + 10,
         "the ported groove, each groove and its cylinder, and the five grooves of regions either side of their axis (council round 2) and their cylinders"
     );
-    assert_eq!(cases.cases.len(), 124);
+    // And the M3 close's four revolves (three tori about the x axis, a cylinder onto a box).
+    assert_eq!(cases.cases.len(), 124 + 4);
 }
 
 #[test]
