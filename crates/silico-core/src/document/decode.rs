@@ -217,7 +217,7 @@ impl Fields {
 
 /// An unknown key as `parameter` names it: as written if it's a plain name (letters,
 /// digits, and `_`, at most [`SHOWN_CHARS`]), quoted as messages show it otherwise.
-fn field_name(key: &str) -> String {
+pub(crate) fn field_name(key: &str) -> String {
     let plain = !key.is_empty()
         && key.len() <= SHOWN_CHARS
         && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
@@ -250,7 +250,7 @@ fn whole_number(
 
 /// A number's text as an error shows it, cut short if it's long. (The reader has checked
 /// its characters: digits, `-`, `.`, `e`, `+`.)
-fn shown_number(text: &str) -> String {
+pub(crate) fn shown_number(text: &str) -> String {
     match text.get(..SHOWN_CHARS) {
         Some(start) if start.len() < text.len() => format!("{start}…"),
         _ => text.to_owned(),

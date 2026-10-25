@@ -13,6 +13,8 @@ mod sketch_gate;
 mod validate;
 pub(crate) mod write;
 
+pub(crate) use decode::{field_name, shown_number};
+
 pub use fingerprint::{Difference, Fingerprint, MEASURE_DECIMALS, Measure};
 pub use model::{
     Axis, ChamferSize, Document, ElementName, Extent, ExtentValue, FEATURE_TYPES, Feature,

@@ -213,7 +213,11 @@ pub struct Fields<'a> {
     path: String,
     members: &'a [Member],
     taken: Vec<bool>,
+    /// The first [`PROBLEMS_LISTED`](crate::document::PROBLEMS_LISTED) refusals, in the
+    /// order found; the rest are only counted, so a request of a million bad values holds
+    /// a hundred errors, not a million.
     refused: Vec<Error>,
+    unlisted: u64,
 }
 
 impl<'a> Fields<'a> {
@@ -226,6 +230,7 @@ impl<'a> Fields<'a> {
                 members,
                 taken: vec![false; members.len()],
                 refused: Vec::new(),
+                unlisted: 0,
             }),
             other => Err(invalid(
                 path,
@@ -233,6 +238,24 @@ impl<'a> Fields<'a> {
             )
             .into()),
         }
+    }
+
+    /// Keeps `error`, if fewer than [`PROBLEMS_LISTED`](crate::document::PROBLEMS_LISTED)
+    /// are kept, and counts it either way.
+    fn refuse(&mut self, error: Error) {
+        if self.refused.len() < crate::document::PROBLEMS_LISTED {
+            self.refused.push(error);
+        } else {
+            self.unlisted += 1;
+        }
+    }
+
+    /// Keeps `listed`, refusals found elsewhere, and counts `unlisted` more.
+    fn refuse_all(&mut self, listed: impl IntoIterator<Item = Error>, unlisted: u64) {
+        for error in listed {
+            self.refuse(error);
+        }
+        self.unlisted += unlisted;
     }
 
     /// The dotted path of `key` here.
@@ -256,10 +279,9 @@ impl<'a> Fields<'a> {
             }
             None => {
                 let at = self.at(key);
-                self.refused
-                    .push(invalid(&at, format!("{at} is missing")).with_suggestion(
-                        "give every field the request's shape has; null where it allows none",
-                    ));
+                self.refuse(invalid(&at, format!("{at} is missing")).with_suggestion(
+                    "give every field the request's shape has; null where it allows none",
+                ));
                 None
             }
         }
@@ -277,7 +299,7 @@ impl<'a> Fields<'a> {
     /// A refusal of `key`'s value: `what` it must be, and what it was.
     fn wrong(&mut self, key: &str, what: &str, node: &Node) {
         let at = self.at(key);
-        self.refused.push(invalid(
+        self.refuse(invalid(
             &at,
             format!("{at} must be {what}, got {}", node.value.kind()),
         ));
@@ -330,7 +352,7 @@ impl<'a> Fields<'a> {
         };
         if whole.is_none() {
             let at = self.at(key);
-            self.refused.push(invalid(
+            self.refuse(invalid(
                 &at,
                 format!(
                     "{at} must be a whole number from 0 to {}, got {}",
@@ -351,7 +373,7 @@ impl<'a> Fields<'a> {
         };
         if id.is_none() {
             let at = self.at("session");
-            self.refused.push(
+            self.refuse(
                 invalid(
                     &at,
                     format!(
@@ -375,7 +397,7 @@ impl<'a> Fields<'a> {
         };
         if choice.is_none() {
             let at = self.at("model");
-            self.refused.push(
+            self.refuse(
                 invalid(
                     &at,
                     format!("{at} must be current or published, got {}", written(node)),
@@ -397,7 +419,7 @@ impl<'a> Fields<'a> {
                 };
                 if id.is_none() {
                     let at = self.at(key);
-                    self.refused.push(invalid(
+                    self.refuse(invalid(
                         &at,
                         format!("{at} must be a feature's ID or null, got {}", written(node)),
                     ));
@@ -426,7 +448,7 @@ impl<'a> Fields<'a> {
                 Value::String(text) if let Some(id) = FeatureId::new(text) => ids.push(id),
                 _ => {
                     fine = false;
-                    self.refused.push(invalid(
+                    self.refuse(invalid(
                         &format!("{at}.{i}"),
                         format!("{at}.{i} must be a feature's ID, got {}", written(item)),
                     ));
@@ -444,7 +466,10 @@ impl<'a> Fields<'a> {
             Some(node) => match Fields::of(node, &at) {
                 Ok(fields) => Some(Some(fields)),
                 Err(refused) => {
-                    self.refused.extend(refused.errors().iter().cloned());
+                    let unlisted = refused
+                        .total()
+                        .saturating_sub(refused.errors().len() as u64);
+                    self.refuse_all(refused.errors().iter().cloned(), unlisted);
                     None
                 }
             },
@@ -453,40 +478,38 @@ impl<'a> Fields<'a> {
 
     /// Keeps `inner`'s refusals, an object read from one of these fields, with these.
     pub fn absorb(&mut self, inner: Fields<'a>) {
-        let refused = inner.finish();
-        self.refused.extend(refused);
+        let (listed, unlisted) = inner.finish();
+        self.refuse_all(listed, unlisted);
     }
 
     /// Every key not taken, refused, and every refusal so far, the first
     /// [`PROBLEMS_LISTED`](crate::document::PROBLEMS_LISTED) listed and all counted; or `Ok`
     /// if there are none.
     pub fn done(self) -> Result<(), Problems> {
-        let mut refused = self.finish();
+        let (refused, unlisted) = self.finish();
         if refused.is_empty() {
             return Ok(());
         }
-        let total = refused.len() as u64;
-        refused.truncate(crate::document::PROBLEMS_LISTED);
-        let unlisted = total - refused.len() as u64;
         Err(Problems::with_unlisted(refused, unlisted))
     }
 
-    fn finish(mut self) -> Vec<Error> {
-        for (member, taken) in self.members.iter().zip(&self.taken) {
+    /// The refusals listed and how many more there are, every key not taken refused. A
+    /// key is named as the document's reader names one (`field_name`): as written if it's a
+    /// plain name, otherwise quoted, escaped, and cut short, so no key makes its refusal
+    /// unsafe to print, long, or a path that names another field (`a.b`).
+    fn finish(mut self) -> (Vec<Error>, u64) {
+        let (members, taken) = (self.members, std::mem::take(&mut self.taken));
+        for (member, taken) in members.iter().zip(taken) {
             if !taken {
-                let at = if self.path.is_empty() {
-                    member.key.clone()
-                } else {
-                    format!("{}.{}", self.path, member.key)
-                };
-                self.refused.push(
+                let at = self.at(&crate::document::field_name(&member.key));
+                self.refuse(
                     invalid(&at, format!("{at} isn't a field of this request")).with_suggestion(
                         "leave it out: a request has only the fields its shape gives",
                     ),
                 );
             }
         }
-        self.refused
+        (self.refused, self.unlisted)
     }
 }
 
@@ -519,10 +542,11 @@ fn whole(text: &str) -> Option<u32> {
     text.parse().ok()
 }
 
-/// What a value was, for a refusal: a number or string as written, else its kind.
+/// What a value was, for a refusal: a number or string as written (a string quoted and
+/// escaped, either cut short if it's long), else its kind.
 fn written(node: &Node) -> String {
     match &node.value {
-        Value::Number(text) => text.clone(),
+        Value::Number(text) => crate::document::shown_number(text),
         Value::String(text) => crate::document::json::shown(text),
         other => other.kind().to_owned(),
     }
@@ -621,5 +645,7 @@ pub fn snapshot(of: &str) -> Option<Result<String, Error>> {
 /// The names [`snapshot`] knows, in order.
 pub const SNAPSHOTS: &[&str] = &["envelope"];
 
+#[cfg(test)]
+mod adversarial;
 #[cfg(test)]
 mod tests;
