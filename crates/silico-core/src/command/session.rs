@@ -412,7 +412,11 @@ impl<P: Clients + 'static> Sessions<P> {
     /// the gate. The session opens even if the gate refuses the document, holding it and the
     /// gate's problems (decision 21). With `create`, writes a new, empty document at `path`
     /// in canonical form first, refusing if anything is there. Refused if the file is open
-    /// in another session of this process (by any path to it), or [`MAX_SESSIONS`] are open.
+    /// in another session of this process (by any path to it), or [`MAX_SESSIONS`] are open
+    /// or opening. The session's ID is taken when the open is asked for, since its thread is
+    /// named by it: an open refused on that thread (no such file, open already) uses an ID
+    /// no session then has, and one refused here (too many open, the sessions closing)
+    /// uses none.
     pub fn open(&self, path: impl Into<PathBuf>, create: bool) -> Running<Opened> {
         let path = path.into();
         let mut book = lock(&self.registry.book);
@@ -807,6 +811,7 @@ fn made<P: Clients + 'static>(
     id: SessionId,
     path: &Path,
 ) -> Result<(PathBuf, Vec<u8>, MadeFile), Problems> {
+    let _span = tracing::info_span!("create").entered();
     let name = path.file_name().ok_or_else(|| {
         Error::new(
             ErrorCode::InvalidInput,

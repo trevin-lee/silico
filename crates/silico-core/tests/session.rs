@@ -4,7 +4,7 @@
 //! the test wrote them, the design's texts and messages, and counts by hand.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -13,7 +13,9 @@ use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::{Response, Revision, Running, SessionId, Sessions};
 use silico_core::document::FeatureId;
-use silico_core::fake::FakeKernel;
+use silico_core::fake::{FakeClient, FakeKernel};
+use silico_core::kernel::{Clients, Generation, Kernel, KernelRequest};
+use silico_core::pool::Pending;
 use tempfile::TempDir;
 
 /// A box document, not in canonical form (keys on one line, `40.0` for 40): what `text`
@@ -25,6 +27,90 @@ const FLAT_BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": 
 
 /// An empty document in canonical form, as the design's `text` example gives it.
 const EMPTY: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": []\n}\n";
+
+/// The fake kernel, counting its clients alive: each session's engine holds one until the
+/// session's thread ends.
+struct Counted {
+    fake: FakeKernel,
+    live: Arc<AtomicUsize>,
+}
+
+struct CountedClient {
+    inner: FakeClient,
+    live: Arc<AtomicUsize>,
+}
+
+impl Clients for Counted {
+    type Client = CountedClient;
+
+    fn client(&self) -> CountedClient {
+        self.live.fetch_add(1, Ordering::SeqCst);
+        CountedClient {
+            inner: self.fake.client(),
+            live: Arc::clone(&self.live),
+        }
+    }
+}
+
+impl Drop for CountedClient {
+    fn drop(&mut self) {
+        self.live.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl Kernel for CountedClient {
+    fn identity(&self) -> &str {
+        self.inner.identity()
+    }
+
+    fn generation(&self) -> Generation {
+        self.inner.generation()
+    }
+
+    fn advance(&self, generation: Generation) {
+        self.inner.advance(generation);
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: Generation,
+        request: KernelRequest<T>,
+    ) -> Pending<T> {
+        self.inner.submit(generation, request)
+    }
+}
+
+/// A cache opener that waits, the first time a cache in a directory named `slow` is opened,
+/// until `release` is sent: an open there waits inside, on its session's thread, having
+/// claimed its file; `entered` says when it's waiting. Dropped, `release` goes first, which
+/// lets the open go on, so a test that fails while it waits ends rather than hanging in
+/// the sessions' drop.
+struct SlowFirst {
+    release: mpsc::Sender<()>,
+    entered: mpsc::Receiver<()>,
+    f: Fixture,
+}
+
+fn slow_first() -> SlowFirst {
+    let (release, released) = mpsc::channel::<()>();
+    let (enter, entered) = mpsc::channel::<()>();
+    let waiting = Mutex::new((released, enter));
+    let waited = AtomicBool::new(false);
+    let f = fixture_with(move |cache| {
+        if cache.parent().is_some_and(|p| p.ends_with("slow"))
+            && !waited.swap(true, Ordering::SeqCst)
+        {
+            let waiting = waiting.lock().unwrap();
+            let _ = waiting.1.send(());
+            let _ = waiting.0.recv();
+        }
+    });
+    SlowFirst {
+        release,
+        entered,
+        f,
+    }
+}
 
 /// Longer than any command here takes on a loaded machine: past it, a command hangs.
 const HANG: Duration = Duration::from_secs(60);
@@ -122,6 +208,8 @@ fn session_ids_count_opens_and_a_closed_ones_is_never_given_again() {
         .collect();
     let names: Vec<String> = ids.iter().map(SessionId::to_string).collect();
     assert_eq!(names, ["s1", "s2", "s3"]);
+    let numbers: Vec<u64> = ids.iter().map(|id| id.number()).collect();
+    assert_eq!(numbers, [1, 2, 3]);
     assert_eq!(answer(f.sessions.close(&ids[1])).result, Ok(()));
     // Two open, s2 closed: the next is s4, never s2 again, nor s3 (one more than those open).
     assert_eq!(f.open(&f.file("d.silico", BOX)).to_string(), "s4");
@@ -196,6 +284,10 @@ fn a_document_the_gate_refuses_opens_with_its_problems() {
     assert_eq!(opened.problems.total(), 1);
     let problem = &opened.problems.errors()[0];
     assert_eq!(problem.code(), ErrorCode::InvalidInput);
+    assert_eq!(
+        problem.message(),
+        "box length must be a length above 1e-7 mm and at most 1e6 mm (a kilometre), got 0"
+    );
     assert_eq!(problem.feature(), Some("k7f2qx3m"));
     assert_eq!(problem.parameter(), Some("length"));
     let s1 = response.session.unwrap().id;
@@ -214,25 +306,28 @@ fn a_document_the_gate_refuses_opens_with_its_problems() {
 
 #[test]
 fn text_that_isnt_a_document_opens_with_the_readers_error_which_outline_gives_too() {
+    // A comment isn't JSON: the reader expects a value at its first character.
+    let junk = "// not a document";
+    let reader = "the document isn't valid JSON: expected a value, found `/`, at line 1, column 1";
     let f = fixture();
-    let response = answer(f.sessions.open(f.file("junk.silico", "not json"), false));
+    let response = answer(f.sessions.open(f.file("junk.silico", junk), false));
     let opened = response.result.unwrap();
     assert_eq!(opened.features, None);
     assert!(opened.bodies.is_empty());
     assert_eq!(opened.problems.total(), 1);
     assert_eq!(opened.problems.errors()[0].code(), ErrorCode::InvalidInput);
+    assert_eq!(opened.problems.errors()[0].message(), reader);
     let s1 = response.session.unwrap().id;
     let status = f.sessions.status(&s1).result.unwrap();
     assert_eq!(status.features, None);
     assert!(!status.gated);
-    assert_eq!(
-        answer(f.sessions.text(&s1, None)).result.unwrap(),
-        "not json"
-    );
+    assert_eq!(answer(f.sessions.text(&s1, None)).result.unwrap(), junk);
     let outline = answer(f.sessions.outline(&s1));
-    assert_eq!(outline.result.unwrap_err(), opened.problems);
+    let (code, message, _, _) = refusal(&outline);
+    assert_eq!((code, message.as_str()), (ErrorCode::InvalidInput, reader));
     let feature = answer(f.sessions.text(&s1, FeatureId::new("k7f2qx3m")));
-    assert_eq!(feature.result.unwrap_err(), opened.problems);
+    let (code, message, _, _) = refusal(&feature);
+    assert_eq!((code, message.as_str()), (ErrorCode::InvalidInput, reader));
 }
 
 #[test]
@@ -291,9 +386,13 @@ fn a_file_is_open_in_one_session_by_any_of_its_paths_until_it_closes() {
         );
     }
     assert_eq!(answer(f.sessions.close(&s1)).result, Ok(()));
-    // Closed, it opens again, through the link too; each refused open took a number.
-    let again = f.open(&link);
-    assert_eq!(again.to_string(), format!("s{}", 2 + paths.len()));
+    // Closed, it opens again, through the link too, holding the path it was given (not
+    // where the link leads); each refused open took a number.
+    let again = answer(f.sessions.open(&link, false));
+    assert!(again.result.is_ok());
+    let session = again.session.unwrap();
+    assert_eq!(session.path, link);
+    assert_eq!(session.id.to_string(), format!("s{}", 2 + paths.len()));
 }
 
 #[test]
@@ -452,15 +551,8 @@ fn a_command_queued_behind_close_is_told_its_session_closed_and_none_hangs() {
 
 #[test]
 fn a_commands_work_is_off_the_callers_thread_and_other_sessions_answer_meanwhile() {
-    let (release, released) = mpsc::channel::<()>();
-    let released = Mutex::new(released);
-    // The cache of the directory `slow` is opened only once released, so its open waits
-    // inside, on its session's thread.
-    let f = fixture_with(move |cache| {
-        if cache.parent().is_some_and(|p| p.ends_with("slow")) {
-            released.lock().unwrap().recv().unwrap();
-        }
-    });
+    let slow_open = slow_first();
+    let (release, f) = (&slow_open.release, &slow_open.f);
     let s1 = f.open(&f.file("a.silico", BOX));
     let mut slow = f.sessions.open(f.file("slow/b.silico", BOX), false);
     // Returned before its open was done, which is still waiting.
@@ -481,20 +573,60 @@ fn a_commands_work_is_off_the_callers_thread_and_other_sessions_answer_meanwhile
 }
 
 #[test]
-fn dropping_the_sessions_closes_them_and_ends_their_threads() {
-    let f = fixture();
-    let path = f.file("block.silico", BOX);
-    let s1 = f.open(&path);
-    let text = f.sessions.text(&s1, None);
-    let Fixture { dir, sessions, .. } = f;
-    drop(sessions);
+fn dropping_the_sessions_waits_for_an_open_refuses_it_and_ends_every_sessions_thread() {
+    let live = Arc::new(AtomicUsize::new(0));
+    let (release, released) = mpsc::channel::<()>();
+    let released = Mutex::new(released);
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let kernel = Counted {
+        fake: FakeKernel::new(1).unwrap(),
+        live: Arc::clone(&live),
+    };
+    let sessions = Sessions::with_cache_opener(kernel, move |cache| {
+        if cache.parent().is_some_and(|p| p.ends_with("slow")) {
+            released.lock().unwrap().recv().unwrap();
+        }
+        Cache::with_secret(cache, &secret)
+    });
+    let path = dir.path().join("block.silico");
+    std::fs::write(&path, BOX).unwrap();
+    let s1 = answer(sessions.open(&path, false)).session.unwrap().id;
+    // s1's engine holds its kernel client.
+    assert_eq!(live.load(Ordering::SeqCst), 1);
+    let text = sessions.text(&s1, None);
+    std::fs::create_dir(dir.path().join("slow")).unwrap();
+    let slow_path = dir.path().join("slow/b.silico");
+    std::fs::write(&slow_path, BOX).unwrap();
+    let slow = sessions.open(&slow_path, false);
+    let (dropped, dropping) = mpsc::channel();
+    let dropper = std::thread::spawn(move || {
+        drop(sessions);
+        dropped.send(()).unwrap();
+    });
+    // The drop waits for the open, whose cache is still being opened.
+    assert!(dropping.recv_timeout(Duration::from_millis(200)).is_err());
+    release.send(()).unwrap();
+    dropping.recv_timeout(HANG).unwrap();
+    dropper.join().unwrap();
+    // The open came to nothing, the sessions closing; every session's thread has ended,
+    // dropping its engine and with it its client.
+    assert_eq!(
+        refusal(&answer(slow)),
+        (
+            ErrorCode::InvalidInput,
+            "this process's sessions are closing, so none opens".to_owned(),
+            None,
+            Some("open it again once the sessions are made again".to_owned()),
+        )
+    );
+    assert_eq!(live.load(Ordering::SeqCst), 0);
     // Queued before the drop: answered, run or told the session closed, never left waiting.
     let text = answer(text);
     assert!(
         text.result.is_ok() || refusal(&text) == not_open("s1"),
         "{text:?}"
     );
-    drop(dir);
 }
 
 #[test]
@@ -653,4 +785,94 @@ fn a_file_replaced_at_its_path_as_a_save_by_rename_does_is_still_open_in_its_ses
     assert_eq!(answer(f.sessions.close(&s1)).result, Ok(()));
     // Closed, the new file opens, as s4: the two refused opens took s2 and s3.
     assert_eq!(f.open(&path).to_string(), "s4");
+}
+
+#[test]
+fn an_open_in_progress_counts_against_the_limit() {
+    let slow = slow_first();
+    let (release, entered, f) = (&slow.release, &slow.entered, &slow.f);
+    for n in 0..15 {
+        f.open(&f.file(&format!("p{n}.silico"), BOX));
+    }
+    let slow = f.sessions.open(f.file("slow/b.silico", BOX), false);
+    entered.recv_timeout(HANG).unwrap();
+    // 15 open and one opening: a 17th is refused at once.
+    let refused = answer(f.sessions.open(f.file("q.silico", BOX), false));
+    assert_eq!(
+        refusal(&refused).1,
+        "16 sessions are open, the most one process holds"
+    );
+    release.send(()).unwrap();
+    assert!(answer(slow).result.is_ok());
+}
+
+#[test]
+fn opens_that_fail_give_their_places_back() {
+    let f = fixture();
+    for n in 0..16 {
+        let missing = answer(
+            f.sessions
+                .open(f.dir.path().join(format!("none{n}.silico")), false),
+        );
+        assert_eq!(refusal(&missing).0, ErrorCode::IoFailed);
+    }
+    f.open(&f.file("real.silico", BOX));
+}
+
+#[test]
+fn a_document_create_made_is_claimed_by_its_session() {
+    let f = fixture();
+    let path = f.dir.path().join("new.silico");
+    let made = answer(f.sessions.open(&path, true));
+    assert_eq!(made.session.unwrap().id.to_string(), "s1");
+    let again = answer(f.sessions.open(&path, false));
+    let (code, message, parameter, _) = refusal(&again);
+    assert_eq!(code, ErrorCode::InvalidInput);
+    assert_eq!(
+        message,
+        format!("\"{}\" is already open in session s1", path.display())
+    );
+    assert_eq!(parameter.as_deref(), Some("path"));
+}
+
+#[test]
+fn a_file_an_open_in_progress_claimed_is_refused_to_another_open_at_once() {
+    let slow = slow_first();
+    let (release, entered, f) = (&slow.release, &slow.entered, &slow.f);
+    let path = f.file("slow/b.silico", BOX);
+    let first = f.sessions.open(&path, false);
+    entered.recv_timeout(HANG).unwrap();
+    // Claimed before its cache is opened: the second is refused without waiting for it.
+    let second = answer(f.sessions.open(&path, false));
+    assert_eq!(
+        refusal(&second).1,
+        format!("\"{}\" is already open in session s1", path.display())
+    );
+    release.send(()).unwrap();
+    assert_eq!(answer(first).session.unwrap().id.to_string(), "s1");
+}
+
+#[test]
+fn a_sketchs_text_is_its_canonical_text_over_lines() {
+    let one_point = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}]}"#;
+    let f = fixture();
+    let s = f.open(&f.file("sketch.silico", one_point));
+    let text = answer(f.sessions.text(&s, FeatureId::new("k7f2qx3m")));
+    // As M3.2's D7 writes a sketch: a list of objects one to a line, each on one line.
+    assert_eq!(
+        text.result.unwrap(),
+        "{\n  \"id\": \"k7f2qx3m\",\n  \"type\": \"sketch\",\n  \"v\": 1,\n  \"name\": \"S\",\n  \"plane\": \"xy\",\n  \"points\": [\n    {\"id\": \"pa000000\", \"x\": 0, \"y\": 0, \"construction\": false}\n  ],\n  \"lines\": [],\n  \"circles\": [],\n  \"arcs\": [],\n  \"constraints\": []\n}"
+    );
+}
+
+#[test]
+fn the_bodies_an_open_gives_are_the_solids_no_later_feature_uses() {
+    // The design's example: a box and a pin, cut one from the other: the cut alone is left.
+    let example = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12}, {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de"}]}"#;
+    let f = fixture();
+    let opened = answer(f.sessions.open(f.file("hole.silico", example), false))
+        .result
+        .unwrap();
+    assert_eq!(opened.features, Some(3));
+    assert_eq!(opened.bodies, [FeatureId::new("m3tq8v0z").unwrap()]);
 }
