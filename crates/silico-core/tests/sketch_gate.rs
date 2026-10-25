@@ -1121,3 +1121,41 @@ fn geometry_deleted_with_its_constraints_leaves_the_rest_as_they_were() {
         ]
     );
 }
+
+#[test]
+fn geometry_counts_every_point_line_circle_and_arc_and_the_origin_and_axes() {
+    // POINTS (3), n lines, one circle, no arc, and the origin and two axes (3): 3 + n + 1 + 3.
+    // 9,994 lines is 10,001, past MAX_SKETCH_GEOMETRY's 10,000; 9,993 is at it. With one
+    // circle and no arc, a count multiplying lines by circles, or circles by arcs, is 10,000
+    // (found by the mutation run).
+    let lines = |n: usize| -> String {
+        (0..n)
+            .map(|i| {
+                format!(
+                    r#"{{"id": "n{i:07}", "from": "pa000000", "to": "pb000000", "construction": false}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    only(
+        &document(&fields(POINTS, &lines(9994), CIRCLE, "", "")),
+        "lines",
+        "the sketch has 10001 points, lines, circles, and arcs, more than the 10000 the sketch solver takes",
+    );
+    none(&document(&fields(POINTS, &lines(9993), CIRCLE, "", "")));
+}
+
+#[test]
+fn symmetric_of_a_lines_two_ends_about_the_line_says_both_are_its_ends() {
+    // FreeCAD's own refusal (CommandConstraints.cpp, GeoId1 == GeoId2 == GeoId3): "Cannot
+    // add a symmetry constraint between a line and its end points!", not one end's (found by
+    // the mutation run).
+    only(
+        &with_two_lines(
+            r#"{"id": "k0000000", "type": "symmetric", "a": "pa000000", "b": "pb000000", "about": "na000000"}"#,
+        ),
+        "constraints.0.about",
+        "a symmetric's a and b, pa000000 and pb000000, are the ends of na000000 itself",
+    );
+}

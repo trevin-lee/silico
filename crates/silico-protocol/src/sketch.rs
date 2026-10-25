@@ -1879,6 +1879,72 @@ mod tests {
     }
 
     #[test]
+    fn each_two_equation_constraint_is_two_rows_of_the_jacobian() {
+        // Found by the mutation run. A coincidence, a tangency at an end, and the two
+        // symmetries are two equations each. 8,191 arcs' rules are 4 × 8,191 = 32,764 rows
+        // on 1,024 unknowns; two more of a two-equation kind make 32,768, 2^25 entries
+        // exactly, and three 32,770, past it (as one row each, three would be 32,767, within
+        // it). Every value is an unknown but the last, the tangency's fixed angle.
+        let (line, circle) = (Geometry(0), Geometry(1));
+        let (start, end) = (PointOf::Start(line), PointOf::End(line));
+        let two_rows = |kind: usize, t: u32| {
+            let tag = Tag(t);
+            match kind {
+                0 => SolverConstraint::Coincident {
+                    tag,
+                    a: start,
+                    b: PointOf::Center(circle),
+                },
+                1 => SolverConstraint::TangentOn {
+                    tag,
+                    a: line,
+                    point: start,
+                    b: circle,
+                    angle: Value(MAX_SKETCH_UNKNOWNS as u32),
+                },
+                2 => SolverConstraint::SymmetricLine {
+                    tag,
+                    a: start,
+                    b: end,
+                    line,
+                },
+                _ => SolverConstraint::SymmetricPoint {
+                    tag,
+                    a: start,
+                    b: end,
+                    center: PointOf::Center(circle),
+                },
+            }
+        };
+        let with = |kind: usize, count: u32| {
+            let mut s = system();
+            s.values.resize(MAX_SKETCH_UNKNOWNS + 1, 1.0);
+            s.unknowns = (0..MAX_SKETCH_UNKNOWNS as u32).map(Value).collect();
+            let arc = s.geometry[2];
+            s.geometry.extend((1..8191).map(|_| arc));
+            s.constraints = (0..8191)
+                .map(|i| SolverConstraint::ArcRules {
+                    arc: Geometry(2 + i),
+                })
+                .collect();
+            s.constraints.extend((1..=count).map(|t| two_rows(kind, t)));
+            s
+        };
+        for kind in 0..4 {
+            with(kind, 2).check().unwrap();
+            let e = with(kind, 3).check().unwrap_err();
+            assert_eq!(e.parameter, "constraints", "kind {kind}");
+            assert_eq!(
+                e.message,
+                format!(
+                    "32770 equations in 1024 unknowns is more than the solver can diagnose (at most {MAX_JACOBIAN_ENTRIES} entries)"
+                ),
+                "kind {kind}"
+            );
+        }
+    }
+
+    #[test]
     fn a_jacobian_past_the_limit_is_refused_and_one_at_it_passes() {
         // The limit is on rows × unknowns, PlaneGCS's dense Jacobian. An arc's rules are four
         // rows: 8,192 arcs (one geometry each, sharing the base arc's values), each with its
@@ -2424,6 +2490,16 @@ mod tests {
         assert_eq!(r, 5.0);
         assert!((a - 0.643_501_108_793_284_4).abs() < 1e-15, "{a}");
         assert!((b - 2.214_297_435_588_181).abs() < 1e-15, "{b}");
+    }
+
+    #[test]
+    fn an_arc_whose_ends_are_at_one_angle_off_the_axes_has_none() {
+        // Found by the mutation run. Both ends at 3π/4 (atan2(1, −1) and atan2(2, −2), each
+        // libm's PI − (atan(1) − PI_LO) = 2.356194490192345): no sweep. Were one angle taken a
+        // turn on, 3π/4 + TAU rounds to 8.63937979737193, and less 3π/4 that's
+        // 6.283185307179585, below TAU: a whole turn that would pass as an arc.
+        assert_eq!(arc_from_points([0.0, 0.0], [-1.0, 1.0], [-2.0, 2.0]), None);
+        assert_eq!(arc_from_points([0.0, 0.0], [-1.0, 1.0], [-1.0, 1.0]), None);
     }
 
     #[test]

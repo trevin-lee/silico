@@ -271,6 +271,22 @@ fn the_corpus_reads_its_step_files_and_names_those_freecad_cant() {
     );
     let names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, ["it's \"a\" box.stp", "it's \"a\" box.stp_moved"]);
+    // The moved case is the box moved by (13.7, -4.2, 9.1): its box, [0, 10] × [0, 20] ×
+    // [0, 30], and its center, (5, 10, 15), each that far over, by hand (found by the
+    // mutation run: both sides measured the same shape, so any offset passed).
+    let mut kernel = silico_core::kernel::KernelWorker::start().unwrap();
+    let outcome = silico_oracle::silico::measure(&mut kernel, &cases[1].shape);
+    let Outcome::Built(moved) = outcome else {
+        panic!("{:?}: {outcome:?}", cases[1].shape)
+    };
+    let near = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-9);
+    let center = moved.center.unwrap();
+    assert!(near(center, [18.7, 5.8, 24.1]), "{center:?}");
+    let [low, high] = moved.bounds.unwrap();
+    assert!(
+        near(low, [13.7, -4.2, 9.1]) && near(high, [23.7, 15.8, 39.1]),
+        "{low:?} {high:?}"
+    );
     assert_eq!(unread.len(), 1, "{unread:?}");
     assert!(
         unread[0].starts_with("bad.stp: FreeCAD can't read it"),

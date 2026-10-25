@@ -640,3 +640,22 @@ fn a_cancelled_solve_runs_its_grace_before_its_stopped() {
     );
     sketches.release();
 }
+
+#[test]
+fn a_point_line_distance_stored_on_the_other_side_is_drift_saying_both_sides() {
+    // pc (0, 10) is 10 from na (pa (0, 0) → pb (10, 0), along +x), to its left: (10, 0) ×
+    // (0, 10) = +100. Stored 10 to its right: only the side moves, and the message says it
+    // (found by the mutation run).
+    let constraints = format!(
+        r#"{HORIZONTAL}, {{"id": "r0000001", "type": "point_line_distance", "point": "pc000000", "line": "na000000", "value": 10, "side": "right", "driving": false}}"#
+    );
+    let errors = drift(&constraints, |_| {});
+    let [e] = &errors[..] else {
+        panic!("{errors:?}")
+    };
+    assert_eq!(e.elements(), ["r0000001"], "{e}");
+    assert!(
+        e.message().contains("r0000001 value 10 right → 10 left"),
+        "{e}"
+    );
+}

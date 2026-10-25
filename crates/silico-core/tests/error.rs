@@ -178,3 +178,42 @@ fn accessors_return_what_was_set() {
     assert_eq!(e.suggestion(), Some("reduce the radius below 5 mm"));
     assert_eq!(e.candidates(), ["Edge2", "Edge4"]);
 }
+
+#[test]
+fn errors_are_equal_by_every_field_they_say_and_no_fewer() {
+    // Found by the mutation run: equality that held of any two errors passed every test,
+    // since every comparison of errors is an assert_eq. Each error here differs from
+    // full() in one field.
+    assert_eq!(full(), full());
+    let full_as = |code, message| {
+        Error::new(code, message)
+            .with_feature("Fillet1")
+            .with_element("Edge3")
+            .with_element("Edge5")
+            .with_parameter("radius")
+            .with_cause("StdFail_NotDone: BRepFilletAPI_MakeFillet")
+            .with_suggestion("reduce the radius below 5 mm")
+            .with_candidates(["Edge2", "Edge4"])
+    };
+    assert_eq!(full_as(ErrorCode::KernelFailed, "fillet failed"), full());
+    let apart = [
+        full_as(ErrorCode::InvalidInput, "fillet failed"),
+        full_as(ErrorCode::KernelFailed, "chamfer failed"),
+        full().with_feature("Fillet2"),
+        full().with_element("Edge7"),
+        full().with_elements_total(9),
+        full().with_parameter("angle"),
+        full().with_cause("another cause"),
+        full().with_suggestion("another suggestion"),
+        full().with_candidates(["Edge2"]),
+    ];
+    for other in &apart {
+        assert_ne!(&full(), other);
+        assert_ne!(other, &full());
+    }
+    // A field unset is not a field set.
+    assert_ne!(
+        Error::new(ErrorCode::KernelFailed, "fillet failed"),
+        Error::new(ErrorCode::KernelFailed, "fillet failed").with_feature("Fillet1")
+    );
+}
