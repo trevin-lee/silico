@@ -24,6 +24,15 @@
 //! session's), and sessions on documents in one directory share one rebuild cache, one
 //! value cloned, so its bound counts every session's writes.
 //!
+//! A session's document changes in transactions (the design's section 4): [`Sessions::begin`]
+//! keeps the session's state, [`Sessions::commit`] saves what the transaction's edits
+//! changed through [`file::save`], writing new fingerprints and solves only for the features
+//! they reached (decision 28), and [`Sessions::rollback`] restores what `begin` kept, the
+//! text byte for byte and the model `begin` saw, at a new revision whose state equals the
+//! old. One at a time, never nested; a session isn't closed while one is open, and a client
+//! that goes away (the sessions dropped) leaves its file as it was: only a commit or
+//! [`Sessions::format`], which accepts drift by name (decision 31), writes the document.
+//!
 //! What it doesn't bound: the caches, one kept for each directory a session has opened a
 //! document in, for the process's life; and each session's queue, which holds every command
 //! queued and not yet run. Nor does it choose which files may be opened: `open` and `text`
@@ -33,8 +42,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Write as _;
-use std::os::unix::fs::MetadataExt as _;
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::thread::JoinHandle;
@@ -107,8 +117,7 @@ pub struct SessionInfo {
     /// Its document's path as `open` was given it.
     pub path: PathBuf,
     pub revision: Revision,
-    /// Whether a transaction is open: never yet, until transactions come (the design's
-    /// section 4).
+    /// Whether a transaction is open (the design's section 4).
     pub transaction: bool,
     /// Whether the session read its file again before the command, finding it changed:
     /// never yet, until a file changed outside the session is reloaded (decision 2).
@@ -167,9 +176,11 @@ pub enum ModelChoice {
     Published,
 }
 
-/// The newest model a session's rebuilds published, and the revision it was rebuilt from
-/// (the same as its response's `model.revision`): what [`Sessions::published`] gives the
-/// app to draw, never waiting for a rebuild.
+/// The newest model a session's rebuilds published, and the revision it's the model of (the
+/// same as its response's `model.revision`): the revision it was rebuilt from, or, after a
+/// rollback, the new revision whose state is the one it was rebuilt from (the design's
+/// section 4). What [`Sessions::published`] gives the app to draw, never waiting for a
+/// rebuild.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Published {
     pub revision: Revision,
@@ -252,6 +263,51 @@ pub struct Opened {
     pub problems: Problems,
 }
 
+/// What `begin` answers: the revision the transaction began from, which `rollback` returns
+/// to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Begun {
+    pub base: Revision,
+}
+
+/// What `commit` did (the design's section 7): whether it wrote the file (not if the
+/// document is the one `begin` saw), its path as `open` was given it, the features the
+/// transaction's edits reached whose fingerprints it wrote anew and the reached sketches
+/// whose solves it wrote, in timeline order (decision 28), and the problems it can't fix:
+/// failed features, solids that couldn't be measured, and the drift of features no edit
+/// reached, which keep what's stored with them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Committed {
+    pub written: bool,
+    pub path: PathBuf,
+    pub refingerprinted: Vec<FeatureId>,
+    pub resolved: Vec<FeatureId>,
+    pub problems: Problems,
+}
+
+/// What `rollback` answers: the revision whose state it restored. The session is at a new
+/// revision, whose state equals that one's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RolledBack {
+    pub restored: Revision,
+}
+
+/// What `format` did (decision 31): whether its canonical text differs from the file,
+/// whether it wrote it, the path as `open` was given it, the features whose fingerprints it
+/// wrote (or, not writing, would write) anew and the sketches whose solves, the features
+/// among them whose drift it accepted, each in timeline order, and what it can't fix:
+/// failed features, solids that couldn't be measured, and the drift it didn't accept.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reformatted {
+    pub changed: bool,
+    pub written: bool,
+    pub path: PathBuf,
+    pub refingerprinted: Vec<FeatureId>,
+    pub resolved: Vec<FeatureId>,
+    pub accepted: Vec<FeatureId>,
+    pub problems: Problems,
+}
+
 /// What `status` says of a session, from what it holds: how many features its document has
 /// (none if its text doesn't read as one), and whether the gate took it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -262,9 +318,10 @@ pub struct Status {
 
 /// A process's open sessions, on one kernel: each session's commands are run on its own
 /// thread, in turn, on its own client of `kernel`. Dropping it closes every session,
-/// stopping its rebuild, and waits for each session's thread to end, then for the threads
-/// watching its rebuilds and running its published reads (a read blocked in its own code
-/// keeps the drop waiting until it returns).
+/// stopping its rebuild and leaving its file as it was (an open transaction is rolled back:
+/// only a commit writes), and waits for each session's thread to end, then for the threads
+/// watching its rebuilds and running its published reads, a session's closed before the
+/// drop too (a read blocked in its own code keeps the drop waiting until it returns).
 pub struct Sessions<P: Clients + 'static> {
     registry: Arc<Registry<P>>,
 }
@@ -325,16 +382,23 @@ struct Book<C: Kernel + 'static> {
     /// Every session thread not yet joined: those open, opening, or closed and ending,
     /// joined once they've ended (at the next open) or when the registry is dropped, so
     /// none outlives it.
-    threads: BTreeMap<SessionId, JoinHandle<()>>,
+    threads: Threads<SessionId>,
+    /// The published reads of sessions released (closed, or their threads ended), each
+    /// session's moved here as it's released, so the drop joins them too.
+    reads: Threads<&'static str>,
     /// The sessions are being dropped: an open that finishes now doesn't open.
     stopping: bool,
 }
 
 impl<C: Kernel + 'static> Book<C> {
     /// Session `id` gone from every record but its thread's: open, opening, and the file
-    /// it held.
+    /// it held; its published reads now the book's to join, and none started after.
     fn release(&mut self, id: SessionId) {
-        self.sessions.remove(&id);
+        if let Some(session) = self.sessions.remove(&id)
+            && let Some(reads) = lock(&session.reads).threads.take()
+        {
+            self.reads.extend(reads);
+        }
         self.opening.remove(&id);
         self.files.retain(|_, (holder, _)| *holder != id);
         self.paths.retain(|_, holder| *holder != id);
@@ -342,16 +406,48 @@ impl<C: Kernel + 'static> Book<C> {
 
     /// The threads that have ended, joined.
     fn reap(&mut self) {
-        let ended: Vec<SessionId> = self
-            .threads
-            .iter()
-            .filter(|(_, thread)| thread.is_finished())
-            .map(|(id, _)| *id)
-            .collect();
-        for id in ended {
-            if let Some(thread) = self.threads.remove(&id) {
-                let _ = thread.join();
-            }
+        self.threads.reap();
+        self.reads.reap();
+    }
+}
+
+/// Threads started and joined later, each with what it's for (its session, revision, or
+/// command): those that have ended joined as more start, the rest when what holds them is
+/// dropped, so none outlives it.
+struct Threads<K> {
+    running: Vec<(K, JoinHandle<()>)>,
+}
+
+impl<K> Threads<K> {
+    fn new() -> Self {
+        Threads {
+            running: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, what: K, thread: JoinHandle<()>) {
+        self.running.push((what, thread));
+    }
+
+    fn extend(&mut self, other: Threads<K>) {
+        self.running.extend(other.running);
+    }
+
+    /// Those that have ended, joined; the rest kept.
+    fn reap(&mut self) {
+        let (ended, running): (Vec<_>, Vec<_>) = std::mem::take(&mut self.running)
+            .into_iter()
+            .partition(|(_, thread)| thread.is_finished());
+        self.running = running;
+        for (_, thread) in ended {
+            let _ = thread.join();
+        }
+    }
+
+    /// Every one joined, waiting for each to end.
+    fn join(self) {
+        for (_, thread) in self.running {
+            let _ = thread.join();
         }
     }
 }
@@ -369,10 +465,47 @@ struct Session<C: Kernel + 'static> {
     rebuilds: Mutex<Rebuilds<C>>,
     /// A rebuild ended: told to the command waiting on it.
     rebuilt: Condvar,
-    /// The published reads started, by command, each on a thread of its own: those ended
-    /// joined as the next starts, the rest by `Sessions::drop` (for the sessions open then),
-    /// at most [`MAX_PUBLISHED_READS`] running at once.
-    reads: Mutex<Vec<(&'static str, JoinHandle<()>)>>,
+    /// Its published reads.
+    reads: Mutex<Reads>,
+}
+
+/// A session's published reads, each on a thread of its own, at most
+/// [`MAX_PUBLISHED_READS`] unanswered at once.
+struct Reads {
+    /// How many have started and not answered: each counted until just before it answers
+    /// (however it ends, by a panic too), so one just answered, its thread still ending,
+    /// leaves room for the next.
+    unanswered: Arc<AtomicUsize>,
+    /// Their threads, by command: those ended joined as the next starts, the rest by
+    /// `Sessions::drop`; none once the session is released (its reads then the book's, and
+    /// a read asked for after it refused as of a session not open).
+    threads: Option<Threads<&'static str>>,
+}
+
+impl Reads {
+    fn new() -> Self {
+        Reads {
+            unanswered: Arc::new(AtomicUsize::new(0)),
+            threads: Some(Threads::new()),
+        }
+    }
+}
+
+/// A published read counted unanswered, until it's dropped: just before the read answers,
+/// or as its thread unwinds.
+struct Unanswered(Arc<AtomicUsize>);
+
+impl Unanswered {
+    fn count(unanswered: &Arc<AtomicUsize>) -> Self {
+        unanswered.fetch_add(1, Ordering::SeqCst);
+        Unanswered(Arc::clone(unanswered))
+    }
+}
+
+impl Drop for Unanswered {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// A session's rebuilds: its engine, on its own client of the kernel, keeping its steps in
@@ -395,9 +528,13 @@ struct Rebuilds<C: Kernel + 'static> {
     published: Option<Published>,
     /// The last rebuild whose recompute failed (a bug), until another starts.
     failed: Option<Failed>,
-    /// The threads watching the rebuilds started: those ended joined as the next starts, the
-    /// rest by `Sessions::drop`, for the sessions open then.
-    watchers: Vec<JoinHandle<()>>,
+    /// While a transaction is open, the revision it began from and that revision's model,
+    /// as `begin` found it or, if its rebuild was running, as the rebuild published it
+    /// since: what a rollback restores.
+    begun: Option<(Revision, Option<Arc<Model>>)>,
+    /// The threads watching the rebuilds started, by revision: those ended joined as the
+    /// next starts, the rest by `Sessions::drop`, for the sessions open then.
+    watchers: Threads<Revision>,
 }
 
 /// A revision's rebuild whose recompute failed (a bug), and why: said once, to the check
@@ -417,11 +554,62 @@ struct Held {
     path: PathBuf,
     /// The path as its links resolve, where saves and reloads go.
     resolved: PathBuf,
-    /// The document's text: the file's bytes as read or written, until an edit.
+    /// The file's bytes as the session last read or wrote them: what a save checks the file
+    /// still holds, so one changed outside the session isn't written over.
+    bytes: Arc<Vec<u8>>,
+    /// The document's text: the file's bytes, until an edit.
     text: Arc<Vec<u8>>,
     /// The text as the reader and the gate found it.
     gated: Arc<Gated>,
     revision: Revision,
+    /// The features the session's edits reached since its last save, and every feature
+    /// that uses one (the design's section 5): those a commit writes new records for, and
+    /// whose drift a check doesn't say.
+    reached: Arc<BTreeSet<FeatureId>>,
+    /// The state `begin` kept, while a transaction is open.
+    transaction: Option<Snapshot>,
+}
+
+/// A session's state as `begin` kept it, which `rollback` restores (its model is kept with
+/// the session's rebuilds, `Rebuilds::begun`).
+#[derive(Clone)]
+struct Snapshot {
+    text: Arc<Vec<u8>>,
+    gated: Arc<Gated>,
+    revision: Revision,
+    reached: Arc<BTreeSet<FeatureId>>,
+}
+
+impl Held {
+    /// The revision the session's next change gives, or why there's none.
+    fn next(&self) -> Result<Revision, Problems> {
+        self.revision.next().ok_or_else(|| {
+            Problems::from(
+                Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "the session has no revisions left to give",
+                )
+                .with_suggestion("close the session, then open the document again"),
+            )
+        })
+    }
+
+    /// The session's document changed to `text`, as the reader and the gate found it
+    /// (`gated`), at `revision` (from [`next`](Self::next)), its edits having reached
+    /// `reached`: the one place a session's document changes (an edit, a save, a
+    /// rollback).
+    fn change(
+        &mut self,
+        revision: Revision,
+        text: Arc<Vec<u8>>,
+        gated: Arc<Gated>,
+        reached: Arc<BTreeSet<FeatureId>>,
+    ) {
+        self.revision = revision;
+        self.text = text;
+        self.gated = gated;
+        self.reached = reached;
+    }
 }
 
 /// A command queued on a session: run on its thread with the session, or, if the session
@@ -513,13 +701,7 @@ impl<C: Kernel + 'static> Session<C> {
         {
             return Ok(false);
         }
-        let (ended, watching): (Vec<_>, Vec<_>) = std::mem::take(&mut rebuilds.watchers)
-            .into_iter()
-            .partition(JoinHandle::is_finished);
-        rebuilds.watchers = watching;
-        for watcher in ended {
-            let _ = watcher.join();
-        }
+        rebuilds.watchers.reap();
         let run = rebuilds.engine.start(Arc::clone(checked));
         rebuilds.running = Some(revision);
         rebuilds.failed = None;
@@ -529,7 +711,7 @@ impl<C: Kernel + 'static> Session<C> {
             .spawn(move || watch(&session, revision, run))
         {
             Ok(watcher) => {
-                rebuilds.watchers.push(watcher);
+                rebuilds.watchers.push(revision, watcher);
                 Ok(true)
             }
             Err(e) => {
@@ -543,23 +725,29 @@ impl<C: Kernel + 'static> Session<C> {
         }
     }
 
-    /// The current revision's model, waited for ([`model`](Self::model)), and what was
-    /// read; or why there's none: the gate refused the document (its problems, the
-    /// document's, which a check gives as its result), or the model couldn't be had.
-    fn current(self: &Arc<Self>) -> Result<(Arc<Model>, ModelRead), Unbuilt> {
-        let (revision, gated) = {
+    /// The current revision's model, waited for ([`model`](Self::model)), what was read,
+    /// and what the session's edits had reached at that revision; or why there's none: the
+    /// gate refused the document (its problems, the document's, which a check gives as its
+    /// result), or the model couldn't be had.
+    fn current(self: &Arc<Self>) -> Result<Current, Unbuilt> {
+        let (revision, gated, reached) = {
             let held = lock(&self.held);
-            (held.revision, Arc::clone(&held.gated))
+            (
+                held.revision,
+                Arc::clone(&held.gated),
+                Arc::clone(&held.reached),
+            )
         };
         match &*gated {
             Gated::Checked(checked) => self
                 .model(revision, checked)
-                .map(|model| {
-                    let read = ModelRead {
+                .map(|model| Current {
+                    model,
+                    read: ModelRead {
                         revision,
                         of: ModelChoice::Current,
-                    };
-                    (model, read)
+                    },
+                    reached,
                 })
                 .map_err(Unbuilt::Unavailable),
             refused => Err(Unbuilt::Gated(refused.problems())),
@@ -567,19 +755,20 @@ impl<C: Kernel + 'static> Session<C> {
     }
 
     /// The published read of the session as it is now ([`published_read`](Self::published_read)),
-    /// with the session as it was read. Refused, the session not open, if it has closed. Its
+    /// with the session as it was read. Refused, of no session, if it has closed. Its
     /// newest published model, if there's one, even when the gate refused the current
     /// revision's document (the model's revision says it's an older one's; the gate's problems
     /// are `check`'s); with none, the gate's (or the reader's) problems for a document it
     /// refused, starting nothing.
-    fn published_now(self: &Arc<Self>) -> (SessionInfo, Result<Published, Unbuilt>) {
+    fn published_now(self: &Arc<Self>) -> (Option<SessionInfo>, Result<Published, Unbuilt>) {
         let (info, revision, gated) = {
             let held = lock(&self.held);
             (self.info_of(&held), held.revision, Arc::clone(&held.gated))
         };
+        // Of a session not open, as every refusal of one is: no session.
         if self.closed() {
             return (
-                info,
+                None,
                 Err(Unbuilt::Unavailable(Problems::from(not_open(self.id)))),
             );
         }
@@ -593,7 +782,7 @@ impl<C: Kernel + 'static> Session<C> {
                 .filter(|published| published.revision <= revision)
                 .ok_or_else(|| Unbuilt::Gated(refused.problems())),
         };
-        (info, read)
+        (Some(info), read)
     }
 
     /// The design's published read of the session at `revision`, whose document is
@@ -646,7 +835,7 @@ impl<C: Kernel + 'static> Session<C> {
             id: self.id,
             path: held.path.clone(),
             revision: held.revision,
-            transaction: false,
+            transaction: held.transaction.is_some(),
             reloaded: false,
         }
     }
@@ -682,6 +871,379 @@ impl<C: Kernel + 'static> Session<C> {
     fn closed(&self) -> bool {
         lock(&self.queue).is_none()
     }
+
+    /// `begin`: the session's state kept, and a transaction opened; refused if one is open.
+    /// The model of its revision is kept with it if it has been published, or, if its
+    /// rebuild is running, once that publishes it.
+    fn begin(&self) -> Result<Begun, Problems> {
+        let mut held = lock(&self.held);
+        if held.transaction.is_some() {
+            return Err(Problems::from(
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    "a transaction is already open in this session",
+                )
+                .with_parameter("session")
+                .with_suggestion("commit or roll back the open transaction, then begin again"),
+            ));
+        }
+        let revision = held.revision;
+        // Under the held state's lock, then the rebuilds' (the only order both are taken
+        // in), so a model published meanwhile is either seen here or kept by its watcher.
+        let mut rebuilds = lock(&self.rebuilds);
+        let model = rebuilds
+            .published
+            .as_ref()
+            .filter(|published| published.revision == revision)
+            .map(|published| Arc::clone(&published.model));
+        rebuilds.begun = Some((revision, model));
+        drop(rebuilds);
+        held.transaction = Some(Snapshot {
+            text: Arc::clone(&held.text),
+            gated: Arc::clone(&held.gated),
+            revision,
+            reached: Arc::clone(&held.reached),
+        });
+        Ok(Begun { base: revision })
+    }
+
+    /// The transaction open, or the refusal of a command that needs one.
+    fn transaction(&self, held: &Held) -> Result<Snapshot, Problems> {
+        held.transaction
+            .clone()
+            .ok_or_else(|| Problems::from(no_transaction(self.id)))
+    }
+
+    /// `rollback`: what `begin` kept restored, exactly (the text byte for byte, the gate's
+    /// finding, what edits had reached), at a new revision whose state equals the one
+    /// `begin` saw, and the transaction ended. Its model is the one `begin` saw, the same
+    /// one, now the new revision's; or, if there was none (`begin` came while its revision
+    /// was rebuilding, and a rebuild in the transaction superseded that), the restored
+    /// document's rebuild is started, which the cache makes cheap. A rebuild of the
+    /// transaction's still running is stopped. The file is never touched.
+    fn rollback(self: &Arc<Self>) -> Result<RolledBack, Problems> {
+        let mut held = lock(&self.held);
+        let begun = self.transaction(&held)?;
+        let revision = held.next()?;
+        held.change(
+            revision,
+            Arc::clone(&begun.text),
+            Arc::clone(&begun.gated),
+            Arc::clone(&begun.reached),
+        );
+        held.transaction = None;
+        let mut rebuilds = lock(&self.rebuilds);
+        let model = rebuilds.begun.take().and_then(|(_, model)| model);
+        match (model, &*begun.gated) {
+            (Some(model), _) => {
+                // What runs now is a transaction's revision's: no command wants it.
+                if rebuilds.running.take().is_some() {
+                    rebuilds.engine.cancel();
+                }
+                rebuilds.failed = None;
+                rebuilds.published = Some(Published { revision, model });
+            }
+            (None, Gated::Checked(checked)) => {
+                if let Err(problems) = self.start_unless_newer(&mut rebuilds, revision, checked) {
+                    // Started again by the next command that needs the model.
+                    tracing::warn!(
+                        session = %self.id,
+                        "the restored document's rebuild couldn't start: {:?}",
+                        problems.errors()
+                    );
+                }
+            }
+            // The gate refused what `begin` saw: nothing to rebuild, as at `open`.
+            (None, _) => {}
+        }
+        Ok(RolledBack {
+            restored: begun.revision,
+        })
+    }
+
+    /// `commit`: the current revision's rebuild waited for, then the document saved in
+    /// canonical form through `file::save`, with new fingerprints and solves for what the
+    /// transaction's edits reached and every other feature's as stored (decision 28), its
+    /// new file claimed with `claim`; the transaction ended, and the session at a new
+    /// revision, its saved text, with only the reached features whose records couldn't be
+    /// written still reached. A document equal to the one `begin` saw is written nowhere.
+    /// Refused, the transaction left open and nothing written, if none is open, the model
+    /// can't be had (a kernel fault, until decision 32 saves around one), the canonical text
+    /// is too long, or the save is (a file changed outside the session: a conflict).
+    fn commit(
+        self: &Arc<Self>,
+        read: &mut Option<ModelRead>,
+        claim: &dyn Fn(&Path),
+    ) -> Result<Committed, Problems> {
+        let (path, resolved, bytes, text, gated, revision, reached, begun) = {
+            let held = lock(&self.held);
+            let begun = self.transaction(&held)?;
+            (
+                held.path.clone(),
+                held.resolved.clone(),
+                Arc::clone(&held.bytes),
+                Arc::clone(&held.text),
+                Arc::clone(&held.gated),
+                held.revision,
+                Arc::clone(&held.reached),
+                begun,
+            )
+        };
+        let unchanged = match (begun.gated.document(), gated.document()) {
+            (Ok(before), Ok(now)) => before == now,
+            _ => begun.text == text,
+        };
+        let ended = |reached: Arc<BTreeSet<FeatureId>>| {
+            let mut held = lock(&self.held);
+            held.transaction = None;
+            held.reached = reached;
+            lock(&self.rebuilds).begun = None;
+        };
+        let checked = match &*gated {
+            Gated::Checked(checked) => checked,
+            refused if unchanged => {
+                let problems = refused.problems();
+                ended(begun.reached);
+                return Ok(Committed {
+                    written: false,
+                    path,
+                    refingerprinted: Vec::new(),
+                    resolved: Vec::new(),
+                    problems,
+                });
+            }
+            refused => return Err(refused.problems()),
+        };
+        let model = self.model(revision, checked)?;
+        *read = Some(ModelRead {
+            revision,
+            of: ModelChoice::Current,
+        });
+        // As `begin` saw it: its reach, since what reached a feature and was undone reached
+        // nothing.
+        let reached = if unchanged {
+            Arc::clone(&begun.reached)
+        } else {
+            reached
+        };
+        let formatted = super::formatted(&model, &reached).map_err(Problems::from)??;
+        if unchanged {
+            ended(reached);
+            return Ok(Committed {
+                written: false,
+                path,
+                refingerprinted: Vec::new(),
+                resolved: Vec::new(),
+                problems: formatted.problems,
+            });
+        }
+        let next = lock(&self.held).next()?;
+        let saved = Arc::new(formatted.text.into_bytes());
+        self.save(&path, &resolved, &bytes, &saved)?;
+        claim(&resolved);
+        let still = reached
+            .iter()
+            .filter(|id| !model.records(id))
+            .cloned()
+            .collect();
+        let mut held = lock(&self.held);
+        held.change(
+            next,
+            Arc::clone(&saved),
+            Arc::new(Gated::of(&saved)),
+            Arc::new(still),
+        );
+        held.bytes = saved;
+        held.transaction = None;
+        lock(&self.rebuilds).begun = None;
+        Ok(Committed {
+            written: true,
+            path,
+            refingerprinted: formatted
+                .refingerprinted
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect(),
+            resolved: formatted.resolved,
+            problems: formatted.problems,
+        })
+    }
+
+    /// `format` (decision 31): the current revision's rebuild waited for, and the document
+    /// in canonical form with every feature's fingerprint and every sketch's solve as
+    /// rebuilt, but those of a drifted feature `accept` doesn't name (all, if it's none),
+    /// which keep what's stored with them and are problems; written through `file::save`
+    /// if `write` and it differs from the file, the new file claimed with `claim`, the
+    /// session then at a new revision, its saved text. Refused, writing nothing, inside a
+    /// transaction, for a document the gate refused (its problems), for a feature in
+    /// `accept` the document hasn't, and as a commit is.
+    fn format(
+        self: &Arc<Self>,
+        accept: Option<&[FeatureId]>,
+        write: bool,
+        read: &mut Option<ModelRead>,
+        claim: &dyn Fn(&Path),
+    ) -> Result<Reformatted, Problems> {
+        let (path, resolved, bytes, gated, revision, reached) = {
+            let held = lock(&self.held);
+            if held.transaction.is_some() {
+                return Err(Problems::from(transaction_open(self.id, "format")));
+            }
+            (
+                held.path.clone(),
+                held.resolved.clone(),
+                Arc::clone(&held.bytes),
+                Arc::clone(&held.gated),
+                held.revision,
+                Arc::clone(&held.reached),
+            )
+        };
+        let checked = match &*gated {
+            Gated::Checked(checked) => checked,
+            refused => return Err(refused.problems()),
+        };
+        let document = checked.document();
+        if let Some(accept) = accept {
+            let unknown: Vec<Error> = accept
+                .iter()
+                .enumerate()
+                .filter(|(_, id)| document.feature(id).is_err())
+                .map(|(i, id)| {
+                    Error::new(
+                        ErrorCode::InvalidInput,
+                        format!("the document has no feature {id} to accept the drift of"),
+                    )
+                    .with_parameter(format!("features.{i}"))
+                    .with_suggestion("name features by their IDs, as the document holds them")
+                })
+                .collect();
+            if !unknown.is_empty() {
+                return Err(Problems::of(unknown));
+            }
+        }
+        let model = self.model(revision, checked)?;
+        *read = Some(ModelRead {
+            revision,
+            of: ModelChoice::Current,
+        });
+        // The drift a check gives, by feature: a feature edits reached isn't drift.
+        let drifted: BTreeSet<FeatureId> = model
+            .drift_except(&reached)
+            .iter()
+            .filter(|error| error.code() == ErrorCode::Drift)
+            .filter_map(|error| error.feature().and_then(FeatureId::new))
+            .collect();
+        let accepts = |id: &FeatureId| accept.is_none_or(|accept| accept.contains(id));
+        let writes: BTreeSet<FeatureId> = document
+            .features
+            .iter()
+            .map(|feature| &feature.id)
+            .filter(|id| !drifted.contains(*id) || accepts(id))
+            .cloned()
+            .collect();
+        let accepted = document
+            .features
+            .iter()
+            .map(|feature| &feature.id)
+            .filter(|id| drifted.contains(*id) && writes.contains(*id))
+            .cloned()
+            .collect();
+        let formatted = super::formatted(&model, &writes).map_err(Problems::from)??;
+        let saved = formatted.text.into_bytes();
+        let changed = saved != *bytes;
+        let written = write && changed;
+        if written {
+            let next = lock(&self.held).next()?;
+            let saved = Arc::new(saved);
+            self.save(&path, &resolved, &bytes, &saved)?;
+            claim(&resolved);
+            // A reached feature is never drift, so `writes` holds it.
+            let still = reached
+                .iter()
+                .filter(|id| !model.records(id))
+                .cloned()
+                .collect();
+            let mut held = lock(&self.held);
+            held.change(
+                next,
+                Arc::clone(&saved),
+                Arc::new(Gated::of(&saved)),
+                Arc::new(still),
+            );
+            held.bytes = saved;
+        }
+        Ok(Reformatted {
+            changed,
+            written,
+            path,
+            refingerprinted: formatted
+                .refingerprinted
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect(),
+            resolved: formatted.resolved,
+            accepted,
+            problems: formatted.problems,
+        })
+    }
+
+    /// `text` saved over the document's file at `resolved` (`path` as `open` was given it),
+    /// which the session last read or wrote as `bytes`: refused, nothing written, if the
+    /// file changed since (a conflict, naming the file) or can't be written.
+    fn save(
+        &self,
+        path: &Path,
+        resolved: &Path,
+        bytes: &[u8],
+        text: &[u8],
+    ) -> Result<(), Problems> {
+        file::save(resolved, bytes, text).map_err(|error| {
+            Problems::from(if error.code() == ErrorCode::Conflict {
+                Error::new(
+                    ErrorCode::Conflict,
+                    format!(
+                        "{} changed outside this session since it was read",
+                        shown(path)
+                    ),
+                )
+                .with_parameter("path")
+                .with_suggestion(
+                    "nothing was written: roll back, then begin again from the file as it is now",
+                )
+            } else {
+                error.with_parameter("path")
+            })
+        })
+    }
+}
+
+/// The refusal of a command that needs a transaction, with none open in session `id`.
+fn no_transaction(id: SessionId) -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!("no transaction is open in session {id}"),
+    )
+    .with_parameter("session")
+    .with_suggestion("begin a transaction first; outside one, every edit is saved as it's made")
+}
+
+/// The refusal of what isn't done while a transaction is open in session `id` (`what`:
+/// close the session, format).
+fn transaction_open(id: SessionId, what: &str) -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!("a transaction is open in session {id}"),
+    )
+    .with_parameter("session")
+    .with_suggestion(format!("commit or roll back the transaction, then {what}"))
+}
+
+/// The current revision's model, as a command that waited for it reads it.
+struct Current {
+    model: Arc<Model>,
+    read: ModelRead,
+    /// What the session's edits had reached at its revision.
+    reached: Arc<BTreeSet<FeatureId>>,
 }
 
 /// Why a session's model couldn't be read.
@@ -704,7 +1266,7 @@ impl Unbuilt {
 /// A published read's response: `then` on the model read, if there was one, the response
 /// naming it; or why there wasn't.
 fn published_answer<T>(
-    info: SessionInfo,
+    info: Option<SessionInfo>,
     read: Result<Published, Unbuilt>,
     then: impl FnOnce(&Published, ModelRead) -> Result<T, Problems>,
 ) -> Response<T> {
@@ -715,13 +1277,13 @@ fn published_answer<T>(
                 of: ModelChoice::Published,
             };
             Response {
-                session: Some(info),
+                session: info,
                 model: Some(read),
                 result: then(&published, read),
             }
         }
         Err(unbuilt) => Response {
-            session: Some(info),
+            session: info,
             model: None,
             result: Err(unbuilt.problems()),
         },
@@ -764,6 +1326,13 @@ fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, revision: Revision, ru
     match outcome {
         // A late model of an older revision never takes a newer one's place.
         Ok(RunOutcome::Published(model)) => {
+            // The model of the revision a transaction began from, if `begin` came while it
+            // was rebuilding: what a rollback restores.
+            if let Some((base, begun @ None)) = &mut rebuilds.begun
+                && *base == revision
+            {
+                *begun = Some(Arc::clone(&model));
+            }
             if rebuilds
                 .published
                 .as_ref()
@@ -836,7 +1405,8 @@ impl<P: Clients + 'static> Sessions<P> {
                     files: BTreeMap::new(),
                     paths: BTreeMap::new(),
                     caches: BTreeMap::new(),
-                    threads: BTreeMap::new(),
+                    threads: Threads::new(),
+                    reads: Threads::new(),
                     stopping: false,
                 }),
             }),
@@ -907,7 +1477,7 @@ impl<P: Clients + 'static> Sessions<P> {
         match started {
             Ok(thread) => {
                 book.opening.insert(id);
-                book.threads.insert(id, thread);
+                book.threads.push(id, thread);
                 Running::new(answer, SESSION_STOPPED)
             }
             Err(e) => Running::answered(refused(crate::pool::thread_error("session", &e))),
@@ -915,10 +1485,18 @@ impl<P: Clients + 'static> Sessions<P> {
     }
 
     /// Closes `session`, once the commands queued before it have run: commands queued
-    /// after it are told the session closed. Its file is then free to open again.
+    /// after it are told the session closed. Its file is then free to open again. Refused
+    /// while a transaction is open (commit or roll back first), so nothing is dropped
+    /// without the client saying so.
     pub fn close(&self, session: &SessionId) -> Running<()> {
         let registry = Arc::downgrade(&self.registry);
         self.queued(session, "close", move |session, _| {
+            if lock(&session.held).transaction.is_some() {
+                return Err(Problems::from(transaction_open(
+                    session.id,
+                    "close the session",
+                )));
+            }
             session.close();
             if let Some(registry) = registry.upgrade() {
                 lock(&registry.book).release(session.id);
@@ -974,15 +1552,18 @@ impl<P: Clients + 'static> Sessions<P> {
 
     /// `session`'s document's problems ([`super::check`]): the gate's, if it refused the
     /// document, or, from the session's current revision rebuilt (waited for, and started if
-    /// it hasn't been: decision 13), each failed feature's and each drift. A kernel fault (a
+    /// it hasn't been: decision 13), each failed feature's and each drift of a feature no
+    /// edit reached since the last save (decision 28: a reached feature's stored fingerprint
+    /// was measured from other inputs, and a commit writes its new one). A kernel fault (a
     /// worker that crashed or hung) is the command's refusal, as `command::check` gives it,
     /// and the next check rebuilds, until faults are reported beside the result and kept as
     /// the revision's outcome (decision 32).
     pub fn check(&self, session: &SessionId) -> Running<Problems> {
         self.queued(session, "check", |session, model| match session.current() {
-            Ok((built, read)) => {
-                *model = Some(read);
-                super::check(&built).map_err(Problems::from)
+            Ok(current) => {
+                *model = Some(current.read);
+                let _span = tracing::info_span!("check").entered();
+                super::check_except(&current.model, &current.reached).map_err(Problems::from)
             }
             Err(Unbuilt::Gated(problems)) => Ok(problems),
             Err(Unbuilt::Unavailable(problems)) => Err(problems),
@@ -996,8 +1577,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// queued, on the newest published model, as [`published`](Self::published) gives it:
     /// starting the current rebuild if needed, refused naming `model` if nothing's published,
     /// and with the gate's (or the reader's) problems for a document the gate refused, with
-    /// nothing published. At most [`MAX_PUBLISHED_READS`] of a session's published reads run
-    /// at once: past them, one is refused. The response's `model` is the [`ModelRead`] of the
+    /// nothing published. At most [`MAX_PUBLISHED_READS`] of a session's published reads are
+    /// unanswered at once: past them, one is refused (each session's own, apart from every
+    /// other's). The response's `model` is the [`ModelRead`] of the
     /// model read, which `read` is handed too ([`Read`]); `read`'s error is the response's
     /// refusal.
     pub fn read_model<T: Send + 'static>(
@@ -1009,11 +1591,11 @@ impl<P: Clients + 'static> Sessions<P> {
     ) -> Running<T> {
         match choice {
             ModelChoice::Current => self.queued(session, command, move |session, model| {
-                let (built, current) = session.current().map_err(Unbuilt::problems)?;
-                *model = Some(current);
+                let current = session.current().map_err(Unbuilt::problems)?;
+                *model = Some(current.read);
                 read(Read {
-                    model: &built,
-                    read: current,
+                    model: &current.model,
+                    read: current.read,
                 })
             }),
             ModelChoice::Published => {
@@ -1021,15 +1603,25 @@ impl<P: Clients + 'static> Sessions<P> {
                     return Running::answered(refused(not_open(*session)));
                 };
                 let mut reads = lock(&found.reads);
-                let (ended, running): (Vec<_>, Vec<_>) = std::mem::take(&mut *reads)
-                    .into_iter()
-                    .partition(|(_, thread)| thread.is_finished());
-                *reads = running;
-                for (_, thread) in ended {
-                    let _ = thread.join();
-                }
-                if reads.len() >= MAX_PUBLISHED_READS {
-                    return Running::answered(refused(
+                let Reads {
+                    unanswered,
+                    threads,
+                } = &mut *reads;
+                // Released (closed) since it was found: its reads are the registry's now.
+                let Some(threads) = threads else {
+                    return Running::answered(refused(not_open(found.id)));
+                };
+                threads.reap();
+                // Refusals of an open session say it, as every command's do.
+                let refused_here = |error: Error| {
+                    Running::answered(Response {
+                        session: Some(found.info()),
+                        model: None,
+                        result: Err(Problems::from(error)),
+                    })
+                };
+                if unanswered.load(Ordering::SeqCst) >= MAX_PUBLISHED_READS {
+                    return refused_here(
                         Error::new(
                             ErrorCode::InvalidInput,
                             format!(
@@ -1038,11 +1630,12 @@ impl<P: Clients + 'static> Sessions<P> {
                             ),
                         )
                         .with_suggestion("wait for one to answer, then read again"),
-                    ));
+                    );
                 }
                 let (reply, answer) = mpsc::sync_channel(1);
                 let caller = tracing::Span::current();
                 let session = Arc::clone(&found);
+                let counted = Unanswered::count(unanswered);
                 let started = std::thread::Builder::new()
                     .name(format!("session-{}-read", found.id))
                     .spawn(move || {
@@ -1061,16 +1654,16 @@ impl<P: Clients + 'static> Sessions<P> {
                                 read: model,
                             })
                         });
+                        drop(counted);
                         let _ = reply.send(response);
                     });
                 match started {
                     Ok(thread) => {
-                        reads.push((command, thread));
+                        threads.push(command, thread);
                         Running::new(answer, READ_STOPPED)
                     }
-                    Err(e) => {
-                        Running::answered(refused(crate::pool::thread_error("published read", &e)))
-                    }
+                    // The read, and its count, dropped with the thread that never started.
+                    Err(e) => refused_here(crate::pool::thread_error("published read", &e)),
                 }
             }
         }
@@ -1099,6 +1692,63 @@ impl<P: Clients + 'static> Sessions<P> {
             let (_, gated) = session.document();
             let document = gated.document().map_err(Clone::clone)?;
             Ok(super::outline(document))
+        })
+    }
+
+    /// Begins a transaction in `session` (the design's section 4): its state kept (its text,
+    /// the gate's finding, its model or the rebuild running for it, its revision, what its
+    /// edits reached) for `rollback` to restore. Inside it, edits are applied without being
+    /// saved or starting a rebuild. Refused if one is open: transactions don't nest.
+    pub fn begin(&self, session: &SessionId) -> Running<Begun> {
+        self.queued(session, "begin", |session, _| session.begin())
+    }
+
+    /// Ends `session`'s transaction, saving its document (the design's section 4): waits for
+    /// the current revision's rebuild, then writes the canonical text through `file::save`,
+    /// with new fingerprints and solves only for the features its edits reached (decision
+    /// 28; every other keeps what's stored, and its drift is a problem, never written over),
+    /// and moves the session to a new revision, the text written. A document equal to the
+    /// one `begin` saw writes nothing. Refused, the transaction left open, if none is open,
+    /// if the file changed since the session read or wrote it (`conflict`), if its text
+    /// would pass the limit, if it can't be written (`io_failed`), or if a kernel fault kept
+    /// the rebuild from being had (until faults are saved around, decision 32).
+    pub fn commit(&self, session: &SessionId) -> Running<Committed> {
+        let registry = Arc::downgrade(&self.registry);
+        self.queued(session, "commit", move |session, model| {
+            let id = session.id;
+            session.commit(model, &|resolved| reclaim(&registry, id, resolved))
+        })
+    }
+
+    /// Ends `session`'s transaction, restoring what `begin` kept, at a new revision whose
+    /// state equals the one `begin` saw: the text byte for byte, the gate's finding, what
+    /// edits reached, and the model `begin` saw, the same one (or, if it was never made, the
+    /// restored document's rebuild started). Never touches the file. Refused if no
+    /// transaction is open.
+    pub fn rollback(&self, session: &SessionId) -> Running<RolledBack> {
+        self.queued(session, "rollback", |session, _| session.rollback())
+    }
+
+    /// Saves `session`'s document in canonical form with every feature's fingerprint and
+    /// every sketch's solve as rebuilt, edited or not (decision 31: what `silico fmt` runs,
+    /// and how drift is accepted, by name): with `features`, only those features' drift is
+    /// accepted, and every other drifted feature keeps what's stored with it and is a
+    /// problem. Written through `file::save` only if `write` and the text differs from the
+    /// file; with `write` false, says whether it would be. Refused inside a transaction
+    /// (commit or roll back first), for a document the gate refuses, and for a feature in
+    /// `features` the document hasn't; and, writing, as a commit is.
+    pub fn format(
+        &self,
+        session: &SessionId,
+        features: Option<Vec<FeatureId>>,
+        write: bool,
+    ) -> Running<Reformatted> {
+        let registry = Arc::downgrade(&self.registry);
+        self.queued(session, "format", move |session, model| {
+            let id = session.id;
+            session.format(features.as_deref(), write, model, &|resolved| {
+                reclaim(&registry, id, resolved);
+            })
         })
     }
 
@@ -1153,7 +1803,7 @@ impl<P: Clients + 'static> Drop for Sessions<P> {
             book.stopping = true;
             (
                 std::mem::take(&mut book.sessions),
-                std::mem::take(&mut book.threads),
+                std::mem::replace(&mut book.threads, Threads::new()),
             )
         };
         // Each queue ended, so its thread ends once its command does, and its rebuild
@@ -1162,23 +1812,23 @@ impl<P: Clients + 'static> Drop for Sessions<P> {
             session.close();
             lock(&session.rebuilds).engine.cancel();
         }
-        for (_, thread) in threads {
-            let _ = thread.join();
-        }
+        threads.join();
         // And the threads watching its rebuilds, each of which ends once its stopped run
-        // does, then its published reads, each of which ends with its read: so no session
-        // open at the drop outlives it. (A session closed before the drop may still be ending
-        // a published read of its own: it holds that session, not the registry.)
+        // does, then its published reads, each of which ends with its read; then the reads
+        // of sessions released before (closed, or their threads ended), which the book
+        // took: so no session's thread outlives it.
+        // Each taken from under its lock before it's joined: a watcher ends by taking the
+        // rebuilds' lock, and a read may ask the sessions anything.
         for session in sessions.values() {
-            let watchers = std::mem::take(&mut lock(&session.rebuilds).watchers);
-            for watcher in watchers {
-                let _ = watcher.join();
-            }
-            let reads = std::mem::take(&mut *lock(&session.reads));
-            for (_, read) in reads {
-                let _ = read.join();
+            let watchers = std::mem::replace(&mut lock(&session.rebuilds).watchers, Threads::new());
+            watchers.join();
+            let reads = lock(&session.reads).threads.take();
+            if let Some(reads) = reads {
+                reads.join();
             }
         }
+        let released = std::mem::replace(&mut lock(&self.registry.book).reads, Threads::new());
+        released.join();
     }
 }
 
@@ -1259,10 +1909,11 @@ fn start<P: Clients + 'static>(
                 running: None,
                 published: None,
                 failed: None,
-                watchers: Vec::new(),
+                begun: None,
+                watchers: Threads::new(),
             }),
             rebuilt: Condvar::new(),
-            reads: Mutex::new(Vec::new()),
+            reads: Mutex::new(Reads::new()),
         });
         book.opening.remove(&id);
         book.sessions.insert(id, Arc::clone(&session));
@@ -1376,12 +2027,16 @@ fn open<P: Clients + 'static>(
             .unwrap_or_default(),
         problems: gated.problems(),
     };
+    let text = Arc::new(text);
     let held = Held {
         path: path.to_owned(),
         resolved,
-        text: Arc::new(text),
+        bytes: Arc::clone(&text),
+        text,
         gated: Arc::new(gated),
         revision: Revision::OPENED,
+        reached: Arc::new(BTreeSet::new()),
+        transaction: None,
     };
     let cache = registry.cache(&file::cache_directory(&held.resolved));
     Ok((held, opened, cache, made))
@@ -1498,6 +2153,35 @@ fn claim<P: Clients + 'static>(
     }
 }
 
+/// Session `id`'s claim on its file moved to the file at `resolved` now, which a save put
+/// there (a new file renamed over the old one, or the old one written in place): the file
+/// kept open while it's claimed, so its inode isn't given to another, and the one before let
+/// go. If it can't be opened (removed since the save), the claim is left as it was, said in
+/// the log: its path still claims it.
+fn reclaim<P: Clients + 'static>(registry: &Weak<Registry<P>>, id: SessionId, resolved: &Path) {
+    let Some(registry) = registry.upgrade() else {
+        return;
+    };
+    // Opened without waiting, as a read is: a pipe put at the path wouldn't block it.
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(resolved)
+        .map_err(file::unreadable)
+        .and_then(|opened| Ok((FileId::of(&opened)?, opened)));
+    match opened {
+        Ok((file, opened)) => {
+            let mut book = lock(&registry.book);
+            book.files.retain(|_, (holder, _)| *holder != id);
+            book.files.insert(file, (id, opened));
+        }
+        Err(error) => tracing::warn!(
+            session = %id,
+            "the file a save wrote couldn't be claimed, so its claim is the file before: {error}"
+        ),
+    }
+}
+
 impl<P: Clients + 'static> Registry<P> {
     /// A new session's engine: on its own client of the kernel, keeping its steps in
     /// `cache`, and solving sketches with the registry's starter, if it has one.
@@ -1555,9 +2239,12 @@ mod tests {
             held: Mutex::new(Held {
                 path: PathBuf::from("a.silico"),
                 resolved: PathBuf::from("a.silico"),
+                bytes: Arc::new(BOX.as_bytes().to_vec()),
                 text: Arc::new(BOX.as_bytes().to_vec()),
                 gated: Arc::new(Gated::of(BOX.as_bytes())),
                 revision: Revision::OPENED,
+                reached: Arc::new(BTreeSet::new()),
+                transaction: None,
             }),
             queue: Mutex::new(Some(sender)),
             rebuilds: Mutex::new(Rebuilds {
@@ -1565,10 +2252,11 @@ mod tests {
                 running: None,
                 published: None,
                 failed: None,
-                watchers: Vec::new(),
+                begun: None,
+                watchers: Threads::new(),
             }),
             rebuilt: Condvar::new(),
-            reads: Mutex::new(Vec::new()),
+            reads: Mutex::new(Reads::new()),
         });
         (session, jobs)
     }
@@ -1739,6 +2427,8 @@ mod tests {
         let (_dir, _kernel, sessions, id) = at_two(SPHERE);
         sessions.find(&id).unwrap().close();
         let response = sessions.published(&id);
+        // Of no session, as every refusal of a session not open is.
+        assert_eq!(response.session, None);
         assert_eq!(response.model, None);
         assert_eq!(response.result.unwrap_err().errors()[0], not_open(id));
     }
@@ -1897,5 +2587,487 @@ mod tests {
         let book = lock(&sessions.registry.book);
         assert!(book.files.is_empty());
         assert!(book.paths.is_empty());
+    }
+
+    /// An edit's step, as the edits to come (`add_feature`, `set_field`, `replace_text`)
+    /// make one: `text` through the gate, held as the session's document at a new revision,
+    /// with what it reached added to what edits had reached (the design's section 5);
+    /// refused whole, the session as it was, if the gate refuses it.
+    impl<C: Kernel + 'static> Session<C> {
+        fn edit(&self, text: &str) -> Result<Revision, Problems> {
+            let gated = Gated::of(text.as_bytes());
+            let Gated::Checked(after) = &gated else {
+                return Err(gated.problems());
+            };
+            let mut held = lock(&self.held);
+            let next = held.next()?;
+            let reached = match held.gated.document() {
+                Ok(before) => {
+                    let mut seeds = (*held.reached).clone();
+                    seeds.extend(document::reached(before, after.document()));
+                    document::with_users(after.document(), &seeds)
+                }
+                Err(_) => after
+                    .document()
+                    .features
+                    .iter()
+                    .map(|feature| feature.id.clone())
+                    .collect(),
+            };
+            held.change(
+                next,
+                Arc::new(text.as_bytes().to_vec()),
+                Arc::new(gated),
+                Arc::new(reached),
+            );
+            Ok(next)
+        }
+    }
+
+    /// Sessions on a fake kernel of two threads, with a document in `a.silico` open as s1.
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        kernel: Arc<FakeKernel>,
+        sessions: Sessions<Arc<FakeKernel>>,
+        id: SessionId,
+        path: PathBuf,
+    }
+
+    fn opened(text: &str) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("secret");
+        let path = dir.path().join("a.silico");
+        std::fs::write(&path, text).unwrap();
+        let kernel = Arc::new(FakeKernel::new(2).unwrap());
+        let sessions = Sessions::with_cache_opener(Arc::clone(&kernel), move |cache| {
+            Cache::with_secret(cache, &secret)
+        });
+        let id = sessions.open(&path, false).wait().session.unwrap().id;
+        Fixture {
+            _dir: dir,
+            kernel,
+            sessions,
+            id,
+            path,
+        }
+    }
+
+    impl Fixture {
+        fn session(&self) -> Arc<Session<FakeClient>> {
+            self.sessions.find(&self.id).unwrap()
+        }
+
+        fn edit(&self, text: &str) -> Revision {
+            self.session().edit(text).unwrap()
+        }
+
+        fn file(&self) -> String {
+            std::fs::read_to_string(&self.path).unwrap()
+        }
+
+        fn begin(&self) -> Begun {
+            self.sessions.begin(&self.id).wait().result.unwrap()
+        }
+
+        /// How many requests of the kind `pick` picks the kernel has started.
+        fn made(&self, pick: impl Fn(&Op) -> bool) -> usize {
+            self.kernel.calls().iter().filter(|c| pick(&c.op)).count()
+        }
+    }
+
+    fn id(text: &str) -> FeatureId {
+        FeatureId::new(text).unwrap()
+    }
+
+    fn is_box(op: &Op) -> bool {
+        matches!(op, Op::MakePrimitive(Primitive::Box { .. }))
+    }
+
+    fn is_cylinder(op: &Op) -> bool {
+        matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. }))
+    }
+
+    /// A block, a lug clear of it, and their fuse, each with the fingerprint the fake
+    /// measures: the boxes' by formula (40 × 20 × 10 = 8000, area 2800; 10 × 10 × 10 =
+    /// 1000, area 600), and the fuse's both together, as the fake fuses two solids as if
+    /// they didn't touch (and these don't): 9000, area 3400. But the block's volume is
+    /// stored 1e-6 mm³ over what it measures: drift, which no edit below reaches.
+    const STORED: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [
+  {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {"volume": 8000.000001, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}},
+  {"id": "b0000001", "type": "box", "v": 1, "name": "Lug", "position": [100, 0, 0], "length": 10, "width": 10, "height": 10, "fingerprint": {"volume": 1000, "area": 600, "bbox": [100, 0, 0, 110, 10, 10], "faces": 6, "edges": 12, "vertices": 8}},
+  {"id": "f0000001", "type": "fuse", "v": 1, "name": "Both", "base": "k7f2qx3m", "tool": "b0000001", "fingerprint": {"volume": 9000, "area": 3400, "bbox": [0, 0, 0, 110, 20, 10], "faces": 12, "edges": 24, "vertices": 16}}
+]}
+"#;
+
+    /// [`STORED`] with the lug 20 long: an edit that reaches the lug and the fuse.
+    fn longer() -> String {
+        let longer = STORED.replace(
+            r#""length": 10, "width": 10"#,
+            r#""length": 20, "width": 10"#,
+        );
+        assert_ne!(longer, STORED);
+        longer
+    }
+
+    /// [`longer`] committed: the block's fingerprint as stored, drift and all; the lug's
+    /// and the fuse's new, by hand: the lug 20 × 10 × 10 = 2000, area 2(200 + 200 + 100) =
+    /// 1000, to x = 120; the fuse 8000 + 2000 = 10000, area 2800 + 1000 = 3800.
+    const COMMITTED: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000.000001, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    },\n    {\n      \"id\": \"b0000001\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Lug\",\n      \"position\": [100, 0, 0],\n      \"length\": 20,\n      \"width\": 10,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 2000, \"area\": 1000, \"bbox\": [100, 0, 0, 120, 10, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    },\n    {\n      \"id\": \"f0000001\",\n      \"type\": \"fuse\",\n      \"v\": 1,\n      \"name\": \"Both\",\n      \"base\": \"k7f2qx3m\",\n      \"tool\": \"b0000001\",\n      \"fingerprint\": {\"volume\": 10000, \"area\": 3800, \"bbox\": [0, 0, 0, 120, 20, 10], \"faces\": 12, \"edges\": 24, \"vertices\": 16}\n    }\n  ]\n}\n";
+
+    /// The one drift `problems` hold: the block's volume, stored 1e-6 over.
+    #[track_caller]
+    fn the_blocks_drift(problems: &Problems) {
+        assert_eq!(problems.total(), 1, "{problems:?}");
+        let drift = &problems.errors()[0];
+        assert_eq!(
+            (drift.code(), drift.feature(), drift.parameter()),
+            (
+                ErrorCode::Drift,
+                Some("k7f2qx3m"),
+                Some("fingerprint.volume")
+            ),
+            "{drift:?}"
+        );
+    }
+
+    #[test]
+    fn a_commit_writes_new_fingerprints_only_for_what_edits_reached_and_keeps_drift_as_stored() {
+        let f = opened(STORED);
+        assert_eq!(
+            f.begin(),
+            Begun {
+                base: Revision::OPENED
+            }
+        );
+        assert_eq!(f.edit(&longer()), Revision(2));
+        let response = f.sessions.commit(&f.id).wait();
+        let session = response.session.unwrap();
+        assert_eq!(
+            (session.revision, session.transaction),
+            (Revision(3), false)
+        );
+        assert_eq!(
+            response.model,
+            Some(ModelRead {
+                revision: Revision(2),
+                of: ModelChoice::Current
+            })
+        );
+        let committed = response.result.unwrap();
+        assert!(committed.written);
+        assert_eq!(committed.path, f.path);
+        assert_eq!(committed.refingerprinted, [id("b0000001"), id("f0000001")]);
+        assert!(committed.resolved.is_empty());
+        the_blocks_drift(&committed.problems);
+        assert_eq!(f.file(), COMMITTED);
+        // The session holds what it wrote, as text and as the file's bytes, and nothing is
+        // reached since the save.
+        let session = f.session();
+        let held = lock(&session.held);
+        assert_eq!(held.text.as_slice(), COMMITTED.as_bytes());
+        assert_eq!(held.bytes.as_slice(), COMMITTED.as_bytes());
+        assert!(held.reached.is_empty());
+        drop(held);
+        // So a check of the saved revision finds the block's drift alone.
+        the_blocks_drift(&f.sessions.check(&f.id).wait().result.unwrap());
+    }
+
+    #[test]
+    fn a_check_says_no_drift_of_what_edits_reached() {
+        // The lug's stored 1000 and the fuse's 9000 were measured from the old length: the
+        // edit reached them, so only the block's drift is said.
+        let f = opened(STORED);
+        f.begin();
+        f.edit(&longer());
+        let response = f.sessions.check(&f.id).wait();
+        the_blocks_drift(&response.result.unwrap());
+        assert_eq!(response.model.unwrap().revision, Revision(2));
+        assert_eq!(
+            *lock(&f.session().held).reached,
+            BTreeSet::from([id("b0000001"), id("f0000001")])
+        );
+    }
+
+    #[test]
+    fn a_notes_edit_reaches_nothing_and_its_commit_writes_no_fingerprint() {
+        // The lug has no fingerprint stored: a commit that reached it would write one.
+        let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}, {"id": "b0000001", "type": "box", "v": 1, "name": "Lug", "position": [100, 0, 0], "length": 10, "width": 10, "height": 10}]}"#;
+        let noted = text.replace(
+            r#""name": "Block", "#,
+            r#""name": "Block", "note": "Mount face", "#,
+        );
+        let f = opened(text);
+        f.begin();
+        f.edit(&noted);
+        let committed = f.sessions.commit(&f.id).wait().result.unwrap();
+        assert!(committed.written);
+        assert!(committed.refingerprinted.is_empty());
+        assert!(committed.problems.is_empty(), "{:?}", committed.problems);
+        assert_eq!(
+            f.file(),
+            "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"note\": \"Mount face\",\n      \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    },\n    {\"id\": \"b0000001\", \"type\": \"box\", \"v\": 1, \"name\": \"Lug\", \"position\": [100, 0, 0], \"length\": 10, \"width\": 10, \"height\": 10}\n  ]\n}\n"
+        );
+    }
+
+    #[test]
+    fn a_commit_of_edits_undone_writes_nothing_and_reaches_what_begin_saw() {
+        let f = opened(STORED);
+        f.begin();
+        f.edit(&longer());
+        // Back as it was, though in canonical form now: the same document.
+        f.edit(&document::write(&document::read(STORED.as_bytes()).unwrap()).unwrap());
+        let response = f.sessions.commit(&f.id).wait();
+        let committed = response.result.unwrap();
+        assert!(!committed.written);
+        assert!(committed.refingerprinted.is_empty());
+        // The block's drift is said: the commit's check is begin's.
+        the_blocks_drift(&committed.problems);
+        assert_eq!(f.file(), STORED);
+        let session = response.session.unwrap();
+        assert_eq!(
+            (session.revision, session.transaction),
+            (Revision(3), false)
+        );
+        assert!(lock(&f.session().held).reached.is_empty());
+    }
+
+    #[test]
+    fn a_commit_over_a_file_changed_outside_is_a_conflict_writing_nothing_and_leaving_it_open() {
+        let f = opened(STORED);
+        f.begin();
+        f.edit(&longer());
+        std::fs::write(&f.path, "edited elsewhere").unwrap();
+        let response = f.sessions.commit(&f.id).wait();
+        let session = response.session.unwrap();
+        assert_eq!((session.revision, session.transaction), (Revision(2), true));
+        let problems = response.result.unwrap_err();
+        assert_eq!(problems.total(), 1);
+        let conflict = &problems.errors()[0];
+        assert_eq!(conflict.code(), ErrorCode::Conflict);
+        assert_eq!(conflict.parameter(), Some("path"));
+        assert_eq!(
+            conflict.message(),
+            format!(
+                "{} changed outside this session since it was read",
+                shown(&f.path)
+            )
+        );
+        assert_eq!(
+            conflict.suggestion(),
+            Some("nothing was written: roll back, then begin again from the file as it is now")
+        );
+        assert_eq!(f.file(), "edited elsewhere");
+        // Rolled back, as the advice says.
+        let rolled = f.sessions.rollback(&f.id).wait();
+        assert_eq!(
+            rolled.result.unwrap(),
+            RolledBack {
+                restored: Revision::OPENED
+            }
+        );
+    }
+
+    #[test]
+    fn a_reached_feature_that_failed_stays_reached_after_its_commit() {
+        let f = opened(STORED);
+        // The lug, 20 long, can't be made: it fails, and the fuse is blocked on it.
+        f.kernel.refuse(|op| {
+            matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx > 15.0 && *dx < 25.0)
+                .then(|| Error::new(ErrorCode::KernelFailed, "the lug can't be made"))
+        });
+        f.begin();
+        f.edit(&longer());
+        let committed = f.sessions.commit(&f.id).wait().result.unwrap();
+        assert!(committed.written);
+        assert!(committed.refingerprinted.is_empty());
+        let found: Vec<(ErrorCode, Option<&str>)> = committed
+            .problems
+            .errors()
+            .iter()
+            .map(|e| (e.code(), e.feature()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (ErrorCode::KernelFailed, Some("b0000001")),
+                (ErrorCode::Drift, Some("k7f2qx3m"))
+            ]
+        );
+        // Neither's fingerprint written, so both still reached, and their stale fingerprints
+        // kept as stored.
+        assert_eq!(
+            *lock(&f.session().held).reached,
+            BTreeSet::from([id("b0000001"), id("f0000001")])
+        );
+        let saved = document::read(f.file().as_bytes()).unwrap();
+        let volumes: Vec<Measure> = saved
+            .features
+            .iter()
+            .map(|feature| feature.fingerprint.unwrap().volume)
+            .collect();
+        assert_eq!(
+            volumes,
+            [
+                Measure::from_millionths(8_000_000_001),
+                Measure::from_millionths(1_000_000_000),
+                Measure::from_millionths(9_000_000_000)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_rollback_restores_the_text_byte_for_byte_and_the_same_model_at_a_new_revision() {
+        // BOX isn't in canonical form: it comes back as written.
+        let f = opened(BOX);
+        assert!(f.sessions.check(&f.id).wait().result.unwrap().is_empty());
+        let model = f.sessions.published(&f.id).result.unwrap().model;
+        f.begin();
+        f.edit(SPHERE);
+        assert!(f.sessions.check(&f.id).wait().result.unwrap().is_empty());
+        let calls = f.kernel.calls().len();
+        let response = f.sessions.rollback(&f.id).wait();
+        assert_eq!(
+            response.result.unwrap(),
+            RolledBack {
+                restored: Revision::OPENED
+            }
+        );
+        let session = response.session.unwrap();
+        assert_eq!(
+            (session.revision, session.transaction),
+            (Revision(3), false)
+        );
+        assert_eq!(f.sessions.text(&f.id, None).wait().result.unwrap(), BOX);
+        // The model begin saw, the same one, as revision 3's.
+        let published = f.sessions.published(&f.id).result.unwrap();
+        assert_eq!(published.revision, Revision(3));
+        assert!(Arc::ptr_eq(&published.model, &model));
+        // A check reads it, and asks the kernel nothing.
+        let check = f.sessions.check(&f.id).wait();
+        assert!(check.result.unwrap().is_empty());
+        assert_eq!(
+            check.model,
+            Some(ModelRead {
+                revision: Revision(3),
+                of: ModelChoice::Current
+            })
+        );
+        assert_eq!(f.kernel.calls().len(), calls);
+        assert_eq!(f.file(), BOX);
+    }
+
+    /// [`BOX`] and a cylinder clear of it, of radius 2 and height 5.
+    const BOX_AND_PIN: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "c0000001", "type": "cylinder", "v": 1, "name": "Pin", "position": [100, 0, 0], "radius": 2, "height": 5}]}"#;
+
+    #[test]
+    fn a_rollback_whose_begin_came_mid_rebuild_and_whose_rebuild_was_superseded_starts_one() {
+        let f = opened(BOX);
+        assert!(f.sessions.check(&f.id).wait().result.unwrap().is_empty());
+        f.edit(BOX_AND_PIN);
+        // Revision 2's rebuild started by a published read, its pin held.
+        let hold = f.kernel.hold(is_cylinder);
+        assert_eq!(
+            f.sessions.published(&f.id).result.unwrap().revision,
+            Revision::OPENED
+        );
+        assert!(f.kernel.wait_running(1, WAIT));
+        assert_eq!(f.begin().base, Revision(2));
+        // A check in the transaction supersedes revision 2's rebuild: its model never comes.
+        f.edit(SPHERE);
+        assert!(f.sessions.check(&f.id).wait().result.unwrap().is_empty());
+        let response = f.sessions.rollback(&f.id).wait();
+        assert_eq!(response.result.unwrap().restored, Revision(2));
+        // The rollback started the restored document's rebuild, as revision 4's.
+        assert_eq!(lock(&f.session().rebuilds).running, Some(Revision(4)));
+        hold.release();
+        let check = f.sessions.check(&f.id).wait();
+        assert!(check.result.unwrap().is_empty());
+        assert_eq!(check.model.unwrap().revision, Revision(4));
+        // The block, built before, is never asked for again; the pin, stopped, is.
+        assert_eq!(f.made(is_box), 1);
+        assert_eq!(f.made(is_cylinder), 2);
+    }
+
+    #[test]
+    fn a_rollback_restores_the_model_begins_rebuild_published_inside_the_transaction() {
+        let f = opened(BOX);
+        assert!(f.sessions.check(&f.id).wait().result.unwrap().is_empty());
+        f.edit(BOX_AND_PIN);
+        let hold = f.kernel.hold(is_cylinder);
+        let _ = f.sessions.published(&f.id);
+        assert!(f.kernel.wait_running(1, WAIT));
+        f.begin();
+        // Revision 2's rebuild publishes after begin, before anything supersedes it.
+        hold.release();
+        let deadline = std::time::Instant::now() + WAIT;
+        let model = loop {
+            let published = f.sessions.published(&f.id).result.unwrap();
+            if published.revision == Revision(2) {
+                break published.model;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "revision 2 never published"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        f.edit(SPHERE);
+        let calls = f.kernel.calls().len();
+        assert_eq!(
+            f.sessions.rollback(&f.id).wait().result.unwrap().restored,
+            Revision(2)
+        );
+        // That model, as revision 4's, with no rebuild started.
+        let published = f.sessions.published(&f.id).result.unwrap();
+        assert_eq!(published.revision, Revision(4));
+        assert!(Arc::ptr_eq(&published.model, &model));
+        assert_eq!(lock(&f.session().rebuilds).running, None);
+        assert_eq!(f.kernel.calls().len(), calls);
+    }
+
+    #[test]
+    fn dropping_the_sessions_mid_transaction_leaves_the_file_as_it_was() {
+        let f = opened(STORED);
+        f.begin();
+        f.edit(&longer());
+        assert!(f.sessions.check(&f.id).wait().result.is_ok());
+        let Fixture {
+            _dir,
+            sessions,
+            path,
+            ..
+        } = f;
+        drop(sessions);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), STORED);
+    }
+
+    #[test]
+    fn a_published_read_answered_but_its_thread_still_ending_leaves_room_for_another() {
+        // Eight reads whose threads haven't ended, each having answered (counted no more):
+        // a ninth runs, since what's bounded is reads unanswered, not threads.
+        let (_dir, _kernel, sessions, id) = at_two(BOX);
+        let (release, released) = mpsc::channel::<()>();
+        let released = Arc::new(Mutex::new(released));
+        {
+            let found = sessions.find(&id).unwrap();
+            let mut reads = lock(&found.reads);
+            let threads = reads.threads.as_mut().unwrap();
+            for _ in 0..MAX_PUBLISHED_READS {
+                let released = Arc::clone(&released);
+                threads.push(
+                    "probe",
+                    std::thread::spawn(move || {
+                        let _ = lock(&released).recv();
+                    }),
+                );
+            }
+        }
+        let ninth = sessions
+            .read_model(&id, "probe", ModelChoice::Published, |read| {
+                Ok(read.model_read().revision)
+            })
+            .wait();
+        assert_eq!(ninth.result.unwrap(), Revision::OPENED);
+        drop(release);
     }
 }
