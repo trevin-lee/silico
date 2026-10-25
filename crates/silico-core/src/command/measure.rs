@@ -1,7 +1,8 @@
 //! M4.5's measures (docs/design/m4.1-command-api.md, section 7; docs/ports/measure.md):
 //! `mass_properties`, a solid's volume, area, and centre of mass as M1's `measure` gives
-//! them, precise to a relative 1e-9: the numbers its feature's fingerprint holds, read from
-//! its rebuild's summary, so a measure never disagrees with the document and asks the kernel
+//! them, integrated to a relative 1e-9 and written as its feature's fingerprint holds them
+//! (to a millionth of a mm³ and mm², the centre to a nanometre), read from its rebuild's
+//! summary, so a measure never disagrees with the document and asks the kernel
 //! nothing.
 
 use super::elements::built;
@@ -91,13 +92,16 @@ fn properties(model: &Model, id: &FeatureId, asked: bool) -> Result<MassProperti
             center_of_mass: [x, y, z],
         }),
         // The core refuses a summary that isn't finite when it's had, and the gate bounds a
-        // solid to a kilometre: a value past what these hold is a bug.
+        // solid to a kilometre: a finite value past what these hold is the worker's, a
+        // summary no admitted solid has (as `check` takes it, never Silico's bug).
         _ => Err(Error::new(
-            ErrorCode::Internal,
-            format!("{id}'s mass properties are past what a measure or a length holds"),
+            ErrorCode::ProtocolError,
+            format!(
+                "the kernel worker measured {id}'s solid past what a measure or a length holds"
+            ),
         )
         .with_feature(id.as_str())
-        .with_suggestion(crate::worker::SILICO_BUG)
+        .with_suggestion("start a new kernel worker")
         .into()),
     }
 }

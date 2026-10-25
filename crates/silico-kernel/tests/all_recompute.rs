@@ -22,6 +22,8 @@ mod adversarial_entries;
 mod adversarial_fake_kernel;
 #[path = "adversarial_fingerprint.rs"]
 mod adversarial_fingerprint;
+#[path = "adversarial_mass_properties.rs"]
+mod adversarial_mass_properties;
 #[path = "adversarial_recompute.rs"]
 mod adversarial_recompute;
 #[path = "cache.rs"]

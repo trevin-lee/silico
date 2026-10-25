@@ -86,8 +86,9 @@ pub struct MassPropertiesRequestSchema {
     pub feature: Option<FeatureId>,
 }
 
-/// A solid's mass properties, precise to a relative 1e-9: the numbers its feature's
-/// fingerprint holds.
+/// A solid's mass properties, integrated to a relative 1e-9 and written as its feature's
+/// fingerprint holds them: volume and area to a millionth of a mm³ and mm², the centre to a
+/// nanometre, so a solid's smallest measures are no more precise than that.
 #[derive(JsonSchema)]
 #[schemars(rename = "MassProperties", transform = wire_shape)]
 pub struct MassPropertiesSchema {
