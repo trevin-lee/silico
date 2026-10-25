@@ -23,6 +23,7 @@ use silico_core::command::elements::{
 };
 use silico_core::command::schema::schema;
 use silico_core::command::wire::elements::{ElementsRequest, QueryRequest};
+use silico_core::command::wire::measure::MassPropertiesRequest;
 use silico_core::command::wire::schema::SchemaRequest;
 use silico_core::command::wire::{COMMANDS, Layout, ToWire, snapshot, snapshot_value, write};
 use silico_core::command::{ModelChoice, Problems, SessionId};
@@ -268,6 +269,13 @@ fn every_object_of_the_commands_snapshots_is_closed_and_requires_its_fields() {
         ]
     );
     assert_eq!(query["result"]["title"], "QueryResult");
+    let mass = snapshot_value("mass_properties").unwrap();
+    assert_eq!(mass["request"]["title"], "MassPropertiesRequest");
+    assert_eq!(mass["result"]["title"], "MassPropertiesResult");
+    assert_eq!(
+        defs(&mass["result"]),
+        ["FeatureId", "Length", "MassProperties", "Measure"]
+    );
     let schema = snapshot_value("schema").unwrap();
     assert_eq!(schema["request"]["title"], "SchemaRequest");
     assert_eq!(schema["result"]["title"], "SchemaResult");
@@ -323,7 +331,7 @@ fn the_word_lists_in_the_snapshots_are_the_commands_own() {
 #[test]
 fn the_examples_are_the_designs_own_text() {
     // Each section's blocks, in order, each file the block and a newline.
-    let sections: [(&str, &str, &str, &[&str]); 4] = [
+    let sections: [(&str, &str, &str, &[&str]); 5] = [
         (
             "### Element entries",
             "### Warnings",
@@ -360,6 +368,12 @@ fn the_examples_are_the_designs_own_text() {
             "### `mass_properties` (M4.5)",
             "schema",
             &["request-document"],
+        ),
+        (
+            "### `mass_properties` (M4.5)",
+            "### `distance` (M4.5)",
+            "mass_properties",
+            &["every-body", "every-body-measured"],
         ),
     ];
     for (from, to, dir, names) in sections {
@@ -404,6 +418,23 @@ fn the_designs_requests_are_read_written_back_byte_for_byte_and_hold_to_their_sc
     );
     assert_eq!(written(&request), text);
     holds(&schema_of("query", "request", None), &text, "query");
+
+    let text = example("mass_properties/every-body");
+    let request = MassPropertiesRequest::read(&parsed(&text)).unwrap();
+    assert_eq!(
+        request,
+        MassPropertiesRequest {
+            session: s1(),
+            model: ModelChoice::Current,
+            feature: None,
+        }
+    );
+    assert_eq!(written(&request), text);
+    holds(
+        &schema_of("mass_properties", "request", None),
+        &text,
+        "mass_properties",
+    );
 
     let text = example("schema/request-document");
     let request = SchemaRequest::read(&parsed(&text)).unwrap();
@@ -654,7 +685,7 @@ fn schema_answers_the_document_and_each_command_as_committed() {
         assert_eq!(error.parameter(), Some("of"));
         assert_eq!(
             error.candidates(),
-            ["document", "elements", "query", "schema"]
+            ["document", "elements", "query", "mass_properties", "schema"]
         );
     }
     assert_eq!(

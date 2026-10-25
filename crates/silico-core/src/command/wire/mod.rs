@@ -26,8 +26,8 @@
 //! result's, which is the envelope's `result` when the command runs, not the whole envelope,
 //! so not by itself what MCP's `outputSchema` checks `structuredContent`, the envelope,
 //! against (that is M4.9's to build from these and the envelope's). Each is added with the
-//! command's wire types ([`COMMANDS`]: [`elements`], for `elements` and `query`, and
-//! [`schema`]).
+//! command's wire types ([`COMMANDS`]: [`elements`], for `elements` and `query`;
+//! [`measure`], for `mass_properties`; and [`schema`]).
 
 use std::fmt;
 
@@ -1194,7 +1194,7 @@ pub enum ResponseSchema {
 
 /// The commands whose wire types are built, each with its snapshot: what `schema`
 /// describes besides the document.
-pub const COMMANDS: [&str; 3] = ["elements", "query", "schema"];
+pub const COMMANDS: [&str; 4] = ["elements", "query", "mass_properties", "schema"];
 
 /// The JSON Schema (draft 2020-12, every object's keys sorted) a snapshot (section 8)
 /// records: `envelope`, the response's; or a command's, `{"request": ..., "result": ...}`,
@@ -1209,6 +1209,10 @@ pub fn snapshot_value(of: &str) -> Option<serde_json::Value> {
         "query" => Some(command_schema::<
             elements::QueryRequestSchema,
             elements::QueryResultSchema,
+        >()),
+        "mass_properties" => Some(command_schema::<
+            measure::MassPropertiesRequestSchema,
+            measure::MassPropertiesResultSchema,
         >()),
         "schema" => Some(command_schema::<
             schema::SchemaRequestSchema,
@@ -1235,6 +1239,7 @@ pub fn snapshot(of: &str) -> Option<Result<String, Error>> {
 }
 
 pub mod elements;
+pub mod measure;
 pub mod schema;
 
 #[cfg(test)]

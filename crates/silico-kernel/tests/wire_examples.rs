@@ -15,6 +15,7 @@ use silico_core::command::Revision;
 use silico_core::command::elements::{
     ElementType, Facing, MeasureName, Order, Query, entries, list, query,
 };
+use silico_core::command::measure::mass_properties;
 use silico_core::command::wire::{Layout, ToWire, write};
 use silico_core::document::{Angle, FeatureId};
 use silico_core::kernel::ElementKind;
@@ -77,6 +78,12 @@ fn the_designs_example_part_gives_its_entries_and_results_byte_for_byte() {
     )
     .unwrap();
     assert_eq!(written(&found), example("query/largest-face-up-found"));
+    // `mass_properties` of every body: the block less its hole.
+    let measured = mass_properties(&model, None).unwrap();
+    assert_eq!(
+        written(&measured),
+        example("mass_properties/every-body-measured")
+    );
     // Section 2's two entries: the top, and the hole's wall.
     let hole = entries(&model, &FeatureId::new("m3tq8v0z").unwrap()).unwrap();
     let named = |name: &str| {
