@@ -534,9 +534,10 @@ impl Model {
         })
     }
 
-    /// Why the feature `id`'s built solid couldn't be measured, if a worker failed to (a
-    /// crash, a timeout, too little of something: not the kernel refusing its values, which
-    /// its [`Built::measure_refused`] holds), as [`drift`](Self::drift) says it.
+    /// Why the feature `id`'s built solid couldn't be measured, if it couldn't: the kernel's
+    /// refusal of its values (which its [`Built::measure_refused`] holds too, once kept) or
+    /// a worker's failure (a crash, a timeout, too little of something), as
+    /// [`drift`](Self::drift) says it.
     pub fn unmeasured(&self, id: &FeatureId) -> Option<&Error> {
         self.unmeasured
             .iter()

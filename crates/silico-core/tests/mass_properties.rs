@@ -14,6 +14,7 @@ use silico_core::command::measure::mass_properties;
 use silico_core::command::{ModelChoice, ModelRead, Revision};
 use silico_core::document::Fingerprint;
 use silico_core::fake::FakeKernel;
+use silico_core::kernel::Op;
 use silico_core::recompute::{Model, Recompute};
 
 /// The fingerprint the feature `feature`'s rebuild gives, as `fmt` writes it.
@@ -147,6 +148,57 @@ fn a_solid_a_worker_failed_to_measure_is_refused_with_that_failure_as_check_says
             "{code:?}"
         );
     }
+}
+
+#[test]
+fn each_solid_a_worker_failed_to_measure_gives_its_own_failure() {
+    // Found by the tests review: a `Model::unmeasured` that gave every feature the first
+    // one's failure passed every test, each body's failure being alike. One body's worker
+    // crashed, the other's timed out: each is said as its own.
+    let engine = Recompute::new(FakeKernel::new(2).unwrap());
+    engine.kernel().refuse(|op| match op {
+        Op::Summarize { shape } => Some(
+            if FakeKernel::describe(shape).is_some_and(|d| d.contains("5, 0, 0")) {
+                silico_core::Error::new(ErrorCode::WorkerTimeout, "timed out")
+            } else {
+                silico_core::Error::new(ErrorCode::WorkerCrashed, "crashed")
+            },
+        ),
+        _ => None,
+    });
+    let model = published(&engine, checked(TWO_BODIES));
+    let refused = mass_properties(&model, None).unwrap_err();
+    let codes: Vec<_> = refused
+        .errors()
+        .iter()
+        .map(|e| (e.code(), e.feature()))
+        .collect();
+    assert_eq!(
+        codes,
+        [
+            (ErrorCode::WorkerCrashed, Some("aaaaaaaa")),
+            (ErrorCode::WorkerTimeout, Some("bbbbbbbb"))
+        ]
+    );
+}
+
+#[test]
+fn entries_of_a_solid_a_worker_failed_to_measure_give_that_failure() {
+    // Found by the tests review: `elements` reads a worker's failure to measure a solid
+    // too, as `check` says it; with that read gone, it said `kernel_failed`, "couldn't be
+    // described", and every test passed.
+    let engine = Recompute::new(FakeKernel::new(2).unwrap());
+    engine.kernel().refuse(|op| {
+        (op.name() == "Summarize")
+            .then(|| silico_core::Error::new(ErrorCode::WorkerCrashed, "crashed"))
+    });
+    let model = published(&engine, checked(TWO_BODIES));
+    let refused = silico_core::command::elements::entries(&model, &id("bbbbbbbb")).unwrap_err();
+    let e = &refused.errors()[0];
+    assert_eq!(
+        (e.code(), e.feature(), e.parameter()),
+        (ErrorCode::WorkerCrashed, Some("bbbbbbbb"), Some("feature"))
+    );
 }
 
 #[test]
