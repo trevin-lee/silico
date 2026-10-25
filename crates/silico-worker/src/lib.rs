@@ -418,10 +418,11 @@ mod tests {
 
     #[test]
     fn a_worker_starts_with_its_traps_off_or_says_they_are_unchecked_or_refuses_to_run() {
-        // Unchecked: it runs, and says so once.
+        // Unchecked: it runs, and says so once, at info (unseen at the default warn level).
         let (started, log) = start_with(Traps::Unchecked);
         assert_eq!(started, Ok(()));
-        assert!(log.contains("traps=\"unchecked\""), "{log}");
+        assert_eq!(log.matches("traps=\"unchecked\"").count(), 1, "{log}");
+        assert!(log.contains(" INFO "), "{log}");
         // Checked, off: it runs, saying nothing about traps.
         let (started, log) = start_with(Traps::Checked {
             mask: || 0,
@@ -439,6 +440,7 @@ mod tests {
             log.contains("couldn't switch floating-point traps off: no"),
             "{log}"
         );
+        assert!(log.contains("ERROR"), "{log}");
         // Checked, switched off, but still on: it refuses to run.
         let (started, log) = start_with(Traps::Checked {
             mask: || 0x100,
@@ -446,5 +448,23 @@ mod tests {
         });
         assert!(started.unwrap_err().contains("refusing to run"));
         assert!(log.contains("trap-enable bits 0x100"), "{log}");
+        assert!(log.contains("ERROR"), "{log}");
+    }
+
+    #[test]
+    fn traps_on_at_start_are_switched_off_and_the_worker_runs() {
+        // The council's tests lens: switching off comes before the check, so traps a linked
+        // library left on are switched off, and the worker runs (checked first, it would
+        // refuse to start with them on).
+        static ON: AtomicBool = AtomicBool::new(true);
+        let (started, log) = start_with(Traps::Checked {
+            mask: || u32::from(ON.load(Ordering::SeqCst)),
+            disable: || {
+                ON.store(false, Ordering::SeqCst);
+                Ok(())
+            },
+        });
+        assert_eq!(started, Ok(()), "{log}");
+        assert!(!ON.load(Ordering::SeqCst));
     }
 }
