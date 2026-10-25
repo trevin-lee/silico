@@ -1526,3 +1526,41 @@ fn a_path_below_a_member_the_feature_hasnt_is_a_field_it_hasnt() {
     }
     assert_eq!(f.file(), PAD);
 }
+
+#[test]
+fn a_feature_added_outside_a_transaction_comes_back_as_saved_fingerprint_and_all() {
+    let f = opened(BLOCK);
+    let lug = r#"{"id": "b0000002", "type": "box", "name": "Lug", "position": [100, 0, 0], "length": 1, "width": 2, "height": 3}"#;
+    let added = answer(f.sessions.add_feature(&f.id, Revision::OPENED, value(lug)))
+        .result
+        .unwrap();
+    assert!(added.commit.unwrap().written);
+    // Its fingerprint, by hand: 1 × 2 × 3 = 6, area 2(2 + 3 + 6) = 22, from (100, 0, 0)
+    // to (101, 2, 3); as the saved file holds it.
+    assert_eq!(
+        document::write_feature(&added.feature).unwrap(),
+        "{\n  \"id\": \"b0000002\",\n  \"type\": \"box\",\n  \"v\": 1,\n  \"name\": \"Lug\",\n  \"position\": [100, 0, 0],\n  \"length\": 1,\n  \"width\": 2,\n  \"height\": 3,\n  \"fingerprint\": {\"volume\": 6, \"area\": 22, \"bbox\": [100, 0, 0, 101, 2, 3], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n}"
+    );
+    let saved = document::read(f.file().as_bytes()).unwrap();
+    assert_eq!(saved.features[1], added.feature);
+}
+
+#[test]
+fn a_sketch_member_set_outside_a_transaction_comes_back_where_its_solve_put_it() {
+    let f = opened(SKETCHED);
+    // pb set to x = 11, and solved to 12.25: the commit writes the solve.
+    moving_pb(&f.sketches);
+    let set = f.set("s0000001", "points.pb000000.x", "11").result.unwrap();
+    let commit = set.commit.unwrap();
+    assert_eq!(commit.resolved, [id("s0000001")]);
+    assert_eq!(
+        (json(&set.before), json(&set.after)),
+        ("10".into(), "12.25".into())
+    );
+    assert!(
+        f.file()
+            .contains(r#""id": "pb000000", "x": 12.25, "y": 0"#),
+        "{}",
+        f.file()
+    );
+}

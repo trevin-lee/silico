@@ -352,9 +352,9 @@ pub struct Reformatted {
 }
 
 /// What `add_feature` did (the design's section 7): the feature as the document now holds it
-/// (its ID, the one given or the one made, and its version), whether the document changed
-/// (always, a feature added), and, outside a transaction, the commit's result, none inside
-/// one.
+/// (its ID, the one given or the one made, and its version; outside a transaction, as its
+/// commit saved it, with the fingerprint written), whether the document changed (always, a
+/// feature added), and, outside a transaction, the commit's result, none inside one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Added {
     pub feature: Feature,
@@ -364,7 +364,8 @@ pub struct Added {
 
 /// What `set_field` did (the design's section 7): the feature and the field, as the request
 /// named them, the field's value before and after, each as the document's canonical form
-/// writes it (`null` for a field the feature hasn't, a note removed), whether the document
+/// writes it (`null` for a field the feature hasn't, a note removed; after, outside a
+/// transaction, as its commit saved it, a sketch's solve and all), whether the document
 /// changed (not if the field was given the value it has: then there's no new revision and
 /// nothing is written), and, outside a transaction, the commit's result, none inside one or
 /// if nothing changed.
@@ -1760,18 +1761,26 @@ impl<C: Kernel + 'static> Session<C> {
                 made,
                 changed: false,
                 commit: None,
+                saved: None,
             });
         };
-        let commit = if transaction {
+        let (commit, saved) = if transaction {
             self.hold(candidate)?;
-            None
+            (None, None)
         } else {
-            Some(self.commit_candidate(candidate, read, claim)?)
+            let committed = self.commit_candidate(candidate, read, claim)?;
+            // What the commit saved is what the session holds now: its commands run in turn,
+            // so none has changed it since.
+            let saved = committed
+                .written
+                .then(|| Arc::clone(&lock(&self.held).gated));
+            (Some(committed), saved)
         };
         Ok(Edited {
             made,
             changed: true,
             commit,
+            saved,
         })
     }
 }
@@ -1814,12 +1823,42 @@ impl<'a> Base<'a> {
 }
 
 /// What an edit gives its command ([`Session::edit`]): what it found, whether the document
-/// changed, and, outside a transaction, the commit's result (none inside one, or if nothing
-/// changed).
+/// changed, and, outside a transaction, the commit's result and the document it saved (none
+/// inside one, or if nothing changed or was written).
 struct Edited<T> {
     made: T,
     changed: bool,
     commit: Option<Committed>,
+    saved: Option<Arc<Gated>>,
+}
+
+/// What an edit gives back as the document holds it once committed (the design's section
+/// 7): `made`, the edit's own, if its commit saved no document (`saved` none: inside a
+/// transaction, or nothing written); otherwise found by `find` in the document saved, with
+/// the fingerprints and solves the commit wrote. A saved document `find` finds nothing in is
+/// Silico's bug, said as one, the edit saved.
+fn as_committed<U>(
+    saved: Option<&Gated>,
+    made: U,
+    find: impl FnOnce(&Document) -> Option<U>,
+) -> Result<U, Problems> {
+    let Some(saved) = saved else {
+        return Ok(made);
+    };
+    let found = match saved {
+        Gated::Checked(checked) => find(checked.document()),
+        Gated::Unread(_) | Gated::Refused(..) => None,
+    };
+    found.ok_or_else(|| {
+        Problems::from(
+            Error::new(
+                ErrorCode::Internal,
+                "the edit was saved, but the document saved doesn't hold what it made",
+            )
+            .with_cause("the file was written: the session's text is what it holds")
+            .with_suggestion(crate::worker::SILICO_BUG),
+        )
+    })
 }
 
 /// The refusal of an edit made against revision `made`, the session being at `at`
@@ -2512,8 +2551,12 @@ impl<P: Clients + 'static> Sessions<P> {
                 model,
                 &|resolved| reclaim(&registry, id, resolved),
             )?;
+            let id = edited.made.id.clone();
+            let feature = as_committed(edited.saved.as_deref(), edited.made, |saved| {
+                saved.feature(&id).ok().cloned()
+            })?;
             Ok(Added {
-                feature: edited.made,
+                feature,
                 changed: edited.changed,
                 commit: edited.commit,
             })
@@ -2545,11 +2588,19 @@ impl<P: Clients + 'static> Sessions<P> {
                 model,
                 &|resolved| reclaim(&registry, id, resolved),
             )?;
+            let edit::FieldValues {
+                before,
+                after,
+                path,
+            } = edited.made;
+            let after = as_committed(edited.saved.as_deref(), after, |saved| {
+                edit::value_of(saved, &feature, &path)
+            })?;
             Ok(FieldSet {
                 feature,
                 field,
-                before: edited.made.before,
-                after: edited.made.after,
+                before,
+                after,
                 changed: edited.changed,
                 commit: edited.commit,
             })

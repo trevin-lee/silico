@@ -3050,7 +3050,7 @@
       },
       "feature": {
         "$ref": "#/$defs/Feature",
-        "description": "The feature as the document now holds it: with its ID (the one given, or the one\nmade) and its version."
+        "description": "The feature as the document now holds it: with its ID (the one given, or the one\nmade) and its version; outside a transaction, as the commit saved it, with the\nfingerprint it wrote."
       }
     },
     "required": [

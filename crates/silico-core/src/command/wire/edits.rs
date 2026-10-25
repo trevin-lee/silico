@@ -306,7 +306,8 @@ pub struct AddFeatureRequestSchema {
 #[schemars(rename = "AddFeatureResult", transform = wire_shape)]
 pub struct AddFeatureResultSchema {
     /// The feature as the document now holds it: with its ID (the one given, or the one
-    /// made) and its version.
+    /// made) and its version; outside a transaction, as the commit saved it, with the
+    /// fingerprint it wrote.
     pub feature: Feature,
     /// Whether the document changed: always, a feature added.
     pub changed: bool,
@@ -348,7 +349,8 @@ pub struct SetFieldResultSchema {
     /// The field's value before, as the document wrote it: null for a field the feature
     /// hadn't.
     pub before: FieldValueSchema,
-    /// The field's value after, as the document writes it.
+    /// The field's value after, as the document writes it: outside a transaction, as the
+    /// commit saved it (a sketch's member where its solve put it).
     pub after: FieldValueSchema,
     /// Whether the document changed: false for a field given the value it had, which makes
     /// no new revision and writes nothing.
