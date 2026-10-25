@@ -11,12 +11,14 @@ use std::time::Duration;
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
-use silico_core::command::{Response, Revision, Running, SessionId, Sessions};
+use silico_core::command::{Response, Revision, SessionId, Sessions};
 use silico_core::document::FeatureId;
 use silico_core::fake::{FakeClient, FakeKernel};
 use silico_core::kernel::{Clients, Generation, Kernel, KernelRequest};
 use silico_core::pool::Pending;
 use tempfile::TempDir;
+
+use crate::sessions::{HANG, answer, refusal};
 
 /// A box document, not in canonical form (keys on one line, `40.0` for 40): what `text`
 /// gives must be these bytes, not the canonical form's.
@@ -112,9 +114,6 @@ fn slow_first() -> SlowFirst {
     }
 }
 
-/// Longer than any command here takes on a loaded machine: past it, a command hangs.
-const HANG: Duration = Duration::from_secs(60);
-
 /// Sessions on a fake kernel, with documents in a scratch directory and each cache's
 /// secret outside it; and the cache directories opened, in order.
 struct Fixture {
@@ -162,29 +161,6 @@ impl Fixture {
         assert!(response.result.is_ok(), "{response:?}");
         response.session.unwrap().id
     }
-}
-
-/// The command's answer, failing if it hangs.
-fn answer<T>(running: Running<T>) -> Response<T> {
-    match running.wait_timeout(HANG) {
-        Ok(response) => response,
-        Err(_) => panic!("the command didn't answer in {HANG:?}"),
-    }
-}
-
-/// The one error a refused response gives: its code, message, parameter, and suggestion.
-fn refusal<T: std::fmt::Debug>(
-    response: &Response<T>,
-) -> (ErrorCode, String, Option<String>, Option<String>) {
-    let problems = response.result.as_ref().unwrap_err();
-    assert_eq!(problems.total(), 1, "{problems:?}");
-    let error = &problems.errors()[0];
-    (
-        error.code(),
-        error.message().to_owned(),
-        error.parameter().map(str::to_owned),
-        error.suggestion().map(str::to_owned),
-    )
 }
 
 fn not_open(id: &str) -> (ErrorCode, String, Option<String>, Option<String>) {

@@ -15,12 +15,14 @@ use silico_core::cache::Cache;
 use silico_core::command::{
     self, ModelChoice, ModelRead, Response, Revision, Running, SessionId, Sessions,
 };
-use silico_core::document::{FeatureId, Measure};
+use silico_core::document::Measure;
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::{Op, Primitive};
 use silico_core::sketch::SketchSolver;
 use silico_protocol::{SketchSystem, Solved};
 use tempfile::TempDir;
+
+use crate::sessions::{self, HANG, answer, id};
 
 use crate::lateness::{Lateness, allowance};
 
@@ -30,9 +32,6 @@ const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"
 const SAME_BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "b0000000", "type": "box", "v": 1, "name": "Other", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
 
 const SPHERE: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "a91cw0de", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5}]}"#;
-
-/// Longer than any command here takes on a loaded machine: past it, a command hangs.
-const HANG: Duration = Duration::from_secs(60);
 
 /// Sessions on a fake kernel of two threads, which the test keeps a handle on, with each
 /// cache's secret outside the documents' scratch directory, and sketches solved by a fake.
@@ -94,13 +93,6 @@ impl Fixture {
     }
 }
 
-fn answer<T>(running: Running<T>) -> Response<T> {
-    match running.wait_timeout(HANG) {
-        Ok(response) => response,
-        Err(_) => panic!("the command didn't answer in {HANG:?}"),
-    }
-}
-
 /// A check that found no problems, of the model rebuilt from revision 1.
 fn clean(response: &Response<command::Problems>) {
     assert!(
@@ -121,18 +113,8 @@ fn clean(response: &Response<command::Problems>) {
 
 /// The one error a refused response gives: its code, message, and parameter.
 fn refusal<T: std::fmt::Debug>(response: &Response<T>) -> (ErrorCode, String, Option<String>) {
-    let problems = response.result.as_ref().unwrap_err();
-    assert_eq!(problems.total(), 1, "{problems:?}");
-    let error = &problems.errors()[0];
-    (
-        error.code(),
-        error.message().to_owned(),
-        error.parameter().map(str::to_owned),
-    )
-}
-
-fn id(text: &str) -> FeatureId {
-    FeatureId::new(text).unwrap()
+    let (code, message, parameter, _) = sessions::refusal(response);
+    (code, message, parameter)
 }
 
 #[test]

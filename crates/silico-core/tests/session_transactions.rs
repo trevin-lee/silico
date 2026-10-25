@@ -8,17 +8,14 @@
 use std::os::unix::fs::MetadataExt as _;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
-use silico_core::command::{Begun, Response, Revision, Running, SessionId, Sessions};
-use silico_core::document::FeatureId;
+use silico_core::command::{Begun, Revision, SessionId, Sessions};
 use silico_core::fake::FakeKernel;
 use tempfile::TempDir;
 
-/// Longer than any command here takes on a loaded machine: past it, a command hangs.
-const HANG: Duration = Duration::from_secs(60);
+use crate::sessions::{answer, id, refusal};
 
 /// The box's fingerprint as the fake measures it, by formula.
 const FINGERPRINT: &str = r#""fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
@@ -79,32 +76,6 @@ impl Fixture {
         assert!(response.result.is_ok(), "{response:?}");
         (response.session.unwrap().id, path)
     }
-}
-
-fn answer<T>(running: Running<T>) -> Response<T> {
-    match running.wait_timeout(HANG) {
-        Ok(response) => response,
-        Err(_) => panic!("the command didn't answer in {HANG:?}"),
-    }
-}
-
-/// The one error a refused response gives: its code, message, parameter, and suggestion.
-fn refusal<T: std::fmt::Debug>(
-    response: &Response<T>,
-) -> (ErrorCode, String, Option<String>, Option<String>) {
-    let problems = response.result.as_ref().unwrap_err();
-    assert_eq!(problems.total(), 1, "{problems:?}");
-    let error = &problems.errors()[0];
-    (
-        error.code(),
-        error.message().to_owned(),
-        error.parameter().map(str::to_owned),
-        error.suggestion().map(str::to_owned),
-    )
-}
-
-fn id(text: &str) -> FeatureId {
-    FeatureId::new(text).unwrap()
 }
 
 #[test]
@@ -346,4 +317,25 @@ fn a_file_a_save_replaced_is_still_claimed_by_its_session() {
         "{message}"
     );
     assert_eq!(parameter.as_deref(), Some("path"));
+}
+
+#[test]
+fn format_refuses_past_a_hundred_unknown_features_listing_a_hundred_and_counting_all() {
+    let f = fixture();
+    let text = stored("8000");
+    let (s1, path) = f.open(&text);
+    // The block, then 150 IDs the document hasn't (z0000000, z0000001, ...).
+    let mut named = vec![id("k7f2qx3m")];
+    named.extend((0..150).map(|n| id(&format!("z{n:07}"))));
+    let response = answer(f.sessions.format(&s1, Some(named), true));
+    let problems = response.result.unwrap_err();
+    assert_eq!(problems.total(), 150);
+    assert_eq!(problems.errors().len(), 100);
+    assert_eq!(problems.errors()[0].parameter(), Some("features.1"));
+    assert_eq!(problems.errors()[99].parameter(), Some("features.100"));
+    assert_eq!(
+        problems.errors()[99].message(),
+        "the document has no feature z0000099 to accept the drift of"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
 }

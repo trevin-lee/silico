@@ -20,6 +20,8 @@ mod lateness;
 mod model;
 #[path = "common/references.rs"]
 mod references;
+#[path = "common/session.rs"]
+mod sessions;
 #[path = "common/sweeps.rs"]
 mod sweeps;
 #[path = "common/within.rs"]

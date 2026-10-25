@@ -214,12 +214,12 @@ pub fn check(model: &Model) -> Result<Problems, Error> {
     check_except(model, &BTreeSet::new())
 }
 
-/// [`check`], but no drift of a feature in `reached` (`Model::drift_except`): one a
+/// [`check`], but no drift of a feature in `except` (`Model::drift_except`): one a
 /// session's edits reached since its last save, which its commit writes anew (decision 28).
-fn check_except(model: &Model, reached: &BTreeSet<FeatureId>) -> Result<Problems, Error> {
+fn check_except(model: &Model, except: &BTreeSet<FeatureId>) -> Result<Problems, Error> {
     let mut problems = failures(model)?;
     let unlisted = model.unlisted_errors();
-    problems.extend(own(model.drift_except(reached))?);
+    problems.extend(own(model.drift_except(except))?);
     Ok(Problems::with_unlisted(problems, unlisted))
 }
 
@@ -250,17 +250,18 @@ pub struct Formatted {
     /// The sketches whose stored values (points, circles' radii, reference dimensions'
     /// values) the solve changed, in timeline order.
     pub resolved: Vec<document::FeatureId>,
-    /// The features that didn't build, or whose solids couldn't be measured: each keeps
-    /// the fingerprint stored with it, and this says why. Drift isn't among them: it's
-    /// what formatting fixes.
+    /// What the text can't fix: the features that didn't build, or whose solids couldn't be
+    /// measured, each keeping the fingerprint stored with it, and the drift of each feature
+    /// whose record it leaves as stored. [`format`] writes every record it can, so its drift
+    /// is only of measures a fingerprint can't hold.
     pub problems: Problems,
 }
 
 /// The model's document in canonical form with each feature's fingerprint as the model
-/// rebuilt it and each sketch as it solved (`Model::saved`): what `silico fmt` writes, and
-/// what a save writes;
-/// or, if its canonical text would be too long, that problem. An error is a format that
-/// couldn't be done, as for [`check`]: nothing should be written then.
+/// rebuilt it and each sketch as it solved (`Model::saved`): what `silico fmt` writes, and a
+/// session's `format` with no features named; or, if its canonical text would be too long,
+/// that problem. An error is a format that couldn't be done, as for [`check`]: nothing
+/// should be written then.
 pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
     let _span = tracing::info_span!("format").entered();
     let every = model
@@ -269,7 +270,7 @@ pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
         .iter()
         .map(|f| f.id.clone())
         .collect();
-    formatted(model, &every)
+    formatted(model, &every, &model.drifted())
 }
 
 /// The model's document in canonical form with the fingerprint and solve of each feature in
@@ -277,10 +278,12 @@ pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
 /// session's commit writes (the features its edits reached, decision 28) and its `format`
 /// (every feature but those whose drift it doesn't accept, decision 31), as [`format`]
 /// writes every feature's. Its problems are the failures, the solids that couldn't be
-/// measured, and the drift of every feature it doesn't write, which it leaves as stored.
+/// measured, and of `drift` (the model's, `Model::drifted`), that of every feature whose
+/// record it doesn't write, which it leaves as stored.
 fn formatted(
     model: &Model,
     writes: &BTreeSet<FeatureId>,
+    drift: &[(FeatureId, Error)],
 ) -> Result<Result<Formatted, Problems>, Error> {
     let mut problems = failures(model)?;
     let unlisted = model.unlisted_errors();
@@ -320,7 +323,10 @@ fn formatted(
     };
     // Problems the save can't fix: the failures, the solids that couldn't be measured, and
     // the drift of what it leaves as stored; drift of what it writes is what it fixes.
-    problems.extend(own(model.drift_except(writes))?);
+    problems.extend(own(model
+        .drift_left(drift, writes)
+        .map(|(_, error)| error.clone())
+        .collect())?);
     Ok(Ok(Formatted {
         text,
         refingerprinted,
