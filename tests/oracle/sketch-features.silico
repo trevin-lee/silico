@@ -2244,7 +2244,7 @@
       "sketch": "s2000001",
       "axis": "x_axis",
       "extent": {"type": "one_side", "angle": 90, "reversed": false},
-      "note": "The circle on XY turned about the sketch's x axis, 90 degrees one_side: 2 pi^2 30 10^2 90/360 (Pappus) = 14804.406601634037. Expected: volume 14804.406601634037."
+      "note": "The circle on XY turned about the sketch's x axis, 90 degrees one_side: 2 pi^2 30 10^2 90/360 (Pappus) = 14804.406601634037. Expected: volume 14804.406601634037; box -10 0 0 10 40 40; center 0 19.629109648000426 19.629109648000426."
     },
     {
       "id": "s2000002",
@@ -2271,7 +2271,7 @@
       "sketch": "s2000002",
       "axis": "x_axis",
       "extent": {"type": "one_side", "angle": 90, "reversed": true},
-      "note": "The circle on XZ turned about the sketch's x axis, 90 degrees reversed: 2 pi^2 30 10^2 90/360 (Pappus) = 14804.406601634037. Expected: volume 14804.406601634037."
+      "note": "The circle on XZ turned about the sketch's x axis, 90 degrees reversed: 2 pi^2 30 10^2 90/360 (Pappus) = 14804.406601634037. Expected: volume 14804.406601634037; box -10 0 0 10 40 40; center 0 19.629109648000426 19.629109648000426."
     },
     {
       "id": "s2000003",
@@ -2298,7 +2298,7 @@
       "sketch": "s2000003",
       "axis": "x_axis",
       "extent": {"type": "symmetric", "angle": 90},
-      "note": "The circle on YZ turned about the sketch's x axis, 90 degrees symmetric: 2 pi^2 30 10^2 90/360 (Pappus) = 14804.406601634037. Expected: volume 14804.406601634037."
+      "note": "The circle on YZ turned about the sketch's x axis, 90 degrees symmetric: 2 pi^2 30 10^2 90/360 (Pappus) = 14804.406601634037. Expected: volume 14804.406601634037; box -28.2842712474619 -10 14.142135623730951 28.2842712474619 10 40; center 0 0 27.75975308151077."
     },
     {
       "id": "b0000022",
@@ -2343,7 +2343,7 @@
       "sketch": "s2000004",
       "axis": "y_axis",
       "extent": {"type": "one_side", "angle": 360, "reversed": false},
-      "note": "The square turned a whole turn about the sketch's y axis: a cylinder of radius 10 from z 5 to 15 (if XZ's y is the world's z), fused with the box, which holds its lower half: 16000 + pi 10^2 5 = 17570.796326794896. Expected: volume 17570.796326794896."
+      "note": "The square turned a whole turn about the sketch's y axis: a cylinder of radius 10 from z 5 to 15 (XZ's y is the world's z), fused with the box, which holds its lower half: 16000 + pi 10^2 5 = 17570.796326794896. Expected: volume 17570.796326794896; box -20 -20 0 20 20 15; center 0 0 5.670485971827931."
     }
   ]
 }
