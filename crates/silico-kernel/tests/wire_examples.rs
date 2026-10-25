@@ -93,3 +93,40 @@ fn the_designs_example_part_gives_its_entries_and_results_byte_for_byte() {
         example("entry/cylinder-face")
     );
 }
+
+#[test]
+fn the_designs_part_gives_an_edges_and_a_vertexs_entries_field_for_field() {
+    // The block's vertical edge at (40, 20), from z 0 to 10 (a box's vertical edges run up,
+    // as FreeCAD's Part.makeBox's do), 10 long, straight, its middle at z 5; and its corner
+    // at (40, 20, 10). Every field by hand; the names are the element map's (pinned by the
+    // naming tests), the rest null.
+    let model = model();
+    let hole = entries(&model, &FeatureId::new("m3tq8v0z").unwrap()).unwrap();
+    let edge = hole
+        .iter()
+        .find(|e| {
+            e.kind == silico_core::kernel::ElementKind::Edge
+                && written(*e).contains(r#""midpoint": [40, 20, 5]"#)
+        })
+        .unwrap();
+    assert_eq!(
+        written(edge),
+        format!(
+            r#"{{"name": "{}", "aliases": [], "stable": true, "feature": "m3tq8v0z", "kind": "edge", "type": "line", "area": null, "length": 10, "position": null, "normal": null, "centroid": null, "start": [40, 20, 0], "end": [40, 20, 10], "midpoint": [40, 20, 5], "straight": true, "axis": null, "radius": null, "diameter": null, "major_radius": null, "minor_radius": null, "half_angle": null, "apex": null, "default_x": null}}
+"#,
+            edge.name
+        )
+    );
+    let corner = hole
+        .iter()
+        .find(|e| written(*e).contains(r#""position": [40, 20, 10]"#))
+        .unwrap();
+    assert_eq!(
+        written(corner),
+        format!(
+            r#"{{"name": "{}", "aliases": [], "stable": true, "feature": "m3tq8v0z", "kind": "vertex", "type": "point", "area": null, "length": null, "position": [40, 20, 10], "normal": null, "centroid": null, "start": null, "end": null, "midpoint": null, "straight": null, "axis": null, "radius": null, "diameter": null, "major_radius": null, "minor_radius": null, "half_angle": null, "apex": null, "default_x": null}}
+"#,
+            corner.name
+        )
+    );
+}
