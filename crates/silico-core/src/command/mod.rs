@@ -19,7 +19,59 @@ use crate::{Error, ErrorCode};
 mod session;
 
 pub use session::{
-    MAX_SESSIONS, Opened, Response, Revision, Running, SessionId, SessionInfo, Sessions, Status,
+    MAX_SESSIONS, ModelRead, Opened, Published, Response, Revision, Running, SessionId,
+    SessionInfo, Sessions, Status,
+};
+
+/// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for
+/// each change to a request's or result's shape that an older client couldn't read.
+pub const API_VERSION: u32 = 1;
+
+/// What `version` answers: the API's version, the document format's and naming scheme's,
+/// and the limits (the design's section 6) of the commands built so far, as data. Each
+/// later step adds its own command's limits as it comes (responses' bytes and elements
+/// listed with M4.4, renders with M4.6, logs with M4.7, exports with M4.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Version {
+    pub api: u32,
+    pub format: u32,
+    pub naming: u32,
+    pub limits: Limits,
+}
+
+/// The limits `version` gives: each the constant the commands hold to, so they can't differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// A document's canonical text, in bytes.
+    pub document_bytes: usize,
+    /// The most bytes read of a request, or of a document's file.
+    pub request_bytes: usize,
+    /// How deeply a request's (or a document's) values may nest.
+    pub request_depth: usize,
+    /// The errors and warnings listed, the rest counted.
+    pub listed: usize,
+    /// The sessions open in one process.
+    pub sessions: usize,
+    /// A kernel request's time, in seconds.
+    pub kernel_seconds: u64,
+    /// A sketch solve's time, in seconds.
+    pub sketch_seconds: u64,
+}
+
+/// What `version` answers.
+pub const VERSION: Version = Version {
+    api: API_VERSION,
+    format: document::FormatVersion::NUMBER,
+    naming: NamingScheme::NUMBER,
+    limits: Limits {
+        document_bytes: document::json::MAX_DOCUMENT_LEN,
+        request_bytes: document::json::MAX_INPUT_LEN,
+        request_depth: document::json::MAX_DEPTH,
+        listed: document::PROBLEMS_LISTED,
+        sessions: MAX_SESSIONS,
+        kernel_seconds: crate::kernel::DEFAULT_TIMEOUT.as_secs(),
+        sketch_seconds: crate::sketch::SKETCH_TIMEOUT.as_secs(),
+    },
 };
 
 /// What was wrong with a document: every problem found, in the order found (reading, then

@@ -35,17 +35,18 @@ use std::io::Write as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use super::{Gated, Problems};
 use crate::cache::Cache;
 use crate::document::json::MAX_INPUT_LEN;
-use crate::document::{self, Document, FeatureId, FormatVersion, NamingScheme, Units};
+use crate::document::{self, Checked, Document, FeatureId, FormatVersion, NamingScheme, Units};
 use crate::file;
 use crate::kernel::{Clients, Kernel};
-use crate::recompute::Recompute;
+use crate::recompute::{Model, Recompute, Run, RunOutcome};
+use crate::sketch::SketchSolver;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
@@ -103,12 +104,30 @@ pub struct SessionInfo {
 }
 
 /// A command's answer: the session as the command left it (none for an `open` that failed,
-/// or a session that isn't open), and the command's result, or every reason it was refused,
-/// in the order found, the first [`document::PROBLEMS_LISTED`] listed and all counted.
+/// or a session that isn't open), the model it read, if it read one, and the command's
+/// result, or every reason it was refused, in the order found, the first
+/// [`document::PROBLEMS_LISTED`] listed and all counted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Response<T> {
     pub session: Option<SessionInfo>,
+    pub model: Option<ModelRead>,
     pub result: Result<T, Problems>,
+}
+
+/// The model a command read (the envelope's `model`): the revision it was rebuilt from, the
+/// session's current one's (a read of the published model, and the fault a rebuild met, come
+/// with decisions 33 and 32).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelRead {
+    pub revision: Revision,
+}
+
+/// The newest model a session's rebuilds published, and the revision it was rebuilt from:
+/// what [`Sessions::published`] gives the app to draw, never waiting for a rebuild.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Published {
+    pub revision: Revision,
+    pub model: Arc<Model>,
 }
 
 /// A command running on its session's thread: wait for its answer, poll it, or drop it
@@ -154,6 +173,7 @@ impl<T> Running<T> {
 fn unanswered<T>() -> Response<T> {
     Response {
         session: None,
+        model: None,
         result: Err(Problems::from(
             Error::new(
                 ErrorCode::Internal,
@@ -194,9 +214,14 @@ pub struct Sessions<P: Clients + 'static> {
 /// What opens a directory's cache: [`Cache::open`], or a test's.
 type CacheOpener = dyn Fn(&Path) -> Cache + Send + Sync;
 
+/// What starts a session's sketch solver, if not the sketch worker: a test's stand-in.
+type SketchStarter = dyn Fn() -> Result<Box<dyn SketchSolver>, Error> + Send + Sync;
+
 struct Registry<P: Clients + 'static> {
     kernel: P,
     open_cache: Box<CacheOpener>,
+    /// Given to each session's engine as it opens; none for the sketch worker.
+    sketches: Mutex<Option<Arc<SketchStarter>>>,
     book: Mutex<Book<P::Client>>,
 }
 
@@ -284,18 +309,31 @@ struct Session<C: Kernel + 'static> {
     /// behind a rebuild's start; and reachable from outside its thread, so a rebuild can be
     /// stopped while a command waits on it.
     rebuilds: Mutex<Rebuilds<C>>,
+    /// A rebuild ended: told to the command waiting on it.
+    rebuilt: Condvar,
 }
 
 /// A session's rebuilds: its engine, on its own client of the kernel, keeping its steps in
-/// its directory's cache. Its rebuilds come with the commands that read a model.
+/// its directory's cache, and what its rebuilds came to. A revision's rebuild starts when a
+/// command first needs its model (decision 13), and a revision has one rebuild at a time.
+/// The session keeps the models its rebuilds published itself, never relying on the
+/// engine's newest (which a transaction's rebuild may make, the design's section 4).
 ///
 /// The rule for its lock: take it, start (or cancel) a rebuild, let it go, and only then
-/// wait on the `Run`. Never wait holding it, or `Sessions::drop`'s cancel, and any other
-/// command's, waits behind the whole rebuild. A command whose rebuild ends superseded checks
-/// `Session::closed` before starting another, so a closed or dropped session's command
-/// stops rather than rebuilding again.
+/// wait, on `Session::rebuilt` (which lets it go). Never wait on a `Run` holding it, or
+/// `Sessions::drop`'s cancel, and any other command's, waits behind the whole rebuild; a
+/// watcher thread waits on each `Run`, holding only a `Weak` to the session. A command whose
+/// rebuild ends superseded checks `Session::closed` before starting another, so a closed or
+/// dropped session's command stops rather than rebuilding again.
 struct Rebuilds<C: Kernel + 'static> {
     engine: Recompute<C>,
+    /// The revision whose rebuild is running, if one is.
+    running: Option<Revision>,
+    /// The newest model the session's rebuilds published.
+    published: Option<Published>,
+    /// The last rebuild that ended without a model: its revision, and, if the recompute
+    /// stopped (a bug) rather than being superseded, why.
+    ended: Option<(Revision, Option<Error>)>,
 }
 
 /// What a session holds (docs/design/m4.1-command-api.md, section 3). Its values are shared
@@ -318,11 +356,62 @@ struct Held {
 type Job<C> = Box<dyn FnOnce(Turn<'_, C>) + Send>;
 
 enum Turn<'a, C: Kernel + 'static> {
-    Run(&'a Session<C>),
+    Run(&'a Arc<Session<C>>),
     Closed(SessionId),
 }
 
 impl<C: Kernel + 'static> Session<C> {
+    /// The model of `revision`, whose document is `checked`: the one its rebuild published,
+    /// waited for, the rebuild started if none of it is running (decision 13). Refused if the
+    /// session closes meanwhile (its rebuild stopped, by `close` or a drop), or the recompute
+    /// stopped (a bug).
+    fn model(
+        self: &Arc<Self>,
+        revision: Revision,
+        checked: &Checked,
+    ) -> Result<Arc<Model>, Problems> {
+        let _span = tracing::info_span!("rebuild", revision = revision.number()).entered();
+        let mut rebuilds = lock(&self.rebuilds);
+        loop {
+            if let Some(published) = &rebuilds.published
+                && published.revision == revision
+            {
+                return Ok(Arc::clone(&published.model));
+            }
+            if rebuilds.running == Some(revision) {
+                rebuilds = self
+                    .rebuilt
+                    .wait(rebuilds)
+                    .unwrap_or_else(PoisonError::into_inner);
+                continue;
+            }
+            // Its rebuild ended without a model: stopped, said once; or superseded, so
+            // started again unless the session has closed.
+            if let Some((ended, Some(why))) = rebuilds.ended.take()
+                && ended == revision
+            {
+                return Err(Problems::from(why));
+            }
+            if self.closed() {
+                return Err(Problems::from(not_open(self.id)));
+            }
+            let run = rebuilds.engine.start(checked.clone());
+            rebuilds.running = Some(revision);
+            let session = Arc::downgrade(self);
+            let watcher = std::thread::Builder::new()
+                .name(format!("session-{}-rebuild", self.id))
+                .spawn(move || watch(&session, revision, run));
+            if let Err(e) = watcher {
+                rebuilds.running = None;
+                rebuilds.engine.cancel();
+                return Err(Problems::from(crate::pool::thread_error(
+                    "rebuild watcher",
+                    &e,
+                )));
+            }
+        }
+    }
+
     /// The session as it is now.
     fn info(&self) -> SessionInfo {
         self.info_of(&lock(&self.held))
@@ -372,6 +461,34 @@ impl<C: Kernel + 'static> Session<C> {
     }
 }
 
+/// Waits for `revision`'s rebuild, then records what it came to in `session`'s rebuilds and
+/// says so, if the session is still there.
+fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, revision: Revision, run: Run) {
+    let outcome = run.wait();
+    let Some(session) = session.upgrade() else {
+        return;
+    };
+    let mut rebuilds = lock(&session.rebuilds);
+    if rebuilds.running == Some(revision) {
+        rebuilds.running = None;
+    }
+    match outcome {
+        Ok(RunOutcome::Published(model)) => {
+            if rebuilds
+                .published
+                .as_ref()
+                .is_none_or(|newest| newest.revision <= revision)
+            {
+                rebuilds.published = Some(Published { revision, model });
+            }
+        }
+        Ok(RunOutcome::Superseded) => rebuilds.ended = Some((revision, None)),
+        Err(why) => rebuilds.ended = Some((revision, Some(why))),
+    }
+    drop(rebuilds);
+    session.rebuilt.notify_all();
+}
+
 impl<P: Clients + 'static> Sessions<P> {
     /// Sessions on `kernel`, keeping each directory's results in its `.silico-cache/`
     /// ([`Cache::open`]).
@@ -393,6 +510,7 @@ impl<P: Clients + 'static> Sessions<P> {
             registry: Arc::new(Registry {
                 kernel,
                 open_cache: Box::new(open),
+                sketches: Mutex::new(None),
                 book: Mutex::new(Book {
                     next: 1,
                     sessions: BTreeMap::new(),
@@ -405,6 +523,18 @@ impl<P: Clients + 'static> Sessions<P> {
                 }),
             }),
         }
+    }
+
+    /// These sessions, each solving its sketches with what `start` starts, rather than the
+    /// sketch worker: for tests, a stand-in (`fake::FakeSketches`). Sessions opened before
+    /// keep theirs.
+    #[must_use]
+    pub fn with_sketch_starter(
+        self,
+        start: impl Fn() -> Result<Box<dyn SketchSolver>, Error> + Send + Sync + 'static,
+    ) -> Self {
+        *lock(&self.registry.sketches) = Some(Arc::new(start));
+        self
     }
 
     /// Opens the document at `path` as a new session, on a thread of its own: reads the
@@ -482,7 +612,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// after it are told the session closed. Its file is then free to open again.
     pub fn close(&self, session: &SessionId) -> Running<()> {
         let registry = Arc::downgrade(&self.registry);
-        self.queued(session, "close", move |session| {
+        self.queued(session, "close", move |session, _| {
             session.close();
             if let Some(registry) = registry.upgrade() {
                 lock(&registry.book).release(session.id);
@@ -500,6 +630,7 @@ impl<P: Clients + 'static> Sessions<P> {
         let held = lock(&found.held);
         Response {
             session: Some(found.info_of(&held)),
+            model: None,
             result: Ok(Status {
                 features: held.gated.document().ok().map(|d| d.features.len()),
                 gated: matches!(*held.gated, Gated::Checked(_)),
@@ -512,7 +643,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// the text isn't UTF-8 (the reader refused it), or, for a feature, if the text doesn't
     /// read as a document or hasn't one feature of that ID.
     pub fn text(&self, session: &SessionId, feature: Option<FeatureId>) -> Running<String> {
-        self.queued(session, "text", move |session| {
+        self.queued(session, "text", move |session, _| {
             let (text, gated) = session.document();
             match feature {
                 None => String::from_utf8(text.to_vec()).map_err(|e| {
@@ -535,10 +666,47 @@ impl<P: Clients + 'static> Sessions<P> {
         })
     }
 
+    /// `session`'s document's problems ([`super::check`]): the gate's, if it refused the
+    /// document, or, from the session's current revision rebuilt (waited for, and started if
+    /// it hasn't been: decision 13), each failed feature's and each drift. A kernel fault (a
+    /// worker that crashed or hung) is the command's refusal, as `command::check` gives it,
+    /// until faults are reported beside the result (decision 32).
+    pub fn check(&self, session: &SessionId) -> Running<Problems> {
+        self.queued(session, "check", |session, model| {
+            let (revision, gated) = {
+                let held = lock(&session.held);
+                (held.revision, Arc::clone(&held.gated))
+            };
+            match &*gated {
+                Gated::Checked(checked) => {
+                    let built = session.model(revision, checked)?;
+                    *model = Some(ModelRead { revision });
+                    super::check(&built).map_err(Problems::from)
+                }
+                Gated::Unread(problems) | Gated::Refused(_, problems) => Ok(problems.clone()),
+            }
+        })
+    }
+
+    /// The newest model `session`'s rebuilds have published, if any has, and its revision:
+    /// answered on the caller's thread from what the session holds, never waiting for a
+    /// rebuild, for the app to draw.
+    pub fn published(&self, session: &SessionId) -> Response<Option<Published>> {
+        let Some(found) = self.find(session) else {
+            return refused(not_open(*session));
+        };
+        let published = lock(&found.rebuilds).published.clone();
+        Response {
+            session: Some(found.info()),
+            model: None,
+            result: Ok(published),
+        }
+    }
+
     /// `session`'s document's outline ([`super::outline`]), as `silico show` prints it.
     /// Refused, with the reader's error, if the text doesn't read as a document.
     pub fn outline(&self, session: &SessionId) -> Running<String> {
-        self.queued(session, "outline", |session| {
+        self.queued(session, "outline", |session, _| {
             let (_, gated) = session.document();
             let document = gated.document().map_err(Clone::clone)?;
             Ok(super::outline(document))
@@ -554,7 +722,9 @@ impl<P: Clients + 'static> Sessions<P> {
         &self,
         session: &SessionId,
         command: &'static str,
-        work: impl FnOnce(&Session<P::Client>) -> Result<T, Problems> + Send + 'static,
+        work: impl FnOnce(&Arc<Session<P::Client>>, &mut Option<ModelRead>) -> Result<T, Problems>
+        + Send
+        + 'static,
     ) -> Running<T> {
         let Some(found) = self.find(session) else {
             return Running::answered(refused(not_open(*session)));
@@ -571,9 +741,11 @@ impl<P: Clients + 'static> Sessions<P> {
                         command
                     )
                     .entered();
-                    let result = work(session);
+                    let mut model = None;
+                    let result = work(session, &mut model);
                     Response {
                         session: Some(session.info()),
+                        model,
                         result,
                     }
                 }
@@ -627,6 +799,7 @@ impl<P: Clients + 'static> Drop for Release<P> {
 fn refused<T>(error: Error) -> Response<T> {
     Response {
         session: None,
+        model: None,
         result: Err(Problems::from(error)),
     }
 }
@@ -680,8 +853,12 @@ fn start<P: Clients + 'static>(
             held: Mutex::new(held),
             queue: Mutex::new(Some(sender)),
             rebuilds: Mutex::new(Rebuilds {
-                engine: Recompute::with_cache(registry.kernel.client(), cache),
+                engine: registry.engine(cache),
+                running: None,
+                published: None,
+                ended: None,
             }),
+            rebuilt: Condvar::new(),
         });
         book.opening.remove(&id);
         book.sessions.insert(id, Arc::clone(&session));
@@ -694,6 +871,7 @@ fn start<P: Clients + 'static>(
         Ok((session, opened, jobs)) => {
             let _ = reply.send(Response {
                 session: Some(session.info()),
+                model: None,
                 result: Ok(opened),
             });
             Some(Started { session, jobs })
@@ -702,6 +880,7 @@ fn start<P: Clients + 'static>(
             lock(&registry.book).release(id);
             let _ = reply.send(Response {
                 session: None,
+                model: None,
                 result: Err(problems),
             });
             None
@@ -735,7 +914,7 @@ impl Drop for MadeFile {
 
 /// The session's commands, in the order they were queued, until its queue ends: each
 /// queued after it closed is told so.
-fn serve<C: Kernel + 'static>(session: &Session<C>, jobs: &Receiver<Job<C>>) {
+fn serve<C: Kernel + 'static>(session: &Arc<Session<C>>, jobs: &Receiver<Job<C>>) {
     while let Ok(job) = jobs.recv() {
         if session.closed() {
             job(Turn::Closed(session.id));
@@ -916,6 +1095,16 @@ fn claim<P: Clients + 'static>(
 }
 
 impl<P: Clients + 'static> Registry<P> {
+    /// A new session's engine: on its own client of the kernel, keeping its steps in
+    /// `cache`, and solving sketches with the registry's starter, if it has one.
+    fn engine(&self, cache: Cache) -> Recompute<P::Client> {
+        let engine = Recompute::with_cache(self.kernel.client(), cache);
+        match lock(&self.sketches).clone() {
+            Some(start) => engine.with_sketch_starter(move || start()),
+            None => engine,
+        }
+    }
+
     /// The cache in `dir`: the one value its sessions share, opened the first time; one
     /// without the user's secret, which keeps nothing, isn't kept, so the next open tries
     /// again.
