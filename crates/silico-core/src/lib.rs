@@ -24,6 +24,7 @@ pub mod fake;
 pub mod file;
 pub mod kernel;
 pub mod logging;
+pub mod meshes;
 pub mod naming;
 pub mod pool;
 pub mod profile;
