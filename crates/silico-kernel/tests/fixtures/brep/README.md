@@ -57,3 +57,18 @@ BinTools::Write(box, out, false, false, BinTools_FormatVersion_CURRENT);
   (`Part.OffsetCurve`), each made a shape and compounded (`exportBrep`). FreeCAD's types and
   lengths are in `describe`'s test of it. `offsets_and_conics.py` makes it
   (`freecadcmd offsets_and_conics.py`, from this directory).
+
+- `extruded_bspline.brep`: a text B-rep (read with `from_text_brep`) of the five-pole cubic
+  B-spline of `curves_and_surfaces.brep` (its Edge4: poles (0, 4), (1, 5), (2, 4), (3, 5),
+  (4, 4) at z = 0), closed by its chord, made a face, and extruded 2 along +z: a valid solid
+  whose volume OCCT integrates wrongly (docs/ports/measure.md, Known wrong results). Written
+  by OCCT 7.9.3 (`BRepTools::Write`) from:
+
+  ```cpp
+  Handle(Geom_Curve) c = BRep_Tool::Curve(edge4, first, last);
+  gp_Pnt a = c->Value(first), b = c->Value(last);
+  TopoDS_Wire w = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(c, first, last),
+                                          BRepBuilderAPI_MakeEdge(b, a));
+  TopoDS_Shape prism =
+      BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(w, true), gp_Vec(0, 0, 2)).Shape();
+  ```
