@@ -59,7 +59,7 @@ pub enum Traps {
 }
 
 /// How the loop reads and switches traps: the only way it does, at startup and after every
-/// request, and the way tests do. Each is none where traps aren't checked.
+/// request. Each is none where traps aren't checked.
 impl Traps {
     /// The trap-enable bits that are set: 0 when every trap is off.
     pub fn mask(self) -> Option<u32> {
@@ -148,6 +148,34 @@ where
     Ok(())
 }
 
+/// The traps as a worker starts: switched off and checked off for [`Traps::Checked`] (or why
+/// not, logged as an error, and the worker refuses to run), said to be unchecked for
+/// [`Traps::Unchecked`].
+fn traps_at_start(traps: Traps) -> Result<(), String> {
+    match traps.disable() {
+        None => {
+            tracing::info!(
+                traps = "unchecked",
+                "floating-point traps aren't checked: no result is computed in this worker"
+            );
+            Ok(())
+        }
+        Some(Err(e)) => {
+            let problem = format!("couldn't switch floating-point traps off: {e}");
+            tracing::error!("{problem}");
+            Err(problem)
+        }
+        Some(Ok(())) => match traps.check() {
+            Some(Err(problem)) => {
+                let problem = format!("{problem}; refusing to run");
+                tracing::error!("{problem}");
+                Err(problem)
+            }
+            _ => Ok(()),
+        },
+    }
+}
+
 /// The socket the core passed this process, by the descriptor named in [`WORKER_FD_ENV`].
 fn inherited_socket() -> Result<UnixStream, String> {
     let value = std::env::var(WORKER_FD_ENV)
@@ -221,21 +249,8 @@ where
         .with_writer(std::io::stderr)
         .try_init();
 
-    match platform.traps.disable() {
-        None => tracing::info!(
-            traps = "unchecked",
-            "floating-point traps aren't checked: no result is computed in this worker"
-        ),
-        Some(Err(e)) => {
-            tracing::error!("couldn't switch floating-point traps off: {e}");
-            return ExitCode::from(3);
-        }
-        Some(Ok(())) => {
-            if let Some(Err(problem)) = platform.traps.check() {
-                tracing::error!("{problem}; refusing to run");
-                return ExitCode::from(3);
-            }
-        }
+    if traps_at_start(platform.traps).is_err() {
+        return ExitCode::from(3);
     }
     let socket = match inherited_socket() {
         Ok(socket) => socket,
@@ -266,7 +281,7 @@ mod tests {
         Response, TraceId, write_message,
     };
 
-    use super::{Platform, Traps, serve};
+    use super::{Platform, Traps, serve, traps_at_start};
 
     /// What a test's subscriber writes.
     #[derive(Clone, Default)]
@@ -386,5 +401,50 @@ mod tests {
             disable: || Ok(()),
         };
         assert!(checked.check().is_some_and(|r| r.is_err()));
+    }
+    /// `traps_at_start` on `traps`: what it returned, and what it logged at info and above.
+    fn start_with(traps: Traps) -> (Result<(), String>, String) {
+        let log = Log::default();
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || writer.clone())
+            .finish();
+        let started = tracing::subscriber::with_default(subscriber, || traps_at_start(traps));
+        let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        (started, log)
+    }
+
+    #[test]
+    fn a_worker_starts_with_its_traps_off_or_says_they_are_unchecked_or_refuses_to_run() {
+        // Unchecked: it runs, and says so once.
+        let (started, log) = start_with(Traps::Unchecked);
+        assert_eq!(started, Ok(()));
+        assert!(log.contains("traps=\"unchecked\""), "{log}");
+        // Checked, off: it runs, saying nothing about traps.
+        let (started, log) = start_with(Traps::Checked {
+            mask: || 0,
+            disable: || Ok(()),
+        });
+        assert_eq!(started, Ok(()));
+        assert!(!log.contains("traps"), "{log}");
+        // Checked, but they can't be switched off: it refuses to run.
+        let (started, log) = start_with(Traps::Checked {
+            mask: || 0,
+            disable: || Err("no".to_owned()),
+        });
+        assert!(started.unwrap_err().contains("couldn't switch"));
+        assert!(
+            log.contains("couldn't switch floating-point traps off: no"),
+            "{log}"
+        );
+        // Checked, switched off, but still on: it refuses to run.
+        let (started, log) = start_with(Traps::Checked {
+            mask: || 0x100,
+            disable: || Ok(()),
+        });
+        assert!(started.unwrap_err().contains("refusing to run"));
+        assert!(log.contains("trap-enable bits 0x100"), "{log}");
     }
 }
