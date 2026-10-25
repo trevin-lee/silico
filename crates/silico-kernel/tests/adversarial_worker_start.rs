@@ -6,8 +6,7 @@
 //! `worker_crashed` one that had started; and from POSIX's exec rules for what can be run.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "common/scripts.rs"]
-mod scripts;
+use super::scripts;
 
 use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
