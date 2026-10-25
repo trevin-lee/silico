@@ -644,6 +644,39 @@ fn a_worker_asked_to_describe_garbage_says_so_and_goes_on() {
     }
 }
 
+#[test]
+fn a_worker_claiming_endless_elements_is_refused_at_its_first_batch_against_the_summary() {
+    // A test worker answering every batch with as many sound faces as it asks for (1,000)
+    // and a total of u32::MAX: unchecked, `KernelWorker::describe` would ask 4,294,968
+    // batches of faces. Checked against the box's summary (6 faces, by hand), the first
+    // batch is the worker's fault: a summary and one batch asked, no more.
+    use silico_core::kernel::KernelRequest;
+    use silico_protocol::{DebugOp, Misbehavior};
+    let mut worker =
+        KernelWorker::start_worker(Path::new(env!("CARGO_BIN_EXE_silico-kernel-test-worker")))
+            .unwrap();
+    worker
+        .run(KernelRequest::debug(DebugOp::Misbehave(
+            Misbehavior::EndlessDescription,
+        )))
+        .unwrap();
+    let block = worker
+        .make(Primitive::Box {
+            dx: 1.0,
+            dy: 2.0,
+            dz: 3.0,
+        })
+        .unwrap();
+    let sent = worker.requests_sent();
+    let err = worker.describe(&block).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ProtocolError, "{err}");
+    assert_eq!(
+        err.cause(),
+        Some("it says the shape has 4294967295 faces, and its summary counts 6")
+    );
+    assert_eq!(worker.requests_sent(), sent + 2);
+}
+
 // ---- Random flat solids: the divergence theorem ----
 
 /// For a solid of flat faces: Σ A·n over its faces (0 for a closed solid), as its length
@@ -1046,8 +1079,8 @@ fn every_fixture_documents_solids_are_described_in_the_rebuild_as_their_maps_nam
     // pool was free, is the one a worker of its own gives for the same shape, value for
     // value; it holds as many of each kind as its summary counts and its element map names;
     // and `elements` names every element of it. A description the core refuses (a value out
-    // of range for a cone's apex, a sphere's pole, a seam) would leave the solid unmeasured
-    // and show here as drift.
+    // of range for a cone's apex, a sphere's pole, a seam) would leave the solid undescribed,
+    // its summary standing (so no drift), and fail here as not described.
     use silico_core::document::{Checked, FeatureId, read};
     use silico_core::elements::elements;
     use silico_core::fake::FakeSketches;

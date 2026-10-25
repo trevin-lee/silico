@@ -569,12 +569,7 @@ impl KernelRequest<DescribedBatch> {
             Reply::Described { total, description } => {
                 match batch_problem(kind, first, count, total, &description) {
                     None => Ok(DescribedBatch { total, description }),
-                    Some(problem) => Err(Error::new(
-                        ErrorCode::ProtocolError,
-                        "the kernel worker sent a description it can't have",
-                    )
-                    .with_cause(problem)
-                    .with_suggestion("start a new kernel worker")),
+                    Some(problem) => Err(description_error(problem)),
                 }
             }
             other => Err(unexpected(name, &other)),
@@ -582,18 +577,41 @@ impl KernelRequest<DescribedBatch> {
     }
 }
 
-/// The error for a description whose total of `kind` was `was` in one batch and `now` in a
-/// later one: the shape can't have changed between them.
-pub(crate) fn description_changed(kind: ElementKind, was: u32, now: u32) -> Error {
+/// The error for a description no shape has, `cause` saying why: the worker's fault.
+pub(crate) fn description_error(cause: String) -> Error {
     Error::new(
         ErrorCode::ProtocolError,
         "the kernel worker sent a description it can't have",
     )
-    .with_cause(format!(
+    .with_cause(cause)
+    .with_suggestion("start a new kernel worker")
+}
+
+/// The error for a batch saying the shape has `total` elements of `kind` when its summary
+/// counts otherwise, if it does: checked before the batch's elements are kept, so a worker
+/// can't make the core ask for batch after batch of elements the shape doesn't have.
+pub(crate) fn total_fault(summary: &ShapeSummary, kind: ElementKind, total: u32) -> Option<Error> {
+    let counted = match kind {
+        ElementKind::Face => summary.faces,
+        ElementKind::Edge => summary.edges,
+        ElementKind::Vertex => summary.vertices,
+        ElementKind::Solid => return None,
+    };
+    (counted != total).then(|| {
+        description_error(format!(
+            "it says the shape has {total} {}, and its summary counts {counted}",
+            kind.plural()
+        ))
+    })
+}
+
+/// The error for a description whose total of `kind` was `was` in one batch and `now` in a
+/// later one: the shape can't have changed between them.
+pub(crate) fn description_changed(kind: ElementKind, was: u32, now: u32) -> Error {
+    description_error(format!(
         "it said the shape has {was} {}, then {now}",
         kind.plural()
     ))
-    .with_suggestion("start a new kernel worker")
 }
 
 /// What's wrong with `description` as the whole of a shape whose summary is `summary`, if
@@ -1132,12 +1150,17 @@ impl KernelWorker {
     }
 
     /// Every one of a shape's faces, edges, and vertices described, a batch
-    /// ([`KernelRequest::describe`]) of at most [`DESCRIBE_BATCH`] after another, joined.
+    /// ([`KernelRequest::describe`]) of at most [`DESCRIBE_BATCH`] after another, joined,
+    /// each batch's total checked against the shape's summary, asked first.
     pub fn describe(&mut self, shape: &ShapeData) -> Result<Description, Error> {
+        let summary = self.summarize(shape)?;
         silico_protocol::describe_in_batches(
             |kind, first, count| {
                 let batch = self.run(KernelRequest::describe(shape, kind, first, count)?)?;
-                Ok((batch.total, batch.description))
+                match total_fault(&summary, kind, batch.total) {
+                    Some(fault) => Err(fault),
+                    None => Ok((batch.total, batch.description)),
+                }
             },
             description_changed,
         )
@@ -1856,6 +1879,72 @@ mod tests {
     }
 
     #[test]
+    fn a_batchs_total_that_isnt_its_summarys_count_is_a_workers_fault_naming_both() {
+        // A box's summary counts 6 faces, 12 edges, and 8 vertices, by hand: a batch's total
+        // of each kind one off either way, or far past it, is a protocol error naming both;
+        // the summary's own count fits; and solids aren't described, so have no total.
+        let summary = ShapeSummary {
+            volume: 1.0,
+            area: 6.0,
+            center: [0.5; 3],
+            faces: 6,
+            edges: 12,
+            vertices: 8,
+            bounds: Some([[0.0; 3], [1.0; 3]]),
+            valid: true,
+        };
+        for (kind, counted) in [
+            (ElementKind::Face, 6),
+            (ElementKind::Edge, 12),
+            (ElementKind::Vertex, 8),
+        ] {
+            assert_eq!(total_fault(&summary, kind, counted), None, "{kind:?}");
+        }
+        for (kind, total, said) in [
+            (
+                ElementKind::Face,
+                5,
+                "it says the shape has 5 faces, and its summary counts 6",
+            ),
+            (
+                ElementKind::Face,
+                7,
+                "it says the shape has 7 faces, and its summary counts 6",
+            ),
+            (
+                ElementKind::Edge,
+                11,
+                "it says the shape has 11 edges, and its summary counts 12",
+            ),
+            (
+                ElementKind::Edge,
+                13,
+                "it says the shape has 13 edges, and its summary counts 12",
+            ),
+            (
+                ElementKind::Vertex,
+                0,
+                "it says the shape has 0 vertices, and its summary counts 8",
+            ),
+            (
+                ElementKind::Vertex,
+                u32::MAX,
+                "it says the shape has 4294967295 vertices, and its summary counts 8",
+            ),
+        ] {
+            let error = total_fault(&summary, kind, total).unwrap();
+            assert_eq!(error.code(), ErrorCode::ProtocolError, "{said}");
+            assert_eq!(error.cause(), Some(said));
+            assert_eq!(
+                error.message(),
+                "the kernel worker sent a description it can't have"
+            );
+            assert_eq!(error.suggestion(), Some("start a new kernel worker"));
+        }
+        assert_eq!(total_fault(&summary, ElementKind::Solid, 99), None);
+    }
+
+    #[test]
     fn a_description_of_more_or_fewer_of_a_kind_than_its_summary_counts_is_at_fault() {
         // A box's summary counts 6 faces, 12 edges, and 8 vertices, by hand; a description
         // of each kind one short or one long is named for that kind, and one of 6, 12, and
@@ -1893,13 +1982,34 @@ mod tests {
         };
         assert_eq!(description_fault(&summary, &of(6, 12, 8)), None);
         for (description, said) in [
-            (of(5, 12, 8), "it describes 5 faces, and its summary counts 6"),
-            (of(7, 12, 8), "it describes 7 faces, and its summary counts 6"),
-            (of(6, 11, 8), "it describes 11 edges, and its summary counts 12"),
-            (of(6, 13, 8), "it describes 13 edges, and its summary counts 12"),
-            (of(6, 12, 7), "it describes 7 vertices, and its summary counts 8"),
-            (of(6, 12, 9), "it describes 9 vertices, and its summary counts 8"),
-            (of(0, 0, 0), "it describes 0 faces, and its summary counts 6"),
+            (
+                of(5, 12, 8),
+                "it describes 5 faces, and its summary counts 6",
+            ),
+            (
+                of(7, 12, 8),
+                "it describes 7 faces, and its summary counts 6",
+            ),
+            (
+                of(6, 11, 8),
+                "it describes 11 edges, and its summary counts 12",
+            ),
+            (
+                of(6, 13, 8),
+                "it describes 13 edges, and its summary counts 12",
+            ),
+            (
+                of(6, 12, 7),
+                "it describes 7 vertices, and its summary counts 8",
+            ),
+            (
+                of(6, 12, 9),
+                "it describes 9 vertices, and its summary counts 8",
+            ),
+            (
+                of(0, 0, 0),
+                "it describes 0 faces, and its summary counts 6",
+            ),
         ] {
             assert_eq!(
                 description_fault(&summary, &description).as_deref(),

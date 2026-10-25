@@ -46,7 +46,8 @@
 //! it. A test of such a refusal gives it with [`FakeKernel::refuse`].
 //!
 //! Tests can hold requests until they're released ([`FakeKernel::hold`]), to see what runs
-//! at once or to supersede a request while it runs, and have requests refused.
+//! at once or to supersede a request while it runs, have requests refused, and have them
+//! answered as a worker at fault would ([`FakeKernel::answer_instead`]).
 //!
 //! It has clients ([`Clients`]): the kernel's own ([`ClientId::KERNEL`]), and each
 //! [`FakeClient`] it gives, each with its own generations, its waiting requests served in
@@ -119,6 +120,7 @@ pub struct Hold {
 
 type Picks = dyn Fn(&Op) -> bool + Send + Sync;
 type Refuses = dyn Fn(&Op) -> Option<Error> + Send + Sync;
+type Answers = dyn Fn(&Op) -> Option<Reply> + Send + Sync;
 
 struct Shared {
     state: Mutex<State>,
@@ -137,6 +139,7 @@ struct State {
     most_running: usize,
     holds: Vec<HoldRule>,
     refusals: Vec<Arc<Refuses>>,
+    answers: Vec<Arc<Answers>>,
 }
 
 struct HoldRule {
@@ -157,6 +160,7 @@ impl FakeKernel {
                 most_running: 0,
                 holds: Vec::new(),
                 refusals: Vec::new(),
+                answers: Vec::new(),
             }),
             work: Condvar::new(),
             changed: Condvar::new(),
@@ -233,6 +237,15 @@ impl FakeKernel {
     /// locked, so it mustn't call the kernel), with that error, after it starts.
     pub fn refuse(&self, refuses: impl Fn(&Op) -> Option<Error> + Send + Sync + 'static) {
         lock(&self.shared.state).refusals.push(Arc::new(refuses));
+    }
+
+    /// Answers every request `answers` returns a reply for (called with the kernel's state
+    /// locked, so it mustn't call the kernel) with that reply instead of the fake's own,
+    /// after it starts, unless a rule of [`FakeKernel::refuse`]'s refuses it: read as a
+    /// worker's reply is, so a test can send what a worker at fault would (a description
+    /// whose total isn't its summary's, say). The first rule given that answers is taken.
+    pub fn answer_instead(&self, answers: impl Fn(&Op) -> Option<Reply> + Send + Sync + 'static) {
+        lock(&self.shared.state).answers.push(Arc::new(answers));
     }
 
     /// Refuses each request from now on that `refuses` gives a failure for, as a kernel
@@ -426,12 +439,12 @@ impl Drop for Hold {
 /// A queued request, its result's type hidden.
 trait Task: ClientTask + Send {
     fn op(&self) -> &Op;
-    /// Answers the request (with `refusal`, if a rule gave one), reads the answer as a
-    /// worker's is read, in the span it was submitted in, and ends it: under the lock
-    /// `advance` takes, as the pool does, it stops counting as running and its outcome is
-    /// sent, superseded if its client has started a newer generation or is retired. Once
+    /// Answers the request (with `given`, if a rule gave a refusal or a reply), reads the
+    /// answer as a worker's is read, in the span it was submitted in, and ends it: under the
+    /// lock `advance` takes, as the pool does, it stops counting as running and its outcome
+    /// is sent, superseded if its client has started a newer generation or is retired. Once
     /// `advance` returns, no result of the client's older generations can still arrive.
-    fn run(self: Box<Self>, refusal: Option<Error>, shared: &Shared);
+    fn run(self: Box<Self>, given: Option<Result<Reply, Error>>, shared: &Shared);
     /// Ends a request that started without running it, under the lock, as `run` does.
     fn stop(self: Box<Self>, shared: &Shared);
     /// Sends [`Outcome::Superseded`] for a request that never started.
@@ -462,7 +475,7 @@ impl<T: Send + 'static> Task for Submitted<T> {
         self.request.op()
     }
 
-    fn run(self: Box<Self>, refusal: Option<Error>, shared: &Shared) {
+    fn run(self: Box<Self>, given: Option<Result<Reply, Error>>, shared: &Shared) {
         let Submitted {
             client,
             generation,
@@ -477,10 +490,7 @@ impl<T: Send + 'static> Task for Submitted<T> {
                 generation = generation.0
             )
             .entered();
-            let reply = match refusal {
-                Some(error) => Err(error),
-                None => answer(request.op()),
-            };
+            let reply = given.unwrap_or_else(|| answer(request.op()));
             request.answer(reply)
         });
         let mut state = lock(&shared.state);
@@ -571,8 +581,17 @@ fn serve(shared: &Shared) {
                     .unwrap_or_else(|| Some(rule_panicked("refusal", task.op())))
             })
         });
+        let given = match refusal {
+            Some(error) => Some(Err(error)),
+            None => state.answers.iter().find_map(|answers| {
+                caught(|| answers(task.op())).map_or_else(
+                    || Some(Err(rule_panicked("answer", task.op()))),
+                    |reply| reply.map(Ok),
+                )
+            }),
+        };
         drop(state);
-        task.run(refusal, shared);
+        task.run(given, shared);
     }
 }
 

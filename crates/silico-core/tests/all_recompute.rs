@@ -7,6 +7,10 @@
 // Shared by the files below, each loaded once.
 #[path = "common/cache.rs"]
 mod cache;
+#[path = "common/cache_format.rs"]
+mod cache_format;
+#[path = "common/describing.rs"]
+mod describing;
 #[path = "common/example.rs"]
 mod example;
 #[path = "common/lateness.rs"]

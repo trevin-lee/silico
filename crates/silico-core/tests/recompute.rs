@@ -256,15 +256,29 @@ fn independent_branches_run_at_once() {
 
 #[test]
 fn a_chain_runs_one_step_at_a_time() {
+    // Counted once the solid's summary has started, held, where its steps have all run and
+    // its description's batches (sent at once, three of them: M4.4) haven't yet.
     let engine = engine(4);
-    published(
-        &engine,
-        document(&[
-            r#"{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "Moved", "position": [5, 0, 0], "length": 1, "width": 1, "height": 1}"#,
-        ]),
-    );
-    assert_eq!(calls_since(&engine, 0), ["MakeBox", "Translate"]);
+    let hold = engine
+        .kernel()
+        .hold(|op| matches!(op, Op::Summarize { .. }));
+    let run = engine.start(document(&[
+        r#"{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "Moved", "position": [5, 0, 0], "length": 1, "width": 1, "height": 1}"#,
+    ]));
+    let deadline = std::time::Instant::now() + WAIT;
+    while !engine
+        .kernel()
+        .calls()
+        .iter()
+        .any(|call| matches!(call.op, Op::Summarize { .. }))
+    {
+        assert!(std::time::Instant::now() < deadline, "never summarized");
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert_eq!(engine.kernel().most_running(), 1);
+    hold.release();
+    assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
+    assert_eq!(calls_since(&engine, 0), ["MakeBox", "Translate"]);
 }
 
 #[test]
