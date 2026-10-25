@@ -290,9 +290,9 @@ pub struct Reformatted {
 }
 
 /// What `add_feature` did (the design's section 7): the feature as the document now holds it
-/// (its ID, the one given or the one made, and its version), whether the document changed
-/// (always, a feature added), and, outside a transaction, the commit's result, none inside
-/// one.
+/// (its ID, the one given or the one made, and its version; outside a transaction, as its
+/// commit saved it, with the fingerprint written), whether the document changed (always, a
+/// feature added), and, outside a transaction, the commit's result, none inside one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Added {
     pub feature: Feature,
@@ -302,7 +302,8 @@ pub struct Added {
 
 /// What `set_field` did (the design's section 7): the feature and the field, as the request
 /// named them, the field's value before and after, each as the document's canonical form
-/// writes it (`null` for a field the feature hasn't, a note removed), whether the document
+/// writes it (`null` for a field the feature hasn't, a note removed; after, outside a
+/// transaction, as its commit saved it, a sketch's solve and all), whether the document
 /// changed (not if the field was given the value it has: then there's no new revision and
 /// nothing is written), and, outside a transaction, the commit's result, none inside one or
 /// if nothing changed.

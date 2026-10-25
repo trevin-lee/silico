@@ -190,7 +190,7 @@
     "properties": {
       "after": {
         "$ref": "#/$defs/FieldValue",
-        "description": "The field's value after, as the document writes it."
+        "description": "The field's value after, as the document writes it: outside a transaction, as the\ncommit saved it (a sketch's member where its solve put it)."
       },
       "before": {
         "$ref": "#/$defs/FieldValue",
