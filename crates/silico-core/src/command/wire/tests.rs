@@ -240,7 +240,7 @@ fn a_request_is_read_strictly_and_every_reason_is_said_in_order() {
             ),
             (
                 "model".to_owned(),
-                r#"model must be current or published, got "latest""#.to_owned()
+                "model must be current or published, got latest".to_owned()
             ),
             (
                 "limit".to_owned(),
