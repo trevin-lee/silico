@@ -46,16 +46,16 @@ core_wall_clock=(
 sketch_wall_clock=(
   an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout
 )
-# The render worker's scale tests, which hold GiBs each (.config/nextest.toml's render
-# group), on every shard at once: their mutants are in silico-render, where its small
-# adversarial tests cover them.
+# The render worker's scale tests, left out: each holds GiBs (.config/nextest.toml's render
+# group), which every shard at once would. Their mutants are in silico-render, where its
+# small adversarial tests cover them.
 render_scale=(
   adversarial_render::the_most_edges_a_scene_may_have_draw_within_the_limit_and_one_more_is_refused
   adversarial_render::the_most_faces_a_scene_may_have_draw_within_the_limit_and_one_more_is_refused
   adversarial_render::a_part_of_ctc_size_at_4096_square_with_highlights_draws_within_the_limit
   adversarial_render::three_thousand_bodies_draw_within_a_tenth_of_the_limit_each_with_its_number
   adversarial_render::ten_thousand_highlighted_faces_draw_within_a_tenth_of_the_limit
-  worker::a_box_from_the_front_is_its_front_face_over_its_projection_its_edges_on_its_boundary
+  worker::the_largest_render_is_the_box_from_the_front_too
 )
 # package(p) & (test(=a) | test(=b) | ...), for a package and its tests.
 tests_of() {

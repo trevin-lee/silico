@@ -119,7 +119,15 @@ fn rules(scene: &RenderScene) -> Option<&'static str> {
     if c.up.iter().any(|x| x.is_nan() || x.is_infinite()) {
         return Some("camera.up");
     }
-    if c.eye == c.target {
+    // At least a nanometre apart, the distance found scaled so it neither overflows nor
+    // underflows (the eye and target are within 1e12, so their difference is finite).
+    let d = [
+        c.eye[0] - c.target[0],
+        c.eye[1] - c.target[1],
+        c.eye[2] - c.target[2],
+    ];
+    let m = d.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+    if m == 0.0 || m * d.iter().map(|x| (x / m) * (x / m)).sum::<f64>().sqrt() < 1e-6 {
         return Some("camera.eye");
     }
     // The up's part across the view, against its length: the sine of their angle, from
@@ -196,6 +204,20 @@ fn rules(scene: &RenderScene) -> Option<&'static str> {
             }
         }
     }
+    // At most 20,000 faces and 200,000 edges across the bodies.
+    let faces: usize = scene
+        .bodies
+        .iter()
+        .map(|b| b.mesh.face_triangles.len())
+        .sum();
+    let edges: usize = scene
+        .bodies
+        .iter()
+        .map(|b| b.mesh.edge_point_counts.len())
+        .sum();
+    if faces > 20_000 || edges > 200_000 {
+        return Some("bodies");
+    }
     // An orthographic view no smaller than 1e-5 of how far the scene reaches from the
     // target.
     if let Projection::Orthographic { view_height } = c.projection {
@@ -220,7 +242,7 @@ fn number() -> impl Strategy<Value = f64> {
         6 => -100.0..100.0f64,
         1 => prop::sample::select(vec![
             0.0, -0.0, 1.0, -1.0, 1e-100, -1e-100, 1e100, -1e100, f64::NAN, f64::INFINITY,
-            f64::NEG_INFINITY,
+            f64::NEG_INFINITY, 1e-7, -1e-7, 1e-6, 1e12, -1e12, 1.000_000_000_001e12,
         ]),
     ]
 }
@@ -375,7 +397,12 @@ fn the_check_refuses_exactly_what_the_designs_rules_refuse_naming_the_first_brok
                     *tally.borrow_mut().1.entry(e.parameter).or_default() += 1;
                     // Every refusal names its parameter, and a body's says which body.
                     if e.parameter == "bodies" {
-                        prop_assert!(e.message.starts_with("bodies["), "{}", e.message);
+                        prop_assert!(
+                            e.message.starts_with("bodies[")
+                                || e.message.starts_with("the bodies have"),
+                            "{}",
+                            e.message
+                        );
                     } else {
                         prop_assert!(e.message.contains(e.parameter), "{}", e.message);
                     }

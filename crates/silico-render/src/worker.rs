@@ -55,7 +55,7 @@ impl State {
                 })?;
                 let renderer = match &mut self.renderer {
                     Some(renderer) => renderer,
-                    None => self.renderer.insert(renderer(self.policy)?),
+                    None => self.renderer.insert(render_context(self.policy)?),
                 };
                 match renderer.render(&scene) {
                     Ok(rendered) => Ok(Reply::Rendered {
@@ -66,13 +66,7 @@ impl State {
                         // Nothing vouches for the context after a failure: the next render
                         // makes a new one.
                         self.renderer = None;
-                        Err(match failure {
-                            RenderFailure::OutOfMemory(cause) => Failure {
-                                refusal: Refusal::OutOfMemory,
-                                cause: Some(cause),
-                            },
-                            RenderFailure::Failed(what) => internal(what),
-                        })
+                        Err(refused(failure))
                     }
                 }
             }
@@ -87,9 +81,21 @@ impl State {
     }
 }
 
+/// A failed render as the worker refuses it: out of memory as a shortage
+/// (`resource_exhausted`, its words the cause), anything else as the renderer's own fault.
+fn refused(failure: RenderFailure) -> Failure {
+    match failure {
+        RenderFailure::OutOfMemory(cause) => Failure {
+            refusal: Refusal::OutOfMemory,
+            cause: Some(cause),
+        },
+        RenderFailure::Failed(what) => internal(what),
+    }
+}
+
 /// A render context on the first adapter `policy` allows that can make one, or why none
 /// can: a fault of the machine, not of the scene.
-fn renderer(policy: RenderAdapter) -> Result<Renderer, Failure> {
+fn render_context(policy: RenderAdapter) -> Result<Renderer, Failure> {
     let unavailable = |cause| Failure::new(Refusal::NoAdapter { cause });
     let mut tried = Vec::new();
     for adapter in crate::adapters(policy).map_err(unavailable)? {
@@ -110,4 +116,28 @@ fn renderer(policy: RenderAdapter) -> Result<Renderer, Failure> {
 
 fn internal(what: String) -> Failure {
     Failure::new(Refusal::Internal { what })
+}
+
+#[cfg(test)]
+mod tests {
+    use silico_protocol::{FailureKind, Refusal};
+
+    use super::refused;
+    use crate::render::RenderFailure;
+
+    #[test]
+    fn a_render_out_of_memory_is_a_shortage_and_anything_else_the_renderers_fault() {
+        let short = refused(RenderFailure::OutOfMemory("4 GiB asked".to_owned()));
+        assert_eq!(short.refusal, Refusal::OutOfMemory);
+        assert_eq!(short.cause.as_deref(), Some("4 GiB asked"));
+        assert_eq!(short.kind(), FailureKind::ResourceExhausted);
+        let failed = refused(RenderFailure::Failed("a readback never came".to_owned()));
+        assert_eq!(
+            failed.refusal,
+            Refusal::Internal {
+                what: "a readback never came".to_owned()
+            }
+        );
+        assert_eq!(failed.kind(), FailureKind::Internal);
+    }
 }

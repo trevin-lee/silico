@@ -80,7 +80,8 @@ impl std::fmt::Display for RenderFailure {
 pub struct Renderer {
     ctx: RenderContext,
     /// The next render's readbacks' identifiers (each render takes two), so a render that
-    /// failed never leaves a readback a later one could take as its own.
+    /// failed never leaves a readback a later one could take as its own, for a caller that
+    /// keeps the renderer after a failure (the worker doesn't; the bench could).
     readback: u64,
 }
 

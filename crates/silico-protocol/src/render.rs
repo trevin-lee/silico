@@ -260,10 +260,13 @@ impl Camera {
 impl RenderScene {
     /// Whether the scene can be drawn without the worker trusting anything about it: the
     /// sizes, the camera ([`Camera::check`]), the bodies' numbers (at least 1, strictly
-    /// ascending), each mesh's structure (positions and normals finite and one each, every
-    /// index in range, the faces' and edges' counts adding up, every number fitting the ID
-    /// buffer), and the highlights (ascending, each once, in range). Only structure: what
-    /// needs the model is the core's.
+    /// ascending), each mesh's structure (positions and normals finite, within
+    /// [`MAX_RENDER_COORDINATE`], and one each, every index in range, the faces' and edges'
+    /// counts adding up, every number fitting the ID buffer), the highlights (ascending, each
+    /// once, in range), the faces and edges across the bodies (at most [`MAX_RENDER_FACES`]
+    /// and [`MAX_RENDER_EDGES`]), and an orthographic view's height against the bodies'
+    /// reach ([`MIN_VIEW_HEIGHT_OF_REACH`]). Only structure: what needs the model is the
+    /// core's.
     pub fn check(&self) -> Result<(), InvalidParameter> {
         for (parameter, side) in [("width", self.width), ("height", self.height)] {
             if !(1..=MAX_RENDER_SIDE).contains(&side) {
@@ -329,9 +332,7 @@ impl RenderScene {
         }
         Ok(())
     }
-}
 
-impl RenderScene {
     /// How far the scene reaches from `from`: its farthest point (a mesh's position or an
     /// edge's) from it, 0 for a scene with none. The check bounds an orthographic view's
     /// zoom by it, and the renderer sets its clipping from it.
