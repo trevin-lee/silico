@@ -1,4 +1,4 @@
-//! Hostile requests through [`Fields`], hostile text through the writer, and every shape of
+//! Hostile requests through [`RequestFields`], hostile text through the writer, and every shape of
 //! the envelope against its snapshot (`/break-it` on M4.4's wire). Expected values are the
 //! design's (docs/design/m4.1-command-api.md, section 2), the error contract's
 //! (`tests/contract/error-full.json`), the document reader's own rules for what an error
@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use super::{Fields, Json, Layout, ToWire, problems, response, write};
+use super::{Json, Layout, Refusals, RequestFields, ToWire, problems, response, write};
 use crate::command::{
     ModelChoice, ModelRead, Problems, Response, Revision, SessionId, SessionInfo,
 };
@@ -39,6 +39,25 @@ fn said(problems: &Problems) -> Vec<(Option<String>, String)> {
         .collect()
 }
 
+/// Every refusal of `node`, read by `read`, which reads what it reads and gives no value of
+/// its own.
+fn refused_by(node: &Node, read: impl FnOnce(&mut RequestFields<'_>)) -> Problems {
+    RequestFields::read(node, |fields| {
+        read(fields);
+        Some(())
+    })
+    .unwrap_err()
+}
+
+/// `node`, read by `read`, refused for nothing.
+fn accepted(node: &Node, read: impl FnOnce(&mut RequestFields<'_>)) {
+    RequestFields::read(node, |fields| {
+        read(fields);
+        Some(())
+    })
+    .unwrap();
+}
+
 fn session(path: &str) -> SessionInfo {
     SessionInfo {
         id: SessionId::parse("s1").unwrap(),
@@ -67,7 +86,7 @@ impl ToWire for Holding {
     }
 }
 
-// --- Fields: the request's top ---------------------------------------------------------
+// --- RequestFields: the request's top ---------------------------------------------------------
 
 #[test]
 fn a_request_that_is_not_an_object_is_refused_for_every_kind() {
@@ -79,7 +98,7 @@ fn a_request_that_is_not_an_object_is_refused_for_every_kind() {
         ("[]", "an array"),
     ] {
         let node = parsed(text);
-        let refused = Fields::of(&node, "").err().unwrap();
+        let refused = refused_by(&node, |_| {});
         assert_eq!(
             said(&refused),
             [(None, format!("the request must be an object, got {kind}"))],
@@ -109,14 +128,14 @@ fn a_key_given_twice_is_refused_before_a_field_is_read() {
 #[test]
 fn an_empty_request_has_every_field_missing_in_the_order_read() {
     let node = parsed("{}");
-    let mut fields = Fields::of(&node, "").unwrap();
-    assert_eq!(fields.session(), None);
-    assert_eq!(fields.model(), None);
-    assert_eq!(fields.u32("limit"), None);
-    assert_eq!(fields.nullable_string("name"), None);
-    assert_eq!(fields.nullable_features("features"), None);
-    assert!(fields.nullable_object("facing").is_none());
-    let refused = fields.done().unwrap_err();
+    let refused = refused_by(&node, |fields| {
+        assert_eq!(fields.session(), None);
+        assert_eq!(fields.model(), None);
+        assert_eq!(fields.u32("limit"), None);
+        assert_eq!(fields.nullable_string("name"), None);
+        assert_eq!(fields.nullable_feature_ids("features"), None);
+        assert!(fields.nullable_object("facing", |_| Some(())).is_none());
+    });
     let missing = ["session", "model", "limit", "name", "features", "facing"];
     assert_eq!(
         said(&refused),
@@ -133,13 +152,15 @@ fn an_empty_request_has_every_field_missing_in_the_order_read() {
 #[test]
 fn an_empty_object_with_no_fields_asked_is_fine_and_a_nested_one_too() {
     let node = parsed(r#"{"facing": {}}"#);
-    let mut fields = Fields::of(&node, "").unwrap();
-    let facing = fields.nullable_object("facing").unwrap().unwrap();
-    fields.absorb(facing);
-    assert!(fields.done().is_ok());
+    accepted(&node, |fields| {
+        assert_eq!(
+            fields.nullable_object("facing", |_| Some(())),
+            Some(Some(()))
+        );
+    });
 }
 
-// --- Fields: what a refusal quotes -----------------------------------------------------
+// --- RequestFields: what a refusal quotes--------------------------------------------------
 
 #[test]
 fn an_unknown_key_with_control_or_bidi_characters_is_quoted_safely() {
@@ -155,8 +176,7 @@ fn an_unknown_key_with_control_or_bidi_characters_is_quoted_safely() {
     ] {
         let text = format!(r#"{{{}: 1}}"#, serde_json::to_string(key).unwrap());
         let node = parsed(&text);
-        let fields = Fields::of(&node, "").unwrap();
-        let refused = fields.done().unwrap_err();
+        let refused = refused_by(&node, |_| {});
         let error = &refused.errors()[0];
         assert!(printable(error.message()), "{key:?}: {:?}", error.message());
         assert!(
@@ -173,7 +193,7 @@ fn a_long_unknown_key_is_cut_short_in_its_refusal() {
     // and parameter), a 1 MB key made a 2 MB error, and a hundred of them a 200 MB response.
     let key = "k".repeat(1 << 20);
     let node = parsed(&format!(r#"{{"{key}": 1}}"#));
-    let refused = Fields::of(&node, "").unwrap().done().unwrap_err();
+    let refused = refused_by(&node, |_| {});
     let error = &refused.errors()[0];
     assert!(
         error.message().len() < 200,
@@ -188,7 +208,7 @@ fn an_empty_unknown_key_is_named() {
     // Named `""`: as written, the key `""` at the top made an empty path, so the refusal
     // had no parameter and its message was " isn't a field of this request".
     let node = parsed(r#"{"": 1}"#);
-    let refused = Fields::of(&node, "").unwrap().done().unwrap_err();
+    let refused = refused_by(&node, |_| {});
     let error = &refused.errors()[0];
     assert_eq!(error.parameter(), Some(r#""""#));
     assert!(
@@ -204,12 +224,11 @@ fn an_unknown_key_holding_a_dot_is_not_taken_for_a_nested_field() {
     // parameter, `facing.extra`, though one is a key at the top: a dotted path named two
     // places. A key that isn't a plain name is quoted (as `decode::field_name` does).
     let top = parsed(r#"{"facing.extra": 1}"#);
-    let top = Fields::of(&top, "").unwrap().done().unwrap_err();
+    let top = refused_by(&top, |_| {});
     let nested = parsed(r#"{"facing": {"extra": 1}}"#);
-    let mut fields = Fields::of(&nested, "").unwrap();
-    let facing = fields.nullable_object("facing").unwrap().unwrap();
-    fields.absorb(facing);
-    let nested = fields.done().unwrap_err();
+    let nested = refused_by(&nested, |fields| {
+        assert_eq!(fields.nullable_object("facing", |_| Some(())), None);
+    });
     assert_eq!(nested.errors()[0].parameter(), Some("facing.extra"));
     assert_ne!(top.errors()[0].parameter(), nested.errors()[0].parameter());
 }
@@ -220,10 +239,10 @@ fn a_long_number_is_cut_short_in_its_refusal() {
     // repeated whole, a 1 MB number made a 1 MB message.
     let digits = format!("1{}", "0".repeat(1 << 20));
     let node = parsed(&format!(r#"{{"limit": {digits}, "feature": {digits}}}"#));
-    let mut fields = Fields::of(&node, "").unwrap();
-    assert_eq!(fields.u32("limit"), None);
-    assert_eq!(fields.nullable_feature("feature"), None);
-    let refused = fields.done().unwrap_err();
+    let refused = refused_by(&node, |fields| {
+        assert_eq!(fields.u32("limit"), None);
+        assert_eq!(fields.nullable_feature("feature"), None);
+    });
     for e in refused.errors() {
         assert!(e.message().len() < 200, "{} bytes", e.message().len());
     }
@@ -237,12 +256,12 @@ fn a_long_or_hostile_string_value_is_cut_short_and_escaped_in_its_refusal() {
         let node = parsed(&format!(
             r#"{{"session": {json}, "model": {json}, "feature": {json}, "features": [{json}]}}"#
         ));
-        let mut fields = Fields::of(&node, "").unwrap();
-        assert_eq!(fields.session(), None);
-        assert_eq!(fields.model(), None);
-        assert_eq!(fields.nullable_feature("feature"), None);
-        assert_eq!(fields.nullable_features("features"), None);
-        let refused = fields.done().unwrap_err();
+        let refused = refused_by(&node, |fields| {
+            assert_eq!(fields.session(), None);
+            assert_eq!(fields.model(), None);
+            assert_eq!(fields.nullable_feature("feature"), None);
+            assert_eq!(fields.nullable_feature_ids("features"), None);
+        });
         assert_eq!(refused.total(), 4);
         for e in refused.errors() {
             assert!(e.message().len() < 200, "{value:?}: {}", e.message().len());
@@ -251,7 +270,7 @@ fn a_long_or_hostile_string_value_is_cut_short_and_escaped_in_its_refusal() {
     }
 }
 
-// --- Fields: numbers -------------------------------------------------------------------
+// --- RequestFields: numbers----------------------------------------------------------------
 
 #[test]
 fn a_whole_number_is_refused_in_every_spelling_but_its_digits() {
@@ -271,9 +290,9 @@ fn a_whole_number_is_refused_in_every_spelling_but_its_digits() {
         "0.5",
     ] {
         let node = parsed(&format!(r#"{{"limit": {text}}}"#));
-        let mut fields = Fields::of(&node, "").unwrap();
-        assert_eq!(fields.u32("limit"), None, "{text}");
-        let refused = fields.done().unwrap_err();
+        let refused = refused_by(&node, |fields| {
+            assert_eq!(fields.u32("limit"), None, "{text}");
+        });
         assert_eq!(
             said(&refused),
             [(
@@ -291,9 +310,9 @@ fn a_whole_number_is_refused_in_every_spelling_but_its_digits() {
     }
     for (text, want) in [("0", 0), ("4294967295", u32::MAX), ("2147483648", 1 << 31)] {
         let node = parsed(&format!(r#"{{"limit": {text}}}"#));
-        let mut fields = Fields::of(&node, "").unwrap();
-        assert_eq!(fields.u32("limit"), Some(want));
-        assert!(fields.done().is_ok());
+        accepted(&node, |fields| {
+            assert_eq!(fields.u32("limit"), Some(want));
+        });
     }
 }
 
@@ -307,9 +326,9 @@ fn a_whole_number_of_another_kind_says_what_it_was() {
         ("{}", "an object"),
     ] {
         let node = parsed(&format!(r#"{{"limit": {text}}}"#));
-        let mut fields = Fields::of(&node, "").unwrap();
-        assert_eq!(fields.u32("limit"), None);
-        let refused = fields.done().unwrap_err();
+        let refused = refused_by(&node, |fields| {
+            assert_eq!(fields.u32("limit"), None);
+        });
         assert_eq!(
             refused.errors()[0].message(),
             format!("limit must be a whole number from 0 to 4294967295, got {got}")
@@ -317,7 +336,7 @@ fn a_whole_number_of_another_kind_says_what_it_was() {
     }
 }
 
-// --- Fields: sessions, models, features ------------------------------------------------
+// --- RequestFields: sessions, models, features---------------------------------------------
 
 #[test]
 fn a_session_id_is_refused_in_every_spelling_but_its_own() {
@@ -343,9 +362,9 @@ fn a_session_id_is_refused_in_every_spelling_but_its_own() {
             r#"{{"session": {}}}"#,
             serde_json::to_string(bad).unwrap()
         ));
-        let mut fields = Fields::of(&node, "").unwrap();
-        assert_eq!(fields.session(), None, "{bad:?}");
-        let refused = fields.done().unwrap_err();
+        let refused = refused_by(&node, |fields| {
+            assert_eq!(fields.session(), None, "{bad:?}");
+        });
         let error = &refused.errors()[0];
         assert_eq!(error.parameter(), Some("session"));
         assert_eq!(error.suggestion(), Some("give the ID open returned"));
@@ -359,9 +378,9 @@ fn a_session_id_is_refused_in_every_spelling_but_its_own() {
     // An ID written as a number or null isn't one.
     for (text, got) in [("1", "1"), ("null", "null"), (r#"["s1"]"#, "an array")] {
         let node = parsed(&format!(r#"{{"session": {text}}}"#));
-        let mut fields = Fields::of(&node, "").unwrap();
-        assert_eq!(fields.session(), None);
-        let refused = fields.done().unwrap_err();
+        let refused = refused_by(&node, |fields| {
+            assert_eq!(fields.session(), None);
+        });
         assert_eq!(
             refused.errors()[0].message(),
             format!("session must be a session's ID, s1, s2, ..., got {got}")
@@ -376,7 +395,7 @@ fn a_session_id_round_trips_through_its_text() {
         let id = SessionId::parse(&text).unwrap();
         assert_eq!(id.number(), n);
         assert_eq!(
-            write(&id.to_wire(), Layout::Canonical),
+            write(&id.to_wire(), Layout::Canonical).unwrap(),
             format!("\"{text}\"")
         );
     }
@@ -397,17 +416,16 @@ fn a_model_is_current_or_published_exactly() {
             r#"{{"model": {}}}"#,
             serde_json::to_string(bad).unwrap()
         ));
-        let mut fields = Fields::of(&node, "").unwrap();
-        assert_eq!(fields.model(), None, "{bad:?}");
-        let refused = fields.done().unwrap_err();
+        let refused = refused_by(&node, |fields| {
+            assert_eq!(fields.model(), None, "{bad:?}");
+        });
         assert_eq!(refused.errors()[0].candidates(), ["current", "published"]);
         assert!(printable(refused.errors()[0].message()));
     }
     let node = parsed(r#"{"model": null}"#);
-    let mut fields = Fields::of(&node, "").unwrap();
-    assert_eq!(fields.model(), None);
+    let refused = refused_by(&node, |fields| assert_eq!(fields.model(), None));
     assert_eq!(
-        fields.done().unwrap_err().errors()[0].message(),
+        refused.errors()[0].message(),
         "model must be current or published, got null"
     );
 }
@@ -415,9 +433,9 @@ fn a_model_is_current_or_published_exactly() {
 #[test]
 fn a_list_of_features_names_each_member_at_fault_by_its_place() {
     let node = parsed(r#"{"features": [[], {}, null, "k7f2qx3m", "K7F2QX3M", "k7f2qx3"]}"#);
-    let mut fields = Fields::of(&node, "").unwrap();
-    assert_eq!(fields.nullable_features("features"), None);
-    let refused = fields.done().unwrap_err();
+    let refused = refused_by(&node, |fields| {
+        assert_eq!(fields.nullable_feature_ids("features"), None);
+    });
     assert_eq!(
         said(&refused),
         [
@@ -434,29 +452,36 @@ fn a_list_of_features_names_each_member_at_fault_by_its_place() {
     );
     // An empty list is a list.
     let node = parsed(r#"{"features": []}"#);
-    let mut fields = Fields::of(&node, "").unwrap();
-    assert_eq!(fields.nullable_features("features"), Some(Some(Vec::new())));
-    assert!(fields.done().is_ok());
+    accepted(&node, |fields| {
+        assert_eq!(
+            fields.nullable_feature_ids("features"),
+            Some(Some(Vec::new()))
+        );
+    });
     // Not a list.
+    // Not a list: what it was is said, as every refusal says it.
     let node = parsed(r#"{"features": "k7f2qx3m"}"#);
-    let mut fields = Fields::of(&node, "").unwrap();
-    assert_eq!(fields.nullable_features("features"), None);
+    let refused = refused_by(&node, |fields| {
+        assert_eq!(fields.nullable_feature_ids("features"), None);
+    });
     assert_eq!(
-        fields.done().unwrap_err().errors()[0].message(),
-        "features must be a list of features' IDs or null, got a string"
+        refused.errors()[0].message(),
+        r#"features must be a list of features' IDs or null, got "k7f2qx3m""#
     );
 }
 
 #[test]
 fn a_nested_object_that_is_not_one_is_refused_at_its_path() {
     let node = parsed(r#"{"facing": [1], "within": {"facing": 3}}"#);
-    let mut fields = Fields::of(&node, "").unwrap();
-    assert!(fields.nullable_object("facing").is_none());
-    let mut within = fields.nullable_object("within").unwrap().unwrap();
-    assert!(within.nullable_object("facing").is_none());
-    fields.absorb(within);
+    let refused = refused_by(&node, |fields| {
+        assert!(fields.nullable_object("facing", |_| Some(())).is_none());
+        let within = fields.nullable_object("within", |within| {
+            within.nullable_object("facing", |_| Some(()))
+        });
+        assert!(within.is_none());
+    });
     assert_eq!(
-        said(&fields.done().unwrap_err()),
+        said(&refused),
         [
             (
                 Some("facing".to_owned()),
@@ -470,13 +495,13 @@ fn a_nested_object_that_is_not_one_is_refused_at_its_path() {
     );
 }
 
-// --- Fields: counting refusals ---------------------------------------------------------
+// --- RequestFields: counting refusals------------------------------------------------------
 
 #[test]
 fn more_than_a_hundred_unknown_keys_are_listed_to_a_hundred_and_all_counted() {
     let members: Vec<String> = (0..250).map(|i| format!(r#""k{i}": {i}"#)).collect();
     let node = parsed(&format!("{{{}}}", members.join(", ")));
-    let refused = Fields::of(&node, "").unwrap().done().unwrap_err();
+    let refused = refused_by(&node, |_| {});
     assert_eq!(refused.total(), 250);
     assert_eq!(refused.errors().len(), PROBLEMS_LISTED);
     for (i, e) in refused.errors().iter().enumerate() {
@@ -489,7 +514,7 @@ fn more_than_a_hundred_unknown_keys_are_listed_to_a_hundred_and_all_counted() {
         result: Err(refused),
     };
     let value: serde_json::Value =
-        serde_json::from_str(&write(&response(&refused), Layout::OneLine)).unwrap();
+        serde_json::from_str(&write(&response(&refused), Layout::OneLine).unwrap()).unwrap();
     assert_eq!(value["total"], 250);
     assert_eq!(value["errors"].as_array().unwrap().len(), 100);
     assert_eq!(value["errors"][99]["parameter"], "k99");
@@ -508,11 +533,10 @@ fn refusals_at_the_top_and_nested_are_counted_together_in_the_order_found() {
         outer.join(", ")
     );
     let node = parsed(&text);
-    let mut fields = Fields::of(&node, "").unwrap();
-    assert_eq!(fields.nullable_features("features"), None);
-    let facing = fields.nullable_object("facing").unwrap().unwrap();
-    fields.absorb(facing);
-    let refused = fields.done().unwrap_err();
+    let refused = refused_by(&node, |fields| {
+        assert_eq!(fields.nullable_feature_ids("features"), None);
+        assert_eq!(fields.nullable_object("facing", |_| Some(())), None);
+    });
     assert_eq!(refused.total(), 160);
     let listed: Vec<String> = refused
         .errors()
@@ -534,16 +558,36 @@ fn a_flood_of_refusals_keeps_no_more_than_it_lists() {
     // release), to list a hundred.
     let items = vec!["1"; 20_000].join(",");
     let node = parsed(&format!(r#"{{"features": [{items}]}}"#));
-    let mut fields = Fields::of(&node, "").unwrap();
-    assert_eq!(fields.nullable_features("features"), None);
-    assert!(
-        fields.refused.len() <= PROBLEMS_LISTED,
-        "{} refusals held",
-        fields.refused.len()
-    );
-    let refused = fields.done().unwrap_err();
+    let refused = refused_by(&node, |fields| {
+        assert_eq!(fields.nullable_feature_ids("features"), None);
+        assert!(
+            fields.refused.listed.len() <= PROBLEMS_LISTED,
+            "{} refusals held",
+            fields.refused.listed.len()
+        );
+    });
     assert_eq!(refused.total(), 20_000);
     assert_eq!(refused.errors().len(), PROBLEMS_LISTED);
+}
+
+#[test]
+fn a_refusal_past_the_hundredth_is_counted_but_never_made() {
+    // Each refusal made past the hundredth was made only to be dropped: a request of 4
+    // million bad values formatted 4 million messages and paths to list a hundred.
+    let mut refusals = Refusals::default();
+    let mut made = 0;
+    for i in 0..150 {
+        refusals.refuse_with(|| {
+            made += 1;
+            Error::new(ErrorCode::InvalidInput, i.to_string())
+        });
+    }
+    assert_eq!(made, PROBLEMS_LISTED);
+    assert_eq!(
+        (refusals.listed.len(), refusals.unlisted),
+        (PROBLEMS_LISTED, 50)
+    );
+    assert_eq!(refusals.listed[99].message(), "99");
 }
 
 // --- Output text -----------------------------------------------------------------------
@@ -576,7 +620,7 @@ fn hostile_strings_are_written_escaped_and_read_back_exactly_in_both_layouts() {
     let texts = hostile();
     let held = Holding(texts.clone());
     for layout in [Layout::Canonical, Layout::OneLine] {
-        let text = write(&held.to_wire(), layout);
+        let text = write(&held.to_wire(), layout).unwrap();
         for c in text.chars() {
             assert!(
                 c == '\n' && layout == Layout::Canonical || printable(&c.to_string()),
@@ -616,7 +660,7 @@ fn an_error_with_hostile_text_in_every_field_is_written_on_one_line() {
         }),
         result: Err(error.into()),
     };
-    let text = write(&response(&refused), Layout::OneLine);
+    let text = write(&response(&refused), Layout::OneLine).unwrap();
     assert!(printable(&text), "{text}");
     let value: serde_json::Value = serde_json::from_str(&text).unwrap();
     let e = &value["errors"][0];
@@ -653,7 +697,7 @@ fn the_canonical_layout_puts_on_one_line_only_what_holds_no_object() {
         ("holds_empty", Json::array([Json::object([])])),
     ]);
     assert_eq!(
-        write(&value, Layout::Canonical),
+        write(&value, Layout::Canonical).unwrap(),
         r#"{
   "flat": {"a": 1, "b": []},
   "grid": [[1, 2], []],
@@ -669,14 +713,14 @@ fn the_canonical_layout_puts_on_one_line_only_what_holds_no_object() {
 }"#
     );
     assert_eq!(
-        write(&value, Layout::OneLine),
+        write(&value, Layout::OneLine).unwrap(),
         r#"{"flat": {"a": 1, "b": []}, "grid": [[1, 2], []], "empty": {}, "holds": [[{"x": null}]], "holds_empty": [{}]}"#
     );
     // A value that holds no object is one line either way, and no trailing newline.
     let flat = Json::object([("a", Json::str("b"))]);
-    assert_eq!(write(&flat, Layout::Canonical), r#"{"a": "b"}"#);
-    assert_eq!(write(&Json::object([]), Layout::Canonical), "{}");
-    assert_eq!(write(&Json::null(), Layout::OneLine), "null");
+    assert_eq!(write(&flat, Layout::Canonical).unwrap(), r#"{"a": "b"}"#);
+    assert_eq!(write(&Json::object([]), Layout::Canonical).unwrap(), "{}");
+    assert_eq!(write(&Json::null(), Layout::OneLine).unwrap(), "null");
 }
 
 #[test]
@@ -685,9 +729,9 @@ fn deep_nesting_on_one_line_has_no_newline_and_reads_back() {
     for _ in 0..60 {
         value = Json::array([Json::object([("in", value)])]);
     }
-    let one = write(&value, Layout::OneLine);
+    let one = write(&value, Layout::OneLine).unwrap();
     assert!(!one.contains('\n'));
-    let canonical = write(&value, Layout::Canonical);
+    let canonical = write(&value, Layout::Canonical).unwrap();
     assert!(!canonical.ends_with('\n'));
     let a: serde_json::Value = serde_json::from_str(&one).unwrap();
     let b: serde_json::Value = serde_json::from_str(&canonical).unwrap();
@@ -744,7 +788,7 @@ fn an_error_with_every_field_is_the_error_contracts_shape_in_its_order() {
     let contract = std::fs::read(path).unwrap();
     let error = full_error();
     for layout in [Layout::Canonical, Layout::OneLine] {
-        let text = write(&error.to_wire(), layout);
+        let text = write(&error.to_wire(), layout).unwrap();
         assert_eq!(
             shape(&read(text.as_bytes()).unwrap()),
             shape(&read(&contract).unwrap())
@@ -798,8 +842,8 @@ fn every_shape_of_the_envelope_holds_to_its_snapshot() {
     ]
     .map(|json| {
         [
-            write(&json, Layout::Canonical),
-            write(&json, Layout::OneLine),
+            write(&json, Layout::Canonical).unwrap(),
+            write(&json, Layout::OneLine).unwrap(),
         ]
     });
     for text in texts.iter().flatten() {
@@ -866,9 +910,10 @@ fn a_results_problems_list_a_hundred_and_count_the_unlisted() {
         .collect();
     let given = Problems::with_unlisted(listed, 7);
     let (errors, total) = problems(&given);
-    let errors: serde_json::Value = serde_json::from_str(&write(&errors, Layout::OneLine)).unwrap();
+    let errors: serde_json::Value =
+        serde_json::from_str(&write(&errors, Layout::OneLine).unwrap()).unwrap();
     assert_eq!(errors.as_array().unwrap().len(), 100);
-    assert_eq!(write(&total, Layout::OneLine), "107");
+    assert_eq!(write(&total, Layout::OneLine).unwrap(), "107");
 }
 
 // --- The document writer ---------------------------------------------------------------
@@ -881,6 +926,6 @@ fn writing_on_one_line_leaves_the_documents_writer_as_it_was() {
     let file = std::fs::read_to_string(path).unwrap();
     let document = crate::document::read(file.as_bytes()).unwrap();
     assert_eq!(crate::document::write(&document).unwrap(), file);
-    let _ = write(&Holding(hostile()).to_wire(), Layout::OneLine);
+    let _ = write(&Holding(hostile()).to_wire(), Layout::OneLine).unwrap();
     assert_eq!(crate::document::write(&document).unwrap(), file);
 }

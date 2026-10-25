@@ -898,6 +898,8 @@ fn version_gives_the_designs_numbers_and_limits() {
     assert_eq!(limits.document_bytes, 16_777_216);
     assert_eq!(limits.request_bytes, 67_108_864);
     assert_eq!(limits.request_depth, 64);
+    // 128 MiB (the design's section 6).
+    assert_eq!(limits.response_bytes, 134_217_728);
     assert_eq!(limits.listed, 100);
     assert_eq!(limits.sessions, 16);
     assert_eq!(limits.published_reads, 8);
