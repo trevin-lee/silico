@@ -234,7 +234,7 @@ impl Fields {
 
 /// An unknown key as `parameter` names it: as written if it's a plain name (letters,
 /// digits, and `_`, at most [`SHOWN_CHARS`]), quoted as messages show it otherwise.
-fn field_name(key: &str) -> String {
+pub(crate) fn field_name(key: &str) -> String {
     let plain = !key.is_empty()
         && key.len() <= SHOWN_CHARS
         && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
@@ -267,7 +267,7 @@ fn whole_number(
 
 /// A number's text as an error shows it, cut short if it's long. (The reader has checked
 /// its characters: digits, `-`, `.`, `e`, `+`.)
-fn shown_number(text: &str) -> String {
+pub(crate) fn shown_number(text: &str) -> String {
     match text.get(..SHOWN_CHARS) {
         Some(start) if start.len() < text.len() => format!("{start}…"),
         _ => text.to_owned(),
@@ -475,7 +475,7 @@ fn measure(fields: &mut Fields, key: &str) -> Result<Measure, Error> {
             &node,
             text,
             &e,
-            Refused {
+            &Refused {
                 precise: String::new(),
                 range: format!(
                     "a fingerprint's {key} is at most {} either way",
@@ -842,23 +842,8 @@ fn length_value(node: &Node, feature: Option<&str>, parameter: &str) -> Result<L
             "a length in millimetres",
         ));
     };
-    Length::parse(text).map_err(|e| {
-        number_refused(
-            feature,
-            parameter,
-            node,
-            text,
-            &e,
-            Refused {
-                precise: ": lengths are whole nanometres".to_owned(),
-                range: format!(
-                    "a length is at most {} mm either way",
-                    Length::from_nm(i64::MAX)
-                ),
-                decimals: LENGTH_DECIMALS,
-            },
-        )
-    })
+    Length::parse(text)
+        .map_err(|e| number_refused(feature, parameter, node, text, &e, &length_refused()))
 }
 
 /// What to say of a number a quantity refused: after "round it to N decimals" (`precise`),
@@ -869,6 +854,55 @@ struct Refused {
     decimals: u32,
 }
 
+/// What to say of a length refused.
+fn length_refused() -> Refused {
+    Refused {
+        precise: ": lengths are whole nanometres".to_owned(),
+        range: format!(
+            "a length is at most {} mm either way",
+            Length::from_nm(i64::MAX)
+        ),
+        decimals: LENGTH_DECIMALS,
+    }
+}
+
+/// What to say of an angle refused.
+fn angle_refused() -> Refused {
+    Refused {
+        precise: ": angles are whole nanodegrees".to_owned(),
+        range: format!(
+            "an angle is at most {} degrees either way",
+            Angle::from_ndeg(i64::MAX)
+        ),
+        decimals: ANGLE_DECIMALS,
+    }
+}
+
+/// What to do about a number refused for `e`.
+fn number_suggestion(e: &NumberError, said: &Refused) -> String {
+    match e {
+        NumberError::TooPrecise { decimals } => {
+            format!("round it to {decimals} decimals{}", said.precise)
+        }
+        NumberError::OutOfRange => said.range.clone(),
+        NumberError::NegativeZero => "write 0".to_owned(),
+        NumberError::Malformed => {
+            format!("write a number, to at most {} decimals", said.decimals)
+        }
+    }
+}
+
+/// What to do about a length refused for `e`, as a document's refusal says it: a
+/// request's lengths are refused as a document's are (`command::wire`).
+pub(crate) fn length_suggestion(e: &NumberError) -> String {
+    number_suggestion(e, &length_refused())
+}
+
+/// What to do about an angle refused for `e`, as a document's refusal says it.
+pub(crate) fn angle_suggestion(e: &NumberError) -> String {
+    number_suggestion(e, &angle_refused())
+}
+
 /// The refusal of `text`, the number at `node` in `parameter`, for `e`.
 fn number_refused(
     feature: Option<&str>,
@@ -876,24 +910,14 @@ fn number_refused(
     node: &Node,
     text: &str,
     e: &NumberError,
-    said: Refused,
+    said: &Refused,
 ) -> Error {
-    let suggestion = match e {
-        NumberError::TooPrecise { decimals } => {
-            format!("round it to {decimals} decimals{}", said.precise)
-        }
-        NumberError::OutOfRange => said.range,
-        NumberError::NegativeZero => "write 0".to_owned(),
-        NumberError::Malformed => {
-            format!("write a number, to at most {} decimals", said.decimals)
-        }
-    };
     refuse(
         feature,
         parameter,
         node.at,
         format!("{parameter} {} {e}", shown_number(text)),
-        suggestion,
+        number_suggestion(e, said),
     )
 }
 
@@ -1285,23 +1309,8 @@ fn angle(fields: &mut Fields, key: &str) -> Result<Angle, Error> {
         }
         return Err(wrong_kind(feature, &name, &node, "an angle in degrees"));
     };
-    Angle::parse(text).map_err(|e| {
-        number_refused(
-            feature,
-            &name,
-            &node,
-            text,
-            &e,
-            Refused {
-                precise: ": angles are whole nanodegrees".to_owned(),
-                range: format!(
-                    "an angle is at most {} degrees either way",
-                    Angle::from_ndeg(i64::MAX)
-                ),
-                decimals: ANGLE_DECIMALS,
-            },
-        )
-    })
+    Angle::parse(text)
+        .map_err(|e| number_refused(feature, &name, &node, text, &e, &angle_refused()))
 }
 
 #[cfg(test)]

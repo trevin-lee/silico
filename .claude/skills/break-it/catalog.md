@@ -172,6 +172,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Calls in the wrong order (editing before opening a document, committing a transaction that was never started)
 - One call wrong in many ways at once (a field of every kind wrong, a list of 150 bad members, a kind that makes the others meaningless, a bad limit with a feature that's a sketch): check every reason is given, the first hundred listed and all counted, none hidden behind an early return or behind the one checked first
 - Listings with cursors and limits: a cursor of another feature or naming nothing, the last entry's, pages of 1; a "never broken" tie exactly ending at the most a call returns and one past it, at the limit and one off it, ascending and descending
+- Strict request readers that keep every refusal and list only the first hundred: an 8 MB list of 4 million bad members holds 4 million errors (a 1.4 GB peak); count past the listed ones
+- Schemas generated from `Option` fields (schemars) leave them out of `required` though the response always has them; `#[schemars(required)]` drops their `null` instead
 
 ## Kernel worker and IPC
 
@@ -221,6 +223,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Measures that depend on parametrization, not geometry (OCCT's fixed-order integration, BRepBndLib's loose box): two builds of one OCCT differ beyond a tight tolerance on curved booleans; sweep thousands of seeds before calibrating
 - A reference process that hangs (no deadline), and a crash partway through a batch on either side: later cases must still run in a fresh process
 - No cases at all (an empty directory, `--count 0`): a harness that compared nothing must not exit 0
+- Answers claimed symmetric in their arguments from a solver that isn't (OCCT's `BRepExtrema_DistShapeShape` on two spheres, two conics, two faces of a real part): call with the arguments swapped and compare bits; a witness picked as the first of whatever pairs the solver found moves 47 mm on NIST CTC 01, and the distance by an ulp
 
 ## Import
 
@@ -237,6 +240,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - IDs parsed with `from_str_radix`, which takes upper-case digits and a leading '+': bytes the component never made are taken as one of its own
 - A fake's step read by its grammar but not its values (a fillet of edge 13 of a box, a radius of -1, an edge listed twice): bytes no request could make are taken as its own
 - Hand-written topology tables (each face's edges, each edge's vertices) for primitives: compare with the real kernel's move history, cones whose cap OCCT drops included
+- A fake's refusal built by hand where the worker client words the real one (`failure_error` adds a suggestion to every refusal): send the same bad request to both and compare every field of the error, not only code, parameter, and message
 
 ## Caches and files the core writes
 

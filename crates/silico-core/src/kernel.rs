@@ -11,11 +11,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use silico_protocol::{
-    Axis, Blob, BooleanOp, BuiltData, ChamferSize, Curve, DESCRIBE_BATCH, Description, EdgeCurve,
-    EdgeDescription, ElementCounts, ElementFate, ElementKind, ElementRef, Ends, ExportMesh,
-    FaceDescription, FaceRegions, FreecadMeasures, Generation, History, InputHistory, Mesh, Op,
-    Primitive, Profile, Region, Reported, ShapeData, ShapeSummary, SketchPlane, Surface, SweepKind,
-    Topology,
+    Axis, Blob, BooleanOp, BuiltData, ChamferSize, Curve, DESCRIBE_BATCH, Description, Distance,
+    EdgeCurve, EdgeDescription, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
+    ExportMesh, FaceDescription, FaceRegions, FreecadMeasures, Generation, History, InputHistory,
+    Mesh, Op, Primitive, Profile, Region, Reported, ShapeData, ShapeSummary, SketchPlane, Surface,
+    SweepKind, Topology,
 };
 use silico_protocol::{DebugOp, Failure, LENGTH_TOLERANCE, Reply};
 
@@ -575,6 +575,66 @@ impl KernelRequest<DescribedBatch> {
             other => Err(unexpected(name, &other)),
         }))
     }
+}
+
+impl KernelRequest<Distance> {
+    /// The least distance between `first`, an element of `shape`, and `second`, one of
+    /// `other` (or of `shape` too, if there's no other), as bounded, with a pair of points
+    /// where it's met (M4.5, docs/ports/measure.md; [`Op::Distance`]). The reply is checked
+    /// before it's returned: its distance and points finite, the distance not negative, and
+    /// at least one pair found.
+    ///
+    /// Refused, naming `first` or `second`, for a solid, which a distance isn't between in
+    /// M4.5, or an element numbered 0, which numbers nothing.
+    pub fn distance(
+        shape: &ShapeData,
+        first: ElementRef,
+        other: Option<&ShapeData>,
+        second: ElementRef,
+    ) -> Result<Self, Error> {
+        if let Err(refusal) = silico_protocol::check_distance(first, second) {
+            return Err(crate::worker::failure_error(
+                "Distance",
+                Failure::new(refusal),
+            ));
+        }
+        let op = Op::Distance {
+            shape: shape.clone(),
+            first,
+            other: other.cloned(),
+            second,
+        };
+        Ok(Self::new(op, |name, reply| match reply {
+            Reply::Distance(distance) => match distance_fault(&distance) {
+                None => Ok(distance),
+                Some(fault) => Err(Error::new(
+                    ErrorCode::ProtocolError,
+                    format!("the kernel worker answered {name} with a distance no pair has"),
+                )
+                .with_cause(fault)
+                .with_suggestion("start a new kernel worker")),
+            },
+            other => Err(unexpected(name, &other)),
+        }))
+    }
+}
+
+/// What's wrong with `distance`, if it's not one two elements could have: a value or point
+/// that isn't finite, a negative distance, or no pair found. (The worker refuses the first
+/// itself; the core checks what it's given, as it checks any reply.)
+pub(crate) fn distance_fault(distance: &Distance) -> Option<String> {
+    let values = std::iter::once(("distance", distance.distance))
+        .chain(distance.from.iter().map(|&c| ("first point", c)))
+        .chain(distance.to.iter().map(|&c| ("second point", c)));
+    for (what, value) in values {
+        if !value.is_finite() {
+            return Some(format!("its {what} has {value}"));
+        }
+    }
+    if distance.distance < 0.0 {
+        return Some(format!("its distance is {}, below 0", distance.distance));
+    }
+    (distance.solutions == 0).then(|| "it found no pair of points".to_owned())
 }
 
 /// The error for a description no shape has, `cause` saying why: the worker's fault.

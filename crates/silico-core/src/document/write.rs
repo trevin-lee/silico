@@ -10,7 +10,7 @@
 
 use std::fmt::Write as _;
 
-use super::fingerprint::Fingerprint;
+use super::fingerprint::{Fingerprint, Measure};
 use super::model::{
     Axis, Document, ElementName, Extent, ExtentValue, Feature, FeatureId, FeatureVersion,
     FormatVersion, NamingScheme, Operation, Position, Units,
@@ -55,23 +55,31 @@ pub fn feature_fits(feature: &Feature, limit: usize) -> bool {
         .is_ok()
 }
 
-/// A value to write: a number's or literal's text, a string, an array, or an object.
-enum Out<'a> {
+/// A value to write: an atom's text (a number, `true`, `false`, `null`), a string
+/// (borrowed, or owned), an array, or an object, its keys known when Silico is built or
+/// only when it runs. The command API's results are written as these too
+/// (`command::wire`), so the two write alike.
+pub(crate) enum Out<'a> {
+    /// An atom's text, written as it is: never a string, array, or object.
     Raw(String),
     Str(&'a str),
+    Owned(String),
     Array(Vec<Out<'a>>),
     /// An array written an item to a line, whatever it holds.
     Lines(Vec<Out<'a>>),
     Object(Vec<(&'static str, Out<'a>)>),
+    /// An object whose keys are known only when Silico runs (a JSON Schema's), in the
+    /// order given.
+    Keyed(Vec<(String, Out<'a>)>),
 }
 
 impl Out<'_> {
     /// Whether it is, or holds, an object anywhere inside it.
     fn holds_object(&self) -> bool {
         match self {
-            Out::Raw(_) | Out::Str(_) => false,
+            Out::Raw(_) | Out::Str(_) | Out::Owned(_) => false,
             // Written over lines, as an object is.
-            Out::Object(_) | Out::Lines(_) => true,
+            Out::Object(_) | Out::Keyed(_) | Out::Lines(_) => true,
             Out::Array(items) => items.iter().any(Out::holds_object),
         }
     }
@@ -80,10 +88,11 @@ impl Out<'_> {
     /// arrays of them counts as holding none).
     fn one_line(&self) -> bool {
         match self {
-            Out::Raw(_) | Out::Str(_) => true,
+            Out::Raw(_) | Out::Str(_) | Out::Owned(_) => true,
             Out::Array(items) => !items.iter().any(Out::holds_object),
             Out::Lines(items) => items.is_empty(),
             Out::Object(members) => !members.iter().any(|(_, v)| v.holds_object()),
+            Out::Keyed(members) => !members.iter().any(|(_, v)| v.holds_object()),
         }
     }
 }
@@ -149,10 +158,7 @@ fn fingerprint(fingerprint: &Fingerprint) -> Out<'static> {
         edges,
         vertices,
     } = fingerprint;
-    let mut members = vec![
-        ("volume", Out::Raw(volume.to_string())),
-        ("area", Out::Raw(area.to_string())),
-    ];
+    let mut members = vec![("volume", measure(*volume)), ("area", measure(*area))];
     if let Some(bbox) = bbox {
         members.push((
             "bbox",
@@ -283,7 +289,7 @@ fn sweep<'a>(
             field,
             match value {
                 ExtentValue::Length(length) => number(length),
-                ExtentValue::Angle(angle) => Out::Raw(angle.to_string()),
+                ExtentValue::Angle(value) => angle(value),
                 ExtentValue::Reversed(reversed) => boolean(reversed),
             },
         )
@@ -398,7 +404,6 @@ fn constraint(constraint: &SketchConstraint) -> Out<'_> {
         ("type", Out::Str(constraint.form.type_name())),
     ];
     let length = |l: &Length| number(*l);
-    let angle = |a: &Angle| Out::Raw(a.to_string());
     let driving = |d: &bool| boolean(*d);
     members.extend(match &constraint.form {
         Form::Horizontal { line } | Form::Vertical { line } => vec![("line", r(line))],
@@ -461,7 +466,7 @@ fn constraint(constraint: &SketchConstraint) -> Out<'_> {
         } => vec![
             ("a", r(a)),
             ("b", r(b)),
-            ("value", angle(value)),
+            ("value", angle(*value)),
             ("driving", driving(d)),
         ],
         Form::Radius {
@@ -519,19 +524,33 @@ fn element(id: &ElementId) -> Out<'_> {
     Out::Str(id.as_str())
 }
 
-fn coordinate(c: Coordinate) -> Out<'static> {
+/// A sketch's coordinate: the shortest decimal that reads back as its `f64`, `-0` as
+/// itself.
+pub(crate) fn coordinate(c: Coordinate) -> Out<'static> {
     Out::Raw(c.to_string())
 }
 
-fn boolean(b: bool) -> Out<'static> {
+pub(crate) fn boolean(b: bool) -> Out<'static> {
     Out::Raw(if b { "true" } else { "false" }.to_owned())
 }
 
-fn number(length: Length) -> Out<'static> {
+/// A length: millimetres, a plain decimal of at most 6 places.
+pub(crate) fn number(length: Length) -> Out<'static> {
     Out::Raw(length.to_string())
 }
 
-fn point(position: &Position) -> Out<'static> {
+/// An angle: degrees, a plain decimal of at most 9 places.
+pub(crate) fn angle(angle: Angle) -> Out<'static> {
+    Out::Raw(angle.to_string())
+}
+
+/// An area or a volume: a plain decimal of at most 6 places.
+pub(crate) fn measure(measure: Measure) -> Out<'static> {
+    Out::Raw(measure.to_string())
+}
+
+/// A point's three lengths, `[x, y, z]`.
+pub(crate) fn point(position: &Position) -> Out<'static> {
     Out::Array(position.iter().map(|&l| number(l)).collect())
 }
 
@@ -544,6 +563,26 @@ fn reference(id: &FeatureId) -> Out<'_> {
     Out::Str(id.as_str())
 }
 
+/// How a value is written: in canonical form, an object or array on one line when it holds
+/// no object, otherwise a member to a line (M2.1's D7, with no trailing newline: a response
+/// is a value, not a file); or all on one line, for a transport that takes one message a line
+/// (MCP's stdio). Either way, the same members in the same order with the same numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    Canonical,
+    OneLine,
+}
+
+/// `value` written in `layout` with no trailing newline, if it's at most `limit` bytes: as
+/// the command API writes its requests and results (docs/design/m4.1-command-api.md,
+/// section 2's *Layout*). Writing stops as soon as the text passes the limit.
+pub(crate) fn text(value: &Out<'_>, layout: Layout, limit: usize) -> Result<String, TooLong> {
+    let mut writer = Writer::new(limit, true);
+    writer.one_line = layout == Layout::OneLine;
+    writer.put(value, 0)?;
+    Ok(writer.out)
+}
+
 /// Canonical text, written (or only counted) up to a limit.
 struct Writer {
     out: String,
@@ -552,6 +591,9 @@ struct Writer {
     limit: usize,
     /// Whether the text is kept, or only counted.
     keep: bool,
+    /// Whether everything is written on one line, as a transport that takes one message a
+    /// line needs (the command API's, design section 2).
+    one_line: bool,
 }
 
 impl Writer {
@@ -561,6 +603,7 @@ impl Writer {
             len: 0,
             limit,
             keep,
+            one_line: false,
         }
     }
 
@@ -591,10 +634,11 @@ impl Writer {
         match value {
             Out::Raw(text) => self.push(text),
             Out::Str(text) => self.quote(text),
+            Out::Owned(text) => self.quote(text),
             Out::Array(items) | Out::Lines(items) => {
                 if items.is_empty() {
                     self.push("[]")
-                } else if value.one_line() {
+                } else if self.one_line || value.one_line() {
                     self.push("[")?;
                     for (i, item) in items.iter().enumerate() {
                         if i > 0 {
@@ -614,33 +658,42 @@ impl Writer {
                     self.push("]")
                 }
             }
-            Out::Object(members) => {
-                if members.is_empty() {
-                    self.push("{}")
-                } else if value.one_line() {
-                    self.push("{")?;
-                    for (i, (key, member)) in members.iter().enumerate() {
-                        if i > 0 {
-                            self.push(", ")?;
-                        }
-                        self.quote(key)?;
-                        self.push(": ")?;
-                        self.put(member, indent)?;
-                    }
-                    self.push("}")
-                } else {
-                    self.push("{\n")?;
-                    for (i, (key, member)) in members.iter().enumerate() {
-                        self.pad(indent + 1)?;
-                        self.quote(key)?;
-                        self.push(": ")?;
-                        self.put(member, indent + 1)?;
-                        self.push(if i + 1 < members.len() { ",\n" } else { "\n" })?;
-                    }
-                    self.pad(indent)?;
-                    self.push("}")
+            Out::Object(members) => self.object(value, members, indent),
+            Out::Keyed(members) => self.object(value, members, indent),
+        }
+    }
+
+    /// An object's members, `value` the object.
+    fn object<K: AsRef<str>>(
+        &mut self,
+        value: &Out<'_>,
+        members: &[(K, Out<'_>)],
+        indent: usize,
+    ) -> Result<(), TooLong> {
+        if members.is_empty() {
+            self.push("{}")
+        } else if self.one_line || value.one_line() {
+            self.push("{")?;
+            for (i, (key, member)) in members.iter().enumerate() {
+                if i > 0 {
+                    self.push(", ")?;
                 }
+                self.quote(key.as_ref())?;
+                self.push(": ")?;
+                self.put(member, indent)?;
             }
+            self.push("}")
+        } else {
+            self.push("{\n")?;
+            for (i, (key, member)) in members.iter().enumerate() {
+                self.pad(indent + 1)?;
+                self.quote(key.as_ref())?;
+                self.push(": ")?;
+                self.put(member, indent + 1)?;
+                self.push(if i + 1 < members.len() { ",\n" } else { "\n" })?;
+            }
+            self.pad(indent)?;
+            self.push("}")
         }
     }
 

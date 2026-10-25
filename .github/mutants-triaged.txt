@@ -97,6 +97,7 @@ crates/silico-kernel/src/lib.rs | amount_of | replace > with >= | #129
 crates/silico-kernel/src/lib.rs | amount_of | replace > with == | #129
 crates/silico-kernel/src/lib.rs | amount_of | replace * with + | #129
 crates/silico-kernel/src/lib.rs | amount_of | replace * with / | #129
+crates/silico-kernel/src/worker.rs | distance_finite | replace distance_finite -> Result<(), Failure> with Ok(()) | #150
 crates/silico-core/src/elements.rs | AxisToken::default_x | replace > with >= | #140
 crates/silico-core/src/elements.rs | AxisToken::default_x | replace > with >= | #140
 crates/silico-core/src/command/edit.rs | id_of | replace | with ^ | #148

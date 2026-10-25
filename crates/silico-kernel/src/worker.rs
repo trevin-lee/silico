@@ -50,6 +50,19 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             .map_err(failure)?;
             described(first, total, description)
         }
+        Op::Distance {
+            shape,
+            first,
+            other,
+            second,
+        } => {
+            let shape = shape_of(&shape)?;
+            let other = other.as_ref().map(shape_of).transpose()?;
+            let distance =
+                crate::distance(&shape, first, other.as_ref(), second).map_err(failure)?;
+            distance_finite(&distance)?;
+            Ok(Reply::Distance(distance))
+        }
         Op::Fillet {
             shape,
             edges,
@@ -192,6 +205,22 @@ fn described(first: u32, total: u32, description: Description) -> Result<Reply, 
         Err(problem) => Err(Failure::new(Refusal::DescriptionImpossible { problem })),
         Ok(()) => Ok(Reply::Described { total, description }),
     }
+}
+
+/// A distance OCCT found, refused if its value or a point of its witness isn't finite.
+fn distance_finite(d: &silico_protocol::Distance) -> Result<(), Failure> {
+    let values = std::iter::once(("distance", d.distance))
+        .chain(d.from.iter().map(|&c| ("distance's first point", c)))
+        .chain(d.to.iter().map(|&c| ("distance's second point", c)));
+    for (quantity, value) in values {
+        if !value.is_finite() {
+            return Err(Failure::new(Refusal::NotFinite {
+                quantity: quantity.to_owned(),
+                value,
+            }));
+        }
+    }
+    Ok(())
 }
 
 /// As [`check_finite`], for a shape measured as FreeCAD measures it.

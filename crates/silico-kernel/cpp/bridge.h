@@ -50,6 +50,7 @@ struct Point3;
 struct Amounts;
 struct FreecadMeasures;
 struct DescribeOut;
+struct DistanceOut;
 struct HistoryEntry;
 struct Counts;
 enum class Kind : uint8_t;
@@ -101,6 +102,16 @@ FreecadMeasures measure_as_freecad(const Shape &shape);
 // measures (areas and lengths to the relative `precision`), and how many of `kind` it has.
 DescribeOut describe(const Shape &shape, Kind kind, uint32_t first, uint32_t count,
                      double precision);
+
+// The least distance between the element of `first_kind` numbered `first` (from 1, in
+// TopExp::MapShapes order) of `first_shape` and the one of `second_kind` numbered `second`
+// of `second_shape`, as bounded: BRepExtrema_DistShapeShape on one thread, at OCCT's default
+// precision, with every pair of points where it found it met (on the first, then on the
+// second), in OCCT's order. OCCT is given the two in one order, by their own B-reps, so the
+// answer doesn't depend on which came first. If either number isn't an element's, `found`
+// is false and only the totals are set.
+DistanceOut distance(const Shape &first_shape, Kind first_kind, uint32_t first,
+                     const Shape &second_shape, Kind second_kind, uint32_t second);
 
 // A triangle mesh of a shape's faces and polylines along its edges, for display. Faces
 // and edges are in TopExp::MapShapes order (edges numbered as edge_facts's). Built whole in

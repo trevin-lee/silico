@@ -766,6 +766,19 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             first,
             count,
         } => described(&Symbolic::read(shape)?.counts(), *kind, *first, *count),
+        Op::Distance {
+            shape,
+            first,
+            other,
+            second,
+        } => {
+            let first_counts = Symbolic::read(shape)?.counts();
+            let second_counts = match other {
+                Some(other) => Symbolic::read(other)?.counts(),
+                None => first_counts,
+            };
+            distance(&first_counts, *first, &second_counts, *second)
+        }
         Op::Echo { data } => Ok(Reply::Echo { data: data.clone() }),
         other => Err(Error::new(
             ErrorCode::Internal,
@@ -773,6 +786,49 @@ fn answer(op: &Op) -> Result<Reply, Error> {
         )
         .with_suggestion("run this test on a real kernel worker")),
     }
+}
+
+/// The fake's distance between `first`, of a shape whose counts are `first_counts`, and
+/// `second`, of one whose counts are `second_counts`: each element at (n, 0, 0), its number
+/// `n`, as its description has a face's centre and a vertex (`described`), so the distance
+/// is how far apart the numbers are, met there, once. An element the shape hasn't is
+/// refused, naming `first` or `second`, as a worker refuses it, in the same words.
+fn distance(
+    first_counts: &ElementCounts,
+    first: ElementRef,
+    second_counts: &ElementCounts,
+    second: ElementRef,
+) -> Result<Reply, Error> {
+    // As a worker refuses them, worded as the worker client words a worker's refusal.
+    let refused = |refusal| {
+        Err(crate::worker::failure_error(
+            "Distance",
+            silico_protocol::Failure::new(refusal),
+        ))
+    };
+    if let Err(refusal) = silico_protocol::check_distance(first, second) {
+        return refused(refusal);
+    }
+    for (element, counts, parameter) in [
+        (first, first_counts, "first"),
+        (second, second_counts, "second"),
+    ] {
+        let count = counts.of(element.kind);
+        if element.index > count {
+            return refused(silico_protocol::Refusal::ElementMissing {
+                parameter: parameter.to_owned(),
+                element,
+                count,
+            });
+        }
+    }
+    let at = |element: ElementRef| [f64::from(element.index), 0.0, 0.0];
+    Ok(Reply::Distance(silico_protocol::Distance {
+        distance: (f64::from(first.index) - f64::from(second.index)).abs(),
+        from: at(first),
+        to: at(second),
+        solutions: 1,
+    }))
 }
 
 /// The fake's description of a shape whose counts are `counts`: its `kind`'s elements from
