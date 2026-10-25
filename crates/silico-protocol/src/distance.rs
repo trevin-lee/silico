@@ -170,8 +170,14 @@ mod tests {
         // is within it.
         let edge = [[0.0, 0.0, 0.0], [0.0, 0.0, 10.000_000_1]];
         assert_eq!(witness_within(&[edge, at], 10.0, 1e-7), Some(edge));
+        assert_eq!(witness_within(&[at, edge], 10.0, 1e-7), Some(edge));
+        // Just past the precision (10.0000002 is 2.0e-7 past 10), sorting first: outside it.
+        let past = [[0.0, 0.0, 0.0], [0.0, 0.0, 10.000_000_2]];
+        assert_eq!(witness_within(&[past, at], 10.0, 1e-7), Some(at));
+        assert_eq!(witness_within(&[at, past], 10.0, 1e-7), Some(at));
         // None within: the witness of them all, never nothing.
         assert_eq!(witness_within(&[far, at], 20.0, 1e-7), Some(far));
+        assert_eq!(witness_within(&[at, far], 20.0, 1e-7), Some(far));
         assert_eq!(witness_within(&[], 10.0, 1e-7), None);
     }
 
@@ -185,15 +191,17 @@ mod tests {
         assert_eq!(witness(&[far, at]), Some(far));
         assert_eq!(witness_within(&[far, at], 13.0, 1e-7), Some(at));
         // Exactly the precision off is within it: 1e-7 apart is 1e-7 in f64, against a
-        // distance of 0; the pair at 0 sorts after it.
+        // distance of 0; the pair at 0 sorts after it, in either order given.
         let edge = [[0.0, 0.0, 0.0], [0.0, 0.0, 1e-7]];
         let zero = [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
         assert_eq!(witness_within(&[edge, zero], 0.0, 1e-7), Some(edge));
+        assert_eq!(witness_within(&[zero, edge], 0.0, 1e-7), Some(edge));
         // Shorter than the distance by more than the precision (5e-7) is outside it too.
         let short = [[0.0, 0.0, 0.0], [0.0, 0.0, 9.999_999_5]];
         let ten = [[1.0, 0.0, 0.0], [1.0, 0.0, 10.0]];
         assert_eq!(witness(&[short, ten]), Some(short));
         assert_eq!(witness_within(&[short, ten], 10.0, 1e-7), Some(ten));
+        assert_eq!(witness_within(&[ten, short], 10.0, 1e-7), Some(ten));
     }
 
     #[test]
