@@ -48,6 +48,8 @@ mod adversarial_fingerprint;
 mod adversarial_references;
 #[path = "adversarial_type_words.rs"]
 mod adversarial_type_words;
+#[path = "adversarial_wire_commands.rs"]
+mod adversarial_wire_commands;
 #[path = "cache_bound.rs"]
 mod cache_bound;
 #[path = "command.rs"]
@@ -76,6 +78,8 @@ mod session_tracing;
 mod session_transactions;
 #[path = "shared_result_checks.rs"]
 mod shared_result_checks;
+#[path = "wire_commands.rs"]
+mod wire_commands;
 
 /// Every file in tests/ is built: this crate lists its test programs (`autotests = false`),
 /// so a new file must be added as a module of one, or as one, or it would never run.

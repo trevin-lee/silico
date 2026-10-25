@@ -321,7 +321,7 @@ fn cursor_name(
                     ErrorCode::InvalidInput,
                     format!(
                         "the cursor's name, {}, isn't an element's name: {error}",
-                        super::quoted(&cursor.name)
+                        crate::document::json::shown(&cursor.name)
                     ),
                 )
                 .with_parameter("after")
@@ -426,7 +426,7 @@ impl MeasureName {
     }
 
     /// The measure's quantity, as written: an area, a length, or an angle.
-    fn quantity(self) -> QuantityKind {
+    pub(crate) fn quantity(self) -> QuantityKind {
         match self {
             MeasureName::Area => QuantityKind::Area,
             MeasureName::HalfAngle => QuantityKind::Angle,
@@ -453,7 +453,7 @@ impl MeasureName {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum QuantityKind {
+pub(crate) enum QuantityKind {
     Area,
     Length,
     Angle,
@@ -762,17 +762,7 @@ fn query_refused(query: &Query, refused: &mut Problems) {
         }
     }
     if query.measures.len() > MEASURES_AT_MOST {
-        refused.push(
-            invalid(
-                format!(
-                    "measures holds at most {MEASURES_AT_MOST} ranges, as many as there are \
-                     measures, got {}",
-                    query.measures.len()
-                ),
-                "measures",
-            )
-            .with_suggestion("give each measure one range at most, from at_least to at_most"),
-        );
+        refused.push(too_many_ranges(query.measures.len()));
     } else {
         for (i, range) in query.measures.iter().enumerate() {
             range_refused(query.kind, solid, i, range, refused);
@@ -791,6 +781,20 @@ fn query_refused(query: &Query, refused: &mut Problems) {
     if let Some(error) = limit_refused(query.limit) {
         refused.push(error);
     }
+}
+
+/// The refusal of a query's `count` ranges, more than [`MEASURES_AT_MOST`]: one reason, its
+/// ranges not checked.
+pub(crate) fn too_many_ranges(count: usize) -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!(
+            "measures holds at most {MEASURES_AT_MOST} ranges, as many as there are measures, \
+             got {count}"
+        ),
+    )
+    .with_parameter("measures")
+    .with_suggestion("give each measure one range at most, from at_least to at_most")
 }
 
 /// Every reason the `i`th range, of a query of `kind` (a `solid`, which decides nothing),

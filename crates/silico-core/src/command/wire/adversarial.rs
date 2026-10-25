@@ -420,6 +420,10 @@ fn a_model_is_current_or_published_exactly() {
             assert_eq!(fields.model(), None, "{bad:?}");
         });
         assert_eq!(refused.errors()[0].candidates(), ["current", "published"]);
+        assert_eq!(
+            refused.errors()[0].suggestion(),
+            Some("give one of the models")
+        );
         assert!(printable(refused.errors()[0].message()));
     }
     let node = parsed(r#"{"model": null}"#);

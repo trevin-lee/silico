@@ -903,6 +903,22 @@ pub(crate) fn angle_suggestion(e: &NumberError) -> String {
     number_suggestion(e, &angle_refused())
 }
 
+/// What to do about an area refused for `e`: a request's areas are refused as a
+/// fingerprint's measures are (`command::wire`).
+pub(crate) fn area_suggestion(e: &NumberError) -> String {
+    number_suggestion(
+        e,
+        &Refused {
+            precise: String::new(),
+            range: format!(
+                "an area is at most {} mm² either way",
+                Measure::from_millionths(i128::MAX)
+            ),
+            decimals: MEASURE_DECIMALS,
+        },
+    )
+}
+
 /// The refusal of `text`, the number at `node` in `parameter`, for `e`.
 fn number_refused(
     feature: Option<&str>,

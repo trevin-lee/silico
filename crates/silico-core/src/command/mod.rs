@@ -21,6 +21,7 @@ use crate::recompute::{Model, Recompute, RunOutcome};
 
 mod edit;
 pub mod elements;
+pub mod schema;
 mod session;
 pub mod wire;
 

@@ -3,11 +3,10 @@
 //! m4.1-command-api.md), copied into `tests/contract/commands/examples/`, which is protected:
 //! the writer must give them as they are.
 //!
-//! **Recording a snapshot.** Run these tests with `SILICO_CONTRACT_RECORD=1` set, and each
-//! committed file a test compares with is written first from what the code gives (the
-//! envelope's schema, `envelope.json`, and the examples): only for a change the maintainer
-//! has approved, since `tests/contract/` is protected. Then check that the examples are
-//! unchanged (`git diff`): the examples are the design's text, which no recording changes.
+//! **Recording a snapshot.** Run these tests with `SILICO_CONTRACT_RECORD=1` set, and the
+//! envelope's schema, `envelope.json`, is written first from what the code gives, by its own
+//! test alone: only for a change the maintainer has approved, since `tests/contract/` is
+//! protected. The examples are the design's text, which no recording writes.
 
 use std::path::PathBuf;
 
@@ -24,14 +23,22 @@ fn contract(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// The committed file `name`, or, with `SILICO_CONTRACT_RECORD` set, `text` written to it
-/// first (the maintainer's to approve: the directory is protected; see the module's doc).
-fn committed(name: &str, text: &str) -> String {
+/// The committed file `name`, or, with `SILICO_CONTRACT_RECORD` set, `text`, what the code
+/// gives, written to it first (the maintainer's to approve: the directory is protected; see
+/// the module's doc). Only a snapshot's own test records it.
+fn recorded(name: &str, text: &str) -> String {
     let path = contract(name);
     if std::env::var_os("SILICO_CONTRACT_RECORD").is_some() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, text).unwrap();
     }
+    committed(name)
+}
+
+/// The committed file `name`, read and never written: the design's examples, and a
+/// snapshot read by any test but its own.
+fn committed(name: &str) -> String {
+    let path = contract(name);
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
@@ -122,21 +129,17 @@ fn examples() -> [(&'static str, String); 3] {
 #[test]
 fn the_envelopes_schema_is_the_committed_snapshot() {
     let text = snapshot("envelope").unwrap().unwrap();
-    assert_eq!(text, committed("envelope.json", &text));
+    assert_eq!(text, recorded("envelope.json", &text));
     assert!(snapshot("no_such_command").is_none());
 }
 
 #[test]
 fn the_designs_envelopes_are_written_byte_for_byte_and_hold_to_the_snapshot() {
-    let schema: serde_json::Value = serde_json::from_str(&committed(
-        "envelope.json",
-        &snapshot("envelope").unwrap().unwrap(),
-    ))
-    .unwrap();
+    let schema: serde_json::Value = serde_json::from_str(&committed("envelope.json")).unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     for (name, text) in examples() {
         // The file holds the response and a newline, as the error contract's files do.
-        let file = committed(name, &format!("{text}\n"));
+        let file = committed(name);
         assert_eq!(format!("{text}\n"), file, "{name}");
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         let errors: Vec<String> = validator
@@ -240,7 +243,7 @@ fn a_request_is_read_strictly_and_every_reason_is_said_in_order() {
             ),
             (
                 "model".to_owned(),
-                r#"model must be current or published, got "latest""#.to_owned()
+                "model must be current or published, got latest".to_owned()
             ),
             (
                 "limit".to_owned(),

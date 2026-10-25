@@ -1202,3 +1202,202 @@ fn fmt_of_a_single_named_document_killed_by_a_size_limit_leaves_no_part_of_the_n
         partial.len()
     );
 }
+
+// --- `silico schema` (M4.4) -------------------------------------------------------------
+
+/// The core's committed contract file `name`.
+fn core_contract(name: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../silico-core/tests/contract")
+        .join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// `silico schema ARGS`, in `scratch`, with a kernel worker that isn't there: `schema`
+/// needs no worker, no file, and no cache.
+fn schema_run(scratch: &Scratch, args: &[&OsStr]) -> Ran {
+    let missing = scratch.0.join("no-such-worker");
+    let mut all: Vec<&OsStr> = vec![os("schema")];
+    all.extend_from_slice(args);
+    run_with(scratch, &missing, &all)
+}
+
+#[test]
+fn schema_with_odd_arguments_is_a_schema_a_refusal_or_usage_never_a_panic() {
+    let scratch = Scratch::new("schema-args");
+    let document = core_contract("document-schema.json");
+    let query = core_contract("commands/query.json");
+    // `--` ends the options: alone, the document's; before a name, that name's.
+    for (args, want) in [
+        (vec!["--"], &document),
+        (vec!["--", "document"], &document),
+        (vec!["query", "--"], &query),
+        (vec!["--", "query"], &query),
+    ] {
+        let args: Vec<&OsStr> = args.into_iter().map(os).collect();
+        let out = schema_run(&scratch, &args);
+        assert_eq!(out.code(), Some(0), "{args:?}: {}", out.stderr);
+        assert_eq!(&out.stdout, want, "{args:?}");
+        assert!(out.stderr.is_empty(), "{args:?}: {}", out.stderr);
+    }
+    // An option schema doesn't have, before or after a name: exit 2, saying so, and usage.
+    for args in [
+        vec!["--json"],
+        vec!["elements", "--json"],
+        vec!["--check", "--"],
+    ] {
+        let args: Vec<&OsStr> = args.into_iter().map(os).collect();
+        let out = schema_run(&scratch, &args);
+        assert_eq!(out.code(), Some(2), "{args:?}");
+        assert!(out.stdout.is_empty(), "{args:?}");
+        assert!(
+            out.stderr.starts_with("silico schema: no option \"--"),
+            "{args:?}: {}",
+            out.stderr
+        );
+        assert!(
+            out.stderr.contains("silico schema [NAME]"),
+            "{}",
+            out.stderr
+        );
+    }
+    // A name like an option, after `--`, or a single dash: the core's refusal of that name.
+    for (name, shown) in [
+        ("--json", "\"--json\""),
+        ("-", "\"-\""),
+        ("-h", "\"-h\""),
+        ("", "\"\""),
+        ("../envelope", "\"../envelope\""),
+        ("commands/query", "\"commands/query\""),
+    ] {
+        let out = schema_run(&scratch, &[os("--"), os(name)]);
+        assert_eq!(out.code(), Some(2), "{name:?}");
+        assert!(out.stdout.is_empty(), "{name:?}");
+        assert_eq!(
+            out.stderr,
+            format!(
+                "silico schema: invalid_input: of must be document or the name of a command \
+                 with a schema, got {shown} (parameter of). Suggestion: give one of the \
+                 candidates. Candidates: document, elements, query, schema.\n"
+            ),
+            "{name:?}"
+        );
+    }
+    // Two names, even the same one twice: usage.
+    let out = schema_run(&scratch, &[os("document"), os("--"), os("document")]);
+    assert_eq!(out.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    assert!(
+        out.stderr.contains("silico schema [NAME]"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn schema_of_a_hostile_name_is_one_short_safe_line_on_stderr() {
+    let scratch = Scratch::new("schema-names");
+    let names: Vec<OsString> = vec![
+        OsString::from("document\n"),
+        OsString::from("document\r\nquery"),
+        OsString::from("\u{1b}[2J\u{1b}[31mdocument"),
+        OsString::from("document\u{2028}"),
+        OsString::from("\u{202e}tnemucod"),
+        OsString::from("document\u{200b}"),
+        OsString::from("d".repeat(100_000)),
+        OsString::from_vec(b"docum\xffent".to_vec()),
+        OsString::from_vec(b"\xc3document".to_vec()),
+    ];
+    for name in names {
+        let out = schema_run(&scratch, &[os("--"), &name]);
+        assert_eq!(out.code(), Some(2), "{name:?}: {}", out.stderr);
+        assert!(out.stdout.is_empty(), "{name:?}");
+        assert!(!out.stderr.contains("panicked"), "{}", out.stderr);
+        assert_eq!(
+            out.stderr.matches('\n').count(),
+            1,
+            "{name:?}: {:?}",
+            out.stderr
+        );
+        assert!(out.stderr.ends_with('\n'));
+        assert!(
+            out.stderr.len() < 1000,
+            "{name:?}: {} bytes",
+            out.stderr.len()
+        );
+        assert!(
+            !out.stderr.chars().any(|c| c.is_control() && c != '\n'
+                || matches!(c, '\u{2028}' | '\u{202e}' | '\u{200b}')),
+            "{name:?}: {:?}",
+            out.stderr
+        );
+        assert!(
+            out.stderr.starts_with(
+                "silico schema: invalid_input: of must be document or the name of a command \
+                 with a schema, got \""
+            ),
+            "{name:?}: {}",
+            out.stderr
+        );
+    }
+}
+
+#[test]
+fn schema_into_a_closed_pipe_fails_quietly_not_a_panic() {
+    // The reader gone before silico starts, so every write fails: exit 2, no panic, for
+    // the document's schema and a command's.
+    let scratch = Scratch::new("schema-epipe");
+    for args in [vec![], vec!["query"]] {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let mut c = Command::new(env!("CARGO_BIN_EXE_silico"));
+        c.arg("schema")
+            .args(&args)
+            .current_dir(&scratch.0)
+            .env_remove("SILICO_LOG")
+            .stdin(Stdio::null())
+            .stdout(writer)
+            .stderr(Stdio::piped());
+        let child = c.spawn().unwrap();
+        let out = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(!stderr.contains("panicked"), "{stderr}");
+    }
+}
+
+#[test]
+fn schema_needs_no_worker_and_writes_nothing_where_it_runs() {
+    // In a read-only directory, with no kernel worker and a cache home that can't be made:
+    // every schema printed, and nothing written.
+    let scratch = Scratch::new("schema-nothing");
+    let dir = scratch.0.join("ro");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    for (name, file) in [
+        ("document", "document-schema.json"),
+        ("elements", "commands/elements.json"),
+        ("query", "commands/query.json"),
+        ("schema", "commands/schema.json"),
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_silico"))
+            .args(["schema", name])
+            .current_dir(&dir)
+            .env("SILICO_KERNEL_WORKER", dir.join("missing"))
+            .env("XDG_CACHE_HOME", dir.join("cache"))
+            .env_remove("SILICO_LOG")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{name}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), core_contract(file));
+        assert!(out.stderr.is_empty(), "{name}");
+    }
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+}

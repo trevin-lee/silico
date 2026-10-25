@@ -20,9 +20,14 @@
 //! read with [`RequestFields::read`]; its result's [`ToWire`]; and the mirror structs its
 //! snapshot is generated from, each with `#[schemars(transform = wire_shape)]`, a name an
 //! agent reads (`#[schemars(rename = "...")]`), and doc comments written for agents, since
-//! each becomes its schema's description. Each command's snapshot will be
-//! `{"request": S, "result": S}`, two standalone root schemas (each with its own `$defs`, as
-//! MCP's `inputSchema` and `outputSchema` take them), added with the command.
+//! each becomes its schema's description. Each command's snapshot is
+//! `{"request": S, "result": S}`, two standalone root schemas, each with its own `$defs`:
+//! the request's, which is what a call's arguments are (MCP's `inputSchema`); and the
+//! result's, which is the envelope's `result` when the command runs, not the whole envelope,
+//! so not by itself what MCP's `outputSchema` checks `structuredContent`, the envelope,
+//! against (that is M4.9's to build from these and the envelope's). Each is added with the
+//! command's wire types ([`COMMANDS`]: [`elements`], for `elements` and `query`, and
+//! [`schema`]).
 
 use std::fmt;
 
@@ -492,6 +497,86 @@ impl<'a> RequestFields<'a> {
         }
     }
 
+    /// `true`, `false`, or `null`.
+    pub fn nullable_bool(&mut self, key: &str) -> Option<Option<bool>> {
+        match self.take_nullable(key)? {
+            None => Some(None),
+            Some(node) => match node.value {
+                Value::Bool(b) => Some(Some(b)),
+                _ => {
+                    self.wrong(key, "true, false, or null", node);
+                    None
+                }
+            },
+        }
+    }
+
+    /// One of `words`, each a word and what it reads as. Refused, any other value is said
+    /// as written if it's a plain word (`got solid`), else quoted and escaped, the words
+    /// given as candidates, suggesting one of `what` (`kinds`).
+    pub fn word<T: Copy>(
+        &mut self,
+        key: &str,
+        words: &[(&'static str, T)],
+        what: &str,
+    ) -> Option<T> {
+        let node = self.take(key)?;
+        self.word_of(key, node, words, what, false)
+    }
+
+    /// One of `words`, as [`word`](RequestFields::word) reads it, or `null`.
+    pub fn nullable_word<T: Copy>(
+        &mut self,
+        key: &str,
+        words: &[(&'static str, T)],
+        what: &str,
+    ) -> Option<Option<T>> {
+        match self.take_nullable(key)? {
+            None => Some(None),
+            Some(node) => self.word_of(key, node, words, what, true).map(Some),
+        }
+    }
+
+    /// `node`, `key`'s value, as one of `words`, or, refused, said to take `null` too if
+    /// it's `nullable`.
+    fn word_of<T: Copy>(
+        &mut self,
+        key: &str,
+        node: &Node,
+        words: &[(&'static str, T)],
+        what: &str,
+        nullable: bool,
+    ) -> Option<T> {
+        let found = match &node.value {
+            Value::String(text) => words.iter().find(|(word, _)| word == text),
+            _ => None,
+        };
+        if let Some((_, value)) = found {
+            return Some(*value);
+        }
+        self.refused.refuse_with(|| {
+            let at = join(&self.path, key);
+            let got = match &node.value {
+                // A plain word bare (`got solid`), but quoted if it spells a JSON value
+                // (`"null"`, `"3"`), so it reads apart from that value.
+                Value::String(text) if !spells_a_value(text) => crate::document::field_name(text),
+                _ => written(node),
+            };
+            let names: Vec<&str> = words.iter().map(|(word, _)| *word).collect();
+            let mut choices = names.clone();
+            if nullable {
+                choices.push("null");
+            }
+            invalid(
+                &at,
+                format!("{at} must be {}, got {got}", alternatives(&choices)),
+            )
+            .with_suggestion(format!("give one of the {what}"))
+            .with_candidates(names.iter().map(|&name| name.to_owned()))
+        });
+        None
+    }
+
     /// A whole number from `low` to `high`, written as its digits alone: no sign,
     /// fraction, exponent, or leading zero.
     fn whole_in(&mut self, key: &str, low: u64, high: u64) -> Option<u64> {
@@ -562,6 +647,39 @@ impl<'a> RequestFields<'a> {
             Angle::parse,
             crate::document::angle_suggestion,
         )
+    }
+
+    /// An angle, or `null`.
+    pub fn nullable_angle(&mut self, key: &str) -> Option<Option<Angle>> {
+        match self.take_nullable(key)? {
+            None => Some(None),
+            Some(node) => self
+                .quantity(
+                    key,
+                    node,
+                    "an angle in degrees or null",
+                    Angle::parse,
+                    crate::document::angle_suggestion,
+                )
+                .map(Some),
+        }
+    }
+
+    /// An area, in square millimetres, or `null`: read exactly from its digits, to at most
+    /// 6 decimals, as a fingerprint's is.
+    pub fn nullable_area(&mut self, key: &str) -> Option<Option<Measure>> {
+        match self.take_nullable(key)? {
+            None => Some(None),
+            Some(node) => self
+                .quantity(
+                    key,
+                    node,
+                    "an area in square millimetres or null",
+                    Measure::parse,
+                    crate::document::area_suggestion,
+                )
+                .map(Some),
+        }
     }
 
     /// `node`, `key`'s value, as a quantity `parse` reads from its digits: `what` it must
@@ -676,40 +794,39 @@ impl<'a> RequestFields<'a> {
 
     /// Which model a read takes (decision 33): `current` or `published`.
     pub fn model(&mut self) -> Option<ModelChoice> {
-        let node = self.take("model")?;
-        let choice = match &node.value {
-            Value::String(text) => ModelChoice::ALL.into_iter().find(|c| c.as_str() == text),
-            _ => None,
-        };
-        if choice.is_none() {
-            self.refused.refuse_with(|| {
-                let at = join(&self.path, "model");
-                let names = ModelChoice::ALL.map(ModelChoice::as_str);
-                invalid(
-                    &at,
-                    format!("{at} must be {}, got {}", names.join(" or "), written(node)),
-                )
-                .with_candidates(names)
-            });
-        }
-        choice
+        self.word(
+            "model",
+            &ModelChoice::ALL.map(|c| (c.as_str(), c)),
+            "models",
+        )
+    }
+
+    /// A feature's ID.
+    pub fn feature(&mut self, key: &str) -> Option<FeatureId> {
+        let node = self.take(key)?;
+        self.feature_of(key, node, "a feature's ID")
     }
 
     /// A feature's ID, or `null`.
     pub fn nullable_feature(&mut self, key: &str) -> Option<Option<FeatureId>> {
         match self.take_nullable(key)? {
             None => Some(None),
-            Some(node) => {
-                let id = match &node.value {
-                    Value::String(text) => FeatureId::new(text),
-                    _ => None,
-                };
-                if id.is_none() {
-                    self.wrong(key, "a feature's ID or null", node);
-                }
-                id.map(Some)
-            }
+            Some(node) => self
+                .feature_of(key, node, "a feature's ID or null")
+                .map(Some),
         }
+    }
+
+    /// `node`, `key`'s value, as a feature's ID: `what` it must be, refused.
+    fn feature_of(&mut self, key: &str, node: &Node, what: &str) -> Option<FeatureId> {
+        let id = match &node.value {
+            Value::String(text) => FeatureId::new(text),
+            _ => None,
+        };
+        if id.is_none() {
+            self.wrong(key, what, node);
+        }
+        id
     }
 
     /// A list of features' IDs, or `null`; a member at fault named by its place
@@ -741,6 +858,44 @@ impl<'a> RequestFields<'a> {
             }
         }
         fine.then_some(Some(ids))
+    }
+
+    /// The list at `key`, of at most `at_most` objects, each read by `read` as the request
+    /// is, a member named by its place (`measures.0`). A list of more is refused as
+    /// `too_many` says, given how many it holds, and its members aren't read, so a list of a
+    /// million costs one refusal.
+    pub fn objects<T>(
+        &mut self,
+        key: &str,
+        at_most: usize,
+        too_many: impl FnOnce(usize) -> Error,
+        mut read: impl FnMut(&mut RequestFields<'a>) -> Option<T>,
+    ) -> Option<Vec<T>> {
+        let node = self.take(key)?;
+        let Value::Array(items) = &node.value else {
+            self.wrong(key, "a list", node);
+            return None;
+        };
+        if items.len() > at_most {
+            self.refused.refuse_with(|| too_many(items.len()));
+            return None;
+        }
+        let mut values = Vec::with_capacity(items.len());
+        let mut fine = true;
+        for (i, item) in items.iter().enumerate() {
+            match self.nested(&format!("{key}.{i}"), item, &mut read) {
+                Some(value) => values.push(value),
+                None => fine = false,
+            }
+        }
+        fine.then_some(values)
+    }
+
+    /// `key`, taken unread: for a field whose reading another decides (a range's bounds,
+    /// read as its measure's quantity), when that one was refused. Refused only if it's
+    /// missing.
+    pub fn unread(&mut self, key: &str) {
+        let _ = self.take(key);
     }
 
     /// The object at `key`, read by `read` as the request is: its refusals, and any of its
@@ -828,6 +983,23 @@ impl<'a> RequestFields<'a> {
             }
         }
         refused
+    }
+}
+
+/// Whether `text`, written bare, would read as a JSON value: a literal, or a number (any
+/// word that starts as one does).
+fn spells_a_value(text: &str) -> bool {
+    matches!(text, "null" | "true" | "false")
+        || text.starts_with(|c: char| c.is_ascii_digit() || c == '-')
+}
+
+/// `names` as a message lists the choices: `current or published`, `face, edge, or vertex`.
+fn alternatives(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [first, second] => format!("{first} or {second}"),
+        [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
     }
 }
 
@@ -1020,13 +1192,38 @@ pub enum ResponseSchema {
     Refused(RefusedSchema),
 }
 
+/// The commands whose wire types are built, each with its snapshot: what `schema`
+/// describes besides the document.
+pub const COMMANDS: [&str; 3] = ["elements", "query", "schema"];
+
 /// The JSON Schema (draft 2020-12, every object's keys sorted) a snapshot (section 8)
-/// records: `envelope`, the response's. None for a name with no snapshot.
+/// records: `envelope`, the response's; or a command's, `{"request": ..., "result": ...}`,
+/// two standalone root schemas. None for a name with no snapshot.
 pub fn snapshot_value(of: &str) -> Option<serde_json::Value> {
     match of {
         "envelope" => Some(crate::document::schema_value_of::<ResponseSchema>()),
+        "elements" => Some(command_schema::<
+            elements::ElementsRequestSchema,
+            elements::ElementsResultSchema,
+        >()),
+        "query" => Some(command_schema::<
+            elements::QueryRequestSchema,
+            elements::QueryResultSchema,
+        >()),
+        "schema" => Some(command_schema::<
+            schema::SchemaRequestSchema,
+            schema::SchemaResultSchema,
+        >()),
         _ => None,
     }
+}
+
+/// A command's snapshot: its request's schema and its result's.
+fn command_schema<Request: JsonSchema, Result: JsonSchema>() -> serde_json::Value {
+    serde_json::json!({
+        "request": crate::document::schema_value_of::<Request>(),
+        "result": crate::document::schema_value_of::<Result>(),
+    })
 }
 
 /// The snapshot `of`'s text, as its committed file holds it: written as the document's
@@ -1036,6 +1233,9 @@ pub fn snapshot(of: &str) -> Option<Result<String, Error>> {
     let value = snapshot_value(of)?;
     Some(crate::document::schema_text(&value, &format!("the {of}")))
 }
+
+pub mod elements;
+pub mod schema;
 
 #[cfg(test)]
 mod adversarial;
