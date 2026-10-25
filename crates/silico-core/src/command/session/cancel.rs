@@ -188,9 +188,9 @@ pub(super) fn cancelled(command: &str) -> Error {
 }
 
 /// The refusal of a `cancel` of `command` in session `session`, which isn't running there:
-/// what is (the queued command, then each published read, as `status` lists them) said and
-/// given as candidates, so a cancel that came late never stops the next command (decision
-/// 34).
+/// what is (the queued command, then each published read, as `status` lists them) said, and
+/// given as candidates, each name once, in the order first seen, since a candidate is a name
+/// to pick: so a cancel that came late never stops the next command (decision 34).
 pub(super) fn not_running(
     session: super::SessionId,
     command: &str,
@@ -208,7 +208,12 @@ pub(super) fn not_running(
     Error::new(ErrorCode::InvalidInput, message)
         .with_parameter("command")
         .with_suggestion("cancel names the command it means; read status to see what's running")
-        .with_candidates(running.iter().copied())
+        .with_candidates(running.iter().fold(Vec::new(), |mut once, &name| {
+            if !once.contains(&name) {
+                once.push(name);
+            }
+            once
+        }))
 }
 
 /// A command's name as a message says it: as it is, if it's a name a command could have

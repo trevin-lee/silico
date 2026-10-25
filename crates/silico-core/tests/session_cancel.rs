@@ -460,11 +460,8 @@ fn cancel_stops_every_read_of_its_name_and_its_refusal_names_each_command_runnin
         (error.message(), error.candidates()),
         (
             "no x is running in session s1: set_field, distance, distance are",
-            &[
-                "set_field".to_owned(),
-                "distance".to_owned(),
-                "distance".to_owned()
-            ][..]
+            // Names to pick from: each once, the queued command first.
+            &["set_field".to_owned(), "distance".to_owned()][..]
         )
     );
     // One cancel stops both reads, and not the edit.
