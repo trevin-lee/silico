@@ -873,6 +873,28 @@ mod tests {
         FeatureId::new(text).unwrap()
     }
 
+    #[test]
+    fn a_tilted_face_faces_a_direction_by_the_whole_angle_between_them() {
+        // Outward normal (0.48, 0.6, 0.64), a unit vector with every component its own, and
+        // the direction (1, 2, 2): n · d / |d| = 2.96 / 3, so the angle between them is
+        // 9.366788884 degrees (atan2 of |n × d| = |(-0.08, -0.32, 0.36)| / 3 over that), as
+        // written to the nanodegree. A face at exactly that is facing; a nanodegree less
+        // isn't.
+        let normal = [0.48, 0.6, 0.64];
+        let facing = |ndeg: i64| Facing {
+            direction: [1.0, 2.0, 2.0],
+            within: Angle::from_ndeg(ndeg),
+        };
+        assert!(faces(normal, &facing(9_366_788_884)));
+        assert!(!faces(normal, &facing(9_366_788_883)));
+        // The direction scaled is the same direction.
+        let scaled = Facing {
+            direction: [1e-200, 2e-200, 2e-200],
+            within: Angle::from_ndeg(9_366_788_884),
+        };
+        assert!(faces(normal, &scaled));
+    }
+
     fn kept(index: u32) -> ElementFate {
         ElementFate {
             kept: Some(index),
