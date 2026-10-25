@@ -1342,3 +1342,29 @@ fn a_hundred_and_one_ids_given_twice_list_a_hundred_and_count_them_all() {
     let problems = response.result.unwrap_err();
     assert_eq!((problems.errors().len(), problems.total()), (100, 101));
 }
+
+#[test]
+fn replace_text_that_changes_only_a_stored_fingerprint_changes_the_document() {
+    let f = opened(BLOCK);
+    // 7999 stored, 8000 measured: the text is another document, saved as given, its
+    // fingerprint's drift said (format accepts it by name).
+    let text = BLOCK.replace(r#""volume": 8000"#, r#""volume": 7999"#);
+    let replaced = answer(f.sessions.replace_text(&f.id, Revision::OPENED, text))
+        .result
+        .unwrap();
+    assert!(replaced.changed);
+    let commit = replaced.commit.unwrap();
+    assert!(commit.written);
+    assert!(commit.refingerprinted.is_empty());
+    let drift: Vec<_> = commit
+        .problems
+        .errors()
+        .iter()
+        .map(|e| (e.code(), e.feature()))
+        .collect();
+    assert_eq!(drift, [(ErrorCode::Drift, Some("k7f2qx3m"))]);
+    assert_eq!(
+        f.file(),
+        block_canonical().replace("\"volume\": 8000", "\"volume\": 7999")
+    );
+}
