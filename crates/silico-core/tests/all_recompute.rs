@@ -26,6 +26,8 @@ mod sweeps;
 
 #[path = "adversarial_described.rs"]
 mod adversarial_described;
+#[path = "adversarial_entries.rs"]
+mod adversarial_entries;
 #[path = "adversarial_measure_refusal.rs"]
 mod adversarial_measure_refusal;
 #[path = "adversarial_recompute.rs"]

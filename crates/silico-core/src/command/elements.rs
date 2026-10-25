@@ -643,7 +643,8 @@ pub struct Listed {
 
 /// `elements` on `model`, of `revision`: `limit` entries of the feature `feature`'s solid,
 /// or, for none, of every body (the solids no later feature consumed, in timeline order),
-/// after `after`'s entry. Every reason it's refused is given, in the order found.
+/// after `after`'s entry. Every reason it's refused is given: the feature's, then the
+/// limit's and the cursor's.
 pub fn list(
     model: &Model,
     revision: Revision,
@@ -651,14 +652,15 @@ pub fn list(
     after: Option<&Cursor>,
     limit: u32,
 ) -> Result<Listed, Problems> {
-    let mut refused = Vec::new();
+    let mut refused = Refused::default();
+    let of_feature = feature.and_then(|id| refused.of(entries(model, id)));
     if let Some(error) = limit_refused(limit) {
-        refused.push(error);
+        refused.errors.push(error);
     }
     if let Some(cursor) = after
         && cursor.revision != revision
     {
-        refused.push(
+        refused.errors.push(
             Error::new(
                 ErrorCode::Conflict,
                 format!(
@@ -671,17 +673,11 @@ pub fn list(
             .with_suggestion("start again with after set to null"),
         );
     }
-    if !refused.is_empty() {
-        return Err(Problems::of(refused));
-    }
-    let solids: Vec<FeatureId> = match feature {
-        Some(id) => vec![id.clone()],
-        None => model.bodies().to_vec(),
+    refused.into_result()?;
+    let mut all = match of_feature {
+        Some(entries) => entries,
+        None => bodies(model)?,
     };
-    let mut all = Vec::new();
-    for id in &solids {
-        all.extend(entries(model, id)?);
-    }
     let from = match after {
         None => 0,
         Some(cursor) => {
@@ -735,6 +731,52 @@ fn limit_refused(limit: u32) -> Option<Error> {
             "list in pages of at most {ENTRIES_AT_MOST}, with after set to the last call's next"
         ))
     })
+}
+
+/// Every body's entries, in timeline order.
+fn bodies(model: &Model) -> Result<Vec<Entry>, Problems> {
+    let mut all = Vec::new();
+    for id in model.bodies() {
+        all.extend(entries(model, id)?);
+    }
+    Ok(all)
+}
+
+/// Every reason a call is refused, in the order found, and how many more there are than
+/// the feature's refusal lists (its broken references past the first hundred).
+#[derive(Default)]
+struct Refused {
+    errors: Vec<Error>,
+    unlisted: u64,
+}
+
+impl Refused {
+    /// `found`'s entries, or none, its refusal kept.
+    fn of(&mut self, found: Result<Vec<Entry>, Problems>) -> Option<Vec<Entry>> {
+        match found {
+            Ok(entries) => Some(entries),
+            Err(problems) => {
+                self.unlisted += problems.total.saturating_sub(problems.errors.len() as u64);
+                self.errors.extend(problems.errors);
+                None
+            }
+        }
+    }
+
+    /// Nothing, if nothing was refused; otherwise every reason, the first
+    /// [`PROBLEMS_LISTED`] listed and all counted.
+    fn into_result(self) -> Result<(), Problems> {
+        let Refused {
+            mut errors,
+            unlisted,
+        } = self;
+        if errors.is_empty() {
+            return Ok(());
+        }
+        let unlisted = unlisted + errors.len().saturating_sub(PROBLEMS_LISTED) as u64;
+        errors.truncate(PROBLEMS_LISTED);
+        Err(Problems::with_unlisted(errors, unlisted))
+    }
 }
 
 /// `query`'s filter: a kind, and optionally a type, stability, a direction a planar face
@@ -796,24 +838,23 @@ pub struct Tied {
 /// `query` on `model`: the entries that match `query`, in its order (or `elements`'s), the
 /// first `limit` of them. A tie at the cut is never broken: it's returned whole, past
 /// `limit`, if it ends within [`ENTRIES_AT_MOST`] entries, and otherwise none of it is
-/// (decision 4). Every reason the query is refused is given, in the order found.
+/// (decision 4). Every reason the query is refused is given, in the order of its fields.
 pub fn query(model: &Model, query: &Query) -> Result<Queried, Problems> {
-    let refused = query_refused(query);
-    if !refused.is_empty() {
-        return Err(Problems::of(refused));
-    }
-    let solids: Vec<FeatureId> = match &query.feature {
-        Some(id) => vec![id.clone()],
-        None => model.bodies().to_vec(),
+    let mut refused = Refused::default();
+    let of_feature = query
+        .feature
+        .as_ref()
+        .and_then(|id| refused.of(entries(model, id)));
+    refused.errors.extend(query_refused(query));
+    refused.into_result()?;
+    let all = match of_feature {
+        Some(entries) => entries,
+        None => bodies(model)?,
     };
-    let mut matched = Vec::new();
-    for id in &solids {
-        matched.extend(
-            entries(model, id)?
-                .into_iter()
-                .filter(|entry| matches(entry, query)),
-        );
-    }
+    let mut matched: Vec<Entry> = all
+        .into_iter()
+        .filter(|entry| matches(entry, query))
+        .collect();
     let Some(order) = &query.order else {
         let count = matched.len() as u64;
         matched.truncate(query.limit as usize);
@@ -891,7 +932,13 @@ fn matches(entry: &Entry, query: &Query) -> bool {
 /// Whether a face of outward normal `normal` faces `facing.direction` within its angle: the
 /// angle between them, as written (to the nanodegree), at most `within`.
 fn faces(normal: [f64; 3], facing: &Facing) -> bool {
-    let d = facing.direction;
+    // Scaled by its largest component, so a direction of any size squares without
+    // overflowing or losing digits to underflow: the angle is its unit direction's.
+    let largest = facing
+        .direction
+        .iter()
+        .fold(0.0f64, |largest, c| largest.max(c.abs()));
+    let d = facing.direction.map(|c| c / largest);
     let cross = [
         normal[1] * d[2] - normal[2] * d[1],
         normal[2] * d[0] - normal[0] * d[2],
@@ -902,13 +949,15 @@ fn faces(normal: [f64; 3], facing: &Facing) -> bool {
     Angle::rounded(libm::atan2(sin, cos).to_degrees()).is_some_and(|angle| angle <= facing.within)
 }
 
-/// Every reason `query` is refused, in the order its fields come.
+/// Every reason `query` is refused but its feature's, in the order its fields come: for a
+/// kind of solid, which no element is, only those the kind doesn't decide.
 fn query_refused(query: &Query) -> Vec<Error> {
     let mut refused = Vec::new();
     let invalid = |message: String, parameter: &str| {
         Error::new(ErrorCode::InvalidInput, message).with_parameter(parameter)
     };
-    if query.kind == ElementKind::Solid {
+    let solid = query.kind == ElementKind::Solid;
+    if solid {
         refused.push(
             invalid(
                 "kind must be face, edge, or vertex, got solid".to_owned(),
@@ -917,11 +966,11 @@ fn query_refused(query: &Query) -> Vec<Error> {
             .with_suggestion("give one of the kinds")
             .with_candidates(["face", "edge", "vertex"].map(str::to_owned)),
         );
-        return refused;
     }
     let kind = kind_word(query.kind);
     let a_kind = a_kind(query.kind);
     if let Some(t) = query.r#type
+        && !solid
         && !t.is_of(query.kind)
     {
         refused.push(
@@ -936,7 +985,9 @@ fn query_refused(query: &Query) -> Vec<Error> {
         );
     }
     if let Some(facing) = &query.facing {
-        if query.kind != ElementKind::Face {
+        if solid {
+            // No element is a solid, so whether it could face anything isn't asked.
+        } else if query.kind != ElementKind::Face {
             refused.push(
                 invalid(
                     format!("only planar faces face a direction, and kind is {kind}"),
@@ -956,8 +1007,7 @@ fn query_refused(query: &Query) -> Vec<Error> {
             );
         }
         let d = facing.direction;
-        let size = d.iter().map(|c| c * c).sum::<f64>().sqrt();
-        if !(size.is_finite() && size > 0.0) {
+        if !(d.iter().all(|c| c.is_finite()) && d.iter().any(|c| *c != 0.0)) {
             refused.push(
                 invalid(
                     format!(
@@ -987,7 +1037,7 @@ fn query_refused(query: &Query) -> Vec<Error> {
     }
     for (i, range) in query.measures.iter().enumerate() {
         let at = |field: &str| format!("measures.{i}.{field}");
-        if !range.measure.is_of(query.kind) {
+        if !solid && !range.measure.is_of(query.kind) {
             refused.push(
                 invalid(
                     format!("{a_kind} has no {}", range.measure.word()),
@@ -1031,6 +1081,7 @@ fn query_refused(query: &Query) -> Vec<Error> {
         }
     }
     if let Some(order) = &query.order
+        && !solid
         && !order.by.is_of(query.kind)
     {
         refused.push(
@@ -1042,7 +1093,6 @@ fn query_refused(query: &Query) -> Vec<Error> {
     if let Some(error) = limit_refused(query.limit) {
         refused.push(error);
     }
-    refused.truncate(PROBLEMS_LISTED);
     refused
 }
 
