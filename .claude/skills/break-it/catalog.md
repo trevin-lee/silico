@@ -174,6 +174,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Schemas generated from `Option` fields (schemars) leave them out of `required` though the response always has them; `#[schemars(required)]` drops their `null` instead
 - One call wrong in many ways at once (a field of every kind wrong, a list of 150 bad members, a kind that makes the others meaningless, a bad limit with a feature that's a sketch): check every reason is given, the first hundred listed and all counted, none hidden behind an early return or behind the one checked first
 - Listings with cursors and limits: a cursor of another feature or naming nothing, the last entry's, pages of 1; a "never broken" tie exactly ending at the most a call returns and one past it, at the limit and one off it, ascending and descending
+- Refused words shown bare when they're plain (`got solid`): a string that spells a JSON literal or number (`"null"`, `"3"`) is refused in the same words as the value itself, and a nullable word's refusal that lists only its words tells an agent `null` is wrong; send each beside the value it spells
+- Snapshots' integers (`"type": "integer"`) against a reader that takes digits only: JSON Schema calls `2.0` and `1e3` integers, and a `uint64` with no `maximum` takes 2^64, so a request the schema validates is refused; validate each refused spelling against the snapshot
 
 ## Kernel worker and IPC
 
