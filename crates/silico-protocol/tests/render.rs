@@ -3,8 +3,8 @@
 
 use silico_protocol::{
     Camera, EDGE_BIT, InvalidParameter, MAX_FIELD_OF_VIEW, MAX_RENDER_COORDINATE, MAX_RENDER_EDGES,
-    MAX_RENDER_FACES, MAX_RENDER_SIDE, MIN_EYE_DISTANCE, MIN_FIELD_OF_VIEW, Mesh, Projection,
-    RenderBody, RenderScene,
+    MAX_RENDER_FACES, MAX_RENDER_SIDE, MAX_RENDER_TRIANGLES, MIN_EYE_DISTANCE, MIN_FIELD_OF_VIEW,
+    Mesh, Projection, RenderBody, RenderScene,
 };
 
 /// A way to break a camera or a mesh, and what its refusal names.
@@ -295,6 +295,30 @@ fn a_scene_past_the_most_faces_or_edges_a_render_draws_is_refused() {
     assert!(
         message.starts_with(&format!("the bodies have {} edges", MAX_RENDER_EDGES + 1)),
         "{message}"
+    );
+}
+
+#[test]
+fn a_scene_past_the_most_triangles_a_render_draws_is_refused() {
+    // MAX_RENDER_TRIANGLES across the bodies: at it passes, one past is refused.
+    let mut s = scene();
+    let half = MAX_RENDER_TRIANGLES / 2;
+    for b in &mut s.bodies {
+        b.mesh.triangles = vec![[0, 1, 2]; half];
+        b.mesh.face_triangles = vec![u32::try_from(half).unwrap()];
+        b.highlight_faces.clear();
+    }
+    s.check().unwrap();
+    s.bodies[1].mesh.triangles.push([0, 2, 3]);
+    s.bodies[1].mesh.face_triangles[0] += 1;
+    let (parameter, message) = refused(&s);
+    assert_eq!(parameter, "bodies");
+    assert_eq!(
+        message,
+        format!(
+            "the bodies have {} triangles, more than the {MAX_RENDER_TRIANGLES} a render draws within its time",
+            MAX_RENDER_TRIANGLES + 1
+        )
     );
 }
 

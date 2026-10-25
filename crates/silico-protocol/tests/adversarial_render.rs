@@ -204,7 +204,7 @@ fn rules(scene: &RenderScene) -> Option<&'static str> {
             }
         }
     }
-    // At most 20,000 faces and 200,000 edges across the bodies.
+    // At most 20,000 faces, 200,000 edges, and 2,000,000 triangles across the bodies.
     let faces: usize = scene
         .bodies
         .iter()
@@ -215,7 +215,8 @@ fn rules(scene: &RenderScene) -> Option<&'static str> {
         .iter()
         .map(|b| b.mesh.edge_point_counts.len())
         .sum();
-    if faces > 20_000 || edges > 200_000 {
+    let triangles: usize = scene.bodies.iter().map(|b| b.mesh.triangles.len()).sum();
+    if faces > 20_000 || edges > 200_000 || triangles > 2_000_000 {
         return Some("bodies");
     }
     // An orthographic view no smaller than 1e-5 of how far the scene reaches from the
