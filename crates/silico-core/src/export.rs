@@ -656,6 +656,16 @@ pub fn three_mf(objects: &[Object<'_>]) -> Result<Vec<u8>, Error> {
         )
         .with_suggestion("export at least one feature that makes a solid"));
     }
+    let triangles = objects
+        .iter()
+        .map(|object| object.mesh.triangles.len() as u64)
+        .sum();
+    if let Err(refusal) = silico_protocol::check_export_triangles(triangles) {
+        return Err(crate::worker::failure_error(
+            "ExportMesh",
+            silico_protocol::Failure::new(refusal),
+        ));
+    }
     let mut model = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" \
          xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n \
@@ -821,13 +831,16 @@ fn archive_size(entries: &[(&str, &[u8])]) -> u64 {
         + 22
 }
 
-/// Refuses an archive of `size` bytes past a plain zip's limit.
+/// Refuses an archive of `size` bytes past a plain zip's limit: a request's limit, as the
+/// triangles' is (which keeps an export well within it), so invalid input, naming the
+/// tolerance.
 fn within_archive_limit(size: u64) -> Result<(), Error> {
     if size > MAX_ARCHIVE {
         return Err(Error::new(
-            ErrorCode::ResourceExhausted,
+            ErrorCode::InvalidInput,
             format!("the 3MF archive would be {size} bytes, past a zip's 4 GiB"),
         )
+        .with_parameter("tolerance")
         .with_suggestion("export with a coarser tolerance, or fewer parts at once"));
     }
     Ok(())
@@ -880,9 +893,35 @@ mod tests {
     fn an_archive_up_to_4_gib_less_a_byte_is_written_and_a_longer_one_refused() {
         assert!(within_archive_limit(u64::from(u32::MAX)).is_ok());
         let error = within_archive_limit(u64::from(u32::MAX) + 1).unwrap_err();
-        assert_eq!(error.code(), ErrorCode::ResourceExhausted, "{error}");
+        assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
+        assert_eq!(error.parameter(), Some("tolerance"), "{error}");
         assert!(error.message().contains("4294967296 bytes"), "{error}");
         assert!(error.suggestion().is_some(), "{error}");
+    }
+
+    #[test]
+    fn a_3mf_of_more_than_ten_million_triangles_in_all_is_refused_naming_the_tolerance() {
+        // Three parts of 3,333,334 triangles each: 10,000,002 in all, though each is under.
+        let mesh = PrintableMesh {
+            vertices: Vec::new(),
+            triangles: vec![[0, 1, 2]; 3_333_334],
+            volume: 1.0,
+            left_out: Vec::new(),
+        };
+        let object = Object {
+            name: "Part",
+            part_number: "f1",
+            mesh: &mesh,
+        };
+        let error = three_mf(&[object; 3]).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
+        assert_eq!(error.parameter(), Some("tolerance"), "{error}");
+        assert!(error.message().contains("10000002 triangles"), "{error}");
+        assert!(error.message().contains("10000000"), "{error}");
+        assert!(
+            error.suggestion().is_some_and(|s| s.contains("coarser")),
+            "{error}"
+        );
     }
 
     #[test]

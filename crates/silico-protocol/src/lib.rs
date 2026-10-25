@@ -22,8 +22,9 @@ use serde::{Deserialize, Serialize};
 
 pub use chamfer::ChamferSize;
 pub use export::{
-    DEFAULT_EXPORT_TOLERANCE, ExportMesh, MAX_EXPORT_TOLERANCE, MIN_EXPORT_TOLERANCE,
-    check_export_tolerance, export_angle, export_deflection, export_rounding,
+    DEFAULT_EXPORT_TOLERANCE, ExportMesh, MAX_EXPORT_TOLERANCE, MAX_EXPORT_TRIANGLES,
+    MIN_EXPORT_TOLERANCE, check_export_tolerance, check_export_triangles, export_angle,
+    export_deflection, export_rounding,
 };
 pub use faces::{
     ArcEnd, Curve, FaceRegions, MAX_ARC_ANGLE, MAX_FACE_CURVES, Region, SizeProblem, SketchPlane,

@@ -134,6 +134,8 @@ pub enum Refusal {
         rounding: f64,
         reach: f64,
     },
+    /// An export's mesh of more `triangles` than [`crate::MAX_EXPORT_TRIANGLES`], in all.
+    TooManyTriangles { triangles: u64 },
 }
 
 /// What OCCT gave back nothing of.
@@ -285,7 +287,8 @@ impl Refusal {
             | Refusal::DeflectionTooFine { .. }
             | Refusal::NoDragSession { .. }
             | Refusal::SweepFlat { .. }
-            | Refusal::RoundingPastTolerance { .. } => FailureKind::InvalidInput,
+            | Refusal::RoundingPastTolerance { .. }
+            | Refusal::TooManyTriangles { .. } => FailureKind::InvalidInput,
             Refusal::ResultInvalid { .. } => FailureKind::InvalidResult,
             Refusal::NoShape
             | Refusal::NothingReturned { .. }
@@ -361,7 +364,9 @@ impl Refusal {
                 Some("deflection")
             }
             Refusal::CornersMerged { .. } => Some("profile"),
-            Refusal::RoundingPastTolerance { .. } => Some("tolerance"),
+            Refusal::RoundingPastTolerance { .. } | Refusal::TooManyTriangles { .. } => {
+                Some("tolerance")
+            }
             Refusal::BooleanInputEmpty { role, .. } => Some(role.name()),
             _ => None,
         }
@@ -625,6 +630,17 @@ impl Refusal {
                      origin",
                     format_number(2.0 * rounding)
                 )),
+            ),
+            Refusal::TooManyTriangles { triangles } => (
+                format!(
+                    "an export's mesh has {triangles} triangles, more than the {} an export may \
+                     have",
+                    crate::MAX_EXPORT_TRIANGLES
+                ),
+                Some(
+                    "export with a coarser tolerance, which makes fewer, or fewer parts at once"
+                        .to_owned(),
+                ),
             ),
             Refusal::SweepFlat { parameter, message } => (
                 message.clone(),
@@ -988,6 +1004,9 @@ mod tests {
                 rounding: 5.16e-3,
                 reach: 5e4,
             },
+            Refusal::TooManyTriangles {
+                triangles: 10_000_001,
+            },
         ]
     }
 
@@ -1098,6 +1117,7 @@ mod tests {
             InvalidInput,      // NoDragSession (new with M3.7: a request out of sequence)
             InvalidInput,      // SweepFlat
             InvalidInput,      // RoundingPastTolerance
+            InvalidInput,      // TooManyTriangles
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), kinds.len());
@@ -1146,6 +1166,7 @@ mod tests {
             None,               // NoDragSession
             Some("axis"),       // SweepFlat
             Some("tolerance"),  // RoundingPastTolerance
+            Some("tolerance"),  // TooManyTriangles
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), parameters.len());

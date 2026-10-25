@@ -380,7 +380,7 @@ pub use silico_protocol::{
 };
 use silico_protocol::{
     BrepDefect, FailureKind, HistoryDefect, Operation, Returned, Role, check_export_tolerance,
-    export_angle, export_deflection,
+    check_export_triangles, export_angle, export_deflection,
 };
 
 mod dressing;
@@ -1689,8 +1689,9 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
 /// single-threaded, so the same shape always gives the same mesh, and with the deflection
 /// the tolerance less what rounding to 32 bits can move the shape's vertices, as far out as
 /// its bounding box reaches ([`export_deflection`]): a tolerance whose rounding there would
-/// take more than half of it is refused ([`Refusal::RoundingPastTolerance`]). It leaves the
-/// shape as it was. Reports each face's triangles and where its nodes lie on the shape's
+/// take more than half of it is refused ([`Refusal::RoundingPastTolerance`]), as is a mesh
+/// of more than [`silico_protocol::MAX_EXPORT_TRIANGLES`] triangles ([`Refusal::TooManyTriangles`]). It
+/// leaves the shape as it was. Reports each face's triangles and where its nodes lie on the shape's
 /// edges and vertices, for the core to join and check (docs/ports/mesh-export.md).
 pub fn export_mesh(shape: &Shape, tolerance: f64) -> Result<ExportMesh, KernelError> {
     check_export_tolerance(tolerance)?;
@@ -1707,6 +1708,8 @@ pub fn export_mesh(shape: &Shape, tolerance: f64) -> Result<ExportMesh, KernelEr
             what: Returned::Mesh,
         })
     })?;
+    check_export_triangles(raw.face_triangles().iter().map(|&n| u64::from(n)).sum())
+        .map_err(KernelError::new)?;
     let triples = |values: &[f64]| -> Vec<[f64; 3]> {
         values.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect()
     };

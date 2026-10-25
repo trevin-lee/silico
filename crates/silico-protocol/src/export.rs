@@ -60,6 +60,20 @@ pub fn export_deflection(tolerance: f64, reach: f64) -> Result<f64, Refusal> {
     })
 }
 
+/// The most triangles an export's mesh may have, in all (M4.1's limits table): counted on
+/// the mesh the worker made, before it's sent, and over every part a 3MF holds. Ten million
+/// make about 0.9 GB of 3MF, well within a plain zip's 4 GiB.
+pub const MAX_EXPORT_TRIANGLES: u64 = 10_000_000;
+
+/// Refuses a mesh of more `triangles`, in all, than [`MAX_EXPORT_TRIANGLES`]
+/// ([`Refusal::TooManyTriangles`]).
+pub fn check_export_triangles(triangles: u64) -> Result<(), Refusal> {
+    if triangles > MAX_EXPORT_TRIANGLES {
+        return Err(Refusal::TooManyTriangles { triangles });
+    }
+    Ok(())
+}
+
 /// The angular deflection FreeCAD meshes with for an export tolerance `tolerance`, in
 /// radians: `min(0.1, 5·tolerance + 0.005)` (`TopoShape.cpp:224-232`, `487215d2f5`). Below
 /// a radius of about 80 mm at 0.1 mm, it, not the tolerance, sets how fine a curve's mesh is.
@@ -341,6 +355,20 @@ impl ExportMesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_export_takes_ten_million_triangles_and_refuses_one_more() {
+        assert_eq!(MAX_EXPORT_TRIANGLES, 10_000_000);
+        assert!(check_export_triangles(0).is_ok());
+        assert!(check_export_triangles(10_000_000).is_ok());
+        assert_eq!(
+            check_export_triangles(10_000_001),
+            Err(Refusal::TooManyTriangles {
+                triangles: 10_000_001
+            })
+        );
+        assert!(check_export_triangles(u64::MAX).is_err());
+    }
 
     #[test]
     fn the_tolerance_takes_freecads_range_inclusive() {
