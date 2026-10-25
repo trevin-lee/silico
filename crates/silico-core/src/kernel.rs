@@ -620,6 +620,22 @@ fn batch_problem(
     }
 }
 
+impl KernelRequest<bool> {
+    /// Whether `point` is inside `shape` or on its boundary, by OCCT's solid classifier
+    /// (FreeCAD's `Shape.isInside(point, tolerance, True)`): M4.6 asks it of each body whose
+    /// tight box holds a camera's eye.
+    pub fn classify(shape: &ShapeData, point: [f64; 3]) -> Self {
+        let op = Op::Classify {
+            shape: shape.clone(),
+            point,
+        };
+        Self::new(op, |name, reply| match reply {
+            Reply::Classified { inside } => Ok(inside),
+            other => Err(unexpected(name, &other)),
+        })
+    }
+}
+
 impl KernelRequest<Mesh> {
     /// A triangle mesh of `shape` for display, no further than `deflection` from its
     /// surface. The mesh is checked before it's returned, so it can be indexed safely. A face

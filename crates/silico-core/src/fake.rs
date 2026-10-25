@@ -740,6 +740,25 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             },
         ),
         Op::Summarize { shape } => Ok(Reply::Summary(Symbolic::read(shape)?.summary())),
+        // The fake's solids are their boxes: a point is inside one if it's in its box,
+        // boundary included.
+        Op::Classify { shape, point } => {
+            if !point.iter().all(|c| c.is_finite()) {
+                return Err(Error::new(
+                    ErrorCode::InvalidInput,
+                    format!("point {point:?} isn't finite"),
+                )
+                .with_parameter("point")
+                .with_suggestion("change the value the message names"));
+            }
+            let inside = Symbolic::read(shape)?
+                .summary()
+                .bounds
+                .is_some_and(|[low, high]| {
+                    (0..3).all(|k| low[k] <= point[k] && point[k] <= high[k])
+                });
+            Ok(Reply::Classified { inside })
+        }
         Op::Echo { data } => Ok(Reply::Echo { data: data.clone() }),
         other => Err(Error::new(
             ErrorCode::Internal,

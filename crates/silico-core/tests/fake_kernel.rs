@@ -1582,3 +1582,36 @@ fn dropping_a_client_supersedes_its_work_and_leaves_another_clients() {
     // A client's number isn't given again once it's retired.
     assert_eq!(kernel.client().id().number(), 3);
 }
+
+#[test]
+fn a_point_is_classified_inside_a_fake_solid_by_its_box() {
+    // The fake's solids are their boxes: the block from the origin to (40, 20, 10), and a
+    // point on its boundary counts as inside, as OCCT's classifier counts it.
+    let fake = FakeKernel::new(1).unwrap();
+    let block = run(&fake, KernelRequest::make(block(40.0, 20.0, 10.0)).unwrap());
+    for (point, inside) in [
+        ([20.0, 10.0, 5.0], true),
+        ([40.0, 20.0, 10.0], true),
+        ([0.0, 0.0, 0.0], true),
+        ([40.000_001, 10.0, 5.0], false),
+        ([20.0, -1.0, 5.0], false),
+    ] {
+        assert_eq!(
+            run(&fake, KernelRequest::classify(&block, point)),
+            inside,
+            "{point:?}"
+        );
+    }
+    let refused = match fake
+        .submit(
+            fake.generation(),
+            KernelRequest::classify(&block, [f64::NAN, 0.0, 0.0]),
+        )
+        .wait()
+    {
+        Outcome::Done(Err(e)) => e,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(refused.code(), ErrorCode::InvalidInput, "{refused:?}");
+    assert_eq!(refused.parameter(), Some("point"), "{refused:?}");
+}
