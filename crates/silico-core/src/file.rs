@@ -3,7 +3,10 @@
 //! is read (a pipe or a device could hang or never end), no more than a document may be;
 //! a save never leaves a document part written or lost, writes through a symbolic link,
 //! keeps a hard link's names together, and refuses a file this user may not write or one
-//! changed since it was read. Every failure is [`ErrorCode::IoFailed`], with what to try.
+//! changed since it was read. Every failure is [`ErrorCode::IoFailed`], with what to try,
+//! but a file changed since it was read, which is [`ErrorCode::Conflict`] (decision 16 of
+//! docs/design/m4.1-command-api.md): what to do about it is to read it again, not to mend
+//! the disk or a permission.
 
 use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
@@ -86,7 +89,7 @@ fn unwritable(why: impl std::fmt::Display) -> Error {
 /// from it, in place, with the old text kept beside it until the new is on disk, and put
 /// back if the write fails (a full disk), so a write cut short never loses the document
 /// (killed mid-write, the old text is in the file beside it, `.NAME.fmt-PID`). Refused if
-/// this process may not write it, or it changed since it was read.
+/// this process may not write it, or, as a conflict, if it changed since it was read.
 pub fn save(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Error> {
     let _span = tracing::info_span!("save", bytes = bytes.len()).entered();
     let target = std::fs::canonicalize(file).map_err(unwritable)?;
@@ -107,7 +110,7 @@ pub fn save(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Error> {
     // Changed while it was rebuilt (another editor saved it): left to them.
     if read(&target)? != before {
         return Err(Error::new(
-            ErrorCode::IoFailed,
+            ErrorCode::Conflict,
             "couldn't be written: it changed while it was rebuilt",
         )
         .with_suggestion(
