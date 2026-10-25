@@ -241,15 +241,37 @@ The Measure module's volume, area, and centre of mass are `BRepGProp` with defau
 
 ## Known wrong results
 
-OCCT's precise integration, `BRepGProp::VolumeProperties` and `SurfaceProperties` to a relative 1e-9 (`measure`), is wrong on a B-spline swept straight, while it estimates its error far under that. Its default integration (FreeCAD's `Shape.Volume` and `Area`) is wrong there too, by less. Silico accepts both answers, as FreeCAD accepts OCCT's, and keeps the precise one, the maintainer's choice of accuracy over FreeCAD's parity (2026-10-09). Silico's own features make no such surface yet, so only an imported part reaches these. The right values are by hand:
+OCCT's precise integration, `BRepGProp::VolumeProperties` and `SurfaceProperties` to a relative 1e-9 (`measure`), is wrong on a sweep of a B-spline curve with interior knots, straight or turned, while it estimates its error far under that (why, below). Its default integration (FreeCAD's `Shape.Volume` and `Area`) is wrong there too, by less. Silico accepts both answers, as FreeCAD accepts OCCT's, and keeps the precise one, the maintainer's choice of accuracy over FreeCAD's parity (2026-10-09). Silico's own features make no such surface yet, so only an imported part reaches these. The right values are by hand:
 
 | Shape | By hand | Precise (its estimate) | Default (FreeCAD's) |
 |---|---|---|---|
 | A cubic B-spline of length 4.40405587355, extruded 2 (a `SurfaceOfExtrusion`): its area | 2 × 4.40405587355 = 8.8081117471 | 8.83202504977072, 0.27% over (2e-16) | 8.808420588300923, 3.5e-5 over |
 | A ruled B-spline surface between two copies of a cubic 2 apart: its area | 2 × 3.2682882396736437 = 6.536576479347287 | 6.53657440325774, 3.2e-7 short | the same |
 | That extruded cubic closed by its chord, a valid solid (`extruded_bspline.brep`): its volume | the cap's 1.9 (Green's theorem, Gauss–Legendre per knot span, exact for the cubic) × 2 = 3.8 | 3.7964232643296967, 9.4e-4 low (3.5e-16) | 3.7998345742369399, 4.4e-5 low |
+| The same cap revolved a full turn about a line parallel to x, 5 below its chord (a `SurfaceOfRevolution`): its volume | Pappus: 2π × the cap's centroid's distance from the axis × the cap's area = 110.62146131890346 | 110.62103479265556, 3.9e-6 low (1.7e-16) | 110.62072134909874, 6.7e-6 low |
 
 The first two are the faces of `curves_and_surfaces.brep`, pinned by `bsplines_beziers_extrusions_and_revolutions_are_each_their_kind_with_their_poles`. The third is pinned by `an_extruded_bsplines_volume_is_right_or_occts_known_wrong_answer`. Each test passes on the right value or on OCCT's wrong one (docs/design/m4.4-describe.md). The fixtures' README says how `extruded_bspline.brep` was made, for a report to OCCT.
+
+The revolved cap is made from the fixture's cubic: Edge4 of `curves_and_surfaces.brep` and its chord made a face, then `BRepPrimAPI_MakeRevol` turns it a full turn about a line through (0, y − 5, z) along x, below the cap in its own plane. Its cap's area and centroid are measured as a plane face, which the precise integration gets right. Gauss–Kronrod gives 110.62146131890302. No test pins it yet: the step that fixes extrusions adds one, right or OCCT's wrong answer.
+
+**Why, in OCCT's source.** The precise path, `BRepGProp_Gauss::Compute` (which `VolumeProperties(shape, props, 1e-9)` runs), splits and orders its Gauss integration by `BRepGProp_Face`'s `UKnots`, `VKnots`, `SUIntSubs`, `SVIntSubs`, `UIntegrationOrder`, and `VIntegrationOrder`. These know the knots of a `GeomAbs_BSplineSurface` only. A `SurfaceOfExtrusion`, `SurfaceOfRevolution`, or `OffsetSurface` falls to their default, one interval of order 9. So a sweep of a B-spline curve with interior knots is integrated across its knots as if it were smooth there. It's only C² there, which the comparison of Gauss orders behind OCCT's estimate never sees, so the estimate is 1e-16. Gauss–Kronrod's `GetUKnots` looks through an extrusion to its basis B-spline (`isCBSpline`, with `IsUseSpan`), which is why it gets 3.8.
+
+So the wrong class is **sweeps of multi-span B-spline curves**, not B-spline faces at large:
+- plain B-spline surfaces (NIST's parts, the stress test's pipes) are right, since `UKnots` has their knots;
+- the stress test's valid prisms are right, since their curves are single spans;
+- the fixture's extruded cubic has an interior knot (knots 0, 0.5, 1), and is 9.4e-4 wrong;
+- the same cubic revolved is 3.9e-6 wrong.
+
+**The knot-split check, and why it isn't taken (2026-10-25,** Fable for the maintainer, his veto open**).** The idea: measure a shape that has B-spline faces again, on a copy with those faces split at every knot (`ShapeUpgrade_ShapeDivideContinuity` to CN), and refuse when the two volumes differ by more than 1e-7. On the 675 valid shapes OCCT made for the stress test and the sweep, it caught the fixture with no false alarm. On real parts it fails:
+- **NIST's 31 valid parts:**
+  - It flags 12 past 1e-7, from 1.1e-7 to 4.4e-4: `ctc_02`'s and `ctc_04`'s three variants, `ctc_05`'s three, `ftc_07_ap242-e2`, `ftc_10_ap242-e2`, and `stc_10`. Four more sit between 2e-8 and 1e-7. So no threshold separates them from the fixture's 9.4e-4.
+  - The split copy isn't the same solid: `BRepCheck_Analyzer` finds it invalid on 22 of the 31, every flagged part among them. On `ctc_04_ap203` no face is split at all, yet the volume moves 8.5e-5: the splitter cuts its 224 B-spline edges at their knots and remakes their pcurves.
+- **Where Gauss–Kronrod finishes on those parts, today's value is the right one:** it agrees with today to between 2.4e-13 and 3.7e-7, against the copy's 1e-4 on `ctc_02_ap242-e2`. Taking the copy's value would write a wrong volume into a third of real parts' fingerprints. Refusing would fail `check` on them for good, with nothing the document could change, and fail any pad or pocket on them.
+- **Splitting the surfaces only** (not the edges and pcurves) still flags 6 of the 11 valid NIST parts with B-spline faces, by up to 1.1e-3, and its copy is invalid on 10 of the 11.
+- **It costs** 1.2 to 4.2 times today's measure on NIST.
+- **It crashes:** the splitter segfaults on `ftc_08_asme1_ap242-e1-tg`, an invalid part that OCCT's reader accepts.
+
+So no check is built that refuses or replaces a measure when two integrations disagree. For extrusions, an exact fix exists: integrate the B-spline surface an extrusion of a B-spline curve equals, as its own step. Revolutions have no exact route this way (their conversion is rational and reparametrizes), so they stay a known wrong result.
 
 **What was tried, and why it isn't taken (2026-10-24).** Every shape of the determinism sweep (204: the oracle cases, the generated ones, and the sketch features) and every one of `stress.cpp`'s (554) was measured both ways:
 - **Gauss–Kronrod** (`VolumePropertiesGK` to 1e-9, its B-spline faces split at their knots; OCCT has no Gauss–Kronrod area) gives the extruded cubic's 3.8. On the 11 of the stress test's 55 B-spline prisms it finished, all invalid, it gives their caps' areas times their heights within 3e-11. But it doesn't finish within 60 s (the sweep's limit) or 30 s (the stress test's):
