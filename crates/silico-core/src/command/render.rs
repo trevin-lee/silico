@@ -226,7 +226,12 @@ pub fn render<K: Kernel>(
         };
         return Err(Problems::from(error));
     }
-    within_a_frame(&scene, bodies.len() > kept.len(), fit_side)?;
+    within_a_frame(
+        &scene,
+        bodies.len() > kept.len(),
+        fit_side,
+        u64::from(MAX_FRAME_LEN),
+    )?;
     let png = match on.renderer.render(scene).wait() {
         RenderOutcome::Done(result) => result.map_err(Problems::from)?.png,
         RenderOutcome::Cancelled => {
@@ -621,9 +626,10 @@ fn within_a_frame(
     scene: &RenderScene,
     left_out: bool,
     fit_side: Option<&'static str>,
+    most: u64,
 ) -> Result<(), Problems> {
     let bound = frame_bound(scene);
-    if bound <= u64::from(MAX_FRAME_LEN) {
+    if bound <= most {
         return Ok(());
     }
     let (parameter, suggestion) = match fit_side {
@@ -644,7 +650,7 @@ fn within_a_frame(
         Error::new(
             ErrorCode::InvalidInput,
             format!(
-                "the scene's meshes would take up to {bound} bytes, more than the {MAX_FRAME_LEN} one message to the render worker holds"
+                "the scene's meshes would take up to {bound} bytes, more than the {most} one message to the render worker holds"
             ),
         )
         .with_parameter(parameter)
@@ -697,5 +703,76 @@ fn a_kind(kind: ElementKind) -> &'static str {
         ElementKind::Edge => "an edge",
         ElementKind::Vertex => "a vertex",
         ElementKind::Solid => "a solid",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{frame_bound, within_a_frame};
+    use silico_protocol::{Camera, Mesh, Projection, RenderBody, RenderScene};
+
+    /// A scene of one body: a triangle, one face, no edges, a face highlighted.
+    fn one_triangle() -> RenderScene {
+        RenderScene {
+            bodies: vec![RenderBody {
+                body: 1,
+                mesh: Mesh {
+                    positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                    normals: vec![[0.0, 0.0, 1.0]; 3],
+                    triangles: vec![[0, 1, 2]],
+                    face_triangles: vec![1],
+                    edge_points: vec![],
+                    edge_point_counts: vec![],
+                    valid: None,
+                },
+                highlight_faces: vec![0],
+                highlight_edges: vec![],
+            }],
+            camera: Camera {
+                projection: Projection::Orthographic { view_height: 2.0 },
+                eye: [0.0, 0.0, 10.0],
+                target: [0.0; 3],
+                up: [0.0, 1.0, 0.0],
+            },
+            width: 10,
+            height: 10,
+            ids: false,
+        }
+    }
+
+    #[test]
+    fn a_scenes_bound_counts_each_number_at_its_widest() {
+        // By hand: positions 3 × 24 + 10, normals 3 × 12 + 10, a triangle 30 + 10, a face
+        // 10 + 10, no edge points or counts 10 + 10, a highlighted face 10 + 10 and none
+        // 10, the body's 64, and the scene's 1,024.
+        let want = 82 + 46 + 40 + 20 + 10 + 10 + 20 + 10 + 64 + 1024;
+        assert_eq!(frame_bound(&one_triangle()), want);
+        // Never under the scene's encoding.
+        let encoded = postcard::to_allocvec(&one_triangle()).unwrap().len() as u64;
+        assert!(encoded <= want, "{encoded} over {want}");
+    }
+
+    #[test]
+    fn a_scene_past_a_frame_names_the_side_that_makes_its_meshes_coarser() {
+        let scene = one_triangle();
+        let bound = frame_bound(&scene);
+        assert!(within_a_frame(&scene, false, None, bound).is_ok());
+        for (left_out, fit, field, wider) in [
+            (false, None, "height", true),
+            (true, None, "height", false),
+            (false, Some("width"), "width", false),
+            (true, Some("height"), "height", false),
+        ] {
+            let problems = within_a_frame(&scene, left_out, fit, bound - 1).unwrap_err();
+            let e = &problems.errors()[0];
+            assert_eq!(e.code(), crate::ErrorCode::InvalidInput);
+            assert_eq!(e.parameter(), Some(field), "{e:?}");
+            let suggestion = e.suggestion().unwrap_or_default();
+            assert_eq!(suggestion.contains("wider view"), wider, "{suggestion}");
+            assert!(
+                e.message().contains(&format!("up to {bound} bytes")),
+                "{e:?}"
+            );
+        }
     }
 }
