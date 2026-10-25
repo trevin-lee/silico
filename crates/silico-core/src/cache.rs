@@ -839,7 +839,9 @@ fn read_file(path: &Path) -> FileRead {
 /// than one past the limit.
 fn read_at_most(reader: impl std::io::Read, limit: u64) -> std::io::Result<Option<Vec<u8>>> {
     let mut bytes = Vec::new();
-    reader.take(limit + 1).read_to_end(&mut bytes)?;
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
     Ok((bytes.len() as u64 <= limit).then_some(bytes))
 }
 

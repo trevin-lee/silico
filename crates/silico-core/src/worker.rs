@@ -3098,6 +3098,9 @@ mod tests {
         // rmem_max), so the core's end is compared with a pair asked for 4 MiB here.
         use std::os::unix::net::UnixStream;
         const ASKED: usize = 4 * 1024 * 1024;
+        // Written out, as the log line's limit is: Linux caps both sizes alike, so a smaller
+        // request than 4 MiB would read the same below.
+        assert_eq!(super::SOCKET_BUFFER, ASKED);
         let dir = scratch("buffers");
         let worker = super::Worker::spawn(&script(&dir, "exec sleep 600")).unwrap();
         let ours = socket2::SockRef::from(&worker.socket);

@@ -733,6 +733,16 @@ fn release(dir: &Path) {
     std::fs::write(dir.join("release"), b"").unwrap();
 }
 
+/// Lets the marking workers of its directory go when it's dropped, so a test that fails
+/// leaves none waiting.
+struct Released<'a>(&'a Path);
+
+impl Drop for Released<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::write(self.0.join("release"), b"");
+    }
+}
+
 #[test]
 fn a_running_superseded_request_that_ends_within_stop_after_finishes_on_its_worker() {
     // Stopping a request costs a new worker (about 30 ms), more than letting a short one
@@ -1510,7 +1520,8 @@ printf '\\0\\0\\0\\0' >&3
 dd bs=1 count=1 <&3 >/dev/null 2>&1
 me=$$
 (
-  while ps -o stat= -p \"$me\" | grep -q '^ *[^Z ]'; do sleep 0.01; done
+  j=0
+  while ps -o stat= -p \"$me\" | grep -q '^ *[^Z ]' && [ \"$j\" -lt 6000 ]; do sleep 0.01; j=$((j + 1)); done
   cat '{reply}' >&3
   i=0
   while [ ! -e '{release}' ] && [ \"$i\" -lt 2400 ]; do sleep 0.05; i=$((i + 1)); done
@@ -1521,6 +1532,8 @@ exit 0",
             release = dir.join("release").display(),
         ),
     );
+    // The process the script leaves is let go however the test ends.
+    let _released = Released(&dir);
     let pool = KernelPool::start_workers(&exe, 1).unwrap();
     let first_pids = pool.pids();
     let first = pool.submit(Generation(0), sleep(0));
@@ -1530,9 +1543,7 @@ exit 0",
         sleep(0).with_timeout(Duration::from_secs(30)),
     );
     done(first).unwrap();
-    let second = done(second);
-    release(&dir);
-    second.unwrap();
+    done(second).unwrap();
     assert_ne!(
         pool.pids(),
         first_pids,
