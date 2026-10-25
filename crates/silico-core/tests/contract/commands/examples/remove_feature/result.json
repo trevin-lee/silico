@@ -1,0 +1,18 @@
+{
+  "feature": {
+    "id": "c0000001",
+    "type": "chamfer",
+    "v": 1,
+    "name": "Bevel",
+    "base": "f0000001",
+    "edges": [
+      "k7f2qx3m.box.Edge1"
+    ],
+    "size": {"distance": 1},
+    "note": "A block's edge, kept by the cut and the fillet under its own name",
+    "fingerprint": {"volume": 7797.770072, "area": 2907.692109, "bbox": [0, 0, 0, 40, 20, 10], "faces": 9, "edges": 20, "vertices": 13}
+  },
+  "index": 4,
+  "changed": true,
+  "commit": null
+}

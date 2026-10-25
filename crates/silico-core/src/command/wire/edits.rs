@@ -195,8 +195,8 @@ impl ToWire for FieldSet {
         Json::object([
             ("feature", self.feature.to_wire()),
             ("field", Json::str(&self.field)),
-            ("before", Json::plain(&self.before)),
-            ("after", Json::plain(&self.after)),
+            ("before", Json::field(&self.field, &self.before)),
+            ("after", Json::field(&self.field, &self.after)),
             ("changed", Json::bool(self.changed)),
             (
                 "commit",

@@ -787,7 +787,7 @@ fn a_feature_added_is_refused_with_what_the_request_may_not_give_and_the_gate_s_
             value("[]")
         )))
         .1,
-        "feature is an array, not an object"
+        "feature must be an object, got an array"
     );
     // The gate's error, its feature the new one: a pocket of a sketch the document hasn't.
     let pocket = r#"{"id": "q7m2x9kd", "type": "pocket", "name": "Leg holes", "base": "f0000001", "sketch": "s0000003", "extent": {"type": "through_all", "reversed": false}}"#;
@@ -1608,4 +1608,47 @@ fn a_sketch_member_set_outside_a_transaction_comes_back_where_its_solve_put_it()
         "{}",
         f.file()
     );
+}
+
+#[test]
+fn a_member_renamed_outside_a_transaction_comes_back_by_its_new_id_as_saved() {
+    // A constraint's ID set: after names it by the new ID, which the saved file holds, the
+    // old one gone.
+    let f = opened(SKETCHED);
+    let set = f
+        .set("s0000001", "constraints.k0000001.id", r#""k0000003""#)
+        .result
+        .unwrap();
+    assert!(set.commit.unwrap().written);
+    assert_eq!(
+        (json(&set.before), json(&set.after)),
+        (r#""k0000001""#.into(), r#""k0000003""#.into())
+    );
+    let file = f.file();
+    assert!(
+        file.contains(r#"{"id": "k0000003", "type": "horizontal", "line": "na000000"}"#),
+        "{file}"
+    );
+    assert!(!file.contains("k0000001"), "{file}");
+
+    // A point nothing uses, set whole under a new ID: after is the new point, as saved.
+    let free = SKETCHED.replace(
+        r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}"#,
+        r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pf000000", "x": 3, "y": 4, "construction": true}"#,
+    );
+    assert_ne!(free, SKETCHED);
+    let f = opened(&free);
+    let point = r#"{"id": "pg000000", "x": 5, "y": 6, "construction": false}"#;
+    let set = f.set("s0000001", "points.pf000000", point).result.unwrap();
+    assert!(set.commit.unwrap().written);
+    assert_eq!(
+        (json(&set.before), json(&set.after)),
+        (
+            r#"{"id": "pf000000", "x": 3, "y": 4, "construction": true}"#.into(),
+            point.into()
+        )
+    );
+    let file = f.file();
+    assert!(file.contains(point), "{file}");
+    assert!(!file.contains("pf000000"), "{file}");
 }

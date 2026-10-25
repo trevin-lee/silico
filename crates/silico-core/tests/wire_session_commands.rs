@@ -10,12 +10,8 @@
 //! (src/command/wire/session_tests.rs), which can build a result's problems. The snapshots
 //! themselves are recorded and checked with the others' (wire_commands.rs).
 //!
-//! The design's examples not yet in the contract: `commit`'s conflict and `add_feature`'s
-//! stale revision, which PR #151 (sessions reloading their files) amends; `commit`'s
-//! `io_failed`, whose message the code gives with the step that failed and its path;
-//! `add_feature`'s gate refusal, `set_field`'s diameter, and `replace_text`'s syntax error,
-//! whose suggestions the gate and the reader give in other words; and `remove_feature`'s
-//! result, whose feature's edges the canonical form writes a name a line.
+//! The one example of the design's not in the contract is `commit`'s `io_failed`, a disk out
+//! of room, which no test can make happen ([`LEFT_OUT`]).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -132,11 +128,15 @@ const BRACKET: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "
 /// The design's pad, of an empty sketch: what `set_field` is refused on.
 const PAD: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "L profile", "plane": "xz", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}, {"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 6, "reversed": false}}]}"#;
 
+/// The bracket, its holes' sketch holding a hole of diameter 5: the design's diameter
+/// constraint, `g4h5j6k7`, what `set_field` sets to 0.
+const HOLES: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "p0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, 0], "length": 40, "width": 20, "height": 6}, {"id": "s0000002", "type": "sketch", "v": 1, "name": "Holes", "plane": "xy", "points": [{"id": "pa000000", "x": 10, "y": 10, "construction": false}], "lines": [], "circles": [{"id": "ca000000", "center": "pa000000", "radius": 2.5, "construction": false}], "arcs": [], "constraints": [{"id": "g4h5j6k7", "type": "diameter", "curve": "ca000000", "value": 5, "driving": true}]}]}"#;
+
 /// The design's document with no features, as `replace_text`'s example gives it.
 const EMPTY: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": []\n}\n";
 
 struct Fixture {
-    _dir: TempDir,
+    dir: TempDir,
     sessions: Sessions<Arc<FakeKernel>>,
     id: SessionId,
 }
@@ -156,14 +156,24 @@ fn opened(text: &str) -> Fixture {
     std::fs::write(&path, text).unwrap();
     let id = answer(sessions.open(&path, false)).session.unwrap().id;
     assert_eq!(id, s1());
-    Fixture {
-        _dir: dir,
-        sessions,
-        id,
-    }
+    Fixture { dir, sessions, id }
 }
 
 impl Fixture {
+    /// The session's file.
+    fn path(&self) -> PathBuf {
+        self.dir.path().join("bracket.silico")
+    }
+
+    /// `written`, a refusal naming the session's file as `open` was given it (by its whole
+    /// path, in a directory of the test's own), as a session opened as `bracket.silico`, in
+    /// the directory it's in, names it: the design's.
+    fn here(&self, written: &str) -> String {
+        let dir = format!("{}/", self.dir.path().display());
+        assert!(written.contains(&dir), "{written}");
+        written.replace(&dir, "")
+    }
+
     fn revision(&self) -> Revision {
         self.sessions.status(&self.id).session.unwrap().revision
     }
@@ -216,7 +226,7 @@ fn the_examples_are_the_designs_own_text() {
                 Some("drift-kept"),
                 Some("unchanged"),
                 Some("refused-no-transaction"),
-                None,
+                Some("refused-conflict"),
                 None,
             ],
         ),
@@ -243,9 +253,9 @@ fn the_examples_are_the_designs_own_text() {
             &[
                 Some("request"),
                 Some("result"),
-                None,
+                Some("refused-sketch"),
                 Some("refused-fingerprint"),
-                None,
+                Some("refused-stale"),
             ],
         ),
         (
@@ -256,7 +266,7 @@ fn the_examples_are_the_designs_own_text() {
                 Some("request"),
                 Some("result"),
                 Some("request-sketch-member"),
-                None,
+                Some("refused-diameter"),
                 Some("refused-extent-length"),
                 Some("refused-no-field"),
                 Some("refused-type"),
@@ -268,7 +278,7 @@ fn the_examples_are_the_designs_own_text() {
             "remove_feature",
             &[
                 Some("request"),
-                None,
+                Some("result"),
                 Some("request-used"),
                 Some("refused-used"),
             ],
@@ -280,7 +290,7 @@ fn the_examples_are_the_designs_own_text() {
             &[
                 Some("request"),
                 Some("result"),
-                None,
+                Some("refused-syntax"),
                 Some("refused-no-naming"),
             ],
         ),
@@ -314,34 +324,30 @@ fn the_examples_are_the_designs_own_text() {
             }
         }
     }
-    // The refusals left out, by code and parameter, and the one result.
-    let left: Vec<(String, String)> = left_out
+    // The refusals left out, by code and parameter, each for its reason.
+    let left: Vec<(&str, &str)> = left_out
         .iter()
         .map(|block| {
             let value: serde_json::Value = serde_json::from_str(block).unwrap();
-            match value.get("code") {
-                Some(code) => (
-                    code.as_str().unwrap().to_owned(),
-                    value["parameter"].as_str().unwrap().to_owned(),
-                ),
-                None => ("result".to_owned(), value["index"].to_string()),
-            }
+            let code = value["code"].as_str().unwrap();
+            let parameter = value["parameter"].as_str().unwrap();
+            LEFT_OUT
+                .iter()
+                .find(|(c, p, _)| (*c, *p) == (code, parameter))
+                .map(|(c, p, _)| (*c, *p))
+                .unwrap_or_else(|| panic!("{code} at {parameter} left out for no reason"))
         })
         .collect();
-    assert_eq!(
-        left,
-        [
-            ("conflict", "path"),
-            ("io_failed", "path"),
-            ("invalid_input", "sketch"),
-            ("conflict", "revision"),
-            ("invalid_input", "constraints.g4h5j6k7.value"),
-            ("result", "4"),
-            ("invalid_input", "text"),
-        ]
-        .map(|(code, parameter)| (code.to_owned(), parameter.to_owned()))
-    );
+    assert_eq!(left, LEFT_OUT.map(|(code, parameter, _)| (code, parameter)));
 }
+
+/// The design's examples not in the contract, by code and parameter, each with why.
+const LEFT_OUT: [(&str, &str, &str); 1] = [(
+    "io_failed",
+    "path",
+    "commit's save failing for a disk out of room, which no test can make happen; and the code \
+     says it with the step that failed and the file's path, which the design's leaves out",
+)];
 
 #[test]
 fn the_designs_requests_are_read_written_back_byte_for_byte_and_hold_to_their_schemas() {
@@ -541,6 +547,19 @@ fn every_request_requires_each_of_its_fields_and_refuses_any_other() {
             "{of}"
         );
         fails(&schema_of(of, "request"), &session, "a numeric session");
+        // Nor an ID SessionId::parse doesn't read: no session 0, and no leading zero.
+        for bad in ["s0", "s01"] {
+            let session = text.replacen(r#""session": "s1""#, &format!(r#""session": "{bad}""#), 1);
+            assert_eq!(
+                said(&read(&parsed(&session)).unwrap_err()),
+                [(
+                    "session".to_owned(),
+                    format!(r#"session must be a session's ID, s1, s2, ..., got "{bad}""#)
+                )],
+                "{of}: {bad}"
+            );
+            fails(&schema_of(of, "request"), &session, bad);
+        }
     }
 }
 
@@ -668,20 +687,25 @@ fn each_requests_fields_are_of_their_types_and_null_only_where_the_shape_allows_
         Plain::of(&request.feature),
         Plain::of(&parsed(r#"{"radius": 7}"#))
     );
+    let f = opened(BRACKET);
     for (value, got) in [
         ("7", "a number"),
         ("null", "null"),
         ("[1]", "an array"),
         (r#""box""#, "a string"),
     ] {
+        let want = [(
+            "feature".to_owned(),
+            format!("feature must be an object, got {got}"),
+        )];
         assert_eq!(
             refused("add_feature", &format!("{head}\"feature\": {value}\n}}")),
-            [(
-                "feature".to_owned(),
-                format!("feature must be an object, got {got}")
-            )],
+            want,
             "{value}"
         );
+        // A Rust caller, past the wire: the session refuses it in the same words.
+        let added = answer(f.sessions.add_feature(&f.id, f.revision(), parsed(value)));
+        assert_eq!(said(added.result.as_ref().unwrap_err()), want, "{value}");
     }
 }
 
@@ -849,27 +873,37 @@ fn a_new_feature_given_null_where_the_reader_takes_it_holds_to_its_schema_and_is
         );
     }
     // Null where the reader refuses it, the schema refuses too: a pocket's base, which it
-    // must have, and a name.
-    for (what, from, to) in [
+    // must have, and a name. Each refused by the document's reader, at its field.
+    for (what, from, to, parameter) in [
         (
             "a pocket's null base",
             r#""base": "p0000001""#,
             r#""base": null"#,
+            "base",
         ),
-        ("a null name", r#""name": "Leg holes""#, r#""name": null"#),
+        (
+            "a null name",
+            r#""name": "Leg holes""#,
+            r#""name": null"#,
+            "name",
+        ),
     ] {
         let text = example("add_feature/request").replace(from, to);
+        assert_ne!(text, example("add_feature/request"), "{what}");
         fails(&schema, &text, what);
         let request = AddFeatureRequest::read(&parsed(&text)).unwrap();
-        assert!(
-            answer(
-                f.sessions
-                    .add_feature(&request.session, f.revision(), request.feature)
-            )
-            .result
-            .is_err(),
-            "{what}"
-        );
+        let refused = answer(f.sessions.add_feature(
+            &request.session,
+            f.revision(),
+            request.feature,
+        ));
+        let problems = refused.result.as_ref().unwrap_err();
+        let at: Vec<(ErrorCode, Option<&str>)> = problems
+            .errors()
+            .iter()
+            .map(|e| (e.code(), e.parameter()))
+            .collect();
+        assert_eq!(at, [(ErrorCode::InvalidInput, Some(parameter))], "{what}");
     }
 }
 
@@ -969,8 +1003,7 @@ fn the_designs_added_and_removed_features_are_the_sessions_own() {
         request.feature,
     ));
     // The chamfer as the document holds it, its text the contract file's own, a level
-    // less deep. (The design's example writes its edges on one line, which the canonical
-    // form never does: not in the contract until the design says it as the code writes it.)
+    // less deep, its edges a name a line: the design's example.
     let file = committed("naming-scheme-5.silico");
     let start = file.find("    {\n      \"id\": \"c0000001\"").unwrap();
     let end = start + file[start..].find("\n    }").unwrap() + "\n    }".len();
@@ -987,6 +1020,7 @@ fn the_designs_added_and_removed_features_are_the_sessions_own() {
             chamfer.trim_start()
         )
     );
+    assert_eq!(text, example("remove_feature/result"));
     holds(&schema_of("remove_feature", "result"), &text, "removed");
 }
 
@@ -1038,6 +1072,55 @@ fn the_designs_refusals_are_the_sessions_own_and_hold_to_the_error_contract() {
     check(
         "add_feature/refused-fingerprint",
         the_refusal(&fingerprinted),
+    );
+    let sketchless = pocket
+        .replace(
+            r#""type": "pocket","#,
+            r#""id": "q7m2x9kd", "type": "pocket","#,
+        )
+        .replace(r#""sketch": "s0000002""#, r#""sketch": "s0000003""#);
+    assert_ne!(sketchless, pocket);
+    check("add_feature/refused-sketch", the_refusal(&add(sketchless)));
+
+    // `add_feature` against revision 6, the design's, the file changed outside the session
+    // since: reloaded before the edit, at revision 7, so the edit is stale.
+    let f = opened(BRACKET);
+    f.at(6);
+    std::fs::write(f.path(), BRACKET.replace("Plate", "Base")).unwrap();
+    let request = AddFeatureRequest::read(&parsed(&pocket)).unwrap();
+    assert_eq!(request.revision, revision(6));
+    let stale = answer(
+        f.sessions
+            .add_feature(&request.session, request.revision, request.feature),
+    );
+    check("add_feature/refused-stale", f.here(&the_refusal(&stale)));
+    assert_eq!(f.revision(), revision(7));
+
+    // `commit` of a transaction begun at revision 4, the file changed outside the session
+    // since: a conflict, the transaction left open.
+    let f = opened(BRACKET);
+    f.at(4);
+    f.begin();
+    let height =
+        r#"{"session": "s1", "revision": 1, "feature": "p0000001", "field": "height", "value": 7}"#;
+    assert!(f.set(height).result.as_ref().unwrap().changed);
+    std::fs::write(f.path(), BRACKET.replace("Plate", "Base")).unwrap();
+    let commit = answer(f.sessions.commit(&f.id));
+    check("commit/refused-conflict", f.here(&the_refusal(&commit)));
+    assert!(
+        f.sessions
+            .status(&f.id)
+            .result
+            .unwrap()
+            .transaction
+            .is_some()
+    );
+
+    // `set_field` of the design's sketch member: its diameter to 0.
+    let f = opened(HOLES);
+    check(
+        "set_field/refused-diameter",
+        the_refusal(&f.set(&example("set_field/request-sketch-member"))),
     );
 
     // `set_field` on the pad: a length of 0, a field it hasn't, and its type.
@@ -1104,4 +1187,12 @@ fn the_designs_refusals_are_the_sessions_own_and_hold_to_the_error_contract() {
     };
     let unnamed = replace(&EMPTY.replacen("  \"naming\": 5,\n", "", 1));
     check("replace_text/refused-no-naming", the_refusal(&unnamed));
+    // Text whose third line, the units, ends without its comma: the reader finds the next
+    // member at line 4, column 3.
+    let broken = EMPTY.replacen("\"1nm\"},\n", "\"1nm\"}\n", 1);
+    assert_ne!(broken, EMPTY);
+    check(
+        "replace_text/refused-syntax",
+        the_refusal(&replace(&broken)),
+    );
 }

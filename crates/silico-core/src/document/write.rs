@@ -233,12 +233,12 @@ fn fields(operation: &Operation) -> Vec<(&'static str, Out<'_>)> {
             radius,
         } => vec![
             ("base", reference(base)),
-            ("edges", names(edges)),
+            (NAMES_FIELD, names(edges)),
             ("radius", number(*radius)),
         ],
         Operation::Chamfer { base, edges, size } => vec![
             ("base", reference(base)),
-            ("edges", names(edges)),
+            (NAMES_FIELD, names(edges)),
             (
                 "size",
                 Out::Object(vec![("distance", number(size.distance))]),
@@ -555,6 +555,11 @@ pub(crate) fn measure(measure: Measure) -> Out<'static> {
 pub(crate) fn point(position: &Position) -> Out<'static> {
     Out::Array(position.iter().map(|&l| number(l)).collect())
 }
+
+/// The field of a fillet and of a chamfer that lists element names, which the canonical
+/// form writes a name to a line ([`names`]): the one list of names a feature holds, so
+/// what `set_field` gives back of it is laid out so too (`command::wire::Json::field`).
+pub(crate) const NAMES_FIELD: &str = "edges";
 
 /// Element names, one to a line, so an edit to one is a line of the diff.
 fn names(names: &[ElementName]) -> Out<'_> {

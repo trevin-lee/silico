@@ -87,12 +87,12 @@ use registry::{
 pub use threads::MAX_PUBLISHED_READS;
 use threads::{Reads, Threads, Unanswered};
 use transaction::{Claim, Held, Reload, Rereads, transaction_open};
+pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
     Added, Begun, Committed, FieldSet, ModelChoice, ModelRead, Opened, Published, Read,
     Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running, SessionId,
     SessionInfo, Status,
 };
-pub(crate) use types::SESSION_ID_PATTERN;
 use types::{READ_STOPPED, SESSION_STOPPED};
 
 /// The most sessions one process holds open at once (decision 18): each may start a sketch

@@ -620,8 +620,9 @@ fn repeated_ids(
 /// the feature type's current version if it gives no `v` (each `null` given as none, as is
 /// a `null` fingerprint, note, or other member the feature may leave out: the design's
 /// section 2); the feature as the document then holds it, and the state it leads
-/// to. Refused for a feature that isn't an object, gives a fingerprint (a commit writes
-/// it), or gives an ID that isn't one, or that the document holds (each naming
+/// to. Refused for a feature that isn't an object (in the words the wire refuses one in,
+/// before it gets here: this is for the Rust API's callers), gives a fingerprint (a commit
+/// writes it), or gives an ID that isn't one, or that the document holds (each naming
 /// `feature.id`); and with every error the reader or the gate finds in the document with
 /// it added.
 pub(super) fn add_feature(
@@ -633,7 +634,7 @@ pub(super) fn add_feature(
         return Err(Problems::from(
             Error::new(
                 ErrorCode::InvalidInput,
-                format!("feature is {}, not an object", feature.value.kind()),
+                format!("feature must be an object, got {}", feature.value.kind()),
             )
             .with_parameter("feature")
             .with_suggestion("give the feature as the document writes it: an object"),

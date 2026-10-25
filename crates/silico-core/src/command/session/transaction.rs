@@ -334,6 +334,7 @@ impl<C: Kernel + 'static> Session<C> {
             }
         };
         self.save_state(state, Through::Transaction, read, claim)
+            .map(|(committed, _)| committed)
     }
 
     /// An edit's `candidate`, made outside a transaction, committed as its own transaction
@@ -341,7 +342,8 @@ impl<C: Kernel + 'static> Session<C> {
     /// commits, but never held until it's saved. Saved, the session is at the next revision,
     /// the text written; refused, the session is exactly as it was, at its revision, holding
     /// what it held, and its models as they were (the candidate's never published), and the
-    /// response reads no model.
+    /// response reads no model. With the commit's result, the document it saved, if it
+    /// wrote one.
     ///
     /// [`commit`]: Self::commit
     pub(super) fn commit_candidate(
@@ -349,7 +351,7 @@ impl<C: Kernel + 'static> Session<C> {
         candidate: Candidate,
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
-    ) -> Result<Committed, Problems> {
+    ) -> Result<(Committed, Option<Arc<Gated>>), Problems> {
         let state = {
             let held = lock(&self.held);
             Saving {
@@ -377,15 +379,17 @@ impl<C: Kernel + 'static> Session<C> {
     /// transaction, if one is open, ended). A document equal to `begun`'s is written nowhere.
     /// `through` says whose state it is: a transaction's (held, its model the session's
     /// revision's, and a commit that writes nothing ends it), or an edit's candidate (held
-    /// only once saved, its model rebuilt for this commit alone). Refused, nothing written
-    /// and nothing held changed, as [`commit`](Self::commit) is.
+    /// only once saved, its model rebuilt for this commit alone). With the commit's result,
+    /// the document saved, as the session then holds it ([`write`](Self::write)), if one was
+    /// written. Refused, nothing written and nothing held changed, as
+    /// [`commit`](Self::commit) is.
     fn save_state(
         self: &Arc<Self>,
         state: Saving,
         through: Through,
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
-    ) -> Result<Committed, Problems> {
+    ) -> Result<(Committed, Option<Arc<Gated>>), Problems> {
         let Saving {
             path,
             text,
@@ -425,13 +429,16 @@ impl<C: Kernel + 'static> Session<C> {
             }
             // Only a transaction's commit is given what was found outside.
             self.unwritten(&begun, revision)?;
-            return Ok(Committed {
-                written: false,
-                path,
-                refingerprinted: Vec::new(),
-                resolved: Vec::new(),
-                problems: gated.problems(),
-            });
+            return Ok((
+                Committed {
+                    written: false,
+                    path,
+                    refingerprinted: Vec::new(),
+                    resolved: Vec::new(),
+                    problems: gated.problems(),
+                },
+                None,
+            ));
         }
         let checked = match &*gated {
             Gated::Checked(checked) => checked,
@@ -440,13 +447,16 @@ impl<C: Kernel + 'static> Session<C> {
                 if through == Through::Transaction {
                     self.unwritten(&begun, revision)?;
                 }
-                return Ok(Committed {
-                    written: false,
-                    path,
-                    refingerprinted: Vec::new(),
-                    resolved: Vec::new(),
-                    problems,
-                });
+                return Ok((
+                    Committed {
+                        written: false,
+                        path,
+                        refingerprinted: Vec::new(),
+                        resolved: Vec::new(),
+                        problems,
+                    },
+                    None,
+                ));
             }
             refused => return Err(refused.problems()),
         };
@@ -464,30 +474,36 @@ impl<C: Kernel + 'static> Session<C> {
             if through == Through::Transaction {
                 self.unwritten(&begun, revision)?;
             }
-            return Ok(Committed {
-                written: false,
-                path,
-                refingerprinted: Vec::new(),
-                resolved: Vec::new(),
-                problems: formatted.problems,
-            });
+            return Ok((
+                Committed {
+                    written: false,
+                    path,
+                    refingerprinted: Vec::new(),
+                    resolved: Vec::new(),
+                    problems: formatted.problems,
+                },
+                None,
+            ));
         }
         let saved = Arc::new(formatted.text.into_bytes());
         // A candidate's model is the saved revision's too, unless the save wrote a sketch's
         // solve, which a rebuild of the saved document would solve again from.
         let publish = through == Through::Candidate && formatted.resolved.is_empty();
-        self.write(saved, &model, &reach, publish, saver, claim)?;
-        Ok(Committed {
-            written: true,
-            path,
-            refingerprinted: formatted
-                .refingerprinted
-                .into_iter()
-                .map(|(id, _)| id)
-                .collect(),
-            resolved: formatted.resolved,
-            problems: formatted.problems,
-        })
+        let written = self.write(saved, &model, &reach, publish, saver, claim)?;
+        Ok((
+            Committed {
+                written: true,
+                path,
+                refingerprinted: formatted
+                    .refingerprinted
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect(),
+                resolved: formatted.resolved,
+                problems: formatted.problems,
+            },
+            Some(written),
+        ))
     }
 
     /// A commit that writes nothing (its document is the one `begin` saw, `begun`, at
@@ -617,8 +633,9 @@ impl<C: Kernel + 'static> Session<C> {
     /// transaction ended. With `publish`, `model` rebound to the saved document
     /// ([`Model::rebound`]) is published as the new revision's, in the same step: for a
     /// save that wrote only fingerprints, whose document a rebuild would build from the
-    /// steps `model` took. Refused, nothing changed, as the save is, a conflict with what
-    /// `saver` advises.
+    /// steps `model` took. The document saved, as the gate found it, which the session now
+    /// holds. Refused, nothing changed, as the save is, a conflict with what `saver`
+    /// advises.
     fn write(
         &self,
         saved: Arc<Vec<u8>>,
@@ -627,7 +644,7 @@ impl<C: Kernel + 'static> Session<C> {
         publish: bool,
         saver: Saver,
         claim: &dyn Fn(&Path),
-    ) -> Result<(), Problems> {
+    ) -> Result<Arc<Gated>, Problems> {
         let (next, path, resolved, bytes) = {
             let held = lock(&self.held);
             (
@@ -670,7 +687,7 @@ impl<C: Kernel + 'static> Session<C> {
                 model: Arc::new(model.rebound(Arc::clone(checked))),
             });
         }
-        Ok(())
+        Ok(gated)
     }
 
     /// Before a queued command (decision 2), as `rereads` says: the session's file read

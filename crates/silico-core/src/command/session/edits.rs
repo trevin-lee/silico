@@ -77,12 +77,7 @@ impl<C: Kernel + 'static> Session<C> {
             self.hold(candidate)?;
             (None, None)
         } else {
-            let committed = self.commit_candidate(candidate, read, claim)?;
-            // What the commit saved is what the session holds now: its commands run in turn,
-            // so none has changed it since.
-            let saved = committed
-                .written
-                .then(|| Arc::clone(&lock(&self.held).gated));
+            let (committed, saved) = self.commit_candidate(candidate, read, claim)?;
             (Some(committed), saved)
         };
         Ok(Edited {

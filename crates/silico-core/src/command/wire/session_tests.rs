@@ -398,6 +398,64 @@ fn a_feature_is_written_as_the_documents_canonical_form_writes_it() {
 }
 
 #[test]
+fn set_fields_edges_are_laid_out_as_the_feature_writer_lays_out_a_fillets() {
+    let fillet = feature(
+        r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"], "radius": 2}"#,
+    );
+    let names = |text: &str| Plain::of(&read(text.as_bytes()).unwrap());
+    let set = FieldSet {
+        feature: FeatureId::new("f0000001").unwrap(),
+        field: "edges".to_owned(),
+        before: names(r#"["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"]"#),
+        after: names(r#"["k7f2qx3m.box.Edge1"]"#),
+        changed: true,
+        commit: None,
+    };
+    let result = written(&set);
+    // By hand: a name a line, as the document holds a fillet's edges.
+    assert_eq!(
+        result,
+        "{\n  \"feature\": \"f0000001\",\n  \"field\": \"edges\",\n  \"before\": [\n    \"k7f2qx3m.box.Edge1\",\n    \"k7f2qx3m.box.Edge5\"\n  ],\n  \"after\": [\n    \"k7f2qx3m.box.Edge1\"\n  ],\n  \"changed\": true,\n  \"commit\": null\n}\n"
+    );
+    holds("set_field", &result);
+    // The fillet's edges as its feature writes them, a member of an object at the same depth
+    // as before is: the same bytes.
+    let feature = write(&Json::feature(&fillet), Layout::Canonical).unwrap();
+    let member = |text: &str, key: &str| {
+        let start = text.find(&format!("\n  \"{key}\": ")).unwrap() + key.len() + 7;
+        let end = start + text[start..].find("\n  ]").unwrap() + "\n  ]".len();
+        text[start..end].to_owned()
+    };
+    assert_eq!(member(&result, "before"), member(&feature, "edges"));
+    // Any other list on one line, as the feature writer writes a box's position, and so the
+    // whole result, holding no object; one edge, a string; and on one line, the same names.
+    let position = FieldSet {
+        field: "position".to_owned(),
+        before: names("[0, 0, 0]"),
+        after: names("[0, 0, 5]"),
+        ..set.clone()
+    };
+    assert_eq!(
+        written(&position),
+        "{\"feature\": \"f0000001\", \"field\": \"position\", \"before\": [0, 0, 0], \"after\": [0, 0, 5], \"changed\": true, \"commit\": null}\n"
+    );
+    let one = FieldSet {
+        field: "edges.0".to_owned(),
+        before: names(r#""k7f2qx3m.box.Edge1""#),
+        after: names(r#""k7f2qx3m.box.Edge2""#),
+        ..set.clone()
+    };
+    assert_eq!(
+        written(&one),
+        "{\"feature\": \"f0000001\", \"field\": \"edges.0\", \"before\": \"k7f2qx3m.box.Edge1\", \"after\": \"k7f2qx3m.box.Edge2\", \"changed\": true, \"commit\": null}\n"
+    );
+    assert_eq!(
+        write(&set.to_wire(), Layout::OneLine).unwrap(),
+        r#"{"feature": "f0000001", "field": "edges", "before": ["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"], "after": ["k7f2qx3m.box.Edge1"], "changed": true, "commit": null}"#
+    );
+}
+
+#[test]
 fn a_requests_value_is_taken_whole_whatever_it_is_and_required() {
     let node = read(br#"{"value": null, "feature": {"type": "box", "extra": [1]}}"#).unwrap();
     let (value, feature) = RequestFields::read(&node, |f| {

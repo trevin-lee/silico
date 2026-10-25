@@ -11,7 +11,8 @@
 //! Values are written as the document is, by its canonical writer (M2.1's D7), or on one
 //! line for a transport that takes one message a line ([`Layout::OneLine`]): a feature by the
 //! document's own feature writer ([`Json::feature`]), a value of the document's as it holds
-//! it ([`Json::plain`]), and a request's value as it was read ([`Json::node`], taken whole by
+//! it ([`Json::plain`]; a feature's field as the document lays it out, [`Json::field`]), and
+//! a request's value as it was read ([`Json::node`], taken whole by
 //! [`RequestFields::node`] for the document's reader to read).
 //!
 //! The builders and readers are public for the core's command modules, which build their
@@ -145,10 +146,24 @@ impl<'a> Json<'a> {
     }
 
     /// A value of a document's, as a command gives it back (`set_field`'s field before and
-    /// after): each object's members in their order, each number as its text is written,
+    /// after, through [`field`](Json::field)): each object's members in their order, each number as its text is written,
     /// and strings escaped as every string is.
     pub fn plain(value: &'a Plain) -> Self {
         Json(walked(value))
+    }
+
+    /// A feature's field `field` (a path, as `set_field` names one), `value` its value
+    /// before or after an edit, laid out as the document's canonical form lays it out: a
+    /// fillet's or a chamfer's `edges` a name to a line ([`write::NAMES_FIELD`]), as
+    /// [`feature`](Json::feature) writes them; any other value as [`plain`](Json::plain)
+    /// writes it.
+    pub fn field(field: &str, value: &'a Plain) -> Self {
+        match value {
+            Plain::Array(items) if field == write::NAMES_FIELD => {
+                Json(Out::Lines(items.iter().map(walked).collect()))
+            }
+            _ => Json::plain(value),
+        }
     }
 
     /// A request's value as it was read (`add_feature`'s feature, `set_field`'s value),
@@ -1017,17 +1032,13 @@ impl<'a> RequestFields<'a> {
     /// missing or isn't an object, as [`object`](RequestFields::object) refuses one.
     pub fn whole_object(&mut self, key: &str) -> Option<&'a Node> {
         let node = self.take(key)?;
-        if let Value::Object(_) = node.value {
-            return Some(node);
+        match RequestFields::of(node, join(&self.path, key)) {
+            Ok(_) => Some(node),
+            Err(refused) => {
+                self.refused.refuse_with(|| refused);
+                None
+            }
         }
-        self.refused.refuse_with(|| {
-            let at = join(&self.path, key);
-            invalid(
-                &at,
-                format!("{at} must be an object, got {}", node.value.kind()),
-            )
-        });
-        None
     }
 
     /// The object at `key`, read by `read` as the request is: its refusals, and any of its
