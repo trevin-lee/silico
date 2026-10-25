@@ -294,6 +294,38 @@ fn inside_a_transaction_an_edits_commit_and_replaced_text_are_null() {
 }
 
 #[test]
+fn an_added_features_commit_is_written_outside_a_transaction() {
+    let added = Added {
+        feature: feature(
+            r#"{"id": "b0000001", "type": "sphere", "v": 1, "name": "S", "position": [0, 0, 0], "radius": 1}"#,
+        ),
+        changed: true,
+        commit: Some(committed(&["b0000001"], &[])),
+    };
+    let value: serde_json::Value = serde_json::from_str(&written(&added)).unwrap();
+    assert_eq!(value["commit"]["refingerprinted"], serde_json::json!(["b0000001"]));
+    assert_eq!(value["commit"]["written"], true);
+    holds("add_feature", &written(&added));
+}
+
+#[test]
+fn a_boolean_fields_before_and_after_are_each_its_own() {
+    let set = FieldSet {
+        feature: FeatureId::new("p0000001").unwrap(),
+        field: "extent.reversed".to_owned(),
+        before: Plain::Bool(false),
+        after: Plain::Bool(true),
+        changed: true,
+        commit: None,
+    };
+    assert_eq!(
+        write(&set.to_wire(), Layout::OneLine).unwrap(),
+        r#"{"feature": "p0000001", "field": "extent.reversed", "before": false, "after": true, "changed": true, "commit": null}"#
+    );
+    holds("set_field", &written(&set));
+}
+
+#[test]
 fn a_documents_value_is_written_in_its_order_with_its_numbers_as_written() {
     // By hand: members as given, never sorted; numbers' text as it is (`1e3`, `2.50`), and
     // strings escaped as every string is.
