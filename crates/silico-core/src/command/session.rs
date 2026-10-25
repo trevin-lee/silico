@@ -3644,4 +3644,20 @@ mod tests {
         );
         assert_eq!(f.file(), STORED);
     }
+
+    #[test]
+    fn a_rollback_of_a_closed_session_starts_no_rebuild() {
+        // A rebuild started in the transaction, so a rollback would start the restored
+        // document's; but the session has closed (its sessions dropped, say): none starts.
+        let f = opened(BOX);
+        f.begin();
+        f.edit(SPHERE);
+        assert!(f.sessions.check(&f.id).wait().result.unwrap().is_empty());
+        let session = f.session();
+        session.close();
+        let calls = f.kernel.calls().len();
+        session.rollback().unwrap();
+        assert_eq!(lock(&session.rebuilds).running, None);
+        assert_eq!(f.kernel.calls().len(), calls);
+    }
 }
