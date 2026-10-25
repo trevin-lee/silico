@@ -659,11 +659,11 @@ fn schema_answers_the_document_and_each_command_as_committed() {
     }
     assert_eq!(
         schema("documents").unwrap_err().errors()[0].message(),
-        "of must be document or a command with a schema, got documents"
+        "of must be document or the name of a command with a schema, got documents"
     );
     assert_eq!(
         schema("query ").unwrap_err().errors()[0].message(),
-        r#"of must be document or a command with a schema, got "query ""#
+        r#"of must be document or the name of a command with a schema, got "query ""#
     );
 }
 
