@@ -106,7 +106,7 @@ use threads::{Counted, Reads, Threads};
 use transaction::{Claim, Held, Reload, Rereads, transaction_open};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
-    Added, Begun, Cancelled, Committed, FieldSet, ModelChoice, ModelRead, Opened, Published, Read,
+    Added, Begun, Cancelled, Committed, FieldSet, ModelChoice, ModelRead, Opened, Published, Read, ReadClient,
     Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
     SessionId, SessionInfo, Status, Stopper,
 };
@@ -145,7 +145,7 @@ struct Session<C: Kernel + 'static> {
     rebuilds: Mutex<Rebuilds<C>>,
     /// A rebuild ended: told to the command waiting on it.
     rebuilt: Condvar,
-    /// Its published reads.
+    /// Its reads: the published ones' threads, and every read's kernel client.
     reads: Mutex<Reads>,
     /// The queued command running, if one is: its stop, which `cancel` finds here.
     command: Mutex<Option<Arc<Ticket>>>,
@@ -592,16 +592,22 @@ impl<P: Clients + 'static> Sessions<P> {
         session: &SessionId,
         command: &'static str,
         choice: ModelChoice,
-        read: impl FnOnce(Read<'_>) -> Result<T, Problems> + Send + 'static,
+        read: impl FnOnce(Read<'_, P::Client>) -> Result<T, Problems> + Send + 'static,
     ) -> Running<T> {
+        // The read's own client, made as it's asked for and dropped when it returns, its stop
+        // able to retire it if it's cancelled or its session closes first.
+        let kernel: Arc<ReadClient<P::Client>> =
+            Arc::new(ReadClient::new(self.registry.kernel.client()));
         match choice {
             ModelChoice::Current => self.queued(session, command, move |session, stop, model| {
+                stop.interrupt_with(Arc::downgrade(&kernel) as Weak<dyn Interrupt>);
                 let current = session.current(stop).map_err(Unbuilt::problems)?;
                 *model = Some(current.read.clone());
                 read(Read {
                     model: &current.model,
                     read: current.read,
                     stop,
+                    kernel: &kernel,
                 })
             }),
             ModelChoice::Published => {
@@ -643,6 +649,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 let session = Arc::clone(&found);
                 let ticket = Ticket::new(command);
                 let counted = Counted::count(unanswered, &ticket);
+                ticket.interrupt_with(Arc::downgrade(&kernel) as Weak<dyn Interrupt>);
                 let stop = Arc::clone(&ticket);
                 let started = std::thread::Builder::new()
                     .name(format!("session-{}-read", found.id))
@@ -664,6 +671,7 @@ impl<P: Clients + 'static> Sessions<P> {
                                         model: &published.model,
                                         read: model,
                                         stop: &stop,
+                                        kernel: &kernel,
                                     })
                                 })
                             },

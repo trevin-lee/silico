@@ -8,7 +8,8 @@ use crate::document::Checked;
 use crate::document::Measure;
 use crate::fake::{FakeClient, FakeKernel};
 use crate::file;
-use crate::kernel::{Op, Primitive};
+use crate::kernel::{Kernel, KernelRequest, Op, Primitive};
+use crate::pool::Outcome;
 use crate::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
@@ -145,7 +146,7 @@ fn at_two(
 
 /// A read that gives the volume of the one feature its model was built from, and what it
 /// read.
-fn volume(read: Read<'_>) -> Result<(Measure, ModelRead), Problems> {
+fn volume<C>(read: Read<'_, C>) -> Result<(Measure, ModelRead), Problems> {
     let feature = &read.model().document().features[0].id;
     let fingerprint = read.model().fingerprint(feature).unwrap();
     Ok((fingerprint.volume, read.model_read().clone()))
@@ -2443,4 +2444,38 @@ fn a_format_that_writes_a_solve_publishes_no_model_and_the_next_check_solves_aga
     assert_eq!(sketches.requests().len(), solved + 1);
     assert_eq!(checked.model.unwrap().revision, saved);
     assert!(checked.result.unwrap().is_empty());
+}
+
+#[test]
+fn a_reads_client_interrupted_by_its_stop_is_superseded_and_one_added_after_at_once() {
+    // M4.5's distance: a read's own kernel client, given to its stop, is retired when the
+    // read is cancelled or its session closes, and one given after either at once (found by
+    // the tests review: a published read can register its client after its session's close
+    // has stopped the rest). One given before answers until then.
+    let kernel = FakeKernel::new(1).unwrap();
+    let make = || {
+        KernelRequest::make(Primitive::Box {
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        })
+        .unwrap()
+    };
+    for why in [Why::Closed, Why::Cancelled] {
+        let stop = Ticket::new("distance");
+        let before = Arc::new(ReadClient::new(kernel.client()));
+        stop.interrupt_with(Arc::downgrade(&before) as Weak<dyn Interrupt>);
+        let asked = before.submit(before.generation(), make()).wait();
+        assert!(matches!(asked, Outcome::Done(Ok(_))), "{why:?} {asked:?}");
+        match why {
+            Why::Closed => stop.close(),
+            Why::Cancelled => assert!(stop.cancel()),
+        }
+        let asked = before.submit(before.generation(), make()).wait();
+        assert!(matches!(asked, Outcome::Superseded), "{why:?} {asked:?}");
+        let after = Arc::new(ReadClient::new(kernel.client()));
+        stop.interrupt_with(Arc::downgrade(&after) as Weak<dyn Interrupt>);
+        let asked = after.submit(after.generation(), make()).wait();
+        assert!(matches!(asked, Outcome::Superseded), "{why:?} {asked:?}");
+    }
 }

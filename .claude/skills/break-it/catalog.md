@@ -15,6 +15,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Derived measures in fixed point sized for their inputs' units (millionths of a mm³ in an i64 hold 9.2e12 mm³, a cube 21 m on a side, while the gate admits 1 km sides): take the largest values the gate admits through every derived quantity (volume, area, products of lengths)
 - Absolute tolerances on quantities that scale with the part (OCCT's `GeomLib::NormEstim` orients a pole's or apex's normal only when \|dP/du × dP/dv\| a 1e-5 step away is over 1e-8): a ball under 0.0316 mm radius or a cone slenderer than 1:1000 gets a normal pointing into the solid
 - Two rules composed into a third (a direction within 4ε of unit length times a length up to the limit, then checked as a vector at most the limit): the product lands a few ulps past it and is refused naming a parameter the caller never sent; search the boundary with `next_up`/`next_down`
+- Parallel tests by an exact zero (a cross product `== 0.0`) beside others at a rounded tolerance (an angle of 0 at the nanodegree): two axes an ulp from parallel are taken as skew and their distance across the cross product is 0 (coplanar lines that cross 5e16 mm away); end one sketch line of a revolve's axis an ulp off
 - Refusals written as `change <= k * before`: NaN makes every comparison false, so the refusal is skipped; an infinite result or a negative (inverted) base passes too
 - Angles from `atan2` at a signed zero (a point at its centre's left with y = −0 gives −π, +0 gives π): a request whose points are placed with zeros as 0 still differs by a turn, and the kernel's bytes with it
 - One rule computed twice, by the core and again by a worker (a sliver's |area| ≤ tol × perimeter about different first points, sqrt against hypot): bisect a turned thin strip's width to the core's boundary and send it; a shoelace sum of coordinates ~10 cancels to ~1e-8 relative
@@ -176,6 +177,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Strict request readers that keep every refusal and list only the first hundred: an 8 MB list of 4 million bad members holds 4 million errors (a 1.4 GB peak); count past the listed ones
 - Schemas generated from `Option` fields (schemars) leave them out of `required` though the response always has them; `#[schemars(required)]` drops their `null` instead
 - Refused words shown bare when they're plain (`got solid`): a string that spells a JSON literal or number (`"null"`, `"3"`) is refused in the same words as the value itself, and a nullable word's refusal that lists only its words tells an agent `null` is wrong; send each beside the value it spells
+- Refusals read through another command's helper that names its own request's field (`elements::entries` names `feature`): from a request whose `feature` was null, the error names a field the caller never set, and is said once per element of the same solid
+- A refusal branch for a kind no element map holds (a solid's name, `box.Solid1`): the dedicated refusal is dead, and the name is "not found" with no candidates, its suggestion still pointing at candidates
 - Snapshots' integers (`"type": "integer"`) against a reader that takes digits only: JSON Schema calls `2.0` and `1e3` integers, and a `uint64` with no `maximum` takes 2^64, so a request the schema validates is refused; validate each refused spelling against the snapshot
 
 ## Kernel worker and IPC
@@ -228,6 +231,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A reference process that hangs (no deadline), and a crash partway through a batch on either side: later cases must still run in a fresh process
 - No cases at all (an empty directory, `--count 0`): a harness that compared nothing must not exit 0
 - Answers claimed symmetric in their arguments from a solver that isn't (OCCT's `BRepExtrema_DistShapeShape` on two spheres, two conics, two faces of a real part): call with the arguments swapped and compare bits; a witness picked as the first of whatever pairs the solver found moves 47 mm on NIST CTC 01, and the distance by an ulp
+- Measures of a pair defined by an order ("the second's point to the first's carrier"): a line and a plane parallel to it measure the plane's centre from the line one way round and the line from the plane the other; call every mixed pair (line and plane, point and line) both ways
 
 ## Import
 

@@ -460,6 +460,19 @@ impl Name {
         }
     }
 
+    /// The feature named in it, first: for a modified element, its source's (it's written
+    /// as that name), not the feature that modified it; for a duplicate, its name's.
+    pub fn feature(&self) -> &FeatureId {
+        match self {
+            Name::Element { feature, .. }
+            | Name::Derived { feature, .. }
+            | Name::Upper { feature, .. }
+            | Name::Lower { feature, .. }
+            | Name::Sketch { feature, .. } => feature,
+            Name::Duplicate { name, .. } | Name::Modified { name, .. } => name.feature(),
+        }
+    }
+
     /// The name it's equal to: a modified element that's its source's only result is its
     /// source's name.
     fn identity(&self) -> &Name {

@@ -39,7 +39,8 @@ pub trait Kernel: Send + Sync {
     fn identity(&self) -> &str;
 
     /// The generation this client's requests are for: the newest [`advance`](Self::advance)
-    /// started.
+    /// started, or, for a client held to the one it began at (a read's,
+    /// [`ReadClient`](crate::command::ReadClient)), that one, however far it's advanced.
     fn generation(&self) -> Generation;
 
     /// Starts `generation` for this client, superseding every older one of its own. A
