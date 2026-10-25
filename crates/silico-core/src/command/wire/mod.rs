@@ -21,9 +21,13 @@
 //! snapshot is generated from, each with `#[schemars(transform = wire_shape)]`, a name an
 //! agent reads (`#[schemars(rename = "...")]`), and doc comments written for agents, since
 //! each becomes its schema's description. Each command's snapshot is
-//! `{"request": S, "result": S}`, two standalone root schemas (each with its own `$defs`, as
-//! MCP's `inputSchema` and `outputSchema` take them), added with the command's wire types
-//! ([`COMMANDS`]: [`elements`], for `elements` and `query`, and [`schema`]).
+//! `{"request": S, "result": S}`, two standalone root schemas, each with its own `$defs`:
+//! the request's, which is what a call's arguments are (MCP's `inputSchema`); and the
+//! result's, which is the envelope's `result` when the command runs, not the whole envelope,
+//! so not by itself what MCP's `outputSchema` checks `structuredContent`, the envelope,
+//! against (that is M4.9's to build from these and the envelope's). Each is added with the
+//! command's wire types ([`COMMANDS`]: [`elements`], for `elements` and `query`, and
+//! [`schema`]).
 
 use std::fmt;
 
@@ -790,23 +794,11 @@ impl<'a> RequestFields<'a> {
 
     /// Which model a read takes (decision 33): `current` or `published`.
     pub fn model(&mut self) -> Option<ModelChoice> {
-        let node = self.take("model")?;
-        let choice = match &node.value {
-            Value::String(text) => ModelChoice::ALL.into_iter().find(|c| c.as_str() == text),
-            _ => None,
-        };
-        if choice.is_none() {
-            self.refused.refuse_with(|| {
-                let at = join(&self.path, "model");
-                let names = ModelChoice::ALL.map(ModelChoice::as_str);
-                invalid(
-                    &at,
-                    format!("{at} must be {}, got {}", names.join(" or "), written(node)),
-                )
-                .with_candidates(names)
-            });
-        }
-        choice
+        self.word(
+            "model",
+            &ModelChoice::ALL.map(|c| (c.as_str(), c)),
+            "models",
+        )
     }
 
     /// A feature's ID.
