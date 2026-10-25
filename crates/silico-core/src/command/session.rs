@@ -47,7 +47,7 @@ use std::fmt;
 use std::io::Write as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::thread::JoinHandle;
@@ -297,10 +297,11 @@ pub struct RolledBack {
 
 /// What `format` did (decision 31): whether its canonical text differs from the file (as
 /// the session last read or wrote it: a change made outside the session since isn't seen
-/// until sessions reload their files, decision 2), whether it wrote it, the path as `open` was given it, the features whose fingerprints it
-/// wrote (or, not writing, would write) anew and the sketches whose solves, the features
-/// among them whose drift it accepted, each in timeline order, and what it can't fix:
-/// failed features, solids that couldn't be measured, and the drift it didn't accept.
+/// until sessions reload their files, decision 2), whether it wrote it, the path as `open`
+/// was given it, the features whose fingerprints it wrote (or, not writing, would write)
+/// anew and the sketches whose solves, the features among them whose drift it accepted,
+/// each in timeline order, and what it can't fix: failed features, solids that couldn't be
+/// measured, and the drift it didn't accept.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reformatted {
     pub changed: bool,
@@ -323,9 +324,10 @@ pub struct Status {
 /// A process's open sessions, on one kernel: each session's commands are run on its own
 /// thread, in turn, on its own client of `kernel`. Dropping it closes every session,
 /// stopping its rebuild and leaving its file as it was (an open transaction is rolled back:
-/// only a commit or `format` writes), and waits for each session's thread to end, then for the threads
-/// watching its rebuilds and running its published reads, a session's closed before the
-/// drop too (a read blocked in its own code keeps the drop waiting until it returns).
+/// only a commit or `format` writes), and waits for each session's thread to end, then for
+/// the threads watching its rebuilds and running its published reads, a session's closed
+/// before the drop too (a read blocked in its own code keeps the drop waiting until it
+/// returns).
 pub struct Sessions<P: Clients + 'static> {
     registry: Arc<Registry<P>>,
 }
@@ -526,23 +528,54 @@ impl Drop for Unanswered {
 /// session's command stops rather than rebuilding again.
 struct Rebuilds<C: Kernel + 'static> {
     engine: Recompute<C>,
-    /// The revision whose rebuild is running, if one is.
-    running: Option<Revision>,
+    /// The rebuild running, if one is, labelled with the revision its model is of.
+    running: Option<Label>,
     /// The newest model the session's rebuilds published.
     published: Option<Published>,
     /// The last rebuild whose recompute failed (a bug), until another starts.
     failed: Option<Failed>,
     /// While a transaction is open, the models `begin` saw: what a rollback restores.
     kept: Option<Kept>,
-    /// A rebuild running for one revision that a rollback gave to the new revision whose
-    /// state equals it: `(from, to)`, so its watcher records what it comes to as `to`'s.
-    relabel: Option<(Revision, Revision)>,
     /// No model of a revision before this one is published: a rollback's, so a rebuild of
     /// the transaction's documents that ends after it never takes the restored state's place.
     floor: Revision,
     /// The threads watching the rebuilds started: those ended joined as the next starts,
     /// the rest by `Sessions::drop`, for the sessions open then.
     watchers: Threads,
+}
+
+impl<C: Kernel + 'static> Rebuilds<C> {
+    /// The revision whose rebuild is running, if one is.
+    fn running(&self) -> Option<Revision> {
+        self.running.as_ref().map(Label::revision)
+    }
+}
+
+/// The revision a rebuild's model is of: shared by the session's rebuilds, while it's the
+/// one running, and the thread watching it, so a rollback that gives the rebuild to the new
+/// revision whose state equals its own gives it for good, however many rollbacks give it on
+/// before it ends. Read and given only under the rebuilds' lock.
+#[derive(Clone)]
+struct Label(Arc<AtomicU64>);
+
+impl Label {
+    fn new(revision: Revision) -> Self {
+        Label(Arc::new(AtomicU64::new(revision.0)))
+    }
+
+    fn revision(&self) -> Revision {
+        Revision(self.0.load(Ordering::SeqCst))
+    }
+
+    /// The rebuild given to `revision`: what it makes is that revision's.
+    fn give(&self, revision: Revision) {
+        self.0.store(revision.0, Ordering::SeqCst);
+    }
+
+    /// Whether `other` is this rebuild's label.
+    fn is(&self, other: &Label) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// The models a transaction's `begin` saw, kept with the session's rebuilds (whose lock a
@@ -606,6 +639,9 @@ struct Snapshot {
     gated: Arc<Gated>,
     revision: Revision,
     carried: Arc<BTreeSet<FeatureId>>,
+    /// If its text didn't read as a document, the IDs it holds, found once, at `begin`,
+    /// for what the transaction's edits reach ([`Reaching`]); none if it read.
+    quoted: Arc<document::QuotedIds>,
 }
 
 impl Held {
@@ -638,7 +674,27 @@ impl Held {
         self.carried = carried;
     }
 
-    /// What the session's edits reach now (the design's section 5, decision 28), net: the
+    /// What the session's edits reach now, taken under the lock, to be worked out
+    /// ([`Reaching::reach`]) once it's let go.
+    fn reaching(&self) -> Reaching {
+        Reaching {
+            gated: Arc::clone(&self.gated),
+            carried: Arc::clone(&self.carried),
+            begun: self.transaction.clone(),
+        }
+    }
+}
+
+/// What a session's edits reach at a revision, as its held state was then: its document,
+/// what was carried, and the transaction's snapshot, if one was open.
+struct Reaching {
+    gated: Arc<Gated>,
+    carried: Arc<BTreeSet<FeatureId>>,
+    begun: Option<Snapshot>,
+}
+
+impl Reaching {
+    /// What the session's edits reach (the design's section 5, decision 28), net: the
     /// features they changed since the transaction began, compared by ID with the document
     /// `begin` saw (or, if that didn't read, those with IDs its text hasn't), with those
     /// carried from before, and every feature that uses one (`document::net_reach`). An
@@ -648,12 +704,12 @@ impl Held {
         let Ok(now) = self.gated.document() else {
             return (*self.carried).clone();
         };
-        let Some(begun) = &self.transaction else {
+        let Some(begun) = &self.begun else {
             return document::with_users(now, &self.carried);
         };
         let before = match begun.gated.document() {
             Ok(before) => document::Before::Read(before),
-            Err(_) => document::Before::Unread(&begun.text),
+            Err(_) => document::Before::Unread(&begun.quoted),
         };
         document::net_reach(before, &self.carried, now)
     }
@@ -705,7 +761,7 @@ impl<C: Kernel + 'static> Session<C> {
             {
                 return Ok(Arc::clone(&published.model));
             }
-            if rebuilds.running == Some(revision) {
+            if rebuilds.running() == Some(revision) {
                 rebuilds = self
                     .rebuilt
                     .wait(rebuilds)
@@ -754,7 +810,7 @@ impl<C: Kernel + 'static> Session<C> {
         if self.closed() {
             return Err(Problems::from(not_open(self.id)));
         }
-        if rebuilds.running.is_some_and(|running| running > revision)
+        if rebuilds.running().is_some_and(|running| running > revision)
             || rebuilds
                 .published
                 .as_ref()
@@ -764,7 +820,8 @@ impl<C: Kernel + 'static> Session<C> {
         }
         rebuilds.watchers.reap();
         let run = rebuilds.engine.start(Arc::clone(checked));
-        rebuilds.running = Some(revision);
+        let label = Label::new(revision);
+        rebuilds.running = Some(label.clone());
         rebuilds.failed = None;
         if let Some(kept) = &mut rebuilds.kept {
             kept.started = true;
@@ -772,7 +829,7 @@ impl<C: Kernel + 'static> Session<C> {
         let session = Arc::downgrade(self);
         match std::thread::Builder::new()
             .name(format!("session-{}-rebuild", self.id))
-            .spawn(move || watch(&session, revision, run))
+            .spawn(move || watch(&session, &label, run))
         {
             Ok(watcher) => {
                 rebuilds.watchers.push(watcher);
@@ -790,14 +847,15 @@ impl<C: Kernel + 'static> Session<C> {
     }
 
     /// The current revision's model, waited for ([`model`](Self::model)), what was read,
-    /// and what the session's edits reach at that revision ([`Held::reach`]); or why there's
-    /// none: the gate refused the document (its problems, the document's, which a check
-    /// gives as its result), or the model couldn't be had.
+    /// and what the session's edits reach at that revision ([`Reaching::reach`]); or why
+    /// there's none: the gate refused the document (its problems, the document's, which a
+    /// check gives as its result), or the model couldn't be had.
     fn current(self: &Arc<Self>) -> Result<Current, Unbuilt> {
-        let (revision, gated, reached) = {
+        let (revision, gated, reaching) = {
             let held = lock(&self.held);
-            (held.revision, Arc::clone(&held.gated), held.reach())
+            (held.revision, Arc::clone(&held.gated), held.reaching())
         };
+        let reached = reaching.reach();
         match &*gated {
             Gated::Checked(checked) => self
                 .model(revision, checked)
@@ -863,7 +921,7 @@ impl<C: Kernel + 'static> Session<C> {
             .filter(|failed| failed.revision == revision)
             .map(|failed| failed.why.clone());
         if failed.is_none()
-            && rebuilds.running != Some(revision)
+            && rebuilds.running() != Some(revision)
             && rebuilds
                 .published
                 .as_ref()
@@ -963,11 +1021,17 @@ impl<C: Kernel + 'static> Session<C> {
             started: false,
         });
         drop(rebuilds);
+        // A text that didn't read is scanned once, here, for the IDs it holds.
+        let quoted = match held.gated.document() {
+            Ok(_) => document::QuotedIds::default(),
+            Err(_) => document::QuotedIds::of(&held.text),
+        };
         held.transaction = Some(Snapshot {
             text: Arc::clone(&held.text),
             gated: Arc::clone(&held.gated),
             revision,
             carried: Arc::clone(&held.carried),
+            quoted: Arc::new(quoted),
         });
         Ok(Begun { base: revision })
     }
@@ -1005,10 +1069,12 @@ impl<C: Kernel + 'static> Session<C> {
         );
         rebuilds.floor = revision;
         rebuilds.published = kept.published;
-        if rebuilds.running == Some(kept.base) && kept.model.is_none() {
+        if let Some(running) = &rebuilds.running
+            && running.revision() == kept.base
+            && kept.model.is_none()
+        {
             // `begin`'s own rebuild, still running: what it makes is the new revision's.
-            rebuilds.running = Some(revision);
-            rebuilds.relabel = Some((kept.base, revision));
+            running.give(revision);
         } else {
             // The transaction's: no command wants it now.
             if rebuilds.running.take().is_some() {
@@ -1041,7 +1107,7 @@ impl<C: Kernel + 'static> Session<C> {
 
     /// `commit`: the current revision's rebuild waited for, then the document saved in
     /// canonical form through `file::save`, with new fingerprints and solves for what the
-    /// transaction's edits reach ([`Held::reach`]) and every other feature's as stored
+    /// transaction's edits reach ([`Reaching::reach`]) and every other feature's as stored
     /// (decision 28), its new file claimed with `claim`; the transaction ended, and the
     /// session at a new revision, its saved text, with only the reached features whose
     /// records couldn't be written still carried. A document equal to the one `begin` saw is
@@ -1054,7 +1120,7 @@ impl<C: Kernel + 'static> Session<C> {
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
     ) -> Result<Committed, Problems> {
-        let (path, text, gated, revision, reach, begun) = {
+        let (path, text, gated, revision, reaching, begun) = {
             let held = lock(&self.held);
             let begun = self.transaction(&held)?;
             (
@@ -1062,10 +1128,11 @@ impl<C: Kernel + 'static> Session<C> {
                 Arc::clone(&held.text),
                 Arc::clone(&held.gated),
                 held.revision,
-                held.reach(),
+                held.reaching(),
                 begun,
             )
         };
+        let reach = reaching.reach();
         let unchanged = match (begun.gated.document(), gated.document()) {
             (Ok(before), Ok(now)) => before == now,
             _ => begun.text == text,
@@ -1165,7 +1232,7 @@ impl<C: Kernel + 'static> Session<C> {
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
     ) -> Result<Reformatted, Problems> {
-        let (path, bytes, gated, revision, reach) = {
+        let (path, bytes, gated, revision, reaching) = {
             let held = lock(&self.held);
             if held.transaction.is_some() {
                 return Err(Problems::from(transaction_open(self.id, "format")));
@@ -1175,9 +1242,10 @@ impl<C: Kernel + 'static> Session<C> {
                 Arc::clone(&held.bytes),
                 Arc::clone(&held.gated),
                 held.revision,
-                held.reach(),
+                held.reaching(),
             )
         };
+        let reach = reaching.reach();
         let checked = match &*gated {
             Gated::Checked(checked) => checked,
             refused => return Err(refused.problems()),
@@ -1282,24 +1350,29 @@ impl<C: Kernel + 'static> Session<C> {
         if let Some(old) = &lock(&self.held).part_written {
             return Err(Problems::from(part_written(path, old)));
         }
-        file::save_over(resolved, bytes, text).map_err(|unsaved| {
-            if let Some(old) = unsaved.old_text_in {
-                lock(&self.held).part_written = Some(old);
-            }
-            let error = unsaved.error;
-            Problems::from(if error.code() == ErrorCode::Conflict {
-                Error::new(
-                    ErrorCode::Conflict,
-                    format!(
-                        "{} changed outside this session since it was read",
-                        shown(Path::new(path))
-                    ),
-                )
-                .with_parameter("path")
-                .with_suggestion(CONFLICT)
-            } else {
-                error.with_parameter("path")
-            })
+        file::save_over(resolved, bytes, text).map_err(|unsaved| self.unsaved(path, unsaved))
+    }
+
+    /// The refusal of a save of the document at `path` (as `open` was given it) that failed,
+    /// as `unsaved` says: a conflict, naming the file, or why it couldn't be written; and, if
+    /// it left the file part written, that marked, for the next save to say.
+    fn unsaved(&self, path: &str, unsaved: file::Unsaved) -> Problems {
+        if let Some(old) = unsaved.old_text_in {
+            lock(&self.held).part_written = Some(old);
+        }
+        let error = unsaved.error;
+        Problems::from(if error.code() == ErrorCode::Conflict {
+            Error::new(
+                ErrorCode::Conflict,
+                format!(
+                    "{} changed outside this session since it was read",
+                    shown(Path::new(path))
+                ),
+            )
+            .with_parameter("path")
+            .with_suggestion(CONFLICT)
+        } else {
+            error.with_parameter("path")
         })
     }
 }
@@ -1457,22 +1530,22 @@ fn nothing_published(id: SessionId) -> Error {
     )
 }
 
-/// Waits for `revision`'s rebuild, then records what it came to in `session`'s rebuilds and
-/// says so, if the session is still there: as the revision a rollback gave it to, if one did.
-fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, revision: Revision, run: Run) {
+/// Waits for a rebuild, `run`, then records what it came to in `session`'s rebuilds and
+/// says so, if the session is still there: as the revision its `label` says now (the last a
+/// rollback gave it to, if any did); and, if it's still the rebuild running, as running no
+/// more (one stopped and started again, or another's since, is left running).
+fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Label, run: Run) {
     let outcome = run.wait();
     let Some(session) = session.upgrade() else {
         return;
     };
     let mut rebuilds = lock(&session.rebuilds);
-    let revision = match rebuilds.relabel {
-        Some((from, to)) if from == revision => {
-            rebuilds.relabel = None;
-            to
-        }
-        _ => revision,
-    };
-    if rebuilds.running == Some(revision) {
+    let revision = label.revision();
+    if rebuilds
+        .running
+        .as_ref()
+        .is_some_and(|running| running.is(label))
+    {
         rebuilds.running = None;
     }
     match outcome {
@@ -2083,7 +2156,6 @@ fn start<P: Clients + 'static>(
                 published: None,
                 failed: None,
                 kept: None,
-                relabel: None,
                 floor: Revision::OPENED,
                 watchers: Threads::new(),
             }),
@@ -2397,6 +2469,7 @@ mod tests {
     use crate::document::Measure;
     use crate::fake::{FakeClient, FakeKernel};
     use crate::kernel::{Op, Primitive};
+    use crate::recompute::FeatureOutcome;
 
     const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
     const SPHERE: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "a91cw0de", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5}]}"#;
@@ -2431,7 +2504,6 @@ mod tests {
                 published: None,
                 failed: None,
                 kept: None,
-                relabel: None,
                 floor: Revision::OPENED,
                 watchers: Threads::new(),
             }),
@@ -2463,7 +2535,7 @@ mod tests {
         let other = Recompute::new(kernel.client());
         watch(
             &Arc::downgrade(&session),
-            Revision::OPENED,
+            &Label::new(Revision::OPENED),
             other.start(checked(BOX)),
         );
         let published = lock(&session.rebuilds).published.clone().unwrap();
@@ -2476,7 +2548,7 @@ mod tests {
                 .start_unless_newer(&mut rebuilds, Revision::OPENED, &checked(BOX))
                 .unwrap()
         );
-        assert_eq!(rebuilds.running, None);
+        assert_eq!(rebuilds.running(), None);
     }
 
     #[test]
@@ -2547,7 +2619,7 @@ mod tests {
         // And it started revision 2's rebuild.
         let found = sessions.find(&id).unwrap();
         assert_eq!(
-            lock(&found.rebuilds).running,
+            lock(&found.rebuilds).running(),
             Some(Revision::OPENED.next().unwrap())
         );
     }
@@ -2620,21 +2692,21 @@ mod tests {
         let _hold = kernel.hold(|_| true);
         let mut rebuilds = lock(&session.rebuilds);
         // Revision 2's rebuild running (as recorded): revision 1's isn't started under it.
-        rebuilds.running = Some(Revision::OPENED.next().unwrap());
+        rebuilds.running = Some(Label::new(Revision::OPENED.next().unwrap()));
         assert!(
             !session
                 .start_unless_newer(&mut rebuilds, Revision::OPENED, &checked(BOX))
                 .unwrap()
         );
-        assert_eq!(rebuilds.running, Some(Revision::OPENED.next().unwrap()));
+        assert_eq!(rebuilds.running(), Some(Revision::OPENED.next().unwrap()));
         // Its own revision's running: started (as a check after a fault starts it again).
-        rebuilds.running = Some(Revision::OPENED);
+        rebuilds.running = Some(Label::new(Revision::OPENED));
         assert!(
             session
                 .start_unless_newer(&mut rebuilds, Revision::OPENED, &checked(BOX))
                 .unwrap()
         );
-        assert_eq!(rebuilds.running, Some(Revision::OPENED));
+        assert_eq!(rebuilds.running(), Some(Revision::OPENED));
         drop(rebuilds);
         assert!(kernel.wait_running(1, WAIT));
     }
@@ -2650,7 +2722,7 @@ mod tests {
             .unwrap();
         assert_eq!(read.revision, Revision::OPENED);
         assert!(Arc::ptr_eq(&read.model, &first));
-        assert_eq!(lock(&session.rebuilds).running, None);
+        assert_eq!(lock(&session.rebuilds).running(), None);
         // At revision 2, with only revision 1 published: revision 1's model, at once, and
         // revision 2's rebuild started (held, so it's seen running).
         let _hold = kernel.hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
@@ -2660,7 +2732,7 @@ mod tests {
         assert_eq!(read.revision, Revision::OPENED);
         assert!(Arc::ptr_eq(&read.model, &first));
         assert_eq!(
-            lock(&session.rebuilds).running,
+            lock(&session.rebuilds).running(),
             Some(Revision::OPENED.next().unwrap())
         );
     }
@@ -2725,7 +2797,7 @@ mod tests {
         let read = sessions.published(&id);
         assert_eq!(read.result.unwrap_err().errors()[0], nothing_published(id));
         // Nor does it start revision 1's rebuild, whose model would be older than one there.
-        assert_eq!(lock(&session.rebuilds).running, None);
+        assert_eq!(lock(&session.rebuilds).running(), None);
     }
 
     #[test]
@@ -2771,8 +2843,15 @@ mod tests {
 
     /// An edit's step, as the edits to come (`add_feature`, `set_field`, `replace_text`)
     /// make one: `text` through the gate, held as the session's document at a new revision
-    /// (what it reaches is the session's to work out, `Held::reach`); refused whole, the
+    /// (what it reaches is the session's to work out, `Reaching::reach`); refused whole, the
     /// session as it was, if the gate refuses it.
+    impl Held {
+        /// What the session's edits reach now ([`Reaching::reach`]).
+        fn reach(&self) -> BTreeSet<FeatureId> {
+            self.reaching().reach()
+        }
+    }
+
     impl<C: Kernel + 'static> Session<C> {
         fn edit(&self, text: &str) -> Result<Revision, Problems> {
             let gated = Gated::of(text.as_bytes());
@@ -3018,6 +3097,13 @@ mod tests {
             (session.revision, session.transaction),
             (Revision(4), false)
         );
+        // The commit's model, revision 3's, is revision 4's: the same document, so nothing
+        // is rebuilt for it.
+        assert_eq!(
+            f.sessions.published(&f.id).result.unwrap().revision,
+            Revision(4)
+        );
+        assert_eq!(lock(&f.session().rebuilds).running(), None);
         assert_eq!(f.sessions.text(&f.id, None).wait().result.unwrap(), STORED);
         assert!(lock(&f.session().held).reach().is_empty());
     }
@@ -3170,7 +3256,7 @@ mod tests {
         let response = f.sessions.rollback(&f.id).wait();
         assert_eq!(response.result.unwrap().restored, Revision(2));
         // The rollback started the restored document's rebuild, as revision 4's.
-        assert_eq!(lock(&f.session().rebuilds).running, Some(Revision(4)));
+        assert_eq!(lock(&f.session().rebuilds).running(), Some(Revision(4)));
         hold.release();
         let check = f.sessions.check(&f.id).wait();
         assert!(check.result.unwrap().is_empty());
@@ -3213,7 +3299,7 @@ mod tests {
         let published = f.sessions.published(&f.id).result.unwrap();
         assert_eq!(published.revision, Revision(4));
         assert!(Arc::ptr_eq(&published.model, &model));
-        assert_eq!(lock(&f.session().rebuilds).running, None);
+        assert_eq!(lock(&f.session().rebuilds).running(), None);
         assert_eq!(f.kernel.calls().len(), calls);
     }
 
@@ -3442,9 +3528,18 @@ mod tests {
             .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
         let _ = f.sessions.published(&f.id);
         assert!(f.kernel.wait_running(1, WAIT));
-        assert_eq!(lock(&f.session().rebuilds).running, Some(Revision(2)));
+        assert_eq!(lock(&f.session().rebuilds).running(), Some(Revision(2)));
         f.sessions.rollback(&f.id).wait().result.unwrap();
-        assert_eq!(lock(&f.session().rebuilds).running, None);
+        assert_eq!(lock(&f.session().rebuilds).running(), None);
+        // Stopped: the kernel's held sphere ends, though its hold is never released.
+        let deadline = std::time::Instant::now() + WAIT;
+        while f.kernel.wait_running(1, Duration::ZERO) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the transaction's rebuild still runs"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     /// [`BOX`] with a length of 0, which the gate refuses.
@@ -3533,11 +3628,101 @@ mod tests {
         assert_eq!(f.begin().base, Revision(2));
         f.edit(SPHERE);
         f.sessions.rollback(&f.id).wait().result.unwrap();
-        assert_eq!(lock(&f.session().rebuilds).running, Some(Revision(4)));
+        assert_eq!(lock(&f.session().rebuilds).running(), Some(Revision(4)));
         hold.release();
         let check = f.sessions.check(&f.id).wait();
         assert!(check.result.unwrap().is_empty());
         assert_eq!(check.model.unwrap().revision, Revision(4));
+        assert_eq!(f.made(is_cylinder), 1);
+    }
+
+    /// `f`'s check, which must answer within [`WAIT`]: if it doesn't (a revision left
+    /// running for good), the sessions are leaked rather than dropped, since their drop would
+    /// wait on the same rebuild, and the test fails rather than hangs.
+    fn check_in_time(f: Fixture) -> (Fixture, Response<Problems>) {
+        match f.sessions.check(&f.id).wait_timeout(WAIT) {
+            Ok(check) => (f, check),
+            Err(_) => {
+                std::mem::forget(f);
+                panic!("the check never answered: a revision is left running");
+            }
+        }
+    }
+
+    /// Revision 2's rebuild running, its pin held, when a transaction begins; then `rollbacks`
+    /// transactions rolled back in a row, each begun from the one before's new revision,
+    /// before the pin is released: the rebuild is each new revision's in turn, and its model
+    /// the last's (1 + `rollbacks` + 1, the edit's 2 and a revision for each rollback).
+    fn rollbacks_while_begins_rebuild_runs(rollbacks: u64) {
+        let f = opened(BOX);
+        assert!(f.sessions.check(&f.id).wait().result.unwrap().is_empty());
+        f.edit(BOX_AND_PIN);
+        let hold = f.kernel.hold(is_cylinder);
+        let _ = f.sessions.published(&f.id);
+        assert!(f.kernel.wait_running(1, WAIT));
+        for rolled in 1..=rollbacks {
+            assert_eq!(f.begin().base, Revision(1 + rolled));
+            f.sessions.rollback(&f.id).wait().result.unwrap();
+            assert_eq!(
+                lock(&f.session().rebuilds).running(),
+                Some(Revision(2 + rolled))
+            );
+        }
+        hold.release();
+        let (f, check) = check_in_time(f);
+        assert!(check.result.unwrap().is_empty());
+        assert_eq!(check.model.unwrap().revision, Revision(2 + rollbacks));
+        // The one rebuild, never started again.
+        assert_eq!(f.made(is_cylinder), 1);
+    }
+
+    #[test]
+    fn two_rollbacks_while_begins_rebuild_runs_still_end() {
+        rollbacks_while_begins_rebuild_runs(2);
+    }
+
+    #[test]
+    fn three_rollbacks_while_begins_rebuild_runs_still_end() {
+        rollbacks_while_begins_rebuild_runs(3);
+    }
+
+    #[test]
+    fn a_rollback_after_the_rebuild_a_rollback_was_given_published_restores_its_model() {
+        // Revision 2's rebuild given to revision 3 by a rollback, then published as 3's; a
+        // transaction from 3 rolled back: that model is revision 5's, nothing rebuilt.
+        let f = opened(BOX);
+        assert!(f.sessions.check(&f.id).wait().result.unwrap().is_empty());
+        f.edit(BOX_AND_PIN);
+        let hold = f.kernel.hold(is_cylinder);
+        let _ = f.sessions.published(&f.id);
+        assert!(f.kernel.wait_running(1, WAIT));
+        f.begin();
+        f.sessions.rollback(&f.id).wait().result.unwrap();
+        hold.release();
+        let deadline = std::time::Instant::now() + WAIT;
+        let model = loop {
+            let published = f.sessions.published(&f.id).result.unwrap();
+            if published.revision == Revision(3) {
+                break published.model;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "revision 3 never published"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(f.begin().base, Revision(3));
+        f.edit(SPHERE);
+        let calls = f.kernel.calls().len();
+        f.sessions.rollback(&f.id).wait().result.unwrap();
+        let published = f.sessions.published(&f.id).result.unwrap();
+        assert_eq!(published.revision, Revision(5));
+        assert!(Arc::ptr_eq(&published.model, &model));
+        assert_eq!(lock(&f.session().rebuilds).running(), None);
+        let (f, check) = check_in_time(f);
+        assert!(check.result.unwrap().is_empty());
+        assert_eq!(check.model.unwrap().revision, Revision(5));
+        assert_eq!(f.kernel.calls().len(), calls);
         assert_eq!(f.made(is_cylinder), 1);
     }
 
@@ -3547,7 +3732,7 @@ mod tests {
         f.begin();
         f.edit(SPHERE);
         f.sessions.rollback(&f.id).wait().result.unwrap();
-        assert_eq!(lock(&f.session().rebuilds).running, None);
+        assert_eq!(lock(&f.session().rebuilds).running(), None);
         assert!(f.kernel.calls().is_empty());
     }
 
@@ -3570,7 +3755,7 @@ mod tests {
         let other = Recompute::new(f.kernel.client());
         watch(
             &Arc::downgrade(&f.session()),
-            Revision(2),
+            &Label::new(Revision(2)),
             other.start(checked(BOX)),
         );
         assert!(lock(&f.session().rebuilds).published.is_none());
@@ -3624,6 +3809,13 @@ mod tests {
         f.begin();
         f.edit(&longer());
         let _read_only = ReadOnly::of(&dir);
+        // Root (in a container, say) writes in a read-only directory all the same: then no
+        // save here fails, and the test has nothing to show, so it ends.
+        let probe = dir.join("probe");
+        if std::fs::write(&probe, "").is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            return;
+        }
         let commit = f.sessions.commit(&f.id).wait();
         let problems = commit.result.unwrap_err();
         let refused = &problems.errors()[0];
@@ -3657,7 +3849,237 @@ mod tests {
         session.close();
         let calls = f.kernel.calls().len();
         session.rollback().unwrap();
-        assert_eq!(lock(&session.rebuilds).running, None);
+        assert_eq!(lock(&session.rebuilds).running(), None);
         assert_eq!(f.kernel.calls().len(), calls);
+    }
+
+    /// A 10 mm cube, its fingerprint stored as the fake measures it: 10³ = 1000 mm³, area
+    /// 6 × 100 = 600.
+    const CUBE: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Cube", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10, "fingerprint": {"volume": 1000, "area": 600, "bbox": [0, 0, 0, 10, 10, 10], "faces": 6, "edges": 12, "vertices": 8}}]}"#;
+
+    /// `f`'s model of the revision it's at, built by a check and published, put back with
+    /// the cube measured 1e40 mm³: 1e46 millionths, past the 1.7e38 an i128 holds, so no
+    /// fingerprint can hold it.
+    fn plant_unholdable(f: &Fixture) {
+        let revision = f.sessions.check(&f.id).wait().model.unwrap().revision;
+        let session = f.session();
+        let mut rebuilds = lock(&session.rebuilds);
+        let published = rebuilds.published.as_mut().unwrap();
+        assert_eq!(published.revision, revision);
+        let cube = id("k7f2qx3m");
+        let Some(FeatureOutcome::Built { built, .. }) = published.model.outcome(&cube) else {
+            panic!("the cube didn't build");
+        };
+        let mut summary = built.summary().unwrap().clone();
+        summary.volume = 1e40;
+        published.model = Arc::new(published.model.measured_as(&cube, summary));
+        assert!(!published.model.records(&cube));
+    }
+
+    /// The one problem `problems` holds: the cube's drift, measured past a fingerprint.
+    #[track_caller]
+    fn the_cubes_unholdable_drift(problems: &Problems) {
+        assert_eq!(problems.total(), 1, "{problems:?}");
+        let drift = &problems.errors()[0];
+        assert_eq!(
+            (drift.code(), drift.feature(), drift.parameter()),
+            (ErrorCode::Drift, Some("k7f2qx3m"), Some("fingerprint")),
+            "{drift:?}"
+        );
+    }
+
+    #[test]
+    fn measures_no_fingerprint_holds_are_drift_however_reached_or_accepted() {
+        // Nothing takes the stored record's place: format accepts nothing, and an edit that
+        // reaches the cube still has its drift said.
+        let f = opened(CUBE);
+        plant_unholdable(&f);
+        let formatted = f.sessions.format(&f.id, None, false).wait().result.unwrap();
+        assert!(formatted.accepted.is_empty(), "{:?}", formatted.accepted);
+        the_cubes_unholdable_drift(&formatted.problems);
+        f.begin();
+        f.edit(&CUBE.replace(r#""length": 10"#, r#""length": 11"#));
+        assert_eq!(
+            lock(&f.session().held).reach(),
+            BTreeSet::from([id("k7f2qx3m")])
+        );
+        plant_unholdable(&f);
+        the_cubes_unholdable_drift(&f.sessions.check(&f.id).wait().result.unwrap());
+    }
+
+    #[test]
+    fn a_save_that_left_the_file_part_written_is_marked_for_the_next() {
+        let f = opened(STORED);
+        let session = f.session();
+        let failed = || Error::new(ErrorCode::IoFailed, "couldn't be written");
+        // Its old text put back: nothing marked.
+        let problems = session.unsaved(
+            "a.silico",
+            file::Unsaved {
+                error: failed(),
+                old_text_in: None,
+            },
+        );
+        assert_eq!(problems.errors()[0].parameter(), Some("path"));
+        assert_eq!(lock(&session.held).part_written, None);
+        // Left part written, its old text beside it: marked, so the next save says where.
+        let old = f.path.with_file_name(".a.silico.fmt-1");
+        let problems = session.unsaved(
+            "a.silico",
+            file::Unsaved {
+                error: failed(),
+                old_text_in: Some(old.clone()),
+            },
+        );
+        assert_eq!(
+            (
+                problems.errors()[0].code(),
+                problems.errors()[0].parameter()
+            ),
+            (ErrorCode::IoFailed, Some("path"))
+        );
+        assert_eq!(lock(&session.held).part_written, Some(old));
+    }
+
+    #[test]
+    fn a_format_after_a_reached_feature_builds_writes_its_record_and_carries_it_no_more() {
+        // As `a_reached_feature_that_failed_stays_reached_after_its_commit`: the lug and the
+        // fuse carried after the commit. Then the lug made 30 long, which builds: a format
+        // writes both records, so neither is carried. By hand: the lug 30 × 10 × 10 = 3000,
+        // area 2(300 + 100 + 300) = 1400; the fuse 8000 + 3000 = 11000, area 2800 + 1400 =
+        // 4200.
+        let f = opened(STORED);
+        refuse_the_longer_lug(&f, ErrorCode::KernelFailed);
+        f.begin();
+        f.edit(&longer());
+        assert!(f.sessions.commit(&f.id).wait().result.unwrap().written);
+        assert_eq!(
+            *lock(&f.session().held).carried,
+            BTreeSet::from([id("b0000001"), id("f0000001")])
+        );
+        f.edit(&f.file().replace("\"length\": 20,", "\"length\": 30,"));
+        let formatted = f.sessions.format(&f.id, None, true).wait().result.unwrap();
+        assert!(formatted.written);
+        assert!(lock(&f.session().held).carried.is_empty());
+        assert!(lock(&f.session().held).reach().is_empty());
+        let saved = document::read(f.file().as_bytes()).unwrap();
+        let measures: Vec<(Measure, Measure)> = saved.features[1..]
+            .iter()
+            .map(|feature| {
+                let fingerprint = feature.fingerprint.unwrap();
+                (fingerprint.volume, fingerprint.area)
+            })
+            .collect();
+        let mm = |whole: i128| Measure::from_millionths(whole * 1_000_000);
+        assert_eq!(measures, [(mm(3000), mm(1400)), (mm(11000), mm(4200))]);
+    }
+
+    #[test]
+    fn a_save_moves_only_its_own_sessions_claim() {
+        // Two sessions, s1 on a.silico and s2 on b.silico; s1's format writes a.silico anew:
+        // b.silico is still s2's, by its file too, so a hard link to it is refused.
+        let f = opened(STORED);
+        let other = f.path.with_file_name("b.silico");
+        std::fs::write(&other, BOX).unwrap();
+        let second = f.sessions.open(&other, false).wait().session.unwrap().id;
+        assert_eq!(second, SessionId(2));
+        assert!(
+            f.sessions
+                .format(&f.id, None, true)
+                .wait()
+                .result
+                .unwrap()
+                .written
+        );
+        let link = f.path.with_file_name("link.silico");
+        std::fs::hard_link(&other, &link).unwrap();
+        let problems = f.sessions.open(&link, false).wait().result.unwrap_err();
+        let refusal = &problems.errors()[0];
+        assert_eq!(refusal.parameter(), Some("path"), "{refusal:?}");
+        assert!(
+            refusal.message().ends_with("is already open in session s2"),
+            "{refusal:?}"
+        );
+    }
+
+    #[test]
+    fn a_commit_from_text_that_still_doesnt_read_writes_nothing_and_ends() {
+        let f = opened("{");
+        f.begin();
+        let response = f.sessions.commit(&f.id).wait();
+        let committed = response.result.unwrap();
+        assert!(!committed.written);
+        assert!(!response.session.unwrap().transaction);
+        assert_eq!(f.file(), "{");
+    }
+
+    /// Waits, up to [`WAIT`], until `done` says the threads it looks at have ended.
+    fn ended(done: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + WAIT;
+        while !done() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the threads never ended"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn all_ended(threads: &Threads) -> bool {
+        threads.running.iter().all(JoinHandle::is_finished)
+    }
+
+    #[test]
+    fn published_reads_that_ended_are_joined_as_the_next_starts() {
+        let f = opened(BOX);
+        assert!(f.sessions.check(&f.id).wait().result.unwrap().is_empty());
+        let read = || {
+            f.sessions
+                .read_model(&f.id, "probe", ModelChoice::Published, |read| {
+                    Ok(read.model_read().revision)
+                })
+                .wait()
+                .result
+                .unwrap()
+        };
+        let session = f.session();
+        let threads = || {
+            lock(&session.reads)
+                .threads
+                .as_ref()
+                .map(|t| t.running.len())
+        };
+        for _ in 0..4 {
+            assert_eq!(read(), Revision::OPENED);
+        }
+        ended(|| all_ended(lock(&session.reads).threads.as_ref().unwrap()));
+        // The four ended, joined as the fifth starts: its thread alone is held.
+        assert_eq!(read(), Revision::OPENED);
+        assert_eq!(threads(), Some(1));
+    }
+
+    #[test]
+    fn session_threads_that_ended_are_joined_as_the_next_opens() {
+        let f = opened(BOX);
+        let other = f.path.with_file_name("b.silico");
+        std::fs::write(&other, BOX).unwrap();
+        for _ in 0..3 {
+            let id = f.sessions.open(&other, false).wait().session.unwrap().id;
+            f.sessions.close(&id).wait().result.unwrap();
+        }
+        let book = || lock(&f.sessions.registry.book);
+        // Each closed session's thread ends (those not joined yet); s1's runs on.
+        ended(|| {
+            book()
+                .threads
+                .running
+                .iter()
+                .filter(|thread| !thread.is_finished())
+                .count()
+                == 1
+        });
+        f.sessions.open(&other, false).wait().session.unwrap();
+        // The three ended, joined as the next opens: s1's thread and the new one's.
+        assert_eq!(book().threads.running.len(), 2);
     }
 }

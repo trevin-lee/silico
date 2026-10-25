@@ -6,21 +6,90 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::json::{self, Value};
 use super::{Document, Feature, FeatureId};
 
 /// The document an edit was made from: read, or text that didn't read as one (a merge's
-/// conflict markers, say), which only `replace_text` mends.
+/// conflict markers, say), which only `replace_text` mends, as the IDs it holds.
 #[derive(Clone, Copy, Debug)]
 pub enum Before<'a> {
     Read(&'a Document),
-    Unread(&'a [u8]),
+    Unread(&'a QuotedIds),
+}
+
+/// The feature IDs a text that didn't read as a document holds quoted, as any reference to
+/// a feature is: each run of the text between two quotes in a row that no backslash escapes
+/// (whichever way its quotes pair, so a stray quote in what didn't read can't hide an ID
+/// after it), its JSON escapes decoded as the reader decodes them (`"k7f2qx3\u006d"` holds
+/// k7f2qx3m). Found in one pass over the text, so whether it holds a feature's ID is a
+/// lookup, not a search of the text for each feature.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QuotedIds(BTreeSet<FeatureId>);
+
+/// The most bytes an ID written with escapes takes between its quotes: each of its
+/// characters as a `\uXXXX` escape.
+const MOST_ESCAPED_ID: usize = 6 * super::model::ID_LENGTH;
+
+impl QuotedIds {
+    /// The IDs `text` holds quoted.
+    pub fn of(text: &[u8]) -> Self {
+        let mut ids = BTreeSet::new();
+        // Where the run after the last unescaped quote starts.
+        let mut run: Option<usize> = None;
+        let mut escaped = false;
+        for (at, byte) in text.iter().enumerate() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match byte {
+                b'\\' => escaped = true,
+                b'"' => {
+                    if let Some(id) = run.and_then(|start| text.get(start..at)).and_then(id_of) {
+                        ids.insert(id);
+                    }
+                    run = Some(at + 1);
+                }
+                _ => {}
+            }
+        }
+        QuotedIds(ids)
+    }
+
+    /// Whether the text holds `id` quoted.
+    pub fn holds(&self, id: &FeatureId) -> bool {
+        self.0.contains(id)
+    }
+}
+
+/// The ID that `between`, the bytes between two quotes, writes, if it writes one: as it is,
+/// or, with a backslash in it, as the reader decodes it as a JSON string.
+fn id_of(between: &[u8]) -> Option<FeatureId> {
+    if between.len() > MOST_ESCAPED_ID {
+        return None;
+    }
+    if !between.contains(&b'\\') {
+        // An ID's characters are ASCII: one byte each.
+        if between.len() != super::model::ID_LENGTH {
+            return None;
+        }
+        return FeatureId::new(std::str::from_utf8(between).ok()?);
+    }
+    let mut literal = Vec::with_capacity(between.len() + 2);
+    literal.push(b'"');
+    literal.extend_from_slice(between);
+    literal.push(b'"');
+    match json::read(&literal).ok()?.value {
+        Value::String(text) => FeatureId::new(&text),
+        _ => None,
+    }
 }
 
 /// What the edits from `before` to `after` reach, net, with `carried` (features reached
 /// before whose records couldn't be written yet): [`with_users`] of `carried` and of what
 /// changed from `before` to `after`, so an edit undone reaches nothing. From text that
-/// didn't read, what changed is only each feature whose ID the text doesn't hold (quoted, as
-/// any reference to it is): one it can't have had. Every other feature keeps its stored
+/// didn't read, what changed is only each feature whose ID the text doesn't hold
+/// ([`QuotedIds`]): one it can't have had. Every other feature keeps its stored
 /// record, and its drift is said for `format` to accept by name, rather than every
 /// fingerprint written over because a merge left markers in the file.
 pub fn net_reach(
@@ -31,22 +100,16 @@ pub fn net_reach(
     let mut seeds = carried.clone();
     match before {
         Before::Read(before) => seeds.extend(changed(before, after)),
-        Before::Unread(text) => seeds.extend(
+        Before::Unread(ids) => seeds.extend(
             after
                 .features
                 .iter()
                 .map(|feature| &feature.id)
-                .filter(|id| !holds(text, &format!("\"{id}\"")))
+                .filter(|id| !ids.holds(id))
                 .cloned(),
         ),
     }
     with_users(after, &seeds)
-}
-
-/// Whether `text` holds `needle`'s bytes anywhere.
-fn holds(text: &[u8], needle: &str) -> bool {
-    text.windows(needle.len())
-        .any(|window| window == needle.as_bytes())
 }
 
 /// The features of `after` that an edit from `before` reaches: each whose own values the

@@ -406,7 +406,7 @@ impl Model {
 
     /// Of `drift` (this model's, [`drifted`](Self::drifted)), what's left with `except`
     /// excepted, as [`drift_except`](Self::drift_except) excepts them.
-    pub fn drift_left<'a>(
+    pub(crate) fn drift_left<'a>(
         &'a self,
         drift: &'a [(FeatureId, Error)],
         except: &'a BTreeSet<FeatureId>,
@@ -3447,6 +3447,28 @@ fn feature_outcome(
     }) {
         Some((key, built)) => FeatureOutcome::Built { key, built },
         None => unbuilt(),
+    }
+}
+
+#[cfg(test)]
+impl Model {
+    /// This model with feature `id`'s solid measured as `summary` says, if it built: a
+    /// test's stand-in for measures past what a fingerprint holds, which no solid the gate
+    /// admits has (a kilometre each way is 1e18 mm³, and a volume holds to 1.7e32).
+    pub(crate) fn measured_as(&self, id: &FeatureId, summary: ShapeSummary) -> Model {
+        let mut model = self.clone();
+        for (feature, outcome) in &mut model.features {
+            if feature == id
+                && let FeatureOutcome::Built { built, .. } = outcome
+            {
+                *built = Arc::new(Built::new(
+                    built.shape.clone(),
+                    built.history.clone(),
+                    Some(summary.clone()),
+                ));
+            }
+        }
+        model
     }
 }
 

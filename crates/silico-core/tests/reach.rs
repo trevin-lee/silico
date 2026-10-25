@@ -4,8 +4,13 @@
 //! Every expected set is read off the documents by hand.
 
 use std::collections::BTreeSet;
+use std::time::{Duration, Instant};
 
-use silico_core::document::{Before, Document, FeatureId, net_reach, reached, read, with_users};
+use silico_core::document::{
+    Before, Document, FeatureId, QuotedIds, net_reach, reached, read, with_users,
+};
+
+use crate::lateness::{Lateness, allowance};
 
 /// Two sketches, a pad of the first, a pocket of the second in the pad, a box apart, a
 /// second box, and a cut of the second box from the pocket: who uses whom is
@@ -161,13 +166,122 @@ fn from_text_that_didnt_read_only_features_whose_ids_it_hasnt_are_reached() {
     assert!(read(before.as_bytes()).is_err());
     assert!(!before.contains("c0000001"));
     assert_eq!(
-        net_reach(Before::Unread(before.as_bytes()), &ids(&[]), &part()),
+        net_reach(
+            Before::Unread(&QuotedIds::of(before.as_bytes())),
+            &ids(&[]),
+            &part()
+        ),
         ids(&["c0000001"])
     );
     // An ID that only appears unquoted, inside another word, isn't one the text holds.
     let unquoted = before.replace(r#""id": "k7f2qx3m""#, r#""id": "xk7f2qx3m""#);
     assert_eq!(
-        net_reach(Before::Unread(unquoted.as_bytes()), &ids(&[]), &part()),
+        net_reach(
+            Before::Unread(&QuotedIds::of(unquoted.as_bytes())),
+            &ids(&[]),
+            &part()
+        ),
         ids(&["c0000001", "k7f2qx3m"])
+    );
+}
+
+/// [`PART`] as a merge left it, markers and all: every feature but the cut, as the text
+/// before [`from_text_that_didnt_read_only_features_whose_ids_it_hasnt_are_reached`] has it.
+fn merged() -> String {
+    let before = PART.replacen("[", "[\n<<<<<<< ours", 1).replace(
+        r#",
+  {"id": "c0000001", "type": "cut", "v": 1, "name": "Notch", "base": "q0000001", "tool": "b0000001"}"#,
+        "",
+    );
+    assert!(read(before.as_bytes()).is_err());
+    before
+}
+
+/// What the part reaches from text that didn't read, `before`.
+fn reached_from(before: &str) -> BTreeSet<FeatureId> {
+    net_reach(
+        Before::Unread(&QuotedIds::of(before.as_bytes())),
+        &ids(&[]),
+        &part(),
+    )
+}
+
+#[test]
+fn from_text_that_didnt_read_an_id_written_with_escapes_is_held() {
+    // The block's ID with its last letter escaped, as JSON may write any character: the
+    // text holds k7f2qx3m all the same, so only the cut is reached.
+    let escaped = merged().replace(r#""id": "k7f2qx3m""#, r#""id": "k7f2qx3\u006d""#);
+    assert!(!escaped.contains("k7f2qx3m"));
+    assert_eq!(reached_from(&escaped), ids(&["c0000001"]));
+    // Every character escaped.
+    let all = merged().replace(
+        r#""id": "k7f2qx3m""#,
+        r#""id": "\u006b\u0037\u0066\u0032\u0071\u0078\u0033\u006d""#,
+    );
+    assert_eq!(reached_from(&all), ids(&["c0000001"]));
+    // An escape that decodes to another ID isn't this one's.
+    let other = merged().replace(r#""id": "k7f2qx3m""#, r#""id": "k7f2qx3\u006e""#);
+    assert_eq!(reached_from(&other), ids(&["c0000001", "k7f2qx3m"]));
+}
+
+#[test]
+fn from_text_that_didnt_read_a_stray_quote_hides_no_id_after_it() {
+    // A quote the merge left on the marker's line: pairing quotes from the start would take
+    // every string after it for the space between two, and every ID for new.
+    let stray = merged().replacen("<<<<<<< ours", "<<<<<<< \"ours", 1);
+    assert_eq!(reached_from(&stray), ids(&["c0000001"]));
+}
+
+#[test]
+fn from_text_that_didnt_read_a_feature_that_uses_a_new_one_is_reached() {
+    // Before: no lug, and the cut's tool the block. After (the part): the lug is new, and
+    // the cut, whose ID the text holds, uses it now: both are reached.
+    let before = PART.replacen("[", "[\n<<<<<<< ours", 1)
+        .replace(
+            r#",
+  {"id": "b0000001", "type": "box", "v": 1, "name": "Lug", "position": [100, 0, 0], "length": 10, "width": 10, "height": 10}"#,
+            "",
+        )
+        .replace(r#""tool": "b0000001""#, r#""tool": "k7f2qx3m""#);
+    assert!(!before.contains("b0000001"));
+    assert_eq!(reached_from(&before), ids(&["b0000001", "c0000001"]));
+}
+
+#[test]
+fn from_a_large_text_that_didnt_read_what_edits_reach_is_found_at_once() {
+    // Five thousand boxes, the text before them with a merge's markers: each ID is held, so
+    // nothing is reached. Searching the text for each ID would read its 0.8 MB five
+    // thousand times over (4e9 bytes); one pass reads it once.
+    let boxes: Vec<String> = (0..5000)
+        .map(|i| {
+            format!(
+                r#"{{"id": "b{i:07}", "type": "box", "v": 1, "name": "Box", "position": [{i}, 0, 0], "length": 1, "width": 1, "height": 1}}"#
+            )
+        })
+        .collect();
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [
+{}
+]}}"#,
+        boxes.join(",\n")
+    );
+    let after = read(text.as_bytes()).unwrap();
+    let before = text.replacen("[\n", "[\n<<<<<<< ours\n", 1);
+    assert!(read(before.as_bytes()).is_err());
+    let lateness = Lateness::start();
+    let at = Instant::now();
+    let reached = net_reach(
+        Before::Unread(&QuotedIds::of(before.as_bytes())),
+        &ids(&[]),
+        &after,
+    );
+    let took = at.elapsed();
+    assert_eq!(reached, ids(&[]));
+    // Milliseconds on a quiet machine: two seconds, and ten times the machine's lateness on
+    // a loaded one.
+    let most = allowance(Duration::from_secs(2), lateness.most());
+    assert!(
+        took < most,
+        "finding the reach took {took:?}, past {most:?}"
     );
 }
