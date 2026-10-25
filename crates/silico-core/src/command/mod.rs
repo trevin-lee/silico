@@ -16,6 +16,7 @@ use crate::kernel::Kernel;
 use crate::recompute::{Model, Recompute, RunOutcome};
 use crate::{Error, ErrorCode};
 
+pub mod elements;
 mod session;
 
 pub use session::{

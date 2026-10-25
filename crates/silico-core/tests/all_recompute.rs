@@ -34,6 +34,8 @@ mod adversarial_recompute;
 mod adversarial_validate;
 #[path = "described.rs"]
 mod described;
+#[path = "entries.rs"]
+mod entries;
 #[path = "measure_refusal.rs"]
 mod measure_refusal;
 #[path = "name_parse.rs"]
