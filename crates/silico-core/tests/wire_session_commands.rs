@@ -540,6 +540,7 @@ fn every_request_requires_each_of_its_fields_and_refuses_any_other() {
             )],
             "{of}"
         );
+        fails(&schema_of(of, "request"), &session, "a numeric session");
     }
 }
 
@@ -572,6 +573,12 @@ fn each_requests_fields_are_of_their_types_and_null_only_where_the_shape_allows_
                 "{of}: {value}"
             );
         }
+        // Of the right type, but no revision: refused by the schema too.
+        fails(
+            &schema_of(of, "request"),
+            &with(&text, "revision", "0"),
+            "revision 0",
+        );
     }
     // `format`'s features: a list of IDs or null, each member at fault by its place; its
     // write true or false.
@@ -653,6 +660,28 @@ fn each_requests_fields_are_of_their_types_and_null_only_where_the_shape_allows_
     let (head, _) = add.split_once(r#""feature": "#).unwrap();
     let request = AddFeatureRequest::read(&parsed(&format!("{head}\"feature\": 7\n}}"))).unwrap();
     assert_eq!(request.feature.value, Value::Number("7".to_owned()));
+}
+
+#[test]
+fn formats_request_keeps_null_features_and_a_false_write() {
+    let text = "{\"session\": \"s1\", \"features\": null, \"write\": false}\n";
+    let request = FormatRequest::read(&parsed(text)).unwrap();
+    assert_eq!(
+        request,
+        FormatRequest {
+            session: s1(),
+            features: None,
+            write: false,
+        }
+    );
+    assert_eq!(written(&request), text);
+    holds(&schema_of("format", "request"), text, "null and false");
+    // No features is a list, none of them: not null.
+    let text = "{\"session\": \"s1\", \"features\": [], \"write\": true}\n";
+    let request = FormatRequest::read(&parsed(text)).unwrap();
+    assert_eq!(request.features, Some(Vec::new()));
+    assert_eq!(written(&request), text);
+    holds(&schema_of("format", "request"), text, "no features");
 }
 
 #[test]
