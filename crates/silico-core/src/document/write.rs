@@ -18,6 +18,7 @@ use super::model::{
 use super::quantity::{Angle, Length};
 use super::sketch::{
     Coordinate, ElementId, ElementKind, Form, Plane, Reference, Sketch, SketchConstraint,
+    in_id_order,
 };
 
 /// The text passed the limit it was written to.
@@ -303,15 +304,9 @@ fn sketch_lists(sketch: &Sketch) -> (&Plane, [(ElementKind, Vec<Out<'_>>); 5]) {
         arcs,
         constraints,
     } = sketch;
-    fn sorted<T>(items: &[T], id: impl Fn(&T) -> &ElementId) -> Vec<&T> {
-        let mut items: Vec<&T> = items.iter().collect();
-        // Stable, so elements sharing an ID (which the gate refuses) keep their order.
-        items.sort_by(|a, b| id(a).cmp(id(b)));
-        items
-    }
     let lists = ElementKind::ALL.map(|kind| {
         let items = match kind {
-            ElementKind::Point => sorted(points, |p| &p.id)
+            ElementKind::Point => in_id_order(points, |p| &p.id)
                 .into_iter()
                 .map(|p| {
                     Out::Object(vec![
@@ -322,7 +317,7 @@ fn sketch_lists(sketch: &Sketch) -> (&Plane, [(ElementKind, Vec<Out<'_>>); 5]) {
                     ])
                 })
                 .collect(),
-            ElementKind::Line => sorted(lines, |l| &l.id)
+            ElementKind::Line => in_id_order(lines, |l| &l.id)
                 .into_iter()
                 .map(|l| {
                     Out::Object(vec![
@@ -333,7 +328,7 @@ fn sketch_lists(sketch: &Sketch) -> (&Plane, [(ElementKind, Vec<Out<'_>>); 5]) {
                     ])
                 })
                 .collect(),
-            ElementKind::Circle => sorted(circles, |c| &c.id)
+            ElementKind::Circle => in_id_order(circles, |c| &c.id)
                 .into_iter()
                 .map(|c| {
                     Out::Object(vec![
@@ -344,7 +339,7 @@ fn sketch_lists(sketch: &Sketch) -> (&Plane, [(ElementKind, Vec<Out<'_>>); 5]) {
                     ])
                 })
                 .collect(),
-            ElementKind::Arc => sorted(arcs, |a| &a.id)
+            ElementKind::Arc => in_id_order(arcs, |a| &a.id)
                 .into_iter()
                 .map(|a| {
                     Out::Object(vec![
@@ -356,7 +351,7 @@ fn sketch_lists(sketch: &Sketch) -> (&Plane, [(ElementKind, Vec<Out<'_>>); 5]) {
                     ])
                 })
                 .collect(),
-            ElementKind::Constraint => sorted(constraints, |c| &c.id)
+            ElementKind::Constraint => in_id_order(constraints, |c| &c.id)
                 .into_iter()
                 .map(constraint)
                 .collect(),

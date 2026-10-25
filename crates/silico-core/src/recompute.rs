@@ -450,6 +450,18 @@ impl Model {
         self.source.document()
     }
 
+    /// This model as `source`'s: the same steps and outcomes, its document `source`. For a
+    /// document that differs from the one it was built from only in what a save writes from
+    /// it (its fingerprints, with no sketch's solve written), whose rebuild would take every
+    /// step from those this one took: a session's commit of an edit made outside a
+    /// transaction, whose model is the saved revision's (the design's section 4).
+    pub(crate) fn rebound(&self, source: Arc<Checked>) -> Model {
+        Model {
+            source,
+            ..self.clone()
+        }
+    }
+
     /// The fingerprint of the feature `id`'s solid, if it built and was measured: none if it
     /// didn't (or the document has no such feature), or if a measure can't be written.
     pub fn fingerprint(&self, id: &FeatureId) -> Option<Fingerprint> {

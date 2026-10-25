@@ -19,12 +19,13 @@ use crate::document::{
 use crate::kernel::Kernel;
 use crate::recompute::{Model, Recompute, RunOutcome};
 
+mod edit;
 mod session;
 
 pub use session::{
-    Begun, Committed, MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, Opened, Published,
-    Read, Reformatted, Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions,
-    Status,
+    Added, Begun, Committed, FieldSet, MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead,
+    Opened, Published, Read, Reformatted, Removed, Replaced, Response, Revision, RolledBack,
+    Running, SessionId, SessionInfo, Sessions, Status,
 };
 
 /// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for
