@@ -612,6 +612,16 @@ fn the_same_request_gives_the_same_bits_here_and_in_fresh_workers() {
     let mut workers = [kernel::kernel(), kernel::kernel()];
     for (what, shape, first, other, second) in cases {
         let here = distance(shape, first, other, second).unwrap();
+        // The witness is its distance apart, within OCCT's precision: iterated pairs too.
+        let apart = (0..3)
+            .map(|i| (here.from[i] - here.to[i]) * (here.from[i] - here.to[i]))
+            .sum::<f64>()
+            .sqrt();
+        assert!(
+            (apart - here.distance).abs() <= 1e-7,
+            "{what}: the witness is {apart} apart, the distance {}",
+            here.distance
+        );
         let again = distance(shape, first, other, second).unwrap();
         assert_eq!(bits(&again), bits(&here), "{what}: again");
         for worker in &mut workers {
@@ -890,7 +900,7 @@ proptest! {
 }
 
 /// A vertex at (`x`, 0, 0), as FreeCAD writes one (`Part.Vertex(x, 0, 0)`).
-fn vertex_at(x: &str) -> Shape {
+fn vertex_shape(x: &str) -> Shape {
     let text = format!(
         "\nCASCADE Topology V1, (c) Matra-Datavision\nLocations 0\nCurve2ds 0\nCurves 0\n\
          Polygon3D 0\nPolygonOnTriangulations 0\nSurfaces 0\nTriangulations 0\n\nTShapes 1\n\
@@ -906,7 +916,7 @@ fn a_distance_past_what_a_number_holds_is_not_done_and_the_worker_lives_on() {
     // starts at the largest finite number, so it keeps none and isn't done: an infinite
     // distance is never sent, and the request is refused as OCCT's (kernel_failed), with
     // its cause, never a worker's lie (protocol_error).
-    let (far, other) = (vertex_at("1e+308"), vertex_at("-1e+308"));
+    let (far, other) = (vertex_shape("1e+308"), vertex_shape("-1e+308"));
     let here = distance(&far, vertex(1), Some(&other), vertex(1)).unwrap_err();
     assert_eq!(here.refusal(), &Refusal::DistanceNotDone);
     let mut worker = kernel::kernel();
@@ -921,8 +931,82 @@ fn a_distance_past_what_a_number_holds_is_not_done_and_the_worker_lives_on() {
         Some("report it with the document: the kernel couldn't measure this pair")
     );
     // The worker lives on.
-    let (three, seven) = (vertex_at("3"), vertex_at("7"));
+    let (three, seven) = (vertex_shape("3"), vertex_shape("7"));
     let request =
         KernelRequest::distance(&data(&three), vertex(1), Some(&data(&seven)), vertex(1)).unwrap();
     assert_eq!(worker.run(request).unwrap().distance, 4.0);
+}
+
+/// The number of `shape`'s face whose area and centre are `like`'s, `like_face` of it.
+fn the_same_face(shape: &Shape, like: &Shape, like_face: u32) -> u32 {
+    let want = &silico_kernel::describe_whole(like).unwrap().faces[like_face as usize - 1];
+    let faces = silico_kernel::describe_whole(shape).unwrap().faces;
+    let found: Vec<usize> = faces
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.area == want.area && f.centroid == want.centroid)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(found.len(), 1, "face {like_face}'s like: {found:?}");
+    u32::try_from(found[0] + 1).unwrap()
+}
+
+#[test]
+fn the_same_two_elements_in_other_shapes_give_the_same_answer() {
+    // Two skew spheres, which OCCT measures differently each way round (the witness 3e-8
+    // apart), measured as two shapes, and with one of them fused with a cube far away (the
+    // sphere's face as it was, under another number in a shape of other bytes): the same
+    // answer every way, since only the two elements decide which goes to OCCT first, not
+    // the rest of their shapes or their numbers.
+    let ball = sphere(5.0);
+    let skew = moved(&ball, [12.0, 5.0, -3.0]);
+    let far = moved(&cube(1.0), [1e4, 0.0, 0.0]);
+    let fused = |shape: &Shape| {
+        silico_kernel::boolean(silico_kernel::BooleanOp::Fuse, &far, shape)
+            .unwrap()
+            .shape
+    };
+    let (ball_fused, skew_fused) = (fused(&ball), fused(&skew));
+    let in_ball = the_same_face(&ball_fused, &ball, 1);
+    let in_skew = the_same_face(&skew_fused, &skew, 1);
+    assert_ne!(
+        (in_ball, in_skew),
+        (1, 1),
+        "the fuse kept the spheres' numbers"
+    );
+    let alone = measured("alone", &ball, face(1), Some(&skew), face(1));
+    for (what, d) in [
+        (
+            "the second fused",
+            measured(
+                "the second fused",
+                &ball,
+                face(1),
+                Some(&skew_fused),
+                face(in_skew),
+            ),
+        ),
+        (
+            "the first fused",
+            measured(
+                "the first fused",
+                &ball_fused,
+                face(in_ball),
+                Some(&skew),
+                face(1),
+            ),
+        ),
+        (
+            "both fused",
+            measured(
+                "both fused",
+                &ball_fused,
+                face(in_ball),
+                Some(&skew_fused),
+                face(in_skew),
+            ),
+        ),
+    ] {
+        assert_eq!(d, alone, "{what}");
+    }
 }

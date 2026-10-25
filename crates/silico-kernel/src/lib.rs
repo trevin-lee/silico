@@ -1010,9 +1010,10 @@ pub fn describe(
 /// The least distance between `first`, an element of `shape`, and `second`, one of
 /// `other` (or of `shape` too, if there's no other), as bounded (docs/ports/measure.md):
 /// OCCT's `BRepExtrema_DistShapeShape` on one thread, its distance, one pair of points where
-/// it's met, chosen by their coordinates ([`silico_protocol::witness`]), and how many pairs
-/// OCCT found. Refused, naming `first` or `second`, for a solid or an element its shape
-/// hasn't; and if OCCT finds no distance.
+/// it's met, chosen by their coordinates among those within OCCT's precision of the
+/// distance ([`silico_protocol::witness_within`]), and how many pairs OCCT found. Refused,
+/// naming `first` or `second`, for a solid, an element numbered 0, or one its shape hasn't;
+/// and if OCCT finds no distance.
 ///
 /// OCCT's search isn't symmetric: given the two elements the other way round, it can find
 /// other pairs, and so another witness, and a distance an ulp off. So the bridge gives them
@@ -1073,20 +1074,9 @@ pub fn distance(
         .chunks_exact(2)
         .map(|pair| [point(&pair[0]), point(&pair[1])])
         .collect();
-    // OCCT keeps only the pairs within its precision of its distance, but its filter skips
-    // the pair after each it drops, so one further off can stay: the witness is chosen
-    // among those within it (all of them, if somehow none is).
-    let apart = |[a, b]: &[[f64; 3]; 2]| {
-        let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
-    };
-    let near: Vec<[[f64; 3]; 2]> = pairs
-        .iter()
-        .filter(|pair| (apart(pair) - out.value).abs() <= silico_protocol::LENGTH_TOLERANCE)
-        .copied()
-        .collect();
-    let among = if near.is_empty() { &pairs } else { &near };
-    let Some([from, to]) = silico_protocol::witness(among) else {
+    let Some([from, to]) =
+        silico_protocol::witness_within(&pairs, out.value, silico_protocol::LENGTH_TOLERANCE)
+    else {
         return Err(KernelError::caused(
             Refusal::DistanceNotDone,
             Some("BRepExtrema_DistShapeShape: done, with no solution".to_owned()),

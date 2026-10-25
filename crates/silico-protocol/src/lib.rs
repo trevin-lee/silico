@@ -27,7 +27,7 @@ pub use describe::{
     DESCRIBE_BATCH, Description, EdgeCurve, EdgeDescription, FaceDescription, Quantity, Surface,
     What, batches, describe_in_batches,
 };
-pub use distance::{Distance, check_distance, witness};
+pub use distance::{Distance, check_distance, witness, witness_within};
 pub use export::{
     DEFAULT_EXPORT_TOLERANCE, ExportMesh, MAX_EXPORT_TOLERANCE, MAX_EXPORT_TRIANGLES,
     MIN_EXPORT_TOLERANCE, check_export_tolerance, check_export_triangles, export_angle,

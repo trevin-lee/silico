@@ -52,6 +52,27 @@ pub fn witness(pairs: &[[[f64; 3]; 2]]) -> Option<[[f64; 3]; 2]> {
         .min_by(|a, b| unordered(a).cmp_by(&unordered(b)))
 }
 
+/// The witness of `pairs` ([`witness`]) among those whose two points are `distance` apart
+/// within `precision`: OCCT means to keep only those (`BRepExtrema_DistShapeShape` at its
+/// default precision, 1e-7), but its filter skips the pair after each it drops, so one
+/// further off can stay. Among all of them, if none is. None for no pairs.
+pub fn witness_within(
+    pairs: &[[[f64; 3]; 2]],
+    distance: f64,
+    precision: f64,
+) -> Option<[[f64; 3]; 2]> {
+    let apart = |[a, b]: &[[f64; 3]; 2]| {
+        let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+    };
+    let near: Vec<[[f64; 3]; 2]> = pairs
+        .iter()
+        .filter(|pair| (apart(pair) - distance).abs() <= precision)
+        .copied()
+        .collect();
+    witness(if near.is_empty() { pairs } else { &near })
+}
+
 /// A pair's points, the lesser by (x, y, z) first.
 fn unordered(pair: &[[f64; 3]; 2]) -> Ordered {
     let [a, b] = *pair;
@@ -78,7 +99,8 @@ fn by_coordinates(a: &[f64; 3], b: &[f64; 3]) -> std::cmp::Ordering {
 
 #[cfg(test)]
 mod tests {
-    use super::witness;
+    use super::{check_distance, witness, witness_within};
+    use crate::{ElementKind, ElementRef, Refusal};
 
     #[test]
     fn the_witness_is_the_pair_first_by_its_lesser_point_then_its_greater() {
@@ -97,6 +119,59 @@ mod tests {
         // Swapped elements: each pair's points swapped, and so the witness's, nothing else.
         let swapped = pairs.map(|[a, b]| [b, a]);
         assert_eq!(witness(&swapped), Some([[0.0, 0.0, 10.0], [0.0, 0.0, 0.0]]));
+    }
+
+    #[test]
+    fn the_first_elements_reason_comes_before_the_seconds_and_a_solid_before_its_number() {
+        let refused = |parameter: &str, message: &str| {
+            Err(Refusal::InvalidParameter {
+                parameter: parameter.to_owned(),
+                message: message.to_owned(),
+            })
+        };
+        let solid = |index| ElementRef {
+            kind: ElementKind::Solid,
+            index,
+        };
+        let edge = ElementRef::edge;
+        // Both wrong: the first is said.
+        assert_eq!(
+            check_distance(solid(1), edge(0)),
+            refused(
+                "first",
+                "first must be a face, an edge, or a vertex, not a solid"
+            )
+        );
+        assert_eq!(
+            check_distance(edge(0), solid(1)),
+            refused("first", "elements are numbered from 1, so first can't be 0")
+        );
+        // A solid numbered 0: refused as a solid.
+        assert_eq!(
+            check_distance(edge(1), solid(0)),
+            refused(
+                "second",
+                "second must be a face, an edge, or a vertex, not a solid"
+            )
+        );
+        assert_eq!(check_distance(edge(1), edge(1)), Ok(()));
+    }
+
+    #[test]
+    fn a_pair_further_than_the_precision_from_the_distance_is_never_the_witness() {
+        // As OCCT's filter can leave them: a pair 5e-7 further than the distance, kept
+        // after one it dropped, sorting first by its points; and the pair at the distance.
+        let far = [[0.0, 0.0, 0.0], [0.0, 0.0, 10.000_000_5]];
+        let at = [[1.0, 0.0, 0.0], [1.0, 0.0, 10.0]];
+        assert_eq!(witness(&[far, at]), Some(far));
+        assert_eq!(witness_within(&[far, at], 10.0, 1e-7), Some(at));
+        assert_eq!(witness_within(&[at, far], 10.0, 1e-7), Some(at));
+        // One off by exactly the precision is within it.
+        let edge = [[0.0, 0.0, 0.0], [0.0, 0.0, 10.000_000_1]];
+        assert_eq!(witness_within(&[edge, at], 10.0, 1e-7), Some(edge));
+        // None within: the witness of them all, never nothing.
+        assert_eq!(witness_within(&[far, at], 20.0, 1e-7), Some(far));
+        assert_eq!(witness_within(&[], 10.0, 1e-7), None);
     }
 
     #[test]

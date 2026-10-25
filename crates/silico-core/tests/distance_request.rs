@@ -76,6 +76,14 @@ fn a_solid_or_an_element_numbered_0_is_refused_before_the_kernel_is_asked() {
         zero.message(),
         "elements are numbered from 1, so first can't be 0"
     );
+    // Worded as a worker's refusal of a value is: what to do, and no cause.
+    for error in [&refused, &zero] {
+        assert_eq!(
+            error.suggestion(),
+            Some("change the value the message names")
+        );
+        assert_eq!(error.cause(), None);
+    }
 }
 
 #[test]

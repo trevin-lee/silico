@@ -462,6 +462,18 @@ DescribeOut describe(const Shape &shape, Kind kind, uint32_t first, uint32_t cou
 }
 
 namespace {
+// A shape's binary B-rep, as `shape_to_brep` writes it: without triangulations, so a mesh
+// made for display never changes a shape's bytes (nor which of two elements `distance`
+// gives OCCT first).
+std::string brep_bytes(const TopoDS_Shape &shape) {
+  std::ostringstream out(std::ios::binary);
+  BinTools::Write(shape, out, false, false, BinTools_FormatVersion_CURRENT);
+  if (!out) {
+    throw Standard_Failure("writing the B-rep failed");
+  }
+  return std::move(out).str();
+}
+
 // The shape type of a face, edge, or vertex; none for a solid, which distance doesn't take.
 bool element_type(Kind kind, TopAbs_ShapeEnum &type) {
   switch (kind) {
@@ -509,15 +521,7 @@ DistanceOut distance(const Shape &first_shape, Kind first_kind, uint32_t first,
   // pairs. So it's given the two elements in one order, by their own B-reps (each with its
   // place), whatever order they came in, and its pairs are put back in the request's: the
   // same two elements give the same answer either way round, and nothing else decides it.
-  const auto bytes = [](const TopoDS_Shape &element) {
-    std::ostringstream text(std::ios::binary);
-    BinTools::Write(element, text, false, false, BinTools_FormatVersion_CURRENT);
-    if (!text) {
-      throw Standard_Failure("writing an element's B-rep failed");
-    }
-    return std::move(text).str();
-  };
-  const bool reversed = bytes(b) < bytes(a);
+  const bool reversed = brep_bytes(b) < brep_bytes(a);
   // One thread, as FreeCAD runs it, so its solutions come the same way every run; OCCT's
   // default precision.
   BRepExtrema_DistShapeShape extrema;
@@ -1527,13 +1531,7 @@ bool is_valid(const Shape &shape) { return BRepCheck_Analyzer(shape.shape).IsVal
 // Returned whole, so Rust copies it once (copying byte by byte across the bridge costs
 // about 16 times more).
 std::unique_ptr<std::string> shape_to_brep(const Shape &shape) {
-  std::ostringstream out(std::ios::binary);
-  // Without triangulations: a mesh made for display must never change a shape's bytes.
-  BinTools::Write(shape.shape, out, false, false, BinTools_FormatVersion_CURRENT);
-  if (!out) {
-    throw Standard_Failure("writing the B-rep failed");
-  }
-  return std::make_unique<std::string>(std::move(out).str());
+  return std::make_unique<std::string>(brep_bytes(shape.shape));
 }
 
 namespace {
