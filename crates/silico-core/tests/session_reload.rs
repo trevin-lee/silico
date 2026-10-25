@@ -137,7 +137,7 @@ const REREAD: &str =
 /// What to do about a file at `path` the session couldn't take as it is now.
 fn put_back(path: &Path) -> String {
     format!(
-        "put the file back at {}, or close the session (roll back first) and open the file where it is now",
+        "put the file back at {}, or close the session and open the file where it is now",
         quoted(path)
     )
 }
@@ -181,6 +181,28 @@ fn commit_conflict(
             "nothing was written: roll back, then begin again from the file as it is now"
                 .to_owned(),
         ),
+    )
+}
+
+/// The refusal of a command whose session found at `path` a file session s2 holds.
+fn held_by_s2(
+    path: &Path,
+) -> (
+    ErrorCode,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
+    (
+        ErrorCode::InvalidInput,
+        format!("{} is already open in session s2", quoted(path)),
+        Some("path".to_owned()),
+        Some(REREAD.to_owned()),
+        Some(format!(
+            "put this session's file back at {}: the file there now is session s2's",
+            quoted(path)
+        )),
     )
 }
 
@@ -697,15 +719,7 @@ fn a_link_to_another_sessions_file_is_refused_naming_it(link: fn(&Path, &Path)) 
     link(&other, &f.path);
     assert_eq!(f.file(), higher());
     let text = f.text();
-    assert_eq!(
-        refusal(&text),
-        (
-            ErrorCode::InvalidInput,
-            format!("{} is already open in session s2", quoted(&f.path)),
-            Some("path".to_owned()),
-            Some("use session s2, which this client opened, or close it first".to_owned())
-        )
-    );
+    assert_eq!(the_error(&text), held_by_s2(&f.path));
     assert_eq!(Fixture::after(&text), (1, false));
     // s2's claim intact: another name for its file is still s2's.
     let third = dir.join("c.silico");
@@ -830,4 +844,98 @@ fn an_edit_older_than_the_latest_reload_says_it_was_reloaded() {
             ))
         )
     );
+}
+
+#[test]
+fn a_link_to_another_sessions_file_saved_by_rename_is_refused_naming_it() {
+    let f = opened(BLOCK);
+    let dir = f.path.parent().unwrap().to_owned();
+    let other = dir.join("b.silico");
+    std::fs::write(&other, BLOCK).unwrap();
+    let s2 = answer(f.sessions.open(&other, false)).session.unwrap().id;
+    // b.silico saved by another editor, by rename: a new file at s2's path, which s2 hasn't
+    // read (nor claimed) yet.
+    let new = dir.join(".b.silico.new");
+    std::fs::write(&new, higher()).unwrap();
+    std::fs::rename(&new, &other).unwrap();
+    std::fs::remove_file(&f.path).unwrap();
+    std::os::unix::fs::symlink(&other, &f.path).unwrap();
+    let text = f.text();
+    assert_eq!(the_error(&text), held_by_s2(&f.path));
+    assert_eq!(Fixture::after(&text), (1, false));
+    // s2 isn't locked out of its own file: it reloads it.
+    let s2_text = answer(f.sessions.text(&s2, None));
+    assert_eq!(Fixture::after(&s2_text), (2, true));
+    assert_eq!(s2_text.result.unwrap(), higher());
+}
+
+/// A file with `BLOCK`'s bytes put at `path` by rename: another file, the same bytes.
+fn put_unchanged_by_rename(path: &Path) {
+    let new = path.with_file_name(".a.silico.new");
+    std::fs::write(&new, BLOCK).unwrap();
+    std::fs::rename(&new, path).unwrap();
+}
+
+/// After s1's file at `f.path` was put back unchanged by rename, its old file still linked
+/// at `old`: the new file is s1's (another name for it is refused, naming s1), and the old
+/// one let go (another name for it opens).
+fn claimed_anew_and_the_old_let_go(f: &Fixture, old: &Path) {
+    let link = f.path.with_file_name("c.silico");
+    std::fs::hard_link(&f.path, &link).unwrap();
+    assert_eq!(
+        refusal(&answer(f.sessions.open(&link, false))).1,
+        format!("{} is already open in session s1", quoted(&link))
+    );
+    let opened = answer(f.sessions.open(old, false));
+    assert!(opened.result.is_ok(), "{:?}", opened.result);
+}
+
+#[test]
+fn a_file_put_back_unchanged_is_claimed_and_the_one_it_replaced_let_go() {
+    let f = opened(BLOCK);
+    let old = f.path.with_file_name("old.silico");
+    std::fs::hard_link(&f.path, &old).unwrap();
+    put_unchanged_by_rename(&f.path);
+    // The same bytes: nothing reloaded.
+    assert_eq!(Fixture::after(&f.text()), (1, false));
+    claimed_anew_and_the_old_let_go(&f, &old);
+}
+
+#[test]
+fn a_file_put_back_unchanged_inside_a_transaction_is_claimed_by_its_commit() {
+    let f = opened(BLOCK);
+    answer(f.sessions.begin(&f.id)).result.unwrap();
+    let old = f.path.with_file_name("old.silico");
+    std::fs::hard_link(&f.path, &old).unwrap();
+    put_unchanged_by_rename(&f.path);
+    // A commit that writes nothing: only its read of the file claims the new one.
+    let commit = answer(f.sessions.commit(&f.id));
+    assert!(!commit.result.unwrap().written);
+    claimed_anew_and_the_old_let_go(&f, &old);
+}
+
+#[test]
+fn outside_a_transaction_an_unreadable_file_refuses_the_command_saying_how_to_go_on() {
+    let f = opened(BLOCK);
+    // A directory where the file was: there, but no regular file.
+    std::fs::remove_file(&f.path).unwrap();
+    std::fs::create_dir(&f.path).unwrap();
+    let text = f.text();
+    assert_eq!(
+        the_error(&text),
+        (
+            ErrorCode::IoFailed,
+            format!(
+                "{} couldn't be read: it isn't a regular file",
+                quoted(&f.path)
+            ),
+            Some("path".to_owned()),
+            Some(REREAD.to_owned()),
+            Some(format!(
+                "make the file at {} a regular file this user may read, or close the session and open the file where it is now",
+                quoted(&f.path)
+            )),
+        )
+    );
+    assert_eq!(Fixture::after(&text), (1, false));
 }

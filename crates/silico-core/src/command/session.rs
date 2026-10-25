@@ -748,7 +748,7 @@ struct Snapshot {
 /// `open` was given it, the text and the gate's finding of it, the revision whose model is
 /// its model, what was carried before, the state the edits were made from, and how the file
 /// was found before the command, if not as the session last read or wrote it (inside a
-/// transaction, [`Reload::changed_outside`]).
+/// transaction, [`Reload::Outside`]).
 struct Saving {
     path: String,
     text: Arc<Vec<u8>>,
@@ -1371,13 +1371,12 @@ impl<C: Kernel + 'static> Session<C> {
         if let Some(outside) = changed_outside {
             if !unchanged {
                 return Err(Problems::from(match outside {
-                    Outside::Changed => saver.conflict(&path),
+                    Outside::ChangedOrGone => saver.conflict(&path),
                     Outside::Unreadable(error) => error,
                 }));
             }
-            if through == Through::Transaction {
-                self.unwritten(&begun, revision)?;
-            }
+            // Only a transaction's commit is given what was found outside.
+            self.unwritten(&begun, revision)?;
             return Ok(Committed {
                 written: false,
                 path,
@@ -1676,8 +1675,9 @@ impl<C: Kernel + 'static> Session<C> {
     /// compared, byte for byte, with what the session last read or wrote: bytes, not times,
     /// so a change that keeps the file's size and its modification time is found too. The
     /// file read is claimed with `claim`, as `open` claims it, so a file another session
-    /// holds (a link to its document put at the path) refuses the command, naming that
-    /// session, before anything changes.
+    /// holds (a link to its document put at the path, even to a file put at that session's
+    /// path that it hasn't read yet) refuses the command, naming that session, before
+    /// anything changes.
     ///
     /// Outside a transaction, a change is reloaded: the file's bytes are the session's text
     /// at a new revision, through the gate (a document it refuses held with its problems, as
@@ -1689,7 +1689,7 @@ impl<C: Kernel + 'static> Session<C> {
     ///
     /// Inside a transaction, only for `commit` ([`Rereads::Always`]): nothing is reloaded,
     /// and a file changed (longer than a document may be, or gone) or unreadable is found
-    /// for the commit to refuse, if it would write ([`Reload::changed_outside`]).
+    /// for the commit to refuse, if it would write ([`Reload::Outside`]).
     ///
     /// A file this session's own save left part written isn't compared, nor reloaded (the
     /// next save says where its old text is), until it holds what the session last read or
@@ -1697,12 +1697,8 @@ impl<C: Kernel + 'static> Session<C> {
     fn reload(
         &self,
         rereads: Rereads,
-        claim: &dyn Fn(Claim<'_>) -> Result<(), Problems>,
+        claim: &dyn Fn(Claim<'_>) -> Result<(), Unclaimed>,
     ) -> Result<Reload, Problems> {
-        let as_held = Reload {
-            reloaded: false,
-            changed_outside: None,
-        };
         let (path, resolved, bytes, transaction, part_written) = {
             let held = lock(&self.held);
             (
@@ -1714,17 +1710,22 @@ impl<C: Kernel + 'static> Session<C> {
             )
         };
         if rereads == Rereads::Never || (transaction && rereads != Rereads::Always) {
-            return Ok(as_held);
+            return Ok(Reload::AsHeld);
         }
         let _span = tracing::info_span!("reload").entered();
+        // Where the path leads now, as `open` found where it led: through a link put there
+        // since, to another session's path, say.
+        let found_at = std::fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
         let found = file::opened_and_read(&resolved);
         let claimed = |opened| {
             claim(Claim {
                 opened,
                 resolved: &resolved,
-                given: Path::new(&path),
+                found_at: &found_at,
             })
+            .map_err(|unclaimed| Problems::from(unclaimed.rereading(&path)))
         };
+        let gone = || matches!(resolved.try_exists(), Ok(false));
         if part_written {
             if let Ok((opened, now)) = found
                 && now == *bytes
@@ -1733,38 +1734,41 @@ impl<C: Kernel + 'static> Session<C> {
                 lock(&self.held).part_written = None;
                 tracing::info!(session = %self.id, "the file a save left part written holds its old text again");
             }
-            return Ok(as_held);
+            return Ok(Reload::AsHeld);
         }
         if transaction {
-            let changed_outside = match found {
+            let outside = match found {
                 Ok((opened, now)) if now == *bytes => {
                     claimed(opened)?;
-                    None
+                    return Ok(Reload::AsHeld);
                 }
                 // Other bytes, or more than a document may be.
-                Ok(_) => Some(Outside::Changed),
-                // Gone: nothing at its path, or a link there to nothing.
-                Err(_) if matches!(resolved.try_exists(), Ok(false)) => Some(Outside::Changed),
-                Err(error) => Some(Outside::Unreadable(unread_by_commit(&path, &error))),
+                Ok(_) => Outside::ChangedOrGone,
+                Err(_) if gone() => Outside::ChangedOrGone,
+                Err(error) => Outside::Unreadable(unread_by_commit(&path, &error)),
             };
-            if changed_outside.is_some() {
-                tracing::info!(session = %self.id, "the file changed outside the session, inside a transaction: not reloaded");
-            }
-            return Ok(Reload {
-                reloaded: false,
-                changed_outside,
-            });
+            tracing::info!(session = %self.id, "the file changed outside the session, inside a transaction: not reloaded");
+            return Ok(Reload::Outside(outside));
         }
-        let (opened, now) =
-            found.map_err(|error| Problems::from(not_reloaded(&path, of_file(&path, &error))))?;
+        let (opened, now) = found.map_err(|error| {
+            let suggestion = if gone() {
+                put_back(&path)
+            } else {
+                format!(
+                    "make the file at {} a regular file this user may read, or close the session and open the file where it is now",
+                    shown(Path::new(&path))
+                )
+            };
+            Problems::from(not_reloaded(of_file(&path, &error), suggestion))
+        })?;
         if now == *bytes {
             claimed(opened)?;
-            return Ok(as_held);
+            return Ok(Reload::AsHeld);
         }
         if now.len() > MAX_INPUT_LEN {
             return Err(Problems::from(not_reloaded(
-                &path,
                 too_long(Path::new(&path)),
+                put_back(&path),
             )));
         }
         // Gated with the held state's lock let go, so `status` never waits on it; nothing
@@ -1781,10 +1785,7 @@ impl<C: Kernel + 'static> Session<C> {
         held.last_reload = Some(next);
         drop(held);
         tracing::info!(session = %self.id, revision = next.number(), "the file changed outside the session: reloaded");
-        Ok(Reload {
-            reloaded: true,
-            changed_outside: None,
-        })
+        Ok(Reload::Reloaded)
     }
 
     /// `text` saved over the document's file at `resolved` (`path` as `open` was given it),
@@ -2035,27 +2036,34 @@ fn of_file(path: &str, error: &Error) -> Error {
     )
 }
 
-/// `error`, why a session couldn't take its file at `path` (as `open` was given it) as it is
-/// now, before a command outside a transaction (decision 2): gone, unreadable, or too long.
-/// The command is refused, naming the file, with how to go on.
-fn not_reloaded(path: &str, error: Error) -> Error {
+/// `error`, naming the file, why a session couldn't take its file as it is now, before a
+/// command (decision 2): gone, unreadable, too long, or another session's. The command is
+/// refused, with `suggestion`, how to go on.
+fn not_reloaded(error: Error, suggestion: String) -> Error {
     error
         .with_parameter("path")
-        .with_cause("the session reads its file before each command to find changes made outside it")
-        .with_suggestion(format!(
-            "put the file back at {}, or close the session (roll back first) and open the file where it is now",
-            shown(Path::new(path))
-        ))
+        .with_cause(
+            "the session reads its file before each command to find changes made outside it",
+        )
+        .with_suggestion(suggestion)
+}
+
+/// What to do about a session's file at `path` (as `open` was given it) gone or grown too
+/// long, outside a transaction.
+fn put_back(path: &str) -> String {
+    format!(
+        "put the file back at {}, or close the session and open the file where it is now",
+        shown(Path::new(path))
+    )
 }
 
 /// `error`, why the file at `path` (as `open` was given it) couldn't be read before a
 /// transaction's `commit`: its `io_failed`, if the commit would write, naming the file.
 fn unread_by_commit(path: &str, error: &Error) -> Error {
+    const SUGGESTION: &str = "nothing was written: make it a regular file this user may read again, then commit; or roll back";
     of_file(path, error)
         .with_parameter("path")
-    .with_suggestion(
-        "nothing was written: make it a regular file this user may read again, then commit; or roll back",
-    )
+        .with_suggestion(SUGGESTION)
 }
 
 /// The refusal of session `id`'s document replaced outside a transaction when its text
@@ -2087,7 +2095,7 @@ fn part_written(path: &str, old: &Path) -> Error {
     )
     .with_parameter("path")
     .with_suggestion(
-        "nothing was written: put the old text back in the file, then run the command again",
+        "nothing was written: put the old text back in the file, then run the command again, or close the session and open the file again",
     )
 }
 
@@ -2672,7 +2680,7 @@ impl<P: Clients + 'static> Sessions<P> {
             Rereads::Always,
             move |session, model, reload| {
                 let id = session.id;
-                session.commit(reload.changed_outside, model, &|resolved| {
+                session.commit(reload.outside(), model, &|resolved| {
                     reclaim(&registry, id, resolved);
                 })
             },
@@ -2921,13 +2929,13 @@ impl<P: Clients + 'static> Sessions<P> {
                     let id = session.id;
                     let claimed = |found: Claim<'_>| match registry.upgrade() {
                         Some(registry) => {
-                            claim(&registry, found.opened, found.resolved, id, found.given)
+                            claim(&registry, found.opened, found.resolved, found.found_at, id)
                         }
                         // The sessions are being dropped: no claim is kept.
                         None => Ok(()),
                     };
                     let (reloaded, result) = match session.reload(rereads, &claimed) {
-                        Ok(reload) => (reload.reloaded, work(session, &mut model, reload)),
+                        Ok(reload) => (reload.reloaded(), work(session, &mut model, reload)),
                         Err(problems) => (false, Err(problems)),
                     };
                     Response {
@@ -3010,32 +3018,50 @@ enum Rereads {
 
 /// What a session found of its file before a command ([`Session::reload`]), given to the
 /// command.
-struct Reload {
-    /// Whether it reloaded the file, found changed outside the session: the response's
-    /// `reloaded`.
-    reloaded: bool,
-    /// Inside a transaction, before `commit` ([`Rereads::Always`]), how the file was found,
-    /// if not as the session last read or wrote it: for the commit to refuse, if it would
-    /// write.
-    changed_outside: Option<Outside>,
+enum Reload {
+    /// Nothing to change: the file unread (inside a transaction, or for `close`), or as the
+    /// session last read or wrote it.
+    AsHeld,
+    /// Found changed outside the session, and reloaded: the response's `reloaded`.
+    Reloaded,
+    /// Inside a transaction, before `commit` ([`Rereads::Always`]): found not as the
+    /// session last read or wrote it, and not reloaded, for the commit to refuse if it
+    /// would write.
+    Outside(Outside),
+}
+
+impl Reload {
+    /// Whether the file was reloaded: the response's `reloaded`.
+    fn reloaded(&self) -> bool {
+        matches!(self, Reload::Reloaded)
+    }
+
+    /// How the file was found, inside a transaction, if not as the session last read or
+    /// wrote it.
+    fn outside(self) -> Option<Outside> {
+        match self {
+            Reload::Outside(outside) => Some(outside),
+            Reload::AsHeld | Reload::Reloaded => None,
+        }
+    }
 }
 
 /// A file found, inside a transaction, not as its session last read or wrote it.
 enum Outside {
-    /// It holds other bytes (more than a document may be, perhaps), or it's gone: a
-    /// conflict.
-    Changed,
+    /// It holds other bytes (more than a document may be, perhaps), or it's gone (nothing
+    /// at its path, or a link there to nothing): a conflict.
+    ChangedOrGone,
     /// It couldn't be read, as the error says: an `io_failed`.
     Unreadable(Error),
 }
 
 /// A file read before a command ([`Session::reload`]), to be claimed for its session as
-/// `open` claims one ([`claim`]): the file opened, its path as its links resolve, and its
-/// path as `open` was given it.
+/// `open` claims one ([`claim`]): the file opened, the session's path as its links resolved
+/// at `open`, and where that path leads now.
 struct Claim<'a> {
     opened: std::fs::File,
     resolved: &'a Path,
-    given: &'a Path,
+    found_at: &'a Path,
 }
 
 /// A refusal, of no session.
@@ -3197,7 +3223,7 @@ fn open<P: Clients + 'static>(
         if text.len() > MAX_INPUT_LEN {
             return Err(Problems::from(too_long(path)));
         }
-        claim(registry, opened, &resolved, id, path)?;
+        claim(registry, opened, &resolved, &resolved, id).map_err(|e| e.opening(path))?;
         (resolved, text, None)
     };
     let gated = Gated::of(&text);
@@ -3280,7 +3306,7 @@ fn made<P: Clients + 'static>(
         text: text.clone(),
         kept: false,
     };
-    claim(registry, made, &resolved, id, path)?;
+    claim(registry, made, &resolved, &resolved, id).map_err(|e| e.opening(path))?;
     Ok((resolved, text, unmade))
 }
 
@@ -3300,20 +3326,23 @@ fn create_new(path: &Path, text: &[u8]) -> std::io::Result<std::fs::File> {
     }
 }
 
-/// The file `opened`, at `resolved` (its path through links), claimed for session `id` by
-/// both: the file it is and its path, the file kept open while it's claimed, and any file
-/// the session claimed before let go (a reload's, decision 2, of a file put at its path).
-/// Refused, naming the session, nothing changed, if another session holds or is opening
-/// either: the same file by another name (a hard link, macOS's data-volume name, a link put
-/// at the path), or another file put at its path since.
+/// The file `opened`, at `resolved` (the session's path through links, as `open` found it),
+/// claimed for session `id` by both: the file it is and its path, the file kept open while
+/// it's claimed, and any file the session claimed before let go (a reload's, decision 2, of
+/// a file put at its path). `found_at` is where `resolved` leads now, through links put
+/// there since (`resolved` itself, at `open`). Refused, naming the session, nothing
+/// changed, if another session holds or is opening the file, `resolved`, or `found_at`: the
+/// same file by another name (a hard link, macOS's data-volume name, a link put at the
+/// path), another file put at its path since, or a link to another session's path whose
+/// file was replaced there, by a save that session hasn't read yet.
 fn claim<P: Clients + 'static>(
     registry: &Registry<P>,
     opened: std::fs::File,
     resolved: &Path,
+    found_at: &Path,
     id: SessionId,
-    given: &Path,
-) -> Result<(), Problems> {
-    let file = FileId::of(&opened).map_err(|e| e.with_parameter("path"))?;
+) -> Result<(), Unclaimed> {
+    let file = FileId::of(&opened).map_err(Unclaimed::Unreadable)?;
     let mut book = lock(&registry.book);
     let holder = book
         .files
@@ -3321,10 +3350,32 @@ fn claim<P: Clients + 'static>(
         .map(|(holder, _)| *holder)
         .into_iter()
         .chain(book.paths.get(resolved).copied())
+        .chain(book.paths.get(found_at).copied())
         .find(|holder| *holder != id);
     match holder {
-        Some(holder) => Err(Problems::from(
-            Error::new(
+        Some(holder) => Err(Unclaimed::Held(holder)),
+        None => {
+            book.files.retain(|_, (holder, _)| *holder != id);
+            book.files.insert(file, (id, opened));
+            book.paths.insert(resolved.to_owned(), id);
+            Ok(())
+        }
+    }
+}
+
+/// Why a file couldn't be claimed for a session ([`claim`]).
+enum Unclaimed {
+    /// Another session holds it, or is opening it.
+    Held(SessionId),
+    /// What file it is couldn't be read.
+    Unreadable(Error),
+}
+
+impl Unclaimed {
+    /// The refusal of `open` of the file at `given`, as `open` was given it.
+    fn opening(self, given: &Path) -> Problems {
+        Problems::from(match self {
+            Unclaimed::Held(holder) => Error::new(
                 ErrorCode::InvalidInput,
                 format!("{} is already open in session {holder}", shown(given)),
             )
@@ -3332,12 +3383,25 @@ fn claim<P: Clients + 'static>(
             .with_suggestion(format!(
                 "use session {holder}, which this client opened, or close it first"
             )),
-        )),
-        None => {
-            book.files.retain(|_, (holder, _)| *holder != id);
-            book.files.insert(file, (id, opened));
-            book.paths.insert(resolved.to_owned(), id);
-            Ok(())
+            Unclaimed::Unreadable(error) => error.with_parameter("path"),
+        })
+    }
+
+    /// The refusal of a command whose session found the file at `path` (as `open` was given
+    /// it) not its own (decision 2): another session's, or one it couldn't tell apart.
+    fn rereading(self, path: &str) -> Error {
+        let shown_path = shown(Path::new(path));
+        match self {
+            Unclaimed::Held(holder) => not_reloaded(
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    format!("{shown_path} is already open in session {holder}"),
+                ),
+                format!(
+                    "put this session's file back at {shown_path}: the file there now is session {holder}'s"
+                ),
+            ),
+            Unclaimed::Unreadable(error) => not_reloaded(of_file(path, &error), put_back(path)),
         }
     }
 }
@@ -4746,7 +4810,7 @@ mod tests {
         assert_eq!(
             problems.errors()[0].suggestion(),
             Some(
-                "nothing was written: put the old text back in the file, then run the command again"
+                "nothing was written: put the old text back in the file, then run the command again, or close the session and open the file again"
             )
         );
         assert_eq!(f.file(), half);
