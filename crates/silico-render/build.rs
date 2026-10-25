@@ -11,10 +11,11 @@ fn main() -> std::io::Result<()> {
     let prefix = std::env::var_os("CONDA_PREFIX").map(PathBuf::from);
     let icd = prefix.as_deref().and_then(lavapipe_icd);
     let lib = prefix.as_ref().map(|p| p.join("lib"));
-    // Installing or removing lavapipe in the same environment changes what's found.
+    // Installing or removing a package in the environment (lavapipe among them) changes
+    // conda-meta, which every pixi environment has.
     if let Some(dir) = prefix
         .as_ref()
-        .map(|p| p.join("share/vulkan/icd.d"))
+        .map(|p| p.join("conda-meta"))
         .filter(|d| d.is_dir())
     {
         writeln!(out, "cargo:rerun-if-changed={}", dir.display())?;

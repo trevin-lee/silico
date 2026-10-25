@@ -37,12 +37,12 @@ pub struct Probed {
     pub render: Duration,
 }
 
-/// Where the box's front face lands in the view, about its centre: x from −14 to 26 mm, z
-/// from −3 to 7 mm, so it's off the image's centre both ways.
-pub const FRONT: [f64; 4] = [-14.0, 26.0, -3.0, 7.0];
-/// The point of the box drawn at the view's centre: (14, 0, 3) puts the front face at
-/// [`FRONT`].
-const CENTRE: [f32; 3] = [14., 10., 3.];
+/// Where the box's front face lands in the view, about its centre: x from −19 to 21 mm, z
+/// from −3 to 7 mm, so it's off the image's centre both ways, and every edge in view.
+pub const FRONT: [f64; 4] = [-19.0, 21.0, -3.0, 7.0];
+/// The point of the box drawn at the view's centre: its x and z, 19 and 3, put the front
+/// face at [`FRONT`] (its y, along the view, doesn't move it).
+const CENTRE: [f32; 3] = [19., 10., 3.];
 /// The view's height, 1.1 × the box's 40 mm width.
 pub const VIEW_HEIGHT: f32 = 44.0;
 /// Frames to wait for the picking readback: re_renderer delivers it in a later frame, and

@@ -8,7 +8,8 @@ platforms = ["osx-arm64", "linux-64"]
 [dependencies]
 # The compiler's build pinned too (clangxx and clang-21, the compiler itself): adding
 # M4.6's lavapipe once moved the Mac's from build 6 to 7, which would change what OCCT is
-# compiled with.
+# compiled with. libclang13, the C API clang-scan-deps uses, is left free: it compiles
+# nothing.
 clangxx = { version = "21.1.8.*", build = "*_6" }
 clang-21 = { version = "21.1.8.*", build = "*_6" }
 # Runtime and headers pinned together: OCCT calls libc++ (std::sort, ...) at runtime.

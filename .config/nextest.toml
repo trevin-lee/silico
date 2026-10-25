@@ -30,8 +30,8 @@ document-heavy = { max-threads = 1 }
 # fsyncs there taking up to seconds.
 cli = { max-threads = 4 }
 thread-exhausting = { max-threads = 1 }
-# The render worker's tests: a 4096-pixel render takes 1.6 GiB, so one at a time, never
-# beside another (docs/design/m4.6-render.md).
+# The render worker's tests: a 4096-pixel render takes 1.6 GiB, so one at a time
+# (docs/design/m4.6-render.md), each with every test thread, so nothing runs beside it.
 render = { max-threads = 1 }
 
 [[profile.default.overrides]]
@@ -83,3 +83,4 @@ test-group = 'cli'
 [[profile.default.overrides]]
 filter = 'package(silico-render)'
 test-group = 'render'
+threads-required = 'num-test-threads'
