@@ -90,6 +90,10 @@ pub enum Refusal {
     FacesUnmeshed { faces: Vec<u32>, count: u64 },
     /// A measure of the shape that isn't finite: which (`volume`, `center x`, ...).
     NotFinite { quantity: String, value: f64 },
+    /// A description of the shape's elements that no shape has, finite but out of range (a
+    /// direction that isn't a unit vector, a negative area, an edge of length 0 that isn't
+    /// degenerated): `problem`, naming the value (`Description::validate`).
+    DescriptionImpossible { problem: String },
     /// Silico's bridge has no result check for an operation on this many shapes.
     ResultCheckMissing { inputs: u32 },
     /// Silico's bridge reported a history it shouldn't have.
@@ -290,7 +294,9 @@ impl Refusal {
             | Refusal::SweepFlat { .. }
             | Refusal::RoundingPastTolerance { .. }
             | Refusal::TooManyTriangles { .. } => FailureKind::InvalidInput,
-            Refusal::ResultInvalid { .. } => FailureKind::InvalidResult,
+            Refusal::ResultInvalid { .. } | Refusal::DescriptionImpossible { .. } => {
+                FailureKind::InvalidResult
+            }
             Refusal::NoShape
             | Refusal::NothingReturned { .. }
             | Refusal::Occt { .. }
@@ -554,6 +560,10 @@ impl Refusal {
             Refusal::NotFinite { quantity, value } => {
                 (format!("the shape's {quantity} isn't finite ({value})"), None)
             }
+            Refusal::DescriptionImpossible { problem } => (
+                format!("OCCT described an element as no element is: {problem}"),
+                None,
+            ),
             Refusal::ResultCheckMissing { inputs } => (
                 format!("no result check for an operation on {inputs} shapes"),
                 None,
@@ -971,6 +981,9 @@ mod tests {
                 quantity: "volume".to_owned(),
                 value: f64::INFINITY,
             },
+            Refusal::DescriptionImpossible {
+                problem: "the kernel's Face1's area is -1".to_owned(),
+            },
             Refusal::ResultCheckMissing { inputs: 3 },
             Refusal::MalformedHistory {
                 defect: HistoryDefect::WrongKind,
@@ -1043,16 +1056,20 @@ mod tests {
     #[test]
     fn the_elements_at_fault_are_named_only_as_the_namer_names_them() {
         // The core names elements (later, as the document does): every name in the words
-        // comes from the namer it gives, and every element at fault is named.
+        // comes from the namer it gives, and every element at fault is named. A value of a
+        // description is named by the kernel's number for its element, said as the
+        // kernel's ("the kernel's Face1's area"), never as a name.
         let name = |e: ElementRef| format!("<{e}>");
         for refusal in every_refusal() {
             let said = refusal.describe(Some("ChFi3d_Builder:only 2 faces"), &name);
             let text = format!("{} {}", said.message, said.suggestion.unwrap_or_default());
             let bare = text.replace('<', " <");
             for kind in ["Edge", "Face", "Vertex"] {
-                for word in bare.split_whitespace() {
+                let words: Vec<&str> = bare.split_whitespace().collect();
+                for (i, word) in words.iter().enumerate() {
+                    let kernels = i > 0 && words[i - 1] == "kernel's";
                     assert!(
-                        !word.starts_with(kind) || word.starts_with('<'),
+                        !word.starts_with(kind) || word.starts_with('<') || kernels,
                         "{refusal:?} names {word} itself: {text}"
                     );
                 }
@@ -1105,6 +1122,7 @@ mod tests {
             KernelFailed,      // ExtentNotFinite
             KernelFailed,      // FacesUnmeshed
             KernelFailed,      // NotFinite
+            InvalidResult,     // DescriptionImpossible (new with M4.4: OCCT's result)
             Internal,          // ResultCheckMissing
             Internal,          // MalformedHistory
             Internal,          // NoEdgeToRefuse
@@ -1154,6 +1172,7 @@ mod tests {
             None,               // ExtentNotFinite
             None,               // FacesUnmeshed
             None,               // NotFinite
+            None,               // DescriptionImpossible
             None,               // ResultCheckMissing
             None,               // MalformedHistory
             None,               // NoEdgeToRefuse
