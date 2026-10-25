@@ -1,5 +1,5 @@
 //! A [`RenderScene`] drawn headless (docs/design/m4.6-render.md): each body's faces shaded
-//! by a headlight, its edges over them, its highlights in Fusion's selection blue, read back
+//! by a key light and a fill fixed to the camera, as Fusion's are, its edges over them, its highlights in Fusion's selection blue, read back
 //! as an 8-bit sRGB PNG and, when asked, the ID buffer. Visuals follow Fusion 360 (the
 //! design's *What a render looks like*).
 
@@ -27,13 +27,18 @@ pub const BODY: [u8; 3] = [170, 175, 182];
 pub const EDGE: [u8; 3] = [40, 40, 40];
 /// Fusion's selection blue, sRGB.
 pub const HIGHLIGHT: [u8; 3] = [6, 150, 215];
-/// The light a face facing away from the eye still gets, of its full albedo.
-pub const AMBIENT: f32 = 0.35;
+/// The light a face facing away from every light still gets, of its full albedo.
+pub const AMBIENT: f32 = 0.30;
+/// The key light's share, from above and to the left of the camera (Fusion's look: a box's
+/// faces seen at a corner each in a shade of its own, the top lightest).
+pub const KEY: f32 = 0.65;
+/// The fill light's share, from below and to the right, softer.
+pub const FILL: f32 = 0.20;
 /// How much of the highlight's blue a highlighted face is tinted with.
 pub const HIGHLIGHT_STRENGTH: f32 = 0.5;
-/// Edges' widths in pixels: every edge, and a highlighted one.
-pub const EDGE_WIDTH: f32 = 1.5;
-pub const HIGHLIGHTED_EDGE_WIDTH: f32 = 3.0;
+/// Edges' widths in pixels: every edge, dark and solid, and a highlighted one.
+pub const EDGE_WIDTH: f32 = 2.0;
+pub const HIGHLIGHTED_EDGE_WIDTH: f32 = 4.0;
 /// A highlighted face's outline, in pixels.
 pub const OUTLINE_WIDTH: f32 = 1.5;
 /// How far past the scene an orthographic camera sits, of the scene's reach, and at least
@@ -206,11 +211,23 @@ struct View {
     view_from_world: macaw::IsoTransform,
     projection: ViewProjection,
     reference: [f64; 3],
-    /// For a perspective view, the eye; for an orthographic one, none: its light comes
-    /// from the view's direction everywhere.
-    eye: Option<[f64; 3]>,
-    /// From the target toward the eye.
-    back: [f64; 3],
+    /// The key light's and the fill light's directions, toward them: fixed to the camera,
+    /// as Fusion's are, the same at every point.
+    key: [f64; 3],
+    fill: [f64; 3],
+}
+
+/// The lights' directions in the camera's frame: the key `back + up/2 − right/2` (above and
+/// to the left), the fill `back − 3up/10 + 3right/5` (below and to the right), each of unit
+/// length.
+fn lights(frame: &silico_protocol::Frame) -> ([f64; 3], [f64; 3]) {
+    let toward = |u: f64, r: f64| {
+        let v: [f64; 3] =
+            std::array::from_fn(|k| frame.back[k] + u * frame.up[k] + r * frame.right[k]);
+        let l = dot(v, v).sqrt();
+        v.map(|c| c / l)
+    };
+    (toward(0.5, -0.5), toward(-0.3, 0.6))
 }
 
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -247,8 +264,8 @@ impl View {
                         far_plane_distance: (2.0 * (reach + margin)) as f32,
                     },
                     reference: camera.target,
-                    eye: None,
-                    back: frame.back,
+                    key: lights(&frame).0,
+                    fill: lights(&frame).1,
                 }
             }
             Projection::Perspective { field_of_view } => {
@@ -265,8 +282,8 @@ impl View {
                         aspect_ratio: scene.width as f32 / scene.height as f32,
                     },
                     reference: camera.eye,
-                    eye: Some(camera.eye),
-                    back: frame.back,
+                    key: lights(&frame).0,
+                    fill: lights(&frame).1,
                 }
             }
         };
@@ -278,19 +295,12 @@ impl View {
         vec3(sub(p, self.reference))
     }
 
-    /// The headlight's share of a vertex's light, from its normal: the ambient, and the
-    /// rest by Lambert's law toward the eye.
-    fn light(&self, p: [f64; 3], normal: [f32; 3]) -> f32 {
-        let toward = match self.eye {
-            None => self.back,
-            Some(eye) => {
-                let d = sub(eye, p);
-                let l = dot(d, d).sqrt();
-                if l > 0.0 { d.map(|c| c / l) } else { self.back }
-            }
-        };
-        let lambert = dot(normal.map(f64::from), toward).clamp(0.0, 1.0) as f32;
-        AMBIENT + (1.0 - AMBIENT) * lambert
+    /// A vertex's light, from its normal: the ambient, and the key's and the fill's shares
+    /// by Lambert's law, at most the full albedo.
+    fn light(&self, normal: [f32; 3]) -> f32 {
+        let n = normal.map(f64::from);
+        let lambert = |toward: [f64; 3]| dot(n, toward).clamp(0.0, 1.0) as f32;
+        (AMBIENT + KEY * lambert(self.key) + FILL * lambert(self.fill)).min(1.0)
     }
 }
 
@@ -301,7 +311,7 @@ fn srgb([r, g, b]: [u8; 3]) -> Rgba {
 
 /// Each face of `body` as a mesh instance of its own, its picking ID the body's number and
 /// the face's from 1. Its lighting is in its vertex colours, its normals zero, so
-/// re_renderer draws it unlit (a headlight, which its own lighting isn't).
+/// re_renderer draws it unlit (the camera's own lights, which re_renderer's lighting isn't).
 fn faces(
     ctx: &RenderContext,
     body: &RenderBody,
@@ -334,7 +344,7 @@ fn faces(
                 let i = usize::try_from(v).map_err(|e| e.to_string())?;
                 out[k] = *index.entry(v).or_insert_with(|| {
                     let p = mesh.positions[i];
-                    let light = view.light(p, mesh.normals[i]);
+                    let light = view.light(mesh.normals[i]);
                     // In linear light: the albedo scaled by the light, half blue if
                     // highlighted, then sRGB (an Rgba's alpha must stay 1, or the
                     // conversion premultiplies in sRGB).

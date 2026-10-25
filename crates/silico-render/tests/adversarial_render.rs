@@ -1557,3 +1557,72 @@ fn the_same_scene_gives_the_same_id_buffer_in_one_worker_and_another() {
     assert!(first == again, "the same worker drew it differently");
     assert!(first == other, "another worker drew it differently");
 }
+
+#[test]
+fn a_boxs_three_faces_at_a_corner_each_take_their_own_shade_from_the_camera_lights() {
+    // Fusion's look (the maintainer's call through Main): a key light above and to the left
+    // of the camera, a soft fill below and to the right, and an ambient, so a box's faces
+    // seen at a corner read apart. From top_front_right, by hand: back (1, −1, 1)/√3, up
+    // (−1, 1, 2)/√6, right (1, 1, 0)/√2; the key is back + up/2 − right/2 and the fill back −
+    // 3up/10 + 3right/5, each made unit; a face's light is 0.30 + 0.65 max(0, n·key) + 0.20
+    // max(0, n·fill), at most 1. That's 0.878 for the top, 0.731 for the front, and 0.497
+    // for the right: lightest on top, and the front (left in the image) over the right.
+    let mut w = worker();
+    let mut scene = front_of_a_box(200, 200);
+    scene.camera = Camera {
+        projection: Projection::Orthographic { view_height: 70.0 },
+        eye: [120.0, -90.0, 105.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    };
+    let (image, ids) = call(&mut w, &scene).unwrap();
+    let ids = ids.unwrap();
+    let (s2, s3, s6) = (2f64.sqrt(), 3f64.sqrt(), 6f64.sqrt());
+    let back = [1.0 / s3, -1.0 / s3, 1.0 / s3];
+    let up = [-1.0 / s6, 1.0 / s6, 2.0 / s6];
+    let right = [1.0 / s2, 1.0 / s2, 0.0];
+    let toward = |u: f64, r: f64| unit([0, 1, 2].map(|k| back[k] + u * up[k] + r * right[k]));
+    let (key, fill) = (toward(0.5, -0.5), toward(-0.3, 0.6));
+    let light =
+        |n: [f64; 3]| (0.30 + 0.65 * dot(n, key).max(0.0) + 0.20 * dot(n, fill).max(0.0)).min(1.0);
+    let linear = |c: u8| libm::pow((f64::from(c) / 255.0 + 0.055) / 1.055, 2.4);
+    let srgb = |l: f64| ((1.055 * libm::pow(l, 1.0 / 2.4) - 0.055) * 255.0).round();
+    let mut seen = Vec::new();
+    for (face, normal, by_hand) in [
+        (6, [0.0, 0.0, 1.0], 0.878),
+        (3, [0.0, -1.0, 0.0], 0.731),
+        (2, [1.0, 0.0, 0.0], 0.497),
+    ] {
+        assert!(
+            (light(normal) - by_hand).abs() < 1e-3,
+            "{face}: {}",
+            light(normal)
+        );
+        let want: Vec<f64> = (0..3)
+            .map(|k| srgb(light(normal) * linear(BODY[k])))
+            .collect();
+        // Every pixel of the face whose eight neighbours are the face's too: away from
+        // its edges' lines.
+        let at = |col: i64, row: i64| ids[(row * 200 + col) as usize];
+        let mut inside = 0;
+        for row in 1..199i64 {
+            for col in 1..199i64 {
+                let all = (-1..=1).all(|dr| (-1..=1).all(|dc| at(col + dc, row + dr) == [1, face]));
+                if !all {
+                    continue;
+                }
+                inside += 1;
+                let got = image.at(col as u32, row as u32);
+                for k in 0..3 {
+                    assert!(
+                        (f64::from(got[k]) - want[k]).abs() <= 1.0,
+                        "Face{face} at ({col}, {row}): {got:?}, want {want:?}"
+                    );
+                }
+            }
+        }
+        assert!(inside > 500, "Face{face}: only {inside} pixels inside");
+        seen.push(want[0]);
+    }
+    assert!(seen[0] > seen[1] && seen[1] > seen[2], "{seen:?}");
+}
