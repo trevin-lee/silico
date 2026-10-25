@@ -134,8 +134,9 @@ pub enum Refusal {
         rounding: f64,
         reach: f64,
     },
-    /// An export's mesh of more `triangles` than [`crate::MAX_EXPORT_TRIANGLES`], in all.
-    TooManyTriangles { triangles: u64 },
+    /// An export's mesh of more `triangles`, in all, than the `limit` an export may have
+    /// ([`crate::MAX_EXPORT_TRIANGLES`]).
+    TooManyTriangles { triangles: u64, limit: u64 },
 }
 
 /// What OCCT gave back nothing of.
@@ -631,11 +632,10 @@ impl Refusal {
                     format_number(2.0 * rounding)
                 )),
             ),
-            Refusal::TooManyTriangles { triangles } => (
+            Refusal::TooManyTriangles { triangles, limit } => (
                 format!(
-                    "an export's mesh has {triangles} triangles, more than the {} an export may \
-                     have",
-                    crate::MAX_EXPORT_TRIANGLES
+                    "an export's mesh has {triangles} triangles, more than the {limit} an export \
+                     may have"
                 ),
                 Some(
                     "export with a coarser tolerance, which makes fewer, or fewer parts at once"
@@ -1006,6 +1006,7 @@ mod tests {
             },
             Refusal::TooManyTriangles {
                 triangles: 10_000_001,
+                limit: 10_000_000,
             },
         ]
     }

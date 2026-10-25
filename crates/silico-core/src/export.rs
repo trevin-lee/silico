@@ -119,9 +119,8 @@ const FINER: &str = "export with another tolerance, or change the part where the
 /// Whether OCCT meshed a face of `mesh` more coarsely than asked for the face's own
 /// tolerance: a face whose tolerance is more than half the deflection, which OCCT raises the
 /// face's deflection to twice (`BRepMesh_Deflection.cxx:149-152`, OCCT's own test). Then
-/// [`printable`] needs the unraised mesh of the same shape too
-/// ([`crate::kernel::KernelRequest::unraised_export_mesh`]), to see whether the raise changed
-/// the face's nodes.
+/// [`printable`] asks for the unraised mesh of the same shape too, to see whether the raise
+/// changed the face's nodes.
 pub fn needs_unraised(mesh: &ExportMesh) -> bool {
     raised_faces(mesh).next().is_some()
 }
@@ -132,15 +131,16 @@ fn raised_faces(mesh: &ExportMesh) -> impl Iterator<Item = usize> + '_ {
 }
 
 /// Joins the faces of `mesh` at the edges they share, and checks the result is printable
-/// at the tolerance it was meshed for (the module's rules, in order). `unraised` is OCCT's
-/// mesh of the same shape with no face's deflection raised, which a face OCCT raised
-/// ([`needs_unraised`]) is compared with: needed only then. `names` names the faces in a
-/// refusal, as the feature's element map does, and must name every face of the shape;
-/// without it they're numbered (`Face3`). Each solid is joined on its own, so two solids
-/// that touch never share a vertex.
+/// at the tolerance it was meshed for (the module's rules, in order). `unraised` gives
+/// OCCT's mesh of the same shape at the same tolerance with no face's deflection raised
+/// ([`crate::kernel::KernelRequest::unraised_export_mesh`]), which a face OCCT raised
+/// ([`needs_unraised`]) is compared with: it's called only then, and its error is the
+/// export's. `names` names the faces in a refusal, as the feature's element map does, and
+/// must name every face of the shape; without it they're numbered (`Face3`). Each solid is
+/// joined on its own, so two solids that touch never share a vertex.
 pub fn printable(
     mesh: &ExportMesh,
-    unraised: Option<&ExportMesh>,
+    unraised: impl FnOnce() -> Result<ExportMesh, Error>,
     names: Option<&ElementMap>,
 ) -> Result<PrintableMesh, Error> {
     let namer = FaceNamer { names };
@@ -171,7 +171,7 @@ pub fn printable(
 /// [`printable`]'s checks, its faces left out unsaid.
 fn checked(
     mesh: &ExportMesh,
-    unraised: Option<&ExportMesh>,
+    unraised: impl FnOnce() -> Result<ExportMesh, Error>,
     names: Option<&ElementMap>,
 ) -> Result<PrintableMesh, Error> {
     let _span = tracing::info_span!(
@@ -183,14 +183,7 @@ fn checked(
     .entered();
     // A report that doesn't hold together can't be indexed: one from the worker is checked
     // as it's read (`KernelRequest::export_mesh`), and any other here.
-    if let Err(problem) = mesh.validate() {
-        return Err(Error::new(
-            ErrorCode::InvalidInput,
-            "the export mesh doesn't hold together",
-        )
-        .with_cause(problem)
-        .with_suggestion("export the mesh the kernel worker reports, as it reports it"));
-    }
+    held_together(mesh, "the export mesh")?;
     let tolerance = mesh.tolerance;
     let faces = FaceNamer { names };
     // A map that doesn't name a face of the shape is another shape's: the error would name
@@ -464,10 +457,18 @@ fn checked(
     };
     // A shell of unoriented faces only is a membrane, no boundary: it encloses nothing, and
     // isn't held to.
-    let membrane = |shell: usize| {
-        !mesh.face_shells.iter().any(|&s| s as usize == shell)
-            && mesh.unoriented_shells.iter().any(|&s| s as usize == shell)
+    let shells_with = |of: &[u32]| {
+        let mut with = vec![false; mesh.shell_solids.len()];
+        for &s in of {
+            with[s as usize] = true;
+        }
+        with
     };
+    let (oriented, unoriented) = (
+        shells_with(&mesh.face_shells),
+        shells_with(&mesh.unoriented_shells),
+    );
+    let membrane = |shell: usize| !oriented[shell] && unoriented[shell];
     let inward: Vec<u32> = (0..shell_volumes.len())
         .filter(|&shell| !membrane(shell))
         .filter(|&shell| {
@@ -517,12 +518,14 @@ fn checked(
     // it raised a face, the face is compared with OCCT's mesh of it unraised: the raise
     // changes nothing on a plane or a cylinder (no nodes inside them), and often nothing on
     // a sphere, cone, or torus (a step count rounded the same), so a face is refused only
-    // where its nodes differ. Its triangles may differ where its nodes don't, as a
-    // cylinder's quads' diagonals are ties, broken as the mesher meets them; the nodes are
-    // what the deflection places.
+    // where its nodes differ. Its triangles may differ where its nodes don't: the face's
+    // deflection also sets the scale a cylinder is triangulated in (`myDu`, through
+    // `computeDelta`), so its quads' diagonals can fall the other way, and the mesh is as far
+    // from the surface either way; the nodes are what the deflection places.
     let raised: Vec<usize> = raised_faces(mesh).collect();
     if !raised.is_empty() {
-        let unraised = unraised_for(mesh, unraised)?;
+        let unraised = unraised()?;
+        same_shape(mesh, &unraised)?;
         let unraised_ranges = unraised.face_ranges();
         let places = |m: &ExportMesh, range: &std::ops::Range<u32>| {
             let mut places: Vec<[u64; 3]> = m.nodes[range.start as usize..range.end as usize]
@@ -535,7 +538,7 @@ fn checked(
         // By their bits, -0 as 0 (one place, as joined above), in any order.
         let (changed, same): (Vec<usize>, Vec<usize>) = raised
             .into_iter()
-            .partition(|&f| places(mesh, &ranges[f]) != places(unraised, &unraised_ranges[f]));
+            .partition(|&f| places(mesh, &ranges[f]) != places(&unraised, &unraised_ranges[f]));
         if !same.is_empty() {
             let named: Vec<String> = same.iter().map(|&f| faces.name(number(f))).collect();
             tracing::info!(
@@ -616,42 +619,36 @@ fn checked(
     })
 }
 
-/// `unraised`, checked to be OCCT's unraised mesh of the shape `mesh` is of: one that
-/// holds together, meshed unraised at the same tolerance and deflection, of the same faces.
-/// Without it, or with another, the caller has a bug.
-fn unraised_for<'a>(
-    mesh: &ExportMesh,
-    unraised: Option<&'a ExportMesh>,
-) -> Result<&'a ExportMesh, Error> {
-    let bug = |what: &str| {
-        Err(Error::new(
-            ErrorCode::Internal,
-            format!(
-                "OCCT meshed a face of the export more coarsely for its own tolerance, and {what} \
-                 to compare it with"
-            ),
-        )
-        .with_suggestion(crate::worker::SILICO_BUG))
-    };
-    let Some(unraised) = unraised else {
-        return bug("there's no unraised mesh");
-    };
-    if let Err(problem) = unraised.validate() {
-        return Err(Error::new(
+/// `mesh` refused, as `what`, if it doesn't hold together.
+fn held_together(mesh: &ExportMesh, what: &str) -> Result<(), Error> {
+    mesh.validate().map_err(|problem| {
+        Error::new(
             ErrorCode::InvalidInput,
-            "the unraised export mesh doesn't hold together",
+            format!("{what} doesn't hold together"),
         )
         .with_cause(problem)
-        .with_suggestion("export the mesh the kernel worker reports, as it reports it"));
-    }
+        .with_suggestion("export the mesh the kernel worker reports, as it reports it")
+    })
+}
+
+/// Checks `unraised` is OCCT's unraised mesh of the shape `mesh` is of: one that holds
+/// together, meshed unraised at the same tolerance and deflection, of the same faces.
+/// Another's is a bug of the caller's.
+fn same_shape(mesh: &ExportMesh, unraised: &ExportMesh) -> Result<(), Error> {
+    held_together(unraised, "the unraised export mesh")?;
     if !unraised.force_face_deflection
         || unraised.tolerance.to_bits() != mesh.tolerance.to_bits()
         || unraised.deflection.to_bits() != mesh.deflection.to_bits()
         || unraised.face_numbers != mesh.face_numbers
     {
-        return bug("the unraised mesh given is another's");
+        return Err(Error::new(
+            ErrorCode::Internal,
+            "OCCT meshed a face of the export more coarsely for its own tolerance, and the \
+             unraised mesh given to compare it with is another's",
+        )
+        .with_suggestion(crate::worker::SILICO_BUG));
     }
-    Ok(unraised)
+    Ok(())
 }
 
 /// The least tolerance in whole nanometres (1e-6 mm, a length a document holds) at which
@@ -757,7 +754,8 @@ const MAX_ARCHIVE: u64 = u32::MAX as u64;
 /// `[Content_Types].xml`, `_rels/.rels`, and `3D/3dmodel.model`, in that order, stored, each
 /// with the zip epoch (1980-01-01 00:00) as its time. A name or part number XML can't hold
 /// (a control character other than tab, line feed, and carriage return) is refused, naming
-/// the object.
+/// the object; so are objects of more than [`silico_protocol::MAX_EXPORT_TRIANGLES`]
+/// triangles in all, and an archive past a plain zip's 4 GiB, each naming the tolerance.
 pub fn three_mf(objects: &[Object<'_>]) -> Result<Vec<u8>, Error> {
     let _span = tracing::info_span!("three_mf", objects = objects.len()).entered();
     if objects.is_empty() {
@@ -772,7 +770,9 @@ pub fn three_mf(objects: &[Object<'_>]) -> Result<Vec<u8>, Error> {
         .iter()
         .map(|object| object.mesh.triangles.len() as u64)
         .sum();
-    if let Err(refusal) = silico_protocol::check_export_triangles(triangles) {
+    if let Err(refusal) =
+        silico_protocol::check_export_triangles(triangles, silico_protocol::MAX_EXPORT_TRIANGLES)
+    {
         return Err(crate::worker::failure_error(
             "ExportMesh",
             silico_protocol::Failure::new(refusal),

@@ -3,7 +3,7 @@
 //! real kernel's meshes are silico-kernel's tests/export.rs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use super::export_report::{P, TETRA, refused, report, tetra};
+use super::export_report::{P, TETRA, refused, report, tetra, unasked};
 
 use silico_core::ErrorCode;
 use silico_core::export::{Object, PrintableMesh, printable, three_mf};
@@ -11,7 +11,7 @@ use silico_protocol::ExportMesh;
 
 #[test]
 fn a_tetrahedron_joins_into_four_vertices_and_encloses_a_sixth() {
-    let mesh = printable(&tetra(), None, None).unwrap();
+    let mesh = printable(&tetra(), unasked, None).unwrap();
     // Vertices as the triangles first name them: Face1's P0, P2, P1, then Face2's P3.
     assert_eq!(
         mesh.vertices(),
@@ -136,7 +136,7 @@ fn a_triangle_flat_once_rounded_to_32_bits_but_with_its_corners_apart_is_written
             &[[1, 4, 3], [4, 2, 3]],
         ],
     );
-    let mesh = printable(&m, None, None).unwrap();
+    let mesh = printable(&m, unasked, None).unwrap();
     assert_eq!(mesh.triangles().len(), 6);
     // The same 1e-6 out is a triangle with area in 32 bits too, and passes.
     let mut points = P.to_vec();
@@ -150,7 +150,7 @@ fn a_triangle_flat_once_rounded_to_32_bits_but_with_its_corners_apart_is_written
             &[[1, 4, 3], [4, 2, 3]],
         ],
     );
-    assert!(printable(&m, None, None).is_ok());
+    assert!(printable(&m, unasked, None).is_ok());
 }
 
 #[test]
@@ -201,12 +201,12 @@ fn deviations_past_the_tolerance_less_the_rounding_are_refused() {
     );
     let mut m = tetra();
     m.edge_deflections[0] = 0.1 - rounding * 1.5;
-    assert!(printable(&m, None, None).is_ok());
+    assert!(printable(&m, unasked, None).is_ok());
     // A face's own deviation, as OCCT estimates it, isn't held to the tolerance, as FreeCAD
     // takes it: the estimate overstates a cone's by 10 to 1000 times (break-it).
     let mut m = tetra();
     m.face_deflections[1] = 1.0;
-    assert!(printable(&m, None, None).is_ok());
+    assert!(printable(&m, unasked, None).is_ok());
     // An edge use's deflection raised past it names its face.
     let mut m = tetra();
     m.edge_deflections[0] = 0.1;
@@ -240,7 +240,7 @@ fn shapes_without_solids_and_faces_outside_them_are_refused() {
         ..ExportMesh::default()
     };
     m.validate().unwrap();
-    let error = printable(&m, None, None).unwrap_err();
+    let error = printable(&m, unasked, None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
     assert!(error.message().contains("no solid"), "{error}");
     let mut m = tetra();
@@ -260,7 +260,7 @@ fn a_report_of_a_tolerance_outside_the_exports_range_is_refused() {
     for bad in [1e-6, 0.0, -1.0, f64::NAN, 1e9] {
         let mut m = tetra();
         m.tolerance = bad;
-        let error = printable(&m, None, None).unwrap_err();
+        let error = printable(&m, unasked, None).unwrap_err();
         assert_eq!(error.code(), ErrorCode::InvalidInput, "{bad}: {error}");
         assert!(
             error.message().contains("doesn't hold together"),
@@ -304,7 +304,7 @@ fn two_solids_are_joined_each_on_its_own() {
     two.edge_nodes
         .extend(one.edge_nodes.iter().map(|n| n + offset));
     two.validate().unwrap();
-    let mesh = printable(&two, None, None).unwrap();
+    let mesh = printable(&two, unasked, None).unwrap();
     assert_eq!(mesh.vertices().len(), 8);
     assert_eq!(mesh.triangles().len(), 8);
     assert_eq!(mesh.volume(), 2.0 / 6.0);
@@ -346,7 +346,7 @@ fn entries(archive: &[u8]) -> Vec<(String, Vec<u8>)> {
 }
 
 fn tetra_mesh() -> PrintableMesh {
-    printable(&tetra(), None, None).unwrap()
+    printable(&tetra(), unasked, None).unwrap()
 }
 
 #[test]
@@ -427,7 +427,7 @@ fn coordinates_are_the_shortest_decimal_of_their_32_bit_value_and_minus_zero_is_
         *p = [p[0] * 0.1 - 0.0, p[1] / 3.0, -p[2] * 0.0];
     }
     points[3] = [0.0, 0.0, 1.0 / 3.0];
-    let mesh = printable(&report(&points, &TETRA), None, None).unwrap();
+    let mesh = printable(&report(&points, &TETRA), unasked, None).unwrap();
     let archive = three_mf(&[Object {
         name: "T",
         part_number: "p",
@@ -481,7 +481,7 @@ fn faces_at_fault_are_named_as_the_features_element_map_names_them() {
     let mut m = tetra();
     m.triangles.pop();
     m.face_triangles[3] = 0;
-    let error = printable(&m, None, Some(&map)).unwrap_err();
+    let error = printable(&m, unasked, Some(&map)).unwrap_err();
     assert_eq!(error.elements(), ["k7f2qx3m.cut.Face4"], "{error}");
 }
 
@@ -519,7 +519,7 @@ fn each_object_is_its_own_mesh_with_its_own_id_and_build_item() {
     // vertices, not the first object's.
     let a = tetra_mesh();
     let big: Vec<[f64; 3]> = P.iter().map(|p| p.map(|c| 2.0 * c)).collect();
-    let b = printable(&report(&big, &TETRA), None, None).unwrap();
+    let b = printable(&report(&big, &TETRA), unasked, None).unwrap();
     let archive = three_mf(&[
         Object {
             name: "A",
@@ -598,20 +598,20 @@ fn a_map_that_names_no_face_of_the_shape_is_a_silico_bug() {
             },
         )
     };
-    let error = printable(&tetra(), None, Some(&map(3))).unwrap_err();
+    let error = printable(&tetra(), unasked, Some(&map(3))).unwrap_err();
     assert_eq!(error.code(), ErrorCode::Internal, "{error}");
     assert!(error.message().contains("names no Face4"), "{error}");
     // A loose face, and a face left out, the map must name too.
     let mut m = tetra();
     m.loose_faces = vec![5];
-    let error = printable(&m, None, Some(&map(4))).unwrap_err();
+    let error = printable(&m, unasked, Some(&map(4))).unwrap_err();
     assert!(error.message().contains("names no Face5"), "{error}");
     let mut m = tetra();
     m.unoriented_faces = vec![5];
     m.unoriented_shells = vec![0];
-    let error = printable(&m, None, Some(&map(4))).unwrap_err();
+    let error = printable(&m, unasked, Some(&map(4))).unwrap_err();
     assert!(error.message().contains("names no Face5"), "{error}");
     // With every face named, the faces left out are named as the map names them.
-    let mesh = printable(&m, None, Some(&map(5))).unwrap();
+    let mesh = printable(&m, unasked, Some(&map(5))).unwrap();
     assert_eq!(mesh.left_out(), ["k7f2qx3m.cut.Face5"]);
 }

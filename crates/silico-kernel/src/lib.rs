@@ -380,8 +380,8 @@ pub use silico_protocol::{
     Profile, Refusal, Region, Reported, ShapeSummary, SketchPlane, Topology,
 };
 use silico_protocol::{
-    BrepDefect, FailureKind, HistoryDefect, Operation, Returned, Role, check_export_tolerance,
-    check_export_triangles, export_angle, export_deflection,
+    BrepDefect, FailureKind, HistoryDefect, MAX_EXPORT_TRIANGLES, Operation, Returned, Role,
+    check_export_tolerance, check_export_triangles, export_angle, export_deflection,
 };
 
 mod dressing;
@@ -1691,13 +1691,28 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
 /// the tolerance less what rounding to 32 bits can move the shape's vertices, as far out as
 /// its bounding box reaches ([`export_deflection`]): a tolerance whose rounding there would
 /// take more than half of it is refused ([`Refusal::RoundingPastTolerance`]), as is a mesh
-/// of more than [`silico_protocol::MAX_EXPORT_TRIANGLES`] triangles ([`Refusal::TooManyTriangles`]). It
-/// leaves the shape as it was. Reports each face's triangles and where its nodes lie on the shape's
+/// of more than [`MAX_EXPORT_TRIANGLES`] triangles ([`Refusal::TooManyTriangles`]). It leaves
+/// the shape as it was. Reports each face's triangles and where its nodes lie on the shape's
 /// edges and vertices, for the core to join and check (docs/ports/mesh-export.md).
 pub fn export_mesh(
     shape: &Shape,
     tolerance: f64,
     force_face_deflection: bool,
+) -> Result<ExportMesh, KernelError> {
+    export_mesh_within(
+        shape,
+        tolerance,
+        force_face_deflection,
+        MAX_EXPORT_TRIANGLES,
+    )
+}
+
+/// [`export_mesh`], refused past `limit` triangles.
+fn export_mesh_within(
+    shape: &Shape,
+    tolerance: f64,
+    force_face_deflection: bool,
+    limit: u64,
 ) -> Result<ExportMesh, KernelError> {
     check_export_tolerance(tolerance)?;
     let inner = shape.get()?;
@@ -1718,8 +1733,11 @@ pub fn export_mesh(
             what: Returned::Mesh,
         })
     })?;
-    check_export_triangles(raw.face_triangles().iter().map(|&n| u64::from(n)).sum())
-        .map_err(KernelError::new)?;
+    check_export_triangles(
+        raw.face_triangles().iter().map(|&n| u64::from(n)).sum(),
+        limit,
+    )
+    .map_err(KernelError::new)?;
     let triples = |values: &[f64]| -> Vec<[f64; 3]> {
         values.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect()
     };
@@ -1763,7 +1781,17 @@ pub fn export_mesh(
 /// (which this crate's own tests turn on, and nothing else should).
 #[cfg(feature = "test_ops")]
 pub mod test_ops {
-    use super::{KernelError, ffi};
+    use super::{ExportMesh, KernelError, Shape, ffi};
+
+    /// [`super::export_mesh`] refused past `limit` triangles, not the export's ten million,
+    /// so the worker's limit is tested on a mesh small enough to make.
+    pub fn export_mesh_within(
+        shape: &Shape,
+        tolerance: f64,
+        limit: u64,
+    ) -> Result<ExportMesh, KernelError> {
+        super::export_mesh_within(shape, tolerance, false, limit)
+    }
 
     /// Throws OCCT's `Standard_Failure` with `message` on the C++ side.
     pub fn throw_standard_failure(message: &str) -> Result<(), KernelError> {

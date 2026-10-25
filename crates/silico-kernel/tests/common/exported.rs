@@ -3,7 +3,7 @@
 
 use super::kernel::kernel;
 
-use silico_core::export::{PrintableMesh, needs_unraised, printable};
+use silico_core::export::{PrintableMesh, printable};
 use silico_core::kernel::ShapeData;
 use silico_kernel::{Shape, to_brep};
 use silico_protocol::{Blob, ExportMesh};
@@ -21,12 +21,16 @@ pub fn exported(shape: &Shape, tolerance: f64) -> Result<PrintableMesh, silico_c
 }
 
 /// `mesh`, `shape`'s export mesh, checked as the core checks it: with OCCT's unraised mesh
-/// of `shape` beside it where OCCT raised a face's deflection.
+/// of `shape` to compare with where OCCT raised a face's deflection.
 pub fn checked(shape: &ShapeData, mesh: &ExportMesh) -> Result<PrintableMesh, silico_core::Error> {
-    let unraised = if needs_unraised(mesh) {
-        Some(kernel().unraised_export_mesh(shape, mesh.tolerance)?)
-    } else {
-        None
-    };
-    printable(mesh, unraised.as_ref(), None)
+    printable(
+        mesh,
+        || kernel().unraised_export_mesh(shape, mesh.tolerance),
+        None,
+    )
+}
+
+/// The unraised mesh, for a report none of whose faces OCCT raised: never asked for.
+pub fn unasked() -> Result<ExportMesh, silico_core::Error> {
+    panic!("the unraised mesh was asked for, though no face is raised")
 }

@@ -4,9 +4,7 @@
 //! tests/adversarial_export.rs builds them from OCCT.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::panic::AssertUnwindSafe;
-
-use super::export_report::{P, TETRA, report, tetra, with_shell};
+use super::export_report::{P, TETRA, caught, report, tetra, unasked, with_shell};
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
@@ -15,17 +13,6 @@ use silico_core::export::{needs_unraised, printable};
 use silico_protocol::{
     ExportMesh, MAX_EXPORT_TOLERANCE, check_export_tolerance, export_deflection, export_rounding,
 };
-
-/// `f`'s result, or its panic's message.
-fn caught<T>(f: impl FnOnce() -> T) -> Result<T, String> {
-    std::panic::catch_unwind(AssertUnwindSafe(f)).map_err(|panic| {
-        panic
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
-            .unwrap_or_default()
-    })
-}
 
 /// The tetrahedron with Face4 (the slanted one) `loose` mm loose, so OCCT raised it at
 /// 0.1 mm, and OCCT's unraised mesh of it, the same nodes.
@@ -67,7 +54,7 @@ fn a_raised_faces_node_at_minus_0_unraised_is_the_same_node() {
         }
     }
     unraised.validate().unwrap();
-    let got = printable(&m, Some(&unraised), None);
+    let got = printable(&m, || Ok(unraised.clone()), None);
     let mesh = got.unwrap_or_else(|error| panic!("refused: {error}"));
     assert_eq!(mesh.vertices().len(), 4);
     assert_eq!(mesh.volume(), 1.0 / 6.0);
@@ -84,7 +71,7 @@ fn a_raised_face_with_a_node_doubled_unraised_is_refused_naming_it() {
     unraised.nodes.insert(face4.end as usize, first);
     unraised.face_nodes[3] += 1;
     unraised.validate().unwrap();
-    let error = printable(&m, Some(&unraised), None).unwrap_err();
+    let error = printable(&m, || Ok(unraised.clone()), None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidResult, "{error}");
     assert_eq!(error.elements(), ["Face4"], "{error}");
     assert_eq!(error.parameter(), Some("tolerance"), "{error}");
@@ -101,7 +88,7 @@ fn a_raised_face_whose_unraised_nodes_are_a_permutation_across_faces_is_refused(
         unraised.nodes.swap(a as usize, b as usize);
     }
     unraised.validate().unwrap();
-    let error = printable(&m, Some(&unraised), None).unwrap_err();
+    let error = printable(&m, || Ok(unraised.clone()), None).unwrap_err();
     assert_eq!(error.elements(), ["Face4"], "{error}");
 }
 
@@ -119,8 +106,8 @@ fn every_face_raised_and_unchanged_is_exported_as_the_raised_mesh() {
     for range in unraised.face_ranges() {
         unraised.nodes[range.start as usize..range.end as usize].rotate_left(1);
     }
-    let mesh = printable(&m, Some(&unraised), None).unwrap();
-    let plain = printable(&tetra(), None, None).unwrap();
+    let mesh = printable(&m, || Ok(unraised.clone()), None).unwrap();
+    let plain = printable(&tetra(), unasked, None).unwrap();
     assert_eq!(mesh.triangles(), plain.triangles());
     assert_eq!(mesh.vertices(), plain.vertices());
 }
@@ -132,8 +119,8 @@ fn an_unraised_mesh_given_when_none_is_needed_changes_nothing() {
     broken.force_face_deflection = true;
     broken.face_nodes[0] += 7;
     assert!(broken.validate().is_err());
-    let with = printable(&tetra(), Some(&broken), None).unwrap();
-    let without = printable(&tetra(), None, None).unwrap();
+    let with = printable(&tetra(), || Ok(broken.clone()), None).unwrap();
+    let without = printable(&tetra(), unasked, None).unwrap();
     assert_eq!(with.triangles(), without.triangles());
     assert_eq!(with.vertices(), without.vertices());
 }
@@ -142,7 +129,7 @@ fn an_unraised_mesh_given_when_none_is_needed_changes_nothing() {
 fn a_raised_face_given_its_own_raised_mesh_as_unraised_is_a_bug_not_an_export() {
     // The raised mesh passed as its own unraised one would always compare the same.
     let (m, _) = raised_tetra(0.06);
-    let error = printable(&m, Some(&m), None).unwrap_err();
+    let error = printable(&m, || Ok(m.clone()), None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::Internal, "{error}");
 }
 
@@ -153,7 +140,7 @@ fn a_face_raised_by_an_infinite_or_nan_tolerance_is_refused_not_compared() {
     for loose in [f64::INFINITY, f64::NAN, -1.0] {
         let (m, unraised) = raised_tetra(loose);
         let _ = needs_unraised(&m);
-        let error = printable(&m, Some(&unraised), None).unwrap_err();
+        let error = printable(&m, || Ok(unraised.clone()), None).unwrap_err();
         assert_eq!(error.code(), ErrorCode::InvalidInput, "{loose}: {error}");
         assert!(error.cause().is_some(), "{loose}: {error}");
     }
@@ -182,7 +169,7 @@ fn refused_at(tolerance: f64, reach: f64, loose: f64) -> Option<(f64, silico_cor
     if m.validate().is_err() {
         return None;
     }
-    let error = printable(&m, Some(&unraised), None).unwrap_err();
+    let error = printable(&m, || Ok(unraised.clone()), None).unwrap_err();
     Some((deflection, error))
 }
 
@@ -496,7 +483,7 @@ fn hostile_unraised_meshes_never_panic_and_refuse_only_the_raised_faces_that_mov
                 if u.validate().is_err() {
                     return Ok(());
                 }
-                let got = match caught(|| printable(&m, Some(&u), None)) {
+                let got = match caught(|| printable(&m, || Ok(u.clone()), None)) {
                     Err(panic) => {
                         return Err(TestCaseError::fail(format!("panicked: {panic}")));
                     }
@@ -561,7 +548,7 @@ fn a_membrane_inside_the_solid_is_left_out_and_the_solid_exported() {
     for outer in [false, true] {
         let m = with_unoriented(1, 0, outer, 2);
         m.validate().unwrap();
-        let mesh = printable(&m, None, None).unwrap();
+        let mesh = printable(&m, unasked, None).unwrap();
         assert_eq!(mesh.left_out(), ["Face5", "Face6"]);
         assert_eq!(mesh.volume(), 1.0 / 6.0);
         assert_eq!(mesh.triangles().len(), 4);
@@ -574,7 +561,7 @@ fn a_solid_of_nothing_but_a_membrane_is_refused_saying_what_was_left_out() {
     // its face was left out (the reason it's empty), so it isn't a bare "no volume".
     let m = with_unoriented(1, 1, true, 1);
     m.validate().unwrap();
-    let error = printable(&m, None, None).unwrap_err();
+    let error = printable(&m, unasked, None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidResult, "{error}");
     assert!(error.message().contains("encloses no volume"), "{error}");
     assert!(
@@ -594,7 +581,7 @@ fn a_shell_of_oriented_and_unoriented_faces_is_no_membrane() {
     m.unoriented_faces = vec![6, 7, 8];
     m.unoriented_shells = vec![1, 1, 1];
     m.validate().unwrap();
-    let error = printable(&m, None, None).unwrap_err();
+    let error = printable(&m, unasked, None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidResult, "{error}");
     assert_eq!(error.elements(), ["Face5"], "{error}");
     assert!(
@@ -607,16 +594,16 @@ fn a_shell_of_oriented_and_unoriented_faces_is_no_membrane() {
 fn an_unoriented_face_in_a_shell_that_isnt_there_is_refused() {
     let mut m = with_unoriented(0, 0, true, 1);
     m.unoriented_shells = vec![1];
-    let error = printable(&m, None, None).unwrap_err();
+    let error = printable(&m, unasked, None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
     let mut m = with_unoriented(0, 0, true, 1);
     m.unoriented_shells.clear();
-    let error = printable(&m, None, None).unwrap_err();
+    let error = printable(&m, unasked, None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
     let mut m = with_unoriented(0, 0, true, 1);
     m.unoriented_shells.push(u32::MAX);
     m.unoriented_faces.push(9);
-    let error = printable(&m, None, None).unwrap_err();
+    let error = printable(&m, unasked, None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
 }
 
@@ -628,7 +615,7 @@ fn an_empty_shell_flagged_with_no_unoriented_face_is_still_refused() {
     m.shell_solids.push(0);
     m.shell_outer.push(false);
     m.validate().unwrap();
-    let error = printable(&m, None, None).unwrap_err();
+    let error = printable(&m, unasked, None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidResult, "{error}");
     assert!(error.message().contains("encloses no volume"), "{error}");
 }

@@ -11,7 +11,7 @@ use super::exported;
 use super::kernel;
 
 use brep_fixture::fixture;
-use exported::{checked, data, exported};
+use exported::{checked, data, exported, unasked};
 use kernel::kernel;
 use silico_core::ErrorCode;
 use silico_core::export::{Object, PrintableMesh, printable, three_mf};
@@ -205,7 +205,7 @@ fn every_round_primitive_is_exported_exactly_when_its_mesh_is_within_the_toleran
                 continue;
             }
             let raw = worker.export_mesh(&shape, tolerance).unwrap();
-            match printable(&raw, None, None) {
+            match printable(&raw, unasked, None) {
                 Ok(mesh) => {
                     let d = deviation(&mesh, &*surface);
                     // A sphere's interior is OCCT's to meet, and misses along its seam by
@@ -264,7 +264,7 @@ fn a_spheres_mesh_misses_the_tolerance_at_its_seam_by_what_occt_makes() {
         let raw = worker
             .export_mesh(&data(&make(&sphere).unwrap()), tolerance)
             .unwrap();
-        let mesh = printable(&raw, None, None).unwrap();
+        let mesh = printable(&raw, unasked, None).unwrap();
         let ratio = deviation(&mesh, &*surface_of(&sphere)) / tolerance;
         got.push((radius, tolerance, (ratio * 1e3).round() / 1e3));
     }
@@ -322,7 +322,7 @@ fn a_cylinder_with_its_rim_chamfered_exports_at_ordinary_tolerances() {
                 })
                 .expect("the nodes lie on one of the two profiles");
             let surface = |p: [f64; 3]| to_revolved(&profile[..], p);
-            match printable(&raw, None, None) {
+            match printable(&raw, unasked, None) {
                 Ok(mesh) => {
                     let d = deviation(&mesh, &surface);
                     assert!(d <= tolerance, "Edge{edge} at {tolerance}: {d}");
@@ -472,7 +472,7 @@ fn a_solid_touching_itself_along_an_edge_is_refused_as_not_manifold() {
     let cut = boolean(BooleanOp::Cut, &block, &quarter).unwrap().shape;
     let cut = boolean(BooleanOp::Cut, &cut, &other).unwrap().shape;
     let raw = kernel().export_mesh(&data(&cut), 0.1).unwrap();
-    match printable(&raw, None, None) {
+    match printable(&raw, unasked, None) {
         Ok(mesh) => {
             assert_eq!(raw.solids, 2, "one solid, taken");
             assert_eq!(mesh.vertices().len(), 16);
@@ -598,7 +598,7 @@ fn an_export_refused_leaves_the_worker_able_to_export() {
     assert!(worker.export_mesh(&far, 1e-3).is_err());
     assert!(worker.export_mesh(&far, 1e-2).is_err());
     let mesh = worker.export_mesh(&cube, 0.1).unwrap();
-    let volume = printable(&mesh, None, None).unwrap().volume();
+    let volume = printable(&mesh, unasked, None).unwrap().volume();
     assert!((volume - 1.0).abs() <= 1e-12, "{volume}");
 }
 
@@ -771,7 +771,7 @@ fn a_countersunk_hole_exports_at_a_fine_tolerance_its_mesh_meets() {
     };
     for tolerance in [0.1, 0.05, 0.01] {
         let raw = kernel().export_mesh(&data(&sunk), tolerance).unwrap();
-        let Err(error) = printable(&raw, None, None) else {
+        let Err(error) = printable(&raw, unasked, None) else {
             continue;
         };
         // The cone's face: the one whose nodes all lie on the cone.
@@ -850,7 +850,7 @@ fn a_box_whose_face_is_unoriented_is_refused_as_open_saying_the_face_was_left_ou
             .collect();
         around.sort();
         assert_eq!(around.len(), 4, "{name}: {around:?}");
-        let error = printable(&raw, None, None).unwrap_err();
+        let error = printable(&raw, unasked, None).unwrap_err();
         assert_eq!(error.code(), ErrorCode::InvalidResult, "{name}: {error}");
         assert!(
             error.message().contains("the mesh is open"),
@@ -896,7 +896,7 @@ print("SILICO_ORACLE " + json.dumps({{"faces": len(s.Faces)}}))
     let shape = silico_kernel::from_text_brep(&std::fs::read(&path).unwrap()).unwrap();
     let raw = kernel().export_mesh(&data(&shape), 0.1).unwrap();
     assert_eq!(raw.unoriented_faces, [7]);
-    let mesh = printable(&raw, None, None).unwrap();
+    let mesh = printable(&raw, unasked, None).unwrap();
     assert_eq!(mesh.triangles().len(), 12);
     assert_eq!(mesh.vertices().len(), 8);
     assert_eq!(mesh.volume(), 6000.0);
@@ -956,6 +956,8 @@ print("SILICO_ORACLE " + json.dumps({{"tolerance": s.getTolerance(1)}}))
     let nanometres = suggested * 1e6;
     assert_eq!(nanometres, nanometres.round(), "{suggested}");
     assert!(suggested > 0.04 && suggested < 0.0401, "{suggested}");
+    // 0.04 plus the margin, 5.16e-6 mm (the sphere's box reaches 50.02 mm), rounded up.
+    assert_eq!(suggested, 0.040006);
     let at = kernel().export_mesh(&shape, suggested).unwrap();
     assert!(2.0 * at.face_tolerances[0] <= at.deflection, "{suggested}");
     assert!(!silico_core::export::needs_unraised(&at), "{suggested}");

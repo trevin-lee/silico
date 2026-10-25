@@ -65,11 +65,11 @@ pub fn export_deflection(tolerance: f64, reach: f64) -> Result<f64, Refusal> {
 /// make about 0.9 GB of 3MF, well within a plain zip's 4 GiB.
 pub const MAX_EXPORT_TRIANGLES: u64 = 10_000_000;
 
-/// Refuses a mesh of more `triangles`, in all, than [`MAX_EXPORT_TRIANGLES`]
-/// ([`Refusal::TooManyTriangles`]).
-pub fn check_export_triangles(triangles: u64) -> Result<(), Refusal> {
-    if triangles > MAX_EXPORT_TRIANGLES {
-        return Err(Refusal::TooManyTriangles { triangles });
+/// Refuses a mesh of more `triangles`, in all, than `limit` ([`Refusal::TooManyTriangles`]):
+/// an export's is [`MAX_EXPORT_TRIANGLES`].
+pub fn check_export_triangles(triangles: u64, limit: u64) -> Result<(), Refusal> {
+    if triangles > limit {
+        return Err(Refusal::TooManyTriangles { triangles, limit });
     }
     Ok(())
 }
@@ -363,15 +363,17 @@ mod tests {
     #[test]
     fn an_export_takes_ten_million_triangles_and_refuses_one_more() {
         assert_eq!(MAX_EXPORT_TRIANGLES, 10_000_000);
-        assert!(check_export_triangles(0).is_ok());
-        assert!(check_export_triangles(10_000_000).is_ok());
+        let limit = MAX_EXPORT_TRIANGLES;
+        assert!(check_export_triangles(0, limit).is_ok());
+        assert!(check_export_triangles(10_000_000, limit).is_ok());
         assert_eq!(
-            check_export_triangles(10_000_001),
+            check_export_triangles(10_000_001, limit),
             Err(Refusal::TooManyTriangles {
-                triangles: 10_000_001
+                triangles: 10_000_001,
+                limit: 10_000_000
             })
         );
-        assert!(check_export_triangles(u64::MAX).is_err());
+        assert!(check_export_triangles(u64::MAX, limit).is_err());
     }
 
     #[test]

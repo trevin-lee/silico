@@ -7,7 +7,7 @@
 use super::exported;
 use super::kernel;
 
-use exported::{checked, data, exported};
+use exported::{checked, data, exported, unasked};
 use kernel::kernel;
 use sha2::{Digest, Sha256};
 use silico_core::ErrorCode;
@@ -288,7 +288,7 @@ fn a_box_with_a_cavity_is_two_shells_the_cavitys_facing_in() {
     assert_eq!(raw.solids, 1);
     assert_eq!(raw.shell_outer.iter().filter(|&&o| o).count(), 1);
     assert_eq!(raw.shell_outer.len(), 2);
-    let mesh = printable(&raw, None, None).unwrap();
+    let mesh = printable(&raw, unasked, None).unwrap();
     assert_eq!(mesh.vertices().len(), 16);
     assert_eq!(mesh.triangles().len(), 24);
     assert!(
@@ -570,7 +570,7 @@ print("SILICO_ORACLE " + json.dumps({{"faces": len(c.Faces)}}))
     let shape = silico_kernel::from_text_brep(&std::fs::read(&path).unwrap()).unwrap();
     let raw = kernel().export_mesh(&data(&shape), 0.1).unwrap();
     assert_eq!((raw.solids, raw.loose_faces.clone()), (1, vec![7]));
-    let error = printable(&raw, None, None).unwrap_err();
+    let error = printable(&raw, unasked, None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
     assert_eq!(error.elements(), ["Face7"], "{error}");
 }
@@ -615,9 +615,18 @@ fn a_face_raised_for_its_tolerance_but_meshed_with_the_same_nodes_is_exported() 
     assert_eq!(mesh.vertices().len(), 8);
     assert_eq!(mesh.triangles().len(), 12);
     assert_eq!(mesh.volume(), 6000.0);
-    // Without the unraised mesh to compare with, it can't be told, and that's a bug.
-    let error = printable(&raw, None, None).unwrap_err();
-    assert_eq!(error.code(), ErrorCode::Internal, "{error}");
+    // The unraised mesh is asked for, as a face was raised.
+    let asked = std::cell::Cell::new(false);
+    printable(
+        &raw,
+        || {
+            asked.set(true);
+            kernel().unraised_export_mesh(&data(&block), 0.1)
+        },
+        None,
+    )
+    .unwrap();
+    assert!(asked.get());
     let (cylinder, freecad) = loosened("Part.makeCylinder(100, 20)", 0.06, 0.1);
     let raw = kernel().export_mesh(&data(&cylinder), 0.1).unwrap();
     assert!(needs_unraised(&raw));
@@ -661,4 +670,27 @@ fn a_b_spline_face_raised_for_its_tolerance_is_refused_where_its_nodes_move() {
     assert_eq!(error.code(), ErrorCode::InvalidResult, "{error}");
     assert_eq!(error.parameter(), Some("tolerance"), "{error}");
     assert_eq!(error.elements(), ["Face1"], "{error}");
+}
+
+#[test]
+fn the_worker_refuses_a_mesh_of_more_triangles_than_its_limit_counted_in_all() {
+    // The council's tests lens: the worker's limit (ten million, M4.1's limits table) is too
+    // many triangles to make in a test, so the same check is run at the box's own count: its
+    // 12 triangles (6 faces of 2) taken at a limit of 12 and refused at 11, the triangles
+    // counted, not the faces, and the refusal naming the tolerance.
+    let block = make_box(10.0, 20.0, 30.0).unwrap();
+    let mesh = silico_kernel::test_ops::export_mesh_within(&block, 0.1, 12).unwrap();
+    assert_eq!(mesh.triangles.len(), 12);
+    let error = silico_kernel::test_ops::export_mesh_within(&block, 0.1, 11).unwrap_err();
+    assert_eq!(error.kind(), KernelErrorKind::InvalidInput, "{error}");
+    assert_eq!(
+        error.refusal(),
+        &silico_protocol::Refusal::TooManyTriangles {
+            triangles: 12,
+            limit: 11
+        }
+    );
+    assert_eq!(error.refusal().parameter(), Some("tolerance"));
+    // The export's own limit takes it.
+    assert_eq!(export_mesh(&block, 0.1, false).unwrap(), mesh);
 }

@@ -7,26 +7,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeMap;
-use std::panic::AssertUnwindSafe;
 
-use super::export_report::{P, TETRA, refused, report, tetra, with_shell};
+use super::export_report::{P, TETRA, caught, refused, report, tetra, unasked, with_shell};
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
 use silico_core::ErrorCode;
 use silico_core::export::{Object, PrintableMesh, needs_unraised, printable, three_mf};
 use silico_protocol::ExportMesh;
-
-/// `f`'s result, or its panic's message.
-fn caught<T>(f: impl FnOnce() -> T) -> Result<T, String> {
-    std::panic::catch_unwind(AssertUnwindSafe(f)).map_err(|panic| {
-        panic
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
-            .unwrap_or_default()
-    })
-}
 
 /// A change made to a good report.
 type Corrupt = Box<dyn Fn(&mut ExportMesh)>;
@@ -88,7 +76,7 @@ fn printable_on_a_report_that_fails_validate_is_an_error_not_a_panic() {
         let mut m = tetra();
         corrupt(&mut m);
         assert!(m.validate().is_err(), "{what}: validate took it");
-        match caught(|| printable(&m, None, None)) {
+        match caught(|| printable(&m, unasked, None)) {
             Err(panic) => panicked.push(format!("{what}: {panic}")),
             Ok(Ok(_)) => panicked.push(format!("{what}: printable took it")),
             // Any refusal will do, rather than a panic.
@@ -232,7 +220,7 @@ fn a_node_welded_through_a_chain_of_vertices_is_checked_against_where_it_lands()
     let mut m = tetra();
     let p1_face4 = m.face_ranges()[3].start;
     m.nodes[p1_face4 as usize] = [1.0 + 0.05, 0.0, 0.0];
-    let mesh = printable(&m, None, None).unwrap();
+    let mesh = printable(&m, unasked, None).unwrap();
     assert!(mesh.vertices().contains(&[1.0, 0.0, 0.0]));
     assert!(!mesh.vertices().contains(&[1.05, 0.0, 0.0]));
 }
@@ -244,7 +232,7 @@ fn a_report_far_enough_out_that_32_bits_overflow_is_refused_without_panicking() 
     let m = report(&far, &TETRA);
     // Refused as the worker refuses such a part: the rounding to 32 bits takes more than
     // half the tolerance (all of it, past f32::MAX), the tolerance named.
-    let error = printable(&m, None, None).unwrap_err();
+    let error = printable(&m, unasked, None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
     assert_eq!(error.parameter(), Some("tolerance"), "{error}");
 }
@@ -252,9 +240,9 @@ fn a_report_far_enough_out_that_32_bits_overflow_is_refused_without_panicking() 
 #[test]
 fn printable_is_the_same_every_time() {
     let m = with_shell(&tetra(), &tetra(), 1, true);
-    let first = printable(&m, None, None).unwrap();
+    let first = printable(&m, unasked, None).unwrap();
     for _ in 0..20 {
-        assert_eq!(printable(&m, None, None).unwrap(), first);
+        assert_eq!(printable(&m, unasked, None).unwrap(), first);
     }
 }
 
@@ -459,7 +447,7 @@ fn corrupted_reports_never_panic_and_whatever_is_taken_is_printable() {
                 if m.validate().is_err() {
                     return Ok(());
                 }
-                let got = caught(|| printable(&m, None, None));
+                let got = caught(|| printable(&m, unasked, None));
                 let got = match got {
                     Err(panic) => {
                         return Err(TestCaseError::fail(format!("panicked: {panic}")));
@@ -505,7 +493,7 @@ fn an_archive_of_no_objects_is_refused() {
 
 #[test]
 fn a_part_number_xml_cant_hold_is_refused_naming_the_object_and_saying_which() {
-    let mesh = printable(&tetra(), None, None).unwrap();
+    let mesh = printable(&tetra(), unasked, None).unwrap();
     let error = three_mf(&[Object {
         name: "Bracket",
         part_number: "k7\u{0}x",
@@ -536,7 +524,7 @@ fn a_part_number_xml_cant_hold_is_refused_naming_the_object_and_saying_which() {
 fn every_character_xml_1_0_holds_is_written_and_every_other_refused() {
     // XML 1.0's Char: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] |
     // [#x10000-#x10FFFF]. Every other scalar value (C0 controls, U+FFFE, U+FFFF) refused.
-    let mesh = printable(&tetra(), None, None).unwrap();
+    let mesh = printable(&tetra(), unasked, None).unwrap();
     let write = |name: &str| {
         three_mf(&[Object {
             name,
@@ -579,7 +567,7 @@ fn every_character_xml_1_0_holds_is_written_and_every_other_refused() {
 fn an_archives_size_is_what_its_limit_counts() {
     // The 4 GiB check counts 76 bytes and the name twice per entry, and 22 for the end: the
     // archive written must be exactly that long, or the limit is off.
-    let mesh = printable(&tetra(), None, None).unwrap();
+    let mesh = printable(&tetra(), unasked, None).unwrap();
     let archive = three_mf(&[Object {
         name: "T",
         part_number: "p",
@@ -607,7 +595,7 @@ fn a_report_claiming_more_solids_than_shells_is_refused_without_allocating_for_t
     let mut m = tetra();
     m.solids = u32::MAX;
     assert!(m.validate().is_err());
-    let error = printable(&m, None, None).unwrap_err();
+    let error = printable(&m, unasked, None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
     assert!(error.message().contains("doesn't hold together"), "{error}");
     assert!(
@@ -634,7 +622,7 @@ fn a_vertex_past_32_bits_is_refused_even_with_no_edge_to_check() {
     m.edge_node_counts.clear();
     m.edge_nodes.clear();
     m.validate().unwrap();
-    let error = printable(&m, None, None).unwrap_err();
+    let error = printable(&m, unasked, None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
     assert_eq!(error.parameter(), Some("tolerance"), "{error}");
     // And at 1e30, finite in 32 bits but past what the rounding allows, likewise.
@@ -648,7 +636,7 @@ fn a_vertex_past_32_bits_is_refused_even_with_no_edge_to_check() {
     m.edge_deflections.clear();
     m.edge_node_counts.clear();
     m.edge_nodes.clear();
-    let error = printable(&m, None, None).unwrap_err();
+    let error = printable(&m, unasked, None).unwrap_err();
     assert_eq!(error.parameter(), Some("tolerance"), "{error}");
 }
 
@@ -679,7 +667,7 @@ fn a_report_with_a_value_that_isnt_finite_or_an_element_numbered_0_is_refused() 
         let mut m = tetra();
         corrupt(&mut m);
         assert!(m.validate().is_err(), "corruption {k}");
-        let error = printable(&m, None, None).unwrap_err();
+        let error = printable(&m, unasked, None).unwrap_err();
         assert_eq!(error.code(), ErrorCode::InvalidInput, "{k}: {error}");
         assert!(
             error.message().contains("doesn't hold together"),
@@ -692,7 +680,7 @@ fn a_report_with_a_value_that_isnt_finite_or_an_element_numbered_0_is_refused() 
 fn a_refusal_names_the_first_hundred_faces_and_counts_them_all() {
     let mut m = tetra();
     m.loose_faces = (1..=150).collect();
-    let error = printable(&m, None, None).unwrap_err();
+    let error = printable(&m, unasked, None).unwrap_err();
     let first: Vec<String> = (1..=100).map(|f| format!("Face{f}")).collect();
     assert_eq!(error.elements(), first, "{error}");
     assert_eq!(error.elements_total(), 150, "{error}");
@@ -720,7 +708,7 @@ fn a_faces_node_at_minus_0_is_one_with_its_node_at_0() {
         }
     }
     m.validate().unwrap();
-    let mesh = printable(&m, None, None).unwrap();
+    let mesh = printable(&m, unasked, None).unwrap();
     assert_eq!(mesh.vertices().len(), 4);
     assert_eq!(mesh.triangles().len(), 4);
     assert_eq!(mesh.volume(), 1.0 / 6.0);
@@ -761,7 +749,7 @@ fn a_poles_nodes_are_one_vertex_though_their_coordinates_differ() {
     m.edge_node_counts.push(3);
     m.edge_nodes.extend([p3, middle, end]);
     m.validate().unwrap();
-    let mesh = printable(&m, None, None).unwrap();
+    let mesh = printable(&m, unasked, None).unwrap();
     assert_eq!(mesh.vertices().len(), 4);
     assert_eq!(mesh.triangles().len(), 4);
     assert!(mesh.vertices().contains(&[0.0, 0.0, 1.0]));
@@ -782,7 +770,7 @@ fn a_joined_node_the_allowed_distance_away_is_taken_and_one_further_refused() {
             .unwrap();
         m.nodes[p0 as usize] = [offset, 0.0, 0.0];
         if taken {
-            printable(&m, None, None).unwrap();
+            printable(&m, unasked, None).unwrap();
         } else {
             refused(
                 &m,
@@ -829,7 +817,7 @@ fn a_face_raised_by_any_tolerance_past_half_the_deflection_needs_the_unraised_me
     // (BRepMesh_Deflection.cxx:149-152): at exactly half it's not raised.
     let (m, _) = loose_tetra(&[(3, 0.05)]);
     assert!(!needs_unraised(&m));
-    printable(&m, None, None).unwrap();
+    printable(&m, unasked, None).unwrap();
     let (m, _) = loose_tetra(&[(3, 0.05f64.next_up())]);
     assert!(needs_unraised(&m));
     assert!(!needs_unraised(&tetra()));
@@ -840,7 +828,7 @@ fn a_raised_face_with_the_nodes_it_has_unraised_is_exported_in_any_order() {
     let (m, mut unraised) = loose_tetra(&[(3, 0.06)]);
     let face4 = unraised.face_ranges()[3].clone();
     unraised.nodes[face4.start as usize..face4.end as usize].reverse();
-    let mesh = printable(&m, Some(&unraised), None).unwrap();
+    let mesh = printable(&m, || Ok(unraised.clone()), None).unwrap();
     assert_eq!(mesh.vertices().len(), 4);
     assert_eq!(mesh.volume(), 1.0 / 6.0);
 }
@@ -852,7 +840,7 @@ fn a_raised_face_whose_nodes_move_unraised_is_refused_alone_with_the_tolerance_t
     let (m, mut unraised) = loose_tetra(&[(1, 0.06), (3, 0.06)]);
     let face4 = unraised.face_ranges()[3].start as usize;
     unraised.nodes[face4][0] = unraised.nodes[face4][0].next_up();
-    let error = printable(&m, Some(&unraised), None).unwrap_err();
+    let error = printable(&m, || Ok(unraised.clone()), None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidResult, "{error}");
     assert_eq!(error.parameter(), Some("tolerance"), "{error}");
     assert_eq!(error.elements(), ["Face4"], "{error}");
@@ -879,7 +867,7 @@ fn a_raised_face_whose_nodes_move_unraised_is_refused_alone_with_the_tolerance_t
         let first = unraised.face_ranges()[face].start as usize;
         unraised.nodes[first][1] += 1e-3;
     }
-    let error = printable(&m, Some(&unraised), None).unwrap_err();
+    let error = printable(&m, || Ok(unraised.clone()), None).unwrap_err();
     assert_eq!(error.elements(), ["Face2", "Face4"], "{error}");
     assert!(error.message().contains("at 0.14 mm"), "{error}");
     assert!(
@@ -911,17 +899,27 @@ fn a_raised_face_unmeshed_unraised_is_refused() {
         .edge_nodes
         .truncate(unraised.edge_nodes.len() - dropped);
     unraised.validate().unwrap();
-    let error = printable(&m, Some(&unraised), None).unwrap_err();
+    let error = printable(&m, || Ok(unraised.clone()), None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidResult, "{error}");
     assert_eq!(error.elements(), ["Face4"], "{error}");
 }
 
 #[test]
-fn a_raised_face_with_no_unraised_mesh_or_another_shapes_is_a_bug() {
+fn a_raised_face_whose_unraised_mesh_fails_or_is_another_shapes_is_refused() {
     let (m, unraised) = loose_tetra(&[(3, 0.06)]);
-    let error = printable(&m, None, None).unwrap_err();
-    assert_eq!(error.code(), ErrorCode::Internal, "{error}");
-    assert!(error.message().contains("no unraised mesh"), "{error}");
+    // The unraised mesh's error is the export's.
+    let error = printable(
+        &m,
+        || {
+            Err(silico_core::Error::new(
+                ErrorCode::WorkerTimeout,
+                "the kernel worker didn't finish ExportMesh",
+            ))
+        },
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::WorkerTimeout, "{error}");
     let others: [fn(&mut ExportMesh); 4] = [
         |u| u.force_face_deflection = false,
         |u| u.tolerance = 0.1f64.next_up(),
@@ -931,14 +929,14 @@ fn a_raised_face_with_no_unraised_mesh_or_another_shapes_is_a_bug() {
     for (k, other) in others.iter().enumerate() {
         let mut u = unraised.clone();
         other(&mut u);
-        let error = printable(&m, Some(&u), None).unwrap_err();
+        let error = printable(&m, || Ok(u.clone()), None).unwrap_err();
         assert_eq!(error.code(), ErrorCode::Internal, "{k}: {error}");
         assert!(error.message().contains("another's"), "{k}: {error}");
     }
     // One that doesn't hold together is refused before it's indexed.
     let mut broken = unraised.clone();
     broken.face_nodes[0] += 1;
-    let error = printable(&m, Some(&broken), None).unwrap_err();
+    let error = printable(&m, || Ok(broken.clone()), None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
     assert!(error.message().contains("unraised"), "{error}");
 }
@@ -964,7 +962,7 @@ fn the_tolerance_suggested_for_a_raised_face_is_whole_nanometres_the_worker_wont
         }
         let face4 = unraised.face_ranges()[3].start as usize;
         unraised.nodes[face4][2] += 1e-3;
-        let error = printable(&m, Some(&unraised), None).unwrap_err();
+        let error = printable(&m, || Ok(unraised.clone()), None).unwrap_err();
         let suggestion = error.suggestion().unwrap();
         let suggested: f64 = suggestion
             .strip_prefix("export with a tolerance of at least ")
@@ -982,4 +980,53 @@ fn the_tolerance_suggested_for_a_raised_face_is_whole_nanometres_the_worker_wont
             "{suggested} for {loose} and {margin}"
         );
     }
+}
+
+#[test]
+fn a_refusal_gives_the_tolerance_of_the_faces_it_names_not_of_a_looser_one_taken() {
+    // The council's tests lens: Face2 raised but unchanged at 0.08 mm, Face4 raised and
+    // moved at 0.06 mm: the refusal names Face4, meshed at 0.12, and suggests from it, not
+    // from Face2's 0.16.
+    let (m, mut unraised) = loose_tetra(&[(1, 0.08), (3, 0.06)]);
+    let face4 = unraised.face_ranges()[3].start as usize;
+    unraised.nodes[face4][0] += 1e-3;
+    let error = printable(&m, || Ok(unraised.clone()), None).unwrap_err();
+    assert_eq!(error.elements(), ["Face4"], "{error}");
+    assert!(
+        error.message().contains("at 0.12 mm") && error.message().contains("to 0.06 mm"),
+        "{error}"
+    );
+    assert!(
+        error
+            .suggestion()
+            .unwrap()
+            .contains("at least 0.120001 mm,"),
+        "{error}"
+    );
+}
+
+#[test]
+fn the_tolerance_suggested_is_the_least_whole_nanometre_that_clears_the_raise() {
+    // The council's tests lens: meshed with a margin of 3e-7 mm (the tolerance less the
+    // deflection), a face 0.06 mm loose needs a tolerance of 0.12 + 3e-7 = 0.1200003 mm: the
+    // least whole nanometre past it is 0.120001, which clears it by far more than any
+    // rounding, so no nanometre more.
+    let (mut m, mut unraised) = loose_tetra(&[(3, 0.06)]);
+    for r in [&mut m, &mut unraised] {
+        r.deflection = 0.1 - 3e-7;
+        for d in &mut r.edge_deflections {
+            *d = 0.0;
+        }
+    }
+    let face4 = unraised.face_ranges()[3].start as usize;
+    unraised.nodes[face4][0] += 1e-3;
+    let error = printable(&m, || Ok(unraised.clone()), None).unwrap_err();
+    assert_eq!(
+        error.suggestion(),
+        Some(
+            "export with a tolerance of at least 0.120001 mm, or rebuild the part so the \
+             faces named meet more precisely"
+        ),
+        "{error}"
+    );
 }

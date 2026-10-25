@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::panic::AssertUnwindSafe;
 
 use silico_core::ErrorCode;
 use silico_core::export::printable;
@@ -124,10 +125,26 @@ pub fn with_shell(base: &ExportMesh, extra: &ExportMesh, solid: u32, outer: bool
 /// `faces`, with a suggestion.
 #[track_caller]
 pub fn refused(m: &ExportMesh, code: ErrorCode, says: &str, faces: &[&str]) {
-    let error = printable(m, None, None).unwrap_err();
+    let error = printable(m, unasked, None).unwrap_err();
     assert_eq!(error.code(), code, "{error}");
     assert!(error.message().contains(says), "{error}");
     assert_eq!(error.elements(), faces, "{error}");
     assert_eq!(error.elements_total(), faces.len() as u64, "{error}");
     assert!(error.suggestion().is_some(), "{error}");
+}
+
+/// `f`'s result, or its panic's message.
+pub fn caught<T>(f: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(AssertUnwindSafe(f)).map_err(|panic| {
+        panic
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+            .unwrap_or_default()
+    })
+}
+
+/// The unraised mesh, for a report none of whose faces OCCT raised: never asked for.
+pub fn unasked() -> Result<ExportMesh, silico_core::Error> {
+    panic!("the unraised mesh was asked for, though no face is raised")
 }
