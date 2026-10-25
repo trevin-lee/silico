@@ -897,3 +897,71 @@ fn a_commit_of_an_edit_outside_a_transaction_rebuilds_it_on_the_kernel_once() {
     answer(f.sessions.check(&f.id)).result.unwrap();
     assert_eq!(f.boxes(), 1);
 }
+
+#[test]
+fn a_text_that_isnt_utf8_is_replaced_only_inside_a_transaction() {
+    let f = opened("{}");
+    std::fs::write(&f.path, b"{\xff}").unwrap();
+    // Opened again on the bytes that aren't UTF-8: the session holds them, unread.
+    drop(f.sessions);
+    let kernel = Arc::new(FakeKernel::new(1).unwrap());
+    let secret = f._dir.path().join("secret");
+    let sessions =
+        Sessions::with_cache_opener(kernel, move |cache| Cache::with_secret(cache, &secret));
+    let s1 = answer(sessions.open(&f.path, false)).session.unwrap().id;
+    let outside = answer(sessions.replace_text(&s1, Revision::OPENED, EMPTY.to_owned()));
+    assert_eq!(
+        refusal(&outside),
+        (
+            ErrorCode::InvalidInput,
+            "the document's text isn't UTF-8 (at byte 1), so the text replace_text replaces couldn't be given back".to_owned(),
+            None,
+            Some("replace it inside a transaction (begin, replace_text, commit), where no text is given back".to_owned())
+        )
+    );
+    assert_eq!(outside.session.unwrap().revision, Revision::OPENED);
+    assert_eq!(std::fs::read(&f.path).unwrap(), b"{\xff}");
+    answer(sessions.begin(&s1)).result.unwrap();
+    let inside = answer(sessions.replace_text(&s1, Revision::OPENED, EMPTY.to_owned()))
+        .result
+        .unwrap();
+    assert!(inside.changed);
+    assert!(answer(sessions.commit(&s1)).result.unwrap().written);
+    assert_eq!(std::fs::read_to_string(&f.path).unwrap(), EMPTY);
+}
+
+#[test]
+fn hostile_paths_and_ids_are_refused_saying_what_they_are() {
+    let f = opened(BLOCK);
+    // A long path with a bidirectional override: quoted, escaped, and cut short.
+    let field = format!("a\u{202e}b{}", "x".repeat(100));
+    let error = the_error(&f.set("k7f2qx3m", &field, "1"));
+    assert_eq!(error.parameter(), Some("field"));
+    assert!(
+        error
+            .message()
+            .starts_with("a box has no field \"a\\u{202e}bxxx"),
+        "{error:?}"
+    );
+    assert!(error.message().ends_with("…"), "{error:?}");
+    assert!(!error.message().contains('\u{202e}'));
+    // A feature's own ID that isn't one: the reader's error, the feature named by its
+    // place in the timeline, where it would go.
+    let bad =
+        r#"{"id": "BAD", "type": "sphere", "name": "Ball", "position": [0, 0, 50], "radius": 5}"#;
+    let error = the_error(&answer(f.sessions.add_feature(
+        &f.id,
+        Revision::OPENED,
+        value(bad),
+    )));
+    assert_eq!(
+        (error.feature(), error.parameter()),
+        (Some("features[1]"), Some("id"))
+    );
+    // A sketch member named by an empty segment: no member has it.
+    let f = opened(SKETCHED);
+    let error = the_error(&f.set("s0000001", "points..x", "1"));
+    assert_eq!(error.message(), "sketch s0000001 has no point \"\"");
+    assert!(error.candidates().is_empty());
+    assert_eq!(f.file(), SKETCHED);
+}
