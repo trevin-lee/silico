@@ -38,6 +38,18 @@ impl ElementRef {
     }
 }
 
+impl ElementKind {
+    /// Its word for many, for messages: `faces`, `edges`, `vertices`, `solids`.
+    pub fn plural(self) -> &'static str {
+        match self {
+            ElementKind::Face => "faces",
+            ElementKind::Edge => "edges",
+            ElementKind::Vertex => "vertices",
+            ElementKind::Solid => "solids",
+        }
+    }
+}
+
 /// FreeCAD's name for an element: `Face1`, `Edge3`, `Vertex2`, `Solid1`.
 impl std::fmt::Display for ElementRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
