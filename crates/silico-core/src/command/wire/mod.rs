@@ -517,7 +517,7 @@ impl<'a> RequestFields<'a> {
         what: &str,
     ) -> Option<T> {
         let node = self.take(key)?;
-        self.word_of(key, node, words, what)
+        self.word_of(key, node, words, what, false)
     }
 
     /// One of `words`, as [`word`](RequestFields::word) reads it, or `null`.
@@ -529,17 +529,19 @@ impl<'a> RequestFields<'a> {
     ) -> Option<Option<T>> {
         match self.take_nullable(key)? {
             None => Some(None),
-            Some(node) => self.word_of(key, node, words, what).map(Some),
+            Some(node) => self.word_of(key, node, words, what, true).map(Some),
         }
     }
 
-    /// `node`, `key`'s value, as one of `words`.
+    /// `node`, `key`'s value, as one of `words`, or, refused, said to take `null` too if
+    /// it's `nullable`.
     fn word_of<T: Copy>(
         &mut self,
         key: &str,
         node: &Node,
         words: &[(&'static str, T)],
         what: &str,
+        nullable: bool,
     ) -> Option<T> {
         let found = match &node.value {
             Value::String(text) => words.iter().find(|(word, _)| word == text),
@@ -551,13 +553,19 @@ impl<'a> RequestFields<'a> {
         self.refused.refuse_with(|| {
             let at = join(&self.path, key);
             let got = match &node.value {
-                Value::String(text) => crate::document::field_name(text),
+                // A plain word bare (`got solid`), but quoted if it spells a JSON value
+                // (`"null"`, `"3"`), so it reads apart from that value.
+                Value::String(text) if !spells_a_value(text) => crate::document::field_name(text),
                 _ => written(node),
             };
             let names: Vec<&str> = words.iter().map(|(word, _)| *word).collect();
+            let mut choices = names.clone();
+            if nullable {
+                choices.push("null");
+            }
             invalid(
                 &at,
-                format!("{at} must be {}, got {got}", alternatives(&names)),
+                format!("{at} must be {}, got {got}", alternatives(&choices)),
             )
             .with_suggestion(format!("give one of the {what}"))
             .with_candidates(names.iter().map(|&name| name.to_owned()))
@@ -984,6 +992,13 @@ impl<'a> RequestFields<'a> {
         }
         refused
     }
+}
+
+/// Whether `text`, written bare, would read as a JSON value: a literal, or a number (any
+/// word that starts as one does).
+fn spells_a_value(text: &str) -> bool {
+    matches!(text, "null" | "true" | "false")
+        || text.starts_with(|c: char| c.is_ascii_digit() || c == '-')
 }
 
 /// `names` as a message lists the choices: `current or published`, `face, edge, or vertex`.
