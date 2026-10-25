@@ -28,7 +28,9 @@ use silico_protocol::{
 };
 
 use super::PROBLEMS_LISTED;
-use super::sketch::{ElementId, ElementKind, Form, Reference, Sketch, Takes, TangentSide};
+use super::sketch::{
+    ElementId, ElementKind, Form, MemberPaths, Reference, Sketch, Takes, TangentSide,
+};
 use crate::Error;
 use crate::profile::{Drawn, sent, unsigned};
 use crate::references::CANDIDATES;
@@ -86,59 +88,58 @@ struct Place {
     index: usize,
 }
 
-impl Place {
-    fn field(self) -> String {
-        format!("{}.{}", self.kind.list(), self.index)
-    }
-}
-
 /// The sketch's problems, in the order of its fields: each list in turn, each element's
 /// fields in order, then its size.
 pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Error)) {
-    // Every element by ID: the first with an ID holds it. Each element whose ID an
-    // earlier one holds, by place, with that holder.
+    // Each element's path (`MemberPaths`), and every element by ID: the first holder of
+    // each ID, which a reference finds. Each later holder, named by its place, with its
+    // first holder's kind and path.
+    let paths = MemberPaths::of(sketch);
     let mut by_id: BTreeMap<&ElementId, Place> = BTreeMap::new();
-    let mut taken: BTreeMap<(ElementKind, usize), Place> = BTreeMap::new();
-    let mut counts: BTreeMap<ElementKind, usize> = BTreeMap::new();
-    for (id, kind) in sketch.elements() {
-        let slot = counts.entry(kind).or_default();
-        let place = Place { kind, index: *slot };
-        *slot += 1;
-        match by_id.get(id) {
-            Some(&first) => {
-                taken.insert((kind, place.index), first);
-            }
-            None => {
-                by_id.insert(id, place);
+    let mut taken: BTreeMap<(ElementKind, usize), (ElementKind, &str)> = BTreeMap::new();
+    for kind in ElementKind::ALL {
+        for (index, (id, named)) in sketch
+            .ids(kind)
+            .into_iter()
+            .zip(paths.list(kind))
+            .enumerate()
+        {
+            if named.by_id {
+                by_id.insert(id, Place { kind, index });
+            } else if let Some(first) = by_id.get(id)
+                && let Some(holder) = paths.list(first.kind).get(first.index)
+            {
+                taken.insert((kind, index), (first.kind, holder.path.as_str()));
             }
         }
     }
     // The element's ID, if an earlier element holds it.
-    let unique = |kind: ElementKind, index: usize, id: &ElementId, add: &mut dyn FnMut(Error)| {
-        if let Some(first) = taken.get(&(kind, index)) {
-            let place = Place { kind, index };
-            add(refuse(
-                &format!("{}.id", place.field()),
-                format!(
-                    "id {id} is already the ID of {} {id} ({})",
-                    first.kind.noun(),
-                    first.field()
-                ),
-                format!("give this {} an ID of its own", kind.noun()),
-            ));
-        }
-    };
+    let unique =
+        |kind: ElementKind, index: usize, at: &str, id: &ElementId, add: &mut dyn FnMut(Error)| {
+            if let Some(&(first, holder)) = taken.get(&(kind, index)) {
+                add(refuse(
+                    &format!("{at}.id"),
+                    format!(
+                        "id {id} is already the ID of {} {id} ({holder})",
+                        first.noun()
+                    ),
+                    format!("give this {} an ID of its own", kind.noun()),
+                ));
+            }
+        };
 
-    for (i, point) in sketch.points.iter().enumerate() {
+    // Each list in turn, in ElementKind::ALL's order, as its paths were named.
+    for ((i, point), named) in sketch.points.iter().enumerate().zip(&paths.points) {
+        let at = named.path.as_str();
         let mut named = |e: Error| add(e.with_element(point.id.as_str()));
         let add: &mut dyn FnMut(Error) = &mut named;
-        unique(ElementKind::Point, i, &point.id, add);
+        unique(ElementKind::Point, i, at, &point.id, add);
         for (axis, value) in [("x", point.x), ("y", point.y)] {
             if value.mm().abs() > MAX_LENGTH {
                 add(refuse(
-                    &format!("points.{i}.{axis}"),
+                    &format!("{at}.{axis}"),
                     format!(
-                        "points.{i}.{axis} is {value} mm, farther from the sketch's origin than the {} mm (a kilometre) a point may be",
+                        "{at}.{axis} is {value} mm, farther from the sketch's origin than the {} mm (a kilometre) a point may be",
                         format_number(MAX_LENGTH)
                     ),
                     "draw the sketch within a kilometre of its origin".to_owned(),
@@ -211,11 +212,11 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         }
     };
 
-    for (i, line) in sketch.lines.iter().enumerate() {
-        let at = format!("lines.{i}");
+    for ((i, line), named) in sketch.lines.iter().enumerate().zip(&paths.lines) {
+        let at = named.path.as_str();
         let mut named = |e: Error| add(e.with_element(line.id.as_str()));
         let add: &mut dyn FnMut(Error) = &mut named;
-        unique(ElementKind::Line, i, &line.id, add);
+        unique(ElementKind::Line, i, at, &line.id, add);
         let from = point_of(format!("{at}.from"), &line.from, add);
         let to = point_of(format!("{at}.to"), &line.to, add);
         if from && to && line.from == line.to {
@@ -251,11 +252,11 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             .with_element(line.to.as_str()));
         }
     }
-    for (i, circle) in sketch.circles.iter().enumerate() {
-        let at = format!("circles.{i}");
+    for ((i, circle), named) in sketch.circles.iter().enumerate().zip(&paths.circles) {
+        let at = named.path.as_str();
         let mut named = |e: Error| add(e.with_element(circle.id.as_str()));
         let add: &mut dyn FnMut(Error) = &mut named;
-        unique(ElementKind::Circle, i, &circle.id, add);
+        unique(ElementKind::Circle, i, at, &circle.id, add);
         point_of(format!("{at}.center"), &circle.center, add);
         let radius = circle.radius.mm();
         if let Some(SizeProblem::Radius(r)) = size_problem(Drawn::Circle {
@@ -284,11 +285,11 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             ));
         }
     }
-    for (i, arc) in sketch.arcs.iter().enumerate() {
-        let at = format!("arcs.{i}");
+    for ((i, arc), named) in sketch.arcs.iter().enumerate().zip(&paths.arcs) {
+        let at = named.path.as_str();
         let mut named = |e: Error| add(e.with_element(arc.id.as_str()));
         let add: &mut dyn FnMut(Error) = &mut named;
-        unique(ElementKind::Arc, i, &arc.id, add);
+        unique(ElementKind::Arc, i, at, &arc.id, add);
         let center = point_of(format!("{at}.center"), &arc.center, add);
         let start = point_of(format!("{at}.start"), &arc.start, add);
         let end = point_of(format!("{at}.end"), &arc.end, add);
@@ -426,11 +427,16 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         })
         .collect();
 
-    for (i, constraint) in sketch.constraints.iter().enumerate() {
-        let at = format!("constraints.{i}");
+    for ((i, constraint), named) in sketch
+        .constraints
+        .iter()
+        .enumerate()
+        .zip(&paths.constraints)
+    {
+        let at = named.path.as_str();
         let mut named = |e: Error| add(e.with_element(constraint.id.as_str()));
         let add: &mut dyn FnMut(Error) = &mut named;
-        unique(ElementKind::Constraint, i, &constraint.id, add);
+        unique(ElementKind::Constraint, i, at, &constraint.id, add);
         let form = &constraint.form;
         let what = form.type_name();
         let references = form.references();
@@ -708,7 +714,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         // Every constraint names an element of the sketch's own (FreeCAD's 3d7871fca5).
         if references.iter().all(|(_, r, _)| r.element().is_none()) {
             add(refuse(
-                &at,
+                at,
                 format!(
                     "this {what} names only the sketch's fixed references, so it constrains nothing in the sketch"
                 ),

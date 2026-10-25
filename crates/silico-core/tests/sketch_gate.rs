@@ -61,7 +61,7 @@ fn an_arcs_radius_past_a_kilometre_along_y_is_refused() {
         ARC,
         "",
     ));
-    only(&text, "arcs.0.start", "more than the 1000000 mm");
+    only(&text, "arcs.aa000000.start", "more than the 1000000 mm");
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn an_arcs_start_or_end_drawn_at_its_center_is_refused() {
         let text = document(&fields(&format!("{POINTS}, {pd}"), "", "", arc, ""));
         only(
             &text,
-            &format!("arcs.0.{key}"),
+            &format!("arcs.aa000000.{key}"),
             &format!(
                 "arc aa000000's {key}, point pd000000 at (0, 0), is 0 mm from its center, point pa000000 at (0, 0): arcs and circles have a radius above 1e-7 mm"
             ),
@@ -95,7 +95,7 @@ fn tangent_at_an_end_of_a_alone_is_refused_naming_b() {
         &with_two_lines(
             r#"{"id": "k0000000", "type": "tangent_at", "a": "na000000", "b": "aa000000", "at": "pa000000", "direction": "same"}"#,
         ),
-        "constraints.0.at",
+        "constraints.k0000000.at",
         "isn't an end of its b, aa000000",
     );
 }
@@ -122,7 +122,7 @@ fn symmetric_about_its_b_or_a_line_through_one_of_them_is_refused() {
         &with_two_lines(
             r#"{"id": "k0000000", "type": "symmetric", "a": "pb000000", "b": "pc000000", "about": "pc000000"}"#,
         ),
-        "constraints.0.about",
+        "constraints.k0000000.about",
         "is one of the points it mirrors",
     );
     // FreeCAD refuses only both ends of the line (CommandConstraints.cpp, GeoId1 == GeoId2 ==
@@ -133,7 +133,7 @@ fn symmetric_about_its_b_or_a_line_through_one_of_them_is_refused() {
         &with_two_lines(
             r#"{"id": "k0000000", "type": "symmetric", "a": "pa000000", "b": "pc000000", "about": "na000000"}"#,
         ),
-        "constraints.0.about",
+        "constraints.k0000000.about",
         "a symmetric's pa000000 is an end of na000000, so it mirrors onto itself",
     );
 }
@@ -145,7 +145,7 @@ fn an_arcs_own_end_on_the_arc_is_refused() {
             &with_two_lines(&format!(
                 r#"{{"id": "k0000000", "type": "on", "point": "{p}", "curve": "aa000000"}}"#
             )),
-            "constraints.0.point",
+            "constraints.k0000000.point",
             "is part of aa000000 itself",
         );
     }
@@ -238,7 +238,7 @@ fn a_tangent_between_curves_sharing_an_end_is_a_tangent_at() {
         &with_two_lines(
             r#"{"id": "k0000000", "type": "tangent", "a": "na000000", "b": "aa000000", "side": "left"}"#,
         ),
-        "constraints.0.b",
+        "constraints.k0000000.b",
         "a tangent's na000000 and aa000000 share an end, point pb000000",
     );
     let error = &problems(&with_two_lines(
@@ -260,7 +260,7 @@ fn a_point_line_distance_from_the_lines_own_end_is_refused() {
         &with_two_lines(
             r#"{"id": "k0000000", "type": "point_line_distance", "point": "pb000000", "line": "na000000", "value": 3, "side": "left", "driving": true}"#,
         ),
-        "constraints.0.point",
+        "constraints.k0000000.point",
         "a point_line_distance's point, pb000000, is part of na000000 itself",
     );
 }
@@ -311,7 +311,11 @@ fn reference_dimensions_take_what_a_solve_can_measure() {
     ] {
         match problem {
             None => none(&with_two_lines(constraint)),
-            Some(message) => only(&with_two_lines(constraint), "constraints.0.value", message),
+            Some(message) => only(
+                &with_two_lines(constraint),
+                "constraints.k0000000.value",
+                message,
+            ),
         }
     }
 }
@@ -330,7 +334,7 @@ fn geometry_the_solver_measures_as_no_size_is_refused() {
             "",
             "",
         )),
-        "lines.0.to",
+        "lines.na000000.to",
         "line na000000 is 1e-200 mm long, from point pa000000 at (0, 0) to pb000000 at (0, 1e-200): lines and arcs are longer than 1e-7 mm between their ends",
     );
     only(
@@ -341,7 +345,7 @@ fn geometry_the_solver_measures_as_no_size_is_refused() {
             r#"{"id": "aa000000", "center": "pa000000", "start": "pc000000", "end": "pd000000", "construction": false}"#,
             "",
         )),
-        "arcs.0.start",
+        "arcs.aa000000.start",
         "arc aa000000's start, point pc000000 at (1e-200, 0), is 1e-200 mm from its center, point pa000000 at (0, 0)",
     );
     // A line from 0 to -0 is the same place: no length.
@@ -353,7 +357,7 @@ fn geometry_the_solver_measures_as_no_size_is_refused() {
             "",
             "",
         )),
-        "lines.0.to",
+        "lines.na000000.to",
         "line na000000 is 0 mm long, from point pa000000 at (0, 0) to pb000000 at (-0, 0)",
     );
 }
@@ -363,7 +367,7 @@ fn an_arc_whose_start_and_end_are_drawn_at_one_place_is_refused() {
     let points = r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 10, "y": 0, "construction": false}, {"id": "pc000000", "x": 10, "y": 0, "construction": false}"#;
     only(
         &document(&fields(points, "", "", ARC, "")),
-        "arcs.0.end",
+        "arcs.aa000000.end",
         "arc aa000000's start and end, points pb000000 and pc000000, are both drawn at (10, 0)",
     );
 }
@@ -423,7 +427,7 @@ fn a_tangent_names_the_end_its_curves_share_whichever_ends_they_are() {
                 "",
                 r#"{"id": "k0000000", "type": "tangent", "a": "nd000000", "b": "aa000000", "side": "left"}"#,
             ),
-            "constraints.0.b",
+            "constraints.k0000000.b",
             &format!("a tangent's nd000000 and aa000000 share an end, point {point}"),
         );
     }
@@ -435,7 +439,7 @@ fn a_curve_tangent_to_itself_is_told_it_needs_two() {
         &constrained(
             r#"{"id": "k0000000", "type": "tangent", "a": "aa000000", "b": "aa000000", "side": "outside"}"#,
         ),
-        "constraints.0.b",
+        "constraints.k0000000.b",
         "a tangent's a and b are both aa000000: it needs two different elements",
     );
 }
@@ -474,20 +478,24 @@ fn each_tangent_side_reads_as_its_own_value_and_writes_back() {
 fn geometry_a_hair_apart_has_no_size_to_the_kernel() {
     // 1e-150 squared is 1e-300, not 0, so the solver would measure a line and an arc's
     // radius; but they're far inside the kernel's 1e-7 mm, one place to it, and refused:
-    // the line (lines.0.to), and the arc's start and end, each 1e-150 from its center.
+    // the line (lines.na000000.to), and the arc's start and end, each 1e-150 from its center.
     let tiny = three_points((1e-150, 0.0), (0.0, 1e-150));
     let all = problems(&document(&fields(&tiny, LINE, "", ARC, "")));
     let refused: Vec<Option<&str>> = all.iter().map(|e| e.parameter()).collect();
     assert_eq!(
         refused,
-        [Some("lines.0.to"), Some("arcs.0.start"), Some("arcs.0.end")],
+        [
+            Some("lines.na000000.to"),
+            Some("arcs.aa000000.start"),
+            Some("arcs.aa000000.end")
+        ],
         "{all:#?}"
     );
     // The arc's end, 1e-200 from its center, is refused by the same rule.
     let end = r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 10, "y": 0, "construction": false}, {"id": "pc000000", "x": 1e-200, "y": 0, "construction": false}"#;
     only(
         &document(&fields(end, "", "", ARC, "")),
-        "arcs.0.end",
+        "arcs.aa000000.end",
         "arc aa000000's end, point pc000000 at (1e-200, 0), is 1e-200 mm from its center, point pa000000 at (0, 0): arcs and circles have a radius above 1e-7 mm, as the kernel measures them",
     );
 }
@@ -519,7 +527,7 @@ fn a_drawn_size_at_most_the_kernels_tolerance_is_refused_and_above_it_admitted()
     // A line along x: 1e-7 long refused, the next float up admitted.
     only(
         &line((1e-7, 0.0), false),
-        "lines.0.to",
+        "lines.na000000.to",
         "line na000000 is 1e-7 mm long, from point pa000000 at (0, 0) to pb000000 at (1e-7, 0): lines and arcs are longer than 1e-7 mm between their ends, as the kernel measures them",
     );
     let error = &problems(&line((1e-7, 0.0), false))[0];
@@ -531,10 +539,14 @@ fn a_drawn_size_at_most_the_kernels_tolerance_is_refused_and_above_it_admitted()
     none(&line((1e-7f64.next_up(), 0.0), false));
     // On a slant, 3-4-5: (0.594e-7, 0.792e-7) is 0.99e-7 long; (0.606e-7, 0.808e-7)
     // 1.01e-7.
-    only(&line((0.594e-7, 0.792e-7), false), "lines.0.to", "mm long");
+    only(
+        &line((0.594e-7, 0.792e-7), false),
+        "lines.na000000.to",
+        "mm long",
+    );
     none(&line((0.606e-7, 0.808e-7), false));
     // Construction lines alike.
-    only(&line((1e-7, 0.0), true), "lines.0.to", "mm long");
+    only(&line((1e-7, 0.0), true), "lines.na000000.to", "mm long");
 
     // A circle's radius: 1e-7 refused, 1e-6 admitted.
     let circle = |radius: f64| {
@@ -548,7 +560,7 @@ fn a_drawn_size_at_most_the_kernels_tolerance_is_refused_and_above_it_admitted()
     };
     only(
         &circle(1e-7),
-        "circles.0.radius",
+        "circles.ca000000.radius",
         "circle ca000000's radius is 1e-7 mm: arcs and circles have a radius above 1e-7 mm, as the kernel measures them",
     );
     assert_eq!(problems(&circle(1e-7))[0].elements(), ["ca000000"]);
@@ -560,7 +572,7 @@ fn a_drawn_size_at_most_the_kernels_tolerance_is_refused_and_above_it_admitted()
         |b: (f64, f64), c: (f64, f64)| document(&fields(&three_points(b, c), "", "", ARC, ""));
     only(
         &arc((1e-7, 0.0), far),
-        "arcs.0.start",
+        "arcs.aa000000.start",
         "arc aa000000's start, point pb000000 at (1e-7, 0), is 1e-7 mm from its center",
     );
     // Each names the point, the center, and the arc.
@@ -571,7 +583,7 @@ fn a_drawn_size_at_most_the_kernels_tolerance_is_refused_and_above_it_admitted()
     none(&arc((1.01e-7, 0.0), (0.0, 1.01e-7)));
     only(
         &arc((10.0, 0.0), (0.0, 1e-7)),
-        "arcs.0.end",
+        "arcs.aa000000.end",
         "arc aa000000's end, point pc000000 at (0, 1e-7), is 1e-7 mm from its center",
     );
     assert_eq!(
@@ -583,7 +595,7 @@ fn a_drawn_size_at_most_the_kernels_tolerance_is_refused_and_above_it_admitted()
     // (10, 1.01e-7) admitted.
     only(
         &arc((10.0, 0.0), (10.0, 1e-8)),
-        "arcs.0.end",
+        "arcs.aa000000.end",
         "arc aa000000's ends, points pb000000 and pc000000, are 1e-8 mm apart: lines and arcs are longer than 1e-7 mm between their ends, as the kernel measures them",
     );
     let chord = &problems(&arc((10.0, 0.0), (10.0, 1e-8)))[0];
@@ -604,7 +616,7 @@ fn a_reference_diameter_takes_up_to_three_kilometres_too() {
         &constrained(
             r#"{"id": "k0000000", "type": "diameter", "curve": "ca000000", "value": 3000000.000001, "driving": false}"#,
         ),
-        "constraints.0.value",
+        "constraints.k0000000.value",
         "a reference diameter's value is 3000000.000001 mm, but it's from 0 to 3000000 mm",
     );
 }
@@ -635,7 +647,7 @@ fn a_curve_ending_on_another_and_tangent_there_is_one_tangent_on() {
     );
     only(
         &text,
-        "constraints.1.b",
+        "constraints.k0000001.b",
         "a tangent's nz000000 ends at point pt000000, which constraint k0000000 puts on ca000000",
     );
     assert_eq!(
@@ -647,7 +659,7 @@ fn a_curve_ending_on_another_and_tangent_there_is_one_tangent_on() {
         &ending_on_the_circle(
             r#"{"id": "k0000000", "type": "on", "point": "pt000000", "curve": "ca000000"}, {"id": "k0000001", "type": "tangent", "a": "ca000000", "b": "nz000000", "side": "left"}"#,
         ),
-        "constraints.1.b",
+        "constraints.k0000001.b",
         "a tangent's nz000000 ends at point pt000000",
     );
 }
@@ -664,13 +676,13 @@ fn a_tangent_on_takes_an_end_of_a_that_isnt_an_end_of_b() {
             "a tangent_on's at, point pb000000, is an end of its b, aa000000, too",
         ),
     ] {
-        only(&constrained(constraint), "constraints.0.at", message);
+        only(&constrained(constraint), "constraints.k0000000.at", message);
     }
     only(
         &constrained(
             r#"{"id": "k0000000", "type": "tangent_on", "a": "na000000", "at": "pb000000", "b": "x_axis", "direction": "same"}"#,
         ),
-        "constraints.0.b",
+        "constraints.k0000000.b",
         "a tangent_on takes a curve ending on a circle or arc, or an arc ending on a line",
     );
     // An arc ending on a line.
@@ -760,7 +772,7 @@ fn a_tangent_on_whose_end_is_bs_own_point_or_whose_curves_are_one_is_refused() {
         &constrained(
             r#"{"id": "k0000000", "type": "tangent_on", "a": "na000000", "at": "pa000000", "b": "ca000000", "direction": "same"}"#,
         ),
-        "constraints.0.at",
+        "constraints.k0000000.at",
         "a tangent_on's at, point pa000000, is part of its b, ca000000, itself",
     );
     // The arc's centre the same.
@@ -768,7 +780,7 @@ fn a_tangent_on_whose_end_is_bs_own_point_or_whose_curves_are_one_is_refused() {
         &constrained(
             r#"{"id": "k0000000", "type": "tangent_on", "a": "na000000", "at": "pa000000", "b": "aa000000", "direction": "same"}"#,
         ),
-        "constraints.0.at",
+        "constraints.k0000000.at",
         "a tangent_on's at, point pa000000, is part of its b, aa000000, itself",
     );
     let text = constrained(
@@ -776,7 +788,7 @@ fn a_tangent_on_whose_end_is_bs_own_point_or_whose_curves_are_one_is_refused() {
     );
     only(
         &text,
-        "constraints.0.b",
+        "constraints.k0000000.b",
         "a tangent_on's a and b are both aa000000: it needs two different curves",
     );
     assert!(
@@ -789,8 +801,8 @@ fn a_tangent_on_whose_end_is_bs_own_point_or_whose_curves_are_one_is_refused() {
         &constrained(
             r#"{"id": "k0000000", "type": "tangent_on", "a": "na000000", "at": "ca000000", "b": "aa000000", "direction": "same"}"#,
         ),
-        "constraints.0.at",
-        "constraints.0.at ca000000 is a circle, but a tangent_on's at is a point of this sketch where a ends, on b",
+        "constraints.k0000000.at",
+        "constraints.k0000000.at ca000000 is a circle, but a tangent_on's at is a point of this sketch where a ends, on b",
     );
 }
 
@@ -851,7 +863,7 @@ fn an_arc_whose_sent_radius_is_the_tolerance_is_refused_at_its_start_though_hypo
     ));
     only(
         &text,
-        "arcs.0.start",
+        "arcs.aa000000.start",
         "arc aa000000's start, point pb000000 at (9.832072323405422e-8, -1.824925704604195e-8), is 1e-7 mm from its center, point pa000000 at (0, 0): arcs and circles have a radius above 1e-7 mm, as the kernel measures them",
     );
     let error = &problems(&text)[0];
@@ -883,7 +895,7 @@ fn a_circles_radius_past_a_kilometre_is_refused_in_the_arcs_words() {
     };
     only(
         &circle(1000001.0),
-        "circles.0.radius",
+        "circles.ca000000.radius",
         "circle ca000000's radius is 1000001 mm, more than the 1000000 mm (a kilometre) the solver takes",
     );
     assert_eq!(problems(&circle(1000001.0))[0].elements(), ["ca000000"]);
@@ -916,12 +928,12 @@ fn a_curves_point_mistyped_has_the_points_a_character_or_two_off_as_candidates()
         "",
         "",
     ));
-    let error = unknown(&text, "lines.0.to");
+    let error = unknown(&text, "lines.na000000.to");
     assert_eq!(error.candidates(), ["pb000000", "pa000000", "pc000000"]);
     assert_eq!(
         error.suggestion(),
         Some(
-            "name one of this sketch's points in lines.0.to: the candidates are this sketch's IDs a character or two from pb000001, none taken for it"
+            "name one of this sketch's points in lines.na000000.to: the candidates are this sketch's IDs a character or two from pb000001, none taken for it"
         )
     );
 }
@@ -933,7 +945,7 @@ fn a_constraints_reference_mistyped_has_only_elements_its_place_takes_as_candida
     // line, so the lines are its candidates.
     let error = unknown(
         &with_two_lines(r#"{"id": "k0000000", "type": "horizontal", "line": "na000001"}"#),
-        "constraints.0.line",
+        "constraints.k0000000.line",
     );
     assert_eq!(error.candidates(), ["na000000", "nb000000"]);
     // An on's curve takes any curve: the circle and the arc too, the nearest first.
@@ -941,7 +953,7 @@ fn a_constraints_reference_mistyped_has_only_elements_its_place_takes_as_candida
         &with_two_lines(
             r#"{"id": "k0000000", "type": "on", "point": "pc000000", "curve": "na000001"}"#,
         ),
-        "constraints.0.curve",
+        "constraints.k0000000.curve",
     );
     assert_eq!(
         error.candidates(),
@@ -958,11 +970,11 @@ fn a_reference_far_from_every_id_has_no_candidates_and_its_advice_says_none() {
         "",
         "",
     ));
-    let error = unknown(&text, "lines.0.to");
+    let error = unknown(&text, "lines.na000000.to");
     assert!(error.candidates().is_empty(), "{error:#?}");
     assert_eq!(
         error.suggestion(),
-        Some("name one of this sketch's points in lines.0.to")
+        Some("name one of this sketch's points in lines.na000000.to")
     );
 }
 
@@ -980,7 +992,10 @@ fn two_characters_swapped_are_a_candidate_and_at_most_five_are_given() {
         "",
         "",
     ));
-    assert_eq!(unknown(&swapped, "lines.0.to").candidates(), ["a0b1c2d3"]);
+    assert_eq!(
+        unknown(&swapped, "lines.na000000.to").candidates(),
+        ["a0b1c2d3"]
+    );
     // p0000001 to p0000007 are each a character from p0000000, and p00000aa two: the
     // first five by ID.
     let points: Vec<String> = (1..=7)
@@ -995,7 +1010,7 @@ fn two_characters_swapped_are_a_candidate_and_at_most_five_are_given() {
         "",
     ));
     assert_eq!(
-        unknown(&many, "lines.0.to").candidates(),
+        unknown(&many, "lines.na000000.to").candidates(),
         ["p0000001", "p0000002", "p0000003", "p0000004", "p0000005"]
     );
 }
@@ -1024,7 +1039,7 @@ fn a_constraint_naming_geometry_that_isnt_there_is_refused_not_dropped() {
         "",
         r#"{"id": "k0000000", "type": "on", "point": "pd000000", "curve": "nb000000"}"#,
     ));
-    let error = unknown(&text, "constraints.0.point");
+    let error = unknown(&text, "constraints.k0000000.point");
     assert_eq!(error.code(), ErrorCode::InvalidInput);
     assert!(
         error.elements().contains(&"k0000000".to_owned()),
@@ -1111,13 +1126,13 @@ fn geometry_deleted_with_its_constraints_leaves_the_rest_as_they_were() {
     assert_eq!(
         found,
         [
-            (Some("constraints.3.point"), near_p2a.to_vec()),
+            (Some("constraints.c0000003.point"), near_p2a.to_vec()),
             (
-                Some("constraints.4.line"),
+                Some("constraints.c0000004.line"),
                 ["n0000000", "n1000000"].map(String::from).to_vec()
             ),
-            (Some("constraints.8.a"), near_p2a.to_vec()),
-            (Some("constraints.8.b"), near_p2b.to_vec()),
+            (Some("constraints.c0000008.a"), near_p2a.to_vec()),
+            (Some("constraints.c0000008.b"), near_p2b.to_vec()),
         ]
     );
 }
@@ -1155,7 +1170,7 @@ fn symmetric_of_a_lines_two_ends_about_the_line_says_both_are_its_ends() {
         &with_two_lines(
             r#"{"id": "k0000000", "type": "symmetric", "a": "pa000000", "b": "pb000000", "about": "na000000"}"#,
         ),
-        "constraints.0.about",
+        "constraints.k0000000.about",
         "a symmetric's a and b, pa000000 and pb000000, are the ends of na000000 itself",
     );
 }
