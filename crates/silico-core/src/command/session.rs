@@ -1418,13 +1418,29 @@ impl<P: Clients + 'static> Sessions<P> {
     /// the gate. The session opens even if the gate refuses the document, holding it and the
     /// gate's problems (decision 21). With `create`, writes a new, empty document at `path`
     /// in canonical form first, refusing if anything is there. Refused if the file is open
-    /// in another session of this process (by any path to it), or [`MAX_SESSIONS`] are open
-    /// or opening. The session's ID is taken when the open is asked for, since its thread is
-    /// named by it: an open refused on that thread (no such file, open already) uses an ID
-    /// no session then has, and one refused here (too many open, the sessions closing)
-    /// uses none.
+    /// in another session of this process (by any path to it), if [`MAX_SESSIONS`] are open
+    /// or opening, or if `path` isn't UTF-8 (a response couldn't name it exactly). The
+    /// session's ID is taken when the open is asked for, since its thread is named by it:
+    /// an open refused on that thread (no such file, open already) uses an ID no session
+    /// then has, and one refused here (a path not UTF-8, too many open, the sessions
+    /// closing) uses none.
     pub fn open(&self, path: impl Into<PathBuf>, create: bool) -> Running<Opened> {
         let path = path.into();
+        // Every response names the session's path exactly, so one it can't name isn't opened
+        // (or made), and takes no ID.
+        if path.to_str().is_none() {
+            return Running::answered(refused(
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    format!(
+                        "{} isn't UTF-8, so the API can't name it exactly",
+                        shown(&path)
+                    ),
+                )
+                .with_parameter("path")
+                .with_suggestion("rename the file, or open it through a path that is UTF-8"),
+            ));
+        }
         let mut book = lock(&self.registry.book);
         if book.stopping {
             return Running::answered(refused(closing()));

@@ -913,3 +913,46 @@ fn a_revision_is_followed_by_one_more() {
     assert_eq!(two.number(), 2);
     assert_eq!(two.next().unwrap().number(), 3);
 }
+
+/// What `open` says of a path that isn't UTF-8 in `dir`, named `a`, a byte 0xff, `.silico`:
+/// the path shown with the byte as U+FFFD, as only a message may show it.
+#[cfg(unix)]
+fn not_utf8(dir: &Path) -> (ErrorCode, String, Option<String>, Option<String>) {
+    (
+        ErrorCode::InvalidInput,
+        format!(
+            "\"{}/a\u{fffd}.silico\" isn't UTF-8, so the API can't name it exactly",
+            dir.display()
+        ),
+        Some("path".to_owned()),
+        Some("rename the file, or open it through a path that is UTF-8".to_owned()),
+    )
+}
+
+#[cfg(unix)]
+#[test]
+fn a_path_that_isnt_utf8_isnt_opened_or_made_and_takes_no_session_id() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let f = fixture();
+    let path = f
+        .dir
+        .path()
+        .join(std::ffi::OsStr::from_bytes(b"a\xff.silico"));
+    // Refused before the file is looked for, so on every system, the file there or not; and
+    // with `create`, nothing is made.
+    for create in [false, true] {
+        let response = answer(f.sessions.open(&path, create));
+        assert_eq!(refusal(&response), not_utf8(f.dir.path()));
+        assert_eq!(response.session, None);
+    }
+    assert!(std::fs::symlink_metadata(&path).is_err());
+    // A file of that name, where the file system takes one (Linux's do; macOS's APFS refuses
+    // a name that isn't UTF-8, so there this part is skipped): refused all the same.
+    if std::fs::write(&path, BOX).is_ok() {
+        let response = answer(f.sessions.open(&path, false));
+        assert_eq!(refusal(&response), not_utf8(f.dir.path()));
+    }
+    // No session ID was taken: the next open is s1.
+    let opened = answer(f.sessions.open(f.file("b.silico", BOX), false));
+    assert_eq!(opened.session.unwrap().id.to_string(), "s1");
+}
