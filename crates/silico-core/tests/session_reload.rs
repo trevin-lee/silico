@@ -2,8 +2,9 @@
 //! "A file changed outside the session", sections 2, 3 and 7, decisions 2, 12, 21 and 22).
 //! Before each queued command the session reads its file and compares its bytes with those it
 //! last read or wrote: outside a transaction a change is reloaded at a new revision
-//! (`reloaded: true`), inside one nothing is reloaded and the commit is a conflict; a file
-//! that's gone refuses the command; `status` and published reads never read the file.
+//! (`reloaded: true`), and a file gone, unreadable, or another session's refuses the
+//! command; inside one only `commit` reads the file, a change its conflict; `close`,
+//! `status`, and published reads never read the file.
 //! Expected values are the design's words, documents written by hand and their bytes, and
 //! boxes' fingerprints by hand arithmetic (l × w × h, and 2(lw + lh + wh)).
 
@@ -126,6 +127,83 @@ fn is_box(op: &Op) -> bool {
 /// A path as the session's messages quote it.
 fn quoted(path: &Path) -> String {
     format!("\"{}\"", path.display())
+}
+
+/// Why a command was refused over a file the session couldn't take as it is now (gone,
+/// unreadable, too long): the design's words (section 4).
+const REREAD: &str =
+    "the session reads its file before each command to find changes made outside it";
+
+/// What to do about a file at `path` the session couldn't take as it is now.
+fn put_back(path: &Path) -> String {
+    format!(
+        "put the file back at {}, or close the session (roll back first) and open the file where it is now",
+        quoted(path)
+    )
+}
+
+/// The refusal of a command outside a transaction whose session's file at `path` is gone.
+fn gone(path: &Path) -> (ErrorCode, String, Option<String>, Option<String>) {
+    (
+        ErrorCode::IoFailed,
+        format!(
+            "{} couldn't be read: No such file or directory (os error 2)",
+            quoted(path)
+        ),
+        Some("path".to_owned()),
+        Some(put_back(path)),
+    )
+}
+
+/// The conflict of a transaction's commit, begun from revision `base`, over the file at
+/// `path`: the design's words (section 7's commit).
+fn commit_conflict(
+    path: &Path,
+    base: u64,
+) -> (
+    ErrorCode,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
+    (
+        ErrorCode::Conflict,
+        format!(
+            "{} changed outside this session since it was read",
+            quoted(path)
+        ),
+        Some("path".to_owned()),
+        Some(format!(
+            "it changed after the transaction began, from revision {base}, and a transaction doesn't reload its file"
+        )),
+        Some(
+            "nothing was written: roll back, then begin again from the file as it is now"
+                .to_owned(),
+        ),
+    )
+}
+
+/// `response`'s one error: its code, message, parameter, cause, and suggestion.
+fn the_error<T: std::fmt::Debug>(
+    response: &Response<T>,
+) -> (
+    ErrorCode,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
+    let problems = response.result.as_ref().unwrap_err();
+    assert_eq!(problems.total(), 1, "{problems:?}");
+    let error = &problems.errors()[0];
+    (
+        error.code(),
+        error.message().to_owned(),
+        error.parameter().map(str::to_owned),
+        error.cause().map(str::to_owned),
+        error.suggestion().map(str::to_owned),
+    )
 }
 
 #[test]
@@ -393,14 +471,13 @@ fn a_file_changed_while_format_rebuilds_is_a_conflict_and_format_run_again_write
 fn a_file_thats_gone_refuses_each_command_but_status_and_close_leaving_the_session_as_it_was() {
     let f = opened(BLOCK);
     std::fs::remove_file(&f.path).unwrap();
-    let gone = (
-        ErrorCode::IoFailed,
-        "couldn't be read: No such file or directory (os error 2)".to_owned(),
-        Some("path".to_owned()),
-        Some("check the file's name, and that it's a regular file this user may read".to_owned()),
-    );
+    let gone = gone(&f.path);
     let text = f.text();
     assert_eq!(refusal(&text), gone);
+    assert_eq!(
+        text.result.as_ref().unwrap_err().errors()[0].cause(),
+        Some(REREAD)
+    );
     assert_eq!(Fixture::after(&text), (1, false));
     assert_eq!(refusal(&answer(f.sessions.check(&f.id))), gone);
     assert_eq!(refusal(&answer(f.sessions.begin(&f.id))), gone);
@@ -442,8 +519,12 @@ fn a_file_grown_past_what_silico_reads_refuses_the_command_and_isnt_held() {
                 quoted(&f.path)
             ),
             Some("path".to_owned()),
-            Some("check it's the document you mean: no document is this long".to_owned())
+            Some(put_back(&f.path))
         )
+    );
+    assert_eq!(
+        check.result.as_ref().unwrap_err().errors()[0].cause(),
+        Some(REREAD)
     );
     f.write(BLOCK);
     assert_eq!(f.text().result.unwrap(), BLOCK);
@@ -503,9 +584,11 @@ fn a_commit_that_writes_nothing_over_a_file_changed_outside_ends_and_the_next_co
     let f = opened(BLOCK);
     answer(f.sessions.begin(&f.id)).result.unwrap();
     f.write(&higher());
-    // The transaction's document is the one begin saw: nothing to write, nothing lost.
+    // The transaction's document is the one begin saw: nothing to write, nothing lost, and
+    // no rebuild waited for.
     let commit = answer(f.sessions.commit(&f.id));
     assert!(!commit.result.unwrap().written);
+    assert_eq!(f.boxes(), 0);
     let session = commit.session.unwrap();
     assert_eq!(
         (
@@ -519,4 +602,232 @@ fn a_commit_that_writes_nothing_over_a_file_changed_outside_ends_and_the_next_co
     let text = f.text();
     assert_eq!(Fixture::after(&text), (2, true));
     assert_eq!(text.result.unwrap(), higher());
+}
+
+#[test]
+fn inside_a_transaction_a_gone_file_is_only_the_commits_conflict() {
+    let f = opened(BLOCK);
+    answer(f.sessions.begin(&f.id)).result.unwrap();
+    f.set_length(Revision::OPENED, "41").result.unwrap();
+    std::fs::remove_file(&f.path).unwrap();
+    // Every command but commit runs on what the session holds: the file isn't read.
+    let text = f.text();
+    assert_eq!(Fixture::after(&text), (2, false));
+    assert!(text.result.unwrap().contains("\"length\": 41,"));
+    assert!(answer(f.sessions.outline(&f.id)).result.is_ok());
+    let check = answer(f.sessions.check(&f.id));
+    assert_eq!(Fixture::after(&check), (2, false));
+    assert!(check.result.is_ok(), "{:?}", check.result);
+    let set = f.set_length(Revision::OPENED.next().unwrap(), "42");
+    assert_eq!(Fixture::after(&set), (3, false));
+    // The commit's conflict, naming the file.
+    let commit = answer(f.sessions.commit(&f.id));
+    assert_eq!(the_error(&commit), commit_conflict(&f.path, 1));
+    assert!(commit.session.unwrap().transaction);
+    assert!(!f.path.exists());
+    // Rolled back, as the advice says; then, outside the transaction, the file's gone.
+    let rolled = answer(f.sessions.rollback(&f.id));
+    assert_eq!(Fixture::after(&rolled), (4, false));
+    assert_eq!(refusal(&answer(f.sessions.begin(&f.id))), gone(&f.path));
+    assert_eq!(answer(f.sessions.close(&f.id)).result, Ok(()));
+}
+
+#[test]
+fn inside_a_transaction_an_unreadable_file_is_the_commits_io_failed() {
+    let f = opened(BLOCK);
+    answer(f.sessions.begin(&f.id)).result.unwrap();
+    f.set_length(Revision::OPENED, "41").result.unwrap();
+    // A directory where the file was: there, but no regular file.
+    std::fs::remove_file(&f.path).unwrap();
+    std::fs::create_dir(&f.path).unwrap();
+    assert_eq!(Fixture::after(&f.text()), (2, false));
+    let commit = answer(f.sessions.commit(&f.id));
+    assert_eq!(
+        the_error(&commit),
+        (
+            ErrorCode::IoFailed,
+            format!("{} couldn't be read: it isn't a regular file", quoted(&f.path)),
+            Some("path".to_owned()),
+            None,
+            Some(
+                "nothing was written: make it a regular file this user may read again, then commit; or roll back"
+                    .to_owned()
+            ),
+        )
+    );
+    assert!(commit.session.unwrap().transaction);
+    assert_eq!(f.boxes(), 0);
+    assert!(f.path.is_dir());
+}
+
+#[test]
+fn a_commit_that_writes_nothing_over_a_gone_file_ends() {
+    let f = opened(BLOCK);
+    answer(f.sessions.begin(&f.id)).result.unwrap();
+    std::fs::remove_file(&f.path).unwrap();
+    let commit = answer(f.sessions.commit(&f.id));
+    assert!(!commit.result.unwrap().written);
+    assert!(!commit.session.unwrap().transaction);
+    assert_eq!(f.boxes(), 0);
+    assert!(!f.path.exists());
+}
+
+#[test]
+fn close_never_reads_the_file() {
+    let f = opened(BLOCK);
+    f.write(&higher());
+    let close = answer(f.sessions.close(&f.id));
+    assert_eq!(close.result, Ok(()));
+    // Not reloaded first: the session closed at the revision it was at.
+    assert_eq!(Fixture::after(&close), (1, false));
+    assert_eq!(f.file(), higher());
+}
+
+/// s1 on `a.silico` (the fixture's) and s2 on `b.silico`, holding [`higher`]; then
+/// `a.silico` replaced by `link` made to `b.silico`: s1's next command is refused, naming
+/// s2, as `open` refuses; s2's claim and s1's state are as they were.
+fn a_link_to_another_sessions_file_is_refused_naming_it(link: fn(&Path, &Path)) {
+    let f = opened(BLOCK);
+    let dir = f.path.parent().unwrap().to_owned();
+    let other = dir.join("b.silico");
+    std::fs::write(&other, higher()).unwrap();
+    let s2 = answer(f.sessions.open(&other, false)).session.unwrap().id;
+    assert_eq!(s2.to_string(), "s2");
+    std::fs::remove_file(&f.path).unwrap();
+    link(&other, &f.path);
+    assert_eq!(f.file(), higher());
+    let text = f.text();
+    assert_eq!(
+        refusal(&text),
+        (
+            ErrorCode::InvalidInput,
+            format!("{} is already open in session s2", quoted(&f.path)),
+            Some("path".to_owned()),
+            Some("use session s2, which this client opened, or close it first".to_owned())
+        )
+    );
+    assert_eq!(Fixture::after(&text), (1, false));
+    // s2's claim intact: another name for its file is still s2's.
+    let third = dir.join("c.silico");
+    std::fs::hard_link(&other, &third).unwrap();
+    assert_eq!(
+        refusal(&answer(f.sessions.open(&third, false))).1,
+        format!("{} is already open in session s2", quoted(&third))
+    );
+    let s2_text = answer(f.sessions.text(&s2, None));
+    assert_eq!(Fixture::after(&s2_text), (1, false));
+    assert_eq!(s2_text.result.unwrap(), higher());
+    // s1 as it was: its file put back, nothing changed, so nothing reloads.
+    std::fs::remove_file(&f.path).unwrap();
+    f.write(BLOCK);
+    let text = f.text();
+    assert_eq!(Fixture::after(&text), (1, false));
+    assert_eq!(text.result.unwrap(), BLOCK);
+}
+
+#[test]
+fn a_symbolic_link_to_another_sessions_file_put_at_the_path_is_refused_naming_it() {
+    a_link_to_another_sessions_file_is_refused_naming_it(|to, at| {
+        std::os::unix::fs::symlink(to, at).unwrap();
+    });
+}
+
+#[test]
+fn a_hard_link_to_another_sessions_file_put_at_the_path_is_refused_naming_it() {
+    a_link_to_another_sessions_file_is_refused_naming_it(|to, at| {
+        std::fs::hard_link(to, at).unwrap();
+    });
+}
+
+#[test]
+fn a_transaction_begun_after_a_conflict_rolled_back_commits() {
+    let f = opened(BLOCK);
+    answer(f.sessions.begin(&f.id)).result.unwrap();
+    f.set_length(Revision::OPENED, "41").result.unwrap();
+    f.write(&higher());
+    assert_eq!(
+        refusal(&answer(f.sessions.commit(&f.id))).0,
+        ErrorCode::Conflict
+    );
+    answer(f.sessions.rollback(&f.id)).result.unwrap();
+    // 1 at open, 2 the edit, 3 the rollback, 4 the reload.
+    let begun = answer(f.sessions.begin(&f.id));
+    assert_eq!(Fixture::after(&begun), (4, true));
+    let base = begun.result.unwrap().base;
+    f.set_length(base, "42").result.unwrap();
+    let commit = answer(f.sessions.commit(&f.id));
+    assert!(commit.result.unwrap().written);
+    assert!(f.file().contains("\"height\": 11,"));
+    assert!(f.file().contains("\"length\": 42,"));
+}
+
+#[test]
+fn a_file_changed_while_a_transactions_commit_rebuilds_has_the_commits_advice() {
+    let f = opened(BLOCK);
+    // Saved outside a transaction: revision 2, the file the session's.
+    f.set_length(Revision::OPENED, "41").result.unwrap();
+    let base = answer(f.sessions.begin(&f.id)).result.unwrap().base;
+    assert_eq!(base.number(), 2);
+    f.set_length(base, "42").result.unwrap();
+    let hold = f.kernel.hold(is_box);
+    let running = f.sessions.commit(&f.id);
+    assert!(f.kernel.wait_running(1, HANG));
+    f.write(&higher());
+    hold.release();
+    let commit = answer(running);
+    assert_eq!(Fixture::after(&commit), (3, false));
+    assert!(commit.session.as_ref().unwrap().transaction);
+    assert_eq!(the_error(&commit), commit_conflict(&f.path, 2));
+    assert_eq!(f.file(), higher());
+}
+
+#[test]
+fn inside_a_transaction_a_file_grown_too_long_is_a_change_like_any_other() {
+    let f = opened(BLOCK);
+    answer(f.sessions.begin(&f.id)).result.unwrap();
+    f.set_length(Revision::OPENED, "41").result.unwrap();
+    // MAX_INPUT_LEN, 4 × 16 MiB, and one more byte.
+    f.write(&" ".repeat(4 * 16 * 1024 * 1024 + 1));
+    let text = f.text();
+    assert_eq!(Fixture::after(&text), (2, false));
+    assert!(text.result.unwrap().contains("\"length\": 41,"));
+    let commit = answer(f.sessions.commit(&f.id));
+    assert_eq!(the_error(&commit), commit_conflict(&f.path, 1));
+    assert_eq!(f.boxes(), 0);
+}
+
+#[test]
+fn a_file_of_exactly_the_bytes_silico_reads_is_reloaded() {
+    let f = opened(BLOCK);
+    // MAX_INPUT_LEN, 4 × 16 MiB, exactly: not a document, but not too long to hold.
+    f.write(&" ".repeat(4 * 16 * 1024 * 1024));
+    let check = answer(f.sessions.check(&f.id));
+    assert_eq!(Fixture::after(&check), (2, true));
+    assert!(!f.sessions.status(&f.id).result.unwrap().gated);
+}
+
+#[test]
+fn an_edit_older_than_the_latest_reload_says_it_was_reloaded() {
+    let f = opened(BLOCK);
+    f.write(&higher());
+    assert_eq!(Fixture::after(&f.text()), (2, true));
+    f.write(&longer());
+    assert_eq!(Fixture::after(&f.text()), (3, true));
+    // Made against revision 2, the first reload's: older than the latest, so stale because
+    // the file changed.
+    let stale = f.set_length(Revision::OPENED.next().unwrap(), "42");
+    assert_eq!(Fixture::after(&stale), (3, false));
+    let (code, message, parameter, cause, _) = the_error(&stale);
+    assert_eq!(
+        (code, message.as_str(), parameter.as_deref(), cause),
+        (
+            ErrorCode::Conflict,
+            "the edit was made against revision 2, and the session is at revision 3",
+            Some("revision"),
+            Some(format!(
+                "{} was reloaded: it changed outside this session",
+                quoted(&f.path)
+            ))
+        )
+    );
 }

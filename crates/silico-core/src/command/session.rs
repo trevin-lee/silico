@@ -36,11 +36,13 @@
 //! own transaction (decision 1): so only a commit, such an edit, or [`Sessions::format`],
 //! which accepts drift by name (decision 31), writes the document.
 //!
-//! A file can change under a session (decision 2): before each queued command, the session
-//! reads its file again and compares its bytes with those it last read or wrote. Outside a
-//! transaction, a change is reloaded at a new revision, the response's `reloaded` saying so;
-//! inside one, nothing is reloaded, and the commit is refused as a conflict. `status` and
-//! published reads never read the file.
+//! A file can change under a session (decision 2): before each queued command outside a
+//! transaction, the session reads its file again and compares its bytes with those it last
+//! read or wrote, and reloads a change at a new revision, the response's `reloaded` saying
+//! so; a file gone, unreadable, or another session's refuses the command. Inside a
+//! transaction, only `commit` reads the file, and a change (or a file gone) is its conflict:
+//! every other command runs on what the session holds. `close`, `status`, and published
+//! reads never read the file.
 //!
 //! A session's path is UTF-8, so every response names it exactly: `open` refuses one that
 //! isn't.
@@ -135,8 +137,8 @@ pub struct SessionInfo {
     /// Whether a transaction is open (the design's section 4).
     pub transaction: bool,
     /// Whether the session reloaded its file before the command, having found it changed
-    /// outside the session (decision 2): never inside a transaction, nor for `status` and
-    /// published reads, which don't read the file.
+    /// outside the session (decision 2): never inside a transaction, nor for `close`,
+    /// `status`, and published reads, which don't read the file.
     pub reloaded: bool,
 }
 
@@ -719,15 +721,12 @@ struct Held {
     transaction: Option<Snapshot>,
     /// Where the file's old text is, if this session's own save left the file part
     /// written and couldn't put it back: the next save says so, rather than take the file
-    /// for one changed outside the session.
+    /// for one changed outside the session; until the file holds what the session last read
+    /// or wrote again, the old text put back ([`Session::reload`]).
     part_written: Option<PathBuf>,
     /// The newest revision a reload of the file gave (decision 2): an edit made against a
     /// revision before it is stale because the file changed, which its refusal says.
-    reloaded: Option<Revision>,
-    /// Whether the file was found changed outside the session before the command running
-    /// now, inside a transaction, where it isn't reloaded: that command, if it's `commit`,
-    /// is refused as a conflict.
-    changed_outside: bool,
+    last_reload: Option<Revision>,
 }
 
 /// A session's state as `begin` kept it, which `rollback` restores (its models are kept with
@@ -747,8 +746,9 @@ struct Snapshot {
 
 /// A state of the session's document a commit saves ([`Session::save_state`]): the path as
 /// `open` was given it, the text and the gate's finding of it, the revision whose model is
-/// its model, what was carried before, the state the edits were made from, and whether the
-/// file was found changed outside the session before the command (inside a transaction).
+/// its model, what was carried before, the state the edits were made from, and how the file
+/// was found before the command, if not as the session last read or wrote it (inside a
+/// transaction, [`Reload::changed_outside`]).
 struct Saving {
     path: String,
     text: Arc<Vec<u8>>,
@@ -756,7 +756,7 @@ struct Saving {
     revision: Revision,
     carried: Arc<BTreeSet<FeatureId>>,
     begun: Snapshot,
-    changed_outside: bool,
+    changed_outside: Option<Outside>,
 }
 
 /// Whose state a commit saves: an open transaction's, or an edit's candidate, made outside
@@ -1033,7 +1033,11 @@ impl<C: Kernel + 'static> Session<C> {
     fn published_now(self: &Arc<Self>) -> (Option<SessionInfo>, Result<Published, Unbuilt>) {
         let (info, revision, gated) = {
             let held = lock(&self.held);
-            (self.info_of(&held), held.revision, Arc::clone(&held.gated))
+            (
+                self.info_of(&held, false),
+                held.revision,
+                Arc::clone(&held.gated),
+            )
         };
         // Of a session not open, as every refusal of one is: no session.
         if self.closed() {
@@ -1093,19 +1097,21 @@ impl<C: Kernel + 'static> Session<C> {
         }
     }
 
-    /// The session as it is now.
-    fn info(&self) -> SessionInfo {
-        self.info_of(&lock(&self.held))
+    /// The session as it is now, `reloaded` saying whether it reloaded its file before the
+    /// command.
+    fn info(&self, reloaded: bool) -> SessionInfo {
+        self.info_of(&lock(&self.held), reloaded)
     }
 
-    /// The session as `held` says it is.
-    fn info_of(&self, held: &Held) -> SessionInfo {
+    /// The session as `held` says it is, `reloaded` saying whether it reloaded its file
+    /// before the command.
+    fn info_of(&self, held: &Held, reloaded: bool) -> SessionInfo {
         SessionInfo {
             id: self.id,
             path: held.path.clone(),
             revision: held.revision,
             transaction: held.transaction.is_some(),
-            reloaded: false,
+            reloaded,
         }
     }
 
@@ -1252,13 +1258,17 @@ impl<C: Kernel + 'static> Session<C> {
     /// (decision 28), its new file claimed with `claim`; the transaction ended, and the
     /// session at a new revision, its saved text, with only the reached features whose
     /// records couldn't be written still carried. A document equal to the one `begin` saw is
-    /// written nowhere, and the session's text is `begin`'s again (the file's). Refused, the
-    /// transaction left open and nothing written, if none is open, the file was found
-    /// changed outside the session before the command (a conflict, before any rebuild), the
-    /// model can't be had (a kernel fault, until decision 32 saves around one), the
-    /// canonical text is too long, or the save is (a file changed since: a conflict too).
+    /// written nowhere, and the session's text is `begin`'s again (the file's as the session
+    /// last read or wrote it), even if the file was found changed outside the session
+    /// (`changed_outside`, before the command), which then waits for no rebuild. Refused,
+    /// the transaction left open and nothing written, if none is open, the file was found
+    /// changed or gone before the command (a conflict, before any rebuild) or unreadable
+    /// (its `io_failed`), the model can't be had (a kernel fault, until decision 32 saves
+    /// around one), the canonical text is too long, or the save is (a file changed since: a
+    /// conflict too).
     fn commit(
         self: &Arc<Self>,
+        changed_outside: Option<Outside>,
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
     ) -> Result<Committed, Problems> {
@@ -1272,7 +1282,7 @@ impl<C: Kernel + 'static> Session<C> {
                 revision: held.revision,
                 carried: Arc::clone(&held.carried),
                 begun,
-                changed_outside: held.changed_outside,
+                changed_outside,
             }
         };
         self.save_state(state, Through::Transaction, read, claim)
@@ -1302,7 +1312,7 @@ impl<C: Kernel + 'static> Session<C> {
                 carried: Arc::clone(&held.carried),
                 begun: held.snapshot(),
                 // Outside a transaction, a change found before the command was reloaded.
-                changed_outside: false,
+                changed_outside: None,
             }
         };
         let committed = self.save_state(state, Through::Candidate, read, claim);
@@ -1355,10 +1365,26 @@ impl<C: Kernel + 'static> Session<C> {
             (Ok(before), Ok(now)) => before.canonically_eq(now),
             _ => begun.text == text,
         };
-        // Found before the command, so before any rebuild for it; a commit that would write
-        // nothing loses nothing, and ends as one does.
-        if changed_outside && !unchanged {
-            return Err(Problems::from(saver.conflict(&path)));
+        // Found before the command, so before any rebuild for it. A commit that would write
+        // nothing loses nothing, and ends as one does, without waiting for a rebuild: its
+        // problems the gate's alone.
+        if let Some(outside) = changed_outside {
+            if !unchanged {
+                return Err(Problems::from(match outside {
+                    Outside::Changed => saver.conflict(&path),
+                    Outside::Unreadable(error) => error,
+                }));
+            }
+            if through == Through::Transaction {
+                self.unwritten(&begun, revision)?;
+            }
+            return Ok(Committed {
+                written: false,
+                path,
+                refingerprinted: Vec::new(),
+                resolved: Vec::new(),
+                problems: gated.problems(),
+            });
         }
         let checked = match &*gated {
             Gated::Checked(checked) => checked,
@@ -1465,8 +1491,10 @@ impl<C: Kernel + 'static> Session<C> {
 
     /// A commit that writes nothing (its document is the one `begin` saw, `begun`, at
     /// `revision` now): the transaction ended, and the session's text `begin`'s, which is
-    /// the file's, at a new revision if the edits left other bytes (the same document in
-    /// canonical form, say), whose model is `revision`'s if it was published.
+    /// the file's as the session last read or wrote it (a change made outside since is
+    /// reloaded by the next command), at a new revision if the edits left other bytes (the
+    /// same document in canonical form, say), whose model is `revision`'s if it was
+    /// published.
     fn unwritten(&self, begun: &Snapshot, revision: Revision) -> Result<(), Problems> {
         let mut held = lock(&self.held);
         let next = if held.text == begun.text {
@@ -1643,62 +1671,120 @@ impl<C: Kernel + 'static> Session<C> {
         Ok(())
     }
 
-    /// Before a queued command (decision 2): the session's file read again (one read,
-    /// bounded as [`file::read`] bounds it) and compared, byte for byte, with what the
-    /// session last read or wrote: bytes, not times, so a change that keeps the file's size
-    /// and its modification time is found too. Outside a transaction, a change is reloaded:
-    /// the file's bytes are the session's text at a new revision, through the gate (a
-    /// document it refuses held with its problems, as `open` holds one, decision 21),
-    /// reaching nothing (a hand edit, the design's section 5: its stale fingerprints are
-    /// drift until `format` accepts them), not even what was carried (so the session is as
-    /// a fresh `open` of the file), its new file claimed with `claim`. Inside one,
-    /// nothing is reloaded, and the change is marked for a `commit` to refuse. Whether it
-    /// reloaded: the response's `reloaded`. Refused, the session as it was, if the file is
-    /// gone or can't be read (its own error), if it's longer than Silico reads of a
-    /// document (outside a transaction: inside one, that's a change like any other), or if
-    /// the session has no revisions left to give. A file this session's own save left part
-    /// written isn't compared, nor reloaded: the next save says where its old text is.
-    fn reload(&self, claim: &dyn Fn(&Path)) -> Result<bool, Problems> {
-        let _span = tracing::info_span!("reload").entered();
-        let (path, resolved, bytes, transaction) = {
-            let mut held = lock(&self.held);
-            held.changed_outside = false;
-            if held.part_written.is_some() {
-                return Ok(false);
-            }
+    /// Before a queued command (decision 2), as `rereads` says: the session's file read
+    /// again through [`file::opened_and_read`] (one read, bounded as open's is) and
+    /// compared, byte for byte, with what the session last read or wrote: bytes, not times,
+    /// so a change that keeps the file's size and its modification time is found too. The
+    /// file read is claimed with `claim`, as `open` claims it, so a file another session
+    /// holds (a link to its document put at the path) refuses the command, naming that
+    /// session, before anything changes.
+    ///
+    /// Outside a transaction, a change is reloaded: the file's bytes are the session's text
+    /// at a new revision, through the gate (a document it refuses held with its problems, as
+    /// `open` holds one, decision 21), reaching nothing (a hand edit, the design's section
+    /// 5: its stale fingerprints are drift until `format` accepts them), not even what was
+    /// carried (so the session is as a fresh `open` of the file). A file gone or unreadable,
+    /// or longer than Silico reads of a document, refuses the command, naming it, the
+    /// session as it was; as does a session with no revisions left to give.
+    ///
+    /// Inside a transaction, only for `commit` ([`Rereads::Always`]): nothing is reloaded,
+    /// and a file changed (longer than a document may be, or gone) or unreadable is found
+    /// for the commit to refuse, if it would write ([`Reload::changed_outside`]).
+    ///
+    /// A file this session's own save left part written isn't compared, nor reloaded (the
+    /// next save says where its old text is), until it holds what the session last read or
+    /// wrote again: the old text put back, which clears the mark.
+    fn reload(
+        &self,
+        rereads: Rereads,
+        claim: &dyn Fn(Claim<'_>) -> Result<(), Problems>,
+    ) -> Result<Reload, Problems> {
+        let as_held = Reload {
+            reloaded: false,
+            changed_outside: None,
+        };
+        let (path, resolved, bytes, transaction, part_written) = {
+            let held = lock(&self.held);
             (
                 held.path.clone(),
                 held.resolved.clone(),
                 Arc::clone(&held.bytes),
                 held.transaction.is_some(),
+                held.part_written.is_some(),
             )
         };
-        let now = file::read(&resolved).map_err(|e| Problems::from(e.with_parameter("path")))?;
-        if now == *bytes {
-            return Ok(false);
+        if rereads == Rereads::Never || (transaction && rereads != Rereads::Always) {
+            return Ok(as_held);
+        }
+        let _span = tracing::info_span!("reload").entered();
+        let found = file::opened_and_read(&resolved);
+        let claimed = |opened| {
+            claim(Claim {
+                opened,
+                resolved: &resolved,
+                given: Path::new(&path),
+            })
+        };
+        if part_written {
+            if let Ok((opened, now)) = found
+                && now == *bytes
+            {
+                claimed(opened)?;
+                lock(&self.held).part_written = None;
+                tracing::info!(session = %self.id, "the file a save left part written holds its old text again");
+            }
+            return Ok(as_held);
         }
         if transaction {
-            tracing::info!(session = %self.id, "the file changed outside the session, inside a transaction: not reloaded");
-            lock(&self.held).changed_outside = true;
-            return Ok(false);
+            let changed_outside = match found {
+                Ok((opened, now)) if now == *bytes => {
+                    claimed(opened)?;
+                    None
+                }
+                // Other bytes, or more than a document may be.
+                Ok(_) => Some(Outside::Changed),
+                // Gone: nothing at its path, or a link there to nothing.
+                Err(_) if matches!(resolved.try_exists(), Ok(false)) => Some(Outside::Changed),
+                Err(error) => Some(Outside::Unreadable(unread_by_commit(&path, &error))),
+            };
+            if changed_outside.is_some() {
+                tracing::info!(session = %self.id, "the file changed outside the session, inside a transaction: not reloaded");
+            }
+            return Ok(Reload {
+                reloaded: false,
+                changed_outside,
+            });
+        }
+        let (opened, now) =
+            found.map_err(|error| Problems::from(not_reloaded(&path, of_file(&path, &error))))?;
+        if now == *bytes {
+            claimed(opened)?;
+            return Ok(as_held);
         }
         if now.len() > MAX_INPUT_LEN {
-            return Err(Problems::from(too_long(Path::new(&path))));
+            return Err(Problems::from(not_reloaded(
+                &path,
+                too_long(Path::new(&path)),
+            )));
         }
         // Gated with the held state's lock let go, so `status` never waits on it; nothing
         // else changes what's held meanwhile, since only the session's thread changes it.
         let gated = Arc::new(Gated::of(&now));
-        let mut held = lock(&self.held);
-        let next = held.next()?;
+        // Given before the claim moves, so a session with none left keeps its claim.
+        let next = lock(&self.held).next()?;
+        claimed(opened)?;
         let now = Arc::new(now);
+        let mut held = lock(&self.held);
         // Nothing carried: a reloaded session is as a fresh `open`.
         held.change(next, Arc::clone(&now), gated, Arc::new(BTreeSet::new()));
         held.bytes = now;
-        held.reloaded = Some(next);
+        held.last_reload = Some(next);
         drop(held);
         tracing::info!(session = %self.id, revision = next.number(), "the file changed outside the session: reloaded");
-        claim(&resolved);
-        Ok(true)
+        Ok(Reload {
+            reloaded: true,
+            changed_outside: None,
+        })
     }
 
     /// `text` saved over the document's file at `resolved` (`path` as `open` was given it),
@@ -1769,7 +1855,7 @@ impl<C: Kernel + 'static> Session<C> {
                 // Stale because the file changed outside the session, if a reload since
                 // the edit's revision moved the session on.
                 let reloaded = held
-                    .reloaded
+                    .last_reload
                     .filter(|reloaded| *reloaded > revision)
                     .map(|_| held.path.as_str());
                 return Err(Problems::from(stale(revision, held.revision, reloaded)));
@@ -1939,6 +2025,39 @@ fn too_long(path: &Path) -> Error {
     .with_suggestion("check it's the document you mean: no document is this long")
 }
 
+/// `error`, a file's (as `file::opened_and_read` gives it, saying nothing of which file),
+/// naming the file at `path` (as `open` was given it): its code, and its message after the
+/// file's name.
+fn of_file(path: &str, error: &Error) -> Error {
+    Error::new(
+        error.code(),
+        format!("{} {}", shown(Path::new(path)), error.message()),
+    )
+}
+
+/// `error`, why a session couldn't take its file at `path` (as `open` was given it) as it is
+/// now, before a command outside a transaction (decision 2): gone, unreadable, or too long.
+/// The command is refused, naming the file, with how to go on.
+fn not_reloaded(path: &str, error: Error) -> Error {
+    error
+        .with_parameter("path")
+        .with_cause("the session reads its file before each command to find changes made outside it")
+        .with_suggestion(format!(
+            "put the file back at {}, or close the session (roll back first) and open the file where it is now",
+            shown(Path::new(path))
+        ))
+}
+
+/// `error`, why the file at `path` (as `open` was given it) couldn't be read before a
+/// transaction's `commit`: its `io_failed`, if the commit would write, naming the file.
+fn unread_by_commit(path: &str, error: &Error) -> Error {
+    of_file(path, error)
+        .with_parameter("path")
+    .with_suggestion(
+        "nothing was written: make it a regular file this user may read again, then commit; or roll back",
+    )
+}
+
 /// The refusal of session `id`'s document replaced outside a transaction when its text
 /// isn't UTF-8 (`valid_up_to` its valid bytes): `replace_text` gives back the text it
 /// replaces, and couldn't give back this one.
@@ -1968,7 +2087,7 @@ fn part_written(path: &str, old: &Path) -> Error {
     )
     .with_parameter("path")
     .with_suggestion(
-        "nothing was written: put the old text back in the file (or check it as it is), then close the session and open the file again",
+        "nothing was written: put the old text back in the file, then run the command again",
     )
 }
 
@@ -2315,10 +2434,11 @@ impl<P: Clients + 'static> Sessions<P> {
     /// Closes `session`, once the commands queued before it have run: commands queued
     /// after it are told the session closed. Its file is then free to open again. Refused
     /// while a transaction is open (commit or roll back first), so nothing is dropped
-    /// without the client saying so; never because its file is gone or can't be read.
+    /// without the client saying so. It never reads the file (decision 2), so a file gone or
+    /// changed never keeps it open.
     pub fn close(&self, session: &SessionId) -> Running<()> {
         let registry = Arc::downgrade(&self.registry);
-        self.queued_with(session, "close", Unread::Runs, move |session, _| {
+        self.queued_with(session, "close", Rereads::Never, move |session, _, _| {
             if lock(&session.held).transaction.is_some() {
                 return Err(Problems::from(transaction_open(
                     session.id,
@@ -2341,7 +2461,7 @@ impl<P: Clients + 'static> Sessions<P> {
         };
         let held = lock(&found.held);
         Response {
-            session: Some(found.info_of(&held)),
+            session: Some(found.info_of(&held, false)),
             model: None,
             result: Ok(Status {
                 features: held.gated.document().ok().map(|d| d.features.len()),
@@ -2446,7 +2566,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 // Refusals of an open session say it, as every command's do.
                 let refused_here = |error: Error| {
                     Running::answered(Response {
-                        session: Some(found.info()),
+                        session: Some(found.info(false)),
                         model: None,
                         result: Err(Problems::from(error)),
                     })
@@ -2539,16 +2659,24 @@ impl<P: Clients + 'static> Sessions<P> {
     /// with new fingerprints and solves only for the features its edits reached (decision
     /// 28; every other keeps what's stored, and its drift is a problem, never written over),
     /// and moves the session to a new revision, the text written. A document equal to the
-    /// one `begin` saw writes nothing. Refused, the transaction left open, if none is open,
-    /// if the file changed since the session read or wrote it (`conflict`), if its text
+    /// one `begin` saw writes nothing, even over a file changed outside the session. Refused,
+    /// the transaction left open, if none is open, if the file changed since the session
+    /// read or wrote it or is gone (`conflict`), or can't be read (`io_failed`), if its text
     /// would pass the limit, if it can't be written (`io_failed`), or if a kernel fault kept
     /// the rebuild from being had (until faults are saved around, decision 32).
     pub fn commit(&self, session: &SessionId) -> Running<Committed> {
         let registry = Arc::downgrade(&self.registry);
-        self.queued(session, "commit", move |session, model| {
-            let id = session.id;
-            session.commit(model, &|resolved| reclaim(&registry, id, resolved))
-        })
+        self.queued_with(
+            session,
+            "commit",
+            Rereads::Always,
+            move |session, model, reload| {
+                let id = session.id;
+                session.commit(reload.changed_outside, model, &|resolved| {
+                    reclaim(&registry, id, resolved);
+                })
+            },
+        )
     }
 
     /// Ends `session`'s transaction, restoring what `begin` kept, at a new revision whose
@@ -2740,8 +2868,8 @@ impl<P: Clients + 'static> Sessions<P> {
     }
 
     /// `work` queued on `session`'s thread, under the caller's span and the command's, after
-    /// the session reads its file again ([`Session::reload`], decision 2), refused if it
-    /// can't.
+    /// the session reads its file again if no transaction is open ([`Session::reload`],
+    /// decision 2), refused if it can't take the file as it is.
     fn queued<T: Send + 'static>(
         &self,
         session: &SessionId,
@@ -2750,17 +2878,26 @@ impl<P: Clients + 'static> Sessions<P> {
         + Send
         + 'static,
     ) -> Running<T> {
-        self.queued_with(session, command, Unread::Refuses, work)
+        self.queued_with(
+            session,
+            command,
+            Rereads::OutsideTransaction,
+            move |session, model, _| work(session, model),
+        )
     }
 
-    /// [`queued`](Self::queued), `unread` saying whether a file that can't be read (gone,
-    /// say) refuses the command or leaves it to run on what the session holds.
+    /// [`queued`](Self::queued), the file read again as `rereads` says, and `work` given
+    /// what the session found of it.
     fn queued_with<T: Send + 'static>(
         &self,
         session: &SessionId,
         command: &'static str,
-        unread: Unread,
-        work: impl FnOnce(&Arc<Session<P::Client>>, &mut Option<ModelRead>) -> Result<T, Problems>
+        rereads: Rereads,
+        work: impl FnOnce(
+            &Arc<Session<P::Client>>,
+            &mut Option<ModelRead>,
+            Reload,
+        ) -> Result<T, Problems>
         + Send
         + 'static,
     ) -> Running<T> {
@@ -2782,17 +2919,19 @@ impl<P: Clients + 'static> Sessions<P> {
                     .entered();
                     let mut model = None;
                     let id = session.id;
-                    let (reloaded, result) =
-                        match session.reload(&|resolved| reclaim(&registry, id, resolved)) {
-                            Ok(reloaded) => (reloaded, work(session, &mut model)),
-                            Err(_) if unread == Unread::Runs => (false, work(session, &mut model)),
-                            Err(problems) => (false, Err(problems)),
-                        };
+                    let claimed = |found: Claim<'_>| match registry.upgrade() {
+                        Some(registry) => {
+                            claim(&registry, found.opened, found.resolved, id, found.given)
+                        }
+                        // The sessions are being dropped: no claim is kept.
+                        None => Ok(()),
+                    };
+                    let (reloaded, result) = match session.reload(rereads, &claimed) {
+                        Ok(reload) => (reload.reloaded, work(session, &mut model, reload)),
+                        Err(problems) => (false, Err(problems)),
+                    };
                     Response {
-                        session: Some(SessionInfo {
-                            reloaded,
-                            ..session.info()
-                        }),
+                        session: Some(session.info(reloaded)),
                         model,
                         result,
                     }
@@ -2856,13 +2995,47 @@ impl<P: Clients + 'static> Drop for Release<P> {
     }
 }
 
-/// What a queued command does when its session's file can't be read before it (decision 2;
-/// the design's section 4): refused, the session as it was, as every command is but
-/// `close`, which runs on what the session holds.
+/// When a queued command's session reads its file first (decision 2; the design's section
+/// 4).
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Unread {
-    Refuses,
-    Runs,
+enum Rereads {
+    /// Outside a transaction only: inside one, the command runs on what the session holds.
+    OutsideTransaction,
+    /// Inside a transaction too, where nothing is reloaded: what's found is the command's
+    /// (`commit`'s) to refuse.
+    Always,
+    /// Never: `close`, which always closes.
+    Never,
+}
+
+/// What a session found of its file before a command ([`Session::reload`]), given to the
+/// command.
+struct Reload {
+    /// Whether it reloaded the file, found changed outside the session: the response's
+    /// `reloaded`.
+    reloaded: bool,
+    /// Inside a transaction, before `commit` ([`Rereads::Always`]), how the file was found,
+    /// if not as the session last read or wrote it: for the commit to refuse, if it would
+    /// write.
+    changed_outside: Option<Outside>,
+}
+
+/// A file found, inside a transaction, not as its session last read or wrote it.
+enum Outside {
+    /// It holds other bytes (more than a document may be, perhaps), or it's gone: a
+    /// conflict.
+    Changed,
+    /// It couldn't be read, as the error says: an `io_failed`.
+    Unreadable(Error),
+}
+
+/// A file read before a command ([`Session::reload`]), to be claimed for its session as
+/// `open` claims one ([`claim`]): the file opened, its path as its links resolve, and its
+/// path as `open` was given it.
+struct Claim<'a> {
+    opened: std::fs::File,
+    resolved: &'a Path,
+    given: &'a Path,
 }
 
 /// A refusal, of no session.
@@ -2945,7 +3118,7 @@ fn start<P: Clients + 'static>(
     match opened {
         Ok((session, opened, jobs)) => {
             let _ = reply.send(Response {
-                session: Some(session.info()),
+                session: Some(session.info(false)),
                 model: None,
                 result: Ok(opened),
             });
@@ -3049,8 +3222,7 @@ fn open<P: Clients + 'static>(
         carried: Arc::new(BTreeSet::new()),
         transaction: None,
         part_written: None,
-        reloaded: None,
-        changed_outside: false,
+        last_reload: None,
     };
     let cache = registry.cache(&file::cache_directory(&held.resolved));
     Ok((held, opened, cache, made))
@@ -3129,9 +3301,11 @@ fn create_new(path: &Path, text: &[u8]) -> std::io::Result<std::fs::File> {
 }
 
 /// The file `opened`, at `resolved` (its path through links), claimed for session `id` by
-/// both: the file it is and its path, the file kept open while it's claimed. Refused, naming
-/// the session, if another session holds or is opening either: the same file by another name
-/// (a hard link, macOS's data-volume name), or another file put at its path since.
+/// both: the file it is and its path, the file kept open while it's claimed, and any file
+/// the session claimed before let go (a reload's, decision 2, of a file put at its path).
+/// Refused, naming the session, nothing changed, if another session holds or is opening
+/// either: the same file by another name (a hard link, macOS's data-volume name, a link put
+/// at the path), or another file put at its path since.
 fn claim<P: Clients + 'static>(
     registry: &Registry<P>,
     opened: std::fs::File,
@@ -3160,6 +3334,7 @@ fn claim<P: Clients + 'static>(
             )),
         )),
         None => {
+            book.files.retain(|_, (holder, _)| *holder != id);
             book.files.insert(file, (id, opened));
             book.paths.insert(resolved.to_owned(), id);
             Ok(())
@@ -3167,11 +3342,13 @@ fn claim<P: Clients + 'static>(
     }
 }
 
-/// Session `id`'s claim on its file moved to the file at `resolved` now, which a save put
-/// there (a new file renamed over the old one, or the old one written in place): the file
-/// kept open while it's claimed, so its inode isn't given to another, and the one before let
-/// go. If it can't be opened (removed since the save), the claim is left as it was, said in
-/// the log: its path still claims it.
+/// Session `id`'s claim on its file moved to the file at `resolved` now, which the session's
+/// own save just put there (a new file renamed over the old one, or the old one written in
+/// place): the file kept open while it's claimed, so its inode isn't given to another, and
+/// the one before let go. A file the session didn't write, a reload's, is claimed through
+/// [`claim`] instead, which refuses one another session holds. If it can't be opened
+/// (removed since the save), the claim is left as it was, said in the log: its path still
+/// claims it.
 fn reclaim<P: Clients + 'static>(registry: &Weak<Registry<P>>, id: SessionId, resolved: &Path) {
     let Some(registry) = registry.upgrade() else {
         return;
@@ -3261,8 +3438,7 @@ mod tests {
                 carried: Arc::new(BTreeSet::new()),
                 transaction: None,
                 part_written: None,
-                reloaded: None,
-                changed_outside: false,
+                last_reload: None,
             }),
             queue: Mutex::new(Some(sender)),
             rebuilds: Mutex::new(Rebuilds {
@@ -4549,6 +4725,9 @@ mod tests {
         let f = opened(STORED);
         let old = f.path.with_file_name(".a.silico.fmt-1");
         lock(&f.session().held).part_written = Some(old.clone());
+        // What a write in place cut short leaves: the first half of the new text.
+        let half = &COMMITTED[..COMMITTED.len() / 2];
+        std::fs::write(&f.path, half).unwrap();
         let response = f.sessions.format(&f.id, None, true).wait();
         let problems = response.result.unwrap_err();
         assert_eq!(problems.total(), 1);
@@ -4564,7 +4743,20 @@ mod tests {
             "{:?}",
             problems.errors()[0]
         );
-        assert_eq!(f.file(), STORED);
+        assert_eq!(
+            problems.errors()[0].suggestion(),
+            Some(
+                "nothing was written: put the old text back in the file, then run the command again"
+            )
+        );
+        assert_eq!(f.file(), half);
+        // As the advice says: the old text put back, the command run again writes.
+        std::fs::write(&f.path, STORED).unwrap();
+        let again = f.sessions.format(&f.id, None, true).wait();
+        assert!(!again.session.unwrap().reloaded);
+        assert!(again.result.unwrap().written);
+        assert_eq!(lock(&f.session().held).part_written, None);
+        assert_ne!(f.file(), STORED);
     }
 
     #[test]
