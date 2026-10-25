@@ -93,7 +93,8 @@ jobs:
           {
             for size in 400 4096; do
               echo "--- $size"
-              env -i PATH="$PATH" /usr/bin/time -v target/release/silico-render-probe "$size" --hold 5 2>&1
+              # Its own peak and present memory (VmHWM, VmRSS) are in what it writes.
+              time env -i PATH="$PATH" target/release/silico-render-probe "$size" --hold 5 2>&1
             done
             echo "--- cpu"
             grep -m1 'model name' /proc/cpuinfo
