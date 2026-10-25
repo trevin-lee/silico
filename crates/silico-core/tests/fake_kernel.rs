@@ -15,6 +15,7 @@ use silico_core::kernel::{
     Generation, Kernel, KernelRequest, Op, Primitive, Region, ShapeData, SketchPlane,
 };
 use silico_core::pool::Outcome;
+use silico_protocol::PointPlace;
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -1585,19 +1586,25 @@ fn dropping_a_client_supersedes_its_work_and_leaves_another_clients() {
 
 #[test]
 fn a_point_is_classified_inside_a_fake_solid_by_its_box() {
-    // The fake's solids are their boxes: the block from the origin to (40, 20, 10), and a
-    // point on its boundary counts as inside, as OCCT's classifier counts it.
+    // The fake's solids are their boxes: the block from the origin to (40, 20, 10), a point
+    // strictly within it inside, one on its faces, edges, or corners on its boundary, as
+    // OCCT's classifier says.
     let fake = FakeKernel::new(1).unwrap();
     let block = run(&fake, KernelRequest::make(block(40.0, 20.0, 10.0)).unwrap());
     for (point, inside) in [
-        ([20.0, 10.0, 5.0], true),
-        ([40.0, 20.0, 10.0], true),
-        ([0.0, 0.0, 0.0], true),
-        ([40.000_001, 10.0, 5.0], false),
-        ([20.0, -1.0, 5.0], false),
+        ([20.0, 10.0, 5.0], PointPlace::Inside),
+        ([39.999_999, 19.999_999, 9.999_999], PointPlace::Inside),
+        ([1e-9, 1e-9, 1e-9], PointPlace::Inside),
+        ([40.0, 20.0, 10.0], PointPlace::OnBoundary),
+        ([0.0, 0.0, 0.0], PointPlace::OnBoundary),
+        ([40.0, 10.0, 5.0], PointPlace::OnBoundary),
+        ([20.0, 0.0, 5.0], PointPlace::OnBoundary),
+        ([20.0, 10.0, 10.0], PointPlace::OnBoundary),
+        ([40.000_001, 10.0, 5.0], PointPlace::Outside),
+        ([20.0, -1.0, 5.0], PointPlace::Outside),
         // As far as a point may be, either way.
-        ([1e12, 10.0, 5.0], false),
-        ([-1e12, 10.0, 5.0], false),
+        ([1e12, 10.0, 5.0], PointPlace::Outside),
+        ([-1e12, 10.0, 5.0], PointPlace::Outside),
     ] {
         assert_eq!(
             run(&fake, KernelRequest::classify(&block, point)),
@@ -1625,7 +1632,8 @@ fn a_point_is_classified_inside_a_fake_solid_by_its_box() {
 #[test]
 fn a_fake_solid_is_meshed_a_triangle_a_face_with_the_kernels_floor_on_its_box() {
     // The block 40 x 20 x 10: six faces, twelve edges, its floor 1e-4 of its box's diagonal,
-    // √2100, by hand.
+    // √2100, by hand. And a block away from the origin, from (10, 20, 30) to (13, 24, 30.5):
+    // its diagonal is √(9 + 16 + 0.25), so its floor 1e-4 × √25.25, its corners not.
     let fake = FakeKernel::new(1).unwrap();
     let block = run(&fake, KernelRequest::make(block(40.0, 20.0, 10.0)).unwrap());
     let floor = 1e-4 * 2100.0f64.sqrt();
@@ -1644,6 +1652,29 @@ fn a_fake_solid_is_meshed_a_triangle_a_face_with_the_kernels_floor_on_its_box() 
         KernelRequest::tessellate_at_least_the_floor(&block, 0.5),
     );
     assert_eq!(made.deflection, 0.5);
+    let away = run(
+        &fake,
+        KernelRequest::make(Primitive::Box {
+            dx: 3.0,
+            dy: 4.0,
+            dz: 0.5,
+        })
+        .unwrap(),
+    );
+    let away = run(
+        &fake,
+        KernelRequest::translate(&away, [10.0, 20.0, 30.0]).unwrap(),
+    );
+    let made = run(
+        &fake,
+        KernelRequest::tessellate_at_least_the_floor(&away.shape, 1e-9),
+    );
+    let floor = 1e-4 * 25.25f64.sqrt();
+    assert!(
+        (made.deflection - floor).abs() <= 1e-15,
+        "{} for {floor}",
+        made.deflection
+    );
     let refused = match fake
         .submit(fake.generation(), KernelRequest::tessellate(&block, 1e-3))
         .wait()

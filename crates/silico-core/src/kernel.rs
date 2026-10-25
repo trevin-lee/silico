@@ -669,18 +669,17 @@ fn batch_problem(
     }
 }
 
-impl KernelRequest<bool> {
-    /// Whether `point` is inside `shape`, by OCCT's solid classifier (FreeCAD's
-    /// `Shape.isInside(point, tolerance, True)`), a point on its boundary counted as inside
-    /// (docs/design/m4.6-render.md: a camera's eye on a face is refused as one inside is).
-    /// M4.6 asks it of each body whose tight box holds a camera's eye.
+impl KernelRequest<PointPlace> {
+    /// Where `point` is against `shape`: inside, on its boundary, or outside, by OCCT's
+    /// solid classifier (FreeCAD's `Shape.isInside(point, tolerance, True)`). What counts as
+    /// inside is the caller's: M4.6's render counts a camera's eye on a face as inside it.
     pub fn classify(shape: &ShapeData, point: [f64; 3]) -> Self {
         let op = Op::Classify {
             shape: shape.clone(),
             point,
         };
         Self::new(op, |name, reply| match reply {
-            Reply::Classified { place } => Ok(place != PointPlace::Outside),
+            Reply::Classified { place } => Ok(place),
             other => Err(unexpected(name, &other)),
         })
     }
@@ -1440,19 +1439,15 @@ mod tests {
     }
 
     #[test]
-    fn a_point_on_the_boundary_counts_as_inside_and_the_wrong_reply_is_a_protocol_error() {
+    fn a_classification_is_the_kernels_place_and_the_wrong_reply_is_a_protocol_error() {
         let shape = ShapeData::unchecked(Blob::inline(vec![1]));
         let answer = |reply| KernelRequest::classify(&shape, [0.0; 3]).answer(Ok(reply));
-        for (place, inside) in [
-            (PointPlace::Inside, true),
-            (PointPlace::OnBoundary, true),
-            (PointPlace::Outside, false),
+        for place in [
+            PointPlace::Inside,
+            PointPlace::OnBoundary,
+            PointPlace::Outside,
         ] {
-            assert_eq!(
-                answer(Reply::Classified { place }).unwrap(),
-                inside,
-                "{place:?}"
-            );
+            assert_eq!(answer(Reply::Classified { place }).unwrap(), place);
         }
         let e = answer(Reply::Mesh(triangle())).unwrap_err();
         assert_eq!(e.code(), ErrorCode::ProtocolError, "{e}");

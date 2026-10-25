@@ -178,9 +178,10 @@ impl Model {
     }
 
     fn level(&self, key: u8, level: f64) -> f64 {
+        // The larger of the two (a NaN level, which the ladder never gives, the floor).
         match self.floors.iter().find(|&&(k, _)| k == key) {
-            Some(&(_, floor)) if level < floor => floor,
-            _ => level,
+            Some(&(_, floor)) => level.max(floor),
+            None => level,
         }
     }
 }

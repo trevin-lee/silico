@@ -103,3 +103,5 @@ crates/silico-kernel/src/lib.rs | amount_of | replace * with / | #129
 # PR 6, which adds edits, must test that the commit is refused, the edits stay held, and
 # the transaction stays open, and remove this line.
 crates/silico-core/src/command/session.rs | Session<C>::commit | replace match guard unchanged with true | #144
+crates/silico-core/src/render.rs | <impl Drop for Job>::drop | replace <impl Drop for Job>::drop with () | #149
+crates/silico-core/src/render.rs | serve | delete ! | #149

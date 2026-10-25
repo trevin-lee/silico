@@ -247,9 +247,9 @@ fn a_real_part_is_classified_as_freecad_classifies_it() {
 
 /// Whether the worker's answer is right for a point far outside: `false`, or the point
 /// refused as out of range, naming it.
-fn outside_or_refused(got: &Result<bool, silico_core::Error>) -> bool {
+fn outside_or_refused(got: &Result<PointPlace, silico_core::Error>) -> bool {
     match got {
-        Ok(inside) => !inside,
+        Ok(place) => *place == PointPlace::Outside,
         Err(e) => e.code() == ErrorCode::InvalidInput && e.parameter() == Some("point"),
     }
 }
@@ -289,7 +289,10 @@ fn points_far_out_along_an_axis_arent_inside_a_box() {
         }
     }
     // And the worker still answers after them.
-    assert!(w.run(KernelRequest::classify(&b, [1.0, 1.0, 1.0])).unwrap());
+    assert_ne!(
+        w.run(KernelRequest::classify(&b, [1.0, 1.0, 1.0])).unwrap(),
+        PointPlace::Outside
+    );
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
@@ -303,8 +306,9 @@ fn the_least_and_signed_zero_points_are_on_a_boxs_corner() {
         [-0.0, -0.0, -0.0],
         [-5e-324, 0.0, 0.0],
     ] {
-        assert!(
+        assert_eq!(
             w.run(KernelRequest::classify(&b, point)).unwrap(),
+            PointPlace::OnBoundary,
             "{point:?}"
         );
     }
@@ -324,7 +328,10 @@ fn a_point_that_isnt_finite_is_refused_through_the_worker_and_it_keeps_answering
         assert_eq!(e.parameter(), Some("point"), "{point:?}: {e:?}");
         assert!(e.suggestion().is_some(), "{point:?}: no suggestion: {e:?}");
     }
-    assert!(w.run(KernelRequest::classify(&b, [0.5, 0.5, 0.5])).unwrap());
+    assert_ne!(
+        w.run(KernelRequest::classify(&b, [0.5, 0.5, 0.5])).unwrap(),
+        PointPlace::Outside
+    );
 }
 
 #[test]
@@ -342,7 +349,10 @@ fn bytes_that_arent_a_shape_are_refused_naming_the_shape() {
         assert_eq!(e.code(), ErrorCode::InvalidInput, "{e:?}");
     }
     let b = data(&make_box(1.0, 1.0, 1.0).unwrap());
-    assert!(w.run(KernelRequest::classify(&b, [0.5, 0.5, 0.5])).unwrap());
+    assert_ne!(
+        w.run(KernelRequest::classify(&b, [0.5, 0.5, 0.5])).unwrap(),
+        PointPlace::Outside
+    );
 }
 
 // ---- The floor ----
@@ -611,9 +621,9 @@ mod fake_against_real {
 
     #[test]
     fn a_boxs_boundary_and_a_hair_past_it_are_classified_alike() {
-        // The fake's solids are their boxes, "a point on its boundary counts as inside, as
-        // OCCT's classifier counts it": on the box's faces, edges, and corners, and a
-        // micrometre past and inside them, the two agree.
+        // The fake's solids are their boxes, strictly inside them inside and on their
+        // boundary on, as OCCT's classifier says: on the box's faces, edges, and corners,
+        // and a micrometre past and inside them, the two give one place.
         let fake = FakeKernel::new(1).unwrap();
         let mut real = worker();
         let box_ = Primitive::Box {
@@ -631,7 +641,7 @@ mod fake_against_real {
                     let f = on_fake(&fake, KernelRequest::classify(&on_fake_box, p)).unwrap();
                     let r = real.run(KernelRequest::classify(&on_real_box, p)).unwrap();
                     if f != r {
-                        differ.push(format!("{p:?}: fake {f}, real {r}"));
+                        differ.push(format!("{p:?}: fake {f:?}, real {r:?}"));
                     }
                 }
             }

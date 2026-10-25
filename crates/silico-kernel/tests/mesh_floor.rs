@@ -110,14 +110,16 @@ fn through_the_worker_the_core_gets_the_mesh_and_the_deflection_used() {
         .unwrap();
     assert_eq!(used.to_bits(), floor.to_bits());
     assert_eq!(mesh, tessellate(&local, floor).unwrap());
-    assert!(
+    assert_eq!(
         worker
             .run(KernelRequest::classify(&cube, [50.0, 50.0, 50.0]))
-            .unwrap()
+            .unwrap(),
+        silico_kernel::PointPlace::Inside
     );
-    assert!(
-        !worker
+    assert_eq!(
+        worker
             .run(KernelRequest::classify(&cube, [150.0, 50.0, 50.0]))
-            .unwrap()
+            .unwrap(),
+        silico_kernel::PointPlace::Outside
     );
 }
