@@ -15,8 +15,9 @@ use silico_protocol::{
 };
 
 use crate::document::{
-    Angle as DocumentAngle, Checked, Coordinate, Direction, ElementId, FeatureId, Form, Length,
-    LineSide, Operation, Reference, Sketch, SketchConstraint, TangentSide,
+    Angle as DocumentAngle, Checked, Coordinate, Direction, ElementId, ElementKind, FeatureId,
+    Form, Length, LineSide, MemberPaths, Operation, Reference, Sketch, SketchConstraint,
+    TangentSide,
 };
 use crate::worker::{Executable, Worker, WorkerKind};
 use crate::{Error, ErrorCode};
@@ -402,38 +403,96 @@ fn measure_into(form: &mut Form, measured: Measured) {
     }
 }
 
+/// One element of a stored sketch that a solve written back changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Moved {
+    pub(crate) id: ElementId,
+    /// The path of its first field changed, as an error's `parameter` names it
+    /// (`points.p0000003.x`, [`MemberPaths`]).
+    pub(crate) field: String,
+    /// What changed (`p0000003 x 4 → 4.5`).
+    pub(crate) said: String,
+}
+
 /// What a solve written back changes of `stored`: each point, circle, and constraint whose
-/// written form differs, in the file's order, with what changed (`p0000003 x 4 → 4.5`).
-pub(crate) fn moved(stored: &Sketch, written: &Sketch) -> Vec<(ElementId, String)> {
+/// written form differs, in the file's order.
+pub(crate) fn moved(stored: &Sketch, written: &Sketch) -> Vec<Moved> {
     let same = |a: Coordinate, b: Coordinate| a.mm().to_bits() == b.mm().to_bits();
+    let paths = MemberPaths::of(stored);
+    let list = |kind: ElementKind| paths.get(&kind).map_or(&[][..], Vec::as_slice);
     let mut out = Vec::new();
-    for (s, w) in stored.points.iter().zip(&written.points) {
+    for ((s, w), named) in stored
+        .points
+        .iter()
+        .zip(&written.points)
+        .zip(list(ElementKind::Point))
+    {
         let mut what = Vec::new();
+        let mut first = None;
         if !same(s.x, w.x) {
             what.push(format!("x {} → {}", s.x.mm(), w.x.mm()));
+            first.get_or_insert("x");
         }
         if !same(s.y, w.y) {
             what.push(format!("y {} → {}", s.y.mm(), w.y.mm()));
+            first.get_or_insert("y");
         }
-        if !what.is_empty() {
-            out.push((s.id.clone(), format!("{} {}", s.id, what.join(", "))));
+        if let Some(key) = first {
+            out.push(Moved {
+                id: s.id.clone(),
+                field: format!("{}.{key}", named.path),
+                said: format!("{} {}", s.id, what.join(", ")),
+            });
         }
     }
-    for (s, w) in stored.circles.iter().zip(&written.circles) {
+    for ((s, w), named) in stored
+        .circles
+        .iter()
+        .zip(&written.circles)
+        .zip(list(ElementKind::Circle))
+    {
         if !same(s.radius, w.radius) {
-            out.push((
-                s.id.clone(),
-                format!("{} radius {} → {}", s.id, s.radius.mm(), w.radius.mm()),
-            ));
+            out.push(Moved {
+                id: s.id.clone(),
+                field: format!("{}.radius", named.path),
+                said: format!("{} radius {} → {}", s.id, s.radius.mm(), w.radius.mm()),
+            });
         }
     }
-    for (s, w) in stored.constraints.iter().zip(&written.constraints) {
+    for ((s, w), named) in stored
+        .constraints
+        .iter()
+        .zip(&written.constraints)
+        .zip(list(ElementKind::Constraint))
+    {
         if s.form != w.form {
             let said = match (s.form.value_text(), w.form.value_text()) {
                 (Some(before), Some(after)) => format!("{} value {before} → {after}", s.id),
                 _ => format!("{}", s.id),
             };
-            out.push((s.id.clone(), said));
+            // A point's distance from a line measured on its other side, at the same
+            // distance, changes its side alone.
+            let key = match (&s.form, &w.form) {
+                (
+                    Form::PointLineDistance {
+                        value: a, side: x, ..
+                    },
+                    Form::PointLineDistance {
+                        value: b, side: y, ..
+                    },
+                ) if a == b && x != y => Some("side"),
+                _ if s.form.value_text().is_some() => Some("value"),
+                _ => None,
+            };
+            let field = match key {
+                Some(key) => format!("{}.{key}", named.path),
+                None => named.path.clone(),
+            };
+            out.push(Moved {
+                id: s.id.clone(),
+                field,
+                said,
+            });
         }
     }
     out

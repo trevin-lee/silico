@@ -1139,6 +1139,79 @@ fn an_array_of_anything_but_a_sketchs_members_is_named_by_place() {
 }
 
 #[test]
+fn a_members_path_is_its_own_id_whatever_order_its_list_is_written_in() {
+    // k0000001, of length 0, written before k0000000: its path is its own ID as written,
+    // and again once the save sorts it after k0000000 (never the ID at its place).
+    let text = constrained(
+        r#"{"id": "k0000001", "type": "length", "line": "na000000", "value": 0, "driving": true}, {"id": "k0000000", "type": "horizontal", "line": "na000000"}"#,
+    );
+    assert_error(
+        &problem(&text),
+        "constraints.k0000001.value",
+        "a length's value is 0 mm",
+    );
+    let saved = write(&read(text.as_bytes()).unwrap()).unwrap();
+    assert!(
+        saved.find("k0000000").unwrap() < saved.find("k0000001").unwrap(),
+        "{saved}"
+    );
+    assert_error(
+        &problem(&saved),
+        "constraints.k0000001.value",
+        "a length's value is 0 mm",
+    );
+}
+
+#[test]
+fn the_reader_takes_the_lists_in_the_formats_order() {
+    // Circles before arcs: an arc holding a circle's ID is its later holder, by place.
+    let text = document(&fields(
+        POINTS,
+        "",
+        CIRCLE,
+        r#"{"id": "ca000000", "center": "pa000000", "start": 7, "end": "pc000000", "construction": false}"#,
+        "",
+    ));
+    assert_error(
+        &read_error(&text),
+        "arcs.0.start",
+        "arcs.0.start is a number, not a string",
+    );
+    // Points before constraints, whatever order the file writes the lists in: a
+    // constraint holding a point's ID is its later holder, by place.
+    let text = document(&format!(
+        r#""plane": "xy", "constraints": [{{"id": "pa000000", "type": "length", "line": "na000000", "value": "1", "driving": true}}], "points": [{POINTS}], "lines": [{LINE}], "circles": [], "arcs": []"#
+    ));
+    assert_error(
+        &read_error(&text),
+        "constraints.0.value",
+        "constraints.0.value is a string, not a length in millimetres",
+    );
+}
+
+#[test]
+fn the_ids_a_sketch_holds_are_its_own_for_its_paths() {
+    // A second sketch with a point pa000000, as the first sketch has: it holds the ID in
+    // its own sketch, so it's named by it, by the reader and by the gate.
+    let second = |x: &str| {
+        let one = document(&fields(POINTS, "", "", "", ""));
+        let other = format!(
+            r#"{{"id": "k7f2qx3n", "type": "sketch", "v": 1, "name": "T", "plane": "xz", "points": [{{"id": "pa000000", "x": {x}, "y": 0, "construction": false}}], "lines": [], "circles": [], "arcs": [], "constraints": []}}"#
+        );
+        format!("{}, {other}]}}", one.strip_suffix("]}").unwrap())
+    };
+    let error = read_error(&second("\"1\""));
+    assert_eq!(error.feature(), Some("k7f2qx3n"), "{error:?}");
+    assert_eq!(error.parameter(), Some("points.pa000000.x"), "{error:?}");
+    let all = problems(&second("2000000"));
+    let [error] = &all[..] else {
+        panic!("{all:#?}")
+    };
+    assert_eq!(error.feature(), Some("k7f2qx3n"), "{error:?}");
+    assert_eq!(error.parameter(), Some("points.pa000000.x"), "{error:?}");
+}
+
+#[test]
 fn a_document_with_a_sketch_rebuilds_its_solids_and_the_sketch_makes_none() {
     use silico_core::document::{Checked, FeatureId};
     use silico_core::fake::FakeKernel;

@@ -5,11 +5,12 @@
 //! sorted by ID (D5). Solving is M3.3's; this is what the file holds.
 
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 
+use super::json::{Node, Value};
 use super::model::{ID_ALPHABET, ID_LENGTH};
 use super::quantity::{Angle, Length};
 
@@ -28,22 +29,23 @@ pub struct Sketch {
 }
 
 impl Sketch {
-    /// Every element's ID with what it is, lists in the file's order (points, lines,
-    /// circles, arcs, constraints), each list in the order held.
+    /// Every element's ID with what it is, lists in the format's order
+    /// ([`ElementKind::ALL`]), each list in the order held.
     pub fn elements(&self) -> impl Iterator<Item = (&ElementId, ElementKind)> {
-        let points = self.points.iter().map(|p| (&p.id, ElementKind::Point));
-        let lines = self.lines.iter().map(|l| (&l.id, ElementKind::Line));
-        let circles = self.circles.iter().map(|c| (&c.id, ElementKind::Circle));
-        let arcs = self.arcs.iter().map(|a| (&a.id, ElementKind::Arc));
-        let constraints = self
-            .constraints
-            .iter()
-            .map(|c| (&c.id, ElementKind::Constraint));
-        points
-            .chain(lines)
-            .chain(circles)
-            .chain(arcs)
-            .chain(constraints)
+        ElementKind::ALL
+            .into_iter()
+            .flat_map(move |kind| self.ids(kind).into_iter().map(move |id| (id, kind)))
+    }
+
+    /// The IDs of the elements of `kind`, in the order held.
+    pub fn ids(&self, kind: ElementKind) -> Vec<&ElementId> {
+        match kind {
+            ElementKind::Point => self.points.iter().map(|p| &p.id).collect(),
+            ElementKind::Line => self.lines.iter().map(|l| &l.id).collect(),
+            ElementKind::Circle => self.circles.iter().map(|c| &c.id).collect(),
+            ElementKind::Arc => self.arcs.iter().map(|a| &a.id).collect(),
+            ElementKind::Constraint => self.constraints.iter().map(|c| &c.id).collect(),
+        }
     }
 }
 
@@ -53,37 +55,93 @@ impl Sketch {
 /// constraints) by its ID, `constraints.g4h5j6k7`, and its field after it,
 /// `constraints.g4h5j6k7.value`.
 ///
-/// A member is named by its ID only when its `id` reads as an ID and no member before it
-/// in the sketch holds that ID: IDs are unique within a sketch, whatever their kind, so
-/// "before" counts every list in the format's order (points, lines, circles, arcs,
-/// constraints, as [`Sketch::elements`] gives them, whatever order the file writes their
-/// keys in), each list in the order read. Every other member, whose `id` is missing, isn't
-/// an ID, or is an earlier member's, is named by its place in its list, from 0, with no
-/// leading zeros (`constraints.3`), as any array that isn't such a list is. So no two
-/// members share a path: an ID names its first holder alone, and a place, under 10,000,000
-/// in any document the reader takes (16 MiB, at least three bytes a member), is never an
-/// ID's eight characters.
+/// A member is named by its ID only when its `id` reads as an ID ([`member_id`]) and no
+/// member before it in the sketch holds that ID: IDs are unique within a sketch, whatever
+/// their kind, so "before" counts every list in the format's order ([`ElementKind::ALL`],
+/// whatever order the file writes their keys in), each list in the order read, and the
+/// IDs held start afresh with each sketch. Every other member, whose `id` is missing,
+/// isn't an ID, or is an earlier member's, is named by its place in its list, from 0, with
+/// no leading zeros (`constraints.3`), as any array that isn't such a list is.
 ///
-/// The reader and the gate both name members through this, taking the members in that
-/// order, so a member has one path wherever it's refused.
+/// So no two members share a path, and in a sketch's lists a segment of eight characters
+/// is an ID and any shorter one a place: an ID names its first holder alone, and a place
+/// is under 10,000,000, seven digits at most. A list the reader reads holds fewer members
+/// than that: each is a value in the reader's tree, of at most [`MAX_TREE_BYTES`] (256
+/// MiB), and a value takes a `json::Node` there, more than 26 bytes. An edit's sketch is
+/// one the gate takes, within `MAX_SKETCH_GEOMETRY` and `MAX_SKETCH_CONSTRAINTS` (10,000
+/// each, silico-protocol). A request names a sketch's members by ID only (decision 15):
+/// a place path names a member only in an error about a document the reader or gate
+/// refuses.
+///
+/// The reader, the gate, and drift name members through this, taking them in that order,
+/// so a member has one path wherever it's named.
+///
+/// [`MAX_TREE_BYTES`]: super::json::MAX_TREE_BYTES
 #[derive(Debug, Default)]
 pub(crate) struct MemberPaths {
     /// The IDs earlier members hold.
     held: BTreeSet<ElementId>,
 }
 
+/// A member's path, and whether it's named by its ID (or, having no ID of its own, by
+/// its place).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Named {
+    pub(crate) path: String,
+    pub(crate) by_id: bool,
+}
+
 impl MemberPaths {
-    /// The path of the next member, at `index` in `list`, whose `id` reads as `id` (none if
-    /// it's missing or isn't an ID); that ID held by it from here on.
-    pub(crate) fn next(&mut self, list: &str, index: usize, id: Option<&ElementId>) -> String {
+    /// The path of the next member, at `index` in `kind`'s list, whose `id` reads as `id`
+    /// (none if it's missing or isn't an ID); that ID held by it from here on.
+    pub(crate) fn next(
+        &mut self,
+        kind: ElementKind,
+        index: usize,
+        id: Option<&ElementId>,
+    ) -> Named {
         match id {
             Some(id) if !self.held.contains(id) => {
                 self.held.insert(id.clone());
-                format!("{list}.{id}")
+                Named {
+                    path: format!("{}.{id}", kind.list()),
+                    by_id: true,
+                }
             }
-            _ => format!("{list}.{index}"),
+            _ => Named {
+                path: format!("{}.{index}", kind.list()),
+                by_id: false,
+            },
         }
     }
+
+    /// Every member's path in `sketch`, each kind's list in the order held.
+    pub(crate) fn of(sketch: &Sketch) -> BTreeMap<ElementKind, Vec<Named>> {
+        let mut paths = MemberPaths::default();
+        ElementKind::ALL
+            .into_iter()
+            .map(|kind| {
+                let named = sketch
+                    .ids(kind)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, id)| paths.next(kind, i, Some(id)))
+                    .collect();
+                (kind, named)
+            })
+            .collect()
+    }
+}
+
+/// The ID a sketch member's object writes in its `id`, read as the reader reads every
+/// sketch ID (a string, [`ElementId::new`]): none if the member isn't an object, has no
+/// `id`, or its `id` isn't an ID.
+pub(crate) fn member_id(node: &Node) -> Option<ElementId> {
+    let Value::Object(members) = &node.value else {
+        return None;
+    };
+    let id = members.iter().find(|m| m.key == "id")?;
+    id.value.value.as_str().and_then(ElementId::new)
 }
 
 /// What a sketch's element is.
@@ -97,6 +155,16 @@ pub enum ElementKind {
 }
 
 impl ElementKind {
+    /// Every kind, in the format's order: the order a sketch's lists are written in, read
+    /// in, and counted in for its members' paths ([`MemberPaths`]).
+    pub const ALL: [ElementKind; 5] = [
+        ElementKind::Point,
+        ElementKind::Line,
+        ElementKind::Circle,
+        ElementKind::Arc,
+        ElementKind::Constraint,
+    ];
+
     /// The element as messages name it: "point", "line", ...
     pub fn noun(self) -> &'static str {
         match self {
@@ -735,3 +803,16 @@ pub const CONSTRAINT_TYPES: [&str; 21] = [
     "symmetric",
     "midpoint",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::super::json::{MAX_TREE_BYTES, Node};
+
+    #[test]
+    fn a_list_the_reader_reads_has_fewer_members_than_a_place_of_eight_digits() {
+        // MemberPaths's reasoning: each member is a `Node` in a tree of at most
+        // MAX_TREE_BYTES, so a place is at most seven digits, never an ID's eight.
+        assert!(size_of::<Node>() > 26, "{}", size_of::<Node>());
+        assert!(MAX_TREE_BYTES / size_of::<Node>() < 10_000_000);
+    }
+}

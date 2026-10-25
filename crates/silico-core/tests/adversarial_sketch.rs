@@ -1283,13 +1283,14 @@ proptest! {
         let saved = write(&document).unwrap();
         let reopened = read(saved.as_bytes()).unwrap();
         prop_assert_eq!(write(&reopened).unwrap(), saved.clone(), "not canonical");
-        // The same verdict, but for where each element sits in its list.
+        // The same verdict, but for where each element named by its place sits in its list.
         let unplaced = |v: &[(ErrorCode, String, String)]| {
             let mut v: Vec<String> = v
                 .iter()
                 .map(|(_, _, p)| {
+                    // Only a place moves with a sort: a member named by its ID keeps it.
                     let mut parts: Vec<&str> = p.split('.').collect();
-                    if parts.len() > 1 {
+                    if parts.len() > 1 && ElementId::new(parts[1]).is_none() {
                         parts[1] = "#";
                     }
                     parts.join(".")

@@ -93,6 +93,14 @@ pub struct Member {
 }
 
 impl Value {
+    /// The text, if it's a string.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Value::String(text) => Some(text),
+            _ => None,
+        }
+    }
+
     /// What kind of value it is, for messages: `a number`, `an object`, ...
     pub fn kind(&self) -> &'static str {
         match self {
