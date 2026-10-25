@@ -953,7 +953,7 @@ print("SILICO_ORACLE " + json.dumps({{"tolerance": s.getTolerance(1)}}))
         .unwrap();
     // A whole number of nanometres, past 0.04 by no more than the margin and a nanometre,
     // at which the worker meshes with a deflection OCCT doesn't raise.
-    let nanometres = suggested * 1e9;
+    let nanometres = suggested * 1e6;
     assert_eq!(nanometres, nanometres.round(), "{suggested}");
     assert!(suggested > 0.04 && suggested < 0.0401, "{suggested}");
     let at = kernel().export_mesh(&shape, suggested).unwrap();

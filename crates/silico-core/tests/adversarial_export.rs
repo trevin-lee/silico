@@ -742,7 +742,7 @@ fn a_poles_nodes_are_one_vertex_though_their_coordinates_differ() {
     let (p1, p3) = (at(&m, P[1]), at(&m, P[3]));
     let middle = m.nodes.len() as u32;
     let end = middle + 1;
-    m.nodes.extend([[1e-9, 0.0, 1.0], [2e-9, 0.0, 1.0]]);
+    m.nodes.extend([[1e-6, 0.0, 1.0], [2e-6, 0.0, 1.0]]);
     m.face_nodes[3] += 2;
     m.triangles.extend([[p1, p3, middle], [p1, middle, end]]);
     m.face_triangles[3] += 2;
@@ -862,13 +862,14 @@ fn a_raised_face_whose_nodes_move_unraised_is_refused_alone_with_the_tolerance_t
         ) && error.message().contains("only exact to 0.06 mm"),
         "{error}"
     );
-    // Meshed at the tolerance itself (no rounding margin), 0.12 mm is the least tolerance
-    // at which 2 × 0.06 isn't past the deflection.
+    // Meshed at the tolerance itself (no rounding margin), 0.12 mm is where 2 × 0.06 stops
+    // being past the deflection; on the nanometre exactly, the suggestion is the next one,
+    // as the margin the worker meshed with is known only to an ulp of the tolerance.
     assert_eq!(
         error.suggestion(),
         Some(
-            "export with a tolerance of at least 0.12 mm, or rebuild the part so the faces \
-             named meet more precisely"
+            "export with a tolerance of at least 0.120001 mm, or rebuild the part so the \
+             faces named meet more precisely"
         ),
         "{error}"
     );
@@ -882,7 +883,7 @@ fn a_raised_face_whose_nodes_move_unraised_is_refused_alone_with_the_tolerance_t
     assert_eq!(error.elements(), ["Face2", "Face4"], "{error}");
     assert!(error.message().contains("at 0.14 mm"), "{error}");
     assert!(
-        error.suggestion().unwrap().contains("at least 0.14 mm"),
+        error.suggestion().unwrap().contains("at least 0.140001 mm"),
         "{error}"
     );
 }
@@ -973,11 +974,11 @@ fn the_tolerance_suggested_for_a_raised_face_is_whole_nanometres_the_worker_wont
             .parse()
             .unwrap();
         let margin = tolerance - (tolerance - margin);
-        let nanometres = suggested * 1e9;
+        let nanometres = suggested * 1e6;
         assert_eq!(nanometres, nanometres.round(), "{suggested}");
         assert!(suggested - margin >= 2.0 * loose, "{suggested}");
         assert!(
-            suggested <= 2.0 * loose + margin + 2e-9,
+            suggested <= 2.0 * loose + margin + 2e-6,
             "{suggested} for {loose} and {margin}"
         );
     }

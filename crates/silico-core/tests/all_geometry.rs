@@ -20,6 +20,8 @@ mod sweeps;
 mod adversarial_axis_regions;
 #[path = "adversarial_export.rs"]
 mod adversarial_export;
+#[path = "adversarial_export_unraised.rs"]
+mod adversarial_export_unraised;
 #[path = "adversarial_fake_kernel.rs"]
 mod adversarial_fake_kernel;
 #[path = "adversarial_profile.rs"]

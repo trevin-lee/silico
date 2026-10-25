@@ -527,11 +527,12 @@ fn checked(
         let places = |m: &ExportMesh, range: &std::ops::Range<u32>| {
             let mut places: Vec<[u64; 3]> = m.nodes[range.start as usize..range.end as usize]
                 .iter()
-                .map(|p| p.map(f64::to_bits))
+                .map(|p| p.map(|c| (c + 0.0).to_bits()))
                 .collect();
             places.sort_unstable();
             places
         };
+        // By their bits, -0 as 0 (one place, as joined above), in any order.
         let (changed, same): (Vec<usize>, Vec<usize>) = raised
             .into_iter()
             .partition(|&f| places(mesh, &ranges[f]) != places(unraised, &unraised_ranges[f]));
@@ -561,14 +562,16 @@ fn checked(
                         loosest = silico_protocol::format_number(loosest)
                     ),
                     changed.into_iter().map(number),
-                    &format!(
-                        "export with a tolerance of at least {} mm, or rebuild the part so the \
-                         faces named meet more precisely",
-                        silico_protocol::format_number(unraising_tolerance(
-                            2.0 * loosest,
-                            mesh.tolerance - mesh.deflection
-                        ))
-                    ),
+                    &match unraising_tolerance(2.0 * loosest, mesh.tolerance, mesh.deflection) {
+                        Some(at) => format!(
+                            "export with a tolerance of at least {} mm, or rebuild the part so \
+                             the faces named meet more precisely",
+                            silico_protocol::format_number(at)
+                        ),
+                        None => "rebuild the part so the faces named meet more precisely: no \
+                                 tolerance an export takes is coarse enough for them"
+                            .to_owned(),
+                    },
                 )
                 .with_parameter("tolerance"));
         }
@@ -651,19 +654,25 @@ fn unraised_for<'a>(
     Ok(unraised)
 }
 
-/// The least tolerance, rounded up to the nanometre, at which the worker, meshing with the
-/// tolerance less `margin`, meshes with a deflection of at least `least`, so OCCT raises no
-/// face whose tolerance is half of `least` or less. The margin is the rounding the part's
-/// bounding box allows for, the same at every tolerance; a nanometre more where the
-/// worker's own subtraction would land short.
-fn unraising_tolerance(least: f64, margin: f64) -> f64 {
-    let nanometres = ((least + margin) * 1e9).ceil();
-    let tolerance = nanometres / 1e9;
-    if tolerance - margin >= least {
-        tolerance
-    } else {
-        (nanometres + 1.0) / 1e9
+/// The least tolerance in whole nanometres (1e-6 mm, a length a document holds) at which
+/// the worker meshes with a deflection of at least `least`, so OCCT raises no face whose
+/// tolerance is half of `least` or less; none if it's past the largest an export takes.
+/// The worker meshes with the tolerance less the rounding its bounding box allows for, the
+/// same at every tolerance, and known here as `tolerance` less `deflection`: that is the
+/// rounding to within an ulp of the tolerance, and the worker's own subtraction rounds by
+/// half an ulp of the tolerance it's given, so both are allowed for, with an ulp to spare
+/// for this test's own rounding. An ulp is far under a nanometre at every tolerance an
+/// export takes (1.5e-8 mm at 1e8), so a nanometre more always clears them.
+fn unraising_tolerance(least: f64, tolerance: f64, deflection: f64) -> Option<f64> {
+    let margin = tolerance - deflection;
+    let ulp = |x: f64| x.next_up() - x;
+    let enough = |at: f64| at - margin - 2.0 * ulp(at) - ulp(tolerance) >= least;
+    let mut nanometres = ((least + margin) * 1e6).ceil();
+    if !enough(nanometres / 1e6) {
+        nanometres += 1.0;
     }
+    let at = nanometres / 1e6;
+    (enough(at) && silico_protocol::check_export_tolerance(at).is_ok()).then_some(at)
 }
 
 /// Whether a shell's or solid's signed `volume` is enclosed the right way: positive for an
