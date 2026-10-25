@@ -900,6 +900,7 @@ fn version_gives_the_designs_numbers_and_limits() {
     assert_eq!(limits.request_depth, 64);
     assert_eq!(limits.listed, 100);
     assert_eq!(limits.sessions, 16);
+    assert_eq!(limits.published_reads, 8);
     assert_eq!(limits.kernel_seconds, 60);
     assert_eq!(limits.sketch_seconds, 300);
 }
@@ -908,6 +909,7 @@ fn version_gives_the_designs_numbers_and_limits() {
 fn a_revision_is_followed_by_one_more() {
     // The design's section 3: 1 at open, one more for each change of the document.
     assert_eq!(Revision::OPENED.number(), 1);
-    assert_eq!(Revision::OPENED.next().number(), 2);
-    assert_eq!(Revision::OPENED.next().next().number(), 3);
+    let two = Revision::OPENED.next().unwrap();
+    assert_eq!(two.number(), 2);
+    assert_eq!(two.next().unwrap().number(), 3);
 }
