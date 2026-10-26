@@ -16,7 +16,7 @@ use super::close::assert_close;
 use super::kernel::kernel;
 use super::numbers::relative_error;
 use super::oracle;
-use super::quadrature::{bezier, cap_integral, integral, kind, misses};
+use super::quadrature::{bezier, cap_integral, integral, kind, misses, right_or_known_wrong};
 use super::revolution_measures::barrel_by_hand;
 
 use std::cell::RefCell;
@@ -109,27 +109,6 @@ pub fn from_freecad(text: &str) -> ShapeData {
 fn assert_refused(e: &silico_core::Error) {
     assert_eq!(e.code(), ErrorCode::KernelFailed, "{e}");
     assert!(e.suggestion().is_some_and(|s| s.contains("axis")), "{e}");
-}
-
-/// Each case right to `tolerance`, or OCCT's known wrong answer for it, `known`, to 1e-12
-/// (docs/ports/measure.md's *Known wrong results*: either is taken, so a fixed OCCT passes,
-/// and any other value fails); said, each case that's neither.
-fn right_or_known_wrong(
-    cases: &[(String, f64, f64)],
-    tolerance: f64,
-    known: &[(&str, f64)],
-) -> Vec<String> {
-    let wrong_as_known = |what: &str, got: f64| {
-        known
-            .iter()
-            .any(|(name, wrong)| *name == what && relative_error(got, *wrong) <= 1e-12)
-    };
-    let neither: Vec<(String, f64, f64)> = cases
-        .iter()
-        .filter(|(what, got, _)| !wrong_as_known(what, *got))
-        .cloned()
-        .collect();
-    misses(&neither, tolerance)
 }
 
 // ---- The barrel about x (its arc from 62° to 118°, clear of angle 0) ----

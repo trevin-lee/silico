@@ -26,9 +26,13 @@ use silico_protocol::{ShapeData, ShapeSummary};
 const TIGHT: f64 = 1e-12;
 
 /// The same for the uneven four-span cubic and the tube, whose integrand along U the
-/// patch refines until its two Gauss orders agree to the asked 1e-9 of each strip, not
-/// exactly: measured, the cubic's volume 7.5e-11, its slanted face's area 1.14e-9 (the
-/// face described alone; 3.5e-10 in the whole solid's), and the tube's face 3.8e-10.
+/// patch refines until its two Gauss orders agree to the asked 1e-9 of each strip's
+/// magnitude, not exactly: measured, the cubic's volume 7.5e-11, its slanted face's area
+/// 1.14e-9 (the face described alone; 3.5e-10 in the whole solid's), and the tube's face
+/// 3.8e-10. An adaptive integration to 0.9 × 1e-9 along U and again along L promises the
+/// asked precision in each direction, not round-off, and the two can add: twice the asked
+/// precision is the bound (docs/ports/measure.md, Known wrong results), measured 1.14 of
+/// it (the bisection never lands on the knots 0.3, 1.1, 2, under either U rule).
 const UNEVEN_VOLUME: f64 = 1e-10;
 const UNEVEN_AREA: f64 = 2e-9;
 
@@ -214,7 +218,7 @@ impl Spline {
 
 /// Cox–de Boor's B-spline basis function `i` of degree `p` on `knots` at `t`, half-open
 /// spans (no node of the integration falls on a knot).
-fn basis(knots: &[f64], i: usize, p: usize, t: f64) -> f64 {
+pub(super) fn basis(knots: &[f64], i: usize, p: usize, t: f64) -> f64 {
     if p == 0 {
         return if knots[i] <= t && t < knots[i + 1] {
             1.0
@@ -235,7 +239,7 @@ fn basis(knots: &[f64], i: usize, p: usize, t: f64) -> f64 {
 }
 
 /// The derivative of [`basis`] in `t`.
-fn basis_derivative(knots: &[f64], i: usize, p: usize, t: f64) -> f64 {
+pub(super) fn basis_derivative(knots: &[f64], i: usize, p: usize, t: f64) -> f64 {
     let p_f = f64::from(u32::try_from(p).unwrap());
     let mut value = 0.0;
     let left = knots[i + p] - knots[i];
@@ -249,7 +253,7 @@ fn basis_derivative(knots: &[f64], i: usize, p: usize, t: f64) -> f64 {
     value
 }
 
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+pub(super) fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
@@ -629,10 +633,11 @@ fn a_bspline_surface_ruled_between_a_cubic_and_its_copy_has_the_area_by_hand() {
 
 #[test]
 fn a_half_turn_whose_cut_face_holds_the_reference_point_measures_as_by_hand() {
-    // The patch sets U's tolerance from each strip's value (0.9 × |strip × 1e-9|), so on a
-    // face through OCCT's reference point (the mean of the vertices' occurrences) every
-    // strip is 0, the tolerance is 0, and U's loop ends after its first pass by its own
-    // condition. The rectangle 0 ≤ x ≤ 3, 0 ≤ z ≤ 5 turned half a turn about z: every
+    // The patch sets U's tolerance from each strip's magnitude (0.9 × 1e-9 × the sum of
+    // the absolute values of the volume element's terms), so on a face through OCCT's
+    // reference point (the mean of the vertices' occurrences), where every term is 0, the
+    // tolerance is 0, and U's loop ends after its first pass by its own condition. The
+    // rectangle 0 ≤ x ≤ 3, 0 ≤ z ≤ 5 turned half a turn about z: every
     // vertex is on y = 0, so the reference point is on the cut face, the plane y = 0. By
     // hand, a half cylinder of radius 3 and height 5: volume 22.5π; area two half discs
     // (9π), the curved side (15π), and the cut face (6 × 5).
@@ -668,4 +673,81 @@ fn a_half_turn_whose_cut_face_holds_the_reference_point_measures_as_by_hand() {
         TIGHT,
         TIGHT,
     );
+}
+
+#[test]
+fn the_extruded_fixture_turned_so_its_volume_terms_mix_signs_measures_as_upright() {
+    // The fixture's prism turned 37° about the axis (1, 2, 3) through (0.7, −0.4, 0.2), and
+    // 45° about z: its faces' normals and their places about the vertex mean are no longer
+    // along the axes, so the volume element's terms x·xn, y·yn, z·zn mix signs within a
+    // strip, and the strip's magnitude (the sum of their absolute values, U's scale) is
+    // larger than its value. U's tolerance mustn't loosen there past the asked precision:
+    // the volume is 3.8 to 1e-12 as upright, the areas the hand values, and the centre the
+    // upright one's turned. Before patch 0004, 9.4e-4 low, as upright.
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/brep/extruded_bspline.brep");
+    let text = std::fs::read_to_string(path).unwrap();
+    let cubic = fixtures_cubic();
+    let v = [0.0, 0.0, 2.0];
+    let (_, area) = cubic.prism_by_hand(v);
+    let upright = [2.0, cubic.centroid_y(), 1.0];
+    let mut k = kernel();
+    let mut volumes = Vec::new();
+    let mut areas = Vec::new();
+    let mut centres = Vec::new();
+    let turns: [(&str, [f64; 3], f64, [f64; 3]); 2] = [
+        (
+            "37° about (1, 2, 3)",
+            [1.0, 2.0, 3.0],
+            37.0,
+            [0.7, -0.4, 0.2],
+        ),
+        ("45° about z", [0.0, 0.0, 1.0], 45.0, [0.0, 0.0, 0.0]),
+    ];
+    for (what, axis, degrees, through) in turns {
+        let [ax, ay, az] = axis;
+        let [cx, cy, cz] = through;
+        let script = format!(
+            "import json, Part, FreeCAD as App\n\
+             V = App.Vector\n\
+             shape = Part.Shape()\n\
+             shape.importBrepFromString({text:?})\n\
+             shape.rotate(V({cx:?}, {cy:?}, {cz:?}), V({ax:?}, {ay:?}, {az:?}), {degrees:?})\n\
+             assert shape.isValid()\n\
+             print(\"SILICO_ORACLE \" + json.dumps(shape.exportBrepToString()))\n"
+        );
+        let shape = from_freecad(oracle::freecad(&script).as_str().unwrap());
+        let s = measured(&mut k, &shape);
+        volumes.push((format!("{what}: the volume"), s.volume, 3.8));
+        areas.push((format!("{what}: the area"), s.area, area));
+        areas.push((
+            format!("{what}: the extruded face's area"),
+            face_area(&mut k, &shape, "extrusion"),
+            8.808_111_747_104_897,
+        ));
+        // Rodrigues: the upright centre turned about the axis through the point.
+        let n = (ax * ax + ay * ay + az * az).sqrt();
+        let [x, y, z] = axis.map(|a| a / n);
+        let (sin, cos) = (
+            libm::sin(degrees.to_radians()),
+            libm::cos(degrees.to_radians()),
+        );
+        let t = 1.0 - cos;
+        let r = [
+            [t * x * x + cos, t * x * y - sin * z, t * x * z + sin * y],
+            [t * x * y + sin * z, t * y * y + cos, t * y * z - sin * x],
+            [t * x * z - sin * y, t * y * z + sin * x, t * z * z + cos],
+        ];
+        let p = [0, 1, 2].map(|i| upright[i] - through[i]);
+        for i in 0..3 {
+            let want = through[i] + r[i][0] * p[0] + r[i][1] * p[1] + r[i][2] * p[2];
+            centres.push((format!("{what}: the centre's {i}"), s.center[i], want));
+        }
+    }
+    assert_cases(&volumes, &areas, TIGHT, TIGHT);
+    let off: Vec<_> = centres
+        .iter()
+        .filter(|(_, got, want)| (got - want).abs() > 1e-12)
+        .collect();
+    assert!(off.is_empty(), "{off:?}");
 }

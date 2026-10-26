@@ -140,3 +140,45 @@ pub fn misses_by(cases: &[(String, f64, f64)], tolerance: f64) -> Vec<String> {
         })
         .collect()
 }
+
+/// The cases that aren't OCCT's known wrong answer for them, `known`: `got` within
+/// `pinned(got, wrong)` of the `wrong` pinned under the case's name.
+fn not_known_wrong(
+    cases: &[(String, f64, f64)],
+    known: &[(&str, f64)],
+    pinned: fn(f64, f64) -> bool,
+) -> Vec<(String, f64, f64)> {
+    cases
+        .iter()
+        .filter(|(what, got, _)| {
+            !known
+                .iter()
+                .any(|(name, wrong)| *name == what && pinned(*got, *wrong))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Each case right to `tolerance` (relative), or OCCT's known wrong answer for it, `known`,
+/// to a relative 1e-12 (docs/ports/measure.md's *Known wrong results*: either is taken, so
+/// a fixed OCCT passes, and any other value fails); said, each case that's neither.
+pub fn right_or_known_wrong(
+    cases: &[(String, f64, f64)],
+    tolerance: f64,
+    known: &[(&str, f64)],
+) -> Vec<String> {
+    let pinned = |got: f64, wrong: f64| relative_error(got, wrong) <= 1e-12;
+    misses(&not_known_wrong(cases, known, pinned), tolerance)
+}
+
+/// [`right_or_known_wrong`] for values right to an absolute `tolerance` (as [`misses_by`]),
+/// such as a centre's coordinates: OCCT's known wrong answer is taken to a relative 1e-12,
+/// or an absolute 1e-12 where it's near 0.
+pub fn right_or_known_wrong_by(
+    cases: &[(String, f64, f64)],
+    tolerance: f64,
+    known: &[(&str, f64)],
+) -> Vec<String> {
+    let pinned = |got: f64, wrong: f64| (got - wrong).abs() <= 1e-12 * wrong.abs().max(1.0);
+    misses_by(&not_known_wrong(cases, known, pinned), tolerance)
+}
