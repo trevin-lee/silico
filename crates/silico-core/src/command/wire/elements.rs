@@ -10,7 +10,7 @@ use std::borrow::Cow;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 
-use super::{Json, RequestFields, ToWire, wire_shape};
+use super::{Json, RequestFields, ToWire, wire_shape, words};
 use crate::command::elements::{
     Alias, AxisToken, Cursor, ENTRIES_AT_MOST, ElementType, Entry, EntryAxis, Facing, Listed,
     MEASURES_AT_MOST, MeasureName, Order, Quantity, QuantityKind, Queried, Query, Range, Tied,
@@ -346,16 +346,6 @@ impl ToWire for Tied {
             ("included", Json::bool(self.included)),
         ])
     }
-}
-
-/// A string schema of one of `words`.
-fn words(description: &str, words: impl IntoIterator<Item = &'static str>) -> Schema {
-    let words: Vec<&str> = words.into_iter().collect();
-    json_schema!({
-        "description": description,
-        "type": "string",
-        "enum": words,
-    })
 }
 
 /// The kinds an element is: `face`, `edge`, or `vertex`.

@@ -1,6 +1,7 @@
 //! A session's IDs and revisions, what its responses say of it and of the model read, the
 //! handle a command answers through ([`Running`]), and each command's result.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
@@ -11,6 +12,7 @@ use super::Problems;
 use super::Sessions;
 use super::cancel::Ticket;
 use super::rebuilds::kept_fault;
+use super::transaction::Reached;
 #[cfg(doc)]
 use crate::document;
 use crate::document::json::Plain;
@@ -144,6 +146,7 @@ pub struct Read<'a, C> {
     pub(super) read: ModelRead,
     pub(super) stop: &'a Ticket,
     pub(super) kernel: &'a ReadClient<C>,
+    pub(super) reached: &'a Reached,
 }
 
 impl<C> Read<'_, C> {
@@ -155,6 +158,14 @@ impl<C> Read<'_, C> {
     /// Which model it is: the response's `model`.
     pub fn model_read(&self) -> &ModelRead {
         &self.read
+    }
+
+    /// What the session's edits reached at the model's revision (decision 28): the features
+    /// whose drift a check of the model doesn't say. Worked out here, the first time a read
+    /// of the model asks: on the session's thread for the current model, on the read's own
+    /// for the published one.
+    pub fn reached(&self) -> &BTreeSet<FeatureId> {
+        self.reached.get()
     }
 
     /// Whether the read was cancelled (`cancel`, or its handle's [`Running::cancel`]): it
@@ -246,11 +257,14 @@ impl ModelChoice {
 /// same as its response's `model.revision`): the revision it was rebuilt from, or, after a
 /// rollback, the new revision whose state is the one it was rebuilt from (the design's
 /// section 4). What [`Sessions::published`] gives the app to draw, never waiting for a
-/// rebuild.
-#[derive(Debug, Clone, PartialEq)]
+/// rebuild. With it, what the session's edits reached at that revision (decision 28): the
+/// features whose drift a check of it doesn't say, since a commit writes their records anew,
+/// which a read of it works out if it asks ([`Read::reached`]).
+#[derive(Debug, Clone)]
 pub struct Published {
     pub revision: Revision,
     pub model: Arc<Model>,
+    pub(crate) reached: Reached,
 }
 
 /// A command running on its session's thread: wait for its answer, poll it, cancel it, or
@@ -371,6 +385,34 @@ pub struct Opened {
     pub features: Option<usize>,
     pub bodies: Vec<FeatureId>,
     pub problems: Problems,
+}
+
+/// What `close` answers: nothing but that it closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Closed;
+
+/// What `text` answers: the text the session's document is, or one feature's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextAnswer {
+    pub text: String,
+}
+
+/// What `outline` answers: the document's outline, as `silico show` prints it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlineAnswer {
+    pub outline: String,
+}
+
+/// What `check` answers: the document's problems, and its warnings, which never fail
+/// anything, and of which there are none yet (the first, M3's two curve ends at one place
+/// that aren't one point, comes with its code).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckAnswer {
+    pub problems: Problems,
+    /// In the error contract's shape, as the wire writes them. Decision 17 gives warnings
+    /// codes of their own: this type changes with the first warning code, when warnings
+    /// are made.
+    pub warnings: Problems,
 }
 
 /// What `begin` answers: the revision the transaction began from, which `rollback` returns
