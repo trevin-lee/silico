@@ -1509,7 +1509,7 @@ static void expand_compound(const TopoDS_Shape &shape, NCollection_List<TopoDS_S
 }
 
 namespace {
-// The elements of a pair OCCT skipped intersecting, each as the input it's of numbers it
+// The elements of a pair OCCT skipped intersecting, each numbered as its input numbers it
 // (TopExp::MapShapes, as every element is numbered), or as neither input's: an element OCCT
 // made of one (a copy with a larger tolerance, which a non-destructive boolean makes
 // instead of changing its input). Each input's map of a kind is built once, the first time

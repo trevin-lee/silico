@@ -55,6 +55,10 @@ fn rod_on_the_point(t: f64) -> Shape {
 }
 const ROD_VOLUME: f64 = 80.0 * PI;
 
+/// What OCCT says it skipped of the cone and a rod on its tip: the cone's side (Face1) with
+/// the rod's cylinder (Face2, between its end discs).
+const TIP_SKIPPED: &str = "OCCT skipped intersecting the base's Face1 with the tool's Face2";
+
 /// Angles the rod lies at, each of which OCCT raised the alert for: along x, along y, and
 /// 300° round.
 const ANGLES: [f64; 3] = [0.0, PI / 2.0, 20.0 * PI / 12.0];
@@ -73,9 +77,7 @@ fn a_rod_resting_on_a_pointed_cones_tip_cuts_nothing_from_it() {
         let (cut, said) = warnings_of(|| boolean(BooleanOp::Cut, &cone, &rod_on_the_point(t)));
         let cut = cut.unwrap_or_else(|e| panic!("at {t} rad: {e} ({:?})", e.refusal()));
         assert!(
-            said.contains(
-                "OCCT skipped intersecting the base's Face1 with the tool's Face2 in the cut"
-            ),
+            said.contains(&format!("{TIP_SKIPPED} in the cut")),
             "at {t} rad: {said}"
         );
         let s = summarize(&cut.shape).unwrap();
@@ -90,8 +92,9 @@ fn a_rod_resting_on_a_pointed_cones_tip_fuses_with_it_into_both() {
     // OCCT's, though it raises the warning.
     let cone = pointed_cone();
     for t in ANGLES {
-        let fuse = boolean(BooleanOp::Fuse, &cone, &rod_on_the_point(t))
-            .unwrap_or_else(|e| panic!("at {t} rad: {e} ({:?})", e.refusal()));
+        let (fuse, said) = warnings_of(|| boolean(BooleanOp::Fuse, &cone, &rod_on_the_point(t)));
+        let fuse = fuse.unwrap_or_else(|e| panic!("at {t} rad: {e} ({:?})", e.refusal()));
+        assert!(said.contains(TIP_SKIPPED), "at {t} rad: {said}");
         let s = summarize(&fuse.shape).unwrap();
         assert!(s.valid, "at {t} rad: {s:?}");
         assert!(
@@ -108,9 +111,10 @@ fn a_rod_resting_on_a_pointed_cones_tip_has_no_common_with_it() {
     // touch at a point is, though OCCT raises the warning.
     let cone = pointed_cone();
     for t in ANGLES {
-        let e = boolean(BooleanOp::Common, &cone, &rod_on_the_point(t))
-            .map(|_| ())
-            .unwrap_err();
+        let (common, said) =
+            warnings_of(|| boolean(BooleanOp::Common, &cone, &rod_on_the_point(t)));
+        assert!(said.contains(TIP_SKIPPED), "at {t} rad: {said}");
+        let e = common.map(|_| ()).unwrap_err();
         assert_eq!(
             e.refusal(),
             &Refusal::BooleanResultEmpty {
@@ -130,9 +134,14 @@ fn a_rod_lifted_off_a_pointed_cones_tip_or_into_it_is_cut_and_fused_as_ever() {
         let rod = translate(&rod_on_the_point(0.0), [0.0, 0.0, lift])
             .unwrap()
             .shape;
-        let cut = boolean(BooleanOp::Cut, &cone, &rod).unwrap();
+        let ((cut, fuse), said) = warnings_of(|| {
+            (
+                boolean(BooleanOp::Cut, &cone, &rod).unwrap(),
+                boolean(BooleanOp::Fuse, &cone, &rod).unwrap(),
+            )
+        });
+        assert!(!said.contains("skipped"), "lifted {lift}: {said}");
         assert!(close(summarize(&cut.shape).unwrap().volume, CONE_VOLUME));
-        let fuse = boolean(BooleanOp::Fuse, &cone, &rod).unwrap();
         assert!(close(
             summarize(&fuse.shape).unwrap().volume,
             CONE_VOLUME + ROD_VOLUME
@@ -158,11 +167,11 @@ fn block(dx: f64, dy: f64, dz: f64, at: [f64; 3]) -> Shape {
         .shape
 }
 
-/// What a boolean of `base` and `tool` logs, for each op, and the op's result.
+/// What a boolean of `base` and `tool` logs, for each op (its result, OCCT's answer or a
+/// refusal for what else is wrong, isn't kept).
 fn logged(base: &Shape, tool: &Shape) -> Vec<(BooleanOp, String)> {
     OPS.into_iter()
         .map(|op| {
-            // OCCT's answer is taken, right or wrong, or refused for what else is wrong.
             let (_built, said) = warnings_of(|| boolean(op, base, tool));
             (op, said)
         })
@@ -262,10 +271,11 @@ fn worker_a_rod_resting_on_a_pointed_cones_tip_is_cut_and_the_worker_goes_on() {
     // Through the worker and the core: the cone whole, and the worker goes on.
     let mut k = kernel();
     let (cone, rod) = (data(&pointed_cone()), data(&rod_on_the_point(0.0)));
-    let cut = k.boolean(BooleanOp::Cut, &cone, &rod);
-    // The worker goes on either way.
+    let cut = k
+        .boolean(BooleanOp::Cut, &cone, &rod)
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(cut.shape.valid(), Some(true));
+    assert!(close(k.summarize(&cut.shape).unwrap().volume, CONE_VOLUME));
     let again = k.boolean(BooleanOp::Fuse, &rod, &rod).unwrap();
     assert_eq!(again.shape.valid(), Some(true));
-    let cut = cut.unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(cut.shape.valid(), Some(true));
 }

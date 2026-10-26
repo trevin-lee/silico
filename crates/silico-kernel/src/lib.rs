@@ -116,6 +116,7 @@ mod ffi {
     /// (`BOPAlgo_AlertIntersectionOfPairOfShapesFailed`): its kind, the input it's of (0
     /// the base, 1 the tool, 2 neither: an element OCCT made of one), and its number there
     /// (0 for neither).
+    #[derive(Clone, Copy)]
     struct SkippedElement {
         kind: Kind,
         input: u8,
@@ -2312,6 +2313,68 @@ mod imports;
 
 #[cfg(test)]
 mod tests {
+    use super::{ffi, skipped_words};
+
+    /// An element of the bridge's: its kind, its input (0 the base, 1 the tool, 2 neither),
+    /// its number there.
+    fn element(kind: ffi::Kind, input: u8, index: u32) -> ffi::SkippedElement {
+        ffi::SkippedElement { kind, input, index }
+    }
+
+    fn face(input: u8, index: u32) -> ffi::SkippedElement {
+        element(ffi::Kind::Face, input, index)
+    }
+
+    #[test]
+    fn skipped_pairs_are_named_by_kind_and_input_or_as_occts_own() {
+        // Each kind by its input's numbering, and an element of neither input by its kind.
+        let words = skipped_words(&[
+            element(ffi::Kind::Vertex, 0, 4),
+            element(ffi::Kind::Edge, 1, 7),
+        ]);
+        assert_eq!(words, "the base's Vertex4 with the tool's Edge7");
+        let words = skipped_words(&[
+            element(ffi::Kind::Edge, 2, 0),
+            element(ffi::Kind::Vertex, 2, 0),
+        ]);
+        assert_eq!(words, "an edge OCCT made with a vertex OCCT made");
+        let words = skipped_words(&[face(2, 0), element(ffi::Kind::Other, 2, 0)]);
+        assert_eq!(words, "a face OCCT made with an element OCCT made");
+    }
+
+    #[test]
+    fn skipped_pairs_are_listed_once_each_the_first_three_named() {
+        let pair = |n| [face(0, 2), face(1, n)];
+        let named = |n: u32| format!("the base's Face2 with the tool's Face{n}");
+        // One, its repeats counted once.
+        let words = skipped_words(&[pair(3), pair(3), pair(3)].concat());
+        assert_eq!(words, named(3));
+        // Two, and three.
+        assert_eq!(
+            skipped_words(&[pair(1), pair(3)].concat()),
+            format!("{} and {}", named(1), named(3))
+        );
+        assert_eq!(
+            skipped_words(&[pair(1), pair(3), pair(4)].concat()),
+            format!("{}, {}, and {}", named(1), named(3), named(4))
+        );
+        // Four, a repeat among them: three named, one more pair.
+        assert_eq!(
+            skipped_words(&[pair(1), pair(3), pair(1), pair(4), pair(5)].concat()),
+            format!("{}, {}, {}, and 1 more pair", named(1), named(3), named(4))
+        );
+        // Five: two more pairs.
+        assert_eq!(
+            skipped_words(&[pair(1), pair(3), pair(4), pair(5), pair(6)].concat()),
+            format!("{}, {}, {}, and 2 more pairs", named(1), named(3), named(4))
+        );
+        // A pair isn't its own reverse: the same two faces, the other way round, is another.
+        assert_eq!(
+            skipped_words(&[[face(0, 2), face(1, 3)], [face(1, 3), face(0, 2)]].concat()),
+            format!("{} and the tool's Face3 with the base's Face2", named(3))
+        );
+    }
+
     /// This crate's unit-test binary links OCCT and the bridge, so it must import no
     /// inexact platform math either (ARCHITECTURE.md, Deterministic kernel).
     #[test]
