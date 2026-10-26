@@ -3087,3 +3087,34 @@ fn counting_a_rebuilds_steps_never_keeps_status_or_a_published_read_waiting() {
     assert_eq!(read.unwrap(), Revision::OPENED);
     check.wait().result.unwrap();
 }
+
+#[test]
+fn an_open_with_no_session_ids_left_is_refused_taking_none() {
+    // The next number u64::MAX, with none after it to count on to: the open is refused,
+    // taking no ID, the book as it was.
+    let f = opened(STORED);
+    lock(&f.sessions.registry.book).next = u64::MAX;
+    let other = f.path.with_file_name("b.silico");
+    std::fs::write(&other, STORED).unwrap();
+    let response = f.sessions.open(&other, false).wait();
+    assert!(response.session.is_none());
+    let problems = response.result.unwrap_err();
+    assert_eq!(problems.total(), 1);
+    let refused = &problems.errors()[0];
+    assert_eq!(
+        (refused.code(), refused.message(), refused.suggestion()),
+        (
+            ErrorCode::ResourceExhausted,
+            "this process has no session IDs left to give",
+            Some("start Silico again")
+        )
+    );
+    let book = lock(&f.sessions.registry.book);
+    assert_eq!(book.next, u64::MAX);
+    assert!(book.opening.is_empty());
+    assert_eq!(book.sessions.keys().copied().collect::<Vec<_>>(), [f.id]);
+    drop(book);
+    // Its file isn't held: once an ID is free to give, it opens.
+    lock(&f.sessions.registry.book).next = 2;
+    assert!(f.sessions.open(&other, false).wait().result.is_ok());
+}
