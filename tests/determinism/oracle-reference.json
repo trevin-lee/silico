@@ -1,4 +1,7 @@
 {
+  "a_face_and_itself": {
+    "answer": "ba4285a46e8c3d88"
+  },
   "adjacent_faces_touch": {
     "answer": "a625f5c675f8d713"
   },
@@ -82,6 +85,9 @@
     "summary": "c1da6d0d7d9f0724",
     "topology": "ddd4de316aeb3ba2"
   },
+  "circle_and_a_line": {
+    "answer": "34c6c62fc6e10e14"
+  },
   "circle_circle": {
     "answer": "a009edc22b863989"
   },
@@ -141,6 +147,9 @@
   },
   "crossing_edges": {
     "answer": "18f610e08231bffd"
+  },
+  "crossing_faces": {
+    "answer": "cae727955cc63775"
   },
   "crossing_rims": {
     "answer": "8ec7caa751b04cfd"
@@ -1268,6 +1277,9 @@
   "rims_r3_r4": {
     "answer": "e4ad937a83c3f45a"
   },
+  "segment_over_a_segment": {
+    "answer": "422ac6121b32e0c3"
+  },
   "skew_edges": {
     "answer": "c3b95a2784d7f5c7"
   },
@@ -1298,6 +1310,9 @@
     "measures": "18ad4fe6c6d5bcb1",
     "mesh": "refused: invalid_input",
     "summary": "60fd03eef9271f11"
+  },
+  "sphere_to_a_wall": {
+    "answer": "262f4c6db08f8ed0"
   },
   "sphere_unround": {
     "brep": "20847dd2ea1d5946",
@@ -1765,6 +1780,15 @@
   },
   "v_groove": {
     "answer": "152c3ef7d3abb5b5"
+  },
+  "vertex_beyond_a_tops_corner": {
+    "answer": "e18916d2bdd84a31"
+  },
+  "vertex_inside_to_a_top": {
+    "answer": "ade6c2035f764918"
+  },
+  "vertex_over_a_top": {
+    "answer": "b31026f7e55e9387"
   },
   "vertex_to_rim": {
     "answer": "af4ccffca4c270a4"

@@ -1271,6 +1271,43 @@ fn a_directory_of_sketch_feature_cases_alone_is_run_and_its_differences_counted(
     assert_eq!(ran.status.and_then(|s| s.code()), Some(1));
 }
 
+#[test]
+fn a_directory_of_measure_cases_alone_is_run_and_its_differences_counted() {
+    // No other cases: a 10 mm cube's bottom and top, 10 apart, said to be 11 apart, is the
+    // run's one case. FreeCAD's MeasureDistance agrees with Silico's 10, so the one
+    // difference is Silico's distance from the case's, and the run fails.
+    let temp = scratch("measures-alone");
+    let dir = temp.path();
+    let measures = dir.join("cases").join(silico_oracle::measures::DIR);
+    std::fs::create_dir_all(&measures).unwrap();
+    std::fs::write(
+        measures.join(silico_oracle::measures::MODEL),
+        r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "bxa00001", "type": "box", "v": 1, "name": "cube", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        measures.join(silico_oracle::measures::CASES),
+        r#"[{"name": "cube_bottom_and_top", "note": "10 apart, said to be 11.", "elements": ["bxa00001.box.Face5", "bxa00001.box.Face6"],
+            "expected": {"distance": {"distance": 11, "center_distance": null, "normal_distance": 10}}}]"#,
+    )
+    .unwrap();
+    let cases = dir.join("cases");
+    let ran = cli(
+        dir,
+        &["run", cases.to_str().unwrap()],
+        &[],
+        Duration::from_secs(120),
+    );
+    assert_eq!(
+        ran.stdout,
+        "cube_bottom_and_top: Silico's distance 10 against the expected 11\n\
+         1 of 1 cases differ from FreeCAD\n",
+        "{}",
+        ran.stderr
+    );
+    assert_eq!(ran.status.and_then(|s| s.code()), Some(1));
+}
+
 // ---- Generated cases from other seeds ----
 
 #[test]

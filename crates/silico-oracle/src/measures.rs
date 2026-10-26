@@ -269,7 +269,7 @@ pub fn resolve(model: &Model, solids: &[FeatureId], text: &str) -> Result<Found,
 
 /// How a case's Silico answer and FreeCAD's measure are compared (Fable's decision,
 /// *Oracle*), by what its two elements are.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Rule {
     /// Silico's `distance` is FreeCAD's `MeasureDistance`, the least distance as OCCT
     /// finds it.
@@ -278,10 +278,20 @@ pub enum Rule {
     /// (`distanceCircleCircle`, `04a6f38ec8`): its `MeasureDistance` is Silico's
     /// `center_distance`, and its `distToShape` Silico's `distance`.
     Centres,
-    /// Two planar faces: Silico's angle (of the wedge both outward normals point into) is
-    /// 180 less FreeCAD's (between the normals, each turned away from the middle of the two
-    /// faces' centres); but where FreeCAD reads exactly 0, its reading of parallel and
-    /// opposite normals alike, the two are compared folded, as min(a, 180 − a).
+    /// Two planar faces of one body: Silico's angle (of the wedge both outward normals point
+    /// into) is 180 less FreeCAD's (between the normals, each turned away from the middle of
+    /// the two faces' centres); but where FreeCAD reads exactly 0, its reading of parallel
+    /// and opposite normals alike, the two are compared folded, as min(a, 180 − a).
+    ///
+    /// It holds only while 1.1.3's turn flips neither outward normal or both, as it does
+    /// for two faces of one body at a convex corner (neither: each face's centre is behind
+    /// the other's plane) or a concave one (both: a V-groove, a valley, an L's inside
+    /// corner). Where it flips just one, FreeCAD reads Silico's angle itself, not its
+    /// supplement. Faces of two bodies have no corner between them, so which way each is
+    /// turned is happenstance: [`Rule::of`] refuses them. A pair of one body whose turn
+    /// flips one (a non-convex body's faces apart from any corner) is seen, not passed: it
+    /// reads as a difference (but at 90, where the two agree anyway), and Silico's value is
+    /// checked by hand besides.
     Supplement,
     /// Two straight edges: each folded, min(a, 180 − a) (FreeCAD's 0 to 180 turns each line
     /// by where the edges' centres are; Silico's is 0 to 180 at a shared vertex, 0 to 90
@@ -294,13 +304,21 @@ pub enum Rule {
 
 impl Rule {
     /// The rule for `expected`'s measure of `a` and `b`; none for an angle FreeCAD's
-    /// `MeasureAngle` doesn't take (its gate takes straight edges and planar faces).
-    pub fn of(expected: &Expected, a: &Element, b: &Element) -> Result<Rule, String> {
+    /// `MeasureAngle` doesn't take (its gate takes straight edges and planar faces), or for
+    /// the angle of planar faces of two bodies, which [`Rule::Supplement`] can't compare.
+    pub fn of(expected: &Expected, a: &Found, b: &Found) -> Result<Rule, String> {
+        let (body, a, b) = (a.body == b.body, &a.element, &b.element);
         match expected {
             Expected::Distance(_) if a.is_circle() && b.is_circle() => Ok(Rule::Centres),
             Expected::Distance(_) => Ok(Rule::Least),
             Expected::Angle(_) => match (a.is_plane(), b.is_plane(), a.is_line(), b.is_line()) {
-                (true, true, _, _) => Ok(Rule::Supplement),
+                (true, true, _, _) if body => Ok(Rule::Supplement),
+                (true, true, _, _) => Err("the angle of planar faces of two bodies has no \
+                    rule: FreeCAD turns each normal away from the middle of the faces' centres, \
+                    which, for faces with no corner between them, may turn one and not the \
+                    other, so its reading needn't be 180 less Silico's; name two faces of one \
+                    body"
+                    .to_owned()),
                 (_, _, true, true) => Ok(Rule::Folded),
                 (true, _, _, true) | (_, true, true, _) => Ok(Rule::FromNormal),
                 _ => Err("an angle takes straight edges and planar faces only".to_owned()),
@@ -781,6 +799,17 @@ impl std::fmt::Display for Compared {
 pub fn run(cases: &Cases) -> Result<Vec<Compared>, String> {
     let (engine, model) = rebuilt(cases)?;
     let ours = answers(&model, engine.kernel(), &cases.cases)?;
+    // Each case's rule, before FreeCAD is asked: a pair no rule compares is the case file's
+    // mistake.
+    let rules = cases
+        .cases
+        .iter()
+        .zip(&ours)
+        .map(|(case, ours)| {
+            Rule::of(&case.expected, &ours.found[0], &ours.found[1])
+                .map_err(|e| format!("{}: {e}", case.name))
+        })
+        .collect::<Result<Vec<Rule>, String>>()?;
     let theirs = freecad(&model, &cases.cases, &ours)?;
     if theirs.len() != cases.cases.len() {
         return Err(format!(
@@ -789,31 +818,26 @@ pub fn run(cases: &Cases) -> Result<Vec<Compared>, String> {
             theirs.len()
         ));
     }
-    cases
+    Ok(cases
         .cases
         .iter()
+        .zip(rules)
         .zip(ours)
         .zip(theirs)
-        .map(|((case, ours), theirs)| {
-            let rule = Rule::of(
-                &case.expected,
-                &ours.found[0].element,
-                &ours.found[1].element,
-            )
-            .map_err(|e| format!("{}: {e}", case.name))?;
+        .map(|(((case, rule), ours), theirs)| {
             let mut how = compare(case, rule, &ours, &theirs);
             how.extend(
                 against_expected(case, &ours)
                     .into_iter()
                     .map(|h| format!("Silico's {h}")),
             );
-            Ok(Compared {
+            Compared {
                 case: case.clone(),
                 rule,
                 ours,
                 theirs,
                 how,
-            })
+            }
         })
-        .collect()
+        .collect())
 }

@@ -90,19 +90,22 @@ fn the_case_file_holds_the_decisions_cases_and_every_rule_has_its_own() {
         "line_in_a_plane",
         "box_adjacent_faces",
         "box_edges_at_a_corner",
+        "sphere_to_a_wall",
+        "vertex_over_a_top",
+        "vertex_beyond_a_tops_corner",
+        "vertex_inside_to_a_top",
+        "crossing_faces",
+        "a_face_and_itself",
+        "circle_and_a_line",
+        "segment_over_a_segment",
     ] {
         assert!(names.contains(name), "{name} is missing");
     }
     let ours = measures::silico(&cases).unwrap();
-    let mut rules: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut rules: BTreeMap<Rule, usize> = BTreeMap::new();
     for (case, ours) in cases.cases.iter().zip(&ours) {
-        let rule = Rule::of(
-            &case.expected,
-            &ours.found[0].element,
-            &ours.found[1].element,
-        )
-        .unwrap();
-        *rules.entry(rule.says()).or_default() += 1;
+        let rule = Rule::of(&case.expected, &ours.found[0], &ours.found[1]).unwrap();
+        *rules.entry(rule).or_default() += 1;
     }
     for rule in [
         Rule::Least,
@@ -111,7 +114,7 @@ fn the_case_file_holds_the_decisions_cases_and_every_rule_has_its_own() {
         Rule::Folded,
         Rule::FromNormal,
     ] {
-        let n = rules.get(rule.says()).copied().unwrap_or_default();
+        let n = rules.get(&rule).copied().unwrap_or_default();
         assert!(n >= 3, "{rule:?}: {n} cases");
     }
 }
@@ -137,8 +140,12 @@ fn edge(curve: &'static str) -> Element {
 }
 
 fn found(element: Element) -> Found {
+    found_in("bxa00001", element)
+}
+
+fn found_in(body: &str, element: Element) -> Found {
     Found {
-        body: FeatureId::new("bxa00001").unwrap(),
+        body: FeatureId::new(body).unwrap(),
         element,
     }
 }
@@ -234,7 +241,9 @@ fn freecad_angle(angle: f64) -> Theirs {
 
 #[test]
 fn each_rule_is_the_decisions_and_finds_a_value_off_it() {
-    let rule_of = |case: &MeasureCase, a: &Element, b: &Element| Rule::of(&case.expected, a, b);
+    let rule_of = |case: &MeasureCase, a: &Element, b: &Element| {
+        Rule::of(&case.expected, &found(a.clone()), &found(b.clone()))
+    };
     let d = distance_case(10.0, None, None);
     let a = angle_case(30.0, None);
     assert_eq!(
@@ -261,6 +270,25 @@ fn each_rule_is_the_decisions_and_finds_a_value_off_it() {
     );
     assert!(rule_of(&a, &edge("circle"), &face("plane")).is_err());
     assert!(rule_of(&a, &face("cylinder"), &face("plane")).is_err());
+    // Planar faces of two bodies: FreeCAD's turn of their normals may flip one and not the
+    // other, so Supplement can't compare them, and the case is refused, saying why. Lines of
+    // two bodies, a line and another's plane, and two bodies' distances are compared still.
+    let two = |rule: &MeasureCase, a: Element, b: Element| {
+        Rule::of(
+            &rule.expected,
+            &found_in("bxa00001", a),
+            &found_in("bxb00001", b),
+        )
+    };
+    let refused = two(&a, face("plane"), face("plane")).unwrap_err();
+    assert!(
+        refused.starts_with("the angle of planar faces of two bodies has no rule")
+            && refused.ends_with("name two faces of one body"),
+        "{refused}"
+    );
+    assert_eq!(two(&a, edge("line"), edge("line")), Ok(Rule::Folded));
+    assert_eq!(two(&a, edge("line"), face("plane")), Ok(Rule::FromNormal));
+    assert_eq!(two(&d, face("plane"), face("plane")), Ok(Rule::Least));
 
     // Supplement: a 30° wedge, FreeCAD's 150; FreeCAD's 0 (parallel) folds both, so 180 and
     // 0 agree with it, 90 doesn't; and 30 against FreeCAD's 30 is a difference.
@@ -514,6 +542,23 @@ fn a_case_file_that_would_check_less_than_it_seems_is_refused() {
 }
 
 #[test]
+fn an_angle_of_two_bodies_planar_faces_is_a_case_file_error() {
+    // The cube's top and the bottom of the cube apart from it: no rule compares them, and
+    // the run fails, naming the case and saying why.
+    let cases = load(
+        r#"[{"name": "two_bodies_faces", "note": "", "elements": ["bxa00001.box.Face6", "bxb00001.box.Face5"],
+            "expected": {"angle": {"angle": 180, "vertex": null}}}]"#,
+    )
+    .unwrap()
+    .unwrap();
+    let refused = measures::run(&cases).unwrap_err();
+    assert!(
+        refused.starts_with("two_bodies_faces: the angle of planar faces of two bodies"),
+        "{refused}"
+    );
+}
+
+#[test]
 fn freecad_finds_each_element_by_its_geometry_or_says_it_cant() {
     // The first case, the box's bottom and top, as Silico found them: FreeCAD measures it.
     // With the bottom's centre moved a micrometre, no face of FreeCAD's box fits it, and it
@@ -543,11 +588,6 @@ fn freecad_finds_each_element_by_its_geometry_or_says_it_cant() {
     if let Ok(Answer::Distance(d)) = &mut wrong.answer {
         d.distance = mm(10.001);
     }
-    let rule = Rule::of(
-        &first[0].expected,
-        &wrong.found[0].element,
-        &wrong.found[1].element,
-    )
-    .unwrap();
+    let rule = Rule::of(&first[0].expected, &wrong.found[0], &wrong.found[1]).unwrap();
     assert_eq!(compare(&first[0], rule, &wrong, &theirs[0]).len(), 1);
 }
