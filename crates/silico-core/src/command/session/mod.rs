@@ -101,7 +101,7 @@ use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
 use cancel::{Interrupt, Ticket, Why, not_running};
-use clearing::{partly_cleared_problems, shown_cache_directory};
+use clearing::{leads_out, partly_cleared_problems, shown_cache_directory};
 use edits::{as_committed, not_given_back};
 use holding::Holding;
 use rebuilds::{Newest, Rebuilds, Unbuilt, published_answer};
@@ -780,19 +780,37 @@ impl<P: Clients + 'static> Sessions<P> {
     /// a cancel that comes after it starts comes too late. It never reads the session's
     /// file (decision 2, as `close`): it needs nothing of the document, so a file gone or
     /// changed neither refuses it nor moves the session's revision; and it runs inside a
-    /// transaction too.
+    /// transaction too. In a workspace (decision 26), the directory is named from its root,
+    /// and one that leads out of it, as the session opened or through a link put on its way
+    /// since, is a cache that keeps nothing: nothing is removed through it (`removed` 0).
     pub fn cache_clear(&self, session: &SessionId) -> Running<CacheCleared> {
         self.queued_with(
             session,
             SessionCommand::CacheClear,
             Rereads::Never,
             |session, stop, _, _| {
+                // The engine's own cache: a stand-in that keeps nothing if its directory led
+                // out of the workspace as the session opened (`Registry::cache`).
                 let cache = lock(&session.rebuilds).cache.clone();
                 let path = session.held.read().path.clone();
-                let directory = shown_cache_directory(&path, cache.directory());
+                let workspace = session.workspace.as_ref();
+                let directory = shown_cache_directory(workspace, &path, cache.directory());
                 stop.settle()?;
                 #[cfg(test)]
                 session.settled.pass();
+                // Checked again as it's cleared (decision 26: where a path resolves): one
+                // that leads out now, through a link put on its way since, is a cache that
+                // keeps nothing, and nothing is removed through it.
+                if leads_out(workspace, cache.directory()) {
+                    tracing::warn!(
+                        dir = %cache.directory().display(),
+                        "the cache directory leads out of the workspace: removing nothing"
+                    );
+                    return Ok(CacheCleared {
+                        directory,
+                        removed: 0,
+                    });
+                }
                 match cache.clear() {
                     Ok(removed) => Ok(CacheCleared { directory, removed }),
                     Err(partly) => Err(partly_cleared_problems(

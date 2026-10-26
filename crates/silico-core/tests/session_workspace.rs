@@ -578,3 +578,88 @@ fn a_workspace_is_a_directory_given_once_before_any_document_opens() {
     assert_eq!(Workspace::new(&root.join("link")).unwrap().root(), root);
 }
 
+/// `cache_clear` called by name on session `s`, which must run: its result, as a value.
+fn cleared_by_name(f: &Fixture, s: &str) -> serde_json::Value {
+    let cleared = f.call("cache_clear", &format!(r#"{{"session": "{s}"}}"#));
+    assert!(cleared.ok, "{}", cleared.text);
+    crate::calls::envelope(&cleared)["result"].clone()
+}
+
+/// The entry-named files at `cache`: `ab/` and `cd/`, each holding one named by 62 hex
+/// digits, as the cache names its entries.
+fn plant_entries(cache: &Path) -> Vec<PathBuf> {
+    ["ab", "cd"]
+        .into_iter()
+        .map(|sub| {
+            std::fs::create_dir_all(cache.join(sub)).unwrap();
+            let entry = cache.join(sub).join(crate::cache_control::NAME);
+            std::fs::write(&entry, b"theirs").unwrap();
+            entry
+        })
+        .collect()
+}
+
+#[test]
+fn cache_clear_through_a_cache_directory_linked_out_of_the_workspace_removes_nothing() {
+    // `.silico-cache` beside the document is a link to a directory outside, holding files
+    // named as entries are: the session's engine got a stand-in that keeps nothing, and a
+    // clear removes none of them, saying so (0), the directory named as the request's path
+    // names the document, never where it leads.
+    let f = fixture();
+    f.file("part.silico", BOX);
+    let theirs = f.outside.join("cache");
+    let planted = plant_entries(&theirs);
+    std::os::unix::fs::symlink(&theirs, f.work.join(".silico-cache")).unwrap();
+    assert!(f.open("part.silico", false).ok);
+    let check = f.call(
+        "check",
+        r#"{"session": "s1", "model": "current", "fresh": true}"#,
+    );
+    assert!(check.ok, "{}", check.text);
+    assert_eq!(
+        cleared_by_name(&f, "s1"),
+        serde_json::json!({"directory": ".silico-cache", "removed": 0})
+    );
+    for entry in &planted {
+        assert_eq!(std::fs::read(entry).unwrap(), b"theirs", "{entry:?}");
+    }
+    assert_eq!(crate::cache_control::entries(&theirs), planted);
+    // Never opened, so nothing was written through it either.
+    assert!(f.caches.lock().unwrap().is_empty());
+}
+
+#[test]
+fn cache_clear_after_its_directory_is_swapped_for_a_link_out_removes_nothing_through_it() {
+    // A document in `sub/`, its cache opened inside the workspace and cleared there, named
+    // from the workspace's root; then `sub` moved outside and a link to it put in its place:
+    // the cache now leads out, and a clear removes nothing through it.
+    let f = fixture();
+    f.file("sub/part.silico", BOX);
+    assert!(f.open("sub/part.silico", false).ok);
+    let fresh = r#"{"session": "s1", "model": "current", "fresh": true}"#;
+    assert!(f.call("check", fresh).ok);
+    let cache = f.work.join("sub/.silico-cache");
+    // One entry: the box, the document's one step.
+    assert_eq!(crate::cache_control::entries(&cache).len(), 1);
+    assert_eq!(
+        cleared_by_name(&f, "s1"),
+        serde_json::json!({"directory": "sub/.silico-cache", "removed": 1})
+    );
+    assert!(crate::cache_control::entries(&cache).is_empty());
+    // Built anew, the entry kept again.
+    assert!(f.call("check", fresh).ok);
+    assert_eq!(crate::cache_control::entries(&cache).len(), 1);
+    let moved = f.outside.join("sub");
+    std::fs::rename(f.work.join("sub"), &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, f.work.join("sub")).unwrap();
+    let kept = crate::cache_control::entries(&moved.join(".silico-cache"));
+    assert_eq!(kept.len(), 1);
+    assert_eq!(
+        cleared_by_name(&f, "s1"),
+        serde_json::json!({"directory": "sub/.silico-cache", "removed": 0})
+    );
+    assert_eq!(
+        crate::cache_control::entries(&moved.join(".silico-cache")),
+        kept
+    );
+}
