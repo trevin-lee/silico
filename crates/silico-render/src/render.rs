@@ -533,3 +533,37 @@ fn png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("couldn't finish the PNG: {e}"))?;
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::lights;
+    use silico_protocol::{Camera, Projection};
+
+    #[test]
+    fn the_key_light_is_above_and_left_of_the_view_and_the_fill_below_and_right() {
+        // From +z onto the origin, up +y: back +z, up +y, right +x. By hand, the key is
+        // back + up/2 − right/2 = (−0.5, 0.5, 1) over √1.5, and the fill back − 3up/10 +
+        // 3right/5 = (0.6, −0.3, 1) over √1.45.
+        let frame = Camera {
+            projection: Projection::Orthographic { view_height: 10.0 },
+            eye: [0.0, 0.0, 10.0],
+            target: [0.0; 3],
+            up: [0.0, 1.0, 0.0],
+        }
+        .frame()
+        .unwrap();
+        let (key, fill) = lights(&frame);
+        let (k, f) = (1.5f64.sqrt(), 1.45f64.sqrt());
+        for (got, want) in [
+            (key, [-0.5 / k, 0.5 / k, 1.0 / k]),
+            (fill, [0.6 / f, -0.3 / f, 1.0 / f]),
+        ] {
+            for i in 0..3 {
+                assert!(
+                    (got[i] - want[i]).abs() <= 1e-15,
+                    "{got:?} against {want:?}"
+                );
+            }
+        }
+    }
+}
