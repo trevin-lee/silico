@@ -368,13 +368,22 @@ mod tests {
         }
         assert_eq!(partial_name(std::ffi::OsStr::new(&long), 63).len(), 255);
         // Two-byte characters, cut where a character ends: valid UTF-8, one byte short when
-        // the room is odd.
-        let accented = "é".repeat(127);
-        let cut =
-            String::from_utf8(partial_name(std::ffi::OsStr::new(&accented), 0).into_vec()).unwrap();
+        // the room ends inside one. Two names, one a byte out of step with the other, so one
+        // of them needs that, whatever the process number's length makes the room (the
+        // mutation run: with an even room, `"é"` alone never did).
         let room = 255 - 1 - suffix.len() - "-63".len();
-        let kept = room - room % 2;
-        assert_eq!(cut, format!(".{}{suffix}", &accented[..kept]));
+        for (name, inside) in [
+            ("é".repeat(127), room % 2),
+            (format!("a{}", "é".repeat(127)), (room - 1) % 2),
+        ] {
+            let cut =
+                String::from_utf8(partial_name(std::ffi::OsStr::new(&name), 0).into_vec()).unwrap();
+            assert_eq!(
+                cut,
+                format!(".{}{suffix}", &name[..room - inside]),
+                "{name}"
+            );
+        }
         // Not UTF-8 (Linux allows it): cut by bytes, to 255.
         let raw = std::ffi::OsStr::from_bytes(&[0xff; 255]);
         let cut = partial_name(raw, 63).into_vec();
