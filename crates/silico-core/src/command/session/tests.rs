@@ -21,7 +21,7 @@ const WAIT: Duration = Duration::from_secs(60);
 
 /// The stop of a command no one cancels: as a queued command's work is handed its own.
 fn probe() -> Arc<Ticket> {
-    Ticket::new("probe")
+    Ticket::new(SessionCommand::Text)
 }
 
 fn checked(text: &str) -> Arc<Checked> {
@@ -61,6 +61,8 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
         rebuilt: Condvar::new(),
         reads: Mutex::new(Reads::new()),
         command: Mutex::new(None),
+        newest: Arc::default(),
+        gate: Gate::default(),
     });
     (session, jobs)
 }
@@ -181,7 +183,7 @@ fn a_published_read_says_the_older_revision_it_read() {
     // Revision 2's sphere held, so its rebuild is seen running.
     let _hold = kernel.hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
     let response = sessions
-        .read_model(&id, "probe", ModelChoice::Published, volume)
+        .read_model(&id, ReadCommand::Check, ModelChoice::Published, volume)
         .wait();
     let read = ModelRead {
         revision: Revision::OPENED,
@@ -208,7 +210,7 @@ fn a_published_read_says_the_older_revision_it_read() {
 fn a_current_read_says_the_newer_revision_it_waited_for() {
     let (_dir, _kernel, sessions, id) = at_two(SPHERE);
     let response = sessions
-        .read_model(&id, "probe", ModelChoice::Current, volume)
+        .read_model(&id, ReadCommand::Check, ModelChoice::Current, volume)
         .wait();
     let read = ModelRead {
         revision: Revision::OPENED.next().unwrap(),
@@ -242,7 +244,7 @@ fn a_published_read_of_a_refused_revision_gives_the_older_model_and_check_its_pr
     assert_eq!(published.model, Some(read.clone()));
     assert_eq!(published.result.unwrap().revision, Revision::OPENED);
     let response = sessions
-        .read_model(&id, "probe", ModelChoice::Published, volume)
+        .read_model(&id, ReadCommand::Check, ModelChoice::Published, volume)
         .wait();
     assert_eq!(
         response.result.unwrap(),
@@ -523,7 +525,7 @@ fn a_document_made_for_a_session_the_sessions_closing_refuse_is_removed() {
         SessionId(1),
         made.to_str().unwrap(),
         true,
-        &crate::command::session::cancel::Ticket::new("open"),
+        &crate::command::session::cancel::Ticket::opening(),
         &reply,
     );
     assert!(started.is_none());
@@ -538,7 +540,7 @@ fn a_document_made_for_a_session_the_sessions_closing_refuse_is_removed() {
             SessionId(2),
             kept.to_str().unwrap(),
             false,
-            &crate::command::session::cancel::Ticket::new("open"),
+            &crate::command::session::cancel::Ticket::opening(),
             &reply
         )
         .is_none()
@@ -842,7 +844,7 @@ fn a_commit_over_a_file_changed_outside_is_a_conflict_writing_nothing_and_leavin
         conflict.message(),
         format!(
             "{} changed outside this session since it was read",
-            shown(&f.path)
+            shown_path(&f.path)
         )
     );
     assert_eq!(
@@ -905,24 +907,185 @@ fn a_reached_feature_that_failed_stays_reached_after_its_commit() {
             (ErrorCode::Drift, Some("k7f2qx3m"))
         ]
     );
-    // Neither's fingerprint written, so both still reached, and their stale fingerprints
-    // kept as stored.
+    // Neither's fingerprint written, so both still reached; and both saved with none,
+    // since what's stored was measured from the lug 10 long (decision 28, amended): the
+    // block, which no edit reached, keeps its own, drift and all.
     assert_eq!(
         *f.session().held.read().carried,
         BTreeSet::from([id("b0000001"), id("f0000001")])
     );
-    let saved = document::read(f.file().as_bytes()).unwrap();
-    let volumes: Vec<Measure> = saved
+    assert_eq!(
+        stored_fingerprints(&f.file()),
+        [Some(millionths(8_000_000_001, 2800)), None, None]
+    );
+    // A feature without an object written on one line (M2.1).
+    assert_eq!(f.file(), REACHED_FAILED);
+}
+
+/// [`STORED`] committed with the lug 20 long, which failed: the block as stored, the lug
+/// and the fuse, which the edit reached, saved with no fingerprint.
+const REACHED_FAILED: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000.000001, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    },\n    {\"id\": \"b0000001\", \"type\": \"box\", \"v\": 1, \"name\": \"Lug\", \"position\": [100, 0, 0], \"length\": 20, \"width\": 10, \"height\": 10},\n    {\"id\": \"f0000001\", \"type\": \"fuse\", \"v\": 1, \"name\": \"Both\", \"base\": \"k7f2qx3m\", \"tool\": \"b0000001\"}\n  ]\n}\n";
+
+/// Each feature's stored volume and area in the document `text`, in timeline order: none
+/// for one saved without a fingerprint.
+fn stored_fingerprints(text: &str) -> Vec<Option<(Measure, Measure)>> {
+    document::read(text.as_bytes())
+        .unwrap()
         .features
         .iter()
-        .map(|feature| feature.fingerprint.unwrap().volume)
-        .collect();
+        .map(|feature| feature.fingerprint.map(|f| (f.volume, f.area)))
+        .collect()
+}
+
+/// A volume in millionths of a mm³, and a whole area in mm².
+fn millionths(volume: i128, area: i128) -> (Measure, Measure) {
+    (
+        Measure::from_millionths(volume),
+        Measure::from_millionths(area * 1_000_000),
+    )
+}
+
+/// The code and feature of each of `problems`.
+fn said(problems: &Problems) -> Vec<(ErrorCode, Option<&str>)> {
+    problems
+        .errors()
+        .iter()
+        .map(|e| (e.code(), e.feature()))
+        .collect()
+}
+
+/// [`STORED`], its lug refused as stored (10 long), the block's note edited and committed:
+/// an edit that reaches nothing.
+fn the_unreached_lug_failed() -> (Fixture, Committed) {
+    let f = opened(STORED);
+    f.kernel.refuse(|op| {
+        matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx > 5.0 && *dx < 15.0)
+            .then(|| Error::new(ErrorCode::KernelFailed, "the lug can't be made"))
+    });
+    f.begin();
+    f.edit(&STORED.replace(
+        r#""name": "Block", "#,
+        r#""name": "Block", "note": "Mount face", "#,
+    ));
+    let committed = f.sessions.commit(&f.id).wait().result.unwrap();
+    (f, committed)
+}
+
+#[test]
+fn a_failed_feature_no_edit_reached_keeps_its_stored_fingerprint() {
+    // The lug fails as stored, and the fuse is blocked on it; the edit, a note, reaches
+    // nothing: all three keep what's stored, measured from the values the file holds.
+    let (f, committed) = the_unreached_lug_failed();
+    assert!(committed.written);
+    assert!(committed.refingerprinted.is_empty());
     assert_eq!(
-        volumes,
+        said(&committed.problems),
         [
-            Measure::from_millionths(8_000_000_001),
-            Measure::from_millionths(1_000_000_000),
-            Measure::from_millionths(9_000_000_000)
+            (ErrorCode::KernelFailed, Some("b0000001")),
+            (ErrorCode::Drift, Some("k7f2qx3m"))
+        ]
+    );
+    assert!(f.session().held.read().carried.is_empty());
+    assert_eq!(
+        stored_fingerprints(&f.file()),
+        [
+            Some(millionths(8_000_000_001, 2800)),
+            Some(millionths(1_000_000_000, 600)),
+            Some(millionths(9_000_000_000, 3400))
+        ]
+    );
+}
+
+#[test]
+fn a_reached_feature_saved_with_no_fingerprint_is_no_drift_in_a_new_session_and_a_reaching_commit_writes_one()
+ {
+    // Saved as `a_reached_feature_that_failed_stays_reached_after_its_commit` saves it,
+    // then opened again: the lug's failure and the block's drift are said, and nothing of
+    // the fuse, which has no fingerprint to hold. The lug made 30 long, which builds: its
+    // commit writes both records. By hand: the lug 30 × 10 × 10 = 3000, area
+    // 2(300 + 100 + 300) = 1400; the fuse 8000 + 3000 = 11000, area 2800 + 1400 = 4200.
+    let f = opened(STORED);
+    refuse_the_longer_lug(&f, ErrorCode::KernelFailed);
+    f.begin();
+    f.edit(&longer());
+    assert!(f.sessions.commit(&f.id).wait().result.unwrap().written);
+    assert_eq!(f.file(), REACHED_FAILED);
+    f.sessions.close(&f.id).wait().result.unwrap();
+    let again = f.sessions.open(&f.path, false).wait().session.unwrap().id;
+    let checked = f.sessions.check(&again, ModelChoice::Current).wait();
+    let problems = checked.result.unwrap().problems;
+    assert_eq!(
+        said(&problems),
+        [
+            (ErrorCode::KernelFailed, Some("b0000001")),
+            (ErrorCode::Drift, Some("k7f2qx3m"))
+        ]
+    );
+    let revision = checked.session.unwrap().revision;
+    let set = f
+        .sessions
+        .set_field(
+            &again,
+            revision,
+            id("b0000001"),
+            "length".to_owned(),
+            crate::document::json::read(b"30").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    let commit = set.commit.unwrap();
+    assert!(commit.written);
+    assert_eq!(commit.refingerprinted, [id("b0000001"), id("f0000001")]);
+    the_blocks_drift(&commit.problems);
+    assert_eq!(
+        stored_fingerprints(&f.file()),
+        [
+            Some(millionths(8_000_000_001, 2800)),
+            Some(millionths(3_000_000_000, 1400)),
+            Some(millionths(11_000_000_000, 4200))
+        ]
+    );
+}
+
+#[test]
+fn a_sessions_format_saves_a_reached_failure_with_no_fingerprint_and_an_unreached_one_as_stored() {
+    // After the reached lug's commit: format accepts the block's drift (8000, as the fake
+    // measures 40 × 20 × 10), and the lug and the fuse, reached and failed still, stay
+    // with none, carried.
+    let f = opened(STORED);
+    refuse_the_longer_lug(&f, ErrorCode::KernelFailed);
+    f.begin();
+    f.edit(&longer());
+    assert!(f.sessions.commit(&f.id).wait().result.unwrap().written);
+    let formatted = f.sessions.format(&f.id, None, true).wait().result.unwrap();
+    assert!(formatted.written);
+    assert_eq!(formatted.accepted, [id("k7f2qx3m")]);
+    assert_eq!(formatted.refingerprinted, [id("k7f2qx3m")]);
+    assert_eq!(
+        said(&formatted.problems),
+        [(ErrorCode::KernelFailed, Some("b0000001"))]
+    );
+    assert_eq!(
+        stored_fingerprints(&f.file()),
+        [Some(millionths(8_000_000_000, 2800)), None, None]
+    );
+    assert_eq!(
+        *f.session().held.read().carried,
+        BTreeSet::from([id("b0000001"), id("f0000001")])
+    );
+    // The lug failing as stored, reached by no edit: format keeps its fingerprint and the
+    // fuse's, as stored, and accepts the block's drift.
+    let (f, _) = the_unreached_lug_failed();
+    let formatted = f.sessions.format(&f.id, None, true).wait().result.unwrap();
+    assert!(formatted.written);
+    assert_eq!(formatted.refingerprinted, [id("k7f2qx3m")]);
+    assert_eq!(
+        stored_fingerprints(&f.file()),
+        [
+            Some(millionths(8_000_000_000, 2800)),
+            Some(millionths(1_000_000_000, 600)),
+            Some(millionths(9_000_000_000, 3400))
         ]
     );
 }
@@ -1193,7 +1356,7 @@ fn a_published_read_answered_but_its_thread_still_ending_leaves_room_for_another
         }
     }
     let ninth = sessions
-        .read_model(&id, "probe", ModelChoice::Published, |read| {
+        .read_model(&id, ReadCommand::Check, ModelChoice::Published, |read| {
             Ok(read.model_read().revision)
         })
         .wait();
@@ -1293,16 +1456,6 @@ fn a_commits_new_file_is_claimed() {
     );
 }
 
-/// Each feature's stored volume in the document `text`, in timeline order.
-fn stored_volumes(text: &str) -> Vec<Measure> {
-    document::read(text.as_bytes())
-        .unwrap()
-        .features
-        .iter()
-        .map(|feature| feature.fingerprint.unwrap().volume)
-        .collect()
-}
-
 /// The code and feature of the fault `response`'s model read gives.
 fn the_fault<T>(response: &Response<T>) -> (ErrorCode, Option<String>) {
     let fault = response.model.as_ref().unwrap().fault.as_ref().unwrap();
@@ -1312,8 +1465,9 @@ fn the_fault<T>(response: &Response<T>) -> (ErrorCode, Option<String>) {
 #[test]
 fn a_commit_saves_around_a_kernel_fault_given_once_beside_its_result() {
     // Decision 32: the lug, 20 long, crashes the worker; the commit saves all the same, as
-    // it saves around a failed feature, the lug and the fuse it stopped keeping their stored
-    // fingerprints, and the fault given once, in the model read, not among the problems.
+    // it saves around a failed feature: the lug and the fuse it stopped, which the edit
+    // reached, with no fingerprint (decision 28, amended), and the fault given once, in the
+    // model read, not among the problems.
     let f = opened(STORED);
     refuse_the_longer_lug(&f, ErrorCode::WorkerCrashed);
     f.begin();
@@ -1328,17 +1482,7 @@ fn a_commit_saves_around_a_kernel_fault_given_once_beside_its_result() {
     assert!(committed.written);
     assert!(committed.refingerprinted.is_empty());
     the_blocks_drift(&committed.problems);
-    let saved = f.file();
-    assert_ne!(saved, STORED);
-    assert!(saved.contains(r#""length": 20"#));
-    assert_eq!(
-        stored_volumes(&saved),
-        [
-            Measure::from_millionths(8_000_000_001),
-            Measure::from_millionths(1_000_000_000),
-            Measure::from_millionths(9_000_000_000)
-        ]
-    );
+    assert_eq!(f.file(), REACHED_FAILED);
     // Their fingerprints unwritten, the lug and the fuse are still reached.
     assert_eq!(
         *f.session().held.read().carried,
@@ -1377,12 +1521,14 @@ fn a_format_saves_around_a_kernel_fault_accepting_the_drift_it_can() {
     assert_eq!(formatted.refingerprinted, [id("k7f2qx3m")]);
     assert_eq!(formatted.accepted, [id("k7f2qx3m")]);
     assert!(formatted.problems.is_empty(), "{:?}", formatted.problems);
+    // The block's as rebuilt (a box's area by hand, 2 * (800 + 400 + 200)); the lug's
+    // and the fuse's as stored.
     assert_eq!(
-        stored_volumes(&f.file()),
+        stored_fingerprints(&f.file()),
         [
-            Measure::from_millionths(8_000_000_000),
-            Measure::from_millionths(1_000_000_000),
-            Measure::from_millionths(9_000_000_000)
+            Some(millionths(8_000_000_000, 2800)),
+            Some(millionths(1_000_000_000, 600)),
+            Some(millionths(9_000_000_000, 3400))
         ]
     );
     // As a commit's: the model, the block's drift accepted, is the saved revision's, so a
@@ -1426,11 +1572,19 @@ fn a_one_edit_commits_fault_is_the_saved_revisions_and_never_met_again() {
         (ErrorCode::WorkerCrashed, Some("b0000001".to_owned()))
     );
     the_blocks_drift(&checked.result.unwrap().problems);
+    // The candidate's rebuild, the saved revision's: its four steps (the block; the lug's
+    // box and its move to x = 100; the fuse) all settled, the lug's crash and the steps it
+    // blocked among them.
     assert_eq!(
         f.sessions.status(&f.id).result.unwrap().rebuild,
         Rebuild {
             revision: saved,
-            state: RebuildState::Faulted
+            state: RebuildState::Faulted,
+            progress: Some(Progress {
+                done: 4,
+                steps: 4,
+                running: None,
+            }),
         }
     );
 }
@@ -1591,6 +1745,55 @@ fn from_text_that_didnt_read_a_commit_reaches_only_features_with_new_ids() {
         drifted,
         [Some("k7f2qx3m"), Some("b0000001"), Some("f0000001")]
     );
+}
+
+#[test]
+fn an_edit_after_text_that_didnt_read_was_mended_reaches_what_it_changed() {
+    // The merge's markers around the lug's length, mended with the lug 20 long: every ID
+    // was in the text, so the mend reaches nothing. Then an edit of the mended document,
+    // the block 60 long: it reaches the block and the fuse, against the mend.
+    let markers = STORED.replace(
+        r#""length": 10, "width": 10"#,
+        "\n<<<<<<< ours\n\"length\": 10, \"width\": 10\n=======\n\"length\": 20, \"width\": 10\n>>>>>>> theirs\n",
+    );
+    let f = opened(&markers);
+    f.begin();
+    f.edit(&longer());
+    assert_eq!(f.session().held.read().reach(), BTreeSet::new());
+    let block_60 = longer().replace(r#""length": 40"#, r#""length": 60"#);
+    assert_ne!(block_60, longer());
+    f.edit(&block_60);
+    assert_eq!(
+        f.session().held.read().reach(),
+        BTreeSet::from([id("k7f2qx3m"), id("f0000001")])
+    );
+    // Undone, the edit after the mend reaches nothing; made again, what it changed.
+    f.edit(&longer());
+    assert_eq!(f.session().held.read().reach(), BTreeSet::new());
+    f.edit(&block_60);
+    let committed = f.sessions.commit(&f.id).wait().result.unwrap();
+    assert!(committed.written);
+    assert_eq!(committed.refingerprinted, [id("k7f2qx3m"), id("f0000001")]);
+    // Only the lug's drift, which the merge made and format accepts by name: the block and
+    // the fuse were measured again.
+    let drifted: Vec<(ErrorCode, Option<&str>)> = committed
+        .problems
+        .errors()
+        .iter()
+        .map(|e| (e.code(), e.feature()))
+        .collect();
+    assert_eq!(drifted, [(ErrorCode::Drift, Some("b0000001"))]);
+    // By hand: the block 60 × 20 × 10 = 12000, area 2(60·20 + 60·10 + 20·10) = 4000; the
+    // fuse, the fake's two solids apart, 12000 + 2000 = 14000, area 4000 + 1000 = 5000,
+    // to x = 120; the lug as stored.
+    let saved = f.file();
+    for fingerprint in [
+        r#""fingerprint": {"volume": 12000, "area": 4000, "bbox": [0, 0, 0, 60, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#,
+        r#""fingerprint": {"volume": 1000, "area": 600, "bbox": [100, 0, 0, 110, 10, 10], "faces": 6, "edges": 12, "vertices": 8}"#,
+        r#""fingerprint": {"volume": 14000, "area": 5000, "bbox": [0, 0, 0, 120, 20, 10], "faces": 12, "edges": 24, "vertices": 16}"#,
+    ] {
+        assert!(saved.contains(fingerprint), "{fingerprint} in {saved}");
+    }
 }
 
 #[test]
@@ -1794,7 +1997,7 @@ fn a_save_this_session_left_part_written_refuses_the_next_saying_where_the_text_
     assert!(
         problems.errors()[0]
             .message()
-            .ends_with(&format!("its text before is in {}", shown(&old))),
+            .ends_with(&format!("its text before is in {}", shown_path(&old))),
         "{:?}",
         problems.errors()[0]
     );
@@ -2058,11 +2261,11 @@ fn a_format_after_a_reached_feature_builds_writes_its_record_and_carries_it_no_m
 #[test]
 fn a_reload_carries_nothing_so_a_hand_edits_drift_is_said_and_not_written_over() {
     // As `a_reached_feature_that_failed_stays_reached_after_its_commit`: the lug and the
-    // fuse carried after the commit, their fingerprints as stored (the lug 1000, the
-    // fuse 9000). Then the lug made 30 long by hand, which builds: 30 × 10 × 10 = 3000,
-    // area 2(300 + 100 + 300) = 1400; the fuse 8000 + 3000 = 11000, area 2800 + 1400 =
-    // 4200. A hand edit reaches nothing, and a reload is as a fresh open: the lug's and
-    // the fuse's stale fingerprints are drift, with the block's (stored 1e-6 over).
+    // fuse carried after the commit, saved with no fingerprint. Then the lug made 30 long
+    // by hand, which builds (30 × 10 × 10 = 3000; the fuse 11000). A hand edit reaches
+    // nothing, and a reload is as a fresh open: the block's drift (stored 1e-6 over) is
+    // said, and nothing of the lug and the fuse, which have no fingerprint to hold; and
+    // nothing is carried, so a commit that reaches nothing writes neither's.
     let f = opened(STORED);
     refuse_the_longer_lug(&f, ErrorCode::KernelFailed);
     f.begin();
@@ -2087,14 +2290,7 @@ fn a_reload_carries_nothing_so_a_hand_edits_drift_is_said_and_not_written_over()
         .iter()
         .map(|e| (e.code(), e.feature()))
         .collect();
-    assert_eq!(
-        drift,
-        [
-            (ErrorCode::Drift, Some("k7f2qx3m")),
-            (ErrorCode::Drift, Some("b0000001")),
-            (ErrorCode::Drift, Some("f0000001"))
-        ]
-    );
+    assert_eq!(drift, [(ErrorCode::Drift, Some("k7f2qx3m"))]);
     assert!(f.session().held.read().carried.is_empty());
     // A note's edit reaches nothing: its commit writes no fingerprint over the drift.
     let note = f
@@ -2112,19 +2308,9 @@ fn a_reload_carries_nothing_so_a_hand_edits_drift_is_said_and_not_written_over()
     let commit = note.commit.unwrap();
     assert!(commit.written);
     assert!(commit.refingerprinted.is_empty(), "{commit:?}");
-    let saved = document::read(f.file().as_bytes()).unwrap();
-    let volumes: Vec<Measure> = saved
-        .features
-        .iter()
-        .map(|feature| feature.fingerprint.unwrap().volume)
-        .collect();
     assert_eq!(
-        volumes,
-        [
-            Measure::from_millionths(8_000_000_001),
-            Measure::from_millionths(1_000_000_000),
-            Measure::from_millionths(9_000_000_000)
-        ]
+        stored_fingerprints(&f.file()),
+        [Some(millionths(8_000_000_001, 2800)), None, None]
     );
 }
 
@@ -2264,7 +2450,7 @@ fn published_reads_that_ended_are_joined_as_the_next_starts() {
     );
     let read = || {
         f.sessions
-            .read_model(&f.id, "probe", ModelChoice::Published, |read| {
+            .read_model(&f.id, ReadCommand::Check, ModelChoice::Published, |read| {
                 Ok(read.model_read().revision)
             })
             .wait()
@@ -2319,17 +2505,22 @@ fn a_cancel_after_the_command_kept_its_work_says_so_and_it_answers_its_result() 
     let f = opened(BOX);
     let (go, wait) = mpsc::channel::<()>();
     let (kept, was_kept) = mpsc::channel::<()>();
-    let running = f.sessions.queued(&f.id, "probe", move |_, stop, _| {
-        stop.settle()?;
-        kept.send(()).unwrap();
-        wait.recv().unwrap();
-        Ok(7)
-    });
+    let running = f
+        .sessions
+        .queued(&f.id, SessionCommand::Text, move |_, stop, _| {
+            stop.settle()?;
+            kept.send(()).unwrap();
+            wait.recv().unwrap();
+            Ok(7)
+        });
     was_kept.recv_timeout(WAIT).unwrap();
     assert_eq!(
-        f.sessions.cancel(&f.id, "probe").result.unwrap(),
+        f.sessions
+            .cancel(&f.id, SessionCommand::Text)
+            .result
+            .unwrap(),
         Cancelled {
-            command: "probe".to_owned(),
+            command: SessionCommand::Text,
             stopped: false
         }
     );
@@ -2343,16 +2534,24 @@ fn a_command_cancelled_before_it_kept_its_work_answers_cancelled_whatever_it_giv
     let f = opened(BOX);
     let (go, wait) = mpsc::channel::<()>();
     let (started, was_started) = mpsc::channel::<()>();
-    let running = f.sessions.queued(&f.id, "probe", move |_, _, _| {
-        started.send(()).unwrap();
-        wait.recv().unwrap();
-        Ok(7)
-    });
+    let running = f
+        .sessions
+        .queued(&f.id, SessionCommand::Text, move |_, _, _| {
+            started.send(()).unwrap();
+            wait.recv().unwrap();
+            Ok(7)
+        });
     was_started.recv_timeout(WAIT).unwrap();
-    assert!(f.sessions.cancel(&f.id, "probe").result.unwrap().stopped);
+    assert!(
+        f.sessions
+            .cancel(&f.id, SessionCommand::Text)
+            .result
+            .unwrap()
+            .stopped
+    );
     go.send(()).unwrap();
     let response = running.wait();
-    assert_eq!(response.result.unwrap_err().errors(), [cancelled("probe")]);
+    assert_eq!(response.result.unwrap_err().errors(), [cancelled("text")]);
     assert_eq!(response.session.unwrap().id, f.id);
 }
 
@@ -2407,7 +2606,7 @@ fn a_transactions_work_a_cancel_came_before_leaves_no_trace() {
     );
     let (session, stop) = cancelled_meanwhile(&f);
     let refused = |result: Result<(), Problems>| {
-        assert_eq!(result.unwrap_err().errors(), [cancelled("probe")]);
+        assert_eq!(result.unwrap_err().errors(), [cancelled("text")]);
     };
     let mut read = None;
     refused(session.commit(&stop, None, &mut read, &|_| {}).map(|_| ()));
@@ -2433,7 +2632,7 @@ fn a_commit_writing_nothing_a_cancel_came_before_leaves_the_transaction_open() {
     let (session, stop) = cancelled_meanwhile(&f);
     let mut read = None;
     let refused = session.commit(&stop, None, &mut read, &|_| {});
-    assert_eq!(refused.unwrap_err().errors(), [cancelled("probe")]);
+    assert_eq!(refused.unwrap_err().errors(), [cancelled("text")]);
     assert!(session.held.read().transaction.is_some());
 }
 
@@ -2450,16 +2649,16 @@ fn work_outside_a_transaction_a_cancel_came_before_leaves_no_trace() {
     let (session, stop) = cancelled_meanwhile(&f);
     let mut read = None;
     let format = session.format(&stop, None, true, &mut read, &|_| {});
-    assert_eq!(format.unwrap_err().errors(), [cancelled("probe")]);
+    assert_eq!(format.unwrap_err().errors(), [cancelled("text")]);
     assert_eq!(f.file(), STORED);
     assert_eq!(
         session.begin(&stop).unwrap_err().errors(),
-        [cancelled("probe")]
+        [cancelled("text")]
     );
     assert!(session.held.read().transaction.is_none());
     assert_eq!(
         session.shut(&stop).unwrap_err().errors(),
-        [cancelled("probe")]
+        [cancelled("text")]
     );
     assert!(!session.closed());
     assert_eq!(session.held.read().revision, Revision::OPENED);
@@ -2502,25 +2701,24 @@ fn each_change_of_what_the_session_holds_is_past_a_cancel() {
     // rollback, a commit that writes nothing, and close.
     let f = opened(STORED);
     let session = f.session();
-    let settled =
-        |stop: &Ticket| assert!(!stop.cancel(), "{}'s stop wasn't settled", stop.command());
-    let stop = Ticket::new("begin");
+    let settled = |stop: &Ticket| assert!(!stop.cancel(), "{}'s stop wasn't settled", stop.name());
+    let stop = Ticket::new(SessionCommand::Begin);
     session.begin(&stop).unwrap();
     settled(&stop);
-    let stop = Ticket::new("replace_text");
+    let stop = Ticket::new(SessionCommand::ReplaceText);
     assert_eq!(session.applied(&stop, &longer()).unwrap(), Revision(2));
     settled(&stop);
-    let stop = Ticket::new("rollback");
+    let stop = Ticket::new(SessionCommand::Rollback);
     session.rollback(&stop).unwrap();
     settled(&stop);
     session.begin(&probe()).unwrap();
-    let stop = Ticket::new("commit");
+    let stop = Ticket::new(SessionCommand::Commit);
     let mut read = None;
     let committed = session.commit(&stop, None, &mut read, &|_| {}).unwrap();
     assert!(!committed.written);
     assert!(session.held.read().transaction.is_none());
     settled(&stop);
-    let stop = Ticket::new("close");
+    let stop = Ticket::new(SessionCommand::Close);
     session.shut(&stop).unwrap();
     assert!(session.closed());
     settled(&stop);
@@ -2530,7 +2728,7 @@ fn each_change_of_what_the_session_holds_is_past_a_cancel() {
 fn a_kept_fault_keeps_the_workers_own_suggestion_and_says_how_to_try_again() {
     // Decision 32: reading the revision again won't run it again, so the suggestion says
     // so after the worker's own, and what does.
-    const KEPT: &str = "reading this revision again won't, since it keeps the fault; an edit that changes the document, reopening the session, or (M4.3) check with fresh tries again; a save that writes only fingerprints keeps the fault";
+    const KEPT: &str = "reading this revision again won't, since it keeps the fault; an edit that changes the document, or reopening the session, tries again; a save that writes only fingerprints keeps the fault";
     let said = |error: &Error| {
         (
             error.code(),
@@ -2587,7 +2785,13 @@ fn a_rebuild_a_cancel_stopped_stays_stopped_once_its_watcher_has_ended() {
     let _hold = f.kernel.hold(is_box);
     let check = f.sessions.check(&f.id, ModelChoice::Current);
     assert!(f.kernel.wait_running(1, WAIT));
-    assert!(f.sessions.cancel(&f.id, "check").result.unwrap().stopped);
+    assert!(
+        f.sessions
+            .cancel(&f.id, SessionCommand::Check)
+            .result
+            .unwrap()
+            .stopped
+    );
     assert_eq!(
         check.wait().result.unwrap_err().errors(),
         [cancelled("check")]
@@ -2616,16 +2820,24 @@ fn a_command_cancelled_after_its_sessions_reload_says_it_reloaded() {
     std::fs::write(&f.path, &outside).unwrap();
     let (go, wait) = mpsc::channel::<()>();
     let (started, was_started) = mpsc::channel::<()>();
-    let running = f.sessions.queued(&f.id, "probe", move |_, _, _| {
-        started.send(()).unwrap();
-        wait.recv().unwrap();
-        Ok(7)
-    });
+    let running = f
+        .sessions
+        .queued(&f.id, SessionCommand::Text, move |_, _, _| {
+            started.send(()).unwrap();
+            wait.recv().unwrap();
+            Ok(7)
+        });
     was_started.recv_timeout(WAIT).unwrap();
-    assert!(f.sessions.cancel(&f.id, "probe").result.unwrap().stopped);
+    assert!(
+        f.sessions
+            .cancel(&f.id, SessionCommand::Text)
+            .result
+            .unwrap()
+            .stopped
+    );
     go.send(()).unwrap();
     let response = running.wait();
-    assert_eq!(response.result.unwrap_err().errors(), [cancelled("probe")]);
+    assert_eq!(response.result.unwrap_err().errors(), [cancelled("text")]);
     let session = response.session.unwrap();
     assert_eq!((session.revision, session.reloaded), (Revision(2), true));
     assert_eq!(&**f.session().held.read().text, outside.as_bytes());
@@ -2660,8 +2872,7 @@ fn a_sessions_close_interrupts_its_reads_as_closed_and_each_counted_after_at_onc
     let f = opened(BOX);
     let session = f.session();
     let unanswered = Arc::clone(&lock(&session.reads).unanswered);
-    let running = probe();
-    let _counted = Counted::count(&unanswered, &running);
+    let (_counted, running) = Counted::count(&unanswered, ReadCommand::Check);
     let before = Told::new();
     // Given twice, told once.
     running.interrupt_with(before.weak());
@@ -2673,8 +2884,7 @@ fn a_sessions_close_interrupts_its_reads_as_closed_and_each_counted_after_at_onc
     assert!(!running.cancelled());
     // Sticky: a read counted after the close is closed at once, so what it adds is told at
     // once.
-    let late = probe();
-    let _late = Counted::count(&unanswered, &late);
+    let (_late, late) = Counted::count(&unanswered, ReadCommand::Check);
     let after = Told::new();
     late.interrupt_with(after.weak());
     assert_eq!(after.whys(), [Why::Closed]);
@@ -2726,7 +2936,7 @@ fn a_reads_client_interrupted_by_its_stop_is_superseded_and_one_added_after_at_o
         .unwrap()
     };
     for why in [Why::Closed, Why::Cancelled] {
-        let stop = Ticket::new("distance");
+        let stop = Ticket::new(SessionCommand::Distance);
         let before = Arc::new(ReadClient::new(kernel.client()));
         stop.interrupt_with(Arc::downgrade(&before) as Weak<dyn Interrupt>);
         let asked = before.submit(before.generation(), make()).wait();
@@ -2765,4 +2975,378 @@ fn a_reads_client_is_its_kernels_and_advances_it() {
         )
         .wait();
     assert!(matches!(asked, Outcome::Superseded), "{asked:?}");
+}
+
+/// Polls `progress` until it's `want`, for at most [`WAIT`].
+#[track_caller]
+fn until_progress(progress: impl Fn() -> Option<Progress>, want: Option<Progress>) {
+    let started = std::time::Instant::now();
+    while progress() != want {
+        assert!(started.elapsed() < WAIT, "{:?}, not {want:?}", progress());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// [`STORED`]'s lug's box (10 long), and [`longer`]'s (20 long): never the block (40).
+fn is_lug(op: &Op) -> bool {
+    matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx < 25.0)
+}
+
+#[test]
+fn a_held_rebuild_shows_its_steps_done_below_its_steps_then_all_of_them() {
+    // STORED's steps, by hand: the block at the origin (one), the lug at x = 100 (its box
+    // and its move: two), and the fuse (one): four. The lug's box held: the block's step
+    // settles, and the move and the fuse wait on the lug.
+    let f = opened(STORED);
+    let hold = f.kernel.hold(is_lug);
+    let check = f.sessions.check(&f.id, ModelChoice::Current);
+    let one_of_four = Some(Progress {
+        done: 1,
+        steps: 4,
+        running: Some("b0000001 box".to_owned()),
+    });
+    until_progress(|| check.progress(), one_of_four.clone());
+    assert_eq!(
+        f.sessions.status(&f.id).result.unwrap().rebuild,
+        Rebuild {
+            revision: Revision::OPENED,
+            state: RebuildState::Running,
+            progress: one_of_four.clone(),
+        }
+    );
+    hold.release();
+    check.wait().result.unwrap();
+    assert_eq!(
+        f.sessions.status(&f.id).result.unwrap().rebuild,
+        Rebuild {
+            revision: Revision::OPENED,
+            state: RebuildState::Done,
+            progress: Some(Progress {
+                done: 4,
+                steps: 4,
+                running: None,
+            }),
+        }
+    );
+    // Nothing running now: a command's handle has no progress to give.
+    let text = f.sessions.text(&f.id, None);
+    assert_eq!(text.progress(), None);
+    text.wait().result.unwrap();
+}
+
+#[test]
+fn counting_a_rebuilds_steps_never_keeps_status_or_a_published_read_waiting() {
+    // Revision 1 built and published; then, in a transaction, the lug 20 long, its
+    // rebuild's lug held, its steps being counted. Status, the check's handle, and a read of
+    // the published model each answer while the step is held, none waiting for it.
+    let f = opened(STORED);
+    f.sessions
+        .check(&f.id, ModelChoice::Current)
+        .wait()
+        .result
+        .unwrap();
+    f.begin();
+    f.edit(&longer());
+    let hold = f.kernel.hold(is_lug);
+    let check = f.sessions.check(&f.id, ModelChoice::Current);
+    // Revision 2's: the block and the fuse unchanged, but the fuse uses the lug, so only
+    // the block's step is kept; the lug's box is held.
+    until_progress(
+        || check.progress(),
+        Some(Progress {
+            done: 1,
+            steps: 4,
+            running: Some("b0000001 box".to_owned()),
+        }),
+    );
+    let quick = Duration::from_secs(5);
+    let (said, heard) = mpsc::channel();
+    let answered = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let status = f.sessions.status(&f.id).result.map(|status| status.rebuild);
+            let read = f
+                .sessions
+                .read_model(&f.id, ReadCommand::Check, ModelChoice::Published, |read| {
+                    Ok(read.model_read().revision)
+                })
+                .wait()
+                .result;
+            let _ = said.send((status, read, f.kernel.wait_running(1, Duration::ZERO)));
+        });
+        let answered = heard.recv_timeout(quick);
+        // Let go either way, so a call that waited on the step ends, and the test with it.
+        hold.release();
+        answered
+    });
+    let (status, read, still_held) = answered.unwrap();
+    assert!(still_held, "answered while the lug was held");
+    assert_eq!(
+        status.unwrap(),
+        Rebuild {
+            revision: Revision(2),
+            state: RebuildState::Running,
+            progress: Some(Progress {
+                done: 1,
+                steps: 4,
+                running: Some("b0000001 box".to_owned()),
+            }),
+        }
+    );
+    assert_eq!(read.unwrap(), Revision::OPENED);
+    check.wait().result.unwrap();
+}
+
+#[test]
+fn a_published_reads_handle_reports_no_rebuilds_progress() {
+    // Revision 1 built and published; then, in a transaction, the lug 20 long, its rebuild's
+    // lug held. The check waits on that rebuild and reports it; a read of the published
+    // model, running while the step is held, waits on no rebuild and reports none.
+    let f = opened(STORED);
+    f.sessions
+        .check(&f.id, ModelChoice::Current)
+        .wait()
+        .result
+        .unwrap();
+    f.begin();
+    f.edit(&longer());
+    let hold = f.kernel.hold(is_lug);
+    let check = f.sessions.check(&f.id, ModelChoice::Current);
+    let lug_held = Some(Progress {
+        done: 1,
+        steps: 4,
+        running: Some("b0000001 box".to_owned()),
+    });
+    until_progress(|| check.progress(), lug_held.clone());
+    let (go, held) = mpsc::channel::<()>();
+    let read = f.sessions.read_model(
+        &f.id,
+        ReadCommand::Check,
+        ModelChoice::Published,
+        move |read| {
+            let _ = held.recv_timeout(WAIT);
+            Ok(read.model_read().revision)
+        },
+    );
+    assert_eq!(read.progress(), None);
+    assert_eq!(check.progress(), lug_held);
+    go.send(()).unwrap();
+    assert_eq!(read.wait().result.unwrap(), Revision::OPENED);
+    hold.release();
+    check.wait().result.unwrap();
+}
+
+#[test]
+fn an_open_with_no_session_ids_left_is_refused_taking_none() {
+    // The next number u64::MAX, with none after it to count on to: the open is refused,
+    // taking no ID, the book as it was.
+    let f = opened(STORED);
+    lock(&f.sessions.registry.book).next = u64::MAX;
+    let other = f.path.with_file_name("b.silico");
+    std::fs::write(&other, STORED).unwrap();
+    let response = f.sessions.open(&other, false).wait();
+    assert!(response.session.is_none());
+    let problems = response.result.unwrap_err();
+    assert_eq!(problems.total(), 1);
+    let refused = &problems.errors()[0];
+    assert_eq!(
+        (refused.code(), refused.message(), refused.suggestion()),
+        (
+            ErrorCode::ResourceExhausted,
+            "this process has no session IDs left to give",
+            Some("start Silico again")
+        )
+    );
+    let book = lock(&f.sessions.registry.book);
+    assert_eq!(book.next, u64::MAX);
+    assert!(book.opening.is_empty());
+    assert_eq!(book.sessions.keys().copied().collect::<Vec<_>>(), [f.id]);
+    drop(book);
+    // Its file isn't held: once an ID is free to give, it opens.
+    lock(&f.sessions.registry.book).next = 2;
+    assert!(f.sessions.open(&other, false).wait().result.is_ok());
+}
+
+#[test]
+fn a_closed_sessions_rebuild_watchers_are_the_books_to_join() {
+    // A session that rebuilt once, closed: the thread that watched its rebuild is moved
+    // into the book with its reads, which the drop joins, and the session keeps none.
+    let f = opened(BOX);
+    let other = f.path.with_file_name("b.silico");
+    std::fs::write(&other, BOX).unwrap();
+    let id = f.sessions.open(&other, false).wait().session.unwrap().id;
+    f.sessions
+        .check(&id, ModelChoice::Current)
+        .wait()
+        .result
+        .unwrap();
+    let session = f.sessions.find(&id).unwrap();
+    assert_eq!(lock(&session.rebuilds).watchers.running.len(), 1);
+    assert!(lock(&f.sessions.registry.book).released.running.is_empty());
+    f.sessions.close(&id).wait().result.unwrap();
+    assert!(lock(&session.rebuilds).watchers.running.is_empty());
+    assert_eq!(lock(&f.sessions.registry.book).released.running.len(), 1);
+}
+
+/// Starts the command and gives a wait for its result (its answer's result alone, whatever
+/// it answers).
+type Start<'a> = Box<dyn Fn() -> Box<dyn FnOnce() -> Result<(), Problems>> + 'a>;
+
+/// What a command's handle answers, its value dropped.
+fn erased<T: Send + 'static>(running: Running<T>) -> Box<dyn FnOnce() -> Result<(), Problems>> {
+    Box::new(move || running.wait().result.map(|_| ()))
+}
+
+#[test]
+fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
+    // Every command that runs in a session, started by its own call and held at the gate
+    // as it starts: status names it (the queued command running, or, read of the published
+    // model, among the reads), and cancel by that name stops it before it has done
+    // anything, so it answers cancelled. The reads, queued, read the current model.
+    let f = opened(BOX);
+    let (started, was_started) = mpsc::channel();
+    let (through, wait) = mpsc::channel();
+    f.session().gate.shut(started, wait);
+    let s = &f.sessions;
+    let at = &f.id;
+    let length = || crate::document::json::read(b"41").unwrap();
+    let pair = || ["Face1".to_owned(), "Face2".to_owned()];
+    let front = || crate::command::render::Render {
+        view: Some(crate::views::NamedView::Front),
+        camera: None,
+        width: 100,
+        height: 100,
+        highlight: vec![],
+        to: None,
+        replace: false,
+    };
+    // Drawn by a fake renderer, as the sessions' render tests draw.
+    let renderer = Arc::new(crate::fake::FakeRenderer::new());
+    *lock(&f.sessions.registry.renderer) = Some(Arc::new(Arc::clone(&renderer)));
+    let reads = |model: ModelChoice| -> Vec<(ReadCommand, Start<'_>)> {
+        vec![
+            (
+                ReadCommand::Check,
+                Box::new(move || erased(s.check(at, model))),
+            ),
+            (
+                ReadCommand::Elements,
+                Box::new(move || erased(s.elements(at, model, None, None, 10))),
+            ),
+            (
+                ReadCommand::Query,
+                Box::new(move || {
+                    erased(s.query(
+                        at,
+                        model,
+                        crate::command::elements::Query::of(crate::kernel::ElementKind::Face, 10),
+                    ))
+                }),
+            ),
+            (
+                ReadCommand::MassProperties,
+                Box::new(move || erased(s.mass_properties(at, model, None))),
+            ),
+            (
+                ReadCommand::Distance,
+                Box::new(move || erased(s.distance(at, model, pair(), None))),
+            ),
+            (
+                ReadCommand::Angle,
+                Box::new(move || erased(s.angle(at, model, pair(), None))),
+            ),
+            (
+                ReadCommand::Render,
+                Box::new(move || erased(s.render(at, model, front()))),
+            ),
+        ]
+    };
+    let mut queued: Vec<(SessionCommand, Start<'_>)> = vec![
+        (SessionCommand::Close, Box::new(|| erased(s.close(at)))),
+        (SessionCommand::Begin, Box::new(|| erased(s.begin(at)))),
+        (SessionCommand::Commit, Box::new(|| erased(s.commit(at)))),
+        (
+            SessionCommand::Rollback,
+            Box::new(|| erased(s.rollback(at))),
+        ),
+        (
+            SessionCommand::Format,
+            Box::new(|| erased(s.format(at, None, true))),
+        ),
+        (
+            SessionCommand::AddFeature,
+            Box::new(|| erased(s.add_feature(at, Revision::OPENED, length()))),
+        ),
+        (
+            SessionCommand::SetField,
+            Box::new(|| {
+                erased(s.set_field(
+                    at,
+                    Revision::OPENED,
+                    id("k7f2qx3m"),
+                    "length".to_owned(),
+                    length(),
+                ))
+            }),
+        ),
+        (
+            SessionCommand::RemoveFeature,
+            Box::new(|| erased(s.remove_feature(at, Revision::OPENED, id("k7f2qx3m")))),
+        ),
+        (
+            SessionCommand::ReplaceText,
+            Box::new(|| erased(s.replace_text(at, Revision::OPENED, BOX.to_owned()))),
+        ),
+        (SessionCommand::Text, Box::new(|| erased(s.text(at, None)))),
+        (SessionCommand::Outline, Box::new(|| erased(s.outline(at)))),
+    ];
+    queued.extend(
+        reads(ModelChoice::Current)
+            .into_iter()
+            .map(|(read, start)| (SessionCommand::from(read), start)),
+    );
+    // Every one, in the design's order.
+    assert_eq!(
+        queued
+            .iter()
+            .map(|(command, _)| *command)
+            .collect::<Vec<_>>(),
+        SessionCommand::ALL
+    );
+    let stops = |command: SessionCommand, start: &Start<'_>, running, reads: Vec<_>| {
+        let answer = start();
+        was_started.recv_timeout(WAIT).unwrap();
+        let status = s.status(at).result.unwrap();
+        assert_eq!(
+            (status.running, status.reads),
+            (running, reads),
+            "{command}"
+        );
+        assert_eq!(
+            s.cancel(at, command).result.unwrap(),
+            Cancelled {
+                command,
+                stopped: true
+            },
+            "{command}"
+        );
+        through.send(()).unwrap();
+        assert_eq!(
+            answer().unwrap_err().errors(),
+            [cancelled(command.as_str())],
+            "{command}"
+        );
+        let status = s.status(at).result.unwrap();
+        assert_eq!((status.running, status.reads), (None, vec![]), "{command}");
+    };
+    for (command, start) in &queued {
+        stops(*command, start, Some(*command), vec![]);
+    }
+    for (read, start) in &reads(ModelChoice::Published) {
+        stops(SessionCommand::from(*read), start, None, vec![*read]);
+    }
+    // Nothing was done: the file is as it was, the session open at its first revision, and
+    // nothing drawn.
+    assert_eq!(f.file(), BOX);
+    assert_eq!(f.session().held.read().revision, Revision::OPENED);
+    assert!(renderer.sent().is_empty());
 }

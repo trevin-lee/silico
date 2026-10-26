@@ -7,17 +7,18 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::Duration;
 
-use super::Problems;
 #[cfg(doc)]
 use super::Sessions;
 use super::cancel::Ticket;
+use super::rebuilds::Newest;
 use super::rebuilds::met_fault;
 use super::transaction::Reached;
+use super::{Problems, ReadCommand, SessionCommand};
 #[cfg(doc)]
 use crate::document;
 use crate::document::json::Plain;
 use crate::document::{Feature, FeatureId};
-use crate::recompute::Model;
+use crate::recompute::{Model, StepCount};
 use crate::{Error, ErrorCode};
 
 /// A session's ID as a request's schema gives it, the IDs [`SessionId::parse`] reads: `s`
@@ -328,6 +329,9 @@ pub struct Running<T> {
     lost: &'static str,
     /// How it's stopped: none for a command answered before it ran (refused).
     ticket: Option<Arc<Ticket>>,
+    /// Its session's newest rebuild: none for a command answered before it ran, and for a
+    /// published read, which waits on no rebuild.
+    rebuild: Option<Arc<Newest>>,
 }
 
 /// What cancels a command apart from its handle ([`Running::stopper`]), from any thread.
@@ -356,11 +360,13 @@ impl<T> Running<T> {
         answer: Receiver<Response<T>>,
         lost: &'static str,
         ticket: Option<Arc<Ticket>>,
+        rebuild: Option<Arc<Newest>>,
     ) -> Self {
         Running {
             answer,
             lost,
             ticket,
+            rebuild,
         }
     }
 
@@ -368,7 +374,15 @@ impl<T> Running<T> {
     pub(super) fn answered(response: Response<T>) -> Self {
         let (reply, answer) = mpsc::sync_channel(1);
         let _ = reply.send(response);
-        Running::new(answer, SESSION_STOPPED, None)
+        Running::new(answer, SESSION_STOPPED, None, None)
+    }
+
+    /// How far its session's rebuild has got, its step running too, while one runs (one the
+    /// command waits for, or any other): none while none runs, and none for a read of the
+    /// published model, which waits on no rebuild. Read at once, never waiting on the
+    /// rebuild or the command, so the app may poll it each frame.
+    pub fn progress(&self) -> Option<Progress> {
+        self.rebuild.as_ref().and_then(|rebuild| rebuild.running())
     }
 
     /// Cancels the command, as MCP's cancellation does (decision 10): if it hasn't done its
@@ -482,7 +496,9 @@ pub struct Begun {
 /// transaction's edits reached whose fingerprints it wrote anew and the reached sketches
 /// whose solves it wrote, in timeline order (decision 28), and the problems it can't fix:
 /// failed features, solids that couldn't be measured, and the drift of features no edit
-/// reached, which keep what's stored with them.
+/// reached, which keep what's stored with them. A failed feature the edits reached is saved
+/// with no fingerprint (decision 28, amended), and isn't among those whose fingerprints it
+/// wrote.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Committed {
     pub written: bool,
@@ -499,12 +515,27 @@ pub struct RolledBack {
     pub restored: Revision,
 }
 
+impl Committed {
+    /// A commit that wrote nothing, of the document at `path`: what it found, `problems`.
+    pub(super) fn unwritten(path: String, problems: Problems) -> Self {
+        Committed {
+            written: false,
+            path,
+            refingerprinted: Vec::new(),
+            resolved: Vec::new(),
+            problems,
+        }
+    }
+}
+
 /// What `format` did (decision 31): whether its canonical text differs from the file (as
 /// the session read it before the command, reloading a change, decision 2), whether it
 /// wrote it, the path as `open` was given it, the features whose fingerprints it wrote (or,
 /// not writing, would write) anew and the sketches whose solves, the features among them
-/// whose drift it accepted, each in timeline order, and what it can't fix: failed features,
-/// solids that couldn't be measured, and the drift it didn't accept.
+/// whose drift it accepted, each in timeline order, and what it can't fix: failed features
+/// (one the session's edits reached saved with no fingerprint, decision 28 amended; any
+/// other keeping what's stored with it), solids that couldn't be measured, and the drift it
+/// didn't accept.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reformatted {
     pub changed: bool,
@@ -579,26 +610,53 @@ pub struct Status {
     pub features: Option<usize>,
     pub gated: bool,
     pub transaction: Option<Begun>,
-    pub running: Option<&'static str>,
-    pub reads: Vec<&'static str>,
+    pub running: Option<SessionCommand>,
+    pub reads: Vec<ReadCommand>,
     pub rebuild: Rebuild,
 }
 
-/// A session's current revision's rebuild, as `status` gives it: the revision, and what's
-/// become of its rebuild.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A session's current revision's rebuild, as `status` gives it: the revision, what's
+/// become of its rebuild, and how far that has got, if a rebuild of it has started. The
+/// wire gives its progress's `done` and `steps`, not the step running, as the design's
+/// `status` does (section 7).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rebuild {
     pub revision: Revision,
     pub state: RebuildState,
+    pub progress: Option<Progress>,
+}
+
+/// How far a rebuild has got (the design's section 6): its steps settled (built, failed,
+/// kept from before, or never to run; all of them once it finishes), the steps of its plan
+/// (none until its plan is made, after the sketches it sweeps are solved), and the step
+/// started last of those running, as its feature and the feature's type (`f0000001
+/// fillet`, MCP's progress message), none while no step runs. A diagnostic, not a result
+/// (section 10): which step finishes first depends on scheduling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Progress {
+    pub done: usize,
+    pub steps: usize,
+    pub running: Option<String>,
+}
+
+impl From<&StepCount> for Progress {
+    fn from(count: &StepCount) -> Self {
+        Progress {
+            done: count.done,
+            steps: count.steps,
+            running: count.running.clone(),
+        }
+    }
 }
 
 /// What's become of a revision's rebuild (the design's `status`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RebuildState {
-    /// Not started: no command has needed its model, or its rebuild was superseded, or an
-    /// edit's commit was cancelled while its rebuild ran; or the gate refused the document,
-    /// so there's nothing to rebuild.
-    None,
+    /// None running, and no end it reports (failed or cancelled): no command has needed
+    /// its model, or its rebuild was superseded, or an edit's commit was cancelled while its
+    /// rebuild ran; or the gate refused the document, so there's nothing to rebuild. Written
+    /// `none`.
+    Idle,
     /// Running: the revision's, or, for an edit made outside a transaction, its commit's.
     Running,
     /// Done, its model published.
@@ -614,7 +672,7 @@ impl RebuildState {
     /// As `status` writes it: `none`, `running`, `done`, `faulted`, or `stopped`.
     pub const fn as_str(self) -> &'static str {
         match self {
-            RebuildState::None => "none",
+            RebuildState::Idle => "none",
             RebuildState::Running => "running",
             RebuildState::Done => "done",
             RebuildState::Faulted => "faulted",
@@ -628,6 +686,6 @@ impl RebuildState {
 /// with its real result).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cancelled {
-    pub command: String,
+    pub command: SessionCommand,
     pub stopped: bool,
 }

@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::cancel::Ticket;
-use super::{Committed, Gated, ModelRead, Problems, Revision, Session, SessionId, shown};
+use super::{Committed, Gated, ModelRead, Problems, Revision, Session, SessionId, shown_path};
 use crate::command::edit::Candidate;
 use crate::document::Document;
 use crate::kernel::Kernel;
@@ -184,7 +184,7 @@ fn stale(made: Revision, at: Revision, reloaded: Option<&str>) -> Error {
     match reloaded {
         Some(path) => error.with_cause(format!(
             "{} was reloaded: it changed outside this session",
-            shown(Path::new(path))
+            shown_path(Path::new(path))
         )),
         None => error,
     }

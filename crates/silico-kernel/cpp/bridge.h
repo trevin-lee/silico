@@ -52,6 +52,7 @@ struct FreecadMeasures;
 struct DescribeOut;
 struct DistanceOut;
 struct HistoryEntry;
+struct SkippedElement;
 struct Counts;
 enum class Kind : uint8_t;
 enum class PointState : uint8_t;
@@ -118,6 +119,15 @@ DescribeOut describe(const Shape &shape, Kind kind, uint32_t first, uint32_t cou
 // is false and only the totals are set.
 DistanceOut distance(const Shape &first_shape, Kind first_kind, uint32_t first,
                      const Shape &second_shape, Kind second_kind, uint32_t second);
+
+// The least distance from `point` to the element of `kind` numbered `index` (from 1, in
+// TopExp::MapShapes order) of `shape`, as bounded, as FreeCAD's QuickMeasure measures a
+// circle's centre against a face or an edge: a vertex made at the point, and
+// BRepExtrema_DistShapeShape from it to the element, on one thread, at OCCT's default
+// precision, with every pair of points where it found it met (on the vertex, then on the
+// element), in OCCT's order. The vertex is the first element (`first_total` 1), the element
+// the second; if `index` isn't an element's, `found` is false and only the totals are set.
+DistanceOut point_distance(const Shape &shape, Kind kind, uint32_t index, const Point3 &point);
 
 // A triangle mesh of a shape's faces and polylines along its edges, for display. Faces
 // and edges are in TopExp::MapShapes order (edges numbered as edge_facts's). Built whole in
@@ -350,12 +360,14 @@ std::unique_ptr<Shape> sweep_revolution(const Shape &faces, Point3 origin, Point
 
 // Fuses, cuts, or intersects `base` and `tool` with OCCT's Boolean Operations, as FreeCAD
 // does (non-destructive, OCCT's default fuzzy value), but single-threaded. Appends the
-// history of `base` as input 0 and of `tool` as input 1, and the names of the warnings
-// OCCT reported (BOPAlgo_AlertTooSmallEdge, ...) to `warnings`. Throws with OCCT's report
-// if it fails.
+// history of `base` as input 0 and of `tool` as input 1, the names of the warnings OCCT
+// reported (BOPAlgo_AlertTooSmallEdge, ...) to `warnings`, and, two by two, each pair of
+// elements OCCT skipped intersecting (BOPAlgo_AlertIntersectionOfPairOfShapesFailed) to
+// `skipped`. Throws with OCCT's report if it fails.
 std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &tool,
                                rust::Vec<HistoryEntry> &history,
-                               rust::Vec<rust::String> &warnings);
+                               rust::Vec<rust::String> &warnings,
+                               rust::Vec<SkippedElement> &skipped);
 
 // How many distinct faces, edges, vertices, and solids the shape has.
 Counts count_elements(const Shape &shape);

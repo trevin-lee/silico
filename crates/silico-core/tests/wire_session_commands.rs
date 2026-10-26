@@ -17,11 +17,10 @@
 //! `check`'s broken reference is a real kernel's: silico-kernel's wire_examples.rs writes it
 //! on kernel workers, and it's the design's own text here too.
 //!
-//! The design's examples not in the contract are four, each for its reason ([`LEFT_OUT`]):
-//! `version`'s and `status`'s results, which hold limits and progress not built yet (their
-//! real results are pinned in wire_session_reads.rs); `open` outside a workspace, which
-//! nothing has yet; and `commit`'s `io_failed`, a disk out of room, which no test can make
-//! happen.
+//! The design's examples not in the contract are three, each for its reason ([`LEFT_OUT`]):
+//! `version`'s result, which holds limits not built yet (its real result is pinned in
+//! wire_session_reads.rs); `open` outside a workspace, which nothing has yet; and `commit`'s
+//! `io_failed`, a disk out of room, which no test can make happen.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -253,7 +252,7 @@ fn the_examples_are_the_designs_own_text() {
             "### `status` (M4.2)",
             "### `cancel` (M4.2)",
             "status",
-            &[Some("request"), None],
+            &[Some("request"), Some("result")],
         ),
         (
             "### `cancel` (M4.2)",
@@ -433,7 +432,7 @@ fn the_examples_are_the_designs_own_text() {
 
 /// The design's examples not in the contract, by command and what each is (a refusal's code
 /// and parameter, or `result` for a result), each with why.
-const LEFT_OUT: [(&str, &str, &str, &str); 4] = [
+const LEFT_OUT: [(&str, &str, &str, &str); 3] = [
     (
         "version",
         "result",
@@ -446,12 +445,6 @@ const LEFT_OUT: [(&str, &str, &str, &str); 4] = [
         "path",
         "open of a path outside the workspace a server was started in: no process has a \
          workspace until `silico serve` (M4.9), so nothing refuses one yet",
-    ),
-    (
-        "status",
-        "result",
-        "",
-        "its rebuild's done and steps are progress, not built yet (§7 status)",
     ),
     (
         "commit",

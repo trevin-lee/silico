@@ -23,8 +23,9 @@ use silico_core::command::wire::session::{
 use silico_core::command::wire::transaction::SessionRequest;
 use silico_core::command::wire::{Layout, ToWire, response, response_text, snapshot_value, write};
 use silico_core::command::{
-    Begun, Cancelled, Limits, MAX_SESSIONS, ModelChoice, Opened, OutlineAnswer, Problems, Rebuild,
-    RebuildState, Response, Revision, SessionId, Sessions, Status, TextAnswer, VERSION, Version,
+    Begun, Cancelled, Limits, MAX_SESSIONS, ModelChoice, Opened, OutlineAnswer, Problems, Progress,
+    ReadCommand, Rebuild, RebuildState, Response, Revision, SessionCommand, SessionId, Sessions,
+    Status, TextAnswer, VERSION, Version,
 };
 use silico_core::document::json::{Node, read};
 use silico_core::fake::{FakeKernel, FakeSketches, Hold};
@@ -265,7 +266,7 @@ fn the_designs_requests_are_read_written_back_byte_for_byte_and_hold_to_their_sc
         request,
         CancelRequest {
             session: s1(),
-            command: "check",
+            command: SessionCommand::Check,
         }
     );
     assert_eq!(written(&request), text);
@@ -343,7 +344,7 @@ fn requests_with_their_other_values_are_read_and_written_back() {
     for name in SESSION_COMMANDS {
         let text = format!("{{\"session\": \"s1\", \"command\": \"{name}\"}}\n");
         let request = CancelRequest::read(&parsed(&text)).unwrap();
-        assert_eq!(request.command, name);
+        assert_eq!(request.command.as_str(), name);
         assert_eq!(written(&request), text);
         holds(&schema_of("cancel", "request"), &text, name);
     }
@@ -714,40 +715,44 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
         features: Some(7),
         gated: true,
         transaction: Some(Begun { base: revision(4) }),
-        running: Some("check"),
-        reads: vec!["distance"],
+        running: Some(SessionCommand::Check),
+        reads: vec![ReadCommand::Distance],
         rebuild: Rebuild {
             revision: revision(6),
             state: RebuildState::Running,
+            progress: Some(Progress {
+                done: 3,
+                steps: 9,
+                running: Some("f0000001 fillet".to_owned()),
+            }),
         },
     };
-    // By hand: the design's result less the rebuild's progress (`done` and `steps`), not
-    // built yet, which is why its example isn't in the contract.
+    // By hand: the design's result, its rebuild 3 steps of 9 in; the step running, which
+    // the design's `status` doesn't give, isn't written.
     let text = written(&status);
     assert_eq!(
         text,
-        "{\n  \"features\": 7,\n  \"gated\": true,\n  \"transaction\": {\"base\": 4},\n  \"running\": \"check\",\n  \"reads\": [\"distance\"],\n  \"rebuild\": {\"revision\": 6, \"state\": \"running\"}\n}\n"
+        "{\n  \"features\": 7,\n  \"gated\": true,\n  \"transaction\": {\"base\": 4},\n  \"running\": \"check\",\n  \"reads\": [\"distance\"],\n  \"rebuild\": {\"revision\": 6, \"state\": \"running\", \"done\": 3, \"steps\": 9}\n}\n"
     );
     // Its read, `distance`, a read of the published model (M4.5's): it holds.
-    holds(
-        &schema_of("status", "result"),
-        &text,
-        "the design's, less progress",
-    );
+    holds(&schema_of("status", "result"), &text, "the design's");
     let designed = &design("### `status` (M4.2)", "### `cancel` (M4.2)")[1];
-    assert_eq!(
-        designed.replace(", \"done\": 3, \"steps\": 9", "") + "\n",
-        text,
-        "the design's, but for progress"
-    );
-    fails(&schema_of("status", "result"), designed, "the design's");
+    assert_eq!(designed.clone() + "\n", text, "the design's");
+    assert_eq!(text, example("status/result"));
+    // Progress is a count: a fraction, or a negative, isn't one.
+    for (from, to) in [
+        ("\"done\": 3", "\"done\": 2.5"),
+        ("\"steps\": 9", "\"steps\": -1"),
+    ] {
+        fails(&schema_of("status", "result"), &text.replace(from, to), to);
+    }
     // A session's own, on the fake kernel: a box, nothing running, nothing rebuilt.
     let f = opened(BOX);
     let request = SessionRequest::read(&parsed(&example("status/request"))).unwrap();
     let text = written(f.sessions.status(&request.session).result.as_ref().unwrap());
     assert_eq!(
         text,
-        "{\n  \"features\": 1,\n  \"gated\": true,\n  \"transaction\": null,\n  \"running\": null,\n  \"reads\": [],\n  \"rebuild\": {\"revision\": 1, \"state\": \"none\"}\n}\n"
+        "{\n  \"features\": 1,\n  \"gated\": true,\n  \"transaction\": null,\n  \"running\": null,\n  \"reads\": [],\n  \"rebuild\": {\"revision\": 1, \"state\": \"none\", \"done\": null, \"steps\": null}\n}\n"
     );
     holds(&schema_of("status", "result"), &text, "a box's");
     // A document the reader refuses: no features, not gated.
@@ -756,20 +761,21 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
         gated: false,
         transaction: None,
         running: None,
-        reads: vec!["elements", "query"],
+        reads: vec![ReadCommand::Elements, ReadCommand::Query],
         rebuild: Rebuild {
             revision: revision(9),
-            state: RebuildState::None,
+            state: RebuildState::Idle,
+            progress: None,
         },
     };
     assert_eq!(
         one_line(&other),
-        r#"{"features": null, "gated": false, "transaction": null, "running": null, "reads": ["elements", "query"], "rebuild": {"revision": 9, "state": "none"}}"#
+        r#"{"features": null, "gated": false, "transaction": null, "running": null, "reads": ["elements", "query"], "rebuild": {"revision": 9, "state": "none", "done": null, "steps": null}}"#
     );
     holds(&schema_of("status", "result"), &written(&other), "unread");
     // Every state, as the schema lists them, each the session's own word.
     let states = [
-        RebuildState::None,
+        RebuildState::Idle,
         RebuildState::Running,
         RebuildState::Done,
         RebuildState::Faulted,
@@ -788,6 +794,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
             rebuild: Rebuild {
                 revision: revision(2),
                 state,
+                progress: None,
             },
             ..other.clone()
         };
@@ -838,7 +845,7 @@ fn cancel_answers_and_refuses_as_the_design_gives_it() {
     assert!(edit.cancel());
     // A result by hand: not stopped, another command.
     let late = Cancelled {
-        command: "set_field".to_owned(),
+        command: SessionCommand::SetField,
         stopped: false,
     };
     assert_eq!(
@@ -1005,7 +1012,7 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
     }
     let base = |running: &str, reads: &str| {
         format!(
-            r#"{{"features": 1, "gated": true, "transaction": null, "running": {running}, "reads": [{reads}], "rebuild": {{"revision": 1, "state": "none"}}}}"#
+            r#"{{"features": 1, "gated": true, "transaction": null, "running": {running}, "reads": [{reads}], "rebuild": {{"revision": 1, "state": "none", "done": null, "steps": null}}}}"#
         )
     };
     holds(&status, &base(r#""check""#, ""), "check running");

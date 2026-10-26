@@ -6,9 +6,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use silico_core::document::{
-    Before, Document, FeatureId, QuotedIds, net_reach, reached, read, with_users,
-};
+use silico_core::document::{Before, Document, FeatureId, QuotedIds, net_reach, read, with_users};
 
 use crate::within::within;
 
@@ -25,6 +23,12 @@ const PART: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm
   {"id": "b0000001", "type": "box", "v": 1, "name": "Lug", "position": [100, 0, 0], "length": 10, "width": 10, "height": 10},
   {"id": "c0000001", "type": "cut", "v": 1, "name": "Notch", "base": "q0000001", "tool": "b0000001"}
 ]}"#;
+
+/// What the edits from `before` to `after` reach, with nothing carried: each feature whose
+/// own values changed, each added, and what uses one.
+fn reached(before: &Document, after: &Document) -> BTreeSet<FeatureId> {
+    net_reach(Before::Read(before), &BTreeSet::new(), after)
+}
 
 fn part() -> Document {
     read(PART.as_bytes()).unwrap()
@@ -247,6 +251,122 @@ fn reached_from(before: &str) -> BTreeSet<FeatureId> {
         &ids(&[]),
         &part(),
     )
+}
+
+#[test]
+fn from_text_that_didnt_read_mended_the_mends_new_features_and_what_changed_since_are_reached() {
+    // The merge mended as the part: the cut, whose ID the text hadn't, is the mend's new
+    // feature, reached. An edit after the mend, the block 50 long, reaches the block too,
+    // against the mend; undone, only the cut again.
+    let merged = merged();
+    let unread = QuotedIds::of(merged.as_bytes());
+    let mend = part();
+    let block_50 = edited(r#""length": 40"#, r#""length": 50"#);
+    let mended = |after: &Document| {
+        net_reach(
+            Before::Mended {
+                unread: &unread,
+                mend: &mend,
+            },
+            &ids(&[]),
+            after,
+        )
+    };
+    assert_eq!(mended(&part()), ids(&["c0000001"]));
+    assert_eq!(mended(&block_50), ids(&["c0000001", "k7f2qx3m"]));
+    // From the merge alone, the block's edit isn't seen: its ID was in the text.
+    assert_eq!(
+        net_reach(Before::Unread(&unread), &ids(&[]), &block_50),
+        ids(&["c0000001"])
+    );
+    // The lug, which the cut uses, edited after the mend: the cut is reached through it.
+    let lug = edited(
+        r#""length": 10, "width": 10"#,
+        r#""length": 20, "width": 10"#,
+    );
+    assert_eq!(mended(&lug), ids(&["b0000001", "c0000001"]));
+}
+
+#[test]
+fn from_text_that_didnt_read_mended_without_a_feature_it_held_putting_it_back_reaches_it_not() {
+    // The merge mended without the block, whose ID the merged text holds, and an edit after
+    // the mend puts it back: the block is one the text had, so it keeps its stored record
+    // and isn't reached; only the cut, whose ID the text hadn't, is.
+    let merged = merged();
+    let unread = QuotedIds::of(merged.as_bytes());
+    let mend = edited(
+        r#"
+  {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},"#,
+        "",
+    );
+    assert!(unread.holds(&FeatureId::new("k7f2qx3m").unwrap()));
+    assert_eq!(
+        net_reach(
+            Before::Mended {
+                unread: &unread,
+                mend: &mend,
+            },
+            &ids(&[]),
+            &part(),
+        ),
+        ids(&["c0000001"])
+    );
+}
+
+#[test]
+fn from_text_mended_a_feature_added_after_the_mend_is_reached() {
+    // A sphere whose ID neither the merged text nor the mend has, added after the mend: it
+    // is reached, with the cut the mend brought.
+    let merged = merged();
+    let unread = QuotedIds::of(merged.as_bytes());
+    let mend = part();
+    let added = edited(
+        r#""tool": "b0000001"}"#,
+        r#""tool": "b0000001"}, {"id": "n0000001", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5}"#,
+    );
+    assert_eq!(
+        net_reach(
+            Before::Mended {
+                unread: &unread,
+                mend: &mend,
+            },
+            &ids(&[]),
+            &added,
+        ),
+        ids(&["c0000001", "n0000001"])
+    );
+}
+
+#[test]
+fn from_text_mended_a_feature_removed_after_the_mend_is_not_reached() {
+    // The block removed after the mend: nothing used it, so only the cut is reached. The cut
+    // removed after the mend: the features it used are as they were, and it, gone, isn't
+    // reached either.
+    let merged = merged();
+    let unread = QuotedIds::of(merged.as_bytes());
+    let mend = part();
+    let mended = |after: &Document| {
+        net_reach(
+            Before::Mended {
+                unread: &unread,
+                mend: &mend,
+            },
+            &ids(&[]),
+            after,
+        )
+    };
+    let no_block = edited(
+        r#"
+  {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},"#,
+        "",
+    );
+    assert_eq!(mended(&no_block), ids(&["c0000001"]));
+    let no_cut = edited(
+        r#",
+  {"id": "c0000001", "type": "cut", "v": 1, "name": "Notch", "base": "q0000001", "tool": "b0000001"}"#,
+        "",
+    );
+    assert_eq!(mended(&no_cut), ids(&[]));
 }
 
 #[test]

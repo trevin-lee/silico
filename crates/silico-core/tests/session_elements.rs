@@ -209,7 +209,7 @@ fn a_model_that_holds_a_fault_gives_no_cursor_and_refuses_one_as_a_conflict() {
     assert_eq!(
         refused.errors()[0].suggestion(),
         Some(
-            "list from the start with a larger limit, or each body by its feature, whose pages go on; an edit that changes the document, reopening the session, or (M4.3) check with fresh rebuilds it; a save that writes only fingerprints keeps the fault"
+            "list from the start with a larger limit, or each body by its feature, whose pages go on; an edit that changes the document, or reopening the session, rebuilds it; a save that writes only fingerprints keeps the fault"
         )
     );
     // The current model is the revision's, kept, fault and all: the same page, no cursor,
@@ -281,7 +281,7 @@ fn elements_of_a_feature_a_fault_stopped_or_blocked_are_refused_with_the_fault()
     // blocked on it. Elements of either are refused with the fault itself, naming the first
     // fuse, which met it (the design's section 6), its suggestion that reading again won't
     // run it again, and what will.
-    const KEPT: &str = "reading this revision again won't, since it keeps the fault; an edit that changes the document, reopening the session, or (M4.3) check with fresh tries again; a save that writes only fingerprints keeps the fault";
+    const KEPT: &str = "reading this revision again won't, since it keeps the fault; an edit that changes the document, or reopening the session, tries again; a save that writes only fingerprints keeps the fault";
     let f = fixture();
     f.kernel.refuse(|op| {
         matches!(

@@ -70,9 +70,10 @@ use crate::kernel::{
     KernelRequest, Op, Primitive, Region, Reported, ShapeData, SketchPlane, SweepKind, Topology,
     cone_caps, primitive_counts,
 };
-use crate::pool::{ClientQueues, ClientTask, MAX_WORKERS, Outcome, Pending, deliver, thread_error};
+use crate::pool::{ClientQueues, ClientTask, MAX_WORKERS, Outcome, Pending, deliver};
 use crate::sketch::{SketchSolver, SolveStopper};
 use crate::worker::lock;
+use crate::worker::thread_error;
 use crate::{Error, ErrorCode};
 
 /// What the fake calls itself in its errors: a [`Pending`] stopped early, a thread that
@@ -135,6 +136,8 @@ struct State {
     clients: ClientQueues<dyn Task>,
     stopping: bool,
     calls: Vec<Call>,
+    /// Every request submitted, in order, whether or not it started.
+    asked: Vec<Call>,
     running: usize,
     most_running: usize,
     holds: Vec<HoldRule>,
@@ -156,6 +159,7 @@ impl FakeKernel {
                 clients: ClientQueues::new(),
                 stopping: false,
                 calls: Vec::new(),
+                asked: Vec::new(),
                 running: 0,
                 most_running: 0,
                 holds: Vec::new(),
@@ -184,6 +188,14 @@ impl FakeKernel {
     /// Every request started so far, in the order they started.
     pub fn calls(&self) -> Vec<Call> {
         lock(&self.shared.state).calls.clone()
+    }
+
+    /// Every request submitted so far, in the order they were, whether or not it started. A
+    /// request its caller dropped (a render that stops at the first body holding its eye) is
+    /// asked at once, but only starts, and is only in [`calls`](Self::calls), once a thread
+    /// takes it, which may be later: dropping it takes nothing from the queue.
+    pub fn asked(&self) -> Vec<Call> {
+        lock(&self.shared.state).asked.clone()
     }
 
     /// The most requests that have run at once.
@@ -414,6 +426,11 @@ impl Shared {
             span: tracing::Span::current(),
         });
         let mut state = lock(&self.state);
+        state.asked.push(Call {
+            client,
+            generation,
+            op: task.op().clone(),
+        });
         if state.stopping {
             // Dropping the task tells the caller the kernel stopped.
             return pending;
@@ -815,6 +832,11 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             };
             distance(&first_counts, *first, &second_counts, *second)
         }
+        Op::PointDistance {
+            shape,
+            element,
+            point,
+        } => point_distance(&Symbolic::read(shape)?.counts(), *element, *point),
         Op::Echo { data } => Ok(Reply::Echo { data: data.clone() }),
         other => Err(Error::new(
             ErrorCode::Internal,
@@ -918,6 +940,41 @@ fn distance(
         distance: (f64::from(first.index) - f64::from(second.index)).abs(),
         from: at(first),
         to: at(second),
+        solutions: 1,
+    }))
+}
+
+/// The fake's distance from `point` to `element`, of a shape whose counts are `counts`: the
+/// element at (n, 0, 0), its number `n`, as [`distance`] places it, so the distance is the
+/// point's from there, met there, once. Refused as a worker refuses it, in the same words.
+fn point_distance(
+    counts: &ElementCounts,
+    element: ElementRef,
+    point: [f64; 3],
+) -> Result<Reply, Error> {
+    let refused = |refusal| {
+        Err(crate::worker::failure_error(
+            "PointDistance",
+            silico_protocol::Failure::new(refusal),
+        ))
+    };
+    if let Err(refusal) = silico_protocol::check_point_distance(element, point) {
+        return refused(refusal);
+    }
+    let count = counts.of(element.kind);
+    if element.index > count {
+        return refused(silico_protocol::Refusal::ElementMissing {
+            parameter: "element".to_owned(),
+            element,
+            count,
+        });
+    }
+    let at = [f64::from(element.index), 0.0, 0.0];
+    let d = [point[0] - at[0], point[1] - at[1], point[2] - at[2]];
+    Ok(Reply::Distance(silico_protocol::Distance {
+        distance: (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt(),
+        from: point,
+        to: at,
         solutions: 1,
     }))
 }

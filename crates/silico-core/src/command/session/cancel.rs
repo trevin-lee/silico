@@ -8,12 +8,13 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use super::{Problems, Response, SessionInfo};
+use crate::command::SessionCommand;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
 /// What a stopped command's work is told to stop: a wait it may be in (a session's, for its
-/// rebuild), or, for a published read, the kernel work it asks for (its own client, which
-/// M4.5's reads give each read and this retires), told why. It may be told more than once (a
+/// rebuild), or, for a read of a model, the kernel work it asks for (its own client, which
+/// each read is given and this retires), told why. It may be told more than once (a
 /// cancel and a close, or a cancel racing the interrupt's adding), so telling it again must
 /// do nothing more.
 pub(super) trait Interrupt: Send + Sync {
@@ -43,7 +44,9 @@ const CANCELLED: u8 = 2;
 /// first decides, so a command stopped never leaves a trace, and one that left one is never
 /// said to be stopped.
 pub(super) struct Ticket {
-    command: &'static str,
+    /// The command it stops: none for `open`'s, its handle's alone, which runs before its
+    /// session is there for `cancel` to name it.
+    command: Option<SessionCommand>,
     state: AtomicU8,
     /// Whether its session closed ([`close`](Self::close)): kept, so what's interrupted
     /// after is interrupted at once.
@@ -55,8 +58,17 @@ pub(super) struct Ticket {
 }
 
 impl Ticket {
-    /// The ticket of a command named `command`, as requests and `cancel` name it.
-    pub(super) fn new(command: &'static str) -> Arc<Self> {
+    /// The ticket of `command`, which `cancel` names.
+    pub(super) fn new(command: SessionCommand) -> Arc<Self> {
+        Self::of(Some(command))
+    }
+
+    /// The ticket of `open`, which only its handle stops.
+    pub(super) fn opening() -> Arc<Self> {
+        Self::of(None)
+    }
+
+    fn of(command: Option<SessionCommand>) -> Arc<Self> {
         Arc::new(Ticket {
             command,
             state: AtomicU8::new(PENDING),
@@ -65,9 +77,14 @@ impl Ticket {
         })
     }
 
-    /// The command's name.
-    pub(super) fn command(&self) -> &'static str {
+    /// The command it stops, none for `open`'s.
+    pub(super) fn command(&self) -> Option<SessionCommand> {
         self.command
+    }
+
+    /// The command's name, as requests name it.
+    pub(super) fn name(&self) -> &'static str {
+        self.command.map_or("open", SessionCommand::as_str)
     }
 
     /// Stops the command unless it has settled, interrupting what it waits on: whether it
@@ -103,7 +120,7 @@ impl Ticket {
 
     /// `interrupt` told when the command is cancelled or its session closes: at once, if
     /// either has come. Added once, however often it's given, and those whose owners have
-    /// gone let go. M4.5's published reads add their kernel client here, so a cancel or a
+    /// gone let go. Each read of a model adds its kernel client here, so a cancel or a
     /// close retires it.
     pub(super) fn interrupt_with(&self, interrupt: Weak<dyn Interrupt>) {
         {
@@ -145,7 +162,7 @@ impl Ticket {
             .compare_exchange(PENDING, SETTLED, Ordering::SeqCst, Ordering::SeqCst)
         {
             Ok(_) | Err(SETTLED) => Ok(()),
-            Err(_) => Err(cancelled(self.command)),
+            Err(_) => Err(cancelled(self.name())),
         }
     }
 
@@ -162,7 +179,7 @@ impl Ticket {
             Response {
                 session: unrun(),
                 model: None,
-                result: Err(Problems::from(cancelled(self.command))),
+                result: Err(Problems::from(cancelled(self.name()))),
             }
         } else {
             run()
@@ -196,22 +213,22 @@ pub(super) fn cancelled(command: &str) -> Error {
 /// to pick: so a cancel that came late never stops the next command (decision 34).
 pub(super) fn not_running(
     session: super::SessionId,
-    command: &str,
-    running: &[&'static str],
+    command: SessionCommand,
+    running: &[SessionCommand],
 ) -> Error {
-    let named = plain(command);
-    let message = match running {
-        [] => format!("no {named} is running in session {session}"),
-        [one] => format!("no {named} is running in session {session}: {one} is"),
+    let names: Vec<&str> = running.iter().map(|running| running.as_str()).collect();
+    let message = match names.as_slice() {
+        [] => format!("no {command} is running in session {session}"),
+        [one] => format!("no {command} is running in session {session}: {one} is"),
         many => format!(
-            "no {named} is running in session {session}: {} are",
+            "no {command} is running in session {session}: {} are",
             many.join(", ")
         ),
     };
     Error::new(ErrorCode::InvalidInput, message)
         .with_parameter("command")
         .with_suggestion("cancel names the command it means; read status to see what's running")
-        .with_candidates(running.iter().fold(Vec::new(), |mut once, &name| {
+        .with_candidates(names.iter().fold(Vec::new(), |mut once, &name| {
             if !once.contains(&name) {
                 once.push(name);
             }
@@ -219,21 +236,11 @@ pub(super) fn not_running(
         }))
 }
 
-/// A command's name as a message says it: as it is, if it's a name a command could have
-/// (lowercase letters and `_`), or quoted, its control and invisible characters escaped.
-fn plain(command: &str) -> String {
-    if !command.is_empty() && command.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
-        command.to_owned()
-    } else {
-        crate::command::quoted(command)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// What a cancel interrupts, as M4.5's read client would be: each why it's told.
+    /// What a cancel interrupts, as a read's kernel client is: each why it's told.
     struct Told(Mutex<Vec<Why>>);
 
     impl Interrupt for Told {
@@ -255,7 +262,7 @@ mod tests {
         // `interrupt_with`'s rule: "none whose owner has gone kept". Three added, the second's
         // owner gone before the third: two kept, the first and the third, each told of the
         // cancel once.
-        let ticket = Ticket::new("probe");
+        let ticket = Ticket::new(SessionCommand::Text);
         let first = told();
         let gone = told();
         ticket.interrupt_with(weak(&first));

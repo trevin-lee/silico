@@ -44,6 +44,7 @@ fn two_faces_are_found_by_name_in_the_live_solids_and_measured_on_the_kernel() {
             to: [mm(6), mm(0), mm(0)],
             center_distance: None,
             normal_distance: None,
+            center_to_element: None,
         }
     );
     // The same name twice: 0 apart.
@@ -457,4 +458,184 @@ fn an_unstable_name_is_taken_as_a_measure_answers_once_and_stores_it_nowhere() {
     )
     .unwrap();
     assert_eq!(d.distance, mm(1));
+}
+
+/// `distance`'s `center_to_element` on the fake kernel, the box `bbbbbbbb`'s description
+/// forged so its elements have the centres and carriers each rule needs (the rest as the
+/// fake has them): Face1 the plane z = 0 (its centre of area (1, 0, 0), as the fake places
+/// a face); Face2 a cylinder whose axis runs along x through (0, 4, 3); Face3 one whose axis
+/// is z; Face4 one whose axis is 1e-12 radians off x, through (0, 0, 7), and Face5 one 1e-10
+/// off; Edge1 a circle centred (1, 3, 4), Edge2 an arc centred (4, 6, 8), Edge3 a circle
+/// centred (0, 0, 9); Edge4 the line along x from (0, 0, 0) to (10, 0, 0); Vertex1 at (4, 4,
+/// 0), Vertex2 at (0, 0, 2). The fake's point distance is the point's from (n, 0, 0), the
+/// element's number n, and its least distance how far apart the two numbers are, so each
+/// value below is by hand.
+mod centre_to_element {
+    use super::super::forged::{
+        BOX, circle, cylinder, forged, line_along_x, name, other_edge, other_face, plane_z0,
+    };
+    use super::{mm, pair};
+
+    use silico_core::command::measure::distance;
+    use silico_core::document::Length;
+    use silico_core::fake::FakeKernel;
+    use silico_core::kernel::{Description, ElementRef, Op};
+    use silico_core::recompute::{Model, Recompute};
+    use std::sync::Arc;
+
+    fn description() -> Description {
+        let off = |radians: f64| [libm::cos(radians), 0.0, libm::sin(radians)];
+        let faces = (1..=6u32)
+            .map(|n| match n {
+                1 => plane_z0(),
+                2 => cylinder([0.0, 4.0, 3.0], [1.0, 0.0, 0.0]),
+                3 => cylinder([0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+                4 => cylinder([0.0, 0.0, 7.0], off(1e-12)),
+                5 => cylinder([0.0, 0.0, 7.0], off(1e-10)),
+                n => other_face(n),
+            })
+            .collect();
+        let edges = (1..=12u32)
+            .map(|n| match n {
+                // A whole circle starts and ends at one point; an arc doesn't.
+                1 => circle([1.0, 3.0, 4.0], [2.0, 3.0, 4.0], [2.0, 3.0, 4.0]),
+                2 => circle([4.0, 6.0, 8.0], [5.0, 6.0, 8.0], [4.0, 7.0, 8.0]),
+                3 => circle([0.0, 0.0, 9.0], [1.0, 0.0, 9.0], [1.0, 0.0, 9.0]),
+                4 => line_along_x(),
+                n => other_edge(n),
+            })
+            .collect();
+        let vertices = (1..=8u32)
+            .map(|n| match n {
+                1 => [4.0, 4.0, 0.0],
+                2 => [0.0, 0.0, 2.0],
+                n => [f64::from(n), 0.0, 0.0],
+            })
+            .collect();
+        Description {
+            faces,
+            edges,
+            vertices,
+        }
+    }
+
+    /// The box rebuilt on a fake kernel whose descriptions are [`description`]'s.
+    fn forged_box() -> (Recompute<FakeKernel>, Arc<Model>) {
+        forged(BOX, description())
+    }
+
+    /// The `center_to_element` of the two elements, either way round (the same), and each
+    /// point distance the kernel was asked for, as (element, point).
+    fn centre_to(a: &str, b: &str) -> (Option<Length>, Vec<(ElementRef, [f64; 3])>) {
+        let (engine, model) = forged_box();
+        let kernel = engine.kernel();
+        let before = kernel.calls().len();
+        let ab = distance(&model, kernel, &pair(&name(a), &name(b)), None).unwrap();
+        let ba = distance(&model, kernel, &pair(&name(b), &name(a)), None).unwrap();
+        assert_eq!(ab.center_to_element, ba.center_to_element, "{a} and {b}");
+        let asked = kernel.calls()[before..]
+            .iter()
+            .filter_map(|call| match &call.op {
+                Op::PointDistance { element, point, .. } => Some((*element, *point)),
+                _ => None,
+            })
+            .collect();
+        (ab.center_to_element, asked)
+    }
+
+    #[test]
+    fn a_vertex_is_its_least_distance_from_a_plane_or_a_straight_edge_asked_once() {
+        // A vertex is its own centre: its distance from the other element as bounded is the
+        // pair's least distance, the fake's |2 − 1| = 1 from Face1 and |2 − 4| = 2 from Edge4,
+        // and no point distance is asked (which would be the fake's √(1² + 2²) = √5 from
+        // (1, 0, 0), and √(4² + 2²) = √20 from (4, 0, 0)).
+        assert_eq!(centre_to("Vertex2", "Face1"), (Some(mm(1)), Vec::new()));
+        assert_eq!(centre_to("Vertex2", "Edge4"), (Some(mm(2)), Vec::new()));
+        // Vertex1 and Face1 are both numbered 1: 0 apart.
+        assert_eq!(centre_to("Vertex1", "Face1"), (Some(mm(0)), Vec::new()));
+    }
+
+    #[test]
+    fn a_circles_centre_and_an_arcs_are_measured_to_a_plane_and_a_straight_edge() {
+        // Edge1's centre (1, 3, 4) to Face1, (1, 0, 0): √(3² + 4²) = 5.
+        let (d, asked) = centre_to("Edge1", "Face1");
+        assert_eq!(d, Some(mm(5)));
+        assert_eq!(asked, [(ElementRef::face(1), [1.0, 3.0, 4.0]); 2]);
+        // Edge2's, an arc's, (4, 6, 8) to Edge4, (4, 0, 0): √(6² + 8²) = 10.
+        let (d, asked) = centre_to("Edge2", "Edge4");
+        assert_eq!(d, Some(mm(10)));
+        assert_eq!(asked, [(ElementRef::edge(4), [4.0, 6.0, 8.0]); 2]);
+    }
+
+    #[test]
+    fn a_cylinders_axis_parallel_to_a_plane_or_a_line_is_its_gap_and_otherwise_null() {
+        // Face2's axis, along x through (0, 4, 3): 3 above the plane z = 0, and √(4² + 3²)
+        // = 5 from the line along x. Neither asks the kernel.
+        assert_eq!(centre_to("Face2", "Face1"), (Some(mm(3)), Vec::new()));
+        assert_eq!(centre_to("Face2", "Edge4"), (Some(mm(5)), Vec::new()));
+        // Face3's axis, z, crosses the plane and the line at right angles: null.
+        assert_eq!(centre_to("Face3", "Face1"), (None, Vec::new()));
+        assert_eq!(centre_to("Face3", "Edge4"), (None, Vec::new()));
+        // Off parallel by 1e-12 radians, 5.7e-11 degrees, 0 at the nanodegree: parallel,
+        // its point (0, 0, 7) 7 above the plane. By 1e-10, 5.7e-9 degrees, 6 nanodegrees:
+        // not parallel, so null, never a gap that holds only at its point.
+        assert_eq!(centre_to("Face4", "Face1"), (Some(mm(7)), Vec::new()));
+        assert_eq!(centre_to("Face4", "Edge4"), (Some(mm(7)), Vec::new()));
+        assert_eq!(centre_to("Face5", "Face1"), (None, Vec::new()));
+        assert_eq!(centre_to("Face5", "Edge4"), (None, Vec::new()));
+    }
+
+    #[test]
+    fn two_centres_or_two_carriers_or_a_centre_and_a_curved_face_are_null() {
+        for (a, b) in [
+            // Two vertices; two circles; a circle and a vertex.
+            ("Vertex1", "Vertex2"),
+            ("Edge1", "Edge3"),
+            ("Edge2", "Vertex2"),
+            // A plane and a line: no centre.
+            ("Face1", "Edge4"),
+            // A centre and a cylinder, or an edge of type other: neither straight nor flat.
+            ("Vertex1", "Face3"),
+            ("Edge1", "Face2"),
+            ("Vertex1", "Edge5"),
+            // A face of type other has no centre and no plane.
+            ("Face6", "Face1"),
+        ] {
+            assert_eq!(centre_to(a, b), (None, Vec::new()), "{a} and {b}");
+        }
+    }
+
+    #[test]
+    fn the_kernels_refusal_of_the_centres_distance_fails_the_measure_naming_both() {
+        // OCCT finding no distance from the centre: said in its own words, as the least
+        // distance's is in its, naming both elements, never a null in its place.
+        let (engine, model) = forged_box();
+        engine.kernel().refuse_as_worker(|op| {
+            matches!(op, Op::PointDistance { .. }).then(|| silico_protocol::Failure {
+                refusal: silico_protocol::Refusal::DistanceNotDone,
+                cause: Some("BRepExtrema_DistShapeShape: not done".to_owned()),
+            })
+        });
+        let refused = distance(
+            &model,
+            engine.kernel(),
+            &pair(&name("Edge1"), &name("Face1")),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(refused.total(), 1);
+        let error = &refused.errors()[0];
+        assert_eq!(error.code(), silico_core::ErrorCode::KernelFailed);
+        assert_eq!(
+            error.message(),
+            "the kernel couldn't find the distance from one of these elements' centre to the \
+             other"
+        );
+        assert_eq!(error.cause(), Some("BRepExtrema_DistShapeShape: not done"));
+        assert_eq!(error.parameter(), Some("elements"));
+        assert_eq!(
+            error.elements(),
+            [name("Edge1").as_str(), name("Face1").as_str()]
+        );
+    }
 }

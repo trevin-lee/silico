@@ -108,6 +108,55 @@ impl<'m> Lookup<'m> {
     /// The element `text` names, the request's `parameter` (`elements.0`); or none, why
     /// kept to say.
     pub(crate) fn find(&mut self, parameter: &str, text: &str) -> Option<Hit<'m>> {
+        let (id, map, element) = self.found(parameter, text)?;
+        let model = self.model;
+        let (Some(description), Ok(built)) = (model.description(id), built(model, id, false))
+        else {
+            // Said once a solid, naming the request's `feature` only if it named one.
+            if !self.undescribed.contains(&id) {
+                self.undescribed.push(id);
+                match super::elements::solid(model, id, self.asked) {
+                    Err(problems) => self.refused.absorb(problems),
+                    Ok(_) => self.refused.push(
+                        Error::new(
+                            ErrorCode::Internal,
+                            format!("{id}'s solid has entries but no description"),
+                        )
+                        .with_suggestion(crate::worker::SILICO_BUG),
+                    ),
+                }
+            }
+            return None;
+        };
+        Some(Hit {
+            feature: id,
+            element,
+            map,
+            description,
+            built,
+        })
+    }
+
+    /// The element `text` names, as [`find`](Self::find) finds it, and the feature whose
+    /// solid it's of, whether or not that solid could be described: for a command that
+    /// needs which element, not its geometry (`render`'s highlights, of a body drawn though
+    /// its measure failed).
+    pub(crate) fn find_element(
+        &mut self,
+        parameter: &str,
+        text: &str,
+    ) -> Option<(&'m FeatureId, ElementRef)> {
+        self.found(parameter, text)
+            .map(|(id, _, element)| (id, element))
+    }
+
+    /// The solid whose element `text` names, its map, and the element; or none, why kept to
+    /// say.
+    fn found(
+        &mut self,
+        parameter: &str,
+        text: &str,
+    ) -> Option<(&'m FeatureId, &'m ElementMap, ElementRef)> {
         let model = self.model;
         let makers = |id: &FeatureId| {
             model
@@ -164,7 +213,8 @@ impl<'m> Lookup<'m> {
         });
         let Some((id, map, element)) = hit else {
             // An element of a feature that failed, was broken, or was blocked is in no
-            // solid: that feature's own failure is why, said once (design §2's A1), never a
+            // solid: that feature's own failure is why, said once (as `elements` and the
+            // measures answer one: M4.1 section 7, M4.5), never a
             // name that finds nothing with another solid's elements offered for it.
             // (A sketch's elements are refused as they're parsed: no name of one gets here.)
             let maker = name.feature();
@@ -197,31 +247,7 @@ impl<'m> Lookup<'m> {
             ));
             return None;
         };
-        let (Some(description), Ok(built)) = (model.description(id), built(model, id, false))
-        else {
-            // Said once a solid, naming the request's `feature` only if it named one.
-            if !self.undescribed.contains(&id) {
-                self.undescribed.push(id);
-                match super::elements::solid(model, id, self.asked) {
-                    Err(problems) => self.refused.absorb(problems),
-                    Ok(_) => self.refused.push(
-                        Error::new(
-                            ErrorCode::Internal,
-                            format!("{id}'s solid has entries but no description"),
-                        )
-                        .with_suggestion(crate::worker::SILICO_BUG),
-                    ),
-                }
-            }
-            return None;
-        };
-        Some(Hit {
-            feature: id,
-            element,
-            map,
-            description,
-            built,
-        })
+        Some((id, map, element))
     }
 
     /// A refusal of the request's own, kept with the lookup's to say in its order.

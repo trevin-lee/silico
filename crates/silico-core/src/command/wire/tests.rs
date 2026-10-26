@@ -1094,7 +1094,7 @@ fn a_models_fault_is_written_in_the_error_contracts_shape() {
 /// What a kept fault's suggestion says on the wire, after the worker's own and "; to try
 /// again here: " (decision 32): reading the revision again won't, and what will, and what
 /// won't.
-const KEPT: &str = "reading this revision again won't, since it keeps the fault; an edit that changes the document, reopening the session, or (M4.3) check with fresh tries again; a save that writes only fingerprints keeps the fault";
+const KEPT: &str = "reading this revision again won't, since it keeps the fault; an edit that changes the document, or reopening the session, tries again; a save that writes only fingerprints keeps the fault";
 
 /// `wire_shape` closes an object, but leaves alone a schema that isn't one (an enum of
 /// names, as `SessionCommand` is): `additionalProperties` means nothing there.

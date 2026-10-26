@@ -16,7 +16,7 @@ use crate::document::{
     self, Checked, Document, Feature, FeatureId, Fingerprint, NamingScheme, Operation,
 };
 use crate::kernel::Kernel;
-use crate::recompute::{Model, Recompute, RunOutcome};
+use crate::recompute::{Model, Recompute, RunOutcome, Save};
 
 mod edit;
 pub mod elements;
@@ -25,14 +25,16 @@ pub mod measure;
 pub mod render;
 pub mod schema;
 mod session;
+mod session_command;
 pub mod wire;
 
 pub use session::{
     Added, Begun, Cancelled, CheckAnswer, Closed, Committed, FieldSet, MAX_PUBLISHED_READS,
-    MAX_SESSIONS, ModelChoice, ModelRead, NOT_RELOADED, Opened, OutlineAnswer, Published, Read,
-    ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision,
+    MAX_SESSIONS, ModelChoice, ModelRead, NOT_RELOADED, Opened, OutlineAnswer, Progress, Published,
+    Read, ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision,
     RolledBack, Running, SessionId, SessionInfo, Sessions, Status, Stopper, TOO_LONG, TextAnswer,
 };
+pub use session_command::{ReadCommand, SessionCommand};
 
 /// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for
 /// each change to a request's or result's shape that an older client couldn't read.
@@ -323,7 +325,8 @@ pub struct Formatted {
     /// values) the solve changed, in timeline order.
     pub resolved: Vec<document::FeatureId>,
     /// What the text can't fix: the features that didn't build, or whose solids couldn't be
-    /// measured, each keeping the fingerprint stored with it, and the drift of each feature
+    /// measured, each keeping the fingerprint stored with it (but, in a session, one its
+    /// edits reached, saved with none: decision 28, amended), and the drift of each feature
     /// whose record it leaves as stored. [`format`] writes every record it can, so its drift
     /// is only of measures a fingerprint can't hold.
     pub problems: Problems,
@@ -338,34 +341,41 @@ pub struct Formatted {
 /// model of its own, as [`check`] is.
 pub fn format(model: &Model) -> Result<Formatted, Problems> {
     let _span = tracing::info_span!("format").entered();
-    let every = model
-        .document()
-        .features
-        .iter()
-        .map(|f| f.id.clone())
-        .collect();
-    formatted(model, &every, &model.drifted())
+    formatted(model, |_| Save::Recorded, &model.drifted())
 }
 
-/// The model's document in canonical form with the fingerprint and solve of each feature in
-/// `writes` as the model rebuilt it (`Model::saved_for`), every other's as stored: what a
-/// session's commit writes (the features its edits reached, decision 28) and its `format`
-/// (every feature but those whose drift it doesn't accept, decision 31), as [`format`]
-/// writes every feature's. Its problems are the failures, the solids that couldn't be
-/// measured, and of `drift` (the model's, `Model::drifted`), that of every feature whose
-/// record it doesn't write, which it leaves as stored; a kernel fault set aside (a feature
-/// it stopped keeps what's stored with it, as a failed one does).
+/// The model's document in canonical form (`Model::saved_as`), each feature written as
+/// `save` says: as the model rebuilt it, with no fingerprint if it didn't build, for what a
+/// session's edits reached (decision 28, amended); with its fingerprint and solve as the
+/// model rebuilt it, or as stored if it didn't build; or as stored. What a session's commit
+/// writes (its edits' reach as rebuilt, every other as stored, decision 28) and its
+/// `format` (its edits' reach as rebuilt, and every other feature's record but those whose
+/// drift it doesn't accept, decision 31), as [`format`] writes every feature's record. Its
+/// problems are the failures, the solids that couldn't be measured, and of `drift` (the
+/// model's, `Model::drifted`), that of every feature it leaves as stored; a kernel fault
+/// set aside (a feature it stopped is saved as a failed one is). `refingerprinted` lists
+/// only fingerprints written, never one left out.
 fn formatted(
     model: &Model,
-    writes: &BTreeSet<FeatureId>,
+    save: impl Fn(&FeatureId) -> Save,
     drift: &[(FeatureId, Error)],
 ) -> Result<Formatted, Problems> {
     let mut problems = failures(model);
     let unlisted = model.unlisted_errors();
-    let written = model.saved_for(writes);
+    let writes: BTreeSet<FeatureId> = model
+        .document()
+        .features
+        .iter()
+        .map(|feature| &feature.id)
+        .filter(|id| save(id) != Save::Stored)
+        .cloned()
+        .collect();
+    let written = model.saved_as(save);
     let pairs = || model.document().features.iter().zip(&written.features);
     let refingerprinted = pairs()
-        .filter(|(before, after)| before.fingerprint != after.fingerprint)
+        .filter(|(before, after)| {
+            after.fingerprint.is_some() && before.fingerprint != after.fingerprint
+        })
         .map(|(before, _)| before.id.clone())
         .collect();
     // Bit for bit, as drift compares them: a coordinate solved to -0 from 0 is written so.
@@ -399,7 +409,7 @@ fn formatted(
     // Problems the save can't fix: the failures, the solids that couldn't be measured, and
     // the drift of what it leaves as stored; drift of what it writes is what it fixes.
     problems.extend(own(model
-        .drift_left(drift, writes)
+        .drift_left(drift, &writes)
         .map(|(_, error)| error.clone())
         .collect()));
     Ok(Formatted {

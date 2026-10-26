@@ -15,6 +15,7 @@
 //! Gauss–Legendre, the integrand smooth on each.
 
 use super::kernel::kernel;
+use super::logs::warnings_of;
 use super::quadrature::integral;
 
 use std::cell::RefCell;
@@ -307,19 +308,6 @@ fn banded_tube(band: Curve) -> FaceRegions {
     )
 }
 
-#[derive(Clone, Default)]
-struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-impl std::io::Write for Captured {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 #[test]
 fn an_arc_under_2e_9_rad_a_hair_off_symmetric_about_angle_0_keeps_its_surfaces_range() {
     // BREAKS (fixed): the edge's range and its revolved surface's domain were a turn apart.
@@ -359,20 +347,12 @@ fn an_arc_under_2e_9_rad_a_hair_off_symmetric_about_angle_0_keeps_its_surfaces_r
         let tube = silico_kernel::revolution(&faces, &Z_AXIS, 0.0, TAU)
             .unwrap()
             .shape;
-        let logs = Captured::default();
-        let writer = logs.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::WARN)
-            .with_ansi(false)
-            .with_writer(move || writer.clone())
-            .finish();
-        let cut = tracing::subscriber::with_default(subscriber, || {
+        let (cut, text) = warnings_of(|| {
             silico_kernel::boolean(BooleanOp::Cut, &tube, &block)
                 .unwrap()
                 .shape
         });
         let s = silico_kernel::summarize(&cut).unwrap();
-        let text = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
         if !(s.valid && near(s.volume, want, 1e-9))
             || text.contains("IntersectionOfPairOfShapesFailed")
         {

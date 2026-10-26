@@ -1187,8 +1187,8 @@ const NO_SKETCH_WORKER_ADVICE: &str = "point SILICO_SKETCH_WORKER at the silico-
 #[test]
 fn fmt_around_a_fault_says_what_it_wrote_then_the_fault_last() {
     // The sketch worker can't be had: the sketch keeps what its file holds, the block's
-    // fingerprint is written, and the fault is said last, in the CLI's words (R-M1: run
-    // it again, not a session's advice), exit 2.
+    // fingerprint is written, and the fault is said last, in the CLI's words (run it
+    // again, not a session's advice), exit 2.
     let scratch = Scratch::new("fmt-around-fault");
     let file = scratch.file(SKETCH_AND_BOX);
     let out = silico_with(&scratch, &["fmt"], &file, Path::new("/nowhere"));
@@ -1214,8 +1214,8 @@ fn fmt_around_a_fault_says_what_it_wrote_then_the_fault_last() {
 
 #[test]
 fn a_kernel_fault_is_said_in_the_clis_words_by_check_and_check_json() {
-    // R-M1: a session's advice (reopening the session, check with fresh) means nothing on
-    // the command line; the worker's own suggestion, then to run it again.
+    // A session's advice (an edit, or reopening the session) means nothing on the command
+    // line: the worker's own suggestion, then to run it again.
     let scratch = Scratch::new("check-fault-words");
     let file = scratch.file(SKETCH_AND_BOX);
     let out = silico_with(&scratch, &["check"], &file, Path::new("/nowhere"));
@@ -1266,8 +1266,8 @@ fn fmt_says_wrote_for_a_fingerprint_it_had_none_of() {
 
 #[test]
 fn checking_files_with_sketches_starts_one_sketch_worker() {
-    // A-M2: a sketch worker a session, three for three files, was one each; the sessions
-    // share one solver, as they share the kernel pool. Each file in a directory of its own,
+    // One sketch worker for three files, not one a session: the sessions share one
+    // solver, as they share the kernel pool. Each file in a directory of its own,
     // so none is solved from another's cache.
     let scratch = Scratch::new("one-sketch-worker");
     let files: Vec<PathBuf> = ["x", "y", "z"]

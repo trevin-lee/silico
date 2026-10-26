@@ -10,11 +10,17 @@ use super::json::{self, Value};
 use super::{Document, Feature, FeatureId};
 
 /// The document an edit was made from: read, or text that didn't read as one (a merge's
-/// conflict markers, say), which only `replace_text` mends, as the IDs it holds.
+/// conflict markers, say), which only `replace_text` mends, as the IDs it holds; or such
+/// text and the first document that read after it, its mend, which later edits are made
+/// from.
 #[derive(Clone, Copy, Debug)]
 pub enum Before<'a> {
     Read(&'a Document),
     Unread(&'a QuotedIds),
+    Mended {
+        unread: &'a QuotedIds,
+        mend: &'a Document,
+    },
 }
 
 /// The feature IDs a text that didn't read as a document holds quoted, as any reference to
@@ -96,7 +102,11 @@ fn id_of(between: &[u8]) -> Option<FeatureId> {
 /// didn't read, what changed is only each feature whose ID the text doesn't hold
 /// ([`QuotedIds`]): one it can't have had. Every other feature keeps its stored
 /// record, and its drift is said for `format` to accept by name, rather than every
-/// fingerprint written over because a merge left markers in the file.
+/// fingerprint written over because a merge left markers in the file. From such text
+/// mended, what changed is that of the mend's features, and what changed from the mend
+/// to `after`: so an edit after the mend reaches what it changed, and, undone, nothing; but
+/// a feature the mend hasn't is reached only if the text hasn't its ID either, so one the
+/// mend dropped and an edit put back keeps its record, as it would have without the mend.
 pub fn net_reach(
     before: Before<'_>,
     carried: &BTreeSet<FeatureId>,
@@ -105,31 +115,41 @@ pub fn net_reach(
     let mut seeds = carried.clone();
     match before {
         Before::Read(before) => seeds.extend(changed(before, after)),
-        Before::Unread(ids) => seeds.extend(
-            after
-                .features
-                .iter()
-                .map(|feature| &feature.id)
-                .filter(|id| !ids.holds(id))
-                .cloned(),
-        ),
+        Before::Unread(ids) => seeds.extend(not_held(ids, after)),
+        Before::Mended { unread, mend } => {
+            seeds.extend(not_held(unread, mend));
+            // A feature the mend hasn't is new against the text that didn't read, as one of
+            // the mend's own is: one whose ID that text held, put back, keeps its record.
+            let mended: BTreeSet<&FeatureId> = mend.features.iter().map(|f| &f.id).collect();
+            seeds.extend(
+                changed(mend, after)
+                    .into_iter()
+                    .filter(|id| mended.contains(id) || !unread.holds(id)),
+            );
+        }
     }
     with_users(after, &seeds)
 }
 
-/// The features of `after` that an edit from `before` reaches: each whose own values the
-/// edit changed (its type and values, or its version: anything but its name, its note, and
-/// its fingerprint), compared with the feature of the same ID in `before`; each it added
-/// (one whose ID `before` hasn't); and every feature of `after` that uses one of those,
-/// directly or through others ([`with_users`]). A removed feature reaches nothing itself:
-/// a feature that used it either changed what it uses, and is reached, or is refused by the
-/// gate. In timeline order is no matter: the set is by ID.
-pub fn reached(before: &Document, after: &Document) -> BTreeSet<FeatureId> {
-    with_users(after, &changed(before, after))
+/// The features of `document` whose IDs the text that didn't read doesn't hold (`ids`).
+fn not_held<'a>(
+    ids: &'a QuotedIds,
+    document: &'a Document,
+) -> impl Iterator<Item = FeatureId> + 'a {
+    document
+        .features
+        .iter()
+        .map(|feature| &feature.id)
+        .filter(|id| !ids.holds(id))
+        .cloned()
 }
 
 /// The features of `after` whose own values differ from those of the feature of the same ID
-/// in `before`, and those `before` hasn't: [`reached`] without what uses them.
+/// in `before` (its type and values, or its version: anything but its name, its note, and
+/// its fingerprint), and each it added (one whose ID `before` hasn't). A removed feature is
+/// none of them: a feature that used it either changed what it uses, and is one, or is
+/// refused by the gate. What uses them is reached too ([`with_users`]), as [`net_reach`]
+/// adds.
 fn changed(before: &Document, after: &Document) -> BTreeSet<FeatureId> {
     let mut was: BTreeMap<&FeatureId, &Feature> = BTreeMap::new();
     for feature in &before.features {

@@ -941,11 +941,23 @@ mod tests {
         let mut ids = FeatureIds::given([[0; 5], [0xff; 5], [0; 5]]);
         let document = held(&["00000000"]);
         assert_eq!(ids.next_free(&document).unwrap().as_str(), "zzzzzzzz");
-        // A source that keeps giving held IDs ends, refused.
-        let mut ids = FeatureIds::given([[0; 5]; ID_TRIES]);
+        // One held ID fewer than the tries, then a free one: the last try takes it.
+        let mut ids =
+            FeatureIds::given(std::iter::repeat_n([0; 5], ID_TRIES - 1).chain([[0xff; 5]]));
+        assert_eq!(ids.next_free(&document).unwrap().as_str(), "zzzzzzzz");
+        // A source that keeps giving held IDs ends after sixteen tries, refused as a bug,
+        // the free ID after them never taken.
+        assert_eq!(ID_TRIES, 16);
+        let mut ids = FeatureIds::given(std::iter::repeat_n([0; 5], ID_TRIES).chain([[0xff; 5]]));
+        let refused = ids.next_free(&document).unwrap_err();
         assert_eq!(
-            ids.next_free(&document).unwrap_err().code(),
-            ErrorCode::Internal
+            (refused.code(), refused.message(), refused.suggestion()),
+            (
+                ErrorCode::Internal,
+                "16 new feature IDs in a row were IDs the document holds",
+                Some(crate::worker::SILICO_BUG)
+            )
         );
+        assert_eq!(ids.next_free(&document).unwrap().as_str(), "zzzzzzzz");
     }
 }

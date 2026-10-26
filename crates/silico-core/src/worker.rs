@@ -1723,6 +1723,17 @@ pub(crate) fn shortage(e: &io::Error, message: &str) -> Option<Error> {
     )
 }
 
+/// A thread of `what` (`kernel pool`, `fake kernel`, `session`, `recompute`) that couldn't
+/// start: the system short of threads ([`shortage`]: `resource_exhausted`), or a bug.
+pub(crate) fn thread_error(what: &str, e: &io::Error) -> Error {
+    let message = format!("couldn't start a {what} thread");
+    shortage(e, &message).unwrap_or_else(|| {
+        Error::new(ErrorCode::Internal, message)
+            .with_cause(e.to_string())
+            .with_suggestion(SILICO_BUG)
+    })
+}
+
 /// A worker executable: the one `env` names, or `binary` next to the running executable.
 /// Cargo puts test binaries in a `deps` directory below the worker's, so from there it looks
 /// one directory up. `noun` names the worker in errors, and `build` says how to build it.
