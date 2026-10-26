@@ -56,6 +56,8 @@ pub(super) struct Rebuilds<C: Kernel + 'static> {
     /// The threads watching the rebuilds started: those ended joined as the next starts,
     /// the rest by `Sessions::drop`, for the sessions open then.
     pub(super) watchers: Threads,
+    /// How many rebuilds it has started: the number of the newest ([`Label::number`]).
+    pub(super) started: u64,
 }
 
 impl<C: Kernel + 'static> Rebuilds<C> {
@@ -76,6 +78,29 @@ impl<C: Kernel + 'static> Rebuilds<C> {
         Err(Problems::from(cancelled(stop.name())))
     }
 
+    /// `label` numbered as the newest rebuild started, after every one started before it.
+    pub(super) fn numbered(&mut self, label: Label) -> Label {
+        self.started = self.started.saturating_add(1);
+        Label {
+            number: self.started,
+            ..label
+        }
+    }
+
+    /// Whether a rebuild of `revision` that started after the one labelled `by` has said
+    /// what it came to: published its model, or ended without one. If so, what `by`'s comes
+    /// to, recorded late, never takes its place (a fresh check's rebuild, say, ending before
+    /// the rebuild it superseded is recorded: the revision's model stays the fresh one's).
+    fn said_later(&self, revision: Revision, by: &Label) -> bool {
+        let later = |other: &Label| other.number > by.number;
+        self.published.as_ref().is_some_and(|published| {
+            published.revision == revision && published.by.as_ref().is_some_and(later)
+        }) || self
+            .ended
+            .as_ref()
+            .is_some_and(|ended| ended.revision == revision && later(&ended.by))
+    }
+
     /// The rebuild labelled `label` stopped, if it's still the one running, for a command
     /// that was waiting on it and was cancelled (decision 34): through the pool's superseded
     /// path, as a newer generation's would, and running no more from here, its end said as
@@ -91,20 +116,29 @@ impl<C: Kernel + 'static> Rebuilds<C> {
             self.engine.cancel();
             self.running = None;
             if !label.candidate {
-                self.end(label.revision(), Ending::Cancelled);
+                self.end(label, Ending::Cancelled);
             }
         }
     }
 
-    /// `revision`'s rebuild ended as `how`, without publishing: kept unless a newer
-    /// revision's end is, so one of an older revision that ends late never hides it.
-    fn end(&mut self, revision: Revision, how: Ending) {
+    /// The rebuild labelled `by` ended as `how`, without publishing, as of the revision its
+    /// label says now: kept unless a newer revision's end is, so one of an older revision
+    /// that ends late never hides it; nor what a rebuild of the same revision started after
+    /// it has said ([`said_later`](Self::said_later)), so a late end of one it superseded
+    /// never hides that rebuild's model, failure, or stop.
+    pub(super) fn end(&mut self, by: &Label, how: Ending) {
+        let revision = by.revision();
         if self
             .ended
             .as_ref()
             .is_none_or(|ended| ended.revision <= revision)
+            && !self.said_later(revision, by)
         {
-            self.ended = Some(Ended { revision, how });
+            self.ended = Some(Ended {
+                revision,
+                how,
+                by: by.clone(),
+            });
         }
     }
 
@@ -197,6 +231,10 @@ pub(super) struct Label {
     /// What it reads of what was kept: nothing for `check`'s `fresh`, every step built anew
     /// ([`Recompute::start_fresh`]).
     reads: Reads,
+    /// Its place among the session's rebuilds, numbered as each starts
+    /// ([`Rebuilds::numbered`]): what a rebuild started later says of its revision is never
+    /// replaced by what this one comes to. Zero until it starts.
+    number: u64,
 }
 
 impl Label {
@@ -208,6 +246,7 @@ impl Label {
             candidate: false,
             cancelled: Arc::new(AtomicBool::new(false)),
             reads: Reads::Kept,
+            number: 0,
         }
     }
 
@@ -265,10 +304,14 @@ pub(super) struct Kept {
 pub(super) struct Ended {
     revision: Revision,
     how: Ending,
+    /// The rebuild that ended: a fresh read answers only with its own rebuild's failure, and
+    /// what a rebuild started after it comes to replaces it, never one started before.
+    by: Label,
 }
 
 /// How a rebuild ended without publishing. Each is kept as any end is ([`Rebuilds::end`]):
-/// over the end of its own revision or an older one, never a newer one's.
+/// over the end of its own revision or an older one, never a newer one's, nor over what a
+/// rebuild of its revision started after it said.
 pub(super) enum Ending {
     /// A newer one started first: whoever needs its model starts it again. One of an older
     /// revision, ending late, never hides a newer revision's failure or stop.
@@ -280,9 +323,8 @@ pub(super) enum Ending {
     /// Its recompute failed (a bug), and why: said once, to the command waiting on it or
     /// the next to need its model; one after that rebuilds it. A published read never
     /// starts it again (it would fail again, each frame), and refuses with `why`. `status`
-    /// says `faulted`, as of a model that holds a kernel fault. With the rebuild that
-    /// failed, `by`: a fresh read answers only with its own rebuild's failure.
-    Failed { why: Error, said: bool, by: Label },
+    /// says `faulted`, as of a model that holds a kernel fault.
+    Failed { why: Error, said: bool },
 }
 
 impl Ended {
@@ -377,7 +419,8 @@ impl<C: Kernel + 'static> Session<C> {
             // A failure of this revision's, said once; the read after that rebuilds it.
             if let Some(Ended {
                 revision: of,
-                how: Ending::Failed { why, said, by },
+                how: Ending::Failed { why, said },
+                by,
             }) = &mut rebuilds.ended
                 && *of == revision
                 && !*said
@@ -393,11 +436,11 @@ impl<C: Kernel + 'static> Session<C> {
             // checking again here would only narrow that window, never close it. A fresh
             // read starts its own, superseding any running.
             let label = Label::reading(revision, reached.clone(), reads);
-            if self.start_labelled(&mut rebuilds, checked, label.clone())? {
-                waited.clone_from(&rebuilds.running);
+            if let Some(started) = self.start_labelled(&mut rebuilds, checked, label)? {
                 if fresh {
-                    own = Some(label);
+                    own = Some(started.clone());
                 }
+                waited = Some(started);
             } else {
                 return Err(Problems::from(
                     Error::new(
@@ -430,16 +473,18 @@ impl<C: Kernel + 'static> Session<C> {
         reached: &Reached,
     ) -> Result<bool, Problems> {
         self.start_labelled(rebuilds, checked, Label::new(revision, reached.clone()))
+            .map(|started| started.is_some())
     }
 
     /// [`start_unless_newer`](Self::start_unless_newer), the rebuild labelled `label` (its
-    /// revision, what the session's edits reached at it, and whether it reads what's kept).
+    /// revision, what the session's edits reached at it, and whether it reads what's kept):
+    /// its label as it started, numbered ([`Rebuilds::numbered`]), if it did.
     fn start_labelled(
         self: &Arc<Self>,
         rebuilds: &mut Rebuilds<C>,
         checked: &Arc<Checked>,
         label: Label,
-    ) -> Result<bool, Problems> {
+    ) -> Result<Option<Label>, Problems> {
         let revision = label.revision();
         if self.closed() {
             return Err(Problems::from(not_open(self.id)));
@@ -450,27 +495,28 @@ impl<C: Kernel + 'static> Session<C> {
                 .as_ref()
                 .is_some_and(|published| published.revision > revision)
         {
-            return Ok(false);
+            return Ok(None);
         }
         rebuilds.ended = None;
         if let Some(kept) = &mut rebuilds.kept {
             kept.started = true;
         }
-        self.spawn_rebuild(rebuilds, checked, label)?;
-        Ok(true)
+        self.spawn_rebuild(rebuilds, checked, label).map(Some)
     }
 
     /// Starts a rebuild of `checked` on the session's engine, labelled `label`, with a
     /// thread watching it ([`watch`]) that records what it comes to: the rebuild running
-    /// from here on. Takes the lock's guard, so the start and the record of it are one
-    /// step; doesn't wait for it. Refused, with no rebuild running, if the watcher can't
-    /// start.
+    /// from here on, numbered as the newest started, its label as numbered given back. Takes
+    /// the lock's guard, so the start and the record of it are one step; doesn't wait for
+    /// it. Refused, with no rebuild running, if the watcher can't start.
     fn spawn_rebuild(
         self: &Arc<Self>,
         rebuilds: &mut Rebuilds<C>,
         checked: &Arc<Checked>,
         label: Label,
-    ) -> Result<(), Problems> {
+    ) -> Result<Label, Problems> {
+        let label = rebuilds.numbered(label);
+        let started = label.clone();
         rebuilds.watchers.reap();
         let run = rebuilds.engine.begin(Arc::clone(checked), label.reads);
         self.newest.started(label.clone(), run.progress());
@@ -482,7 +528,7 @@ impl<C: Kernel + 'static> Session<C> {
         {
             Ok(watcher) => {
                 rebuilds.watchers.push(watcher);
-                Ok(())
+                Ok(started)
             }
             Err(e) => {
                 rebuilds.running = None;
@@ -644,8 +690,7 @@ impl<C: Kernel + 'static> Session<C> {
             }
             rebuilds.stopped(stop, None)?;
             rebuilds.candidate = None;
-            let label = Label::candidate(revision);
-            self.spawn_rebuild(&mut rebuilds, checked, label.clone())?;
+            let label = self.spawn_rebuild(&mut rebuilds, checked, Label::candidate(revision))?;
             let outcome = loop {
                 if let Some((ended, _)) = &rebuilds.candidate
                     && ended.is(&label)
@@ -798,8 +843,9 @@ fn stopped_unpublished(id: SessionId) -> Error {
 
 /// Waits for a rebuild, `run`, then records what it came to in `session`'s rebuilds and
 /// says so, if the session is still there: as the revision its `label` says now (the last a
-/// rollback gave it to, if any did); and, if it's still the rebuild running, as running no
-/// more (one stopped and started again, or another's since, is left running).
+/// rollback gave it to, if any did), unless a rebuild of that revision started after it has
+/// said what it came to ([`Rebuilds::said_later`]); and, if it's still the rebuild running,
+/// as running no more (one stopped and started again, or another's since, is left running).
 pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Label, run: Run) {
     let outcome = run.wait();
     let Some(session) = session.upgrade() else {
@@ -823,7 +869,8 @@ pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Lab
     }
     match outcome {
         // A late model of an older revision never takes a newer one's place, nor one of a
-        // transaction rolled back the restored state's.
+        // transaction rolled back the restored state's, nor one of a rebuild superseded
+        // (after its engine published) what a rebuild of its revision started after it said.
         Ok(RunOutcome::Published(model)) => {
             // The model of the revision a transaction began from, if `begin` came while it
             // was rebuilding: what a rollback restores.
@@ -838,6 +885,7 @@ pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Lab
                     .published
                     .as_ref()
                     .is_none_or(|newest| newest.revision <= revision)
+                && !rebuilds.said_later(revision, label)
             {
                 rebuilds.published = Some(Published {
                     revision,
@@ -852,17 +900,10 @@ pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Lab
         // rebuild started since comes to.
         Ok(RunOutcome::Superseded) => {
             if !label.cancelled.load(Ordering::SeqCst) {
-                rebuilds.end(revision, Ending::Superseded);
+                rebuilds.end(label, Ending::Superseded);
             }
         }
-        Err(why) => rebuilds.end(
-            revision,
-            Ending::Failed {
-                why,
-                said: false,
-                by: label.clone(),
-            },
-        ),
+        Err(why) => rebuilds.end(label, Ending::Failed { why, said: false }),
     }
     drop(rebuilds);
     session.rebuilt.notify_all();
@@ -887,6 +928,7 @@ mod tests {
             floor: Revision::OPENED,
             candidate: None,
             watchers: Threads::new(),
+            started: 0,
         }
     }
 
@@ -894,12 +936,16 @@ mod tests {
         Ending::Failed {
             why: Error::new(ErrorCode::Internal, "the recompute failed"),
             said: false,
-            by: Label::new(ONE, Reached::default()),
         }
     }
 
     const ONE: Revision = Revision(1);
     const TWO: Revision = Revision(2);
+
+    /// The label of a rebuild of `revision` numbered as the newest `rebuilds` started.
+    fn started(rebuilds: &mut Rebuilds<FakeClient>, revision: Revision) -> Label {
+        rebuilds.numbered(Label::new(revision, Reached::default()))
+    }
 
     fn states(rebuilds: &Rebuilds<FakeClient>) -> [RebuildState; 2] {
         [rebuilds.state(ONE).state, rebuilds.state(TWO).state]
@@ -913,24 +959,71 @@ mod tests {
         use RebuildState::{Faulted, Idle, Stopped};
         let kernel = FakeKernel::new(1).unwrap();
         let mut rebuilds = rebuilds(&kernel, None);
-        rebuilds.end(ONE, failed());
+        let first = started(&mut rebuilds, ONE);
+        rebuilds.end(&first, failed());
         assert_eq!(states(&rebuilds), [Faulted, Idle]);
         // The same revision's later end replaces it.
-        rebuilds.end(ONE, Ending::Cancelled);
+        let again = started(&mut rebuilds, ONE);
+        rebuilds.end(&again, Ending::Cancelled);
         assert_eq!(states(&rebuilds), [Stopped, Idle]);
         // A newer revision's replaces it.
-        rebuilds.end(TWO, failed());
+        let second = started(&mut rebuilds, TWO);
+        rebuilds.end(&second, failed());
         assert_eq!(states(&rebuilds), [Idle, Faulted]);
         // An older revision's, ending late, never hides it.
-        rebuilds.end(ONE, Ending::Cancelled);
+        let late = started(&mut rebuilds, ONE);
+        rebuilds.end(&late, Ending::Cancelled);
         assert_eq!(states(&rebuilds), [Idle, Faulted]);
+    }
+
+    #[test]
+    fn a_late_end_of_a_rebuild_started_before_never_replaces_a_later_ones_of_its_revision() {
+        // Two rebuilds of revision 1, the second started after the first (a fresh check's,
+        // superseding it). Whatever the first comes to, recorded after the second's end,
+        // leaves the second's: its failure, its stop.
+        use RebuildState::{Faulted, Idle, Stopped};
+        let kernel = FakeKernel::new(1).unwrap();
+        let mut rebuilds = rebuilds(&kernel, None);
+        let before = started(&mut rebuilds, ONE);
+        let after = started(&mut rebuilds, ONE);
+        rebuilds.end(&after, failed());
+        assert_eq!(states(&rebuilds), [Faulted, Idle]);
+        // Superseded late: the failure stays, said as the second's.
+        rebuilds.end(&before, Ending::Superseded);
+        assert_eq!(states(&rebuilds), [Faulted, Idle]);
+        // Failed late: the second's failure stays the one kept.
+        rebuilds.end(&before, failed());
+        let Some(ended) = &rebuilds.ended else {
+            panic!("no end")
+        };
+        assert!(
+            ended.by.is(&after),
+            "the first's failure replaced the second's"
+        );
+        // The second's stop stays a stop, whatever the first's end.
+        rebuilds.end(&after, Ending::Cancelled);
+        assert_eq!(states(&rebuilds), [Stopped, Idle]);
+        rebuilds.end(&before, failed());
+        assert_eq!(states(&rebuilds), [Stopped, Idle]);
+        rebuilds.end(&before, Ending::Superseded);
+        assert_eq!(states(&rebuilds), [Stopped, Idle]);
+        // A third, started after both, replaces it.
+        let third = started(&mut rebuilds, ONE);
+        rebuilds.end(&third, Ending::Superseded);
+        assert_eq!(states(&rebuilds), [Idle, Idle]);
     }
 
     #[test]
     fn status_says_faulted_only_of_the_revision_whose_recompute_failed() {
         use RebuildState::{Faulted, Idle, Stopped};
         let kernel = FakeKernel::new(1).unwrap();
-        let ended = |revision, how| Some(Ended { revision, how });
+        let ended = |revision, how| {
+            Some(Ended {
+                revision,
+                how,
+                by: Label::new(revision, Reached::default()),
+            })
+        };
         // Revision 1's failure is its own, never revision 2's.
         let one_failed = rebuilds(&kernel, ended(ONE, failed()));
         assert_eq!(states(&one_failed), [Faulted, Idle]);

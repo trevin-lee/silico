@@ -60,6 +60,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
             floor: Revision::OPENED,
             candidate: None,
             watchers: Threads::new(),
+            started: 0,
         }),
         rebuilt: Condvar::new(),
         reads: Mutex::new(Reads::new()),
@@ -127,6 +128,75 @@ fn a_fresh_read_answers_with_its_own_rebuilds_model_never_one_recorded_after_it_
     // Its model is the revision's from then on.
     let published = lock(&session.rebuilds).published.clone().unwrap();
     assert_eq!(built_from(&published.model), "k7f2qx3m");
+}
+
+#[test]
+fn a_rebuild_started_before_a_fresh_one_never_replaces_what_the_fresh_one_came_to() {
+    // A rebuild of revision 1 that reads what's kept (another engine's sphere, here) starts
+    // before a fresh read's; the fresh rebuild (the box) publishes first, and the first's
+    // watcher records its model only after. The revision's model stays the fresh one's:
+    // the read after it gets the box, never the model of before the fresh check.
+    let kernel = FakeKernel::new(2).unwrap();
+    let (session, _jobs) = session(&kernel);
+    let before = lock(&session.rebuilds).numbered(Label::new(Revision::OPENED, Reached::default()));
+    let other = FakeKernel::new(1).unwrap();
+    let late = Recompute::new(other.client());
+    let run = late.start(checked(SPHERE));
+    let fresh = session
+        .model_with(
+            &probe(),
+            Revision::OPENED,
+            &checked(BOX),
+            &Reached::default(),
+            crate::recompute::Reads::Nothing,
+        )
+        .unwrap();
+    assert_eq!(built_from(&fresh), "k7f2qx3m");
+    watch(&Arc::downgrade(&session), &before, run);
+    let published = lock(&session.rebuilds).published.clone().unwrap();
+    assert_eq!(published.revision, Revision::OPENED);
+    assert_eq!(built_from(&published.model), "k7f2qx3m");
+    assert!(Arc::ptr_eq(&published.model, &fresh));
+    // A read of what's kept answers with it, starting nothing.
+    let read = session
+        .model(
+            &probe(),
+            Revision::OPENED,
+            &checked(BOX),
+            &Reached::default(),
+        )
+        .unwrap();
+    assert!(Arc::ptr_eq(&read, &fresh));
+    assert_eq!(
+        kernel
+            .calls()
+            .iter()
+            .filter(|call| call.op.name() == "MakeBox")
+            .count(),
+        1
+    );
+    // Nor does one started before a rebuild of the revision that ended unpublished (a
+    // stop, here) take that one's place with its late model.
+    let earlier =
+        lock(&session.rebuilds).numbered(Label::new(Revision::OPENED, Reached::default()));
+    let later = lock(&session.rebuilds).numbered(Label::new(Revision::OPENED, Reached::default()));
+    lock(&session.rebuilds).end(&later, Ending::Cancelled);
+    watch(
+        &Arc::downgrade(&session),
+        &earlier,
+        late.start(checked(SPHERE)),
+    );
+    let published = lock(&session.rebuilds).published.clone().unwrap();
+    assert!(Arc::ptr_eq(&published.model, &fresh));
+    // One started after both publishes over them.
+    let last = lock(&session.rebuilds).numbered(Label::new(Revision::OPENED, Reached::default()));
+    watch(
+        &Arc::downgrade(&session),
+        &last,
+        late.start(checked(SPHERE)),
+    );
+    let published = lock(&session.rebuilds).published.clone().unwrap();
+    assert_eq!(built_from(&published.model), "a91cw0de");
 }
 
 #[test]
