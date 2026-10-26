@@ -416,11 +416,10 @@ pub fn distance<K: Kernel>(
                 Some(0 | 180_000_000_000)
             );
             if parallel {
-                // A line and a plane: the line's point from the plane, whichever is first.
+                // A line and a plane: the line's point from the plane, whichever is first (a
+                // line's reference is its middle, so the second's from the first serves a
+                // plane then a line too).
                 let apart = match (&first, &second) {
-                    (Carrier::Plane { .. }, Carrier::Line { middle, .. }) => {
-                        first.distance_to(*middle)
-                    }
                     (Carrier::Line { middle, .. }, Carrier::Plane { .. }) => {
                         second.distance_to(*middle)
                     }
@@ -841,7 +840,52 @@ fn point_to_line(p: [f64; 3], point: [f64; 3], direction: [f64; 3]) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::article;
+    use super::{Centre, article, centre_gap, cross, kernel_words};
+    use crate::{Error, ErrorCode};
+
+    #[test]
+    fn a_cross_product_is_each_component_by_hand() {
+        // The mutation run: every angle tested lay in one plane, so two of the three
+        // components' signs went untested. (1, 2, 3) × (4, 5, 6) = (2·6 − 3·5, 3·4 − 1·6,
+        // 1·5 − 2·4) = (−3, 6, −3).
+        assert_eq!(cross([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]), [-3.0, 6.0, -3.0]);
+    }
+
+    #[test]
+    fn skew_axes_are_as_far_apart_as_their_common_perpendicular() {
+        // The mutation run: the axes tested met at right angles, so the cross product's
+        // length was 1 and dividing by it untested. The x axis, and an axis 5 above it at 45°
+        // in a plane parallel to xy: their common perpendicular is along z, 5 long.
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        let x = Centre::Line {
+            point: [0.0, 0.0, 0.0],
+            direction: [1.0, 0.0, 0.0],
+        };
+        let skew = Centre::Line {
+            point: [3.0, -2.0, 5.0],
+            direction: [h, h, 0.0],
+        };
+        let gap = centre_gap(&x, &skew);
+        assert!((gap - 5.0).abs() <= 1e-12, "{gap}");
+    }
+
+    #[test]
+    fn only_the_kernels_not_done_is_reworded() {
+        // The mutation run: either half of the test alone was untested. Kernel_failed with
+        // another cause, and another code with the not-done cause, pass as they are.
+        const NOT_DONE: &str = "BRepExtrema_DistShapeShape: not done";
+        let reworded = kernel_words(Error::new(ErrorCode::KernelFailed, "x").with_cause(NOT_DONE));
+        assert_eq!(
+            reworded.message(),
+            "the kernel couldn't find the least distance between these elements"
+        );
+        for kept in [
+            Error::new(ErrorCode::KernelFailed, "x").with_cause("another"),
+            Error::new(ErrorCode::InvalidResult, "x").with_cause(NOT_DONE),
+        ] {
+            assert_eq!(kernel_words(kept.clone()), kept);
+        }
+    }
 
     #[test]
     fn a_word_takes_its_article() {

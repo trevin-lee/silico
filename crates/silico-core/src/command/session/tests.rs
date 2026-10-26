@@ -2479,3 +2479,26 @@ fn a_reads_client_interrupted_by_its_stop_is_superseded_and_one_added_after_at_o
         assert!(matches!(asked, Outcome::Superseded), "{why:?} {asked:?}");
     }
 }
+
+#[test]
+fn a_reads_client_is_its_kernels_and_advances_it() {
+    // The mutation run: a read's client's identity and advance went untested. It names the
+    // kernel it's a client of, and advancing it supersedes what it asks for after, at the
+    // generation it began at.
+    let kernel = FakeKernel::new(1).unwrap();
+    let client = ReadClient::new(kernel.client());
+    assert_eq!(client.identity(), kernel.identity());
+    client.advance(crate::kernel::Generation(u64::MAX));
+    let asked = client
+        .submit(
+            client.generation(),
+            KernelRequest::make(Primitive::Box {
+                dx: 1.0,
+                dy: 1.0,
+                dz: 1.0,
+            })
+            .unwrap(),
+        )
+        .wait();
+    assert!(matches!(asked, Outcome::Superseded), "{asked:?}");
+}
