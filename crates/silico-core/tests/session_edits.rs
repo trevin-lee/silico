@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
-use silico_core::command::{ModelChoice, ModelRead, Response, Revision, SessionId, Sessions};
+use silico_core::command::{
+    ModelChoice, ModelRead, Rebuild, RebuildState, Response, Revision, SessionId, Sessions,
+};
 use silico_core::document::json::{Node, Plain};
 use silico_core::document::{self, Length, Measure, Operation};
 use silico_core::fake::{FakeKernel, FakeSketches};
@@ -384,6 +386,39 @@ fn a_refused_commit_of_an_edit_outside_a_transaction_leaves_the_session_as_it_wa
     let text = answer(f.sessions.text(&f.id, None));
     assert!(text.session.unwrap().reloaded);
     assert_eq!(text.result.unwrap().text, "edited elsewhere");
+}
+
+#[test]
+fn a_refused_commit_s_ended_rebuild_is_no_progress_of_the_session_s_revision() {
+    let f = opened(BLOCK);
+    // As above: the file changes while the edit's commit rebuilds, so its save is refused
+    // after its candidate's rebuild has ended, built.
+    let hold = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+    let running = f.sessions.set_field(
+        &f.id,
+        Revision::OPENED,
+        id("k7f2qx3m"),
+        "length".to_owned(),
+        value("41"),
+    );
+    assert!(f.kernel.wait_running(1, crate::sessions::HANG));
+    std::fs::write(&f.path, "edited elsewhere").unwrap();
+    hold.release();
+    let error = the_error(&answer(running));
+    assert_eq!(error.code(), ErrorCode::Conflict);
+    // The design's `status` (section 7): the candidate was the revision the save would
+    // have given, never saved, and no command has needed revision 1's model, so its
+    // rebuild is `none`, and `done` and `steps` are null: no rebuild of it has started.
+    assert_eq!(
+        f.sessions.status(&f.id).result.unwrap().rebuild,
+        Rebuild {
+            revision: Revision::OPENED,
+            state: RebuildState::Idle,
+            progress: None,
+        }
+    );
 }
 
 #[test]
