@@ -7,82 +7,20 @@
 //! as written here by hand, and lengths in nanometres worked out by hand.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
-use silico_core::cache::Cache;
 use silico_core::command::render::Render;
 use silico_core::command::wire::{COMMANDS, Layout, response_text};
 use silico_core::command::{
-    Answered, Call, Calling, Command, ModelChoice, Response, Revision, SessionId, Sessions, VERSION,
+    Answered, Call, Calling, Command, ModelChoice, Response, Revision, SessionId, VERSION,
 };
 use silico_core::document::json::Node;
 use silico_core::document::{Length, Operation};
-use silico_core::fake::{FakeKernel, FakeRenderer};
 use silico_core::kernel::{Op, Primitive};
 use silico_core::views::NamedView;
-use tempfile::TempDir;
 
+use crate::calls::{BOX, Fixture, answered, envelope, fixture};
 use crate::example::EXAMPLE;
 use crate::sessions::{HANG, answer, id};
-
-/// A 40 × 20 × 10 box.
-const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
-
-/// Sessions on a fake kernel, drawing with a fake renderer, in a workspace of their own.
-struct Fixture {
-    _dir: TempDir,
-    work: PathBuf,
-    kernel: Arc<FakeKernel>,
-    sessions: Sessions<Arc<FakeKernel>>,
-}
-
-fn fixture() -> Fixture {
-    let dir = tempfile::tempdir().unwrap();
-    let work = std::fs::canonicalize(dir.path()).unwrap().join("work");
-    std::fs::create_dir(&work).unwrap();
-    let secret = dir.path().join("secret");
-    let kernel = Arc::new(FakeKernel::new(2).unwrap());
-    let sessions = Sessions::with_cache_opener(Arc::clone(&kernel), move |cache| {
-        Cache::with_secret(cache, &secret)
-    })
-    .rendering(FakeRenderer::new())
-    .in_workspace(&work)
-    .unwrap();
-    Fixture {
-        _dir: dir,
-        work,
-        kernel,
-        sessions,
-    }
-}
-
-impl Fixture {
-    /// `text` written at `name` in the workspace.
-    fn file(&self, name: &str, text: &str) {
-        std::fs::write(self.work.join(name), text).unwrap();
-    }
-
-    /// The command `name` called on `arguments`, which must be a command's.
-    fn calling(&self, name: &str, arguments: &str) -> Calling {
-        match self.sessions.call(name, arguments) {
-            Call::Running(calling) => calling,
-            Call::Unknown => panic!("{name} is no command"),
-        }
-    }
-
-    /// The answer of the command `name` called on `arguments`.
-    fn call(&self, name: &str, arguments: &str) -> Answered {
-        answered(self.calling(name, arguments))
-    }
-}
-
-/// The call's answer, failing if it hangs.
-fn answered(calling: Calling) -> Answered {
-    match calling.wait_timeout(HANG) {
-        Ok(answered) => answered,
-        Err(_) => panic!("the call didn't answer in {HANG:?}"),
-    }
-}
 
 /// What `call` must answer for the typed method's `response`: its envelope on one line, and
 /// whether it ran.
@@ -100,11 +38,6 @@ fn value(text: &str) -> Node {
 
 fn s(n: &str) -> SessionId {
     SessionId::parse(n).unwrap()
-}
-
-/// The answer's envelope, as a value.
-fn envelope(answered: &Answered) -> serde_json::Value {
-    serde_json::from_str(&answered.text).unwrap()
 }
 
 /// The committed snapshot of `command`'s request.
@@ -666,6 +599,10 @@ fn a_request_nested_past_the_limit_or_longer_than_it_is_refused_unread() {
         )
     );
     assert_eq!(past["errors"][0]["parameter"], serde_json::Value::Null);
+    assert_eq!(
+        past["errors"][0]["suggestion"],
+        format!("send less at once: a request is at most {most} bytes")
+    );
 }
 
 #[test]
@@ -895,4 +832,254 @@ fn a_call_is_waited_on_by_another_thread_than_the_one_that_called() {
         (opened, status.join().unwrap())
     });
     assert!(open.ok && status.ok, "{} {}", open.text, status.text);
+}
+
+/// `a`, and every other answer in `others`, told apart: so a field `call` dropped (each of
+/// `others` its request with that field at its default) can't answer as `a` does.
+fn apart(a: &Answered, others: &[&Answered], what: &str) {
+    for other in others {
+        assert_ne!(
+            a.text, other.text,
+            "{what}: a field's default answers alike"
+        );
+    }
+}
+
+#[test]
+fn every_field_of_a_request_reaches_its_typed_method() {
+    // Found by the review: rows where each field was at its default passed with `call`
+    // dropping it (`format(.., None, false)`, `check(.., Current)`, `elements(.., None, None,
+    // ..)`, `mass_properties(.., None)`, `distance(.., None)`). Each field here differs from
+    // its default, and the answer with it at its default is told apart from it.
+    let s1 = s("s1");
+    let (by_name, typed) = (fixture(), fixture());
+    for f in [&by_name, &typed] {
+        f.file("part.silico", EXAMPLE);
+        answer(f.sessions.open("part.silico", false))
+            .result
+            .unwrap();
+    }
+    let t = &typed.sessions;
+    let block = || Some(id("k7f2qx3m"));
+    // `elements` of the block alone, after its first entry: the cut's bodies, and from the
+    // start, list otherwise.
+    let first = answer(t.elements(&s1, ModelChoice::Current, block(), None, 1))
+        .result
+        .unwrap();
+    let cursor = envelope(&by_name.call(
+        "elements",
+        r#"{"session": "s1", "model": "current", "feature": "k7f2qx3m", "after": null, "limit": 1}"#,
+    ))["result"]["next"]
+        .clone();
+    assert!(cursor.is_object(), "{cursor}");
+    let elements = |feature: &str, after: &str| {
+        by_name.call(
+            "elements",
+            &format!(
+                r#"{{"session": "s1", "model": "current", "feature": {feature}, "after": {after}, "limit": 2}}"#
+            ),
+        )
+    };
+    let cursor = cursor.to_string();
+    let listed = elements(r#""k7f2qx3m""#, &cursor);
+    assert_eq!(
+        listed,
+        as_written(&answer(t.elements(
+            &s1,
+            ModelChoice::Current,
+            block(),
+            first.next,
+            2
+        )))
+    );
+    apart(
+        &listed,
+        &[
+            &elements("null", &cursor),
+            &elements(r#""k7f2qx3m""#, "null"),
+        ],
+        "elements",
+    );
+    // `mass_properties` of the block alone, not of the cut, the one body.
+    let mass = |feature: &str| {
+        by_name.call(
+            "mass_properties",
+            &format!(r#"{{"session": "s1", "model": "current", "feature": {feature}}}"#),
+        )
+    };
+    let block_mass = mass(r#""k7f2qx3m""#);
+    assert!(block_mass.ok, "{}", block_mass.text);
+    assert_eq!(
+        block_mass,
+        as_written(&answer(t.mass_properties(
+            &s1,
+            ModelChoice::Current,
+            block()
+        )))
+    );
+    apart(&block_mass, &[&mass("null")], "mass_properties");
+    // `distance` and `angle` between two of the block's faces, looked for in the pin's
+    // element map, which hasn't them: the bodies' (the cut's) has.
+    let faces = answer(t.elements(&s1, ModelChoice::Current, block(), None, 2))
+        .result
+        .unwrap();
+    let [a, b] = [0, 1].map(|i| faces.entries[i].name.to_string());
+    let pair = serde_json::to_string(&[&a, &b]).unwrap();
+    for name in ["distance", "angle"] {
+        let measured = |feature: &str| {
+            by_name.call(
+                name,
+                &format!(
+                    r#"{{"session": "s1", "model": "current", "elements": {pair}, "feature": {feature}}}"#
+                ),
+            )
+        };
+        let expected = if name == "distance" {
+            as_written(&answer(t.distance(
+                &s1,
+                ModelChoice::Current,
+                [a.clone(), b.clone()],
+                Some(id("a91cw0de")),
+            )))
+        } else {
+            as_written(&answer(t.angle(
+                &s1,
+                ModelChoice::Current,
+                [a.clone(), b.clone()],
+                Some(id("a91cw0de")),
+            )))
+        };
+        let of_pin = measured(r#""a91cw0de""#);
+        assert_eq!(of_pin, expected, "{name}");
+        apart(&of_pin, &[&measured("null")], name);
+    }
+}
+
+#[test]
+fn a_read_of_the_published_model_reaches_its_typed_method_as_one() {
+    // The published model at revision 1, the session at 2, its rebuild held: a read of the
+    // published model answers of revision 1 at once; of the current one, it waits.
+    let s1 = s("s1");
+    let (by_name, typed) = (fixture(), fixture());
+    let (mut holds, mut edits) = (Vec::new(), Vec::new());
+    for f in [&by_name, &typed] {
+        f.file("part.silico", BOX);
+        answer(f.sessions.open("part.silico", false))
+            .result
+            .unwrap();
+        answer(f.sessions.check(&s1, ModelChoice::Current))
+            .result
+            .unwrap();
+        holds.push(
+            f.kernel
+                .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. }))),
+        );
+        // The edit waits on its rebuild, held: sent, not waited on.
+        edits.push(f.calling(
+            "set_field",
+            r#"{"session": "s1", "revision": 1, "feature": "k7f2qx3m", "field": "length", "value": 41}"#,
+        ));
+        assert!(f.kernel.wait_running(1, HANG));
+    }
+    let t = &typed.sessions;
+    let promptly = |calling: Calling, what: &str| match calling
+        .wait_timeout(std::time::Duration::from_secs(10))
+    {
+        Ok(answer) => answer,
+        Err(_) => panic!("{what} waited on the held rebuild: read the current model"),
+    };
+    let check = promptly(
+        by_name.calling(
+            "check",
+            r#"{"session": "s1", "model": "published", "fresh": false}"#,
+        ),
+        "check",
+    );
+    assert_eq!(
+        check,
+        as_written(&answer(t.check(&s1, ModelChoice::Published)))
+    );
+    let elements = promptly(
+        by_name.calling(
+            "elements",
+            r#"{"session": "s1", "model": "published", "feature": null, "after": null, "limit": 3}"#,
+        ),
+        "elements",
+    );
+    assert_eq!(
+        elements,
+        as_written(&answer(t.elements(
+            &s1,
+            ModelChoice::Published,
+            None,
+            None,
+            3
+        )))
+    );
+    // Of revision 1, the edit's rebuild held.
+    for answer in [&check, &elements] {
+        let envelope = envelope(answer);
+        assert!(answer.ok, "{envelope}");
+        assert_eq!(envelope["model"]["revision"], 1, "{envelope}");
+        assert_eq!(envelope["model"]["of"], "published", "{envelope}");
+    }
+    for (hold, edit) in holds.into_iter().zip(edits) {
+        hold.release();
+        let edit = answered(edit);
+        assert!(edit.ok, "{}", edit.text);
+    }
+}
+
+#[test]
+fn a_formats_features_and_write_reach_its_typed_method() {
+    // Three workspaces holding the same document, saved with its fingerprints, then the
+    // block and the pin edited by hand, so both drift: one formatted by name, accepting the
+    // block's drift alone and writing; one by the typed method alike; one accepting all.
+    let fixtures = [fixture(), fixture(), fixture()];
+    let saved = |f: &Fixture| std::fs::read_to_string(f.work.join("part.silico")).unwrap();
+    for f in &fixtures {
+        f.file("part.silico", EXAMPLE);
+        let s1 = answer(f.sessions.open("part.silico", false))
+            .session
+            .unwrap()
+            .id;
+        answer(f.sessions.format(&s1, None, true)).result.unwrap();
+        answer(f.sessions.close(&s1)).result.unwrap();
+    }
+    let fingerprinted = saved(&fixtures[0]);
+    assert!(fingerprinted.contains("fingerprint"), "{fingerprinted}");
+    let drifted = fingerprinted
+        .replacen("\"length\": 40,", "\"length\": 41,", 1)
+        .replacen("\"radius\": 2.5,", "\"radius\": 3,", 1);
+    assert_eq!(
+        drifted.matches("41").count(),
+        1 + fingerprinted.matches("41").count()
+    );
+    assert!(drifted.contains("\"radius\": 3,"));
+    for f in &fixtures {
+        f.file("part.silico", &drifted);
+        answer(f.sessions.open("part.silico", false))
+            .result
+            .unwrap();
+    }
+    let s2 = s("s2");
+    let [by_name, typed, all] = &fixtures;
+    let formatted = by_name.call(
+        "format",
+        r#"{"session": "s2", "features": ["k7f2qx3m"], "write": true}"#,
+    );
+    assert_eq!(
+        formatted,
+        as_written(&answer(typed.sessions.format(
+            &s2,
+            Some(vec![id("k7f2qx3m")]),
+            true
+        )))
+    );
+    assert_eq!(saved(by_name), saved(typed));
+    // Written: `write` reached it.
+    assert_ne!(saved(by_name), drifted);
+    // Only the block's drift accepted: `features` reached it.
+    answer(all.sessions.format(&s2, None, true)).result.unwrap();
+    assert_ne!(saved(by_name), saved(all));
 }
