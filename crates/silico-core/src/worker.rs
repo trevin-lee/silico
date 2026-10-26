@@ -1923,6 +1923,16 @@ mod tests {
         let dir = scratch("advice-late");
         let path = script(&dir, "printf '\\0\\0\\0\\0' >&3\nexec sleep 600");
         let mut worker = super::Worker::spawn(&path).unwrap();
+        // Said to have started before the call, however loaded the machine, so its 2 s are
+        // all the request's.
+        let starting = std::time::Instant::now();
+        while !worker.has_started() {
+            assert!(
+                starting.elapsed() < Duration::from_secs(60),
+                "the script never said it started"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
         let late = worker
             .call(generation, echo(), Duration::from_secs(2))
             .unwrap_err();
