@@ -765,12 +765,8 @@ impl<P: Clients + 'static> Sessions<P> {
                 match started {
                     Ok(thread) => {
                         threads.push(thread);
-                        Running::new(
-                            answer,
-                            READ_STOPPED,
-                            Some(ticket),
-                            Some(Arc::clone(&found.newest)),
-                        )
+                        // It waits on no rebuild, so it reports none's progress.
+                        Running::new(answer, READ_STOPPED, Some(ticket), None)
                     }
                     // The read, and its count, dropped with the thread that never started.
                     Err(e) => refused_here(crate::worker::thread_error("published read", &e)),

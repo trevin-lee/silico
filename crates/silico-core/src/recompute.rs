@@ -774,7 +774,7 @@ pub enum RunOutcome {
 #[must_use = "a recompute's outcome is only had by waiting for it"]
 pub struct Run {
     outcome: Receiver<Result<RunOutcome, Error>>,
-    progress: Progress,
+    progress: StepCounter,
 }
 
 /// How far a recompute has got (docs/design/m4.1-command-api.md, section 6): its steps
@@ -783,9 +783,9 @@ pub struct Run {
 /// reading it never waits on the recompute's work. A diagnostic, not a result (section
 /// 10): which step finishes first depends on scheduling. Clones share the count.
 #[derive(Clone, Default)]
-pub struct Progress(Arc<Mutex<Counted>>);
+pub struct StepCounter(Arc<Mutex<Counted>>);
 
-/// A recompute's count of its steps, as [`Progress::now`] reads it.
+/// A recompute's count of its steps, as [`StepCounter::now`] reads it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StepCount {
     /// The steps settled: built, failed, kept from before, or never to run (an input
@@ -810,7 +810,7 @@ struct Counted {
     running: Vec<Key>,
 }
 
-impl Progress {
+impl StepCounter {
     /// The count now.
     pub fn now(&self) -> StepCount {
         lock(&self.0).count.clone()
@@ -863,7 +863,7 @@ impl Progress {
 impl Run {
     /// How far the recompute has got: shared with it, so it may be kept and read after the
     /// run is waited on, or by another thread.
-    pub fn progress(&self) -> Progress {
+    pub fn progress(&self) -> StepCounter {
         self.progress.clone()
     }
 
@@ -1266,7 +1266,7 @@ impl<K: Kernel + 'static> Recompute<K> {
     pub fn start(&self, document: impl Into<Arc<Checked>>) -> Run {
         let document = document.into();
         let (reply, outcome) = mpsc::sync_channel(1);
-        let progress = Progress::default();
+        let progress = StepCounter::default();
         let (generation, later) = {
             let mut state = lock(&self.engine.state);
             let newest = state.generation.0.max(self.engine.kernel.generation().0);
@@ -2607,7 +2607,7 @@ impl<K: Kernel + 'static> Engine<K> {
         &self,
         document: &Arc<Checked>,
         generation: Generation,
-        progress: &Progress,
+        progress: &StepCounter,
     ) -> Result<RunOutcome, Error> {
         // Every sketch a feature sweeps is solved, and its profile made, before the plan
         // (design S3): a sweep's steps depend on its profile. Unchanged sketches cost
@@ -3077,7 +3077,7 @@ impl<K: Kernel + 'static> Engine<K> {
         schedule: &Mutex<Schedule>,
         changed: &Condvar,
         generation: Generation,
-        progress: &Progress,
+        progress: &StepCounter,
     ) {
         let known = Arc::clone(&lock(&self.state).known);
         loop {

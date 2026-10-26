@@ -720,10 +720,15 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
         rebuild: Rebuild {
             revision: revision(6),
             state: RebuildState::Running,
-            progress: Some(Progress { done: 3, steps: 9 }),
+            progress: Some(Progress {
+                done: 3,
+                steps: 9,
+                running: Some("f0000001 fillet".to_owned()),
+            }),
         },
     };
-    // By hand: the design's result, its rebuild 3 steps of 9 in.
+    // By hand: the design's result, its rebuild 3 steps of 9 in; the step running, which
+    // the design's `status` doesn't give, isn't written.
     let text = written(&status);
     assert_eq!(
         text,

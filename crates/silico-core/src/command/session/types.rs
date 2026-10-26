@@ -18,7 +18,7 @@ use super::{Problems, PublishedRead, SessionCommand};
 use crate::document;
 use crate::document::json::Plain;
 use crate::document::{Feature, FeatureId};
-use crate::recompute::Model;
+use crate::recompute::{Model, StepCount};
 use crate::{Error, ErrorCode};
 
 /// A session's ID as a request's schema gives it, the IDs [`SessionId::parse`] reads: `s`
@@ -376,9 +376,10 @@ impl<T> Running<T> {
         Running::new(answer, SESSION_STOPPED, None, None)
     }
 
-    /// How far its session's rebuild has got, while one runs (one the command waits for,
-    /// or any other): none while none runs. Read at once, never waiting on the rebuild or
-    /// the command, so the app may poll it each frame.
+    /// How far its session's rebuild has got, its step running too, while one runs (one the
+    /// command waits for, or any other): none while none runs, and none for a read of the
+    /// published model, which waits on no rebuild. Read at once, never waiting on the
+    /// rebuild or the command, so the app may poll it each frame.
     pub fn progress(&self) -> Option<Progress> {
         self.rebuild.as_ref().and_then(|rebuild| rebuild.running())
     }
@@ -614,8 +615,10 @@ pub struct Status {
 }
 
 /// A session's current revision's rebuild, as `status` gives it: the revision, what's
-/// become of its rebuild, and how far that has got, if a rebuild of it has started.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// become of its rebuild, and how far that has got, if a rebuild of it has started. The
+/// wire gives its progress's `done` and `steps`, not the step running, as the design's
+/// `status` does (section 7).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rebuild {
     pub revision: Revision,
     pub state: RebuildState,
@@ -623,13 +626,26 @@ pub struct Rebuild {
 }
 
 /// How far a rebuild has got (the design's section 6): its steps settled (built, failed,
-/// kept from before, or never to run; all of them once it finishes), and the steps of its
-/// plan (none until its plan is made, after the sketches it sweeps are solved). A
-/// diagnostic, not a result (section 10): which step finishes first depends on scheduling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// kept from before, or never to run; all of them once it finishes), the steps of its plan
+/// (none until its plan is made, after the sketches it sweeps are solved), and the step
+/// started last of those running, as its feature and the feature's type (`f0000001
+/// fillet`, MCP's progress message), none while no step runs. A diagnostic, not a result
+/// (section 10): which step finishes first depends on scheduling.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Progress {
     pub done: usize,
     pub steps: usize,
+    pub running: Option<String>,
+}
+
+impl From<&StepCount> for Progress {
+    fn from(count: &StepCount) -> Self {
+        Progress {
+            done: count.done,
+            steps: count.steps,
+            running: count.running.clone(),
+        }
+    }
 }
 
 /// What's become of a revision's rebuild (the design's `status`).

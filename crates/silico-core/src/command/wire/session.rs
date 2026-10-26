@@ -197,18 +197,23 @@ impl ToWire for Closed {
 
 impl ToWire for Rebuild {
     /// The revision, what's become of its rebuild, and its steps done and steps (each
-    /// `null` if no rebuild of the revision has started).
+    /// `null` if no rebuild of the revision has started), not the step running, which the
+    /// design's `status` doesn't give.
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("revision", self.revision.to_wire()),
             ("state", Json::str(self.state.as_str())),
             (
                 "done",
-                Json::or_null(self.progress, |progress| Json::count(progress.done)),
+                Json::or_null(self.progress.as_ref(), |progress| {
+                    Json::count(progress.done)
+                }),
             ),
             (
                 "steps",
-                Json::or_null(self.progress, |progress| Json::count(progress.steps)),
+                Json::or_null(self.progress.as_ref(), |progress| {
+                    Json::count(progress.steps)
+                }),
             ),
         ])
     }

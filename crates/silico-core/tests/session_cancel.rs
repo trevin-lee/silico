@@ -126,13 +126,17 @@ fn cancel_naming_the_running_check_stops_its_rebuild_and_the_check_answers_cance
     let (hold, check) = f.running_held(|| f.sessions.check(&f.id, ModelChoice::Current));
     let status = f.sessions.status(&f.id).result.unwrap();
     assert_eq!(status.running, Some(SessionCommand::Check));
-    // One box, one step, held: none done.
+    // One box, one step, held: none done, the box's running.
     assert_eq!(
         status.rebuild,
         Rebuild {
             revision: Revision::OPENED,
             state: RebuildState::Running,
-            progress: Some(Progress { done: 0, steps: 1 }),
+            progress: Some(Progress {
+                done: 0,
+                steps: 1,
+                running: Some("k7f2qx3m box".to_owned()),
+            }),
         }
     );
     let stop = f.sessions.cancel(&f.id, SessionCommand::Check);

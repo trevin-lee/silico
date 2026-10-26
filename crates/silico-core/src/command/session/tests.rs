@@ -1587,7 +1587,11 @@ fn a_one_edit_commits_fault_is_the_saved_revisions_and_never_met_again() {
         Rebuild {
             revision: saved,
             state: RebuildState::Faulted,
-            progress: Some(Progress { done: 4, steps: 4 }),
+            progress: Some(Progress {
+                done: 4,
+                steps: 4,
+                running: None,
+            }),
         }
     );
 }
@@ -3008,14 +3012,18 @@ fn a_held_rebuild_shows_its_steps_done_below_its_steps_then_all_of_them() {
     let f = opened(STORED);
     let hold = f.kernel.hold(is_lug);
     let check = f.sessions.check(&f.id, ModelChoice::Current);
-    let one_of_four = Some(Progress { done: 1, steps: 4 });
-    until_progress(|| check.progress(), one_of_four);
+    let one_of_four = Some(Progress {
+        done: 1,
+        steps: 4,
+        running: Some("b0000001 box".to_owned()),
+    });
+    until_progress(|| check.progress(), one_of_four.clone());
     assert_eq!(
         f.sessions.status(&f.id).result.unwrap().rebuild,
         Rebuild {
             revision: Revision::OPENED,
             state: RebuildState::Running,
-            progress: one_of_four,
+            progress: one_of_four.clone(),
         }
     );
     hold.release();
@@ -3025,7 +3033,11 @@ fn a_held_rebuild_shows_its_steps_done_below_its_steps_then_all_of_them() {
         Rebuild {
             revision: Revision::OPENED,
             state: RebuildState::Done,
-            progress: Some(Progress { done: 4, steps: 4 }),
+            progress: Some(Progress {
+                done: 4,
+                steps: 4,
+                running: None,
+            }),
         }
     );
     // Nothing running now: a command's handle has no progress to give.
@@ -3051,7 +3063,14 @@ fn counting_a_rebuilds_steps_never_keeps_status_or_a_published_read_waiting() {
     let check = f.sessions.check(&f.id, ModelChoice::Current);
     // Revision 2's: the block and the fuse unchanged, but the fuse uses the lug, so only
     // the block's step is kept; the lug's box is held.
-    until_progress(|| check.progress(), Some(Progress { done: 1, steps: 4 }));
+    until_progress(
+        || check.progress(),
+        Some(Progress {
+            done: 1,
+            steps: 4,
+            running: Some("b0000001 box".to_owned()),
+        }),
+    );
     let quick = Duration::from_secs(5);
     let (said, heard) = mpsc::channel();
     let answered = std::thread::scope(|scope| {
@@ -3081,10 +3100,53 @@ fn counting_a_rebuilds_steps_never_keeps_status_or_a_published_read_waiting() {
         Rebuild {
             revision: Revision(2),
             state: RebuildState::Running,
-            progress: Some(Progress { done: 1, steps: 4 }),
+            progress: Some(Progress {
+                done: 1,
+                steps: 4,
+                running: Some("b0000001 box".to_owned()),
+            }),
         }
     );
     assert_eq!(read.unwrap(), Revision::OPENED);
+    check.wait().result.unwrap();
+}
+
+#[test]
+fn a_published_reads_handle_reports_no_rebuilds_progress() {
+    // Revision 1 built and published; then, in a transaction, the lug 20 long, its rebuild's
+    // lug held. The check waits on that rebuild and reports it; a read of the published
+    // model, running while the step is held, waits on no rebuild and reports none.
+    let f = opened(STORED);
+    f.sessions
+        .check(&f.id, ModelChoice::Current)
+        .wait()
+        .result
+        .unwrap();
+    f.begin();
+    f.edit(&longer());
+    let hold = f.kernel.hold(is_lug);
+    let check = f.sessions.check(&f.id, ModelChoice::Current);
+    let lug_held = Some(Progress {
+        done: 1,
+        steps: 4,
+        running: Some("b0000001 box".to_owned()),
+    });
+    until_progress(|| check.progress(), lug_held.clone());
+    let (go, held) = mpsc::channel::<()>();
+    let read = f.sessions.read_model(
+        &f.id,
+        PublishedRead::Check,
+        ModelChoice::Published,
+        move |read| {
+            let _ = held.recv_timeout(WAIT);
+            Ok(read.model_read().revision)
+        },
+    );
+    assert_eq!(read.progress(), None);
+    assert_eq!(check.progress(), lug_held);
+    go.send(()).unwrap();
+    assert_eq!(read.wait().result.unwrap(), Revision::OPENED);
+    hold.release();
     check.wait().result.unwrap();
 }
 

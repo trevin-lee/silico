@@ -14,7 +14,7 @@ use super::{
 };
 use crate::document::Checked;
 use crate::kernel::Kernel;
-use crate::recompute::{self, Model, Recompute, Run, RunOutcome};
+use crate::recompute::{Model, Recompute, Run, RunOutcome, StepCounter};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
@@ -143,11 +143,11 @@ impl<C: Kernel + 'static> Rebuilds<C> {
 /// lock of its own, taken after every other and held only to read or replace them, so
 /// `status` and a command's handle read it without waiting on any of the session's work.
 #[derive(Default)]
-pub(super) struct Newest(Mutex<Option<(Label, recompute::Progress)>>);
+pub(super) struct Newest(Mutex<Option<(Label, StepCounter)>>);
 
 impl Newest {
     /// The rebuild labelled `label` started, counted by `progress`.
-    fn started(&self, label: Label, progress: recompute::Progress) {
+    fn started(&self, label: Label, progress: StepCounter) {
         *lock(&self.0) = Some((label, progress));
     }
 
@@ -158,19 +158,14 @@ impl Newest {
         let newest = lock(&self.0);
         let (label, progress) = newest.as_ref()?;
         let count = progress.now();
-        (label.revision() == revision || (label.candidate && !count.ended)).then_some(Progress {
-            done: count.done,
-            steps: count.steps,
-        })
+        (label.revision() == revision || (label.candidate && !count.ended))
+            .then(|| Progress::from(&count))
     }
 
     /// The progress of the newest rebuild, while it runs.
     pub(super) fn running(&self) -> Option<Progress> {
         let count = lock(&self.0).as_ref()?.1.now();
-        (!count.ended).then_some(Progress {
-            done: count.done,
-            steps: count.steps,
-        })
+        (!count.ended).then(|| Progress::from(&count))
     }
 }
 
