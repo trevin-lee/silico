@@ -8,10 +8,9 @@
 //! tests wrote them, and paths worked out by hand.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use silico_core::ErrorCode;
-use silico_core::cache::Cache;
 use silico_core::command::render::Render;
 use silico_core::command::{ModelChoice, Revision, SessionId, Sessions};
 use silico_core::document::json::Node;
@@ -19,84 +18,16 @@ use silico_core::fake::{FakeKernel, FakeRenderer};
 use silico_core::file::{Unresolved, Workspace};
 use silico_core::kernel::{Op, Primitive};
 use silico_core::views::NamedView;
-use tempfile::TempDir;
 
+use crate::calls::{BOX, Fixture, OUTSIDE, fixture, sessions_on};
 use crate::sessions::{HANG, answer, id, refusal};
 
-/// A 40 × 20 × 10 box.
-const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
-
-/// Another box, 30 long: the file outside the workspace a link leads to.
-const OUTSIDE: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Theirs", "position": [0, 0, 0], "length": 30, "width": 20, "height": 10}]}"#;
-
-/// A scratch directory holding the workspace, `work`, and a directory beside it,
-/// `outside`, which holds `part.silico` ([`OUTSIDE`]); sessions on a fake kernel in the
-/// workspace, each cache's secret outside both, and the cache directories opened, in order.
-struct Fixture {
-    _dir: TempDir,
-    work: PathBuf,
-    outside: PathBuf,
-    kernel: Arc<FakeKernel>,
-    sessions: Sessions<Arc<FakeKernel>>,
-    caches: Opened,
-}
-
-/// The cache directories a fixture's sessions opened, in order.
-type Opened = Arc<Mutex<Vec<PathBuf>>>;
-
-/// Sessions on a fake kernel, and the cache directories they open, in order.
-fn sessions_on(dir: &Path) -> (Arc<FakeKernel>, Sessions<Arc<FakeKernel>>, Opened) {
-    let secret = dir.join("secret");
-    let kernel = Arc::new(FakeKernel::new(2).unwrap());
-    let caches = Arc::new(Mutex::new(Vec::new()));
-    let seen = Arc::clone(&caches);
-    let sessions = Sessions::with_cache_opener(Arc::clone(&kernel), move |cache| {
-        seen.lock().unwrap().push(cache.to_owned());
-        Cache::with_secret(cache, &secret)
-    });
-    (kernel, sessions, caches)
-}
-
-fn fixture() -> Fixture {
-    let dir = tempfile::tempdir().unwrap();
-    // Through its links, as the workspace's root is (macOS's temporary directory is a link).
-    let root = std::fs::canonicalize(dir.path()).unwrap();
-    let work = root.join("work");
-    let outside = root.join("outside");
-    std::fs::create_dir_all(&work).unwrap();
-    std::fs::create_dir_all(&outside).unwrap();
-    std::fs::write(outside.join("part.silico"), OUTSIDE).unwrap();
-    let (kernel, sessions, caches) = sessions_on(&root);
-    let sessions = sessions.in_workspace(&work).unwrap();
-    Fixture {
-        _dir: dir,
-        work,
-        outside,
-        kernel,
-        sessions,
-        caches,
-    }
-}
-
 impl Fixture {
-    /// `text` written at `name` in the workspace, its directories made.
-    fn file(&self, name: &str, text: &str) -> PathBuf {
-        let path = self.work.join(name);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, text).unwrap();
-        path
-    }
-
     /// The session `path` opened as, which must open.
-    fn open(&self, path: impl Into<PathBuf>) -> SessionId {
+    fn session_of(&self, path: impl Into<PathBuf>) -> SessionId {
         let response = answer(self.sessions.open(path, false));
         assert!(response.result.is_ok(), "{response:?}");
         response.session.unwrap().id
-    }
-
-    /// The outside file's bytes, which no test may change.
-    fn theirs(&self) -> String {
-        std::fs::read_to_string(self.outside.join("part.silico")).unwrap()
     }
 }
 
@@ -113,7 +44,7 @@ fn outside(given: &str, field: &str) -> (ErrorCode, String, Option<String>, Opti
 
 /// The refusal of a command whose session's file, opened as `given`, now leads out of the
 /// workspace.
-fn led_out(
+fn outside_now(
     given: &str,
 ) -> (
     ErrorCode,
@@ -192,7 +123,7 @@ fn a_relative_path_is_opened_made_and_saved_in_the_workspace_and_named_as_given(
     assert!(saved.contains("\"length\": 41,"), "{saved}");
     // An absolute path inside it, and a directory below its root.
     f.file("sub/b.silico", BOX);
-    f.open(f.work.join("sub/b.silico"));
+    f.session_of(f.work.join("sub/b.silico"));
     // A new document, made in the workspace, relative to its root.
     let made = answer(f.sessions.open("new.silico", true));
     assert!(made.result.unwrap().created);
@@ -280,14 +211,14 @@ fn a_link_out_of_the_workspace_to_a_file_or_a_directory_is_refused() {
 fn a_file_swapped_for_a_link_out_after_open_is_refused_as_it_is_read_again() {
     let f = fixture();
     let path = f.file("part.silico", BOX);
-    let s = f.open("part.silico");
+    let s = f.session_of("part.silico");
     swap_for_link(&path, &f.outside.join("part.silico"));
     // Each queued command reads the file again first (decision 2): refused, not reloaded.
     for response in [
         refused_with_cause(&answer(f.sessions.text(&s, None))),
         refused_with_cause(&answer(f.sessions.check(&s, ModelChoice::Current))),
     ] {
-        assert_eq!(response, led_out("part.silico"));
+        assert_eq!(response, outside_now("part.silico"));
     }
     assert_eq!(
         f.sessions.status(&s).session.unwrap().revision,
@@ -305,18 +236,21 @@ fn a_file_swapped_for_a_link_out_after_open_is_refused_as_it_is_read_again() {
 fn a_directory_swapped_for_a_link_out_after_open_is_refused_as_the_file_is_read_again() {
     let f = fixture();
     f.file("sub/part.silico", BOX);
-    let s = f.open("sub/part.silico");
+    let s = f.session_of("sub/part.silico");
     std::fs::rename(f.work.join("sub"), f.work.join("moved")).unwrap();
     std::os::unix::fs::symlink(&f.outside, f.work.join("sub")).unwrap();
     let response = answer(f.sessions.text(&s, None));
-    assert_eq!(refused_with_cause(&response), led_out("sub/part.silico"));
+    assert_eq!(
+        refused_with_cause(&response),
+        outside_now("sub/part.silico")
+    );
 }
 
 #[test]
 fn a_commit_after_its_file_was_swapped_for_a_link_out_is_refused_and_writes_nothing() {
     let f = fixture();
     let path = f.file("part.silico", BOX);
-    let s = f.open("part.silico");
+    let s = f.session_of("part.silico");
     answer(f.sessions.begin(&s)).result.unwrap();
     answer(f.sessions.set_field(
         &s,
@@ -329,7 +263,7 @@ fn a_commit_after_its_file_was_swapped_for_a_link_out_is_refused_and_writes_noth
     .unwrap();
     swap_for_link(&path, &f.outside.join("part.silico"));
     let response = answer(f.sessions.commit(&s));
-    assert_eq!(refused_with_cause(&response), led_out("part.silico"));
+    assert_eq!(refused_with_cause(&response), outside_now("part.silico"));
     assert!(response.session.unwrap().transaction);
     assert_eq!(f.theirs(), OUTSIDE);
 }
@@ -338,7 +272,7 @@ fn a_commit_after_its_file_was_swapped_for_a_link_out_is_refused_and_writes_noth
 fn a_save_whose_file_was_swapped_for_a_link_out_as_it_rebuilt_is_refused_and_writes_nothing() {
     let f = fixture();
     let path = f.file("part.silico", BOX);
-    let s = f.open("part.silico");
+    let s = f.session_of("part.silico");
     // The edit's commit read the file before the swap (inside then), and saves it after:
     // the save finds where the file leads now.
     let hold = f
@@ -357,7 +291,7 @@ fn a_save_whose_file_was_swapped_for_a_link_out_as_it_rebuilt_is_refused_and_wri
     swap_for_link(&path, &f.outside.join("part.silico"));
     hold.release();
     let response = answer(running);
-    assert_eq!(refused_with_cause(&response), led_out("part.silico"));
+    assert_eq!(refused_with_cause(&response), outside_now("part.silico"));
     assert_eq!(response.session.unwrap().revision, Revision::OPENED);
     assert_eq!(
         std::fs::read_to_string(f.outside.join("part.silico")).unwrap(),
@@ -391,7 +325,7 @@ fn a_save_through_a_link_swapped_in_is_refused_by_the_file_layer_itself() {
             e.cause().map(str::to_owned),
             e.suggestion().map(str::to_owned),
         ),
-        led_out("part.silico")
+        outside_now("part.silico")
     );
     assert_eq!(
         std::fs::read_to_string(f.outside.join("part.silico")).unwrap(),
@@ -413,8 +347,8 @@ fn a_cache_directory_that_leads_out_of_the_workspace_is_never_opened() {
     let theirs = f.outside.join("cache");
     std::fs::create_dir(&theirs).unwrap();
     std::os::unix::fs::symlink(&theirs, f.work.join(".silico-cache")).unwrap();
-    let linked = f.open("part.silico");
-    let plain = f.open("sub/part.silico");
+    let linked = f.session_of("part.silico");
+    let plain = f.session_of("sub/part.silico");
     // Both build; only the one inside opens its cache.
     for s in [linked, plain] {
         let check = answer(f.sessions.check(&s, ModelChoice::Current));
@@ -430,7 +364,7 @@ fn a_cache_directory_that_leads_out_of_the_workspace_is_never_opened() {
     std::fs::remove_file(f.work.join(".silico-cache")).unwrap();
     f.file("third/part.silico", BOX);
     std::os::unix::fs::symlink(f.work.join("kept"), f.work.join("third/.silico-cache")).unwrap();
-    f.open("third/part.silico");
+    f.session_of("third/part.silico");
     assert_eq!(
         f.caches.lock().unwrap().last(),
         Some(&f.work.join("third/.silico-cache"))
@@ -511,7 +445,7 @@ fn without_a_workspace_paths_resolve_as_the_system_resolves_them() {
     std::fs::create_dir(elsewhere.join("cache")).unwrap();
     std::os::unix::fs::symlink(elsewhere.join("cache"), work.join(".silico-cache")).unwrap();
     std::fs::write(work.join("own.silico"), BOX).unwrap();
-    let (_kernel, sessions, caches) = sessions_on(&root);
+    let (_kernel, sessions, caches) = sessions_on(&root, |_| {});
     assert!(sessions.workspace().is_none());
     let relative = relative_to_working_directory(&work.join("own.silico"));
     let given = relative.to_str().unwrap().to_owned();
@@ -548,7 +482,7 @@ fn a_workspace_is_a_directory_given_once_before_any_document_opens() {
         Ok(_) => panic!("given a workspace"),
         Err(e) => (e.code(), e.message().to_owned()),
     };
-    let (_, sessions, _) = sessions_on(&root);
+    let (_, sessions, _) = sessions_on(&root, |_| {});
     assert_eq!(
         code(sessions.in_workspace(&root.join("file"))),
         (
@@ -559,12 +493,12 @@ fn a_workspace_is_a_directory_given_once_before_any_document_opens() {
             )
         )
     );
-    let (_, sessions, _) = sessions_on(&root);
+    let (_, sessions, _) = sessions_on(&root, |_| {});
     let (missing, message) = code(sessions.in_workspace(&root.join("missing")));
     assert_eq!(missing, ErrorCode::IoFailed);
     assert!(message.starts_with("the workspace \""), "{message}");
     // Once only.
-    let (_, sessions, _) = sessions_on(&root);
+    let (_, sessions, _) = sessions_on(&root, |_| {});
     let sessions = sessions.in_workspace(&root).unwrap();
     assert_eq!(sessions.workspace().unwrap().root(), root);
     assert_eq!(
@@ -576,7 +510,7 @@ fn a_workspace_is_a_directory_given_once_before_any_document_opens() {
     );
     // Not once a document has been asked to open: those opened before would be outside its
     // rule.
-    let (_, sessions, _) = sessions_on(&root);
+    let (_, sessions, _) = sessions_on(&root, |_| {});
     let _ = answer(sessions.open(root.join("none.silico"), false));
     assert_eq!(
         code(sessions.in_workspace(&root)).1,

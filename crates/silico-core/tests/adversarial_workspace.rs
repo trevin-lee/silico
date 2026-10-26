@@ -9,81 +9,19 @@
 //! bytes as the tests wrote them.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
-use silico_core::cache::Cache;
-use silico_core::command::{Answered, Call, Calling, Sessions};
-use silico_core::fake::{FakeKernel, FakeRenderer};
-use tempfile::TempDir;
+use silico_core::command::{Answered, Calling};
 
-use crate::sessions::HANG;
-
-/// A 40 × 20 × 10 box.
-const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
-
-/// Another box, the file outside the workspace.
-const OUTSIDE: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Theirs", "position": [0, 0, 0], "length": 30, "width": 20, "height": 10}]}"#;
-
-/// What a refusal's envelope may reasonably be.
-const REFUSAL_BOUND: usize = 16 << 10;
+use crate::calls::{
+    BOX, Fixture, OUTSIDE, REFUSAL_BOUND, call, calling, envelope, fixture, open_request,
+    sessions_in,
+};
 
 /// The longest a call that refuses a FIFO or a device may take: it never waits on one.
 const PROMPT: Duration = Duration::from_secs(10);
 
-/// A scratch directory holding the workspace, `work`, and `outside` beside it (with
-/// `part.silico`, [`OUTSIDE`]); sessions on a fake kernel and a fake renderer in `work`.
-struct Fixture {
-    _dir: TempDir,
-    root: PathBuf,
-    work: PathBuf,
-    outside: PathBuf,
-    sessions: Sessions<Arc<FakeKernel>>,
-}
-
-fn sessions_in(scratch: &Path, workspace: &Path) -> Sessions<Arc<FakeKernel>> {
-    let secret = scratch.join("secret");
-    let kernel = Arc::new(FakeKernel::new(2).unwrap());
-    Sessions::with_cache_opener(kernel, move |cache| Cache::with_secret(cache, &secret))
-        .rendering(FakeRenderer::new())
-        .in_workspace(workspace)
-        .unwrap()
-}
-
-fn fixture() -> Fixture {
-    let dir = tempfile::tempdir().unwrap();
-    let root = std::fs::canonicalize(dir.path()).unwrap();
-    let work = root.join("work");
-    let outside = root.join("outside");
-    std::fs::create_dir_all(&work).unwrap();
-    std::fs::create_dir_all(&outside).unwrap();
-    std::fs::write(outside.join("part.silico"), OUTSIDE).unwrap();
-    let sessions = sessions_in(&root, &work);
-    Fixture {
-        _dir: dir,
-        root,
-        work,
-        outside,
-        sessions,
-    }
-}
-
 impl Fixture {
-    fn file(&self, name: &str, text: &str) -> PathBuf {
-        let path = self.work.join(name);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, text).unwrap();
-        path
-    }
-
-    fn call(&self, name: &str, arguments: &str) -> Answered {
-        call(&self.sessions, name, arguments)
-    }
-
-    fn open(&self, path: &str, create: bool) -> Answered {
-        self.call("open", &open_request(path, create))
-    }
-
     /// A render of session `session`'s current model, written to `to`.
     fn render_to(&self, session: &str, to: &str) -> Answered {
         self.call(
@@ -94,32 +32,6 @@ impl Fixture {
             ),
         )
     }
-
-    /// The outside file's bytes, which no test may change.
-    fn theirs(&self) -> String {
-        std::fs::read_to_string(self.outside.join("part.silico")).unwrap()
-    }
-}
-
-fn open_request(path: &str, create: bool) -> String {
-    format!(
-        r#"{{"path": {}, "create": {create}}}"#,
-        serde_json::to_string(path).unwrap()
-    )
-}
-
-fn calling(sessions: &Sessions<Arc<FakeKernel>>, name: &str, arguments: &str) -> Calling {
-    match sessions.call(name, arguments) {
-        Call::Running(calling) => calling,
-        Call::Unknown => panic!("{name} is no command"),
-    }
-}
-
-fn call(sessions: &Sessions<Arc<FakeKernel>>, name: &str, arguments: &str) -> Answered {
-    match calling(sessions, name, arguments).wait_timeout(HANG) {
-        Ok(answered) => answered,
-        Err(_) => panic!("{name} didn't answer in {HANG:?}"),
-    }
 }
 
 /// The call's answer, failing if it takes longer than [`PROMPT`].
@@ -128,10 +40,6 @@ fn promptly(calling: Calling, what: &str) -> Answered {
         Ok(answered) => answered,
         Err(_) => panic!("{what} didn't answer in {PROMPT:?}: it waits on a FIFO or a device"),
     }
-}
-
-fn envelope(answered: &Answered) -> serde_json::Value {
-    serde_json::from_str(&answered.text).unwrap()
 }
 
 /// The first error of a refused answer: its code, message, and parameter.
@@ -704,4 +612,217 @@ fn a_renders_to_inside_by_any_spelling_writes_there_and_nowhere_else() {
         std::fs::read_to_string(f.work.join("part.silico")).unwrap(),
         BOX
     );
+}
+
+/// The refusal of `given`, in the request's `field`, as out of the workspace: its code,
+/// message, and parameter (M4.1 section 7's `open` example).
+fn outside(given: &str, field: &str) -> (String, String, Option<String>) {
+    (
+        "invalid_input".to_owned(),
+        format!("\"{given}\" is outside the workspace this server was started in"),
+        Some(field.to_owned()),
+    )
+}
+
+/// A render of s1's current model, written to `to`, replacing a file there if `replace`.
+fn render(
+    sessions: &silico_core::command::Sessions<std::sync::Arc<silico_core::fake::FakeKernel>>,
+    to: &str,
+    replace: bool,
+) -> Answered {
+    call(
+        sessions,
+        "render",
+        &format!(
+            r#"{{"session": "s1", "model": "current", "view": "front", "camera": null, "width": 40, "height": 30, "highlight": [], "to": {}, "replace": {replace}}}"#,
+            serde_json::to_string(to).unwrap()
+        ),
+    )
+}
+
+#[test]
+fn a_path_through_an_outside_directory_and_back_is_never_told_apart_by_its_existence() {
+    // Found by the review: a path was resolved by the system before it was checked, so
+    // `../secrets/../work/part.silico` opened when `secrets` was there (the system went into
+    // it and back) and was refused as outside when it wasn't: whether anything outside is
+    // there told by the answer. Now the walk never looks a name up in a directory outside
+    // the workspace, and both are outside, as is every way of spelling them.
+    let f = fixture();
+    f.opened();
+    std::fs::create_dir(f.root.join("secrets")).unwrap();
+    let root = f.root.to_str().unwrap();
+    for top in ["secrets", "nothere"] {
+        for (path, ending) in [
+            (format!("../{top}/../work/part.silico"), "part.silico"),
+            (format!("{root}/{top}/../work/part.silico"), "part.silico"),
+            (
+                format!("../{top}/../work/sub/../part.silico"),
+                "part.silico",
+            ),
+            (
+                format!("../work/../{top}/../work/part.silico"),
+                "part.silico",
+            ),
+        ] {
+            assert_eq!(error(&f.open(&path, false)), outside(&path, "path"));
+            let made = path.replace(ending, "made.silico");
+            assert_eq!(error(&f.open(&made, true)), outside(&made, "path"));
+            let to = path.replace(ending, "view.png");
+            assert_eq!(error(&f.render_to("s1", &to)), outside(&to, "to"));
+        }
+    }
+    // Nothing made, nothing written, in the workspace or out of it.
+    assert!(!f.work.join("made.silico").exists());
+    assert!(!f.work.join("view.png").exists());
+    assert_eq!(
+        std::fs::read_dir(f.root.join("secrets")).unwrap().count(),
+        0
+    );
+    assert!(!f.root.join("nothere").exists());
+    // Coming back down through the root's own ancestors is no way out: it opens (as s2,
+    // the file held by s1 refused as held, not as outside).
+    let back = f.open(&format!("{root}/work/../work/part.silico"), false);
+    assert!(!error(&back).1.contains("outside"), "{}", back.text);
+}
+
+#[test]
+fn a_path_through_a_directory_this_user_cant_search_is_outside_never_denied() {
+    // Nothing outside the workspace is looked in, so a directory there that would refuse
+    // the lookup (or block on it: a mount made on demand, a stale network share) is never
+    // asked: the path is outside, as it is wherever it goes, not "permission denied".
+    use std::os::unix::fs::PermissionsExt as _;
+    let f = fixture();
+    f.opened();
+    let locked = f.root.join("locked");
+    std::fs::create_dir_all(locked.join("in")).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let answers: Vec<_> = [
+        "../locked/../work/part.silico",
+        "../locked/in/part.silico",
+        "../locked/part.silico",
+    ]
+    .iter()
+    .map(|path| {
+        (
+            path.to_string(),
+            error(&f.open(path, false)),
+            error(&f.open(&path.replace("part.silico", "made.silico"), true)),
+            error(&f.render_to("s1", &path.replace("part.silico", "view.png"))),
+        )
+    })
+    .collect();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for (path, open, made, render) in answers {
+        assert_eq!(open, outside(&path, "path"));
+        assert_eq!(
+            made,
+            outside(&path.replace("part.silico", "made.silico"), "path")
+        );
+        assert_eq!(
+            render,
+            outside(&path.replace("part.silico", "view.png"), "to")
+        );
+    }
+}
+
+#[test]
+fn a_renders_to_that_is_a_link_is_resolved_as_every_path_is() {
+    // mutants (cargo-mutants, the link at `to` out of the workspace): each link at a
+    // render's `to` refused, or written through, as the rules say.
+    let f = fixture();
+    f.opened();
+    std::fs::write(f.outside.join("theirs.png"), b"theirs").unwrap();
+    std::fs::write(f.work.join("real.png"), b"ours").unwrap();
+    let link = |name: &str, to: &Path| std::os::unix::fs::symlink(to, f.work.join(name)).unwrap();
+    link("out.png", &f.outside.join("theirs.png"));
+    link("dangling-out.png", &f.outside.join("none.png"));
+    link("in.png", &f.work.join("real.png"));
+    link("dangling-in.png", &f.work.join("none.png"));
+    // Out, to a file there or to nothing: outside, replacing or not.
+    for to in ["out.png", "dangling-out.png"] {
+        for replace in [false, true] {
+            assert_eq!(
+                error(&render(&f.sessions, to, replace)),
+                outside(to, "to"),
+                "{to} {replace}"
+            );
+        }
+    }
+    assert_eq!(
+        std::fs::read(f.outside.join("theirs.png")).unwrap(),
+        b"theirs"
+    );
+    assert!(!f.outside.join("none.png").exists());
+    // In, to a file there: there already, unless replaced, then written through the link.
+    assert_eq!(
+        error(&render(&f.sessions, "in.png", false)),
+        (
+            "invalid_input".to_owned(),
+            "to \"in.png\": is there already".to_owned(),
+            Some("to".to_owned())
+        )
+    );
+    assert!(render(&f.sessions, "in.png", true).ok);
+    assert_eq!(
+        std::fs::read(f.work.join("real.png")).unwrap(),
+        b"PNG 40x30"
+    );
+    assert!(f.work.join("in.png").is_symlink());
+    // In, to nothing: a link to nothing, not outside.
+    let (code, message, parameter) = error(&render(&f.sessions, "dangling-in.png", true));
+    assert_eq!(
+        (code.as_str(), parameter.as_deref()),
+        ("invalid_input", Some("to"))
+    );
+    assert!(
+        message.starts_with("to \"dangling-in.png\": is a link to nothing that can be reached: "),
+        "{message}"
+    );
+    assert!(f.work.join("dangling-in.png").is_symlink());
+    assert!(!f.work.join("none.png").exists());
+}
+
+#[test]
+fn without_a_workspace_a_renders_to_that_is_a_link_is_written_through_it_anywhere() {
+    // The CLI's rules: no workspace, so a link anywhere is written through, and a link to
+    // nothing is refused as one.
+    let f = fixture();
+    let (_, sessions, _) = crate::calls::sessions_on(&f.root, |_| {});
+    let part = f.file("part.silico", BOX);
+    let open = call(
+        &sessions,
+        "open",
+        &open_request(part.to_str().unwrap(), false),
+    );
+    assert!(open.ok, "{}", open.text);
+    std::fs::write(f.outside.join("theirs.png"), b"theirs").unwrap();
+    let out = f.work.join("out.png");
+    std::os::unix::fs::symlink(f.outside.join("theirs.png"), &out).unwrap();
+    let dangling = f.work.join("dangling.png");
+    std::os::unix::fs::symlink(f.outside.join("none.png"), &dangling).unwrap();
+    let out = out.to_str().unwrap();
+    assert_eq!(
+        error(&render(&sessions, out, false)),
+        (
+            "invalid_input".to_owned(),
+            format!("to \"{out}\": is there already"),
+            Some("to".to_owned())
+        )
+    );
+    let written = render(&sessions, out, true);
+    assert!(written.ok, "{}", written.text);
+    assert_eq!(
+        std::fs::read(f.outside.join("theirs.png")).unwrap(),
+        b"PNG 40x30"
+    );
+    let dangling = dangling.to_str().unwrap();
+    let (_, message, parameter) = error(&render(&sessions, dangling, true));
+    assert_eq!(parameter.as_deref(), Some("to"));
+    assert!(
+        message.starts_with(&format!(
+            "to \"{dangling}\": is a link to nothing that can be reached: "
+        )),
+        "{message}"
+    );
+    assert!(!f.outside.join("none.png").exists());
 }

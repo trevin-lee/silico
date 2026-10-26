@@ -7,6 +7,12 @@
 //! but a file changed since it was read, which is [`ErrorCode::Conflict`] (decision 16 of
 //! docs/design/m4.1-command-api.md): what to do about it is to read it again, not to mend
 //! the disk or a permission.
+//!
+//! And the workspace ([`Workspace`], decision 26), the directory `silico serve` is started
+//! in, which every path a client gives must lie in: [`resolve`] finds where a path leads
+//! without ever looking up a name outside the workspace, so nothing there is told apart by
+//! whether it exists; [`save_within`] saves a session's file only while it's still inside;
+//! and [`write_output`] writes a command's file (a render's `to`) only inside it.
 
 use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
@@ -53,21 +59,21 @@ pub fn cache_directory(file: &Path) -> PathBuf {
 
 /// The directory every path a client gives must lie in, through its links (decision 26 of
 /// docs/design/m4.1-command-api.md): what `silico serve` is started in. Its root is
-/// canonicalized once, when it's made, and every check is of a path through its links
-/// against that root, component by component, so a sibling whose name starts with the
-/// root's (`work2` beside `work`) is outside it. One implementation of the rule, which every
-/// place a path resolves holds to: `open` (a session's file, and the directory a new one is
-/// made in), each re-read and save of a session's file, its directory's `.silico-cache/`,
-/// and a file a command writes ([`Output`]). Without one (the CLI), paths resolve as the
-/// system resolves them, against the process's working directory.
+/// canonicalized once, when it's made, and every check is of a path walked through its
+/// links, never into a directory outside the root, against that root, component by
+/// component, so a sibling whose name starts with the root's (`work2` beside `work`) is
+/// outside it. One implementation of the rule ([`resolve`]), which every place a path
+/// resolves holds to: `open` (a session's file, and the directory a new one is made in),
+/// each re-read and save of a session's file, its directory's `.silico-cache/`, and a file
+/// a command writes ([`Output`]). Without one (the CLI), paths resolve as the system
+/// resolves them, against the process's working directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
     root: PathBuf,
 }
 
-/// How many links [`Workspace::leads_out`] follows through a path that doesn't resolve
-/// before it decides by the path's form: Linux's and macOS's own limit on links followed in
-/// one lookup.
+/// How many links [`Workspace::leads_out`] follows through a path before it decides by the
+/// path's form: Linux's and macOS's own limit on links followed in one lookup.
 const LINKS_FOLLOWED: u32 = 40;
 
 /// The longest path, in bytes, [`Workspace::leads_out`] walks on the file system; a longer
@@ -138,68 +144,98 @@ impl Workspace {
         resolved.starts_with(&self.root)
     }
 
-    /// Whether `path`, which doesn't resolve (a link to nothing, or a file not made yet),
-    /// would lead out of the workspace: where it leads through its links as far as they can
-    /// be followed, the nearest place on its way that is there. So a path out of the
-    /// workspace is refused as one, whether or not anything is there, and nothing outside it
-    /// is told apart by whether it exists, however deep below it the path goes. A path to
-    /// the root, or to one of its directories, that doesn't resolve is the workspace gone
-    /// (removed since it was made), not out of it: so a path inside it is then said to be
-    /// unreachable, as the system says, never outside. A path longer than the system
-    /// resolves ([`WALKED_PATH_BYTES`]), or through more links than it follows
-    /// ([`LINKS_FOLLOWED`]), is decided by its form alone ([`Workspace::leaves`]), so
-    /// what's there never decides it, and the walk is bounded.
+    /// Whether `path`, a path from the file system's top, leads out of the workspace, decided
+    /// as the system would walk it, a name at a time, through its links, but never looking
+    /// a name up in a directory outside the workspace: the walk only looks in the root, a
+    /// directory below it, or one of the root's ancestors (the directories above it, from the
+    /// file system's top), and of an ancestor's names it only goes on through the next on
+    /// the way down to the root (by any spelling the file system takes for it: another case,
+    /// another Unicode form) or a link. Any other name in an ancestor, whether or not
+    /// anything is there by it, leads out, nothing below it looked at: so nothing outside the
+    /// workspace is told apart by whether it exists (`../secret/../work/x` and
+    /// `../nowhere/../work/x` alike), and no lookup outside it can wait on a slow or a
+    /// mounted-on-demand directory. A path that stops inside the workspace (a name missing
+    /// there, or one below a file) leads nowhere out of it, as the system goes no further:
+    /// what's wrong with it is the system's to say. So is a path to the root, or one of its
+    /// ancestors on the way, gone (the workspace removed since it was made): it's
+    /// unreachable, never outside. A path longer than the system resolves
+    /// ([`WALKED_PATH_BYTES`]), or through more links than it follows ([`LINKS_FOLLOWED`]),
+    /// is decided by its form alone ([`Workspace::leaves`]), so the walk is bounded.
     fn leads_out(&self, path: &Path) -> bool {
         if path.as_os_str().len() > WALKED_PATH_BYTES {
             return self.leaves(path);
         }
         // The path walked from the top a name at a time, as the system resolves it: the
-        // steps still to take (the next last), and where the walk is, through every link,
-        // so a `..` is the directory above it. A link's target takes its place, and costs
-        // one of the budget; only a link does.
+        // steps still to take (the next last), and where the walk is, through every link, so
+        // a `..` is the directory above it. It's only ever the root, below it, or one of its
+        // ancestors, spelled as the root is. A link's target takes its place, and costs one
+        // of the budget; only a link does.
         let mut steps = Step::of(path);
         steps.reverse();
         let mut at = PathBuf::new();
         let mut links = LINKS_FOLLOWED;
         while let Some(step) = steps.pop() {
-            match step {
-                Step::From(top) => at = top,
+            let name = match step {
+                Step::From(top) => {
+                    at = top;
+                    continue;
+                }
                 Step::Up => {
                     at.pop();
+                    continue;
                 }
-                Step::Name(name) => {
-                    let next = at.join(name);
-                    match std::fs::symlink_metadata(&next) {
-                        Ok(meta) if meta.file_type().is_symlink() => {
-                            let Some(left) = links.checked_sub(1) else {
-                                return self.leaves(path);
-                            };
-                            links = left;
-                            let Ok(target) = std::fs::read_link(&next) else {
-                                break;
-                            };
-                            steps.extend(Step::of(&target).into_iter().rev());
-                        }
-                        Ok(meta) => {
-                            at = next;
-                            // Nothing below a file, nor above it through it: the system
-                            // stops here.
-                            if !meta.is_dir() {
-                                break;
-                            }
-                        }
-                        Err(_) if self.root.starts_with(&next) => return false,
-                        Err(_) => break,
-                    }
+                Step::Name(name) => name,
+            };
+            let next = at.join(&name);
+            // Of an ancestor's names, the next on the way to the root; none in the workspace.
+            let way = if self.holds(&at) {
+                None
+            } else {
+                match self
+                    .root
+                    .strip_prefix(&at)
+                    .map(|rest| rest.components().next())
+                {
+                    Ok(Some(Component::Normal(way))) => Some(at.join(way)),
+                    // Not the root's ancestor (a path not from the top): nowhere to look.
+                    _ => return true,
                 }
+            };
+            let meta = std::fs::symlink_metadata(&next);
+            if let Ok(meta) = &meta
+                && meta.file_type().is_symlink()
+            {
+                let Some(left) = links.checked_sub(1) else {
+                    return self.leaves(path);
+                };
+                links = left;
+                let Ok(target) = std::fs::read_link(&next) else {
+                    // Gone since it was looked at: the system stops here.
+                    return !self.holds(&at);
+                };
+                steps.extend(Step::of(&target).into_iter().rev());
+                continue;
+            }
+            match (meta, way) {
+                // In the workspace: a directory to go on in; a file, or nothing, where the
+                // system stops, in it.
+                (Ok(meta), None) if meta.is_dir() => at = next,
+                (_, None) => return false,
+                // The way to the root, by its own spelling or another the file system takes
+                // for the same directory: on, spelled as the root is.
+                (Ok(meta), Some(way))
+                    if meta.is_dir() && (next == way || same_file(&meta, &way)) =>
+                {
+                    at = way;
+                }
+                // The way to the root, not a directory or not there: the workspace gone, as
+                // the system will say.
+                (_, Some(way)) if next == way => return false,
+                // Any other name of an ancestor: out, whatever is there.
+                (_, Some(_)) => return true,
             }
         }
-        // Where the walk got to is there: decided through its links, as the system spells
-        // it (a case-insensitive file system's own spelling of a name given otherwise).
-        match std::fs::canonicalize(&at) {
-            Ok(resolved) => !self.holds(&resolved),
-            Err(_) => self.leaves(path),
-        }
+        !self.holds(&at)
     }
 
     /// Whether `path`, its `.`s and `..`s taken as written, links not followed, leaves the
@@ -236,7 +272,7 @@ impl Workspace {
     /// The refusal of a command whose session's file, `given` as `open` was given it, now
     /// leads out of the workspace (a link put on its path since): `invalid_input`, naming
     /// `path`, as `open` refuses one, never `io_failed`.
-    pub fn led_out(given: &Path) -> Error {
+    pub fn outside_now(given: &Path) -> Error {
         Error::new(
             ErrorCode::InvalidInput,
             format!(
@@ -252,6 +288,13 @@ impl Workspace {
             "put the document back inside the workspace, or close the session and open one inside it",
         )
     }
+}
+
+/// Whether `meta` is of the file at `path`, links not followed: the same device and inode,
+/// however each is spelled.
+fn same_file(meta: &std::fs::Metadata, path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .is_ok_and(|other| other.dev() == meta.dev() && other.ino() == meta.ino())
 }
 
 /// Why a path doesn't resolve inside a workspace ([`resolve`]).
@@ -273,10 +316,21 @@ pub fn resolve(workspace: Option<&Workspace>, path: &Path) -> Result<PathBuf, Un
         return std::fs::canonicalize(path).map_err(Unresolved::Unreachable);
     };
     let joined = workspace.root.join(path);
+    // Walked first, never looking outside the workspace, so only a path that stays in it
+    // (or stops in it) is ever resolved by the system.
+    if workspace.leads_out(&joined) {
+        return Err(Unresolved::Outside);
+    }
+    // Longer than the system resolves: refused as the system refuses it, never walked.
+    if joined.as_os_str().len() > WALKED_PATH_BYTES {
+        return Err(Unresolved::Unreachable(std::io::Error::from_raw_os_error(
+            libc::ENAMETOOLONG,
+        )));
+    }
     match std::fs::canonicalize(&joined) {
         Ok(resolved) if workspace.holds(&resolved) => Ok(resolved),
+        // Changed since it was walked (a link put on its way): out, where it leads now.
         Ok(_) => Err(Unresolved::Outside),
-        Err(_) if workspace.leads_out(&joined) => Err(Unresolved::Outside),
         Err(e) => Err(Unresolved::Unreachable(e)),
     }
 }
@@ -364,7 +418,7 @@ pub struct Within<'a> {
 }
 
 /// [`save_over`], and, `within` a workspace, refused if `file` now leads out of it (a link
-/// put on its path since it was read: [`Workspace::led_out`]), checked where the file it
+/// put on its path since it was read: [`Workspace::outside_now`]), checked where the file it
 /// writes is found, nothing written.
 pub fn save_within(
     file: &Path,
@@ -378,7 +432,7 @@ pub fn save_within(
         Err(Unresolved::Unreachable(e)) => return Err(Unsaved::from(unwritable(e))),
         Err(Unresolved::Outside) => {
             let given = within.map_or(file, |w| w.given);
-            return Err(Unsaved::from(Workspace::led_out(given)));
+            return Err(Unsaved::from(Workspace::outside_now(given)));
         }
     };
     let metadata = std::fs::metadata(&target).map_err(unwritable)?;
@@ -814,6 +868,84 @@ mod tests {
     }
 
     #[test]
+    fn the_walk_stops_at_exactly_the_longest_path_the_system_resolves() {
+        use std::os::unix::fs::symlink;
+        let (dir, w) = scratch();
+        let work = w.root().to_owned();
+        // Through `out`, a link out of the workspace: out if walked, in by its form.
+        symlink(dir.path().join("outside"), work.join("out")).unwrap();
+        let mut below = work.join("out");
+        while below.as_os_str().len() < WALKED_PATH_BYTES - 200 {
+            below.push("m");
+        }
+        // `below/` and a name making it `bytes` long.
+        let of = |bytes: usize| {
+            let name = "n".repeat(bytes - below.as_os_str().len() - 1);
+            let path = below.join(name);
+            assert_eq!(path.as_os_str().len(), bytes);
+            path
+        };
+        assert!(w.leads_out(&of(WALKED_PATH_BYTES)));
+        assert!(!w.leads_out(&of(WALKED_PATH_BYTES + 1)));
+        assert!(matches!(
+            resolve(Some(&w), &of(WALKED_PATH_BYTES)),
+            Err(Unresolved::Outside)
+        ));
+        // One past, in by its form: refused as too long, as the system refuses it.
+        match resolve(Some(&w), &of(WALKED_PATH_BYTES + 1)) {
+            Err(Unresolved::Unreachable(e)) => {
+                assert_eq!(e.raw_os_error(), Some(libc::ENAMETOOLONG));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_name_outside_is_never_looked_up_whether_or_not_its_there() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (dir, w) = scratch();
+        let work = w.root().to_owned();
+        let top = work.parent().unwrap().to_owned();
+        // `outside` is there, `nowhere` isn't, and `locked` can't be looked in: each the
+        // same, out, through it and back or not.
+        let locked = top.join("locked");
+        std::fs::create_dir_all(locked.join("in")).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let mut decided = Vec::new();
+        for name in ["outside", "nowhere", "locked"] {
+            for rest in ["../work/part.silico", "in/part.silico", "", "x/../../work"] {
+                let path = work.join(format!("../{name}/{rest}"));
+                decided.push((path.clone(), w.leads_out(&path), resolve(Some(&w), &path)));
+                let absolute = top.join(name).join(rest);
+                decided.push((
+                    absolute.clone(),
+                    w.leads_out(&absolute),
+                    resolve(Some(&w), &absolute),
+                ));
+            }
+        }
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for (path, out, resolved) in decided {
+            assert!(out, "{}", path.display());
+            assert!(
+                matches!(resolved, Err(Unresolved::Outside)),
+                "{}: {resolved:?}",
+                path.display()
+            );
+        }
+        // Down through the root's ancestors, by its own spelling or the system's other
+        // (macOS's `/var` for `/private/var`): in.
+        let part = work.join("part.silico");
+        assert_eq!(resolve(Some(&w), &part).unwrap(), part);
+        let given = dir.path().join("work/../work/part.silico");
+        assert!(!w.leads_out(&given));
+        assert_eq!(resolve(Some(&w), &given).unwrap(), part);
+        // The root's parent, and the top: out, as ancestors are, nothing below looked at.
+        assert!(w.leads_out(&top));
+        assert!(w.leads_out(Path::new("/")));
+    }
+
+    #[test]
     fn a_path_in_a_workspace_gone_is_never_out_of_it() {
         let (dir, w) = scratch();
         let work = dir.path().join("work");
@@ -943,17 +1075,12 @@ fn output_target(
     // a case-insensitive file system, `HELD.png` is a held `Held.png`).
     let existing = std::fs::symlink_metadata(dir.join(name)).ok();
     let target = match &existing {
-        Some(meta) => match std::fs::canonicalize(dir.join(name)) {
+        // Through a link at the path as every path is resolved: in a workspace, never
+        // looking outside it.
+        Some(meta) => match resolve(rules.workspace, &dir.join(name)) {
             Ok(target) => target,
-            Err(_)
-                if meta.file_type().is_symlink()
-                    && rules
-                        .workspace
-                        .is_some_and(|w| w.leads_out(&dir.join(name))) =>
-            {
-                return Err(Workspace::outside(given, rules.field));
-            }
-            Err(e) if meta.file_type().is_symlink() => {
+            Err(Unresolved::Outside) => return Err(Workspace::outside(given, rules.field)),
+            Err(Unresolved::Unreachable(e)) if meta.file_type().is_symlink() => {
                 return Err(refuse(
                     format!("is a link to nothing that can be reached: {e}"),
                     "give a path that isn't a broken link",
@@ -961,17 +1088,10 @@ fn output_target(
             }
             // Gone since it was looked at: as if it hadn't been there (the write checks
             // what's there again).
-            Err(_) => dir.join(name),
+            Err(Unresolved::Unreachable(_)) => dir.join(name),
         },
         None => dir.join(name),
     };
-    // A link at the path out of the workspace, its directory inside it: said before anything
-    // of what it leads to.
-    if let Some(workspace) = rules.workspace
-        && !workspace.holds(&target)
-    {
-        return Err(Workspace::outside(given, rules.field));
-    }
     if target
         .components()
         .any(|c| c.as_os_str() == ".silico-cache")
