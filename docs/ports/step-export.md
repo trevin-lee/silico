@@ -226,30 +226,39 @@ The plain writer's files read back the same, named `Box 1`, `Fillet 1`, … (the
 - 4,701 build steps against 2,220 now; about 20 minutes at `-j 4`, `nice`.
 - About 15 MB more libraries (`TKDESTEP` 7 MB). It changes no existing library, so the stress reference stays byte-identical.
 - No new inexact math imports: `nm -u` on all ten new libraries finds none of the shim's functions.
-- On macOS, `TKService` links AppKit, IOKit, CoreGraphics, Foundation, and CoreFoundation, so the kernel worker would load them; startup of a probe that writes a box is 0.11 s in all. If that matters, a STEP worker binary of its own would keep them out of the modeling worker. Linux links no GUI library (`USE_OPENGL=OFF`, `USE_FREETYPE=OFF`, no X11 needed by `TKService` there; not verified).
+- On macOS, `TKService` links AppKit, IOKit, CoreGraphics, Foundation, and CoreFoundation, so whatever links it loads them. As built, that's the STEP worker alone (`silico-step-worker`, in silico-kernel, which stays the only crate that links OCCT): linked into the kernel worker, they took its startup from about 30 to 70 ms and its memory from 8.4 to 18.5 MB (debug), past what the pool's rule for stopping superseded work assumes, in every worker of the pool. The STEP worker is started for each export (exports are rare, and a fresh process is deterministic by construction), its own bridge (`cpp/step.cpp`) and its own import check; the kernel worker links none of STEP's toolkits, tested.
+- On Linux, `TKService` includes X11's headers unless OCCT is configured with `USE_XLIB=OFF`, as build.sh does (nothing Silico calls draws).
 - The writer prints transfer statistics to stdout through `Message::DefaultMessenger()`. The worker removes the default printers (or routes them to `tracing`).
 
 ### The worker's request
 
-`Op::ExportStep` beside `Op::ExportMesh`:
+`Op::ExportStep`, answered by the STEP worker (the kernel worker refuses it as another worker's):
 
 ```
 ExportStep {
-  parts: [ { shape: <a body's solid, as the worker holds it>, id: "f0000003", name: "<encoded>" } ],  // timeline order, at least one
+  parts: [ { shape: <a body's B-rep>, id: "f0000003", name: "<encoded>" } ],  // the file's order, at least one
   assembly: "<encoded document stem>",   // used only with two or more parts
-  header: { file_name: "<encoded>" }     // the rest are constants in the worker
+  file_name: "<encoded document file name>"  // the header's; its other fields the worker's constants
 }
-→ { step: <bytes>, left_out: [ { part: 0, faces: [<face indices>] } ] }
+→ StepFile {
+  step: <bytes>,
+  left_out: [ [<face numbers>], ... ],          // a list a part: its INTERNAL and EXTERNAL faces
+  unwritten: [ { part, element, messages } ],   // the writer's check-list failures, of anything else
+  faces: { expected, written },                 // the parts' faces that bound material, and the file's
+  bounds: { expected, written },                // their wires, and the file's face bounds
+}
 ```
 
-The core encodes the strings, names the parts, and words refusals; the worker checks the strings' form (`ExportStep::check`), builds the XCAF document, transfers with the parameters above, sets the ids and the header, and returns `WriteStream`'s bytes.
+The core encodes the strings, names the parts, and words refusals (`command::export`'s `unwritten`); the worker checks the strings' form (`ExportStep::check`) and each part's B-rep (as the kernel does), builds the XCAF document, transfers with the parameters above, sets the ids and the header, splices in the strings, and reports what it finds. Whatever wrote a file, its identity (the STEP worker's build: `STEP worker sha256:...`) is logged with it, as a kernel's keys its results.
 
 Refused:
 
 - **No parts** (`features: []`, or a document with no body): `invalid_input`, naming `features`, as the 3MF export refuses it (after FreeCAD's mesh export, `04005b5e45`). FreeCAD's STEP export doesn't refuse: `ExportOCAF2::exportObjects` returns at once on an empty list (`ExportOCAF2.cpp:347-349`) and the writer is handed an empty document (what it writes then is not verified).
 - **A feature that didn't build**: its own failure, as `describe` answers it.
 - **A string not in the encoded form**: a protocol error (the core never sends one).
-- **A transfer OCCT fails** (`Transfer` returns false, or `WriteStream` fails): `invalid_result`, naming the feature, with OCCT's message.
+- **A transfer OCCT fails** (`Transfer` returns false, or `WriteStream` fails): `invalid_result`, naming the feature if there's one, with OCCT's message.
+- **A check-list failure, or fewer faces or face bounds written than the parts have**: `invalid_result`, naming the feature (one part's) and the elements, the core's words.
+- **No STEP worker to be had**: `worker_unavailable`, saying how to build it or name it (`SILICO_STEP_WORKER`).
 - **Names: nothing.** Every Unicode string can be encoded. A name's length is bounded by the document's (16 MiB).
 
 `export`'s `tolerance` means nothing for STEP: decided (Fable, 2026-10-26), it's `null` for STEP, and a length is refused naming it, as a camera's `view_height` is for a perspective camera.

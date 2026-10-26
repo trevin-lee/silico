@@ -108,12 +108,14 @@ impl<P: Clients + 'static> Sessions<P> {
     /// file written once the read settles, so a cancelled export leaves no trace.
     pub fn export(&self, session: &SessionId, request: Export) -> Running<Exported> {
         let rules = self.write_rules();
+        let step = self.step_exporter();
         self.read_current(session, SessionCommand::Export, move |read| {
             export(
                 read.model(),
                 &request,
                 &ExportOn {
                     kernel: read.kernel(),
+                    step: &*step,
                     document: read.path(),
                     workspace: rules.workspace.as_ref(),
                     held: &rules.held,
@@ -128,6 +130,8 @@ impl<P: Clients + 'static> Sessions<P> {
 /// must keep clear of (decision 35), and the settle that comes before it.
 pub struct ExportOn<'a, K: Kernel> {
     pub kernel: &'a K,
+    /// What writes a STEP file: the STEP worker (`step_worker::StepWorkers`), or a test's.
+    pub step: &'a dyn crate::step_worker::StepExporter,
     /// The document's path, whose file name a STEP file's header gives, and whose stem
     /// names its assembly.
     pub document: &'a str,
@@ -269,9 +273,9 @@ fn stepped<K: Kernel>(
     on: &ExportOn<'_, K>,
 ) -> Result<(Vec<u8>, Vec<ExportedObject>), Problems> {
     let document = Path::new(on.document);
-    let text = |part: Option<&std::ffi::OsStr>| {
+    let text = |component: Option<&std::ffi::OsStr>| {
         silico_protocol::step_encoded(
-            &part.map_or_else(String::new, |p| p.to_string_lossy().into_owned()),
+            &component.map_or_else(String::new, |c| c.to_string_lossy().into_owned()),
         )
     };
     let export = silico_protocol::ExportStep {
@@ -286,21 +290,21 @@ fn stepped<K: Kernel>(
         assembly: text(document.file_stem()),
         file_name: text(document.file_name()),
     };
-    let request = KernelRequest::export_step(export).map_err(Problems::from)?;
-    let file = super::done(
-        on.kernel.submit(on.kernel.generation(), request).wait(),
-        session_closed,
-    )
-    .map_err(|p| {
-        p.map(|e| match (e.feature(), solids) {
+    let (file, writer) = on.step.export_step(export).map_err(|e| {
+        // A file that took past a request's time is the bodies' to split.
+        let e = match e.code() {
+            ErrorCode::WorkerTimeout => e.with_suggestion(STEP_TIMED_OUT),
+            _ => e,
+        };
+        Problems::from(match solids {
             // One part: whatever the writer refused is its.
-            (None, [solid]) if e.parameter() != Some("session") => {
-                e.with_feature(solid.id.as_str())
-            }
+            [solid] => super::of_solid(solid.id, e),
             _ => e,
         })
     })?;
-    if let Some(refused) = unwritten(model, solids, &file.unwritten) {
+    // Its bytes are its writer's: which build wrote it, as a kernel's identity keys its results.
+    tracing::info!(writer = %writer, bytes = file.step.as_bytes().len(), "STEP file written");
+    if let Some(refused) = unwritten(model, solids, &file) {
         return Err(refused);
     }
     let objects = solids
@@ -320,6 +324,10 @@ fn stepped<K: Kernel>(
         .map_err(Problems::from)?;
     Ok((file.step.into_bytes(), objects))
 }
+
+/// What a STEP export that took past a request's time suggests.
+const STEP_TIMED_OUT: &str =
+    "export fewer features at once: the STEP writer writes every body in one request";
 
 /// What an export whose mesh took past a kernel request's time suggests.
 const TIMED_OUT: &str =
@@ -539,35 +547,50 @@ fn object(solid: &Solid, mesh: &PrintableMesh) -> Result<ExportedObject, Problem
     })
 }
 
-/// The refusal of a STEP file whose writer said it couldn't transfer, or transferred with a
-/// warning, something of a part other than the faces it leaves out (its check list, which
-/// OCCT otherwise only logs: docs/ports/step-export.md, *Edge cases*): never a file with
-/// geometry missing. One error a part, naming its feature and the elements at fault by its
-/// element map, OCCT's words its cause; one for what's of no part. None if it said nothing.
+/// The refusal of a STEP file its writer didn't write whole (docs/ports/step-export.md,
+/// *Edge cases*), never a file with geometry missing: what the writer's check list says it
+/// couldn't transfer of a part (other than the faces left out), one error a part, naming its
+/// feature and the elements at fault by its element map, OCCT's words its cause; and fewer
+/// faces, or face bounds (a face's outer edge and its holes), in the file than the parts
+/// have that bound material, which the writer drops with only a warning. One part's, each
+/// names its feature. None if it's whole.
 fn unwritten(
     model: &Model,
     solids: &[Solid<'_>],
-    said: &[silico_protocol::StepUnwritten],
+    file: &silico_protocol::StepFile,
 ) -> Option<Problems> {
-    if said.is_empty() {
+    let short = |count: silico_protocol::StepCount| count.written < count.expected;
+    if file.unwritten.is_empty() && !short(file.faces) && !short(file.bounds) {
         return None;
     }
+    // Of no part: of the one there is, if there's one.
+    let of = |part: Option<u32>| match (part, solids) {
+        (Some(p), _) => solids.get(p as usize),
+        (None, [solid]) => Some(solid),
+        (None, _) => None,
+    };
+    let advice = |solid: Option<&Solid<'_>>| match solid {
+        Some(_) => {
+            "this solid can't be exported as STEP until the kernel writes it whole: there's no \
+             workaround in the request; export it as 3MF, or rebuild it otherwise"
+        }
+        None => "export the bodies one at a time, to find which the writer can't write whole",
+    };
+    let named = |error: Error, solid: Option<&Solid<'_>>| match solid {
+        Some(solid) => error.with_feature(solid.id.as_str()),
+        None => error,
+    };
     let mut refused = Problems::none();
     let mut parts: BTreeMap<Option<u32>, Vec<&silico_protocol::StepUnwritten>> = BTreeMap::new();
-    for entry in said {
+    for entry in &file.unwritten {
         parts.entry(entry.part).or_default().push(entry);
     }
     for (part, entries) in parts {
-        // Of no part: of the one there is, if there's one.
-        let solid = match (part, solids) {
-            (Some(p), _) => solids.get(p as usize),
-            (None, [solid]) => Some(solid),
-            (None, _) => None,
-        };
+        let solid = of(part);
         let elements: BTreeSet<silico_protocol::ElementRef> =
             entries.iter().filter_map(|e| e.element).collect();
         let map = solid.and_then(|s| model.element_map(s.id));
-        let named: Vec<String> = elements
+        let names: Vec<String> = elements
             .iter()
             .take(silico_protocol::FACES_NAMED)
             .map(|&element| {
@@ -580,25 +603,40 @@ fn unwritten(
             .flat_map(|e| e.messages.iter().map(String::as_str))
             .collect();
         let whose = solid.map_or_else(|| "the file".to_owned(), |s| format!("{}'s solid", s.id));
-        let mut error = Error::new(
+        let error = Error::new(
             ErrorCode::InvalidResult,
-            format!("the STEP writer couldn't write all of {whose}: OCCT reports what it couldn't transfer"),
+            format!(
+                "the STEP writer couldn't write all of {whose}: OCCT reports what it couldn't \
+                 transfer"
+            ),
         )
-        .with_elements(named)
+        .with_elements(names)
         .with_elements_total(elements.len() as u64)
         .with_cause(if messages.is_empty() {
             "OCCT's check list names it, with no message".to_owned()
         } else {
             messages.join("; ")
         })
-        .with_suggestion(
-            "this solid can't be exported as STEP until the kernel writes it whole: there's no \
-             workaround in the request; export it as 3MF, or rebuild it otherwise",
-        );
-        if let Some(solid) = solid {
-            error = error.with_feature(solid.id.as_str());
+        .with_suggestion(advice(solid));
+        refused.push(named(error, solid));
+    }
+    for (count, what) in [(file.faces, "faces"), (file.bounds, "face bounds")] {
+        if short(count) {
+            let solid = of(None);
+            let error = Error::new(
+                ErrorCode::InvalidResult,
+                format!(
+                    "the STEP file holds {} of the {} {what} the bodies have that bound \
+                     material: OCCT's writer dropped {}",
+                    count.written,
+                    count.expected,
+                    count.expected - count.written
+                ),
+            )
+            .with_cause("OCCT's writer drops what it can't map with only a warning")
+            .with_suggestion(advice(solid));
+            refused.push(named(error, solid));
         }
-        refused.push(error);
     }
     Some(refused)
 }

@@ -63,6 +63,7 @@ impl Bench {
             request,
             &ExportOn {
                 kernel: &self.kernel,
+                step: &*self.kernel,
                 document: "part.silico",
                 workspace: None,
                 held: &[],
@@ -934,6 +935,12 @@ fn two_kernel_faults_stopping_features_listed_are_each_said_once() {
     assert_eq!(problems.total(), 2);
 }
 
+/// A STEP file's faces or bounds, every one written.
+const WHOLE: silico_protocol::StepCount = silico_protocol::StepCount {
+    expected: 6,
+    written: 6,
+};
+
 /// A STEP export of `features` (every body if none) to `path`.
 fn step_request(path: &Path, features: Option<&[&str]>) -> Export {
     Export {
@@ -1028,6 +1035,8 @@ fn a_step_exports_faces_left_out_are_named_by_the_features_element_map() {
                 step: silico_protocol::Blob::inline(b"STEP".to_vec()),
                 left_out: vec![vec![5, 6]],
                 unwritten: vec![],
+                faces: WHOLE,
+                bounds: WHOLE,
             }))),
             _ => None,
         });
@@ -1073,6 +1082,8 @@ fn a_step_reply_for_another_number_of_parts_is_the_workers_fault() {
                 step: silico_protocol::Blob::inline(b"STEP".to_vec()),
                 left_out: vec![vec![]],
                 unwritten: vec![],
+                faces: WHOLE,
+                bounds: WHOLE,
             }))),
             _ => None,
         });
@@ -1103,6 +1114,8 @@ fn a_step_file_whose_writer_couldnt_transfer_a_face_is_refused_naming_it() {
                         element: Some(silico_protocol::ElementRef::face(3)),
                         messages: vec!["Face not transferred".to_owned()],
                     }],
+                    faces: WHOLE,
+                    bounds: WHOLE,
                 }))),
                 _ => None,
             });
@@ -1129,4 +1142,165 @@ fn a_step_file_whose_writer_couldnt_transfer_a_face_is_refused_naming_it() {
     let problems = refused(bench.export(&step_request(&path, Some(&["k7f2qx3m"]))));
     assert_eq!(problems.errors()[0].code(), ErrorCode::ProtocolError);
     assert!(dir.names().is_empty());
+}
+
+/// The example's bench, its STEP exports answered with `file`.
+fn step_answered(file: silico_protocol::StepFile) -> Bench {
+    Bench::with(EXAMPLE, move |kernel| {
+        kernel.answer_instead(move |op| match op {
+            Op::ExportStep(_) => Some(Reply::StepFile(Box::new(file.clone()))),
+            _ => None,
+        });
+    })
+}
+
+#[test]
+fn a_step_file_short_of_faces_or_bounds_is_refused_saying_how_many_and_whose() {
+    // The writer drops a face, or a face's hole, with only a warning: the worker's counts say
+    // so. One part: each shortfall names its feature; two: none, the advice to export them
+    // one at a time.
+    let short = |faces: (u64, u64), bounds: (u64, u64), parts: usize| silico_protocol::StepFile {
+        step: silico_protocol::Blob::inline(b"STEP".to_vec()),
+        left_out: vec![vec![]; parts],
+        unwritten: vec![],
+        faces: silico_protocol::StepCount {
+            expected: faces.0,
+            written: faces.1,
+        },
+        bounds: silico_protocol::StepCount {
+            expected: bounds.0,
+            written: bounds.1,
+        },
+    };
+    let bench = step_answered(short((7, 6), (9, 8), 1));
+    let dir = Scratch::new("step-short");
+    let path = dir.0.join("out.step");
+    let problems = refused(bench.export(&step_request(&path, Some(&["k7f2qx3m"]))));
+    let said: Vec<(&str, Option<&str>)> = problems
+        .errors()
+        .iter()
+        .map(|e| (e.message(), e.feature()))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            (
+                "the STEP file holds 6 of the 7 faces the bodies have that bound material: \
+                 OCCT's writer dropped 1",
+                Some("k7f2qx3m")
+            ),
+            (
+                "the STEP file holds 8 of the 9 face bounds the bodies have that bound \
+                 material: OCCT's writer dropped 1",
+                Some("k7f2qx3m")
+            ),
+        ]
+    );
+    assert!(
+        problems
+            .errors()
+            .iter()
+            .all(|e| e.code() == ErrorCode::InvalidResult)
+    );
+    assert!(dir.names().is_empty());
+    // More written than the parts have (a face two solids share, written for each): whole.
+    let bench = step_answered(short((7, 8), (9, 10), 1));
+    bench
+        .export(&step_request(&path, Some(&["k7f2qx3m"])))
+        .unwrap();
+    std::fs::remove_file(&path).unwrap();
+    // Two parts: whose it is isn't known.
+    let bench = step_answered(short((14, 13), (14, 14), 2));
+    let problems = refused(bench.export(&step_request(&path, Some(&["m3tq8v0z", "k7f2qx3m"]))));
+    let e = &problems.errors()[0];
+    assert_eq!(e.feature(), None, "{e:?}");
+    assert_eq!(
+        e.suggestion(),
+        Some("export the bodies one at a time, to find which the writer can't write whole")
+    );
+}
+
+#[test]
+fn a_step_check_list_of_many_elements_and_messages_lists_a_hundred_and_says_every_message() {
+    // 101 faces at fault, in two entries with a message each: the first hundred named, all
+    // counted, both messages the cause.
+    let entries = vec![
+        silico_protocol::StepUnwritten {
+            part: Some(0),
+            element: Some(silico_protocol::ElementRef::face(1)),
+            messages: vec!["first".to_owned()],
+        },
+        silico_protocol::StepUnwritten {
+            part: Some(0),
+            element: Some(silico_protocol::ElementRef::face(2)),
+            messages: vec!["second".to_owned()],
+        },
+    ];
+    let mut many = entries.clone();
+    many.extend((3..=101).map(|n| silico_protocol::StepUnwritten {
+        part: Some(0),
+        element: Some(silico_protocol::ElementRef::face(n)),
+        messages: vec![],
+    }));
+    let bench = step_answered(silico_protocol::StepFile {
+        step: silico_protocol::Blob::inline(b"STEP".to_vec()),
+        left_out: vec![vec![]],
+        unwritten: many,
+        faces: WHOLE,
+        bounds: WHOLE,
+    });
+    let dir = Scratch::new("step-many");
+    let problems =
+        refused(bench.export(&step_request(&dir.0.join("out.step"), Some(&["k7f2qx3m"]))));
+    assert_eq!(problems.total(), 1);
+    let e = &problems.errors()[0];
+    assert_eq!(e.elements().len(), 100);
+    assert_eq!(e.elements_total(), 101);
+    assert_eq!(e.cause(), Some("first; second"));
+    assert_eq!(e.feature(), Some("k7f2qx3m"));
+}
+
+#[test]
+fn a_two_part_step_file_the_writer_refuses_names_no_feature() {
+    // Whatever it refused isn't known to be either body's: no feature named.
+    let bench = Bench::with(EXAMPLE, |kernel| {
+        kernel.refuse(|op| {
+            matches!(op, Op::ExportStep(_))
+                .then(|| Error::new(ErrorCode::InvalidResult, "OCCT couldn't write the file"))
+        });
+    });
+    let dir = Scratch::new("step-two-refused");
+    let problems = refused(bench.export(&step_request(
+        &dir.0.join("out.step"),
+        Some(&["m3tq8v0z", "k7f2qx3m"]),
+    )));
+    assert_eq!(problems.errors()[0].feature(), None);
+    assert!(dir.names().is_empty());
+}
+
+#[test]
+fn a_step_file_past_a_requests_time_suggests_exporting_fewer_features() {
+    let bench = Bench::with(EXAMPLE, |kernel| {
+        kernel.refuse(|op| {
+            matches!(op, Op::ExportStep(_)).then(|| {
+                Error::new(
+                    ErrorCode::WorkerTimeout,
+                    "the STEP worker didn't answer ExportStep within 60 s",
+                )
+                .with_suggestion("the worker's own")
+            })
+        });
+    });
+    let dir = Scratch::new("step-timeout");
+    let problems = refused(bench.export(&step_request(&dir.0.join("out.step"), None)));
+    let e = &problems.errors()[0];
+    assert_eq!(
+        (e.code(), e.feature(), e.suggestion()),
+        (
+            ErrorCode::WorkerTimeout,
+            Some("m3tq8v0z"),
+            Some("export fewer features at once: the STEP writer writes every body in one request")
+        ),
+        "{e:?}"
+    );
 }

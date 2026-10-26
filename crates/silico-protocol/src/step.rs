@@ -35,22 +35,34 @@ pub struct StepPart {
     pub name: String,
 }
 
-/// A STEP export written: the file's bytes, and, for each part, in order, the faces left out
-/// of it as bounding no material (OCCT's INTERNAL and EXTERNAL, which its writer drops), as
-/// numbered in `TopExp::MapShapes` order from 1; and what the writer's check list says it
-/// couldn't transfer, or transferred with a warning, of anything else, which the core
-/// refuses (docs/ports/step-export.md, *Edge cases*): the worker reports, the core decides,
-/// as it does a mesh's unmeshed faces.
+/// A STEP export written: the file's bytes; for each part, in order, the faces left out of
+/// it as bounding no material (OCCT's INTERNAL and EXTERNAL, which its writer drops), as
+/// numbered in `TopExp::MapShapes` order from 1; what the writer's check list says it failed
+/// to transfer, of anything else; and the faces the parts have that bound material, and
+/// their bounds (wires), against those the file holds, as the writer drops a face or a wire
+/// it can't map with only a warning. The core refuses a failure or a shortfall
+/// (docs/ports/step-export.md, *Edge cases*): the worker reports, the core decides and words
+/// it, as it does a mesh's unmeshed faces.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StepFile {
     pub step: Blob,
     pub left_out: Vec<Vec<u32>>,
     pub unwritten: Vec<StepUnwritten>,
+    pub faces: StepCount,
+    pub bounds: StepCount,
+}
+
+/// How many of something the parts have, and how many the file holds (more, for what two
+/// solids share, written once for each).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StepCount {
+    pub expected: u64,
+    pub written: u64,
 }
 
 /// One entry of a STEP writer's check list: the part its shape is of, if it's of one, and
 /// the element it is of that part (a face, edge, or vertex, numbered as `TopExp::MapShapes`
-/// numbers them), if it's one; and OCCT's messages, its failures then its warnings.
+/// numbers them), if it's one; and OCCT's messages of its failures.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StepUnwritten {
     pub part: Option<u32>,
@@ -355,7 +367,7 @@ mod tests {
             "\\X2\\D800\\X0\\",
             "\\X4\\00110000\\X0\\",
             // Encoded, but not as the encoder would: a split run, printable ASCII encoded,
-            // an astral character as a pair of surrogates' worth in X4's place in X2.
+            // and a character of the BMP in an X4 run (the encoder gives it X2).
             "\\X2\\00FC\\X0\\\\X2\\00F6\\X0\\",
             "\\X2\\0041\\X0\\",
             "\\X4\\000000FC\\X0\\",

@@ -74,7 +74,8 @@ pub use sketch::{
     squared_distance, unbuildable, within_reach,
 };
 pub use step::{
-    ExportStep, StepFile, StepPart, StepUnwritten, is_step_encoded, step_decoded, step_encoded,
+    ExportStep, StepCount, StepFile, StepPart, StepUnwritten, is_step_encoded, step_decoded,
+    step_encoded,
 };
 pub use sweep::{
     ANGULAR_TOLERANCE, EndAtStart, MEASURE_PRECISION, SlitAt, SweepKind, THROUGH_ALL_FACTOR,

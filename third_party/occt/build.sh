@@ -218,7 +218,8 @@ esac
 # toolkit of DataExchange Silico uses, with exactly the toolkits it needs (TKXCAF and what
 # it links: TKCAF, TKLCAF, TKCDF, TKVCAF, TKV3d, TKService, TKXSBase, TKDE). It changes no
 # library already built, and step 9 checks the new ones import none of the platform's
-# inexact math, as every other.
+# inexact math, as every other. USE_XLIB=OFF: TKService, which TKXCAF links, otherwise
+# includes X11's headers on Linux (as it doesn't on macOS); nothing Silico calls draws.
 #
 # BUILD_RELEASE_DISABLE_EXCEPTIONS=OFF: OCCT's Release default (-DNo_Exception) compiles
 # out its input checks, so bad input (a zero scale, a zero-length direction) comes back as
@@ -240,7 +241,7 @@ cmake -S "$work/src" -B "$work/build" -G Ninja \
   -DBUILD_MODULE_FoundationClasses=ON -DBUILD_MODULE_ModelingData=ON -DBUILD_MODULE_ModelingAlgorithms=ON \
   -DBUILD_MODULE_Visualization=OFF -DBUILD_MODULE_ApplicationFramework=OFF -DBUILD_MODULE_DataExchange=OFF \
   -DBUILD_MODULE_Draw=OFF -DBUILD_MODULE_Deprecated=OFF \
-  -DBUILD_ADDITIONAL_TOOLKITS=TKDESTEP \
+  -DBUILD_ADDITIONAL_TOOLKITS=TKDESTEP -DUSE_XLIB=OFF \
   -DUSE_TBB=OFF -DUSE_FREETYPE=OFF -DUSE_OPENGL=OFF -DUSE_TK=OFF -DUSE_FREEIMAGE=OFF \
   -DUSE_RAPIDJSON=OFF -DUSE_DRACO=OFF -DUSE_VTK=OFF -DUSE_GLES2=OFF \
   > "$out/cmake.log" 2>&1 || { tail -30 "$out/cmake.log" >&2; exit 1; }

@@ -15,7 +15,8 @@ use silico_protocol::{
     Request, RequestId, Response, ShapeData, ShapeSummary, Topology, TraceId, write_message,
 };
 use silico_protocol::{
-    Camera, EDGE_BIT, Projection, RenderBody, RenderScene, StepFile, StepPart, StepUnwritten,
+    Camera, EDGE_BIT, Projection, RenderBody, RenderScene, StepCount, StepFile, StepPart,
+    StepUnwritten,
 };
 use silico_protocol::{Curve, Distance, FaceRegions, Region, SketchPlane};
 use silico_protocol::{Description, EdgeCurve, EdgeDescription, FaceDescription, Surface};
@@ -706,6 +707,14 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
                     messages: vec![],
                 },
             ],
+            faces: StepCount {
+                expected: u64::MAX,
+                written: 0,
+            },
+            bounds: StepCount {
+                expected: 0,
+                written: 12,
+            },
         }))),
     ];
     let indices: std::collections::BTreeSet<usize> = results

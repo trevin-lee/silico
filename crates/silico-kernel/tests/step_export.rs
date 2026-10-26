@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::exported::data;
-use super::kernel::kernel;
+use super::kernel::{kernel, step};
 
 use sha2::{Digest, Sha256};
 use silico_kernel::{Primitive, Shape, make, make_box};
@@ -61,7 +61,7 @@ fn block() -> Shape {
 
 #[test]
 fn a_box_is_one_product_its_header_written_from_the_document() {
-    let file = kernel()
+    let file = step()
         .export_step(export(&[(&block(), "k7f2qx3m", "Block")]))
         .unwrap();
     let text = text(&file);
@@ -94,7 +94,7 @@ fn a_step_file_is_the_same_every_run_after_any_other_and_in_any_worker() {
     // process, and its statics outlive a request: the same request gives the same bytes in
     // a new worker, again in the same one, and after other exports there.
     let request = || export(&[(&block(), "k7f2qx3m", "Block")]);
-    let mut worker = kernel();
+    let mut worker = step();
     let first = worker.export_step(request()).unwrap();
     worker
         .export_step(export(&[
@@ -103,7 +103,7 @@ fn a_step_file_is_the_same_every_run_after_any_other_and_in_any_worker() {
         ]))
         .unwrap();
     let again = worker.export_step(request()).unwrap();
-    let elsewhere = kernel().export_step(request()).unwrap();
+    let elsewhere = step().export_step(request()).unwrap();
     assert_eq!(again.step, first.step);
     assert_eq!(elsewhere.step, first.step);
     // The golden: the same on every platform CI runs (macOS arm64 and Linux x86-64).
@@ -115,7 +115,7 @@ const BOX_STEP_SHA256: &str = "67a46f6e348ae45329be29ccc4d516213a2c2665782230da0
 
 #[test]
 fn two_parts_are_an_assembly_named_by_the_documents_stem_each_a_product_in_order() {
-    let file = kernel()
+    let file = step()
         .export_step(export(&[
             (&cylinder(), "p0000001", "Pin"),
             (&block(), "k7f2qx3m", "Block"),
@@ -128,6 +128,15 @@ fn two_parts_are_an_assembly_named_by_the_documents_stem_each_a_product_in_order
     let block = text.find("PRODUCT('k7f2qx3m','Block'").unwrap();
     assert!(pin < block, "{text}");
     assert_eq!(entities(&text, "NEXT_ASSEMBLY_USAGE_OCCURRENCE"), 2);
+    // Each link's id its place among them, from 1 (OCCT's counter is the process's).
+    assert!(
+        text.contains("NEXT_ASSEMBLY_USAGE_OCCURRENCE('1',"),
+        "{text}"
+    );
+    assert!(
+        text.contains("NEXT_ASSEMBLY_USAGE_OCCURRENCE('2',"),
+        "{text}"
+    );
     assert_eq!(entities(&text, "MANIFOLD_SOLID_BREP"), 2);
     assert_eq!(file.left_out, [Vec::<u32>::new(), Vec::new()]);
     assert!(file.unwritten.is_empty(), "{:?}", file.unwritten);
@@ -143,7 +152,7 @@ fn every_name_is_written_encoded_as_iso_10303_21_reads_it() {
         ("smile \u{1F600} end", "smile \\X4\\0001F600\\X0\\ end"),
         ("it's", "it\\X2\\0027\\X0\\s"),
     ] {
-        let file = kernel()
+        let file = step()
             .export_step(export(&[(&block(), "k7f2qx3m", name)]))
             .unwrap();
         let text = text(&file);
@@ -170,7 +179,7 @@ fn a_face_that_bounds_no_material_is_left_out_and_said_and_nothing_else() {
         // The checksum Silico appends to a B-rep (the fixtures' README).
         bytes.extend_from_slice(&crc32fast::hash(&bytes).to_le_bytes());
         let shape = silico_kernel::from_brep(&bytes).unwrap();
-        let file = kernel()
+        let file = step()
             .export_step(export(&[(&shape, "k7f2qx3m", "Block")]))
             .unwrap();
         assert_eq!(file.left_out.len(), 1, "{name}");
@@ -181,18 +190,103 @@ fn a_face_that_bounds_no_material_is_left_out_and_said_and_nothing_else() {
 }
 
 #[test]
-fn a_string_not_encoded_is_refused_by_the_worker_naming_its_field() {
-    // The core never sends one; the worker refuses it before OCCT reads it as a directive.
-    let mut asked = export(&[(&block(), "k7f2qx3m", "Block")]);
-    asked.parts[0].name = "a\\N\\b".to_owned();
-    let failure = silico_kernel::worker::handle(silico_protocol::Op::ExportStep(Box::new(asked)))
+fn the_kernel_worker_writes_no_step_and_links_none_of_steps_toolkits() {
+    // STEP has a worker of its own: the kernel worker refuses it as another worker's, and
+    // carries none of its toolkits (nor what TKService loads), so its startup, memory, and
+    // identity are the kernel's alone. The STEP worker links them.
+    let refused = kernel()
+        .run(
+            silico_core::kernel::KernelRequest::export_step(export(&[(
+                &block(),
+                "k7f2qx3m",
+                "Block",
+            )]))
+            .unwrap(),
+        )
         .unwrap_err();
+    assert!(refused.message().contains("ExportStep"), "{refused:?}");
+    let bytes = |exe: &str| std::fs::read(exe).unwrap();
+    let names = |bytes: &[u8], lib: &str| bytes.windows(lib.len()).any(|w| w == lib.as_bytes());
+    let kernel_worker = bytes(env!("CARGO_BIN_EXE_silico-kernel-worker"));
+    let step_worker = bytes(env!("CARGO_BIN_EXE_silico-step-worker"));
+    for lib in [
+        "libTKDESTEP",
+        "libTKXCAF",
+        "libTKXSBase",
+        "libTKService",
+        "libTKV3d",
+    ] {
+        assert!(!names(&kernel_worker, lib), "the kernel worker links {lib}");
+    }
+    for lib in ["libTKDESTEP", "libTKXCAF"] {
+        assert!(
+            names(&step_worker, lib),
+            "the STEP worker doesn't link {lib}"
+        );
+    }
+}
+
+#[test]
+fn the_step_worker_imports_no_platform_math() {
+    // As every executable linking OCCT: check-math-imports.sh on the STEP worker itself.
+    let script = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../third_party/occt/scripts/check-math-imports.sh"
+    );
+    let out = std::process::Command::new("bash")
+        .arg(script)
+        .arg(env!("CARGO_BIN_EXE_silico-step-worker"))
+        .output()
+        .unwrap();
     assert!(
-        matches!(
-            &failure.refusal,
-            silico_protocol::Refusal::InvalidParameter { parameter, .. } if parameter == "name"
-        ),
-        "{failure:?}"
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_face_the_writer_drops_is_said_by_the_count_from_a_real_worker() {
+    // A box and a face with no wires (Face7): OCCT's writer drops the face with only a
+    // warning (" No Wires of this Face were mapped"); the worker reports seven faces that
+    // bound material, six written, for the core to refuse. Nothing is on the check list.
+    let shape = silico_kernel::test_ops::box_with_wireless_face().unwrap();
+    let file = step()
+        .export_step(export(&[(&shape, "k7f2qx3m", "Block")]))
+        .unwrap();
+    assert_eq!(
+        file.faces,
+        silico_protocol::StepCount {
+            expected: 7,
+            written: 6
+        }
+    );
+    // The box's six faces, one bound each, all written.
+    assert_eq!(
+        file.bounds,
+        silico_protocol::StepCount {
+            expected: 6,
+            written: 6
+        }
+    );
+    assert!(file.unwritten.is_empty(), "{:?}", file.unwritten);
+    // A box alone: all written.
+    let file = step()
+        .export_step(export(&[(&block(), "k7f2qx3m", "Block")]))
+        .unwrap();
+    assert_eq!(
+        (file.faces, file.bounds),
+        (
+            silico_protocol::StepCount {
+                expected: 6,
+                written: 6
+            },
+            silico_protocol::StepCount {
+                expected: 6,
+                written: 6
+            }
+        )
     );
 }
 
@@ -203,7 +297,7 @@ fn a_part_placed_by_a_location_is_one_product_named_by_its_feature() {
     let moved = silico_kernel::translate(&block(), [5.0, 0.0, 0.0])
         .unwrap()
         .shape;
-    let file = kernel()
+    let file = step()
         .export_step(export(&[(&moved, "k7f2qx3m", "Block")]))
         .unwrap();
     let text = text(&file);

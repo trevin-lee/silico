@@ -64,6 +64,7 @@ impl Bench {
             },
             &ExportOn {
                 kernel: &self.kernel,
+                step: &*self.kernel,
                 document,
                 workspace: None,
                 held: &[],
@@ -156,13 +157,15 @@ fn a_one_part_files_face_shortfall_is_refused_naming_its_feature() {
     *bench.reply.lock().unwrap() = Some(StepFile {
         step: Blob::inline(b"STEP".to_vec()),
         left_out: vec![vec![]],
-        unwritten: vec![StepUnwritten {
-            part: None,
-            element: None,
-            messages: vec![
-                "the file holds 5 faces of the 6 the parts have that bound material".to_owned(),
-            ],
-        }],
+        unwritten: vec![],
+        faces: silico_protocol::StepCount {
+            expected: 6,
+            written: 5,
+        },
+        bounds: silico_protocol::StepCount {
+            expected: 6,
+            written: 6,
+        },
     });
     let out = dir.0.join("out.step");
     let problems = bench
@@ -228,6 +231,15 @@ fn replies() -> impl Strategy<Value = (usize, StepFile)> {
                     step: Blob::inline(b"ISO-10303-21;".to_vec()),
                     left_out,
                     unwritten,
+                    // Whole: a shortfall's refusal is export_command.rs's to test.
+                    faces: silico_protocol::StepCount {
+                        expected: 6,
+                        written: 6,
+                    },
+                    bounds: silico_protocol::StepCount {
+                        expected: 6,
+                        written: 6,
+                    },
                 },
             )
         })

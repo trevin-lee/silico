@@ -481,20 +481,6 @@ mod ffi {
         fn edge_node_counts(self: &ExportTriangulation) -> &[u32];
         fn edge_nodes(self: &ExportTriangulation) -> &[u32];
 
-        type StepWriter;
-        type StepOut;
-        fn step_writer() -> UniquePtr<StepWriter>;
-        fn add_part(self: Pin<&mut StepWriter>, shape: &Shape, id: &str, name: &str);
-        fn write(self: &StepWriter, assembly: &str, file_name: &str) -> Result<UniquePtr<StepOut>>;
-        fn bytes(self: &StepOut) -> &[u8];
-        fn left_out_counts(self: &StepOut) -> &[u32];
-        fn left_out(self: &StepOut) -> &[u32];
-        fn unwritten_parts(self: &StepOut) -> &[u32];
-        fn unwritten_kinds(self: &StepOut) -> &[u8];
-        fn unwritten_indices(self: &StepOut) -> &[u32];
-        fn unwritten_messages(self: &StepOut) -> Vec<String>;
-        fn warnings(self: &StepOut) -> Vec<String>;
-
         fn shape_to_brep(shape: &Shape) -> Result<UniquePtr<CxxString>>;
         fn shape_from_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
         fn shape_from_text_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
@@ -518,6 +504,8 @@ mod ffi {
         fn debug_box_with_loose_edge() -> Result<UniquePtr<Shape>>;
         #[cfg(feature = "test_ops")]
         fn debug_empty_shape() -> Result<UniquePtr<Shape>>;
+        #[cfg(feature = "test_ops")]
+        fn debug_box_with_wireless_face() -> Result<UniquePtr<Shape>>;
     }
 }
 
@@ -2309,80 +2297,6 @@ fn export_mesh_within(
     })
 }
 
-/// `export` written as one STEP file (docs/ports/step-export.md), each part a product
-/// whose id and name are its strings, already encoded ([`silico_protocol::step_encoded`]),
-/// under an assembly named `export.assembly` if there are two or more; the header's file name
-/// `export.file_name`, its other fields Silico's constants. Refused if a string isn't in
-/// that form (the core encodes them all) or OCCT can't transfer or write the parts. Reports
-/// each part's faces left out as bounding no material, which OCCT's writer drops, and what
-/// else its check list says it failed to transfer, or the file's faces short of the parts',
-/// for the core to refuse; what it warns of, it corrected, and is logged.
-pub fn export_step(
-    shapes: &[Shape],
-    export: &silico_protocol::ExportStep,
-) -> Result<silico_protocol::StepFile, KernelError> {
-    export.check().map_err(|invalid| {
-        KernelError::new(Refusal::InvalidParameter {
-            parameter: invalid.parameter.to_owned(),
-            message: invalid.message,
-        })
-    })?;
-    let mut writer = ffi::step_writer();
-    let Some(mut adding) = writer.as_mut() else {
-        return Err(KernelError::new(Refusal::NothingReturned {
-            what: Returned::Shape,
-        }));
-    };
-    for (shape, part) in shapes.iter().zip(&export.parts) {
-        adding.as_mut().add_part(shape.get()?, &part.id, &part.name);
-    }
-    let raw = writer
-        .as_ref()
-        .map(|w| w.write(&export.assembly, &export.file_name))
-        .ok_or_else(|| KernelError::new(Refusal::NoShape))?
-        .map_err(|e| KernelError::from(e).during(Operation::Other))?;
-    let raw = raw.as_ref().ok_or_else(|| {
-        KernelError::new(Refusal::NothingReturned {
-            what: Returned::Brep,
-        })
-    })?;
-    for warning in raw.warnings() {
-        tracing::debug!(warning = %warning, "the STEP writer corrected what it wrote");
-    }
-    let mut faces = raw.left_out().iter().copied();
-    let left_out = raw
-        .left_out_counts()
-        .iter()
-        .map(|&count| faces.by_ref().take(count as usize).collect())
-        .collect();
-    let messages = raw.unwritten_messages();
-    let unwritten = raw
-        .unwritten_parts()
-        .iter()
-        .zip(raw.unwritten_kinds())
-        .zip(raw.unwritten_indices())
-        .zip(messages)
-        .map(|(((&part, &kind), &index), messages)| {
-            let kind = match kind {
-                1 => Some(ElementKind::Face),
-                2 => Some(ElementKind::Edge),
-                3 => Some(ElementKind::Vertex),
-                _ => None,
-            };
-            silico_protocol::StepUnwritten {
-                part: (part != u32::MAX).then_some(part),
-                element: kind.map(|kind| ElementRef { kind, index }),
-                messages: messages.lines().map(str::to_owned).collect(),
-            }
-        })
-        .collect();
-    Ok(silico_protocol::StepFile {
-        step: silico_protocol::Blob::inline(raw.bytes().to_vec()),
-        left_out,
-        unwritten,
-    })
-}
-
 /// Operations that exist only to test the bridge, built with the `test_ops` feature
 /// (which this crate's own tests turn on, and nothing else should).
 #[cfg(feature = "test_ops")]
@@ -2439,6 +2353,12 @@ pub mod test_ops {
     /// A compound with nothing in it.
     pub fn empty_shape() -> Result<super::Shape, KernelError> {
         Ok(super::Shape::new(ffi::debug_empty_shape()?))
+    }
+
+    /// A compound of a 10 × 20 × 30 box and a face with a surface and no wires (Face7),
+    /// which OCCT's STEP writer drops with only a warning.
+    pub fn box_with_wireless_face() -> Result<super::Shape, KernelError> {
+        Ok(super::Shape::new(ffi::debug_box_with_wireless_face()?))
     }
 }
 

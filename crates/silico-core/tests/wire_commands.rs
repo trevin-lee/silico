@@ -1450,6 +1450,7 @@ fn exported(
         request,
         &ExportOn {
             kernel: &kernel,
+            step: &*kernel,
             document: "bracket.silico",
             workspace: Some(&silico_core::file::Workspace::new(workspace).unwrap()),
             held: &[],

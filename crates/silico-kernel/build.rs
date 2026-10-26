@@ -16,14 +16,17 @@ mod recipe;
 
 use recipe::{BuildResult, check_cxx_env, read_recipe};
 
+/// The OCCT libraries the STEP worker's bridge (cpp/step.cpp) calls into directly, linked
+/// into silico-step-worker alone: no other executable carries STEP's toolkits, nor the
+/// windowing frameworks TKService (which TKXCAF links) loads on macOS.
+const STEP_LIBS: &[&str] = &["TKDESTEP", "TKXCAF", "TKXSBase", "TKLCAF", "TKCDF"];
+
+/// The STEP worker's executable, which alone links [`STEP_LIBS`] and the STEP bridge.
+const STEP_WORKER: &str = "silico-step-worker";
+
 /// The OCCT libraries the bridge calls into directly. Their own dependencies are found
 /// through the libraries themselves.
 const OCCT_LIBS: &[&str] = &[
-    "TKDESTEP",
-    "TKXCAF",
-    "TKXSBase",
-    "TKLCAF",
-    "TKCDF",
     "TKFillet",
     "TKBO",
     "TKBool",
@@ -98,6 +101,22 @@ fn main() -> BuildResult<()> {
     }
     build.try_compile("silico_kernel_bridge")?;
 
+    // The STEP worker's bridge, compiled apart and linked into its executable alone (no
+    // cargo metadata: cxx_build would link it into every target).
+    let mut step = cxx_build::bridge("src/bin/silico-step-worker.rs");
+    step.file("cpp/step.cpp")
+        .compiler(cxx)
+        .std("c++17")
+        .cpp_link_stdlib(None::<&str>)
+        .cargo_metadata(false)
+        .flag("-isystem")
+        .flag(&occt_include);
+    for flag in get("SILICO_CXXFLAGS")?.split_whitespace() {
+        step.flag(flag);
+    }
+    step.try_compile("silico_step_bridge")?;
+    let out_dir = PathBuf::from(env::var("OUT_DIR")?);
+
     let mut out = std::io::stdout().lock();
     writeln!(out, "cargo:rustc-link-search=native={}", occt_lib.display())?;
     writeln!(
@@ -107,6 +126,14 @@ fn main() -> BuildResult<()> {
     )?;
     for lib in OCCT_LIBS {
         writeln!(out, "cargo:rustc-link-lib=dylib={lib}")?;
+    }
+    writeln!(
+        out,
+        "cargo:rustc-link-arg-bin={STEP_WORKER}={}",
+        out_dir.join("libsilico_step_bridge.a").display()
+    )?;
+    for lib in STEP_LIBS {
+        writeln!(out, "cargo:rustc-link-arg-bin={STEP_WORKER}=-l{lib}")?;
     }
     // Executables find OCCT and libc++ at run time, and carry the shim.
     writeln!(
@@ -123,8 +150,11 @@ fn main() -> BuildResult<()> {
 
     for path in [
         "src/lib.rs",
+        "src/bin/silico-step-worker.rs",
         "cpp/bridge.h",
         "cpp/bridge.cpp",
+        "cpp/step.h",
+        "cpp/step.cpp",
         "cxx_env.rs",
         "recipe.rs",
     ] {

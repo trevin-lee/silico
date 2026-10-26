@@ -8,6 +8,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use silico_core::kernel::KernelWorker;
+use silico_core::step_worker::StepWorker;
 use silico_protocol::{ExportStep, Primitive, StepPart, step_encoded};
 
 /// Each name, and the header's file name, exported and read back by FreeCAD: what came
@@ -19,6 +20,7 @@ fn read_back(cases: &[(&str, &str)]) -> Vec<(String, String, serde_json::Value)>
         .unwrap();
     let dir = temp.path();
     let mut kernel = KernelWorker::start().unwrap();
+    let mut step = StepWorker::start().unwrap();
     let block = kernel
         .make(Primitive::Box {
             dx: 10.0,
@@ -27,7 +29,7 @@ fn read_back(cases: &[(&str, &str)]) -> Vec<(String, String, serde_json::Value)>
         })
         .unwrap();
     for (n, &(name, file_name)) in cases.iter().enumerate() {
-        let file = kernel
+        let file = step
             .export_step(ExportStep {
                 parts: vec![StepPart {
                     shape: block.clone(),

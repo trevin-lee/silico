@@ -170,21 +170,15 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
                 crate::export_mesh(&shape, tolerance, force_face_deflection).map_err(failure)?;
             Ok(Reply::ExportMesh(Box::new(mesh)))
         }
-        Op::ExportStep(export) => {
-            let shapes = export
-                .parts
-                .iter()
-                .map(|part| shape_of(&part.shape))
-                .collect::<Result<Vec<_>, _>>()?;
-            let file = crate::export_step(&shapes, &export).map_err(failure)?;
-            Ok(Reply::StepFile(Box::new(file)))
-        }
         Op::Echo { data } => Ok(Reply::Echo { data }),
-        Op::Solve(_) | Op::DragBegin(_) | Op::DragMove { .. } | Op::DragEnd | Op::Render(_) => {
-            Err(Failure::new(Refusal::OtherWorkersOp {
-                op: op.name().to_owned(),
-            }))
-        }
+        Op::Solve(_)
+        | Op::DragBegin(_)
+        | Op::DragMove { .. }
+        | Op::DragEnd
+        | Op::Render(_)
+        | Op::ExportStep(_) => Err(Failure::new(Refusal::OtherWorkersOp {
+            op: op.name().to_owned(),
+        })),
         Op::Debug(_) => Err(Failure::new(Refusal::TestOperation {
             op: op.name().to_owned(),
         })),

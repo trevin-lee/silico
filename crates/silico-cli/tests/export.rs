@@ -68,6 +68,10 @@ fn silico_export_with(dir: &Path, args: &[&str], sketch_worker: Option<&Path>) -
             exe.with_file_name("silico-kernel-worker"),
         )
         .env(
+            "SILICO_STEP_WORKER",
+            exe.with_file_name("silico-step-worker"),
+        )
+        .env(
             "SILICO_SKETCH_WORKER",
             sketch_worker.map_or_else(
                 || exe.with_file_name("silico-sketch-worker"),

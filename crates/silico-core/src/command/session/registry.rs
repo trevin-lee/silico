@@ -46,6 +46,9 @@ pub(super) struct Registry<P: Clients + 'static> {
     /// What draws `render`'s scenes: the render worker's client, given when the sessions are
     /// made ([`Sessions::rendering`](super::Sessions::rendering)), or none (refused).
     pub(super) renderer: Mutex<Option<Arc<dyn crate::command::render::Renderer>>>,
+    /// What writes `export`'s STEP files: the STEP worker, started for each, unless the
+    /// sessions were given another ([`Sessions::exporting_step`](super::Sessions::exporting_step)).
+    pub(super) step: Mutex<Arc<dyn crate::step_worker::StepExporter>>,
     /// The display meshes `render` makes, shared by the sessions of this kernel.
     pub(super) meshes: Arc<crate::meshes::MeshCache<crate::recompute::Key>>,
     /// The workspace every path a session is given, and every file it reads, writes, or

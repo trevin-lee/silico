@@ -11,6 +11,7 @@
 use std::path::Path;
 
 use silico_core::kernel::KernelWorker;
+use silico_core::step_worker::StepWorker;
 use silico_oracle::case::load;
 use silico_protocol::{ExportStep, StepPart, step_encoded};
 
@@ -30,7 +31,14 @@ struct Written {
     area: f64,
     faces: u64,
     valid: bool,
+    /// Where it is: its tight bounding box and its center, as FreeCAD measures them, which a
+    /// rigid motion lost on the way would move (volume, area, and faces wouldn't).
+    bounds: Option<[[f64; 3]; 2]>,
+    center: [f64; 3],
 }
+
+/// How far a solid read back may be from where it was, as a fraction of its box's diagonal.
+const PLACED: f64 = 1e-9;
 
 #[test]
 fn every_oracle_case_written_as_step_reads_back_in_freecad_as_the_solid_it_was() {
@@ -40,13 +48,14 @@ fn every_oracle_case_written_as_step_reads_back_in_freecad_as_the_solid_it_was()
         .unwrap();
     let dir = temp.path();
     let mut kernel = KernelWorker::start().unwrap();
+    let mut step = StepWorker::start().unwrap();
     let mut written = Vec::new();
     for case in load(Path::new(CASES)).unwrap() {
         let Ok(shape) = silico_oracle::silico::build(&mut kernel, &case.shape) else {
             // A case the kernel refuses is the oracle's to compare, not this test's.
             continue;
         };
-        let file = kernel
+        let file = step
             .export_step(ExportStep {
                 parts: vec![StepPart {
                     shape: shape.clone(),
@@ -76,6 +85,8 @@ fn every_oracle_case_written_as_step_reads_back_in_freecad_as_the_solid_it_was()
             area: measured.area,
             faces: u64::from(summary.faces),
             valid: summary.valid,
+            bounds: measured.bounds,
+            center: measured.center,
         });
     }
     assert!(written.len() > 20, "{}", written.len());
@@ -89,7 +100,10 @@ for name in {names:?}:
     path = os.path.join(D, name + ".step")
     try:
         s = Part.read(path)
-        read = [s.Volume, s.Area, len(s.Faces), s.isValid()]
+        b = s.optimalBoundingBox(False, False)
+        read = [s.Volume, s.Area, len(s.Faces), s.isValid(),
+                [[b.XMin, b.YMin, b.ZMin], [b.XMax, b.YMax, b.ZMax]],
+                list(s.CenterOfGravity) if s.Solids else None]
     except Exception as e:
         out[name] = {{"error": repr(e)}}
         continue
@@ -123,9 +137,118 @@ print("SILICO_ORACLE " + json.dumps(out))
                 w.name, w.volume, w.area, w.faces, w.valid
             ));
         }
+        if let Some([low, high]) = w.bounds {
+            let diagonal = (0..3)
+                .map(|i| (high[i] - low[i]) * (high[i] - low[i]))
+                .sum::<f64>()
+                .sqrt()
+                .max(1.0);
+            let off = |ours: f64, theirs: &serde_json::Value| {
+                (ours - theirs.as_f64().unwrap()).abs() > PLACED * diagonal
+            };
+            let box_off =
+                (0..3).any(|i| off(low[i], &read[4][0][i]) || off(high[i], &read[4][1][i]));
+            let center_off = !read[5].is_null() && (0..3).any(|i| off(w.center[i], &read[5][i]));
+            if box_off || center_off {
+                wrong.push(format!(
+                    "{}: at {low:?} to {high:?}, center {:?}, read back at {} center {}",
+                    w.name, w.center, read[4], read[5]
+                ));
+            }
+        }
         if case["labels"] != serde_json::json!([w.name]) {
             wrong.push(format!("{}: labelled {}", w.name, case["labels"]));
         }
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[test]
+fn two_parts_placed_apart_read_back_in_freecad_each_where_it_was() {
+    // A box moved to (100, 0, 0) and a cylinder moved to (0, 50, 0), one assembly: each
+    // solid read back where it was, its box by hand (the box from 100 to 110 in x, 0 to 20
+    // in y, 0 to 30 in z; the cylinder of radius 3 and height 7 centered on (0, 50)), and
+    // each product's name its object's label.
+    let mut kernel = KernelWorker::start().unwrap();
+    let mut step = StepWorker::start().unwrap();
+    use silico_oracle::case::Shape;
+    let moved = |shape: Shape, by: [f64; 3]| Shape::Translate {
+        shape: Box::new(shape),
+        by,
+    };
+    let block = silico_oracle::silico::build(
+        &mut kernel,
+        &moved(
+            Shape::Block {
+                dx: 10.0,
+                dy: 20.0,
+                dz: 30.0,
+            },
+            [100.0, 0.0, 0.0],
+        ),
+    )
+    .unwrap();
+    let pin = silico_oracle::silico::build(
+        &mut kernel,
+        &moved(
+            Shape::Cylinder {
+                radius: 3.0,
+                height: 7.0,
+            },
+            [0.0, 50.0, 0.0],
+        ),
+    )
+    .unwrap();
+    let file = step
+        .export_step(ExportStep {
+            parts: vec![
+                StepPart {
+                    shape: block,
+                    id: "k7f2qx3m".to_owned(),
+                    name: "Block".to_owned(),
+                },
+                StepPart {
+                    shape: pin,
+                    id: "p0000001".to_owned(),
+                    name: "Pin".to_owned(),
+                },
+            ],
+            assembly: "part".to_owned(),
+            file_name: "part.silico".to_owned(),
+        })
+        .unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("silico-step-placed-")
+        .tempdir()
+        .unwrap();
+    let path = temp.path().join("two.step");
+    std::fs::write(&path, file.step.as_bytes()).unwrap();
+    let value = silico_oracle::freecad::script(&format!(
+        r#"
+import json, FreeCAD, Part, Import
+s = Part.read({path:?})
+boxes = []
+for solid in s.Solids:
+    b = solid.optimalBoundingBox(False, False)
+    boxes.append([b.XMin, b.YMin, b.ZMin, b.XMax, b.YMax, b.ZMax])
+doc = FreeCAD.newDocument("rt")
+Import.insert({path:?}, doc.Name)
+labels = sorted(o.Label for o in doc.Objects if o.TypeId == "Part::Feature")
+print("SILICO_ORACLE " + json.dumps({{"boxes": sorted(boxes), "labels": labels}}))
+"#,
+        path = path.to_str().unwrap(),
+    ))
+    .unwrap();
+    let boxes: Vec<Vec<f64>> = serde_json::from_value(value["boxes"].clone()).unwrap();
+    let want = [
+        [-3.0, 47.0, 0.0, 3.0, 53.0, 7.0],
+        [100.0, 0.0, 0.0, 110.0, 20.0, 30.0],
+    ];
+    assert_eq!(boxes.len(), 2, "{value}");
+    for (got, want) in boxes.iter().zip(want) {
+        for (g, w) in got.iter().zip(want) {
+            assert!((g - w).abs() < 1e-9, "{got:?} against {want:?}");
+        }
+    }
+    assert_eq!(value["labels"], serde_json::json!(["Block", "Pin"]));
 }

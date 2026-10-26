@@ -8,7 +8,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::exported::data;
-use super::kernel::kernel;
+use super::kernel::{kernel, step};
 use super::oracle::freecad_shape;
 
 use silico_core::kernel::ShapeData;
@@ -65,7 +65,7 @@ fn a_body_of_two_solids_apart_writes_all_twelve_faces_in_one_product() {
         "{}",
         summary.volume
     );
-    let file = kernel()
+    let file = step()
         .export_step(export(&[(&body, "f0000001", "Pair")]))
         .unwrap();
     let text = text(&file);
@@ -82,7 +82,7 @@ fn a_moved_body_of_two_solids_is_one_product_named_by_its_feature() {
     // make its located compound an assembly of its own, products OCCT names: one product,
     // named and id'd by its feature, and every face in the file.
     let body = data(&translate(&two_apart(), [0.0, 5.0, 0.0]).unwrap().shape);
-    let file = kernel()
+    let file = step()
         .export_step(export(&[(&body, "f0000002", "Moved pair")]))
         .unwrap();
     let text = text(&file);
@@ -103,7 +103,7 @@ fn two_located_parts_are_two_products_under_the_assembly_and_no_other() {
     // each part's own id and name, none of OCCT's ("SOLID").
     let a = data(&translate(&block(), [0.0, 0.0, 50.0]).unwrap().shape);
     let b = data(&translate(&block(), [0.0, 70.0, 0.0]).unwrap().shape);
-    let file = kernel()
+    let file = step()
         .export_step(export(&[
             (&a, "a0000001", "Upper"),
             (&b, "b0000002", "Side"),
@@ -124,7 +124,7 @@ fn the_same_shape_twice_is_two_products_each_with_its_own_id() {
     // The same B-rep bytes as two parts (two features that built the same box), and the same
     // name: two products, never one shared, each with its own id, in order.
     let b = data(&block());
-    let file = kernel()
+    let file = step()
         .export_step(export(&[(&b, "f0000001", "Box"), (&b, "f0000002", "Box")]))
         .unwrap();
     let text = text(&file);
@@ -152,7 +152,7 @@ fn forty_parts_each_get_their_own_id_and_name_in_order() {
         .zip(&names)
         .map(|((s, i), n)| (s, i.as_str(), n.as_str()))
         .collect();
-    let file = kernel().export_step(export(&parts)).unwrap();
+    let file = step().export_step(export(&parts)).unwrap();
     let text = text(&file);
     assert!(file.unwritten.is_empty(), "{:?}", file.unwritten);
     assert_eq!(entities(&text, "PRODUCT"), 41);
@@ -178,7 +178,7 @@ fn a_membrane_inside_a_box_is_left_out_and_the_box_written_whole() {
          V(5, 5, 5)]))\nfused, _ = Part.makeBox(10, 20, 30).generalFuse([m])\nshape = \
          fused.Solids[0]\nassert [f.Orientation for f in shape.Faces].count('Internal') == 1",
     );
-    let file = kernel()
+    let file = step()
         .export_step(export(&[(&shape, "f0000001", "Membrane")]))
         .unwrap();
     assert_eq!(file.left_out, [vec![7]]);
@@ -203,7 +203,7 @@ fn two_solids_sharing_a_face_are_written_whole_and_nothing_said() {
     );
     let summary = kernel().summarize(&shape).unwrap();
     assert_eq!(summary.faces, 11);
-    let file = kernel()
+    let file = step()
         .export_step(export(&[(&shape, "f0000001", "Split")]))
         .unwrap();
     let written = entities(&text(&file), "ADVANCED_FACE");
@@ -216,7 +216,7 @@ fn an_empty_compound_is_refused_or_written_empty_but_never_crashes_the_worker() 
     // No faces, no solid: the core never sends one; the worker answers it (a refusal or a
     // file) and goes on to export a box.
     let empty = freecad_shape("shape = Part.Compound([])");
-    let mut worker = kernel();
+    let mut worker = step();
     match worker.export_step(export(&[(&empty, "f0000001", "Nothing")])) {
         Ok(file) => {
             assert_eq!(entities(&text(&file), "ADVANCED_FACE"), 0);
@@ -241,7 +241,7 @@ fn a_lone_face_and_a_lone_edge_beside_a_box_write_every_face() {
          V(50, 0, 0)]))\ne = Part.makeLine(V(-20, 0, 0), V(-10, 0, 0))\nshape = \
          Part.Compound([Part.makeBox(10, 20, 30), f, e])",
     );
-    let file = kernel()
+    let file = step()
         .export_step(export(&[(&shape, "f0000001", "Mixed")]))
         .unwrap();
     let written = entities(&text(&file), "ADVANCED_FACE");
@@ -257,7 +257,7 @@ fn a_refused_export_leaves_the_worker_writing_the_same_bytes() {
     // An export refused for a string not encoded, then the box: the same bytes as a fresh
     // worker's.
     let b = data(&block());
-    let mut worker = kernel();
+    let mut worker = step();
     let mut bad = export(&[(&b, "f0000001", "Box")]);
     bad.assembly = "a\\N\\b".to_owned();
     assert!(worker.export_step(bad).is_err());
@@ -267,7 +267,7 @@ fn a_refused_export_leaves_the_worker_writing_the_same_bytes() {
     let after = worker
         .export_step(export(&[(&b, "f0000001", "Box")]))
         .unwrap();
-    let fresh = kernel()
+    let fresh = step()
         .export_step(export(&[(&b, "f0000001", "Box")]))
         .unwrap();
     assert_eq!(after.step, fresh.step);
@@ -290,13 +290,13 @@ fn two_parts_are_the_same_bytes_in_any_worker_after_any_other_export() {
         .unwrap(),
     );
     let request = || export(&[(&a, "a0000001", "Upper"), (&c, "c0000002", "Pin ü")]);
-    let mut worker = kernel();
+    let mut worker = step();
     let first = worker.export_step(request()).unwrap();
     worker
         .export_step(export(&[(&c, "z0000009", "Other")]))
         .unwrap();
     let again = worker.export_step(request()).unwrap();
-    let elsewhere = kernel().export_step(request()).unwrap();
+    let elsewhere = step().export_step(request()).unwrap();
     assert_eq!(again.step, first.step);
     assert_eq!(elsewhere.step, first.step);
 }
@@ -315,7 +315,7 @@ fn a_long_name_is_written_whole_on_its_line_as_encoded() {
         format!("{}ü{}", "a".repeat(66), "b".repeat(20)),
         "\u{1F600}".repeat(12),
     ] {
-        let file = kernel()
+        let file = step()
             .export_step(export(&[(&b, "f0000001", &name)]))
             .unwrap();
         let text = text(&file);
@@ -337,7 +337,7 @@ fn an_eight_megabyte_name_is_written_within_the_kernels_time() {
     let b = data(&block());
     let name = "a".repeat(8 << 20);
     let start = std::time::Instant::now();
-    let result = kernel().export_step(export(&[(&b, "f0000001", &name)]));
+    let result = step().export_step(export(&[(&b, "f0000001", &name)]));
     let took = start.elapsed();
     let file = result.unwrap_or_else(|e| panic!("after {took:?}: {e:?}"));
     assert!(file.step.as_bytes().len() > 8 << 20);
