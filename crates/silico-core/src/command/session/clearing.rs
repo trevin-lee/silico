@@ -5,7 +5,7 @@ use std::path::Path;
 
 use super::Problems;
 use crate::cache::{ClearFailure, ClearStep, PartlyCleared};
-use crate::file::{self, Unresolved, Workspace, shown_path};
+use crate::file::{self, Workspace, shown_path};
 use crate::{Error, ErrorCode};
 
 /// The rebuild cache's directory, `cache_dir` (where it is, through links), as the session's
@@ -32,21 +32,6 @@ pub(super) fn shown_cache_directory(
             .to_string_lossy()
             .into_owned(),
     }
-}
-
-/// Whether the cache directory `cache_dir` leads out of `workspace` now (decision 26):
-/// through a link on its way (`.silico-cache` itself, or a directory above it), there as its
-/// session opened or put there since. `cache_clear` checks it as it clears and removes
-/// nothing through a cache that leads out then; it's the only check made after the session
-/// opens (a rebuild's writes are checked as its cache is first opened, `Registry::cache`).
-/// Never, without a workspace.
-pub(super) fn leads_out(workspace: Option<&Workspace>, cache_dir: &Path) -> bool {
-    workspace.is_some_and(|workspace| {
-        matches!(
-            file::resolve(Some(workspace), cache_dir),
-            Err(Unresolved::Outside)
-        )
-    })
 }
 
 /// What a clear of the cache in `cache_dir`, shown as `directory`, couldn't do: an
@@ -169,29 +154,6 @@ mod tests {
             shown_cache_directory(workspace, "parts/bracket.silico", &cache),
             "parts/.silico-cache"
         );
-    }
-
-    #[test]
-    fn a_cache_directory_leads_out_only_through_a_link_out_of_a_workspace() {
-        let dir = tempfile::tempdir().unwrap();
-        let real = std::fs::canonicalize(dir.path()).unwrap();
-        let work = real.join("work");
-        let outside = real.join("outside");
-        std::fs::create_dir_all(work.join("plain")).unwrap();
-        std::fs::create_dir_all(outside.join("cache")).unwrap();
-        let workspace = Workspace::new(&work).unwrap();
-        let workspace = Some(&workspace);
-        // Inside, there or not yet made.
-        std::fs::create_dir(work.join("plain/.silico-cache")).unwrap();
-        assert!(!leads_out(workspace, &work.join("plain/.silico-cache")));
-        assert!(!leads_out(workspace, &work.join(".silico-cache")));
-        // A link out, at `.silico-cache` or at a directory above it.
-        std::os::unix::fs::symlink(outside.join("cache"), work.join(".silico-cache")).unwrap();
-        assert!(leads_out(workspace, &work.join(".silico-cache")));
-        std::os::unix::fs::symlink(&outside, work.join("away")).unwrap();
-        assert!(leads_out(workspace, &work.join("away/.silico-cache")));
-        // Without a workspace, nothing leads out.
-        assert!(!leads_out(None, &work.join("away/.silico-cache")));
     }
 
     #[test]

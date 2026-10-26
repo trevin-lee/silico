@@ -589,12 +589,20 @@ impl<P: Clients + 'static> Registry<P> {
 
     /// The cache in `dir`: the one value its sessions share, opened the first time; one
     /// without the user's secret, which keeps nothing, isn't kept, so the next open tries
-    /// again.
+    /// again. In a workspace, every cache it gives is [`within`](Cache::within) it, so each
+    /// of its reads, writes, evictions, and clears checks that it still leads nowhere out of
+    /// the workspace (a link put on its way after this, in a transaction that reads nothing
+    /// again, say).
     fn cache(&self, dir: &Path) -> Cache {
+        let within = |cache: Cache| match &self.workspace {
+            Some(workspace) => cache.within(workspace.clone()),
+            None => cache,
+        };
         // A cache directory that leads out of the workspace (a link put there) is never
-        // opened: a cache that keeps nothing and reads nothing stands in for it, so no entry
-        // is read or written through it, nor any scanned or removed, as the cache keeps none
-        // through a link (M2.5). It changes no result, so the document still opens.
+        // opened, the user's secret not read for it: a cache that keeps nothing and reads
+        // nothing stands in for it, as the cache keeps none through a link (M2.5). It
+        // changes no result, so the document still opens. Its clear checks again as it
+        // clears, as every cache in the workspace does.
         if let Some(workspace) = &self.workspace
             && let Err(Unresolved::Outside) = file::resolve(Some(workspace), dir)
         {
@@ -602,14 +610,14 @@ impl<P: Clients + 'static> Registry<P> {
                 dir = %dir.display(),
                 "the cache directory leads out of the workspace: keeping no results"
             );
-            return Cache::unsealed(dir);
+            return within(Cache::unsealed(dir));
         }
         if let Some(cache) = lock(&self.book).caches.get(dir) {
             return cache.clone();
         }
         // Opened without the book held (it reads the user's secret): should another session
         // have opened it meanwhile, its value is the one kept.
-        let opened = (self.open_cache)(dir);
+        let opened = within((self.open_cache)(dir));
         if !opened.sealed() {
             return opened;
         }

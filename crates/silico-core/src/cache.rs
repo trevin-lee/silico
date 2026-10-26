@@ -13,7 +13,9 @@
 //! entries side by side, never in each other's place. The directory ignores itself (a
 //! `.gitignore` of `*`, put back if it's anything else), so it isn't committed with a
 //! document in any repository; a directory that's a link, which may point anywhere, keeps
-//! nothing.
+//! nothing. So does one that leads out of its sessions' workspace (decision 26 of
+//! docs/design/m4.1-command-api.md; [`Cache::within`]), checked as each read, write,
+//! eviction, and clear begins, not only as the cache is opened.
 //!
 //! Only results are kept, never a step's failure: a failure's cause may not last (memory,
 //! say), and recompute keeps those that follow from the values in memory. A result's
@@ -42,6 +44,7 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
+use crate::file::{self, Unresolved, Workspace};
 use crate::kernel::{Blob, History, ShapeData, ShapeSummary};
 use crate::recompute::{Built, Described, Key};
 use silico_protocol::{Description, Failure};
@@ -72,8 +75,13 @@ pub struct Cache {
     /// The secret entries are keyed and sealed with: none if it couldn't be had, and then
     /// nothing is kept.
     secret: Option<Secret>,
+    /// The workspace its directory must lead nowhere out of ([`Cache::within`]), or none (the
+    /// CLI's).
+    workspace: Option<Workspace>,
     /// Whether this cache (or a clone) has said its directory is a link it won't use.
     said_linked: Arc<AtomicBool>,
+    /// Whether this cache (or a clone) has said its directory leads out of its workspace.
+    said_outside: Arc<AtomicBool>,
     /// The most bytes the directory's entries and partial files may take.
     bound: u64,
     /// What this cache and its clones know of the directory's size, and the condition its
@@ -121,6 +129,7 @@ impl std::fmt::Debug for Cache {
             .field("dir", &self.dir)
             .field("platform", &self.platform)
             .field("sealed", &self.secret.is_some())
+            .field("workspace", &self.workspace.as_ref().map(Workspace::root))
             .field("bound", &self.bound)
             .finish()
     }
@@ -254,7 +263,9 @@ impl Cache {
             dir: plain(dir),
             platform,
             secret,
+            workspace: None,
             said_linked: Arc::default(),
+            said_outside: Arc::default(),
             bound: DEFAULT_BOUND,
             usage: Arc::default(),
             said_full: Arc::default(),
@@ -268,6 +279,22 @@ impl Cache {
     #[must_use]
     pub fn with_bound(mut self, bound: u64) -> Self {
         self.bound = bound;
+        self
+    }
+
+    /// This cache, in `workspace` (decision 26 of docs/design/m4.1-command-api.md: a
+    /// session's sessions are given one by `Sessions::in_workspace`): it keeps results only
+    /// while its directory leads nowhere out of the workspace, through [`file::resolve`],
+    /// checked once as each read, write (and the eviction it makes room by), and clear
+    /// begins, since a link may be put on its way at any time (its own name, its document's
+    /// directory, or one above it, in a transaction that reads nothing again). One that
+    /// leads out then is a cache that keeps nothing, as one whose directory is a link is
+    /// (M2.5): a read misses, and a write, an eviction, and a clear do nothing through it,
+    /// said once. A cache never changes a result, so a rebuild through it is still right,
+    /// only uncached. Without a workspace, the directory is used wherever it leads.
+    #[must_use]
+    pub fn within(mut self, workspace: Workspace) -> Self {
+        self.workspace = Some(workspace);
         self
     }
 
@@ -541,7 +568,8 @@ impl Cache {
     /// under way, whose rename would then fail; a stale one is removed by the next put's
     /// scan), and anything else, under any name; nothing is followed through a link, the
     /// directory's own included (a cache through a link keeps nothing there, so none is
-    /// removed). An entry removed is only a miss: one another process reads as it's removed
+    /// removed), and nothing is removed while the directory leads out of its workspace
+    /// ([`within`](Self::within)), checked as the clear begins. An entry removed is only a miss: one another process reads as it's removed
     /// is read whole, from the file it holds open, and one renamed into place after it's
     /// listed is left, whole (M2.5's sealed entries: an entry is whole or absent, never
     /// trusted half-written). Read and removed in order of name, so what it says of a failure
@@ -567,9 +595,10 @@ impl Cache {
         );
         let _entered = span.enter();
         let mut clearing = PartlyCleared::default();
-        // A directory that's a link (followed nowhere), a file, or nothing holds no entry of
-        // the cache's.
+        // A directory that's a link (followed nowhere), one that leads out of the workspace
+        // now, a file, or nothing holds no entry of the cache's.
         match std::fs::symlink_metadata(&self.dir).map(|meta| meta.is_dir()) {
+            Ok(true) if !self.usable() => {}
             Ok(true) => walk(&self.dir, |found| match found {
                 Walked::Entry(path, _) => clearing.remove(path),
                 Walked::Partial(..) => {}
@@ -603,16 +632,46 @@ impl Cache {
     }
 
     /// The secret to key and seal entries with, if the cache keeps any: not when its
-    /// directory is a link (one that came with a document may point anywhere: inside the
-    /// repository, where its entries would be committed, or at anyone's files), which it
-    /// says once. Nor is a subdirectory that's a link used, for the same reason.
+    /// directory can't be used now ([`usable`](Self::usable)). Nor is a subdirectory that's
+    /// a link used, for the same reason ([`linked_below`](Self::linked_below)).
     fn secret(&self) -> Option<&Secret> {
         let secret = self.secret.as_ref()?;
+        self.usable().then_some(secret)
+    }
+
+    /// Whether its directory may be read, written, scanned, or cleared now, checked once as
+    /// each of those begins: not if it's a link (one that came with a document may point
+    /// anywhere: inside the repository, where its entries would be committed, or at anyone's
+    /// files), nor if it leads out of its workspace ([`within`](Self::within)), each said
+    /// once.
+    fn usable(&self) -> bool {
         if is_link(&self.dir) {
             self.say_linked(&self.dir);
-            return None;
+            return false;
         }
-        Some(secret)
+        if self.leads_out() {
+            if !self.said_outside.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    dir = %self.dir.display(),
+                    "the cache's directory leads out of the workspace, through a link on its \
+                     way: keeping no results through it"
+                );
+            }
+            return false;
+        }
+        true
+    }
+
+    /// Whether its directory leads out of its workspace now, through a link on its way (its
+    /// own name, or a directory above it), by [`file::resolve`]'s one rule; never without a
+    /// workspace. One not made yet, inside, doesn't.
+    fn leads_out(&self) -> bool {
+        self.workspace.as_ref().is_some_and(|workspace| {
+            matches!(
+                file::resolve(Some(workspace), &self.dir),
+                Err(Unresolved::Outside)
+            )
+        })
     }
 
     /// Whether the subdirectory an entry at `path` lives in is a link, said once.
@@ -1765,6 +1824,75 @@ mod tests {
             assert!(cache.clone().secret().is_none());
         });
         assert_eq!(*warnings.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_cache_directory_leads_out_only_through_a_link_out_of_its_workspace() {
+        // Moved from `cache_clear`'s own check (#183), which this one replaces. A workspace,
+        // `work`, and a directory beside it, `outside`.
+        let dir = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        let work = real.join("work");
+        let outside = real.join("outside");
+        std::fs::create_dir_all(work.join("plain")).unwrap();
+        std::fs::create_dir_all(outside.join("cache")).unwrap();
+        let workspace = Workspace::new(&work).unwrap();
+        let within = |dir: &Path| Cache::unsealed(dir).within(workspace.clone());
+        // Inside, there or not yet made.
+        std::fs::create_dir(work.join("plain/.silico-cache")).unwrap();
+        assert!(!within(&work.join("plain/.silico-cache")).leads_out());
+        assert!(!within(&work.join(".silico-cache")).leads_out());
+        // A link out, at `.silico-cache` or at a directory above it.
+        std::os::unix::fs::symlink(outside.join("cache"), work.join(".silico-cache")).unwrap();
+        assert!(within(&work.join(".silico-cache")).leads_out());
+        std::os::unix::fs::symlink(&outside, work.join("away")).unwrap();
+        assert!(within(&work.join("away/.silico-cache")).leads_out());
+        // A link to a directory inside is no way out.
+        std::os::unix::fs::symlink(work.join("plain"), work.join("near")).unwrap();
+        assert!(!within(&work.join("near/.silico-cache")).leads_out());
+        // Without a workspace, nothing leads out.
+        assert!(!Cache::unsealed(work.join("away/.silico-cache")).leads_out());
+    }
+
+    #[test]
+    fn a_cache_that_leads_out_of_its_workspace_keeps_nothing_and_says_so_once() {
+        // Its document's directory swapped for a link out after it was made: no secret to
+        // read or write with, said once for itself and its clones; put back inside, it keeps
+        // results again. Without a workspace, the same directory is used.
+        use std::sync::Mutex;
+        use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+        struct Warnings(Arc<Mutex<u32>>);
+        impl<S: tracing::Subscriber> Layer<S> for Warnings {
+            fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+                if *event.metadata().level() == tracing::Level::WARN {
+                    *self.0.lock().unwrap() += 1;
+                }
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        let (work, outside) = (real.join("work"), real.join("outside"));
+        std::fs::create_dir_all(work.join("sub")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let cache_dir = work.join("sub/.silico-cache");
+        let cache = Cache::new(cache_dir.clone(), this_platform(), Some(Secret([7; 32])))
+            .within(Workspace::new(&work).unwrap());
+        let anywhere = Cache::new(cache_dir, this_platform(), Some(Secret([7; 32])));
+        assert!(cache.secret().is_some());
+        std::fs::rename(work.join("sub"), outside.join("sub")).unwrap();
+        std::os::unix::fs::symlink(outside.join("sub"), work.join("sub")).unwrap();
+        let warnings = Arc::new(Mutex::new(0));
+        let subscriber = tracing_subscriber::registry().with(Warnings(Arc::clone(&warnings)));
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(cache.secret().is_none());
+            assert!(cache.secret().is_none());
+            assert!(cache.clone().secret().is_none());
+            assert!(anywhere.secret().is_some());
+        });
+        assert_eq!(*warnings.lock().unwrap(), 1);
+        std::fs::remove_file(work.join("sub")).unwrap();
+        std::fs::rename(outside.join("sub"), work.join("sub")).unwrap();
+        assert!(cache.secret().is_some());
     }
 
     #[test]
