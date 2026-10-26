@@ -14,7 +14,8 @@ use std::sync::Arc;
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::{
-    Begun, Closed, ModelChoice, ReadCommand, Response, Revision, SessionId, Sessions, TextAnswer,
+    Begun, CheckModel, Closed, ModelChoice, ReadCommand, Response, Revision, SessionId, Sessions,
+    TextAnswer,
 };
 use silico_core::document::json::Node;
 use silico_core::fake::FakeKernel;
@@ -261,7 +262,10 @@ fn a_change_keeping_the_files_size_and_time_is_reloaded_before_the_next_command(
     ));
     assert_eq!(Fixture::after(&read), (1, false));
     // The next queued command reloads it: a new revision, whose model is the file's.
-    let check = answer(f.sessions.check(&f.id, ModelChoice::Current));
+    let check = answer(
+        f.sessions
+            .check(&f.id, CheckModel::Current { fresh: false }),
+    );
     assert_eq!(Fixture::after(&check), (2, true));
     assert_eq!(check.model.unwrap().revision.number(), 2);
     // A hand edit reaches nothing (section 5): its stale fingerprint is drift, 41 × 20 × 10
@@ -294,7 +298,10 @@ fn a_reloaded_document_the_gate_refuses_is_held_with_its_problems() {
     let f = opened(BLOCK);
     let flat = BLOCK.replace(r#""height": 10"#, r#""height": 0"#);
     f.write(&flat);
-    let check = answer(f.sessions.check(&f.id, ModelChoice::Current));
+    let check = answer(
+        f.sessions
+            .check(&f.id, CheckModel::Current { fresh: false }),
+    );
     assert_eq!(Fixture::after(&check), (2, true));
     assert_eq!(check.model, None);
     let problems = check.result.unwrap().problems;
@@ -506,7 +513,10 @@ fn a_file_thats_gone_refuses_each_command_but_status_and_close_leaving_the_sessi
     );
     assert_eq!(Fixture::after(&text), (1, false));
     assert_eq!(
-        refusal(&answer(f.sessions.check(&f.id, ModelChoice::Current))),
+        refusal(&answer(
+            f.sessions
+                .check(&f.id, CheckModel::Current { fresh: false })
+        )),
         gone
     );
     assert_eq!(refusal(&answer(f.sessions.begin(&f.id))), gone);
@@ -537,7 +547,10 @@ fn a_file_grown_past_what_silico_reads_refuses_the_command_and_isnt_held() {
     let f = opened(BLOCK);
     // MAX_INPUT_LEN, 4 × 16 MiB, and one more byte.
     f.write(&" ".repeat(4 * 16 * 1024 * 1024 + 1));
-    let check = answer(f.sessions.check(&f.id, ModelChoice::Current));
+    let check = answer(
+        f.sessions
+            .check(&f.id, CheckModel::Current { fresh: false }),
+    );
     assert_eq!(Fixture::after(&check), (1, false));
     assert_eq!(
         refusal(&check),
@@ -644,7 +657,10 @@ fn inside_a_transaction_a_gone_file_is_only_the_commits_conflict() {
     assert_eq!(Fixture::after(&text), (2, false));
     assert!(text.result.unwrap().text.contains("\"length\": 41,"));
     assert!(answer(f.sessions.outline(&f.id)).result.is_ok());
-    let check = answer(f.sessions.check(&f.id, ModelChoice::Current));
+    let check = answer(
+        f.sessions
+            .check(&f.id, CheckModel::Current { fresh: false }),
+    );
     assert_eq!(Fixture::after(&check), (2, false));
     assert!(check.result.is_ok(), "{:?}", check.result);
     let set = f.set_length(Revision::OPENED.next().unwrap(), "42");
@@ -822,7 +838,10 @@ fn a_file_of_exactly_the_bytes_silico_reads_is_reloaded() {
     let f = opened(BLOCK);
     // MAX_INPUT_LEN, 4 × 16 MiB, exactly: not a document, but not too long to hold.
     f.write(&" ".repeat(4 * 16 * 1024 * 1024));
-    let check = answer(f.sessions.check(&f.id, ModelChoice::Current));
+    let check = answer(
+        f.sessions
+            .check(&f.id, CheckModel::Current { fresh: false }),
+    );
     assert_eq!(Fixture::after(&check), (2, true));
     assert!(!f.sessions.status(&f.id).result.unwrap().gated);
 }

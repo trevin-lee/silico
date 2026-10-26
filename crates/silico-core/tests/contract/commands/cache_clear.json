@@ -1,0 +1,42 @@
+{
+  "request": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`cache_clear`'s request: remove every entry of the rebuild cache beside the session's\ndocument. The cache is the directory's, shared by every document in it, and an entry\nremoved is only a miss: the next rebuild of each step makes it again.",
+    "properties": {
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session"
+    ],
+    "title": "CacheClearRequest",
+    "type": "object"
+  },
+  "result": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`cache_clear`'s result. Only files the cache made as entries are removed: never another\nfile in the directory, and nothing through a link.",
+    "properties": {
+      "directory": {
+        "description": "The cache's directory (`.silico-cache` beside the document), named as the session's\npath names the document's.",
+        "type": "string"
+      },
+      "removed": {
+        "description": "How many entries were removed.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "directory",
+      "removed"
+    ],
+    "title": "CacheClearResult",
+    "type": "object"
+  }
+}

@@ -32,6 +32,12 @@
 //! recompute builds its [`Model`] aside and publishes it whole, only if no newer one has
 //! started, so a superseded recompute leaves the published model as it was.
 //!
+//! A recompute may read nothing kept ([`Recompute::start_fresh`], what `check`'s `fresh`
+//! starts): every step built, every sketch solved, and every element map named anew, none
+//! taken from the engine or the cache, though what it builds is kept in both as any
+//! recompute's is, so the next recompute hits it. A failure the engine kept for a step's
+//! values is asked again then, and a kernel fault (never kept) too.
+//!
 //! Every sketch is solved too, from the coordinates its document stores
 //! (docs/design/m3.4-stored-coordinates.md), on the engine's [`SketchSolver`] (the sketch
 //! worker, started at the first sketch, unless [`Recompute::with_sketches`] or
@@ -899,6 +905,16 @@ fn stopped() -> Error {
     .with_suggestion(crate::worker::SILICO_BUG)
 }
 
+/// What a recompute reads of what was kept before it: everything it may ([`Recompute::start`]),
+/// or nothing ([`Recompute::start_fresh`]), every step built anew.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reads {
+    /// The engine's results, solves, profiles, and named maps, and the cache's entries.
+    Kept,
+    /// None of them: each is made again, and kept as any recompute's are.
+    Nothing,
+}
+
 /// Rebuilds documents on a kernel, keeping each step's result by key between recomputes.
 /// Dropping it supersedes the recompute running, if any.
 pub struct Recompute<K: Kernel + 'static> {
@@ -1264,7 +1280,24 @@ impl<K: Kernel + 'static> Recompute<K> {
     /// if any; returns at once. A document held already in an `Arc` (a session's) is shared,
     /// not copied.
     pub fn start(&self, document: impl Into<Arc<Checked>>) -> Run {
-        let document = document.into();
+        self.begin(document.into(), Reads::Kept)
+    }
+
+    /// Starts rebuilding `document` as [`start`](Self::start) does, but with every step
+    /// built and every sketch solved anew (`check`'s `fresh`, docs/design/m4.1-command-api.md,
+    /// section 7; SolidWorks' forced rebuild, Ctrl+Q): nothing is read of what the engine
+    /// keeps (its steps' results, the refusals among them, its sketches' solves and profiles,
+    /// and the element maps it has named) or of the cache on disk. What it builds is kept
+    /// as any recompute's is, in the engine and on disk, so a later recompute hits it; and
+    /// its model, once published, is the engine's, with the maps it named. Nothing kept is
+    /// cleared: the engine's other models, and other engines on the same cache, keep theirs.
+    pub fn start_fresh(&self, document: impl Into<Arc<Checked>>) -> Run {
+        self.begin(document.into(), Reads::Nothing)
+    }
+
+    /// [`start`](Self::start), reading what's kept as `reads` says
+    /// ([`start_fresh`](Self::start_fresh) for [`Reads::Nothing`]).
+    pub(crate) fn begin(&self, document: Arc<Checked>, reads: Reads) -> Run {
         let (reply, outcome) = mpsc::sync_channel(1);
         let progress = StepCounter::default();
         let (generation, later) = {
@@ -1298,13 +1331,17 @@ impl<K: Kernel + 'static> Recompute<K> {
         let caller = tracing::Span::current();
         // At warning level, as the worker's request span is: a warning during a recompute,
         // at the default level, says which generation and step it was.
-        let span = tracing::warn_span!("recompute", generation = generation.0);
+        let span = tracing::warn_span!(
+            "recompute",
+            generation = generation.0,
+            fresh = matches!(reads, Reads::Nothing)
+        );
         let started = std::thread::Builder::new()
             .name(format!("recompute-{}", generation.0))
             .spawn(move || {
                 let _caller = caller.enter();
                 let _entered = span.enter();
-                let outcome = engine.run(&document, generation, &counting);
+                let outcome = engine.run(&document, generation, &counting, reads);
                 counting.ended(matches!(outcome, Ok(RunOutcome::Published(_))));
                 let published = match &outcome {
                     Ok(RunOutcome::Published(model)) => Some(Arc::clone(model)),
@@ -2608,11 +2645,13 @@ impl<K: Kernel + 'static> Engine<K> {
         document: &Arc<Checked>,
         generation: Generation,
         progress: &StepCounter,
+        reads: Reads,
     ) -> Result<RunOutcome, Error> {
+        let kept = reads == Reads::Kept;
         // Every sketch a feature sweeps is solved, and its profile made, before the plan
         // (design S3): a sweep's steps depend on its profile. Unchanged sketches cost
-        // nothing (their solves and profiles are kept by key).
-        let first = match self.solve_swept(document, generation)? {
+        // nothing (their solves and profiles are kept by key), unless nothing kept is read.
+        let first = match self.solve_swept(document, generation, reads)? {
             Some(first) => first,
             None => return Ok(RunOutcome::Superseded),
         };
@@ -2634,16 +2673,21 @@ impl<K: Kernel + 'static> Engine<K> {
             // The sketches solved before the plan, and their profiles, kept now that the
             // plan's keys hold them.
             state.profiles.extend(first.profiles.iter().cloned());
-            let done = plan
-                .order
-                .iter()
-                .filter_map(|key| state.results.get(key).map(|r| (*key, r.clone())))
-                .collect();
-            let mut solutions: SketchResults = plan
-                .sketches
-                .iter()
-                .filter_map(|(_, key)| state.solutions.get(key).map(|r| (*key, r.clone())))
-                .collect();
+            // Reading nothing kept, every step is built and every sketch solved.
+            let (done, mut solutions): (BTreeMap<Key, StepResult>, SketchResults) = if kept {
+                (
+                    plan.order
+                        .iter()
+                        .filter_map(|key| state.results.get(key).map(|r| (*key, r.clone())))
+                        .collect(),
+                    plan.sketches
+                        .iter()
+                        .filter_map(|(_, key)| state.solutions.get(key).map(|r| (*key, r.clone())))
+                        .collect(),
+                )
+            } else {
+                (BTreeMap::new(), BTreeMap::new())
+            };
             solutions.extend(first.solutions.iter().map(|(k, r)| (*k, r.clone())));
             (done, solutions)
         };
@@ -2656,7 +2700,7 @@ impl<K: Kernel + 'static> Engine<K> {
             .cloned()
             .collect();
         // What's kept on disk for this kernel, for the steps not kept in memory.
-        if let Some(cache) = &self.cache {
+        if let Some(cache) = self.cache.as_ref().filter(|_| kept) {
             let kernel = self.kernel.identity();
             for key in &plan.order {
                 if !done.contains_key(key)
@@ -2749,6 +2793,14 @@ impl<K: Kernel + 'static> Engine<K> {
         let schedule = Mutex::new(schedule);
         let changed = Condvar::new();
         let threads = to_run.min(MOST_AT_ONCE);
+        // The maps its features are named with: those named before, or, reading nothing
+        // kept, none, each named again from what this recompute built (and, once its model
+        // is published, the engine's).
+        let known: NamedMaps = if kept {
+            Arc::clone(&lock(&self.state).known)
+        } else {
+            NamedMaps::default()
+        };
         // The recompute's span, for its threads' steps: so a worker's call traces back to
         // the recompute, and the edit that started it (ARCHITECTURE.md, invariant 9).
         let parent = tracing::Span::current();
@@ -2772,7 +2824,7 @@ impl<K: Kernel + 'static> Engine<K> {
                     .name(format!("recompute-{}-{n}", generation.0))
                     .spawn_scoped(scope, || {
                         let _entered = parent.enter();
-                        self.serve(&plan, &schedule, &changed, generation, progress);
+                        self.serve(&plan, &schedule, &changed, generation, progress, &known);
                     })
                     .map(drop)
             })?;
@@ -2805,13 +2857,22 @@ impl<K: Kernel + 'static> Engine<K> {
         if schedule.superseded {
             return Ok(RunOutcome::Superseded);
         }
-        let known = Arc::clone(&lock(&self.state).known);
         let model = Arc::new(model(
-            document, &plan, &schedule, &solutions, generation, known,
+            document,
+            &plan,
+            &schedule,
+            &solutions,
+            generation,
+            Arc::clone(&known),
         ));
         let mut state = lock(&self.state);
         if state.generation != generation || state.cancelled {
             return Ok(RunOutcome::Superseded);
+        }
+        // Named anew, its maps are the engine's from here: those named before, of the
+        // histories it built again, aren't read again.
+        if !kept {
+            state.known = known;
         }
         // Maps only the models worth keeping name are kept: theirs, and their sketches'
         // faces'.
@@ -2845,6 +2906,7 @@ impl<K: Kernel + 'static> Engine<K> {
         &self,
         document: &Checked,
         generation: Generation,
+        reads: Reads,
     ) -> Result<Option<SolvedFirst>, Error> {
         let (sketches, swept) = Plan::sketches_of(document);
         let used: Vec<(FeatureId, Key)> = sketches
@@ -2855,18 +2917,21 @@ impl<K: Kernel + 'static> Engine<K> {
             return Ok(Some(SolvedFirst::default()));
         }
         let _span = tracing::debug_span!("solve_swept", sketches = used.len()).entered();
-        let (mut solutions, mut profiles): (SketchResults, BTreeMap<Key, ProfileResult>) = {
-            let state = lock(&self.state);
-            let solutions = used
-                .iter()
-                .filter_map(|(_, key)| state.solutions.get(key).map(|r| (*key, r.clone())))
-                .collect();
-            let profiles = used
-                .iter()
-                .filter_map(|(_, key)| state.profiles.get(key).map(|p| (*key, p.clone())))
-                .collect();
-            (solutions, profiles)
-        };
+        let (mut solutions, mut profiles): (SketchResults, BTreeMap<Key, ProfileResult>) =
+            if reads == Reads::Nothing {
+                (BTreeMap::new(), BTreeMap::new())
+            } else {
+                let state = lock(&self.state);
+                let solutions = used
+                    .iter()
+                    .filter_map(|(_, key)| state.solutions.get(key).map(|r| (*key, r.clone())))
+                    .collect();
+                let profiles = used
+                    .iter()
+                    .filter_map(|(_, key)| state.profiles.get(key).map(|p| (*key, p.clone())))
+                    .collect();
+                (solutions, profiles)
+            };
         let to_solve: Vec<(FeatureId, Key)> = used
             .iter()
             .filter(|(_, key)| !solutions.contains_key(key))
@@ -3078,8 +3143,8 @@ impl<K: Kernel + 'static> Engine<K> {
         changed: &Condvar,
         generation: Generation,
         progress: &StepCounter,
+        known: &NamedMaps,
     ) {
-        let known = Arc::clone(&lock(&self.state).known);
         loop {
             let (job, inputs, sources) = {
                 let mut s = lock(schedule);
@@ -3108,7 +3173,7 @@ impl<K: Kernel + 'static> Engine<K> {
                         Job::Make(key) => plan.dresses.get(&key),
                         Job::Measure(_) => None,
                     };
-                    let sources = match dress.map(|d| plan.sources(d.base, &s.done, &known)) {
+                    let sources = match dress.map(|d| plan.sources(d.base, &s.done, known)) {
                         None => None,
                         Some(Ok(sources)) => Some(sources),
                         Some(Err(unbuilt)) => {
@@ -3152,7 +3217,7 @@ impl<K: Kernel + 'static> Engine<K> {
                     Job::Make(key) => match (plan.steps.get(&key), plan.dresses.get(&key)) {
                         (Some(step), Some(dress)) => {
                             let sources = sources.unwrap_or_default();
-                            match self.resolve(plan, dress, &sources, &known) {
+                            match self.resolve(plan, dress, &sources, known) {
                                 Ok((edges, names)) => Ran::Made(self.dressed(
                                     step.clone(),
                                     &inputs,
@@ -3943,6 +4008,108 @@ mod tests {
         });
         assert_eq!(started.unwrap(), 2);
         assert_eq!(tried, [0, 1, 2]);
+    }
+
+    /// A sketch of a 4 by 2 rectangle on xy, its pad, 10 long, and a box: what a fresh
+    /// recompute makes again, each part of it.
+    const PADDED: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "Outline", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 4, "y": 0, "construction": false}, {"id": "pa000003", "x": 4, "y": 2, "construction": false}, {"id": "pa000004", "x": 0, "y": 2, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": []}, {"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}, {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
+
+    fn published(run: Run) -> Arc<Model> {
+        match run.wait_timeout(Duration::from_secs(60)) {
+            Ok(Ok(RunOutcome::Published(model))) => model,
+            _ => panic!("not published"),
+        }
+    }
+
+    #[test]
+    fn a_fresh_recompute_makes_its_profiles_and_names_anew_and_they_are_the_engines_after() {
+        // `start_fresh` reads nothing kept: not the engine's profiles (made again from the
+        // sketch solved again), nor the maps it has named (named again from the histories
+        // it built again); once published, its own are the engine's, so the next recompute
+        // takes them.
+        let document =
+            Arc::new(Checked::new(crate::document::read(PADDED.as_bytes()).unwrap()).unwrap());
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap())
+            .with_sketches(crate::fake::FakeSketches::new());
+        let pad = FeatureId::new("p0000001").unwrap();
+        let block = FeatureId::new("k7f2qx3m").unwrap();
+        let profiles = |engine: &Recompute<crate::fake::FakeKernel>| {
+            let state = lock(&engine.engine.state);
+            let profiles: Vec<Arc<Profile>> = state
+                .profiles
+                .values()
+                .map(|profile| Arc::clone(profile.as_ref().unwrap()))
+                .collect();
+            profiles
+        };
+        let first = published(engine.start(Arc::clone(&document)));
+        let (pad_map, block_map) = (
+            first.element_map(&pad).unwrap() as *const ElementMap,
+            first.element_map(&block).unwrap() as *const ElementMap,
+        );
+        let made = profiles(&engine);
+        assert_eq!(made.len(), 1);
+        // Read again: the same profile, the same maps.
+        let again = published(engine.start(Arc::clone(&document)));
+        assert!(Arc::ptr_eq(&again.known, &first.known));
+        assert!(std::ptr::eq(again.element_map(&pad).unwrap(), pad_map));
+        assert!(Arc::ptr_eq(&profiles(&engine)[0], &made[0]));
+        // Fresh: another profile, other maps, the same names.
+        let fresh = published(engine.start_fresh(Arc::clone(&document)));
+        assert!(!Arc::ptr_eq(&fresh.known, &first.known));
+        let fresh_profiles = profiles(&engine);
+        assert_eq!(fresh_profiles.len(), 1);
+        assert!(!Arc::ptr_eq(&fresh_profiles[0], &made[0]));
+        for (id, before) in [(&pad, pad_map), (&block, block_map)] {
+            let named = fresh.element_map(id).unwrap();
+            assert!(!std::ptr::eq(named, before), "{id}");
+            assert_eq!(named, first.element_map(id).unwrap(), "{id}");
+        }
+        // The engine's from here: the next recompute names with them.
+        assert!(Arc::ptr_eq(&lock(&engine.engine.state).known, &fresh.known));
+        let next = published(engine.start(Arc::clone(&document)));
+        assert!(Arc::ptr_eq(&next.known, &fresh.known));
+        assert!(std::ptr::eq(
+            next.element_map(&pad).unwrap(),
+            fresh.element_map(&pad).unwrap()
+        ));
+    }
+
+    #[test]
+    fn a_fresh_recompute_of_another_document_leaves_the_profiles_kept_for_the_one_before() {
+        // Reading nothing kept isn't clearing it: the padded document's profile, made by a
+        // recompute that reads what's kept, is the engine's still after a fresh recompute of
+        // a box (the two published models' plans are kept), and the next recompute of the
+        // padded document takes it, the same profile, not one made again.
+        let padded =
+            Arc::new(Checked::new(crate::document::read(PADDED.as_bytes()).unwrap()).unwrap());
+        let block = Arc::new(
+            Checked::new(
+                crate::document::read(
+                    br#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#,
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap())
+            .with_sketches(crate::fake::FakeSketches::new());
+        let profile = |engine: &Recompute<crate::fake::FakeKernel>| {
+            let state = lock(&engine.engine.state);
+            let profiles: Vec<Arc<Profile>> = state
+                .profiles
+                .values()
+                .map(|profile| Arc::clone(profile.as_ref().unwrap()))
+                .collect();
+            assert_eq!(profiles.len(), 1);
+            Arc::clone(&profiles[0])
+        };
+        published(engine.start(Arc::clone(&padded)));
+        let made = profile(&engine);
+        published(engine.start_fresh(Arc::clone(&block)));
+        assert!(Arc::ptr_eq(&profile(&engine), &made));
+        published(engine.start(Arc::clone(&padded)));
+        assert!(Arc::ptr_eq(&profile(&engine), &made));
     }
 
     #[test]

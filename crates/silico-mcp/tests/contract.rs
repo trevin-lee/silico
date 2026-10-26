@@ -331,9 +331,9 @@ fn every_example_holds_to_its_tools_schemas() {
             }
         }
     }
-    // Every file in the contract's examples, counted by hand: 89 on M4.9's branch, and
-    // export's 8 (#182).
-    assert_eq!(seen, 97);
+    // Every file in the contract's examples, counted by hand: 89 on M4.9's branch,
+    // export's 8 (#182), and cache_clear's 2 (#183).
+    assert_eq!(seen, 99);
 }
 
 #[test]

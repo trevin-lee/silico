@@ -379,6 +379,7 @@ impl<C: Kernel + 'static> Session<C> {
                         revision,
                         model,
                         reached,
+                        by: None,
                     });
                 }
                 (None, Gated::Checked(checked)) if kept.started => {
@@ -817,6 +818,7 @@ impl<C: Kernel + 'static> Session<C> {
                 // The saved revision's, its transaction ended: what's carried, and what uses
                 // it. Taken, not worked out, under the locks.
                 reached: Reached::of(held.reaching()),
+                by: None,
             });
         }
         Ok(gated)
@@ -1188,15 +1190,17 @@ pub(super) enum Rereads {
     /// Inside a transaction too, where nothing is reloaded: what's found is the command's
     /// (`commit`'s) to refuse.
     Always,
-    /// Never: `close`, which always closes.
+    /// Never: the commands that need nothing of the document, `close` (which always
+    /// closes) and `cache_clear` (which clears the directory's cache whatever the file holds).
     Never,
 }
 
 /// What a session found of its file before a command ([`Session::reload`]), given to the
 /// command.
 pub(super) enum Reload {
-    /// Nothing to change: the file unread (inside a transaction, or for `close`), or as the
-    /// session last read or wrote it.
+    /// Nothing to change: the file unread (inside a transaction, or for a command that needs
+    /// nothing of the document: `close`, `cache_clear`), or as the session last read or
+    /// wrote it.
     AsHeld,
     /// Found changed outside the session, and reloaded: the response's `reloaded`.
     Reloaded,

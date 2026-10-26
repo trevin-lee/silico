@@ -748,19 +748,13 @@ impl Worker {
             ),
         );
         // A worker that hadn't started never had the request to work on.
-        let error = if self.has_started() {
-            error.with_suggestion("simplify the operation, or allow it more time")
-        } else {
+        let started = self.has_started();
+        let error = if started {
             error
-                .with_cause(format!("the {} hadn't started", self.kind.noun()))
-                .with_suggestion(format!(
-                    "try the request again: the {} hadn't started in the time allowed (a new \
-                     worker binary's first launch can be slow while the system checks it); if \
-                     it never starts, check Silico's install",
-                    self.kind.noun()
-                ))
+        } else {
+            error.with_cause(format!("the {} hadn't started", self.kind.noun()))
         };
-        self.stop(error)
+        self.stop(error.with_advice(timeout_advice(self.kind, started)))
     }
 
     /// The worker's socket closed: report how it ended, with its last log lines.
@@ -836,7 +830,7 @@ impl Worker {
         };
         Error::new(code, message)
             .with_cause(cause)
-            .with_suggestion(crash_advice(self.kind, status, reached))
+            .with_advice(crash_advice(self.kind, status, reached))
     }
 
     /// Waits briefly for a worker whose socket closed to exit, then kills it if needed.
@@ -1406,13 +1400,67 @@ const FAULTS: [i32; 7] = [
 
 /// How far a worker got before it ended.
 #[derive(Clone, Copy, Debug)]
-enum Reached {
+pub(crate) enum Reached {
     /// It never said it had started.
     NotStarted,
     /// It started, but none of the request reached it.
     Started,
     /// Some of the request reached it (its socket took some, at least).
     Request,
+}
+
+/// What a worker's crash or timeout advises, as data: the error's suggestion is worded from
+/// it ([`Error::with_advice`], [`Advice::words`]), and a client that words it its own way (a
+/// session's kept fault, `command::session`'s `kept_suggestion`) reads what it says, never
+/// its words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Advice {
+    /// The request's values crashed the worker, and would crash it again, as `why` says:
+    /// change them.
+    ChangeTheValues { why: String },
+    /// The request ran past the time allowed, once the worker had started: simplify the
+    /// operation, or allow it more time.
+    SimplifyOrWait,
+    /// What ended the worker wasn't the request's values, as `why` says: try the request
+    /// again, or, `once_more`, only once more (a kill that may have been for the memory the
+    /// request used).
+    TryAgain { once_more: bool, why: String },
+    /// Any other advice (the worker's install, say), as worded.
+    Other(String),
+}
+
+impl Advice {
+    /// The advice as the worker client words it.
+    pub(crate) fn words(&self) -> String {
+        match self {
+            Advice::ChangeTheValues { why } => format!("change the operation's values: {why}"),
+            Advice::SimplifyOrWait => "simplify the operation, or allow it more time".to_owned(),
+            Advice::TryAgain { once_more, why } => {
+                let again = if *once_more { "once more" } else { "again" };
+                format!("try the request {again}: {why}")
+            }
+            Advice::Other(words) => words.clone(),
+        }
+    }
+}
+
+/// What a timeout of a worker suggests: one that had `started`, simplifying the operation or
+/// allowing it more time; one that hadn't never had the request to work on, so trying it
+/// again.
+pub(crate) fn timeout_advice(kind: WorkerKind, started: bool) -> Advice {
+    if started {
+        Advice::SimplifyOrWait
+    } else {
+        Advice::TryAgain {
+            once_more: false,
+            why: format!(
+                "the {} hadn't started in the time allowed (a new worker binary's first launch \
+                 can be slow while the system checks it); if it never starts, check Silico's \
+                 install",
+                kind.noun()
+            ),
+        }
+    }
 }
 
 /// What to try after a worker crashed, by how it ended, and how far it got. A fault of its
@@ -1425,41 +1473,56 @@ enum Reached {
 /// shutdown), a worker that stopped responding, or one gone before the request reached it
 /// is from outside, worth trying again (the next request starts another worker). A worker
 /// that exited with a code ended on its own, which is its install, not the request.
-fn crash_advice(kind: WorkerKind, status: Option<ExitStatus>, reached: Reached) -> String {
+pub(crate) fn crash_advice(
+    kind: WorkerKind,
+    status: Option<ExitStatus>,
+    reached: Reached,
+) -> Advice {
     let request = matches!(reached, Reached::Request);
     let worker = kind.noun();
+    let again = |why: String| Advice::TryAgain {
+        once_more: false,
+        why,
+    };
     match status.map(|s| (s.code(), s.signal())) {
-        Some((Some(_), _)) => format!(
+        Some((Some(_), _)) => Advice::Other(format!(
             "check Silico's install: the {worker} exited on its own (see its last output), \
              which no change to the request will help; report it if it persists"
-        ),
+        )),
         Some((None, Some(signal)))
             if matches!(reached, Reached::NotStarted) && FAULTS.contains(&signal) =>
         {
-            format!(
+            Advice::Other(format!(
                 "check Silico's install: the {worker} crashed as it started, before it could \
                  read the request (see its last output); report it if it persists"
-            )
+            ))
         }
-        Some((None, Some(signal))) if request && FAULTS.contains(&signal) => format!(
-            "change the operation's values: these crashed {}, and the same request would \
-             crash it again",
-            kind.runs()
-        ),
-        Some((None, Some(libc::SIGKILL))) if matches!(reached, Reached::NotStarted) => format!(
-            "try the request again: the {worker} was killed before it started; if it's killed \
-             before starting again, check Silico's install (macOS kills a worker binary whose \
-             code signature is broken)"
-        ),
-        Some((None, Some(libc::SIGKILL))) if request => format!(
-            "try the request once more: the {worker} was killed, most likely by the system for \
-             running out of memory; if it's killed again, the request needs too much memory: \
-             simplify it"
-        ),
-        _ => format!(
-            "try the request again: the {worker} was stopped from outside, stopped responding, \
-             or was gone before the request reached it, not by these values"
-        ),
+        Some((None, Some(signal))) if request && FAULTS.contains(&signal) => {
+            Advice::ChangeTheValues {
+                why: format!(
+                    "these crashed {}, and the same request would crash it again",
+                    kind.runs()
+                ),
+            }
+        }
+        Some((None, Some(libc::SIGKILL))) if matches!(reached, Reached::NotStarted) => {
+            again(format!(
+                "the {worker} was killed before it started; if it's killed before starting \
+                 again, check Silico's install (macOS kills a worker binary whose code \
+                 signature is broken)"
+            ))
+        }
+        Some((None, Some(libc::SIGKILL))) if request => Advice::TryAgain {
+            once_more: true,
+            why: format!(
+                "the {worker} was killed, most likely by the system for running out of memory; \
+                 if it's killed again, the request needs too much memory: simplify it"
+            ),
+        },
+        _ => again(format!(
+            "the {worker} was stopped from outside, stopped responding, or was gone before the \
+             request reached it, not by these values"
+        )),
     }
 }
 
@@ -1821,6 +1884,114 @@ mod tests {
     }
 
     #[test]
+    fn a_crash_and_a_timeout_say_their_advice_as_data_beside_its_words() {
+        // What a session words its own way (`kept_suggestion`) it reads from the advice as
+        // data, so each real end of a worker sets it, with the words the suggestion gives.
+        use super::Advice;
+        use std::time::Duration;
+        let echo = || silico_protocol::Op::Echo {
+            data: silico_protocol::Blob::inline(vec![1]),
+        };
+        let generation = silico_protocol::Generation(1);
+        // It says it started (an empty frame), takes a byte of the request, and segfaults.
+        let dir = scratch("advice-crash");
+        let path = script(
+            &dir,
+            "printf '\\0\\0\\0\\0' >&3\nhead -c 1 <&3 >/dev/null\nkill -SEGV $$\nexec sleep 600",
+        );
+        let mut worker = super::Worker::spawn(&path).unwrap();
+        let crashed = worker
+            .call(generation, echo(), Duration::from_secs(30))
+            .unwrap_err();
+        assert_eq!(crashed.code(), ErrorCode::WorkerCrashed, "{crashed}");
+        assert_eq!(
+            crashed.advice(),
+            Some(&Advice::ChangeTheValues {
+                why: "these crashed the kernel, and the same request would crash it again"
+                    .to_owned()
+            }),
+            "{crashed}"
+        );
+        assert_eq!(
+            crashed.suggestion(),
+            Some(
+                "change the operation's values: these crashed the kernel, and the same request \
+                 would crash it again"
+            )
+        );
+        // Started, and never answering: past its time.
+        let dir = scratch("advice-late");
+        let path = script(&dir, "printf '\\0\\0\\0\\0' >&3\nexec sleep 600");
+        let mut worker = super::Worker::spawn(&path).unwrap();
+        // Said to have started before the call, however loaded the machine, so its 2 s are
+        // all the request's.
+        let starting = std::time::Instant::now();
+        while !worker.has_started() {
+            assert!(
+                starting.elapsed() < Duration::from_secs(60),
+                "the script never said it started"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let late = worker
+            .call(generation, echo(), Duration::from_secs(2))
+            .unwrap_err();
+        assert_eq!(late.code(), ErrorCode::WorkerTimeout, "{late}");
+        assert_eq!(late.cause(), None, "{late}");
+        assert_eq!(late.advice(), Some(&Advice::SimplifyOrWait), "{late}");
+        assert_eq!(
+            late.suggestion(),
+            Some("simplify the operation, or allow it more time")
+        );
+        // Said to have started only during the call (once it has a byte of the request), then
+        // never answering: past its time as well, as the timeout reads whether it started when
+        // it fires, not when the call began.
+        let dir = scratch("advice-started-mid-call");
+        let path = script(
+            &dir,
+            "head -c 1 <&3 >/dev/null\nprintf '\\0\\0\\0\\0' >&3\nexec sleep 600",
+        );
+        let mut worker = super::Worker::spawn(&path).unwrap();
+        assert!(!worker.has_started());
+        let late = worker
+            .call(generation, echo(), Duration::from_secs(15))
+            .unwrap_err();
+        assert_eq!(late.code(), ErrorCode::WorkerTimeout, "{late}");
+        assert_eq!(late.cause(), None, "{late}");
+        assert_eq!(late.advice(), Some(&Advice::SimplifyOrWait), "{late}");
+        assert_eq!(
+            late.suggestion(),
+            Some("simplify the operation, or allow it more time")
+        );
+        // Never said it started: try again.
+        let dir = scratch("advice-unstarted");
+        let path = script(&dir, "exec sleep 600");
+        let mut worker = super::Worker::spawn(&path).unwrap();
+        let unstarted = worker
+            .call(generation, echo(), Duration::from_millis(300))
+            .unwrap_err();
+        assert_eq!(unstarted.code(), ErrorCode::WorkerTimeout, "{unstarted}");
+        assert!(
+            matches!(
+                unstarted.advice(),
+                Some(Advice::TryAgain {
+                    once_more: false,
+                    ..
+                })
+            ),
+            "{unstarted}"
+        );
+        assert_eq!(
+            unstarted.suggestion(),
+            Some(
+                "try the request again: the kernel worker hadn't started in the time allowed (a \
+                 new worker binary's first launch can be slow while the system checks it); if \
+                 it never starts, check Silico's install"
+            )
+        );
+    }
+
+    #[test]
     fn draining_reads_everything_a_worker_sent_up_to_where_its_replies_end() {
         // It says it started (an empty frame), then sends a frame that doesn't decode (one
         // byte, 0xff), which ends its reply thread, and runs on. Drained, everything it sent
@@ -1961,12 +2132,12 @@ mod tests {
         use super::WorkerKind::Sketch;
         let signalled = |signal| Some(ExitStatus::from_raw(signal));
         assert_eq!(
-            crash_advice(Sketch, signalled(libc::SIGSEGV), Request),
+            crash_advice(Sketch, signalled(libc::SIGSEGV), Request).words(),
             "change the operation's values: these crashed the sketch solver, and the same \
              request would crash it again"
         );
         assert_eq!(
-            crash_advice(Sketch, signalled(libc::SIGTERM), Request),
+            crash_advice(Sketch, signalled(libc::SIGTERM), Request).words(),
             "try the request again: the sketch worker was stopped from outside, stopped \
              responding, or was gone before the request reached it, not by these values"
         );
@@ -1979,13 +2150,50 @@ mod tests {
 
     #[test]
     fn crash_advice_follows_how_the_worker_ended() {
+        use super::Advice;
         use super::Reached::{NotStarted, Request, Started};
         // From the signals' meanings, not from `FAULTS`: a fault of the worker's own once
-        // the request reached it is the values'; before it started, the install's.
-        let values = "change the operation's values";
-        let again = "try the request again";
-        let install = "check Silico's install";
+        // the request reached it is the values'; before it started, the install's. Each
+        // case's advice as data (what a session's kept fault reads), and its opening words.
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        enum Says {
+            Values,
+            Again,
+            OnceMore,
+            Install,
+        }
+        let says = |advice: &Advice| match advice {
+            Advice::ChangeTheValues { .. } => Some(Says::Values),
+            Advice::TryAgain {
+                once_more: false, ..
+            } => Some(Says::Again),
+            Advice::TryAgain {
+                once_more: true, ..
+            } => Some(Says::OnceMore),
+            Advice::Other(_) => Some(Says::Install),
+            Advice::SimplifyOrWait => None,
+        };
+        let opening = |kind: Says| match kind {
+            Says::Values => "change the operation's values",
+            Says::Again => "try the request again",
+            Says::OnceMore => "try the request once more",
+            Says::Install => "check Silico's install",
+        };
         let signalled = |signal| Some(ExitStatus::from_raw(signal));
+        let check = |status: Option<ExitStatus>, reached: super::Reached, want: Says| {
+            let advice = crash_advice(super::WorkerKind::Kernel, status, reached);
+            assert_eq!(
+                says(&advice),
+                Some(want),
+                "{status:?} {reached:?}: {advice:?}"
+            );
+            let words = advice.words();
+            assert!(
+                words.starts_with(opening(want)),
+                "{status:?} {reached:?}: {words}"
+            );
+            words
+        };
         for signal in [
             libc::SIGSEGV,
             libc::SIGBUS,
@@ -1995,31 +2203,22 @@ mod tests {
             libc::SIGTRAP,
             libc::SIGSYS,
         ] {
-            for (reached, says) in [(Request, values), (Started, again), (NotStarted, install)] {
-                let advice = crash_advice(super::WorkerKind::Kernel, signalled(signal), reached);
-                assert!(advice.starts_with(says), "{signal} {reached:?}: {advice}");
+            for (reached, want) in [
+                (Request, Says::Values),
+                (Started, Says::Again),
+                (NotStarted, Says::Install),
+            ] {
+                check(signalled(signal), reached, want);
             }
         }
-        for (reached, says) in [
-            (Request, "try the request once more"),
-            (Started, again),
-            (NotStarted, again),
-        ] {
-            let advice = crash_advice(super::WorkerKind::Kernel, signalled(libc::SIGKILL), reached);
-            assert!(advice.starts_with(says), "{reached:?}: {advice}");
-        }
-        // Killed before it started: from outside, or, again and again, the system refusing
-        // the binary.
-        let unstarted = crash_advice(
-            super::WorkerKind::Kernel,
-            signalled(libc::SIGKILL),
-            NotStarted,
-        );
-        assert!(unstarted.contains(install), "{unstarted}");
-        assert!(
-            !crash_advice(super::WorkerKind::Kernel, signalled(libc::SIGKILL), Started)
-                .contains(install)
-        );
+        // Killed: most likely for memory once the request reached it, worth once more; else
+        // from outside, worth trying again. Before it started, again and again, it may be
+        // the system refusing the binary, which the words say, the retry still a retry.
+        check(signalled(libc::SIGKILL), Request, Says::OnceMore);
+        let started = check(signalled(libc::SIGKILL), Started, Says::Again);
+        assert!(!started.contains(opening(Says::Install)), "{started}");
+        let unstarted = check(signalled(libc::SIGKILL), NotStarted, Says::Again);
+        assert!(unstarted.contains(opening(Says::Install)), "{unstarted}");
         for reached in [Request, Started, NotStarted] {
             for signal in [
                 libc::SIGTERM,
@@ -2028,21 +2227,12 @@ mod tests {
                 libc::SIGUSR1,
                 libc::SIGPIPE,
             ] {
-                let advice = crash_advice(super::WorkerKind::Kernel, signalled(signal), reached);
-                assert!(advice.starts_with(again), "{signal} {reached:?}: {advice}");
+                check(signalled(signal), reached, Says::Again);
             }
             // Killed after it stopped responding: no status.
-            assert!(
-                crash_advice(super::WorkerKind::Kernel, None, reached).starts_with(again),
-                "{reached:?}"
-            );
+            check(None, reached, Says::Again);
             // An exit code (3, in the status's high byte) is the install's, either way.
-            let exited = crash_advice(
-                super::WorkerKind::Kernel,
-                Some(ExitStatus::from_raw(3 << 8)),
-                reached,
-            );
-            assert!(exited.starts_with(install), "{reached:?}: {exited}");
+            check(Some(ExitStatus::from_raw(3 << 8)), reached, Says::Install);
         }
     }
 

@@ -6,17 +6,21 @@
 //! mirrors their snapshots, `commands/text.json`, `outline.json`, and `check.json`, are
 //! generated from.
 //!
-//! `check`'s `fresh` (a rebuild that reads no cache) comes with M4.3: until then the request
-//! has it, as the design's does, and takes only `false`.
+//! `check`'s `fresh` (M4.3: the current revision rebuilt with every step built anew) is
+//! taken only with the current model: a published read never rebuilds. The request's
+//! [`CheckModel`] is what [`Sessions::check`](crate::command::Sessions::check) takes.
 
 use schemars::JsonSchema;
 
 use super::elements::ModelChoiceSchema;
 use super::{ErrorSchema, Json, RequestFields, ToWire, problems, wire_shape};
 use crate::command::session::SESSION_ID_PATTERN;
-use crate::command::{CheckAnswer, ModelChoice, OutlineAnswer, Problems, SessionId, TextAnswer};
+use crate::command::{
+    CheckAnswer, CheckModel, ModelChoice, OutlineAnswer, Problems, SessionId, TextAnswer,
+};
 use crate::document::json::Node;
 use crate::document::{FeatureId, PROBLEMS_LISTED};
+use crate::{Error, ErrorCode};
 
 /// A `text` request: the session, and the feature to read alone (`None` for the whole
 /// document).
@@ -53,44 +57,66 @@ impl ToWire for TextRequest {
     }
 }
 
-/// A `check` request: the session, and the model it reads, as
-/// [`Sessions::check`](crate::command::Sessions::check) takes them. Its `fresh`
-/// is read too, and only `false` taken.
+/// A `check` request: the session, and the model it reads (the wire's `model` and
+/// `fresh`), as [`Sessions::check`](crate::command::Sessions::check) takes them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CheckRequest {
     pub session: SessionId,
-    pub model: ModelChoice,
+    pub model: CheckModel,
 }
 
 impl CheckRequest {
-    /// The request `node` holds, or every reason its shape is refused: `fresh` true among
-    /// them, until a fresh check is built.
+    /// The request `node` holds, or every reason its shape is refused: `fresh` true with the
+    /// published model among them (a published read never rebuilds), naming `fresh`.
     pub fn read(node: &Node) -> Result<Self, Problems> {
         RequestFields::read(node, |f| {
             let session = f.session();
-            let model = f.model();
-            let fresh = f.only_false(
-                "fresh",
-                "a check that rebuilds without reading the rebuild cache isn't built yet",
-                "give false; to try a kernel fault the revision keeps again, close the session \
-                 and open the document again",
-            );
-            fresh?;
+            let model = match (f.model(), f.bool("fresh")) {
+                (Some(ModelChoice::Current), Some(fresh)) => CheckModel::Current { fresh },
+                (Some(ModelChoice::Published), Some(false)) => CheckModel::Published,
+                (Some(ModelChoice::Published), Some(true)) => {
+                    f.refuse(fresh_published());
+                    return None;
+                }
+                (None, _) | (_, None) => return None,
+            };
             Some(CheckRequest {
                 session: session?,
-                model: model?,
+                model,
             })
         })
     }
 }
 
+/// The refusal of `fresh` with the published model, which is read as it is, never rebuilt
+/// (decision 33): as a request's fields that must agree are refused (a camera's
+/// projection's), naming the field to change.
+fn fresh_published() -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        "fresh must be false for a read of the published model",
+    )
+    .with_parameter("fresh")
+    .with_cause(
+        "a read of the published model answers from the newest model as it is, rebuilding nothing",
+    )
+    .with_suggestion(
+        "give model current with fresh true to rebuild the current revision anew, or fresh \
+         false to read the published model",
+    )
+}
+
 impl ToWire for CheckRequest {
-    /// The request as a client writes it, every field in the shape's order: `fresh` false.
+    /// The request as a client writes it, every field in the shape's order.
     fn to_wire(&self) -> Json<'_> {
+        let (choice, fresh) = match self.model {
+            CheckModel::Current { fresh } => (ModelChoice::Current, fresh),
+            CheckModel::Published => (ModelChoice::Published, false),
+        };
         Json::object([
             ("session", self.session.to_wire()),
-            ("model", self.model.to_wire()),
-            ("fresh", Json::bool(false)),
+            ("model", Json::str(choice.as_str())),
+            ("fresh", Json::bool(fresh)),
         ])
     }
 }
@@ -170,9 +196,11 @@ pub struct CheckRequestSchema {
     #[schemars(regex(pattern = SESSION_ID_PATTERN))]
     pub session: String,
     pub model: ModelChoiceSchema,
-    /// Only false, for now: a check that rebuilds every step without reading the rebuild
-    /// cache isn't built yet, and true is refused.
-    #[schemars(extend("const" = false))]
+    /// Whether to rebuild the current revision with every step built anew, reading nothing
+    /// kept, in memory or in the rebuild cache (still keeping what it builds, so later
+    /// rebuilds hit it), as a forced rebuild does: it tries again a kernel fault the
+    /// revision keeps. Usually false. True only with model current: a read of the published
+    /// model never rebuilds.
     pub fresh: bool,
 }
 

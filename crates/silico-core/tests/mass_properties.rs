@@ -100,8 +100,10 @@ fn a_feature_a_fault_stopped_or_blocked_is_refused_with_the_fault_as_elements_re
         ErrorCode::WorkerCrashed,
         "crashed".to_owned(),
         Some("a91cw0de".to_owned()),
+        // The design's words for a crash (section 6): reading the revision again won't
+        // try it again, `check` with `fresh` will.
         Some(
-            "reading this revision again won't, since it keeps the fault; an edit that changes the document, or reopening the session, tries again; a save that writes only fingerprints keeps the fault"
+            "check with fresh to try it again; if the same feature crashes the worker again, report it with the document"
                 .to_owned(),
         ),
     );
@@ -174,11 +176,11 @@ fn a_solid_a_worker_failed_to_measure_is_refused_with_that_failure_as_check_says
             .iter()
             .map(|e| (e.code(), e.feature(), e.suggestion()))
             .collect();
-        // The worker's own advice, then that the revision keeps the fault, as `elements`
-        // gives it for the same solid.
-        let advice = Some(
-            "check again: a new worker is started; to try again here: reading this revision again won't, since it keeps the fault; an edit that changes the document, or reopening the session, tries again; a save that writes only fingerprints keeps the fault",
-        );
+        // The worker's own advice, then how to try it again in the session, as `elements`
+        // gives it for the same solid: the revision keeps the fault, so `check` with
+        // `fresh`.
+        let advice =
+            Some("check again: a new worker is started; then check with fresh to try it again");
         assert_eq!(
             said,
             [

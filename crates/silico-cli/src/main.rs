@@ -1,11 +1,12 @@
-//! The `silico` command-line client (docs/cli.md): `check`, `fmt`, `show`, `export`, and
-//! `schema`, each a thin client of the core's commands (`silico_core::command`), which MCP
-//! and the app run too; `textconv`, for `git diff`; and `serve`, the MCP server on stdin and
-//! stdout (`silico_mcp`; docs/design/m4.9-mcp.md). `check`, `fmt`, `show`, and `export` each
-//! open a file as a session, run one session command on it (`check`, `format`, `outline`,
-//! `export`), and close it
-//! (docs/design/m4.1-command-api.md, section 9), every file on one kernel pool and one
-//! sketch solver.
+//! The `silico` command-line client (docs/cli.md): `check`, `fmt`, `show`, `cache clear`,
+//! `export`, and `schema`, each a thin client of the core's commands (`silico_core::command`),
+//! which MCP and the app run too; `textconv`, for `git diff`; and `serve`, the MCP server on
+//! stdin and stdout (`silico_mcp`; docs/design/m4.9-mcp.md). `check`, `fmt`, `show`,
+//! `cache clear`, and `export` each open a file as a session, run one session command on it
+//! (`check`, `format`, `outline`, `cache_clear`, `export`), and close it
+//! (docs/design/m4.1-command-api.md, section 9). `check` and `fmt` run every file on one
+//! kernel pool and one sketch solver, and `export` its file on one of each; `show` and
+//! `cache clear` rebuild nothing, so they start neither.
 //!
 //! Exit codes: 0, nothing wrong; 1, a document has problems (or, with `fmt --check`, isn't
 //! in canonical form, or a file is longer than a document may be); 2, the command couldn't
@@ -21,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use silico_core::cache::Cache;
-use silico_core::command::{self, ModelChoice, Problems, Response, SessionId, Sessions};
+use silico_core::command::{self, CheckModel, Problems, Response, SessionId, Sessions};
 use silico_core::file::opened_and_read;
 use silico_core::pool::KernelPool;
 use silico_core::{Error, ErrorCode};
@@ -33,9 +34,10 @@ macro_rules! say {
     }};
 }
 
-const USAGE: &str = "usage: silico check [--json] [--] FILE...
+const USAGE: &str = "usage: silico check [--json] [--fresh] [--] FILE...
        silico fmt [--check] [--] FILE...
        silico show [--] FILE
+       silico cache clear [--] FILE...
        silico export [--tolerance=MM] [--features=ID,...] [--replace] [--] FILE OUT.3mf
        silico textconv [--] FILE
        silico schema [NAME]
@@ -84,11 +86,13 @@ impl Ended {
 enum Command {
     Check {
         json: bool,
+        fresh: bool,
     },
     Fmt {
         check: bool,
     },
     Show,
+    CacheClear,
     Export {
         tolerance: Option<String>,
         features: Option<String>,
@@ -101,7 +105,8 @@ enum Command {
 
 impl Command {
     /// The command `name` with `flags`; or, for a command or an option there's no such
-    /// thing as, what to say.
+    /// thing as, what to say. `cache`'s subcommand is its first word after it, `clear`, taken
+    /// from `files` ([`Command::parse_cache`]).
     fn parse(name: &str, flags: &[String]) -> Result<Command, String> {
         let flag = |option: &str| flags.iter().any(|f| f == option);
         // An option's value, `--name=VALUE`, the last given if it's given more than once.
@@ -116,9 +121,11 @@ impl Command {
             "check" => (
                 Command::Check {
                     json: flag("--json"),
+                    fresh: flag("--fresh"),
                 },
-                &["--json"],
+                &["--json", "--fresh"],
             ),
+            "cache" => (Command::CacheClear, &[]),
             "fmt" => (
                 Command::Fmt {
                     check: flag("--check"),
@@ -195,6 +202,17 @@ fn main() -> ExitCode {
             return Ended::Failed.code();
         }
     };
+    // `cache` takes its subcommand, `clear`, before its files (and before `--`, which ends
+    // the options, not the words).
+    if matches!(command, Command::CacheClear) {
+        match subcommand(&mut files) {
+            Ok(()) => {}
+            Err(why) => {
+                say!("{why}\n{USAGE}");
+                return Ended::Failed.code();
+            }
+        }
+    }
     // `check` and `fmt` run every file on one kernel pool, started once, whatever
     // directories they're in (each directory's cache beside its files), and one sketch
     // solver. A pool that couldn't be started fails each rebuild that needs it, so the
@@ -239,8 +257,20 @@ fn main() -> ExitCode {
             features.as_deref(),
             replace,
         ),
-        (Command::Check { json }, _) => each(&|sessions, file| check(sessions, file, json)),
+        (Command::Check { json, fresh }, _) => {
+            each(&|sessions, file| check(sessions, file, json, fresh))
+        }
         (Command::Fmt { check }, _) => each(&|sessions, file| fmt(sessions, file, check)),
+        (Command::CacheClear, _) => {
+            // Nothing is rebuilt: no kernel is started, and the user's cache secret is
+            // neither read nor made (a clear removes entries whoever sealed them).
+            let sessions =
+                Sessions::with_cache_opener(no_kernel("cache clear"), |dir| Cache::unsealed(dir));
+            files
+                .iter()
+                .map(|file| cache_clear(&sessions, file))
+                .fold(Ended::Clean, Ended::and)
+        }
         (Command::Show, [file]) => show(file),
         (Command::Textconv, [file]) => textconv(file),
     };
@@ -359,6 +389,34 @@ fn serve(workspace: Option<&Path>) -> Ended {
             Ended::Clean
         }
     }
+}
+
+/// `cache`'s subcommand, taken from the front of `files`: `clear`, the only one; or what to
+/// say of another, or of none.
+fn subcommand(files: &mut Vec<PathBuf>) -> Result<(), String> {
+    match files
+        .first()
+        .map(|word| word.to_string_lossy().into_owned())
+    {
+        Some(word) if word == "clear" => {
+            files.remove(0);
+            Ok(())
+        }
+        Some(word) => Err(format!("silico cache: no subcommand {word:?}")),
+        None => Err("silico cache: which? clear".to_owned()),
+    }
+}
+
+/// A kernel for a command that rebuilds nothing, `silico command`: starting none, and
+/// refusing, as a bug, anything asked of it.
+fn no_kernel(command: &str) -> KernelPool {
+    KernelPool::refusing(
+        Error::new(
+            ErrorCode::Internal,
+            format!("`silico {command}` starts no kernel"),
+        )
+        .with_suggestion(silico_core::worker::SILICO_BUG),
+    )
 }
 
 /// `silico schema [NAME]`: the document's JSON Schema, or the command `NAME`'s request and
@@ -596,7 +654,7 @@ fn with_retry(fault: &Error, command: &str) -> Error {
 /// be checked (a refusal that says it couldn't run, or a kernel fault), `{"file", "ok":
 /// false, "error"}`, the error that stopped it, in the same shape
 /// (tests/contract/check-line.json).
-fn check(sessions: &Sessions<KernelPool>, file: &Path, json: bool) -> Ended {
+fn check(sessions: &Sessions<KernelPool>, file: &Path, json: bool, fresh: bool) -> Ended {
     let refused = |refusal: Refusal| {
         if json {
             refusal.line(file)
@@ -605,7 +663,8 @@ fn check(sessions: &Sessions<KernelPool>, file: &Path, json: bool) -> Ended {
         }
     };
     in_session(sessions, file, "check", refused, |id| {
-        let Response { model, result, .. } = sessions.check(id, ModelChoice::Current).wait();
+        let Response { model, result, .. } =
+            sessions.check(id, CheckModel::Current { fresh }).wait();
         let problems = match result {
             Ok(answer) => answer.problems,
             Err(problems) => {
@@ -803,18 +862,43 @@ fn export(
     )
 }
 
+/// `silico cache clear FILE`: open, the session's `cache_clear`, close. Every entry of the
+/// rebuild cache beside the file removed (the directory's, shared by every document in it,
+/// decision 25), and only those: said on stderr, with how many, as `fmt` says what it wrote.
+/// What it couldn't remove is each said, and the command couldn't run (exit 2), the rest
+/// removed. Needs no kernel, and opens a file the gate refuses as any session does.
+fn cache_clear(sessions: &Sessions<KernelPool>, file: &Path) -> Ended {
+    in_session(
+        sessions,
+        file,
+        "cache clear",
+        |refusal| refusal.said(file),
+        |id| match sessions.cache_clear(id).wait().result {
+            Ok(cleared) => {
+                let entries = if cleared.removed == 1 {
+                    "entry"
+                } else {
+                    "entries"
+                };
+                say!(
+                    "{}: removed {} {entries} from {}",
+                    shown(file),
+                    cleared.removed,
+                    shown(Path::new(&cleared.directory))
+                );
+                Ended::Clean
+            }
+            Err(problems) => Refusal::of_command("cache clear", &problems).said(file),
+        },
+    )
+}
+
 /// `silico show FILE`: open, the session's `outline`, close; the outline on stdout. Needs no
 /// kernel: it's the document as written, for reading and for `git diff`.
 fn show(file: &Path) -> Ended {
     // A kernel and a cache it never uses: nothing is rebuilt, no worker is looked for, and
     // the user's cache secret is neither read nor made.
-    let sessions = Sessions::with_cache_opener(
-        KernelPool::refusing(
-            Error::new(ErrorCode::Internal, "`silico show` starts no kernel")
-                .with_suggestion(silico_core::worker::SILICO_BUG),
-        ),
-        |dir| Cache::unsealed(dir),
-    );
+    let sessions = Sessions::with_cache_opener(no_kernel("show"), |dir| Cache::unsealed(dir));
     in_session(
         &sessions,
         file,

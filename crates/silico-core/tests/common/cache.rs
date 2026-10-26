@@ -93,8 +93,10 @@ pub fn hole(model: &Model) -> String {
     described(model, "m3tq8v0z")
 }
 
-/// Every file in the cache's subdirectories (its entries, and any partial files), in order.
-pub fn files(dir: &Path) -> Vec<PathBuf> {
+/// Every file in the cache's subdirectories, in order of path, whatever its name or kind:
+/// the cache's entries, and any partial or stray files beside them (`cache_control::entries`
+/// lists only what the cache counts as an entry).
+pub fn subdirectory_files(dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     for sub in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         for file in std::fs::read_dir(sub.path())

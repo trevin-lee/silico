@@ -33,9 +33,9 @@
 //! command's wire types ([`COMMANDS`]: [`session`], for `version`, `open`, `close`,
 //! `status`, and `cancel`; [`transaction`], for `begin`, `commit`, `rollback`, and `format`;
 //! [`edits`], for `add_feature`, `set_field`, `remove_feature`, and `replace_text`;
-//! [`reads`], for `text`, `outline`, and `check`; [`elements`], for `elements` and `query`;
-//! [`schema`]; [`measure`], for `mass_properties`, `distance`, and `angle`; [`render`]; and
-//! [`export`]).
+//! [`reads`], for `text`, `outline`, and `check`; [`cache`], for `cache_clear`;
+//! [`elements`], for `elements` and `query`; [`schema`]; [`measure`], for `mass_properties`,
+//! `distance`, and `angle`; [`render`]; and [`export`]).
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -344,8 +344,8 @@ impl ToWire for SessionInfo {
 impl ToWire for ModelRead {
     /// Its revision, whether it was the current or the published, and the kernel fault its
     /// rebuild met, if it met one, kept as the revision's outcome (decision 32): its
-    /// suggestion the worker's own, then how a session's client tries again
-    /// (`kept_suggestion`).
+    /// suggestion the worker's own, if it has one, then how a session's client tries it
+    /// again, `check` with `fresh` (`kept_suggestion`, the design's section 6).
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("revision", self.revision.to_wire()),
@@ -670,21 +670,6 @@ impl<'a> RequestFields<'a> {
                 None
             }
         }
-    }
-
-    /// `false`, for a flag whose `true` isn't built yet (`check`'s `fresh`): `true` refused,
-    /// `why` its cause and `instead` what to do.
-    pub fn only_false(&mut self, key: &str, why: &str, instead: &str) -> Option<()> {
-        if !self.bool(key)? {
-            return Some(());
-        }
-        self.refused.refuse_with(|| {
-            let at = join(&self.path, key);
-            invalid(&at, format!("{at} must be false, got true"))
-                .with_cause(why)
-                .with_suggestion(instead)
-        });
-        None
     }
 
     /// `true`, `false`, or `null`.
@@ -1590,6 +1575,9 @@ const fn snapshot_of(command: Command) -> MakeSnapshot {
             command_schema::<reads::OutlineRequestSchema, reads::OutlineResultSchema>
         }
         Command::Check => command_schema::<reads::CheckRequestSchema, reads::CheckResultSchema>,
+        Command::CacheClear => {
+            command_schema::<cache::CacheClearRequestSchema, cache::CacheClearResultSchema>
+        }
         Command::Elements => {
             command_schema::<elements::ElementsRequestSchema, elements::ElementsResultSchema>
         }
@@ -1703,6 +1691,7 @@ pub fn snapshot(of: &str) -> Option<Result<String, Error>> {
     Some(crate::document::schema_text(&value, &format!("the {of}")))
 }
 
+pub mod cache;
 pub mod edits;
 pub mod elements;
 pub mod export;

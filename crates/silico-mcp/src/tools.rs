@@ -172,6 +172,8 @@ fn effect(command: Command) -> Effect {
         Command::Open | Command::Close | Command::Cancel | Command::Begin | Command::Rollback => {
             Effect::Changes { destructive: false }
         }
+        // Removes only the cache's own entries, each a miss the next rebuild makes again.
+        Command::CacheClear => Effect::Changes { destructive: false },
     }
 }
 
@@ -249,6 +251,10 @@ fn words(command: Command) -> (&'static str, String) {
             "Check",
             "The document's problems and warnings, from the model named: failed features, broken references, drift.",
         ),
+        Command::CacheClear => (
+            "Clear the cache",
+            "Remove every entry of the rebuild cache beside the session's document (`.silico-cache/`), and only the files the cache made. The cache is the directory's, shared by every document in it; an entry removed is only a miss, made again by the next rebuild. To rebuild without the cache once, `check` with `fresh: true` instead.",
+        ),
         Command::Elements => (
             "List elements",
             "A page of the model's faces, edges, and vertices, of one feature's solid or of every body, each with its name, its geometry, and its measures.",
@@ -303,6 +309,7 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::Text
         | Command::Outline
         | Command::Schema
+        | Command::CacheClear
         | Command::Export => &[],
     };
     let mut description = what.to_owned();

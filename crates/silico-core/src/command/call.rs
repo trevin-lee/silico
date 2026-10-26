@@ -61,6 +61,7 @@ pub enum Command {
     Text,
     Outline,
     Check,
+    CacheClear,
     Elements,
     Query,
     Schema,
@@ -73,7 +74,7 @@ pub enum Command {
 
 impl Command {
     /// Every command, in the design's order.
-    pub const ALL: [Command; 24] = [
+    pub const ALL: [Command; 25] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -90,6 +91,7 @@ impl Command {
         Command::Text,
         Command::Outline,
         Command::Check,
+        Command::CacheClear,
         Command::Elements,
         Command::Query,
         Command::Schema,
@@ -119,6 +121,7 @@ impl Command {
             Command::Text => "text",
             Command::Outline => "outline",
             Command::Check => "check",
+            Command::CacheClear => "cache_clear",
             Command::Elements => "elements",
             Command::Query => "query",
             Command::Schema => "schema",
@@ -158,6 +161,7 @@ impl Command {
             | Command::Text
             | Command::Outline
             | Command::Check
+            | Command::CacheClear
             | Command::Elements
             | Command::Query
             | Command::MassProperties
@@ -500,6 +504,9 @@ impl<P: Clients + 'static> Sessions<P> {
             Command::Outline => typed(SessionRequest::read(request), |r| self.outline(&r.session)),
             Command::Check => typed(CheckRequest::read(request), |r| {
                 self.check(&r.session, r.model)
+            }),
+            Command::CacheClear => typed(SessionRequest::read(request), |r| {
+                self.cache_clear(&r.session)
             }),
             Command::Elements => typed(ElementsRequest::read(request), |r| {
                 self.elements(&r.session, r.model, r.feature, r.after, r.limit)

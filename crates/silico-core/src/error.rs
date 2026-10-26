@@ -18,6 +18,8 @@ use std::fmt;
 
 use serde::Serialize;
 
+use crate::worker::Advice;
+
 /// Declares the error codes from one list, so the enum, [`ErrorCode::ALL`], and the
 /// string forms (which are also the serialized forms) can't drift apart.
 macro_rules! error_codes {
@@ -163,6 +165,11 @@ struct Fields {
     /// words it itself.
     #[serde(skip)]
     worker: Option<Box<WorkerFailure>>,
+    /// What `suggestion` says to do, as data, where the worker client worded it from that
+    /// ([`Error::with_advice`]): never written out, no part of what the error is, and
+    /// dropped by any other suggestion given after.
+    #[serde(skip)]
+    advice: Option<Box<Advice>>,
 }
 
 impl PartialEq for Fields {
@@ -178,6 +185,7 @@ impl PartialEq for Fields {
             suggestion,
             candidates,
             worker: _,
+            advice: _,
         } = self;
         (
             code,
@@ -227,6 +235,7 @@ impl Error {
             suggestion: None,
             candidates: Vec::new(),
             worker: None,
+            advice: None,
         }))
     }
 
@@ -307,7 +316,23 @@ impl Error {
     #[must_use]
     pub fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
         self.0.suggestion = Some(suggestion.into());
+        self.0.advice = None;
         self
+    }
+
+    /// A worker's `advice` as the suggestion, worded as the worker client words it
+    /// ([`Advice::words`]), and kept as data, so a client that words it its own way reads
+    /// what it says ([`Error::advice`]), never its words.
+    #[must_use]
+    pub(crate) fn with_advice(mut self, advice: Advice) -> Self {
+        self.0.suggestion = Some(advice.words());
+        self.0.advice = Some(Box::new(advice));
+        self
+    }
+
+    /// The worker's advice the suggestion was worded from, if it was.
+    pub(crate) fn advice(&self) -> Option<&Advice> {
+        self.0.advice.as_deref()
     }
 
     /// Candidate fixes, such as the elements a broken reference might have meant.

@@ -11,7 +11,8 @@ use std::path::PathBuf;
 use silico_core::command::render::Render;
 use silico_core::command::wire::{COMMANDS, Layout, response_text};
 use silico_core::command::{
-    Answered, Call, Calling, Command, ModelChoice, Response, Revision, SessionId, VERSION,
+    Answered, Call, Calling, CheckModel, Command, ModelChoice, Response, Revision, SessionId,
+    VERSION,
 };
 use silico_core::document::json::Node;
 use silico_core::document::{Length, Operation};
@@ -54,8 +55,8 @@ fn the_commands_are_one_list_in_one_order() {
     let names: Vec<&str> = Command::ALL.iter().map(|c| c.as_str()).collect();
     let listed: Vec<&str> = COMMANDS.iter().map(|(name, _)| *name).collect();
     assert_eq!(names, listed);
-    // The design's section 7, in its order, written out by hand (read_logs and cache_clear
-    // come with their commands).
+    // The design's section 7, in its order, written out by hand (read_logs comes with its
+    // command).
     assert_eq!(
         names,
         [
@@ -75,6 +76,7 @@ fn the_commands_are_one_list_in_one_order() {
             "text",
             "outline",
             "check",
+            "cache_clear",
             "elements",
             "query",
             "schema",
@@ -149,7 +151,8 @@ fn a_name_no_command_has_is_unknown() {
         "tools/call",
         "Export",
         "read_logs",
-        "cache_clear",
+        "cache-clear",
+        "cache clear",
         "versions",
         "check\0",
     ] {
@@ -196,7 +199,7 @@ fn a_call_answers_as_its_typed_method_does_written_on_one_line() {
         (
             "check",
             r#"{"session": "s1", "model": "current", "fresh": false}"#,
-            as_written(&answer(t.check(&s1, ModelChoice::Current))),
+            as_written(&answer(t.check(&s1, CheckModel::Current { fresh: false }))),
         ),
         (
             "mass_properties",
@@ -238,7 +241,7 @@ fn a_call_answers_as_its_typed_method_does_written_on_one_line() {
         (
             "check",
             r#"{"session": "s1", "model": "current", "fresh": false}"#,
-            as_written(&answer(t.check(&s1, ModelChoice::Current))),
+            as_written(&answer(t.check(&s1, CheckModel::Current { fresh: false }))),
         ),
         (
             "schema",
@@ -1067,7 +1070,7 @@ fn a_read_of_the_published_model_reaches_its_typed_method_as_one() {
         answer(f.sessions.open("part.silico", false))
             .result
             .unwrap();
-        answer(f.sessions.check(&s1, ModelChoice::Current))
+        answer(f.sessions.check(&s1, CheckModel::Current { fresh: false }))
             .result
             .unwrap();
         holds.push(
@@ -1097,7 +1100,7 @@ fn a_read_of_the_published_model_reaches_its_typed_method_as_one() {
     );
     assert_eq!(
         check,
-        as_written(&answer(t.check(&s1, ModelChoice::Published)))
+        as_written(&answer(t.check(&s1, CheckModel::Published)))
     );
     let elements = promptly(
         by_name.calling(
@@ -1194,9 +1197,12 @@ fn every_reads_model_reaches_its_typed_method_the_published_answering_past_a_hel
     answer(f.sessions.open("part.silico", false))
         .result
         .unwrap();
-    answer(f.sessions.check(&s("s1"), ModelChoice::Current))
-        .result
-        .unwrap();
+    answer(
+        f.sessions
+            .check(&s("s1"), CheckModel::Current { fresh: false }),
+    )
+    .result
+    .unwrap();
     let hold = f
         .kernel
         .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
@@ -1223,4 +1229,78 @@ fn every_reads_model_reaches_its_typed_method_the_published_answering_past_a_hel
     }
     hold.release();
     assert!(answered(edit).ok);
+}
+
+#[test]
+fn cache_clear_and_a_fresh_check_answer_as_their_typed_methods_do() {
+    // Two workspaces holding the same box, whose kernel crashes making it until told not to:
+    // the open's check keeps the fault as its revision's outcome (decision 32). Then, by name
+    // and by the typed methods alike: a plain check gives the kept fault, asking the kernel
+    // nothing; a fresh one tries the box again and builds it, its model the fault's no more;
+    // and cache_clear removes the one entry the fresh check kept (the box, the document's
+    // one step), then none.
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let s1 = s("s1");
+    let (by_name, typed) = (fixture(), fixture());
+    let crashing = Arc::new(AtomicBool::new(true));
+    for f in [&by_name, &typed] {
+        let crashes = Arc::clone(&crashing);
+        f.kernel.refuse(move |op| {
+            (op.name() == "MakeBox" && crashes.load(Ordering::SeqCst))
+                .then(|| silico_core::Error::new(silico_core::ErrorCode::WorkerCrashed, "crashed"))
+        });
+        f.file("part.silico", BOX);
+        answer(f.sessions.open("part.silico", false))
+            .result
+            .unwrap();
+        let faulted = answer(f.sessions.check(&s1, CheckModel::Current { fresh: false }));
+        assert!(faulted.model.unwrap().fault.is_some());
+    }
+    crashing.store(false, Ordering::SeqCst);
+    let t = &typed.sessions;
+    let boxes = |f: &Fixture| {
+        f.kernel
+            .calls()
+            .iter()
+            .filter(|call| call.op.name() == "MakeBox")
+            .count()
+    };
+    let before = boxes(&by_name);
+    let kept = by_name.call(
+        "check",
+        r#"{"session": "s1", "model": "current", "fresh": false}"#,
+    );
+    assert_eq!(
+        kept,
+        as_written(&answer(t.check(&s1, CheckModel::Current { fresh: false })))
+    );
+    assert!(
+        envelope(&kept)["model"]["fault"].is_object(),
+        "{}",
+        kept.text
+    );
+    assert_eq!(boxes(&by_name), before);
+    let fresh = by_name.call(
+        "check",
+        r#"{"session": "s1", "model": "current", "fresh": true}"#,
+    );
+    assert_eq!(
+        fresh,
+        as_written(&answer(t.check(&s1, CheckModel::Current { fresh: true })))
+    );
+    // `fresh` reached it: it built the box again, and answers otherwise than the plain check.
+    assert!(fresh.ok, "{}", fresh.text);
+    assert_eq!(envelope(&fresh)["model"]["fault"], serde_json::Value::Null);
+    assert_ne!(fresh, kept);
+    assert_eq!(boxes(&by_name), before + 1);
+    for removed in [1, 0] {
+        let cleared = by_name.call("cache_clear", r#"{"session": "s1"}"#);
+        assert_eq!(cleared, as_written(&answer(t.cache_clear(&s1))));
+        assert!(cleared.ok, "{}", cleared.text);
+        assert_eq!(
+            envelope(&cleared)["result"],
+            serde_json::json!({"directory": ".silico-cache", "removed": removed})
+        );
+    }
 }
