@@ -330,8 +330,40 @@ impl<P: Clients + 'static> Sessions<P> {
                     reads: Threads::new(),
                     stopping: false,
                 }),
+                renderer: Mutex::new(None),
+                meshes: Arc::new(crate::meshes::MeshCache::new(
+                    crate::meshes::MESH_CACHE_BYTES,
+                )),
             }),
         }
+    }
+
+    /// The same sessions, drawing `render`'s scenes with `renderer` (the render worker's
+    /// client, [`crate::render::RenderClient`], or a test's fake), as they're given their
+    /// kernel. Without one, `render` is refused as `worker_unavailable`.
+    #[must_use]
+    pub fn rendering(self, renderer: impl crate::command::render::Renderer + 'static) -> Self {
+        *lock(&self.registry.renderer) = Some(Arc::new(renderer));
+        self
+    }
+
+    /// The renderer `render` draws with, and the meshes it keeps.
+    pub(crate) fn render_on(
+        &self,
+    ) -> (
+        Option<Arc<dyn crate::command::render::Renderer>>,
+        Arc<crate::meshes::MeshCache<crate::recompute::Key>>,
+    ) {
+        (
+            lock(&self.registry.renderer).clone(),
+            Arc::clone(&self.registry.meshes),
+        )
+    }
+
+    /// The documents the sessions hold, by their paths: what a file a command writes is
+    /// never (decision 35).
+    pub(crate) fn held_paths(&self) -> Vec<PathBuf> {
+        lock(&self.registry.book).paths.keys().cloned().collect()
     }
 
     /// Opens the document at `path` as a new session, on a thread of its own: reads the

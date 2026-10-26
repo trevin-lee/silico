@@ -17,10 +17,10 @@ use silico_protocol::{
     MAX_RENDER_TRIANGLES, Mesh, MeshAt, PointPlace, Projection, RenderBody, RenderScene,
 };
 
-use super::Problems;
+use super::{ModelChoice, Problems, Running, SessionId, Sessions};
 use crate::document::{Angle, FeatureId, Length, PROBLEMS_LISTED, Position};
 use crate::file::{self, Output};
-use crate::kernel::{ElementKind, Kernel, KernelRequest};
+use crate::kernel::{Clients, ElementKind, Kernel, KernelRequest};
 use crate::meshes::{MeshCache, mesh_level};
 use crate::naming::{ElementMap, Maker, Name};
 use crate::pool::{Outcome, Pending};
@@ -171,6 +171,55 @@ pub trait Renderer: Send + Sync {
 impl Renderer for RenderClient {
     fn render(&self, scene: RenderScene) -> RenderTicket {
         RenderClient::render(self, scene)
+    }
+}
+
+/// A renderer shared: the sessions hold theirs so, and a test keeps a handle on its fake.
+impl<R: Renderer + ?Sized> Renderer for std::sync::Arc<R> {
+    fn render(&self, scene: RenderScene) -> RenderTicket {
+        (**self).render(scene)
+    }
+}
+
+impl<P: Clients + 'static> Sessions<P> {
+    /// `render` (M4.6): a PNG of the model `model` names (decision 33), as `request` asks
+    /// ([`render`]): meshed on the read's own client of the kernel, through the meshes the
+    /// sessions keep, and drawn by the sessions' renderer ([`Sessions::rendering`]); the read's
+    /// cancel, or its session closing, stops it, and it settles before writing its file.
+    /// Refused as `worker_unavailable` if the sessions were given no renderer.
+    pub fn render(
+        &self,
+        session: &SessionId,
+        model: ModelChoice,
+        request: Render,
+    ) -> Running<Rendering> {
+        let (renderer, meshes) = self.render_on();
+        let held = self.held_paths();
+        self.read_model(session, "render", model, move |read| {
+            let Some(renderer) = renderer else {
+                return Err(Problems::from(
+                    Error::new(
+                        ErrorCode::WorkerUnavailable,
+                        "these sessions were given no render worker",
+                    )
+                    .with_suggestion("start Silico with its render worker (silico-render-worker)"),
+                ));
+            };
+            read.rendering(&*renderer, |renderer| {
+                render(
+                    read.model(),
+                    &request,
+                    &RenderOn {
+                        kernel: read.kernel(),
+                        meshes: &meshes,
+                        renderer,
+                        workspace: None,
+                        held: &held,
+                        settle: &|| read.settle(),
+                    },
+                )
+            })
+        })
     }
 }
 

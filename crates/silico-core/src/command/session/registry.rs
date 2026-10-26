@@ -45,6 +45,11 @@ pub(super) struct Registry<P: Clients + 'static> {
     /// Where `add_feature` takes the IDs of features given none.
     pub(super) feature_ids: Arc<Mutex<FeatureIds>>,
     pub(super) book: Mutex<Book<P::Client>>,
+    /// What draws `render`'s scenes: the render worker's client, given when the sessions are
+    /// made ([`Sessions::rendering`](super::Sessions::rendering)), or none (refused).
+    pub(super) renderer: Mutex<Option<Arc<dyn crate::command::render::Renderer>>>,
+    /// The display meshes `render` makes, shared by the sessions of this kernel.
+    pub(super) meshes: Arc<crate::meshes::MeshCache<crate::recompute::Key>>,
 }
 
 /// A file as the system knows it, whatever path reaches it: its device and inode.
