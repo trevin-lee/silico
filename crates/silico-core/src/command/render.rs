@@ -18,7 +18,7 @@ use silico_protocol::{
 };
 
 use super::Problems;
-use crate::document::{FeatureId, PROBLEMS_LISTED};
+use crate::document::{Angle, FeatureId, Length, PROBLEMS_LISTED};
 use crate::file::{self, Output};
 use crate::kernel::{ElementKind, Generation, Kernel, KernelRequest};
 use crate::meshes::{MeshCache, mesh_level};
@@ -151,7 +151,7 @@ pub fn render<K: Kernel>(
     // The camera used is the one answered: a given one's up made perpendicular and of unit
     // length; a named view's as it's fitted, already so.
     let (camera, fit_side) = match asked {
-        Asked::Given(camera) => (perpendicular(&camera), None),
+        Asked::Given(camera) => (camera, None),
         Asked::Named(view) => {
             // Fitted to every body's box: one that couldn't be measured has none to fit.
             if let Some(unmeasured) = bodies.iter().find(|b| b.bounds.is_none()) {
@@ -198,6 +198,25 @@ pub fn render<K: Kernel>(
                 ));
             }
             (camera, Some(side))
+        }
+    };
+    // The camera answered is the one drawn, as the wire writes it (lengths to the nanometre,
+    // the angle to the nanodegree), so it passes back unchanged; checked again, as rounding
+    // a camera at its limits could move it past one.
+    let camera = match written_as_answered(&camera) {
+        // Rounded first, then up made perpendicular to the view the rounded eye and target
+        // give, so passed back, rounding changes nothing and up is already its frame's.
+        Some(written) if written.check().is_ok() => perpendicular(&written),
+        _ => {
+            let parameter = if fit_side.is_some() { "view" } else { "camera" };
+            return Err(Problems::from(
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    "the camera, its lengths to the nanometre and its angle to the nanodegree as a result writes it, can't make a view",
+                )
+                .with_parameter(parameter)
+                .with_suggestion("give a camera within the render's limits"),
+            ));
         }
     };
     let kept: Vec<&Body> = bodies
@@ -757,6 +776,28 @@ fn a_kind(kind: ElementKind) -> &'static str {
         ElementKind::Vertex => "a vertex",
         ElementKind::Solid => "a solid",
     }
+}
+
+/// `camera` as a result writes it: its eye, target, and view height rounded to the
+/// nanometre, its angle to the nanodegree, its up as it is (a direction is written exactly).
+/// None if a number doesn't fit.
+fn written_as_answered(camera: &Camera) -> Option<Camera> {
+    let mm = |v: f64| Length::rounded(v).map(Length::mm);
+    let point = |p: [f64; 3]| Some([mm(p[0])?, mm(p[1])?, mm(p[2])?]);
+    let projection = match camera.projection {
+        Projection::Orthographic { view_height } => Projection::Orthographic {
+            view_height: mm(view_height)?,
+        },
+        Projection::Perspective { field_of_view } => Projection::Perspective {
+            field_of_view: Angle::rounded(field_of_view)?.degrees(),
+        },
+    };
+    Some(Camera {
+        projection,
+        eye: point(camera.eye)?,
+        target: point(camera.target)?,
+        up: camera.up,
+    })
 }
 
 /// `problems`, each naming `feature` if it names none: a body's kernel request's.

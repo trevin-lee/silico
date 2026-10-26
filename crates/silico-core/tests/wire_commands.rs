@@ -345,7 +345,7 @@ fn the_word_lists_in_the_snapshots_are_the_commands_own() {
 #[test]
 fn the_examples_are_the_designs_own_text() {
     // Each section's blocks, in order, each file the block and a newline.
-    let sections: [(&str, &str, &str, &[&str]); 5] = [
+    let sections: [(&str, &str, &str, &[&str]); 6] = [
         (
             "### Element entries",
             "### Warnings",
@@ -388,6 +388,12 @@ fn the_examples_are_the_designs_own_text() {
             "### `distance` (M4.5)",
             "mass_properties",
             &["every-body", "every-body-measured"],
+        ),
+        (
+            "### `render` (M4.6)",
+            "### `read_logs` (M4.7)",
+            "render",
+            &["request", "result", "refused-width", "refused-eye-inside"],
         ),
     ];
     for (from, to, dir, names) in sections {
@@ -712,7 +718,8 @@ fn schema_answers_the_document_and_each_command_as_committed() {
                 "elements",
                 "query",
                 "schema",
-                "mass_properties"
+                "mass_properties",
+                "render"
             ]
         );
     }
@@ -1048,4 +1055,131 @@ fn every_field_of_an_entry_is_written_from_its_own_value() {
     // A vertex's kind is its own word.
     entry.kind = ElementKind::Vertex;
     assert!(written(&entry).contains(r#""kind": "vertex","#));
+}
+
+// ---- render (M4.6) ----
+
+/// The design's block, `k7f2qx3m` the 40 x 20 x 10 block alone (its box the one the
+/// design's camera is fitted to: the fake measures a box as a box), on the fake kernel.
+const BLOCK: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
+  ]
+}
+"#;
+
+/// `request` rendered on `text`'s model, on the fake kernel and the fake renderer.
+fn rendered(
+    text: &str,
+    request: &silico_core::command::render::RenderRequest,
+) -> Result<silico_core::command::render::Rendering, Problems> {
+    use silico_core::command::render::{RenderOn, render};
+    use silico_core::fake::{FakeKernel, FakeRenderer};
+    use silico_core::kernel::Kernel;
+    use silico_core::meshes::{MESH_CACHE_BYTES, MeshCache};
+    use silico_core::recompute::Recompute;
+    let kernel = std::sync::Arc::new(FakeKernel::new(1).unwrap());
+    let engine = Recompute::new(std::sync::Arc::clone(&kernel));
+    let model = silico_core::command::rebuild(
+        &engine,
+        silico_core::command::gate(text.as_bytes()).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let meshes = MeshCache::new(MESH_CACHE_BYTES);
+    let renderer = FakeRenderer::new();
+    render(
+        &model,
+        request,
+        &RenderOn {
+            kernel: &kernel,
+            generation: kernel.generation(),
+            meshes: &meshes,
+            renderer: &renderer,
+            workspace: None,
+            held: &[],
+        },
+    )
+}
+
+#[test]
+fn the_designs_render_request_is_read_and_written_back_and_holds_to_its_schema() {
+    use silico_core::command::render::RenderRequest;
+    use silico_core::command::wire::render::RenderCall;
+    let text = example("render/request");
+    let call = RenderCall::read(&parsed(&text)).unwrap();
+    assert_eq!(
+        call,
+        RenderCall {
+            session: s1(),
+            model: ModelChoice::Current,
+            render: RenderRequest {
+                view: Some("top_front_right".to_owned()),
+                camera: None,
+                width: 800,
+                height: 600,
+                highlight: vec!["k7f2qx3m.box.Face6".to_owned()],
+                to: None,
+                replace: false,
+            },
+        }
+    );
+    assert_eq!(written(&call), text);
+    holds(&schema_of("render", "request", None), &text, "render");
+}
+
+#[test]
+fn the_designs_render_result_is_the_commands_own_but_for_its_machines_png_bytes() {
+    // The block's top_front_right at 800 x 600, its top highlighted, as the design's request
+    // asks. The PNG's size is the machine's (the fake's stand-in here): it alone is set to
+    // the design's before comparing, as the design says it isn't a result.
+    use silico_core::command::wire::render::RenderCall;
+    let call = RenderCall::read(&parsed(&example("render/request"))).unwrap();
+    let done = rendered(BLOCK, &call.render).unwrap();
+    let mut result = done.result.clone();
+    result.png_bytes = 48_213;
+    let want = example("render/result");
+    assert_eq!(written(&result), want);
+    holds(&schema_of("render", "result", None), &want, "render");
+    // Exactly M4.1's five members, so the ID buffer can't drift into it.
+    let value: serde_json::Value = serde_json::from_str(&want).unwrap();
+    let keys: Vec<&String> = value.as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["camera", "height", "path", "png_bytes", "width"]);
+}
+
+#[test]
+fn the_designs_render_refusals_are_the_commands_own_and_hold_to_the_error_contract() {
+    use silico_core::command::wire::render::RenderCall;
+    use silico_protocol::{Camera, Projection};
+    let error = error_schema();
+    let check = |name: &str, got: String| {
+        let want = example(name);
+        assert_eq!(got, want, "{name}");
+        holds(&error, &want, name);
+    };
+    let mut call = RenderCall::read(&parsed(&example("render/request"))).unwrap();
+    call.render.width = 0;
+    check(
+        "render/refused-width",
+        the_refusal(&rendered(BLOCK, &call.render).unwrap_err()),
+    );
+    // A perspective eye inside the design's part (its block, the hole aside).
+    let mut call = RenderCall::read(&parsed(&example("render/request"))).unwrap();
+    call.render.view = None;
+    call.render.highlight = vec![];
+    call.render.camera = Some(Camera {
+        projection: Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        eye: [5.0, 5.0, 5.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    });
+    check(
+        "render/refused-eye-inside",
+        the_refusal(&rendered(super::example::EXAMPLE, &call.render).unwrap_err()),
+    );
 }

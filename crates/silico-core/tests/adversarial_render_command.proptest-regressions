@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 60057a67278317e4525a4cc4b7cc174c907fb1c2ec7a2e31be703620752cd84b # shrinks to c = Camera { projection: Orthographic { view_height: 1e-6 }, eye: [0.0, 0.0, 0.0], target: [0.0, 0.0, 1000000000000.0], up: [12407780.962029574, 56681815.41849138, -1000000000000.0] }
+cc cdd5d1a8417e6ad8035cc9476af74c2fc3647c7a3d00a79a89bc82181431fa00 # shrinks to c = Camera { projection: Orthographic { view_height: 1e-6 }, eye: [0.0, -1000000000000.0, 0.0], target: [-0.0006535717844179246, -1000000000000.0, -680.2121755144824], up: [0.0006439150841037309, 0.0, 680.2121755144824] }

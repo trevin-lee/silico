@@ -10,6 +10,7 @@ use std::sync::Arc;
 use super::example::EXAMPLE;
 use silico_core::command::render::{RenderOn, RenderRequest, Rendering, render};
 use silico_core::command::{self, Problems};
+use silico_core::document::Length;
 use silico_core::fake::{FakeKernel, FakeRenderer};
 use silico_core::kernel::{ElementKind, ElementRef, Kernel, Op};
 use silico_core::meshes::{MESH_CACHE_BYTES, MeshCache};
@@ -159,16 +160,27 @@ fn a_named_view_fits_the_bodies_and_the_renderer_is_sent_their_scene() {
     let c = &done.result.camera;
     assert_eq!(c.target, [20.0, 10.0, 5.0]);
     let s6 = 6f64.sqrt();
+    // Answered as a result writes it: the eye to the nanometre, which tilts the view by
+    // under 1e-10, and up made perpendicular to that view; the height to the nanometre.
     for (got, want) in c.up.iter().zip([-1.0 / s6, 1.0 / s6, 2.0 / s6]) {
-        assert!((got - want).abs() < 1e-15, "{:?}", c.up);
+        assert!((got - want).abs() < 1e-10, "{:?}", c.up);
     }
     let Projection::Orthographic { view_height } = c.projection else {
         panic!("{:?}", c.projection)
     };
     assert!(
-        (view_height - 1.1 * 84.0 / s6).abs() < 1e-12,
+        (view_height - 1.1 * 84.0 / s6).abs() <= 5e-7,
         "{view_height}"
     );
+    assert_eq!(view_height, 37.722_142);
+    for k in 0..3 {
+        assert_eq!(
+            c.eye[k],
+            Length::rounded(c.eye[k]).unwrap().mm(),
+            "{:?}",
+            c.eye
+        );
+    }
     // The result: the PNG's size, no path, the size asked; the PNG beside it.
     assert_eq!(done.png, b"PNG 800x600");
     assert_eq!(done.result.png_bytes, 11);

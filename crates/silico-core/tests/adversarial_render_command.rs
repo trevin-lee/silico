@@ -269,11 +269,13 @@ fn every_named_view_of_a_nanometre_cube_at_either_extreme_aspect_is_drawn() {
             let done = bench.render(&view(name, w, h)).unwrap_or_else(|p| {
                 panic!("{name} {w}x{h}: {p:?}");
             });
-            assert_eq!(done.result.camera.target, [5e-7; 3], "{name}");
+            // The cube's centre, half a nanometre, as a result writes it: to the nanometre,
+            // half to even, so 0; its view at least the nanometre a view may be.
+            assert_eq!(done.result.camera.target, [0.0; 3], "{name}");
             let Projection::Orthographic { view_height } = done.result.camera.projection else {
                 panic!();
             };
-            assert!(view_height >= 1.1e-6 * (1.0 - 1e-12), "{name} {w}x{h}");
+            assert!(view_height >= 1e-6, "{name} {w}x{h}");
         }
     }
     assert_eq!(bench.renderer.sent().len(), 14 * 3);
@@ -450,8 +452,9 @@ fn an_eye_in_the_second_body_names_it_and_one_on_a_shared_face_names_the_first()
     // At B's far corner, (20, 10, 10): on it, refused.
     let e = refused(bench.render(&at([20.0, 10.0, 10.0])));
     assert_eq!(e.feature(), Some("bbbbbbbb"));
-    // An ulp beyond it: outside every box, never classified, drawn.
-    let beyond = f64::from_bits(20f64.to_bits() + 1);
+    // A nanometre beyond it, the least a request can say: outside every box, never
+    // classified, drawn.
+    let beyond = 20.000_001;
     bench.render(&at([beyond, 10.0, 10.0])).unwrap();
     assert_eq!(bench.classified(), 4);
     assert_eq!(bench.renderer.sent().len(), 1);
