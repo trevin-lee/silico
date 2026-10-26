@@ -226,16 +226,22 @@ fn checked(
     // 1. Every face meshed.
     let unmeshed: Vec<u32> = mesh.unmeshed().collect();
     if !unmeshed.is_empty() {
-        return Err(faces.refuse(
-            ErrorCode::InvalidResult,
-            format!(
-                "the kernel couldn't mesh {} of the faces, so the mesh would have holes there",
-                unmeshed.len()
-            ),
-            unmeshed,
-            "change the faces named: the kernel can't mesh them at any tolerance (slivers too \
-             narrow for it, as FreeCAD's export leaves them as holes)",
-        ));
+        // M4.1's words (`export`): a face, or so many.
+        let (have, faces_said) = match unmeshed.len() {
+            1 => ("a face has".to_owned(), "the face"),
+            n => (format!("{n} faces have"), "the faces"),
+        };
+        return Err(faces
+            .refuse(
+                ErrorCode::InvalidResult,
+                format!("the export mesh isn't closed: {have} no triangles"),
+                unmeshed,
+                &format!(
+                    "this solid can't be exported until the kernel meshes {faces_said}: there's \
+                     no workaround in the request"
+                ),
+            )
+            .with_cause(format!("OCCT made no triangles for {faces_said}")));
     }
 
     let ranges = mesh.face_ranges();
@@ -750,6 +756,16 @@ pub struct Object<'a> {
 /// ZIP64 is left out.
 const MAX_ARCHIVE: u64 = u32::MAX as u64;
 
+/// Nothing, if `triangles` in all are few enough for one file
+/// ([`silico_protocol::MAX_EXPORT_TRIANGLES`]); otherwise the kernel's refusal of a mesh
+/// that large, naming the tolerance, as [`three_mf`] refuses its objects.
+pub(crate) fn within_triangles(triangles: u64) -> Result<(), Error> {
+    silico_protocol::check_export_triangles(triangles, silico_protocol::MAX_EXPORT_TRIANGLES)
+        .map_err(|refusal| {
+            crate::worker::failure_error("ExportMesh", silico_protocol::Failure::new(refusal))
+        })
+}
+
 /// `objects` as a 3MF archive (3MF Core 1.4.0): each a `type="model"` object in
 /// millimetres, in the order given, with one build item each, its vertices in document
 /// coordinates. Its bytes depend on the objects alone: the entries are
@@ -768,18 +784,12 @@ pub fn three_mf(objects: &[Object<'_>]) -> Result<Vec<u8>, Error> {
         )
         .with_suggestion("export at least one feature that makes a solid"));
     }
-    let triangles = objects
-        .iter()
-        .map(|object| object.mesh.triangles.len() as u64)
-        .sum();
-    if let Err(refusal) =
-        silico_protocol::check_export_triangles(triangles, silico_protocol::MAX_EXPORT_TRIANGLES)
-    {
-        return Err(crate::worker::failure_error(
-            "ExportMesh",
-            silico_protocol::Failure::new(refusal),
-        ));
-    }
+    within_triangles(
+        objects
+            .iter()
+            .map(|object| object.mesh.triangles.len() as u64)
+            .sum(),
+    )?;
     let mut model = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" \
          xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n \
@@ -787,9 +797,10 @@ pub fn three_mf(objects: &[Object<'_>]) -> Result<Vec<u8>, Error> {
     );
     for (i, object) in objects.iter().enumerate() {
         let id = i + 1;
-        let name = attribute(object.name).ok_or_else(|| unwritable(object.name, "name"))?;
-        let part =
-            attribute(object.part_number).ok_or_else(|| unwritable(object.name, "part number"))?;
+        let name =
+            attribute(object.name).ok_or_else(|| unwritable(object.name, "name", object.name))?;
+        let part = attribute(object.part_number)
+            .ok_or_else(|| unwritable(object.name, "part number", object.part_number))?;
         model.push_str(&format!(
             "  <object id=\"{id}\" type=\"model\" name=\"{name}\" partnumber=\"{part}\">\n   \
              <mesh>\n    <vertices>\n"
@@ -833,17 +844,32 @@ const RELATIONSHIPS: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Relati
      Target=\"/3D/3dmodel.model\" Id=\"rel0\" \
      Type=\"http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel\"/>\n</Relationships>\n";
 
-fn unwritable(name: &str, what: &str) -> Error {
-    Error::new(
-        ErrorCode::InvalidInput,
-        format!(
-            "the {what} of {} has a character a 3MF file can't hold (a control character)",
-            crate::document::json::shown(name)
-        ),
-    )
-    .with_element(crate::references::cut_short(name))
-    .with_suggestion("rename the feature without control characters")
+/// The refusal of the object `name`'s `what`, `text`, which a 3MF file can't hold, naming
+/// the object.
+fn unwritable(name: &str, what: &str, text: &str) -> Error {
+    Error::new(ErrorCode::InvalidInput, unholdable(what, text))
+        .with_element(crate::references::cut_short(name))
+        .with_suggestion(UNHOLDABLE_ADVICE)
 }
+
+/// Whether a 3MF file can hold `text` as a name: XML 1.0 can hold every character of it,
+/// as [`three_mf`] writes it.
+pub(crate) fn holds_in_3mf(text: &str) -> bool {
+    attribute(text).is_some()
+}
+
+/// What's said of `text`, the `what` of an object, that a 3MF file can't hold
+/// ([`holds_in_3mf`]), by [`three_mf`] and by the `export` command alike.
+pub(crate) fn unholdable(what: &str, text: &str) -> String {
+    format!(
+        "the {what}, {}, has a character a 3MF file can't hold (XML 1.0 holds no control \
+         character but tab, line feed, and carriage return, and neither U+FFFE nor U+FFFF)",
+        crate::document::json::shown(text)
+    )
+}
+
+/// The advice for a name a 3MF file can't hold.
+pub(crate) const UNHOLDABLE_ADVICE: &str = "rename the feature without that character";
 
 /// `text` escaped for an XML attribute, or none if XML 1.0 can't hold a character of it.
 /// Tab, line feed, and carriage return are written as references, which a parser would
@@ -976,6 +1002,19 @@ fn crc32(data: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ten_million_triangles_in_all_are_taken_and_one_more_refused_naming_the_tolerance() {
+        // The tools' limits table: 10,000,000 (`MAX_EXPORT_TRIANGLES`), which the command
+        // counts as each solid's mesh is taken.
+        assert!(within_triangles(10_000_000).is_ok());
+        let e = within_triangles(10_000_001).unwrap_err();
+        assert_eq!(
+            (e.code(), e.parameter()),
+            (ErrorCode::InvalidInput, Some("tolerance"))
+        );
+        assert!(e.message().contains("10000001"), "{e:?}");
+    }
 
     #[test]
     fn crc32_is_zips() {

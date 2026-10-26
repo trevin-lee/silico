@@ -165,8 +165,8 @@ fn effect(command: Command) -> Effect {
         | Command::SetField
         | Command::RemoveFeature
         | Command::ReplaceText => Effect::Changes { destructive: true },
-        // `replace: true` writes over a file at `to`.
-        Command::Render => Effect::Changes { destructive: true },
+        // `replace: true` writes over a file at `to`, or at `path`.
+        Command::Render | Command::Export => Effect::Changes { destructive: true },
         // A new document is only made where nothing is; the rest change what the server
         // holds, never a file.
         Command::Open | Command::Close | Command::Cancel | Command::Begin | Command::Rollback => {
@@ -273,6 +273,10 @@ fn words(command: Command) -> (&'static str, String) {
             "Angle",
             "The angle between two elements, each a straight edge or a planar face.",
         ),
+        Command::Export => (
+            "Export",
+            "Write the current model's bodies, or the features named, as a printable 3MF file at `path` in the workspace, each solid meshed at the tolerance (FreeCAD's default is 0.1 mm). A file already at `path` is replaced only with `replace: true`.",
+        ),
         Command::Render => (
             "Render",
             "A PNG of the model's bodies from a named view or a camera, with elements highlighted, returned as an image beside the result, and written to `to` in the workspace if given.",
@@ -298,7 +302,8 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::Format
         | Command::Text
         | Command::Outline
-        | Command::Schema => &[],
+        | Command::Schema
+        | Command::Export => &[],
     };
     let mut description = what.to_owned();
     for tip in tips {

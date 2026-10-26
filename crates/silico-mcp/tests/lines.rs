@@ -307,3 +307,22 @@ fn garbage_gets_an_error_and_the_server_reads_on() {
     c.send(r#"{"jsonrpc": "2.0", "id": 2, "method": "ping"}"#);
     assert_eq!(c.line(), r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);
 }
+
+#[test]
+fn calls_that_wait_on_nothing_sent_just_before_stdins_end_are_answered_in_order() {
+    // From the review (round 2): a `version` queued when stdin ended was cancelled with the
+    // calls in flight, and so answered or not by timing, while a `ping` after it always was.
+    // It's answered as it's read, its reply queued with the rest.
+    for _ in 0..20 {
+        let mut c = Client::initialized();
+        c.send_call(1, "version", "{}");
+        c.send_call(2, "status", r#"{"session": "s9"}"#);
+        c.send(r#"{"jsonrpc": "2.0", "id": 3, "method": "ping"}"#);
+        c.close_input();
+        let ids: Vec<u64> = (0..3)
+            .map(|_| c.message()["id"].as_u64().unwrap())
+            .collect();
+        assert_eq!(ids, [1, 2, 3]);
+        c.ended();
+    }
+}

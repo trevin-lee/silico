@@ -1400,7 +1400,8 @@
               "mass_properties",
               "distance",
               "angle",
-              "render"
+              "render",
+              "export"
             ],
             "type": "string"
           }
@@ -1544,7 +1545,8 @@
               "mass_properties",
               "distance",
               "angle",
-              "render"
+              "render",
+              "export"
             ],
             "type": "string"
           }
@@ -1797,7 +1799,8 @@
               "mass_properties",
               "distance",
               "angle",
-              "render"
+              "render",
+              "export"
             ],
             "type": "string"
           }
@@ -13704,7 +13707,7 @@
                     "type": "integer"
                   },
                   "path": {
-                    "description": "Where the PNG was written, through any links; null if `to` was.",
+                    "description": "Where the PNG was written, as the request gave it; null if `to` was.",
                     "type": [
                       "string",
                       "null"
@@ -13759,6 +13762,420 @@
         "type": "object"
       },
       "title": "Render"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Export"
+      },
+      "description": "Write the current model's bodies, or the features named, as a printable 3MF file at `path` in the workspace, each solid meshed at the tolerance (FreeCAD's default is 0.1 mm). A file already at `path` is replaced only with `replace: true`.",
+      "inputSchema": {
+        "$defs": {
+          "ExportFormat": {
+            "description": "What `export` writes: 3MF, each body a mesh, as a slicer prints it.",
+            "enum": [
+              "3mf"
+            ],
+            "type": "string"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Length": {
+            "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+            "type": "number"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`export`'s request: the current model's bodies, or the features named, written as a\nfile, each solid meshed at the tolerance.",
+        "properties": {
+          "features": {
+            "description": "The features whose solids to write, each by its ID, in the file's order; or null,\nfor every body.",
+            "items": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "format": {
+            "$ref": "#/$defs/ExportFormat"
+          },
+          "path": {
+            "description": "Where to write it: a path in the workspace ending in the format's extension, never a\ndocument or its cache.",
+            "type": "string"
+          },
+          "replace": {
+            "description": "Whether to replace a file already at `path`.",
+            "type": "boolean"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "tolerance": {
+            "$ref": "#/$defs/Length",
+            "description": "The mesh's tolerance, in mm, from 0.00001 to 100000000: the mesher's linear\ndeflection, as FreeCAD's export takes it (its default is 0.1)."
+          }
+        },
+        "required": [
+          "features",
+          "format",
+          "path",
+          "replace",
+          "session",
+          "tolerance"
+        ],
+        "title": "ExportRequest",
+        "type": "object"
+      },
+      "name": "export",
+      "outputSchema": {
+        "$defs": {
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "ExportedObject": {
+            "additionalProperties": false,
+            "description": "An object of an export: one solid's mesh.",
+            "properties": {
+              "feature": {
+                "$ref": "#/$defs/FeatureId",
+                "description": "The feature whose solid it is."
+              },
+              "left_out": {
+                "description": "The faces left out of the mesh as bounding no material (OCCT's INTERNAL and\nEXTERNAL), by their names: none for most parts.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "name": {
+                "description": "The feature's name, the object's name in the file.",
+                "type": "string"
+              },
+              "triangles": {
+                "description": "The mesh's triangles.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "vertices": {
+                "description": "The mesh's vertices.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "volume": {
+                "$ref": "#/$defs/Measure",
+                "description": "The mesh's volume, in mm³, computed in doubles from the coordinates as written."
+              }
+            },
+            "required": [
+              "feature",
+              "left_out",
+              "name",
+              "triangles",
+              "vertices",
+              "volume"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Measure": {
+            "description": "A volume (mm³) or area (mm²): a number, to at most 6 decimals.",
+            "type": "number"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "format": "uint64",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "format": "uint64",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`export`'s result.",
+                "properties": {
+                  "bytes": {
+                    "description": "The file's size, in bytes.",
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "objects": {
+                    "description": "Each object in the file, in its order.",
+                    "items": {
+                      "$ref": "#/$defs/ExportedObject"
+                    },
+                    "type": "array"
+                  },
+                  "path": {
+                    "description": "Where the file was written, as the request gave it.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bytes",
+                  "objects",
+                  "path"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Export"
     }
   ]
 }

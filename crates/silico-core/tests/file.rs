@@ -288,6 +288,7 @@ fn png_rules<'a>(
     silico_core::file::Output {
         field: "to",
         extension: "png",
+        writer: "a render",
         replace,
         workspace,
         held,
@@ -360,7 +361,11 @@ fn a_file_there_is_refused_unless_replaced_and_replaced_keeps_its_permissions() 
     let path = dir.0.join("view.png");
     std::fs::write(&path, b"old").unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    refused_output(&path, &png_rules(None, &[], false), "is there already");
+    refused_output(
+        &path,
+        &png_rules(None, &[], false),
+        &format!("\"{}\" exists", path.display()),
+    );
     silico_core::file::write_output(&path, b"new", &png_rules(None, &[], true)).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), b"new");
     assert_eq!(
@@ -376,12 +381,12 @@ fn a_document_its_cache_or_a_held_file_is_never_written() {
     refused_output(
         &dir.0.join("part.silico"),
         &png_rules(None, &[], true),
-        "is a document's path",
+        "is a document: a render never writes over one",
     );
     refused_output(
         &dir.0.join("part.SILICO"),
         &png_rules(None, &[], true),
-        "is a document's path",
+        "is a document: a render never writes over one",
     );
     // In a .silico-cache directory.
     let cache = dir.0.join(".silico-cache");
@@ -418,6 +423,34 @@ fn a_document_its_cache_or_a_held_file_is_never_written() {
         "is a link to a document",
     );
     assert_eq!(std::fs::read(&doc).unwrap(), b"{}");
+    // Each way of reaching a document said alike: the path, how it's a document, and that
+    // the writer never writes over one.
+    let said = |path: &std::path::Path, held: &[std::path::PathBuf]| {
+        let e = silico_core::file::check_output(path, &png_rules(None, held, true)).unwrap_err();
+        (e.message().to_owned(), e.suggestion().map(str::to_owned))
+    };
+    let shown = |path: &std::path::Path| format!("\"{}\"", path.display());
+    let advice = Some("write it to a path that isn't a document's".to_owned());
+    assert_eq!(
+        said(&to_doc, &[]),
+        (
+            format!(
+                "{} is a link to a document: a render never writes over one",
+                shown(&to_doc)
+            ),
+            advice.clone()
+        )
+    );
+    assert_eq!(
+        said(&held, &holding),
+        (
+            format!(
+                "{} is a document a session holds: a render never writes over one",
+                shown(&held)
+            ),
+            advice
+        )
+    );
 }
 
 #[test]

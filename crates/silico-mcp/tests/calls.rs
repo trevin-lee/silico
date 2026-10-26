@@ -340,3 +340,43 @@ fn calls_back_to_back_on_one_session_run_in_the_order_sent() {
     assert_eq!(answers[&14]["session"]["transaction"], false);
     assert!(c.read_file("a.silico").contains("\"length\": 42,"));
 }
+
+#[test]
+fn a_cancel_read_before_a_command_was_sent_never_stops_it_however_far_behind_the_client_reads() {
+    // From the review (round 2): `cancel` was run when the replies' thread reached it, so
+    // behind a backlog of replies a client hadn't read it could stop a command sent after
+    // it (the one it meant having finished meanwhile). It's answered as it's read now.
+    let mut c = Client::opened();
+    let hold = c.kernel.hold(is_box);
+    c.send_call(10, "check", CHECK);
+    running(&c.kernel, 1);
+    // A backlog: the client reads nothing, and pings' replies wait to be written.
+    c.stall_output();
+    for id in 20..25 {
+        c.send(&format!(
+            r#"{{"jsonrpc": "2.0", "id": {id}, "method": "ping"}}"#
+        ));
+    }
+    c.send_call(11, "cancel", r#"{"session": "s1", "command": "check"}"#);
+    c.send_call(12, "check", CHECK);
+    // The first check, cancelled as the cancel was read, ends before the second runs.
+    hold.release();
+    c.release_output();
+    let mut seen = std::collections::BTreeMap::new();
+    while seen.len() < 8 {
+        let reply = c.message();
+        seen.insert(reply["id"].as_u64().unwrap(), reply);
+    }
+    let envelope = |id: u64| seen[&id]["result"]["structuredContent"].clone();
+    assert_eq!(
+        envelope(10)["errors"][0]["code"],
+        "cancelled",
+        "{}",
+        seen[&10]
+    );
+    assert_eq!(
+        envelope(11)["result"],
+        json!({"command": "check", "stopped": true})
+    );
+    assert_eq!(envelope(12)["ok"], true, "{}", seen[&12]);
+}

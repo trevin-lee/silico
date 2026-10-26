@@ -170,6 +170,12 @@ struct Session<C: Kernel + 'static> {
     gate: Gate,
 }
 
+/// Where a file a command writes may go ([`Sessions::write_rules`]).
+pub(crate) struct WriteRules {
+    pub(crate) workspace: Option<crate::file::Workspace>,
+    pub(crate) held: Vec<PathBuf>,
+}
+
 /// In this crate's tests only: where a session's commands, queued and published reads,
 /// wait as each starts (its stop recorded, its work not begun), once a test has shut it:
 /// each says it started, then waits until the test lets it through. Its lock is taken
@@ -454,10 +460,14 @@ impl<P: Clients + 'static> Sessions<P> {
         )
     }
 
-    /// The documents the sessions hold, by their paths: what a file a command writes is
-    /// never (decision 35).
-    pub(crate) fn held_paths(&self) -> Vec<PathBuf> {
-        lock(&self.registry.book).paths.keys().cloned().collect()
+    /// Where a file a command writes may go (decision 35), taken by every command that
+    /// writes one: the workspace it must be inside, if the sessions have one (decision 26),
+    /// and the documents the sessions hold, by their paths, which it never is.
+    pub(crate) fn write_rules(&self) -> WriteRules {
+        WriteRules {
+            workspace: self.workspace().cloned(),
+            held: lock(&self.registry.book).paths.keys().cloned().collect(),
+        }
     }
 
     /// Opens the document at `path` as a new session, on a thread of its own: reads the
@@ -700,6 +710,33 @@ impl<P: Clients + 'static> Sessions<P> {
         }
     }
 
+    /// Runs `read` on the session's current model, queued as the command `command`, waiting
+    /// for its revision's rebuild: [`read_model`](Self::read_model)'s `Current`, for a command
+    /// that reads only the current model (`export`), so is never one of the published reads.
+    pub(crate) fn read_current<T: Send + 'static>(
+        &self,
+        session: &SessionId,
+        command: SessionCommand,
+        read: impl FnOnce(Read<'_, P::Client>) -> Result<T, Problems> + Send + 'static,
+    ) -> Running<T> {
+        // The read's own client, made as it's asked for and dropped when it returns, its stop
+        // able to retire it if it's cancelled or its session closes first.
+        let kernel: Arc<ReadClient<P::Client>> =
+            Arc::new(ReadClient::new(self.registry.kernel.client()));
+        self.queued(session, command, move |session, stop, model| {
+            stop.interrupt_with(Arc::downgrade(&kernel) as Weak<dyn Interrupt>);
+            let current = session.current(stop).map_err(Unbuilt::problems)?;
+            *model = Some(current.read.clone());
+            read(Read {
+                model: &current.model,
+                read: current.read,
+                stop,
+                kernel: &kernel,
+                reached: &current.reached,
+            })
+        })
+    }
+
     /// Runs `read` on the model `choice` names, off the caller's thread (decision 33), as
     /// the command named `command` (for its trace, and the session's record of reads).
     /// `Current` is queued on the session and waits for its revision's rebuild, as `check`
@@ -719,26 +756,13 @@ impl<P: Clients + 'static> Sessions<P> {
         choice: ModelChoice,
         read: impl FnOnce(Read<'_, P::Client>) -> Result<T, Problems> + Send + 'static,
     ) -> Running<T> {
-        // The read's own client, made as it's asked for and dropped when it returns, its stop
-        // able to retire it if it's cancelled or its session closes first.
-        let kernel: Arc<ReadClient<P::Client>> =
-            Arc::new(ReadClient::new(self.registry.kernel.client()));
         match choice {
-            ModelChoice::Current => {
-                self.queued(session, command.into(), move |session, stop, model| {
-                    stop.interrupt_with(Arc::downgrade(&kernel) as Weak<dyn Interrupt>);
-                    let current = session.current(stop).map_err(Unbuilt::problems)?;
-                    *model = Some(current.read.clone());
-                    read(Read {
-                        model: &current.model,
-                        read: current.read,
-                        stop,
-                        kernel: &kernel,
-                        reached: &current.reached,
-                    })
-                })
-            }
+            ModelChoice::Current => self.read_current(session, command.into(), read),
             ModelChoice::Published => {
+                // The read's own client, made as it's asked for and dropped when it returns,
+                // its stop able to retire it if it's cancelled or its session closes first.
+                let kernel: Arc<ReadClient<P::Client>> =
+                    Arc::new(ReadClient::new(self.registry.kernel.client()));
                 let ticket = Ticket::new(command.into());
                 let (reply, answer) = mpsc::sync_channel(1);
                 let caller = tracing::Span::current();

@@ -424,7 +424,7 @@ fn cancel_names_only_a_command_and_any_other_name_is_refused_with_every_command_
     for (value, got) in [
         (r#""Check""#, "Check"),
         (r#""check ""#, r#""check ""#),
-        (r#""export""#, "export"),
+        (r#""read_logs""#, "read_logs"),
         (r#""probe""#, "probe"),
         (r#""status""#, "status"),
         (r#""open""#, "open"),

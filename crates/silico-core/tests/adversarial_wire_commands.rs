@@ -1006,7 +1006,8 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "mass_properties",
                 "distance",
                 "angle",
-                "render"
+                "render",
+                "export"
             ]
         );
         assert!(printable(error.message()), "{of:?}: {:?}", error.message());

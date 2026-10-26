@@ -253,7 +253,6 @@ impl<P: Clients + 'static> Server<P> {
                             Job::Text(text) => {
                                 output.send(reply::text(&text));
                             }
-                            Job::Call(waiter, calling) => waiter.run(calling),
                         }
                     }
                 })
@@ -362,8 +361,6 @@ impl Drop for Drained {
 enum Job {
     /// Writes a reply already made.
     Text(String),
-    /// Answers a call that waits on no session.
-    Call(Waiter, Calling),
 }
 
 /// `serve`'s own thread's work: each message handled in line order.
@@ -688,18 +685,24 @@ impl<P: Clients + 'static> Dispatch<'_, P> {
                 .with_suggestion("wait for one to answer, or cancel one, and call again"),
             );
         };
+        if !slotted {
+            // Answered now, on this thread, as it's read (the core: it never waits on a
+            // session, its locks held only briefly), so a `cancel` or `status` answers for
+            // the moment it was sent, not for when a backlog of replies lets it be written:
+            // a cancel read before a command was sent never stops that command. Its ID is
+            // given back at once, and its reply queued with the others, so it's written
+            // whatever ends the server after (stdin's end drains the queue).
+            let answered = self.sessions.call_command(command, arguments).wait();
+            drop(landing);
+            self.queue(Job::Text(reply::written(reply::answer(id, &answered))));
+            return;
+        }
         let waiter = Waiter {
             id: id.clone(),
             landing,
             token,
             output: Arc::clone(&self.output),
         };
-        if !slotted {
-            let calling = self.sessions.call_command(command, arguments);
-            waiter.landing.stopped_by(calling.stopper());
-            self.queue(Job::Call(waiter, calling));
-            return;
-        }
         // The waiter's thread first, so a call is only started once it can be waited for.
         let (give, given) = mpsc::sync_channel::<(Waiter, Calling)>(1);
         let started = std::thread::Builder::new()

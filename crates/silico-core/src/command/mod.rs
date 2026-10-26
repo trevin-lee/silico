@@ -23,6 +23,7 @@ use crate::recompute::{Model, Recompute, RunOutcome, Save};
 mod call;
 mod edit;
 pub mod elements;
+pub mod export;
 mod lookup;
 pub mod measure;
 pub mod render;
@@ -192,6 +193,49 @@ impl Problems {
     /// Nothing, if none were found; otherwise them all.
     pub(crate) fn into_result(self) -> Result<(), Problems> {
         if self.is_empty() { Ok(()) } else { Err(self) }
+    }
+
+    /// Each listed error as `f` makes it, the count kept.
+    pub(crate) fn map(self, f: impl FnMut(Error) -> Error) -> Problems {
+        Problems {
+            errors: self.errors.into_iter().map(f).collect(),
+            total: self.total,
+        }
+    }
+}
+
+/// The answer of a read stopped by its session closing (a read's own kernel client is
+/// advanced only when its read is stopped: a cancel, whose answer the session gives,
+/// `cancelled`, or its session closing, this): never `cancelled`, as of a session that
+/// closed (decision 34), naming no feature, `before` what it closed before ("the render
+/// finished") and `again` the command's verb ("render").
+pub(crate) fn session_closed(before: &str, again: &str) -> Error {
+    Error::new(
+        crate::ErrorCode::InvalidInput,
+        format!("the session closed before {before}"),
+    )
+    .with_parameter("session")
+    .with_suggestion(format!("open the document again, and {again} it there"))
+}
+
+/// `e`, an error about the solid of the feature `feature`, naming the feature if it names
+/// none; but the session's close ([`session_closed`]), which isn't the solid's.
+pub(crate) fn of_solid(feature: &document::FeatureId, e: Error) -> Error {
+    match (e.feature(), e.parameter()) {
+        (Some(_), _) | (None, Some("session")) => e,
+        (None, _) => e.with_feature(feature.as_str()),
+    }
+}
+
+/// A read's kernel request's result: its error as the refusal, and one superseded as its
+/// session closing, `closed`.
+pub(crate) fn done<T>(
+    outcome: crate::pool::Outcome<T>,
+    closed: impl FnOnce() -> Error,
+) -> Result<T, Problems> {
+    match outcome {
+        crate::pool::Outcome::Done(result) => result.map_err(Problems::from),
+        crate::pool::Outcome::Superseded => Err(Problems::from(closed())),
     }
 }
 

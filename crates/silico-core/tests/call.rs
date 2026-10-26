@@ -54,8 +54,8 @@ fn the_commands_are_one_list_in_one_order() {
     let names: Vec<&str> = Command::ALL.iter().map(|c| c.as_str()).collect();
     let listed: Vec<&str> = COMMANDS.iter().map(|(name, _)| *name).collect();
     assert_eq!(names, listed);
-    // The design's section 7, in its order, written out by hand (export, read_logs, and
-    // cache_clear come with their commands).
+    // The design's section 7, in its order, written out by hand (read_logs and cache_clear
+    // come with their commands).
     assert_eq!(
         names,
         [
@@ -82,6 +82,7 @@ fn the_commands_are_one_list_in_one_order() {
             "distance",
             "angle",
             "render",
+            "export",
         ]
     );
     for command in Command::ALL {
@@ -146,7 +147,7 @@ fn a_name_no_command_has_is_unknown() {
         "check ",
         " check",
         "tools/call",
-        "export",
+        "Export",
         "read_logs",
         "cache_clear",
         "versions",
@@ -811,7 +812,7 @@ fn each_commands_calling_is_answered_when_waited_on_exactly_as_the_command_says(
         let request = std::fs::read_to_string(&path).unwrap();
         let calling = f.calling(name, &request);
         assert_eq!(
-            calling.answered_when_waited(),
+            calling.waits_on_nothing(),
             command.answered_when_waited(),
             "{name}"
         );
@@ -836,10 +837,10 @@ fn each_commands_calling_is_answered_when_waited_on_exactly_as_the_command_says(
     // command; `version`'s `{}` is its whole request, and runs, as it's answered.
     for command in Command::ALL {
         let calling = f.calling(command.as_str(), "{}");
-        assert!(calling.answered_when_waited(), "{command}");
+        assert!(calling.waits_on_nothing(), "{command}");
         let _ = answered(calling);
         let calling = f.calling(command.as_str(), "not json");
-        assert!(calling.answered_when_waited(), "{command}");
+        assert!(calling.waits_on_nothing(), "{command}");
         assert!(!answered(calling).ok, "{command}");
     }
 }

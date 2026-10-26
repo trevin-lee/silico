@@ -12,7 +12,7 @@ use crate::contract::{committed_core, holds};
 
 /// The error a reply carries, failing unless it's one, with `code` and `id`, whose `data`
 /// is a refused envelope of one error: that error.
-fn rpc_error(reply: &Value, code: i64, id: Value) -> Value {
+fn refused_rpc_error(reply: &Value, code: i64, id: Value) -> Value {
     assert_eq!(reply["jsonrpc"], "2.0", "{reply}");
     let (was, with, _) = parts(reply);
     assert_eq!((was, with), (code, id), "{reply}");
@@ -50,7 +50,7 @@ fn a_line_that_isnt_json_is_a_parse_error_with_a_null_id_saying_where() {
         (b"{\"a\xff\": 1}", "isn't UTF-8: at byte 3"),
     ] {
         c.send_bytes(line);
-        let error = rpc_error(&c.message(), -32700, Value::Null);
+        let error = refused_rpc_error(&c.message(), -32700, Value::Null);
         let message = error["message"].as_str().unwrap();
         assert!(message.contains(said), "{message}");
         assert_eq!(error["parameter"], Value::Null);
@@ -117,7 +117,7 @@ fn json_that_isnt_a_request_or_a_notification_is_an_invalid_request() {
         ),
     ] {
         c.send(line);
-        let error = rpc_error(&c.message(), -32600, id);
+        let error = refused_rpc_error(&c.message(), -32600, id);
         let message = error["message"].as_str().unwrap();
         assert!(message.contains(said), "{line}: {message}");
     }
@@ -127,11 +127,11 @@ fn json_that_isnt_a_request_or_a_notification_is_an_invalid_request() {
 fn a_tools_call_before_initialize_is_refused_and_after_it_runs() {
     let mut c = Client::start();
     let refused = c.request(1, "tools/call", r#"{"name": "version"}"#);
-    let error = rpc_error(&refused, -32600, json!(1));
+    let error = refused_rpc_error(&refused, -32600, json!(1));
     assert_eq!(error["message"], "tools/call came before initialize");
     // tools/list needs no initialize; the call does.
     let listed = c.request(2, "tools/list", "{}");
-    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 23);
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 24);
     c.request(3, "initialize", "{}");
     let ran = c.request(4, "tools/call", r#"{"name": "version"}"#);
     assert_eq!(ran["result"]["isError"], false, "{ran}");
@@ -147,7 +147,7 @@ fn an_unknown_method_is_method_not_found_naming_the_methods() {
         "notifications/cancelled",
     ] {
         let reply = c.request(1, method, "{}");
-        let error = rpc_error(&reply, -32601, json!(1));
+        let error = refused_rpc_error(&reply, -32601, json!(1));
         assert_eq!(error["message"], format!("no method is named \"{method}\""));
         assert_eq!(error["parameter"], "method");
         assert_eq!(
@@ -158,7 +158,7 @@ fn an_unknown_method_is_method_not_found_naming_the_methods() {
 }
 
 /// Every tool's name, in the list's order, written out by hand.
-pub const TOOLS: [&str; 23] = [
+pub const TOOLS: [&str; 24] = [
     "version",
     "open",
     "close",
@@ -182,6 +182,7 @@ pub const TOOLS: [&str; 23] = [
     "distance",
     "angle",
     "render",
+    "export",
 ];
 
 #[test]
@@ -246,7 +247,7 @@ fn an_unknown_tool_or_arguments_that_arent_an_object_are_invalid_params_naming_t
         ),
     ] {
         let reply = c.request(1, "tools/call", params);
-        let error = rpc_error(&reply, -32602, json!(1));
+        let error = refused_rpc_error(&reply, -32602, json!(1));
         let message = error["message"].as_str().unwrap();
         assert!(message.contains(said), "{params}: {message}");
         assert_eq!(error["parameter"], parameter, "{params}");
@@ -256,12 +257,12 @@ fn an_unknown_tool_or_arguments_that_arent_an_object_are_invalid_params_naming_t
     }
     // A tools/call with no params names no tool.
     c.send(r#"{"jsonrpc": "2.0", "id": 2, "method": "tools/call"}"#);
-    let error = rpc_error(&c.message(), -32602, json!(2));
+    let error = refused_rpc_error(&c.message(), -32602, json!(2));
     assert_eq!(error["message"], "name is missing");
     // A name too long to quote whole is quoted cut.
     let long = "x".repeat(10_000);
     let reply = c.request(3, "tools/call", &format!(r#"{{"name": "{long}"}}"#));
-    let error = rpc_error(&reply, -32602, json!(3));
+    let error = refused_rpc_error(&reply, -32602, json!(3));
     assert_eq!(
         error["message"],
         format!("no tool is named \"{}\"...", "x".repeat(200))
@@ -297,7 +298,7 @@ fn a_request_id_in_flight_is_refused_and_free_once_answered() {
         r#"{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "version"}}"#,
     ] {
         c.send(line);
-        let error = rpc_error(&c.message(), -32600, json!(2));
+        let error = refused_rpc_error(&c.message(), -32600, json!(2));
         assert_eq!(
             error["message"],
             "the ID \"2\" is a request's still in flight"
@@ -316,7 +317,7 @@ fn a_request_id_in_flight_is_refused_and_free_once_answered() {
         c.send(&format!(
             r#"{{"jsonrpc": "2.0", "id": {spelling}, "method": "ping"}}"#
         ));
-        let error = rpc_error(&c.message(), -32600, json!("ab"));
+        let error = refused_rpc_error(&c.message(), -32600, json!("ab"));
         let message = error["message"].as_str().unwrap();
         assert!(message.starts_with("the ID "), "{spelling}: {message}");
         assert!(

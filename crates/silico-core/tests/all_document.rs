@@ -18,6 +18,8 @@ mod calls;
 mod commands;
 #[path = "common/example.rs"]
 mod example;
+#[path = "common/export_report.rs"]
+mod export_report;
 #[path = "common/forged.rs"]
 mod forged;
 #[path = "common/lateness.rs"]
@@ -94,6 +96,8 @@ mod session_cancel;
 mod session_edits;
 #[path = "session_elements.rs"]
 mod session_elements;
+#[path = "session_export.rs"]
+mod session_export;
 #[path = "session_rebuild.rs"]
 mod session_rebuild;
 #[path = "session_reload.rs"]

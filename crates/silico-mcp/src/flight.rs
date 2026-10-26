@@ -219,10 +219,15 @@ impl Waiter {
             None => calling.wait(),
             Some(token) => self.with_progress(calling, token),
         };
+        self.deliver(&answered);
+    }
+
+    /// Writes `answered`, the call's answer, unless the call was cancelled first.
+    pub(crate) fn deliver(&self, answered: &Answered) {
         let landing = &self.landing;
         match landing.flights.answer(&self.id, &landing.flight) {
             Some(_writing) => {
-                self.output.send(reply::answer(&self.id, &answered));
+                self.output.send(reply::answer(&self.id, answered));
             }
             None => tracing::debug!("cancelled: its answer isn't sent"),
         }

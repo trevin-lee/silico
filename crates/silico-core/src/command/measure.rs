@@ -384,13 +384,9 @@ fn waited(
         Outcome::Done(Err(error)) => Err(named(kernel_words(error, not_done), a, b).into()),
         // A read's own client is advanced only when its session closes (and, with decision
         // 34's cancel, when the read is cancelled, which will say `cancelled`).
-        Outcome::Superseded => Err(Error::new(
-            ErrorCode::InvalidInput,
-            "the session closed before the kernel measured the distance",
-        )
-        .with_parameter("session")
-        .with_suggestion("open the document again, and measure it there")
-        .into()),
+        Outcome::Superseded => {
+            Err(super::session_closed("the kernel measured the distance", "measure").into())
+        }
     }
 }
 

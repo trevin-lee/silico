@@ -122,6 +122,7 @@ fn the_tools_are_the_commands_in_their_order_each_with_mcps_fields() {
         "remove_feature",
         "replace_text",
         "render",
+        "export",
     ];
     for tool in sent["tools"].as_array().unwrap() {
         let name = tool["name"].as_str().unwrap();
@@ -330,8 +331,9 @@ fn every_example_holds_to_its_tools_schemas() {
             }
         }
     }
-    // Every file in the contract's examples, counted by hand (89 on M4.9's branch).
-    assert_eq!(seen, 89);
+    // Every file in the contract's examples, counted by hand: 89 on M4.9's branch, and
+    // export's 8 (#182).
+    assert_eq!(seen, 97);
 }
 
 #[test]

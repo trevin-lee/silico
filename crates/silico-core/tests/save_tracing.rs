@@ -182,6 +182,7 @@ fn a_file_a_command_writes_syncs_its_new_file_and_then_the_directory_it_was_rena
     let rules = silico_core::file::Output {
         field: "to",
         extension: "png",
+        writer: "a render",
         replace: false,
         workspace: Some(&silico_core::file::Workspace::new(&directory).unwrap()),
         held: &[],

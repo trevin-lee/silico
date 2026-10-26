@@ -28,6 +28,7 @@ use super::wire::edits::{
     AddFeatureRequest, RemoveFeatureRequest, ReplaceTextRequest, SetFieldRequest,
 };
 use super::wire::elements::{ElementsRequest, QueryRequest};
+use super::wire::export::ExportRequest;
 use super::wire::measure::{MassPropertiesRequest, PairRequest};
 use super::wire::reads::{CheckRequest, TextRequest};
 use super::wire::render::RenderRequest;
@@ -67,11 +68,12 @@ pub enum Command {
     Distance,
     Angle,
     Render,
+    Export,
 }
 
 impl Command {
     /// Every command, in the design's order.
-    pub const ALL: [Command; 23] = [
+    pub const ALL: [Command; 24] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -95,6 +97,7 @@ impl Command {
         Command::Distance,
         Command::Angle,
         Command::Render,
+        Command::Export,
     ];
 
     /// The command's name, as requests and tools give it.
@@ -123,6 +126,7 @@ impl Command {
             Command::Distance => "distance",
             Command::Angle => "angle",
             Command::Render => "render",
+            Command::Export => "export",
         }
     }
 
@@ -159,7 +163,8 @@ impl Command {
             | Command::MassProperties
             | Command::Distance
             | Command::Angle
-            | Command::Render => false,
+            | Command::Render
+            | Command::Export => false,
         }
     }
 }
@@ -235,10 +240,11 @@ impl<T: Send + 'static> Waiting for Typed<T> {
 }
 
 impl Calling {
-    /// Whether it's answered when it's waited on, on the waiting thread, never waiting on a
-    /// session: a command whose [`Command::answered_when_waited`] says so, or a request
-    /// refused before it ran.
-    pub fn answered_when_waited(&self) -> bool {
+    /// Whether it waits on nothing: answered when it's waited on, on the waiting thread, a
+    /// command whose [`Command::answered_when_waited`] says so, or a request refused before
+    /// it ran. Not a transport's routing rule, which must be decided before the call starts
+    /// ([`Command::answered_when_waited`]): a refused request is known only after.
+    pub fn waits_on_nothing(&self) -> bool {
         matches!(self.pending, Pending::Later(_))
     }
 
@@ -519,6 +525,9 @@ impl<P: Clients + 'static> Sessions<P> {
                 Ok(r) => Calling::waiting(self.render(&r.session, r.model, r.render), rendered),
                 Err(problems) => Calling::refused(problems),
             },
+            Command::Export => typed(ExportRequest::read(request), |r| {
+                self.export(&r.session, r.export)
+            }),
         }
     }
 }

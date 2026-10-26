@@ -1,8 +1,9 @@
-//! The `silico` command-line client (docs/cli.md): `check`, `fmt`, `show`, and `schema`,
-//! each a thin client of the core's commands (`silico_core::command`), which MCP and the
-//! app run too; `textconv`, for `git diff`; and `serve`, the MCP server on stdin and stdout
-//! (`silico_mcp`; docs/design/m4.9-mcp.md). `check`, `fmt`, and `show` each open a file as a
-//! session, run one session command on it (`check`, `format`, `outline`), and close it
+//! The `silico` command-line client (docs/cli.md): `check`, `fmt`, `show`, `export`, and
+//! `schema`, each a thin client of the core's commands (`silico_core::command`), which MCP
+//! and the app run too; `textconv`, for `git diff`; and `serve`, the MCP server on stdin and
+//! stdout (`silico_mcp`; docs/design/m4.9-mcp.md). `check`, `fmt`, `show`, and `export` each
+//! open a file as a session, run one session command on it (`check`, `format`, `outline`,
+//! `export`), and close it
 //! (docs/design/m4.1-command-api.md, section 9), every file on one kernel pool and one
 //! sketch solver.
 //!
@@ -35,6 +36,7 @@ macro_rules! say {
 const USAGE: &str = "usage: silico check [--json] [--] FILE...
        silico fmt [--check] [--] FILE...
        silico show [--] FILE
+       silico export [--tolerance=MM] [--features=ID,...] [--replace] [--] FILE OUT.3mf
        silico textconv [--] FILE
        silico schema [NAME]
        silico serve [--workspace DIR]";
@@ -80,9 +82,18 @@ impl Ended {
 
 /// A command, as named, with its options.
 enum Command {
-    Check { json: bool },
-    Fmt { check: bool },
+    Check {
+        json: bool,
+    },
+    Fmt {
+        check: bool,
+    },
     Show,
+    Export {
+        tolerance: Option<String>,
+        features: Option<String>,
+        replace: bool,
+    },
     Textconv,
     Schema,
     Serve,
@@ -93,6 +104,14 @@ impl Command {
     /// thing as, what to say.
     fn parse(name: &str, flags: &[String]) -> Result<Command, String> {
         let flag = |option: &str| flags.iter().any(|f| f == option);
+        // An option's value, `--name=VALUE`, the last given if it's given more than once.
+        let value = |option: &str| {
+            flags
+                .iter()
+                .rev()
+                .find_map(|f| f.strip_prefix(option)?.strip_prefix('='))
+                .map(str::to_owned)
+        };
         let (command, options): (Command, &[&str]) = match name {
             "check" => (
                 Command::Check {
@@ -107,12 +126,27 @@ impl Command {
                 &["--check"],
             ),
             "show" => (Command::Show, &[]),
+            "export" => (
+                Command::Export {
+                    tolerance: value("--tolerance"),
+                    features: value("--features"),
+                    replace: flag("--replace"),
+                },
+                &["--tolerance=", "--features=", "--replace"],
+            ),
             "textconv" => (Command::Textconv, &[]),
             "schema" => (Command::Schema, &[]),
             "serve" => (Command::Serve, &[WORKSPACE]),
             _ => return Err(format!("silico: no command {name:?}")),
         };
-        match flags.iter().find(|f| !options.contains(&f.as_str())) {
+        // An option takes a value if it ends in `=`; every other is a flag, named exactly.
+        let known = |f: &str| {
+            options.iter().any(|o| match o.strip_suffix('=') {
+                Some(_) => f.starts_with(o),
+                None => f == *o,
+            })
+        };
+        match flags.iter().find(|f| !known(f)) {
             Some(unknown) => Err(format!("silico {name}: no option {unknown:?}")),
             None => Ok(command),
         }
@@ -183,12 +217,28 @@ fn main() -> ExitCode {
         },
         (Command::Schema, []) => schema("document"),
         (Command::Schema, [name]) => schema(&name.to_string_lossy()),
-        (_, [])
+        (Command::Export { .. }, [] | [_] | [_, _, _, ..])
+        | (_, [])
         | (Command::Show | Command::Textconv | Command::Schema, [_, _, ..])
         | (Command::Serve, [_, ..]) => {
             say!("{USAGE}");
             Ended::Failed
         }
+        (
+            Command::Export {
+                tolerance,
+                features,
+                replace,
+            },
+            [file, out],
+        ) => export(
+            &Sessions::new(KernelPool::start()),
+            file,
+            out,
+            tolerance.as_deref(),
+            features.as_deref(),
+            replace,
+        ),
         (Command::Check { json }, _) => each(&|sessions, file| check(sessions, file, json)),
         (Command::Fmt { check }, _) => each(&|sessions, file| fmt(sessions, file, check)),
         (Command::Show, [file]) => show(file),
@@ -420,7 +470,11 @@ impl Refusal {
             .iter()
             .map(|error| {
                 let about_the_file = error.parameter() == Some("path");
-                if about_the_file && error.code() == ErrorCode::Conflict {
+                if error.suggestion() == Some(silico_core::file::REPLACE_ADVICE) {
+                    error
+                        .clone()
+                        .with_suggestion("give --replace to replace it, or another path")
+                } else if about_the_file && error.code() == ErrorCode::Conflict {
                     error.clone().with_suggestion(format!(
                         "nothing was written: run `silico {command}` again, on the file as it \
                          is now"
@@ -451,15 +505,36 @@ impl Refusal {
 
     /// This refusal of `silico command`, with `fault`, a kernel fault its response's model
     /// read carries: the command's failure (exit 2), as a fault beside a result is, with
-    /// the CLI's advice to run it again.
+    /// the CLI's advice to run it again. Said once: where the refusal lists it already (a
+    /// solid it stopped, asked for), there, in the CLI's words, not a session's.
     fn with_fault(self, fault: Option<Error>, command: &str) -> Self {
-        match fault {
-            Some(fault) => Refusal {
-                fault: Some(with_retry(&fault, command)),
+        let Some(fault) = fault else {
+            return self;
+        };
+        let same =
+            |error: &Error| error.code() == fault.code() && error.message() == fault.message();
+        if self.errors.iter().any(same) {
+            let errors = self
+                .errors
+                .iter()
+                .map(|error| {
+                    if same(error) {
+                        with_retry(&fault, command)
+                    } else {
+                        error.clone()
+                    }
+                })
+                .collect();
+            return Refusal {
+                errors,
                 failed: true,
                 ..self
-            },
-            None => self,
+            };
+        }
+        Refusal {
+            fault: Some(with_retry(&fault, command)),
+            failed: true,
+            ..self
         }
     }
 
@@ -632,6 +707,98 @@ fn fmt(sessions: &Sessions<KernelPool>, file: &Path, check_only: bool) -> Ended 
                 ended = Ended::Failed;
             }
             ended
+        },
+    )
+}
+
+/// `silico export FILE OUT.3mf`: open, the session's `export` of its current revision
+/// (every body, or the features `--features` names, at `--tolerance` mm, FreeCAD's 0.1 if
+/// none is given), close. On stdout, where the file went and each object in it: its
+/// feature, name, triangles, vertices, and volume, and the faces left out of it as bounding
+/// no material. Refused as the command refuses (a path that's there without `--replace`, a
+/// document, a tolerance out of range, a solid that isn't printable), each reason on
+/// stderr: nothing written. A tolerance or a feature's ID that isn't one is a usage error.
+fn export(
+    sessions: &Sessions<KernelPool>,
+    file: &Path,
+    out: &Path,
+    tolerance: Option<&str>,
+    features: Option<&str>,
+    replace: bool,
+) -> Ended {
+    use silico_core::command::export::{DEFAULT_TOLERANCE, Export, ExportFormat};
+    use silico_core::document::{FeatureId, Length};
+    let tolerance = match tolerance.map(Length::parse) {
+        None => DEFAULT_TOLERANCE,
+        Some(Ok(tolerance)) => tolerance,
+        Some(Err(_)) => {
+            say!("silico export: --tolerance takes a length in mm, such as 0.1\n{USAGE}");
+            return Ended::Failed;
+        }
+    };
+    let features = match features {
+        None => None,
+        Some(list) => {
+            let ids: Option<Vec<FeatureId>> = list.split(',').map(FeatureId::new).collect();
+            match ids {
+                Some(ids) => Some(ids),
+                None => {
+                    say!(
+                        "silico export: --features takes features' IDs, separated by commas\n{USAGE}"
+                    );
+                    return Ended::Failed;
+                }
+            }
+        }
+    };
+    let request = Export {
+        format: ExportFormat::ThreeMf,
+        path: out.to_owned(),
+        replace,
+        features,
+        tolerance,
+    };
+    in_session(
+        sessions,
+        file,
+        "export",
+        |refusal| refusal.said(file),
+        |id| {
+            let Response { model, result, .. } = sessions.export(id, request).wait();
+            match result {
+                Ok(done) => {
+                    let mut stdout = std::io::stdout().lock();
+                    let _ = writeln!(stdout, "wrote {} ({} bytes)", shown(&done.path), done.bytes);
+                    for object in &done.objects {
+                        let _ = writeln!(
+                            stdout,
+                            "{} {}: {} triangles, {} vertices, volume {} mm³",
+                            object.feature,
+                            command::quoted(&object.name),
+                            object.triangles,
+                            object.vertices,
+                            object.volume
+                        );
+                        if !object.left_out.is_empty() {
+                            let _ = writeln!(
+                                stdout,
+                                "  left out as bounding no material: {}",
+                                object.left_out.join(", ")
+                            );
+                        }
+                    }
+                    // The features asked for built, but a kernel fault stopped another: as
+                    // `fmt` says it, the command couldn't wholly run.
+                    if let Some(fault) = model.and_then(|read| read.fault) {
+                        say!("{}: {}", shown(file), with_retry(&fault, "export"));
+                        return Ended::Failed;
+                    }
+                    Ended::Clean
+                }
+                Err(problems) => Refusal::of_command("export", &problems)
+                    .with_fault(model.and_then(|read| read.fault), "export")
+                    .said(file),
+            }
         },
     )
 }
@@ -866,6 +1033,37 @@ mod tests {
         let cancelled = Problems::from(Error::new(ErrorCode::Cancelled, "cancelled"));
         let both = Refusal::of_command("check", &cancelled).with_fault(Some(fault), "check");
         assert_eq!(both.stopped().unwrap().code(), ErrorCode::Cancelled);
+    }
+
+    #[test]
+    fn a_fault_the_refusal_lists_is_said_there_once_and_another_is_kept_beside_it() {
+        // The refusal lists the fault itself (a feature it stopped, asked for): said there,
+        // in the CLI's words, and not again. An error of the same code with another message,
+        // or the same message with another code, is another error: kept, the fault said last.
+        let fault =
+            Error::new(ErrorCode::WorkerUnavailable, "no worker").with_suggestion("install it");
+        let listed = Problems::from(fault.clone().with_suggestion("a session's advice"));
+        let once = Refusal::of_command("export", &listed).with_fault(Some(fault.clone()), "export");
+        assert!(once.fault.is_none());
+        assert_eq!(once.errors.len(), 1);
+        assert_eq!(
+            once.errors[0].suggestion(),
+            Some("install it; run `silico export` again to retry it")
+        );
+        assert!(failed(&once.ended()));
+        for other in [
+            Error::new(ErrorCode::WorkerUnavailable, "another worker"),
+            Error::new(ErrorCode::WorkerCrashed, "no worker"),
+        ] {
+            let refusal = Refusal::of_command("export", &Problems::from(other.clone()))
+                .with_fault(Some(fault.clone()), "export");
+            assert_eq!(refusal.errors, std::slice::from_ref(&other), "{other:?}");
+            assert_eq!(
+                refusal.fault.as_ref().map(Error::message),
+                Some("no worker"),
+                "{other:?}"
+            );
+        }
     }
 
     #[test]
