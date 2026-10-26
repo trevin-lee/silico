@@ -5,14 +5,14 @@
 //! knots (`pixi install -e oracle`), and its expected measures come from the same poles and
 //! knots by hand, independently of OCCT: the curve evaluated by Cox–de Boor, the cap's area
 //! and centroid by Green's theorem, and the curve's length, each integrated per knot span
-//! by Gauss–Legendre. The hand values are task B's (f127fffa), whose conversion of an
+//! by Gauss–Legendre. The hand values are task B's (dropped), whose conversion of an
 //! extrusion to a B-spline surface before measuring the patch makes unneeded.
 
-use super::adversarial_revolution_measures::{freecad_face, from_freecad};
 use super::close::assert_close;
+use super::geometry::{apply, cross, norm, rotation};
 use super::kernel::kernel;
-use super::oracle;
-use super::quadrature::{NODES, WEIGHTS, kind, misses};
+use super::oracle::{self, freecad_face, from_freecad};
+use super::quadrature::{basis, basis_derivative, integral, kind, misses};
 
 use std::path::Path;
 
@@ -27,14 +27,18 @@ const TIGHT: f64 = 1e-12;
 
 /// The same for the uneven four-span cubic and the tube, whose integrand along U the
 /// patch refines until its two Gauss orders agree to the asked 1e-9 of each strip's
-/// magnitude, not exactly: measured, the cubic's volume 7.5e-11, its slanted face's area
-/// 1.14e-9 (the face described alone; 3.5e-10 in the whole solid's), and the tube's face
-/// 3.8e-10. An adaptive integration to 0.9 × 1e-9 along U and again along L promises the
-/// asked precision in each direction, not round-off, and the two can add: twice the asked
-/// precision is the bound (docs/ports/measure.md, Known wrong results), measured 1.14 of
-/// it (the bisection never lands on the knots 0.3, 1.1, 2, under either U rule).
+/// magnitude, not exactly: measured, the cubic's volume 7.5e-11 (upright, down, or
+/// slanted), its extruded face's area 3.5e-10 upright and its whole area 1.2e-10 (3.5e-10
+/// slanted), and the tube's face 3.8e-10 and whole area 1.7e-10.
 const UNEVEN_VOLUME: f64 = 1e-10;
-const UNEVEN_AREA: f64 = 2e-9;
+const UNEVEN_AREA: f64 = 5e-10;
+
+/// The same for the slanted cubic's extruded face, described alone: measured 1.14e-9. An
+/// adaptive integration to 0.9 × 1e-9 along U and again along L promises the asked
+/// precision in each direction, not round-off, and the two can add: twice the asked
+/// precision is the bound (docs/ports/measure.md, Known wrong results), measured 1.14 of it
+/// (the bisection never lands on the knots 0.3, 1.1, 2, under either U rule).
+const SLANTED_AREA: f64 = 2e-9;
 
 /// A B-spline curve in z = 0, as FreeCAD's `buildFromPolesMultsKnots` takes it.
 struct Spline {
@@ -145,19 +149,15 @@ impl Spline {
 
     /// The integral of `f(point, tangent)` along the curve, each span cut in `pieces`.
     fn integral(&self, pieces: u32, f: impl Fn([f64; 2], [f64; 2]) -> f64) -> f64 {
-        let mut sum = 0.0;
-        for [a, b] in self.spans() {
-            let step = (b - a) / f64::from(pieces);
-            for k in 0..pieces {
-                let (lo, hi) = (a + step * f64::from(k), a + step * f64::from(k + 1));
-                for (x, w) in NODES.iter().zip(WEIGHTS) {
-                    let t = (lo + hi) / 2.0 + (hi - lo) / 2.0 * x;
+        self.spans()
+            .into_iter()
+            .map(|[a, b]| {
+                integral(a, b, pieces, |t| {
                     let (c, d) = self.at(t);
-                    sum += w * (hi - lo) / 2.0 * f(c, d);
-                }
-            }
-        }
-        sum
+                    f(c, d)
+                })
+            })
+            .sum()
     }
 
     /// The curve's ends: its first and last poles, for an open, clamped curve.
@@ -214,55 +214,6 @@ impl Spline {
         let area = 2.0 * self.area() + self.swept_area(v) + self.chord_swept_area(v);
         (self.area() * v[2].abs(), area)
     }
-}
-
-/// Cox–de Boor's B-spline basis function `i` of degree `p` on `knots` at `t`, half-open
-/// spans (no node of the integration falls on a knot).
-pub(super) fn basis(knots: &[f64], i: usize, p: usize, t: f64) -> f64 {
-    if p == 0 {
-        return if knots[i] <= t && t < knots[i + 1] {
-            1.0
-        } else {
-            0.0
-        };
-    }
-    let mut value = 0.0;
-    let left = knots[i + p] - knots[i];
-    if left > 0.0 {
-        value += (t - knots[i]) / left * basis(knots, i, p - 1, t);
-    }
-    let right = knots[i + p + 1] - knots[i + 1];
-    if right > 0.0 {
-        value += (knots[i + p + 1] - t) / right * basis(knots, i + 1, p - 1, t);
-    }
-    value
-}
-
-/// The derivative of [`basis`] in `t`.
-pub(super) fn basis_derivative(knots: &[f64], i: usize, p: usize, t: f64) -> f64 {
-    let p_f = f64::from(u32::try_from(p).unwrap());
-    let mut value = 0.0;
-    let left = knots[i + p] - knots[i];
-    if left > 0.0 {
-        value += p_f / left * basis(knots, i, p - 1, t);
-    }
-    let right = knots[i + p + 1] - knots[i + 1];
-    if right > 0.0 {
-        value -= p_f / right * basis(knots, i + 1, p - 1, t);
-    }
-    value
-}
-
-pub(super) fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn norm(a: [f64; 3]) -> f64 {
-    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
 }
 
 /// The fixture's cubic: Edge4 of curves_and_surfaces.brep, which extruded_bspline.brep
@@ -458,14 +409,20 @@ fn an_extruded_multi_span_bspline_measures_as_by_hand_up_down_or_slanted() {
     let spline = uneven_cubic();
     let mut k = kernel();
     let cap = spline.cap();
-    let (mut volumes, mut areas) = (Vec::new(), Vec::new());
+    let (mut volumes, mut areas, mut slanted) = (Vec::new(), Vec::new(), Vec::new());
     for v in [[0.0, 0.0, 2.0], [0.0, 0.0, -2.0], [0.5, -0.3, 1.5]] {
         let shape = swept(&mut k, &cap, v);
-        let (vs, a) = prism_cases(&mut k, &format!("along {v:?}"), &spline, &shape, v);
+        let (vs, mut a) = prism_cases(&mut k, &format!("along {v:?}"), &spline, &shape, v);
         volumes.extend(vs);
+        if v[0] != 0.0 {
+            // The extruded face's area, the second.
+            slanted.push(a.remove(1));
+        }
         areas.extend(a);
     }
+    assert_eq!(slanted.len(), 1);
     assert_cases(&volumes, &areas, UNEVEN_VOLUME, UNEVEN_AREA);
+    assert_cases(&[], &slanted, UNEVEN_VOLUME, SLANTED_AREA);
 }
 
 /// Python: `spline`'s cap extruded along `v` by FreeCAD, its extruded face's surface put
@@ -633,14 +590,17 @@ fn a_bspline_surface_ruled_between_a_cubic_and_its_copy_has_the_area_by_hand() {
 
 #[test]
 fn a_half_turn_whose_cut_face_holds_the_reference_point_measures_as_by_hand() {
-    // The patch sets U's tolerance from each strip's magnitude (0.9 × 1e-9 × the sum of
-    // the absolute values of the volume element's terms), so on a face through OCCT's
-    // reference point (the mean of the vertices' occurrences), where every term is 0, the
-    // tolerance is 0, and U's loop ends after its first pass by its own condition. The
-    // rectangle 0 ≤ x ≤ 3, 0 ≤ z ≤ 5 turned half a turn about z: every
-    // vertex is on y = 0, so the reference point is on the cut face, the plane y = 0. By
-    // hand, a half cylinder of radius 3 and height 5: volume 22.5π; area two half discs
-    // (9π), the curved side (15π), and the cut face (6 × 5).
+    // The rectangle 0 ≤ x ≤ 3, 0 ≤ z ≤ 5 turned half a turn about z: every vertex is on y
+    // = 0, so OCCT's reference point (the mean of the vertices' occurrences) is on the cut
+    // face, the plane y = 0, where every term of the volume element is 0. There the patch's
+    // U tolerance (0.9 × 1e-9 × the strip's magnitude, the sum of those terms' absolute
+    // values) is 0, and U's loop ends after its first pass by its own condition. What this
+    // covers: a revolve with such a face measures by hand, the cut face adding nothing and
+    // the others refined as ever. Not that U stopped there: a plane is integrated exactly
+    // either way. The cost of not stopping is pinned on B-spline faces through the vertex
+    // mean (adversarial_measure_refine_u.rs, its tests in time). By hand, a half cylinder
+    // of radius 3 and height 5: volume 22.5π; area two half discs (9π), the curved side
+    // (15π), and the cut face (6 × 5).
     use silico_kernel::{Axis, Curve, FaceRegions, Region, SketchPlane};
     let line = |start, end| Curve::Line { start, end };
     let regions = FaceRegions {
@@ -681,9 +641,12 @@ fn the_extruded_fixture_turned_so_its_volume_terms_mix_signs_measures_as_upright
     // 45° about z: its faces' normals and their places about the vertex mean are no longer
     // along the axes, so the volume element's terms x·xn, y·yn, z·zn mix signs within a
     // strip, and the strip's magnitude (the sum of their absolute values, U's scale) is
-    // larger than its value. U's tolerance mustn't loosen there past the asked precision:
-    // the volume is 3.8 to 1e-12 as upright, the areas the hand values, and the centre the
-    // upright one's turned. Before patch 0004, 9.4e-4 low, as upright.
+    // larger than its value, so U's tolerance is looser than the asked precision of the
+    // strip. What this covers: on this shape the looser tolerance still gives the volume
+    // to 1e-12 (3.8 as upright) and the centre the upright one's turned. The areas, by
+    // hand too, don't reach that rule (an area's magnitude is the strip itself); and it's
+    // one shape, not a bound: docs/ports/measure.md gives the bound. Before patch 0004,
+    // 9.4e-4 low, as upright.
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/brep/extruded_bspline.brep");
     let text = std::fs::read_to_string(path).unwrap();
@@ -726,22 +689,10 @@ fn the_extruded_fixture_turned_so_its_volume_terms_mix_signs_measures_as_upright
             8.808_111_747_104_897,
         ));
         // Rodrigues: the upright centre turned about the axis through the point.
-        let n = (ax * ax + ay * ay + az * az).sqrt();
-        let [x, y, z] = axis.map(|a| a / n);
-        let (sin, cos) = (
-            libm::sin(degrees.to_radians()),
-            libm::cos(degrees.to_radians()),
-        );
-        let t = 1.0 - cos;
-        let r = [
-            [t * x * x + cos, t * x * y - sin * z, t * x * z + sin * y],
-            [t * x * y + sin * z, t * y * y + cos, t * y * z - sin * x],
-            [t * x * z - sin * y, t * y * z + sin * x, t * z * z + cos],
-        ];
         let p = [0, 1, 2].map(|i| upright[i] - through[i]);
-        for i in 0..3 {
-            let want = through[i] + r[i][0] * p[0] + r[i][1] * p[1] + r[i][2] * p[2];
-            centres.push((format!("{what}: the centre's {i}"), s.center[i], want));
+        let want = apply(&rotation(axis, degrees), p, through);
+        for (i, (got, want)) in s.center.iter().zip(want).enumerate() {
+            centres.push((format!("{what}: the centre's {i}"), *got, want));
         }
     }
     assert_cases(&volumes, &areas, TIGHT, TIGHT);

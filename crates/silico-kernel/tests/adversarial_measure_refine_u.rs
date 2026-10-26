@@ -7,21 +7,22 @@
 //! Attacked: faces whose strips integrate to about nothing (a plane through the point the
 //! volume is integrated about, where a tolerance relative to the strip's value is 0 or
 //! round-off and U could only stop at its cap), B-spline faces of many spans (the cap's
-//! cost, past `SM` spans, and rough ones that reach the cap while refining), integrands
-//! kinked inside one U span (an extruded polyline), located and rotated shapes far out,
-//! shapes centred exactly at the origin, compounds whose box centre is nowhere near their
-//! parts, an empty compound, and the worker's 60 s timeout.
+//! cost, past `SM` spans, rough ones that reach the cap while refining, and rough ones
+//! trimmed so that narrow strips follow wide ones), integrands kinked inside one U span
+//! (an extruded polyline), located and rotated shapes far out, shapes centred exactly at
+//! the origin, compounds whose box centre is nowhere near their parts, an empty compound,
+//! and the worker's 60 s timeout.
 
-use super::adversarial_revolution_measures::from_freecad;
-use super::extruded_bsplines::{basis, basis_derivative, cross};
-use super::oracle;
+use super::geometry::{apply, cross, dot, norm, rotation};
+use super::kernel::kernel;
+use super::oracle::{self, freecad_shape, freecad_text, from_freecad};
 use super::quadrature::{
-    integral, misses, misses_by, right_or_known_wrong, right_or_known_wrong_by,
+    basis, basis_derivative, integral, misses, misses_by, right_or_known_wrong,
+    right_or_known_wrong_by,
 };
 
 use std::cell::RefCell;
 use std::f64::consts::PI;
-use std::path::Path;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -30,52 +31,11 @@ use proptest::test_runner::{Config, TestRunner};
 use silico_core::kernel::KernelWorker;
 use silico_protocol::{ShapeData, ShapeSummary};
 
-fn worker() -> KernelWorker {
-    KernelWorker::start_worker(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker"))).unwrap()
-}
-
-/// The text B-rep of `shape`, as FreeCAD makes it from `body` (Python that sets `shape`).
-fn freecad_text(body: &str) -> String {
-    let script = format!(
-        "import json, math, Part, FreeCAD as App\nV = App.Vector\n{body}\n\
-         print(\"SILICO_ORACLE \" + json.dumps(shape.exportBrepToString()))\n"
-    );
-    oracle::freecad(&script).as_str().unwrap().to_owned()
-}
-
-fn freecad_shape(body: &str) -> ShapeData {
-    from_freecad(&freecad_text(body))
-}
-
 /// `shape` summarized through `k`, and how long that took.
 fn timed(k: &mut KernelWorker, shape: &ShapeData) -> (ShapeSummary, Duration) {
     let start = Instant::now();
     let s = k.summarize(shape).unwrap();
     (s, start.elapsed())
-}
-
-/// Rodrigues: the rotation by `degrees` about `axis` (not unit).
-fn rotation(axis: [f64; 3], degrees: f64) -> [[f64; 3]; 3] {
-    let n = libm::sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
-    let [x, y, z] = axis.map(|a| a / n);
-    let (s, c) = (
-        libm::sin(degrees.to_radians()),
-        libm::cos(degrees.to_radians()),
-    );
-    let t = 1.0 - c;
-    [
-        [t * x * x + c, t * x * y - s * z, t * x * z + s * y],
-        [t * x * y + s * z, t * y * y + c, t * y * z - s * x],
-        [t * x * z - s * y, t * y * z + s * x, t * z * z + c],
-    ]
-}
-
-fn apply(r: &[[f64; 3]; 3], p: [f64; 3], t: [f64; 3]) -> [f64; 3] {
-    let mut out = t;
-    for (i, row) in r.iter().enumerate() {
-        out[i] += row[0] * p[0] + row[1] * p[1] + row[2] * p[2];
-    }
-    out
 }
 
 fn centre_cases(what: &str, got: [f64; 3], want: [f64; 3]) -> Vec<(String, f64, f64)> {
@@ -108,7 +68,7 @@ fn an_l_brackets_inner_faces_through_its_vertex_mean_measure_by_hand_in_time() {
          shape.Placement = App.Placement(V({}, {}, {}), App.Rotation(V(1, 2, 3), {angle:?}))\n",
         at[0], at[1], at[2]
     ));
-    let mut k = worker();
+    let mut k = kernel();
     let (m, took) = timed(&mut k, &shape);
     assert!(m.valid);
     let area_l = s * s - (s - t) * (s - t);
@@ -135,7 +95,7 @@ fn a_lone_tilted_square_whose_plane_holds_its_vertex_mean_measures_in_time() {
         "shape = Part.makePlane(1, 1)\n\
          shape.Placement = App.Placement(V(0.3, 0.2, 0.1), App.Rotation(V(1, 1, 1), 33))\n",
     );
-    let mut k = worker();
+    let mut k = kernel();
     let (m, took) = timed(&mut k, &shape);
     assert!((m.area - 1.0).abs() <= 1e-12, "{m:?}");
     assert!(m.volume.abs() <= 1e-12, "{m:?}");
@@ -164,7 +124,7 @@ fn planar_bspline(nu: usize, nv: usize) -> String {
 #[test]
 fn a_tilted_planar_bspline_face_of_sixty_by_sixty_spans_measures_within_the_timeout() {
     let shape = freecad_shape(&planar_bspline(60, 60));
-    let mut k = worker();
+    let mut k = kernel();
     let (m, took) = timed(&mut k, &shape);
     assert!((m.area - 1.0).abs() <= 1e-12, "{m:?}");
     assert!(m.volume.abs() <= 1e-12, "{m:?}");
@@ -217,7 +177,7 @@ fn l_with_bspline_inner_faces(n: usize) -> String {
 /// a valid solid, measured by hand as the plain L is (0.009, 0.3).
 #[test]
 fn an_l_bracket_whose_inner_faces_are_many_span_bsplines_measures_within_the_timeout() {
-    let mut k = worker();
+    let mut k = kernel();
     for n in [20, 60] {
         let shape = freecad_shape(&l_with_bspline_inner_faces(n));
         let start = Instant::now();
@@ -254,7 +214,7 @@ fn an_l_bracket_whose_inner_faces_are_many_span_bsplines_measures_within_the_tim
 #[test]
 fn a_planar_bspline_face_of_two_thousand_u_spans_measures_its_area() {
     let shape = freecad_shape(&planar_bspline(2000, 1));
-    let mut k = worker();
+    let mut k = kernel();
     // Before the amendment (patch 0004 as first proposed): kernel_failed
     // "Standard_OutOfRange: NCollection_Array1::ChangeValue" after 8.9 s, U refined past
     // its arrays (the cap `JU == UMaxSubs` was passed before `JU >= iUSubEnd` started
@@ -272,7 +232,7 @@ fn a_planar_bspline_face_of_two_thousand_u_spans_measures_its_area() {
 /// The worker is well after a 2000-span face (which once made it fail).
 #[test]
 fn the_worker_measures_a_box_after_a_two_thousand_span_face() {
-    let mut k = worker();
+    let mut k = kernel();
     let _ = k.summarize(&freecad_shape(&planar_bspline(2000, 1)));
     let again = freecad_shape("shape = Part.makeBox(1, 2, 3)\n");
     let m = k.summarize(&again).unwrap();
@@ -294,7 +254,7 @@ fn a_prism_of_a_two_thousand_span_bspline_face_is_a_unit_cube() {
         "{}shape.Placement = App.Placement()\nshape = shape.extrude(V(0, 0, 1))\nassert shape.isValid()\n",
         planar_bspline(2000, 1)
     ));
-    let mut k = worker();
+    let mut k = kernel();
     let m = k.summarize(&shape).unwrap();
     assert!(m.valid);
     let missed = right_or_known_wrong(
@@ -309,10 +269,6 @@ fn a_prism_of_a_two_thousand_span_bspline_face_is_a_unit_cube() {
 }
 
 // ---- Rough faces: U refined to its cap, or past it not at all ----
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
 
 /// ∫ f over [a, b], given `whole`, its eight-point Gauss–Legendre estimate there: the two
 /// halves' estimates, each bisected again until the halves agree with their whole to
@@ -335,19 +291,37 @@ fn bisected(
         + bisected(mid, b, right, tolerance, depth - 1, f)
 }
 
+/// Where a rough face is trimmed in its (u, v): the whole unit square, or the triangle
+/// (0, 0), (1, 0), (1, 1), v ≤ u, whose U strip at each point of its diagonal runs from 0
+/// to the point, so the strips there narrow from all of U's spans to none, after its side
+/// u = 1's strips, which each cross every span.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Trim {
+    Square,
+    Triangle,
+}
+
 /// rough.py's faces (seed 7): cubic in U over `n` equal spans, linear in V, poles (i/n, j,
 /// z) for i in 0..n + 3 and j in 0..2, each z = 0.004 × uniform(−1, 1) drawn in that order
 /// (the 200-span face drawn first, then the 2000-span one, then any other), so the poles
 /// jump by about a span's width and no span's integrand is smooth enough for one Gauss
-/// pass. Tilted by its location. The face as FreeCAD makes it, each pole's z as drawn,
-/// and the surface's point at a few (u, v), to check the evaluation by hand against OCCT's.
+/// pass. Trimmed to the square or the triangle (its edges `Geom2d` segments in (u, v) on
+/// the surface), tilted by its location. The face as FreeCAD makes it, each pole's z as
+/// drawn, and the surface's point at a few (u, v), to check the evaluation by hand against
+/// OCCT's.
 struct Rough {
     shape: ShapeData,
+    trim: Trim,
     z: Vec<[f64; 2]>,
     points: Vec<([f64; 2], [f64; 3])>,
 }
 
-fn rough(n: usize) -> Rough {
+fn rough(n: usize, trim: Trim) -> Rough {
+    let triangle = if trim == Trim::Triangle {
+        "True"
+    } else {
+        "False"
+    };
     let script = format!(
         "import json, random, Part, FreeCAD as App\n\
          V = App.Vector\n\
@@ -358,12 +332,18 @@ fn rough(n: usize) -> Rough {
          \x20   s = Part.BSplineSurface()\n\
          \x20   s.buildFromPolesMultsKnots(poles, [4] + [1] * (n - 1) + [4], [2, 2], \
              [i / n for i in range(n + 1)], [0.0, 1.0], False, False, 3, 1)\n\
-         \x20   shape = s.toShape()\n\
-         \x20   shape.Placement = App.Placement(V(0.3, 0.2, 0.1), App.Rotation(V(1, 1, 1), 33))\n\
-         \x20   return s, shape, z\n\
+         \x20   return s, z\n\
          drawn = {{n: rough(n) for n in (200, 2000)}}\n\
          if {n} not in drawn: drawn[{n}] = rough({n})\n\
-         s, shape, z = drawn[{n}]\n\
+         s, z = drawn[{n}]\n\
+         if {triangle}:\n\
+         \x20   P = App.Base.Vector2d\n\
+         \x20   c = [P(0, 0), P(1, 0), P(1, 1)]\n\
+         \x20   edges = [Part.Geom2d.Line2dSegment(c[i], c[(i + 1) % 3]).toShape(s) for i in range(3)]\n\
+         \x20   shape = Part.Face(s, Part.Wire(edges))\n\
+         else:\n\
+         \x20   shape = s.toShape()\n\
+         shape.Placement = App.Placement(V(0.3, 0.2, 0.1), App.Rotation(V(1, 1, 1), 33))\n\
          assert shape.isValid()\n\
          at = [(0.0, 0.0), (0.123456, 0.25), (0.5, 0.5), (0.97653, 0.9), (0.999, 1.0)]\n\
          points = [[[u, v], list(s.value(u, v))] for u, v in at]\n\
@@ -397,6 +377,7 @@ fn rough(n: usize) -> Rough {
         .collect();
     Rough {
         shape: from_freecad(got["brep"].as_str().unwrap()),
+        trim,
         z,
         points,
     }
@@ -440,11 +421,12 @@ impl Rough {
         [0, 1, 2].map(|d| (1.0 - v) * c0[d] + v * c1[d])
     }
 
-    /// The area of each span, ∫∫ |S_u × S_v| dv du. S_u = (1 − v) C0′ + v C1′ and S_v = C1
-    /// − C0, so S_u × S_v = A + vB, A = C0′ × S_v and B = (C1′ − C0′) × S_v, and along V
-    /// it's exact: |A + vB| = |B| √((v + p)² + h²), p = A·B / |B|², h = |A × B| / |B|², whose
-    /// integral is (t √(t² + h²) + h² asinh(t / h)) / 2 between t = p and 1 + p. Along U,
-    /// adaptive: eight Gauss–Legendre points on an interval against eight on each half,
+    /// The area of each span, ∫∫ |S_u × S_v| dv du, v from 0 to the trim's top: 1 on the
+    /// square, u on the triangle. S_u = (1 − v) C0′ + v C1′ and S_v = C1 − C0, so S_u × S_v
+    /// = A + vB, A = C0′ × S_v and B = (C1′ − C0′) × S_v, and along V it's exact: |A + vB| =
+    /// |B| √((v + p)² + h²), p = A·B / |B|², h = |A × B| / |B|², whose integral is (t √(t² +
+    /// h²) + h² asinh(t / h)) / 2 between t = p and top + p. Along U, adaptive, split at
+    /// every knot: eight Gauss–Legendre points on an interval against eight on each half,
     /// bisected until the two agree to `tolerance` of the span's first estimate. (The poles
     /// jump by about a span's width, so the integrand along U is analytic in a strip only
     /// about a span/16 wide: fixed pieces converge slowly, bisection doesn't care.)
@@ -472,7 +454,11 @@ impl Rough {
                     (t * root + h * h * libm::asinh(t / h)) / 2.0
                 }
             };
-            libm::sqrt(bb) * (primitive(1.0 + p) - primitive(p))
+            let top = match self.trim {
+                Trim::Square => 1.0,
+                Trim::Triangle => u,
+            };
+            libm::sqrt(bb) * (primitive(top + p) - primitive(p))
         };
         (0..n)
             .map(|k| {
@@ -512,60 +498,76 @@ impl Rough {
 
 /// The rough face of 200 spans, under the cap: U refines at every L point, to the asked
 /// 1e-9 of each strip's magnitude (here its value: an area's terms never cancel), and L to
-/// its own 1e-9, so the area is within 1e-9 of the hand quadrature's: by hand
-/// 1.0564688264694702, measured 1.0564688264646631 (4.6e-12; 2.0e-11 without patch 0004),
-/// in 41 ms.
+/// its own 1e-9: by hand 1.0564688264694702, measured 1.0564688264646631 (4.6e-12) in 15
+/// ms. Held to 1e-11, so it fails unrefined: without patch 0004, or under a cap rule that
+/// withheld U's tolerance from faces under the cap too, U isn't refined and the area is
+/// 2.0e-11 off.
 #[test]
 fn a_rough_bspline_face_of_two_hundred_spans_measures_its_area_by_hand() {
-    let face = rough(200);
+    let face = rough(200, Trim::Square);
     face.assert_evaluated_as_occt();
     let (spans, error) = face.area();
     assert!(error <= 1e-12, "the hand quadrature's own error: {error:e}");
     let area: f64 = spans.iter().sum();
-    let mut k = worker();
+    let mut k = kernel();
     let (m, took) = timed(&mut k, &face.shape);
     assert!(m.valid);
-    let missed = misses(&[("area".to_owned(), m.area, area)], 1e-9);
+    let missed = misses(&[("area".to_owned(), m.area, area)], 1e-11);
     assert!(missed.is_empty(), "{missed:?}");
     assert!(took < Duration::from_secs(10), "{took:?}");
 }
 
-/// The rough face of 2000 spans, past the cap (`SM` = 1953): patch 0004 gives it no U
-/// tolerance, so U isn't refined, as before the patch, and it's integrated at its first
+/// A rough face of `n` spans, `n` at or past the cap (`SM` = 1953): patch 0004 gives it no
+/// U tolerance, so U isn't refined, as before the patch, and it's integrated at its first
 /// pass's Gauss points, its span 1953 left out (OCCT's known wrong result, as the planar
-/// face's above); L refines to its own 1e-9. Before the amendment, U refined towards its
-/// arrays' end at every L point and the worker was killed at its timeout. By hand: the
-/// area, 2.8315774454792653, and the area without span 1953, 2.8292641882719094; the
-/// measure (2.8292747615806313, in 0.57 s, 0.50 s without patch 0004) is the second, to
-/// the tolerance its unrefined U reaches (`ROUGH_AT_THE_CAP`), or the first, so a fixed
-/// OCCT passes.
-#[test]
-fn a_rough_bspline_face_of_two_thousand_spans_past_the_cap_measures_in_time() {
-    let face = rough(2000);
+/// face's above); L refines to its own 1e-9. Its measure is the area by hand without span
+/// 1953, to the tolerance its unrefined U reaches (`ROUGH_AT_THE_CAP`), or the whole area
+/// by hand, so a fixed OCCT passes; in time.
+fn assert_past_the_cap(n: usize) {
+    let face = rough(n, Trim::Square);
     face.assert_evaluated_as_occt();
     let (spans, error) = face.area();
     assert!(error <= 1e-12, "the hand quadrature's own error: {error:e}");
     let area: f64 = spans.iter().sum();
     let without = area - spans[1952];
-    let mut k = worker();
+    let mut k = kernel();
     let (m, took) = timed(&mut k, &face.shape);
     assert!(m.valid);
     let right = misses(&[("area".to_owned(), m.area, area)], 1e-9);
     let known = misses(&[("area".to_owned(), m.area, without)], ROUGH_AT_THE_CAP);
     assert!(
         right.is_empty() || known.is_empty(),
-        "{right:?} {known:?} (span 1953: {})",
+        "{n}: {right:?} {known:?} (span 1953: {})",
         spans[1952]
     );
-    assert!(took < Duration::from_secs(10), "{took:?}");
+    assert!(took < Duration::from_secs(10), "{n}: {took:?}");
 }
 
-/// How far the rough faces of 1952 and 2000 spans may be from their hand values (the
-/// 2000-span face's without its span 1953), relative: U unrefined, its first pass's Gauss
+/// 2000 spans. Before the amendment, U refined towards its arrays' end at every L point
+/// and the worker was killed at its timeout. By hand: the area, 2.8315774454792653, and
+/// the area without span 1953, 2.8292641882719094; the measure 2.8292747615806313, in 0.57
+/// s (0.50 s without patch 0004).
+#[test]
+fn a_rough_bspline_face_of_two_thousand_spans_past_the_cap_measures_in_time() {
+    assert_past_the_cap(2000);
+}
+
+/// 1953 spans, exactly the cap: the first with no U tolerance (its initial spans reach
+/// `UMaxSubs`, `iUSubEnd < UMaxSubs` false), so a rule that took the cap's own count as
+/// under it (`<=`) would refine it past its cap, as the 2000-span face once did. By hand
+/// 2.736421101215214, and 2.734310161810381 without span 1953; measured
+/// 2.7342996060588294 (3.86e-6 under the second) in 0.38 s.
+#[test]
+fn a_rough_bspline_face_of_exactly_the_caps_spans_measures_as_past_it() {
+    assert_past_the_cap(1953);
+}
+
+/// How far the rough faces of 1952, 1953, and 2000 spans may be from their hand values
+/// (the last two's without their span 1953), relative: U unrefined, its first pass's Gauss
 /// order on each rough span, and OCCT estimating 1.7e-12. Measured: 2000 spans 3.74e-6
-/// (the same bits without patch 0004), 1952 spans 3.89e-6 (3.85e-6 without it: the cap
-/// branch loosens L). OCCT's known wrong result for faces of so many spans
-/// (docs/ports/measure.md), pinned here so a worse one fails.
+/// (the same bits without patch 0004), 1953 spans 3.86e-6, 1952 spans 3.89e-6 (3.85e-6
+/// without it: the cap branch loosens L). OCCT's known wrong result for faces of so many
+/// spans (docs/ports/measure.md), pinned here so a worse one fails.
 const ROUGH_AT_THE_CAP: f64 = 4e-6;
 
 /// A rough face of 1952 spans, one under the cap: U gets its tolerance, and its first
@@ -577,15 +579,68 @@ const ROUGH_AT_THE_CAP: f64 = 4e-6;
 /// what its first pass reaches (`ROUGH_AT_THE_CAP`).
 #[test]
 fn a_rough_bspline_face_of_1952_spans_reaches_the_cap_on_its_first_refinement() {
-    let face = rough(1952);
+    let face = rough(1952, Trim::Square);
     face.assert_evaluated_as_occt();
     let (spans, error) = face.area();
     assert!(error <= 1e-12, "the hand quadrature's own error: {error:e}");
     let area: f64 = spans.iter().sum();
-    let mut k = worker();
+    let mut k = kernel();
     let (m, took) = timed(&mut k, &face.shape);
     assert!(m.valid);
     let missed = misses(&[("area".to_owned(), m.area, area)], ROUGH_AT_THE_CAP);
+    assert!(missed.is_empty(), "{missed:?}");
+    assert!(took < Duration::from_secs(10), "{took:?}");
+}
+
+/// The rough face of 400 spans trimmed to the triangle under its diagonal: OCCT's L runs
+/// along its side u = 1 first, each U strip there across all 400 spans, then along the
+/// diagonal, each strip [0, u] across fewer, down to one. U's error vector is cleared only
+/// to each strip's own cap (32 × its spans + 1), so past it the vector keeps a wider
+/// strip's errors; patch 0004 searches only the strip's own intervals for the one to split
+/// and for its error. By hand (`span_areas`: exact along V up to v = u, adaptive
+/// Gauss–Legendre along U split at every knot) 0.590013413208074, measured
+/// 0.590013413948603 (1.26e-9) in 1.3 s: twice the asked precision is the bound, U's and
+/// L's 0.9 × 1e-9 adding, as `SLANTED_AREA`'s in extruded_bsplines.rs. With a search of the
+/// whole vector (0004 as amended before), a narrow strip split a wide one's stale
+/// intervals, outside itself, and summed them: 0.5900096629043639, 6.4e-6 low, in 4.0 s.
+#[test]
+fn a_rough_bspline_face_trimmed_to_a_triangle_measures_its_area_by_hand() {
+    let face = rough(400, Trim::Triangle);
+    face.assert_evaluated_as_occt();
+    let (spans, error) = face.area();
+    assert!(error <= 1e-12, "the hand quadrature's own error: {error:e}");
+    let area: f64 = spans.iter().sum();
+    let mut k = kernel();
+    let (m, _) = timed(&mut k, &face.shape);
+    assert!(m.valid);
+    let missed = misses(&[("area".to_owned(), m.area, area)], 2e-9);
+    assert!(missed.is_empty(), "{missed:?}");
+}
+
+/// How far the triangle of 1000 spans may be from its area by hand, relative: along its
+/// diagonal, a straight pcurve with no knots, L starts from one span and subdivides to at
+/// most 33, which can't follow an integrand rough at every one of 1000 spans (as a
+/// meridian of many spans, docs/ports/measure.md, Known wrong results). Measured 8.7e-6
+/// over (8.6e-6 without patch 0004; 200 spans 5.2e-7 low either way). OCCT's known wrong
+/// result, pinned here so a worse one fails.
+const ROUGH_DIAGONAL: f64 = 2e-5;
+
+/// The same triangle over 1000 spans, in time: measured 5.6 s, 0.8318642493074171 for
+/// 0.8318570454103432 by hand (8.7e-6 over: `ROUGH_DIAGONAL`). With a search of the whole
+/// error vector (0004 as amended before), each step of every strip's refinement scanned
+/// all of it, and every narrow strip refined a wide one's stale intervals to its cap: past
+/// the worker's 60 s timeout (11.9 s, 24.9 s, and 37.6 s at 600, 700, and 800 spans, for
+/// 2.1 s, 3.2 s, and 4.5 s).
+#[test]
+fn a_rough_bspline_face_of_a_thousand_spans_trimmed_to_a_triangle_measures_in_time() {
+    let face = rough(1000, Trim::Triangle);
+    let (spans, error) = face.area();
+    assert!(error <= 1e-12, "the hand quadrature's own error: {error:e}");
+    let area: f64 = spans.iter().sum();
+    let mut k = kernel();
+    let (m, took) = timed(&mut k, &face.shape);
+    assert!(m.valid);
+    let missed = misses(&[("area".to_owned(), m.area, area)], ROUGH_DIAGONAL);
     assert!(missed.is_empty(), "{missed:?}");
     assert!(took < Duration::from_secs(10), "{took:?}");
 }
@@ -626,7 +681,7 @@ fn a_turned_saddle_through_its_vertex_mean_measures_by_hand_in_time() {
     };
     let (want, finer) = (area(64), area(128));
     assert!(((want - finer) / finer).abs() <= 1e-15, "{want} {finer}");
-    let mut k = worker();
+    let mut k = kernel();
     for n in [1, 8, 40] {
         let shape = freecad_shape(&saddle(n));
         let (m, took) = timed(&mut k, &shape);
@@ -649,7 +704,7 @@ fn a_cylinder_turned_and_far_out_measures_as_by_hand() {
          shape.Placement = App.Placement(V({:?}, {:?}, {:?}), App.Rotation(V(3, -1, 2), {angle:?}))\n",
         at[0], at[1], at[2]
     ));
-    let mut k = worker();
+    let mut k = kernel();
     let (m, _) = timed(&mut k, &shape);
     let missed = misses(
         &[
@@ -669,7 +724,7 @@ fn a_cylinder_turned_and_far_out_measures_as_by_hand() {
 /// the origin; and one of r 1e-3 at x = 1e4, 4π/3 × 1e-9 and 4π × 1e-6, at (1e4, 0, 0).
 #[test]
 fn spheres_at_the_origin_and_small_far_out_measure_as_by_hand() {
-    let mut k = worker();
+    let mut k = kernel();
     let at_origin = freecad_shape("shape = Part.makeSphere(3)\n");
     let (m, _) = timed(&mut k, &at_origin);
     let mut missed = misses(
@@ -703,7 +758,7 @@ fn spheres_at_the_origin_and_small_far_out_measure_as_by_hand() {
 /// move (to its rounding at 1e6).
 #[test]
 fn a_box_measures_the_same_moved_a_million_out() {
-    let mut k = worker();
+    let mut k = kernel();
     let here = freecad_shape("shape = Part.makeBox(1, 2, 3)\n");
     let there = freecad_shape(
         "shape = Part.makeBox(1, 2, 3)\nshape.Placement = App.Placement(V(1e6, -1e6, 1e6), App.Rotation())\n",
@@ -749,7 +804,7 @@ fn two_nanometre_foils_far_apart_in_one_compound_measure_their_two_cubic_millime
          b.Placement = App.Placement(V(-1e5, 0, 0), App.Rotation())\n\
          shape = Part.Compound([a, b])\n",
     );
-    let mut k = worker();
+    let mut k = kernel();
     let (m, _) = timed(&mut k, &shape);
     let missed = right_or_known_wrong_by(
         &[("volume".to_owned(), m.volume, 2.0)],
@@ -762,7 +817,7 @@ fn two_nanometre_foils_far_apart_in_one_compound_measure_their_two_cubic_millime
 /// An empty compound: no box, nothing to integrate; Ok with nothing, not a crash.
 #[test]
 fn an_empty_compound_measures_nothing() {
-    let mut k = worker();
+    let mut k = kernel();
     let empty = freecad_shape("shape = Part.Compound([])\n");
     match k.summarize(&empty) {
         Ok(m) => {
@@ -778,11 +833,8 @@ fn an_empty_compound_measures_nothing() {
 
 // ---- Kinks inside one U span: an extruded polyline ----
 
-/// A star-shaped 200-gon as one degree-1 B-spline (each side a span), closed, its face
-/// extruded along `v`: the side is a surface of extrusion, one U span to OCCT, whose
-/// integrand is kinked (its normal jumps) at each of the 199 inner knots. By hand: the
-/// shoelace area A and centroid; the volume A v_z, the area 2A plus each side's |e × v|,
-/// the centre the centroid plus v/2.
+/// The corners of a star-shaped `n`-gon about the origin in z = 0, its radius 1 + 0.3
+/// sin(`lobes` × the angle), counterclockwise.
 fn polygon(n: usize, lobes: f64) -> Vec<[f64; 2]> {
     (0..n)
         .map(|i| {
@@ -793,7 +845,12 @@ fn polygon(n: usize, lobes: f64) -> Vec<[f64; 2]> {
         .collect()
 }
 
-fn polyline_prism(n: usize, lobes: f64, v: [f64; 3]) -> (ShapeData, [f64; 3], [f64; 3]) {
+/// The `n`-gon as one degree-1 B-spline (each side a span), closed, its face extruded
+/// along `v`: the side is a surface of extrusion, one U span to OCCT, whose integrand is
+/// kinked (its normal jumps) at each of the n − 1 inner knots. The prism, and by hand its
+/// volume and area, and its centre: the shoelace area A and centroid; the volume A v_z,
+/// the area 2A plus each side's |e × v|, the centre the centroid plus v/2.
+fn polyline_prism(n: usize, lobes: f64, v: [f64; 3]) -> (ShapeData, (f64, f64), [f64; 3]) {
     let p = polygon(n, lobes);
     let poles: Vec<String> = p
         .iter()
@@ -815,19 +872,13 @@ fn polyline_prism(n: usize, lobes: f64, v: [f64; 3]) -> (ShapeData, [f64; 3], [f
     for i in 0..n {
         let [x0, y0] = p[i];
         let [x1, y1] = p[(i + 1) % n];
-        let cross = x0 * y1 - x1 * y0;
-        a += cross / 2.0;
-        cx += (x0 + x1) * cross / 6.0;
-        cy += (y0 + y1) * cross / 6.0;
-        let e = [x1 - x0, y1 - y0, 0.0];
-        let c = [
-            e[1] * v[2] - e[2] * v[1],
-            e[2] * v[0] - e[0] * v[2],
-            e[0] * v[1] - e[1] * v[0],
-        ];
-        side += libm::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+        let shoelace = x0 * y1 - x1 * y0;
+        a += shoelace / 2.0;
+        cx += (x0 + x1) * shoelace / 6.0;
+        cy += (y0 + y1) * shoelace / 6.0;
+        side += norm(cross([x1 - x0, y1 - y0, 0.0], v));
     }
-    let measures = [a * v[2], 2.0 * a + side, 0.0];
+    let measures = (a * v[2], 2.0 * a + side);
     let centre = [cx / a + v[0] / 2.0, cy / a + v[1] / 2.0, v[2] / 2.0];
     (shape, measures, centre)
 }
@@ -863,10 +914,10 @@ fn an_extruded_two_hundred_span_polyline_measures_as_by_hand_up_or_slanted() {
             ],
         ),
     ];
-    let mut k = worker();
+    let mut k = kernel();
     let mut missed = Vec::new();
     for (v, [volume_wrong, area_wrong, x_wrong, y_wrong]) in known {
-        let (shape, [volume, area, _], centre) = polyline_prism(200, 7.0, v);
+        let (shape, (volume, area), centre) = polyline_prism(200, 7.0, v);
         let (m, _) = timed(&mut k, &shape);
         assert!(m.valid);
         let (volume_is, area_is) = (format!("{v:?}: volume"), format!("{v:?}: area"));
@@ -897,8 +948,8 @@ fn an_extruded_two_hundred_span_polyline_measures_as_by_hand_up_or_slanted() {
 /// fails.
 #[test]
 fn an_extruded_eight_span_polyline_has_its_centre_by_hand() {
-    let mut k = worker();
-    let (shape, [volume, area, _], centre) = polyline_prism(8, 3.0, [0.0, 0.0, 2.0]);
+    let mut k = kernel();
+    let (shape, (volume, area), centre) = polyline_prism(8, 3.0, [0.0, 0.0, 2.0]);
     let (m, _) = timed(&mut k, &shape);
     let mut missed = misses(
         &[
@@ -1015,7 +1066,7 @@ fn turn() -> impl Strategy<Value = ([f64; 3], f64)> {
 #[test]
 fn located_primitives_measure_as_by_hand_wherever_they_are() {
     let templates = templates();
-    let k = RefCell::new(worker());
+    let k = RefCell::new(kernel());
     let mut runner = TestRunner::new(Config {
         cases: 1000,
         failure_persistence: None,
@@ -1065,8 +1116,8 @@ fn measuring_twice_and_on_another_worker_gives_the_same_bits() {
         )
     };
     for shape in [shape, l] {
-        let mut a = worker();
-        let mut b = worker();
+        let mut a = kernel();
+        let mut b = kernel();
         let first = a.summarize(&shape).unwrap();
         let second = a.summarize(&shape).unwrap();
         let other = b.summarize(&shape).unwrap();

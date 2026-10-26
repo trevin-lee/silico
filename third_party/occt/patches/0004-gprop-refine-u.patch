@@ -25,21 +25,30 @@ Why: BRepGProp_Gauss::Compute with an Eps (BRepGProp::VolumeProperties and Surfa
      0.25 s -> 59 s). A face whose initial spans already reach the subdivision cap (1953
      and more) gets no U tolerance and is integrated as before, bit for bit, where a
      refinement past the cap ran off OCCT's arrays; and none where the computation isn't
-     verified (a negative Eps: estimate, don't refine), as L's loop has it. The magnitude reaches
+     verified (a negative Eps: estimate, don't refine), as L's loop has it. U's interval to
+     split, and its error, are the largest of the current strip's intervals only: the error
+     vector is cleared to each strip's own cap, so a search of the whole vector found a
+     wider earlier strip's stale errors past it and split intervals the strip doesn't have
+     (a triangle-trimmed rough B-spline face measured worse than unpatched, and a trimmed
+     1000-span one took 60 s instead of 1 s). The magnitude reaches
      computeVInertiaOfElementaryPart through a pointer defaulting to NULL, so the default
      integration (Compute without an Eps, FreeCAD's), a different function, is unchanged
      to the bit.
 Moves: tests/determinism/oracle-reference.json's summary hashes of 113 of its 208 cases (151
      with Silico's measure about the shape's box centre, bridge.cpp, which moves 100; the
-     list is in the PR), to be re-recorded with the maintainer: volumes by at most 1.8e-13
-     relative, areas not at all, centres of mass by at most 4.6e-10 of the shape's size;
-     not their measures, B-reps, meshes, histories, or topologies. No committed
-     fingerprint (every golden and committed document checks and formats unchanged), and
-     not the stress reference (default integration). Re-measured on the amended patch
-     (2026-10-25).
+     list is the diff of that file in the commit that re-records it), to be re-recorded
+     with the maintainer: volumes by at most 1.8e-13 relative, areas not at all, centres
+     of mass by at most 4.6e-10 of the shape's size; not their measures, B-reps, meshes,
+     histories, or topologies. No committed fingerprint (every golden and committed
+     document checks and formats unchanged), and not the stress reference (default
+     integration). Re-measured on this patch, with its search of only the strip's own
+     intervals (2026-10-25).
 Drop when: an OCCT release refines U in BRepGProp_Gauss::Compute's Eps path (check that
-     EpsU can become nonzero before the U loop's first pass ends), or when
-     extruded_bsplines.rs passes with the patch removed.
+     EpsU is set by the end of the U loop's first pass, so the loop can go on), or when
+     extruded_bsplines.rs passes with the patch removed; and only once
+     adversarial_measure_refine_u.rs's tests in time and at the cap (its faces through the
+     vertex mean, its rough faces of 1952, 1953, and 2000 spans, and its triangles) pass
+     on that release too.
 
 --- a/src/BRepGProp/BRepGProp_Gauss.hxx
 +++ b/src/BRepGProp/BRepGProp_Gauss.hxx
@@ -55,7 +64,32 @@ Drop when: an OCCT release refines U in BRepGProp_Gauss::Compute's Eps path (che
                                         const gp_Vec&             theNormal,
 --- a/src/BRepGProp/BRepGProp_Gauss.cxx
 +++ b/src/BRepGProp/BRepGProp_Gauss.cxx
-@@ -261,7 +261,8 @@
+@@ -119,6 +119,24 @@
+ 
+   return theA * theB;
+ }
++
++// The index of the largest of theVector's values from its lower bound to theUpper, the first
++// on ties, as math_Vector::Max takes over the whole vector: the U loop searches only the
++// current strip's intervals, since the vector keeps a wider earlier strip's past them.
++static Standard_Integer MaxIndex(const math_Vector& theVector, const Standard_Integer theUpper)
++{
++  Standard_Integer anIndex = 0;
++  Standard_Real    aMax    = RealFirst();
++  for (Standard_Integer i = theVector.Lower(); i <= theUpper; ++i)
++  {
++    if (theVector(i) > aMax)
++    {
++      aMax    = theVector(i);
++      anIndex = i;
++    }
++  }
++  return anIndex;
++}
+ } // namespace
+ 
+ //=================================================================================================
+@@ -261,7 +279,8 @@
                                                        const Standard_Real       theWeight,
                                                        const Standard_Real       theCoeff[],
                                                        const Standard_Boolean    theIsByPoint,
@@ -65,7 +99,7 @@ Drop when: an OCCT release refines U in BRepGProp_Gauss::Compute's Eps path (che
  {
    Standard_Real x = thePoint.X() - theLocation.X();
    Standard_Real y = thePoint.Y() - theLocation.Y();
-@@ -280,6 +281,10 @@
+@@ -280,6 +299,10 @@
  
      Standard_Real dv = x * xn + y * yn + z * zn; // xyz  = x * y * z;
      theOutInertia.Mass += dv / 3.0;              // Ixyi += zn * xyz;
@@ -76,7 +110,7 @@ Drop when: an OCCT release refines U in BRepGProp_Gauss::Compute's Eps path (che
      theOutInertia.Ix += 0.25 * x * dv;           // Iyzi += xn * xyz;
      theOutInertia.Iy += 0.25 * y * dv;           // Ixzi += yn * xyz;
      theOutInertia.Iz += 0.25 * z * dv;           // xi = x * x * x * xn / 3.0;
-@@ -307,6 +312,10 @@
+@@ -307,6 +330,10 @@
      Standard_Real dv = s * d1;
  
      theOutInertia.Mass += dv;
@@ -87,7 +121,7 @@ Drop when: an OCCT release refines U in BRepGProp_Gauss::Compute's Eps path (che
      theOutInertia.Ix += (x - (theCoeff[0] * d1 * 0.5)) * dv;
      theOutInertia.Iy += (y - (theCoeff[1] * d1 * 0.5)) * dv;
      theOutInertia.Iz += (z - (theCoeff[2] * d1 * 0.5)) * dv;
-@@ -730,6 +739,9 @@
+@@ -730,12 +757,16 @@
                  BRepGProp_Gauss::InitMass(0.0, 1, UMaxSubs, anInertiaU);
                  BRepGProp_Gauss::Init(ErrU, 0.0, 1, UMaxSubs);
                  ErrorU = 0.0;
@@ -97,7 +131,15 @@ Drop when: an OCCT release refines U in BRepGProp_Gauss::Compute's Eps path (che
  
                  do
                  { // while: U
-@@ -769,7 +781,8 @@
+                   if (++JU > iUSubEnd)
+                   {
+-                    URange[0] = IU = ErrU->Max();
++                    // Split the largest error of the strip's intervals so far, 1 to JU - 1.
++                    URange[0] = IU = MaxIndex(*ErrU, JU - 1);
+                     URange[1]      = JU;
+ 
+                     U1->Value(JU) = (U1->Value(IU) + U2->Value(IU)) * 0.5;
+@@ -769,7 +800,8 @@
                        BRepGProp_Gauss::Inertia aLocal[2];
  
                        Standard_Integer       iUS     = URange[kU];
@@ -107,7 +149,7 @@ Drop when: an OCCT release refines U in BRepGProp_Gauss::Compute's Eps path (che
  
                        const Standard_Real um = 0.5 * (U2->Value(iUS) + U1->Value(iUS));
                        const Standard_Real ur = 0.5 * (U2->Value(iUS) - U1->Value(iUS));
-@@ -791,7 +804,8 @@
+@@ -791,7 +823,8 @@
                                                              w,
                                                              theCoeff,
                                                              theIsByPoint,
@@ -117,14 +159,13 @@ Drop when: an OCCT release refines U in BRepGProp_Gauss::Compute's Eps path (che
                            }
                            else
                            {
-@@ -819,7 +833,14 @@
-                         anUI.Iyy = mult(aLocal[0].Iyy, ur);
+@@ -820,6 +853,13 @@
                          anUI.Izz = mult(aLocal[0].Izz, ur);
                        }
-+
+ 
 +                      if (kUEnd == 1)
 +                        aStripMag += mult(myType == Vinert ? aMag[0] : aLocal[0].Mass, ur);
- 
++
 +                      // U's error, on every L order's pass.
 +                      if (iGLEnd == 2)
 +                        ErrU->Value(iUS) = mult(Abs(aLocal[1].Mass - aLocal[0].Mass), ur);
@@ -132,7 +173,7 @@ Drop when: an OCCT release refines U in BRepGProp_Gauss::Compute's Eps path (che
                        if (iGL > 0)
                          continue;
  
-@@ -862,9 +883,18 @@
+@@ -862,10 +902,20 @@
                      }
                    }
  
@@ -140,6 +181,7 @@ Drop when: an OCCT release refines U in BRepGProp_Gauss::Compute's Eps path (che
 +                  if (JU >= iUSubEnd)
                    {
 -                    kUEnd  = 2;
+-                    ErrorU = ErrU->Value(ErrU->Max());
 +                    if (JU == iUSubEnd)
 +                    {
 +                      // The first pass ends: U's tolerance, set once as L's is, where the
@@ -150,6 +192,8 @@ Drop when: an OCCT release refines U in BRepGProp_Gauss::Compute's Eps path (che
 +                                ? 0.9 * aStripMag * anEpsilon
 +                                : 0.0;
 +                    }
-                     ErrorU = ErrU->Value(ErrU->Max());
++                    // The largest error of the strip's intervals, 1 to JU.
++                    ErrorU = ErrU->Value(MaxIndex(*ErrU, JU));
                    }
                  } while ((ErrorU - EpsU > 0.0 && EpsU != 0.0) || kUEnd == 1);
+ 

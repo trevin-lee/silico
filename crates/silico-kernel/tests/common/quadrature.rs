@@ -1,6 +1,7 @@
-//! Values by hand for measures of revolutions, independent of OCCT: Gauss–Legendre on
-//! [a, b], cubic Bézier spans, a cap between a curve and its chord integrated along the
-//! curve, a face's kind of surface as a word, and the cases that miss their values.
+//! Values by hand for measures, independent of OCCT: Gauss–Legendre on [a, b], B-spline
+//! basis functions by Cox–de Boor, cubic Bézier spans, a cap between a curve and its chord
+//! integrated along the curve, a face's kind of surface as a word, and the cases that miss
+//! their values.
 
 use super::numbers::relative_error;
 
@@ -40,6 +41,43 @@ pub fn integral(a: f64, b: f64, pieces: u32, f: impl Fn(f64) -> f64) -> f64 {
         }
     }
     sum
+}
+
+/// Cox–de Boor's B-spline basis function `i` of degree `p` on `knots` at `t`, half-open
+/// spans (no node of the integration falls on a knot).
+pub fn basis(knots: &[f64], i: usize, p: usize, t: f64) -> f64 {
+    if p == 0 {
+        return if knots[i] <= t && t < knots[i + 1] {
+            1.0
+        } else {
+            0.0
+        };
+    }
+    let mut value = 0.0;
+    let left = knots[i + p] - knots[i];
+    if left > 0.0 {
+        value += (t - knots[i]) / left * basis(knots, i, p - 1, t);
+    }
+    let right = knots[i + p + 1] - knots[i + 1];
+    if right > 0.0 {
+        value += (knots[i + p + 1] - t) / right * basis(knots, i + 1, p - 1, t);
+    }
+    value
+}
+
+/// The derivative of [`basis`] in `t`.
+pub fn basis_derivative(knots: &[f64], i: usize, p: usize, t: f64) -> f64 {
+    let p_f = f64::from(u32::try_from(p).unwrap());
+    let mut value = 0.0;
+    let left = knots[i + p] - knots[i];
+    if left > 0.0 {
+        value += p_f / left * basis(knots, i, p - 1, t);
+    }
+    let right = knots[i + p + 1] - knots[i + 1];
+    if right > 0.0 {
+        value -= p_f / right * basis(knots, i + 1, p - 1, t);
+    }
+    value
 }
 
 /// A cubic Bézier span's point and derivative at `t`.

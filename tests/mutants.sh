@@ -46,12 +46,15 @@ core_wall_clock=(
 sketch_wall_clock=(
   an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout
 )
-# The precise measure of a 400-span B-spline meridian's turn, bounded by its wall clock (10 s,
-# under the worker's 60 s timeout): what it alone tests is OCCT's, that the measure finishes
-# and gives its known values; Silico's measure path, which it runs, is tested by every other
-# measure test. Named with its module, as all_geometry's tests are.
+# The precise measure of a 400-span B-spline meridian's turn, and of a rough 1000-span
+# B-spline face trimmed to a triangle (OCCT patch 0004's search of only a strip's own
+# intervals), each bounded by its wall clock (10 s, under the worker's 60 s timeout): what
+# they alone test is OCCT's, that the measure finishes and gives its known values; Silico's
+# measure path, which they run, is tested by every other measure test. Named with their
+# modules, as all_geometry's tests are.
 kernel_wall_clock=(
   adversarial_revolution_measures::a_bspline_meridian_of_many_spans_turned_measures_as_pappus
+  adversarial_measure_refine_u::a_rough_bspline_face_of_a_thousand_spans_trimmed_to_a_triangle_measures_in_time
 )
 # The render worker's scale tests, left out: each holds GiBs (.config/nextest.toml's render
 # group), which every shard at once would. Their mutants are in silico-render, where its
