@@ -56,8 +56,9 @@ pub(super) struct Rebuilds<C: Kernel + 'static> {
     /// The threads watching the rebuilds started: those ended joined as the next starts,
     /// the rest by `Sessions::drop`, for the sessions open then.
     pub(super) watchers: Threads,
-    /// How many rebuilds it has started: the number of the newest ([`Label::number`]).
-    pub(super) started: u64,
+    /// The number of the newest rebuild started ([`Label::number`]): as many as have
+    /// started, 0 before the first.
+    pub(super) last_number: u64,
 }
 
 impl<C: Kernel + 'static> Rebuilds<C> {
@@ -80,9 +81,9 @@ impl<C: Kernel + 'static> Rebuilds<C> {
 
     /// `label` numbered as the newest rebuild started, after every one started before it.
     pub(super) fn numbered(&mut self, label: Label) -> Label {
-        self.started = self.started.saturating_add(1);
+        self.last_number = self.last_number.saturating_add(1);
         Label {
-            number: self.started,
+            number: self.last_number,
             ..label
         }
     }
@@ -232,8 +233,9 @@ pub(super) struct Label {
     /// ([`Recompute::start_fresh`]).
     reads: Reads,
     /// Its place among the session's rebuilds, numbered as each starts
-    /// ([`Rebuilds::numbered`]): what a rebuild started later says of its revision is never
-    /// replaced by what this one comes to. Zero until it starts.
+    /// ([`Rebuilds::numbered`]), from 1: what a rebuild started later says of its revision
+    /// is never replaced by what this one comes to. 0 for a label not started (as a test
+    /// makes one by hand): every rebuild that starts is numbered as it does.
     number: u64,
 }
 
@@ -949,7 +951,7 @@ mod tests {
             floor: Revision::OPENED,
             candidate: None,
             watchers: Threads::new(),
-            started: 0,
+            last_number: 0,
         }
     }
 

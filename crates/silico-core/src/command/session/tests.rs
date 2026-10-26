@@ -60,7 +60,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
             floor: Revision::OPENED,
             candidate: None,
             watchers: Threads::new(),
-            started: 0,
+            last_number: 0,
         }),
         rebuilt: Condvar::new(),
         reads: Mutex::new(Reads::new()),

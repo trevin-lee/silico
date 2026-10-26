@@ -215,7 +215,7 @@ pub(super) fn start<P: Clients + 'static>(
                 floor: Revision::OPENED,
                 candidate: None,
                 watchers: Threads::new(),
-                started: 0,
+                last_number: 0,
             }),
             rebuilt: Condvar::new(),
             reads: Mutex::new(Reads::new()),
