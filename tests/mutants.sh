@@ -46,6 +46,13 @@ core_wall_clock=(
 sketch_wall_clock=(
   an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout
 )
+# The precise measure of a 400-span B-spline meridian's turn, bounded by its wall clock (10 s,
+# under the worker's 60 s timeout): what it alone tests is OCCT's, that the measure finishes
+# and gives its known values; Silico's measure path, which it runs, is tested by every other
+# measure test. Named with its module, as all_geometry's tests are.
+kernel_wall_clock=(
+  adversarial_revolution_measures::a_bspline_meridian_of_many_spans_turned_measures_as_pappus
+)
 # package(p) & (test(=a) | test(=b) | ...), for a package and its tests.
 tests_of() {
   local package=$1 tests="" t
@@ -53,7 +60,7 @@ tests_of() {
   for t in "$@"; do tests="${tests:+$tests | }test(=$t)"; done
   echo "package($package) & ($tests)"
 }
-filter="not ($(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}"))"
+filter="not ($(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}") | $(tests_of silico-kernel "${kernel_wall_clock[@]}"))"
 # Each test given 5 minutes a try, not the 2 its slow-timeout gives (.config/nextest.toml):
 # the shards run niced, and while gates build and test at full priority a niced test that
 # takes 20 s alone can take minutes. Ended at 2, under retries no longer than a burst of

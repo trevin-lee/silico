@@ -36,6 +36,8 @@ mod kernel;
 mod numbers;
 #[path = "common/oracle.rs"]
 mod oracle;
+#[path = "common/quadrature.rs"]
+mod quadrature;
 #[path = "../../silico-core/tests/common/sweeps.rs"]
 mod sweeps;
 
@@ -59,6 +61,8 @@ mod adversarial_fillet;
 mod adversarial_mesh;
 #[path = "adversarial_profile_faces.rs"]
 mod adversarial_profile_faces;
+#[path = "adversarial_revolution_measures.rs"]
+mod adversarial_revolution_measures;
 #[path = "adversarial_sketch_feature_build.rs"]
 mod adversarial_sketch_feature_build;
 #[path = "adversarial_sweep.rs"]
@@ -91,6 +95,8 @@ mod primitive_numbers;
 mod primitives;
 #[path = "profile_faces.rs"]
 mod profile_faces;
+#[path = "revolution_measures.rs"]
+mod revolution_measures;
 #[path = "sweep.rs"]
 mod sweep;
 #[path = "thin_wall.rs"]
