@@ -626,17 +626,20 @@ fn the_most_edges_a_scene_may_have_draw_within_the_limit_and_one_more_is_refused
 }
 
 #[test]
-fn ten_thousand_highlighted_faces_draw_within_a_tenth_of_the_limit() {
+fn ten_thousand_highlighted_faces_draw_within_half_the_limit() {
     // A large imported part has thousands of faces (NIST's CTC 02 has 487); each face is a
     // mesh and a draw of its own (the design's cost, M5's to meet), so 10,000 must still be
-    // a small part of the limit.
+    // well within the limit.
     let mut w = worker();
     let n = 10_000;
     let mut scene = with_mesh(400, 300, tiles(n));
     scene.bodies[0].highlight_faces = (0..6 + n).collect();
     let (took, result) = timed(&mut w, &scene);
     let (_, ids) = result.unwrap_or_else(|e| panic!("{took:?}: {e:?}"));
-    assert!(took < LIMIT / 10, "{took:?}");
+    // Half the limit: a tenth (3 s) held unloaded, but loaded gate runners took 3.37 s,
+    // 3.56 s, and 3.99 s (main at b896ede5, #164, #159). Half still catches a cost per body
+    // or face that grows past linear, and is what an agent's 30 s can count on.
+    assert!(took < LIMIT / 2, "{took:?}");
     let ids = ids.unwrap();
     // A tile's face, or (the tiles are under a pixel high) its edge.
     assert!(
@@ -1515,7 +1518,7 @@ fn a_position_past_f32_about_the_target_is_refused_not_an_internal_error() {
 }
 
 #[test]
-fn three_thousand_bodies_draw_within_a_tenth_of_the_limit_each_with_its_number() {
+fn three_thousand_bodies_draw_within_half_the_limit_each_with_its_number() {
     // A pattern of pins left unfused is a body each: each body is a line batch of its own
     // and each face a mesh of its own.
     let mut w = worker();
@@ -1533,7 +1536,10 @@ fn three_thousand_bodies_draw_within_a_tenth_of_the_limit_each_with_its_number()
     };
     let (took, result) = timed(&mut w, &scene);
     let (_, ids) = result.unwrap_or_else(|e| panic!("{took:?}: {e:?}"));
-    assert!(took < LIMIT / 10, "{took:?}");
+    // Half the limit: a tenth (3 s) held unloaded, but loaded gate runners took 3.37 s,
+    // 3.56 s, and 3.99 s (main at b896ede5, #164, #159). Half still catches a cost per body
+    // or face that grows past linear, and is what an agent's 30 s can count on.
+    assert!(took < LIMIT / 2, "{took:?}");
     // By hand: body k + 1's front face is x 0.4i to 0.4i + 0.3, z 0.2j to 0.2j + 0.15, about
     // the view's centre at (21, 7): the last row's first, j = 29 and i = 0 (body 2901), at
     // z 5.8 to 5.95; its front face's centre is (0.15, 5.875), 2 by 1 pixels, so its face's
