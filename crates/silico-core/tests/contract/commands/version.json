@@ -1,0 +1,140 @@
+{
+  "request": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`version`'s request: it has no fields. It takes no session, so its response's `session`\nis null.",
+    "title": "VersionRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "Limits": {
+        "additionalProperties": false,
+        "description": "The limits every command holds to (the design's section 6), each the value the commands\nuse. A request past one is refused, as `invalid_input`, unless its description says\notherwise.",
+        "properties": {
+          "document_bytes": {
+            "description": "The most bytes a document's canonical text may be: past it, an edit, a commit, or an\n`open` is refused.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "elements": {
+            "description": "The most entries an `elements` call lists: its `limit` at most.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kernel_seconds": {
+            "description": "How long one request to a kernel worker may take, in seconds: past it, the worker is\nstopped, a `worker_timeout`, which is the machine's fault, never the document's.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "listed": {
+            "description": "How many errors (or problems, or warnings) a response lists: the rest are counted,\nnever refused.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "published_reads": {
+            "description": "How many reads of the published model run at once in one session.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "query": {
+            "description": "The most entries a `query` returns: its `limit` at most.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "query_measures": {
+            "description": "The most ranges a `query`'s `measures` holds: one a measure.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "request_bytes": {
+            "description": "The most bytes a request may be, or a document's file `open` reads.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "request_depth": {
+            "description": "How deeply a request's values (or a document's) may nest.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "response_bytes": {
+            "description": "The most bytes a response may be: a command whose result would pass it is refused.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sessions": {
+            "description": "How many sessions one process holds open at once.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sketch_seconds": {
+            "description": "How long one sketch's solve may take, in seconds: past it, a `worker_timeout`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "document_bytes",
+          "elements",
+          "kernel_seconds",
+          "listed",
+          "published_reads",
+          "query",
+          "query_measures",
+          "request_bytes",
+          "request_depth",
+          "response_bytes",
+          "sessions",
+          "sketch_seconds"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`version`'s result.",
+    "properties": {
+      "api": {
+        "description": "The API's version: ask for it first. One more for each change to a shape that an\nolder client could misread.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "format": {
+        "description": "The document format's version, a document's `silico`.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "limits": {
+        "$ref": "#/$defs/Limits"
+      },
+      "naming": {
+        "description": "The naming scheme every element's name is in, a document's `naming`.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "api",
+      "format",
+      "limits",
+      "naming"
+    ],
+    "title": "VersionResult",
+    "type": "object"
+  }
+}

@@ -1,0 +1,184 @@
+{
+  "request": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`status`'s request: what the session holds, answered at once, even while another of its\ncommands runs. It never reads the file.",
+    "properties": {
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session"
+    ],
+    "title": "StatusRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "BeginResult": {
+        "additionalProperties": false,
+        "description": "`begin`'s result.",
+        "properties": {
+          "base": {
+            "description": "The revision the transaction began from: the one `rollback` returns to.",
+            "format": "uint64",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "base"
+        ],
+        "type": "object"
+      },
+      "PublishedRead": {
+        "description": "A command that reads the published model, by name, as a tool is named: what `status` lists among its reads, and `cancel` stops.",
+        "enum": [
+          "check",
+          "elements",
+          "query",
+          "mass_properties",
+          "distance",
+          "angle"
+        ],
+        "type": "string"
+      },
+      "Rebuild": {
+        "additionalProperties": false,
+        "description": "The session's current revision's rebuild.",
+        "properties": {
+          "revision": {
+            "description": "The revision it's of: the session's current one.",
+            "format": "uint64",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/$defs/RebuildState"
+          }
+        },
+        "required": [
+          "revision",
+          "state"
+        ],
+        "type": "object"
+      },
+      "RebuildState": {
+        "description": "What's become of a revision's rebuild.",
+        "oneOf": [
+          {
+            "const": "none",
+            "description": "Not started: no command has needed its model yet, or the gate refused the document,\nso there's nothing to rebuild.",
+            "type": "string"
+          },
+          {
+            "const": "running",
+            "description": "Running.",
+            "type": "string"
+          },
+          {
+            "const": "done",
+            "description": "Done, its model published.",
+            "type": "string"
+          },
+          {
+            "const": "faulted",
+            "description": "Done, but its model holds a kernel fault, kept as the revision's outcome (reads give\nit once, in the response's `model.fault`); or its recompute failed.",
+            "type": "string"
+          },
+          {
+            "const": "stopped",
+            "description": "Cancelled: the next command that needs its model starts it again.",
+            "type": "string"
+          }
+        ]
+      },
+      "SessionCommand": {
+        "description": "A command that runs in a session, by name, as a tool is named: what `status` says is running, and `cancel` stops.",
+        "enum": [
+          "close",
+          "begin",
+          "commit",
+          "rollback",
+          "format",
+          "add_feature",
+          "set_field",
+          "remove_feature",
+          "replace_text",
+          "text",
+          "outline",
+          "check",
+          "elements",
+          "query",
+          "mass_properties",
+          "distance",
+          "angle"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`status`'s result. What's running is a diagnostic, not a result: it depends on when it's\nasked.",
+    "properties": {
+      "features": {
+        "description": "How many features the document has: null if its text doesn't read as a document.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "gated": {
+        "description": "Whether the gate took the document.",
+        "type": "boolean"
+      },
+      "reads": {
+        "description": "Each read of the published model running, in the order they started: `cancel` stops\nevery one of a name.",
+        "items": {
+          "$ref": "#/$defs/PublishedRead"
+        },
+        "type": "array"
+      },
+      "rebuild": {
+        "$ref": "#/$defs/Rebuild"
+      },
+      "running": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/SessionCommand"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The session's queued command running, which `cancel` can stop: null if none is."
+      },
+      "transaction": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/BeginResult"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The transaction open, as `begin` answered it: null if none is."
+      }
+    },
+    "required": [
+      "features",
+      "gated",
+      "reads",
+      "rebuild",
+      "running",
+      "transaction"
+    ],
+    "title": "StatusResult",
+    "type": "object"
+  }
+}

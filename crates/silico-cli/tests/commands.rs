@@ -927,9 +927,9 @@ fn schema_prints_the_documents_or_a_commands_as_committed() {
         stderr(&out),
         "silico schema: invalid_input: of must be document or the name of a command with a \
          schema, got envelope (parameter of). Suggestion: give one of the candidates. \
-         Candidates: document, begin, commit, rollback, format, add_feature, set_field, \
-         remove_feature, replace_text, elements, query, schema, mass_properties, distance, \
-         angle.\n"
+         Candidates: document, version, open, close, status, cancel, begin, commit, rollback, \
+         format, add_feature, set_field, remove_feature, replace_text, text, outline, check, \
+         elements, query, schema, mass_properties, distance, angle.\n"
     );
     // Two names: a usage error.
     let out = schema(&["query", "elements"]);
