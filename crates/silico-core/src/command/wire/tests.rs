@@ -1038,7 +1038,9 @@ fn a_response_past_its_limit_is_answered_with_a_refusal_saying_so() {
 
 #[test]
 fn a_models_fault_is_written_in_the_error_contracts_shape() {
-    // Decision 32: the envelope's `model.fault`, the error contract's every field.
+    // Decision 32: the envelope's `model.fault`, the error contract's every field, its
+    // suggestion the worker's own (as the model read holds it) and then how a session's
+    // client tries again (R-M1: the session's advice is the wire's, not the CLI's).
     let faulted = Response {
         session: Some(session(7, false)),
         model: Some(ModelRead {
@@ -1068,12 +1070,31 @@ fn a_models_fault_is_written_in_the_error_contracts_shape() {
                 "elements_total": 0,
                 "parameter": null,
                 "cause": "the worker ended on signal 11 (SIGSEGV) during a fillet",
-                "suggestion": "edit the document to try again",
+                "suggestion": format!("edit the document to try again; to try again here: {KEPT}"),
                 "candidates": []
             }
         })
     );
+    // With no suggestion of its own, the advice alone. (A worker that couldn't be had names
+    // no feature: the model read holds it so (`met_fault`, tested through `kept_fault` in the
+    // session's tests); the wire writes the fault as it's held.)
+    let unavailable = Response {
+        model: Some(ModelRead {
+            revision: revision(6),
+            of: ModelChoice::Current,
+            fault: Some(Error::new(ErrorCode::WorkerUnavailable, "no worker")),
+        }),
+        ..faulted
+    };
+    let text = write(&response(&unavailable), Layout::Canonical).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(value["model"]["fault"]["suggestion"], KEPT);
 }
+
+/// What a kept fault's suggestion says on the wire, after the worker's own and "; to try
+/// again here: " (decision 32): reading the revision again won't, and what will, and what
+/// won't.
+const KEPT: &str = "reading this revision again won't, since it keeps the fault; an edit that changes the document, reopening the session, or (M4.3) check with fresh tries again; a save that writes only fingerprints keeps the fault";
 
 /// `wire_shape` closes an object, but leaves alone a schema that isn't one (an enum of
 /// names, as `SessionCommand` is): `additionalProperties` means nothing there.

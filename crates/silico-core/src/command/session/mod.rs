@@ -82,13 +82,14 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use super::edit::{self, FeatureIds};
-use super::{Faults, Gated, Problems};
+use super::{Gated, Problems};
 use crate::cache::Cache;
 use crate::document::json::Node;
 use crate::document::{self, FeatureId};
 #[cfg(doc)]
 use crate::file;
 use crate::kernel::{Clients, Kernel};
+use crate::recompute::SketchSolvers;
 use crate::sketch::SketchSolver;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
@@ -97,13 +98,12 @@ use cancel::{Interrupt, Ticket, Why, not_running};
 use edits::{as_committed, not_given_back};
 use holding::Holding;
 use rebuilds::{Rebuilds, Unbuilt, published_answer};
-pub(super) use rebuilds::{kept_fault, retried};
-use registry::{
-    Book, CacheOpener, Registry, Release, SketchStarter, Started, claim, reclaim, serve, start,
-};
+pub(super) use rebuilds::{kept_fault, kept_suggestion, retried};
+use registry::{Book, CacheOpener, Registry, Release, Started, claim, reclaim, serve, start};
 pub use threads::MAX_PUBLISHED_READS;
 use threads::{Counted, Reads, Threads};
 use transaction::{Claim, Held, Reload, Rereads, transaction_open};
+pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
     Added, Begun, Cancelled, CheckAnswer, Closed, Committed, FieldSet, ModelChoice, ModelRead,
@@ -285,34 +285,32 @@ impl<P: Clients + 'static> Sessions<P> {
     /// Sessions on `kernel`, opening each directory's cache with `open` (given the cache's
     /// directory, `.silico-cache/` beside the document) the first time a session on a
     /// document in it opens (or, if two open at once, by each, the first value kept), every
-    /// later session sharing that value: for tests, a cache with a secret of their own. A
-    /// cache without the user's secret, which keeps nothing, isn't kept, so the next open
-    /// in its directory tries again.
+    /// later session sharing that value. A cache without the user's secret, which keeps
+    /// nothing, isn't kept, so the next open in its directory tries again. For tests, a
+    /// cache with a secret of their own; for a client that rebuilds nothing (`silico
+    /// show`), one that keeps nothing and never reads the user's secret
+    /// ([`Cache::unsealed`]).
     pub fn with_cache_opener(
         kernel: P,
         open: impl Fn(&Path) -> Cache + Send + Sync + 'static,
     ) -> Self {
-        Self::build(kernel, Box::new(open), None)
+        Self::build(kernel, Box::new(open), SketchSolvers::workers())
     }
 
     /// Sessions on `kernel` with stand-ins, for tests: each directory's cache opened with
-    /// `open`, as [`with_cache_opener`](Self::with_cache_opener) does, and each session's
-    /// sketches solved with what `start` starts (`fake::FakeSketches`), rather than the
-    /// sketch worker. `start` is called from each session's engine, on its own thread, so
-    /// it's `Fn` and `Sync`.
+    /// `open`, as [`with_cache_opener`](Self::with_cache_opener) does, and sketches solved
+    /// with what `start` starts (`fake::FakeSketches`), rather than the sketch worker: the
+    /// solvers every session shares, `start` called when none is idle
+    /// ([`SketchSolvers`]).
     pub fn with_stand_ins(
         kernel: P,
         open: impl Fn(&Path) -> Cache + Send + Sync + 'static,
         start: impl Fn() -> Result<Box<dyn SketchSolver>, Error> + Send + Sync + 'static,
     ) -> Self {
-        Self::build(kernel, Box::new(open), Some(Arc::new(start)))
+        Self::build(kernel, Box::new(open), SketchSolvers::starting(start))
     }
 
-    fn build(
-        kernel: P,
-        open_cache: Box<CacheOpener>,
-        sketches: Option<Arc<SketchStarter>>,
-    ) -> Self {
+    fn build(kernel: P, open_cache: Box<CacheOpener>, sketches: SketchSolvers) -> Self {
         Sessions {
             registry: Arc::new(Registry {
                 kernel,
@@ -631,9 +629,10 @@ impl<P: Clients + 'static> Sessions<P> {
                     Ok(current) => {
                         *model = Some(current.read);
                         let _span = tracing::info_span!("check").entered();
-                        super::check_except(&current.model, current.reached.get(), Faults::Aside)
-                            .map(answer)
-                            .map_err(Problems::from)
+                        Ok(answer(super::check_except(
+                            &current.model,
+                            current.reached.get(),
+                        )))
                     }
                     Err(Unbuilt::Gated(problems)) => Ok(answer(problems)),
                     Err(Unbuilt::Unavailable(problems)) => Err(problems),
@@ -642,9 +641,7 @@ impl<P: Clients + 'static> Sessions<P> {
             ModelChoice::Published => {
                 self.read_model(session, "check", ModelChoice::Published, move |read| {
                     let _span = tracing::info_span!("check").entered();
-                    super::check_except(read.model(), read.reached(), Faults::Aside)
-                        .map(answer)
-                        .map_err(Problems::from)
+                    Ok(answer(super::check_except(read.model(), read.reached())))
                 })
             }
         }

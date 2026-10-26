@@ -29,7 +29,7 @@ pub fn check_bytes<K: Kernel + 'static>(
     bytes: &[u8],
 ) -> Result<Problems, Error> {
     match command::gate(bytes) {
-        Ok(checked) => command::check(&*rebuilt(engine, checked)?),
+        Ok(checked) => Ok(command::check(&*rebuilt(engine, checked)?)),
         Err(problems) => Ok(problems),
     }
 }
@@ -40,7 +40,7 @@ pub fn format_bytes<K: Kernel + 'static>(
     bytes: &[u8],
 ) -> Result<Result<Formatted, Problems>, Error> {
     match command::gate(bytes) {
-        Ok(checked) => command::format(&*rebuilt(engine, checked)?),
+        Ok(checked) => Ok(command::format(&*rebuilt(engine, checked)?)),
         Err(problems) => Ok(Err(problems)),
     }
 }

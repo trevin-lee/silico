@@ -340,12 +340,19 @@ impl ToWire for SessionInfo {
 
 impl ToWire for ModelRead {
     /// Its revision, whether it was the current or the published, and the kernel fault its
-    /// rebuild met, if it met one, kept as the revision's outcome (decision 32).
+    /// rebuild met, if it met one, kept as the revision's outcome (decision 32): its
+    /// suggestion the worker's own, then how a session's client tries again
+    /// (`kept_suggestion`).
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("revision", self.revision.to_wire()),
             ("of", self.of.to_wire()),
-            ("fault", Json::or_null(self.fault.as_ref(), Error::to_wire)),
+            (
+                "fault",
+                Json::or_null(self.fault.as_ref(), |fault| {
+                    error_with(fault, Json::string(super::session::kept_suggestion(fault)))
+                }),
+            ),
         ])
     }
 }
@@ -353,24 +360,29 @@ impl ToWire for ModelRead {
 impl ToWire for Error {
     /// The error contract's shape (`tests/contract/error-full.json`), field for field.
     fn to_wire(&self) -> Json<'_> {
-        Json::object([
-            ("code", Json::str(self.code().as_str())),
-            ("message", Json::str(self.message())),
-            ("feature", Json::or_null(self.feature(), Json::str)),
-            (
-                "elements",
-                Json::array(self.elements().iter().map(|e| Json::str(e))),
-            ),
-            ("elements_total", Json::whole(self.elements_total())),
-            ("parameter", Json::or_null(self.parameter(), Json::str)),
-            ("cause", Json::or_null(self.cause(), Json::str)),
-            ("suggestion", Json::or_null(self.suggestion(), Json::str)),
-            (
-                "candidates",
-                Json::array(self.candidates().iter().map(|c| Json::str(c))),
-            ),
-        ])
+        error_with(self, Json::or_null(self.suggestion(), Json::str))
     }
+}
+
+/// `error` in the error contract's shape, `suggestion` its suggestion.
+fn error_with<'a>(error: &'a Error, suggestion: Json<'a>) -> Json<'a> {
+    Json::object([
+        ("code", Json::str(error.code().as_str())),
+        ("message", Json::str(error.message())),
+        ("feature", Json::or_null(error.feature(), Json::str)),
+        (
+            "elements",
+            Json::array(error.elements().iter().map(|e| Json::str(e))),
+        ),
+        ("elements_total", Json::whole(error.elements_total())),
+        ("parameter", Json::or_null(error.parameter(), Json::str)),
+        ("cause", Json::or_null(error.cause(), Json::str)),
+        ("suggestion", suggestion),
+        (
+            "candidates",
+            Json::array(error.candidates().iter().map(|c| Json::str(c))),
+        ),
+    ])
 }
 
 /// A list of problems as a result or the envelope writes them: the first

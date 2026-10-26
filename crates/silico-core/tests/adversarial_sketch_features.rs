@@ -860,7 +860,7 @@ fn format_keeps_a_sweeps_stored_fingerprint_and_says_why() {
     let sketch = empty_sketch("s0000001", "S", "xy");
     let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new());
     let model = published(&engine, checked_document(&[&sketch, &pad_text]));
-    let formatted = command::format(&model).unwrap().unwrap();
+    let formatted = command::format(&model).unwrap();
     // The stored fingerprint is kept, byte for byte, and nothing was refingerprinted.
     assert!(
         formatted

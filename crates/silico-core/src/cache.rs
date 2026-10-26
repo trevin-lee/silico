@@ -230,6 +230,13 @@ impl Cache {
         Self::new(dir.into(), this_platform(), secret)
     }
 
+    /// A cache in `dir` that keeps nothing and reads nothing, never reading or making the
+    /// user's secret: for a client that rebuilds nothing (`silico show`), whose sessions
+    /// need a cache to open.
+    pub fn unsealed(dir: impl Into<PathBuf>) -> Self {
+        Self::new(dir.into(), this_platform(), None)
+    }
+
     /// The cache in `dir`, for this platform, sealed with the secret in `secret_file` (made
     /// if there's none): for tests and tools; a session uses [`open`](Self::open).
     pub fn with_secret(dir: impl Into<PathBuf>, secret_file: &Path) -> Self {

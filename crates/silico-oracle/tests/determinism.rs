@@ -200,7 +200,7 @@ fn run(cases: &[Case]) -> Digests {
 /// history), digested on a fresh worker, under the case's name.
 fn run_features() -> Digests {
     let cases = features::load(Path::new(CASES)).unwrap().unwrap();
-    let engine = Recompute::new(KernelPool::start().unwrap());
+    let engine = Recompute::new(KernelPool::start());
     let model = rebuild(&engine, cases.document.clone()).unwrap().unwrap();
     let mut kernel = KernelWorker::start().unwrap();
     cases
