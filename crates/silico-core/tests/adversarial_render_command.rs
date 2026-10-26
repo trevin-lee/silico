@@ -93,9 +93,12 @@ impl Bench {
             .collect()
     }
 
+    /// How many points the render asked the kernel to classify: asked, not started, as a
+    /// render stops at the first body that holds its eye and drops the rest, which a thread
+    /// may or may not have taken by then.
     fn classified(&self) -> usize {
         self.kernel
-            .calls()
+            .asked()
             .iter()
             .filter(|c| matches!(c.op, Op::Classify { .. }))
             .count()

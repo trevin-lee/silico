@@ -117,6 +117,27 @@ fn waiting_for_running_requests_without_a_time_limit() {
 }
 
 #[test]
+fn a_request_waiting_behind_a_held_one_is_asked_but_not_started() {
+    // One thread, its request held: a second waits, asked but not started, and is asked
+    // still if its caller drops it, whether or not a thread ever takes it.
+    let kernel = FakeKernel::new(1).unwrap();
+    let hold = kernel.hold(|_| true);
+    let first = kernel.submit(Generation(0), KernelRequest::echo(Blob::inline(vec![1])));
+    assert!(kernel.wait_running(1, WAIT));
+    let second = kernel.submit(Generation(0), KernelRequest::echo(Blob::inline(vec![2])));
+    assert_eq!((kernel.asked().len(), kernel.calls().len()), (2, 1));
+    drop(second);
+    assert_eq!(kernel.asked().len(), 2);
+    hold.release();
+    done(within(first, "the held request"));
+    let asked: Vec<Op> = kernel.asked().into_iter().map(|c| c.op).collect();
+    assert!(
+        matches!(&asked[..], [Op::Echo { .. }, Op::Echo { .. }]),
+        "{asked:?}"
+    );
+}
+
+#[test]
 fn waiting_for_no_running_requests_is_at_once() {
     let kernel = FakeKernel::new(1).unwrap();
     assert!(kernel.wait_running(0, Duration::ZERO));
