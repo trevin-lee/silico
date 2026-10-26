@@ -20,6 +20,7 @@ use crate::recompute::{Model, Recompute, RunOutcome};
 
 mod edit;
 pub mod elements;
+mod lookup;
 pub mod measure;
 pub mod render;
 pub mod schema;
