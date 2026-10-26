@@ -12,7 +12,7 @@ use super::listing::{answer, fixture};
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::export::{Export, ExportFormat};
-use silico_core::command::{ModelChoice, Sessions};
+use silico_core::command::{CheckModel, Sessions};
 use silico_core::document::Length;
 use silico_core::fake::{FakeClient, FakeKernel, FakeSketches};
 use silico_core::kernel::{Clients, Kernel, KernelRequest, Op};
@@ -127,7 +127,7 @@ fn an_export_cancelled_once_meshed_answers_cancelled_and_writes_no_file() {
     std::fs::write(&file, EXAMPLE).unwrap();
     let s = answer(sessions.open(file, false)).session.unwrap().id;
     // Rebuilt first, so the one request running once it's asked is the export's mesh.
-    answer(sessions.check(&s, ModelChoice::Current))
+    answer(sessions.check(&s, CheckModel::Current { fresh: false }))
         .result
         .unwrap();
     let out = dir.path().join("out");

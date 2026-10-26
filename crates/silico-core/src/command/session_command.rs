@@ -21,6 +21,7 @@ pub enum SessionCommand {
     Text,
     Outline,
     Check,
+    CacheClear,
     Elements,
     Query,
     MassProperties,
@@ -32,7 +33,7 @@ pub enum SessionCommand {
 
 impl SessionCommand {
     /// Every command that runs in a session, in the design's order.
-    pub const ALL: [SessionCommand; 19] = [
+    pub const ALL: [SessionCommand; 20] = [
         SessionCommand::Close,
         SessionCommand::Begin,
         SessionCommand::Commit,
@@ -45,6 +46,7 @@ impl SessionCommand {
         SessionCommand::Text,
         SessionCommand::Outline,
         SessionCommand::Check,
+        SessionCommand::CacheClear,
         SessionCommand::Elements,
         SessionCommand::Query,
         SessionCommand::MassProperties,
@@ -69,6 +71,7 @@ impl SessionCommand {
             SessionCommand::Text => "text",
             SessionCommand::Outline => "outline",
             SessionCommand::Check => "check",
+            SessionCommand::CacheClear => "cache_clear",
             SessionCommand::Elements => "elements",
             SessionCommand::Query => "query",
             SessionCommand::MassProperties => "mass_properties",

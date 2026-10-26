@@ -1000,6 +1000,7 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "text",
                 "outline",
                 "check",
+                "cache_clear",
                 "elements",
                 "query",
                 "schema",

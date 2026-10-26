@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, session};
+use cache::{HOLE, Scratch, calls, example_with_pin, hole, session, subdirectory_files};
 use cache_format::{KeptDescription, MAGIC, Measure, decode, encode, entry_path};
 use describing::{asked, fused_boxes, fused_tree, settled};
 use example::EXAMPLE;
@@ -598,7 +598,7 @@ fn a_solids_batches_are_sent_four_at_a_time_and_joined_in_order() {
 /// described as its summary counts.
 #[track_caller]
 fn assert_no_entry_half_measured(dir: &Path) {
-    for file in files(dir) {
+    for file in subdirectory_files(dir) {
         let bytes = std::fs::read(&file).unwrap();
         if !bytes.starts_with(MAGIC) {
             continue;

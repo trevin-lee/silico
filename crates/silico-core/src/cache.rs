@@ -525,6 +525,78 @@ impl Cache {
         self.usage.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// The directory it keeps its entries in (`.silico-cache/` beside a document), as it
+    /// was given, with no trailing slash and no `.` components.
+    pub fn directory(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Removes every entry in its directory (`cache_clear`, docs/design/m4.1-command-api.md,
+    /// section 7 and decision 25): this cache's, those of other secrets, platforms, and
+    /// kernels beside them, and none of anything else. An entry is what the cache writes and
+    /// [`scan`] counts ([`walk`] finds them for both): a regular file named by
+    /// [`ENTRY_DIGITS`] lowercase hex digits in a subdirectory named by
+    /// [`SUBDIRECTORY_DIGITS`]. Left are its `.gitignore`, its subdirectories (a write under
+    /// way may be about to put its entry in one), partial files (another process's write
+    /// under way, whose rename would then fail; a stale one is removed by the next put's
+    /// scan), and anything else, under any name; nothing is followed through a link, the
+    /// directory's own included (a cache through a link keeps nothing there, so none is
+    /// removed). An entry removed is only a miss: one another process reads as it's removed
+    /// is read whole, from the file it holds open, and one renamed into place after it's
+    /// listed is left, whole (M2.5's sealed entries: an entry is whole or absent, never
+    /// trusted half-written). Read and removed in order of name, so what it says of a failure
+    /// is the same each time.
+    ///
+    /// Each directory is found to be no link, then listed, by its path: a process that
+    /// replaces one with a link between the two (one that may write in `.silico-cache/`
+    /// already, as only this user's may) has the clear list the link's target, and remove
+    /// what's named as an entry there. Never more: removing a file never follows a link at its
+    /// own name. Listing each directory from a handle opened without following links would
+    /// close that gap; the standard library lists directories only by path.
+    ///
+    /// How many entries it removed (not those another process removed first); or, if any
+    /// couldn't be removed, or a directory of the cache couldn't be read, each, with how many
+    /// it removed of the rest. Its next put scans the directory again, since what this cache
+    /// knew of its size is gone.
+    pub fn clear(&self) -> Result<u64, PartlyCleared> {
+        let span = tracing::info_span!(
+            "cache.clear",
+            dir = %self.dir.display(),
+            removed = tracing::field::Empty,
+            failed = tracing::field::Empty,
+        );
+        let _entered = span.enter();
+        let mut clearing = PartlyCleared::default();
+        // A directory that's a link (followed nowhere), a file, or nothing holds no entry of
+        // the cache's.
+        match std::fs::symlink_metadata(&self.dir).map(|meta| meta.is_dir()) {
+            Ok(true) => walk(&self.dir, |found| match found {
+                Walked::Entry(path, _) => clearing.remove(path),
+                Walked::Partial(..) => {}
+                Walked::Unread(path, why) => clearing.failed(path, ClearStep::Read, why),
+                Walked::Unknown(path, why) => clearing.failed(path, ClearStep::Remove, why),
+            }),
+            Ok(false) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => clearing.failed(&self.dir, ClearStep::Read, e),
+        }
+        // What it knew of the directory's size is gone: its next put scans it.
+        self.usage().known = None;
+        span.record("removed", clearing.removed);
+        span.record("failed", clearing.total);
+        if clearing.total == 0 {
+            tracing::info!(removed = clearing.removed, "cleared the cache");
+            Ok(clearing.removed)
+        } else {
+            tracing::warn!(
+                removed = clearing.removed,
+                failed = clearing.total,
+                "cleared the cache, but for what couldn't be removed or read"
+            );
+            Err(clearing)
+        }
+    }
+
     /// Whether it has the user's secret to seal entries with: without it, it keeps nothing.
     pub(crate) fn sealed(&self) -> bool {
         self.secret.is_some()
@@ -568,8 +640,186 @@ impl Cache {
     /// holds every entry.
     fn path(&self, key: &EntryKey) -> PathBuf {
         let hex = crate::hex(&key.0);
-        self.dir.join(&hex[..2]).join(&hex[2..])
+        let (subdirectory, name) = hex.split_at(SUBDIRECTORY_DIGITS);
+        self.dir.join(subdirectory).join(name)
     }
+}
+
+/// What [`Cache::clear`] did when it couldn't do all of it: how many entries it removed, and
+/// each file it couldn't remove and each directory of the cache it couldn't read, the first
+/// [`CLEAR_FAILURES_LISTED`] in order of path, with how many there were in all.
+#[derive(Debug, Default)]
+pub struct PartlyCleared {
+    /// The entries it removed.
+    pub removed: u64,
+    /// The first of what it couldn't do, in the order it met them.
+    pub failures: Vec<ClearFailure>,
+    /// How many there were, listed or not.
+    pub total: u64,
+}
+
+/// How many of what [`Cache::clear`] couldn't do are listed: as many as a response lists
+/// (`document::PROBLEMS_LISTED`).
+pub const CLEAR_FAILURES_LISTED: usize = crate::document::PROBLEMS_LISTED;
+
+/// One thing [`Cache::clear`] couldn't do: where, what, and why.
+#[derive(Debug)]
+pub struct ClearFailure {
+    /// The entry it couldn't remove, or the directory it couldn't read.
+    pub path: PathBuf,
+    /// Which of the two.
+    pub step: ClearStep,
+    /// What the system said.
+    pub why: std::io::Error,
+}
+
+/// What [`Cache::clear`] was doing at a path when it failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClearStep {
+    /// Removing an entry (or reading what it is, first): the entry is left.
+    Remove,
+    /// Reading a directory of the cache: what's in it, if anything, is left.
+    Read,
+}
+
+impl PartlyCleared {
+    /// `path` counted as where it failed at `step`, for `why`; listed if there's room.
+    fn failed(&mut self, path: &Path, step: ClearStep, why: std::io::Error) {
+        self.total += 1;
+        if self.failures.len() < CLEAR_FAILURES_LISTED {
+            self.failures.push(ClearFailure {
+                path: path.to_owned(),
+                step,
+                why,
+            });
+        }
+    }
+
+    /// The entry at `path` removed, and counted, unless another process removed it first.
+    fn remove(&mut self, path: &Path) {
+        match remove_file(path) {
+            Ok(true) => self.removed += 1,
+            Ok(false) => {}
+            Err(e) => self.failed(path, ClearStep::Remove, e),
+        }
+    }
+}
+
+/// How many lowercase hex digits name a subdirectory of the cache: an entry key's first
+/// byte's, so no directory holds every entry.
+const SUBDIRECTORY_DIGITS: usize = 2;
+
+/// How many lowercase hex digits name an entry in its subdirectory: the rest of its key's.
+const ENTRY_DIGITS: usize = 2 * std::mem::size_of::<EntryKey>() - SUBDIRECTORY_DIGITS;
+
+/// Whether `name` is a subdirectory's of the cache, in which its entries are.
+fn is_entry_directory(name: &std::ffi::OsStr) -> bool {
+    is_hex(name, SUBDIRECTORY_DIGITS)
+}
+
+/// Whether `name` is an entry's, in a subdirectory of the cache.
+fn is_entry_name(name: &std::ffi::OsStr) -> bool {
+    is_hex(name, ENTRY_DIGITS)
+}
+
+/// Removes the file (or link, never followed) at `path`: whether this removed it, not
+/// another process first.
+fn remove_file(path: &Path) -> std::io::Result<bool> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// What [`walk`] finds in a cache's directory, as it finds it.
+enum Walked<'a> {
+    /// A partial file's name (a write's, under way or killed), in the directory or a
+    /// subdirectory, of whatever type, and its metadata (a link's own).
+    Partial(&'a Path, &'a std::fs::Metadata),
+    /// An entry: a regular file named as one in a subdirectory named as one, and its
+    /// metadata.
+    Entry(&'a Path, &'a std::fs::Metadata),
+    /// A directory of the cache it couldn't read, or list whole (what of it could be listed
+    /// is walked), or a name of a subdirectory's whose metadata it couldn't read.
+    Unread(&'a Path, std::io::Error),
+    /// A name of an entry's whose metadata it couldn't read.
+    Unknown(&'a Path, std::io::Error),
+}
+
+/// Walks the cache in `dir`, following no link below it, each directory in order of name:
+/// its partial files and its entries, and each directory and name it couldn't read, given
+/// to `visit` as it finds them. What has any other name, at either level, is passed over,
+/// unread; what's gone as it's read (another process's clear or eviction) without a word.
+/// The one way the cache's layout is read: [`scan`] and [`Cache::clear`] both walk it.
+fn walk(dir: &Path, mut visit: impl FnMut(Walked<'_>)) {
+    for (name, path) in names_in(dir, &mut visit) {
+        let partial = is_partial(&name);
+        if !partial && !is_entry_directory(&name) {
+            continue;
+        }
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) if partial => continue,
+            Err(e) => {
+                visit(Walked::Unread(&path, e));
+                continue;
+            }
+        };
+        if partial {
+            visit(Walked::Partial(&path, &meta));
+            continue;
+        }
+        if !meta.is_dir() {
+            // A file or a link at a subdirectory's name: not the cache's.
+            continue;
+        }
+        for (name, path) in names_in(&path, &mut visit) {
+            let partial = is_partial(&name);
+            if !partial && !is_entry_name(&name) {
+                continue;
+            }
+            match std::fs::symlink_metadata(&path) {
+                Ok(meta) if partial => visit(Walked::Partial(&path, &meta)),
+                Ok(meta) if meta.is_file() => visit(Walked::Entry(&path, &meta)),
+                // A link, a directory, a pipe at an entry's name: not one the cache made.
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) if partial => {}
+                Err(e) => visit(Walked::Unknown(&path, e)),
+            }
+        }
+    }
+}
+
+/// The names in the directory `dir`, and their paths, in order of name; one that can't be
+/// read (or listed whole) given to `visit`, as what's in it that can be is listed. Nothing,
+/// without a word, for a directory gone (another process's clear, say).
+fn names_in(dir: &Path, visit: &mut impl FnMut(Walked<'_>)) -> Vec<(std::ffi::OsString, PathBuf)> {
+    let items = match std::fs::read_dir(dir) {
+        Ok(items) => items,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) => {
+            visit(Walked::Unread(dir, e));
+            return Vec::new();
+        }
+    };
+    let mut names = Vec::new();
+    let mut unread = None;
+    for item in items {
+        match item {
+            Ok(item) => names.push((item.file_name(), item.path())),
+            Err(e) => {
+                unread.get_or_insert(e);
+            }
+        }
+    }
+    if let Some(e) = unread {
+        visit(Walked::Unread(dir, e));
+    }
+    names.sort();
+    names
 }
 
 /// Whether `path` is a symbolic link (not followed).
@@ -632,11 +882,13 @@ struct Scan {
 }
 
 /// Lists the entries of the cache in `dir`, and removes its partial files last written
-/// [`STALE_PARTIAL`] or more from `now`. Reads metadata only, and follows no link: an entry
-/// is a regular file named by 62 hex digits in a subdirectory named by two; a partial is a
-/// file named `.partial-…` in either. Anything else is left, and not counted; nor are this
-/// process's own partials not yet stale, which its puts count as being written (a process
-/// keeps one cache, and its clones, for a directory: two would each miss the other's).
+/// [`STALE_PARTIAL`] or more from `now`. Reads metadata only, and follows no link
+/// ([`walk`]): an entry is a regular file named by [`ENTRY_DIGITS`] hex digits in a
+/// subdirectory named by [`SUBDIRECTORY_DIGITS`]; a partial is a file named `.partial-…` in
+/// either. Anything else is left, and not counted; nor are this process's own partials not
+/// yet stale, which its puts count as being written (a process keeps one cache, and its
+/// clones, for a directory: two would each miss the other's). What it can't read it passes
+/// over.
 fn scan(dir: &Path, now: SystemTime) -> Scan {
     let mut found = Scan {
         entries: Vec::new(),
@@ -645,31 +897,15 @@ fn scan(dir: &Path, now: SystemTime) -> Scan {
         warned: false,
     };
     let own = format!(".partial-{}-", std::process::id());
-    for item in list(dir) {
-        let name = item.file_name();
-        let path = item.path();
-        let Ok(meta) = std::fs::symlink_metadata(&path) else {
-            continue;
-        };
-        if is_partial(&name) {
-            found.remove_or_count_partial(&path, &meta, now, &own);
-        } else if meta.is_dir() && is_hex(&name, 2) {
-            for file in list(&path) {
-                let name = file.file_name();
-                let path = file.path();
-                let Ok(meta) = std::fs::symlink_metadata(&path) else {
-                    continue;
-                };
-                if is_partial(&name) {
-                    found.remove_or_count_partial(&path, &meta, now, &own);
-                } else if meta.is_file() && is_hex(&name, 62) {
-                    let used = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                    found.bytes = found.bytes.saturating_add(u128::from(meta.len()));
-                    found.entries.push((used, path, meta.len()));
-                }
-            }
+    walk(dir, |item| match item {
+        Walked::Partial(path, meta) => found.remove_or_count_partial(path, meta, now, &own),
+        Walked::Entry(path, meta) => {
+            let used = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            found.bytes = found.bytes.saturating_add(u128::from(meta.len()));
+            found.entries.push((used, path.to_owned(), meta.len()));
         }
-    }
+        Walked::Unread(..) | Walked::Unknown(..) => {}
+    });
     found
 }
 
@@ -703,9 +939,8 @@ impl Scan {
     /// Removes the file (or link) at `path`, warning of a failure (once a scan): whether
     /// it's gone, as it is if another session removed it first.
     fn remove(&mut self, path: &Path) -> bool {
-        match std::fs::remove_file(path) {
-            Ok(()) => true,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        match remove_file(path) {
+            Ok(_) => true,
             Err(e) => {
                 if !std::mem::replace(&mut self.warned, true) {
                     tracing::warn!(path = %path.display(), "couldn't remove a cache file: {e}");
@@ -737,11 +972,6 @@ fn evict(found: &mut Scan, target: u128) -> (usize, u128) {
     }
     found.entries = kept;
     (evicted, evicted_bytes)
-}
-
-/// The items in the directory `dir`, or none if it can't be read.
-fn list(dir: &Path) -> impl Iterator<Item = std::fs::DirEntry> {
-    std::fs::read_dir(dir).into_iter().flatten().flatten()
 }
 
 /// Whether `name` is a partial file's: one [`new_file`] makes.
@@ -1051,6 +1281,44 @@ fn new_file(dir: &Path, mode: u32) -> std::io::Result<(PathBuf, std::fs::File)> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clear_lists_the_first_hundred_of_what_it_couldnt_do_and_counts_them_all() {
+        // The design's section 7: the first hundred listed, all counted. 101 met: the
+        // first hundred, in the order met, and 101 in all.
+        let mut partly = PartlyCleared::default();
+        for n in 0..101 {
+            partly.failed(
+                &PathBuf::from(format!("/cache/{n:03}")),
+                ClearStep::Remove,
+                std::io::Error::from_raw_os_error(libc::EACCES),
+            );
+        }
+        assert_eq!(partly.failures.len(), 100);
+        assert_eq!(partly.total, 101);
+        let listed: Vec<PathBuf> = partly.failures.iter().map(|f| f.path.clone()).collect();
+        let first: Vec<PathBuf> = (0..100)
+            .map(|n| PathBuf::from(format!("/cache/{n:03}")))
+            .collect();
+        assert_eq!(listed, first);
+        assert_eq!(partly.removed, 0);
+    }
+
+    #[test]
+    fn an_entrys_path_is_its_keys_first_two_hex_digits_then_the_other_62() {
+        // The layout scan and clear walk: 32 bytes of key, 64 hex digits, two for the
+        // subdirectory and 62 for the name.
+        let cache = Cache::unsealed("/cache");
+        let mut key = [0_u8; 32];
+        key[0] = 0xab;
+        key[31] = 0x01;
+        let path = cache.path(&EntryKey(key));
+        let name = format!("{}01", "0".repeat(60));
+        assert_eq!(path, Path::new("/cache/ab").join(&name));
+        assert!(is_entry_directory(std::ffi::OsStr::new("ab")));
+        assert!(is_entry_name(std::ffi::OsStr::new(&name)));
+        assert!(!is_entry_name(std::ffi::OsStr::new(&name[1..])));
+    }
 
     /// A directory of its own for one test, removed after.
     struct Scratch(PathBuf);
@@ -1682,5 +1950,57 @@ mod tests {
         for taken in (n + 1..=n + 8).chain(n + 10..=n + 18) {
             assert_eq!(std::fs::read(named(taken)).unwrap(), b"planted");
         }
+    }
+
+    /// What [`walk`] gave its visitor, as data: what it found, and where.
+    fn walked(found: Walked<'_>) -> (&'static str, PathBuf) {
+        match found {
+            Walked::Partial(path, _) => ("partial", path.to_owned()),
+            Walked::Entry(path, _) => ("entry", path.to_owned()),
+            Walked::Unread(path, _) => ("unread", path.to_owned()),
+            Walked::Unknown(path, _) => ("unknown", path.to_owned()),
+        }
+    }
+
+    #[test]
+    fn a_walk_of_a_cache_directory_gone_finds_nothing_and_says_nothing() {
+        // Another process's clear (or the user) removed the directory before it's listed:
+        // nothing in it, and nothing it couldn't read.
+        let scratch = Scratch::new("walk-gone");
+        let gone = scratch.0.join("cache");
+        let mut seen = Vec::new();
+        walk(&gone, |found| seen.push(walked(found)));
+        assert_eq!(seen, []);
+    }
+
+    #[test]
+    fn a_walk_passes_over_an_entry_or_a_subdirectory_removed_after_its_listed() {
+        // Another process's clear or eviction removes what this walk has listed but not
+        // yet looked at: an entry beside the one it's at, and the subdirectory after it.
+        // The visitor removes both as it's given the first entry, after both were listed
+        // (`00` with its two names, before either is looked at; `01` before `00` is walked):
+        // each is passed over without a word, as if it had never been there.
+        let scratch = Scratch::new("walk-raced");
+        let entry = |sub: &str, byte: char| {
+            scratch
+                .0
+                .join(sub)
+                .join(byte.to_string().repeat(ENTRY_DIGITS))
+        };
+        let (first, second, later) = (entry("00", 'a'), entry("00", 'b'), entry("01", 'c'));
+        for path in [&first, &second, &later] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"an entry").unwrap();
+        }
+        let mut seen = Vec::new();
+        walk(&scratch.0, |found| {
+            if matches!(&found, Walked::Entry(path, _) if *path == first.as_path()) {
+                std::fs::remove_file(&second).unwrap();
+                std::fs::remove_dir_all(scratch.0.join("01")).unwrap();
+            }
+            seen.push(walked(found));
+        });
+        assert_eq!(seen, [("entry", first.clone())]);
+        assert!(first.is_file() && !second.exists() && !later.exists());
     }
 }

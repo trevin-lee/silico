@@ -7,7 +7,7 @@ use std::time::SystemTime;
 use silico_core::fake::FakeKernel;
 use silico_core::recompute::Recompute;
 
-use crate::cache::{cache, files};
+use crate::cache::{cache, subdirectory_files};
 
 /// A fresh session over the cache in `dir`, bounded at `bound` bytes, on a fake of `size`.
 pub fn bounded_on(dir: &Path, bound: u64, size: usize) -> Recompute<FakeKernel> {
@@ -22,7 +22,7 @@ pub fn bounded(dir: &Path, bound: u64) -> Recompute<FakeKernel> {
 /// The bytes of every file in the cache's subdirectories, its entries and partial files,
 /// by length (links' own).
 pub fn total(dir: &Path) -> u64 {
-    files(dir)
+    subdirectory_files(dir)
         .iter()
         .map(|file| std::fs::symlink_metadata(file).unwrap().len())
         .sum()

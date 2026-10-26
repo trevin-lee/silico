@@ -696,17 +696,21 @@ fn crashed_cut(text: &str) -> Bench {
     })
 }
 
-/// `e` is the crashed worker's fault, worded as a read of the revision keeps it (reading
-/// it again won't try again).
+/// `e` is the crashed worker's fault, worded as a session keeps it: with no advice of the
+/// worker's own, a crash that met a feature says to check with fresh, then to report the
+/// document if it crashes the worker again (M4.1 §6, as built in M4.3).
 fn is_the_crash(e: &Error) {
     assert_eq!(
         (e.code(), e.message()),
         (ErrorCode::WorkerCrashed, "the kernel worker crashed"),
         "{e:?}"
     );
-    assert!(
-        e.suggestion()
-            .is_some_and(|s| s.contains("reading this revision again won't")),
+    assert_eq!(
+        e.suggestion(),
+        Some(
+            "check with fresh to try it again; if the same feature crashes the worker again, \
+             report it with the document"
+        ),
         "{e:?}"
     );
 }

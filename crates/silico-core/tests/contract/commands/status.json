@@ -132,6 +132,7 @@
           "text",
           "outline",
           "check",
+          "cache_clear",
           "elements",
           "query",
           "mass_properties",

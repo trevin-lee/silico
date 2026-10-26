@@ -72,6 +72,7 @@
 //! queued and not yet run.
 
 mod cancel;
+mod clearing;
 mod edits;
 mod holding;
 mod rebuilds;
@@ -94,12 +95,13 @@ use crate::document::{self, FeatureId};
 use crate::file;
 use crate::file::{Workspace, shown_path};
 use crate::kernel::{Clients, Kernel};
-use crate::recompute::SketchSolvers;
+use crate::recompute::{self, SketchSolvers};
 use crate::sketch::SketchSolver;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
 use cancel::{Interrupt, Ticket, Why, not_running};
+use clearing::{leads_out, partly_cleared_problems, shown_cache_directory};
 use edits::{as_committed, not_given_back};
 use holding::Holding;
 use rebuilds::{Newest, Rebuilds, Unbuilt, published_answer};
@@ -113,10 +115,10 @@ use transaction::{Claim, Held, Reload, Rereads, transaction_open};
 pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
-    Added, Begun, Cancelled, CheckAnswer, Closed, Committed, FieldSet, ModelChoice, ModelRead,
-    Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild, RebuildState,
-    Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running, SessionId,
-    SessionInfo, Status, Stopper, TextAnswer,
+    Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, FieldSet,
+    ModelChoice, ModelRead, Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild,
+    RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
+    SessionId, SessionInfo, Status, Stopper, TextAnswer,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 
@@ -168,6 +170,10 @@ struct Session<C: Kernel + 'static> {
     /// Where its commands wait as each starts, in this crate's tests only.
     #[cfg(test)]
     gate: Gate,
+    /// Where `cache_clear` waits once it has settled, before it removes anything, in this
+    /// crate's tests only.
+    #[cfg(test)]
+    settled: Gate,
 }
 
 /// Where a file a command writes may go ([`Sessions::write_rules`]).
@@ -654,14 +660,25 @@ impl<P: Clients + 'static> Sessions<P> {
         })
     }
 
-    /// `session`'s document's problems ([`super::check`]) from the model `choice` names
-    /// (decision 33), and its warnings (none yet).
+    /// `session`'s document's problems ([`super::check`]) from the model `model` names
+    /// (decision 33), and its warnings (none yet): a `check` request's `model` and `fresh`,
+    /// as the wire reads them (`CheckRequest::model`).
     ///
     /// The current revision's: the gate's problems, if it refused the document, or, from the
     /// session's current revision rebuilt (waited for, and started if it hasn't been:
     /// decision 13), each failed feature's and each drift of a feature no edit reached since
     /// the last save (decision 28: a reached feature's stored fingerprint was measured from
     /// other inputs, and a commit writes its new one).
+    ///
+    /// With `fresh` (the design's section 7, M4.3), the current revision rebuilt with every
+    /// step built anew, as SolidWorks' forced rebuild (Ctrl+Q) does, reading nothing kept,
+    /// neither in the session's engine (its steps' results, the refusals among them, its
+    /// sketches' solves) nor in the cache on disk
+    /// ([`Recompute::start_fresh`](crate::recompute::Recompute::start_fresh)), though what it
+    /// builds is kept in both, so the next rebuild hits it. A kernel fault the revision kept
+    /// as its outcome (decision 32) is tried again, and the model this rebuild publishes is
+    /// the revision's from then on, the fault's or not. For a document the gate refused, the
+    /// gate's problems, nothing rebuilt.
     ///
     /// Or the newest published model's, answered at once from what the session's rebuilds
     /// have published, never waiting for a rebuild or queueing behind its commands, as every
@@ -676,35 +693,26 @@ impl<P: Clients + 'static> Sessions<P> {
     /// given once, beside them, in the response's `model` ([`ModelRead::fault`]), and kept as
     /// the revision's outcome, so the next check of the revision reads the same model
     /// (decision 32).
-    pub fn check(&self, session: &SessionId, choice: ModelChoice) -> Running<CheckAnswer> {
-        let answer = |problems| CheckAnswer {
-            problems,
-            warnings: Problems::none(),
-        };
-        match choice {
-            ModelChoice::Current => self.queued(
+    pub fn check(&self, session: &SessionId, model: CheckModel) -> Running<CheckAnswer> {
+        match model {
+            CheckModel::Current { fresh } => self.check_current(
                 session,
-                SessionCommand::Check,
-                move |session, stop, model| match session.current(stop) {
-                    Ok(current) => {
-                        *model = Some(current.read);
-                        let _span = tracing::info_span!("check").entered();
-                        Ok(answer(super::check_except(
-                            &current.model,
-                            current.reached.get(),
-                        )))
-                    }
-                    Err(Unbuilt::Gated(problems)) => Ok(answer(problems)),
-                    Err(Unbuilt::Unavailable(problems)) => Err(problems),
+                if fresh {
+                    recompute::Reads::Nothing
+                } else {
+                    recompute::Reads::Kept
                 },
             ),
-            ModelChoice::Published => self.read_model(
+            CheckModel::Published => self.read_model(
                 session,
                 ReadCommand::Check,
                 ModelChoice::Published,
                 move |read| {
                     let _span = tracing::info_span!("check").entered();
-                    Ok(answer(super::check_except(read.model(), read.reached())))
+                    Ok(CheckAnswer::of(super::check_except(
+                        read.model(),
+                        read.reached(),
+                    )))
                 },
             ),
         }
@@ -735,6 +743,85 @@ impl<P: Clients + 'static> Sessions<P> {
                 reached: &current.reached,
             })
         })
+    }
+
+    /// `check` of `session`'s current model, its rebuild reading what's kept as `reads` says.
+    fn check_current(&self, session: &SessionId, reads: recompute::Reads) -> Running<CheckAnswer> {
+        self.queued(
+            session,
+            SessionCommand::Check,
+            move |session, stop, model| match session.current_with(stop, reads) {
+                Ok(current) => {
+                    *model = Some(current.read);
+                    let fresh = reads == recompute::Reads::Nothing;
+                    let _span = tracing::info_span!("check", fresh).entered();
+                    Ok(CheckAnswer::of(super::check_except(
+                        &current.model,
+                        current.reached.get(),
+                    )))
+                }
+                Err(Unbuilt::Gated(problems)) => Ok(CheckAnswer::of(problems)),
+                Err(Unbuilt::Unavailable(problems)) => Err(problems),
+            },
+        )
+    }
+
+    /// `cache_clear` (the design's section 7, M4.3; decision 25): every entry of the
+    /// rebuild cache beside `session`'s document removed ([`Cache::clear`]), the
+    /// directory's, shared by every document in it, and only the files the cache made as
+    /// entries: never another file in `.silico-cache/`, its `.gitignore`, the partial files
+    /// of writes under way (another process's, whose rename would fail), its subdirectories,
+    /// or the user's secret, which isn't in it; never through a link. An entry removed is
+    /// only a miss, and one another process is reading it reads whole (it holds the file
+    /// open); one written after it's listed is left, whole. Answers with the directory, as
+    /// the session's path names it, and how many entries it removed. Refused, `io_failed`,
+    /// naming each file it couldn't remove and each directory it couldn't read (the first
+    /// hundred, all counted), having removed every other. Settled before it removes any, so
+    /// a cancel that comes after it starts comes too late. It never reads the session's
+    /// file (decision 2, as `close`): it needs nothing of the document, so a file gone or
+    /// changed neither refuses it nor moves the session's revision; and it runs inside a
+    /// transaction too. In a workspace (decision 26), the directory is named from its root,
+    /// and whether it leads out of it is checked as it clears: nothing is removed through one
+    /// that does then (`removed` 0), and one inside then is cleared, whatever it was as the
+    /// session opened.
+    pub fn cache_clear(&self, session: &SessionId) -> Running<CacheCleared> {
+        self.queued_with(
+            session,
+            SessionCommand::CacheClear,
+            Rereads::Never,
+            |session, stop, _, _| {
+                // The engine's own cache: a stand-in that writes nothing if its directory led
+                // out of the workspace as the session opened (`Registry::cache`); whether this
+                // clear goes through is checked below, as it clears.
+                let cache = lock(&session.rebuilds).cache.clone();
+                let path = session.held.read().path.clone();
+                let workspace = session.workspace.as_ref();
+                let directory = shown_cache_directory(workspace, &path, cache.directory());
+                stop.settle()?;
+                #[cfg(test)]
+                session.settled.pass();
+                // Checked as it's cleared (decision 26: where a path resolves): nothing is
+                // removed through a directory that leads out now, through any link on its way.
+                if leads_out(workspace, cache.directory()) {
+                    tracing::warn!(
+                        dir = %cache.directory().display(),
+                        "the cache directory leads out of the workspace: removing nothing"
+                    );
+                    return Ok(CacheCleared {
+                        directory,
+                        removed: 0,
+                    });
+                }
+                match cache.clear() {
+                    Ok(removed) => Ok(CacheCleared { directory, removed }),
+                    Err(partly) => Err(partly_cleared_problems(
+                        &directory,
+                        cache.directory(),
+                        partly,
+                    )),
+                }
+            },
+        )
     }
 
     /// Runs `read` on the model `choice` names, off the caller's thread (decision 33), as

@@ -10,8 +10,8 @@ use std::time::Duration;
 #[cfg(doc)]
 use super::Sessions;
 use super::cancel::Ticket;
-use super::rebuilds::Newest;
 use super::rebuilds::met_fault;
+use super::rebuilds::{Label, Newest};
 use super::transaction::Reached;
 use super::{Problems, ReadCommand, SessionCommand};
 #[cfg(doc)]
@@ -306,6 +306,17 @@ impl ModelChoice {
     }
 }
 
+/// The model a `check` reads (decision 33; the design's section 7): the current one,
+/// rebuilt with every step built anew if `fresh` (M4.3, as SolidWorks' forced rebuild,
+/// Ctrl+Q), or the published one, read as it is, never rebuilt, so never fresh. On the
+/// wire, `model` and `fresh` (`wire::reads::CheckRequest`, whose reader refuses `fresh` true
+/// with the published model): what [`Sessions::check`](super::Sessions::check) takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckModel {
+    Current { fresh: bool },
+    Published,
+}
+
 /// The newest model a session's rebuilds published, and the revision it's the model of (the
 /// same as its response's `model.revision`): the revision it was rebuilt from, or, after a
 /// rollback, the new revision whose state is the one it was rebuilt from (the design's
@@ -318,6 +329,10 @@ pub struct Published {
     pub revision: Revision,
     pub model: Arc<Model>,
     pub(crate) reached: Reached,
+    /// The rebuild whose watcher published it, if one did (none for a rollback's restored
+    /// model or a save's rebound one): so a fresh read answers only with its own rebuild's
+    /// model, never one of a rebuild it superseded that the engine published first.
+    pub(super) by: Option<Label>,
 }
 
 /// A command running on its session's thread: wait for its answer, poll it, cancel it, or
@@ -489,6 +504,28 @@ pub struct CheckAnswer {
     /// codes of their own: this type changes with the first warning code, when warnings
     /// are made.
     pub warnings: Problems,
+}
+
+impl CheckAnswer {
+    /// The answer of a check that found `problems`, and no warnings (none are made yet).
+    pub(super) fn of(problems: Problems) -> Self {
+        CheckAnswer {
+            problems,
+            warnings: Problems::none(),
+        }
+    }
+}
+
+/// What `cache_clear` answers (the design's section 7): the rebuild cache's directory, as
+/// the session's path names it (`.silico-cache` beside `bracket.silico`, `parts/.silico-cache`
+/// beside `parts/bracket.silico`; where it is, through links, if the path is a link from
+/// another directory), and how many entries it removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheCleared {
+    /// The cache's directory, as the session's path names it.
+    pub directory: String,
+    /// How many entries this clear removed (not those another process removed first).
+    pub removed: u64,
 }
 
 /// What `begin` answers: the revision the transaction began from, which `rollback` returns

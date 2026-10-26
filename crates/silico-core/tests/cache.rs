@@ -17,7 +17,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Barrier};
 
-use cache::{HOLE, Scratch, cache, calls, example_with_pin, files, hole, session};
+use cache::{HOLE, Scratch, cache, calls, example_with_pin, hole, session, subdirectory_files};
 use example::EXAMPLE;
 use model::{checked, described, made, published};
 use silico_core::cache::Cache;
@@ -37,7 +37,7 @@ fn a_document_built_once_is_rebuilt_from_the_cache_with_no_kernel_call() {
         ["Cut", "MakeBox", "MakeCylinder", "Translate"]
     );
     // One entry per step.
-    assert_eq!(files(&dir.0).len(), 4);
+    assert_eq!(subdirectory_files(&dir.0).len(), 4);
     drop(first);
     let second = session(&dir.0);
     let again = published(&second, checked(EXAMPLE));
@@ -114,7 +114,7 @@ fn another_platform_misses_everything() {
         ["Cut", "MakeBox", "MakeCylinder", "Translate"]
     );
     // Both platforms' entries are kept, side by side.
-    assert_eq!(files(&dir.0).len(), 8);
+    assert_eq!(subdirectory_files(&dir.0).len(), 8);
 }
 
 /// Damages an entry's bytes, given another entry's.
@@ -148,7 +148,7 @@ fn an_entry_that_doesnt_hold_together_is_rebuilt_and_written_over() {
     for (damage, damaged) in damages {
         let dir = Scratch::new(&format!("corrupt-{damage}"));
         published(&session(&dir.0), checked(EXAMPLE));
-        let files = files(&dir.0);
+        let files = subdirectory_files(&dir.0);
         let (victim, other) = (&files[0], &files[1]);
         let sound = std::fs::read(victim).unwrap();
         std::fs::write(victim, damaged(&sound, &std::fs::read(other).unwrap())).unwrap();
@@ -171,7 +171,7 @@ fn any_sound_entry_under_another_steps_name_is_refused() {
     let count = {
         let dir = Scratch::new("pairs-count");
         published(&session(&dir.0), checked(EXAMPLE));
-        files(&dir.0).len()
+        subdirectory_files(&dir.0).len()
     };
     // The block, the pin and its move, and the cut.
     assert_eq!(count, 4);
@@ -179,7 +179,7 @@ fn any_sound_entry_under_another_steps_name_is_refused() {
         for planted in (0..count).filter(|&p| p != victim) {
             let dir = Scratch::new(&format!("pairs-{victim}-{planted}"));
             let built = published(&session(&dir.0), checked(EXAMPLE));
-            let files = files(&dir.0);
+            let files = subdirectory_files(&dir.0);
             let other = std::fs::read(&files[planted]).unwrap();
             std::fs::write(&files[victim], other).unwrap();
             let second = session(&dir.0);
@@ -207,7 +207,7 @@ fn failures_arent_kept_on_disk() {
     });
     published(&first, checked(EXAMPLE));
     // The block's make only: the pin failed, and the cut was blocked.
-    assert_eq!(files(&dir.0).len(), 1);
+    assert_eq!(subdirectory_files(&dir.0).len(), 1);
     // Another session asks the kernel again, and builds.
     let second = session(&dir.0);
     let model = published(&second, checked(EXAMPLE));
@@ -228,7 +228,7 @@ fn a_solid_that_couldnt_be_measured_is_kept_on_disk_unmeasured_and_measured_next
         let model = published(&first, checked(EXAMPLE));
         assert_eq!(model.drift().len(), 3, "{code:?}");
         // Every step, the features' solids unmeasured.
-        assert_eq!(files(&dir.0).len(), 4, "{code:?}");
+        assert_eq!(subdirectory_files(&dir.0).len(), 4, "{code:?}");
         let second = session(&dir.0);
         let model = published(&second, checked(EXAMPLE));
         assert!(calls(&second).is_empty(), "{code:?}: {:?}", calls(&second));
@@ -297,7 +297,7 @@ fn the_cache_ignores_itself_in_any_repository() {
         Cache::with_secret(&dir, &secret.secret()),
     );
     published(&engine, checked(EXAMPLE));
-    assert_eq!(files(&dir).len(), 4);
+    assert_eq!(subdirectory_files(&dir).len(), 4);
     assert_eq!(git(&["status", "--porcelain", "--untracked-files=all"]), "");
     // A sound one is left as it is when more entries are written: not written again.
     let ignore = || {
@@ -309,7 +309,7 @@ fn the_cache_ignores_itself_in_any_repository() {
     };
     let first = ignore();
     published(&engine, example_with_pin("3"));
-    assert_eq!(files(&dir).len(), 7);
+    assert_eq!(subdirectory_files(&dir).len(), 7);
     assert_eq!(ignore(), first);
 }
 
@@ -354,7 +354,7 @@ fn a_damaged_secret_keeps_nothing_and_fails_nothing() {
         std::fs::write(dir.secret(), bytes).unwrap();
         let first = session(&dir.0);
         assert_eq!(hole(&published(&first, checked(EXAMPLE))), HOLE, "{damage}");
-        assert!(files(&dir.0).is_empty(), "{damage}");
+        assert!(subdirectory_files(&dir.0).is_empty(), "{damage}");
         // Left as it was, for the user to look at: not replaced under entries sealed with it.
         assert_eq!(std::fs::read(dir.secret()).unwrap(), bytes, "{damage}");
     }
@@ -456,7 +456,7 @@ fn a_relative_home_is_ignored() {
     let cwd = Scratch::new("relative-home-cwd");
     std::fs::create_dir_all(&cwd.0).unwrap();
     session_with(&dir.0, &cwd.0, &[("HOME", Path::new("relative"))]);
-    assert!(!dir.0.exists(), "{:?}", files(&dir.0));
+    assert!(!dir.0.exists(), "{:?}", subdirectory_files(&dir.0));
     assert_eq!(std::fs::read_dir(&cwd.0).unwrap().count(), 0);
 }
 
@@ -468,7 +468,7 @@ fn with_no_home_a_session_keeps_nothing() {
     let cwd = Scratch::new("no-home-cwd");
     std::fs::create_dir_all(&cwd.0).unwrap();
     session_with(&dir.0, &cwd.0, &[]);
-    assert!(!dir.0.exists(), "{:?}", files(&dir.0));
+    assert!(!dir.0.exists(), "{:?}", subdirectory_files(&dir.0));
     assert_eq!(std::fs::read_dir(&cwd.0).unwrap().count(), 0);
 }
 
@@ -521,7 +521,7 @@ fn caches_of_two_secrets_in_one_directory_keep_each_others_entries() {
         calls(&first),
         ["Cut", "MakeBox", "MakeCylinder", "Translate"]
     );
-    assert_eq!(files(&dir.0).len(), 8);
+    assert_eq!(subdirectory_files(&dir.0).len(), 8);
     let mine = session(&dir.0);
     published(&mine, checked(EXAMPLE));
     assert!(calls(&mine).is_empty(), "{:?}", calls(&mine));
@@ -608,7 +608,7 @@ fn a_linked_cache_takes_nothing_kept_where_it_points() {
         ),
         checked(EXAMPLE),
     );
-    assert_eq!(files(&target).len(), 4);
+    assert_eq!(subdirectory_files(&target).len(), 4);
     let link = base.0.join(".silico-cache");
     std::os::unix::fs::symlink("target", &link).unwrap();
     let engine = Recompute::with_cache(
@@ -677,7 +677,7 @@ fn a_cache_takes_nothing_kept_behind_subdirectories_that_are_links() {
         calls(&engine),
         ["Cut", "MakeBox", "MakeCylinder", "Translate"]
     );
-    assert_eq!(files(&kept).len(), 4);
+    assert_eq!(subdirectory_files(&kept).len(), 4);
 }
 
 #[test]

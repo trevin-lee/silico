@@ -26,6 +26,31 @@ const EXAMPLE: &str = r#"{
 }
 "#;
 
+/// The entries of the cache `dir`, in order of path, found as the cache finds its own: a
+/// regular file named by 62 lowercase hex digits in a subdirectory named by two, no link
+/// followed. A copy of silico-core's `tests/common/cache_control.rs` `entries` (this crate's
+/// tests can't load that file): keep the two alike.
+fn entries(dir: &Path) -> Vec<PathBuf> {
+    let hex = |name: &str, digits: usize| {
+        name.len() == digits && name.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    };
+    let mut found = Vec::new();
+    for sub in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let named = sub.file_name().to_str().is_some_and(|name| hex(name, 2));
+        if !named || !std::fs::symlink_metadata(sub.path()).unwrap().is_dir() {
+            continue;
+        }
+        for file in std::fs::read_dir(sub.path()).unwrap().flatten() {
+            let named = file.file_name().to_str().is_some_and(|name| hex(name, 62));
+            if named && std::fs::symlink_metadata(file.path()).unwrap().is_file() {
+                found.push(file.path());
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
 /// A directory of its own for one test, removed after.
 struct Scratch(PathBuf);
 
@@ -942,7 +967,8 @@ fn schema_prints_the_documents_or_a_commands_as_committed() {
          schema, got envelope (parameter of). Suggestion: give one of the candidates. \
          Candidates: document, version, open, close, status, cancel, begin, commit, rollback, \
          format, add_feature, set_field, remove_feature, replace_text, text, outline, check, \
-         elements, query, schema, mass_properties, distance, angle, render, export.\n"
+         cache_clear, elements, query, schema, mass_properties, distance, angle, render, \
+         export.\n"
     );
     // Two names: a usage error.
     let out = schema(&["query", "elements"]);
@@ -1297,4 +1323,311 @@ fn checking_files_with_sketches_starts_one_sketch_worker() {
     let out = run::output(cmd);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(stderr(&out).matches("started sketch worker").count(), 1);
+}
+
+/// `silico ARGS FILE` on the real workers, logging their starts: its output, and how many
+/// kernel workers it started.
+fn run_counting_workers(scratch: &Scratch, args: &[&str], file: &Path) -> (Output, usize) {
+    let exe = Path::new(env!("CARGO_BIN_EXE_silico"));
+    let mut cmd = Command::new(exe);
+    cmd.args(args)
+        .arg(file)
+        .env(
+            "SILICO_KERNEL_WORKER",
+            exe.with_file_name("silico-kernel-worker"),
+        )
+        .env(
+            "SILICO_SKETCH_WORKER",
+            exe.with_file_name("silico-sketch-worker"),
+        )
+        .env("XDG_CACHE_HOME", scratch.0.join("cache-home"))
+        .env("SILICO_LOG", "silico_core::worker=debug")
+        .stdin(Stdio::null());
+    let out = run::output(cmd);
+    let started = stderr(&out).matches("started kernel worker").count();
+    (out, started)
+}
+
+#[test]
+fn check_fresh_rebuilds_from_the_kernel_with_a_full_cache_and_leaves_it_full() {
+    // M4.3: `--fresh` reads nothing of the cache, so the block is made on a worker though
+    // its entry is there; and what it builds is kept, so a plain check after starts none.
+    let scratch = Scratch::new("check-fresh");
+    let file = scratch.file(EXAMPLE);
+    let (out, started) = run_counting_workers(&scratch, &["check"], &file);
+    assert_eq!(
+        (out.status.code(), started),
+        (Some(0), 1),
+        "{}",
+        stderr(&out)
+    );
+    let (out, started) = run_counting_workers(&scratch, &["check"], &file);
+    assert_eq!(
+        (out.status.code(), started),
+        (Some(0), 0),
+        "{}",
+        stderr(&out)
+    );
+    let (out, started) = run_counting_workers(&scratch, &["check", "--fresh"], &file);
+    assert_eq!(
+        (out.status.code(), started),
+        (Some(0), 1),
+        "{}",
+        stderr(&out)
+    );
+    let (out, started) = run_counting_workers(&scratch, &["check"], &file);
+    assert_eq!(
+        (out.status.code(), started),
+        (Some(0), 0),
+        "{}",
+        stderr(&out)
+    );
+    // With `--json`, the same line as a plain check's, in either order of the options.
+    for args in [
+        &["check", "--fresh", "--json"][..],
+        &["check", "--json", "--fresh"],
+    ] {
+        let out = silico(&scratch, args, &file);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(
+            line,
+            serde_json::json!({"file": file.display().to_string(), "ok": true, "problems": [], "total": 0})
+        );
+    }
+    // A document with problems is exit 1, fresh or not; a misspelt option is a usage error.
+    let bad = scratch.file(&EXAMPLE.replace(r#""length": 40"#, r#""length": 0"#));
+    assert_eq!(
+        silico(&scratch, &["check", "--fresh"], &bad).status.code(),
+        Some(1)
+    );
+    let out = silico(&scratch, &["check", "--frseh"], &bad);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).starts_with("silico check: no option \"--frseh\"\n"),
+        "{}",
+        stderr(&out)
+    );
+    // `fmt` takes no `--fresh`.
+    assert_eq!(
+        silico(&scratch, &["fmt", "--fresh"], &bad).status.code(),
+        Some(2)
+    );
+}
+
+#[test]
+fn cache_clear_removes_the_entries_beside_a_file_and_says_how_many() {
+    let scratch = Scratch::new("cache-clear");
+    let file = scratch.file(EXAMPLE);
+    let (out, started) = run_counting_workers(&scratch, &["check"], &file);
+    assert_eq!(
+        (out.status.code(), started),
+        (Some(0), 1),
+        "{}",
+        stderr(&out)
+    );
+    let cache = scratch.0.join(".silico-cache");
+    let stray = cache.join("notes.txt");
+    std::fs::write(&stray, b"mine").unwrap();
+    // No kernel is needed, nor the cache's secret (none is made where it would be, as
+    // `show` makes none): the block's one entry removed. Run as it is, not through
+    // `run::output`, which gives each run a secret.
+    let clear = || {
+        Command::new(env!("CARGO_BIN_EXE_silico"))
+            .args(["cache", "clear"])
+            .arg(&file)
+            .env("SILICO_KERNEL_WORKER", "/nonexistent")
+            .env("XDG_CACHE_HOME", scratch.0.join("no-cache-home"))
+            .env_remove("SILICO_LOG")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let out = clear();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        format!(
+            "{}: removed 1 entry from {}\n",
+            file.display(),
+            cache.display()
+        )
+    );
+    assert!(!scratch.0.join("no-cache-home").exists());
+    assert_eq!(std::fs::read(&stray).unwrap(), b"mine");
+    let out = clear();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        format!(
+            "{}: removed 0 entries from {}\n",
+            file.display(),
+            cache.display()
+        )
+    );
+    // A miss: the next check makes the block again.
+    let (out, started) = run_counting_workers(&scratch, &["check"], &file);
+    assert_eq!(
+        (out.status.code(), started),
+        (Some(0), 1),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn cache_without_clear_or_a_file_is_a_usage_error_and_a_file_it_cant_read_exit_2() {
+    let scratch = Scratch::new("cache-usage");
+    let file = scratch.file(EXAMPLE);
+    let run = |args: &[&str]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_silico"));
+        cmd.args(args)
+            .current_dir(&scratch.0)
+            .env("XDG_CACHE_HOME", scratch.0.join("cache-home"))
+            .env_remove("SILICO_LOG")
+            .stdin(Stdio::null());
+        run::output(cmd)
+    };
+    for (args, said) in [
+        (&["cache"][..], "silico cache: which? clear\n"),
+        (
+            &["cache", "wipe", "part.silico"],
+            "silico cache: no subcommand \"wipe\"\n",
+        ),
+        (
+            &["cache", "--all", "clear", "part.silico"],
+            "silico cache: no option \"--all\"\n",
+        ),
+        (&["cache", "clear"], "usage: "),
+    ] {
+        let out = run(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert!(stderr(&out).starts_with(said), "{args:?}: {}", stderr(&out));
+    }
+    // `clear` and then `--` ends the options, so a file may be named like one.
+    let dashed = scratch.0.join("--all.silico");
+    std::fs::write(&dashed, EXAMPLE).unwrap();
+    let out = run(&["cache", "clear", "--", "--all.silico"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    // A file that isn't there: exit 2, as check's.
+    let out = run(&["cache", "clear", "missing.silico"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("io_failed"), "{}", stderr(&out));
+    // A cache whose entry can't be removed: said, exit 2.
+    let out = silico(&scratch, &["check"], &file);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let cache = scratch.0.join(".silico-cache");
+    let sub = entries(&cache)[0].parent().unwrap().to_owned();
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o555)).unwrap();
+    if std::fs::write(sub.join("probe"), b"").is_err() {
+        let out = run(&["cache", "clear", "part.silico"]);
+        assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+        assert!(
+            stderr(&out).contains("io_failed: couldn't remove the cache's entry"),
+            "{}",
+            stderr(&out)
+        );
+    }
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn cache_clear_of_several_files_says_each_and_exits_with_the_worst() {
+    // Two documents, each in a directory of its own, each with a cache of one entry (the
+    // block's) beside it.
+    let scratch = Scratch::new("cache-clear-several");
+    let dirs = [scratch.0.join("one"), scratch.0.join("two")];
+    let files: Vec<PathBuf> = dirs
+        .iter()
+        .map(|dir| {
+            std::fs::create_dir_all(dir).unwrap();
+            let file = dir.join("part.silico");
+            std::fs::write(&file, EXAMPLE).unwrap();
+            file
+        })
+        .collect();
+    let caches: Vec<PathBuf> = dirs.iter().map(|dir| dir.join(".silico-cache")).collect();
+    let check_all = || {
+        for file in &files {
+            let out = silico(&scratch, &["check"], file);
+            assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        }
+    };
+    // The files cleared in the order `order` names them.
+    let clear = |order: [usize; 2]| {
+        Command::new(env!("CARGO_BIN_EXE_silico"))
+            .args(["cache", "clear"])
+            .args(order.map(|i| &files[i]))
+            .env("SILICO_KERNEL_WORKER", "/nonexistent")
+            .env("XDG_CACHE_HOME", scratch.0.join("no-cache-home"))
+            .env_remove("SILICO_LOG")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    // Both cleared: a line each, in the order named, exit 0.
+    check_all();
+    let out = clear([0, 1]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        format!(
+            "{}: removed 1 entry from {}\n{}: removed 1 entry from {}\n",
+            files[0].display(),
+            caches[0].display(),
+            files[1].display(),
+            caches[1].display()
+        )
+    );
+    // The first's entry can't be removed: said, the second cleared all the same, and the
+    // run couldn't do all it was asked (exit 2), whichever comes first: named first, so a
+    // run that took the last file's exit would exit 0; or named last, so one that took the
+    // first's would.
+    let failing = |file: usize, entry: &Path| {
+        format!(
+            "{}: io_failed: couldn't remove the cache's entry \"{}\": Permission denied (os \
+             error 13): the clear removed 0 entries and left what it couldn't remove or read. \
+             Suggestion: check that this user may read and write the cache's directory and \
+             its subdirectories, then clear it again: an entry left is still sound, and one \
+             removed is only a miss.\n",
+            files[file].display(),
+            entry.display(),
+        )
+    };
+    let cleared = |file: usize| {
+        format!(
+            "{}: removed 1 entry from {}\n",
+            files[file].display(),
+            caches[file].display()
+        )
+    };
+    for order in [[0, 1], [1, 0]] {
+        check_all();
+        let first = entries(&caches[0]);
+        assert_eq!(first.len(), 1, "{first:?}");
+        let entry = &first[0];
+        let sub = entry.parent().unwrap();
+        std::fs::set_permissions(sub, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::write(sub.join("probe"), b"").is_ok() {
+            return; // root
+        }
+        let out = clear(order);
+        std::fs::set_permissions(sub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(out.status.code(), Some(2), "{order:?}: {}", stderr(&out));
+        // What's said of each file (the cache's warning, logged at the default level, aside).
+        let told: String = stderr(&out)
+            .lines()
+            .filter(|line| !line.contains(" WARN silico_core::cache: "))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let said: String = order
+            .map(|file| match file {
+                0 => failing(0, entry),
+                _ => cleared(1),
+            })
+            .concat();
+        assert_eq!(told, said, "{order:?}");
+        assert!(entry.is_file());
+        assert_eq!(entries(&caches[1]), Vec::<PathBuf>::new());
+    }
 }

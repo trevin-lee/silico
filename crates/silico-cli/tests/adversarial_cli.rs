@@ -1366,7 +1366,7 @@ fn schema_with_odd_arguments_is_a_schema_a_refusal_or_usage_never_a_panic() {
                  with a schema, got {shown} (parameter of). Suggestion: give one of the \
                  candidates. Candidates: document, version, open, close, status, cancel, \
                  begin, commit, rollback, format, add_feature, set_field, remove_feature, \
-                 replace_text, text, outline, check, elements, query, schema, \
+                 replace_text, text, outline, check, cache_clear, elements, query, schema, \
                  mass_properties, distance, angle, render, export.\n"
             ),
             "{name:?}"

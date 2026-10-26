@@ -18,7 +18,7 @@ use super::refusals;
 
 use std::sync::Arc;
 
-use cache::{HOLE, Scratch, calls, files, hole, session};
+use cache::{HOLE, Scratch, calls, hole, session, subdirectory_files};
 use cache_format::{KeptDescription, Measure, decode, entry_path};
 use describing::{asked, fused_boxes, settled};
 use example::EXAMPLE;
@@ -255,7 +255,7 @@ fn a_description_refused_for_its_values_keeps_the_summary_and_the_refusal() {
         assert!(calls(&second).is_empty(), "{code:?}: {:?}", calls(&second));
         assert_eq!(asked(second.kernel(), "Summarize"), 0, "{code:?}");
         assert!(again.drift().is_empty(), "{code:?}: {:?}", again.drift());
-        assert!(!files(&dir.0).is_empty());
+        assert!(!subdirectory_files(&dir.0).is_empty());
         if lasting {
             // A session that would describe them asks nothing, and says the same.
             assert!(second.kernel().calls().is_empty(), "{code:?}");

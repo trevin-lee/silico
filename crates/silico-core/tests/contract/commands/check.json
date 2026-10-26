@@ -22,8 +22,7 @@
     "description": "`check`'s request: the document's problems and warnings, from the model named.",
     "properties": {
       "fresh": {
-        "const": false,
-        "description": "Only false, for now: a check that rebuilds every step without reading the rebuild\ncache isn't built yet, and true is refused.",
+        "description": "Whether to rebuild the current revision with every step built anew, reading nothing\nkept, in memory or in the rebuild cache (still keeping what it builds, so later\nrebuilds hit it), as a forced rebuild does: it tries again a kernel fault the\nrevision keeps. Usually false. True only with model current: a read of the published\nmodel never rebuilds.",
         "type": "boolean"
       },
       "model": {
