@@ -22,6 +22,10 @@ use silico_protocol::{Blob, ShapeData};
 
 const CONE: f64 = 125.0 * PI / 3.0;
 const ROD: f64 = 20.0 * PI;
+/// The cone's area: its side πr·√(r² + h²) = 25√2π, and its base 25π.
+const CONE_AREA: f64 = 25.0 * std::f64::consts::SQRT_2 * PI + 25.0 * PI;
+/// The rod's area: its side 2πrl = 40π, and its two ends 2π.
+const ROD_AREA: f64 = 42.0 * PI;
 
 fn data(name: &str) -> ShapeData {
     ShapeData::unchecked(Blob::inline(fixture(name)))
@@ -43,6 +47,12 @@ fn a_rod_touching_a_pointed_cones_side_is_fused_cut_and_commoned_as_by_hand() {
         .unwrap_or_else(|e| panic!("fuse: {e}"));
     let s = k.summarize(&fuse.shape).unwrap();
     assert!(s.valid, "fuse: {s:?}");
+    // Both solids' faces, edges, and vertices, nothing more: the cone's side and base, the
+    // rod's side and ends (5); the cone's seam, base circle, and degenerated apex edge, the
+    // rod's seam and end circles (6); the cone's apex and base vertex, the rod's two (4).
+    // FreeCAD's fuse of the same B-reps has the same counts.
+    assert_eq!((s.faces, s.edges, s.vertices), (5, 6, 4), "fuse: {s:?}");
+    assert!(close(s.area, CONE_AREA + ROD_AREA), "fuse: {s:?}");
     assert!(
         close(s.volume, CONE + ROD),
         "fuse: {} for {}",
@@ -55,6 +65,10 @@ fn a_rod_touching_a_pointed_cones_side_is_fused_cut_and_commoned_as_by_hand() {
         .unwrap_or_else(|e| panic!("cut: {e}"));
     let s = k.summarize(&cut.shape).unwrap();
     assert!(s.valid, "cut: {s:?}");
+    // The cone's own, as FreeCAD's cut has them: its side and base, its seam, base circle,
+    // and degenerated apex edge, and its apex and base vertex.
+    assert_eq!((s.faces, s.edges, s.vertices), (2, 3, 2), "cut: {s:?}");
+    assert!(close(s.area, CONE_AREA), "cut: {s:?}");
     assert!(close(s.volume, CONE), "cut: {} for {CONE}", s.volume);
     // The common: nothing, refused as an empty result, as a common of solids that touch at
     // a point is.

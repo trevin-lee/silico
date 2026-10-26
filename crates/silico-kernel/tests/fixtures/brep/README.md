@@ -83,8 +83,11 @@ BinTools::Write(box, out, false, false, BinTools_FormatVersion_CURRENT);
   ```
 
 - `pointed_cone.bin`, `rod_on_a_cones_side.bin`: a pointed cone (`Primitive::Cone`, radius 5 to
-  0, height 5) and a level rod of radius 1, 20 long (a rectangle revolved about its long side,
-  then moved), touching the cone's side at one point, at half height, 300° round. Written by
+  0, height 5) and a level rod of radius 1, 20 long, touching the cone's side at one point, at half
+  height, 300° round (t = 20π/12): the rectangle from (−10, 0) to (10, 1) in the frame turned
+  u = t + π/2 about z, revolved a whole turn about the axis through the origin along
+  (cos u, sin u, 0), then moved to (2.5 cos t + cos t/√2, 2.5 sin t + sin t/√2, 2.5 + 1/√2),
+  its axis 1 from the touching point along the cone's outward normal. Written by
   Silico's own `make`, `revolve`, and `translate` (found by `/break-it` on #171), with
   `BinTools::Write` and no checksum. On Silico's OCCT build, a boolean of the two dereferenced
   a section edge with no 3D curve (patch 0005); the text B-reps of the same shapes, their
