@@ -1031,7 +1031,7 @@ fn a_read_of_the_published_model_reaches_its_typed_method_as_one() {
 }
 
 #[test]
-fn a_formats_features_and_write_reach_its_typed_method() {
+fn a_format_calls_features_and_write_reach_its_typed_method() {
     // Three workspaces holding the same document, saved with its fingerprints, then the
     // block and the pin edited by hand, so both drift: one formatted by name, accepting the
     // block's drift alone and writing; one by the typed method alike; one accepting all.
@@ -1082,4 +1082,45 @@ fn a_formats_features_and_write_reach_its_typed_method() {
     // Only the block's drift accepted: `features` reached it.
     answer(all.sessions.format(&s2, None, true)).result.unwrap();
     assert_ne!(saved(by_name), saved(all));
+}
+
+#[test]
+fn every_reads_model_reaches_its_typed_method_the_published_answering_past_a_held_rebuild() {
+    // Found by the review (round 2): a read's `model` could be dropped to `current` and
+    // every test passed. A read of the published model answers while the current one's
+    // rebuild is held; one of the current model would wait on it.
+    let f = fixture();
+    f.file("part.silico", BOX);
+    answer(f.sessions.open("part.silico", false))
+        .result
+        .unwrap();
+    answer(f.sessions.check(&s("s1"), ModelChoice::Current))
+        .result
+        .unwrap();
+    let hold = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+    let edit = f.calling(
+        "set_field",
+        r#"{"session": "s1", "revision": 1, "feature": "k7f2qx3m", "field": "length", "value": 41}"#,
+    );
+    assert!(f.kernel.wait_running(1, HANG));
+    let pair = r#"["k7f2qx3m.Face1", "k7f2qx3m.Face2"]"#;
+    for (name, args) in [
+        ("mass_properties", r#"{"session": "s1", "model": "published", "feature": null}"#.to_owned()),
+        ("distance", format!(r#"{{"session": "s1", "model": "published", "elements": {pair}, "feature": null}}"#)),
+        ("angle", format!(r#"{{"session": "s1", "model": "published", "elements": {pair}, "feature": null}}"#)),
+        ("query", r#"{"session": "s1", "model": "published", "feature": null, "kind": "face", "type": null, "stable": null, "facing": null, "measures": [], "order": null, "limit": 4}"#.to_owned()),
+        ("render", r#"{"session": "s1", "model": "published", "view": "front", "camera": null, "width": 40, "height": 30, "highlight": [], "to": null, "replace": false}"#.to_owned()),
+    ] {
+        let answer = match f.calling(name, &args).wait_timeout(HANG) {
+            Ok(a) => a,
+            Err(_) => panic!("{name} waited on the held rebuild: read the current model"),
+        };
+        let e = envelope(&answer);
+        assert_eq!(e["model"]["revision"], 1, "{name}: {e}");
+        assert_eq!(e["model"]["of"], "published", "{name}: {e}");
+    }
+    hold.release();
+    assert!(answered(edit).ok);
 }
