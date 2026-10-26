@@ -1399,7 +1399,8 @@ fn cancel_in<P: Clients + 'static>(
 
 /// `status` and `cancel` of a [`Sessions`], answered later, on whichever thread asks
 /// ([`Sessions::later`]): as the sessions answer them, or, once they're dropped, refused as
-/// closing. It holds them only weakly, so it keeps nothing of theirs alive.
+/// of sessions closed ([`gone`]). It holds them only weakly, so it keeps nothing of theirs
+/// alive.
 pub(crate) struct Later<P: Clients + 'static>(Weak<Registry<P>>);
 
 impl<P: Clients + 'static> Later<P> {
@@ -1407,7 +1408,7 @@ impl<P: Clients + 'static> Later<P> {
     pub(crate) fn status(&self, session: &SessionId) -> Response<Status> {
         match self.0.upgrade() {
             Some(registry) => status_in(&registry, session),
-            None => refused(closing()),
+            None => refused(gone()),
         }
     }
 
@@ -1419,7 +1420,7 @@ impl<P: Clients + 'static> Later<P> {
     ) -> Response<Cancelled> {
         match self.0.upgrade() {
             Some(registry) => cancel_in(&registry, session, command),
-            None => refused(closing()),
+            None => refused(gone()),
         }
     }
 }
@@ -1475,6 +1476,17 @@ fn not_open(id: SessionId) -> Error {
         .with_suggestion(
             "open the document again: a session ends when it's closed or its client goes away",
         )
+}
+
+/// The refusal of `status` or `cancel` answered after the sessions were dropped
+/// ([`Later`]): every session closed with them, so there's none to report on or stop.
+fn gone() -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        "this process's sessions are closing, so none is open",
+    )
+    .with_parameter("session")
+    .with_suggestion("open the document again once the sessions are made again")
 }
 
 fn closing() -> Error {
