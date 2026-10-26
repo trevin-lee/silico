@@ -686,6 +686,44 @@ fn a_path_through_an_outside_directory_and_back_is_never_told_apart_by_its_exist
 }
 
 #[test]
+fn a_path_through_a_file_and_back_up_is_never_told_apart_by_whats_outside() {
+    // Found by the review (round 2): the walk stopped at a file in the workspace and left the
+    // rest to the system, and macOS's `realpath` takes `part.silico/..` by its text and goes
+    // on, so `part.silico/../../secrets/x` was looked up outside: refused as outside when
+    // there, as not found when not. Now a file with more of the path to go stops the walk,
+    // as glibc stops it: not a directory, whatever is outside.
+    let f = fixture();
+    f.opened();
+    std::fs::create_dir(f.root.join("secrets")).unwrap();
+    std::fs::write(f.root.join("secrets/x.silico"), BOX).unwrap();
+    let answers: Vec<Vec<(String, String, Option<String>)>> = ["secrets", "nothere"]
+        .iter()
+        .map(|top| {
+            let open = format!("part.silico/../../{top}/x.silico");
+            let made = format!("part.silico/../../{top}/made.silico");
+            let to = format!("part.silico/../../{top}/view.png");
+            [
+                error(&f.open(&open, false)),
+                error(&f.open(&made, true)),
+                error(&f.render_to("s1", &to)),
+            ]
+            .into_iter()
+            .map(|(code, message, parameter)| (code, message.replace(top, "TOP"), parameter))
+            .collect()
+        })
+        .collect();
+    assert_eq!(answers[0], answers[1]);
+    // Each as a path the system can't follow (open's io_failed, render's to refused as
+    // unreachable), never as outside: nothing outside was looked at to answer it.
+    for (code, message, _) in &answers[0] {
+        assert!(message.contains("Not a directory"), "{code}: {message}");
+        assert!(!message.contains("outside"), "{code}: {message}");
+    }
+    assert!(!f.root.join("secrets/made.silico").exists());
+    assert!(!f.root.join("secrets/view.png").exists());
+}
+
+#[test]
 fn a_path_through_a_directory_this_user_cant_search_is_outside_never_denied() {
     // Nothing outside the workspace is looked in, so a directory there that would refuse
     // the lookup (or block on it: a mount made on demand, a stale network share) is never

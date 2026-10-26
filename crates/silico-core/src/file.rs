@@ -72,16 +72,25 @@ pub struct Workspace {
     root: PathBuf,
 }
 
-/// How many links [`Workspace::leads_out`] follows through a path before it decides by the
+/// How many links [`Workspace::walk`] follows through a path before it decides by the
 /// path's form: Linux's and macOS's own limit on links followed in one lookup.
 const LINKS_FOLLOWED: u32 = 40;
 
-/// The longest path, in bytes, [`Workspace::leads_out`] walks on the file system; a longer
+/// The longest path, in bytes, [`Workspace::walk`] walks on the file system; a longer
 /// one it decides by its form: Linux's `PATH_MAX`, the longest path it resolves (macOS's is
 /// shorter). So a path of millions of names costs no more than reading it once.
 const WALKED_PATH_BYTES: usize = 4096;
 
-/// One step of a path walked as the system resolves it ([`Workspace::leads_out`]).
+/// Where a path's walk ends ([`Workspace::walk`]).
+#[derive(Debug, PartialEq, Eq)]
+enum Walked {
+    Out,
+    In,
+    /// In the workspace, at a file with more of the path to go.
+    ThroughAFile,
+}
+
+/// One step of a path walked as the system resolves it ([`Workspace::walk`]).
 enum Step {
     /// Start again from here: the file system's top (and on Windows, the drive).
     From(PathBuf),
@@ -161,9 +170,19 @@ impl Workspace {
     /// unreachable, never outside. A path longer than the system resolves
     /// ([`WALKED_PATH_BYTES`]), or through more links than it follows ([`LINKS_FOLLOWED`]),
     /// is decided by its form alone ([`Workspace::leaves`]), so the walk is bounded.
+    #[cfg(test)]
     fn leads_out(&self, path: &Path) -> bool {
+        self.walk(path) == Walked::Out
+    }
+
+    /// Where `path`'s walk ends: out of the workspace, in it, or
+    /// in it at a file with more of the path to go, where the system stops (`ENOTDIR`).
+    /// That last isn't left to `canonicalize`: macOS's `realpath` takes a `..` after a file
+    /// by its text and goes on, outside the workspace, where glibc's stops (review).
+    fn walk(&self, path: &Path) -> Walked {
+        let out = |out: bool| if out { Walked::Out } else { Walked::In };
         if path.as_os_str().len() > WALKED_PATH_BYTES {
-            return self.leaves(path);
+            return out(self.leaves(path));
         }
         // The path walked from the top a name at a time, as the system resolves it: the
         // steps still to take (the next last), and where the walk is, through every link, so
@@ -198,7 +217,7 @@ impl Workspace {
                 {
                     Ok(Some(Component::Normal(way))) => Some(at.join(way)),
                     // Not the root's ancestor (a path not from the top): nowhere to look.
-                    _ => return true,
+                    _ => return Walked::Out,
                 }
             };
             let meta = std::fs::symlink_metadata(&next);
@@ -206,21 +225,22 @@ impl Workspace {
                 && meta.file_type().is_symlink()
             {
                 let Some(left) = links.checked_sub(1) else {
-                    return self.leaves(path);
+                    return out(self.leaves(path));
                 };
                 links = left;
                 let Ok(target) = std::fs::read_link(&next) else {
                     // Gone since it was looked at: the system stops here.
-                    return !self.holds(&at);
+                    return out(!self.holds(&at));
                 };
                 steps.extend(Step::of(&target).into_iter().rev());
                 continue;
             }
             match (meta, way) {
-                // In the workspace: a directory to go on in; a file, or nothing, where the
-                // system stops, in it.
+                // In the workspace: a directory to go on in; a file with more to go, where
+                // the system stops, not a directory; a file at the end, or nothing, in it.
                 (Ok(meta), None) if meta.is_dir() => at = next,
-                (_, None) => return false,
+                (Ok(_), None) if !steps.is_empty() => return Walked::ThroughAFile,
+                (_, None) => return Walked::In,
                 // The way to the root, by its own spelling or another the file system takes
                 // for the same directory: on, spelled as the root is.
                 (Ok(meta), Some(way))
@@ -230,16 +250,16 @@ impl Workspace {
                 }
                 // The way to the root, not a directory or not there: the workspace gone, as
                 // the system will say.
-                (_, Some(way)) if next == way => return false,
+                (_, Some(way)) if next == way => return Walked::In,
                 // Any other name of an ancestor: out, whatever is there.
-                (_, Some(_)) => return true,
+                (_, Some(_)) => return Walked::Out,
             }
         }
-        !self.holds(&at)
+        out(!self.holds(&at))
     }
 
     /// Whether `path`, its `.`s and `..`s taken as written, links not followed, leaves the
-    /// workspace: what [`Workspace::leads_out`] decides when walking the path would cost
+    /// workspace: what [`Workspace::walk`] decides when walking the path would cost
     /// more than the system itself spends on one. Nothing on the file system decides it.
     fn leaves(&self, path: &Path) -> bool {
         let mut normal = PathBuf::new();
@@ -318,8 +338,14 @@ pub fn resolve(workspace: Option<&Workspace>, path: &Path) -> Result<PathBuf, Un
     let joined = workspace.root.join(path);
     // Walked first, never looking outside the workspace, so only a path that stays in it
     // (or stops in it) is ever resolved by the system.
-    if workspace.leads_out(&joined) {
-        return Err(Unresolved::Outside);
+    match workspace.walk(&joined) {
+        Walked::Out => return Err(Unresolved::Outside),
+        Walked::ThroughAFile => {
+            return Err(Unresolved::Unreachable(std::io::Error::from_raw_os_error(
+                libc::ENOTDIR,
+            )));
+        }
+        Walked::In => {}
     }
     // Longer than the system resolves: refused as the system refuses it, never walked.
     if joined.as_os_str().len() > WALKED_PATH_BYTES {
@@ -790,9 +816,15 @@ mod tests {
         assert!(!w.leads_out(&work.join(format!("sub/../{deep}x"))));
         // Out and back in: in.
         assert!(!w.leads_out(&work.join(format!("../work/{deep}x"))));
-        // Below a file, or through one and up: in, as the system stops at the file.
-        assert!(!w.leads_out(&work.join("part.silico/x")));
-        assert!(!w.leads_out(&work.join("part.silico/../../outside/x")));
+        // Below a file, or through one and up: stopped at the file, never walked on (macOS's
+        // `realpath` would go on, outside, by the `..`'s text).
+        assert_eq!(w.walk(&work.join("part.silico/x")), Walked::ThroughAFile);
+        assert_eq!(
+            w.walk(&work.join("part.silico/../../outside/x")),
+            Walked::ThroughAFile
+        );
+        assert_eq!(w.walk(&work.join("part.silico/..")), Walked::ThroughAFile);
+        assert_eq!(w.walk(&work.join("part.silico")), Walked::In);
         // Through links in the workspace: one to the outside directory, one to where nothing
         // is outside, one to a directory in the workspace.
         symlink(dir.path().join("outside"), work.join("out")).unwrap();
