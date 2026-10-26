@@ -227,8 +227,11 @@ impl<C: Kernel + 'static> Session<C> {
         for ticket in running {
             ticket.close();
         }
-        // Taken last and alone, as `Session` orders its locks.
-        if let Some(ticket) = lock(&self.command).clone() {
+        // Taken last and alone, as `Session` orders its locks: let go before the ticket's
+        // interrupts take theirs (the robustness review: an `if let`'s guard lives through
+        // its block).
+        let running = lock(&self.command).clone();
+        if let Some(ticket) = running {
             ticket.close();
         }
     }
@@ -1026,6 +1029,12 @@ impl<P: Clients + 'static> Sessions<P> {
                     )
                     .entered();
                     *lock(&session.command) = Some(Arc::clone(&stop));
+                    // Closed as it started (after `serve` found it open, before it was
+                    // recorded): closed now, as `close` would have, since `close` ends the
+                    // queue before it reads the command.
+                    if session.closed() {
+                        stop.close();
+                    }
                     let response = stop.answer(
                         // Cancelled while it was queued: never run, the file not read.
                         || Some(session.info(false)),
