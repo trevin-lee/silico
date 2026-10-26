@@ -508,11 +508,10 @@ fn a_summary_that_isnt_finite_is_refused_as_check_refuses_it_never_dropped() {
         (
             ErrorCode::ProtocolError,
             Some("bbbbbbbb"),
-            // How to try it again in the session, as `elements` gives it for the same
-            // solid: the revision keeps the fault, so `check` with `fresh`.
-            Some(
-                "check with fresh to try it again; if the same feature meets this fault again, report it with the document"
-            )
+            // The worker's own advice, then how to try it again in the session, as
+            // `elements` gives it for the same solid: the revision keeps the fault, so
+            // `check` with `fresh`.
+            Some("start a new kernel worker; then check with fresh to try it again")
         ),
         "{}",
         error.message()

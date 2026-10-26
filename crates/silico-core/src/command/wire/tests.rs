@@ -1050,15 +1050,14 @@ fn a_response_past_its_limit_is_answered_with_a_refusal_saying_so() {
 fn a_models_fault_is_written_in_the_error_contracts_shape() {
     // Decision 32: the envelope's `model.fault`, the error contract's every field, its
     // suggestion how a session's client tries it again (R-M1: the session's advice is the
-    // wire's, not the CLI's). The design's example (section 6), byte for byte: the worker's
-    // own suggestion is the model read's, and the wire's is the design's.
+    // wire's, not the CLI's). The design's example (section 6), byte for byte: a crash
+    // that met a feature, with no advice of the worker's own.
     let crashed = Error::new(
         ErrorCode::WorkerCrashed,
         "the kernel worker crashed while building this feature",
     )
     .with_feature("f0000001")
-    .with_cause("the worker ended on signal 11 (SIGSEGV) during a fillet")
-    .with_suggestion("change the operation's values: these crashed OCCT");
+    .with_cause("the worker ended on signal 11 (SIGSEGV) during a fillet");
     let faulted = Response {
         session: Some(session(7, false)),
         model: Some(ModelRead {
@@ -1086,6 +1085,31 @@ fn a_models_fault_is_written_in_the_error_contracts_shape() {
     );
     assert_eq!(value["model"]["revision"], 6);
     assert_eq!(value["model"]["of"], "current");
+    // With the worker's advice (worker.rs's for a crash on the request's values), that,
+    // then check with fresh.
+    let advised = Response {
+        session: Some(session(7, false)),
+        result: Ok(Clean),
+        model: Some(ModelRead {
+            revision: revision(6),
+            of: ModelChoice::Current,
+            fault: Some(
+                Error::new(ErrorCode::WorkerCrashed, "crashed")
+                    .with_feature("f0000001")
+                    .with_suggestion(
+                        "change the operation's values: these crashed the kernel, and the same \
+                         request would crash it again",
+                    ),
+            ),
+        }),
+    };
+    let text = write(&response(&advised), Layout::Canonical).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        value["model"]["fault"]["suggestion"],
+        "change the operation's values: these crashed the kernel, and the same request would \
+         crash it again; then check with fresh to try it again"
+    );
     // A worker that couldn't be had names no feature (the model read holds it so:
     // `met_fault`, tested through `kept_fault` in the session's tests), and says nothing of
     // the document: with no suggestion of its own, check with fresh alone.

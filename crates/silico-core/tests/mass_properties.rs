@@ -155,11 +155,10 @@ fn a_solid_a_worker_failed_to_measure_is_refused_with_that_failure_as_check_says
     // or ran short measuring a solid (kept unmeasured, not as a refusal) was refused as
     // `kernel_failed`, "couldn't be measured", with no cause: the kernel refusing the
     // geometry, to an agent, where `check` says the worker's own failure.
-    // Each worded as the design words a crash (section 6), the fault it met said as it was.
-    for (code, met) in [
-        (ErrorCode::WorkerCrashed, "crashes the worker"),
-        (ErrorCode::WorkerTimeout, "runs past the worker's timeout"),
-        (ErrorCode::ResourceExhausted, "meets this fault"),
+    for code in [
+        ErrorCode::WorkerCrashed,
+        ErrorCode::WorkerTimeout,
+        ErrorCode::ResourceExhausted,
     ] {
         let engine = Recompute::new(FakeKernel::new(2).unwrap());
         engine.kernel().refuse(move |op| {
@@ -177,12 +176,11 @@ fn a_solid_a_worker_failed_to_measure_is_refused_with_that_failure_as_check_says
             .iter()
             .map(|e| (e.code(), e.feature(), e.suggestion()))
             .collect();
-        // How to try it again in the session, as `elements` gives it for the same solid:
-        // the revision keeps the fault, so `check` with `fresh`.
-        let advice = format!(
-            "check with fresh to try it again; if the same feature {met} again, report it with the document"
-        );
-        let advice = Some(advice.as_str());
+        // The worker's own advice, then how to try it again in the session, as `elements`
+        // gives it for the same solid: the revision keeps the fault, so `check` with
+        // `fresh`.
+        let advice =
+            Some("check again: a new worker is started; then check with fresh to try it again");
         assert_eq!(
             said,
             [

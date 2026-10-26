@@ -2829,10 +2829,10 @@ fn each_change_of_what_the_session_holds_is_past_a_cancel() {
 }
 
 #[test]
-fn a_kept_fault_says_to_check_with_fresh_as_the_design_does() {
+fn a_kept_fault_keeps_the_workers_advice_then_says_to_check_with_fresh() {
     // Decision 32 and the design's section 6: reading the revision again won't run it
-    // again, so the suggestion is to check with fresh, and, if the same feature meets the
-    // fault again, to report it. A crash's words are the design's example's, exactly.
+    // again, so the worker's own advice (what to change, free, or allow), then `check` with
+    // `fresh`. The workers' words, written out as worker.rs and silico-protocol give them.
     let said = |error: &Error| {
         (
             error.code(),
@@ -2841,9 +2841,13 @@ fn a_kept_fault_says_to_check_with_fresh_as_the_design_does() {
             error.suggestion().map(str::to_owned),
         )
     };
+    // A crash on the request's values (worker.rs, `crash_advice`).
     let crashed = Error::new(ErrorCode::WorkerCrashed, "the worker crashed")
         .with_feature("f0000001")
-        .with_suggestion("change the operation's values, or report it with the document");
+        .with_suggestion(
+            "change the operation's values: these crashed the kernel, and the same request \
+             would crash it again",
+        );
     assert_eq!(
         said(&kept_fault(&crashed)),
         (
@@ -2851,22 +2855,27 @@ fn a_kept_fault_says_to_check_with_fresh_as_the_design_does() {
             "the worker crashed".to_owned(),
             Some("f0000001".to_owned()),
             Some(
-                "check with fresh to try it again; if the same feature crashes the worker \
-                 again, report it with the document"
+                "change the operation's values: these crashed the kernel, and the same request \
+                 would crash it again; then check with fresh to try it again"
                     .to_owned()
             )
         )
     );
-    // A timeout's, and any other fault's, said as it was met.
-    let timed_out = Error::new(ErrorCode::WorkerTimeout, "timed out").with_feature("f0000001");
+    // A timeout once the worker had started (worker.rs, `timed_out`).
+    let timed_out = Error::new(ErrorCode::WorkerTimeout, "timed out")
+        .with_feature("f0000001")
+        .with_suggestion("simplify the operation, or allow it more time");
     assert_eq!(
         kept_fault(&timed_out).suggestion(),
         Some(
-            "check with fresh to try it again; if the same feature runs past the worker's \
-             timeout again, report it with the document"
+            "simplify the operation, or allow it more time; then check with fresh to try it \
+             again"
         )
     );
-    let short = Error::new(ErrorCode::ResourceExhausted, "out of memory").with_feature("f0000001");
+    // Out of memory (silico-protocol's `OUT_OF_MEMORY`).
+    let short = Error::new(ErrorCode::ResourceExhausted, "out of memory")
+        .with_feature("f0000001")
+        .with_suggestion("free some memory, or make the part or sketch simpler, and try again");
     assert_eq!(
         said(&kept_fault(&short)),
         (
@@ -2874,14 +2883,31 @@ fn a_kept_fault_says_to_check_with_fresh_as_the_design_does() {
             "out of memory".to_owned(),
             Some("f0000001".to_owned()),
             Some(
-                "check with fresh to try it again; if the same feature meets this fault \
-                 again, report it with the document"
+                "free some memory, or make the part or sketch simpler, and try again; then \
+                 check with fresh to try it again"
                     .to_owned()
             )
         )
     );
+    // A crash with no advice of its own: the design's example's words, exactly.
+    let bare_crash =
+        Error::new(ErrorCode::WorkerCrashed, "the worker crashed").with_feature("f0000001");
+    assert_eq!(
+        kept_fault(&bare_crash).suggestion(),
+        Some(
+            "check with fresh to try it again; if the same feature crashes the worker again, \
+             report it with the document"
+        )
+    );
+    // Any other with none: check with fresh alone.
+    let bare_timeout = Error::new(ErrorCode::WorkerTimeout, "timed out").with_feature("f0000001");
+    assert_eq!(
+        kept_fault(&bare_timeout).suggestion(),
+        Some("check with fresh to try it again")
+    );
     // A worker that couldn't be had says nothing of the feature that asked for one: its
-    // own suggestion, then check with fresh; with none of its own, check with fresh alone.
+    // own suggestion, then check with fresh; with none of its own, check with fresh alone,
+    // never the design's crash words (it names no feature).
     let unavailable = Error::new(ErrorCode::WorkerUnavailable, "no worker")
         .with_feature("f0000001")
         .with_suggestion("restart Silico");
@@ -2897,6 +2923,11 @@ fn a_kept_fault_says_to_check_with_fresh_as_the_design_does() {
     let bare = Error::new(ErrorCode::WorkerUnavailable, "no worker");
     assert_eq!(
         kept_fault(&bare).suggestion(),
+        Some("check with fresh to try it again")
+    );
+    let unnamed_crash = Error::new(ErrorCode::WorkerCrashed, "the worker crashed");
+    assert_eq!(
+        kept_fault(&unnamed_crash).suggestion(),
         Some("check with fresh to try it again")
     );
 }

@@ -745,31 +745,30 @@ pub(in crate::command) fn met_fault(fault: &Error) -> Error {
 
 /// A kernel fault as a session's client reads it (the envelope's `model.fault`, decision
 /// 32), and as a command that needs a faulted feature's solid is refused with it: kept as
-/// the revision's outcome, so its suggestion is how to try again ([`kept_suggestion`]).
+/// the revision's outcome, so its suggestion, the worker's own kept, goes on to say how to
+/// try again ([`kept_suggestion`]).
 pub(in crate::command) fn kept_fault(fault: &Error) -> Error {
     let fault = met_fault(fault);
     let suggestion = kept_suggestion(&fault);
     fault.with_suggestion(suggestion)
 }
 
-/// [`kept_fault`]'s suggestion (the design's section 6): reading the revision again won't
-/// try it again, so `check` with `fresh`, and, if the same feature meets it again, the
-/// document reported, as the design's example says it of a crash. A fault that names no
-/// feature (a worker that couldn't be had) says nothing of the document: the worker's own
-/// suggestion, if it has one, then `check` with `fresh`.
+/// [`kept_fault`]'s suggestion (the design's section 6): reading the revision again won't try
+/// it again, so how to: the worker's own suggestion, which says what to change, free, or
+/// allow (the values that crashed it, the memory it ran short of, the time it ran past),
+/// then `check` with `fresh`. With none of its own, a crash that met a feature says it as
+/// the design's example does, `check` with `fresh`, then the document reported if the same
+/// feature crashes the worker again; any other fault, `check` with `fresh` alone. (A fault
+/// is never known to have met the same feature twice running: each model holds the one
+/// its rebuild met.)
 pub(in crate::command) fn kept_suggestion(fault: &Error) -> String {
     const FRESH: &str = "check with fresh to try it again";
-    let met = match fault.code() {
-        ErrorCode::WorkerCrashed => "crashes the worker",
-        ErrorCode::WorkerTimeout => "runs past the worker's timeout",
-        _ => "meets this fault",
-    };
-    match (fault.feature(), fault.suggestion()) {
-        (Some(_), _) => {
-            format!("{FRESH}; if the same feature {met} again, report it with the document")
-        }
-        (None, Some(own)) => format!("{own}; then {FRESH}"),
-        (None, None) => FRESH.to_owned(),
+    match (fault.suggestion(), fault.code(), fault.feature()) {
+        (Some(own), _, _) => format!("{own}; then {FRESH}"),
+        (None, ErrorCode::WorkerCrashed, Some(_)) => format!(
+            "{FRESH}; if the same feature crashes the worker again, report it with the document"
+        ),
+        (None, _, _) => FRESH.to_owned(),
     }
 }
 
