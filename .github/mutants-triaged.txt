@@ -137,8 +137,18 @@ crates/silico-render/src/render.rs | read_back | delete ! | #147
 crates/silico-render/src/render.rs | read_back | replace || with && | #147
 crates/silico-core/src/render.rs | <impl Drop for Job>::drop | replace <impl Drop for Job>::drop with () | #149
 crates/silico-core/src/render.rs | serve | delete ! | #149
-# Unreachable but by a bug: the lookup's own refuse is used only for an element map that
-# names an element its solid's description hasn't, which a rebuild never makes (the
-# description and the map are of one shape); with refuse emptied, such a bug would be
-# answered by the internal error that no two elements were found.
-crates/silico-core/src/command/lookup.rs | Lookup<'m>::refuse | replace Lookup<'m>::refuse with () | #164
+# A side view's direction is a unit axis perpendicular to z, so the corners' arm gives it +z to the bit.
+crates/silico-core/src/views.rs | NamedView::up | delete match arm NamedView::Front | NamedView::Back | NamedView::Left | NamedView::Right | #181
+# `i & b != 0` swaps a box's low and high on one axis: the same eight corners in another
+# order, which every min, max, and per-side && over them ignores.
+crates/silico-core/src/views.rs | NamedView::fit | replace == with != | #181
+crates/silico-core/src/views.rs | NamedView::fit | replace == with != | #181
+crates/silico-core/src/views.rs | NamedView::fit | replace == with != | #181
+crates/silico-core/src/views.rs | depth_of_box | replace == with != | #181
+crates/silico-core/src/views.rs | depth_of_box | replace == with != | #181
+crates/silico-core/src/views.rs | depth_of_box | replace == with != | #181
+crates/silico-core/src/views.rs | sees | replace == with != | #181
+crates/silico-core/src/views.rs | sees | replace == with != | #181
+crates/silico-core/src/views.rs | sees | replace == with != | #181
+# An absolute path joined to the workspace is itself.
+crates/silico-core/src/file.rs | output_target | replace match guard given.is_relative() with true | #181

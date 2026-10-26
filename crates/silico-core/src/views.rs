@@ -572,4 +572,160 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn a_named_views_depth_is_its_eyes_distance_less_how_far_the_nearest_corner_reaches() {
+        // Each view's eye is the block's diagonal, √2100, from its centre along its
+        // direction. By hand, the nearest corner reaches toward the eye by half the block
+        // along a face's axis (y 10, x 20, z 5), or by (20 + 10 + 5)/√3 along a corner's
+        // diagonal; each view's nearest corner is another of the eight, so every one counts.
+        let diagonal = 2100f64.sqrt();
+        for view in NAMED_VIEWS {
+            let reach = match view {
+                NamedView::Front | NamedView::Back => 10.0,
+                NamedView::Left | NamedView::Right => 20.0,
+                NamedView::Top | NamedView::Bottom => 5.0,
+                _ => 35.0 / 3f64.sqrt(),
+            };
+            let depth = depth_of_box(&view.camera(BLOCK, 800, 600), BLOCK);
+            assert!(
+                (depth - (diagonal - reach)).abs() <= 1e-12,
+                "{view:?}: {depth}, by hand {}",
+                diagonal - reach
+            );
+        }
+    }
+
+    #[test]
+    fn an_orthographic_box_in_view_by_one_corner_alone_is_seen() {
+        // Looking down −z with up (−1, 1, 0)/√2 (so the right is (1, 1, 0)/√2), 44 high,
+        // square: within ±22 along each. The box x −18..−8, y 18..28 reaches 26/√2 = 18.4 up
+        // at its corner (−8, 18), and 25.5 up at its others: in view by that corner alone,
+        // across from 0 to 14.1. From −y with up (−1, 0, 1)/√2, the same box with z for y.
+        let cases = [
+            (
+                [0.0, 0.0, 100.0],
+                [-1.0, 1.0, 0.0],
+                [[-18.0, 18.0, -1.0], [-8.0, 28.0, 1.0]],
+                1,
+            ),
+            (
+                [0.0, -100.0, 0.0],
+                [-1.0, 0.0, 1.0],
+                [[-18.0, -1.0, 18.0], [-8.0, 1.0, 28.0]],
+                2,
+            ),
+        ];
+        for (eye, up, bounds, k) in cases {
+            let camera = Camera {
+                projection: ORTHO,
+                eye,
+                target: [0.0; 3],
+                up,
+            };
+            assert_eq!(sees(&camera, 300, 300, bounds), Some(true), "{up:?}");
+            // 6 further along y (or z), its nearest corner 32/√2 = 22.6 up: out of view.
+            let [mut low, mut high] = bounds;
+            low[k] += 6.0;
+            high[k] += 6.0;
+            assert_eq!(sees(&camera, 300, 300, [low, high]), Some(false), "{up:?}");
+        }
+    }
+
+    #[test]
+    fn an_orthographic_view_sees_about_its_target_wherever_that_is() {
+        // From +z onto (30, 50, 0), up +y, 44 high and square: x 8..52 and y 28..72 in view.
+        let camera = Camera {
+            projection: ORTHO,
+            eye: [30.0, 50.0, 100.0],
+            target: [30.0, 50.0, 0.0],
+            up: [0.0, 1.0, 0.0],
+        };
+        let cube = |c: [f64; 3]| [[c[0] - 1.0, c[1] - 1.0, c[2] - 1.0], c.map(|v| v + 1.0)];
+        for (centre, seen) in [
+            ([30.0, 50.0, 0.0], true),
+            ([30.0, 50.0, -500.0], true),
+            ([0.0, 0.0, 0.0], false),
+            ([30.0, 0.0, 0.0], false),
+            ([0.0, 50.0, 0.0], false),
+            ([30.0, 74.0, 0.0], false),
+        ] {
+            assert_eq!(
+                sees(&camera, 300, 300, cube(centre)),
+                Some(seen),
+                "{centre:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_perspective_view_is_out_past_each_of_its_four_sides_and_in_on_them() {
+        // From −y at y = −100, 40° high: at y = 0, 100 deep, the sides are at ±100 tan 20°
+        // (36.4) across and up when square, and twice that across when twice as wide.
+        let perspective = from_front(PERSPECTIVE);
+        let cube = |c: [f64; 3]| [[c[0] - 1.0, c[1] - 1.0, c[2] - 1.0], c.map(|v| v + 1.0)];
+        for (centre, seen) in [
+            ([-35.0, 0.0, 0.0], true),
+            ([-38.0, 0.0, 0.0], false),
+            ([0.0, 0.0, 35.0], true),
+            ([0.0, 0.0, 38.0], false),
+        ] {
+            assert_eq!(
+                sees(&perspective, 300, 300, cube(centre)),
+                Some(seen),
+                "{centre:?}"
+            );
+        }
+        for (centre, seen) in [
+            ([60.0, 0.0, 0.0], true),
+            ([-60.0, 0.0, 0.0], true),
+            ([0.0, 0.0, 38.0], false),
+        ] {
+            assert_eq!(
+                sees(&perspective, 600, 300, cube(centre)),
+                Some(seen),
+                "{centre:?} at 600 x 300"
+            );
+        }
+        // An eye off the axes, (50, −100, 30), onto (50, 0, 30): the box there is seen, and
+        // one 30 below it (within 36.4); one at the origin, 50 to the left, isn't.
+        let aside = Camera {
+            eye: [50.0, -100.0, 30.0],
+            target: [50.0, 0.0, 30.0],
+            ..perspective.clone()
+        };
+        assert_eq!(sees(&aside, 300, 300, cube([50.0, 0.0, 30.0])), Some(true));
+        assert_eq!(sees(&aside, 300, 300, cube([50.0, 0.0, 0.0])), Some(true));
+        assert_eq!(sees(&aside, 300, 300, cube([0.0, 0.0, 0.0])), Some(false));
+        // A box 100 deep with a face exactly on a side touches the view: seen. Moved off it
+        // by the least there is, it's out. The side, 100 × tan 20°, as the view takes it.
+        let side = 100.0 * libm::tan(40f64.to_radians() / 2.0);
+        let past = side.next_up();
+        let flat = |x: [f64; 2], z: [f64; 2]| [[x[0], 0.0, z[0]], [x[1], 0.0, z[1]]];
+        for (on, off, which) in [
+            (
+                flat([side, side + 10.0], [-1.0, 1.0]),
+                flat([past, past + 10.0], [-1.0, 1.0]),
+                "right",
+            ),
+            (
+                flat([-side - 10.0, -side], [-1.0, 1.0]),
+                flat([-past - 10.0, -past], [-1.0, 1.0]),
+                "left",
+            ),
+            (
+                flat([-1.0, 1.0], [side, side + 10.0]),
+                flat([-1.0, 1.0], [past, past + 10.0]),
+                "top",
+            ),
+            (
+                flat([-1.0, 1.0], [-side - 10.0, -side]),
+                flat([-1.0, 1.0], [-past - 10.0, -past]),
+                "bottom",
+            ),
+        ] {
+            assert_eq!(sees(&perspective, 300, 300, on), Some(true), "{which}");
+            assert_eq!(sees(&perspective, 300, 300, off), Some(false), "{which}");
+        }
+    }
 }

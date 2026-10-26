@@ -1498,6 +1498,33 @@ fn every_reason_a_render_request_is_refused_is_found() {
 }
 
 #[test]
+fn a_render_request_of_1000_highlights_is_read_and_one_of_1001_refused_as_it_is_read() {
+    // M4.1 §7: at most 1,000 elements highlighted. The reader takes exactly that many, and
+    // refuses one more itself, naming `highlight`, before any is read as a string.
+    use silico_core::command::wire::render::RenderRequest;
+    let request = |count: usize| {
+        let names = vec![r#""k7f2qx3m.box.Face1""#; count].join(", ");
+        format!(
+            r#"{{"session": "s1", "model": "current", "view": "front", "camera": null, "width": 10, "height": 10, "highlight": [{names}], "to": null, "replace": false}}"#
+        )
+    };
+    let call = RenderRequest::read(&parsed(&request(1000))).unwrap();
+    assert_eq!(call.render.highlight.len(), 1000);
+    let refused = RenderRequest::read(&parsed(&request(1001))).unwrap_err();
+    assert_eq!(refused.total(), 1, "{refused:?}");
+    let e = &refused.errors()[0];
+    assert_eq!(
+        (e.code(), e.parameter()),
+        (ErrorCode::InvalidInput, Some("highlight")),
+        "{e:?}"
+    );
+    assert!(
+        e.message().starts_with("1001 elements highlighted"),
+        "{e:?}"
+    );
+}
+
+#[test]
 fn a_perspective_result_writes_its_angle_and_no_height() {
     use silico_core::command::render::{AnsweredCamera, RenderResult};
     use silico_protocol::{Camera, Projection};

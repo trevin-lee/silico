@@ -311,6 +311,29 @@ fn refused_output(path: &std::path::Path, rules: &silico_core::file::Output, say
 }
 
 #[test]
+fn a_png_spelled_otherwise_than_a_held_document_on_disk_is_that_document_and_refused() {
+    // A held document named `Held.png` (the session's path, canonical, as it's on disk)
+    // and a render to `HELD.png`, replacing what's there. On a case-insensitive file system
+    // (macOS's default) that's the same file: refused, the document kept. On a
+    // case-sensitive one (CI's Linux) it's another file, written beside it: there the fix
+    // can't be told apart, so a gate on a Mac is what pins it.
+    let dir = Scratch::new("held-case");
+    let held = dir.0.join("Held.png");
+    std::fs::write(&held, b"a document").unwrap();
+    let held = [std::fs::canonicalize(&held).unwrap()];
+    let other = dir.0.join("HELD.png");
+    let rules = png_rules(None, &held, true);
+    if other.exists() {
+        refused_output(&other, &rules, "is a document a session holds");
+        assert_eq!(std::fs::read(&held[0]).unwrap(), b"a document");
+    } else {
+        let wrote = silico_core::file::write_output(&other, b"PNG", &rules).unwrap();
+        assert_eq!(wrote, std::fs::canonicalize(&other).unwrap());
+        assert_eq!(std::fs::read(&held[0]).unwrap(), b"a document");
+    }
+}
+
+#[test]
 fn a_png_is_written_whole_where_asked_and_its_canonical_path_given() {
     let dir = Scratch::new("output-new");
     let path = dir.0.join("view.png");
@@ -469,4 +492,108 @@ fn a_png_link_to_a_file_of_another_kind_is_refused_and_the_file_kept() {
     std::os::unix::fs::symlink(&real, &alias).unwrap();
     silico_core::file::write_output(&alias, b"new", &png_rules(Some(&dir.0), &[], true)).unwrap();
     assert_eq!(std::fs::read(&real).unwrap(), b"new");
+}
+
+/// The `n`th name a file a command writes is first written to, beside `name`, in this
+/// process (`.NAME.part-PID`, then `-1`, `-2`, ...), by the rule's own words.
+fn part(name: &str, n: u32) -> String {
+    let pid = std::process::id();
+    match n {
+        0 => format!(".{name}.part-{pid}"),
+        n => format!(".{name}.part-{pid}-{n}"),
+    }
+}
+
+#[test]
+fn a_png_takes_the_next_name_beside_it_and_with_all_64_taken_is_refused_writing_nothing() {
+    // A run killed with this process number left `.view.png.part-PID`: the write goes on to
+    // the next name, the left one as it was.
+    let dir = Scratch::new("output-next-name");
+    let path = dir.0.join("view.png");
+    std::fs::write(dir.0.join(part("view.png", 0)), b"left").unwrap();
+    silico_core::file::write_output(&path, b"PNG", &png_rules(None, &[], false)).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"PNG");
+    assert_eq!(
+        std::fs::read(dir.0.join(part("view.png", 0))).unwrap(),
+        b"left"
+    );
+    assert_eq!(dir.names(), [part("view.png", 0), "view.png".to_owned()]);
+    // Every one of the 64 names taken: refused, saying so, nothing written.
+    let dir = Scratch::new("output-names-taken");
+    let path = dir.0.join("view.png");
+    let mut taken: Vec<String> = (0..64).map(|n| part("view.png", n)).collect();
+    for name in &taken {
+        std::fs::write(dir.0.join(name), b"left").unwrap();
+    }
+    let e =
+        silico_core::file::write_output(&path, b"PNG", &png_rules(None, &[], false)).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::IoFailed, "{e}");
+    assert!(
+        e.to_string()
+            .contains("every name for a file beside it is taken"),
+        "{e}"
+    );
+    taken.sort();
+    assert_eq!(dir.names(), taken);
+}
+
+#[test]
+fn a_png_in_a_directory_it_cant_write_in_says_why_at_once() {
+    // Not a name taken, so not tried again under the next: the directory's own error.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Scratch::new("output-unwritable");
+    let shut = dir.0.join("shut");
+    std::fs::create_dir(&shut).unwrap();
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let e = silico_core::file::write_output(
+        &shut.join("view.png"),
+        b"PNG",
+        &png_rules(None, &[], false),
+    )
+    .unwrap_err();
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(e.code(), ErrorCode::IoFailed, "{e}");
+    assert!(e.to_string().contains("couldn't create a file in"), "{e}");
+    assert_eq!(std::fs::read_dir(&shut).unwrap().count(), 0);
+}
+
+#[test]
+fn a_png_named_up_to_255_bytes_with_its_part_suffix_is_written_beside_under_its_own_name() {
+    // The name beside it, `.NAME.part-PID-NN`, is the name and its suffix and 8 bytes at
+    // most (the dot, and `-63` with room to spare): kept where that's 255 bytes or fewer,
+    // `silico-output` in its place past them. Seen by which names, all 64 taken, stop it.
+    let suffix = format!(".part-{}", std::process::id()).len();
+    let longest = 255 - 8 - suffix;
+    let named = |len: usize| format!("{}.png", "a".repeat(len - 4));
+    // At the most: its own name. Every `silico-output` name taken doesn't stop it.
+    let dir = Scratch::new("output-long-name");
+    for n in 0..64 {
+        std::fs::write(dir.0.join(part("silico-output", n)), b"left").unwrap();
+    }
+    let at_most = dir.0.join(named(longest));
+    silico_core::file::write_output(&at_most, b"PNG", &png_rules(None, &[], false)).unwrap();
+    assert_eq!(std::fs::read(&at_most).unwrap(), b"PNG");
+    // One byte more: `silico-output`. Every name of its own taken doesn't stop it.
+    let dir = Scratch::new("output-too-long-name");
+    let name = named(longest + 1);
+    for n in 0..64 {
+        std::fs::write(dir.0.join(part(&name, n)), b"left").unwrap();
+    }
+    let past = dir.0.join(&name);
+    silico_core::file::write_output(&past, b"PNG", &png_rules(None, &[], false)).unwrap();
+    assert_eq!(std::fs::read(&past).unwrap(), b"PNG");
+    assert_eq!(dir.names().len(), 65);
+}
+
+#[test]
+fn a_bare_file_name_is_checked_in_the_current_directory() {
+    // A name with no directory, and no workspace: the process's own, as a shell takes it.
+    // Checked only, so nothing is written.
+    let name = format!("silico-bare-name-{}.png", std::process::id());
+    let checked =
+        silico_core::file::check_output(std::path::Path::new(&name), &png_rules(None, &[], false))
+            .unwrap();
+    let here = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+    assert_eq!(checked, here.join(&name));
+    assert!(!checked.exists());
 }
