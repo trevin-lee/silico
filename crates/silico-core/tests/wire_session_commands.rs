@@ -14,9 +14,11 @@
 //! and `open`'s, which name no session, is read strictly here; the rest of their tests are in
 //! wire_session_reads.rs.
 //!
-//! The design's examples not in the contract are three, each for its reason ([`LEFT_OUT`]):
-//! `open` outside a workspace, which nothing has yet; `commit`'s `io_failed`, a disk out of
-//! room, which no test can make happen; and `check`'s broken reference, a real kernel's.
+//! The design's examples not in the contract are five, each for its reason ([`LEFT_OUT`]):
+//! `version`'s and `status`'s results, which hold limits and progress not built yet (their
+//! real results are pinned in wire_session_reads.rs); `open` outside a workspace, which
+//! nothing has yet; `commit`'s `io_failed`, a disk out of room, which no test can make
+//! happen; and `check`'s broken reference, a real kernel's.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -221,7 +223,7 @@ fn the_examples_are_the_designs_own_text() {
             "### `version` (M4.2)",
             "### `open` (M4.2)",
             "version",
-            &[Some("request"), Some("result")],
+            &[Some("request"), None],
         ),
         (
             "### `open` (M4.2)",
@@ -248,7 +250,7 @@ fn the_examples_are_the_designs_own_text() {
             "### `status` (M4.2)",
             "### `cancel` (M4.2)",
             "status",
-            &[Some("request"), Some("result")],
+            &[Some("request"), None],
         ),
         (
             "### `cancel` (M4.2)",
@@ -389,44 +391,67 @@ fn the_examples_are_the_designs_own_text() {
                     example(&format!("{dir}/{name}")),
                     "{dir}/{name}"
                 ),
-                None => left_out.push(block.clone()),
+                None => left_out.push((dir, block.clone())),
             }
         }
     }
-    // The examples left out, by code and parameter (a refusal's, or a result's one
-    // problem's), each for its reason.
-    let left: Vec<(&str, &str)> = left_out
+    // The examples left out, by command and what each is (a refusal's code and parameter, a
+    // result's one problem's, or a result itself), each for its reason.
+    let left: Vec<(&str, &str, &str)> = left_out
         .iter()
-        .map(|block| {
+        .map(|(dir, block)| {
             let value: serde_json::Value = serde_json::from_str(block).unwrap();
             let error = match value.get("problems") {
                 Some(problems) => {
                     assert_eq!(problems.as_array().map(Vec::len), Some(1), "{block}");
-                    &problems[0]
+                    Some(&problems[0])
                 }
-                None => &value,
+                None => value.get("code").map(|_| &value),
             };
-            let code = error["code"].as_str().unwrap();
-            let parameter = error["parameter"].as_str().unwrap();
+            let (code, parameter) = match error {
+                Some(error) => (
+                    error["code"].as_str().unwrap(),
+                    error["parameter"].as_str().unwrap(),
+                ),
+                None => ("result", ""),
+            };
             LEFT_OUT
                 .iter()
-                .find(|(c, p, _)| (*c, *p) == (code, parameter))
-                .map(|(c, p, _)| (*c, *p))
-                .unwrap_or_else(|| panic!("{code} at {parameter} left out for no reason"))
+                .find(|(d, c, p, _)| (*d, *c, *p) == (*dir, code, parameter))
+                .map(|(d, c, p, _)| (*d, *c, *p))
+                .unwrap_or_else(|| panic!("{dir}'s {code} at {parameter:?} left out for no reason"))
         })
         .collect();
-    assert_eq!(left, LEFT_OUT.map(|(code, parameter, _)| (code, parameter)));
+    assert_eq!(
+        left,
+        LEFT_OUT.map(|(dir, code, parameter, _)| (dir, code, parameter))
+    );
 }
 
-/// The design's examples not in the contract, by code and parameter, each with why.
-const LEFT_OUT: [(&str, &str, &str); 3] = [
+/// The design's examples not in the contract, by command and what each is (a refusal's code
+/// and parameter, or `result` for a result), each with why.
+const LEFT_OUT: [(&str, &str, &str, &str); 5] = [
     (
+        "version",
+        "result",
+        "",
+        "its limits include those of render, read_logs and export, not built yet",
+    ),
+    (
+        "open",
         "invalid_input",
         "path",
         "open of a path outside the workspace a server was started in: no process has a \
          workspace until `silico serve` (M4.9), so nothing refuses one yet",
     ),
     (
+        "status",
+        "result",
+        "",
+        "its rebuild's done and steps are progress, not built yet (§7 status)",
+    ),
+    (
+        "commit",
         "io_failed",
         "path",
         "commit's save failing for a disk out of room, which no test can make happen; and the \
@@ -434,6 +459,7 @@ const LEFT_OUT: [(&str, &str, &str); 3] = [
          out",
     ),
     (
+        "check",
         "reference_broken",
         "edges.0",
         "check of a fillet whose edge an upstream edit removed: its message and candidate are \

@@ -585,6 +585,37 @@ impl<P: Clients + 'static> Sessions<P> {
         })
     }
 
+    /// `session`'s document's problems from the model `choice` names (decision 33): the
+    /// current revision's, as [`check`](Self::check) gives them; or the newest published,
+    /// answered at once from what the session's rebuilds have published, never waiting for a
+    /// rebuild or queueing behind its commands, as every published read is
+    /// ([`read_model`](Self::read_model)): its revision in the response's `model`, which may
+    /// be an older one's. A published check's drift leaves out what the session's edits reach
+    /// now, which a commit writes anew, as a current check's does; a feature an edit reached
+    /// at the published revision and an edit since undid may then show its drift there,
+    /// until the current revision's model is published. With nothing published, it's refused
+    /// as every published read is: naming `model`, or, for a document the gate refused, with
+    /// the gate's problems.
+    pub fn check_model(&self, session: &SessionId, choice: ModelChoice) -> Running<Problems> {
+        match choice {
+            ModelChoice::Current => self.check(session),
+            ModelChoice::Published => {
+                let found = self.find(session);
+                self.read_model(session, "check", ModelChoice::Published, move |read| {
+                    let reached = found
+                        .map(|session| {
+                            let reaching = session.held.read().reaching();
+                            reaching.reach()
+                        })
+                        .unwrap_or_default();
+                    let _span = tracing::info_span!("check").entered();
+                    super::check_except(read.model(), &reached, Faults::Aside)
+                        .map_err(Problems::from)
+                })
+            }
+        }
+    }
+
     /// Runs `read` on the model `choice` names, off the caller's thread (decision 33), as
     /// the command named `command` (for its trace, and the session's record of reads).
     /// `Current` is queued on the session and waits for its revision's rebuild, as `check`

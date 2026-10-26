@@ -1,8 +1,0 @@
-{
-  "features": 7,
-  "gated": true,
-  "transaction": {"base": 4},
-  "running": "check",
-  "reads": ["distance"],
-  "rebuild": {"revision": 6, "state": "running"}
-}

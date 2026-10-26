@@ -1,6 +1,0 @@
-{
-  "api": 1,
-  "format": 1,
-  "naming": 5,
-  "limits": {"document_bytes": 16777216, "request_bytes": 67108864, "request_depth": 64, "response_bytes": 134217728, "listed": 100, "sessions": 16, "published_reads": 8, "elements": 1000, "query": 1000, "query_measures": 7, "kernel_seconds": 60, "sketch_seconds": 300}
-}

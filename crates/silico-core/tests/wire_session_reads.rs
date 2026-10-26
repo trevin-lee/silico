@@ -4,9 +4,12 @@
 //! result and refusal the design gives made by the session, on the fake kernel, from the
 //! request's text (a path as `open` was given it, in a directory of the test's own, said as
 //! the design's `bracket.silico`), written to its example file, and held to its schema;
-//! `status`'s, which names a read no command has yet, built by hand. Expected values are the
-//! design's text (each file its own block: wire_session_commands.rs checks that), and, for
-//! values the design hasn't, written by hand.
+//! `status`'s, which names a read no command has yet, built by hand. `version`'s and
+//! `status`'s results aren't the design's yet (its limits of commands not built, its
+//! progress), so each is pinned here as written by hand. Expected values are the design's
+//! text (each file its own block: wire_session_commands.rs checks that), and, for values the
+//! design hasn't, written by hand. A published `check` answers at once from the newest model
+//! published, while the current revision's rebuild is held.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -59,6 +62,19 @@ fn written<T: ToWire>(value: &T) -> String {
 /// `value` as the API writes it on one line.
 fn one_line<T: ToWire>(value: &T) -> String {
     write(&value.to_wire(), Layout::OneLine).unwrap()
+}
+
+/// The design's JSON code blocks between the headings `from` and `to`, in order.
+fn design(from: &str, to: &str) -> Vec<String> {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/design/m4.1-command-api.md");
+    let doc = std::fs::read_to_string(&path).unwrap();
+    let section = &doc[doc.find(from).unwrap()..doc.find(to).unwrap()];
+    section
+        .split("```json\n")
+        .skip(1)
+        .map(|block| block.split("\n```").next().unwrap().to_owned())
+        .collect()
 }
 
 fn parsed(text: &str) -> Node {
@@ -507,10 +523,22 @@ fn checks_fresh_is_only_false_until_a_fresh_check_is_built() {
 }
 
 #[test]
-fn version_is_answered_as_the_design_gives_it_with_no_session() {
+fn version_is_answered_with_the_limits_built_so_far_and_no_session() {
+    // By hand: the design's result less the limits of commands not built yet (render's,
+    // read_logs', and export's), which is why its example isn't in the contract.
     let text = written(&VERSION);
-    assert_eq!(text, example("version/result"));
+    assert_eq!(
+        text,
+        "{\n  \"api\": 1,\n  \"format\": 1,\n  \"naming\": 5,\n  \"limits\": {\"document_bytes\": 16777216, \"request_bytes\": 67108864, \"request_depth\": 64, \"response_bytes\": 134217728, \"listed\": 100, \"sessions\": 16, \"published_reads\": 8, \"elements\": 1000, \"query\": 1000, \"query_measures\": 7, \"kernel_seconds\": 60, \"sketch_seconds\": 300}\n}\n"
+    );
     holds(&schema_of("version", "result"), &text, "version");
+    // The design's, with those limits, is the target: the snapshot doesn't take it yet.
+    let designed = &design("### `version` (M4.2)", "### `open` (M4.2)")[1];
+    assert!(
+        designed.contains("\"export_triangles\": 10000000"),
+        "{designed}"
+    );
+    fails(&schema_of("version", "result"), designed, "the design's");
     // Its envelope: no session, no model.
     let ran = Response {
         session: None,
@@ -687,9 +715,25 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
             state: RebuildState::Running,
         },
     };
+    // By hand: the design's result less the rebuild's progress (`done` and `steps`), not
+    // built yet, which is why its example isn't in the contract.
     let text = written(&status);
-    assert_eq!(text, example("status/result"));
-    holds(&schema_of("status", "result"), &text, "the design's");
+    assert_eq!(
+        text,
+        "{\n  \"features\": 7,\n  \"gated\": true,\n  \"transaction\": {\"base\": 4},\n  \"running\": \"check\",\n  \"reads\": [\"distance\"],\n  \"rebuild\": {\"revision\": 6, \"state\": \"running\"}\n}\n"
+    );
+    holds(
+        &schema_of("status", "result"),
+        &text,
+        "the design's, less progress",
+    );
+    let designed = &design("### `status` (M4.2)", "### `cancel` (M4.2)")[1];
+    assert_eq!(
+        designed.replace(", \"done\": 3, \"steps\": 9", "") + "\n",
+        text,
+        "the design's, but for progress"
+    );
+    fails(&schema_of("status", "result"), designed, "the design's");
     // A session's own, on the fake kernel: a box, nothing running, nothing rebuilt.
     let f = opened(BOX);
     let request = SessionRequest::read(&parsed(&example("status/request"))).unwrap();
@@ -914,4 +958,98 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
     let check = schema_of("check", "request");
     assert_eq!(check["properties"]["fresh"]["const"], false);
     assert_eq!(check["properties"]["fresh"]["type"], "boolean");
+}
+
+#[test]
+fn a_published_check_answers_at_once_from_the_older_revision_while_the_current_rebuilds() {
+    let f = opened(BOX);
+    // Revision 1's model, built and published.
+    assert!(answer(f.sessions.check(&s1())).result.unwrap().is_empty());
+    // Revision 2, an edit in a transaction, its rebuild held by a current check.
+    answer(f.sessions.begin(&s1())).result.unwrap();
+    let edit = answer(f.sessions.set_field(
+        &s1(),
+        Revision::OPENED,
+        id("k7f2qx3m"),
+        "length".to_owned(),
+        parsed("41"),
+    ));
+    assert_eq!(edit.session.unwrap().revision, revision(2));
+    let (hold, current) = f.running_held(|| f.sessions.check(&s1()));
+    // The design's request, reading the published model: answered while the rebuild is held,
+    // from revision 1's model.
+    let text = example("check/request").replace("current", "published");
+    let request = CheckRequest::read(&parsed(&text)).unwrap();
+    assert_eq!(request.model, ModelChoice::Published);
+    let published = answer(f.sessions.check_model(&request.session, request.model));
+    let model = published.model.as_ref().unwrap();
+    assert_eq!(
+        (model.revision, model.of, &model.fault),
+        (Revision::OPENED, ModelChoice::Published, &None)
+    );
+    assert_eq!(published.session.as_ref().unwrap().revision, revision(2));
+    let text = written(&CheckAnswer {
+        problems: published.result.unwrap(),
+    });
+    assert_eq!(text, example("check/result"));
+    // The current check still waits on its rebuild, then answers of revision 2.
+    let Err(current) = current.try_take() else {
+        panic!("the current check answered with its rebuild held");
+    };
+    hold.release();
+    let current = answer(current);
+    let model = current.model.as_ref().unwrap();
+    assert_eq!(
+        (model.revision, model.of),
+        (revision(2), ModelChoice::Current)
+    );
+    assert!(current.result.unwrap().is_empty());
+    // The current choice is the current check's.
+    let again = answer(f.sessions.check_model(&s1(), ModelChoice::Current));
+    assert_eq!(again.model.unwrap().of, ModelChoice::Current);
+}
+
+#[test]
+fn a_published_check_of_a_document_the_gate_refused_follows_the_published_rule() {
+    // Nothing published: refused with the gate's problems, where the current check gives them
+    // as its result.
+    let zero = BOX.replace("\"length\": 40", "\"length\": 0");
+    assert_ne!(zero, BOX);
+    let f = opened(&zero);
+    let published = answer(f.sessions.check_model(&s1(), ModelChoice::Published));
+    assert_eq!(published.model, None);
+    let refused = published.result.unwrap_err();
+    let current = answer(f.sessions.check_model(&s1(), ModelChoice::Current));
+    assert_eq!(current.model, None);
+    let problems = current.result.unwrap();
+    assert_eq!(refused, problems);
+    assert_eq!(
+        problems
+            .errors()
+            .iter()
+            .map(|e| (e.code(), e.parameter()))
+            .collect::<Vec<_>>(),
+        [(ErrorCode::InvalidInput, Some("length"))]
+    );
+    // Something published, then the file changed to a document the gate refuses, reloaded at
+    // revision 2: the published check answers from revision 1's model.
+    let f = opened(BOX);
+    assert!(answer(f.sessions.check(&s1())).result.unwrap().is_empty());
+    std::fs::write(f.path(), &zero).unwrap();
+    assert!(
+        answer(f.sessions.text(&s1(), None))
+            .session
+            .unwrap()
+            .reloaded
+    );
+    let published = answer(f.sessions.check_model(&s1(), ModelChoice::Published));
+    let model = published.model.as_ref().unwrap();
+    assert_eq!(
+        (model.revision, model.of),
+        (Revision::OPENED, ModelChoice::Published)
+    );
+    assert_eq!(published.session.as_ref().unwrap().revision, revision(2));
+    assert!(published.result.unwrap().is_empty());
+    let current = answer(f.sessions.check_model(&s1(), ModelChoice::Current));
+    assert_eq!(current.result.unwrap().total(), 1);
 }

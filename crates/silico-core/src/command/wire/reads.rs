@@ -53,8 +53,9 @@ impl ToWire for TextRequest {
     }
 }
 
-/// A `check` request: the session, and the model it reads. Its `fresh` is read too, and
-/// only `false` taken.
+/// A `check` request: the session, and the model it reads, as
+/// [`Sessions::check_model`](crate::command::Sessions::check_model) takes them. Its `fresh`
+/// is read too, and only `false` taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CheckRequest {
     pub session: SessionId,
