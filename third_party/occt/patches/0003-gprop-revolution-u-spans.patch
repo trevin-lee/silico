@@ -1,5 +1,5 @@
 Subject: Modeling Algorithms - BRepGProp_Face splits a surface of revolution's U into three spans, as a torus's
-Upstream: ISSUE-TO-COME (the issue the maintainer posts on BRepGProp_Gauss's U refinement; a PR needs OCCT's CLA)
+Upstream: https://github.com/Open-Cascade-SAS/OCCT/issues/1675 (BRepGProp_Gauss never refines U; a PR needs OCCT's CLA)
 Applies to: OCCT V7_9_3.
 Why: BRepGProp_Gauss::Compute with an Eps (BRepGProp::VolumeProperties(shape, props, eps),
      Silico's precise measure) never refines U: EpsU is left 0, so the U loop ends after its
@@ -17,7 +17,7 @@ Why: BRepGProp_Gauss::Compute with an Eps (BRepGProp::VolumeProperties(shape, pr
      reads neither UKnots nor SUIntSubs, and is unchanged to the bit.
 Moves: tests/determinism/oracle-reference.json's torus_horn summary hash, 4be84275f45be6dc
      to f3c516303caa58e7 (the horn torus is a surface of revolution; its centre of mass
-     was 7.46e-6 off its origin), to be re-recorded with the maintainer. No committed
+     was 7.46e-6 off its origin), re-recorded with the maintainer's approval (2026-10-25). No committed
      fingerprint.
 Drop when: an OCCT release's UKnots gives a surface of revolution's U spans, or when
      revolution_measures.rs and adversarial_revolution_measures.rs pass with the patch
