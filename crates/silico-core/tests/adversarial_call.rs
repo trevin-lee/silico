@@ -6,91 +6,15 @@
 //! the sessions are gone. Expected values: RFC 8259 (what's JSON), the design's words for a
 //! session not open, the files' bytes as the tests wrote them, and counts worked out by hand.
 
-use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use silico_core::cache::Cache;
-use silico_core::command::{Answered, Call, Calling, Command, Sessions};
-use silico_core::fake::{FakeKernel, FakeRenderer};
+use silico_core::command::{Answered, Call, Calling, Command};
 use silico_core::kernel::{Op, Primitive};
-use tempfile::TempDir;
 
+use crate::calls::{
+    BOX, Fixture, REFUSAL_BOUND, answered, calling, envelope, fixture, fixture_with,
+};
 use crate::sessions::HANG;
-
-/// A 40 × 20 × 10 box.
-const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
-
-/// The most an error's envelope may reasonably be: every value quoted in a message is cut
-/// to a few dozen characters (`json::shown`), so a refusal is some hundreds of bytes.
-const REFUSAL_BOUND: usize = 16 << 10;
-
-/// Sessions on a fake kernel, drawing with a fake renderer, in a workspace of their own.
-struct Fixture {
-    _dir: TempDir,
-    work: PathBuf,
-    kernel: Arc<FakeKernel>,
-    sessions: Sessions<Arc<FakeKernel>>,
-}
-
-fn fixture() -> Fixture {
-    let dir = tempfile::tempdir().unwrap();
-    let work = std::fs::canonicalize(dir.path()).unwrap().join("work");
-    std::fs::create_dir(&work).unwrap();
-    let secret = dir.path().join("secret");
-    let kernel = Arc::new(FakeKernel::new(2).unwrap());
-    let sessions = Sessions::with_cache_opener(Arc::clone(&kernel), move |cache| {
-        Cache::with_secret(cache, &secret)
-    })
-    .rendering(FakeRenderer::new())
-    .in_workspace(&work)
-    .unwrap();
-    Fixture {
-        _dir: dir,
-        work,
-        kernel,
-        sessions,
-    }
-}
-
-impl Fixture {
-    fn file(&self, name: &str, text: &str) {
-        std::fs::write(self.work.join(name), text).unwrap();
-    }
-
-    fn calling(&self, name: &str, arguments: &str) -> Calling {
-        calling(&self.sessions, name, arguments)
-    }
-
-    fn call(&self, name: &str, arguments: &str) -> Answered {
-        answered(self.calling(name, arguments))
-    }
-
-    /// `part.silico` (the box) written and opened as s1.
-    fn opened(&self) {
-        self.file("part.silico", BOX);
-        let open = self.call("open", r#"{"path": "part.silico", "create": false}"#);
-        assert!(open.ok, "{}", open.text);
-    }
-}
-
-fn calling(sessions: &Sessions<Arc<FakeKernel>>, name: &str, arguments: &str) -> Calling {
-    match sessions.call(name, arguments) {
-        Call::Running(calling) => calling,
-        Call::Unknown => panic!("{name} is no command"),
-    }
-}
-
-fn answered(calling: Calling) -> Answered {
-    match calling.wait_timeout(HANG) {
-        Ok(answered) => answered,
-        Err(_) => panic!("the call didn't answer in {HANG:?}"),
-    }
-}
-
-fn envelope(answered: &Answered) -> serde_json::Value {
-    serde_json::from_str(&answered.text).unwrap()
-}
 
 /// A request of every command, sound in shape, naming session `session`.
 fn requests(session: &str) -> Vec<(&'static str, String)> {
@@ -658,30 +582,16 @@ fn held_open() -> (
 ) {
     use std::sync::Mutex;
     use std::sync::mpsc;
-    let dir = tempfile::tempdir().unwrap();
-    let work = std::fs::canonicalize(dir.path()).unwrap().join("work");
-    std::fs::create_dir(&work).unwrap();
-    let secret = dir.path().join("secret");
     let (held_tx, held) = mpsc::channel();
     let (through, through_rx) = mpsc::channel::<()>();
     let first = Mutex::new(Some((held_tx, through_rx)));
-    let kernel = Arc::new(FakeKernel::new(2).unwrap());
-    let sessions = Sessions::with_cache_opener(Arc::clone(&kernel), move |cache| {
+    let f = fixture_with(move |_| {
         let hold = first.lock().unwrap().take();
         if let Some((held, through)) = hold {
             held.send(()).unwrap();
             let _ = through.recv();
         }
-        Cache::with_secret(cache, &secret)
-    })
-    .in_workspace(&work)
-    .unwrap();
-    let f = Fixture {
-        _dir: dir,
-        work,
-        kernel,
-        sessions,
-    };
+    });
     (f, held, through)
 }
 
@@ -785,6 +695,99 @@ fn commands_sent_while_an_open_is_held_and_then_cancelled_are_each_told_no_sessi
     // The file free: it opens, as s2.
     let again = f.call("open", r#"{"path": "part.silico", "create": false}"#);
     assert_eq!(envelope(&again)["session"]["id"], "s2", "{}", again.text);
+}
+
+#[test]
+fn a_command_queued_behind_an_open_gives_its_progress_and_is_stopped_by_its_stopper() {
+    // Found by the review: a command queued behind an open read its progress from the
+    // opening session's record of its newest rebuild, which the session takes as its own as
+    // it opens; a session that made a record of its own instead passed every test.
+    let (f, held, through) = held_open();
+    f.file("part.silico", BOX);
+    let hold = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+    let open = f.calling("open", r#"{"path": "part.silico", "create": false}"#);
+    held.recv_timeout(HANG).unwrap();
+    // Certainly opening: none of these can find s1 open.
+    let check = f.calling(
+        "check",
+        r#"{"session": "s1", "model": "current", "fresh": false}"#,
+    );
+    let text = f.calling("text", r#"{"session": "s1", "feature": null}"#);
+    let read = f.calling(
+        "mass_properties",
+        r#"{"session": "s1", "model": "published", "feature": null}"#,
+    );
+    // Stopped from another thread while the open is held, each before it ran.
+    for calling in [&text, &read] {
+        let stopper = calling.stopper();
+        assert!(std::thread::spawn(move || stopper.cancel()).join().unwrap());
+    }
+    through.send(()).unwrap();
+    assert!(answered(open).ok);
+    // The check's rebuild, its one step the box's, held running and not done.
+    assert!(f.kernel.wait_running(1, HANG));
+    let deadline = Instant::now() + HANG;
+    let progress = loop {
+        if let Some(progress) = check.progress()
+            && progress.steps == 1
+        {
+            break progress;
+        }
+        assert!(Instant::now() < deadline, "no progress");
+        std::thread::yield_now();
+    };
+    assert_eq!((progress.done, progress.steps), (0, 1));
+    assert_eq!(progress.running.as_deref(), Some("k7f2qx3m box"));
+    hold.release();
+    let check = answered(check);
+    assert!(check.ok, "{}", check.text);
+    for (what, calling) in [("text", text), ("published read", read)] {
+        let answer = envelope(&answered(calling));
+        assert_eq!(answer["errors"][0]["code"], "cancelled", "{what}: {answer}");
+    }
+    // Nothing of them done: the session at revision 1, as opened.
+    let status = envelope(&f.call("status", r#"{"session": "s1"}"#));
+    assert_eq!(status["session"]["revision"], 1, "{status}");
+}
+
+#[test]
+fn published_reads_held_behind_an_open_are_as_many_as_an_open_session_runs() {
+    // Found by the review: an opening session held every published read sent to it, without
+    // bound, each with a kernel client of its own; an open one runs at most
+    // MAX_PUBLISHED_READS at once, and refuses one past them.
+    use silico_core::command::MAX_PUBLISHED_READS;
+    let (f, held, through) = held_open();
+    f.file("part.silico", BOX);
+    let open = f.calling("open", r#"{"path": "part.silico", "create": false}"#);
+    held.recv_timeout(HANG).unwrap();
+    let read = r#"{"session": "s1", "model": "published", "fresh": false}"#;
+    let reads: Vec<Calling> = (0..MAX_PUBLISHED_READS)
+        .map(|_| f.calling("check", read))
+        .collect();
+    // One past them: refused at once, as an open session refuses it, the open still held.
+    let past = match f.calling("check", read).wait_timeout(Duration::ZERO) {
+        Ok(answer) => envelope(&answer),
+        Err(_) => panic!("held behind the open, past the bound"),
+    };
+    let e = &past["errors"][0];
+    assert_eq!(e["code"], "invalid_input", "{past}");
+    assert_eq!(
+        e["message"],
+        format!(
+            "{MAX_PUBLISHED_READS} published reads are running in session s1, the most one session runs at once"
+        ),
+        "{past}"
+    );
+    assert_eq!(e["suggestion"], "wait for one to answer, then read again");
+    through.send(()).unwrap();
+    assert!(answered(open).ok);
+    // Those held each read s1, once it opened.
+    for calling in reads {
+        let answer = envelope(&answered(calling));
+        assert_eq!(answer["session"]["id"], "s1", "{answer}");
+    }
 }
 
 #[test]
@@ -1130,7 +1133,15 @@ fn status_and_cancel_waited_on_after_the_sessions_are_dropped_are_refused_as_clo
         assert!(!answer.ok, "{}", answer.text);
         let e = &envelope(&answer)["errors"][0];
         assert_eq!(e["code"], "invalid_input", "{e}");
-        assert!(e["message"].as_str().unwrap().contains("closing"), "{e}");
+        assert_eq!(
+            e["message"], "this process's sessions are closing, so none is open",
+            "{e}"
+        );
+        assert_eq!(e["parameter"], "session", "{e}");
+        assert_eq!(
+            e["suggestion"], "open the document again once the sessions are made again",
+            "{e}"
+        );
     }
     assert!(answered(version).ok);
     // The check, queued before the drop, answers (its result, or the session's end), never

@@ -611,8 +611,8 @@ impl<P: Clients + 'static> Sessions<P> {
     /// What answers [`status`](Self::status) and [`cancel`](Self::cancel) later, on whichever
     /// thread asks, as they're answered here: for `call`, whose caller (MCP's reader) never
     /// waits on what a session holds.
-    pub(crate) fn later(&self) -> Later<P> {
-        Later(Arc::downgrade(&self.registry))
+    pub(crate) fn weak(&self) -> WeakSessions<P> {
+        WeakSessions(Arc::downgrade(&self.registry))
     }
 
     /// The text `session`'s document is: the file's bytes exactly, until an edit; or, given
@@ -708,8 +708,8 @@ impl<P: Clients + 'static> Sessions<P> {
     /// starting the current rebuild if needed, refused naming `model` if nothing's published,
     /// and with the gate's (or the reader's) problems for a document the gate refused, with
     /// nothing published. At most [`MAX_PUBLISHED_READS`] of a session's published reads are
-    /// unanswered at once: past them, one is refused (each session's own, apart from every
-    /// other's). The response's `model` is the [`ModelRead`] of the
+    /// unanswered at once, or held while it opens: past them, one is refused (each
+    /// session's own, apart from every other's). The response's `model` is the [`ModelRead`] of the
     /// model read, which `read` is handed too ([`Read`]); `read`'s error is the response's
     /// refusal.
     pub fn read_model<T: Send + 'static>(
@@ -757,6 +757,10 @@ impl<P: Clients + 'static> Sessions<P> {
                 let Some(opening) = book.opening.get_mut(session) else {
                     return Running::answered(refused(not_open(*session)));
                 };
+                // As many held as an open session runs at once, and refused alike past them.
+                if opening.reads.len() >= MAX_PUBLISHED_READS {
+                    return Running::answered(refused(too_many_reads(*session)));
+                }
                 let stop = Arc::clone(&ticket);
                 opening.reads.push(Box::new(move |turn| {
                     let refusal = match turn {
@@ -1244,16 +1248,7 @@ fn start_published<C: Kernel + 'static, T: Send + 'static>(
         result: Err(Problems::from(error)),
     };
     if lock(unanswered).len() >= MAX_PUBLISHED_READS {
-        return Err(refused_here(
-            Error::new(
-                ErrorCode::InvalidInput,
-                format!(
-                    "{MAX_PUBLISHED_READS} published reads are running in session {}, the most one session runs at once",
-                    found.id
-                ),
-            )
-            .with_suggestion("wait for one to answer, then read again"),
-        ));
+        return Err(refused_here(too_many_reads(found.id)));
     }
     let session = Arc::clone(found);
     let counted = Counted::count(unanswered, command, ticket);
@@ -1398,12 +1393,12 @@ fn cancel_in<P: Clients + 'static>(
 }
 
 /// `status` and `cancel` of a [`Sessions`], answered later, on whichever thread asks
-/// ([`Sessions::later`]): as the sessions answer them, or, once they're dropped, refused as
+/// ([`Sessions::weak`]): as the sessions answer them, or, once they're dropped, refused as
 /// of sessions closed ([`gone`]). It holds them only weakly, so it keeps nothing of theirs
 /// alive.
-pub(crate) struct Later<P: Clients + 'static>(Weak<Registry<P>>);
+pub(crate) struct WeakSessions<P: Clients + 'static>(Weak<Registry<P>>);
 
-impl<P: Clients + 'static> Later<P> {
+impl<P: Clients + 'static> WeakSessions<P> {
     /// [`Sessions::status`].
     pub(crate) fn status(&self, session: &SessionId) -> Response<Status> {
         match self.0.upgrade() {
@@ -1470,6 +1465,18 @@ fn refused<T>(error: Error) -> Response<T> {
     }
 }
 
+/// The refusal of a published read past the [`MAX_PUBLISHED_READS`] session `id` runs at
+/// once, or holds while it opens.
+fn too_many_reads(id: SessionId) -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!(
+            "{MAX_PUBLISHED_READS} published reads are running in session {id}, the most one session runs at once"
+        ),
+    )
+    .with_suggestion("wait for one to answer, then read again")
+}
+
 fn not_open(id: SessionId) -> Error {
     Error::new(ErrorCode::InvalidInput, format!("no session {id} is open"))
         .with_parameter("session")
@@ -1479,7 +1486,7 @@ fn not_open(id: SessionId) -> Error {
 }
 
 /// The refusal of `status` or `cancel` answered after the sessions were dropped
-/// ([`Later`]): every session closed with them, so there's none to report on or stop.
+/// ([`WeakSessions`]): every session closed with them, so there's none to report on or stop.
 fn gone() -> Error {
     Error::new(
         ErrorCode::InvalidInput,

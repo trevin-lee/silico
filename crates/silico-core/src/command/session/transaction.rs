@@ -871,7 +871,7 @@ impl<C: Kernel + 'static> Session<C> {
         let found_at = match file::resolve(self.workspace.as_ref(), &resolved) {
             Ok(found_at) => found_at,
             Err(file::Unresolved::Outside) => {
-                return Err(Problems::from(Workspace::led_out(Path::new(&path))));
+                return Err(Problems::from(Workspace::outside_now(Path::new(&path))));
             }
             Err(file::Unresolved::Unreachable(_)) => resolved.clone(),
         };
