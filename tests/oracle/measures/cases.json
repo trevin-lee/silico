@@ -319,7 +319,7 @@
   },
   {
     "name": "sphere_to_a_wall",
-    "note": "FreeCAD main's testCurvedFaceDistance: a sphere of radius 5 at the origin and a box's face, the plane x = 20: 20 - 5 = 15, from (5, 0, 0) to (20, 0, 0) (FreeCAD 1.1.3 reads 15 through MeasureDistance from Python; its gate, which refuses a sphere, is the GUI's, not execute's). A sphere has no centre a distance takes, and a plane none, so no center_distance; no normal distance either.",
+    "note": "FreeCAD main's testCurvedFaceDistance, its box moved to (20, -5, -5) so the nearest point is inside the face (FreeCAD's box at (20, 0, 0) meets it at a corner vertex): a sphere of radius 5 at the origin and a box's face, the plane x = 20: 20 - 5 = 15, from (5, 0, 0) to (20, 0, 0) (FreeCAD 1.1.3 reads 15 through MeasureDistance from Python; its gate, which refuses a sphere, is the GUI's, not execute's). A sphere has no centre a distance takes, and a plane none, so no center_distance; no normal distance either.",
     "elements": ["sph00005.sphere.Face1", "wbx00020.box.Face1"],
     "expected": {"distance": {"distance": 15, "center_distance": null, "normal_distance": null, "witness": [[5, 0, 0], [20, 0, 0]]}}
   },
