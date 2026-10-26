@@ -43,6 +43,8 @@ mod quadrature;
 #[path = "../../silico-core/tests/common/sweeps.rs"]
 mod sweeps;
 
+#[path = "adversarial_arc_range.rs"]
+mod adversarial_arc_range;
 #[path = "adversarial_boolean.rs"]
 mod adversarial_boolean;
 #[path = "adversarial_chamfer.rs"]
@@ -61,6 +63,8 @@ mod adversarial_export;
 mod adversarial_faces;
 #[path = "adversarial_fillet.rs"]
 mod adversarial_fillet;
+#[path = "adversarial_measure_refine_u.rs"]
+mod adversarial_measure_refine_u;
 #[path = "adversarial_mesh.rs"]
 mod adversarial_mesh;
 #[path = "adversarial_point_distance.rs"]
@@ -89,6 +93,8 @@ mod describe;
 mod distance;
 #[path = "export.rs"]
 mod export;
+#[path = "extruded_bsplines.rs"]
+mod extruded_bsplines;
 #[path = "faces.rs"]
 mod faces;
 #[path = "fillet.rs"]

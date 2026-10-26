@@ -186,6 +186,55 @@ impl<C> Read<'_, C> {
     pub fn kernel(&self) -> &ReadClient<C> {
         self.kernel
     }
+
+    /// Settles the read before it leaves its one trace (a file written, decision 34): from
+    /// here a cancel comes too late, and if one came first, its answer, `cancelled`.
+    pub fn settle(&self) -> Result<(), Error> {
+        self.stop.settle()
+    }
+
+    /// `f` given `renderer`, its renders cancelled with the read: a cancel, or the session
+    /// closing, cancels each render it asked for (a queued one never sent, a running one's
+    /// worker killed).
+    pub(crate) fn rendering<T>(
+        &self,
+        renderer: &dyn crate::command::render::Renderer,
+        f: impl FnOnce(&dyn crate::command::render::Renderer) -> T,
+    ) -> T {
+        let read = ReadRenderer {
+            inner: renderer,
+            stop: self.stop,
+            kept: std::sync::Mutex::new(Vec::new()),
+        };
+        f(&read)
+    }
+}
+
+/// A read's renderer: each render it asks for cancelled when the read is (its stop holds a
+/// weak handle to each render's cancel; this keeps them while the read runs).
+struct ReadRenderer<'a> {
+    inner: &'a dyn crate::command::render::Renderer,
+    stop: &'a Ticket,
+    kept: std::sync::Mutex<Vec<Arc<dyn super::cancel::Interrupt>>>,
+}
+
+impl crate::command::render::Renderer for ReadRenderer<'_> {
+    fn render(&self, scene: silico_protocol::RenderScene) -> crate::render::RenderTicket {
+        let ticket = self.inner.render(scene);
+        let cancel: Arc<dyn super::cancel::Interrupt> = Arc::new(RenderStop(ticket.canceller()));
+        self.stop.interrupt_with(Arc::downgrade(&cancel));
+        crate::worker::lock(&self.kept).push(cancel);
+        ticket
+    }
+}
+
+/// A render's cancel, as a read's stop interrupts it: cancelled or closed, the render stops.
+struct RenderStop(crate::render::RenderCancel);
+
+impl super::cancel::Interrupt for RenderStop {
+    fn interrupt(&self, _why: super::cancel::Why) {
+        self.0.cancel();
+    }
 }
 
 /// A read's own kernel client, as [`Read::kernel`] gives it: every request it makes is at

@@ -76,7 +76,7 @@ impl ToWire for OpenRequest {
 /// [`COMMANDS`]): what `status` says is running, and `cancel` stops. Every command but those
 /// answered at once, never running (`version`, `status`, `cancel`, and `schema`), and
 /// `open`, which runs before its session is there to name it.
-pub const SESSION_COMMANDS: [&str; 17] = [
+pub const SESSION_COMMANDS: [&str; 18] = [
     "close",
     "begin",
     "commit",
@@ -94,18 +94,20 @@ pub const SESSION_COMMANDS: [&str; 17] = [
     "mass_properties",
     "distance",
     "angle",
+    "render",
 ];
 
 /// The commands that run as reads that may read the published model (`Sessions::read_model`'s),
 /// each by name, in the design's order (a subset of [`SESSION_COMMANDS`]): what `status`
 /// lists among the published reads running.
-pub const PUBLISHED_READS: [&str; 6] = [
+pub const PUBLISHED_READS: [&str; 7] = [
     "check",
     "elements",
     "query",
     "mass_properties",
     "distance",
     "angle",
+    "render",
 ];
 
 /// A `cancel` request: the session, and the command to stop, by its name: one of the
@@ -160,6 +162,9 @@ impl ToWire for Limits {
             ("elements", Json::whole(self.elements.into())),
             ("query", Json::whole(self.query.into())),
             ("query_measures", Json::count(self.query_measures)),
+            ("highlight", Json::count(self.highlight)),
+            ("render_side", Json::whole(self.render_side.into())),
+            ("render_seconds", Json::whole(self.render_seconds)),
             ("kernel_seconds", Json::whole(self.kernel_seconds)),
             ("sketch_seconds", Json::whole(self.sketch_seconds)),
         ])
@@ -315,6 +320,13 @@ pub struct LimitsSchema {
     pub query: u64,
     /// The most ranges a `query`'s `measures` holds: one a measure.
     pub query_measures: u64,
+    /// The most elements one `render` highlights.
+    pub highlight: u64,
+    /// The most pixels a `render`'s image is across or high.
+    pub render_side: u64,
+    /// How long one render may take, in seconds: past it, the render worker is stopped, a
+    /// `worker_timeout`, which is the machine's fault, never the document's.
+    pub render_seconds: u64,
     /// How long one request to a kernel worker may take, in seconds: past it, the worker is
     /// stopped, a `worker_timeout`, which is the machine's fault, never the document's.
     pub kernel_seconds: u64,

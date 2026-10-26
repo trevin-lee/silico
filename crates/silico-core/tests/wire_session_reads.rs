@@ -423,7 +423,7 @@ fn cancel_names_only_a_command_and_any_other_name_is_refused_with_every_command_
     for (value, got) in [
         (r#""Check""#, "Check"),
         (r#""check ""#, r#""check ""#),
-        (r#""render""#, "render"),
+        (r#""export""#, "export"),
         (r#""probe""#, "probe"),
         (r#""status""#, "status"),
         (r#""open""#, "open"),
@@ -526,12 +526,12 @@ fn checks_fresh_is_only_false_until_a_fresh_check_is_built() {
 
 #[test]
 fn version_is_answered_with_the_limits_built_so_far_and_no_session() {
-    // By hand: the design's result less the limits of commands not built yet (render's,
-    // read_logs', and export's), which is why its example isn't in the contract.
+    // By hand: the design's result less the limits of commands not built yet (read_logs'
+    // and export's), which is why its example isn't in the contract.
     let text = written(&VERSION);
     assert_eq!(
         text,
-        "{\n  \"api\": 1,\n  \"format\": 1,\n  \"naming\": 5,\n  \"limits\": {\"document_bytes\": 16777216, \"request_bytes\": 67108864, \"request_depth\": 64, \"response_bytes\": 134217728, \"listed\": 100, \"sessions\": 16, \"published_reads\": 8, \"elements\": 1000, \"query\": 1000, \"query_measures\": 7, \"kernel_seconds\": 60, \"sketch_seconds\": 300}\n}\n"
+        "{\n  \"api\": 1,\n  \"format\": 1,\n  \"naming\": 5,\n  \"limits\": {\"document_bytes\": 16777216, \"request_bytes\": 67108864, \"request_depth\": 64, \"response_bytes\": 134217728, \"listed\": 100, \"sessions\": 16, \"published_reads\": 8, \"elements\": 1000, \"query\": 1000, \"query_measures\": 7, \"highlight\": 1000, \"render_side\": 4096, \"render_seconds\": 30, \"kernel_seconds\": 60, \"sketch_seconds\": 300}\n}\n"
     );
     holds(&schema_of("version", "result"), &text, "version");
     // The design's, with those limits, is the target: the snapshot doesn't take it yet.
@@ -583,13 +583,16 @@ fn version_is_answered_with_the_limits_built_so_far_and_no_session() {
             elements: 18,
             query: 19,
             query_measures: 20,
+            highlight: 23,
+            render_side: 24,
+            render_seconds: 25,
             kernel_seconds: 21,
             sketch_seconds: 22,
         },
     };
     assert_eq!(
         one_line(&other),
-        r#"{"api": 2, "format": 3, "naming": 4, "limits": {"document_bytes": 11, "request_bytes": 12, "request_depth": 13, "response_bytes": 14, "listed": 15, "sessions": 16, "published_reads": 17, "elements": 18, "query": 19, "query_measures": 20, "kernel_seconds": 21, "sketch_seconds": 22}}"#
+        r#"{"api": 2, "format": 3, "naming": 4, "limits": {"document_bytes": 11, "request_bytes": 12, "request_depth": 13, "response_bytes": 14, "listed": 15, "sessions": 16, "published_reads": 17, "elements": 18, "query": 19, "query_measures": 20, "highlight": 23, "render_side": 24, "render_seconds": 25, "kernel_seconds": 21, "sketch_seconds": 22}}"#
     );
     holds(&schema_of("version", "result"), &written(&other), "another");
 }

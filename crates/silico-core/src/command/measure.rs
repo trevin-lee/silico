@@ -9,19 +9,17 @@
 //! measures it, with their centres', normal, and centre-to-element distances; and `angle`
 //! between two, from their geometry.
 
-use std::collections::BTreeMap;
-
-use super::elements::{built, summarized};
+use super::elements::summarized;
+use super::lookup::{Kinds, Lookup};
 use super::{ModelChoice, Problems, Running, SessionId, Sessions};
 use crate::document::{Angle, FeatureId, Fingerprint, Length, Measure};
 use crate::kernel::{
     Clients, EdgeCurve, EdgeDescription, ElementKind, ElementRef, FaceDescription, Kernel,
     KernelRequest, ShapeData, Surface,
 };
-use crate::naming::{ElementMap, Maker, Name};
+use crate::naming::ElementMap;
 use crate::pool::Outcome;
 use crate::recompute::Model;
-use crate::references::Candidates;
 use crate::{Error, ErrorCode};
 
 impl<P: Clients + 'static> Sessions<P> {
@@ -196,147 +194,27 @@ enum Seen<'m> {
     Vertex([f64; 3]),
 }
 
-/// The two elements `names` name, each looked for in the solids the request reads: the
-/// feature `feature`'s, or, for none, every body (the solids no later feature consumed), in
-/// timeline order. Every reason one isn't found is said, in the request's order: a name
-/// that isn't one, or that names no element of those solids (`reference_broken`, with the
-/// names it most likely meant, none taken for it), or names a solid. An unstable name is
-/// taken: a measure is answered once and stored nowhere.
+/// The kinds a measure takes by name.
+const MEASURED: Kinds = Kinds {
+    taken: &[ElementKind::Face, ElementKind::Edge, ElementKind::Vertex],
+    why: "a measure is between faces, edges, and vertices",
+    suggestion: "name a face, an edge, or a vertex of the solid",
+};
+
+/// The two elements `names` name, each looked for by [`Lookup`] with [`MEASURED`], and
+/// their geometry.
 fn find<'m>(
     model: &'m Model,
     names: &'m [String; 2],
     feature: Option<&FeatureId>,
 ) -> Result<[Found<'m>; 2], Problems> {
-    let mut refused = Problems::none();
-    let mut unbuilt: Vec<FeatureId> = Vec::new();
-    let solids: Vec<&'m FeatureId> = match feature {
-        Some(id) => match built(model, id, true) {
-            Ok(_) => model
-                .document()
-                .features
-                .iter()
-                .map(|f| &f.id)
-                .find(|f| *f == id)
-                .into_iter()
-                .collect(),
-            Err(problems) => {
-                refused.absorb(problems);
-                // Said once: a name of its own elements adds nothing to it.
-                unbuilt.push(id.clone());
-                Vec::new()
-            }
-        },
-        None => model.bodies().iter().collect(),
-    };
-    let makers = |id: &FeatureId| {
-        model
-            .document()
-            .features
-            .iter()
-            .find(|f| f.id == *id)
-            .map(|f| Maker::of(&f.operation))
-    };
-    let where_ = match feature {
-        Some(id) => format!("{id}'s solid"),
-        None => "the live solids".to_owned(),
-    };
+    let mut lookup = Lookup::new(model, feature, MEASURED);
     let mut found = Vec::with_capacity(2);
-    let mut undescribed: Vec<&FeatureId> = Vec::new();
-    // Each kind's candidates, built once a request, the first time a name of it breaks.
-    let mut candidates: BTreeMap<ElementKind, Candidates> = BTreeMap::new();
     for (at, text) in names.iter().enumerate() {
-        let parameter = format!("elements.{at}");
-        let broken = |why: String, candidates: Vec<String>| {
-            let suggestion = if candidates.is_empty() {
-                "name the element as the model now names it: `elements` lists every one"
-            } else {
-                "name the element as the model now names it: the candidates are the \
-                 likeliest, none taken for it"
-            };
-            Error::new(
-                ErrorCode::ReferenceBroken,
-                format!("{parameter}, {}, {why}", crate::document::json::shown(text)),
-            )
-            .with_parameter(parameter.clone())
-            .with_element(crate::references::cut_short(text))
-            .with_candidates(candidates)
-            .with_suggestion(suggestion)
-        };
-        let name = match Name::parse(text, &makers) {
-            Ok(name) => name,
-            Err(error) => {
-                refused.push(broken(format!("isn't a name: {error}"), Vec::new()));
-                continue;
-            }
-        };
-        if name.kind() == ElementKind::Solid {
-            refused.push(
-                Error::new(
-                    ErrorCode::InvalidInput,
-                    format!(
-                        "{parameter}, {}, names a solid: a measure is between faces, edges, \
-                         and vertices",
-                        crate::document::json::shown(text)
-                    ),
-                )
-                .with_parameter(parameter.clone())
-                .with_element(crate::references::cut_short(text))
-                .with_suggestion("name a face, an edge, or a vertex of the solid"),
-            );
-            continue;
-        }
-        let hit = solids.iter().find_map(|id| {
-            let map = model.element_map(id)?;
-            map.element(&name).map(|element| (*id, map, element))
-        });
-        let Some((id, map, element)) = hit else {
-            // An element of a feature that failed, was broken, or was blocked is in no
-            // solid: that feature's own failure is why, said once (design §2's A1), never a
-            // name that finds nothing with another solid's elements offered for it.
-            // (A sketch's elements are refused as they're parsed: no name of one gets here.)
-            let maker = name.feature();
-            if let Err(problems) = built(model, maker, false) {
-                if !unbuilt.contains(maker) {
-                    refused.absorb(problems);
-                    unbuilt.push(maker.clone());
-                }
-                continue;
-            }
-            // The request's `feature` was refused already: its solid has nothing to look in.
-            if solids.is_empty() && feature.is_some() {
-                continue;
-            }
-            let candidates = candidates
-                .entry(name.kind())
-                .or_insert_with(|| {
-                    let maps: Vec<&ElementMap> = solids
-                        .iter()
-                        .filter_map(|id| model.element_map(id))
-                        .collect();
-                    Candidates::of(&maps, name.kind())
-                })
-                .of_name(&name);
-            refused.push(broken(format!("names no element of {where_}"), candidates));
+        let Some(hit) = lookup.find(&format!("elements.{at}"), text) else {
             continue;
         };
-        let (Some(description), Ok(built)) = (model.description(id), built(model, id, false))
-        else {
-            // Said once a solid, naming the request's `feature` only if it named one.
-            if !undescribed.contains(&id) {
-                undescribed.push(id);
-                match super::elements::solid(model, id, feature.is_some()) {
-                    Err(problems) => refused.absorb(problems),
-                    Ok(_) => refused.push(
-                        Error::new(
-                            ErrorCode::Internal,
-                            format!("{id}'s solid has entries but no description"),
-                        )
-                        .with_suggestion(crate::worker::SILICO_BUG),
-                    ),
-                }
-            }
-            continue;
-        };
+        let (id, element, description) = (hit.feature, hit.element, hit.description);
         let slot = (element.index as usize).checked_sub(1);
         let geometry = match element.kind {
             ElementKind::Face => slot.and_then(|i| description.faces.get(i)).map(Seen::Face),
@@ -346,7 +224,7 @@ fn find<'m>(
                 .map(|p| Seen::Vertex(*p)),
         };
         let Some(geometry) = geometry else {
-            refused.push(
+            lookup.refuse(
                 Error::new(
                     ErrorCode::Internal,
                     format!("{id}'s element map names {element}, which its description hasn't"),
@@ -359,14 +237,14 @@ fn find<'m>(
             at,
             text,
             feature: id,
-            shape: &built.shape,
+            shape: &hit.built.shape,
             element,
             geometry,
             vertices: &description.vertices,
-            map,
+            map: hit.map,
         });
     }
-    refused.into_result()?;
+    lookup.finish()?;
     let [a, b]: [Found<'m>; 2] = found.try_into().map_err(|_| {
         Problems::from(
             Error::new(

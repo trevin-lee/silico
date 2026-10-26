@@ -53,6 +53,8 @@ fn the_case_file_holds_every_case_of_the_design() {
         "groove_both_sides_near_270",
         "groove_both_sides_mirrored_360",
         "cylinder_revolved_onto_a_box",
+        "barrel_across_angle_0",
+        "barrel_across_angle_0_slotted",
     ] {
         assert!(names.contains(name), "{name} is missing");
     }
@@ -74,8 +76,9 @@ fn the_case_file_holds_every_case_of_the_design() {
         2 + 24 + 10,
         "the ported groove, each groove and its cylinder, and the five grooves of regions either side of their axis (council round 2) and their cylinders"
     );
-    // And the M3 close's four revolves (three tori about the x axis, a cylinder onto a box).
-    assert_eq!(cases.cases.len(), 124 + 4);
+    // And the M3 close's four revolves (three tori about the x axis, a cylinder onto a box),
+    // and the arc-range fix's barrel across its arc's angle 0 and its slotted pocket.
+    assert_eq!(cases.cases.len(), 124 + 4 + 2);
 }
 
 #[test]

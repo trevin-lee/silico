@@ -184,8 +184,10 @@ mod ffi {
     /// One curve of a profile's loop, in model space, for `make_faces`: a line from point
     /// `start` to point `end` (numbered from 0 in the points given); an arc of the circle of
     /// `radius` about `center`, turning counter-clockwise about `axis` from the plane's x
-    /// axis, from point `start` at parameter `first` to point `end` at `last`; or a whole
-    /// circle about `axis` (its points and parameters unused).
+    /// axis, from point `start` at parameter `first` to point `end` at `last` (`first` <
+    /// `last`, any representative of the arc's range: the bridge moves it by whole turns to
+    /// the one OCCT's trimmed curves give it); or a whole circle about `axis` (its points and
+    /// parameters unused).
     struct FaceCurve {
         kind: CurveKind,
         start: u32,

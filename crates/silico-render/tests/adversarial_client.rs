@@ -15,8 +15,8 @@ use silico_protocol::{Mesh, RenderScene};
 use silico_render::bench::front_of_a_box;
 
 use crate::common::{
-    TEST_WORKER, WORKER, client, crashing, drawn, eventually, failed, hanging, process_exists,
-    scratch, signal, small, wait_within, zombie,
+    TEST_WORKER, WORKER, client, crashing, drawn, ended, eventually, failed, hanging,
+    process_exists, scratch, signal, small, state, wait_within, zombie,
 };
 
 // ---- Dropping the client ----
@@ -120,8 +120,12 @@ fn a_worker_killed_while_idle_is_replaced_and_the_next_render_draws() {
     drawn(c.render(small()).wait());
     let pid = c.pid().unwrap();
     signal(pid, "-KILL");
-    assert!(eventually(Duration::from_secs(5), || !process_exists(pid)
-        || zombie(pid)));
+    // Ended, every thread: before that the client can't reap it, and finds it still there.
+    assert!(
+        eventually(Duration::from_secs(5), || ended(pid)),
+        "the killed worker {pid} hasn't ended: ps says {:?}",
+        state(pid)
+    );
     // Not a crash of this render's: the worker was gone before it was sent.
     drawn(c.render(small()).wait());
     assert!(c.pid().is_some_and(|p| p != pid));
