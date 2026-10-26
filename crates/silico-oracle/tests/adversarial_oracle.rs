@@ -1271,6 +1271,101 @@ fn a_directory_of_sketch_feature_cases_alone_is_run_and_its_differences_counted(
     assert_eq!(ran.status.and_then(|s| s.code()), Some(1));
 }
 
+#[test]
+fn a_directory_of_measure_cases_alone_is_run_and_its_differences_counted() {
+    // No other cases: a 10 mm cube's bottom and top, 10 apart, said to be 11 apart, is the
+    // run's one case. FreeCAD's MeasureDistance agrees with Silico's 10, so the one
+    // difference is Silico's distance from the case's, and the run fails.
+    let temp = scratch("measures-alone");
+    let dir = temp.path();
+    let measures = dir.join("cases").join(silico_oracle::measures::DIR);
+    std::fs::create_dir_all(&measures).unwrap();
+    std::fs::write(
+        measures.join(silico_oracle::measures::MODEL),
+        r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "bxa00001", "type": "box", "v": 1, "name": "cube", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        measures.join(silico_oracle::measures::CASES),
+        r#"[{"name": "cube_bottom_and_top", "note": "10 apart, said to be 11.", "elements": ["bxa00001.box.Face5", "bxa00001.box.Face6"],
+            "expected": {"distance": {"distance": 11, "center_distance": null, "normal_distance": 10}}}]"#,
+    )
+    .unwrap();
+    let cases = dir.join("cases");
+    let ran = cli(
+        dir,
+        &["run", cases.to_str().unwrap()],
+        &[],
+        Duration::from_secs(120),
+    );
+    assert_eq!(
+        ran.stdout,
+        "cube_bottom_and_top: Silico's distance 10 against the expected 11\n\
+         1 of 1 cases differ from FreeCAD\n",
+        "{}",
+        ran.stderr
+    );
+    assert_eq!(ran.status.and_then(|s| s.code()), Some(1));
+}
+
+#[test]
+fn a_run_of_measure_cases_prints_each_that_differs_and_counts_them_all() {
+    // Two pairs of a 10 mm cube's bottom and top, each 10 apart as the case says, against a
+    // FreeCAD stand-in that measures the first 10 apart and the second 11: the second alone
+    // is printed, with how it differs, and counted, of the run's two cases.
+    let temp = scratch("measures-counted");
+    let dir = temp.path();
+    let measures = dir.join("cases").join(silico_oracle::measures::DIR);
+    std::fs::create_dir_all(&measures).unwrap();
+    std::fs::write(
+        measures.join(silico_oracle::measures::MODEL),
+        r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "bxa00001", "type": "box", "v": 1, "name": "cube", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}]}"#,
+    )
+    .unwrap();
+    let case = |name: &str| {
+        format!(
+            r#"{{"name": "{name}", "note": "", "elements": ["bxa00001.box.Face5", "bxa00001.box.Face6"],
+                "expected": {{"distance": {{"distance": 10, "center_distance": null, "normal_distance": 10}}}}}}"#
+        )
+    };
+    std::fs::write(
+        measures.join(silico_oracle::measures::CASES),
+        format!("[{}, {}]", case("agrees"), case("differs")),
+    )
+    .unwrap();
+    let measured = |distance: f64| {
+        format!(
+            "echo 'SILICO_ORACLE_CASE {{\"measured\": {{\"elements\": [\"Face5\", \"Face6\"], \
+             \"distance\": {distance}, \"from\": [0.0, 0.0, 0.0], \"to\": [0.0, 0.0, {distance}], \
+             \"dist_to_shape\": {distance}, \"witness\": [0.0, 0.0]}}}}'\n"
+        )
+    };
+    let freecad = dir.join("freecadcmd");
+    executable(
+        &freecad,
+        &format!(
+            "#!/bin/sh\necho SILICO_ORACLE_READY\n{}{}",
+            measured(10.0),
+            measured(11.0)
+        ),
+    );
+    let cases = dir.join("cases");
+    let ran = cli(
+        dir,
+        &["run", cases.to_str().unwrap()],
+        &[("SILICO_FREECADCMD", &freecad)],
+        Duration::from_secs(120),
+    );
+    assert_eq!(
+        ran.stdout,
+        "differs: Silico's distance (FreeCAD's MeasureDistance) 10 against FreeCAD's Some(11.0)\n\
+         1 of 2 cases differ from FreeCAD\n",
+        "{}",
+        ran.stderr
+    );
+    assert_eq!(ran.status.and_then(|s| s.code()), Some(1));
+}
+
 // ---- Generated cases from other seeds ----
 
 #[test]
