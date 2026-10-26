@@ -8,9 +8,10 @@ Why: BRepGProp_Gauss::Compute with an Eps (BRepGProp::VolumeProperties(shape, pr
      GeomAbs_SurfaceOfRevolution included, whose U is an angle as a torus's is. So a full
      turn of an arc whose circle crosses the axis (a barrel, a dome) measured 2.2e-7 low,
      and of the fixture's two-span B-spline 3.9e-6 low, their centres of mass 9.3e-4 and
-     0.033 off their axes; with three spans, all to round-off. The knots are fixed at 0,
-     2*pi/3, 4*pi/3, as a torus's, not at the face's own thirds: a face whose U starts at
-     1 or 3 is fixed too, and only one that starts past 4*pi/3 stays nearly as it was. A
+     0.033 off their axes; with three spans, whole turns to round-off (a part turn's centre
+     to 2e-9). The knots are fixed at 0, 2*pi/3, 4*pi/3, as a torus's, not at the face's own
+     thirds: a face whose U starts at 1 or 3 is fixed too, and one that starts past 4*pi/3
+     gets a short span and a long one, up to 2.2e-7 low as before. A
      meridian of many spans keeps its residual, which is along the meridian (L), not U
      (docs/ports/measure.md). The default integration (Compute without an Eps, FreeCAD's)
      reads neither UKnots nor SUIntSubs, and is unchanged to the bit.

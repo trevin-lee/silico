@@ -1,7 +1,9 @@
-//! Revolutions OCCT keeps as a `SurfaceOfRevolution`, measured through a kernel worker to
-//! round-off: a barrel (a revolved arc whose circle reaches the axis) through 2π, 1.5π, and
-//! 0.5π, and with part of it cut away by a box; and the fixture's cubic cap revolved 2π and
-//! 1.5π. OCCT 7.9.3's precise integration took such a surface's angle as one span of six
+//! Revolutions OCCT keeps as a `SurfaceOfRevolution`, measured through a kernel worker: a
+//! barrel (a revolved arc whose circle reaches the axis) through 2π, 1.5π, and 0.5π, its
+//! volume, area, and centre of mass, and with part of it cut away by a box; the fixture's
+//! cubic cap revolved 2π and 1.5π, and its centre; and the horn torus primitive, alone and
+//! fused with a box off its axis. Whole turns to round-off, a part turn's centre to 2e-9,
+//! the fused torus to 1e-10 (its cut circles written as B-splines). OCCT 7.9.3's precise integration took such a surface's angle as one span of six
 //! Gauss points, 2.2e-7 low on the barrel and 3.9e-6 on the cap; patch 0003 splits it in
 //! three, as OCCT splits a torus's (docs/ports/measure.md, Known wrong results). Every
 //! expected value is by hand from the profile, independent of OCCT: closed forms, Pappus,
@@ -202,9 +204,10 @@ fn a_barrels_centre_of_mass_turned_whole_or_in_part_is_by_hand() {
     // turn's centre is the origin; 1.5π's (−0.6915836531753319, 0.6915836531753321, 0) and
     // 0.5π's (2.0747509595259954, 2.074750959525995, 0) in Python. OCCT 7.9.3 without
     // patch 0003 had the whole turn's 9.3e-4 off the axis. The whole turn's is held to
-    // 1e-12; a part turn's moments vary along U as sin and cos of the angle, which the
-    // three spans' six points don't integrate to round-off, so to 2e-9 (9.6e-10 measured at
-    // 1.5π, 5.2e-11 at 0.5π, 2026-10-25).
+    // 1e-12; a part turn's to 2e-9 (9.6e-10 measured at 1.5π, 5.2e-11 at 0.5π, 2026-10-25):
+    // not the U integral's (six points a span get its sine and cosine to about 2e-12), but
+    // OCCT's U error estimate (its four-point pass's, 3.7e-7 on the first span) loosening
+    // the tolerance its refinement along the edges (L) holds to.
     let b = barrel_by_hand();
     let mut k = kernel();
     let mut whole = Vec::new();
