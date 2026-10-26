@@ -640,7 +640,7 @@ mod tests {
 
     #[test]
     fn opens_refusal_drops_the_path_its_line_names_and_a_commands_keeps_it() {
-        // Q-M: open's `path` is the file each line names; a later command's parameter is
+        // Open's `path` is the file each line names, so it's dropped; a later command's parameter is
         // its own (a document's key), so kept.
         let problems =
             Problems::from(Error::new(ErrorCode::InvalidInput, "too long").with_parameter("path"));
@@ -649,7 +649,7 @@ mod tests {
         assert!(!failed(&opened.ended()));
         let ran = Refusal::of_command("fmt", &problems);
         assert_eq!(ran.errors[0].parameter(), Some("path"));
-        // R-M2: a name that isn't UTF-8 is a file that couldn't be had, its path the
+        // A name that isn't UTF-8 is a file that couldn't be had, its path the
         // parameter at fault.
         let unnamed = PathBuf::from(OsString::from_vec(b"\xff.silico".to_vec()));
         let opened = Refusal::of_open(&unnamed, &problems);
@@ -659,7 +659,7 @@ mod tests {
 
     #[test]
     fn a_commands_refusal_about_its_file_says_how_to_go_on_in_the_clis_words() {
-        // R-M1: a conflict, or a session that couldn't take its file as it is now, says what
+        // A conflict, or a session that couldn't take its file as it is now, says what
         // the CLI's user does (run it again), not what a session's client does; a save that
         // couldn't be written keeps the file's own advice.
         let said = |error: Error| {
