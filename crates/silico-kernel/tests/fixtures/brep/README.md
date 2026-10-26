@@ -82,6 +82,39 @@ BinTools::Write(box, out, false, false, BinTools_FormatVersion_CURRENT);
       BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(w, true), gp_Vec(0, 0, 2)).Shape();
   ```
 
+- `barrel_range_off_its_surface.bin`: the barrel of `revolution_measures.rs` (the wall from
+  x = 1 to the arc from (4, −4) to (4, 4) of the circle about (−3.5, 0) of radius 8.5, on
+  XZ) turned a whole turn about z, as Silico's bridge built it before the arc-range fix: the
+  arc's edge a whole `Geom_Circle` over the raw range [−α, α], so its turned face's pcurves
+  lie a turn outside its surface's domain, and OCCT skips intersecting that face
+  (`BOPAlgo_AlertIntersectionOfPairOfShapesFailed`). Written with `BinTools::Write` by:
+
+  ```cpp
+  gp_Pnt a(1, 0, -4), b(4, 0, -4), c(4, 0, 4), d(1, 0, 4);
+  gp_Dir n(0, -1, 0), x(1, 0, 0);
+  BRep_Builder B;
+  const double tol = 1e-7;
+  TopoDS_Vertex va, vb, vc, vd;
+  B.MakeVertex(va, a, tol); B.MakeVertex(vb, b, tol);
+  B.MakeVertex(vc, c, tol); B.MakeVertex(vd, d, tol);
+  const double alpha = std::atan2(4.0, 7.5);
+  TopoDS_Edge arc;
+  B.MakeEdge(arc, new Geom_Circle(gp_Ax2(gp_Pnt(-3.5, 0, 0), n, x), 8.5), tol);
+  TopoDS_Vertex from = vb, to = vc;
+  from.Orientation(TopAbs_FORWARD); to.Orientation(TopAbs_REVERSED);
+  B.Add(arc, from); B.Add(arc, to); B.Range(arc, -alpha, alpha);
+  TopoDS_Wire w; B.MakeWire(w);
+  B.Add(w, BRepBuilderAPI_MakeEdge(va, vb).Edge()); B.Add(w, arc);
+  B.Add(w, BRepBuilderAPI_MakeEdge(vc, vd).Edge()); B.Add(w, BRepBuilderAPI_MakeEdge(vd, va).Edge());
+  w.Closed(true);
+  TopoDS_Face f;
+  B.MakeFace(f, new Geom_Plane(gp_Ax3(gp_Pnt(0, 0, 0), n, x)), tol); B.Add(f, w);
+  TopoDS_Shape barrel = BRepPrimAPI_MakeRevol(
+      f, gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 2 * M_PI).Shape();
+  std::ofstream out(path, std::ios::binary);
+  BinTools::Write(barrel, out, false, false, BinTools_FormatVersion_CURRENT);
+  ```
+
 - `pointed_cone.bin`, `rod_on_a_cones_side.bin`: a pointed cone (`Primitive::Cone`, radius 5 to
   0, height 5) and a level rod of radius 1, 20 long, touching the cone's side at one point, at half
   height, 300° round (t = 20π/12): the rectangle from (−10, 0) to (10, 1) in the frame turned

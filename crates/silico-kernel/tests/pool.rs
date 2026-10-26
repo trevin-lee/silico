@@ -1019,6 +1019,18 @@ fn kill9_mid_burst() {
     let fillet = |i: u32| KernelRequest::fillet(&block, &[1 + i % 12], 1.0).unwrap();
     let pool = pool(TEST_WORKER, 4);
     let size = pool.size();
+    // Each worker answered once, so each has started: a kill then is a crash. (One killed
+    // before it said it started is `worker_unavailable`, and a worker slow to start, on a
+    // loaded machine or a binary just built, can take longer than the 60 ms below.) A busy
+    // slot takes no second request, so `size` sleeps at once reach every worker.
+    let warm: Vec<_> = (0..size)
+        .map(|_| pool.submit(Generation(1), sleep(300)))
+        .collect();
+    for pending in warm {
+        assert!(matches!(outcome(pending), Outcome::Done(Ok(()))));
+    }
+    let started = pool.pids();
+    assert_eq!(started.len(), size);
     let mut killed = BTreeSet::new();
     let (sleeps, fillets) = std::thread::scope(|scope| {
         let submitter = scope.spawn(|| {
@@ -1033,13 +1045,11 @@ fn kill9_mid_burst() {
             }
             (sleeps, fillets)
         });
-        for n in 0..4 {
+        // The four started workers, each once: never a replacement that may not have.
+        for &pid in &started {
             std::thread::sleep(Duration::from_millis(60));
-            let pids = pool.pids();
-            if let Some(&pid) = pids.get(n % pids.len().max(1)) {
-                signal("9", pid);
-                killed.insert(pid);
-            }
+            signal("9", pid);
+            killed.insert(pid);
         }
         submitter.join().unwrap()
     });

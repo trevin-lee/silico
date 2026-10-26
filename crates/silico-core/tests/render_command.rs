@@ -81,9 +81,11 @@ impl Bench {
             .collect()
     }
 
+    /// How many points the render asked the kernel to classify: asked, not started, as a
+    /// render drops the classifies it no longer needs, which a thread may take later.
     fn classified(&self) -> usize {
         self.kernel
-            .calls()
+            .asked()
             .iter()
             .filter(|c| matches!(c.op, Op::Classify { .. }))
             .count()
