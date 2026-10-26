@@ -3212,7 +3212,7 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
     let f = opened(BOX);
     let (started, was_started) = mpsc::channel();
     let (through, wait) = mpsc::channel();
-    *lock(&f.session().gate.0) = Some((started, Arc::new(Mutex::new(wait))));
+    f.session().gate.shut(started, wait);
     let s = &f.sessions;
     let at = &f.id;
     let length = || crate::document::json::read(b"41").unwrap();

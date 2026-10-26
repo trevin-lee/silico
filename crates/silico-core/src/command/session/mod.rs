@@ -166,13 +166,32 @@ struct Session<C: Kernel + 'static> {
 /// alone.
 #[cfg(test)]
 #[derive(Default)]
-struct Gate(Mutex<Option<(Sender<()>, Arc<Mutex<mpsc::Receiver<()>>>)>>);
+struct Gate(Mutex<Option<Shut>>);
+
+/// A shut [`Gate`]'s ends.
+#[cfg(test)]
+#[derive(Clone)]
+struct Shut {
+    /// Told as each command starts.
+    started: Sender<()>,
+    /// What each waits on until the test lets it through (or goes).
+    through: Arc<Mutex<mpsc::Receiver<()>>>,
+}
 
 #[cfg(test)]
 impl Gate {
+    /// Shut: each command that starts says so on `started`, then waits for one word on
+    /// `through`.
+    fn shut(&self, started: Sender<()>, through: mpsc::Receiver<()>) {
+        *lock(&self.0) = Some(Shut {
+            started,
+            through: Arc::new(Mutex::new(through)),
+        });
+    }
+
     fn pass(&self) {
         let shut = lock(&self.0).clone();
-        if let Some((started, through)) = shut {
+        if let Some(Shut { started, through }) = shut {
             let _ = started.send(());
             let _ = lock(&through).recv();
         }
