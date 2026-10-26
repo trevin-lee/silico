@@ -637,3 +637,120 @@ fn a_perspective_view_wider_than_high_isnt_stretched() {
     assert_eq!(at(400.0 - edge - 4.0), [1, 3], "inside the right edge");
     assert_eq!(at(400.0 - edge + 4.0), [0, 0], "outside the right edge");
 }
+
+#[test]
+fn the_bench_boxs_normals_point_out_of_it() {
+    // Each face's normal against the way from the box's centre to the face's: outward, so
+    // a face's light is from its outside.
+    let mesh = box_mesh([1.0, 2.0, 3.0], [4.0, 6.0, 8.0]);
+    let centre = [3.0, 5.0, 7.0];
+    let mut first = 0usize;
+    for (face, &count) in mesh.face_triangles.iter().enumerate() {
+        let count = usize::try_from(count).unwrap();
+        for t in &mesh.triangles[first..first + count] {
+            for &v in t {
+                let v = usize::try_from(v).unwrap();
+                let (p, n) = (mesh.positions[v], mesh.normals[v]);
+                let out: f64 = (0..3).map(|k| (p[k] - centre[k]) * f64::from(n[k])).sum();
+                assert!(
+                    out > 0.0,
+                    "Face{}'s normal {n:?} at {p:?} points in",
+                    face + 1
+                );
+            }
+        }
+        first += count;
+    }
+}
+
+#[test]
+fn a_render_failure_says_what_failed() {
+    use silico_render::render::RenderFailure;
+    assert_eq!(
+        RenderFailure::OutOfMemory("the picking layer".to_owned()).to_string(),
+        "out of GPU memory: the picking layer"
+    );
+    assert_eq!(
+        RenderFailure::Failed("no adapter".to_owned()).to_string(),
+        "no adapter"
+    );
+}
+
+#[test]
+fn an_edge_of_many_points_is_drawn_as_one_with_its_number() {
+    // A 13th edge of three points across the front face, at its middle height: drawn, and
+    // carrying its number, as the box's 2-point edges are.
+    let mut w = worker();
+    let mut mesh = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+    mesh.edge_points
+        .extend([[5.0, 0.0, 5.0], [20.0, 0.0, 5.0], [35.0, 0.0, 5.0]]);
+    mesh.edge_point_counts.push(3);
+    let (_, ids) = render(&mut w, front(400, 300, vec![body(1, mesh)]));
+    let ids = ids.unwrap();
+    assert!(
+        ids.contains(&[1, EDGE_BIT | 13]),
+        "the 3-point edge isn't drawn"
+    );
+}
+
+/// A mesh of the triangles `faces`, each a face of its own, each vertex its own, with
+/// `normal` for every vertex (lighting isn't what's tested).
+fn faces_of(faces: &[[[f64; 3]; 3]]) -> Mesh {
+    Mesh {
+        positions: faces.iter().flatten().copied().collect(),
+        normals: vec![[0.0, -1.0, 0.0]; faces.len() * 3],
+        triangles: (0..faces.len())
+            .map(|f| {
+                let f = u32::try_from(f * 3).unwrap();
+                [f, f + 1, f + 2]
+            })
+            .collect(),
+        face_triangles: vec![1; faces.len()],
+        edge_points: vec![],
+        edge_point_counts: vec![],
+        valid: None,
+    }
+}
+
+#[test]
+fn an_orthographic_view_cuts_off_nothing_toward_the_eye_or_away_from_it() {
+    // The view from the front about the target (21, 10, 7). A pyramid's apex 100 toward
+    // the eye: the scene reaches 100 there, so the camera must be past it. Its four sides
+    // meet at the image's centre; cut off, the centre is its base (Face5) or nothing.
+    let mut w = worker();
+    let apex = [21.0, -90.0, 7.0];
+    let corner = |dx: f64, dz: f64| [21.0 + dx, 10.0, 7.0 + dz];
+    let (a, b, c, d) = (
+        corner(-40.0, -40.0),
+        corner(40.0, -40.0),
+        corner(40.0, 40.0),
+        corner(-40.0, 40.0),
+    );
+    let pyramid = faces_of(&[
+        [a, b, apex],
+        [b, c, apex],
+        [c, d, apex],
+        [d, a, apex],
+        [a, c, b],
+        [a, d, c],
+    ]);
+    let (_, ids) = render(&mut w, front(400, 300, vec![body(1, pyramid)]));
+    let centre = ids.unwrap()[150 * 400 + 200];
+    assert!(
+        centre[0] == 1 && (1..=4).contains(&centre[1]),
+        "the apex is cut off: the centre is {centre:?}"
+    );
+    // A small face 100 past the target, away from the eye, facing it: the far plane must
+    // be past it too.
+    let far = |dx: f64, dz: f64| [21.0 + dx, 110.0, 7.0 + dz];
+    let square = faces_of(&[
+        [far(-1.0, -1.0), far(1.0, -1.0), far(1.0, 1.0)],
+        [far(-1.0, -1.0), far(1.0, 1.0), far(-1.0, 1.0)],
+    ]);
+    let (_, ids) = render(&mut w, front(400, 300, vec![body(1, square)]));
+    let centre = ids.unwrap()[150 * 400 + 200];
+    assert_eq!(
+        centre[0], 1,
+        "the far face is cut off: the centre is {centre:?}"
+    );
+}

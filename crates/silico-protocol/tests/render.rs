@@ -419,3 +419,23 @@ fn highlights_out_of_order_repeated_or_past_the_mesh_are_refused() {
         );
     }
 }
+
+#[test]
+fn a_cameras_frame_makes_a_long_tilted_up_perpendicular_and_of_unit_length() {
+    // By hand: the eye at (0, −3, 4) from the origin, so back is (0, −0.6, 0.8). Up (0, 0, 2)
+    // has 1.6 along it; less that, (0, 0.96, 0.72), 1.2 long, so up is (0, 0.8, 0.6).
+    let camera = Camera {
+        projection: Projection::Orthographic { view_height: 10.0 },
+        eye: [0.0, -3.0, 4.0],
+        target: [0.0; 3],
+        up: [0.0, 0.0, 2.0],
+    };
+    let frame = camera.frame().unwrap();
+    for (got, want) in frame.back.iter().zip([0.0, -0.6, 0.8]) {
+        assert!((got - want).abs() < 1e-15, "back {:?}", frame.back);
+    }
+    for (got, want) in frame.up.iter().zip([0.0, 0.8, 0.6]) {
+        assert!((got - want).abs() < 1e-15, "up {:?}", frame.up);
+    }
+    assert!((frame.distance - 5.0).abs() < 1e-15);
+}
