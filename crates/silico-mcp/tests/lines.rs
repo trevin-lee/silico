@@ -207,6 +207,14 @@ fn a_stop_ends_serve_at_once_though_an_answer_is_being_written() {
     c.send_call(2, "text", r#"{"session": "s1", "feature": null}"#);
     c.wait_stalled();
     c.close_input();
+    // From the review (round 2): stopped at once, the stop reached serve before the reader
+    // saw stdin's end, so the wait at its end (for the answer being written) was never
+    // tested. Given time to reach that wait, serve is still in it: the client hasn't read.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!c.has_ended());
+    // A stop ends it there, as SIGTERM must when a client closed stdin and stopped reading.
+    // (Either way it ended: should the reader be slower than that on a loaded machine, the
+    // stop comes first, and serve ends Stopped; a stop the wait ignored would hang.)
     c.stop.stop();
     assert!(matches!(c.ended(), Ended::Input | Ended::Stopped));
     c.release_output();

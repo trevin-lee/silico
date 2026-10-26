@@ -380,3 +380,34 @@ fn a_cancel_read_before_a_command_was_sent_never_stops_it_however_far_behind_the
     );
     assert_eq!(envelope(12)["ok"], true, "{}", seen[&12]);
 }
+
+#[test]
+fn progress_dropped_while_the_output_is_busy_is_sent_once_it_is_free() {
+    // From the review (round 2): a count that couldn't be sent while another write held the
+    // output must stay to send, not be marked sent and lost.
+    let mut c = Client::initialized();
+    c.file("two.silico", TWO);
+    c.open(1, "two.silico");
+    let boxes = c.kernel.hold(is_box);
+    let cylinders = c.kernel.hold(is_cylinder);
+    c.send(r#"{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "check", "arguments": {"session": "s1", "model": "current", "fresh": false}, "_meta": {"progressToken": "t"}}}"#);
+    running(&c.kernel, 2);
+    c.stall_output();
+    c.send(r#"{"jsonrpc": "2.0", "id": 3, "method": "ping"}"#);
+    c.wait_stalled();
+    // A step done while the output is held: its count can't be sent yet.
+    cylinders.release();
+    std::thread::sleep(silico_mcp::PROGRESS_STEP * 5);
+    c.release_output();
+    assert_eq!(c.line(), r#"{"jsonrpc":"2.0","id":3,"result":{}}"#);
+    let line = c
+        .line_within(crate::client::HANG)
+        .expect("no progress after the output was free");
+    let message: Value = serde_json::from_str(&line).unwrap();
+    let (token, count) = progress(&message).unwrap();
+    assert_eq!(token, "t");
+    assert!(count >= 1, "{message}");
+    boxes.release();
+    let (line, _) = c.reply_line("2");
+    assert!(line.contains(r#""isError":false"#), "{line}");
+}
