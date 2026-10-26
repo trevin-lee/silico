@@ -15,8 +15,8 @@ use super::registry::Unclaimed;
 #[cfg(doc)]
 use super::registry::claim;
 use super::{
-    Begun, Committed, Faults, Gated, ModelChoice, ModelRead, Problems, Published, Reformatted,
-    Revision, RolledBack, Session, SessionId, shown,
+    Begun, Committed, Gated, ModelChoice, ModelRead, Problems, Published, Reformatted, Revision,
+    RolledBack, Session, SessionId, shown,
 };
 use crate::command::edit::Candidate;
 use crate::document::json::MAX_INPUT_LEN;
@@ -553,8 +553,7 @@ impl<C: Kernel + 'static> Session<C> {
             Through::Candidate => self.candidate_model(stop, revision, checked)?,
         };
         *read = Some(ModelRead::of(revision, ModelChoice::Current, &model));
-        let formatted = crate::command::formatted(&model, reach, &model.drifted(), Faults::Aside)
-            .map_err(Problems::from)??;
+        let formatted = crate::command::formatted(&model, reach, &model.drifted())?;
         if unchanged {
             if through == Through::Transaction {
                 self.unwritten(stop, &begun, revision)?;
@@ -587,11 +586,7 @@ impl<C: Kernel + 'static> Session<C> {
             Committed {
                 written: true,
                 path,
-                refingerprinted: formatted
-                    .refingerprinted
-                    .into_iter()
-                    .map(|(id, _)| id)
-                    .collect(),
+                refingerprinted: formatted.refingerprinted,
                 resolved: formatted.resolved,
                 problems: formatted.problems,
             },
@@ -705,8 +700,7 @@ impl<C: Kernel + 'static> Session<C> {
             .filter(|id| drifted.contains(id) && writes.contains(*id) && model.records(id))
             .cloned()
             .collect();
-        let formatted = crate::command::formatted(&model, &writes, &drift, Faults::Aside)
-            .map_err(Problems::from)??;
+        let formatted = crate::command::formatted(&model, &writes, &drift)?;
         let saved = formatted.text.into_bytes();
         let changed = saved != *bytes;
         let written = write && changed;
@@ -727,11 +721,7 @@ impl<C: Kernel + 'static> Session<C> {
             changed,
             written,
             path,
-            refingerprinted: formatted
-                .refingerprinted
-                .into_iter()
-                .map(|(id, _)| id)
-                .collect(),
+            refingerprinted: formatted.refingerprinted,
             resolved: formatted.resolved,
             accepted,
             problems: formatted.problems,
@@ -1033,8 +1023,13 @@ pub(super) fn too_long(path: &Path) -> Error {
         ),
     )
     .with_parameter("path")
-    .with_suggestion("check it's the document you mean: no document is this long")
+    .with_suggestion(TOO_LONG)
 }
+
+/// What to do about a file longer than Silico reads of a document ([`too_long`]'s
+/// suggestion): so a client that opens a session for each run (the CLI) can say it of a
+/// file grown that long since, rather than a session's advice.
+pub const TOO_LONG: &str = "check it's the document you mean: no document is this long";
 
 /// `error`, a file's (as `file::opened_and_read` gives it, saying nothing of which file),
 /// naming the file at `path` (as `open` was given it): its code, and its message after the
@@ -1052,11 +1047,15 @@ pub(super) fn of_file(path: &str, error: &Error) -> Error {
 pub(super) fn not_reloaded(error: Error, suggestion: String) -> Error {
     error
         .with_parameter("path")
-        .with_cause(
-            "the session reads its file before each command to find changes made outside it",
-        )
+        .with_cause(NOT_RELOADED)
         .with_suggestion(suggestion)
 }
+
+/// The cause of every refusal of a command whose session couldn't take its file as it is
+/// now ([`not_reloaded`]): so a client that opens a session for each run (the CLI) can tell
+/// these apart from the rest, and say how to go on in its own words.
+pub const NOT_RELOADED: &str =
+    "the session reads its file before each command to find changes made outside it";
 
 /// What to do about a session's file at `path` (as `open` was given it) gone or grown too
 /// long, outside a transaction.

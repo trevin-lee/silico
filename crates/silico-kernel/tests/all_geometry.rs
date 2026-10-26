@@ -41,6 +41,8 @@ mod quadrature;
 #[path = "../../silico-core/tests/common/sweeps.rs"]
 mod sweeps;
 
+#[path = "adversarial_arc_range.rs"]
+mod adversarial_arc_range;
 #[path = "adversarial_boolean.rs"]
 mod adversarial_boolean;
 #[path = "adversarial_chamfer.rs"]

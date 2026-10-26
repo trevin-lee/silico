@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use super::{Json, Layout, RequestFields, ToWire, write};
 use crate::command::{
     Added, Begun, CheckAnswer, Committed, FieldSet, Opened, Problems, Reformatted, Removed,
-    Replaced, Revision, RolledBack,
+    Replaced, Revision, RolledBack, SessionId,
 };
 use crate::document::json::{Plain, read};
 use crate::document::{Feature, FeatureId};
@@ -169,6 +169,7 @@ fn opens_and_checks_problems_are_their_first_hundred_and_all_counted() {
         )
     };
     let opened = Opened {
+        session: SessionId::parse("s1").unwrap(),
         path: "p.silico".to_owned(),
         created: false,
         features: Some(1),

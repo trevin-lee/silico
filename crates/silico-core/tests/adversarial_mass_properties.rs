@@ -476,7 +476,7 @@ fn a_worker_summary_whose_box_is_past_a_length_is_refused_as_check_refuses_it() 
     let model = forged(box_summary(|s| {
         s.bounds = Some([[0.0; 3], [1e13, 1.0, 1.0]])
     }));
-    let checked = silico_core::command::check(&model).unwrap();
+    let checked = silico_core::command::check(&model);
     let check_codes: Vec<ErrorCode> = checked.errors().iter().map(|e| e.code()).collect();
     assert!(
         !check_codes.contains(&ErrorCode::Internal),
