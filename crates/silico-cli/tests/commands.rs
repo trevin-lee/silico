@@ -26,6 +26,30 @@ const EXAMPLE: &str = r#"{
 }
 "#;
 
+/// The entries of the cache `dir`, in order of path, found as the cache finds its own: a
+/// regular file named by 62 lowercase hex digits in a subdirectory named by two, no link
+/// followed.
+fn entries(dir: &Path) -> Vec<PathBuf> {
+    let hex = |name: &str, digits: usize| {
+        name.len() == digits && name.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    };
+    let mut found = Vec::new();
+    for sub in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let named = sub.file_name().to_str().is_some_and(|name| hex(name, 2));
+        if !named || !std::fs::symlink_metadata(sub.path()).unwrap().is_dir() {
+            continue;
+        }
+        for file in std::fs::read_dir(sub.path()).unwrap().flatten() {
+            let named = file.file_name().to_str().is_some_and(|name| hex(name, 62));
+            if named && std::fs::symlink_metadata(file.path()).unwrap().is_file() {
+                found.push(file.path());
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
 /// A directory of its own for one test, removed after.
 struct Scratch(PathBuf);
 
@@ -1492,12 +1516,7 @@ fn cache_without_clear_or_a_file_is_a_usage_error_and_a_file_it_cant_read_exit_2
     let out = silico(&scratch, &["check"], &file);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let cache = scratch.0.join(".silico-cache");
-    let sub = std::fs::read_dir(&cache)
-        .unwrap()
-        .flatten()
-        .map(|e| e.path())
-        .find(|p| p.is_dir())
-        .unwrap();
+    let sub = entries(&cache)[0].parent().unwrap().to_owned();
     std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o555)).unwrap();
     if std::fs::write(sub.join("probe"), b"").is_err() {
         let out = run(&["cache", "clear", "part.silico"]);
@@ -1533,10 +1552,11 @@ fn cache_clear_of_several_files_says_each_and_exits_with_the_worst() {
             assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         }
     };
-    let clear = || {
+    // The files cleared in the order `order` names them.
+    let clear = |order: [usize; 2]| {
         Command::new(env!("CARGO_BIN_EXE_silico"))
             .args(["cache", "clear"])
-            .args(&files)
+            .args(order.map(|i| &files[i]))
             .env("SILICO_KERNEL_WORKER", "/nonexistent")
             .env("XDG_CACHE_HOME", scratch.0.join("no-cache-home"))
             .env_remove("SILICO_LOG")
@@ -1546,7 +1566,7 @@ fn cache_clear_of_several_files_says_each_and_exits_with_the_worst() {
     };
     // Both cleared: a line each, in the order named, exit 0.
     check_all();
-    let out = clear();
+    let out = clear([0, 1]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(
         stderr(&out),
@@ -1559,53 +1579,54 @@ fn cache_clear_of_several_files_says_each_and_exits_with_the_worst() {
         )
     );
     // The first's entry can't be removed: said, the second cleared all the same, and the
-    // run couldn't do all it was asked (exit 2), whichever came first.
-    check_all();
-    let sub = std::fs::read_dir(&caches[0])
-        .unwrap()
-        .flatten()
-        .map(|e| e.path())
-        .find(|p| p.is_dir())
-        .unwrap();
-    let entry = std::fs::read_dir(&sub)
-        .unwrap()
-        .flatten()
-        .map(|e| e.path())
-        .next()
-        .unwrap();
-    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o555)).unwrap();
-    if std::fs::write(sub.join("probe"), b"").is_ok() {
-        return; // root
-    }
-    let out = clear();
-    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    // What's said of each file (the cache's warning, logged at the default level, aside).
-    let said: String = stderr(&out)
-        .lines()
-        .filter(|line| !line.contains(" WARN silico_core::cache: "))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    assert_eq!(
-        said,
+    // run couldn't do all it was asked (exit 2), whichever comes first: named first, so a
+    // run that took the last file's exit would exit 0; or named last, so one that took the
+    // first's would.
+    let failing = |file: usize, entry: &Path| {
         format!(
             "{}: io_failed: couldn't remove the cache's entry \"{}\": Permission denied (os \
              error 13): the clear removed 0 entries and left what it couldn't remove or read. \
              Suggestion: check that this user may read and write the cache's directory and \
              its subdirectories, then clear it again: an entry left is still sound, and one \
-             removed is only a miss.\n{}: removed 1 entry from {}\n",
-            files[0].display(),
+             removed is only a miss.\n",
+            files[file].display(),
             entry.display(),
-            files[1].display(),
-            caches[1].display()
         )
-    );
-    assert!(entry.is_file());
-    let left_in_second = std::fs::read_dir(&caches[1])
-        .unwrap()
-        .flatten()
-        .filter(|sub| sub.path().is_dir())
-        .flat_map(|sub| std::fs::read_dir(sub.path()).unwrap().flatten())
-        .count();
-    assert_eq!(left_in_second, 0);
+    };
+    let cleared = |file: usize| {
+        format!(
+            "{}: removed 1 entry from {}\n",
+            files[file].display(),
+            caches[file].display()
+        )
+    };
+    for order in [[0, 1], [1, 0]] {
+        check_all();
+        let first = entries(&caches[0]);
+        assert_eq!(first.len(), 1, "{first:?}");
+        let entry = &first[0];
+        let sub = entry.parent().unwrap();
+        std::fs::set_permissions(sub, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::write(sub.join("probe"), b"").is_ok() {
+            return; // root
+        }
+        let out = clear(order);
+        std::fs::set_permissions(sub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(out.status.code(), Some(2), "{order:?}: {}", stderr(&out));
+        // What's said of each file (the cache's warning, logged at the default level, aside).
+        let told: String = stderr(&out)
+            .lines()
+            .filter(|line| !line.contains(" WARN silico_core::cache: "))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let said: String = order
+            .map(|file| match file {
+                0 => failing(0, entry),
+                _ => cleared(1),
+            })
+            .concat();
+        assert_eq!(told, said, "{order:?}");
+        assert!(entry.is_file());
+        assert_eq!(entries(&caches[1]), Vec::<PathBuf>::new());
+    }
 }
