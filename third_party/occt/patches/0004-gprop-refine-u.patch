@@ -35,11 +35,12 @@ Why: BRepGProp_Gauss::Compute with an Eps (BRepGProp::VolumeProperties and Surfa
      computeVInertiaOfElementaryPart through a pointer defaulting to NULL, so the default
      integration (Compute without an Eps, FreeCAD's), a different function, is unchanged
      to the bit.
-Moves: tests/determinism/oracle-reference.json's summary hashes of 113 of its 208 cases (151
-     with Silico's measure about the shape's box centre, bridge.cpp, which moves 100; the
-     list is the diff of that file in the commit that re-records it), to be re-recorded
-     with the maintainer: volumes by at most 1.8e-13 relative, areas not at all, centres
-     of mass by at most 4.6e-10 of the shape's size; not their measures, B-reps, meshes,
+Moves: tests/determinism/oracle-reference.json's summary hashes of 113 of its cases (151
+     with Silico's measure about the shape's box centre, bridge.cpp, which moves 100; and 2
+     cases #168 added, barrels revolved across angle 0, and slot_plate's from #168's hash:
+     153 in all; the list is the diff of that file in the commit that re-records it),
+     re-recorded with the maintainer's approval (2026-10-26): volumes by at most 1.8e-13
+     relative, areas not at all, centres of mass by at most 4.6e-10 of the shape's size; not their measures, B-reps, meshes,
      histories, or topologies. No committed fingerprint (every golden and committed
      document checks and formats unchanged), and not the stress reference (default
      integration). Re-measured on this patch, with its search of only the strip's own

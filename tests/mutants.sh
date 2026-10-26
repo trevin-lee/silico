@@ -48,7 +48,7 @@ sketch_wall_clock=(
 )
 # The precise measure of a 400-span B-spline meridian's turn, and of a rough 1000-span
 # B-spline face trimmed to a triangle (OCCT patch 0004's search of only a strip's own
-# intervals), each bounded by its wall clock (10 s, under the worker's 60 s timeout): what
+# intervals), each bounded by its wall clock (10 s and 30 s, under the worker's 60 s timeout): what
 # they alone test is OCCT's, that the measure finishes and gives its known values; Silico's
 # measure path, which they run, is tested by every other measure test. Named with their
 # modules, as all_geometry's tests are.

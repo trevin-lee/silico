@@ -5,8 +5,9 @@
 //! knots (`pixi install -e oracle`), and its expected measures come from the same poles and
 //! knots by hand, independently of OCCT: the curve evaluated by Cox–de Boor, the cap's area
 //! and centroid by Green's theorem, and the curve's length, each integrated per knot span
-//! by Gauss–Legendre. The hand values are task B's (dropped), whose conversion of an
-//! extrusion to a B-spline surface before measuring the patch makes unneeded.
+//! by Gauss–Legendre. The hand values come from an earlier route, never taken, that
+//! converted an extrusion to the B-spline surface it equals before measuring; the patch
+//! makes it unneeded.
 
 use super::close::assert_close;
 use super::geometry::{apply, cross, norm, rotation};
