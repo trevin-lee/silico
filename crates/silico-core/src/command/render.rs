@@ -25,6 +25,7 @@ use crate::meshes::{MeshCache, mesh_level};
 use crate::naming::{ElementMap, Maker, Name};
 use crate::pool::{Outcome, Pending};
 use crate::recompute::{Built, FeatureOutcome, Key, Model};
+use crate::references::Candidates;
 use crate::render::{RenderClient, RenderOutcome, RenderTicket};
 use crate::views::{NamedView, distance_to_box, half_pixel_at, sees};
 use crate::worker::SILICO_BUG;
@@ -480,6 +481,11 @@ fn highlighted(model: &Model, bodies: &[Body], highlight: &[String]) -> Result<V
         return Ok(Vec::new());
     }
     let maps: Vec<Option<&ElementMap>> = bodies.iter().map(|b| model.element_map(b.id)).collect();
+    let known: Vec<&ElementMap> = maps.iter().flatten().copied().collect();
+    // Each kind's candidates, built once, the first time a listed broken name needs them:
+    // a name past the listed hundred gets none, as it isn't shown.
+    let mut candidates: std::collections::BTreeMap<ElementKind, Candidates> =
+        std::collections::BTreeMap::new();
     let document = model.document();
     let makers = |id: &FeatureId| {
         document
@@ -525,12 +531,19 @@ fn highlighted(model: &Model, bodies: &[Body], highlight: &[String]) -> Result<V
                     )
                     .with_suggestion("highlight the faces or edges around it"),
                     None => {
-                        let known: Vec<&ElementMap> = maps.iter().flatten().copied().collect();
+                        let likeliest = if errors.len() < PROBLEMS_LISTED {
+                            candidates
+                                .entry(name.kind())
+                                .or_insert_with(|| Candidates::of(&known, name.kind()))
+                                .of_name(&name)
+                        } else {
+                            Vec::new()
+                        };
                         Error::new(
                             ErrorCode::ReferenceBroken,
                             format!("{parameter}, {shown}, names no element of the model's bodies"),
                         )
-                        .with_candidates(crate::references::likeliest(&known, &name, name.kind()))
+                        .with_candidates(likeliest)
                         .with_suggestion(
                             "name the element as its body names it now: the candidates are the \
                              likeliest, none taken for it",

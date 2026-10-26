@@ -23,7 +23,7 @@ use silico_core::command::elements::{
 };
 use silico_core::command::schema::schema;
 use silico_core::command::wire::elements::{ElementsRequest, QueryRequest};
-use silico_core::command::wire::measure::MassPropertiesRequest;
+use silico_core::command::wire::measure::{MassPropertiesRequest, PairRequest};
 use silico_core::command::wire::schema::SchemaRequest;
 use silico_core::command::wire::{COMMANDS, Layout, ToWire, snapshot, snapshot_value, write};
 use silico_core::command::{ModelChoice, Problems, SessionId};
@@ -346,7 +346,7 @@ fn the_word_lists_in_the_snapshots_are_the_commands_own() {
 #[test]
 fn the_examples_are_the_designs_own_text() {
     // Each section's blocks, in order, each file the block and a newline.
-    let sections: [(&str, &str, &str, &[&str]); 6] = [
+    let sections: [(&str, &str, &str, &[&str]); 8] = [
         (
             "### Element entries",
             "### Warnings",
@@ -389,6 +389,24 @@ fn the_examples_are_the_designs_own_text() {
             "### `distance` (M4.5)",
             "mass_properties",
             &["every-body", "every-body-measured"],
+        ),
+        (
+            "### `distance` (M4.5)",
+            "### `angle` (M4.5)",
+            "distance",
+            &[
+                "box-bottom-and-top",
+                "box-bottom-and-top-measured",
+                "rims-measured",
+                "refused-no-such-face",
+                "refused-kernel-failed",
+            ],
+        ),
+        (
+            "### `angle` (M4.5)",
+            "### `render` (M4.6)",
+            "angle",
+            &["wedge", "wedge-measured", "refused-circle"],
         ),
         (
             "### `render` (M4.6)",
@@ -720,6 +738,8 @@ fn schema_answers_the_document_and_each_command_as_committed() {
                 "query",
                 "schema",
                 "mass_properties",
+                "distance",
+                "angle",
                 "render"
             ]
         );
@@ -1056,6 +1076,140 @@ fn every_field_of_an_entry_is_written_from_its_own_value() {
     // A vertex's kind is its own word.
     entry.kind = ElementKind::Vertex;
     assert!(written(&entry).contains(r#""kind": "vertex","#));
+}
+
+#[test]
+fn distance_and_angle_requests_are_read_and_written_back_byte_for_byte() {
+    for (name, of, first, second) in [
+        (
+            "distance/box-bottom-and-top",
+            "distance",
+            "k7f2qx3m.box.Face5",
+            "k7f2qx3m.box.Face6",
+        ),
+        (
+            "angle/wedge",
+            "angle",
+            "w5mb4c2n.pad.Face(G s0000003.sketch.Edge.ra000001)",
+            "w5mb4c2n.pad.Face(G s0000003.sketch.Edge.ra000002)",
+        ),
+    ] {
+        let text = example(name);
+        let request = PairRequest::read(&parsed(&text)).unwrap();
+        assert_eq!(
+            request,
+            PairRequest {
+                session: s1(),
+                model: ModelChoice::Current,
+                elements: [first.to_owned(), second.to_owned()],
+                feature: None,
+            },
+            "{name}"
+        );
+        assert_eq!(written(&request), text, "{name}");
+        holds(&schema_of(of, "request", None), &text, name);
+    }
+    // Two names exactly, each a string, said by its place.
+    let with = |elements: &str| {
+        format!(
+            r#"{{"session": "s1", "model": "current", "elements": {elements}, "feature": null}}"#
+        )
+    };
+    let said = |elements: &str| -> Vec<(String, String)> {
+        PairRequest::read(&parsed(&with(elements)))
+            .unwrap_err()
+            .errors()
+            .iter()
+            .map(|e| (e.parameter().unwrap().to_owned(), e.message().to_owned()))
+            .collect()
+    };
+    assert_eq!(
+        said(r#"["a"]"#),
+        [(
+            "elements".to_owned(),
+            "elements must be a list of 2 names, got 1 of them".to_owned()
+        )]
+    );
+    assert_eq!(
+        said(r#"["a", 2]"#),
+        [(
+            "elements.1".to_owned(),
+            "elements.1 must be a name, got 2".to_owned()
+        )]
+    );
+    assert_eq!(
+        said(r#""a""#),
+        [(
+            "elements".to_owned(),
+            r#"elements must be a list of 2 names, got "a""#.to_owned()
+        )]
+    );
+}
+
+#[test]
+fn distances_refusals_are_the_commands_own_as_the_design_gives_them() {
+    use silico_core::command::measure::distance;
+    use silico_core::fake::FakeKernel;
+    let error = error_schema();
+    let model = model_of(super::example::EXAMPLE);
+    let kernel = FakeKernel::new(1).unwrap();
+    let pair = |a: &str, b: &str| [a.to_owned(), b.to_owned()];
+    // A face the box hasn't: the nearest it has as the candidate.
+    let broken = distance(
+        &model,
+        &kernel,
+        &pair("k7f2qx3m.box.Face5", "k7f2qx3m.box.Face7"),
+        None,
+    )
+    .unwrap_err();
+    let text = the_refusal(&broken);
+    assert_eq!(text, example("distance/refused-no-such-face"));
+    holds(&error, &text, "no such face");
+    // OCCT finding no distance, as a worker refuses it.
+    kernel.refuse_as_worker(|op| {
+        matches!(op, silico_core::kernel::Op::Distance { .. }).then(|| silico_protocol::Failure {
+            refusal: silico_protocol::Refusal::DistanceNotDone,
+            cause: Some("BRepExtrema_DistShapeShape: not done".to_owned()),
+        })
+    });
+    let failed = distance(
+        &model,
+        &kernel,
+        &pair(
+            "k7f2qx3m.box.Face5",
+            "m3tq8v0z.cut.Face(I a91cw0de.cylinder.Face1)",
+        ),
+        None,
+    )
+    .unwrap_err();
+    let text = the_refusal(&failed);
+    assert_eq!(text, example("distance/refused-kernel-failed"));
+    holds(&error, &text, "kernel failed");
+}
+
+#[test]
+fn the_measures_examples_hold_to_their_results_schemas() {
+    for (name, of) in [
+        ("mass_properties/every-body-measured", "mass_properties"),
+        ("distance/box-bottom-and-top-measured", "distance"),
+        ("distance/rims-measured", "distance"),
+        ("angle/wedge-measured", "angle"),
+    ] {
+        holds(&schema_of(of, "result", None), &example(name), name);
+    }
+    // And a vertex named, which no example writes; a field left out fails.
+    let angle = schema_of("angle", "result", None);
+    holds(
+        &angle,
+        r#"{"angle": 135, "vertex": "w5mb4c2n.pad.Vertex(G s0000001.sketch.Vertex.pb000000)"}"#,
+        "a vertex",
+    );
+    fails(&angle, r#"{"angle": 135}"#, "no vertex");
+    fails(
+        &schema_of("distance", "result", None),
+        r#"{"distance": 1, "from": [0, 0, 0], "to": [0, 0, 1], "center_distance": null}"#,
+        "no normal distance",
+    );
 }
 
 // ---- render (M4.6) ----

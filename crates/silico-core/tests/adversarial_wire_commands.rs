@@ -996,6 +996,8 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "query",
                 "schema",
                 "mass_properties",
+                "distance",
+                "angle",
                 "render"
             ]
         );

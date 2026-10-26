@@ -33,7 +33,7 @@
 //! command's wire types ([`COMMANDS`]: [`transaction`], for `begin`, `commit`, `rollback`,
 //! and `format`; [`edits`], for `add_feature`, `set_field`, `remove_feature`, and
 //! `replace_text`; [`elements`], for `elements` and `query`; [`schema`]; and [`measure`],
-//! for `mass_properties`; and [`render`]).
+//! for `mass_properties`, `distance`, and `angle`; and [`render`]).
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -951,7 +951,7 @@ impl<'a> RequestFields<'a> {
     /// The list at `key` of at most `at_most` strings, a member at fault named by its place
     /// (`highlight.0`). A list of more is refused as `too_many` says, given how many it
     /// holds, and its members aren't read.
-    pub fn strings(
+    pub fn string_list(
         &mut self,
         key: &str,
         at_most: usize,
@@ -1041,6 +1041,40 @@ impl<'a> RequestFields<'a> {
             self.wrong(key, what, node);
         }
         id
+    }
+
+    /// A list of exactly `N` strings (`what` each is: `a name`), a member at fault named by
+    /// its place (`elements.1`).
+    pub fn strings<const N: usize>(&mut self, key: &str, what: &str) -> Option<[String; N]> {
+        let node = self.take(key)?;
+        let Value::Array(items) = &node.value else {
+            self.wrong(key, format_args!("a list of {N} {what}s"), node);
+            return None;
+        };
+        if items.len() != N {
+            self.refused.refuse_with(|| {
+                let at = join(&self.path, key);
+                invalid(
+                    &at,
+                    format!(
+                        "{at} must be a list of {N} {what}s, got {} of them",
+                        items.len()
+                    ),
+                )
+            });
+            return None;
+        }
+        let mut found = Vec::with_capacity(N);
+        for (i, item) in items.iter().enumerate() {
+            match &item.value {
+                Value::String(text) => found.push(text.clone()),
+                _ => self.refused.refuse_with(|| {
+                    let at = format!("{}.{i}", join(&self.path, key));
+                    invalid(&at, format!("{at} must be a {what}, got {}", written(item)))
+                }),
+            }
+        }
+        found.try_into().ok()
     }
 
     /// A list of features' IDs, or `null`; a member at fault named by its place
@@ -1426,7 +1460,7 @@ pub type MakeSnapshot = fn() -> serde_json::Value;
 
 /// The commands whose wire types are built, each by name with what makes its snapshot, in
 /// the design's order (section 7): what `schema` describes besides the document.
-pub const COMMANDS: [(&str, MakeSnapshot); 13] = [
+pub const COMMANDS: [(&str, MakeSnapshot); 15] = [
     (
         "begin",
         command_schema::<transaction::BeginRequestSchema, transaction::BeginResultSchema>,
@@ -1474,6 +1508,14 @@ pub const COMMANDS: [(&str, MakeSnapshot); 13] = [
     (
         "mass_properties",
         command_schema::<measure::MassPropertiesRequestSchema, measure::MassPropertiesResultSchema>,
+    ),
+    (
+        "distance",
+        command_schema::<measure::DistanceRequestSchema, measure::DistanceResultSchema>,
+    ),
+    (
+        "angle",
+        command_schema::<measure::AngleRequestSchema, measure::AngleResultSchema>,
     ),
     (
         "render",

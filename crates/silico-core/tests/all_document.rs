@@ -46,6 +46,8 @@ mod adversarial_document;
 mod adversarial_fingerprint;
 #[path = "adversarial_mass_properties.rs"]
 mod adversarial_mass_properties;
+#[path = "adversarial_measures.rs"]
+mod adversarial_measures;
 #[path = "adversarial_references.rs"]
 mod adversarial_references;
 #[path = "adversarial_render_command.rs"]
@@ -64,6 +66,8 @@ mod document;
 mod fingerprint;
 #[path = "mass_properties.rs"]
 mod mass_properties;
+#[path = "measures.rs"]
+mod measures;
 #[path = "reach.rs"]
 mod reach;
 #[path = "refused_from_a_partial_cache.rs"]

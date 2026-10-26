@@ -1,0 +1,1 @@
+{"code": "reference_broken", "message": "elements.1, \"k7f2qx3m.box.Face7\", names no element of the live solids", "feature": null, "elements": ["k7f2qx3m.box.Face7"], "elements_total": 1, "parameter": "elements.1", "cause": null, "suggestion": "name the element as the model now names it: the candidates are the likeliest, none taken for it", "candidates": ["k7f2qx3m.box.Face6"]}

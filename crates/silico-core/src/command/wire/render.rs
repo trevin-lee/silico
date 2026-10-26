@@ -55,7 +55,7 @@ impl RenderRequest {
             let camera = f.nullable_object("camera", read_camera);
             let width = f.u32("width");
             let height = f.u32("height");
-            let highlight = f.strings("highlight", MAX_HIGHLIGHTS, too_many_highlights);
+            let highlight = f.string_list("highlight", MAX_HIGHLIGHTS, too_many_highlights);
             let to = f.nullable_string("to");
             let replace = f.bool("replace");
             Some(RenderRequest {
