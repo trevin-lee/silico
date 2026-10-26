@@ -1,0 +1,189 @@
+{
+  "request": {
+    "$defs": {
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`format`'s request: save the document in canonical form with every feature's\nfingerprint as rebuilt, as `silico fmt` does, accepting the drift of the features named.",
+    "properties": {
+      "features": {
+        "description": "The features whose drift to accept, by ID, or null for every feature's. Any other\ndrifted feature keeps its stored fingerprint and is a problem.",
+        "items": {
+          "$ref": "#/$defs/FeatureId"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      },
+      "write": {
+        "description": "Whether to write the file: false only says whether it would change (`silico fmt\n--check`).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "features",
+      "session",
+      "write"
+    ],
+    "title": "FormatRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "Error": {
+        "additionalProperties": false,
+        "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+        "properties": {
+          "candidates": {
+            "description": "What might have been meant, such as the names nearest one that found nothing.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cause": {
+            "description": "What lay under it, such as the kernel's own failure, if known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+            "type": "string"
+          },
+          "elements": {
+            "description": "The elements at fault, by name: the first of them, if there are many.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "elements_total": {
+            "description": "How many elements are at fault, listed or not.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "feature": {
+            "description": "The ID of the feature at fault, if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "description": "What went wrong, in a sentence.",
+            "type": "string"
+          },
+          "parameter": {
+            "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suggestion": {
+            "description": "What to do about it, if Silico can say.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "candidates",
+          "cause",
+          "code",
+          "elements",
+          "elements_total",
+          "feature",
+          "message",
+          "parameter",
+          "suggestion"
+        ],
+        "type": "object"
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`format`'s result.",
+    "properties": {
+      "accepted": {
+        "description": "The features among those whose drift was accepted: a stored fingerprint the rebuild\ndidn't match.",
+        "items": {
+          "$ref": "#/$defs/FeatureId"
+        },
+        "type": "array"
+      },
+      "changed": {
+        "description": "Whether the canonical text differs from the file.",
+        "type": "boolean"
+      },
+      "path": {
+        "description": "The document's path, as `open` was given it.",
+        "type": "string"
+      },
+      "problems": {
+        "description": "What format couldn't fix, the first 100: failed features, which keep their\nfingerprints, and drift it didn't accept.",
+        "items": {
+          "$ref": "#/$defs/Error"
+        },
+        "maxItems": 100,
+        "type": "array"
+      },
+      "problems_total": {
+        "description": "How many problems there are, listed or not.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "refingerprinted": {
+        "description": "Every feature whose fingerprint was written (or, not writing, would be), in timeline\norder.",
+        "items": {
+          "$ref": "#/$defs/FeatureId"
+        },
+        "type": "array"
+      },
+      "resolved": {
+        "description": "Every sketch whose solve was written (or would be), in timeline order.",
+        "items": {
+          "$ref": "#/$defs/FeatureId"
+        },
+        "type": "array"
+      },
+      "written": {
+        "description": "Whether the file was written.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "accepted",
+      "changed",
+      "path",
+      "problems",
+      "problems_total",
+      "refingerprinted",
+      "resolved",
+      "written"
+    ],
+    "title": "FormatResult",
+    "type": "object"
+  }
+}

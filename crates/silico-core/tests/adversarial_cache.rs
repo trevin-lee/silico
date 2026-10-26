@@ -10,6 +10,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::cache;
+use super::cache_format;
 use super::example;
 use super::model;
 use super::sweeps;
@@ -19,11 +20,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, secret_of, session};
+use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, session};
+use cache_format::{
+    Entry, KeptDescription, MAGIC, Measure, decode, encode, encode_with, entry_path, entry_path_in,
+};
 use example::EXAMPLE;
-use hmac::{Hmac, Mac};
 use model::{checked, made, published};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use silico_core::cache::Cache;
 use silico_core::document::FeatureId;
@@ -36,65 +39,11 @@ use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{Failure, Operation, Refusal};
 
-const MAGIC: &[u8] = b"silico cache 6\n";
-
 fn built(model: &Model, id: &str) -> (String, Arc<silico_core::recompute::Built>) {
     match model.outcome(&FeatureId::new(id).unwrap()) {
         Some(FeatureOutcome::Built { key, built }) => (key.to_string(), Arc::clone(built)),
         other => panic!("{id}: {other:?}"),
     }
-}
-
-/// This platform's name, as the cache spells it.
-fn platform() -> String {
-    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
-}
-
-/// Where the fake kernel's entry for step `key` lives in the cache in `dir`, derived by hand
-/// from the format the module documents: HMAC-SHA-256, under the cache's secret, of the
-/// magic, then the kernel, the platform, and the step, each after its length (8 bytes,
-/// little-endian); the first two hex digits are the subdirectory.
-fn entry_path(dir: &Path, step: &str) -> PathBuf {
-    entry_path_in(dir, MAGIC, step)
-}
-
-/// Where the fake kernel's entry for step `key` would live in the cache in `dir`, in the
-/// format whose magic is `magic`.
-fn entry_path_in(dir: &Path, magic: &[u8], step: &str) -> PathBuf {
-    let platform = platform();
-    let secret = std::fs::read(secret_of(dir)).unwrap();
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&secret).unwrap();
-    mac.update(magic);
-    for part in ["silico fake kernel 1", &platform, step] {
-        mac.update(&(part.len() as u64).to_le_bytes());
-        mac.update(part.as_bytes());
-    }
-    let hex: String = mac
-        .finalize()
-        .into_bytes()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    dir.join(&hex[..2]).join(&hex[2..])
-}
-
-/// An entry's payload, as the module documents it (postcard is structural).
-#[derive(Serialize, Deserialize)]
-struct Entry {
-    key: [u8; 32],
-    brep: Vec<u8>,
-    valid: bool,
-    history: Option<History>,
-    measure: Measure,
-}
-
-/// An entry's measure: none, its summary, or the kernel worker's refusal, as data, and the
-/// operation it was for (the protocol's own `Failure`: its layout is the protocol's).
-#[derive(Serialize, Deserialize)]
-enum Measure {
-    Unmeasured,
-    Summary(ShapeSummary),
-    Refused { op: String, failure: Failure },
 }
 
 /// A measure refused, as a worker refuses it, with `refusal`.
@@ -123,28 +72,6 @@ fn measures(engine: &Recompute<FakeKernel>) -> usize {
         .iter()
         .filter(|call| call.op.name() == "Summarize")
         .count()
-}
-
-fn decode(bytes: &[u8]) -> Entry {
-    let payload = &bytes[MAGIC.len() + 32..];
-    postcard::from_bytes(payload).unwrap()
-}
-
-/// An entry's bytes, as the module documents them: the magic, the payload's HMAC-SHA-256
-/// under `secret`, and the payload.
-fn encode_with(secret: &[u8], entry: &impl Serialize) -> Vec<u8> {
-    let payload = postcard::to_allocvec(entry).unwrap();
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret).unwrap();
-    mac.update(&payload);
-    let mut bytes = MAGIC.to_vec();
-    bytes.extend_from_slice(&mac.finalize().into_bytes());
-    bytes.extend_from_slice(&payload);
-    bytes
-}
-
-/// An entry's bytes, sealed with the secret of the cache in `dir`, as its own writer would.
-fn encode(dir: &Path, entry: &impl Serialize) -> Vec<u8> {
-    encode_with(&std::fs::read(secret_of(dir)).unwrap(), entry)
 }
 
 /// The first session's model, built into `dir`.
@@ -989,7 +916,7 @@ fn a_refusal_kept_on_disk_is_written_as_the_worker_said_it_and_kernel_failed_is_
                     assert_eq!(failure, given, "as the worker said it");
                 }
                 Measure::Unmeasured => assert!(!kept, "{given:?}: {id} written unmeasured"),
-                Measure::Summary(_) => panic!("{given:?}: {id} measured"),
+                Measure::Measured { .. } => panic!("{given:?}: {id} measured"),
             }
         }
     }
@@ -1044,7 +971,69 @@ fn a_kept_refusal_this_core_wouldnt_keep_is_measured_again_not_made_again() {
         // Written measured.
         assert!(matches!(
             decode(&std::fs::read(&path).unwrap()).measure,
-            Measure::Summary(_)
+            Measure::Measured { .. }
+        ));
+    }
+}
+
+#[test]
+fn a_kept_description_refusal_this_core_wouldnt_keep_is_described_again() {
+    // As a summary's: an entry keeping a refusal of the block's description of a kind the
+    // cache doesn't keep is worded now and judged now. Its summary is taken back, and only
+    // its description is asked again, its three batches; nothing is made or summarized, and
+    // the entry is written over, described.
+    for refusal in [
+        Refusal::NotFinite {
+            quantity: "the kernel's Face1's area".to_owned(),
+            value: f64::NAN,
+        },
+        Refusal::OutOfMemory,
+        Refusal::Internal {
+            what: "a bug".to_owned(),
+        },
+        Refusal::TestOperation {
+            op: "Abort".to_owned(),
+        },
+    ] {
+        let dir = Scratch::new(&format!(
+            "never-kept-description-{:?}",
+            std::mem::discriminant(&refusal)
+        ));
+        let model = seed(&dir.0);
+        let (_, block) = built(&model, "k7f2qx3m");
+        let path = forge_block(
+            &dir.0,
+            &model,
+            Measure::Measured {
+                summary: block.summary().unwrap().clone(),
+                description: KeptDescription::Refused {
+                    op: "Describe".to_owned(),
+                    failure: Failure::new(refusal.clone()),
+                },
+            },
+        );
+        let next = session(&dir.0);
+        let again = published(&next, checked(EXAMPLE));
+        assert!(calls(&next).is_empty(), "{refusal:?}: {:?}", calls(&next));
+        assert_eq!(measures(&next), 0, "{refusal:?}");
+        let describes = next
+            .kernel()
+            .calls()
+            .iter()
+            .filter(|call| call.op.name() == "Describe")
+            .count();
+        assert_eq!(describes, 3, "{refusal:?}");
+        assert_eq!(
+            again.description(&FeatureId::new("k7f2qx3m").unwrap()),
+            block.description(),
+            "{refusal:?}"
+        );
+        assert!(matches!(
+            decode(&std::fs::read(&path).unwrap()).measure,
+            Measure::Measured {
+                description: KeptDescription::Described(_),
+                ..
+            }
         ));
     }
 }
@@ -1136,7 +1125,7 @@ fn a_kept_refusal_of_a_kind_this_silico_doesnt_know_is_an_entry_that_doesnt_hold
             assert!(again.drift().is_empty());
             assert!(matches!(
                 decode(&std::fs::read(&path).unwrap()).measure,
-                Measure::Summary(_)
+                Measure::Measured { .. }
             ));
         }
     }
@@ -1152,7 +1141,15 @@ fn a_kept_summary_no_shape_has_is_measured_again() {
     let (_, block) = built(&model, "k7f2qx3m");
     let mut summary = block.summary().unwrap().clone();
     summary.volume = f64::NAN;
-    forge_block(&dir.0, &model, Measure::Summary(summary));
+    let description = block.description().unwrap().clone();
+    forge_block(
+        &dir.0,
+        &model,
+        Measure::Measured {
+            summary,
+            description: KeptDescription::Described(description),
+        },
+    );
     let next = session(&dir.0);
     let again = published(&next, checked(EXAMPLE));
     assert!(calls(&next).is_empty(), "{:?}", calls(&next));
@@ -1162,22 +1159,71 @@ fn a_kept_summary_no_shape_has_is_measured_again() {
             .fingerprint(&FeatureId::new("k7f2qx3m").unwrap())
             .is_some()
     );
+    // Measured again whole: the kept description goes with the summary no shape has.
+    let (_, remeasured) = built(&again, "k7f2qx3m");
+    assert_eq!(remeasured.summary(), block.summary());
+    assert_eq!(remeasured.description(), block.description());
+}
+
+#[test]
+fn a_kept_description_no_worker_could_send_is_described_again_its_summary_kept() {
+    // As a summary no shape has: a description the core would refuse from a worker (here a
+    // face of area -1, its summary sound) isn't taken back from the cache. The summary is
+    // sound, so it's kept: the block is described again, a batch of each kind (6 faces, 12
+    // edges, 8 vertices, each under a batch), not summarized again, and the model holds the
+    // kernel's description, not the planted one, which is written over on disk.
+    let dir = Scratch::new("bad-description");
+    let model = seed(&dir.0);
+    let (_, block) = built(&model, "k7f2qx3m");
+    let summary = block.summary().unwrap().clone();
+    let mut description = block.description().unwrap().clone();
+    description.faces[2].area = -1.0;
+    let path = forge_block(
+        &dir.0,
+        &model,
+        Measure::Measured {
+            summary,
+            description: KeptDescription::Described(description),
+        },
+    );
+    let next = session(&dir.0);
+    let again = published(&next, checked(EXAMPLE));
+    assert!(calls(&next).is_empty(), "{:?}", calls(&next));
+    assert_eq!(measures(&next), 0);
+    let describes = next
+        .kernel()
+        .calls()
+        .iter()
+        .filter(|call| call.op.name() == "Describe")
+        .count();
+    assert_eq!(describes, 3);
+    assert!(again.drift().is_empty(), "{:?}", again.drift());
+    let (_, remeasured) = built(&again, "k7f2qx3m");
+    assert_eq!(remeasured.summary(), block.summary());
+    assert_eq!(remeasured.description(), block.description());
+    match decode(&std::fs::read(&path).unwrap()).measure {
+        Measure::Measured {
+            description: KeptDescription::Described(kept),
+            ..
+        } => assert_eq!(Some(&kept), block.description()),
+        _ => panic!("the block's entry isn't written described"),
+    }
 }
 
 #[test]
 fn an_entry_of_the_format_before_is_never_looked_for_and_a_name_of_this_one_holding_it_is_rebuilt()
 {
     // Each format's magic is part of every entry's key: an older format's entry for a step
-    // ("silico cache 4") lives elsewhere, so this one never reads it. Planted where the format
+    // ("silico cache 7") lives elsewhere, so this one never reads it. Planted where the format
     // before keeps the block, it's left as it was (the cache's bound evicts it in time), and
     // the block is made and written in this format.
     let dir = Scratch::new("format-before");
     let model = seed(&dir.0);
     let (key, _) = built(&model, "k7f2qx3m");
-    let old = entry_path_in(&dir.0, b"silico cache 4\n", &key);
+    let old = entry_path_in(&dir.0, b"silico cache 7\n", &key);
     let new = entry_path(&dir.0, &key);
     assert_ne!(old, new);
-    let mut bytes = b"silico cache 4\n".to_vec();
+    let mut bytes = b"silico cache 7\n".to_vec();
     bytes.extend([7; 32]);
     bytes.extend(b"a payload of the format before");
     std::fs::create_dir_all(old.parent().unwrap()).unwrap();
@@ -1192,7 +1238,7 @@ fn an_entry_of_the_format_before_is_never_looked_for_and_a_name_of_this_one_hold
     // An entry of this format's name holding the format before's bytes doesn't hold
     // together: rebuilt, and written over in this format.
     let mut text = std::fs::read(&new).unwrap();
-    text[..MAGIC.len()].copy_from_slice(b"silico cache 4\n");
+    text[..MAGIC.len()].copy_from_slice(b"silico cache 7\n");
     std::fs::write(&new, &text).unwrap();
     let third = session(&dir.0);
     published(&third, checked(EXAMPLE));

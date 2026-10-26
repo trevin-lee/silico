@@ -1,0 +1,525 @@
+{
+  "request": {
+    "$defs": {
+      "Cursor": {
+        "additionalProperties": false,
+        "description": "Where a listing goes on from, as the last call's `next` gave it: pass it back as it\nwas.",
+        "properties": {
+          "feature": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The feature whose solid the last entry listed is of."
+          },
+          "name": {
+            "description": "The last entry listed, by its own name.",
+            "type": "string"
+          },
+          "revision": {
+            "description": "The revision the listing is of: a cursor of another is refused, as a `conflict`.",
+            "format": "uint64",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "feature",
+          "name",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "ModelChoice": {
+        "description": "Which model to read: the current one, or the newest published.",
+        "oneOf": [
+          {
+            "const": "current",
+            "description": "The session's current revision's model, rebuilt if it isn't yet: what an agent that\njust edited reads.",
+            "type": "string"
+          },
+          {
+            "const": "published",
+            "description": "The newest model published, which may be an older revision's, read at once: what a\nUI reads while a rebuild runs.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`elements`' request: a page of the model's elements, of one feature's solid or of\nevery body.",
+    "properties": {
+      "after": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Cursor"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Where to go on from: null to start, else the last call's `next`."
+      },
+      "feature": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/FeatureId"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The feature whose solid to list, or null for every body (the solids no later\nfeature consumed, in timeline order)."
+      },
+      "limit": {
+        "description": "How many entries to list.",
+        "format": "uint32",
+        "maximum": 1000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "model": {
+        "$ref": "#/$defs/ModelChoice"
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "after",
+      "feature",
+      "limit",
+      "model",
+      "session"
+    ],
+    "title": "ElementsRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "Alias": {
+        "additionalProperties": false,
+        "description": "One of an element's other names.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "stable": {
+            "description": "Whether this name is stable: one a reference stored in the document may use.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "stable"
+        ],
+        "type": "object"
+      },
+      "Angle": {
+        "description": "An angle in degrees: a number, to at most 9 decimals (nanodegrees). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+        "type": "number"
+      },
+      "AxisToken": {
+        "description": "A global axis, signed, as a sketch on a face names its x.",
+        "enum": [
+          "+x",
+          "-x",
+          "+y",
+          "-y",
+          "+z",
+          "-z"
+        ],
+        "type": "string"
+      },
+      "Cursor": {
+        "additionalProperties": false,
+        "description": "Where a listing goes on from, as the last call's `next` gave it: pass it back as it\nwas.",
+        "properties": {
+          "feature": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The feature whose solid the last entry listed is of."
+          },
+          "name": {
+            "description": "The last entry listed, by its own name.",
+            "type": "string"
+          },
+          "revision": {
+            "description": "The revision the listing is of: a cursor of another is refused, as a `conflict`.",
+            "format": "uint64",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "feature",
+          "name",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "ElementKind": {
+        "description": "What an element is: a face, an edge, or a vertex.",
+        "enum": [
+          "face",
+          "edge",
+          "vertex"
+        ],
+        "type": "string"
+      },
+      "ElementType": {
+        "description": "An element's geometry, as OCCT names it. A face is a plane, cylinder, cone, sphere, torus, bezier, bspline, revolution, extrusion, offset, or other; an edge a line, circle (an arc too), ellipse, hyperbola, parabola, bezier, bspline, offset, or other (a degenerated edge, such as a sphere's pole, is other); a vertex a point.",
+        "enum": [
+          "plane",
+          "cylinder",
+          "cone",
+          "sphere",
+          "torus",
+          "bezier",
+          "bspline",
+          "revolution",
+          "extrusion",
+          "offset",
+          "other",
+          "line",
+          "circle",
+          "ellipse",
+          "hyperbola",
+          "parabola",
+          "point"
+        ],
+        "type": "string"
+      },
+      "Entry": {
+        "additionalProperties": false,
+        "description": "A face, an edge, or a vertex, named and measured. Every field is always present, null\nwhere it doesn't apply to the element's kind and type.",
+        "properties": {
+          "aliases": {
+            "description": "Its other names, in the element map's order, each with its own stability.",
+            "items": {
+              "$ref": "#/$defs/Alias"
+            },
+            "type": "array"
+          },
+          "apex": {
+            "description": "A cone's apex; null for a cone so nearly a cylinder that its apex lies further than a\nlength holds.",
+            "items": {
+              "$ref": "#/$defs/Length"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "area": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Measure"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A face's area, in mm²."
+          },
+          "axis": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/EntryAxis"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A cylinder's, cone's, sphere's, torus's, circle's, or arc's axis."
+          },
+          "centroid": {
+            "description": "A face's centre of area.",
+            "items": {
+              "$ref": "#/$defs/Length"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "default_x": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AxisToken"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a planar face, the axis a sketch on it takes as its x by default."
+          },
+          "diameter": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Length"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Twice the radius: a circle's or arc's, and a cylinder face's."
+          },
+          "end": {
+            "description": "An edge's last end (FreeCAD's `Edge.lastVertex()`).",
+            "items": {
+              "$ref": "#/$defs/Length"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "feature": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The feature whose solid the element is of."
+          },
+          "half_angle": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Angle"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A cone's half-angle in degrees, keeping its sign, as FreeCAD's `Part.Cone.SemiAngle`\ngives it."
+          },
+          "kind": {
+            "$ref": "#/$defs/ElementKind"
+          },
+          "length": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Length"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An edge's length (0 for a degenerated edge)."
+          },
+          "major_radius": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Length"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A torus's major radius (FreeCAD's Toroid MajorRadius)."
+          },
+          "midpoint": {
+            "description": "A straight edge's middle.",
+            "items": {
+              "$ref": "#/$defs/Length"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "minor_radius": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Length"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A torus's minor radius."
+          },
+          "name": {
+            "description": "The element's own name, the first of its names: give it to a fillet's `edges` (if\nit's stable), `distance`, `angle`, or `render`'s `highlight`.",
+            "type": "string"
+          },
+          "normal": {
+            "description": "A planar face's outward unit normal.",
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "position": {
+            "description": "A vertex's point.",
+            "items": {
+              "$ref": "#/$defs/Length"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "radius": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Length"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A cylinder's, sphere's, circle's, or arc's radius."
+          },
+          "stable": {
+            "description": "Whether `name` is stable: false for a name that came about for more than one\nelement, a duplicate (`~n`), or an element by its number. A reference stored in the\ndocument refuses an unstable name; use a stable alias.",
+            "type": "boolean"
+          },
+          "start": {
+            "description": "An edge's first end, in its curve's own order (FreeCAD's `Edge.firstVertex()`), not\nthe order a face uses it in.",
+            "items": {
+              "$ref": "#/$defs/Length"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "straight": {
+            "description": "Whether an edge is straight: a line, or a degree-1 B-spline of two poles.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "type": {
+            "$ref": "#/$defs/ElementType"
+          }
+        },
+        "required": [
+          "aliases",
+          "apex",
+          "area",
+          "axis",
+          "centroid",
+          "default_x",
+          "diameter",
+          "end",
+          "feature",
+          "half_angle",
+          "kind",
+          "length",
+          "major_radius",
+          "midpoint",
+          "minor_radius",
+          "name",
+          "normal",
+          "position",
+          "radius",
+          "stable",
+          "start",
+          "straight",
+          "type"
+        ],
+        "type": "object"
+      },
+      "EntryAxis": {
+        "additionalProperties": false,
+        "description": "An axis: a point on it and its direction, a unit vector keeping its surface's own sign.",
+        "properties": {
+          "direction": {
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "point": {
+            "items": {
+              "$ref": "#/$defs/Length"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          }
+        },
+        "required": [
+          "direction",
+          "point"
+        ],
+        "type": "object"
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "Length": {
+        "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+        "type": "number"
+      },
+      "Measure": {
+        "description": "A volume (mm³) or area (mm²): a number, to at most 6 decimals.",
+        "type": "number"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`elements`' result: a page of entries.",
+    "properties": {
+      "elements": {
+        "description": "The entries, in order: by body in timeline order, then faces, edges, and vertices,\neach by name, byte by byte.",
+        "items": {
+          "$ref": "#/$defs/Entry"
+        },
+        "maxItems": 1000,
+        "type": "array"
+      },
+      "next": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Cursor"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Where the next page starts: null after the last, and for a listing of every body of\na model whose rebuild met a kernel fault."
+      },
+      "total": {
+        "description": "How many entries the listing holds in all, on every page.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "elements",
+      "next",
+      "total"
+    ],
+    "title": "ElementsResult",
+    "type": "object"
+  }
+}

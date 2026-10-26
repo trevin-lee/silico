@@ -3,8 +3,8 @@
 
 use silico_protocol::{
     Camera, EDGE_BIT, InvalidParameter, MAX_FIELD_OF_VIEW, MAX_RENDER_COORDINATE, MAX_RENDER_EDGES,
-    MAX_RENDER_FACES, MAX_RENDER_SIDE, MIN_EYE_DISTANCE, MIN_FIELD_OF_VIEW, Mesh, Projection,
-    RenderBody, RenderScene,
+    MAX_RENDER_FACES, MAX_RENDER_SIDE, MAX_RENDER_TRIANGLES, MIN_EYE_DISTANCE, MIN_FIELD_OF_VIEW,
+    Mesh, Projection, RenderBody, RenderScene,
 };
 
 /// A way to break a camera or a mesh, and what its refusal names.
@@ -299,6 +299,30 @@ fn a_scene_past_the_most_faces_or_edges_a_render_draws_is_refused() {
 }
 
 #[test]
+fn a_scene_past_the_most_triangles_a_render_draws_is_refused() {
+    // MAX_RENDER_TRIANGLES across the bodies: at it passes, one past is refused.
+    let mut s = scene();
+    let half = MAX_RENDER_TRIANGLES / 2;
+    for b in &mut s.bodies {
+        b.mesh.triangles = vec![[0, 1, 2]; half];
+        b.mesh.face_triangles = vec![u32::try_from(half).unwrap()];
+        b.highlight_faces.clear();
+    }
+    s.check().unwrap();
+    s.bodies[1].mesh.triangles.push([0, 2, 3]);
+    s.bodies[1].mesh.face_triangles[0] += 1;
+    let (parameter, message) = refused(&s);
+    assert_eq!(parameter, "bodies");
+    assert_eq!(
+        message,
+        format!(
+            "the bodies have {} triangles, more than the {MAX_RENDER_TRIANGLES} a render draws within its time",
+            MAX_RENDER_TRIANGLES + 1
+        )
+    );
+}
+
+#[test]
 fn an_orthographic_views_least_height_counts_edge_points_too() {
     // The bodies reach from the target to their farthest point, an edge's as well as a
     // mesh's: an edge point 1e5 from the target needs a view at least 1 high.
@@ -463,4 +487,24 @@ fn a_classified_point_is_finite_and_within_a_render_of_the_origin() {
             e.message
         );
     }
+}
+
+#[test]
+fn a_cameras_frame_makes_a_long_tilted_up_perpendicular_and_of_unit_length() {
+    // By hand: the eye at (0, −3, 4) from the origin, so back is (0, −0.6, 0.8). Up (0, 0, 2)
+    // has 1.6 along it; less that, (0, 0.96, 0.72), 1.2 long, so up is (0, 0.8, 0.6).
+    let camera = Camera {
+        projection: Projection::Orthographic { view_height: 10.0 },
+        eye: [0.0, -3.0, 4.0],
+        target: [0.0; 3],
+        up: [0.0, 0.0, 2.0],
+    };
+    let frame = camera.frame().unwrap();
+    for (got, want) in frame.back.iter().zip([0.0, -0.6, 0.8]) {
+        assert!((got - want).abs() < 1e-15, "back {:?}", frame.back);
+    }
+    for (got, want) in frame.up.iter().zip([0.0, 0.8, 0.6]) {
+        assert!((got - want).abs() < 1e-15, "up {:?}", frame.up);
+    }
+    assert!((frame.distance - 5.0).abs() < 1e-15);
 }
