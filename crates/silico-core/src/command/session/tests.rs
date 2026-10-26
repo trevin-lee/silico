@@ -75,6 +75,59 @@ fn built_from(model: &Model) -> String {
 }
 
 #[test]
+fn a_fresh_read_answers_with_its_own_rebuilds_model_never_one_recorded_after_it_started() {
+    // A rebuild of the revision that reads what's kept publishes in its engine before a
+    // fresh read's start supersedes it, and its watcher records that model only after the
+    // fresh rebuild has started: of the right revision, not the model published before the
+    // fresh read, yet not the fresh rebuild's. The fresh read waits for its own. (The late
+    // model is another engine's sphere, so the two are told apart by what they're built
+    // from; the fresh one's box is held until the late one is recorded.)
+    let kernel = FakeKernel::new(2).unwrap();
+    let (session, _jobs) = session(&kernel);
+    let hold = kernel.hold(|op| op.name() == "MakeBox");
+    let (said, answered) = mpsc::channel();
+    let reader = {
+        let session = Arc::clone(&session);
+        std::thread::spawn(move || {
+            let model = session.model_with(
+                &probe(),
+                Revision::OPENED,
+                &checked(BOX),
+                &Reached::default(),
+                true,
+            );
+            let _ = said.send(model.map(|model| built_from(&model)));
+        })
+    };
+    assert!(kernel.wait_running(1, WAIT));
+    let other = FakeKernel::new(1).unwrap();
+    let late = Recompute::new(other.client());
+    watch(
+        &Arc::downgrade(&session),
+        &Label::new(Revision::OPENED, Reached::default()),
+        late.start(checked(SPHERE)),
+    );
+    // Recorded as the revision's newest, and told to the waiting read...
+    let recorded = lock(&session.rebuilds).published.clone().unwrap();
+    assert_eq!(recorded.revision, Revision::OPENED);
+    assert_eq!(built_from(&recorded.model), "a91cw0de");
+    // ...which doesn't take it: it answers only once its own rebuild is let through.
+    assert!(
+        answered.recv_timeout(Duration::from_millis(500)).is_err(),
+        "a fresh read answered before its own rebuild ended"
+    );
+    drop(hold);
+    assert_eq!(
+        answered.recv_timeout(WAIT).unwrap().unwrap(),
+        "k7f2qx3m".to_owned()
+    );
+    reader.join().unwrap();
+    // Its model is the revision's from then on.
+    let published = lock(&session.rebuilds).published.clone().unwrap();
+    assert_eq!(built_from(&published.model), "k7f2qx3m");
+}
+
+#[test]
 fn a_revisions_model_is_its_own_and_a_late_one_of_an_older_never_replaces_it() {
     let kernel = FakeKernel::new(2).unwrap();
     let (session, _jobs) = session(&kernel);
@@ -475,6 +528,7 @@ fn a_published_read_never_gives_a_model_newer_than_the_sessions_revision() {
         revision: Revision::OPENED.next().unwrap(),
         model: newer,
         reached: Reached::default(),
+        by: None,
     });
     let read = sessions.published(&id);
     assert_eq!(read.result.unwrap_err().errors()[0], nothing_published(id));

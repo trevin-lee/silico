@@ -177,7 +177,7 @@ impl Newest {
 /// commit's, never published as it is. While it runs, the session's revision is still the
 /// one before: so `status` says a candidate's is the current revision's rebuild running
 /// (its edit being committed), not a rebuild of a revision to come.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct Label {
     revision: Arc<AtomicU64>,
     /// What the session's edits reached at the revision it's of, published with its model:
@@ -276,8 +276,9 @@ pub(super) enum Ending {
     /// Its recompute failed (a bug), and why: said once, to the command waiting on it or
     /// the next to need its model; one after that rebuilds it. A published read never
     /// starts it again (it would fail again, each frame), and refuses with `why`. `status`
-    /// says `faulted`, as of a model that holds a kernel fault.
-    Failed { why: Error, said: bool },
+    /// says `faulted`, as of a model that holds a kernel fault. With the rebuild that
+    /// failed, `by`: a fresh read answers only with its own rebuild's failure.
+    Failed { why: Error, said: bool, by: Label },
 }
 
 impl Ended {
@@ -320,7 +321,9 @@ impl<C: Kernel + 'static> Session<C> {
     /// nothing kept (`check`'s `fresh`, the design's section 7: every step built anew,
     /// [`Recompute::start_fresh`]), started now whatever the revision has: never the model
     /// published of it before (a kernel fault kept as its outcome is tried again, decision
-    /// 32), nor one of a rebuild running that reads what's kept, which it supersedes. Its
+    /// 32), nor one of a rebuild running that reads what's kept, which it supersedes, even
+    /// one its engine published before the fresh rebuild started and its watcher records
+    /// after: only its own rebuild's model ([`Published::by`]), or its own failure. Its
     /// model, once published, is the revision's, in the place of the one before.
     pub(super) fn model_with(
         self: &Arc<Self>,
@@ -336,25 +339,20 @@ impl<C: Kernel + 'static> Session<C> {
         let mut waited: Option<Label> = None;
         // A fresh read's own rebuild, once started: only what it comes to answers the read.
         let mut own: Option<Label> = None;
-        // The model of the revision published before a fresh read started: never its answer
-        // (held, so no model made since can be taken for it).
-        let before: Option<Arc<Model>> = rebuilds
-            .published
-            .as_ref()
-            .filter(|published| fresh && published.revision == revision)
-            .map(|published| Arc::clone(&published.model));
+        // Whether what the rebuild labelled `by` came to answers this read: what any of the
+        // revision's rebuilds came to, for a read of what's kept; for a fresh one, only
+        // what its own did. Never the model published before it started (a kept fault is
+        // tried again), nor one of a rebuild it superseded that its engine had published
+        // before the fresh one started, and whose watcher records it only after.
+        let answers = |own: &Option<Label>, by: Option<&Label>| {
+            !fresh || own.as_ref().zip(by).is_some_and(|(own, by)| by.is(own))
+        };
         loop {
-            // Whether what the revision's rebuilds come to is this read's: any, for a read
-            // of what's kept; for a fresh one, only once its own has started.
-            let answers = !fresh || own.is_some();
             // Had, it's given even to a command cancelled meanwhile, whose work then stops
             // where it would leave a trace (its stop settled).
             if let Some(published) = &rebuilds.published
                 && published.revision == revision
-                && answers
-                && !before
-                    .as_ref()
-                    .is_some_and(|before| Arc::ptr_eq(before, &published.model))
+                && answers(&own, published.by.as_ref())
             {
                 return Ok(Arc::clone(&published.model));
             }
@@ -373,11 +371,11 @@ impl<C: Kernel + 'static> Session<C> {
             // A failure of this revision's, said once; the read after that rebuilds it.
             if let Some(Ended {
                 revision: of,
-                how: Ending::Failed { why, said },
+                how: Ending::Failed { why, said, by },
             }) = &mut rebuilds.ended
                 && *of == revision
                 && !*said
-                && answers
+                && answers(&own, Some(&*by))
             {
                 *said = true;
                 return Err(Problems::from(why.clone()));
@@ -847,6 +845,7 @@ pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Lab
                     revision,
                     model,
                     reached: label.reached.clone(),
+                    by: Some(label.clone()),
                 });
             }
         }
@@ -858,7 +857,14 @@ pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Lab
                 rebuilds.end(revision, Ending::Superseded);
             }
         }
-        Err(why) => rebuilds.end(revision, Ending::Failed { why, said: false }),
+        Err(why) => rebuilds.end(
+            revision,
+            Ending::Failed {
+                why,
+                said: false,
+                by: label.clone(),
+            },
+        ),
     }
     drop(rebuilds);
     session.rebuilt.notify_all();
@@ -889,6 +895,7 @@ mod tests {
         Ending::Failed {
             why: Error::new(ErrorCode::Internal, "the recompute failed"),
             said: false,
+            by: Label::new(ONE, Reached::default()),
         }
     }
 

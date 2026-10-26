@@ -379,6 +379,7 @@ impl<C: Kernel + 'static> Session<C> {
                         revision,
                         model,
                         reached,
+                        by: None,
                     });
                 }
                 (None, Gated::Checked(checked)) if kept.started => {
@@ -817,6 +818,7 @@ impl<C: Kernel + 'static> Session<C> {
                 // The saved revision's, its transaction ended: what's carried, and what uses
                 // it. Taken, not worked out, under the locks.
                 reached: Reached::of(held.reaching()),
+                by: None,
             });
         }
         Ok(gated)

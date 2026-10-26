@@ -10,8 +10,8 @@ use std::time::Duration;
 #[cfg(doc)]
 use super::Sessions;
 use super::cancel::Ticket;
-use super::rebuilds::Newest;
 use super::rebuilds::met_fault;
+use super::rebuilds::{Label, Newest};
 use super::transaction::Reached;
 use super::{Problems, ReadCommand, SessionCommand};
 #[cfg(doc)]
@@ -318,6 +318,10 @@ pub struct Published {
     pub revision: Revision,
     pub model: Arc<Model>,
     pub(crate) reached: Reached,
+    /// The rebuild whose watcher published it, if one did (none for a rollback's restored
+    /// model or a save's rebound one): so a fresh read answers only with its own rebuild's
+    /// model, never one of a rebuild it superseded that the engine published first.
+    pub(super) by: Option<Label>,
 }
 
 /// A command running on its session's thread: wait for its answer, poll it, cancel it, or
