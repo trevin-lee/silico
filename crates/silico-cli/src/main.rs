@@ -3,8 +3,9 @@
 //! and the app run too, and `textconv`, for `git diff` (docs/cli.md). `check`, `fmt`, `show`,
 //! `cache clear`, and `export` each open a file as a session, run one session command on it
 //! (`check`, `format`, `outline`, `cache_clear`, `export`), and close it
-//! (docs/design/m4.1-command-api.md, section 9), every file on one kernel pool and one
-//! sketch solver.
+//! (docs/design/m4.1-command-api.md, section 9). `check` and `fmt` run every file on one
+//! kernel pool and one sketch solver, and `export` its file on one of each; `show` and
+//! `cache clear` rebuild nothing, so they start neither.
 //!
 //! Exit codes: 0, nothing wrong; 1, a document has problems (or, with `fmt --check`, isn't
 //! in canonical form, or a file is longer than a document may be); 2, the command couldn't

@@ -1510,3 +1510,102 @@ fn cache_without_clear_or_a_file_is_a_usage_error_and_a_file_it_cant_read_exit_2
     }
     std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
+
+#[test]
+fn cache_clear_of_several_files_says_each_and_exits_with_the_worst() {
+    // Two documents, each in a directory of its own, each with a cache of one entry (the
+    // block's) beside it.
+    let scratch = Scratch::new("cache-clear-several");
+    let dirs = [scratch.0.join("one"), scratch.0.join("two")];
+    let files: Vec<PathBuf> = dirs
+        .iter()
+        .map(|dir| {
+            std::fs::create_dir_all(dir).unwrap();
+            let file = dir.join("part.silico");
+            std::fs::write(&file, EXAMPLE).unwrap();
+            file
+        })
+        .collect();
+    let caches: Vec<PathBuf> = dirs.iter().map(|dir| dir.join(".silico-cache")).collect();
+    let check_all = || {
+        for file in &files {
+            let out = silico(&scratch, &["check"], file);
+            assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        }
+    };
+    let clear = || {
+        Command::new(env!("CARGO_BIN_EXE_silico"))
+            .args(["cache", "clear"])
+            .args(&files)
+            .env("SILICO_KERNEL_WORKER", "/nonexistent")
+            .env("XDG_CACHE_HOME", scratch.0.join("no-cache-home"))
+            .env_remove("SILICO_LOG")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    // Both cleared: a line each, in the order named, exit 0.
+    check_all();
+    let out = clear();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        format!(
+            "{}: removed 1 entry from {}\n{}: removed 1 entry from {}\n",
+            files[0].display(),
+            caches[0].display(),
+            files[1].display(),
+            caches[1].display()
+        )
+    );
+    // The first's entry can't be removed: said, the second cleared all the same, and the
+    // run couldn't do all it was asked (exit 2), whichever came first.
+    check_all();
+    let sub = std::fs::read_dir(&caches[0])
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.is_dir())
+        .unwrap();
+    let entry = std::fs::read_dir(&sub)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .next()
+        .unwrap();
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o555)).unwrap();
+    if std::fs::write(sub.join("probe"), b"").is_ok() {
+        return; // root
+    }
+    let out = clear();
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    // What's said of each file (the cache's warning, logged at the default level, aside).
+    let said: String = stderr(&out)
+        .lines()
+        .filter(|line| !line.contains(" WARN silico_core::cache: "))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_eq!(
+        said,
+        format!(
+            "{}: io_failed: couldn't remove the cache's entry \"{}\": Permission denied (os \
+             error 13): the clear removed 0 entries and left what it couldn't remove or read. \
+             Suggestion: check that this user may read and write the cache's directory and \
+             its subdirectories, then clear it again: an entry left is still sound, and one \
+             removed is only a miss.\n{}: removed 1 entry from {}\n",
+            files[0].display(),
+            entry.display(),
+            files[1].display(),
+            caches[1].display()
+        )
+    );
+    assert!(entry.is_file());
+    let left_in_second = std::fs::read_dir(&caches[1])
+        .unwrap()
+        .flatten()
+        .filter(|sub| sub.path().is_dir())
+        .flat_map(|sub| std::fs::read_dir(sub.path()).unwrap().flatten())
+        .count();
+    assert_eq!(left_in_second, 0);
+}

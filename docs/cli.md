@@ -1,6 +1,6 @@
 # The `silico` command
 
-Each command is a thin client of the core's commands (`silico_core::command`), which the app and MCP run too, so they all do the same thing: `check`, `fmt`, `show`, `cache clear`, and `export` open each file as a session, run one command on it (`check`, `format`, `outline`, `cache_clear`, `export`), and close it, every file on one kernel pool and one sketch solver (docs/design/m4.1-command-api.md, section 9).
+Each command is a thin client of the core's commands (`silico_core::command`), which the app and MCP run too, so they all do the same thing: `check`, `fmt`, `show`, `cache clear`, and `export` open each file as a session, run one command on it (`check`, `format`, `outline`, `cache_clear`, `export`), and close it (docs/design/m4.1-command-api.md, section 9). `check` and `fmt` run every file on one kernel pool and one sketch solver, and `export` its file on one of each; `show` and `cache clear` rebuild nothing, so they start neither.
 
 | Command | What it does |
 |---|---|
