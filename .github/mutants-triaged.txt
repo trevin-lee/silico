@@ -150,5 +150,3 @@ crates/silico-core/src/views.rs | sees | replace == with != | #181
 crates/silico-core/src/views.rs | sees | replace == with != | #181
 # An absolute path joined to the workspace is itself.
 crates/silico-core/src/file.rs | output_target | replace match guard given.is_relative() with true | #181
-# A file that isn't a link, in a canonical directory, canonicalizes to itself on a
-# case-sensitive file system (CI's); on a case-insensitive one the code is the bug (#TBD).
