@@ -64,7 +64,7 @@ fn a_rod_touching_a_pointed_cones_side_is_fused_cut_and_commoned_as_by_hand() {
         .unwrap_err();
     assert_eq!(e.code(), ErrorCode::KernelFailed, "common: {e}");
     assert!(
-        e.message().contains("the common's result is empty"),
+        e.to_string().contains("the common's result is empty"),
         "common: {e}"
     );
 }
