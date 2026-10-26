@@ -579,7 +579,7 @@ fn a_horn_torus_fused_with_a_box_off_its_axis_measures_as_by_hand() {
     assert!(missed.is_empty(), "{}", missed.join("\n"));
 }
 
-// ---- An arc across its circle's angle 0 (Fable, 2026-10-25: arc-range-fable.md) ----
+// ---- An arc across its circle's angle 0 (docs/ports/measure.md, fixed 2026-10-25) ----
 
 /// The box from (−20, 2, −20) to (20, 20, 20), which cuts y > 2 away.
 fn y_over_2(k: &mut KernelWorker) -> ShapeData {

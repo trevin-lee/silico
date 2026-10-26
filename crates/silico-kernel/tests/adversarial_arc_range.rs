@@ -397,7 +397,9 @@ fn a_band_turning_a_micro_radian_is_cut_by_a_box_or_is_occts_known_wrong_answer(
     // warning; FreeCAD 1.1.3's `Shape.cut` gives the same (2026-10-25). Turning 1e-5 rad
     // it's right, and a band of line of the same height (a cylinder) is right. Silico takes
     // OCCT's answer, as FreeCAD does: each cut is the right answer or that wrong one, so
-    // OCCT giving any other fails here, and a fixed OCCT passes.
+    // OCCT giving any other fails here, and a fixed OCCT passes. The uncut tube is also
+    // what the range's defect gave, so this documents OCCT's result and doesn't guard the
+    // range fix: the tests above and below do.
     let mut k = kernel();
     let block = beyond(&mut k, Z_AXIS);
     let want = 8.0 * (kept(5.0, TAU) - kept(INNER, TAU));
