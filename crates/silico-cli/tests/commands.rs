@@ -876,8 +876,13 @@ fn a_revolved_barrels_fingerprint_is_its_volume_by_hand_and_check_passes() {
     let out = silico(&scratch, &["fmt"], &file);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let text = std::fs::read_to_string(&file).unwrap();
+    // Its tight box by hand, (−5, −5, −4) to (5, 5, 4): the arc's widest point, x = 5 at
+    // z = 0, turned. Its arc crosses its circle's angle 0, whose face was boxed from x = −4
+    // before each arc edge took OCCT's own range (docs/ports/measure.md).
     assert!(
-        text.contains(r#""fingerprint": {"volume": 526.334314, "area": 388.599549,"#),
+        text.contains(
+            r#""fingerprint": {"volume": 526.334314, "area": 388.599549, "bbox": [-5, -5, -4, 5, 5, 4],"#
+        ),
         "{text}"
     );
     let out = silico(&scratch, &["check"], &file);
