@@ -4,6 +4,8 @@
 //! `testCurvedFaceDistance`); a cylinder's rims; the witness pair chosen by coordinates and
 //! swapped with the elements; and each refusal. Every expected value is by hand.
 
+use super::cube_elements::{cube, vertex_at};
+
 use std::path::Path;
 
 use silico_core::ErrorCode;
@@ -11,35 +13,12 @@ use silico_core::kernel::{Blob, KernelRequest, KernelWorker, ShapeData};
 use silico_kernel::{Primitive, Shape, describe_whole, distance, make, to_brep, translate};
 use silico_protocol::{EdgeCurve, ElementKind, ElementRef, Refusal};
 
-fn cube(side: f64) -> Shape {
-    make(&Primitive::Box {
-        dx: side,
-        dy: side,
-        dz: side,
-    })
-    .unwrap()
-}
-
 fn moved(shape: &Shape, by: [f64; 3]) -> Shape {
     translate(shape, by).unwrap().shape
 }
 
-fn vertex(index: u32) -> ElementRef {
-    ElementRef {
-        kind: ElementKind::Vertex,
-        index,
-    }
-}
-
 fn edge(index: u32) -> ElementRef {
     ElementRef::edge(index)
-}
-
-/// The number of `shape`'s vertex at `at`.
-fn vertex_at(shape: &Shape, at: [f64; 3]) -> u32 {
-    let d = describe_whole(shape).unwrap();
-    let i = d.vertices.iter().position(|v| *v == at).unwrap();
-    u32::try_from(i + 1).unwrap()
 }
 
 fn assert_point(what: &str, got: [f64; 3], want: [f64; 3]) {
@@ -99,7 +78,7 @@ fn corners_are_their_diagonal_apart() {
     .unwrap();
     let low = vertex_at(&shape, [0.0, 0.0, 0.0]);
     let high = vertex_at(&shape, [10.0, 20.0, 30.0]);
-    let d = distance(&shape, vertex(low), None, vertex(high)).unwrap();
+    let d = distance(&shape, low, None, high).unwrap();
     assert!(
         (d.distance - 1400f64.sqrt()).abs() < 1e-12,
         "{}",
@@ -306,7 +285,7 @@ fn corners_of_two_shapes_are_measured_across_them() {
     let b = moved(&a, [50.0, 0.0, 0.0]);
     let origin = vertex_at(&a, [0.0, 0.0, 0.0]);
     let there = vertex_at(&b, [50.0, 0.0, 0.0]);
-    let d = distance(&a, vertex(origin), Some(&b), vertex(there)).unwrap();
+    let d = distance(&a, origin, Some(&b), there).unwrap();
     assert_eq!(d.distance, 50.0);
     assert_eq!(d.from, [0.0, 0.0, 0.0]);
     assert_eq!(d.to, [50.0, 0.0, 0.0]);

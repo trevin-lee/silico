@@ -1,5 +1,5 @@
-//! For the tests of a point's distance from an element (`silico_kernel::point_distance`): a
-//! cube at the origin, and its edges and vertices found by where they are.
+//! For the tests of distances (`silico_kernel::distance` and `point_distance`): a cube at
+//! the origin, and its edges and vertices found by where they are.
 
 use silico_kernel::{Primitive, Shape, describe_whole, make};
 use silico_protocol::{ElementKind, ElementRef};

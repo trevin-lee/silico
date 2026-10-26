@@ -8,6 +8,7 @@
 //! the fake's refusals against a worker's, and the witness's order over hostile coordinates.
 //! Every expected value is a closed form, by hand, named where it's used.
 
+use super::cube_elements::cube;
 use super::kernel;
 
 use std::path::Path;
@@ -28,15 +29,6 @@ fn fixture(name: &str) -> Vec<u8> {
         .join("tests/fixtures/brep")
         .join(name);
     std::fs::read(path).unwrap()
-}
-
-fn cube(side: f64) -> Shape {
-    make(&Primitive::Box {
-        dx: side,
-        dy: side,
-        dz: side,
-    })
-    .unwrap()
 }
 
 fn sphere(radius: f64) -> Shape {

@@ -36,8 +36,9 @@ pub fn check_classify_point(point: [f64; 3]) -> Result<(), InvalidParameter> {
 
 /// Why `point`, the value of `parameter`, can't be asked, if it can't: a coordinate that
 /// isn't finite or is past `most` mm of the origin. The one rule, in one set of words, for
-/// every point a request bounds (a classified point, a camera's eye and target, a point a
-/// distance is measured from).
+/// every point a request gives by value (a classified point, a camera's eye and target, a
+/// point a distance is measured from). A render mesh's positions and edge points are bounded
+/// alike but named by their index, not their value (`render.rs`'s mesh check).
 pub(crate) fn point_beyond(parameter: &str, point: [f64; 3], most: f64) -> Option<String> {
     (!point.iter().all(|c| c.abs() <= most))
         .then(|| format!("{parameter} {point:?} must be finite and within {most} mm of the origin"))
