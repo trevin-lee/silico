@@ -1,6 +1,7 @@
 #include "silico-kernel/cpp/bridge.h"
 #include "silico-kernel/src/lib.rs.h"
 
+#include <BOPAlgo_Alerts.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <algorithm>
@@ -1507,9 +1508,45 @@ static void expand_compound(const TopoDS_Shape &shape, NCollection_List<TopoDS_S
   }
 }
 
+namespace {
+// An element of a pair OCCT skipped intersecting, as the input it's of numbers it
+// (TopExp::MapShapes, as every element is numbered), or as neither input's: an element OCCT
+// made of one (a copy with a larger tolerance, which a non-destructive boolean makes
+// instead of changing its input). The pair is always of vertices, edges, or faces.
+SkippedElement skipped_element(const TopoDS_Shape &element, const TopoDS_Shape &base,
+                               const TopoDS_Shape &tool) {
+  Kind kind;
+  switch (element.ShapeType()) {
+  case TopAbs_VERTEX:
+    kind = Kind::Vertex;
+    break;
+  case TopAbs_EDGE:
+    kind = Kind::Edge;
+    break;
+  case TopAbs_FACE:
+    kind = Kind::Face;
+    break;
+  default:
+    throw Standard_Failure("OCCT skipped intersecting an element that isn't a vertex, an edge, "
+                           "or a face");
+  }
+  const TopoDS_Shape *inputs[2] = {&base, &tool};
+  for (uint8_t input = 0; input < 2; ++input) {
+    TopTools_IndexedMapOfShape elements;
+    TopExp::MapShapes(*inputs[input], element.ShapeType(), elements);
+    const int index = elements.FindIndex(element);
+    if (index > 0) {
+      return SkippedElement{kind, input, static_cast<uint32_t>(index)};
+    }
+  }
+  return SkippedElement{kind, 2, 0};
+}
+} // namespace
+
 std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &tool,
                                rust::Vec<HistoryEntry> &history,
-                               rust::Vec<rust::String> &warnings) {
+                               rust::Vec<rust::String> &warnings,
+                               rust::Vec<SkippedElement> &skipped) {
   std::unique_ptr<BRepAlgoAPI_BooleanOperation> maker;
   switch (op) {
   case BooleanOp::Fuse:
@@ -1562,6 +1599,21 @@ std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &too
   }
   for (const Handle(Message_Alert) &alert : maker->GetReport()->GetAlerts(Message_Warning)) {
     warnings.push_back(rust::String(alert->GetMessageKey()));
+    // Its shape is a compound of the pair, in OCCT's order (AddIntersectionFailedWarning);
+    // alerts with a shape are never merged, so each pair is its own.
+    Handle(BOPAlgo_AlertIntersectionOfPairOfShapesFailed) pair =
+        Handle(BOPAlgo_AlertIntersectionOfPairOfShapesFailed)::DownCast(alert);
+    if (pair.IsNull()) {
+      continue;
+    }
+    size_t found = 0;
+    for (TopoDS_Iterator element(pair->GetShape()); element.More(); element.Next()) {
+      skipped.push_back(skipped_element(element.Value(), base.shape, tool.shape));
+      ++found;
+    }
+    if (found != 2) {
+      throw Standard_Failure("OCCT skipped intersecting a pair that isn't two elements");
+    }
   }
   const TopoDS_Shape result = maker->Shape();
   capture_history(*maker, 0, base.shape, result, history);

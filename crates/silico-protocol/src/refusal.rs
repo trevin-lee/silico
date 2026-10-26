@@ -159,7 +159,29 @@ pub enum Refusal {
     /// no CPU adapter (Mesa's lavapipe, its compiled-in paths gone, or none built in).
     /// `cause` names what it looked for and what it found.
     NoAdapter { cause: String },
+    /// OCCT skipped intersecting pairs of a boolean's elements
+    /// (`BOPAlgo_AlertIntersectionOfPairOfShapesFailed`, a warning it gives where the
+    /// intersection itself threw): its result takes each pair as not meeting, so it can be
+    /// whole where it should be cut, and still valid. Each pair as OCCT gave it, in its
+    /// order, every one. Of its warnings this alone is refused: the others still come with
+    /// results FreeCAD and Silico take (docs/ports/booleans.md).
+    BooleanPairsSkipped {
+        op: BooleanOp,
+        pairs: Vec<[Skipped; 2]>,
+    },
 }
+
+/// One of a pair of elements OCCT skipped intersecting: its kind, and the input it's of
+/// with its number there, or none for an element OCCT made of one (a copy with a larger
+/// tolerance, which a boolean that leaves its inputs alone makes instead of changing them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Skipped {
+    pub kind: ElementKind,
+    pub of: Option<(Role, u32)>,
+}
+
+/// How many skipped pairs a refusal's message names; the rest are counted.
+pub const PAIRS_NAMED: usize = 3;
 
 /// What OCCT gave back nothing of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -326,7 +348,8 @@ impl Refusal {
             | Refusal::FacesUnmeshed { .. }
             | Refusal::NotFinite { .. }
             | Refusal::SolutionOutOfReach { .. }
-            | Refusal::DistanceNotDone => FailureKind::KernelFailed,
+            | Refusal::DistanceNotDone
+            | Refusal::BooleanPairsSkipped { .. } => FailureKind::KernelFailed,
             Refusal::NoAdapter { .. } => FailureKind::Unavailable,
             Refusal::TestOperation { .. } | Refusal::OtherWorkersOp { .. } => {
                 FailureKind::UnknownOp
@@ -364,6 +387,23 @@ impl Refusal {
                 .take(FACES_NAMED)
                 .map(|&face| ElementRef::face(face))
                 .collect(),
+            // The base's, which is the one input whose elements a boolean's error names:
+            // each once, in the order OCCT gave them.
+            Refusal::BooleanPairsSkipped { pairs, .. } => {
+                let mut base = Vec::new();
+                for element in pairs.iter().flatten() {
+                    if let Some((Role::Base, index)) = element.of {
+                        let element = ElementRef {
+                            kind: element.kind,
+                            index,
+                        };
+                        if !base.contains(&element) {
+                            base.push(element);
+                        }
+                    }
+                }
+                base
+            }
             _ => Vec::new(),
         }
     }
@@ -679,6 +719,53 @@ impl Refusal {
                 ),
                 None,
             ),
+            Refusal::BooleanPairsSkipped { op, pairs } => {
+                let one = |element: &Skipped| match element.of {
+                    Some((Role::Base, index)) => format!(
+                        "the base's {}",
+                        name(ElementRef {
+                            kind: element.kind,
+                            index
+                        })
+                    ),
+                    // The tool's aren't the input the namer names: by kind and number, as a
+                    // refusal names an element that isn't its shape's.
+                    Some((Role::Tool, index)) => {
+                        format!("the tool's {} {index}", one_of(element.kind))
+                    }
+                    None => {
+                        let kind = one_of(element.kind);
+                        let a = if kind.starts_with(['a', 'e', 'i', 'o', 'u']) {
+                            "an"
+                        } else {
+                            "a"
+                        };
+                        format!("{a} {kind} OCCT made of one")
+                    }
+                };
+                let mut named: Vec<String> = pairs
+                    .iter()
+                    .take(PAIRS_NAMED)
+                    .map(|[first, second]| format!("{} with {}", one(first), one(second)))
+                    .collect();
+                if pairs.len() > PAIRS_NAMED {
+                    named.push(format!("{} more pairs", pairs.len() - PAIRS_NAMED));
+                }
+                (
+                    format!(
+                        "OCCT skipped intersecting {} in the {}, so its result would take them \
+                         as not meeting",
+                        listed(&named),
+                        op.name().to_lowercase()
+                    ),
+                    Some(
+                        "OCCT couldn't intersect those elements: check their geometry where \
+                         they meet (a face whose edges lie outside its surface is one cause), \
+                         or move the tool slightly"
+                            .to_owned(),
+                    ),
+                )
+            }
             Refusal::NoAdapter { cause } => (
                 format!("the render worker found nothing it may draw on: {cause}"),
                 Some(
@@ -1090,6 +1177,19 @@ mod tests {
             Refusal::NoAdapter {
                 cause: "no CPU adapter; found [\"Apple M4 Pro\"]".to_owned(),
             },
+            Refusal::BooleanPairsSkipped {
+                op: BooleanOp::Cut,
+                pairs: vec![[
+                    Skipped {
+                        kind: ElementKind::Face,
+                        of: Some((Role::Base, 3)),
+                    },
+                    Skipped {
+                        kind: ElementKind::Face,
+                        of: Some((Role::Tool, 2)),
+                    },
+                ]],
+            },
         ]
     }
 
@@ -1214,6 +1314,7 @@ mod tests {
             KernelFailed,      // DistanceNotDone (new with M4.5)
             InvalidInput,      // ElementMissing (new with M4.5)
             Unavailable,       // NoAdapter
+            KernelFailed,      // BooleanPairsSkipped (new: OCCT's failure, as Occt)
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), kinds.len());
@@ -1267,6 +1368,7 @@ mod tests {
             None,               // DistanceNotDone
             Some("second"),     // ElementMissing
             None,               // NoAdapter
+            None,               // BooleanPairsSkipped
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), parameters.len());

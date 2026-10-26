@@ -1101,3 +1101,101 @@ fn a_torus_cut_by_a_larger_torus_occt_turns_inside_out_is_right_or_refused() {
         }
     }
 }
+
+/// The fixture `name` (tests/fixtures/brep), with Silico's checksum.
+fn fixture(name: &str) -> Vec<u8> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/brep")
+        .join(name);
+    let mut body = std::fs::read(path).unwrap();
+    body.extend_from_slice(&crc32fast::hash(&body).to_le_bytes());
+    body
+}
+
+/// The box from (−20, 2, −20) to (20, 20, 20): its face 3, as `BRepPrimAPI_MakeBox` numbers
+/// them (x = −20, x = 20, then y = 2), is the plane y = 2 that cuts the barrel's side.
+fn beyond_y_2() -> Shape {
+    at(
+        Primitive::Box {
+            dx: 40.0,
+            dy: 18.0,
+            dz: 40.0,
+        },
+        [-20.0, 2.0, -20.0],
+    )
+}
+
+#[test]
+fn a_boolean_whose_occt_skips_a_pair_of_faces_is_refused_naming_them() {
+    // The barrel as the bridge built it before the arc-range fix (the fixture's README): its
+    // turned face (Face2, a surface of revolution) lies a turn outside its own surface's
+    // range, and OCCT's intersection of it with the box's face y = 2 throws, which OCCT
+    // takes as their not meeting (BOPAlgo_AlertIntersectionOfPairOfShapesFailed): the cut
+    // came back whole, 526.334 for 395.478, "valid". Every op is refused naming that pair,
+    // once, though OCCT raised it twice.
+    let barrel = from_brep(&fixture("barrel_range_off_its_surface.bin")).unwrap();
+    let (_, faces) =
+        silico_kernel::describe(&barrel, silico_protocol::ElementKind::Face, 2, 1).unwrap();
+    assert!(
+        matches!(faces.faces[..], [ref face] if face.surface == silico_protocol::Surface::Revolution),
+        "{faces:?}"
+    );
+    let block = beyond_y_2();
+    let pair = [
+        silico_protocol::Skipped {
+            kind: silico_protocol::ElementKind::Face,
+            of: Some((silico_protocol::Role::Base, 2)),
+        },
+        silico_protocol::Skipped {
+            kind: silico_protocol::ElementKind::Face,
+            of: Some((silico_protocol::Role::Tool, 3)),
+        },
+    ];
+    for op in OPS {
+        let e = boolean(op, &barrel, &block).map(|_| ()).unwrap_err();
+        assert_eq!(
+            e.refusal(),
+            &Refusal::BooleanPairsSkipped {
+                op,
+                pairs: vec![pair]
+            },
+            "{op:?}"
+        );
+        assert_eq!(e.kind(), KernelErrorKind::Failed, "{op:?}: {e}");
+    }
+}
+
+#[test]
+fn worker_a_boolean_whose_occt_skips_a_pair_of_faces_is_a_kernel_failure_naming_them() {
+    // The same through the worker and the core's words: `kernel_failed`, the base's face
+    // its element, and both faces in its cause.
+    let mut k = KernelWorker::start_worker(Path::new(WORKER)).unwrap();
+    let barrel = ShapeData::unchecked(silico_protocol::Blob::inline(fixture(
+        "barrel_range_off_its_surface.bin",
+    )));
+    let block = k
+        .make(Primitive::Box {
+            dx: 40.0,
+            dy: 18.0,
+            dz: 40.0,
+        })
+        .unwrap();
+    let block = k.translate(&block, [-20.0, 2.0, -20.0]).unwrap().shape;
+    let e = k.boolean(BooleanOp::Cut, &barrel, &block).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::KernelFailed, "{e}");
+    assert_eq!(e.elements(), ["Face2"], "{e}");
+    assert!(
+        e.cause().is_some_and(|c| c.starts_with(
+            "OCCT skipped intersecting the base's Face2 with the tool's face 3 in the cut"
+        )),
+        "{e}"
+    );
+    assert!(
+        e.suggestion()
+            .is_some_and(|s| s.contains("move the tool slightly")),
+        "{e}"
+    );
+    // And the worker goes on.
+    let fine = k.boolean(BooleanOp::Fuse, &block, &block).unwrap();
+    assert_eq!(fine.shape.valid(), Some(true));
+}

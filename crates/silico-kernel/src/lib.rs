@@ -112,6 +112,16 @@ mod ffi {
         position: u32,
     }
 
+    /// One of a pair of elements a boolean's OCCT skipped intersecting
+    /// (`BOPAlgo_AlertIntersectionOfPairOfShapesFailed`): its kind, the input it's of (0
+    /// the base, 1 the tool, 2 neither: an element OCCT made of one), and its number there
+    /// (0 for neither).
+    struct SkippedElement {
+        kind: Kind,
+        input: u8,
+        index: u32,
+    }
+
     /// What makes a shape read from bytes unusable, as `brep_defect` finds it.
     #[repr(u8)]
     enum BrepDefect {
@@ -395,6 +405,7 @@ mod ffi {
             tool: &Shape,
             history: &mut Vec<HistoryEntry>,
             warnings: &mut Vec<String>,
+            skipped: &mut Vec<SkippedElement>,
         ) -> Result<UniquePtr<Shape>>;
         fn count_elements(shape: &Shape) -> Result<Counts>;
         fn topology(shape: &Shape) -> Result<TopologyFacts>;
@@ -496,7 +507,7 @@ pub use silico_protocol::{
 };
 use silico_protocol::{
     BrepDefect, FailureKind, HistoryDefect, MAX_EXPORT_TRIANGLES, Operation, Returned, Role,
-    check_export_tolerance, check_export_triangles, export_angle, export_deflection,
+    Skipped, check_export_tolerance, check_export_triangles, export_angle, export_deflection,
 };
 
 mod dressing;
@@ -1613,9 +1624,10 @@ pub fn make_faces(regions: &FaceRegions) -> Result<Built, KernelError> {
 /// away, as if nothing were wrong) or as the result (a common of shapes that don't
 /// overlap, a cut that removes everything) or as a result of solids with no volume to
 /// speak of; and a result of solids turned inside out (a volume well below none) is
-/// refused as invalid, whatever OCCT's own check says of it. A valid result is otherwise
-/// accepted as OCCT gives it, as FreeCAD accepts it, though OCCT gets some wrong (the port
-/// note lists them).
+/// refused as invalid, whatever OCCT's own check says of it; and so is a result OCCT made
+/// skipping a pair of elements it couldn't intersect (`Refusal::BooleanPairsSkipped`). A
+/// valid result is otherwise accepted as OCCT gives it, as FreeCAD accepts it, though OCCT
+/// gets some wrong (the port note lists them).
 pub fn boolean(op: BooleanOp, base: &Shape, tool: &Shape) -> Result<Built, KernelError> {
     let name = op.name().to_lowercase();
     let operation = Operation::Boolean { op };
@@ -1632,12 +1644,14 @@ pub fn boolean(op: BooleanOp, base: &Shape, tool: &Shape) -> Result<Built, Kerne
     }
     let mut entries = Vec::new();
     let mut warnings = Vec::new();
+    let mut skipped = Vec::new();
     let built = ffi::boolean(
         bridge_op,
         base_inner,
         tool_inner,
         &mut entries,
         &mut warnings,
+        &mut skipped,
     )
     .map_err(|e| KernelError::from(e).during(operation.clone()))?;
     // FreeCAD accepts whatever valid result OCCT gives, warnings or not, and so does
@@ -1649,6 +1663,17 @@ pub fn boolean(op: BooleanOp, base: &Shape, tool: &Shape) -> Result<Built, Kerne
             "OCCT warned about the {name}: {}",
             alerts.into_iter().collect::<Vec<_>>().join(", ")
         );
+    }
+    // But one warning is OCCT saying it skipped intersecting a pair of elements, where the
+    // intersection threw: its result takes them as not meeting (a cut of a barrel whose
+    // turned face lay outside its own surface came back whole, "valid"). No right result
+    // was found to raise it (across every test, the oracle, its sweep, and the corpus), so
+    // it's refused, naming the pairs (docs/ports/booleans.md).
+    if !skipped.is_empty() {
+        return Err(KernelError::new(Refusal::BooleanPairsSkipped {
+            op,
+            pairs: skipped_pairs(&skipped)?,
+        }));
     }
     if let Some(result) = built.as_ref() {
         let amount = if is_empty(result)? {
@@ -1898,6 +1923,42 @@ fn assemble_history(
         }
     }
     Ok(history)
+}
+
+/// The pairs a boolean's OCCT skipped intersecting, from the bridge's elements, two by two,
+/// each once.
+fn skipped_pairs(elements: &[ffi::SkippedElement]) -> Result<Vec<[Skipped; 2]>, KernelError> {
+    let malformed = |what: &str| {
+        KernelError::new(Refusal::Internal {
+            what: format!("the boolean's skipped pairs {what}"),
+        })
+    };
+    let one = |element: &ffi::SkippedElement| {
+        let kind = element_kind(element.kind).ok_or_else(|| malformed("hold an unknown kind"))?;
+        let of = match element.input {
+            0 => Some((Role::Base, element.index)),
+            1 => Some((Role::Tool, element.index)),
+            2 => None,
+            _ => return Err(malformed("name an input there isn't")),
+        };
+        Ok(Skipped { kind, of })
+    };
+    if !elements.len().is_multiple_of(2) {
+        return Err(malformed("aren't two by two"));
+    }
+    // OCCT can raise a pair more than once (a cut of the barrel raised its pair twice):
+    // each once, in the order OCCT first gave it.
+    let mut pairs: Vec<[Skipped; 2]> = Vec::new();
+    for pair in elements.chunks_exact(2) {
+        let pair = match pair {
+            [first, second] => [one(first)?, one(second)?],
+            _ => return Err(malformed("aren't two by two")),
+        };
+        if !pairs.contains(&pair) {
+            pairs.push(pair);
+        }
+    }
+    Ok(pairs)
 }
 
 fn element_kind(kind: ffi::Kind) -> Option<ElementKind> {
