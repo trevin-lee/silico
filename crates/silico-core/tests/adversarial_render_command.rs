@@ -407,8 +407,8 @@ fn an_up_just_across_the_view_is_taken_and_one_just_under_refused() {
 fn cameras_at_the_coordinate_limit_mesh_at_the_ladders_level_by_hand() {
     let bench = Bench::of(EXAMPLE);
     // The eye at (1e12, 1e12, 1e12), the target at its negation, 179.999° high. Half a
-    // pixel is taken at the body's nearest point to the eye, its box's corner (40, 20, 11),
-    // √3e12 away to 1e-10 of it: at 100 pixels √3e12 × tan(89.9995°) / 100 = 1.7321e12 ×
+    // pixel is taken at the body's nearest depth along the view, its box's corner
+    // (40, 20, 11)'s, (3e12 − 71)/√3 = √3e12 to 1e-10 of it: at 100 pixels √3e12 × tan(89.9995°) / 100 = 1.7321e12 ×
     // 114591.56 / 100 = 1.98e15, whose power of two below is 2⁵⁰ (at the target's 2√3e12
     // it would be 2⁵¹).
     let far = perspective(179.999, [1e12; 3], [-1e12; 3]);
@@ -931,6 +931,58 @@ fn meshes_of_more_triangles_than_a_render_draws_name_the_side_that_meshes_coarse
         });
     });
     bench.render(&view("front", 100, 100)).unwrap();
+}
+
+#[test]
+fn the_triangle_cap_counts_every_bodys_triangles_together() {
+    // Two bodies of 1,000,001 triangles each: neither is past the cap, but the scene is
+    // (2,000,002), so it's the request's fault before anything is sent.
+    let bench = Bench::with(
+        &boxes(&[
+            ("aaaaaaaa", [0.0; 3], [1.0; 3]),
+            ("bbbbbbbb", [2.0, 0.0, 0.0], [1.0; 3]),
+        ]),
+        |k| {
+            k.answer_instead(|op| match op {
+                Op::Tessellate { deflection, .. } => {
+                    Some(one_face_of(MAX_RENDER_TRIANGLES / 2 + 1, *deflection))
+                }
+                _ => None,
+            });
+        },
+    );
+    let e = refused(bench.render(&view("front", 100, 100)));
+    assert_eq!(e.code(), ErrorCode::InvalidInput, "{e:?}");
+    assert!(e.message().contains("2000002 triangles"), "{e:?}");
+    assert!(bench.renderer.sent().is_empty());
+}
+
+#[test]
+fn a_render_whose_read_wont_settle_writes_no_file() {
+    // The read cancelled while the scene was drawn: the render answers its cancel, and the
+    // PNG drawn is never written (decision 34: a cancelled command leaves no trace).
+    let dir = Scratch::new("settle");
+    let bench = Bench::of(EXAMPLE);
+    let to = dir.0.join("view.png");
+    let mut request = view("front", 40, 30);
+    request.to = Some(to.clone());
+    let cancelled = || Err(Error::new(ErrorCode::Cancelled, "the render was cancelled"));
+    let e = refused(render(
+        &bench.model,
+        &request,
+        &RenderOn {
+            kernel: &bench.kernel,
+            meshes: &bench.meshes,
+            renderer: &bench.renderer,
+            workspace: Some(&dir.0),
+            held: &[],
+            settle: &cancelled,
+        },
+    ));
+    assert_eq!(e.code(), ErrorCode::Cancelled, "{e:?}");
+    assert_eq!(bench.renderer.sent().len(), 1);
+    assert!(!to.exists());
+    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
 }
 
 #[test]

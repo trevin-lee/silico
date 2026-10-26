@@ -189,16 +189,16 @@ impl NamedView {
     }
 }
 
-/// Half a pixel of `camera`'s image, `height` pixels high, in mm, at `distance` from a
-/// perspective eye (an orthographic view's is the same at any): a body is meshed to half
-/// a pixel at its nearest point, where its pixels are finest. None for a camera that fails
-/// its check.
-pub fn half_pixel_at(camera: &Camera, height: u32, distance: f64) -> Option<f64> {
+/// Half a pixel of `camera`'s image, `height` pixels high, in mm, at `depth` along the view
+/// from a perspective eye (an orthographic view's is the same at any): a body is meshed to
+/// half a pixel at its nearest depth (`depth_of_box`), where its pixels are finest. None for
+/// a camera that fails its check.
+pub fn half_pixel_at(camera: &Camera, height: u32, depth: f64) -> Option<f64> {
     camera.frame().ok()?;
     let view_height = match camera.projection {
         Projection::Orthographic { view_height } => view_height,
         Projection::Perspective { field_of_view } => {
-            2.0 * distance * libm::tan(field_of_view.to_radians() / 2.0)
+            2.0 * depth * libm::tan(field_of_view.to_radians() / 2.0)
         }
     };
     Some(view_height / f64::from(height) / 2.0)

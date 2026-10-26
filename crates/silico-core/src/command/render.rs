@@ -223,9 +223,9 @@ impl<P: Clients + 'static> Sessions<P> {
     }
 }
 
-/// What a render runs on: a kernel client and the generation its requests are for (the
-/// session's read lane), the meshes kept beside the kernel, the renderer, and what a file
-/// written must keep clear of (decision 35).
+/// What a render runs on: a kernel client (the session's read lane), the meshes kept beside
+/// the kernel, the renderer, what a file written must keep clear of (decision 35), and the
+/// settle that comes before it.
 pub struct RenderOn<'a, K: Kernel> {
     /// The read's kernel client, its requests at its own generation.
     pub kernel: &'a K,
@@ -766,8 +766,8 @@ fn meshed<K: Kernel>(
     // scales with its depth, not its distance), its power of two; at no depth (a box reaching
     // the eye's plane, or none), the finest there is, which meshes at the floor.
     let level = |b: &Body| {
-        let distance = b.bounds.map_or(0.0, |bounds| depth_of_box(camera, bounds));
-        half_pixel_at(camera, height, distance)
+        let depth = b.bounds.map_or(0.0, |bounds| depth_of_box(camera, bounds));
+        half_pixel_at(camera, height, depth)
             .and_then(mesh_level)
             .unwrap_or(f64::MIN_POSITIVE)
     };
