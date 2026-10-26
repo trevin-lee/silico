@@ -4080,6 +4080,43 @@ mod tests {
     }
 
     #[test]
+    fn a_fresh_recompute_of_another_document_leaves_the_profiles_kept_for_the_one_before() {
+        // Reading nothing kept isn't clearing it: the padded document's profile, made by a
+        // recompute that reads what's kept, is the engine's still after a fresh recompute of
+        // a box (the two published models' plans are kept), and the next recompute of the
+        // padded document takes it, the same profile, not one made again.
+        let padded =
+            Arc::new(Checked::new(crate::document::read(PADDED.as_bytes()).unwrap()).unwrap());
+        let block = Arc::new(
+            Checked::new(
+                crate::document::read(
+                    br#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#,
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap())
+            .with_sketches(crate::fake::FakeSketches::new());
+        let profile = |engine: &Recompute<crate::fake::FakeKernel>| {
+            let state = lock(&engine.engine.state);
+            let profiles: Vec<Arc<Profile>> = state
+                .profiles
+                .values()
+                .map(|profile| Arc::clone(profile.as_ref().unwrap()))
+                .collect();
+            assert_eq!(profiles.len(), 1);
+            Arc::clone(&profiles[0])
+        };
+        published(engine.start(Arc::clone(&padded)));
+        let made = profile(&engine);
+        published(engine.start_fresh(Arc::clone(&block)));
+        assert!(Arc::ptr_eq(&profile(&engine), &made));
+        published(engine.start(Arc::clone(&padded)));
+        assert!(Arc::ptr_eq(&profile(&engine), &made));
+    }
+
+    #[test]
     fn a_superseded_solve_is_left_only_what_remains_of_its_grace() {
         // Started 1 ms ago, superseded now: it may run on for at most the 9 ms left of
         // SKETCH_STOP_AFTER's 10, not stopped yet. (Had this thread stalled past the

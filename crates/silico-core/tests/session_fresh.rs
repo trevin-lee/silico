@@ -484,3 +484,59 @@ fn cache_clear_names_the_directory_as_the_sessions_path_does() {
         }
     );
 }
+
+#[test]
+fn a_fresh_check_clears_nothing_kept_on_disk_or_in_its_engine() {
+    // The pad's prism is refused for its values (`kernel_failed`): a refusal the engine
+    // keeps and the disk never does, so only the engine can spare the kernel it; and the
+    // sketch's solve is kept only in the engine too. The faces, the box, and the ball are
+    // kept on disk.
+    let f = fixture();
+    f.kernel.refuse(|op| {
+        (op.name() == "Prism").then(|| {
+            silico_core::Error::new(ErrorCode::KernelFailed, "OCCT couldn't sweep the face")
+        })
+    });
+    let (padded, ball) = (document(&[PADDED, BLOCK]), document(&[BALL]));
+    let refused = vec![(ErrorCode::KernelFailed, Some("p0000001".to_owned()))];
+    let a = f.open("a.silico", &padded);
+    let b = f.open("b.silico", &ball);
+    let start = f.mark();
+    assert_eq!(problems(&f.check(&a)), refused);
+    assert_eq!(problems(&f.check(&b)), []);
+    assert_eq!(
+        f.made_since(start),
+        (vec!["MakeBox", "MakeFaces", "MakeSphere", "Prism"], 2)
+    );
+    assert_eq!(f.solved_since(start), 1);
+    // In a transaction, so its edits are rebuilt only when read: a holds the ball, checked
+    // fresh; its engine has published the padded document and the ball, the two models it
+    // keeps results for.
+    assert!(answer(f.sessions.begin(&a)).result.is_ok());
+    let revision = f.sessions.status(&a).session.unwrap().revision;
+    let replaced = answer(f.sessions.replace_text(&a, revision, ball.clone()));
+    assert!(replaced.result.is_ok(), "{replaced:?}");
+    let fresh = f.mark();
+    assert_eq!(problems(&f.fresh(&a)), []);
+    assert_eq!(f.made_since(fresh), (vec!["MakeSphere"], 1));
+    // The disk keeps what every session wrote: a session of its own on the ball, and one on
+    // the padded document, take every entry there (but the pad's refusal, never on disk,
+    // and the sketch's solve).
+    let c = f.open("c.silico", &ball);
+    let d = f.open("d.silico", &padded);
+    let other = f.mark();
+    assert_eq!(problems(&f.check(&c)), []);
+    assert_eq!(problems(&f.check(&d)), refused);
+    assert_eq!(f.made_since(other), (vec!["Prism"], 0));
+    assert_eq!(f.solved_since(other), 1);
+    // And a's engine keeps what it built of the padded document: back to it, nothing is
+    // asked of the kernel or the solver, the pad's refusal and the solve kept in memory.
+    let revision = f.sessions.status(&a).session.unwrap().revision;
+    let back = answer(f.sessions.replace_text(&a, revision, padded.clone()));
+    assert!(back.result.is_ok(), "{back:?}");
+    let kept = f.mark();
+    assert_eq!(problems(&f.check(&a)), refused);
+    assert_eq!(f.made_since(kept), (vec![], 0));
+    assert_eq!(f.solved_since(kept), 0);
+    assert!(answer(f.sessions.rollback(&a)).result.is_ok());
+}
