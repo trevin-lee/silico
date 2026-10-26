@@ -1,0 +1,201 @@
+Subject: Modeling Algorithms - BRepGProp_Gauss refines U to the requested precision, as it refines L
+Upstream: https://github.com/Open-Cascade-SAS/OCCT/issues/1675 (BRepGProp_Gauss never refines U; a PR needs OCCT's CLA)
+Applies to: OCCT V7_9_3, after 0003 (which changes BRepGProp_Face.cxx only; this patch is
+     against the pinned BRepGProp_Gauss.hxx and BRepGProp_Gauss.cxx).
+Why: BRepGProp_Gauss::Compute with an Eps (BRepGProp::VolumeProperties and SurfaceProperties
+     with an eps, Silico's precise measure) never refines U: EpsU starts at 0 and is set only
+     in a branch the U loop can't reach, so the loop ends after its first pass, and U is
+     integrated once, at SIntOrder(eps) points on each span UKnots gives. U's error is also
+     left out of the estimate (ErrUL is set only on the first L order's pass). So an
+     extruded two-span B-spline measured 9.4e-4 low and its swept face's area 0.27% high,
+     a slanted prism of a one-span B-spline (the stress test's) 5.2% low in area, B-spline
+     surfaces' areas up to about 1e-5 off, and one NIST part's volume 3.6e-5 off, each
+     with an estimate of about 1e-16. This patch computes U's error on both L orders'
+     passes, refreshes it on every U pass, and sets EpsU once, at the end of the first
+     pass, as EpsL is, so U subdivides until it meets eps or the subdivision cap, whose
+     branch (EpsU = ErrorU, break) ends it. Setting EpsU alone isn't enough: U would refine
+     on the first L order's pass only, and the two L orders would disagree by U's error.
+     U's tolerance is the requested precision of each strip's magnitude, 0.9 * eps * M,
+     where M is the first pass's integral of the absolute values of the volume element's
+     terms (|x xn| + |y yn| + |z zn|) / 3, and for areas the strip itself (its terms are
+     w |n|, never negative). M is the strip's value wherever its terms don't cancel; where
+     they do (a face whose plane holds the point the volume is integrated about, the mean
+     of the shape's vertices) the strip's value is round-off and no scale, and a tolerance
+     relative to it took U to its cap at every L point (a 60x60-span planar B-spline face
+     0.25 s -> 59 s). A face whose initial spans already reach the subdivision cap (1953
+     and more) gets no U tolerance and is integrated as before, bit for bit, where a
+     refinement past the cap ran off OCCT's arrays; and none where the computation isn't
+     verified (a negative Eps: estimate, don't refine), as L's loop has it. U's interval to
+     split, and its error, are the largest of the current strip's intervals only: the error
+     vector is cleared to each strip's own cap, so a search of the whole vector found a
+     wider earlier strip's stale errors past it and split intervals the strip doesn't have
+     (a triangle-trimmed rough B-spline face measured worse than unpatched, and a trimmed
+     1000-span one took past 60 s, where it takes 1 s unpatched and about 5 s with this
+     patch). The magnitude reaches
+     computeVInertiaOfElementaryPart through a pointer defaulting to NULL, so the default
+     integration (Compute without an Eps, FreeCAD's), a different function, is unchanged
+     to the bit.
+Moves: tests/determinism/oracle-reference.json's summary hashes of 113 of its cases (151
+     with Silico's measure about the shape's box centre, bridge.cpp, which moves 100; and 2
+     cases #168 added, barrels revolved across angle 0, and slot_plate's from #168's hash:
+     153 in all; the list is the diff of that file in the commit that re-records it),
+     re-recorded with the maintainer's approval (2026-10-26): volumes by at most 1.8e-13
+     relative, areas not at all, centres of mass by at most 4.6e-10 of the shape's size; not their measures, B-reps, meshes,
+     histories, or topologies. No committed fingerprint (every golden and committed
+     document checks and formats unchanged), and not the stress reference (default
+     integration). Re-measured on this patch, with its search of only the strip's own
+     intervals (2026-10-25).
+Drop when: an OCCT release refines U in BRepGProp_Gauss::Compute's Eps path (check that
+     EpsU is set by the end of the U loop's first pass, so the loop can go on), or when
+     extruded_bsplines.rs passes with the patch removed; and only once
+     adversarial_measure_refine_u.rs's tests in time and at the cap (its faces through the
+     vertex mean, its rough faces of 1952, 1953, and 2000 spans, and its triangles) pass
+     on that release too.
+
+--- a/src/BRepGProp/BRepGProp_Gauss.hxx
++++ b/src/BRepGProp/BRepGProp_Gauss.hxx
+@@ -206,7 +206,8 @@
+                                        const Standard_Real       theWeight,
+                                        const Standard_Real       theCoeff[],
+                                        const Standard_Boolean    theIsByPoint,
+-                                       BRepGProp_Gauss::Inertia& theOutInertia);
++                                       BRepGProp_Gauss::Inertia& theOutInertia,
++                                       Standard_Real*            theOutMagnitude = NULL);
+ 
+   void computeSInertiaOfElementaryPart(const gp_Pnt&             thePoint,
+                                        const gp_Vec&             theNormal,
+--- a/src/BRepGProp/BRepGProp_Gauss.cxx
++++ b/src/BRepGProp/BRepGProp_Gauss.cxx
+@@ -119,6 +119,24 @@
+ 
+   return theA * theB;
+ }
++
++// The index of the largest of theVector's values from its lower bound to theUpper, the first
++// on ties, as math_Vector::Max takes over the whole vector: the U loop searches only the
++// current strip's intervals, since the vector keeps a wider earlier strip's past them.
++static Standard_Integer MaxIndex(const math_Vector& theVector, const Standard_Integer theUpper)
++{
++  Standard_Integer anIndex = 0;
++  Standard_Real    aMax    = RealFirst();
++  for (Standard_Integer i = theVector.Lower(); i <= theUpper; ++i)
++  {
++    if (theVector(i) > aMax)
++    {
++      aMax    = theVector(i);
++      anIndex = i;
++    }
++  }
++  return anIndex;
++}
+ } // namespace
+ 
+ //=================================================================================================
+@@ -261,7 +279,8 @@
+                                                       const Standard_Real       theWeight,
+                                                       const Standard_Real       theCoeff[],
+                                                       const Standard_Boolean    theIsByPoint,
+-                                                      BRepGProp_Gauss::Inertia& theOutInertia)
++                                                      BRepGProp_Gauss::Inertia& theOutInertia,
++                                                      Standard_Real*            theOutMagnitude)
+ {
+   Standard_Real x = thePoint.X() - theLocation.X();
+   Standard_Real y = thePoint.Y() - theLocation.Y();
+@@ -280,6 +299,10 @@
+ 
+     Standard_Real dv = x * xn + y * yn + z * zn; // xyz  = x * y * z;
+     theOutInertia.Mass += dv / 3.0;              // Ixyi += zn * xyz;
++    // The magnitude of the mass's terms: the mass itself where none cancels, the scale of
++    // its round-off where they do (a face through theLocation).
++    if (theOutMagnitude)
++      *theOutMagnitude += (Abs(x * xn) + Abs(y * yn) + Abs(z * zn)) / 3.0;
+     theOutInertia.Ix += 0.25 * x * dv;           // Iyzi += xn * xyz;
+     theOutInertia.Iy += 0.25 * y * dv;           // Ixzi += yn * xyz;
+     theOutInertia.Iz += 0.25 * z * dv;           // xi = x * x * x * xn / 3.0;
+@@ -307,6 +330,10 @@
+     Standard_Real dv = s * d1;
+ 
+     theOutInertia.Mass += dv;
++    if (theOutMagnitude)
++      *theOutMagnitude += (Abs(xn * theCoeff[0]) + Abs(yn * theCoeff[1]) + Abs(zn * theCoeff[2]))
++                          * (Abs(theCoeff[0] * x) + Abs(theCoeff[1] * y) + Abs(theCoeff[2] * z)
++                             + Abs(theCoeff[3]));
+     theOutInertia.Ix += (x - (theCoeff[0] * d1 * 0.5)) * dv;
+     theOutInertia.Iy += (y - (theCoeff[1] * d1 * 0.5)) * dv;
+     theOutInertia.Iz += (z - (theCoeff[2] * d1 * 0.5)) * dv;
+@@ -730,12 +757,16 @@
+                 BRepGProp_Gauss::InitMass(0.0, 1, UMaxSubs, anInertiaU);
+                 BRepGProp_Gauss::Init(ErrU, 0.0, 1, UMaxSubs);
+                 ErrorU = 0.0;
++                // The strip's magnitude over its first pass: U's tolerance is the requested
++                // precision of it, as L's is of the face's value.
++                Standard_Real aStripMag = 0.0;
+ 
+                 do
+                 { // while: U
+                   if (++JU > iUSubEnd)
+                   {
+-                    URange[0] = IU = ErrU->Max();
++                    // Split the largest error of the strip's intervals so far, 1 to JU - 1.
++                    URange[0] = IU = MaxIndex(*ErrU, JU - 1);
+                     URange[1]      = JU;
+ 
+                     U1->Value(JU) = (U1->Value(IU) + U2->Value(IU)) * 0.5;
+@@ -769,7 +800,8 @@
+                       BRepGProp_Gauss::Inertia aLocal[2];
+ 
+                       Standard_Integer       iUS     = URange[kU];
+-                      const Standard_Integer aLength = iGLEnd - iGL;
++                      const Standard_Integer aLength = iGLEnd;
++                      Standard_Real          aMag[2] = {0.0, 0.0};
+ 
+                       const Standard_Real um = 0.5 * (U2->Value(iUS) + U1->Value(iUS));
+                       const Standard_Real ur = 0.5 * (U2->Value(iUS) - U1->Value(iUS));
+@@ -791,7 +823,8 @@
+                                                             w,
+                                                             theCoeff,
+                                                             theIsByPoint,
+-                                                            aLocal[iGU]);
++                                                            aLocal[iGU],
++                                                            &aMag[iGU]);
+                           }
+                           else
+                           {
+@@ -820,6 +853,13 @@
+                         anUI.Izz = mult(aLocal[0].Izz, ur);
+                       }
+ 
++                      if (kUEnd == 1)
++                        aStripMag += mult(myType == Vinert ? aMag[0] : aLocal[0].Mass, ur);
++
++                      // U's error, on every L order's pass.
++                      if (iGLEnd == 2)
++                        ErrU->Value(iUS) = mult(Abs(aLocal[1].Mass - aLocal[0].Mass), ur);
++
+                       if (iGL > 0)
+                         continue;
+ 
+@@ -862,10 +902,20 @@
+                     }
+                   }
+ 
+-                  if (JU == iUSubEnd)
++                  if (JU >= iUSubEnd)
+                   {
+-                    kUEnd  = 2;
+-                    ErrorU = ErrU->Value(ErrU->Max());
++                    if (JU == iUSubEnd)
++                    {
++                      // The first pass ends: U's tolerance, set once as L's is, where the
++                      // computation is verified and the initial spans are under the cap
++                      // (none, and no refinement, where they already reach it).
++                      kUEnd = 2;
++                      EpsU  = (isVerifyComputation && iUSubEnd < UMaxSubs)
++                                ? 0.9 * aStripMag * anEpsilon
++                                : 0.0;
++                    }
++                    // The largest error of the strip's intervals, 1 to JU.
++                    ErrorU = ErrU->Value(MaxIndex(*ErrU, JU));
+                   }
+                 } while ((ErrorU - EpsU > 0.0 && EpsU != 0.0) || kUEnd == 1);
+ 

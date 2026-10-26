@@ -5,6 +5,7 @@
 //! a closed form or FreeCAD's (named where it's used).
 
 use super::close;
+use super::geometry::{cross, dot, norm};
 use super::numbers;
 
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -39,14 +40,6 @@ fn described(shape: &Shape) -> Description {
     let d = describe_whole(shape).unwrap();
     d.validate(1).unwrap();
     d
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn norm(a: [f64; 3]) -> f64 {
-    libm::sqrt(dot(a, a))
 }
 
 fn assert_point(what: &str, got: [f64; 3], want: [f64; 3], tolerance: f64) {
@@ -716,14 +709,6 @@ fn direction(polar: f64, azimuth: f64) -> [f64; 3] {
     [sp * libm::cos(azimuth), sp * libm::sin(azimuth), cp]
 }
 
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
 /// A convex polygon of `n` corners on a circle of radius `r` about `origin`, in the plane
 /// of normal `n̂`, counterclockwise seen from its tip.
 fn polygon(origin: [f64; 3], normal: [f64; 3], r: f64, corners: usize, turn: f64) -> Profile {
@@ -928,25 +913,24 @@ fn bsplines_beziers_extrusions_and_revolutions_are_each_their_kind_with_their_po
     }
     // The ruled surface is the cubic B-spline (3.2682882396736437 long, FreeCAD's Edge.Length,
     // which an independent Gauss integration agrees with to 2.5e-13) extruded 2 at right
-    // angles to its plane: 2 × that = 6.536576479347287 by hand. OCCT gives
-    // 6.53657440325774 either way it integrates, 3.2e-7 short, relatively: its wrong answer, as the
-    // extruded face's below. Right, or that wrong answer.
-    let ruled = d.faces[0].area;
-    assert!(
-        (ruled - 2.0 * 3.2682882396736437).abs() < 1e-9 * ruled
-            || (ruled - 6.53657440325774).abs() < 1e-12,
-        "{ruled}"
+    // angles to its plane: 2 × that = 6.536576479347287 by hand. Before patch 0004, OCCT's
+    // precise integration gave 6.53657440325774, 3.2e-7 short (docs/ports/measure.md).
+    assert_close(
+        "the ruled face's area",
+        d.faces[0].area,
+        2.0 * 3.268_288_239_673_643_7,
+        1e-12,
     );
-    // The extruded B-spline's is, by hand, its curve's length times the 2 it's extruded:
-    // 2 × 4.40405587355 = 8.8081117471. OCCT's precise integration (to 1e-9, saying it got
-    // to 2e-16) gives 8.83202504977072, 0.27% over, and its default one (FreeCAD's) gives
-    // 8.808420588300923: OCCT's wrong answer, accepted as FreeCAD accepts OCCT's
-    // (docs/design/m4.4-describe.md, Known wrong results). Right, or that wrong answer.
-    let extruded = d.faces[2].area;
-    assert!(
-        (extruded - 2.0 * 4.40405587355).abs() < 1e-9 * extruded
-            || (extruded - 8.83202504977072).abs() < 1e-12,
-        "{extruded}"
+    // The extruded B-spline's is, by hand, its curve's length (4.4040558735524487, a
+    // Gauss–Legendre integration per knot span, agreeing with FreeCAD's Edge.Length) times
+    // the 2 it's extruded. Before patch 0004, OCCT's precise integration gave
+    // 8.83202504977072, 0.27% over (docs/ports/measure.md); extruded_bsplines.rs pins it
+    // and the fixture's whole prism.
+    assert_close(
+        "the extruded B-spline's area",
+        d.faces[2].area,
+        2.0 * 4.404_055_873_552_449,
+        1e-12,
     );
     assert_eq!(
         faces,
@@ -1048,36 +1032,6 @@ fn offsets_parabolas_and_hyperbolas_are_each_their_kind() {
     assert_eq!(d.edges[4].curve, EdgeCurve::Parabola);
     assert_eq!(d.edges[5].curve, EdgeCurve::Hyperbola);
     assert_eq!(d.edges[6].curve, EdgeCurve::Offset);
-}
-
-#[test]
-fn an_extruded_bsplines_volume_is_right_or_occts_known_wrong_answer() {
-    // extruded_bspline.brep (the fixtures' README): curves_and_surfaces.brep's five-pole
-    // cubic, closed by its chord and extruded 2 along +z, a valid solid. Its cap's area is
-    // 1.9 by Green's theorem (Gauss–Legendre per knot span, exact for the cubic), so its
-    // volume is 3.8 by hand. OCCT's precise integration (to 1e-9, estimating its error at
-    // 3.5e-16) gives 3.7964232643296967, 9.4e-4 low; its default (FreeCAD's Shape.Volume)
-    // gives 3.7998345742369399, also low (docs/ports/measure.md, Known wrong results). Right,
-    // or that wrong answer.
-    let shape = from_text_brep(&fixture("extruded_bspline.brep")).unwrap();
-    let s = summarize(&shape).unwrap();
-    assert!(s.valid);
-    // Two caps, the extruded cubic, and the extruded chord, as FreeCAD 1.1.3 counts them.
-    assert_eq!((s.faces, s.edges, s.vertices), (4, 6, 4));
-    // Its area by hand: two caps of 1.9, the chord's face 4 × 2, and the cubic's length
-    // (4.404055873552449, FreeCAD's Edge.Length) × 2: 20.6081117471049. OCCT gives
-    // 20.632025049770718, its extruded face's wrong area (the test above). Right, or that.
-    assert!(
-        (s.area - 20.6081117471049).abs() < 1e-9 * s.area
-            || (s.area - 20.632025049770718).abs() < 1e-12,
-        "{}",
-        s.area
-    );
-    assert!(
-        (s.volume - 3.8).abs() < 1e-9 * 3.8 || (s.volume - 3.7964232643296967).abs() < 1e-12,
-        "{}",
-        s.volume
-    );
 }
 
 // ---------------------------------------------------------------------------------------
