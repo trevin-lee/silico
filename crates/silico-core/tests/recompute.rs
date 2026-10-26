@@ -254,30 +254,108 @@ fn independent_branches_run_at_once() {
     assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
 }
 
+/// Polls `progress` until its whole count is `want`, for at most [`WAIT`].
+#[track_caller]
+fn until_counted(progress: &silico_core::recompute::StepCounter, want: &StepCount) {
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        let now = progress.now();
+        if now == *want {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{now:?}, not {want:?}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// The example's cylinders held until the hold is dropped.
+fn hold_cylinders(engine: &Recompute<FakeKernel>) -> silico_core::fake::Hold {
+    engine
+        .kernel()
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. })))
+}
+
 #[test]
 fn a_recompute_counts_its_steps_names_the_one_running_and_ends_with_all_done() {
     // The example's steps, by hand: the block at the origin (one), the pin at (20, 10, -1)
     // (its cylinder and its move: two), and the hole cut (one): four. The pin's cylinder
     // held: the block's step settles; the move and the cut wait on the cylinder.
     let engine = engine(2);
-    let hold = engine
-        .kernel()
-        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. })));
+    let hold = hold_cylinders(&engine);
     let run = engine.start(checked(EXAMPLE));
     let progress = run.progress();
-    let deadline = std::time::Instant::now() + WAIT;
-    while progress.now().done < 1 {
-        assert!(std::time::Instant::now() < deadline, "{:?}", progress.now());
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert_eq!(
-        progress.now(),
-        StepCount {
+    until_counted(
+        &progress,
+        &StepCount {
             done: 1,
             steps: 4,
             running: Some("a91cw0de cylinder".to_owned()),
             ended: false,
-        }
+        },
+    );
+    hold.release();
+    assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
+    let all_done = StepCount {
+        done: 4,
+        steps: 4,
+        running: None,
+        ended: true,
+    };
+    assert_eq!(progress.now(), all_done);
+    // Again, every step kept: all four settled before any runs.
+    let again = engine.start(checked(EXAMPLE));
+    let progress = again.progress();
+    assert!(matches!(again.wait().unwrap(), RunOutcome::Published(_)));
+    assert_eq!(progress.now(), all_done);
+    // A thicker pin, its cylinder held: the block's step is kept, settled before any runs,
+    // so one is done while the cylinder is held, though the block never ran.
+    let hold = hold_cylinders(&engine);
+    let thicker = engine.start(example_with(
+        BLOCK,
+        r#""position": [20, 10, -1], "radius": 3, "height": 12"#,
+    ));
+    let progress = thicker.progress();
+    until_counted(
+        &progress,
+        &StepCount {
+            done: 1,
+            steps: 4,
+            running: Some("a91cw0de cylinder".to_owned()),
+            ended: false,
+        },
+    );
+    hold.release();
+    assert!(matches!(thicker.wait().unwrap(), RunOutcome::Published(_)));
+    assert_eq!(progress.now(), all_done);
+}
+
+#[test]
+fn steps_that_cant_run_are_counted_done_before_any_runs() {
+    // The pin's cylinder refused (kept), then the block made 41 long, its box held: the
+    // cylinder's step is kept, failed, and the move and the cut, which use it, can't run.
+    // All three are settled while the block's box is held: three of four done.
+    let engine = engine(2);
+    refuse_cylinders(&engine, ErrorCode::KernelFailed);
+    published(&engine, checked(EXAMPLE));
+    let hold = engine
+        .kernel()
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+    let run = engine.start(example_with(
+        r#""position": [0, 0, 0], "length": 41, "width": 20, "height": 10"#,
+        PIN,
+    ));
+    let progress = run.progress();
+    until_counted(
+        &progress,
+        &StepCount {
+            done: 3,
+            steps: 4,
+            running: Some("k7f2qx3m box".to_owned()),
+            ended: false,
+        },
     );
     hold.release();
     assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
@@ -290,11 +368,6 @@ fn a_recompute_counts_its_steps_names_the_one_running_and_ends_with_all_done() {
             ended: true,
         }
     );
-    // Again, every step kept: all four settled before any runs.
-    let again = engine.start(checked(EXAMPLE));
-    let progress = again.progress();
-    assert!(matches!(again.wait().unwrap(), RunOutcome::Published(_)));
-    assert_eq!((progress.now().done, progress.now().steps), (4, 4));
 }
 
 #[test]
