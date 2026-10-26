@@ -1,12 +1,11 @@
-//! The core's commands, which every client (the CLI, and MCP and the app as they arrive)
-//! runs, so each does exactly what the others do: a document's bytes through the gate
-//! ([`gate`]), rebuilt ([`rebuild`]), checked ([`check`]), written in canonical form with
-//! its fingerprints ([`format`]), and its outline ([`outline`]). [`check`] and [`format`]
-//! take a model, so a client with a live model (the app's, of the document it saves) uses
-//! that one, and one with none rebuilds it. Each gives structured errors; reading and
-//! writing files is the client's, or a session's ([`Sessions`]: a document held open between
+//! The core's commands, which every client (the CLI, MCP, and the app) runs, so each does
+//! exactly what the others do: a session's ([`Sessions`]: a document held open between
 //! commands, each session's commands run in turn on a thread of its own, each answered by a
-//! [`Running`] handle; docs/design/m4.1-command-api.md, section 3).
+//! [`Running`] handle; docs/design/m4.1-command-api.md, section 3), which reads and writes
+//! its document's file. Beneath them, for a caller with a document or a model of its own (a
+//! test, a tool on an engine it holds): a document's bytes through the gate ([`gate`]),
+//! rebuilt ([`rebuild`]), checked ([`check`]), written in canonical form with its
+//! fingerprints ([`format`]), and its outline ([`outline`]), each giving structured errors.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -264,8 +263,12 @@ pub fn rebuild<K: Kernel + 'static>(
 /// match (`Model::drift`), if any. A feature blocked by another's failure isn't a problem
 /// of its own (the failure at its root is). An error is a check that couldn't be done:
 /// the kernel failed in a way that says nothing about the document (a worker that crashed
-/// or hung, a shortage, a reply that couldn't be read), which a client reports as its own
-/// failure, not the document's.
+/// or hung, a shortage, a reply that couldn't be read), the first such fault met.
+///
+/// For a caller with a model of its own (a test, a tool rebuilding on an engine it holds).
+/// Every client of the command API checks through a session ([`Sessions::check`]), which
+/// gives a fault beside the document's problems rather than instead of them (decision 32);
+/// the CLI's `silico check` is one.
 pub fn check(model: &Model) -> Result<Problems, Error> {
     let _span = tracing::info_span!("check").entered();
     check_except(model, &BTreeSet::new(), Faults::Refuse)
@@ -275,7 +278,7 @@ pub fn check(model: &Model) -> Result<Problems, Error> {
 /// section 6): one that says nothing about the document, so is never one of its problems.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Faults {
-    /// The command's failure, as [`check`] and [`format`] give it: the first fault met.
+    /// The function's failure, as [`check`] and [`format`] give it: the first fault met.
     Refuse,
     /// Set aside: the document's own problems given without it, and a save made around it,
     /// as a session's commands do, which give the fault once, beside their result, in the
@@ -339,10 +342,11 @@ pub struct Formatted {
 }
 
 /// The model's document in canonical form with each feature's fingerprint as the model
-/// rebuilt it and each sketch as it solved (`Model::saved`): what `silico fmt` writes, and a
-/// session's `format` with no features named; or, if its canonical text would be too long,
-/// that problem. An error is a format that couldn't be done, as for [`check`]: nothing
-/// should be written then.
+/// rebuilt it and each sketch as it solved (`Model::saved`): the text a session's `format`
+/// with no features named writes (what `silico fmt` runs); or, if its canonical text would
+/// be too long, that problem. An error is a format that couldn't be done, the first kernel
+/// fault met, as for [`check`], where the session's `format` saves around it (decision 32).
+/// For a caller with a model of its own, as [`check`] is.
 pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
     let _span = tracing::info_span!("format").entered();
     let every = model

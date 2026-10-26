@@ -288,6 +288,14 @@ impl Error {
         self
     }
 
+    /// The error about no parameter: for a client that has no request whose field it could
+    /// name (the CLI, whose `path` is the file each of its lines already names).
+    #[must_use]
+    pub fn without_parameter(mut self) -> Self {
+        self.0.parameter = None;
+        self
+    }
+
     /// The underlying cause, such as the kernel's own message.
     #[must_use]
     pub fn with_cause(mut self, cause: impl Into<String>) -> Self {

@@ -569,6 +569,73 @@ impl crate::kernel::Kernel for PoolClient {
     }
 }
 
+/// A kernel pool that couldn't be started ([`KernelPool::start`]'s error: its worker isn't
+/// where Silico looks, say), standing in for one: every request fails at once with why, as
+/// a request whose worker couldn't be started fails. So a client that couldn't start its
+/// pool still runs, on [`Sessions`](crate::command::Sessions), what needs no kernel (the
+/// gate, an outline), and each rebuild that needs one meets that error as the kernel fault
+/// it is, said once beside the document's problems (docs/design/m4.1-command-api.md,
+/// section 6). Each client of it ([`Clients::client`]) has generations of its own, as a
+/// pool's clients do.
+#[derive(Clone)]
+pub struct Unstarted {
+    /// Why the pool couldn't be started: a kernel fault (`worker_unavailable`, say).
+    why: Error,
+    generation: Arc<AtomicU64>,
+}
+
+impl Unstarted {
+    /// A stand-in for a pool that couldn't be started, `why` saying why.
+    pub fn new(why: Error) -> Self {
+        Unstarted {
+            why,
+            generation: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl Clients for Unstarted {
+    type Client = Unstarted;
+
+    fn client(&self) -> Unstarted {
+        Unstarted::new(self.why.clone())
+    }
+}
+
+impl crate::kernel::Kernel for Unstarted {
+    /// None that a kept result could carry: nothing is ever built on it.
+    fn identity(&self) -> &str {
+        "unstarted"
+    }
+
+    fn generation(&self) -> Generation {
+        Generation(self.generation.load(Ordering::SeqCst))
+    }
+
+    fn advance(&self, generation: Generation) {
+        self.generation.fetch_max(generation.0, Ordering::SeqCst);
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: Generation,
+        request: KernelRequest<T>,
+    ) -> Pending<T> {
+        let (outcome, pending) = mpsc::sync_channel(1);
+        let _ = outcome.send(if generation < self.generation() {
+            Outcome::Superseded
+        } else {
+            Outcome::Done(Err(self.why.clone()))
+        });
+        Pending::new(
+            request.name(),
+            "unstarted kernel pool",
+            ClientId::KERNEL,
+            pending,
+        )
+    }
+}
+
 impl Drop for PoolClient {
     fn drop(&mut self) {
         let _span = tracing::debug_span!("retire_client", client = self.id.number()).entered();
@@ -1761,5 +1828,51 @@ mod tests {
             Some(false),
             "Some(true): freed under the lock; None: never freed"
         );
+    }
+
+    #[test]
+    fn an_unstarted_pool_fails_each_request_with_why_and_supersedes_by_client() {
+        use crate::kernel::{Clients as _, Kernel as _, KernelRequest, Primitive};
+        use crate::{Error, ErrorCode};
+
+        let why = Error::new(ErrorCode::WorkerUnavailable, "no kernel worker here");
+        let pool = super::Unstarted::new(why.clone());
+        let request = || {
+            KernelRequest::make(Primitive::Box {
+                dx: 1.0,
+                dy: 1.0,
+                dz: 1.0,
+            })
+            .unwrap()
+        };
+        // Each request fails with why, at once, whatever it asks.
+        match pool.submit(Generation(0), request()).wait() {
+            Outcome::Done(Err(error)) => assert_eq!(error, why),
+            other => panic!("{other:?}"),
+        }
+        // A client's generations are its own: one advanced past a request's supersedes it,
+        // and leaves the pool's and another client's as they were.
+        let one = pool.client();
+        let two = pool.client();
+        one.advance(Generation(3));
+        assert_eq!(
+            (one.generation(), two.generation(), pool.generation()),
+            (Generation(3), Generation(0), Generation(0))
+        );
+        assert!(matches!(
+            one.submit(Generation(2), request()).wait(),
+            Outcome::Superseded
+        ));
+        assert!(matches!(
+            one.submit(Generation(3), request()).wait(),
+            Outcome::Done(Err(_))
+        ));
+        assert!(matches!(
+            two.submit(Generation(0), request()).wait(),
+            Outcome::Done(Err(_))
+        ));
+        // An older generation is no advance.
+        one.advance(Generation(1));
+        assert_eq!(one.generation(), Generation(3));
     }
 }
