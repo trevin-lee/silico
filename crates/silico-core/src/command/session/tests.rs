@@ -77,21 +77,26 @@ fn a_revisions_model_is_its_own_and_a_late_one_of_an_older_never_replaces_it() {
     assert_eq!(
         built_from(
             &session
-                .model(&probe(), Revision::OPENED, &checked(BOX))
+                .model(&probe(), Revision::OPENED, &checked(BOX), &Arc::default())
                 .unwrap()
         ),
         "k7f2qx3m"
     );
     // Revision 2's read is never revision 1's model, published as it is.
     let second = session
-        .model(&probe(), Revision::OPENED.next().unwrap(), &checked(SPHERE))
+        .model(
+            &probe(),
+            Revision::OPENED.next().unwrap(),
+            &checked(SPHERE),
+            &Arc::default(),
+        )
         .unwrap();
     assert_eq!(built_from(&second), "a91cw0de");
     // A model of revision 1 arriving late (another engine's, here) leaves 2's in place.
     let other = Recompute::new(kernel.client());
     watch(
         &Arc::downgrade(&session),
-        &Label::new(Revision::OPENED),
+        &Label::new(Revision::OPENED, Arc::default()),
         other.start(checked(BOX)),
     );
     let published = lock(&session.rebuilds).published.clone().unwrap();
@@ -101,7 +106,12 @@ fn a_revisions_model_is_its_own_and_a_late_one_of_an_older_never_replaces_it() {
     let mut rebuilds = lock(&session.rebuilds);
     assert!(
         !session
-            .start_unless_newer(&mut rebuilds, Revision::OPENED, &checked(BOX))
+            .start_unless_newer(
+                &mut rebuilds,
+                Revision::OPENED,
+                &checked(BOX),
+                &Arc::default()
+            )
             .unwrap()
     );
     assert_eq!(rebuilds.running(), None);
@@ -251,18 +261,28 @@ fn a_rebuild_is_refused_only_under_a_newer_revisions() {
     let _hold = kernel.hold(|_| true);
     let mut rebuilds = lock(&session.rebuilds);
     // Revision 2's rebuild running (as recorded): revision 1's isn't started under it.
-    rebuilds.running = Some(Label::new(Revision::OPENED.next().unwrap()));
+    rebuilds.running = Some(Label::new(Revision::OPENED.next().unwrap(), Arc::default()));
     assert!(
         !session
-            .start_unless_newer(&mut rebuilds, Revision::OPENED, &checked(BOX))
+            .start_unless_newer(
+                &mut rebuilds,
+                Revision::OPENED,
+                &checked(BOX),
+                &Arc::default()
+            )
             .unwrap()
     );
     assert_eq!(rebuilds.running(), Some(Revision::OPENED.next().unwrap()));
     // Its own revision's running: started (as a check after a fault starts it again).
-    rebuilds.running = Some(Label::new(Revision::OPENED));
+    rebuilds.running = Some(Label::new(Revision::OPENED, Arc::default()));
     assert!(
         session
-            .start_unless_newer(&mut rebuilds, Revision::OPENED, &checked(BOX))
+            .start_unless_newer(
+                &mut rebuilds,
+                Revision::OPENED,
+                &checked(BOX),
+                &Arc::default()
+            )
             .unwrap()
     );
     assert_eq!(rebuilds.running(), Some(Revision::OPENED));
@@ -281,7 +301,12 @@ fn a_superseded_rebuilds_watcher_leaves_the_newer_one_running() {
     let mut rebuilds = lock(&session.rebuilds);
     assert!(
         session
-            .start_unless_newer(&mut rebuilds, Revision::OPENED, &checked(BOX))
+            .start_unless_newer(
+                &mut rebuilds,
+                Revision::OPENED,
+                &checked(BOX),
+                &Arc::default()
+            )
             .unwrap()
     );
     drop(rebuilds);
@@ -290,7 +315,7 @@ fn a_superseded_rebuilds_watcher_leaves_the_newer_one_running() {
     let mut rebuilds = lock(&session.rebuilds);
     assert!(
         session
-            .start_unless_newer(&mut rebuilds, second, &checked(SPHERE))
+            .start_unless_newer(&mut rebuilds, second, &checked(SPHERE), &Arc::default())
             .unwrap()
     );
     assert_eq!(rebuilds.watchers.running.len(), 2);
@@ -305,7 +330,9 @@ fn a_superseded_rebuilds_watcher_leaves_the_newer_one_running() {
     drop(rebuilds);
     // Its model, when its sphere is let go, is revision 2's, from its one rebuild.
     spheres.release();
-    let model = session.model(&probe(), second, &checked(SPHERE)).unwrap();
+    let model = session
+        .model(&probe(), second, &checked(SPHERE), &Arc::default())
+        .unwrap();
     assert_eq!(built_from(&model), "a91cw0de");
     let published = lock(&session.rebuilds).published.clone().unwrap();
     assert_eq!(published.revision, second);
@@ -323,11 +350,15 @@ fn a_published_read_starts_its_revisions_rebuild_only_while_an_older_is_publishe
     let kernel = FakeKernel::new(1).unwrap();
     let (session, _jobs) = session(&kernel);
     let first = session
-        .model(&probe(), Revision::OPENED, &checked(BOX))
+        .model(&probe(), Revision::OPENED, &checked(BOX), &Arc::default())
         .unwrap();
     // At revision 1, with revision 1 published: that model, and nothing started.
     let read = session
-        .published_read(Revision::OPENED, &checked(BOX))
+        .published_read(
+            Revision::OPENED,
+            &checked(BOX),
+            &session.held.read().reaching(),
+        )
         .unwrap();
     assert_eq!(read.revision, Revision::OPENED);
     assert!(Arc::ptr_eq(&read.model, &first));
@@ -336,7 +367,11 @@ fn a_published_read_starts_its_revisions_rebuild_only_while_an_older_is_publishe
     // revision 2's rebuild started (held, so it's seen running).
     let _hold = kernel.hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
     let read = session
-        .published_read(Revision::OPENED.next().unwrap(), &checked(SPHERE))
+        .published_read(
+            Revision::OPENED.next().unwrap(),
+            &checked(SPHERE),
+            &session.held.read().reaching(),
+        )
         .unwrap();
     assert_eq!(read.revision, Revision::OPENED);
     assert!(Arc::ptr_eq(&read.model, &first));
@@ -359,7 +394,8 @@ fn a_rebuild_stopped_under_an_open_session_is_started_again() {
             .count()
     };
     std::thread::scope(|scope| {
-        let read = scope.spawn(|| session.model(&probe(), Revision::OPENED, &checked(BOX)));
+        let read = scope
+            .spawn(|| session.model(&probe(), Revision::OPENED, &checked(BOX), &Arc::default()));
         assert!(kernel.wait_running(1, WAIT));
         lock(&session.rebuilds).engine.cancel();
         // The box asked for again, by the read, still waiting.
@@ -402,6 +438,7 @@ fn a_published_read_never_gives_a_model_newer_than_the_sessions_revision() {
     lock(&session.rebuilds).published = Some(Published {
         revision: Revision::OPENED.next().unwrap(),
         model: newer,
+        reached: Arc::default(),
     });
     let read = sessions.published(&id);
     assert_eq!(read.result.unwrap_err().errors()[0], nothing_published(id));
@@ -1562,7 +1599,7 @@ fn a_rollback_restores_what_begin_saw_published_and_no_transaction_model_comes_a
     let other = Recompute::new(f.kernel.client());
     watch(
         &Arc::downgrade(&f.session()),
-        &Label::new(Revision(2)),
+        &Label::new(Revision(2), Arc::default()),
         other.start(checked(BOX)),
     );
     assert!(lock(&f.session().rebuilds).published.is_none());

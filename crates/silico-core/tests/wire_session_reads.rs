@@ -1053,3 +1053,55 @@ fn a_published_check_of_a_document_the_gate_refused_follows_the_published_rule()
     let current = answer(f.sessions.check_model(&s1(), ModelChoice::Current));
     assert_eq!(current.result.unwrap().total(), 1);
 }
+
+#[test]
+fn a_published_check_leaves_out_the_drift_its_own_revisions_edits_reached() {
+    // A box whose stored fingerprint is the fake kernel's, by formula: no drift as it is.
+    let stored = BOX.replace(
+        r#""height": 10}"#,
+        r#""height": 10, "fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#,
+    );
+    assert_ne!(stored, BOX);
+    let f = opened(&stored);
+    let length = |at: u64, value: &str| {
+        let set = answer(f.sessions.set_field(
+            &s1(),
+            revision(at),
+            id("k7f2qx3m"),
+            "length".to_owned(),
+            parsed(value),
+        ));
+        assert_eq!(set.session.unwrap().revision, revision(at + 1));
+    };
+    // Revision 2: the box made longer in a transaction, which reaches it, so its stored
+    // fingerprint, the shorter box's, isn't drift; its model published.
+    answer(f.sessions.begin(&s1())).result.unwrap();
+    length(1, "41");
+    let checked = answer(f.sessions.check(&s1()));
+    assert_eq!(checked.model.unwrap().revision, revision(2));
+    assert!(checked.result.unwrap().is_empty());
+    // Revision 3: the edit undone, so nothing is reached, its rebuild held by a current check.
+    length(2, "40");
+    let (hold, current) = f.running_held(|| f.sessions.check(&s1()));
+    // The published check reads revision 2's model, as revision 2's edits reached it: no
+    // drift, though nothing is reached now.
+    let published = answer(f.sessions.check_model(&s1(), ModelChoice::Published));
+    let model = published.model.as_ref().unwrap();
+    assert_eq!(
+        (model.revision, model.of),
+        (revision(2), ModelChoice::Published)
+    );
+    assert_eq!(published.session.as_ref().unwrap().revision, revision(3));
+    let problems = published.result.unwrap();
+    assert!(problems.is_empty(), "{:?}", problems.errors());
+    // The current check, released, is of revision 3: the box as stored, no drift.
+    hold.release();
+    let current = answer(current);
+    assert_eq!(current.model.as_ref().unwrap().revision, revision(3));
+    let problems = current.result.unwrap();
+    assert!(problems.is_empty(), "{:?}", problems.errors());
+    // And revision 3's model, published, checks as its own: still nothing reached, no drift.
+    let published = answer(f.sessions.check_model(&s1(), ModelChoice::Published));
+    assert_eq!(published.model.unwrap().revision, revision(3));
+    assert!(published.result.unwrap().is_empty());
+}

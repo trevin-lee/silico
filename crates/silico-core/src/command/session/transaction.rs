@@ -291,10 +291,19 @@ impl<C: Kernel + 'static> Session<C> {
                 rebuilds.engine.cancel();
             }
             rebuilds.ended = None;
+            // What the edits reach at the restored state: what they reached at `begin`.
+            let reached = || Arc::new(held.reaching().reach());
             match (kept.model, &*begun.gated) {
-                (Some(model), _) => rebuilds.published = Some(Published { revision, model }),
+                (Some(model), _) => {
+                    rebuilds.published = Some(Published {
+                        revision,
+                        model,
+                        reached: reached(),
+                    });
+                }
                 (None, Gated::Checked(checked)) if kept.started => {
-                    if let Err(problems) = self.start_unless_newer(&mut rebuilds, revision, checked)
+                    if let Err(problems) =
+                        self.start_unless_newer(&mut rebuilds, revision, checked, &reached())
                         && !self.closed()
                     {
                         // Started again by the next command that needs the model.
@@ -481,7 +490,9 @@ impl<C: Kernel + 'static> Session<C> {
             refused => return Err(refused.problems()),
         };
         let model = match through {
-            Through::Transaction => self.model(stop, revision, checked)?,
+            Through::Transaction => {
+                self.model(stop, revision, checked, &Arc::new(reach.clone()))?
+            }
             Through::Candidate => self.candidate_model(stop, revision, checked)?,
         };
         *read = Some(ModelRead::of(revision, ModelChoice::Current, &model));
@@ -602,7 +613,7 @@ impl<C: Kernel + 'static> Session<C> {
                 held.reaching(),
             )
         };
-        let reach = reaching.reach();
+        let reach = Arc::new(reaching.reach());
         let checked = match &*gated {
             Gated::Checked(checked) => checked,
             refused => return Err(refused.problems()),
@@ -612,7 +623,7 @@ impl<C: Kernel + 'static> Session<C> {
             None => None,
             Some(accept) => Some(named(document, accept)?),
         };
-        let model = self.model(stop, revision, checked)?;
+        let model = self.model(stop, revision, checked, &reach)?;
         *read = Some(ModelRead::of(revision, ModelChoice::Current, &model));
         // Each feature's drift, once: a feature edits reached isn't drift.
         let drift = model.drifted();
@@ -735,6 +746,8 @@ impl<C: Kernel + 'static> Session<C> {
             rebuilds.published = Some(Published {
                 revision: next,
                 model: Arc::new(model.rebound(Arc::clone(checked))),
+                // The saved revision's, its transaction ended: what's carried, and what uses it.
+                reached: Arc::new(held.reaching().reach()),
             });
         }
         Ok(gated)

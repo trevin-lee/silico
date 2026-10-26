@@ -1,6 +1,7 @@
 //! A session's IDs and revisions, what its responses say of it and of the model read, the
 //! handle a command answers through ([`Running`]), and each command's result.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
@@ -144,6 +145,7 @@ pub struct Read<'a, C> {
     pub(super) read: ModelRead,
     pub(super) stop: &'a Ticket,
     pub(super) kernel: &'a ReadClient<C>,
+    pub(super) reached: &'a BTreeSet<FeatureId>,
 }
 
 impl<C> Read<'_, C> {
@@ -155,6 +157,12 @@ impl<C> Read<'_, C> {
     /// Which model it is: the response's `model`.
     pub fn model_read(&self) -> &ModelRead {
         &self.read
+    }
+
+    /// What the session's edits reached at the model's revision (decision 28): the features
+    /// whose drift a check of the model doesn't say.
+    pub fn reached(&self) -> &BTreeSet<FeatureId> {
+        self.reached
     }
 
     /// Whether the read was cancelled (`cancel`, or its handle's [`Running::cancel`]): it
@@ -246,11 +254,13 @@ impl ModelChoice {
 /// same as its response's `model.revision`): the revision it was rebuilt from, or, after a
 /// rollback, the new revision whose state is the one it was rebuilt from (the design's
 /// section 4). What [`Sessions::published`] gives the app to draw, never waiting for a
-/// rebuild.
+/// rebuild. With it, what the session's edits reached at that revision (decision 28): the
+/// features whose drift a check of it doesn't say, since a commit writes their records anew.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Published {
     pub revision: Revision,
     pub model: Arc<Model>,
+    pub reached: Arc<BTreeSet<FeatureId>>,
 }
 
 /// A command running on its session's thread: wait for its answer, poll it, cancel it, or
