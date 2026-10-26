@@ -346,8 +346,9 @@ fn a_solver_given_back_while_another_session_starts_one_is_taken_not_started_aga
     clean(&answer(checking_p));
     clean(&answer(checking_q));
     assert_eq!(starts.load(Ordering::SeqCst), 2);
-    // o's and q's on the first, p's on the second.
-    assert_eq!((held.requests().len(), free.requests().len()), (2, 1));
+    // Three solves on the two: which one q's took depends on when it came (o's solver, given
+    // back while it waited, or p's, given back first on a slow machine), so only the total.
+    assert_eq!(held.requests().len() + free.requests().len(), 3);
 }
 
 #[test]
