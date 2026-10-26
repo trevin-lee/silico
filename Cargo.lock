@@ -5208,10 +5208,17 @@ name = "silico-render"
 version = "0.0.0"
 dependencies = [
  "glam",
+ "libm",
  "macaw",
+ "png",
  "pollster",
+ "proptest",
  "re_renderer",
+ "silico-core",
+ "silico-protocol",
+ "silico-worker",
  "smallvec",
+ "tracing",
  "wgpu",
 ]
 

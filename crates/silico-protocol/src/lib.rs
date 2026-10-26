@@ -17,6 +17,7 @@ mod history;
 mod primitive;
 mod profile;
 mod refusal;
+mod render;
 mod sketch;
 mod sweep;
 
@@ -53,6 +54,12 @@ pub use profile::{
 pub use refusal::{
     BrepDefect, ChamferKind, Described, DressingKind, EdgeTrouble, FACES_NAMED, HistoryDefect,
     OUT_OF_MEMORY, Operation, Refusal, Returned, Role, Trouble,
+};
+pub use render::{
+    Camera, EDGE_BIT, Frame, MAX_FIELD_OF_VIEW, MAX_RENDER_COORDINATE, MAX_RENDER_EDGES,
+    MAX_RENDER_FACES, MAX_RENDER_SIDE, MAX_RENDER_TRIANGLES, MIN_EYE_DISTANCE, MIN_FIELD_OF_VIEW,
+    MIN_UP_ACROSS_VIEW, MIN_VIEW_HEIGHT, MIN_VIEW_HEIGHT_OF_REACH, PixelId, Projection, RenderBody,
+    RenderScene,
 };
 pub use sketch::{
     Algorithm, DragBegin, Geometry, MAX_DRAG_UNKNOWNS, MAX_JACOBIAN_ENTRIES,
@@ -244,6 +251,9 @@ pub enum Op {
         tolerance: f64,
         force_face_deflection: bool,
     },
+    /// A scene drawn by the render worker, boxed, as it's every body's mesh. Replies with
+    /// [`Reply::Rendered`].
+    Render(Box<RenderScene>),
 }
 
 impl Op {
@@ -263,6 +273,7 @@ impl Op {
             Op::Describe { .. } => "Describe",
             Op::Distance { .. } => "Distance",
             Op::ExportMesh { .. } => "ExportMesh",
+            Op::Render(_) => "Render",
             Op::Solve(_) => "Solve",
             Op::DragBegin(_) => "DragBegin",
             Op::DragMove { .. } => "DragMove",
@@ -435,6 +446,13 @@ pub enum Reply {
     Distance(Distance),
     /// A shape's solids meshed for export ([`Op::ExportMesh`]), boxed, as it's many lists.
     ExportMesh(Box<ExportMesh>),
+    /// A scene drawn ([`Op::Render`]): the image, an 8-bit sRGB PNG, and the ID buffer, one
+    /// pair a pixel row by row from the top left, if the scene asked for it.
+    Rendered {
+        #[serde(with = "serde_bytes")]
+        png: Vec<u8>,
+        ids: Option<Vec<PixelId>>,
+    },
 }
 
 impl Reply {
@@ -449,6 +467,7 @@ impl Reply {
             Reply::Described { .. } => "Described",
             Reply::Distance(_) => "Distance",
             Reply::ExportMesh(_) => "ExportMesh",
+            Reply::Rendered { .. } => "Rendered",
             Reply::Solved(_) => "Solved",
             Reply::DragStarted { .. } => "DragStarted",
             Reply::Moved(_) => "Moved",
@@ -683,6 +702,10 @@ pub enum FailureKind {
     /// The worker ran short of something (memory): not the values' fault, so the same
     /// request may succeed later.
     ResourceExhausted,
+    /// The worker lacks what it needs to do any such operation on this machine (the render
+    /// worker, an adapter to draw on): not the values' fault, and it won't change by asking
+    /// again.
+    Unavailable,
 }
 
 /// A shape as it crosses the worker boundary: OCCT's binary B-rep (with its checksum), and

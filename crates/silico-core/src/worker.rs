@@ -94,14 +94,17 @@ pub enum WorkerKind {
     Kernel,
     /// PlaneGCS's (silico-sketch).
     Sketch,
+    /// re_renderer's, on lavapipe (silico-render).
+    Render,
 }
 
 impl WorkerKind {
-    /// As errors name it: "kernel worker", "sketch worker".
+    /// As errors name it: "kernel worker", "sketch worker", "render worker".
     pub fn noun(self) -> &'static str {
         match self {
             WorkerKind::Kernel => "kernel worker",
             WorkerKind::Sketch => "sketch worker",
+            WorkerKind::Render => "render worker",
         }
     }
 
@@ -110,6 +113,7 @@ impl WorkerKind {
         match self {
             WorkerKind::Kernel => "the kernel",
             WorkerKind::Sketch => "the sketch solver",
+            WorkerKind::Render => "the renderer",
         }
     }
 }
@@ -1616,6 +1620,14 @@ fn failure_error_with_edge_names(
             )
             .with_cause(why),
             silico_protocol::OUT_OF_MEMORY,
+        ),
+        FailureKind::Unavailable => (
+            Error::new(
+                ErrorCode::WorkerUnavailable,
+                format!("the {} can't do {op} on this machine", kind.noun()),
+            )
+            .with_cause(described.message),
+            "set up the machine as the cause says, or ask for something else",
         ),
         FailureKind::UnknownOp | FailureKind::Internal => (
             Error::new(
@@ -3142,6 +3154,31 @@ mod tests {
         assert!(
             ours.send_buffer_size().unwrap()
                 > socket2::SockRef::from(&default).send_buffer_size().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_render_worker_with_nothing_to_draw_on_is_unavailable_with_its_cause_and_advice() {
+        // Refusal::NoAdapter, a fault of the machine, not of the scene and not a bug in
+        // Silico: worker_unavailable, its words the cause, its suggestion the refusal's.
+        let failure = Failure::new(silico_protocol::Refusal::NoAdapter {
+            cause: "no CPU adapter; found [\"Apple M4 Pro\"]".to_owned(),
+        });
+        let e = failure_error_with_edge_names(WorkerKind::Render, "Render", failure, None);
+        assert_eq!(e.code(), ErrorCode::WorkerUnavailable, "{e:?}");
+        assert_eq!(
+            e.message(),
+            "the render worker can't do Render on this machine"
+        );
+        assert_eq!(
+            e.cause(),
+            Some(
+                "the render worker found nothing it may draw on: no CPU adapter; found [\"Apple M4 Pro\"]"
+            )
+        );
+        assert_eq!(
+            e.suggestion(),
+            Some("build Silico in its pixi environment, which brings Mesa's lavapipe")
         );
     }
 }

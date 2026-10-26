@@ -109,28 +109,20 @@ crates/silico-core/src/sketch.rs | moved | replace match guard s.form.value_text
 # PR 6, which adds edits, must test that the commit is refused, the edits stay held, and
 # the transaction stays open, and remove this line.
 crates/silico-core/src/command/session.rs | Session<C>::commit | replace match guard unchanged with true | #144
-crates/silico-render/src/probe.rs | front_of_a_box | replace + with * | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace < with <= | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace < with == | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace - with / | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace < with <= | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace < with == | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace - with / | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace || with && | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace > with == | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace > with >= | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace + with * | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace || with && | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace < with <= | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace < with == | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace - with / | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace || with && | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace > with == | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace > with >= | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace + with * | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace || with && | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace += with *= | #142
-crates/silico-render/src/probe.rs | front_of_a_box | replace += with -= | #142
-crates/silico-render/src/probe.rs |  | delete - | #142
-crates/silico-render/src/probe.rs |  | delete - | #142
-crates/silico-render/src/probe.rs |  | delete - | #142
+crates/silico-render/src/bin/silico-render-worker.rs | main | replace == with != | #147
+crates/silico-render/src/lib.rs | adapters | delete match arm wgpu::DeviceType::Cpu | #147
+crates/silico-render/src/lib.rs | adapters | delete match arm wgpu::DeviceType::DiscreteGpu | #147
+crates/silico-render/src/lib.rs | adapters | replace == with != | #147
+crates/silico-render/src/render.rs | Renderer::render | replace + with * | #147
+crates/silico-render/src/render.rs | Renderer::render | replace + with - | #147
+crates/silico-render/src/render.rs | Renderer::draw | delete ! | #147
+crates/silico-render/src/render.rs | Renderer::draw | delete field name from struct TargetConfiguration expression | #147
+crates/silico-render/src/render.rs | View::of | replace * with + | #147
+crates/silico-render/src/render.rs | View::of | replace * with / | #147
+crates/silico-render/src/render.rs | View::of | replace + with * | #147
+crates/silico-render/src/render.rs | View::light | replace > with >= | #147
+crates/silico-render/src/render.rs | edges | replace | with ^ | #147
+crates/silico-render/src/render.rs | read_back | replace && with || | #147
+crates/silico-render/src/render.rs | read_back | replace || with && | #147
+crates/silico-render/src/render.rs | read_back | delete ! | #147
+crates/silico-render/src/render.rs | read_back | replace || with && | #147

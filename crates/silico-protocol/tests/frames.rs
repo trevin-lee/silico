@@ -14,6 +14,7 @@ use silico_protocol::{
     Misbehavior, Op, Operation, OutOfTurn, Primitive, Profile, Refusal, Reply, Reported, Request,
     RequestId, Response, ShapeData, ShapeSummary, Topology, TraceId, write_message,
 };
+use silico_protocol::{Camera, EDGE_BIT, Projection, RenderBody, RenderScene};
 use silico_protocol::{Curve, Distance, FaceRegions, Region, SketchPlane};
 use silico_protocol::{Description, EdgeCurve, EdgeDescription, FaceDescription, Surface};
 
@@ -262,6 +263,33 @@ fn every_op() -> Vec<Op> {
                 index: 1,
             },
         },
+        Op::Render(Box::new(RenderScene {
+            bodies: vec![RenderBody {
+                body: u32::MAX,
+                mesh: Mesh {
+                    positions: vec![[-0.0, 1e-300, 1e6], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                    normals: vec![[0.0, 0.0, -1.0]; 3],
+                    triangles: vec![[0, 1, 2]],
+                    face_triangles: vec![1, 0],
+                    edge_points: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                    edge_point_counts: vec![2],
+                    valid: Some(true),
+                },
+                highlight_faces: vec![1],
+                highlight_edges: vec![0],
+            }],
+            camera: Camera {
+                projection: Projection::Perspective {
+                    field_of_view: 179.999,
+                },
+                eye: [1e-300, -0.0, 5e6],
+                target: [0.0, 0.0, 0.0],
+                up: [0.0, 1.0, 0.0],
+            },
+            width: 4096,
+            height: 1,
+            ids: true,
+        })),
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
@@ -327,9 +355,10 @@ fn every_op() -> Vec<Op> {
             Op::ExportMesh { .. } => 41,
             Op::Debug(DebugOp::Misbehave(Misbehavior::EndlessDescription)) => 42,
             Op::Distance { .. } => 43,
+            Op::Render(_) => 44,
         })
         .collect();
-    assert_eq!(indices, (0..44).collect(), "an operation has no case");
+    assert_eq!(indices, (0..45).collect(), "an operation has no case");
     ops
 }
 
@@ -588,6 +617,13 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             },
             edges: vec![1, 2],
         })),
+        Ok(Reply::Rendered {
+            png: vec![0x89, b'P', b'N', b'G', 0, 255],
+            ids: Some(vec![[0, 0], [u32::MAX, EDGE_BIT | 7]]),
+        }),
+        Err(Failure::new(Refusal::NoAdapter {
+            cause: "no CPU adapter".to_owned(),
+        })),
         Err(Failure::new(Refusal::TestOperation { op: String::new() })),
         Err(Failure::new(Refusal::FpTrapsOn {
             mask: 0x200,
@@ -614,6 +650,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::Described { .. }) => 16,
             Ok(Reply::ExportMesh(_)) => 17,
             Ok(Reply::Distance(_)) => 18,
+            Ok(Reply::Rendered { .. }) => 19,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
@@ -621,12 +658,13 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
                 FailureKind::UnknownOp => 8,
                 FailureKind::Internal => 9,
                 FailureKind::ResourceExhausted => 12,
+                FailureKind::Unavailable => 20,
             },
         })
         .collect();
     assert_eq!(
         indices,
-        (0..19).collect(),
+        (0..21).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -1034,7 +1072,8 @@ fn every_op_has_its_own_name() {
             "Revolution",
             "Describe",
             "ExportMesh",
-            "Distance"
+            "Distance",
+            "Render",
         ]
     );
 }

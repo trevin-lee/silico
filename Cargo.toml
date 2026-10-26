@@ -59,6 +59,8 @@ glam = "0.30"
 macaw = "0.30"
 pollster = "0.4"
 smallvec = "1"
+# The render worker's PNG (silico-render), the version Rerun already brings.
+png = "0.18"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 

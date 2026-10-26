@@ -146,7 +146,7 @@ fn kernel_and_input_errors_are_structured_and_the_worker_lives_on() {
 }
 
 #[test]
-fn a_sketch_solve_or_drag_is_refused_as_another_workers() {
+fn a_sketch_solve_or_drag_or_a_render_is_refused_as_another_workers() {
     let mut w = worker();
     let system = silico_protocol::SketchSystem {
         values: vec![],
@@ -166,6 +166,21 @@ fn a_sketch_solve_or_drag_is_refused_as_another_workers() {
         ),
         (Op::DragMove { to: [1.0, 2.0] }, "DragMove"),
         (Op::DragEnd, "DragEnd"),
+        (
+            Op::Render(Box::new(silico_protocol::RenderScene {
+                bodies: vec![],
+                camera: silico_protocol::Camera {
+                    projection: silico_protocol::Projection::Orthographic { view_height: 1.0 },
+                    eye: [0.0, 0.0, 1.0],
+                    target: [0.0; 3],
+                    up: [0.0, 1.0, 0.0],
+                },
+                width: 1,
+                height: 1,
+                ids: false,
+            })),
+            "Render",
+        ),
     ] {
         let err = w.call(Generation(1), op, TIMEOUT).unwrap_err();
         assert_eq!(err.code(), ErrorCode::Internal, "{err}");

@@ -589,7 +589,9 @@ impl KernelError {
             FailureKind::InvalidInput => KernelErrorKind::InvalidInput,
             FailureKind::KernelFailed => KernelErrorKind::Failed,
             FailureKind::InvalidResult => KernelErrorKind::InvalidResult,
-            FailureKind::UnknownOp | FailureKind::Internal => KernelErrorKind::Internal,
+            FailureKind::UnknownOp | FailureKind::Internal | FailureKind::Unavailable => {
+                KernelErrorKind::Internal
+            }
             FailureKind::ResourceExhausted => KernelErrorKind::ResourceExhausted,
         }
     }

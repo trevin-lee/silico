@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+# The tests are one program (tests/all_render.rs), fewer to build and link, each linking
+# wgpu and re_renderer: every file in tests/ is a module of it.
+autotests = false
 
 [dependencies]
 re_renderer.workspace = true
@@ -13,6 +16,21 @@ glam.workspace = true
 macaw.workspace = true
 pollster.workspace = true
 smallvec.workspace = true
+png.workspace = true
+silico-protocol.workspace = true
+silico-worker.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# The core's worker client, to drive the worker as the core does (no OCCT: the core links
+# none).
+silico-core.workspace = true
+libm.workspace = true
+proptest.workspace = true
+
+[[test]]
+name = "all_render"
+path = "tests/all_render.rs"
 
 [lints]
 workspace = true
