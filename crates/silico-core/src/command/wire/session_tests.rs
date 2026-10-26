@@ -10,9 +10,10 @@
 
 use std::path::PathBuf;
 
+use super::reads::CheckAnswer;
 use super::{Json, Layout, RequestFields, ToWire, write};
 use crate::command::{
-    Added, Begun, Committed, FieldSet, Problems, Reformatted, Removed, Replaced, Revision,
+    Added, Begun, Committed, FieldSet, Opened, Problems, Reformatted, Removed, Replaced, Revision,
     RolledBack,
 };
 use crate::document::json::{Plain, read};
@@ -157,6 +158,39 @@ fn a_commits_problems_are_its_first_hundred_and_all_counted() {
     assert_eq!(value["problems"].as_array().unwrap().len(), 100);
     assert_eq!(value["problems"][99]["message"], "drift 99");
     assert_eq!(value["problems_total"], 150);
+}
+
+#[test]
+fn opens_and_checks_problems_are_their_first_hundred_and_all_counted() {
+    let many = || {
+        Problems::of(
+            (0..150)
+                .map(|i| Error::new(ErrorCode::Drift, format!("drift {i}")))
+                .collect(),
+        )
+    };
+    let opened = Opened {
+        path: "p.silico".to_owned(),
+        created: false,
+        features: Some(1),
+        bodies: Vec::new(),
+        problems: many(),
+    };
+    let check = CheckAnswer { problems: many() };
+    for (of, text) in [("open", written(&opened)), ("check", written(&check))] {
+        holds(of, &text);
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["problems"].as_array().unwrap().len(), 100, "{of}");
+        assert_eq!(value["problems"][0]["message"], "drift 0", "{of}");
+        assert_eq!(value["problems"][99]["message"], "drift 99", "{of}");
+        assert_eq!(value["problems_total"], 150, "{of}");
+    }
+    // A check's warnings: none yet, whatever its problems.
+    let value: serde_json::Value = serde_json::from_str(&written(&check)).unwrap();
+    assert_eq!(
+        (&value["warnings"], &value["warnings_total"]),
+        (&serde_json::json!([]), &serde_json::json!(0))
+    );
 }
 
 #[test]

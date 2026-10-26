@@ -30,10 +30,11 @@
 //! result's, which is the envelope's `result` when the command runs, not the whole envelope,
 //! so not by itself what MCP's `outputSchema` checks `structuredContent`, the envelope,
 //! against (that is M4.9's to build from these and the envelope's). Each is added with the
-//! command's wire types ([`COMMANDS`]: [`transaction`], for `begin`, `commit`, `rollback`,
-//! and `format`; [`edits`], for `add_feature`, `set_field`, `remove_feature`, and
-//! `replace_text`; [`elements`], for `elements` and `query`; [`schema`]; and [`measure`],
-//! for `mass_properties`, `distance`, and `angle`).
+//! command's wire types ([`COMMANDS`]: [`session`], for `version`, `open`, `close`,
+//! `status`, and `cancel`; [`transaction`], for `begin`, `commit`, `rollback`, and `format`;
+//! [`edits`], for `add_feature`, `set_field`, `remove_feature`, and `replace_text`;
+//! [`reads`], for `text`, `outline`, and `check`; [`elements`], for `elements` and `query`;
+//! [`schema`]; and [`measure`], for `mass_properties`, `distance`, and `angle`).
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -623,6 +624,21 @@ impl<'a> RequestFields<'a> {
                 None
             }
         }
+    }
+
+    /// `false`, for a flag whose `true` isn't built yet (`check`'s `fresh`): `true` refused,
+    /// `why` its cause and `instead` what to do.
+    pub fn only_false(&mut self, key: &str, why: &str, instead: &str) -> Option<()> {
+        if !self.bool(key)? {
+            return Some(());
+        }
+        self.refused.refuse_with(|| {
+            let at = join(&self.path, key);
+            invalid(&at, format!("{at} must be false, got true"))
+                .with_cause(why)
+                .with_suggestion(instead)
+        });
+        None
     }
 
     /// `true`, `false`, or `null`.
@@ -1230,8 +1246,15 @@ pub(crate) fn wire_shape(schema: &mut schemars::Schema) {
     }
 }
 
-/// `schema`, an object's schema, closed to its properties, and each variant it has inline.
+/// `schema`, an object's schema, closed to its properties (an object of none, a request or
+/// result with no fields, to none), and each variant it has inline.
 fn close(schema: &mut serde_json::Map<String, serde_json::Value>) {
+    if !schema.contains_key("properties") && schema.get("type") == Some(&"object".into()) {
+        schema.insert(
+            "additionalProperties".to_owned(),
+            serde_json::Value::Bool(false),
+        );
+    }
     let keys: Option<Vec<serde_json::Value>> = schema
         .get("properties")
         .and_then(serde_json::Value::as_object)
@@ -1374,7 +1397,27 @@ pub type MakeSnapshot = fn() -> serde_json::Value;
 
 /// The commands whose wire types are built, each by name with what makes its snapshot, in
 /// the design's order (section 7): what `schema` describes besides the document.
-pub const COMMANDS: [(&str, MakeSnapshot); 14] = [
+pub const COMMANDS: [(&str, MakeSnapshot); 22] = [
+    (
+        "version",
+        command_schema::<session::VersionRequestSchema, session::VersionResultSchema>,
+    ),
+    (
+        "open",
+        command_schema::<session::OpenRequestSchema, session::OpenResultSchema>,
+    ),
+    (
+        "close",
+        command_schema::<session::CloseRequestSchema, session::CloseResultSchema>,
+    ),
+    (
+        "status",
+        command_schema::<session::StatusRequestSchema, session::StatusResultSchema>,
+    ),
+    (
+        "cancel",
+        command_schema::<session::CancelRequestSchema, session::CancelResultSchema>,
+    ),
     (
         "begin",
         command_schema::<transaction::BeginRequestSchema, transaction::BeginResultSchema>,
@@ -1406,6 +1449,18 @@ pub const COMMANDS: [(&str, MakeSnapshot); 14] = [
     (
         "replace_text",
         command_schema::<edits::ReplaceTextRequestSchema, edits::ReplaceTextResultSchema>,
+    ),
+    (
+        "text",
+        command_schema::<reads::TextRequestSchema, reads::TextResultSchema>,
+    ),
+    (
+        "outline",
+        command_schema::<reads::OutlineRequestSchema, reads::OutlineResultSchema>,
+    ),
+    (
+        "check",
+        command_schema::<reads::CheckRequestSchema, reads::CheckResultSchema>,
     ),
     (
         "elements",
@@ -1521,7 +1576,9 @@ pub fn snapshot(of: &str) -> Option<Result<String, Error>> {
 pub mod edits;
 pub mod elements;
 pub mod measure;
+pub mod reads;
 pub mod schema;
+pub mod session;
 pub mod transaction;
 
 #[cfg(test)]

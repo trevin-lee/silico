@@ -1,0 +1,105 @@
+{
+  "request": {
+    "$defs": {
+      "CommandName": {
+        "description": "A command's name, as a tool is named.",
+        "enum": [
+          "version",
+          "open",
+          "close",
+          "status",
+          "cancel",
+          "begin",
+          "commit",
+          "rollback",
+          "format",
+          "add_feature",
+          "set_field",
+          "remove_feature",
+          "replace_text",
+          "text",
+          "outline",
+          "check",
+          "elements",
+          "query",
+          "schema",
+          "mass_properties",
+          "distance",
+          "angle"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`cancel`'s request: stop the command named, if it's running in the session (its queued\ncommand, and every read of the published model of that name), answered at once. The\ncommand stopped answers too: `cancelled` if it left no trace, or its real result if it\nhad done its work. Refused, naming what is running, if that command isn't, so a cancel\nthat comes late never stops the command after it.",
+    "properties": {
+      "command": {
+        "$ref": "#/$defs/CommandName",
+        "description": "The command to stop, as `status` names it."
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "command",
+      "session"
+    ],
+    "title": "CancelRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "CommandName": {
+        "description": "A command's name, as a tool is named.",
+        "enum": [
+          "version",
+          "open",
+          "close",
+          "status",
+          "cancel",
+          "begin",
+          "commit",
+          "rollback",
+          "format",
+          "add_feature",
+          "set_field",
+          "remove_feature",
+          "replace_text",
+          "text",
+          "outline",
+          "check",
+          "elements",
+          "query",
+          "schema",
+          "mass_properties",
+          "distance",
+          "angle"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`cancel`'s result.",
+    "properties": {
+      "command": {
+        "$ref": "#/$defs/CommandName",
+        "description": "The command, as the request named it."
+      },
+      "stopped": {
+        "description": "Whether it was stopped before it had done its work: false means it had (an edit\nalready saved), and it answers with its real result. Read `status` for the revision.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "command",
+      "stopped"
+    ],
+    "title": "CancelResult",
+    "type": "object"
+  }
+}

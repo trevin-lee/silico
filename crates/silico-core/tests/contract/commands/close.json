@@ -1,0 +1,26 @@
+{
+  "request": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`close`'s request: close the session. Refused while a transaction is open: commit or\nroll back first.",
+    "properties": {
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session"
+    ],
+    "title": "CloseRequest",
+    "type": "object"
+  },
+  "result": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`close`'s result: it has no fields.",
+    "title": "CloseResult",
+    "type": "object"
+  }
+}

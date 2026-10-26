@@ -349,7 +349,7 @@ impl ToWire for Tied {
 }
 
 /// A string schema of one of `words`.
-fn words(description: &str, words: impl IntoIterator<Item = &'static str>) -> Schema {
+pub(super) fn words(description: &str, words: impl IntoIterator<Item = &'static str>) -> Schema {
     let words: Vec<&str> = words.into_iter().collect();
     json_schema!({
         "description": description,

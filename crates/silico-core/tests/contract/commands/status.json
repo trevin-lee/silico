@@ -1,0 +1,145 @@
+{
+  "request": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`status`'s request: what the session holds, answered at once, even while another of its\ncommands runs. It never reads the file.",
+    "properties": {
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session"
+    ],
+    "title": "StatusRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "Rebuild": {
+        "additionalProperties": false,
+        "description": "The session's current revision's rebuild.",
+        "properties": {
+          "revision": {
+            "description": "The revision it's of: the session's current one.",
+            "format": "uint64",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/$defs/RebuildState"
+          }
+        },
+        "required": [
+          "revision",
+          "state"
+        ],
+        "type": "object"
+      },
+      "RebuildState": {
+        "description": "What's become of a revision's rebuild.",
+        "oneOf": [
+          {
+            "const": "none",
+            "description": "Not started: no command has needed its model yet, or the gate refused the document,\nso there's nothing to rebuild.",
+            "type": "string"
+          },
+          {
+            "const": "running",
+            "description": "Running.",
+            "type": "string"
+          },
+          {
+            "const": "done",
+            "description": "Done, its model published.",
+            "type": "string"
+          },
+          {
+            "const": "faulted",
+            "description": "Done, but its model holds a kernel fault, kept as the revision's outcome (reads give\nit once, in the response's `model.fault`); or its recompute failed.",
+            "type": "string"
+          },
+          {
+            "const": "stopped",
+            "description": "Cancelled: the next command that needs its model starts it again.",
+            "type": "string"
+          }
+        ]
+      },
+      "Transaction": {
+        "additionalProperties": false,
+        "description": "The transaction open in the session.",
+        "properties": {
+          "base": {
+            "description": "The revision it began from: the one `rollback` returns to.",
+            "format": "uint64",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "base"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`status`'s result. What's running is a diagnostic, not a result: it depends on when it's\nasked.",
+    "properties": {
+      "features": {
+        "description": "How many features the document has: null if its text doesn't read as a document.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "gated": {
+        "description": "Whether the gate took the document.",
+        "type": "boolean"
+      },
+      "reads": {
+        "description": "The name of each read of the published model running, in the order they started:\n`cancel` stops every one of a name.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "rebuild": {
+        "$ref": "#/$defs/Rebuild"
+      },
+      "running": {
+        "description": "The name of the session's queued command running, which `cancel` can stop: null if\nnone is.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "transaction": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Transaction"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The transaction open: null if none is."
+      }
+    },
+    "required": [
+      "features",
+      "gated",
+      "reads",
+      "rebuild",
+      "running",
+      "transaction"
+    ],
+    "title": "StatusResult",
+    "type": "object"
+  }
+}

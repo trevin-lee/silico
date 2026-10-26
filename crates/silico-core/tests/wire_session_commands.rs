@@ -8,10 +8,15 @@
 //! contract. The results the fake can make as the design's are made so too; the rest (a
 //! path as `open` was given it, a drift) are written by the crate's own tests
 //! (src/command/wire/session_tests.rs), which can build a result's problems. The snapshots
-//! themselves are recorded and checked with the others' (wire_commands.rs).
+//! themselves are recorded and checked with the others' (wire_commands.rs). The examples of
+//! M4.2's other commands, `version`, `open`, `close`, `status`, `cancel`, `text`, `outline`,
+//! and `check`, are each the design's own text here too, and every request but `version`'s
+//! and `open`'s, which name no session, is read strictly here; the rest of their tests are in
+//! wire_session_reads.rs.
 //!
-//! The one example of the design's not in the contract is `commit`'s `io_failed`, a disk out
-//! of room, which no test can make happen ([`LEFT_OUT`]).
+//! The design's examples not in the contract are three, each for its reason ([`LEFT_OUT`]):
+//! `open` outside a workspace, which nothing has yet; `commit`'s `io_failed`, a disk out of
+//! room, which no test can make happen; and `check`'s broken reference, a real kernel's.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,6 +26,8 @@ use silico_core::cache::Cache;
 use silico_core::command::wire::edits::{
     AddFeatureRequest, RemoveFeatureRequest, ReplaceTextRequest, SetFieldRequest,
 };
+use silico_core::command::wire::reads::{CheckRequest, TextRequest};
+use silico_core::command::wire::session::CancelRequest;
 use silico_core::command::wire::transaction::{FormatRequest, SessionRequest};
 use silico_core::command::wire::{Layout, ToWire, snapshot_value, write};
 use silico_core::command::{Problems, Response, Revision, SessionId, Sessions};
@@ -209,7 +216,51 @@ impl Fixture {
 fn the_examples_are_the_designs_own_text() {
     // Each section's blocks, in order, each file the block and a newline; a block not yet in
     // the contract (`None`) is the one the module's doc says, and has no file.
-    let sections: [(&str, &str, &str, &[Option<&str>]); 8] = [
+    let sections: [(&str, &str, &str, &[Option<&str>]); 16] = [
+        (
+            "### `version` (M4.2)",
+            "### `open` (M4.2)",
+            "version",
+            &[Some("request"), Some("result")],
+        ),
+        (
+            "### `open` (M4.2)",
+            "### `close` (M4.2)",
+            "open",
+            &[
+                Some("request"),
+                Some("result"),
+                Some("refused-document"),
+                Some("refused-missing"),
+                Some("refused-exists"),
+                Some("refused-open-already"),
+                None,
+                Some("refused-too-many"),
+            ],
+        ),
+        (
+            "### `close` (M4.2)",
+            "### `status` (M4.2)",
+            "close",
+            &[Some("request"), Some("result"), Some("refused-transaction")],
+        ),
+        (
+            "### `status` (M4.2)",
+            "### `cancel` (M4.2)",
+            "status",
+            &[Some("request"), Some("result")],
+        ),
+        (
+            "### `cancel` (M4.2)",
+            "### `begin` (M4.2)",
+            "cancel",
+            &[
+                Some("request"),
+                Some("result"),
+                Some("refused-not-running"),
+                Some("cancelled"),
+            ],
+        ),
         (
             "### `begin` (M4.2)",
             "### `commit` (M4.2)",
@@ -294,6 +345,24 @@ fn the_examples_are_the_designs_own_text() {
                 Some("refused-no-naming"),
             ],
         ),
+        (
+            "### `text` (M4.2)",
+            "### `outline` (M4.2)",
+            "text",
+            &[Some("request"), Some("result")],
+        ),
+        (
+            "### `outline` (M4.2)",
+            "### `check` (M4.2",
+            "outline",
+            &[Some("request"), Some("result")],
+        ),
+        (
+            "### `check` (M4.2",
+            "### `cache_clear` (M4.3)",
+            "check",
+            &[Some("request"), Some("result"), None],
+        ),
     ];
     let mut left_out = Vec::new();
     for (from, to, dir, names) in sections {
@@ -324,13 +393,21 @@ fn the_examples_are_the_designs_own_text() {
             }
         }
     }
-    // The refusals left out, by code and parameter, each for its reason.
+    // The examples left out, by code and parameter (a refusal's, or a result's one
+    // problem's), each for its reason.
     let left: Vec<(&str, &str)> = left_out
         .iter()
         .map(|block| {
             let value: serde_json::Value = serde_json::from_str(block).unwrap();
-            let code = value["code"].as_str().unwrap();
-            let parameter = value["parameter"].as_str().unwrap();
+            let error = match value.get("problems") {
+                Some(problems) => {
+                    assert_eq!(problems.as_array().map(Vec::len), Some(1), "{block}");
+                    &problems[0]
+                }
+                None => &value,
+            };
+            let code = error["code"].as_str().unwrap();
+            let parameter = error["parameter"].as_str().unwrap();
             LEFT_OUT
                 .iter()
                 .find(|(c, p, _)| (*c, *p) == (code, parameter))
@@ -342,12 +419,28 @@ fn the_examples_are_the_designs_own_text() {
 }
 
 /// The design's examples not in the contract, by code and parameter, each with why.
-const LEFT_OUT: [(&str, &str, &str); 1] = [(
-    "io_failed",
-    "path",
-    "commit's save failing for a disk out of room, which no test can make happen; and the code \
-     says it with the step that failed and the file's path, which the design's leaves out",
-)];
+const LEFT_OUT: [(&str, &str, &str); 3] = [
+    (
+        "invalid_input",
+        "path",
+        "open of a path outside the workspace a server was started in: no process has a \
+         workspace until `silico serve` (M4.9), so nothing refuses one yet",
+    ),
+    (
+        "io_failed",
+        "path",
+        "commit's save failing for a disk out of room, which no test can make happen; and the \
+         code says it with the step that failed and the file's path, which the design's leaves \
+         out",
+    ),
+    (
+        "reference_broken",
+        "edges.0",
+        "check of a fillet whose edge an upstream edit removed: its message and candidate are \
+         a real cut's element map's, which the fake kernel doesn't make (its boolean keeps both \
+         inputs whole), so it's for a test on kernel workers, as the entries' examples are",
+    ),
+];
 
 #[test]
 fn the_designs_requests_are_read_written_back_byte_for_byte_and_hold_to_their_schemas() {
@@ -468,12 +561,19 @@ fn reader(of: &str) -> fn(&Node) -> Result<(), Problems> {
         "set_field" => |n| SetFieldRequest::read(n).map(drop),
         "remove_feature" => |n| RemoveFeatureRequest::read(n).map(drop),
         "replace_text" => |n| ReplaceTextRequest::read(n).map(drop),
+        "close" | "status" | "outline" => |n| SessionRequest::read(n).map(drop),
+        "cancel" => |n| CancelRequest::read(n).map(drop),
+        "text" => |n| TextRequest::read(n).map(drop),
+        "check" => |n| CheckRequest::read(n).map(drop),
         _ => panic!("{of}"),
     }
 }
 
 /// Each command, and the keys its request has, in the shape's order.
-const REQUESTS: [(&str, &[&str]); 8] = [
+const REQUESTS: [(&str, &[&str]); 14] = [
+    ("close", &["session"]),
+    ("status", &["session"]),
+    ("cancel", &["session", "command"]),
     ("begin", &["session"]),
     ("commit", &["session"]),
     ("rollback", &["session"]),
@@ -485,6 +585,9 @@ const REQUESTS: [(&str, &[&str]); 8] = [
     ),
     ("remove_feature", &["session", "revision", "feature"]),
     ("replace_text", &["session", "revision", "text"]),
+    ("text", &["session", "feature"]),
+    ("outline", &["session"]),
+    ("check", &["session", "model", "fresh"]),
 ];
 
 /// `text`, an object's JSON, without its member `key`.
