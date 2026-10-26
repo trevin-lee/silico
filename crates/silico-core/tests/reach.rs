@@ -288,6 +288,88 @@ fn from_text_that_didnt_read_mended_the_mends_new_features_and_what_changed_sinc
 }
 
 #[test]
+fn from_text_that_didnt_read_mended_without_a_feature_it_held_putting_it_back_reaches_it_not() {
+    // The merge mended without the block, whose ID the merged text holds, and an edit after
+    // the mend puts it back: the block is one the text had, so it keeps its stored record
+    // and isn't reached; only the cut, whose ID the text hadn't, is.
+    let merged = merged();
+    let unread = QuotedIds::of(merged.as_bytes());
+    let mend = edited(
+        r#"
+  {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},"#,
+        "",
+    );
+    assert!(unread.holds(&FeatureId::new("k7f2qx3m").unwrap()));
+    assert_eq!(
+        net_reach(
+            Before::Mended {
+                unread: &unread,
+                mend: &mend,
+            },
+            &ids(&[]),
+            &part(),
+        ),
+        ids(&["c0000001"])
+    );
+}
+
+#[test]
+fn from_text_mended_a_feature_added_after_the_mend_is_reached() {
+    // A sphere whose ID neither the merged text nor the mend has, added after the mend: it
+    // is reached, with the cut the mend brought.
+    let merged = merged();
+    let unread = QuotedIds::of(merged.as_bytes());
+    let mend = part();
+    let added = edited(
+        r#""tool": "b0000001"}"#,
+        r#""tool": "b0000001"}, {"id": "n0000001", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5}"#,
+    );
+    assert_eq!(
+        net_reach(
+            Before::Mended {
+                unread: &unread,
+                mend: &mend,
+            },
+            &ids(&[]),
+            &added,
+        ),
+        ids(&["c0000001", "n0000001"])
+    );
+}
+
+#[test]
+fn from_text_mended_a_feature_removed_after_the_mend_is_not_reached() {
+    // The block removed after the mend: nothing used it, so only the cut is reached. The cut
+    // removed after the mend: the features it used are as they were, and it, gone, isn't
+    // reached either.
+    let merged = merged();
+    let unread = QuotedIds::of(merged.as_bytes());
+    let mend = part();
+    let mended = |after: &Document| {
+        net_reach(
+            Before::Mended {
+                unread: &unread,
+                mend: &mend,
+            },
+            &ids(&[]),
+            after,
+        )
+    };
+    let no_block = edited(
+        r#"
+  {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},"#,
+        "",
+    );
+    assert_eq!(mended(&no_block), ids(&["c0000001"]));
+    let no_cut = edited(
+        r#",
+  {"id": "c0000001", "type": "cut", "v": 1, "name": "Notch", "base": "q0000001", "tool": "b0000001"}"#,
+        "",
+    );
+    assert_eq!(mended(&no_cut), ids(&[]));
+}
+
+#[test]
 fn from_text_that_didnt_read_an_id_written_with_escapes_is_held() {
     // The block's ID with its last letter escaped, as JSON may write any character: the
     // text holds k7f2qx3m all the same, so only the cut is reached.

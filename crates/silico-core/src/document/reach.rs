@@ -104,7 +104,9 @@ fn id_of(between: &[u8]) -> Option<FeatureId> {
 /// record, and its drift is said for `format` to accept by name, rather than every
 /// fingerprint written over because a merge left markers in the file. From such text
 /// mended, what changed is that of the mend's features, and what changed from the mend
-/// to `after`: so an edit after the mend reaches what it changed, and, undone, nothing.
+/// to `after`: so an edit after the mend reaches what it changed, and, undone, nothing; but
+/// a feature the mend hasn't is reached only if the text hasn't its ID either, so one the
+/// mend dropped and an edit put back keeps its record, as it would have without the mend.
 pub fn net_reach(
     before: Before<'_>,
     carried: &BTreeSet<FeatureId>,
@@ -116,7 +118,14 @@ pub fn net_reach(
         Before::Unread(ids) => seeds.extend(not_held(ids, after)),
         Before::Mended { unread, mend } => {
             seeds.extend(not_held(unread, mend));
-            seeds.extend(changed(mend, after));
+            // A feature the mend hasn't is new against the text that didn't read, as one of
+            // the mend's own is: one whose ID that text held, put back, keeps its record.
+            let mended: BTreeSet<&FeatureId> = mend.features.iter().map(|f| &f.id).collect();
+            seeds.extend(
+                changed(mend, after)
+                    .into_iter()
+                    .filter(|id| mended.contains(id) || !unread.holds(id)),
+            );
         }
     }
     with_users(after, &seeds)
