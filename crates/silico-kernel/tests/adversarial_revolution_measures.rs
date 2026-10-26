@@ -1,20 +1,23 @@
 //! break-it on OCCT patch 0003 (`BRepGProp_Face` gives a `GeomAbs_SurfaceOfRevolution`
 //! three U spans, as a torus): hostile surfaces of revolution measured through a kernel
 //! worker against values by hand, independent of OCCT (closed forms, Pappus, and
-//! Gauss–Legendre on smooth integrands to convergence). The plan's item 6
-//! (docs/ports/measure.md, Known wrong results): an arc whose circle is tangent to the axis,
-//! one nearly centred on it, turns of 1° and 359.999° and at the knots the patch adds, a C⁰
-//! B-spline meridian, a surface of revolution under a `Geom_RectangularTrimmedSurface`, and
-//! the barrel fused to a box and filleted along the seam; with lines skew to the axis
-//! (hyperboloids), ellipses, rational B-splines, faces whose U starts off 0, and a property
-//! over barrels of every proportion. Arcs here keep clear of their circle's angle 0, where
-//! OCCT 7.9.3's booleans ignore the turned face (a separate bug), except where said.
-//! The tests that need FreeCAD to make a face (`pixi install -e oracle`) say so.
+//! Gauss–Legendre on smooth integrands to convergence): an arc whose circle is tangent to
+//! the axis, one nearly centred on it, turns of 1° and 359.999° and at the knots the patch
+//! adds, a C⁰ B-spline meridian, a surface of revolution under a
+//! `Geom_RectangularTrimmedSurface`, and the barrel fused to a box and filleted along the
+//! seam; with lines skew to the axis (hyperboloids), ellipses, rational B-splines, faces
+//! whose U starts off 0, and a property over barrels of every proportion. Arcs here keep
+//! clear of their circle's angle 0, where OCCT 7.9.3's booleans ignore the turned face
+//! (docs/ports/measure.md, Known wrong results: a sketch arc across its circle's angle 0),
+//! except where said. The tests that need FreeCAD to make a face (`pixi install -e
+//! oracle`) say so.
 
 use super::close::assert_close;
 use super::kernel::kernel;
 use super::numbers::relative_error;
 use super::oracle;
+use super::quadrature::{bezier, cap_integral, integral, kind, misses};
+use super::revolution_measures::barrel_by_hand;
 
 use std::cell::RefCell;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
@@ -23,61 +26,10 @@ use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::kernel::KernelWorker;
 use silico_kernel::{Axis, BooleanOp, Curve, FaceRegions, Region, SketchPlane};
-use silico_protocol::{Blob, Primitive, ShapeData, Surface};
+use silico_protocol::{Blob, Primitive, ShapeData};
 
 /// OCCT's precise measure's promise: a relative 1e-9 (`MEASURE_PRECISION`).
 const ASKED: f64 = 1e-9;
-
-/// Gauss–Legendre's eight nodes on [-1, 1] and their weights.
-const NODES: [f64; 8] = [
-    -0.960_289_856_497_536_2,
-    -0.796_666_477_413_626_7,
-    -0.525_532_409_916_329,
-    -0.183_434_642_495_649_8,
-    0.183_434_642_495_649_8,
-    0.525_532_409_916_329,
-    0.796_666_477_413_626_7,
-    0.960_289_856_497_536_2,
-];
-const WEIGHTS: [f64; 8] = [
-    0.101_228_536_290_376_26,
-    0.222_381_034_453_374_47,
-    0.313_706_645_877_887_3,
-    0.362_683_783_378_362,
-    0.362_683_783_378_362,
-    0.313_706_645_877_887_3,
-    0.222_381_034_453_374_47,
-    0.101_228_536_290_376_26,
-];
-
-/// The integral of `f` over [a, b], cut in `pieces`, eight Gauss–Legendre points on each.
-fn integral(a: f64, b: f64, pieces: u32, f: impl Fn(f64) -> f64) -> f64 {
-    let step = (b - a) / f64::from(pieces);
-    let mut sum = 0.0;
-    for k in 0..pieces {
-        let (lo, hi) = (a + step * f64::from(k), a + step * f64::from(k + 1));
-        for (x, w) in NODES.iter().zip(WEIGHTS) {
-            sum += w * (hi - lo) / 2.0 * f((lo + hi) / 2.0 + (hi - lo) / 2.0 * x);
-        }
-    }
-    sum
-}
-
-fn kind(surface: &Surface) -> &'static str {
-    match surface {
-        Surface::Plane { .. } => "plane",
-        Surface::Cylinder { .. } => "cylinder",
-        Surface::Cone { .. } => "cone",
-        Surface::Sphere { .. } => "sphere",
-        Surface::Torus { .. } => "torus",
-        Surface::Revolution => "revolution",
-        Surface::Bezier => "bezier",
-        Surface::Bspline => "bspline",
-        Surface::Extrusion => "extrusion",
-        Surface::Offset => "offset",
-        Surface::Other => "other",
-    }
-}
 
 fn line(start: [f64; 2], end: [f64; 2]) -> Curve {
     Curve::Line { start, end }
@@ -157,23 +109,6 @@ fn from_freecad(text: &str) -> ShapeData {
 fn assert_refused(e: &silico_core::Error) {
     assert_eq!(e.code(), ErrorCode::KernelFailed, "{e}");
     assert!(e.suggestion().is_some_and(|s| s.contains("axis")), "{e}");
-}
-
-/// Each `(what, got, want)` further than `tolerance` (relative), said with its error.
-fn misses(cases: &[(String, f64, f64)], tolerance: f64) -> Vec<String> {
-    cases
-        .iter()
-        .filter(|(_, got, want)| {
-            let error = relative_error(*got, *want);
-            error.is_nan() || error > tolerance
-        })
-        .map(|(what, got, want)| {
-            format!(
-                "{what}: got {got}, want {want} (relative error {:e})",
-                relative_error(*got, *want)
-            )
-        })
-        .collect()
 }
 
 /// Each case right to `tolerance`, or OCCT's known wrong answer for it, `known`, to 1e-12
@@ -274,24 +209,23 @@ impl Barrel {
 }
 
 #[test]
-fn the_general_barrel_formula_is_the_closed_form_of_the_plan() {
-    // The general barrel, barrel(), is revolution_measures.rs's barrel: its ends at (±4, 4)
-    // and Fable's 526.33431398915138 a whole turn, 388.5995488823284 its area.
+fn the_general_barrel_is_revolution_measures_barrel() {
+    // barrel() is revolution_measures.rs's barrel with the sketch's x and y swapped: its
+    // ends at (±4, 4), and its volume, area, and profile those by hand there (whose closed
+    // form and quadrature that file checks), from the general formulas here.
     let (right, left) = barrel().ends();
     assert_close("right x", right[0], 4.0, 1e-15);
     assert_close("right z", right[1], 4.0, 1e-15);
     assert_eq!(left[0], -right[0]);
-    assert_close("volume", barrel().volume(TAU), 526.334_313_989_151_4, 1e-15);
+    let b = barrel_by_hand();
+    assert_close("volume", barrel().volume(TAU), b.volume, 1e-15);
     assert_close(
         "area",
         barrel().area(TAU, true),
-        388.599_548_882_328_4,
+        2.0 * b.annulus + b.side + b.bore,
         1e-15,
     );
-    // And by quadrature, π ∫ (y² − 1) dx.
-    let y = |x: f64| -3.5 + libm::sqrt(8.5 * 8.5 - x * x);
-    let q = PI * integral(-4.0, 4.0, 64, |x| y(x) * y(x) - 1.0);
-    assert_close("quadrature", q, barrel().volume(TAU), 1e-14);
+    assert_close("profile", barrel().profile(), b.profile, 1e-15);
 }
 
 #[test]
@@ -753,44 +687,20 @@ const C0_SPANS: [[[f64; 2]; 4]; 2] = [
     [[2.0, 4.8], [2.5, 5.6], [3.5, 5.2], [4.0, 4.0]],
 ];
 
-fn bezier(p: &[[f64; 2]; 4], t: f64) -> ([f64; 2], [f64; 2]) {
-    let s = 1.0 - t;
-    let b = [s * s * s, 3.0 * t * s * s, 3.0 * t * t * s, t * t * t];
-    let db = [
-        -3.0 * s * s,
-        3.0 * s * s - 6.0 * t * s,
-        6.0 * t * s - 3.0 * t * t,
-        3.0 * t * t,
-    ];
-    let mut point = [0.0; 2];
-    let mut tangent = [0.0; 2];
-    for i in 0..4 {
-        for d in 0..2 {
-            point[d] += b[i] * p[i][d];
-            tangent[d] += db[i] * p[i][d];
-        }
-    }
-    (point, tangent)
-}
-
 #[test]
 fn a_c0_bspline_meridian_with_a_triple_knot_turned_measures_as_pappus() {
     // The cap between the C⁰ cubic and its chord on y = 4, turned about the line along x
     // through (0, −5, 0): Pappus, 2π (ȳ + 5) A, A = ∫ (y − 4) dx and A ȳ = ∫ (y² − 16)/2 dx
     // along the curve (Green; polynomials of degree 5 and 8 per span, exact at 8 points).
-    let along = |f: &dyn Fn([f64; 2], [f64; 2]) -> f64| {
-        C0_SPANS
-            .iter()
-            .map(|span| {
-                integral(0.0, 1.0, 1, |t| {
-                    let (c, d) = bezier(span, t);
-                    f(c, d)
-                })
-            })
-            .sum::<f64>()
+    let along = |inner: fn([f64; 2]) -> f64| {
+        cap_integral(
+            &[(0.0, 1.0); 2],
+            |span, t| bezier(&C0_SPANS[span], t),
+            inner,
+        )
     };
-    let area = along(&|c, d| (c[1] - 4.0) * d[0]);
-    let moment = along(&|c, d| (c[1] * c[1] - 16.0) / 2.0 * d[0]);
+    let area = along(|[_, y]| y - 4.0);
+    let moment = along(|[_, y]| (y * y - 16.0) / 2.0);
     let pappus = TAU * (moment + 5.0 * area);
     let cap = freecad_face(
         r#"
@@ -1016,8 +926,9 @@ fn a_surface_of_revolution_whose_u_starts_off_zero_measures_as_by_hand() {
     // Found by /break-it, a known wrong result (docs/ports/measure.md): the knots don't
     // follow the face's U, so a face whose U starts past 4π/3 is integrated over nearly one
     // span, as before the patch, and as stock OCCT does a torus's. Silico's own revolves
-    // start U at 0; only a file reaches this. Right to the asked precision from 1 and 3,
-    // OCCT's known wrong answer from 5, 6, and 6.2 (or right, once OCCT places them).
+    // start U at 0; only a file reaches this. Right from 1 and 3 (to 1e-11; 1.4e-12
+    // measured), OCCT's known wrong answer from 5, 6, and 6.2 (or right, once OCCT places
+    // them).
     let known = [
         ("barrel from u = 5", 526.334_308_090_930_6),
         ("barrel from u = 6", 526.334_239_754_574_1),
@@ -1026,7 +937,7 @@ fn a_surface_of_revolution_whose_u_starts_off_zero_measures_as_by_hand() {
         ("torus from u = 6", 1_104.276_109_099_114_4),
         ("torus from u = 6.2", 1_104.276_025_769_664),
     ];
-    let missed = right_or_known_wrong(&cases, ASKED, &known);
+    let missed = right_or_known_wrong(&cases, 1e-11, &known);
     assert!(missed.is_empty(), "{}", missed.join("\n"));
 }
 
@@ -1177,9 +1088,10 @@ fn barrel_case() -> impl Strategy<Value = (Barrel, f64, f64)> {
 #[test]
 fn barrels_of_every_proportion_measure_as_by_hand() {
     // 1,000 barrels about x: every one a surface of revolution where |c| is past 1e-7 and
-    // under r, a sphere or torus otherwise; its volume by the closed form to the asked 1e-9.
-    // Cases too near a sphere (|c| ≤ 1e-6, where OCCT may take the centre on the axis) are
-    // held to the asked precision plus what that moves, 2|c| r² · 2 / volume.
+    // under r, a sphere or torus otherwise; its volume by the closed form to 1e-11 (the
+    // worst of a run 6.0e-13). Cases too near a sphere (|c| ≤ 1e-6, where OCCT may take the
+    // centre on the axis) are held to the asked 1e-9 plus what that moves,
+    // 2|c| r² · 2 / volume.
     let k = RefCell::new(kernel());
     let worst = RefCell::new((0.0f64, String::new()));
     let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
@@ -1197,10 +1109,10 @@ fn barrels_of_every_proportion_measure_as_by_hand() {
         prop_assert!(s.valid, "{b:?} {angle} invalid");
         let want = b.volume(angle);
         let err = relative_error(s.volume, want);
-        let slack = if b.c.abs() <= 1e-6 {
-            4.0 * b.c.abs() * b.r * b.r * angle / want.abs()
+        let tolerance = if b.c.abs() <= 1e-6 {
+            ASKED + 4.0 * b.c.abs() * b.r * b.r * angle / want.abs()
         } else {
-            0.0
+            1e-11
         };
         {
             let mut w = worst.borrow_mut();
@@ -1209,7 +1121,7 @@ fn barrels_of_every_proportion_measure_as_by_hand() {
             }
         }
         prop_assert!(
-            err <= ASKED + slack,
+            err <= tolerance,
             "{b:?} angle {angle} start {start}: got {}, want {want} ({err:e})",
             s.volume
         );
@@ -1301,19 +1213,13 @@ impl Wavy {
     /// the curve (Green; polynomials of degree 5 and 8 on each span, exact at 8 points).
     fn pappus(&self) -> f64 {
         let spans = self.spans() as f64;
-        let along = |f: &dyn Fn([f64; 2], [f64; 2]) -> f64| {
-            (0..self.spans())
-                .map(|span| {
-                    let (lo, hi) = (span as f64 / spans, (span + 1) as f64 / spans);
-                    integral(lo, hi, 1, |t| {
-                        let (c, d) = self.at(span, t);
-                        f(c, d)
-                    })
-                })
-                .sum::<f64>()
-        };
-        let area = along(&|c, d| (c[1] - 4.0) * d[0]);
-        let moment = along(&|c, d| (c[1] * c[1] - 16.0) / 2.0 * d[0]);
+        let ranges: Vec<(f64, f64)> = (0..self.spans())
+            .map(|span| (span as f64 / spans, (span + 1) as f64 / spans))
+            .collect();
+        let along =
+            |inner: fn([f64; 2]) -> f64| cap_integral(&ranges, |span, t| self.at(span, t), inner);
+        let area = along(|[_, y]| y - 4.0);
+        let moment = along(|[_, y]| (y * y - 16.0) / 2.0);
         TAU * (moment + 5.0 * area)
     }
 

@@ -5,29 +5,55 @@ Why: BRepGProp_Gauss::Compute with an Eps (BRepGProp::VolumeProperties(shape, pr
      Silico's precise measure) never refines U: EpsU is left 0, so the U loop ends after its
      first pass, and U is integrated once over the spans BRepGProp_Face::UKnots gives. Those
      are thirds for a cylinder, cone, sphere, or torus, and one span for anything else, a
-     GeomAbs_SurfaceOfRevolution included, whose U is the same angle over [0, 2*pi]. So a
-     full turn of an arc whose circle crosses the axis (a barrel, a dome) measured 2.2e-7
-     low, and of the fixture's two-span B-spline 3.9e-6 low; with three spans, both to
-     round-off (a face whose U doesn't start at 0, and a meridian of many spans, stay as
-     they were: docs/ports/measure.md). The default integration (Compute without an Eps,
-     FreeCAD's) reads neither UKnots nor SUIntSubs, and is unchanged to the bit.
-Drop when: Silico upgrades to an OCCT release that splits or refines a surface of revolution's
-     U (check BRepGProp_Face::UKnots and BRepGProp_Gauss::Compute).
+     GeomAbs_SurfaceOfRevolution included, whose U is an angle as a torus's is. So a full
+     turn of an arc whose circle crosses the axis (a barrel, a dome) measured 2.2e-7 low,
+     and of the fixture's two-span B-spline 3.9e-6 low, their centres of mass 9.3e-4 and
+     0.033 off their axes; with three spans, all to round-off. The knots are fixed at 0,
+     2*pi/3, 4*pi/3, as a torus's, not at the face's own thirds: a face whose U starts at
+     1 or 3 is fixed too, and only one that starts past 4*pi/3 stays nearly as it was. A
+     meridian of many spans keeps its residual, which is along the meridian (L), not U
+     (docs/ports/measure.md). The default integration (Compute without an Eps, FreeCAD's)
+     reads neither UKnots nor SUIntSubs, and is unchanged to the bit.
+Moves: tests/determinism/oracle-reference.json's torus_horn summary hash, 4be84275f45be6dc
+     to f3c516303caa58e7 (the horn torus is a surface of revolution; its centre of mass
+     was 7.46e-6 off its origin), to be re-recorded with the maintainer. No committed
+     fingerprint.
+Drop when: an OCCT release's UKnots gives a surface of revolution's U spans, or when
+     revolution_measures.rs and adversarial_revolution_measures.rs pass with the patch
+     removed.
 
 --- a/src/BRepGProp/BRepGProp_Face.cxx
 +++ b/src/BRepGProp/BRepGProp_Face.cxx
-@@ -283,6 +283,10 @@
+@@ -277,18 +277,22 @@
+     case GeomAbs_Cone:
+       N = 4;
+       break;
+     case GeomAbs_Sphere:
+       N = 4;
+       break;
      case GeomAbs_Torus:
        N = 4;
        break;
 +    case GeomAbs_SurfaceOfRevolution:
-+      // U is an angle over [0, 2*pi], as a torus's: three spans.
++      // Three spans, as a torus's: UKnots fixes the knots at 0, 2*pi/3, 4*pi/3, 2*pi.
 +      N = 4;
 +      break;
      case GeomAbs_BezierSurface:
        N = 2;
        break;
-@@ -345,6 +349,7 @@
+     case GeomAbs_BSplineSurface:
+       N = (*((Handle(Geom_BSplineSurface)*)&((mySurface.Surface()).Surface())))->NbUKnots();
+       break;
+     default:
+       N = 2;
+       break;
+@@ -339,18 +343,19 @@
+   {
+     case GeomAbs_Plane:
+       Knots(1) = mySurface.FirstUParameter();
+       Knots(2) = mySurface.LastUParameter();
+       break;
+     case GeomAbs_Cylinder:
      case GeomAbs_Cone:
      case GeomAbs_Sphere:
      case GeomAbs_Torus:
@@ -35,3 +61,9 @@ Drop when: Silico upgrades to an OCCT release that splits or refines a surface o
        Knots(1) = 0.0;
        Knots(2) = M_PI * 2.0 / 3.0;
        Knots(3) = M_PI * 4.0 / 3.0;
+       Knots(4) = M_PI * 6.0 / 3.0;
+       break;
+     case GeomAbs_BSplineSurface:
+       (*((Handle(Geom_BSplineSurface)*)&((mySurface.Surface()).Surface())))->UKnots(Knots);
+       break;
+     default:

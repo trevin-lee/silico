@@ -12,82 +12,14 @@
 
 use super::close::assert_close;
 use super::kernel::kernel;
-use super::numbers::relative_error;
 use super::oracle;
+use super::quadrature::{bezier, cap_integral, integral, kind, misses, misses_by};
 
 use std::f64::consts::{PI, TAU};
 
 use silico_core::kernel::KernelWorker;
 use silico_kernel::{Axis, BooleanOp, Curve, FaceRegions, Region, SketchPlane};
-use silico_protocol::{Blob, Primitive, ShapeData, Surface};
-
-/// Gauss–Legendre's eight nodes on [-1, 1] and their weights: exact for polynomials up to
-/// degree 15.
-const NODES: [f64; 8] = [
-    -0.960_289_856_497_536_2,
-    -0.796_666_477_413_626_7,
-    -0.525_532_409_916_329,
-    -0.183_434_642_495_649_8,
-    0.183_434_642_495_649_8,
-    0.525_532_409_916_329,
-    0.796_666_477_413_626_7,
-    0.960_289_856_497_536_2,
-];
-const WEIGHTS: [f64; 8] = [
-    0.101_228_536_290_376_26,
-    0.222_381_034_453_374_47,
-    0.313_706_645_877_887_3,
-    0.362_683_783_378_362,
-    0.362_683_783_378_362,
-    0.313_706_645_877_887_3,
-    0.222_381_034_453_374_47,
-    0.101_228_536_290_376_26,
-];
-
-/// The integral of `f` over [a, b], cut in `pieces`, eight Gauss–Legendre points on each.
-fn integral(a: f64, b: f64, pieces: u32, f: impl Fn(f64) -> f64) -> f64 {
-    let step = (b - a) / f64::from(pieces);
-    let mut sum = 0.0;
-    for k in 0..pieces {
-        let (lo, hi) = (a + step * f64::from(k), a + step * f64::from(k + 1));
-        for (x, w) in NODES.iter().zip(WEIGHTS) {
-            sum += w * (hi - lo) / 2.0 * f((lo + hi) / 2.0 + (hi - lo) / 2.0 * x);
-        }
-    }
-    sum
-}
-
-/// Each case whose `got` is further than `tolerance` (relative) from `want`, said with its
-/// error, so a failure lists every case that misses, not only the first.
-fn misses(cases: &[(String, f64, f64)], tolerance: f64) -> Vec<String> {
-    cases
-        .iter()
-        .filter(|(_, got, want)| relative_error(*got, *want) > tolerance)
-        .map(|(what, got, want)| {
-            format!(
-                "{what}: got {got}, want {want} (relative error {:e})",
-                relative_error(*got, *want)
-            )
-        })
-        .collect()
-}
-
-/// A face's kind of surface, as a word.
-fn kind(surface: &Surface) -> &'static str {
-    match surface {
-        Surface::Plane { .. } => "plane",
-        Surface::Cylinder { .. } => "cylinder",
-        Surface::Cone { .. } => "cone",
-        Surface::Sphere { .. } => "sphere",
-        Surface::Torus { .. } => "torus",
-        Surface::Revolution => "revolution",
-        Surface::Bezier => "bezier",
-        Surface::Bspline => "bspline",
-        Surface::Extrusion => "extrusion",
-        Surface::Offset => "offset",
-        Surface::Other => "other",
-    }
-}
+use silico_protocol::{Blob, Primitive, ShapeData};
 
 // ---- The barrel ----
 
@@ -136,17 +68,19 @@ fn barrel_regions() -> FaceRegions {
 }
 
 /// The barrel's measures by hand, for a whole turn: its volume, and its faces' areas (the
-/// annulus at each end, the arc's turned side, the bore), and the profile's own area (each
-/// end face of a part turn).
-struct Barrel {
-    volume: f64,
-    annulus: f64,
-    side: f64,
-    bore: f64,
-    profile: f64,
+/// annulus at each end, the arc's turned side, the bore), the profile's own area (each
+/// end face of a part turn), and the profile's second moment about the axis, ∫∫ x² dA,
+/// whose turn places the centre of mass.
+pub struct BarrelMeasures {
+    pub volume: f64,
+    pub annulus: f64,
+    pub side: f64,
+    pub bore: f64,
+    pub profile: f64,
+    pub moment: f64,
 }
 
-fn barrel_by_hand() -> Barrel {
+pub fn barrel_by_hand() -> BarrelMeasures {
     let (c, r) = barrel_circle();
     let [x, h] = END;
     // The arc's x at height z: xo(z) = c + √(R² − z²), from −h to h; its half-angle α,
@@ -159,13 +93,22 @@ fn barrel_by_hand() -> Barrel {
     // Pappus on the side: the arc's length 2Rα times the turn of its centroid, which is
     // R sin α / α from the circle's centre: 2π (2Rα c + 2R² sin α) = 4πR (cα + h).
     let side = 4.0 * PI * r * (c * alpha + h);
-    Barrel {
+    // ∫∫ x² dA = ∫ (xo³ − 1)/3 dz, xo³ = c³ + 3c² s + 3c s² + s³ with s = √(R² − z²):
+    // ∫ s² dz = 2hR² − 2h³/3, and ∫ s³ dz = (h/4)(5R² − 2h²) √(R² − h²) + (3R⁴/4) α.
+    let squares = 2.0 * h * r * r - 2.0 * h * h * h / 3.0;
+    let cubes = h / 4.0 * (5.0 * r * r - 2.0 * h * h) * libm::sqrt(r * r - h * h)
+        + 3.0 * r * r * r * r / 4.0 * alpha;
+    let moment = (2.0 * h * c * c * c + 3.0 * c * c * root + 3.0 * c * squares + cubes
+        - 2.0 * h * INNER * INNER * INNER)
+        / 3.0;
+    BarrelMeasures {
         volume,
         annulus: PI * (x * x - INNER * INNER),
         side,
         bore: TAU * INNER * 2.0 * h,
         // ∫ (xo − 1) dz.
         profile: 2.0 * h * (c - INNER) + root,
+        moment,
     }
 }
 
@@ -199,6 +142,11 @@ fn the_barrels_hand_values_are_the_closed_form() {
     let xo = |z: f64| c + libm::sqrt(r * r - z * z);
     let quadrature = PI * integral(-4.0, 4.0, 64, |z| xo(z) * xo(z) - 1.0);
     assert_close("by quadrature", quadrature, b.volume, 1e-14);
+    // The second moment, 273.0031557451118 in Python (closed form, and 20-point
+    // Gauss–Legendre on 64 pieces), and by quadrature here.
+    assert_close("the moment", b.moment, 273.003_155_745_111_8, 1e-15);
+    let quadrature = integral(-4.0, 4.0, 64, |z| (xo(z) * xo(z) * xo(z) - 1.0) / 3.0);
+    assert_close("the moment by quadrature", quadrature, b.moment, 1e-14);
 }
 
 #[test]
@@ -245,12 +193,48 @@ fn a_barrel_turned_whole_or_in_part_measures_as_by_hand() {
     assert!(missed.is_empty(), "{}", missed.join("\n"));
 }
 
+#[test]
+fn a_barrels_centre_of_mass_turned_whole_or_in_part_is_by_hand() {
+    // The profile is in the half plane y = 0, x > 0, turned about +z from angle 0 (no
+    // start), right-handed: (ρ, 0, z) goes to (ρ cos φ, ρ sin φ, z), and dV = ρ dρ dz dφ.
+    // So ∫ x dV = M sin θ and ∫ y dV = M (1 − cos θ), M = ∫∫ ρ² dA (the barrel's moment),
+    // and ∫ z dV = 0, the profile being symmetric about z = 0; each over V θ/2π. A whole
+    // turn's centre is the origin; 1.5π's (−0.6915836531753319, 0.6915836531753321, 0) and
+    // 0.5π's (2.0747509595259954, 2.074750959525995, 0) in Python. OCCT 7.9.3 without
+    // patch 0003 had the whole turn's 9.3e-4 off the axis. The whole turn's is held to
+    // 1e-12; a part turn's moments vary along U as sin and cos of the angle, which the
+    // three spans' six points don't integrate to round-off, so to 2e-9 (9.6e-10 measured at
+    // 1.5π, 5.2e-11 at 0.5π, 2026-10-25).
+    let b = barrel_by_hand();
+    let mut k = kernel();
+    let mut whole = Vec::new();
+    let mut part = Vec::new();
+    for (angle, what) in [(TAU, "2π"), (1.5 * PI, "1.5π"), (0.5 * PI, "0.5π")] {
+        let cases = if angle == TAU { &mut whole } else { &mut part };
+        let volume = b.volume * angle / TAU;
+        let want = [
+            b.moment * libm::sin(angle) / volume,
+            b.moment * (1.0 - libm::cos(angle)) / volume,
+            0.0,
+        ];
+        let shape = barrel_turned(&mut k, angle);
+        let s = k.summarize(&shape).unwrap();
+        for (axis, (got, want)) in ["x", "y", "z"].iter().zip(s.center.iter().zip(want)) {
+            cases.push((format!("{what}: the centre's {axis}"), *got, want));
+        }
+    }
+    let mut missed = misses_by(&whole, 1e-12);
+    missed.extend(misses_by(&part, 2e-9));
+    assert!(missed.is_empty(), "{}", missed.join("\n"));
+}
+
 /// The barrel turned about the sketch's x (model x), not its y: its profile on XZ is the
 /// first one's with the sketch's x and y swapped, x = ±4 from y = 1 to the arc through
 /// (4, 4), (0, 5), and (−4, 4) about (0, −3.5), counter-clockwise from 62° to 118°. (The
 /// barrel about z, its arc from −28° to 28° across the circle's angle 0, isn't cut by
 /// OCCT 7.9.3's boolean at all: the cut below leaves it whole, and so does a box through
-/// its side; open, 2026-10-25.)
+/// its side; open, docs/ports/measure.md, Known wrong results: a sketch arc across its
+/// circle's angle 0.)
 fn barrel_about_x(k: &mut KernelWorker) -> ShapeData {
     let (c, r) = barrel_circle();
     let [x, z] = END;
@@ -365,47 +349,52 @@ const SPANS: [[[f64; 2]; 4]; 2] = [
     [[2.0, 4.5], [2.5, 4.5], [3.0, 5.0], [4.0, 4.0]],
 ];
 
-/// A cubic Bézier span's point and derivative at `t`.
-fn bezier(p: &[[f64; 2]; 4], t: f64) -> ([f64; 2], [f64; 2]) {
-    let s = 1.0 - t;
-    let b = [s * s * s, 3.0 * t * s * s, 3.0 * t * t * s, t * t * t];
-    let db = [
-        -3.0 * s * s,
-        3.0 * s * s - 6.0 * t * s,
-        6.0 * t * s - 3.0 * t * t,
-        3.0 * t * t,
-    ];
-    let mut point = [0.0; 2];
-    let mut tangent = [0.0; 2];
-    for i in 0..4 {
-        for d in 0..2 {
-            point[d] += b[i] * p[i][d];
-            tangent[d] += db[i] * p[i][d];
-        }
-    }
-    (point, tangent)
+/// ∫∫ f dA over the cap between the cubic and its chord on y = 4, by Green's theorem along
+/// the cubic's two spans; `inner` is ∫ f dy from the chord to the point.
+fn over_cap(inner: impl Fn([f64; 2]) -> f64) -> f64 {
+    cap_integral(&[(0.0, 1.0); 2], |span, t| bezier(&SPANS[span], t), inner)
 }
 
-/// The cap between the cubic and its chord on y = 4: its area, ∫ (y − 4) dx, and its
-/// centroid's height, ∫ (y² − 16)/2 dx over that (Green's theorem along the curve; the
-/// chord adds nothing, y constant and dx along it the curve's back). Polynomials of degree
-/// 5 and 8 on each span, so the eight-point rule is exact.
+/// The cap's area, ∫∫ dA, and its centroid's height, ∫∫ y dA over that: polynomials of
+/// degree 5 and 8 along each span, so the eight-point rule is exact.
 fn cap_by_hand() -> (f64, f64) {
-    let along = |f: &dyn Fn([f64; 2], [f64; 2]) -> f64| {
-        SPANS
-            .iter()
-            .map(|span| {
-                integral(0.0, 1.0, 1, |t| {
-                    let (c, d) = bezier(span, t);
-                    f(c, d)
-                })
-            })
-            .sum::<f64>()
-    };
-    let area = along(&|c, d| (c[1] - 4.0) * d[0]);
-    let moment = along(&|c, d| (c[1] * c[1] - 16.0) / 2.0 * d[0]);
+    let area = over_cap(|[_, y]| y - 4.0);
+    let moment = over_cap(|[_, y]| (y * y - 16.0) / 2.0);
     (area, moment / area)
 }
+
+/// The cap's face, made by FreeCAD from the fixture's curve, which must be the cubic
+/// `SPANS` are of.
+fn cap_face() -> ShapeData {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/brep/curves_and_surfaces.brep"
+    );
+    let script = CAP.replace("PATH", &format!("{path:?}"));
+    let [spline, face]: [serde_json::Value; 2] =
+        serde_json::from_value(oracle::freecad(&script)).unwrap();
+    assert_eq!(
+        spline,
+        serde_json::json!([
+            3,
+            POLES.map(|[x, y]| [x, y, 0.0]),
+            [0.0, 0.5, 1.0],
+            [4, 1, 4]
+        ])
+    );
+    let cap = silico_kernel::from_text_brep(face.as_str().unwrap().as_bytes()).unwrap();
+    ShapeData::checked(Blob::inline(silico_kernel::to_brep(&cap).unwrap()), true)
+}
+
+/// The cubic's poles.
+const POLES: [[f64; 2]; 5] = [[0.0, 4.0], [1.0, 5.0], [2.0, 4.0], [3.0, 5.0], [4.0, 4.0]];
+
+/// The line the cap turns about: along x through (0, −5, 0), in the cap's plane, 9 below
+/// its chord.
+const BELOW_CHORD: Axis = Axis {
+    origin: [0.0, -5.0, 0.0],
+    direction: [1.0, 0.0, 0.0],
+};
 
 #[test]
 fn the_fixtures_cubic_cap_turned_whole_and_three_quarters_measures_as_pappus() {
@@ -419,39 +408,11 @@ fn the_fixtures_cubic_cap_turned_whole_and_three_quarters_measures_as_pappus() {
     assert_close("Pappus", pappus, 14789.0 * PI / 420.0, 1e-15);
     assert_close("Pappus", pappus, 110.621_461_318_903_46, 1e-15);
 
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/brep/curves_and_surfaces.brep"
-    );
-    let script = CAP.replace("PATH", &format!("{path:?}"));
-    let [spline, face]: [serde_json::Value; 2] =
-        serde_json::from_value(oracle::freecad(&script)).unwrap();
-    // The curve the spans are of.
-    assert_eq!(
-        spline,
-        serde_json::json!([
-            3,
-            [
-                [0.0, 4.0, 0.0],
-                [1.0, 5.0, 0.0],
-                [2.0, 4.0, 0.0],
-                [3.0, 5.0, 0.0],
-                [4.0, 4.0, 0.0]
-            ],
-            [0.0, 0.5, 1.0],
-            [4, 1, 4]
-        ])
-    );
-    let cap = silico_kernel::from_text_brep(face.as_str().unwrap().as_bytes()).unwrap();
-    let cap = ShapeData::checked(Blob::inline(silico_kernel::to_brep(&cap).unwrap()), true);
+    let cap = cap_face();
     let mut k = kernel();
-    let axis = Axis {
-        origin: [0.0, -5.0, 0.0],
-        direction: [1.0, 0.0, 0.0],
-    };
     let mut cases = Vec::new();
     for (angle, what) in [(TAU, "2π"), (1.5 * PI, "1.5π")] {
-        let shape = k.revolution(&cap, axis, 0.0, angle).unwrap().shape;
+        let shape = k.revolution(&cap, BELOW_CHORD, 0.0, angle).unwrap().shape;
         let s = k.summarize(&shape).unwrap();
         assert!(s.valid, "{what}");
         let d = k.describe(&shape).unwrap();
@@ -463,5 +424,154 @@ fn the_fixtures_cubic_cap_turned_whole_and_three_quarters_measures_as_pappus() {
         ));
     }
     let missed = misses(&cases, 1e-12);
+    assert!(missed.is_empty(), "{}", missed.join("\n"));
+}
+
+#[test]
+fn the_fixtures_cubic_cap_turned_whole_has_its_centre_where_its_symmetry_puts_it() {
+    // The poles mirror about x = 2, (0, 4) and (4, 4), (1, 5) and (3, 5), (2, 4) on it, and
+    // the knots (0, 0.5, 1) about 0.5, so the curve does, and the cap with its chord; and a
+    // whole turn about the line along x through (0, −5, 0) is symmetric about that line. So
+    // the solid's centre is (2, −5, 0). And by Green's theorem, its x is ∫∫ x ρ dA over
+    // ∫∫ ρ dA, ρ = y + 5 the distance from the axis: polynomials of degree 11 and 8 along
+    // each span, so exact, and 2 to round-off. OCCT 7.9.3 without patch 0003 had the centre
+    // 0.033 off.
+    for (i, [x, y]) in POLES.iter().enumerate() {
+        assert_eq!([4.0 - x, *y], POLES[POLES.len() - 1 - i]);
+    }
+    for (i, [x, y]) in SPANS[0].iter().enumerate() {
+        assert_eq!([4.0 - x, *y], SPANS[1][3 - i]);
+    }
+    // ∫ from the chord, y' = 4, to y of ρ' = y' + 5: ((y + 5)² − 81)/2.
+    let turned = over_cap(|[_, y]| ((y + 5.0) * (y + 5.0) - 81.0) / 2.0);
+    let x = over_cap(|[x, y]| x * ((y + 5.0) * (y + 5.0) - 81.0) / 2.0) / turned;
+    assert_close("the centre's x by Green's theorem", x, 2.0, 1e-15);
+
+    let cap = cap_face();
+    let mut k = kernel();
+    let shape = k.revolution(&cap, BELOW_CHORD, 0.0, TAU).unwrap().shape;
+    let s = k.summarize(&shape).unwrap();
+    assert!(s.valid);
+    let cases: Vec<(String, f64, f64)> = ["x", "y", "z"]
+        .iter()
+        .zip(s.center.iter().zip([2.0, -5.0, 0.0]))
+        .map(|(axis, (got, want))| (format!("the centre's {axis}"), *got, want))
+        .collect();
+    let missed = misses_by(&cases, 1e-12);
+    assert!(missed.is_empty(), "{}", missed.join("\n"));
+}
+
+// ---- The horn torus ----
+
+/// Silico's torus primitive with its tube touching the axis, radius1 = radius2 = 10
+/// (tests/oracle/primitives.json's torus_horn): FreeCAD's construction (bridge.cpp's
+/// make_torus), the circle about (R, 0, 0) of radius r = R in XZ turned about z, which
+/// OCCT keeps as a `SurfaceOfRevolution`, its circle's centre exactly its radius from the
+/// axis (neither sphere nor torus).
+const HORN: f64 = 10.0;
+
+fn horn_torus(k: &mut KernelWorker) -> ShapeData {
+    k.make(Primitive::Torus {
+        major_radius: HORN,
+        minor_radius: HORN,
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_horn_torus_measures_as_by_hand() {
+    // Pappus: the disc πr² turned about R, V = 2π²Rr²; the circle 2πr turned about R,
+    // A = 4π²Rr; the centre at its placement's origin, by symmetry. OCCT 7.9.3 without
+    // patch 0003 had the centre 7.46e-6 off (the determinism sweep's torus_horn summary).
+    let (big, small) = (HORN, HORN);
+    let mut k = kernel();
+    let shape = horn_torus(&mut k);
+    let s = k.summarize(&shape).unwrap();
+    assert!(s.valid);
+    let d = k.describe(&shape).unwrap();
+    let kinds: Vec<&str> = d.faces.iter().map(|f| kind(&f.surface)).collect();
+    assert_eq!(kinds, ["revolution"]);
+    let mut missed = misses(
+        &[
+            (
+                "the volume".into(),
+                s.volume,
+                2.0 * PI * PI * big * small * small,
+            ),
+            ("the area".into(), s.area, 4.0 * PI * PI * big * small),
+        ],
+        1e-12,
+    );
+    let centre: Vec<(String, f64, f64)> = ["x", "y", "z"]
+        .iter()
+        .zip(s.center)
+        .map(|(axis, got)| (format!("the centre's {axis}"), got, 0.0))
+        .collect();
+    missed.extend(misses_by(&centre, 1e-12 * big));
+    assert!(missed.is_empty(), "{}", missed.join("\n"));
+}
+
+#[test]
+fn a_horn_torus_fused_with_a_box_off_its_axis_measures_as_by_hand() {
+    // The box from (−22, −25, 5) to (30, 25, 15): off the axis (its middle at x = 4), its
+    // sides clear of the torus (which reaches 20 from the axis), its floor, z = 5, through
+    // the tube, which it cuts along two circles, ρ = R ∓ w with w = √(r² − 25) = 5√3:
+    // iso-lines of the torus's surface. The torus above z = 5, by slices, each the annulus
+    // between R ∓ √(r² − z²), of area 4πR √(r² − z²): its volume 4πR ∫ √(r² − z²) dz over
+    // [5, r] = 4πR [z √(r² − z²)/2 + (r²/2) asin(z/r)] = 40π (50π/3 − 12.5√3), and its
+    // moment ∫ z dV = 4πR (r² − 25)^(3/2)/3 = 5000√3 π; its side the tube's circle from
+    // 30° to 150° turned, 2πr ∫ (R + r cos ψ) dψ = 4π²Rr/3. So the fusion is the box's
+    // 26000 plus the torus's 2000π² less that cap; its area the box's 7240 less the floor's
+    // annulus inside the tube, 4πRw = 200√3 π, plus two thirds of the torus's 400π²; and
+    // its centre the box's (4, 0, 10) times 26000 less the cap's moment, over the fusion's
+    // volume (the torus's own centre is the origin). The boolean writes the two circles as
+    // B-splines (of degree 7 and 188 poles, and of 8 and 233), about 2e-10 off the circles
+    // at their middles, so the solid is that far from the one by hand: held to 1e-10, its
+    // volume, area, and centre measured 9.7e-12, 4.7e-11, and 2.6e-11 off (2026-10-25).
+    let (big, small) = (HORN, HORN);
+    let root3 = libm::sqrt(3.0);
+    let cap = 40.0 * PI * (50.0 * PI / 3.0 - 12.5 * root3);
+    let cap_moment = 5000.0 * root3 * PI;
+    let torus = 2.0 * PI * PI * big * small * small;
+    let volume = 26_000.0 + torus - cap;
+    let area = 7240.0 - 200.0 * root3 * PI + 2.0 / 3.0 * 4.0 * PI * PI * big * small;
+    let centre = [
+        26_000.0 * 4.0 / volume,
+        0.0,
+        (26_000.0 * 10.0 - cap_moment) / volume,
+    ];
+    let mut k = kernel();
+    let torus = horn_torus(&mut k);
+    let block = k
+        .make(Primitive::Box {
+            dx: 52.0,
+            dy: 50.0,
+            dz: 10.0,
+        })
+        .unwrap();
+    let block = k.translate(&block, [-22.0, -25.0, 5.0]).unwrap().shape;
+    let fused = k.boolean(BooleanOp::Fuse, &torus, &block).unwrap().shape;
+    let s = k.summarize(&fused).unwrap();
+    assert!(s.valid);
+    let d = k.describe(&fused).unwrap();
+    // The torus below the floor in two faces, both surfaces of revolution: the tube's
+    // outside, and its inside, which meets the axis at the origin; the box's floor in two,
+    // the disc of ρ < R − w inside the torus's hole and the rest; the box's top and sides.
+    let kinds: Vec<&str> = d.faces.iter().map(|f| kind(&f.surface)).collect();
+    let count = |which: &str| kinds.iter().filter(|k| **k == which).count();
+    assert_eq!((count("revolution"), count("plane")), (2, 7), "{kinds:?}");
+    let mut missed = misses(
+        &[
+            ("the volume".into(), s.volume, volume),
+            ("the area".into(), s.area, area),
+        ],
+        1e-10,
+    );
+    let centre: Vec<(String, f64, f64)> = ["x", "y", "z"]
+        .iter()
+        .zip(s.center.iter().zip(centre))
+        .map(|(axis, (got, want))| (format!("the centre's {axis}"), *got, want))
+        .collect();
+    missed.extend(misses_by(&centre, 1e-10));
     assert!(missed.is_empty(), "{}", missed.join("\n"));
 }

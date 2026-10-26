@@ -36,6 +36,8 @@ mod kernel;
 mod numbers;
 #[path = "common/oracle.rs"]
 mod oracle;
+#[path = "common/quadrature.rs"]
+mod quadrature;
 #[path = "../../silico-core/tests/common/sweeps.rs"]
 mod sweeps;
 
