@@ -89,6 +89,92 @@ fn replies_queued_before_the_inputs_end_are_still_written() {
 }
 
 #[test]
+fn replies_queued_while_the_client_isnt_reading_as_the_input_ends_are_all_written() {
+    let mut c = Client::initialized();
+    c.stall_output();
+    for id in 10..20 {
+        c.send(&format!(
+            r#"{{"jsonrpc": "2.0", "id": {id}, "method": "ping"}}"#
+        ));
+    }
+    c.wait_stalled();
+    c.close_input();
+    // The client reads again a while after its input closed.
+    let release = c.releaser();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        release();
+    });
+    assert_eq!(c.ended(), Ended::Input);
+    // Every pong written before `serve` returned.
+    let mut written = Vec::new();
+    while let Some(line) = c.line_within(std::time::Duration::ZERO) {
+        written.push(line);
+    }
+    let pongs: Vec<String> = (10..20)
+        .map(|id| format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{{}}}}"#))
+        .collect();
+    assert_eq!(written, pongs);
+}
+
+/// A reader that gives `parts` in turn, each some bytes or an error, then the input's end.
+struct Parts(
+    std::collections::VecDeque<Result<Vec<u8>, std::io::ErrorKind>>,
+    Vec<u8>,
+);
+
+impl std::io::Read for Parts {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let n = std::io::BufRead::fill_buf(self)?.len().min(out.len());
+        out[..n].copy_from_slice(&self.1[..n]);
+        std::io::BufRead::consume(self, n);
+        Ok(n)
+    }
+}
+
+impl std::io::BufRead for Parts {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if self.1.is_empty() {
+            match self.0.pop_front() {
+                Some(Ok(bytes)) => self.1 = bytes,
+                Some(Err(kind)) => return Err(kind.into()),
+                None => {}
+            }
+        }
+        Ok(&self.1)
+    }
+
+    fn consume(&mut self, n: usize) {
+        self.1.drain(..n);
+    }
+}
+
+#[test]
+fn a_read_interrupted_is_read_again_and_a_read_that_fails_ends_serve() {
+    use std::io::ErrorKind;
+    let parts = [
+        Ok(br#"{"jsonrpc": "2.0", "id": 1, "#.to_vec()),
+        // A signal mid-line: read again, the line whole.
+        Err(ErrorKind::Interrupted),
+        Ok(b"\"method\": \"ping\"}\n".to_vec()),
+        Err(ErrorKind::Interrupted),
+        Err(ErrorKind::PermissionDenied),
+        // Never read: the input failed.
+        Ok(b"{\"jsonrpc\": \"2.0\", \"id\": 2, \"method\": \"ping\"}\n".to_vec()),
+    ];
+    let mut c = Client::reading(Parts(parts.into_iter().collect(), Vec::new()));
+    assert_eq!(c.line(), r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+    match c.ended() {
+        Ended::InputFailed(why) => assert_eq!(
+            why,
+            std::io::Error::from(ErrorKind::PermissionDenied).to_string()
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(c.line_within(std::time::Duration::ZERO), None);
+}
+
+#[test]
 fn an_answer_being_written_as_the_input_ends_is_written_whole_before_serve_ends() {
     let mut c = Client::initialized();
     c.file("part.silico", BOX);

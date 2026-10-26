@@ -85,6 +85,13 @@ struct Stall {
     changed: Condvar,
 }
 
+/// Writes go on again, a blocked one first.
+fn release(stall: &Stall) {
+    let mut state = stall.state.lock().unwrap();
+    *state = (false, false);
+    stall.changed.notify_all();
+}
+
 impl Write for Lines {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let mut state = self.stall.state.lock().unwrap();
@@ -130,6 +137,14 @@ pub struct Client {
 impl Client {
     /// A server, not yet initialized.
     pub fn start() -> Client {
+        let (reader, input) = std::io::pipe().unwrap();
+        let mut client = Client::reading(BufReader::new(reader));
+        client.input = Some(input);
+        client
+    }
+
+    /// A server, not yet initialized, reading `reader` (the client's own writes fail).
+    pub fn reading(reader: impl std::io::BufRead + Send + 'static) -> Client {
         let dir = tempfile::tempdir().unwrap();
         let work = std::fs::canonicalize(dir.path()).unwrap().join("work");
         std::fs::create_dir(&work).unwrap();
@@ -143,7 +158,6 @@ impl Client {
         .unwrap();
         let server = Server::new(sessions).unwrap();
         let stop = server.stopper();
-        let (reader, input) = std::io::pipe().unwrap();
         let (to, lines) = mpsc::channel();
         let fail = Arc::new(AtomicBool::new(false));
         let stall = Arc::new(Stall::default());
@@ -153,12 +167,12 @@ impl Client {
             fail: Arc::clone(&fail),
             stall: Arc::clone(&stall),
         };
-        let server = std::thread::spawn(move || server.serve(BufReader::new(reader), output));
+        let server = std::thread::spawn(move || server.serve(reader, output));
         Client {
             _dir: dir,
             work,
             kernel,
-            input: Some(input),
+            input: None,
             lines,
             fail,
             stall,
@@ -306,9 +320,13 @@ impl Client {
 
     /// Writes to the output go on again, a blocked one first.
     pub fn release_output(&self) {
-        let mut state = self.stall.state.lock().unwrap();
-        *state = (false, false);
-        self.stall.changed.notify_all();
+        release(&self.stall);
+    }
+
+    /// What lets writes to the output go on again, from another thread.
+    pub fn releaser(&self) -> impl FnOnce() + Send + 'static {
+        let stall = Arc::clone(&self.stall);
+        move || release(&stall)
     }
 
     /// Whether `serve` has returned.

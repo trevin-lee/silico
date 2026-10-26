@@ -166,6 +166,26 @@ fn serve_takes_its_options_as_every_command_does() {
 }
 
 #[test]
+fn serve_exits_2_when_its_stdin_cant_be_read() {
+    // Its stdin a directory, which reading fails (EISDIR).
+    let dir = tempfile::tempdir().unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_silico"));
+    command
+        .args(["serve", "--workspace"])
+        .arg(dir.path())
+        .env("SILICO_RENDER_WORKER", dir.path().join("no-such-worker"))
+        .stdin(std::fs::File::open(dir.path()).unwrap());
+    let out = output(command);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("silico serve: stdin couldn't be read: Is a directory"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn serve_ends_on_sigterm_with_its_input_still_open() {
     let dir = tempfile::tempdir().unwrap();
     let mut child = serve(dir.path(), None, Stdio::null());
