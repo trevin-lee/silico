@@ -655,13 +655,11 @@ print("SILICO_ORACLE " + json.dumps(out))
             theirs["area"]
         );
         // Silico integrates adaptively (to a relative 1e-9), FreeCAD with a fixed order of
-        // points: they agree to 1e-9 except at a horn torus's singular point, where the
-        // adaptive center is 7.5e-6 off the axis (of a torus 40 across).
-        let horn = matches!(primitive, Primitive::Torus { major_radius, minor_radius } if major_radius == minor_radius);
-        let center_tolerance = if horn { 1e-5 } else { 1e-9 };
+        // points: they agree to 1e-9, a horn torus's center too since patch 0003 (it was
+        // 7.5e-6 off the axis, of a torus 40 across: docs/ports/measure.md).
         for (ours, theirs) in s.center.iter().zip(theirs["center"].as_array().unwrap()) {
             assert!(
-                (ours - num(theirs)).abs() <= center_tolerance,
+                (ours - num(theirs)).abs() <= 1e-9,
                 "{what}: center {:?}",
                 s.center
             );
