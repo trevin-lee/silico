@@ -227,7 +227,10 @@ fn cancel_naming_another_command_is_refused_with_whats_running_as_the_candidate(
     assert_eq!(refusal(&stopped), cancelled("set_field"));
     assert_eq!(f.file(), BOX);
     assert_eq!(f.revision(), Revision::OPENED);
-    assert_eq!(answer(f.sessions.text(&f.id, None)).result.unwrap().text, BOX);
+    assert_eq!(
+        answer(f.sessions.text(&f.id, None)).result.unwrap().text,
+        BOX
+    );
 }
 
 #[test]
@@ -335,7 +338,13 @@ fn a_commit_cancelled_while_it_waits_for_its_rebuild_leaves_the_transaction_open
 #[test]
 fn a_published_read_is_stopped_by_name_and_answers_cancelled() {
     let f = opened();
-    assert!(answer(f.sessions.check(&f.id, ModelChoice::Current)).result.unwrap().problems.is_empty());
+    assert!(
+        answer(f.sessions.check(&f.id, ModelChoice::Current))
+            .result
+            .unwrap()
+            .problems
+            .is_empty()
+    );
     let (go, wait) = mpsc::channel::<()>();
     let (started, was_started) = mpsc::channel::<bool>();
     let (seen, saw) = mpsc::channel::<bool>();
@@ -433,7 +442,13 @@ fn an_edit_cancelled_while_its_commit_rebuilds_stops_that_rebuild() {
 #[test]
 fn cancel_stops_every_read_of_its_name_and_its_refusal_names_each_command_running() {
     let f = opened();
-    assert!(answer(f.sessions.check(&f.id, ModelChoice::Current)).result.unwrap().problems.is_empty());
+    assert!(
+        answer(f.sessions.check(&f.id, ModelChoice::Current))
+            .result
+            .unwrap()
+            .problems
+            .is_empty()
+    );
     // Two published reads of one name, each waiting for a go.
     let (go, wait) = mpsc::channel::<()>();
     let wait = Arc::new(Mutex::new(wait));
@@ -488,7 +503,13 @@ fn status_says_none_of_a_revision_nothing_rebuilt_or_whose_document_the_gate_ref
     std::fs::write(&flat, BOX.replace("\"length\": 40", "\"length\": 0")).unwrap();
     let s = answer(f.sessions.open(&flat, false)).session.unwrap().id;
     // Its check gives the gate's problems, and rebuilds nothing.
-    assert!(!answer(f.sessions.check(&s, ModelChoice::Current)).result.unwrap().problems.is_empty());
+    assert!(
+        !answer(f.sessions.check(&s, ModelChoice::Current))
+            .result
+            .unwrap()
+            .problems
+            .is_empty()
+    );
     let status = f.sessions.status(&s).result.unwrap();
     assert!(!status.gated);
     assert_eq!(status.rebuild.state, RebuildState::None);

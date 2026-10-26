@@ -11,8 +11,10 @@ use std::borrow::Cow;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 
-use super::elements::words;
-use super::{COMMANDS, ErrorSchema, Json, RequestFields, ToWire, problems, wire_shape};
+#[cfg(doc)]
+use super::COMMANDS;
+use super::transaction::BeginResultSchema;
+use super::{ErrorSchema, Json, RequestFields, ToWire, problems, wire_shape, words};
 use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{
     Cancelled, Closed, Limits, Opened, Problems, Rebuild, SessionId, Status, Version,
@@ -70,8 +72,32 @@ impl ToWire for OpenRequest {
     }
 }
 
+/// The commands that run in a session, each by its name, in the design's order (a subset of
+/// [`COMMANDS`]): what `status` says is running, and `cancel` stops. Every command but those
+/// answered at once, never running (`version`, `status`, `cancel`, and `schema`), and
+/// `open`, which runs before its session is there to name it.
+pub const SESSION_COMMANDS: [&str; 17] = [
+    "close",
+    "begin",
+    "commit",
+    "rollback",
+    "format",
+    "add_feature",
+    "set_field",
+    "remove_feature",
+    "replace_text",
+    "text",
+    "outline",
+    "check",
+    "elements",
+    "query",
+    "mass_properties",
+    "distance",
+    "angle",
+];
+
 /// A `cancel` request: the session, and the command to stop, by its name: one of the
-/// wire's commands ([`COMMANDS`]), never any other string.
+/// commands that run in a session ([`SESSION_COMMANDS`]), never any other string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CancelRequest {
     pub session: SessionId,
@@ -80,13 +106,14 @@ pub struct CancelRequest {
 
 impl CancelRequest {
     /// The request `node` holds, or every reason its shape is refused: a `command` that
-    /// isn't a command's name refused, with every command's name as candidates.
+    /// isn't the name of a command that runs in a session refused, with every such name as
+    /// candidates.
     pub fn read(node: &Node) -> Result<Self, Problems> {
         RequestFields::read(node, |f| {
             let session = f.session();
             let command = f.word(
                 "command",
-                &COMMANDS.map(|(name, _)| (name, name)),
+                &SESSION_COMMANDS.map(|name| (name, name)),
                 "commands",
             );
             Some(CancelRequest {
@@ -107,25 +134,20 @@ impl ToWire for CancelRequest {
     }
 }
 
-/// A count as a result writes it: a whole number.
-fn count(n: usize) -> Json<'static> {
-    Json::whole(n as u64)
-}
-
 impl ToWire for Limits {
     /// Every limit, in the design's order (section 6's table).
     fn to_wire(&self) -> Json<'_> {
         Json::object([
-            ("document_bytes", count(self.document_bytes)),
-            ("request_bytes", count(self.request_bytes)),
-            ("request_depth", count(self.request_depth)),
-            ("response_bytes", count(self.response_bytes)),
-            ("listed", count(self.listed)),
-            ("sessions", count(self.sessions)),
-            ("published_reads", count(self.published_reads)),
+            ("document_bytes", Json::count(self.document_bytes)),
+            ("request_bytes", Json::count(self.request_bytes)),
+            ("request_depth", Json::count(self.request_depth)),
+            ("response_bytes", Json::count(self.response_bytes)),
+            ("listed", Json::count(self.listed)),
+            ("sessions", Json::count(self.sessions)),
+            ("published_reads", Json::count(self.published_reads)),
             ("elements", Json::whole(self.elements.into())),
             ("query", Json::whole(self.query.into())),
-            ("query_measures", count(self.query_measures)),
+            ("query_measures", Json::count(self.query_measures)),
             ("kernel_seconds", Json::whole(self.kernel_seconds)),
             ("sketch_seconds", Json::whole(self.sketch_seconds)),
         ])
@@ -153,7 +175,7 @@ impl ToWire for Opened {
         Json::object([
             ("path", Json::str(&self.path)),
             ("created", Json::bool(self.created)),
-            ("features", Json::or_null(self.features, count)),
+            ("features", Json::or_null(self.features, Json::count)),
             ("bodies", Json::ids(&self.bodies)),
             ("problems", problems),
             ("problems_total", problems_total),
@@ -185,7 +207,7 @@ impl ToWire for Status {
     /// rebuild.
     fn to_wire(&self) -> Json<'_> {
         Json::object([
-            ("features", Json::or_null(self.features, count)),
+            ("features", Json::or_null(self.features, Json::count)),
             ("gated", Json::bool(self.gated)),
             (
                 "transaction",
@@ -212,19 +234,19 @@ impl ToWire for Cancelled {
     }
 }
 
-/// A command of the API's, by name: one of the commands `schema` describes, in the design's
-/// order.
-pub struct CommandNameSchema;
+/// A command that runs in a session, by name ([`SESSION_COMMANDS`]), in the design's order.
+pub struct SessionCommandSchema;
 
-impl JsonSchema for CommandNameSchema {
+impl JsonSchema for SessionCommandSchema {
     fn schema_name() -> Cow<'static, str> {
-        "CommandName".into()
+        "SessionCommand".into()
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         words(
-            "A command's name, as a tool is named.",
-            COMMANDS.map(|(name, _)| name),
+            "A command that runs in a session, by name, as a tool is named: what `status` says \
+             is running, and `cancel` stops.",
+            SESSION_COMMANDS,
         )
     }
 }
@@ -345,15 +367,6 @@ pub struct StatusRequestSchema {
     pub session: String,
 }
 
-/// The transaction open in the session.
-#[derive(JsonSchema)]
-#[schemars(rename = "Transaction", transform = wire_shape)]
-pub struct TransactionSchema {
-    /// The revision it began from: the one `rollback` returns to.
-    #[schemars(range(min = 1))]
-    pub base: u64,
-}
-
 /// What's become of a revision's rebuild.
 #[derive(JsonSchema)]
 #[schemars(rename = "RebuildState", rename_all = "lowercase")]
@@ -391,14 +404,13 @@ pub struct StatusResultSchema {
     pub features: Option<u64>,
     /// Whether the gate took the document.
     pub gated: bool,
-    /// The transaction open: null if none is.
-    pub transaction: Option<TransactionSchema>,
-    /// The name of the session's queued command running, which `cancel` can stop: null if
-    /// none is.
-    pub running: Option<String>,
-    /// The name of each read of the published model running, in the order they started:
-    /// `cancel` stops every one of a name.
-    pub reads: Vec<String>,
+    /// The transaction open, as `begin` answered it: null if none is.
+    pub transaction: Option<BeginResultSchema>,
+    /// The session's queued command running, which `cancel` can stop: null if none is.
+    pub running: Option<SessionCommandSchema>,
+    /// Each read of the published model running, in the order they started: `cancel` stops
+    /// every one of a name.
+    pub reads: Vec<SessionCommandSchema>,
     pub rebuild: RebuildSchema,
 }
 
@@ -414,7 +426,7 @@ pub struct CancelRequestSchema {
     #[schemars(regex(pattern = SESSION_ID_PATTERN))]
     pub session: String,
     /// The command to stop, as `status` names it.
-    pub command: CommandNameSchema,
+    pub command: SessionCommandSchema,
 }
 
 /// `cancel`'s result.
@@ -422,7 +434,7 @@ pub struct CancelRequestSchema {
 #[schemars(rename = "CancelResult", transform = wire_shape)]
 pub struct CancelResultSchema {
     /// The command, as the request named it.
-    pub command: CommandNameSchema,
+    pub command: SessionCommandSchema,
     /// Whether it was stopped before it had done its work: false means it had (an edit
     /// already saved), and it answers with its real result. Read `status` for the revision.
     pub stopped: bool,

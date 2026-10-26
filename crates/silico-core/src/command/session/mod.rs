@@ -592,8 +592,10 @@ impl<P: Clients + 'static> Sessions<P> {
             warnings: Problems::none(),
         };
         match choice {
-            ModelChoice::Current => self.queued(session, "check", move |session, stop, model| {
-                match session.current(stop) {
+            ModelChoice::Current => {
+                self.queued(session, "check", move |session, stop, model| match session
+                    .current(stop)
+                {
                     Ok(current) => {
                         *model = Some(current.read);
                         let _span = tracing::info_span!("check").entered();
@@ -603,8 +605,8 @@ impl<P: Clients + 'static> Sessions<P> {
                     }
                     Err(Unbuilt::Gated(problems)) => Ok(answer(problems)),
                     Err(Unbuilt::Unavailable(problems)) => Err(problems),
-                }
-            }),
+                })
+            }
             ModelChoice::Published => {
                 self.read_model(session, "check", ModelChoice::Published, move |read| {
                     let _span = tracing::info_span!("check").entered();

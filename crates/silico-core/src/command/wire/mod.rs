@@ -74,6 +74,11 @@ impl<'a> Json<'a> {
         Json(Out::Raw(n.to_string()))
     }
 
+    /// A count, or a place counted from 0: a whole number.
+    pub fn count(n: usize) -> Self {
+        Json(Out::Raw(n.to_string()))
+    }
+
     pub fn str(text: &'a str) -> Self {
         Json(Out::Str(text))
     }
@@ -1244,6 +1249,16 @@ pub(crate) fn wire_shape(schema: &mut schemars::Schema) {
     if let Some(schema) = schema.as_object_mut() {
         close(schema);
     }
+}
+
+/// A string schema of one of `words`, described as `description`.
+fn words(description: &str, words: impl IntoIterator<Item = &'static str>) -> schemars::Schema {
+    let words: Vec<&str> = words.into_iter().collect();
+    schemars::json_schema!({
+        "description": description,
+        "type": "string",
+        "enum": words,
+    })
 }
 
 /// `schema`, an object's schema, closed to its properties (an object of none, a request or

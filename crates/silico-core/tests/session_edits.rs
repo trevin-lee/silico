@@ -90,7 +90,10 @@ impl Fixture {
     }
 
     fn text(&self) -> String {
-        answer(self.sessions.text(&self.id, None)).result.unwrap().text
+        answer(self.sessions.text(&self.id, None))
+            .result
+            .unwrap()
+            .text
     }
 
     fn set(
@@ -977,7 +980,9 @@ fn a_commit_of_an_edit_outside_a_transaction_rebuilds_it_on_the_kernel_once() {
     f.set("k7f2qx3m", "length", "41").result.unwrap();
     assert_eq!(f.boxes(), 1);
     // Its check rebuilds the saved document from the steps already built.
-    answer(f.sessions.check(&f.id, ModelChoice::Current)).result.unwrap().problems;
+    answer(f.sessions.check(&f.id, ModelChoice::Current))
+        .result
+        .unwrap();
     assert_eq!(f.boxes(), 1);
 }
 
@@ -1426,7 +1431,9 @@ fn an_edit_whose_save_writes_a_solve_leaves_its_check_to_rebuild_the_saved_docum
     let sent = f.sketches.requests().len();
     // The edit's model was solved from 11, not from what the file now holds: its check
     // solves the saved document again, sending pb's x as saved.
-    answer(f.sessions.check(&f.id, ModelChoice::Current)).result.unwrap().problems;
+    answer(f.sessions.check(&f.id, ModelChoice::Current))
+        .result
+        .unwrap();
     let requests = f.sketches.requests();
     assert_eq!(requests.len(), sent + 1);
     assert_eq!(requests[sent].values[8], 12.25);
@@ -1469,7 +1476,9 @@ fn an_edit_refused_counts_places_in_its_own_order_not_the_canonical_text_s() {
 fn dropping_the_sessions_while_an_edit_rebuilds_refuses_it_and_writes_nothing() {
     let f = opened(SKETCHED);
     // Settled first, so the solve held is the edit's.
-    answer(f.sessions.check(&f.id, ModelChoice::Current)).result.unwrap().problems;
+    answer(f.sessions.check(&f.id, ModelChoice::Current))
+        .result
+        .unwrap();
     f.sketches.hold();
     let running = f.sessions.set_field(
         &f.id,

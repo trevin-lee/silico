@@ -503,7 +503,10 @@ fn a_file_thats_gone_refuses_each_command_but_status_and_close_leaving_the_sessi
         Some(REREAD)
     );
     assert_eq!(Fixture::after(&text), (1, false));
-    assert_eq!(refusal(&answer(f.sessions.check(&f.id, ModelChoice::Current))), gone);
+    assert_eq!(
+        refusal(&answer(f.sessions.check(&f.id, ModelChoice::Current))),
+        gone
+    );
     assert_eq!(refusal(&answer(f.sessions.begin(&f.id))), gone);
     assert_eq!(
         f.set_length(Revision::OPENED, "41")

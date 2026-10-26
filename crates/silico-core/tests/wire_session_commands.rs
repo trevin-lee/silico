@@ -462,9 +462,10 @@ const LEFT_OUT: [(&str, &str, &str, &str); 5] = [
         "check",
         "reference_broken",
         "edges.0",
-        "check of a fillet whose edge an upstream edit removed: its message and candidate are \
-         a real cut's element map's, which the fake kernel doesn't make (its boolean keeps both \
-         inputs whole), so it's for a test on kernel workers, as the entries' examples are",
+        "check of a fillet whose edge an upstream edit removed needs a kernel worker: its \
+         message and candidate are a real cut's element map's, which the fake kernel doesn't \
+         make (its boolean keeps both inputs whole); recorded by silico-kernel's wire_examples \
+         in a follow-up: the design's exact candidate needs checking against OCCT",
     ),
 ];
 

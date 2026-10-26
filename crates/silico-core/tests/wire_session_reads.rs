@@ -17,14 +17,14 @@ use std::sync::Arc;
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::wire::reads::{CheckRequest, TextRequest};
-use silico_core::command::wire::session::{CancelRequest, OpenRequest, VersionRequest};
-use silico_core::command::wire::transaction::SessionRequest;
-use silico_core::command::wire::{
-    COMMANDS, Layout, ToWire, response, response_text, snapshot_value, write,
+use silico_core::command::wire::session::{
+    CancelRequest, OpenRequest, SESSION_COMMANDS, VersionRequest,
 };
+use silico_core::command::wire::transaction::SessionRequest;
+use silico_core::command::wire::{Layout, ToWire, response, response_text, snapshot_value, write};
 use silico_core::command::{
-    Begun, Cancelled, Limits, OutlineAnswer, TextAnswer, MAX_SESSIONS, ModelChoice, Opened, Problems, Rebuild, RebuildState,
-    Response, Revision, SessionId, Sessions, Status, VERSION, Version,
+    Begun, Cancelled, Limits, MAX_SESSIONS, ModelChoice, Opened, OutlineAnswer, Problems, Rebuild,
+    RebuildState, Response, Revision, SessionId, Sessions, Status, TextAnswer, VERSION, Version,
 };
 use silico_core::document::json::{Node, read};
 use silico_core::fake::{FakeKernel, FakeSketches, Hold};
@@ -339,8 +339,8 @@ fn requests_with_their_other_values_are_read_and_written_back() {
     assert_eq!(request.model, ModelChoice::Published);
     assert_eq!(written(&request), text);
     holds(&schema_of("check", "request"), text, "published");
-    // Every command can be named, and is written back as named.
-    for (name, _) in COMMANDS {
+    // Every command that runs in a session can be named, and is written back as named.
+    for name in SESSION_COMMANDS {
         let text = format!("{{\"session\": \"s1\", \"command\": \"{name}\"}}\n");
         let request = CancelRequest::read(&parsed(&text)).unwrap();
         assert_eq!(request.command, name);
@@ -417,13 +417,17 @@ fn version_and_open_take_only_their_fields_and_require_each() {
 #[test]
 fn cancel_names_only_a_command_and_any_other_name_is_refused_with_every_command_as_candidates() {
     let text = example("cancel/request");
-    let names: Vec<String> = COMMANDS.iter().map(|(n, _)| (*n).to_owned()).collect();
-    // A name close to one, a command not built yet, the session's own probe, and other types.
+    let names: Vec<String> = SESSION_COMMANDS.map(str::to_owned).to_vec();
+    // A name close to one, a command not built yet, the session's own probe, commands that
+    // never run in a session, and other types.
     for (value, got) in [
         (r#""Check""#, "Check"),
         (r#""check ""#, r#""check ""#),
         (r#""render""#, "render"),
         (r#""probe""#, "probe"),
+        (r#""status""#, "status"),
+        (r#""open""#, "open"),
+        (r#""version""#, "version"),
         (r#""""#, r#""""#),
         ("null", "null"),
         ("1", "1"),
@@ -447,15 +451,15 @@ fn cancel_names_only_a_command_and_any_other_name_is_refused_with_every_command_
         assert_eq!(error.candidates(), names.as_slice(), "{value}");
         fails(&schema_of("cancel", "request"), &changed, value);
     }
-    // The schema's names are the commands', in order, and its result names one too.
+    // The schema's names are those, in order, and its result names one too.
     let request = schema_of("cancel", "request");
     assert_eq!(
-        request["$defs"]["CommandName"]["enum"],
+        request["$defs"]["SessionCommand"]["enum"],
         serde_json::json!(names)
     );
     let result = schema_of("cancel", "result");
     assert_eq!(
-        result["$defs"]["CommandName"]["enum"],
+        result["$defs"]["SessionCommand"]["enum"],
         serde_json::json!(names)
     );
     fails(
@@ -720,6 +724,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
         text,
         "{\n  \"features\": 7,\n  \"gated\": true,\n  \"transaction\": {\"base\": 4},\n  \"running\": \"check\",\n  \"reads\": [\"distance\"],\n  \"rebuild\": {\"revision\": 6, \"state\": \"running\"}\n}\n"
     );
+    // Its read, `distance`, a command that runs in a session (M4.5's): it holds.
     holds(
         &schema_of("status", "result"),
         &text,
@@ -846,7 +851,8 @@ fn text_outline_and_check_answer_as_the_design_gives_them() {
     let request = TextRequest::read(&parsed(&example("text/request"))).unwrap();
     let text = answer(f.sessions.text(&request.session, request.feature))
         .result
-        .unwrap().text;
+        .unwrap()
+        .text;
     let written_text = written(&TextAnswer { text });
     assert_eq!(written_text, example("text/result"));
     holds(&schema_of("text", "result"), &written_text, "text");
@@ -854,7 +860,10 @@ fn text_outline_and_check_answer_as_the_design_gives_them() {
     // The design's block's outline.
     let f = opened(&block());
     let request = SessionRequest::read(&parsed(&example("outline/request"))).unwrap();
-    let outline = answer(f.sessions.outline(&request.session)).result.unwrap().outline;
+    let outline = answer(f.sessions.outline(&request.session))
+        .result
+        .unwrap()
+        .outline;
     let text = written(&OutlineAnswer { outline });
     assert_eq!(text, example("outline/result"));
     holds(&schema_of("outline", "result"), &text, "outline");
@@ -916,14 +925,14 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
             "StatusRequest",
             &[],
             "StatusResult",
-            &["Rebuild", "RebuildState", "Transaction"],
+            &["BeginResult", "Rebuild", "RebuildState", "SessionCommand"],
         ),
         (
             "cancel",
             "CancelRequest",
-            &["CommandName"],
+            &["SessionCommand"],
             "CancelResult",
-            &["CommandName"],
+            &["SessionCommand"],
         ),
         ("text", "TextRequest", &["FeatureId"], "TextResult", &[]),
         ("outline", "OutlineRequest", &[], "OutlineResult", &[]),
@@ -950,17 +959,49 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
         holds(&schema, "{}", of);
         fails(&schema, r#"{"x": 1}"#, of);
     }
-    // `check`'s fresh only false; `status`'s running a name or null.
+    // `check`'s fresh only false; `status`'s running a command that runs in a session, by
+    // name, or null, and its reads each one; `cancel`'s command, asked and answered, one.
     let check = schema_of("check", "request");
     assert_eq!(check["properties"]["fresh"]["const"], false);
     assert_eq!(check["properties"]["fresh"]["type"], "boolean");
+    let command = serde_json::json!({"$ref": "#/$defs/SessionCommand"});
+    let status = schema_of("status", "result");
+    assert_eq!(
+        status["properties"]["running"]["anyOf"],
+        serde_json::json!([command, {"type": "null"}])
+    );
+    assert_eq!(status["properties"]["reads"]["items"], command);
+    assert_eq!(
+        status["$defs"]["SessionCommand"]["enum"],
+        serde_json::json!(SESSION_COMMANDS)
+    );
+    for part in ["request", "result"] {
+        let cancel = schema_of("cancel", part);
+        assert_eq!(cancel["properties"]["command"]["$ref"], command["$ref"]);
+    }
+    let base = |running: &str| {
+        format!(
+            r#"{{"features": 1, "gated": true, "transaction": null, "running": {running}, "reads": [], "rebuild": {{"revision": 1, "state": "none"}}}}"#
+        )
+    };
+    holds(&status, &base(r#""check""#), "check running");
+    holds(&status, &base("null"), "nothing running");
+    for never in [r#""status""#, r#""version""#, r#""probe""#, "1"] {
+        fails(&status, &base(never), never);
+    }
 }
 
 #[test]
 fn a_published_check_answers_at_once_from_the_older_revision_while_the_current_rebuilds() {
     let f = opened(BOX);
     // Revision 1's model, built and published.
-    assert!(answer(f.sessions.check(&s1(), ModelChoice::Current)).result.unwrap().problems.is_empty());
+    assert!(
+        answer(f.sessions.check(&s1(), ModelChoice::Current))
+            .result
+            .unwrap()
+            .problems
+            .is_empty()
+    );
     // Revision 2, an edit in a transaction, its rebuild held by a current check.
     answer(f.sessions.begin(&s1())).result.unwrap();
     let edit = answer(f.sessions.set_field(
@@ -1028,7 +1069,13 @@ fn a_published_check_of_a_document_the_gate_refused_follows_the_published_rule()
     // Something published, then the file changed to a document the gate refuses, reloaded at
     // revision 2: the published check answers from revision 1's model.
     let f = opened(BOX);
-    assert!(answer(f.sessions.check(&s1(), ModelChoice::Current)).result.unwrap().problems.is_empty());
+    assert!(
+        answer(f.sessions.check(&s1(), ModelChoice::Current))
+            .result
+            .unwrap()
+            .problems
+            .is_empty()
+    );
     std::fs::write(f.path(), &zero).unwrap();
     assert!(
         answer(f.sessions.text(&s1(), None))
@@ -1244,6 +1291,10 @@ fn a_published_check_lists_problems_beside_a_kernel_fault() {
         Some(ErrorCode::WorkerCrashed)
     );
     let checked = published.result.unwrap();
-    assert!(checked.problems.is_empty(), "{:?}", checked.problems.errors());
+    assert!(
+        checked.problems.is_empty(),
+        "{:?}",
+        checked.problems.errors()
+    );
     assert!(checked.warnings.is_empty());
 }

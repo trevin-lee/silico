@@ -292,7 +292,10 @@ fn a_sessions_check_gives_drift_of_a_stored_fingerprint() {
     );
     let f = fixture();
     let a = f.open(&f.file("a.silico", &stored));
-    let problems = answer(f.sessions.check(&a, ModelChoice::Current)).result.unwrap().problems;
+    let problems = answer(f.sessions.check(&a, ModelChoice::Current))
+        .result
+        .unwrap()
+        .problems;
     let codes: Vec<ErrorCode> = problems.errors().iter().map(|e| e.code()).collect();
     assert_eq!(codes, [ErrorCode::Drift]);
     assert_eq!(problems.errors()[0].feature(), Some("k7f2qx3m"));
@@ -331,7 +334,10 @@ fn a_kernel_fault_is_given_once_beside_the_checks_result_and_kept_for_the_revisi
     });
     let s = f.open(&f.file("s.silico", BOX_AND_BALL));
     let first = answer(f.sessions.check(&s, ModelChoice::Current));
-    assert!(first.result.as_ref().unwrap().problems.is_empty(), "{first:?}");
+    assert!(
+        first.result.as_ref().unwrap().problems.is_empty(),
+        "{first:?}"
+    );
     assert_eq!(first.model.as_ref().unwrap().revision, Revision::OPENED);
     assert_eq!(
         fault(&first),
@@ -375,7 +381,10 @@ fn the_fault_given_is_the_first_the_timeline_met_in_a_measure_or_a_failure() {
     });
     let s = f.open(&f.file("a.silico", &stored));
     let checked = answer(f.sessions.check(&s, ModelChoice::Current));
-    assert!(checked.result.as_ref().unwrap().problems.is_empty(), "{checked:?}");
+    assert!(
+        checked.result.as_ref().unwrap().problems.is_empty(),
+        "{checked:?}"
+    );
     let (code, feature, message, _) = fault(&checked);
     assert_eq!(
         (code, feature.as_deref(), message.as_str()),
@@ -408,7 +417,10 @@ fn a_sketch_solver_that_cant_be_had_is_one_fault_naming_no_feature() {
     std::fs::write(&path, two).unwrap();
     let s = answer(sessions.open(&path, false)).session.unwrap().id;
     let checked = answer(sessions.check(&s, ModelChoice::Current));
-    assert!(checked.result.as_ref().unwrap().problems.is_empty(), "{checked:?}");
+    assert!(
+        checked.result.as_ref().unwrap().problems.is_empty(),
+        "{checked:?}"
+    );
     assert_eq!(
         fault(&checked),
         (

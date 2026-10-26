@@ -271,11 +271,15 @@ fn a_document_the_gate_refuses_opens_with_its_problems() {
     assert_eq!(status.features, Some(1));
     assert!(!status.gated);
     // It reads as a document, so its text and outline are there to mend it from.
-    assert_eq!(answer(f.sessions.text(&s1, None)).result.unwrap().text, FLAT_BOX);
+    assert_eq!(
+        answer(f.sessions.text(&s1, None)).result.unwrap().text,
+        FLAT_BOX
+    );
     assert!(
         answer(f.sessions.outline(&s1))
             .result
-            .unwrap().outline
+            .unwrap()
+            .outline
             .starts_with("k7f2qx3m \"Block\" box length 0,")
     );
 }
@@ -297,7 +301,10 @@ fn text_that_isnt_a_document_opens_with_the_readers_error_which_outline_gives_to
     let status = f.sessions.status(&s1).result.unwrap();
     assert_eq!(status.features, None);
     assert!(!status.gated);
-    assert_eq!(answer(f.sessions.text(&s1, None)).result.unwrap().text, junk);
+    assert_eq!(
+        answer(f.sessions.text(&s1, None)).result.unwrap().text,
+        junk
+    );
     let outline = answer(f.sessions.outline(&s1));
     let (code, message, _, _) = refusal(&outline);
     assert_eq!((code, message.as_str()), (ErrorCode::InvalidInput, reader));
@@ -443,7 +450,10 @@ fn create_writes_an_empty_document_in_canonical_form_and_never_over_a_file() {
     assert!(opened.problems.is_empty());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), EMPTY);
     let s1 = response.session.unwrap().id;
-    assert_eq!(answer(f.sessions.text(&s1, None)).result.unwrap().text, EMPTY);
+    assert_eq!(
+        answer(f.sessions.text(&s1, None)).result.unwrap().text,
+        EMPTY
+    );
     assert!(f.sessions.status(&s1).result.unwrap().gated);
 
     let existing = f.file("old.silico", BOX);
@@ -716,11 +726,15 @@ fn a_feature_over_several_lines_is_written_as_the_document_writes_it_not_indente
     let s = f.open(&f.file("block.silico", document));
     let text = answer(f.sessions.text(&s, FeatureId::new("k7f2qx3m")))
         .result
-        .unwrap().text;
+        .unwrap()
+        .text;
     assert_eq!(text, feature);
     assert!(document.contains(&format!("    {}\n", text.replace('\n', "\n    "))));
     // The document is in canonical form, so `text` of the whole is the same bytes.
-    assert_eq!(answer(f.sessions.text(&s, None)).result.unwrap().text, document);
+    assert_eq!(
+        answer(f.sessions.text(&s, None)).result.unwrap().text,
+        document
+    );
 }
 
 #[test]
