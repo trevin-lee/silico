@@ -518,13 +518,13 @@ fn nul_and_very_long_paths_are_refused_as_data() {
 
 #[test]
 fn an_outside_directory_is_never_told_apart_by_whether_it_exists_however_deep() {
-    // BREAKS: `Workspace::leads_out` spends its budget of 40 links on each directory it
-    // walks up as well as on each link it follows: so past about 40 missing directories
-    // below an outside one, whether that one exists decides the answer. `../outside/` (there)
-    // with 39 missing below it is "outside the workspace"; `../nowhere/` (not there) with 39
-    // is "can't be reached": an MCP client learns which directories exist outside the
-    // workspace, which the design says it never does. And past 40 either way it isn't
-    // called outside at all.
+    // Broke (break-it): `Workspace::leads_out` spent its budget of 40 links on each
+    // directory it walked up as well as on each link it followed: so past about 40 missing
+    // directories below an outside one, whether that one exists decided the answer.
+    // `../outside/` (there) with 39 missing below it was "outside the workspace";
+    // `../nowhere/` (not there) with 39 was "can't be reached": an MCP client learned which
+    // directories exist outside the workspace, which the design says it never does. And
+    // past 40 either way it wasn't called outside at all. Now only links spend the budget.
     let f = fixture();
     f.file("part.silico", BOX);
     assert!(f.open("part.silico", false).ok);

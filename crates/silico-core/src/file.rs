@@ -11,7 +11,7 @@
 use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::document::json::MAX_INPUT_LEN;
 use crate::{Error, ErrorCode};
@@ -66,8 +66,45 @@ pub struct Workspace {
 }
 
 /// How many links [`Workspace::leads_out`] follows through a path that doesn't resolve
-/// before it gives up: Linux's and macOS's own limit on links followed in one lookup.
+/// before it decides by the path's form: Linux's and macOS's own limit on links followed in
+/// one lookup.
 const LINKS_FOLLOWED: u32 = 40;
+
+/// The longest path, in bytes, [`Workspace::leads_out`] walks on the file system; a longer
+/// one it decides by its form: Linux's `PATH_MAX`, the longest path it resolves (macOS's is
+/// shorter). So a path of millions of names costs no more than reading it once.
+const WALKED_PATH_BYTES: usize = 4096;
+
+/// One step of a path walked as the system resolves it ([`Workspace::leads_out`]).
+enum Step {
+    /// Start again from here: the file system's top (and on Windows, the drive).
+    From(PathBuf),
+    /// The directory above.
+    Up,
+    /// The entry by this name.
+    Name(OsString),
+}
+
+impl Step {
+    /// `path`'s steps, in order, its `.`s none.
+    fn of(path: &Path) -> Vec<Step> {
+        let mut steps = Vec::new();
+        let mut top = PathBuf::new();
+        for component in path.components() {
+            match component {
+                Component::Prefix(_) => top.push(component),
+                Component::RootDir => {
+                    top.push(component);
+                    steps.push(Step::From(std::mem::take(&mut top)));
+                }
+                Component::CurDir => {}
+                Component::ParentDir => steps.push(Step::Up),
+                Component::Normal(name) => steps.push(Step::Name(name.to_owned())),
+            }
+        }
+        steps
+    }
+}
 
 impl Workspace {
     /// The workspace at `root`, through its links: refused if it isn't a directory that can
@@ -102,29 +139,84 @@ impl Workspace {
     }
 
     /// Whether `path`, which doesn't resolve (a link to nothing, or a file not made yet),
-    /// would lead out of the workspace: the link it is followed, or, if it's none, the
-    /// nearest of its directories that resolves. So a path out of the workspace is refused
-    /// as one, whether or not anything is there, and nothing outside it is told apart by
-    /// whether it exists. A path to the root, or to one of its directories, that doesn't
-    /// resolve is the workspace gone (removed since it was made), not out of it: so a path
-    /// inside it is then said to be unreachable, as the system says, never outside.
-    fn leads_out(&self, path: &Path, links: u32) -> bool {
-        if let Ok(resolved) = std::fs::canonicalize(path) {
-            return !self.holds(&resolved);
+    /// would lead out of the workspace: where it leads through its links as far as they can
+    /// be followed, the nearest place on its way that is there. So a path out of the
+    /// workspace is refused as one, whether or not anything is there, and nothing outside it
+    /// is told apart by whether it exists, however deep below it the path goes. A path to
+    /// the root, or to one of its directories, that doesn't resolve is the workspace gone
+    /// (removed since it was made), not out of it: so a path inside it is then said to be
+    /// unreachable, as the system says, never outside. A path longer than the system
+    /// resolves ([`WALKED_PATH_BYTES`]), or through more links than it follows
+    /// ([`LINKS_FOLLOWED`]), is decided by its form alone ([`Workspace::leaves`]), so
+    /// what's there never decides it, and the walk is bounded.
+    fn leads_out(&self, path: &Path) -> bool {
+        if path.as_os_str().len() > WALKED_PATH_BYTES {
+            return self.leaves(path);
         }
-        if self.root.starts_with(path) {
-            return false;
+        // The path walked from the top a name at a time, as the system resolves it: the
+        // steps still to take (the next last), and where the walk is, through every link,
+        // so a `..` is the directory above it. A link's target takes its place, and costs
+        // one of the budget; only a link does.
+        let mut steps = Step::of(path);
+        steps.reverse();
+        let mut at = PathBuf::new();
+        let mut links = LINKS_FOLLOWED;
+        while let Some(step) = steps.pop() {
+            match step {
+                Step::From(top) => at = top,
+                Step::Up => {
+                    at.pop();
+                }
+                Step::Name(name) => {
+                    let next = at.join(name);
+                    match std::fs::symlink_metadata(&next) {
+                        Ok(meta) if meta.file_type().is_symlink() => {
+                            let Some(left) = links.checked_sub(1) else {
+                                return self.leaves(path);
+                            };
+                            links = left;
+                            let Ok(target) = std::fs::read_link(&next) else {
+                                break;
+                            };
+                            steps.extend(Step::of(&target).into_iter().rev());
+                        }
+                        Ok(meta) => {
+                            at = next;
+                            // Nothing below a file, nor above it through it: the system
+                            // stops here.
+                            if !meta.is_dir() {
+                                break;
+                            }
+                        }
+                        Err(_) if self.root.starts_with(&next) => return false,
+                        Err(_) => break,
+                    }
+                }
+            }
         }
-        let Some(links) = links.checked_sub(1) else {
-            return false;
-        };
-        match std::fs::read_link(path) {
-            Ok(target) => self.leads_out(&directory(path).join(target), links),
-            Err(_) => path
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .is_some_and(|parent| self.leads_out(parent, links)),
+        // Where the walk got to is there: decided through its links, as the system spells
+        // it (a case-insensitive file system's own spelling of a name given otherwise).
+        match std::fs::canonicalize(&at) {
+            Ok(resolved) => !self.holds(&resolved),
+            Err(_) => self.leaves(path),
         }
+    }
+
+    /// Whether `path`, its `.`s and `..`s taken as written, links not followed, leaves the
+    /// workspace: what [`Workspace::leads_out`] decides when walking the path would cost
+    /// more than the system itself spends on one. Nothing on the file system decides it.
+    fn leaves(&self, path: &Path) -> bool {
+        let mut normal = PathBuf::new();
+        for component in path.components() {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    normal.pop();
+                }
+                other => normal.push(other),
+            }
+        }
+        !self.holds(&normal)
     }
 
     /// The refusal of `given`, the request's `field`, a path outside the workspace or one
@@ -184,7 +276,7 @@ pub fn resolve(workspace: Option<&Workspace>, path: &Path) -> Result<PathBuf, Un
     match std::fs::canonicalize(&joined) {
         Ok(resolved) if workspace.holds(&resolved) => Ok(resolved),
         Ok(_) => Err(Unresolved::Outside),
-        Err(_) if workspace.leads_out(&joined, LINKS_FOLLOWED) => Err(Unresolved::Outside),
+        Err(_) if workspace.leads_out(&joined) => Err(Unresolved::Outside),
         Err(e) => Err(Unresolved::Unreachable(e)),
     }
 }
@@ -610,6 +702,132 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A scratch directory (as the system spells it, through its links: on macOS,
+    /// `/private/var/...`, given here as `/var/...` too) holding `work`, the workspace, with
+    /// `part.silico` and a directory `sub` in it, and `outside`, a directory beside it with a
+    /// directory `a` in it.
+    fn scratch() -> (tempfile::TempDir, Workspace) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work/sub")).unwrap();
+        std::fs::write(dir.path().join("work/part.silico"), b"{}").unwrap();
+        std::fs::create_dir_all(dir.path().join("outside/a")).unwrap();
+        let workspace = Workspace::new(&dir.path().join("work")).unwrap();
+        (dir, workspace)
+    }
+
+    #[test]
+    fn a_path_that_doesnt_resolve_leads_where_its_links_and_dots_take_it_however_deep() {
+        use std::os::unix::fs::symlink;
+        let (dir, w) = scratch();
+        let work = dir.path().join("work");
+        let deep = "m/".repeat(100);
+        // Below an outside directory that's there, or one that isn't: out either way, at
+        // any depth (each missing directory looked at once, none of them a link).
+        for top in ["outside", "nowhere", "outside/a"] {
+            assert!(
+                w.leads_out(&work.join(format!("../{top}/{deep}x"))),
+                "{top}"
+            );
+            assert!(w.leads_out(&work.join(format!("../{top}/x"))), "{top}");
+        }
+        // Below the workspace: in it, at any depth.
+        assert!(!w.leads_out(&work.join(format!("{deep}x"))));
+        assert!(!w.leads_out(&work.join(format!("sub/{deep}x"))));
+        assert!(!w.leads_out(&work.join(format!("sub/../{deep}x"))));
+        // Out and back in: in.
+        assert!(!w.leads_out(&work.join(format!("../work/{deep}x"))));
+        // Below a file, or through one and up: in, as the system stops at the file.
+        assert!(!w.leads_out(&work.join("part.silico/x")));
+        assert!(!w.leads_out(&work.join("part.silico/../../outside/x")));
+        // Through links in the workspace: one to the outside directory, one to where nothing
+        // is outside, one to a directory in the workspace.
+        symlink(dir.path().join("outside"), work.join("out")).unwrap();
+        symlink("../nowhere", work.join("gone")).unwrap();
+        symlink("sub", work.join("in")).unwrap();
+        for link in ["out", "gone"] {
+            assert!(w.leads_out(&work.join(format!("{link}/{deep}x"))), "{link}");
+            assert!(w.leads_out(&work.join(link)), "{link}");
+        }
+        assert!(!w.leads_out(&work.join(format!("in/{deep}x"))));
+        // A `..` after a link is the directory above where the link leads, as the system
+        // has it: `out/a/..` is `outside`, so `out/a/../x` is out, though `work/x` isn't.
+        assert!(w.leads_out(&work.join("out/a/../x")));
+        assert!(!w.leads_out(&work.join("in/../x")));
+        assert!(w.leads_out(&work.join("in/../../nowhere/x")));
+    }
+
+    #[test]
+    fn links_alone_spend_the_budget_of_forty() {
+        use std::os::unix::fs::symlink;
+        let (_dir, w) = scratch();
+        // As the system spells it, so its form is the root's.
+        let work = w.root().to_owned();
+        let target = work.join("../outside/made");
+        // A chain of n links in the workspace, the last to `outside/made`, which isn't there:
+        // 40 followed, the system's own limit, and it's out; 41, and it's decided by the
+        // path's form, `work/c41-0`, which is in.
+        for n in [1, 39, 40, 41, 60] {
+            for i in 0..n {
+                let to = if i + 1 == n {
+                    target.clone()
+                } else {
+                    PathBuf::from(format!("c{n}-{}", i + 1))
+                };
+                symlink(to, work.join(format!("c{n}-{i}"))).unwrap();
+            }
+            let first = work.join(format!("c{n}-0"));
+            assert_eq!(w.leads_out(&first), n <= 40, "{n}");
+            // And as many missing directories below as there are: no more spent.
+            assert_eq!(
+                w.leads_out(&first.join("m/".repeat(100)).join("x")),
+                n <= 40,
+                "{n}"
+            );
+        }
+        // A loop: decided by its form, in.
+        symlink("loop-b", work.join("loop-a")).unwrap();
+        symlink("loop-a", work.join("loop-b")).unwrap();
+        assert!(!w.leads_out(&work.join("loop-a")));
+        assert!(!w.leads_out(&work.join("loop-a/x")));
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn a_path_longer_than_the_system_resolves_is_decided_by_its_form_at_once() {
+        use std::os::unix::fs::symlink;
+        let (dir, w) = scratch();
+        // As the system spells it, so its form is the root's.
+        let work = w.root().to_owned();
+        // Twenty million bytes, four million names: the `..`s taken as written, and nothing
+        // looked at (`out` is a link out of the workspace, but not followed).
+        symlink(dir.path().join("outside"), work.join("out")).unwrap();
+        let churn = "x/../".repeat(4_000_000);
+        assert!(w.leads_out(&work.join(format!("{churn}../outside/x"))));
+        assert!(w.leads_out(&work.join(format!("{churn}../nowhere/x"))));
+        assert!(!w.leads_out(&work.join(format!("{churn}sub/x"))));
+        assert!(!w.leads_out(&work.join(format!("{churn}out/x"))));
+        assert!(w.leads_out(&work.join(format!("{}x", "../".repeat(2000)))));
+        // Just within the length walked, the link is followed.
+        let near = work.join("out").join("m/".repeat(1000)).join("x");
+        assert!(near.as_os_str().len() <= WALKED_PATH_BYTES);
+        assert!(w.leads_out(&near));
+    }
+
+    #[test]
+    fn a_path_in_a_workspace_gone_is_never_out_of_it() {
+        let (dir, w) = scratch();
+        let work = dir.path().join("work");
+        std::fs::remove_dir_all(&work).unwrap();
+        for path in ["x", "sub/x", "m/m/m/x", ""] {
+            assert!(!w.leads_out(&work.join(path)), "{path}");
+        }
+        // A path through the workspace gone goes no further, as the system's doesn't; one
+        // beside it is out.
+        assert!(!w.leads_out(&work.join("../outside/x")));
+        assert!(w.leads_out(&dir.path().join("outside/x")));
+        assert!(w.leads_out(&dir.path().join("nowhere/x")));
+    }
+
     #[test]
     fn only_a_size_limit_gets_the_limits_advice() {
         // Found by the review: an error on a full disk told to raise a limit that isn't the
@@ -731,7 +949,7 @@ fn output_target(
                 if meta.file_type().is_symlink()
                     && rules
                         .workspace
-                        .is_some_and(|w| w.leads_out(&dir.join(name), LINKS_FOLLOWED)) =>
+                        .is_some_and(|w| w.leads_out(&dir.join(name))) =>
             {
                 return Err(Workspace::outside(given, rules.field));
             }
