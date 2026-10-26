@@ -1,0 +1,3056 @@
+{
+  "request": {
+    "$defs": {
+      "Angle": {
+        "description": "An angle in degrees: a number, to at most 9 decimals (nanodegrees). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+        "type": "number"
+      },
+      "Axis": {
+        "description": "What a revolve or groove turns about: x_axis (the sketch's, from its origin along +x), y_axis (along +y), or the ID of a line of the sketch, construction or not, from its `from` point to its `to`.",
+        "pattern": "^([0123456789abcdefghjkmnpqrstvwxyz]{8}|x_axis|y_axis)$",
+        "type": "string"
+      },
+      "ChamferSize": {
+        "additionalProperties": false,
+        "description": "How far a chamfer cuts each edge back: along both its faces alike. (The uneven forms,\nmeasured from one of each edge's faces, are left for later: which face is the document's\nto name, not OCCT's order to pick.)",
+        "properties": {
+          "distance": {
+            "$ref": "#/$defs/Length"
+          }
+        },
+        "required": [
+          "distance"
+        ],
+        "type": "object"
+      },
+      "Coordinate": {
+        "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+        "type": "number"
+      },
+      "Direction": {
+        "description": "How two curves meeting at a point run there: on in the `same` direction (a smooth\njoin), or back the `opposite` way (a cusp).",
+        "enum": [
+          "same",
+          "opposite"
+        ],
+        "type": "string"
+      },
+      "ElementId": {
+        "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "ElementName": {
+        "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.type.Kind(...)), never by its number. A sketch's elements appear only as sources in what a feature made of them, by ID (sketch.sketch.Edge.<id>, sketch.sketch.Vertex.<id>), its only region sketch.sketch.Face1: a pad's side face is pad.pad.Face(G sketch.sketch.Edge.<id>).",
+        "minLength": 1,
+        "type": "string"
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "FeatureVersion": {
+        "const": 1,
+        "description": "The feature's version: changing a feature type's behaviour bumps it, and a document keeps the behaviour it was made with. 1 for every type so far."
+      },
+      "Length": {
+        "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+        "type": "number"
+      },
+      "LineSide": {
+        "description": "Which side of a line, facing from its start (`from`) to its end (`to`); for an axis,\nfacing along it (+x, +y).",
+        "enum": [
+          "left",
+          "right"
+        ],
+        "type": "string"
+      },
+      "Name": {
+        "description": "A display name, which needn't be unique.",
+        "minLength": 1,
+        "type": "string"
+      },
+      "NewFeature": {
+        "description": "A feature as the document writes it, to add at the end of the timeline. Its id may be left out, for one the core makes that no feature holds, and its v, for the type's current version. A fingerprint is refused, but for null: a commit writes it. Each member the feature may leave out (its id, v, note, and fingerprint, and a pad's or revolve's base) may be given as null, which is the same as leaving it out.",
+        "oneOf": [
+          {
+            "description": "A box from `position` (its lowest corner), `length` along x, `width` along y, and\n`height` along z.",
+            "properties": {
+              "height": {
+                "$ref": "#/$defs/Length"
+              },
+              "length": {
+                "$ref": "#/$defs/Length"
+              },
+              "position": {
+                "items": {
+                  "$ref": "#/$defs/Length"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "type": {
+                "const": "box",
+                "type": "string"
+              },
+              "width": {
+                "$ref": "#/$defs/Length"
+              }
+            },
+            "required": [
+              "type",
+              "position",
+              "length",
+              "width",
+              "height"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A cylinder along z, its base centred on `position`.",
+            "properties": {
+              "height": {
+                "$ref": "#/$defs/Length"
+              },
+              "position": {
+                "items": {
+                  "$ref": "#/$defs/Length"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "radius": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "cylinder",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "position",
+              "radius",
+              "height"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A sphere centred on `position`.",
+            "properties": {
+              "position": {
+                "items": {
+                  "$ref": "#/$defs/Length"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "radius": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "sphere",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "position",
+              "radius"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A cone along z, its base (`radius1`) centred on `position`, `radius2` at `height`.\nEither radius may be zero, not both.",
+            "properties": {
+              "height": {
+                "$ref": "#/$defs/Length"
+              },
+              "position": {
+                "items": {
+                  "$ref": "#/$defs/Length"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "radius1": {
+                "$ref": "#/$defs/Length"
+              },
+              "radius2": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "cone",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "position",
+              "radius1",
+              "radius2",
+              "height"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A torus around z, centred on `position`: `radius1` from the axis to the tube's\ncentre, `radius2` the tube's.",
+            "properties": {
+              "position": {
+                "items": {
+                  "$ref": "#/$defs/Length"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "radius1": {
+                "$ref": "#/$defs/Length"
+              },
+              "radius2": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "torus",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "position",
+              "radius1",
+              "radius2"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Everything in either of two features' solids.",
+            "properties": {
+              "base": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "tool": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "type": {
+                "const": "fuse",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "base",
+              "tool"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`base`'s solid less what's in `tool`'s.",
+            "properties": {
+              "base": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "tool": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "type": {
+                "const": "cut",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "base",
+              "tool"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "What's in both of two features' solids.",
+            "properties": {
+              "base": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "tool": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "type": {
+                "const": "common",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "base",
+              "tool"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A constrained 2D sketch (docs/design/m3.2-sketch-format.md).",
+            "properties": {
+              "arcs": {
+                "items": {
+                  "$ref": "#/$defs/SketchArc"
+                },
+                "type": "array"
+              },
+              "circles": {
+                "items": {
+                  "$ref": "#/$defs/SketchCircle"
+                },
+                "type": "array"
+              },
+              "constraints": {
+                "items": {
+                  "$ref": "#/$defs/SketchConstraint"
+                },
+                "type": "array"
+              },
+              "lines": {
+                "items": {
+                  "$ref": "#/$defs/SketchLine"
+                },
+                "type": "array"
+              },
+              "plane": {
+                "$ref": "#/$defs/Plane"
+              },
+              "points": {
+                "description": "The sketch's points, which its curves share: two curves that meet name the same\npoint.",
+                "items": {
+                  "$ref": "#/$defs/SketchPoint"
+                },
+                "type": "array"
+              },
+              "type": {
+                "const": "sketch",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "plane",
+              "points",
+              "lines",
+              "circles",
+              "arcs",
+              "constraints"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`base`'s solid with `edges` rounded to `radius`.",
+            "properties": {
+              "base": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "edges": {
+                "items": {
+                  "$ref": "#/$defs/ElementName"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "radius": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "fillet",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "base",
+              "edges",
+              "radius"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`base`'s solid with `edges` cut back by `size`.",
+            "properties": {
+              "base": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "edges": {
+                "items": {
+                  "$ref": "#/$defs/ElementName"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "size": {
+                "$ref": "#/$defs/ChamferSize"
+              },
+              "type": {
+                "const": "chamfer",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "base",
+              "edges",
+              "size"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`sketch`'s profile swept along the sketch's normal as `extent` says, and fused with\n`base`'s solid, if it has one (left out when it has none).",
+            "properties": {
+              "base": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Null is the same as left out."
+              },
+              "extent": {
+                "$ref": "#/$defs/PadExtent"
+              },
+              "sketch": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "type": {
+                "const": "pad",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "sketch",
+              "extent"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`sketch`'s profile swept against the sketch's normal as `extent` says, and cut from\n`base`'s solid.",
+            "properties": {
+              "base": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "extent": {
+                "$ref": "#/$defs/PocketExtent"
+              },
+              "sketch": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "type": {
+                "const": "pocket",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "base",
+              "sketch",
+              "extent"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`sketch`'s profile turned about `axis` as `extent` says, and fused with `base`'s\nsolid, if it has one (left out when it has none).",
+            "properties": {
+              "axis": {
+                "$ref": "#/$defs/Axis"
+              },
+              "base": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Null is the same as left out."
+              },
+              "extent": {
+                "$ref": "#/$defs/TurnExtent"
+              },
+              "sketch": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "type": {
+                "const": "revolve",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "sketch",
+              "axis",
+              "extent"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`sketch`'s profile turned about `axis` as `extent` says, and cut from `base`'s solid.",
+            "properties": {
+              "axis": {
+                "$ref": "#/$defs/Axis"
+              },
+              "base": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "extent": {
+                "$ref": "#/$defs/TurnExtent"
+              },
+              "sketch": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "type": {
+                "const": "groove",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "base",
+              "sketch",
+              "axis",
+              "extent"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "fingerprint": {
+            "description": "Only null, which is the same as leaving it out: a commit writes a feature's fingerprint.",
+            "type": "null"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FeatureId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its ID: null, or left out, for one the core makes that no feature holds."
+          },
+          "name": {
+            "$ref": "#/$defs/Name"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A note about the feature, kept with it (left out when there's none). Null is the same as left out."
+          },
+          "v": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FeatureVersion"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its version: null, or left out, for the type's current version."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object",
+        "unevaluatedProperties": false
+      },
+      "PadExtent": {
+        "description": "How far a pad goes from its sketch's plane: each form holds exactly the values it needs.\nLengths are above 0; `reversed` only where it changes the solid.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "`length` along the feature's direction, or against it when `reversed`.",
+            "properties": {
+              "length": {
+                "$ref": "#/$defs/Length"
+              },
+              "reversed": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "one_side",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "length",
+              "reversed"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "`length / 2` each way from the plane.",
+            "properties": {
+              "length": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "symmetric",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "length"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "`length` along the feature's direction and `length2` against it.",
+            "properties": {
+              "length": {
+                "$ref": "#/$defs/Length"
+              },
+              "length2": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "two_sides",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "length",
+              "length2"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Plane": {
+        "description": "The plane a sketch is drawn on: one of the origin's, oriented as FreeCAD's (D6). On\n`xy`, the sketch's x is +X and its y +Y (normal +Z); on `xz`, x is +X and y +Z (normal\n−Y); on `yz`, x is +Y and y +Z (normal +X).",
+        "enum": [
+          "xy",
+          "xz",
+          "yz"
+        ],
+        "type": "string"
+      },
+      "PocketExtent": {
+        "description": "How far a pocket goes from its sketch's plane: a pad's forms, or through everything of\nits base along its direction (against it when `reversed`).",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "`length` along the feature's direction, or against it when `reversed`.",
+            "properties": {
+              "length": {
+                "$ref": "#/$defs/Length"
+              },
+              "reversed": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "one_side",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "length",
+              "reversed"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "`length / 2` each way from the plane.",
+            "properties": {
+              "length": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "symmetric",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "length"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "`length` along the feature's direction and `length2` against it.",
+            "properties": {
+              "length": {
+                "$ref": "#/$defs/Length"
+              },
+              "length2": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "two_sides",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "length",
+              "length2"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Through everything of its base along the feature's direction, or against it when\n`reversed`.",
+            "properties": {
+              "reversed": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "through_all",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "reversed"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "SketchArc": {
+        "additionalProperties": false,
+        "description": "An arc about `center`, counter-clockwise from `start` to `end`. Its points are its\ndefinition: its radius and angles are the solver's, worked out from them, and the\nsolve holds its ends on it (D2, arcs).",
+        "properties": {
+          "center": {
+            "$ref": "#/$defs/ElementId"
+          },
+          "construction": {
+            "type": "boolean"
+          },
+          "end": {
+            "$ref": "#/$defs/ElementId"
+          },
+          "id": {
+            "$ref": "#/$defs/ElementId"
+          },
+          "start": {
+            "$ref": "#/$defs/ElementId"
+          }
+        },
+        "required": [
+          "id",
+          "center",
+          "start",
+          "end",
+          "construction"
+        ],
+        "type": "object"
+      },
+      "SketchCircle": {
+        "additionalProperties": false,
+        "description": "A circle about a point.",
+        "properties": {
+          "center": {
+            "$ref": "#/$defs/ElementId"
+          },
+          "construction": {
+            "type": "boolean"
+          },
+          "id": {
+            "$ref": "#/$defs/ElementId"
+          },
+          "radius": {
+            "$ref": "#/$defs/Coordinate",
+            "description": "Worked out by the solver, as coordinates are."
+          }
+        },
+        "required": [
+          "id",
+          "center",
+          "radius",
+          "construction"
+        ],
+        "type": "object"
+      },
+      "SketchConstraint": {
+        "description": "One constraint: its ID and its form.",
+        "oneOf": [
+          {
+            "description": "The line parallel to x.",
+            "properties": {
+              "line": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "horizontal",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "line"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The line parallel to y.",
+            "properties": {
+              "line": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "vertical",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "line"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The two points level.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "horizontal_points",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "One point above the other.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "vertical_points",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The line's length.",
+            "properties": {
+              "driving": {
+                "type": "boolean"
+              },
+              "line": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "length",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Length"
+              }
+            },
+            "required": [
+              "type",
+              "line",
+              "value",
+              "driving"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The distance between two points.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "driving": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "distance",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Length"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b",
+              "value",
+              "driving"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "x(b) − x(a), signed.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "driving": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "distance_x",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Length"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b",
+              "value",
+              "driving"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "y(b) − y(a), signed.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "driving": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "distance_y",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Length"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b",
+              "value",
+              "driving"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The point's distance from the line (extended), on the given side of it.",
+            "properties": {
+              "driving": {
+                "type": "boolean"
+              },
+              "line": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "point": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "side": {
+                "$ref": "#/$defs/LineSide"
+              },
+              "type": {
+                "const": "point_line_distance",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Length"
+              }
+            },
+            "required": [
+              "type",
+              "point",
+              "line",
+              "value",
+              "side",
+              "driving"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The point on the curve: a line extended, or an arc's whole circle, as FreeCAD's.",
+            "properties": {
+              "curve": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "point": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "on",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "point",
+              "curve"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "parallel",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "perpendicular",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The angle from `a`'s direction to `b`'s, counter-clockwise, signed.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "driving": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "angle",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Angle"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b",
+              "value",
+              "driving"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A circle's or arc's radius.",
+            "properties": {
+              "curve": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "driving": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "radius",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Length"
+              }
+            },
+            "required": [
+              "type",
+              "curve",
+              "value",
+              "driving"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A circle's or arc's diameter.",
+            "properties": {
+              "curve": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "driving": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "diameter",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Length"
+              }
+            },
+            "required": [
+              "type",
+              "curve",
+              "value",
+              "driving"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Two lines of equal length, or two circles or arcs of equal radius.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "equal",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Tangent along their edges: a line and a circle or arc, or two circles or arcs.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "side": {
+                "$ref": "#/$defs/TangentSide"
+              },
+              "type": {
+                "const": "tangent",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b",
+              "side"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Tangent where `a` ends on `b`: the point `at`, an end of `a`, lies on `b`, and `a`\nruns there along `b`, its direction leaving `at` the `same` as `b`'s or `opposite`\n(FreeCAD's endpoint-to-edge `Tangent`).",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "at": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "direction": {
+                "$ref": "#/$defs/Direction"
+              },
+              "type": {
+                "const": "tangent_on",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "at",
+              "b",
+              "direction"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Tangent where two curves meet, at the point `at` they share.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "at": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "direction": {
+                "$ref": "#/$defs/Direction"
+              },
+              "type": {
+                "const": "tangent_at",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b",
+              "at",
+              "direction"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`a` and `b` mirror each other about a line or a point.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "about": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "symmetric",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b",
+              "about"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The point midway along the line.",
+            "properties": {
+              "line": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "point": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "midpoint",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "point",
+              "line"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/ElementId"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object",
+        "unevaluatedProperties": false
+      },
+      "SketchLine": {
+        "additionalProperties": false,
+        "description": "A line from one point to another.",
+        "properties": {
+          "construction": {
+            "type": "boolean"
+          },
+          "from": {
+            "$ref": "#/$defs/ElementId"
+          },
+          "id": {
+            "$ref": "#/$defs/ElementId"
+          },
+          "to": {
+            "$ref": "#/$defs/ElementId"
+          }
+        },
+        "required": [
+          "id",
+          "from",
+          "to",
+          "construction"
+        ],
+        "type": "object"
+      },
+      "SketchPoint": {
+        "additionalProperties": false,
+        "description": "A point of the sketch, which curves share.",
+        "properties": {
+          "construction": {
+            "description": "Construction geometry is solved like any other and left out of the profile (D7).",
+            "type": "boolean"
+          },
+          "id": {
+            "$ref": "#/$defs/ElementId"
+          },
+          "x": {
+            "$ref": "#/$defs/Coordinate"
+          },
+          "y": {
+            "$ref": "#/$defs/Coordinate"
+          }
+        },
+        "required": [
+          "id",
+          "x",
+          "y",
+          "construction"
+        ],
+        "type": "object"
+      },
+      "SketchReference": {
+        "description": "An element of this sketch, by its ID, or one of the fixed references every sketch has: origin, x_axis (from the origin along +x), y_axis (from the origin along +y).",
+        "pattern": "^([0123456789abcdefghjkmnpqrstvwxyz]{8}|origin|x_axis|y_axis)$",
+        "type": "string"
+      },
+      "TangentSide": {
+        "description": "Where a tangent curve lies: for a line and a circle or arc, the side of the line the\ncurve is on (facing from its start to its end); for two circles or arcs, each outside\nthe other, or one inside the other.",
+        "enum": [
+          "left",
+          "right",
+          "outside",
+          "inside"
+        ],
+        "type": "string"
+      },
+      "TurnExtent": {
+        "description": "How far a revolve or groove turns its profile: an angle above 0° and at most 360°.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "`angle` right-handed about the axis, or left-handed when `reversed`.",
+            "properties": {
+              "angle": {
+                "$ref": "#/$defs/Angle"
+              },
+              "reversed": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "one_side",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "angle",
+              "reversed"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "`angle / 2` each way from the sketch.",
+            "properties": {
+              "angle": {
+                "$ref": "#/$defs/Angle"
+              },
+              "type": {
+                "const": "symmetric",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "angle"
+            ],
+            "type": "object"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`add_feature`'s request: add a feature at the end of the session's timeline.",
+    "properties": {
+      "feature": {
+        "$ref": "#/$defs/NewFeature"
+      },
+      "revision": {
+        "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`, so it never writes over a change it didn't see.",
+        "format": "uint64",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "feature",
+      "revision",
+      "session"
+    ],
+    "title": "AddFeatureRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "Angle": {
+        "description": "An angle in degrees: a number, to at most 9 decimals (nanodegrees). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+        "type": "number"
+      },
+      "Axis": {
+        "description": "What a revolve or groove turns about: x_axis (the sketch's, from its origin along +x), y_axis (along +y), or the ID of a line of the sketch, construction or not, from its `from` point to its `to`.",
+        "pattern": "^([0123456789abcdefghjkmnpqrstvwxyz]{8}|x_axis|y_axis)$",
+        "type": "string"
+      },
+      "ChamferSize": {
+        "additionalProperties": false,
+        "description": "How far a chamfer cuts each edge back: along both its faces alike. (The uneven forms,\nmeasured from one of each edge's faces, are left for later: which face is the document's\nto name, not OCCT's order to pick.)",
+        "properties": {
+          "distance": {
+            "$ref": "#/$defs/Length"
+          }
+        },
+        "required": [
+          "distance"
+        ],
+        "type": "object"
+      },
+      "CommitResult": {
+        "additionalProperties": false,
+        "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
+        "properties": {
+          "path": {
+            "description": "The document's path, as `open` was given it.",
+            "type": "string"
+          },
+          "problems": {
+            "description": "What the commit couldn't fix, the first 100: failed features, and the drift of\nfeatures no edit reached, whose fingerprints it leaves as stored (only `format`\naccepts drift).",
+            "items": {
+              "$ref": "#/$defs/Error"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "problems_total": {
+            "description": "How many problems there are, listed or not.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "refingerprinted": {
+            "description": "The features the edits reached whose fingerprints were written anew, in timeline\norder.",
+            "items": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": "array"
+          },
+          "resolved": {
+            "description": "The sketches the edits reached whose solves were written anew, in timeline order.",
+            "items": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": "array"
+          },
+          "written": {
+            "description": "Whether the file was written: false when the document is the one the transaction\nbegan with.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "problems",
+          "problems_total",
+          "refingerprinted",
+          "resolved",
+          "written"
+        ],
+        "type": "object"
+      },
+      "Coordinate": {
+        "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+        "type": "number"
+      },
+      "Direction": {
+        "description": "How two curves meeting at a point run there: on in the `same` direction (a smooth\njoin), or back the `opposite` way (a cusp).",
+        "enum": [
+          "same",
+          "opposite"
+        ],
+        "type": "string"
+      },
+      "ElementId": {
+        "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "ElementName": {
+        "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.type.Kind(...)), never by its number. A sketch's elements appear only as sources in what a feature made of them, by ID (sketch.sketch.Edge.<id>, sketch.sketch.Vertex.<id>), its only region sketch.sketch.Face1: a pad's side face is pad.pad.Face(G sketch.sketch.Edge.<id>).",
+        "minLength": 1,
+        "type": "string"
+      },
+      "Error": {
+        "additionalProperties": false,
+        "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+        "properties": {
+          "candidates": {
+            "description": "What might have been meant, such as the names nearest one that found nothing.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cause": {
+            "description": "What lay under it, such as the kernel's own failure, if known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+            "type": "string"
+          },
+          "elements": {
+            "description": "The elements at fault, by name: the first of them, if there are many.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "elements_total": {
+            "description": "How many elements are at fault, listed or not.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "feature": {
+            "description": "The ID of the feature at fault, if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "description": "What went wrong, in a sentence.",
+            "type": "string"
+          },
+          "parameter": {
+            "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suggestion": {
+            "description": "What to do about it, if Silico can say.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "candidates",
+          "cause",
+          "code",
+          "elements",
+          "elements_total",
+          "feature",
+          "message",
+          "parameter",
+          "suggestion"
+        ],
+        "type": "object"
+      },
+      "Feature": {
+        "description": "One feature of the timeline: what it is, its version, and its name.",
+        "oneOf": [
+          {
+            "description": "A box from `position` (its lowest corner), `length` along x, `width` along y, and\n`height` along z.",
+            "properties": {
+              "height": {
+                "$ref": "#/$defs/Length"
+              },
+              "length": {
+                "$ref": "#/$defs/Length"
+              },
+              "position": {
+                "items": {
+                  "$ref": "#/$defs/Length"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "type": {
+                "const": "box",
+                "type": "string"
+              },
+              "width": {
+                "$ref": "#/$defs/Length"
+              }
+            },
+            "required": [
+              "type",
+              "position",
+              "length",
+              "width",
+              "height"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A cylinder along z, its base centred on `position`.",
+            "properties": {
+              "height": {
+                "$ref": "#/$defs/Length"
+              },
+              "position": {
+                "items": {
+                  "$ref": "#/$defs/Length"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "radius": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "cylinder",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "position",
+              "radius",
+              "height"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A sphere centred on `position`.",
+            "properties": {
+              "position": {
+                "items": {
+                  "$ref": "#/$defs/Length"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "radius": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "sphere",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "position",
+              "radius"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A cone along z, its base (`radius1`) centred on `position`, `radius2` at `height`.\nEither radius may be zero, not both.",
+            "properties": {
+              "height": {
+                "$ref": "#/$defs/Length"
+              },
+              "position": {
+                "items": {
+                  "$ref": "#/$defs/Length"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "radius1": {
+                "$ref": "#/$defs/Length"
+              },
+              "radius2": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "cone",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "position",
+              "radius1",
+              "radius2",
+              "height"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A torus around z, centred on `position`: `radius1` from the axis to the tube's\ncentre, `radius2` the tube's.",
+            "properties": {
+              "position": {
+                "items": {
+                  "$ref": "#/$defs/Length"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "radius1": {
+                "$ref": "#/$defs/Length"
+              },
+              "radius2": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "torus",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "position",
+              "radius1",
+              "radius2"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Everything in either of two features' solids.",
+            "properties": {
+              "base": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "tool": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "type": {
+                "const": "fuse",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "base",
+              "tool"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`base`'s solid less what's in `tool`'s.",
+            "properties": {
+              "base": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "tool": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "type": {
+                "const": "cut",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "base",
+              "tool"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "What's in both of two features' solids.",
+            "properties": {
+              "base": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "tool": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "type": {
+                "const": "common",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "base",
+              "tool"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A constrained 2D sketch (docs/design/m3.2-sketch-format.md).",
+            "properties": {
+              "arcs": {
+                "items": {
+                  "$ref": "#/$defs/SketchArc"
+                },
+                "type": "array"
+              },
+              "circles": {
+                "items": {
+                  "$ref": "#/$defs/SketchCircle"
+                },
+                "type": "array"
+              },
+              "constraints": {
+                "items": {
+                  "$ref": "#/$defs/SketchConstraint"
+                },
+                "type": "array"
+              },
+              "lines": {
+                "items": {
+                  "$ref": "#/$defs/SketchLine"
+                },
+                "type": "array"
+              },
+              "plane": {
+                "$ref": "#/$defs/Plane"
+              },
+              "points": {
+                "description": "The sketch's points, which its curves share: two curves that meet name the same\npoint.",
+                "items": {
+                  "$ref": "#/$defs/SketchPoint"
+                },
+                "type": "array"
+              },
+              "type": {
+                "const": "sketch",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "plane",
+              "points",
+              "lines",
+              "circles",
+              "arcs",
+              "constraints"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`base`'s solid with `edges` rounded to `radius`.",
+            "properties": {
+              "base": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "edges": {
+                "items": {
+                  "$ref": "#/$defs/ElementName"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "radius": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "fillet",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "base",
+              "edges",
+              "radius"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`base`'s solid with `edges` cut back by `size`.",
+            "properties": {
+              "base": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "edges": {
+                "items": {
+                  "$ref": "#/$defs/ElementName"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "size": {
+                "$ref": "#/$defs/ChamferSize"
+              },
+              "type": {
+                "const": "chamfer",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "base",
+              "edges",
+              "size"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`sketch`'s profile swept along the sketch's normal as `extent` says, and fused with\n`base`'s solid, if it has one (left out when it has none).",
+            "properties": {
+              "base": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "extent": {
+                "$ref": "#/$defs/PadExtent"
+              },
+              "sketch": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "type": {
+                "const": "pad",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "sketch",
+              "extent"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`sketch`'s profile swept against the sketch's normal as `extent` says, and cut from\n`base`'s solid.",
+            "properties": {
+              "base": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "extent": {
+                "$ref": "#/$defs/PocketExtent"
+              },
+              "sketch": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "type": {
+                "const": "pocket",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "base",
+              "sketch",
+              "extent"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`sketch`'s profile turned about `axis` as `extent` says, and fused with `base`'s\nsolid, if it has one (left out when it has none).",
+            "properties": {
+              "axis": {
+                "$ref": "#/$defs/Axis"
+              },
+              "base": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "extent": {
+                "$ref": "#/$defs/TurnExtent"
+              },
+              "sketch": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "type": {
+                "const": "revolve",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "sketch",
+              "axis",
+              "extent"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`sketch`'s profile turned about `axis` as `extent` says, and cut from `base`'s solid.",
+            "properties": {
+              "axis": {
+                "$ref": "#/$defs/Axis"
+              },
+              "base": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "extent": {
+                "$ref": "#/$defs/TurnExtent"
+              },
+              "sketch": {
+                "$ref": "#/$defs/FeatureId"
+              },
+              "type": {
+                "const": "groove",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "base",
+              "sketch",
+              "axis",
+              "extent"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "fingerprint": {
+            "$ref": "#/$defs/Fingerprint",
+            "description": "What the feature's solid measured when it was last built and saved; a rebuild that\nmeasures otherwise is drift (left out when it has none: new, or not built)."
+          },
+          "id": {
+            "$ref": "#/$defs/FeatureId"
+          },
+          "name": {
+            "$ref": "#/$defs/Name"
+          },
+          "note": {
+            "description": "A note about the feature, kept with it (left out when there's none).",
+            "type": "string"
+          },
+          "v": {
+            "$ref": "#/$defs/FeatureVersion"
+          }
+        },
+        "required": [
+          "id",
+          "v",
+          "name"
+        ],
+        "type": "object",
+        "unevaluatedProperties": false
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "FeatureVersion": {
+        "const": 1,
+        "description": "The feature's version: changing a feature type's behaviour bumps it, and a document keeps the behaviour it was made with. 1 for every type so far."
+      },
+      "Fingerprint": {
+        "additionalProperties": false,
+        "description": "What a feature's solid measures: its volume and area, its tight bounding box (lowest x, y,\nz, then highest; none for a solid with nothing in it), and how many faces, edges, and\nvertices it has.",
+        "properties": {
+          "area": {
+            "$ref": "#/$defs/Measure"
+          },
+          "bbox": {
+            "description": "`[x, y, z, x, y, z]`: the lowest corner, then the highest (left out when the solid\nhas nothing in it).",
+            "items": {
+              "$ref": "#/$defs/Length"
+            },
+            "maxItems": 6,
+            "minItems": 6,
+            "type": "array"
+          },
+          "edges": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "faces": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "vertices": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "volume": {
+            "$ref": "#/$defs/Measure"
+          }
+        },
+        "required": [
+          "volume",
+          "area",
+          "faces",
+          "edges",
+          "vertices"
+        ],
+        "type": "object"
+      },
+      "Length": {
+        "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+        "type": "number"
+      },
+      "LineSide": {
+        "description": "Which side of a line, facing from its start (`from`) to its end (`to`); for an axis,\nfacing along it (+x, +y).",
+        "enum": [
+          "left",
+          "right"
+        ],
+        "type": "string"
+      },
+      "Measure": {
+        "description": "A volume (mm³) or area (mm²): a number, to at most 6 decimals.",
+        "type": "number"
+      },
+      "Name": {
+        "description": "A display name, which needn't be unique.",
+        "minLength": 1,
+        "type": "string"
+      },
+      "PadExtent": {
+        "description": "How far a pad goes from its sketch's plane: each form holds exactly the values it needs.\nLengths are above 0; `reversed` only where it changes the solid.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "`length` along the feature's direction, or against it when `reversed`.",
+            "properties": {
+              "length": {
+                "$ref": "#/$defs/Length"
+              },
+              "reversed": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "one_side",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "length",
+              "reversed"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "`length / 2` each way from the plane.",
+            "properties": {
+              "length": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "symmetric",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "length"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "`length` along the feature's direction and `length2` against it.",
+            "properties": {
+              "length": {
+                "$ref": "#/$defs/Length"
+              },
+              "length2": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "two_sides",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "length",
+              "length2"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Plane": {
+        "description": "The plane a sketch is drawn on: one of the origin's, oriented as FreeCAD's (D6). On\n`xy`, the sketch's x is +X and its y +Y (normal +Z); on `xz`, x is +X and y +Z (normal\n−Y); on `yz`, x is +Y and y +Z (normal +X).",
+        "enum": [
+          "xy",
+          "xz",
+          "yz"
+        ],
+        "type": "string"
+      },
+      "PocketExtent": {
+        "description": "How far a pocket goes from its sketch's plane: a pad's forms, or through everything of\nits base along its direction (against it when `reversed`).",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "`length` along the feature's direction, or against it when `reversed`.",
+            "properties": {
+              "length": {
+                "$ref": "#/$defs/Length"
+              },
+              "reversed": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "one_side",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "length",
+              "reversed"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "`length / 2` each way from the plane.",
+            "properties": {
+              "length": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "symmetric",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "length"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "`length` along the feature's direction and `length2` against it.",
+            "properties": {
+              "length": {
+                "$ref": "#/$defs/Length"
+              },
+              "length2": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "two_sides",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "length",
+              "length2"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Through everything of its base along the feature's direction, or against it when\n`reversed`.",
+            "properties": {
+              "reversed": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "through_all",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "reversed"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "SketchArc": {
+        "additionalProperties": false,
+        "description": "An arc about `center`, counter-clockwise from `start` to `end`. Its points are its\ndefinition: its radius and angles are the solver's, worked out from them, and the\nsolve holds its ends on it (D2, arcs).",
+        "properties": {
+          "center": {
+            "$ref": "#/$defs/ElementId"
+          },
+          "construction": {
+            "type": "boolean"
+          },
+          "end": {
+            "$ref": "#/$defs/ElementId"
+          },
+          "id": {
+            "$ref": "#/$defs/ElementId"
+          },
+          "start": {
+            "$ref": "#/$defs/ElementId"
+          }
+        },
+        "required": [
+          "id",
+          "center",
+          "start",
+          "end",
+          "construction"
+        ],
+        "type": "object"
+      },
+      "SketchCircle": {
+        "additionalProperties": false,
+        "description": "A circle about a point.",
+        "properties": {
+          "center": {
+            "$ref": "#/$defs/ElementId"
+          },
+          "construction": {
+            "type": "boolean"
+          },
+          "id": {
+            "$ref": "#/$defs/ElementId"
+          },
+          "radius": {
+            "$ref": "#/$defs/Coordinate",
+            "description": "Worked out by the solver, as coordinates are."
+          }
+        },
+        "required": [
+          "id",
+          "center",
+          "radius",
+          "construction"
+        ],
+        "type": "object"
+      },
+      "SketchConstraint": {
+        "description": "One constraint: its ID and its form.",
+        "oneOf": [
+          {
+            "description": "The line parallel to x.",
+            "properties": {
+              "line": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "horizontal",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "line"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The line parallel to y.",
+            "properties": {
+              "line": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "vertical",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "line"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The two points level.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "horizontal_points",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "One point above the other.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "vertical_points",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The line's length.",
+            "properties": {
+              "driving": {
+                "type": "boolean"
+              },
+              "line": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "length",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Length"
+              }
+            },
+            "required": [
+              "type",
+              "line",
+              "value",
+              "driving"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The distance between two points.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "driving": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "distance",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Length"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b",
+              "value",
+              "driving"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "x(b) − x(a), signed.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "driving": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "distance_x",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Length"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b",
+              "value",
+              "driving"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "y(b) − y(a), signed.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "driving": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "distance_y",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Length"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b",
+              "value",
+              "driving"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The point's distance from the line (extended), on the given side of it.",
+            "properties": {
+              "driving": {
+                "type": "boolean"
+              },
+              "line": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "point": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "side": {
+                "$ref": "#/$defs/LineSide"
+              },
+              "type": {
+                "const": "point_line_distance",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Length"
+              }
+            },
+            "required": [
+              "type",
+              "point",
+              "line",
+              "value",
+              "side",
+              "driving"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The point on the curve: a line extended, or an arc's whole circle, as FreeCAD's.",
+            "properties": {
+              "curve": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "point": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "on",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "point",
+              "curve"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "parallel",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "perpendicular",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The angle from `a`'s direction to `b`'s, counter-clockwise, signed.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "driving": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "angle",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Angle"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b",
+              "value",
+              "driving"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A circle's or arc's radius.",
+            "properties": {
+              "curve": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "driving": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "radius",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Length"
+              }
+            },
+            "required": [
+              "type",
+              "curve",
+              "value",
+              "driving"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A circle's or arc's diameter.",
+            "properties": {
+              "curve": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "driving": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "diameter",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Length"
+              }
+            },
+            "required": [
+              "type",
+              "curve",
+              "value",
+              "driving"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Two lines of equal length, or two circles or arcs of equal radius.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "equal",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Tangent along their edges: a line and a circle or arc, or two circles or arcs.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "side": {
+                "$ref": "#/$defs/TangentSide"
+              },
+              "type": {
+                "const": "tangent",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b",
+              "side"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Tangent where `a` ends on `b`: the point `at`, an end of `a`, lies on `b`, and `a`\nruns there along `b`, its direction leaving `at` the `same` as `b`'s or `opposite`\n(FreeCAD's endpoint-to-edge `Tangent`).",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "at": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "direction": {
+                "$ref": "#/$defs/Direction"
+              },
+              "type": {
+                "const": "tangent_on",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "at",
+              "b",
+              "direction"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Tangent where two curves meet, at the point `at` they share.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "at": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "direction": {
+                "$ref": "#/$defs/Direction"
+              },
+              "type": {
+                "const": "tangent_at",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b",
+              "at",
+              "direction"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`a` and `b` mirror each other about a line or a point.",
+            "properties": {
+              "a": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "about": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "b": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "symmetric",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "a",
+              "b",
+              "about"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The point midway along the line.",
+            "properties": {
+              "line": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "point": {
+                "$ref": "#/$defs/SketchReference"
+              },
+              "type": {
+                "const": "midpoint",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "point",
+              "line"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/ElementId"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object",
+        "unevaluatedProperties": false
+      },
+      "SketchLine": {
+        "additionalProperties": false,
+        "description": "A line from one point to another.",
+        "properties": {
+          "construction": {
+            "type": "boolean"
+          },
+          "from": {
+            "$ref": "#/$defs/ElementId"
+          },
+          "id": {
+            "$ref": "#/$defs/ElementId"
+          },
+          "to": {
+            "$ref": "#/$defs/ElementId"
+          }
+        },
+        "required": [
+          "id",
+          "from",
+          "to",
+          "construction"
+        ],
+        "type": "object"
+      },
+      "SketchPoint": {
+        "additionalProperties": false,
+        "description": "A point of the sketch, which curves share.",
+        "properties": {
+          "construction": {
+            "description": "Construction geometry is solved like any other and left out of the profile (D7).",
+            "type": "boolean"
+          },
+          "id": {
+            "$ref": "#/$defs/ElementId"
+          },
+          "x": {
+            "$ref": "#/$defs/Coordinate"
+          },
+          "y": {
+            "$ref": "#/$defs/Coordinate"
+          }
+        },
+        "required": [
+          "id",
+          "x",
+          "y",
+          "construction"
+        ],
+        "type": "object"
+      },
+      "SketchReference": {
+        "description": "An element of this sketch, by its ID, or one of the fixed references every sketch has: origin, x_axis (from the origin along +x), y_axis (from the origin along +y).",
+        "pattern": "^([0123456789abcdefghjkmnpqrstvwxyz]{8}|origin|x_axis|y_axis)$",
+        "type": "string"
+      },
+      "TangentSide": {
+        "description": "Where a tangent curve lies: for a line and a circle or arc, the side of the line the\ncurve is on (facing from its start to its end); for two circles or arcs, each outside\nthe other, or one inside the other.",
+        "enum": [
+          "left",
+          "right",
+          "outside",
+          "inside"
+        ],
+        "type": "string"
+      },
+      "TurnExtent": {
+        "description": "How far a revolve or groove turns its profile: an angle above 0° and at most 360°.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "`angle` right-handed about the axis, or left-handed when `reversed`.",
+            "properties": {
+              "angle": {
+                "$ref": "#/$defs/Angle"
+              },
+              "reversed": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "one_side",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "angle",
+              "reversed"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "`angle / 2` each way from the sketch.",
+            "properties": {
+              "angle": {
+                "$ref": "#/$defs/Angle"
+              },
+              "type": {
+                "const": "symmetric",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "angle"
+            ],
+            "type": "object"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`add_feature`'s result.",
+    "properties": {
+      "changed": {
+        "description": "Whether the document changed: always, a feature added.",
+        "type": "boolean"
+      },
+      "commit": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/CommitResult"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Outside a transaction, the commit that saved the edit; null inside one."
+      },
+      "feature": {
+        "$ref": "#/$defs/Feature",
+        "description": "The feature as the document now holds it: with its ID (the one given, or the one\nmade) and its version; outside a transaction, as the commit saved it, with the\nfingerprint it wrote."
+      }
+    },
+    "required": [
+      "changed",
+      "commit",
+      "feature"
+    ],
+    "title": "AddFeatureResult",
+    "type": "object"
+  }
+}

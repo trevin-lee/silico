@@ -1,6 +1,6 @@
-//! The `silico` command-line client: `check`, `fmt`, and `show`, each a thin client of the
-//! core's commands (`silico_core::command`), which the app and MCP run too, and `textconv`,
-//! for `git diff` (docs/cli.md).
+//! The `silico` command-line client: `check`, `fmt`, `show`, and `schema`, each a thin client
+//! of the core's commands (`silico_core::command`), which the app and MCP run too, and
+//! `textconv`, for `git diff` (docs/cli.md).
 //!
 //! Exit codes: 0, nothing wrong; 1, a document has problems (or, with `fmt --check`, isn't
 //! in canonical form); 2, the command couldn't run (a usage error, a file that couldn't be
@@ -32,7 +32,8 @@ macro_rules! say {
 const USAGE: &str = "usage: silico check [--json] [--] FILE...
        silico fmt [--check] [--] FILE...
        silico show [--] FILE
-       silico textconv [--] FILE";
+       silico textconv [--] FILE
+       silico schema [NAME]";
 
 /// How a command ended.
 enum Ended {
@@ -69,6 +70,7 @@ enum Command {
     Fmt { check: bool },
     Show,
     Textconv,
+    Schema,
 }
 
 impl Command {
@@ -91,6 +93,7 @@ impl Command {
             ),
             "show" => (Command::Show, &[]),
             "textconv" => (Command::Textconv, &[]),
+            "schema" => (Command::Schema, &[]),
             _ => return Err(format!("silico: no command {name:?}")),
         };
         match flags.iter().find(|f| !options.contains(&f.as_str())) {
@@ -131,7 +134,9 @@ fn main() -> ExitCode {
     };
     let mut engines = Engines::default();
     let ended = match (command, files.as_slice()) {
-        (_, []) | (Command::Show | Command::Textconv, [_, _, ..]) => {
+        (Command::Schema, []) => schema("document"),
+        (Command::Schema, [name]) => schema(&name.to_string_lossy()),
+        (_, []) | (Command::Show | Command::Textconv | Command::Schema, [_, _, ..]) => {
             say!("{USAGE}");
             Ended::Failed
         }
@@ -147,6 +152,37 @@ fn main() -> ExitCode {
         (Command::Textconv, [file]) => textconv(file),
     };
     ended.code()
+}
+
+/// `silico schema [NAME]`: the document's JSON Schema, or the command `NAME`'s request and
+/// result schemas, as the core's `schema` gives them and its committed snapshots hold them.
+fn schema(of: &str) -> Ended {
+    let text = match command::schema::schema(of) {
+        Ok(described) => described.text(),
+        Err(problems) => {
+            for error in problems.errors() {
+                say!("silico schema: {error}");
+            }
+            return Ended::Failed;
+        }
+    };
+    match text {
+        Ok(text) => {
+            let mut out = std::io::stdout().lock();
+            if out
+                .write_all(text.as_bytes())
+                .and_then(|()| out.flush())
+                .is_err()
+            {
+                return Ended::Failed;
+            }
+            Ended::Clean
+        }
+        Err(error) => {
+            say!("silico schema: {error}");
+            Ended::Failed
+        }
+    }
 }
 
 /// `silico check FILE`: its problems (failed features and sketches, and drift of

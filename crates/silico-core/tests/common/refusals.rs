@@ -2,7 +2,6 @@
 //! them where a worker would.
 
 use silico_core::fake::FakeKernel;
-use silico_core::kernel::Op;
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{Failure, Operation, Refusal};
 
@@ -31,12 +30,18 @@ pub fn worker_failure(code: ErrorCode) -> Option<Failure> {
 
 /// A kernel that refuses every measure with `code`: as a worker would, if one gives it.
 pub fn refusing(kernel: &FakeKernel, code: ErrorCode) {
+    refusing_to(kernel, code, "Summarize");
+}
+
+/// A kernel that refuses every request of the operation `op` (a measure's, `Summarize` or
+/// `Describe`) with `code`: as a worker would, if one gives it.
+pub fn refusing_to(kernel: &FakeKernel, code: ErrorCode, op: &'static str) {
     match worker_failure(code) {
-        Some(failure) => kernel.refuse_as_worker(move |op| {
-            matches!(op, Op::Summarize { .. }).then(|| failure.clone())
-        }),
-        None => kernel.refuse(move |op| {
-            matches!(op, Op::Summarize { .. }).then(|| Error::new(code, "Summarize failed"))
+        Some(failure) => {
+            kernel.refuse_as_worker(move |asked| (asked.name() == op).then(|| failure.clone()))
+        }
+        None => kernel.refuse(move |asked| {
+            (asked.name() == op).then(|| Error::new(code, format!("{op} failed")))
         }),
     }
 }

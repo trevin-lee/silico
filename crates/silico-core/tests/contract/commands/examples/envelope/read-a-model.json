@@ -1,0 +1,6 @@
+{
+  "ok": true,
+  "session": {"id": "s1", "path": "bracket.silico", "revision": 7, "transaction": true, "reloaded": false},
+  "model": {"revision": 6, "of": "published", "fault": null},
+  "result": {"problems": [], "problems_total": 0, "warnings": [], "warnings_total": 0}
+}

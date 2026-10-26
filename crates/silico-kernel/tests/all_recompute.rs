@@ -11,23 +11,33 @@
 mod cached;
 #[path = "../../silico-core/tests/common/example.rs"]
 mod example;
+#[path = "../../silico-core/tests/common/model.rs"]
+mod model;
 
 #[path = "adversarial_cache.rs"]
 mod adversarial_cache;
+#[path = "adversarial_entries.rs"]
+mod adversarial_entries;
 #[path = "adversarial_fake_kernel.rs"]
 mod adversarial_fake_kernel;
 #[path = "adversarial_fingerprint.rs"]
 mod adversarial_fingerprint;
+#[path = "adversarial_mass_properties.rs"]
+mod adversarial_mass_properties;
 #[path = "adversarial_recompute.rs"]
 mod adversarial_recompute;
 #[path = "cache.rs"]
 mod cache;
 #[path = "elements.rs"]
 mod elements;
+#[path = "entries.rs"]
+mod entries;
 #[path = "fake_kernel.rs"]
 mod fake_kernel;
 #[path = "fingerprint.rs"]
 mod fingerprint;
+#[path = "mass_properties.rs"]
+mod mass_properties;
 #[path = "recompute.rs"]
 mod recompute;
 #[path = "recompute_spans_close.rs"]
@@ -38,3 +48,5 @@ mod recompute_tracing;
 mod recompute_tracing_lagging;
 #[path = "refused_span_closes.rs"]
 mod refused_span_closes;
+#[path = "wire_examples.rs"]
+mod wire_examples;

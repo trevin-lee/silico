@@ -88,15 +88,61 @@ struct Place {
     index: usize,
 }
 
+/// An ID a sketch gives more than one member ([`repeats`]), and every member that holds
+/// it, by kind and place in its list, in the order [`MemberPaths`] counts them: the first
+/// the one the ID names (its path is `list.id`), each later one named by its place.
+pub(crate) struct Repeat<'a> {
+    pub(crate) id: &'a ElementId,
+    pub(crate) holders: Vec<(ElementKind, usize)>,
+}
+
+/// Each ID `sketch` gives more than one member, in the order its second holder comes in
+/// [`MemberPaths`]'s count (the lists in [`ElementKind::ALL`]'s order, each in the order
+/// held): what the gate refuses (each later holder, at its place), and an edit that set
+/// one of them (at the request's field).
+pub(crate) fn repeats(sketch: &Sketch) -> Vec<Repeat<'_>> {
+    let mut holders: BTreeMap<&ElementId, Vec<(ElementKind, usize)>> = BTreeMap::new();
+    let mut order = Vec::new();
+    for kind in ElementKind::ALL {
+        for (index, id) in sketch.ids(kind).into_iter().enumerate() {
+            let held = holders.entry(id).or_default();
+            if held.len() == 1 {
+                order.push(id);
+            }
+            held.push((kind, index));
+        }
+    }
+    order
+        .into_iter()
+        .map(|id| Repeat {
+            id,
+            holders: holders.remove(id).unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// The refusal's message for a member given `id`, which the `holder` member at `path`
+/// already holds.
+pub(crate) fn id_held(id: &ElementId, holder: ElementKind, path: &str) -> String {
+    format!(
+        "id {id} is already the ID of {} {id} ({path})",
+        holder.noun()
+    )
+}
+
+/// The suggestion for a `kind` member given an ID another holds.
+pub(crate) fn an_id_of_its_own(kind: ElementKind) -> String {
+    format!("give this {} an ID of its own", kind.noun())
+}
+
 /// The sketch's problems, in the order of its fields: each list in turn, each element's
 /// fields in order, then its size.
 pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Error)) {
     // Each element's path (`MemberPaths`), and every element by ID: the first holder of
-    // each ID, which a reference finds. Each later holder, named by its place, with its
-    // first holder's kind and path.
+    // each ID, which a reference finds. Each later holder ([`repeats`]), named by its
+    // place, with its first holder's kind and path.
     let paths = MemberPaths::of(sketch);
     let mut by_id: BTreeMap<&ElementId, Place> = BTreeMap::new();
-    let mut taken: BTreeMap<(ElementKind, usize), (ElementKind, &str)> = BTreeMap::new();
     for kind in ElementKind::ALL {
         for (index, (id, named)) in sketch
             .ids(kind)
@@ -106,10 +152,17 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         {
             if named.by_id {
                 by_id.insert(id, Place { kind, index });
-            } else if let Some(first) = by_id.get(id)
-                && let Some(holder) = paths.list(first.kind).get(first.index)
-            {
-                taken.insert((kind, index), (first.kind, holder.path.as_str()));
+            }
+        }
+    }
+    let mut taken: BTreeMap<(ElementKind, usize), (ElementKind, &str)> = BTreeMap::new();
+    for repeat in repeats(sketch) {
+        let Some((&(first, at), later)) = repeat.holders.split_first() else {
+            continue;
+        };
+        if let Some(holder) = paths.list(first).get(at) {
+            for &later in later {
+                taken.insert(later, (first, holder.path.as_str()));
             }
         }
     }
@@ -119,11 +172,8 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             if let Some(&(first, holder)) = taken.get(&(kind, index)) {
                 add(refuse(
                     &format!("{at}.id"),
-                    format!(
-                        "id {id} is already the ID of {} {id} ({holder})",
-                        first.noun()
-                    ),
-                    format!("give this {} an ID of its own", kind.noun()),
+                    id_held(id, first, holder),
+                    an_id_of_its_own(kind),
                 ));
             }
         };
@@ -750,7 +800,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 let kind = if driving { "" } else { "reference " };
                 add(refuse(
                     &format!("{at}.value"),
-                    format!("a {kind}{what}'s value is {value} mm, but it's {range}"),
+                    format!("a {kind}{what}'s value is {value} mm, but it must be {range}"),
                     format!("give the {what} a value {range}"),
                 ));
             }
@@ -761,7 +811,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             add(refuse(
                 &format!("{at}.value"),
                 format!(
-                    "an angle's value is {value} degrees, but it's at most {MAX_ANGLE_DEGREES} either way"
+                    "an angle's value is {value} degrees, but it must be at most {MAX_ANGLE_DEGREES} either way"
                 ),
                 format!(
                     "give the angle a value from -{MAX_ANGLE_DEGREES} to {MAX_ANGLE_DEGREES} degrees"

@@ -148,7 +148,9 @@ fn changed(before: &Document, after: &Document) -> BTreeSet<FeatureId> {
 }
 
 /// Whether two features hold the same values of their own: every field but those an edit of
-/// which reaches nothing (the design's section 5).
+/// which reaches nothing (the design's section 5), compared as canonical form writes them,
+/// so a sketch whose lists are only put in ID order (a file's, and its canonical text's)
+/// hasn't changed.
 fn same_values(before: &Feature, after: &Feature) -> bool {
     // Every field taken apart, so one added to a feature is a compile error here until it
     // says whether changing it reaches the feature.
@@ -160,7 +162,7 @@ fn same_values(before: &Feature, after: &Feature) -> bool {
         note: _,
         fingerprint: _,
     } = before;
-    *operation == after.operation && *version == after.version
+    operation.canonically_eq(&after.operation) && *version == after.version
 }
 
 /// The features of `features` that `document` has, and every feature of `document` that

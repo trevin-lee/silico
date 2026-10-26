@@ -123,7 +123,7 @@ fn planted_entry(dir: &Path, n: u64) -> PathBuf {
 fn eviction_goes_by_last_use_then_by_path() {
     let dir = Scratch::new("order");
     std::fs::create_dir_all(dir.0.join("ab")).unwrap();
-    // Eight entries of 4 KiB, 32 KiB in all: exactly the bound, so the first put passes it.
+    // Eight entries of 8 KiB, 64 KiB in all: exactly the bound, so the first put passes it.
     // Their last uses, oldest first: 5; 7; 2 and 6 at once (2 first, by path); then 0, 1,
     // 3, 4. Three go, so the cut falls between the two used at once.
     let now = SystemTime::now();
@@ -140,13 +140,14 @@ fn eviction_goes_by_last_use_then_by_path() {
     ];
     for (n, time) in used.iter().enumerate() {
         let entry = planted_entry(&dir.0, n as u64);
-        std::fs::write(&entry, vec![0; 4096]).unwrap();
+        std::fs::write(&entry, vec![0; 8192]).unwrap();
         set_time(&entry, *time);
     }
-    let bound = 8 * 4096;
+    let bound = 8 * 8192;
     let session = bounded(&dir.0, bound);
     published(&session, checked(EXAMPLE));
-    // The example's own entries, each under 2 KiB, so the evictions are the first put's.
+    // The example's own entries, each under 4 KiB (its solids described), so the evictions
+    // are the first put's.
     let planted: Vec<PathBuf> = (0..8).map(|n| planted_entry(&dir.0, n)).collect();
     let own: Vec<PathBuf> = files(&dir.0)
         .into_iter()
@@ -154,10 +155,10 @@ fn eviction_goes_by_last_use_then_by_path() {
         .collect();
     assert_eq!(own.len(), 4, "{own:?}");
     for file in &own {
-        assert!(std::fs::metadata(file).unwrap().len() < 2048, "{file:?}");
+        assert!(std::fs::metadata(file).unwrap().len() < 4096, "{file:?}");
     }
-    // The first put, of at most 2 KiB, leaves what's kept and itself at most three quarters
-    // of the bound, 24 KiB: five planted entries stay (20 KiB), so three go, the oldest.
+    // The first put, of at most 4 KiB, leaves what's kept and itself at most three quarters
+    // of the bound, 48 KiB: five planted entries stay (40 KiB), so three go, the oldest.
     let gone: Vec<u64> = (0..8).filter(|&n| !planted[n as usize].exists()).collect();
     assert_eq!(gone, [2, 5, 7]);
     assert!(total(&dir.0) <= bound);

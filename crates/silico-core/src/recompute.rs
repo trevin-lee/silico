@@ -54,9 +54,10 @@ use crate::document::{
     Checked, Document, ElementId, ElementName, FeatureId, Fingerprint, Made, Operation,
     SweepFeature,
 };
+use crate::elements::Entry;
 use crate::kernel::{
-    BooleanOp, BuiltData, FaceRegions, Generation, History, Kernel, KernelRequest, Primitive,
-    ShapeData, ShapeSummary, SweepKind,
+    BooleanOp, BuiltData, DESCRIBE_BATCH, FaceRegions, Generation, History, Kernel, KernelRequest,
+    Primitive, ShapeData, ShapeSummary, SweepKind,
 };
 use crate::naming::{ElementMap, Maker, NAMING_SCHEME, OpCode};
 use crate::pool::Outcome;
@@ -65,6 +66,7 @@ use crate::references::EdgeNames;
 use crate::sketch::{SketchSolution, SketchSolver, SketchWorker, SolveStopper};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
+use silico_protocol::Description;
 
 /// The most steps one recompute waits on at once: enough to keep a pool of workers busy
 /// (the kernel queues what it can't run yet), few enough that a document of thousands of
@@ -90,16 +92,34 @@ impl fmt::Debug for Key {
 
 /// What a kernel step made: its shape, for an operation on other shapes what it did to
 /// them, and, if it was measured, the shape's summary (from which a feature's fingerprint
-/// comes; a step that's a feature's solid is measured after it's made, by a job of its own,
-/// which puts a measured copy in its place), or why the kernel refused to measure it, if
-/// that follows from its values (so it would refuse again). Never changed once made: models
-/// share it.
+/// comes), or why the kernel refused to measure it, if that follows from its values (so it
+/// would refuse again); and, once it's summarized, what became of the description of each
+/// of its faces, edges, and vertices (which element reads give:
+/// docs/design/m4.1-command-api.md, *Where the entries come from*). A step that's a
+/// feature's solid is measured after it's made, by a job of its own, which puts a measured
+/// copy in its place. Never changed once made: models share it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Built {
     pub shape: ShapeData,
     pub history: Option<History>,
     summary: Option<ShapeSummary>,
     refused: Option<Error>,
+    described: Option<Described>,
+}
+
+/// What became of a summarized shape's description. A description that couldn't be had
+/// leaves the summary as it is: a sweep's checks and its fingerprint read the summary
+/// alone, so only element reads report it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Described {
+    /// Described whole: each of its faces, edges, and vertices, in the kernel's numbering.
+    Whole(Description),
+    /// Refused for the shape's values (`kept`): it would be refused again, so it isn't
+    /// asked again in the session, nor, if it lasts (`cache::lasting`), from the cache.
+    Refused(Error),
+    /// A worker's failure (a crash, a hang, a reply no shape has): asked again by the next
+    /// recompute.
+    Failed(Error),
 }
 
 impl Built {
@@ -113,6 +133,7 @@ impl Built {
             history,
             summary,
             refused: None,
+            described: None,
         }
     }
 
@@ -127,6 +148,7 @@ impl Built {
             history,
             summary: None,
             refused: Some(refused),
+            described: None,
         }
     }
 
@@ -135,15 +157,57 @@ impl Built {
         self.summary.as_ref()
     }
 
+    /// Each of the shape's faces, edges, and vertices described, in the kernel's numbering
+    /// (`TopExp::MapShapes` order), if it was.
+    pub fn description(&self) -> Option<&Description> {
+        match &self.described {
+            Some(Described::Whole(description)) => Some(description),
+            Some(Described::Refused(_) | Described::Failed(_)) | None => None,
+        }
+    }
+
+    /// Why the shape's elements couldn't be described, if they couldn't: refused for its
+    /// values, or a worker's failure.
+    pub fn why_undescribed(&self) -> Option<&Error> {
+        match &self.described {
+            Some(Described::Refused(error) | Described::Failed(error)) => Some(error),
+            Some(Described::Whole(_)) | None => None,
+        }
+    }
+
+    /// What became of its description, if it was asked for.
+    pub(crate) fn described(&self) -> Option<&Described> {
+        self.described.as_ref()
+    }
+
     /// Why the kernel refused to measure the shape, if it did for its values.
     pub fn measure_refused(&self) -> Option<&Error> {
         self.refused.as_ref()
     }
 
-    /// This result, measured.
-    fn measured(&self, summary: ShapeSummary) -> Self {
+    /// Whether a measure job has something to do for it: a summary not refused, or, once
+    /// summarized, a description not yet had or refused (one a worker failed is asked
+    /// again).
+    fn needs_measure(&self) -> bool {
+        match (&self.summary, &self.described) {
+            (None, _) => self.refused.is_none(),
+            (Some(_), None | Some(Described::Failed(_))) => true,
+            (Some(_), Some(Described::Whole(_) | Described::Refused(_))) => false,
+        }
+    }
+
+    /// This result, summarized.
+    fn summarized(&self, summary: ShapeSummary) -> Self {
         Built {
             summary: Some(summary),
+            ..self.clone()
+        }
+    }
+
+    /// This result, with what became of its description.
+    pub(crate) fn with_described(&self, described: Described) -> Self {
+        Built {
+            described: Some(described),
             ..self.clone()
         }
     }
@@ -156,6 +220,13 @@ impl Built {
         }
     }
 }
+
+/// The most batches of one solid's description in flight at once: each carries the solid's
+/// B-rep, so it bounds the copies held, while the pool's workers describe in parallel. Only
+/// a solid of more than one batch of a kind is described so: a smaller one's batches are
+/// quick, and asking them at once would start a worker for each (a small document's check
+/// starting three where it needs one).
+const DESCRIBE_AT_ONCE: usize = 4;
 
 /// What became of a feature in a recompute.
 #[derive(Debug, Clone, PartialEq)]
@@ -180,6 +251,20 @@ pub enum FeatureOutcome {
     Sketch(Arc<SketchSolution>),
 }
 
+impl FeatureOutcome {
+    /// Why it failed, each error naming the feature: its failure, or its broken references
+    /// (the first hundred); none if it built, is blocked on another, or is a sketch.
+    pub fn errors(&self) -> &[Error] {
+        match self {
+            FeatureOutcome::Failed(error) => std::slice::from_ref(error),
+            FeatureOutcome::Broken { errors, .. } => errors,
+            FeatureOutcome::Built { .. }
+            | FeatureOutcome::Blocked { .. }
+            | FeatureOutcome::Sketch(_) => &[],
+        }
+    }
+}
+
 /// A document as rebuilt: what became of each feature, in timeline order, and its bodies.
 #[derive(Debug, Clone)]
 pub struct Model {
@@ -200,6 +285,10 @@ pub struct Model {
     /// a function of the model's own data alone, so they're the same whenever they're
     /// named.
     maps: Vec<OnceLock<Option<Arc<ElementMap>>>>,
+    /// Each feature's solid's elements as entries (`elements` and `query`'s), built from its
+    /// description and its names the first time they're read, once for the model, so paging
+    /// through a large solid costs one build and a copy of each page, not a build a page.
+    entries: Vec<OnceLock<Result<Arc<[Entry]>, Error>>>,
     /// The engine's maps named so far.
     known: NamedMaps,
 }
@@ -288,13 +377,30 @@ impl Model {
     /// across it) has one error, naming it, whose elements are the sketch's at fault; the
     /// sketch, solved, has none (design S3, S5, S6).
     pub fn errors(&self) -> impl Iterator<Item = &Error> {
-        self.features.iter().flat_map(|(_, outcome)| match outcome {
-            FeatureOutcome::Failed(error) => std::slice::from_ref(error),
-            FeatureOutcome::Broken { errors, .. } => errors.as_slice(),
-            FeatureOutcome::Built { .. }
-            | FeatureOutcome::Blocked { .. }
-            | FeatureOutcome::Sketch(_) => &[],
-        })
+        self.features
+            .iter()
+            .flat_map(|(_, outcome)| outcome.errors())
+    }
+
+    /// The first kernel fault the rebuild met, in timeline order: a failure that says
+    /// nothing about the document (a worker that crashed, hung, or couldn't be had, a reply
+    /// that couldn't be read, a shortage, a bug), in a feature's failure or in a measure of
+    /// its solid. One, however many features it stopped: a sketch solver that couldn't
+    /// start fails every sketch with it, and is still one fault (docs/design/m4.1-command-api.md,
+    /// section 6, after AR1). None if the rebuild met none.
+    pub fn fault(&self) -> Option<&Error> {
+        let mut unmeasured = self.unmeasured.iter().peekable();
+        for (id, outcome) in &self.features {
+            if let Some(fault) = outcome.errors().iter().find(|e| e.code().is_kernel_fault()) {
+                return Some(fault);
+            }
+            if let Some((_, error)) = unmeasured.next_if(|(feature, _)| feature == id)
+                && error.code().is_kernel_fault()
+            {
+                return Some(error);
+            }
+        }
+        None
     }
 
     /// The names of the elements of the feature `id`'s solid, if it built. The recompute
@@ -320,6 +426,37 @@ impl Model {
             }
         }
         self.maps.get(i)?.get()?.as_deref()
+    }
+
+    /// Each of the feature `id`'s solid's faces, edges, and vertices described, in the
+    /// kernel's numbering, if it built and they were: described as part of the rebuild,
+    /// before the model was published, so reading it asks the kernel nothing. Why they
+    /// weren't, if they couldn't be, is its `Built::why_undescribed`.
+    pub fn description(&self, id: &FeatureId) -> Option<&Description> {
+        match self.outcome(id)? {
+            FeatureOutcome::Built { built, .. } => built.description(),
+            FeatureOutcome::Failed(_)
+            | FeatureOutcome::Broken { .. }
+            | FeatureOutcome::Blocked { .. }
+            | FeatureOutcome::Sketch(_) => None,
+        }
+    }
+
+    /// Each of the feature `id`'s solid's elements as an entry, in the element list's order
+    /// (`elements::entries`), if it built and was described ([`Model::description`]): built
+    /// the first time they're asked for, naming its elements if they aren't yet, and kept for
+    /// the model. A fault if they couldn't be named, or don't fit an entry.
+    pub fn entries(&self, id: &FeatureId) -> Option<Result<&[Entry], &Error>> {
+        let description = self.description(id)?;
+        let slot = self.entries.get(self.index(id)?)?;
+        let built = slot.get_or_init(|| match self.element_map(id) {
+            Some(map) => crate::elements::entries(map, id, description).map(Arc::from),
+            None => Err(crate::elements::fault(
+                id,
+                "its solid built, but its elements couldn't be named",
+            )),
+        });
+        Some(built.as_deref())
     }
 
     /// The names of the elements of the feature `id`'s solid if they've been named
@@ -364,6 +501,18 @@ impl Model {
     /// The document it was built from.
     pub fn document(&self) -> &Document {
         self.source.document()
+    }
+
+    /// This model as `source`'s: the same steps and outcomes, its document `source`. For a
+    /// document that differs from the one it was built from only in what a save writes from
+    /// it (its fingerprints, with no sketch's solve written), whose rebuild would take every
+    /// step from those this one took: a session's save (a commit, an edit's, `format`'s),
+    /// whose model is the saved revision's (the design's section 4).
+    pub(crate) fn rebound(&self, source: Arc<Checked>) -> Model {
+        Model {
+            source,
+            ..self.clone()
+        }
     }
 
     /// The fingerprint of the feature `id`'s solid, if it built and was measured: none if it
@@ -414,6 +563,17 @@ impl Model {
         drift.iter().filter(|(id, error)| {
             !(error.code() == ErrorCode::Drift && except.contains(id) && self.records(id))
         })
+    }
+
+    /// Why the feature `id`'s built solid couldn't be measured, if it couldn't: the kernel's
+    /// refusal of its values (which its [`Built::measure_refused`] holds too, once kept) or
+    /// a worker's failure (a crash, a timeout, a reply no shape has), as
+    /// [`drift`](Self::drift) says it.
+    pub fn unmeasured(&self, id: &FeatureId) -> Option<&Error> {
+        self.unmeasured
+            .iter()
+            .find(|(unmeasured, _)| unmeasured == id)
+            .map(|(_, error)| error)
     }
 
     /// [`drift`](Self::drift), each error with the ID of the feature it's of, computed once
@@ -2145,15 +2305,19 @@ enum MeasureKnown {
     Nothing,
     /// Why the kernel refused it, which, for the session, may not last.
     Refused,
+    /// Its summary, its description not had (not yet asked, or failed).
     Summary,
+    /// Its summary, and its description or why it was refused.
+    Described,
 }
 
 /// How much `built` knows of its measure.
 fn measure_known(built: &Built) -> MeasureKnown {
-    match (built.summary(), built.measure_refused()) {
-        (Some(_), _) => MeasureKnown::Summary,
-        (None, Some(_)) => MeasureKnown::Refused,
-        (None, None) => MeasureKnown::Nothing,
+    match (built.summary(), built.described(), built.measure_refused()) {
+        (Some(_), Some(Described::Whole(_) | Described::Refused(_)), _) => MeasureKnown::Described,
+        (Some(_), _, _) => MeasureKnown::Summary,
+        (None, _, Some(_)) => MeasureKnown::Refused,
+        (None, _, None) => MeasureKnown::Nothing,
     }
 }
 
@@ -2358,17 +2522,14 @@ impl<K: Kernel + 'static> Engine<K> {
                 schedule.waiting.insert(*key, unbuilt);
             }
         }
-        // Features' solids built before (kept, or from the cache) but not measured yet,
-        // unless the kernel refused to for their values: it would again.
+        // Features' solids built before (kept, or from the cache) but not summarized or
+        // described yet, unless the kernel refused to for their values: it would again.
         for key in &plan.results {
-            if let Some(Ok(built)) = schedule.done.get(key)
-                && built.summary().is_none()
-            {
-                match built.measure_refused() {
-                    Some(error) => {
-                        schedule.unmeasured.insert(*key, error.clone());
-                    }
-                    None => schedule.ready.push_back(Job::Measure(*key)),
+            if let Some(Ok(built)) = schedule.done.get(key) {
+                if built.needs_measure() {
+                    schedule.ready.push_back(Job::Measure(*key));
+                } else if let Some(error) = built.measure_refused() {
+                    schedule.unmeasured.insert(*key, error.clone());
                 }
             }
         }
@@ -2844,7 +3005,8 @@ impl<K: Kernel + 'static> Engine<K> {
                     let made = result.is_ok();
                     let result = result.map(Arc::new);
                     // A feature's solid is kept on disk once it's measured, with its
-                    // summary (written now too, it could land after, and over, that).
+                    // summary and description (written now too, it could land after, and
+                    // over, that).
                     if let Ok(built) = &result
                         && !plan.results.contains(&key)
                     {
@@ -2997,14 +3159,84 @@ impl<K: Kernel + 'static> Engine<K> {
     }
 
     /// Measures `built`, a feature's solid, on the kernel, for `generation`: a copy of it
-    /// with its summary.
+    /// with its summary, unless it has one, and what became of its description, a batch at a
+    /// time ([`Engine::describe`]), so a read of the model it's published in asks the kernel
+    /// nothing. A summary refused or failed is the measure's failure; a description refused
+    /// or failed is kept beside the summary, which stands: only element reads report it.
     fn measure(&self, built: &Built, generation: Generation) -> Outcome<Built> {
-        map(
-            self.kernel
+        let (built, summary) = match built.summary() {
+            Some(summary) => (built.clone(), summary.clone()),
+            None => match self
+                .kernel
                 .submit(generation, KernelRequest::summarize(&built.shape))
-                .wait(),
-            |summary| built.measured(summary),
-        )
+                .wait()
+            {
+                Outcome::Done(Ok(summary)) => (built.summarized(summary.clone()), summary),
+                Outcome::Done(Err(error)) => return Outcome::Done(Err(error)),
+                Outcome::Superseded => return Outcome::Superseded,
+            },
+        };
+        let described = match self.describe(&built.shape, &summary, generation) {
+            Outcome::Superseded => return Outcome::Superseded,
+            Outcome::Done(Ok(description)) => Described::Whole(description),
+            Outcome::Done(Err(error)) if kept(&error) => Described::Refused(error),
+            Outcome::Done(Err(error)) => Described::Failed(error),
+        };
+        Outcome::Done(Ok(built.with_described(described)))
+    }
+
+    /// Each of `shape`'s faces, edges, and vertices described, for `generation`: batches of
+    /// at most [`DESCRIBE_BATCH`](crate::kernel::DESCRIBE_BATCH) planned from `summary`'s
+    /// counts, [`DESCRIBE_AT_ONCE`] of them in flight at a time (each carries the shape),
+    /// joined in order. Each batch's total is checked against the summary's count, and the
+    /// whole against the summary, before it's taken.
+    fn describe(
+        &self,
+        shape: &ShapeData,
+        summary: &ShapeSummary,
+        generation: Generation,
+    ) -> Outcome<Description> {
+        let mut planned = silico_protocol::batches(summary.faces, summary.edges, summary.vertices);
+        let mut description = Description {
+            faces: Vec::new(),
+            edges: Vec::new(),
+            vertices: Vec::new(),
+        };
+        let large = [summary.faces, summary.edges, summary.vertices]
+            .iter()
+            .any(|&n| n > DESCRIBE_BATCH);
+        let at_once = if large { DESCRIBE_AT_ONCE } else { 1 };
+        let mut in_flight = VecDeque::new();
+        loop {
+            while in_flight.len() < at_once
+                && let Some((kind, first, count)) = planned.next()
+            {
+                let request = match KernelRequest::describe(shape, kind, first, count) {
+                    Ok(request) => request,
+                    Err(error) => return Outcome::Done(Err(error)),
+                };
+                in_flight.push_back((kind, self.kernel.submit(generation, request)));
+            }
+            let Some((kind, pending)) = in_flight.pop_front() else {
+                break;
+            };
+            match pending.wait() {
+                Outcome::Done(Ok(batch)) => {
+                    if let Some(fault) = crate::kernel::total_fault(summary, kind, batch.total) {
+                        return Outcome::Done(Err(fault));
+                    }
+                    description.faces.extend(batch.description.faces);
+                    description.edges.extend(batch.description.edges);
+                    description.vertices.extend(batch.description.vertices);
+                }
+                Outcome::Done(Err(error)) => return Outcome::Done(Err(error)),
+                Outcome::Superseded => return Outcome::Superseded,
+            }
+        }
+        match crate::kernel::description_fault(summary, &description) {
+            None => Outcome::Done(Ok(description)),
+            Some(fault) => Outcome::Done(Err(crate::kernel::description_error(fault))),
+        }
     }
 
     /// What one step makes on the kernel, for `generation`: its shape, and its history.
@@ -3207,6 +3439,7 @@ fn model(
         .collect();
     let naming = naming(plan, &features, done);
     let maps = (0..features.len()).map(|_| OnceLock::new()).collect();
+    let entries = (0..features.len()).map(|_| OnceLock::new()).collect();
     Model {
         source: Arc::clone(source),
         generation,
@@ -3215,6 +3448,7 @@ fn model(
         unmeasured,
         naming,
         maps,
+        entries,
         known,
     }
 }
@@ -3603,10 +3837,48 @@ mod tests {
             valid: true,
         };
         let refusal = Error::new(ErrorCode::KernelFailed, "Summarize failed");
-        let measured: StepResult = Ok(Arc::new(Built::new(shape(), None, Some(summary))));
+        let measured: StepResult = Ok(Arc::new(Built::new(shape(), None, Some(summary.clone()))));
         let refused: StepResult = Ok(Arc::new(Built::refused_measure(shape(), None, refusal)));
         let unmeasured: StepResult = Ok(Arc::new(Built::new(shape(), None, None)));
         let failed = |code| -> StepResult { Err(Error::new(code, "the step failed")) };
+        // And with what became of its description: a summarized result that knows its
+        // description, or why it was refused, knows more than one whose describe failed or
+        // wasn't asked, which knows as much as a summary alone.
+        {
+            let summarized = Built::new(shape(), None, Some(summary.clone()));
+            let description = Description {
+                faces: Vec::new(),
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            };
+            let whole: StepResult = Ok(Arc::new(
+                summarized.with_described(Described::Whole(description)),
+            ));
+            let kept: StepResult = Ok(Arc::new(summarized.with_described(Described::Refused(
+                Error::new(ErrorCode::InvalidResult, "Describe failed"),
+            ))));
+            let lost: StepResult = Ok(Arc::new(summarized.with_described(Described::Failed(
+                Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed"),
+            ))));
+            // By hand: what each knows, most first.
+            let ranked = [
+                (&whole, 3),
+                (&kept, 3),
+                (&lost, 2),
+                (&measured, 2),
+                (&refused, 1),
+                (&unmeasured, 0),
+            ];
+            for (old, knows) in ranked {
+                for (new, coming) in ranked {
+                    assert_eq!(
+                        replaces(Some(old), new),
+                        coming >= knows,
+                        "{old:?} by {new:?}"
+                    );
+                }
+            }
+        }
         // [kept now][coming], as measured, refused, unmeasured: a result replaces one that
         // knows as much or less.
         let results = [&measured, &refused, &unmeasured];

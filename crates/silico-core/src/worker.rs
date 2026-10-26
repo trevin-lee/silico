@@ -1545,9 +1545,10 @@ fn edges_fit(named: &[u32], listed: Option<&[u32]>) -> Result<(), String> {
     }
 }
 
-/// The operation whose refusals an error keeps as data: a measure's, which the rebuild
-/// cache keeps (`Op::Summarize`'s name).
-const MEASURE: &str = "Summarize";
+/// The operations whose refusals an error keeps as data: a measure's, its summary and its
+/// elements described, which the rebuild cache keeps (`Op::Summarize`'s and
+/// `Op::Describe`'s names).
+const MEASURES: [&str; 2] = ["Summarize", "Describe"];
 
 /// A worker's refusal or failure, as a structured error. The core names the elements at
 /// fault (as FreeCAD does, `Edge3`, where no document names them: `references::EdgeNames`) and has
@@ -1581,8 +1582,8 @@ fn failure_error_with_edge_names(
     };
     // A kernel worker's refusal of a measure is kept with the error, so the rebuild cache
     // keeps it as data, for the core that reads it to word (no other error is cached).
-    let words =
-        (kind == WorkerKind::Kernel && op == MEASURE && names.is_none()).then(|| failure.clone());
+    let words = (kind == WorkerKind::Kernel && MEASURES.contains(&op) && names.is_none())
+        .then(|| failure.clone());
     let described = failure.refusal.describe(failure.cause.as_deref(), &name);
     // Why it failed: OCCT's words where it threw; otherwise the refusal's.
     let why = failure
@@ -1868,20 +1869,27 @@ mod tests {
             },
             cause: Some("OCCT's words".to_owned()),
         };
-        // The measure's name is the protocol's for it.
+        // The measure's names are the protocol's for its two requests.
+        let shape =
+            silico_protocol::ShapeData::checked(silico_protocol::Blob::inline(Vec::new()), true);
         let summarize = silico_protocol::Op::Summarize {
-            shape: silico_protocol::ShapeData::checked(
-                silico_protocol::Blob::inline(Vec::new()),
-                true,
-            ),
+            shape: shape.clone(),
         };
-        assert_eq!(summarize.name(), super::MEASURE);
-        let measure = failure_error("Summarize", failure.clone());
-        let (op, kept) = measure.worker_failure().unwrap();
-        assert_eq!((op, kept), ("Summarize", &failure));
-        let again = failure_error(op, kept.clone());
-        assert_eq!(again, measure);
-        assert_eq!(again.elements(), ["Edge4294967295"]);
+        let describe = silico_protocol::Op::Describe {
+            shape,
+            kind: silico_protocol::ElementKind::Face,
+            first: 1,
+            count: 1,
+        };
+        assert_eq!([summarize.name(), describe.name()], super::MEASURES);
+        for name in super::MEASURES {
+            let measure = failure_error(name, failure.clone());
+            let (op, kept) = measure.worker_failure().unwrap();
+            assert_eq!((op, kept), (name, &failure));
+            let again = failure_error(op, kept.clone());
+            assert_eq!(again, measure);
+            assert_eq!(again.elements(), ["Edge4294967295"]);
+        }
         // Another operation's, a named fillet's, and the sketch worker's keep none.
         assert!(
             failure_error("Fillet", failure.clone())
@@ -1896,6 +1904,7 @@ mod tests {
             Some(&names),
         );
         assert!(named.worker_failure().is_none());
+        let measure = failure_error("Summarize", failure.clone());
         let sketch = failure_error_with_edge_names(WorkerKind::Sketch, "Summarize", failure, None);
         assert!(sketch.worker_failure().is_none());
         // Keeping it is no part of what the error is: the same fields, built by hand, are
