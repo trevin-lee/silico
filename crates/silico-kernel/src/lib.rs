@@ -1950,26 +1950,19 @@ fn skipped_words(elements: &[ffi::SkippedElement]) -> String {
             _ => "an element OCCT made".to_owned(),
         }
     };
-    let mut pairs: Vec<&[ffi::SkippedElement]> = Vec::new();
-    for pair in elements.chunks(2) {
-        let same = |seen: &&[ffi::SkippedElement]| {
-            seen.len() == pair.len()
-                && seen
-                    .iter()
-                    .zip(pair)
-                    .all(|(a, b)| (a.kind, a.input, a.index) == (b.kind, b.input, b.index))
-        };
-        if !pairs.iter().any(same) {
-            pairs.push(pair);
-        }
-    }
+    // The bridge gives them two by two.
+    let key = |e: &ffi::SkippedElement| (e.kind.repr, e.input, e.index);
+    let mut seen = std::collections::BTreeSet::new();
+    let pairs: Vec<&[ffi::SkippedElement]> = elements
+        .chunks_exact(2)
+        .filter(|pair| seen.insert(pair.iter().map(key).collect::<Vec<_>>()))
+        .collect();
     let mut named: Vec<String> = pairs
         .iter()
         .take(PAIRS_NAMED)
-        .map(|pair| match pair {
-            [first, second] => format!("{} with {}", one(first), one(second)),
-            [only] => format!("{} with an element OCCT didn't give", one(only)),
-            _ => "a pair OCCT didn't give".to_owned(),
+        .filter_map(|pair| match pair {
+            [first, second] => Some(format!("{} with {}", one(first), one(second))),
+            _ => None,
         })
         .collect();
     match pairs.len().saturating_sub(PAIRS_NAMED) {
