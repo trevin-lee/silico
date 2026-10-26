@@ -16,8 +16,11 @@
 
 use silico_protocol::{ChamferSize, MAX_LENGTH, check_fillet_radius, check_offset, format_number};
 
+use super::index::FeatureIndex;
 use super::json::shown;
-use super::model::{Axis, Document, ExtentValue, FeatureId, ID_LENGTH, NamingScheme, Operation};
+use super::model::{
+    Axis, Document, ExtentValue, Feature, FeatureId, ID_LENGTH, NamingScheme, Operation,
+};
 use super::quantity::Length;
 use super::sketch::ElementKind as SketchElement;
 use crate::kernel::ElementKind;
@@ -645,7 +648,13 @@ fn bytes_key(id: &str) -> u64 {
 /// A document the validation gate passed: the only kind recompute takes, so nothing is
 /// rebuilt from a document whose references haven't been checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Checked(Document);
+pub struct Checked {
+    document: Document,
+    /// Its features' places by ID, so [`Checked::feature`] doesn't scan the timeline: a
+    /// function of the document's IDs alone, so two checked documents are equal exactly
+    /// when their documents are.
+    index: FeatureIndex,
+}
 
 impl Checked {
     /// `document`, if it passes the gate ([`validate`]); every problem with it if not.
@@ -658,17 +667,30 @@ impl Checked {
     /// can be mended).
     pub fn try_new(document: Document) -> Result<Self, (Document, Invalid)> {
         match validate(&document) {
-            Ok(()) => Ok(Checked(document)),
+            Ok(()) => Ok(Checked {
+                index: FeatureIndex::new(document.features.iter().map(|f| &f.id)),
+                document,
+            }),
             Err(invalid) => Err((document, invalid)),
         }
     }
 
     pub fn document(&self) -> &Document {
-        &self.0
+        &self.document
     }
 
     pub fn into_document(self) -> Document {
-        self.0
+        self.document
+    }
+
+    /// The feature whose ID is `id`, found by its index, not a scan of the timeline; or, as
+    /// [`Document::feature`] refuses it, naming `feature`, why there's none: a checked
+    /// document has no ID twice.
+    pub fn feature(&self, id: &FeatureId) -> Result<&Feature, Error> {
+        self.index
+            .get(id)
+            .and_then(|place| self.document.features.get(place))
+            .ok_or_else(|| super::model::no_feature(id))
     }
 }
 

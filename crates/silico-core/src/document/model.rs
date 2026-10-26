@@ -53,21 +53,11 @@ impl Document {
     /// The feature whose ID is `id`; or, refused naming `feature`, why there's no one such
     /// feature: none has it, or (in a document the gate refused) more than one does.
     pub fn feature(&self, id: &FeatureId) -> Result<&Feature, crate::Error> {
-        let refused = |message: String, suggestion: &str| {
-            crate::Error::new(crate::ErrorCode::InvalidInput, message)
-                .with_parameter("feature")
-                .with_suggestion(suggestion)
-        };
         let mut found = self.features.iter().filter(|f| &f.id == id);
-        let first = found.next().ok_or_else(|| {
-            refused(
-                format!("the document has no feature {id}"),
-                "name a feature by its ID, as the document's outline lists them",
-            )
-        })?;
+        let first = found.next().ok_or_else(|| no_feature(id))?;
         match found.count() {
             0 => Ok(first),
-            more => Err(refused(
+            more => Err(feature_refused(
                 format!("{} features in the document have the ID {id}", more + 1),
                 "give each feature an ID of its own: the gate refuses an ID used twice",
             )),
@@ -153,6 +143,21 @@ impl JsonSchema for Units {
             "additionalProperties": false
         })
     }
+}
+
+/// The refusal of a request whose `feature` names no feature of the document.
+pub(crate) fn no_feature(id: &FeatureId) -> crate::Error {
+    feature_refused(
+        format!("the document has no feature {id}"),
+        "name a feature by its ID, as the document's outline lists them",
+    )
+}
+
+/// A request's `feature` refused: `message`, with `suggestion`.
+fn feature_refused(message: String, suggestion: &str) -> crate::Error {
+    crate::Error::new(crate::ErrorCode::InvalidInput, message)
+        .with_parameter("feature")
+        .with_suggestion(suggestion)
 }
 
 /// A feature's ID: 8 characters of Crockford's base32 in lower case, unique within the

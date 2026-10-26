@@ -376,14 +376,7 @@ fn cursor_name(
         ));
         return None;
     }
-    let makers = |id: &FeatureId| {
-        model
-            .document()
-            .features
-            .iter()
-            .find(|f| f.id == *id)
-            .map(|f| Maker::of(&f.operation))
-    };
+    let makers = |id: &FeatureId| model.feature(id).map(|f| Maker::of(&f.operation));
     match Name::parse(&cursor.name, &makers) {
         Ok(name) => Some(name),
         Err(error) => {

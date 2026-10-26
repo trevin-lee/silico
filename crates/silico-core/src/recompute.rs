@@ -57,8 +57,8 @@ use sha2::{Digest, Sha256};
 
 use crate::cache::Cache;
 use crate::document::{
-    Checked, Document, ElementId, ElementName, FeatureId, Fingerprint, Made, Operation,
-    SweepFeature,
+    Checked, Document, ElementId, ElementName, Feature, FeatureId, FeatureIndex, Fingerprint, Made,
+    Operation, SweepFeature,
 };
 use crate::elements::Entry;
 use crate::kernel::{
@@ -278,9 +278,14 @@ pub struct Model {
     source: Arc<Checked>,
     generation: Generation,
     features: Vec<(FeatureId, FeatureOutcome)>,
+    /// Each feature's place in `features`, by ID, so a lookup by ID doesn't scan the
+    /// timeline: derived from `features`, whose IDs nothing changes once it's built.
+    index: Arc<FeatureIndex>,
     bodies: Vec<FeatureId>,
     /// Built features whose solids couldn't be measured, in timeline order: why.
     unmeasured: Vec<(FeatureId, Error)>,
+    /// Each feature's place in `unmeasured`, by ID: derived from it, as `index` is.
+    unmeasured_index: Arc<FeatureIndex>,
     /// How each feature's solid's elements are named, in timeline order: none for one that
     /// didn't build, or a sketch, which makes no solid.
     naming: Vec<Option<FeatureNaming>>,
@@ -316,7 +321,8 @@ struct FeatureNaming {
 }
 
 /// Models are equal when they're of the same document, built in the same generation, and
-/// every feature came to the same: names are a function of those.
+/// every feature came to the same: names are a function of those, and the indexes are
+/// derived from them.
 impl PartialEq for Model {
     fn eq(&self, other: &Self) -> bool {
         self.source == other.source
@@ -341,8 +347,7 @@ impl Model {
     /// What became of the feature `id`, if the document has it.
     pub fn outcome(&self, id: &FeatureId) -> Option<&FeatureOutcome> {
         self.features
-            .iter()
-            .find(|(feature, _)| feature == id)
+            .get(self.index(id)?)
             .map(|(_, outcome)| outcome)
     }
 
@@ -483,8 +488,15 @@ impl Model {
         }
     }
 
+    /// The place of the feature `id` in the timeline, if the document has it: found in
+    /// its index, in logarithmic time, so a read that looks up each feature isn't quadratic.
     fn index(&self, id: &FeatureId) -> Option<usize> {
-        self.features.iter().position(|(feature, _)| feature == id)
+        self.index.get(id)
+    }
+
+    /// The feature `id` as its document holds it, found by the document's index.
+    pub(crate) fn feature(&self, id: &FeatureId) -> Option<&Feature> {
+        self.source.feature(id).ok()
     }
 
     /// The `j`th feature's element names, those it's made from named already: from the maps
@@ -577,8 +589,7 @@ impl Model {
     /// [`drift`](Self::drift) says it.
     pub fn unmeasured(&self, id: &FeatureId) -> Option<&Error> {
         self.unmeasured
-            .iter()
-            .find(|(unmeasured, _)| unmeasured == id)
+            .get(self.unmeasured_index.get(id)?)
             .map(|(_, error)| error)
     }
 
@@ -2783,7 +2794,6 @@ impl<K: Kernel + 'static> Engine<K> {
             .iter()
             .map(|(key, id)| {
                 let kind = document
-                    .document()
                     .feature(id)
                     .map_or("", |feature| feature.operation.type_name());
                 (*key, format!("{id} {kind}"))
@@ -3717,16 +3727,20 @@ fn model(
             | FeatureOutcome::Blocked { .. }
             | FeatureOutcome::Sketch(_) => None,
         })
-        .collect();
+        .collect::<Vec<_>>();
     let naming = naming(plan, &features, done);
     let maps = (0..features.len()).map(|_| OnceLock::new()).collect();
     let entries = (0..features.len()).map(|_| OnceLock::new()).collect();
+    let index = Arc::new(FeatureIndex::new(features.iter().map(|(id, _)| id)));
+    let unmeasured_index = Arc::new(FeatureIndex::new(unmeasured.iter().map(|(id, _)| id)));
     Model {
         source: Arc::clone(source),
         generation,
         features,
+        index,
         bodies,
         unmeasured,
+        unmeasured_index,
         naming,
         maps,
         entries,
@@ -4019,6 +4033,121 @@ mod tests {
             Ok(Ok(RunOutcome::Published(model))) => model,
             _ => panic!("not published"),
         }
+    }
+
+    /// A document of `n` boxes, `b0000000` on: each its own body, 1 mm high, or 2 mm
+    /// where `tall` says.
+    fn boxes(n: usize, tall: impl Fn(usize) -> bool) -> Checked {
+        let features: Vec<String> = (0..n)
+            .map(|i| {
+                let height = if tall(i) { 2 } else { 1 };
+                format!(
+                    r#"{{"id": "b{i:07}", "type": "box", "v": 1, "name": "Block", "position": [{i}, 0, 0], "length": 1, "width": 1, "height": {height}}}"#
+                )
+            })
+            .collect();
+        let text = format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{}]}}"#,
+            features.join(", ")
+        );
+        Checked::new(crate::document::read(text.as_bytes()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn reading_every_feature_by_id_compares_n_log_n_ids_not_n_squared() {
+        // #182's review: each lookup by ID scanned the timeline from its start, so a read
+        // that looks up each feature compared N(N + 1) / 2 IDs (20,000 features, 1.45 s).
+        // Counted, not timed: every lookup by ID is a binary search of a sorted index, which
+        // halves what's left with each comparison, so of N IDs ⌈log₂ N⌉ comparisons leave
+        // one and one more decides it (`FeatureIndex::get`). Each feature here is looked up
+        // by 11 reads: `outcome`, `records`, `fingerprint`, `description`,
+        // `named_element_map`, `element_map`, `feature`, and `unmeasured` once each, and
+        // `entries` three times (its `description`, its slot, its `element_map`). So at
+        // most 11 N (⌈log₂ N⌉ + 1) comparisons: for N = 1,000, 121,000, where the scans
+        // compared 5,005,000 (ten of N(N + 1) / 2 = 500,500 each, the eleventh of a list of
+        // no unmeasured solids); for N = 4,000, 572,000, where they compared 80,020,000.
+        // And at least one a lookup of an ID that's there, as the first eight reads' are.
+        for n in [1000usize, 4000] {
+            let document = Arc::new(boxes(n, |_| false));
+            let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap());
+            let model = published(engine.start(Arc::clone(&document)));
+            assert_eq!(model.features().len(), n);
+            assert_eq!(model.bodies().len(), n);
+            let before = crate::document::compared();
+            for (place, (id, outcome)) in model.features().iter().enumerate() {
+                // The feature at its place, as the scan found it.
+                assert!(std::ptr::eq(model.outcome(id).unwrap(), outcome), "{id}");
+                assert!(std::ptr::eq(
+                    model.feature(id).unwrap(),
+                    &model.document().features[place]
+                ));
+                assert!(model.records(id), "{id}");
+                assert!(model.fingerprint(id).is_some(), "{id}");
+                assert!(model.description(id).is_some(), "{id}");
+                let _ = model.named_element_map(id);
+                assert!(model.element_map(id).is_some(), "{id}");
+                assert!(matches!(model.entries(id), Some(Ok(_))), "{id}");
+                assert!(model.unmeasured(id).is_none(), "{id}");
+            }
+            let compared = crate::document::compared() - before;
+            let log2 = u64::from(n.next_power_of_two().trailing_zeros());
+            let n = n as u64;
+            assert!(
+                compared <= 11 * n * (log2 + 1),
+                "{n} features: {compared} comparisons, past 11 N (⌈log₂ N⌉ + 1) = {}",
+                11 * n * (log2 + 1)
+            );
+            assert!(
+                compared >= 8 * n,
+                "{n} features: only {compared} comparisons"
+            );
+            // An ID the document hasn't: none, in as few.
+            let missing = FeatureId::new("zzzzzzzz").unwrap();
+            let before = crate::document::compared();
+            assert!(model.outcome(&missing).is_none());
+            assert!(model.feature(&missing).is_none());
+            assert!(crate::document::compared() - before <= 2 * (log2 + 1));
+        }
+    }
+
+    #[test]
+    fn each_unmeasured_solid_is_found_by_id_in_log_u_comparisons() {
+        // Every third of 1,000 boxes (`b0000000`, `b0000003`, ...) can't be measured: 334
+        // unmeasured, each said for its own feature, and no other. A lookup is a binary
+        // search of their index, so at most ⌈log₂ 334⌉ + 1 = 10 comparisons whether it's
+        // there or not: 10,000 for the 1,000, where a scan compared about 280,000 (each of
+        // the 666 measured ones all 334, each unmeasured one up to its place).
+        let n = 1000;
+        let tall = |i: usize| i.is_multiple_of(3);
+        let document = Arc::new(boxes(n, tall));
+        let kernel = crate::fake::FakeKernel::new(2).unwrap();
+        kernel.refuse(|op| match op {
+            silico_protocol::Op::Summarize { shape } => crate::fake::FakeKernel::describe(shape)
+                .filter(|made| made.contains("box(1, 1, 2)"))
+                .map(|_| Error::new(ErrorCode::KernelFailed, "Summarize failed")),
+            _ => None,
+        });
+        let model = published(Recompute::new(kernel).start(document));
+        let before = crate::document::compared();
+        let said: Vec<Option<Error>> = model
+            .features()
+            .iter()
+            .map(|(id, _)| model.unmeasured(id).cloned())
+            .collect();
+        let compared = crate::document::compared() - before;
+        for (i, ((id, outcome), said)) in model.features().iter().zip(&said).enumerate() {
+            assert!(matches!(outcome, FeatureOutcome::Built { .. }), "{id}");
+            match said {
+                Some(error) => {
+                    assert!(tall(i), "{id}: {error:?}");
+                    assert_eq!(error.code(), ErrorCode::KernelFailed, "{id}");
+                    assert_eq!(error.feature(), Some(id.as_str()));
+                }
+                None => assert!(!tall(i), "{id}"),
+            }
+        }
+        assert!(compared <= 10 * n as u64, "{compared} comparisons");
+        assert!(compared >= n as u64, "only {compared} comparisons");
     }
 
     #[test]

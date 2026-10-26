@@ -535,7 +535,7 @@ pub fn solve(
     feature: &FeatureId,
     solver: &mut dyn SketchSolver,
 ) -> Result<SketchSolution, Error> {
-    let found = document.document().feature(feature)?;
+    let found = document.feature(feature)?;
     let Operation::Sketch(sketch) = &found.operation else {
         return Err(Error::new(
             ErrorCode::InvalidInput,

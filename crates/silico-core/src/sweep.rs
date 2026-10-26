@@ -34,8 +34,7 @@ fn solved_axis<'a>(
     feature: &FeatureId,
     solution: &SketchSolution,
 ) -> Result<SolvedAxis<'a>, Error> {
-    let features = &document.document().features;
-    let found = document.document().feature(feature)?;
+    let found = document.feature(feature)?;
     let (Some(axis), Some(sketch)) = (found.operation.axis(), found.operation.sketch()) else {
         return Err(Error::new(
             ErrorCode::InvalidInput,
@@ -61,9 +60,9 @@ fn solved_axis<'a>(
         Axis::Line(line) => line,
     };
     // The gate has checked that the sketch is one, and the axis a line of it.
-    let line = features
-        .iter()
-        .find(|f| &f.id == sketch)
+    let line = document
+        .feature(sketch)
+        .ok()
         .and_then(|f| match &f.operation {
             Operation::Sketch(drawn) => drawn.lines.iter().find(|l| &l.id == line_id),
             _ => None,
@@ -348,11 +347,7 @@ pub fn check_axis(
             ));
         }
     }
-    let found = document
-        .document()
-        .features
-        .iter()
-        .find(|f| &f.id == feature);
+    let found = document.feature(feature).ok();
     let degrees = match found.and_then(|f| f.operation.extent()) {
         Some(crate::document::Extent::Turn(
             crate::document::TurnExtent::OneSide { angle, .. }

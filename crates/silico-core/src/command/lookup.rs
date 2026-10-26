@@ -85,14 +85,7 @@ impl<'m> Lookup<'m> {
         };
         lookup.solids = match feature {
             Some(id) => match built(model, id, true) {
-                Ok(_) => model
-                    .document()
-                    .features
-                    .iter()
-                    .map(|f| &f.id)
-                    .find(|f| *f == id)
-                    .into_iter()
-                    .collect(),
+                Ok(_) => model.feature(id).map(|f| &f.id).into_iter().collect(),
                 Err(problems) => {
                     lookup.refused.absorb(problems);
                     // Said once: a name of its own elements adds nothing to it.
@@ -158,14 +151,7 @@ impl<'m> Lookup<'m> {
         text: &str,
     ) -> Option<(&'m FeatureId, &'m ElementMap, ElementRef)> {
         let model = self.model;
-        let makers = |id: &FeatureId| {
-            model
-                .document()
-                .features
-                .iter()
-                .find(|f| f.id == *id)
-                .map(|f| Maker::of(&f.operation))
-        };
+        let makers = |id: &FeatureId| model.feature(id).map(|f| Maker::of(&f.operation));
         let broken = |why: String, candidates: Vec<String>| {
             let suggestion = if candidates.is_empty() {
                 "name the element as the model now names it: `elements` lists every one"
