@@ -30,7 +30,8 @@ Why: BRepGProp_Gauss::Compute with an Eps (BRepGProp::VolumeProperties and Surfa
      vector is cleared to each strip's own cap, so a search of the whole vector found a
      wider earlier strip's stale errors past it and split intervals the strip doesn't have
      (a triangle-trimmed rough B-spline face measured worse than unpatched, and a trimmed
-     1000-span one took 60 s instead of 1 s). The magnitude reaches
+     1000-span one took past 60 s, where it takes 1 s unpatched and about 5 s with this
+     patch). The magnitude reaches
      computeVInertiaOfElementaryPart through a pointer defaulting to NULL, so the default
      integration (Compute without an Eps, FreeCAD's), a different function, is unchanged
      to the bit.

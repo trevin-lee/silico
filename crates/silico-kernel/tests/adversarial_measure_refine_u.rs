@@ -556,7 +556,9 @@ fn a_rough_bspline_face_of_two_thousand_spans_past_the_cap_measures_in_time() {
 /// `UMaxSubs`, `iUSubEnd < UMaxSubs` false), so a rule that took the cap's own count as
 /// under it (`<=`) would refine it past its cap, as the 2000-span face once did. By hand
 /// 2.736421101215214, and 2.734310161810381 without span 1953; measured
-/// 2.7342996060588294 (3.86e-6 under the second) in 0.38 s.
+/// 2.7342996060588294 (3.86e-6 under the second) in 0.38 s. Such a rule is caught by the
+/// worker's failure or its time (refining past the cap runs off OCCT's arrays or spins),
+/// not by the value: the cap's own span is zeroed either way.
 #[test]
 fn a_rough_bspline_face_of_exactly_the_caps_spans_measures_as_past_it() {
     assert_past_the_cap(1953);
@@ -599,8 +601,10 @@ fn a_rough_bspline_face_of_1952_spans_reaches_the_cap_on_its_first_refinement() 
 /// strip's errors; patch 0004 searches only the strip's own intervals for the one to split
 /// and for its error. By hand (`span_areas`: exact along V up to v = u, adaptive
 /// Gauss–Legendre along U split at every knot) 0.590013413208074, measured
-/// 0.590013413948603 (1.26e-9) in 1.3 s: twice the asked precision is the bound, U's and
-/// L's 0.9 × 1e-9 adding, as `SLANTED_AREA`'s in extruded_bsplines.rs. With a search of the
+/// 0.590013413948603 (1.26e-9) in 1.3 s: a value pinned for this draw, not a bound (other
+/// draws of the same face are about 1e-5 off, L's residual along the diagonal, the same
+/// without patch 0004: docs/ports/measure.md); the 1000-span test below, in time, is the
+/// guard that doesn't depend on L's accuracy. With a search of the
 /// whole vector (0004 as amended before), a narrow strip split a wide one's stale
 /// intervals, outside itself, and summed them: 0.5900096629043639, 6.4e-6 low, in 4.0 s.
 #[test]
@@ -625,7 +629,8 @@ fn a_rough_bspline_face_trimmed_to_a_triangle_measures_its_area_by_hand() {
 /// result, pinned here so a worse one fails.
 const ROUGH_DIAGONAL: f64 = 2e-5;
 
-/// The same triangle over 1000 spans, in time: measured 5.6 s, 0.8318642493074171 for
+/// The same triangle over 1000 spans, in time (30 s: measured 5.6 s here, up to about 9 s
+/// on the gate's shared VM; a search of the whole vector takes past 60 s): 0.8318642493074171 for
 /// 0.8318570454103432 by hand (8.7e-6 over: `ROUGH_DIAGONAL`). With a search of the whole
 /// error vector (0004 as amended before), each step of every strip's refinement scanned
 /// all of it, and every narrow strip refined a wide one's stale intervals to its cap: past
@@ -642,7 +647,7 @@ fn a_rough_bspline_face_of_a_thousand_spans_trimmed_to_a_triangle_measures_in_ti
     assert!(m.valid);
     let missed = misses(&[("area".to_owned(), m.area, area)], ROUGH_DIAGONAL);
     assert!(missed.is_empty(), "{missed:?}");
-    assert!(took < Duration::from_secs(10), "{took:?}");
+    assert!(took < Duration::from_secs(30), "{took:?}");
 }
 
 /// Python: `shape`, the saddle z = xy over [−1, 1]² as a degree-1 B-spline surface of `n` ×
