@@ -1,4 +1,20 @@
 {
+  "barrel_across_angle_0": {
+    "brep": "582faadd72cb6d00",
+    "history": "08c686e96c9577b7",
+    "measures": "c2fe74c9747e4c7b",
+    "mesh": "c1678f42bf96f226",
+    "summary": "91b2f91d814d036f",
+    "topology": "5680c73562c156fb"
+  },
+  "barrel_across_angle_0_slotted": {
+    "brep": "5f0483c105070e13",
+    "history": "dc6c2f7743cf901f",
+    "measures": "e7768515db01b8d5",
+    "mesh": "9775b86e0062ac78",
+    "summary": "658ae4c5c2507d38",
+    "topology": "5cc7e7bb82db36bc"
+  },
   "box_10_20_30": {
     "brep": "67208fb74b93f8bc",
     "measures": "c430bba68a5bec93",
@@ -1158,19 +1174,19 @@
     "topology": "beb131353f8ebf30"
   },
   "slot_plate": {
-    "brep": "bd49627ee3895986",
+    "brep": "003df2bbf29bff54",
     "history": "f8233f40d30f41a9",
-    "measures": "12aa7cf7ea95f4a9",
-    "mesh": "96e87410c90792d2",
-    "summary": "3bdd3eaa29b03f36",
+    "measures": "3b28054d7f9e06e2",
+    "mesh": "d2c536039ef7a690",
+    "summary": "2aaf2fb9715a8a6f",
     "topology": "fa5d97668685fada"
   },
   "sphere": {
-    "brep": "bc376e1fa5a1db75",
+    "brep": "ecb7ca63de7ebd3e",
     "history": "f556752b9125bf9c",
-    "measures": "3491480fa2a8444e",
-    "mesh": "4379d2ebd94e5ab2",
-    "summary": "23d67a4b679b36e4",
+    "measures": "67c694bf4dc16e26",
+    "mesh": "bc572c24f4c2ac77",
+    "summary": "8dc8496eba0fb0b4",
     "topology": "5b2b1ec0087b34ec"
   },
   "sphere_5": {
