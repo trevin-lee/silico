@@ -8,6 +8,75 @@
 
 use std::fmt::Write as _;
 
+use serde::{Deserialize, Serialize};
+
+use crate::{Blob, InvalidParameter, ShapeData};
+
+/// A STEP export (docs/ports/step-export.md, *The worker's request*): each part a product,
+/// in the file's order, under an assembly named `assembly` if there are two or more; the
+/// header's FILE_NAME `file_name`, its other fields the worker's constants. Every string is
+/// in [`step_encoded`]'s form ([`ExportStep::check`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExportStep {
+    pub parts: Vec<StepPart>,
+    /// The assembly's product name: the document's file stem.
+    pub assembly: String,
+    /// The header's FILE_NAME: the document's file name, its last component only.
+    pub file_name: String,
+}
+
+/// One part of a STEP export: a body's solid, its product's id (the feature's ID) and its
+/// product's name (the feature's name).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StepPart {
+    pub shape: ShapeData,
+    pub id: String,
+    pub name: String,
+}
+
+/// A STEP export written: the file's bytes, and, for each part, in order, the faces left out
+/// of it as bounding no material (OCCT's INTERNAL and EXTERNAL, which its writer drops), as
+/// numbered in `TopExp::MapShapes` order from 1.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StepFile {
+    pub step: Blob,
+    pub left_out: Vec<Vec<u32>>,
+}
+
+impl ExportStep {
+    /// Nothing, if the export can be written: at least one part, and every string in
+    /// [`step_encoded`]'s form (the core encodes them all, so another is a fault of the
+    /// core's, refused before OCCT reads it as a directive).
+    pub fn check(&self) -> Result<(), InvalidParameter> {
+        if self.parts.is_empty() {
+            return Err(InvalidParameter {
+                parameter: "parts",
+                message: "a STEP export needs at least one part, and there are none".to_owned(),
+            });
+        }
+        let encoded = |parameter: &'static str, text: &str| {
+            if is_step_encoded(text) {
+                Ok(())
+            } else {
+                Err(InvalidParameter {
+                    parameter,
+                    message: format!(
+                        "the {parameter} {text:?} isn't encoded as a STEP string: every \
+                         character but printable ASCII in \\X2\\ or \\X4\\ runs"
+                    ),
+                })
+            }
+        };
+        encoded("assembly", &self.assembly)?;
+        encoded("file_name", &self.file_name)?;
+        for part in &self.parts {
+            encoded("id", &part.id)?;
+            encoded("name", &part.name)?;
+        }
+        Ok(())
+    }
+}
+
 /// `text` as a STEP string's contents: each character from U+0020 to U+007E but `\` as
 /// itself, and every other (`\`, control characters, everything past ASCII), in maximal
 /// runs, as `\X2\` and four uppercase hex digits each, then `\X0\`, or, for a character past
@@ -76,7 +145,7 @@ pub fn step_decoded(encoded: &str) -> Option<String> {
         rest = &rest[4..];
         let end = rest.find("\\X0\\")?;
         let run = &rest[..end];
-        if run.is_empty() || run.len() % digits != 0 {
+        if run.is_empty() || !run.len().is_multiple_of(digits) {
             return None;
         }
         for group in run.as_bytes().chunks(digits) {
@@ -105,6 +174,55 @@ pub fn is_step_encoded(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn export(parts: &[(&str, &str)]) -> ExportStep {
+        ExportStep {
+            parts: parts
+                .iter()
+                .map(|&(id, name)| StepPart {
+                    shape: ShapeData::unchecked(Blob::inline(vec![1, 2, 3])),
+                    id: id.to_owned(),
+                    name: name.to_owned(),
+                })
+                .collect(),
+            assembly: "bracket".to_owned(),
+            file_name: "bracket.silico".to_owned(),
+        }
+    }
+
+    #[test]
+    fn an_export_of_encoded_strings_and_a_part_is_taken_and_any_other_refused_by_its_field() {
+        assert_eq!(
+            export(&[("f0000003", "Kl\\X2\\00F6\\X0\\tzchen")]).check(),
+            Ok(())
+        );
+        assert_eq!(export(&[]).check().unwrap_err().parameter, "parts");
+        assert_eq!(
+            export(&[("f0000003", "a\\N\\b")])
+                .check()
+                .unwrap_err()
+                .parameter,
+            "name"
+        );
+        assert_eq!(
+            export(&[("f\u{F6}", "a")]).check().unwrap_err().parameter,
+            "id"
+        );
+        let mut e = export(&[("f0000003", "a")]);
+        e.assembly = "Kl\u{F6}tzchen".to_owned();
+        assert_eq!(e.check().unwrap_err().parameter, "assembly");
+        let mut e = export(&[("f0000003", "a")]);
+        e.file_name = "a\\b.silico".to_owned();
+        assert_eq!(e.check().unwrap_err().parameter, "file_name");
+        // The second part's name, after a first that's fine.
+        assert_eq!(
+            export(&[("f0000003", "a"), ("f0000004", "b\u{0}")])
+                .check()
+                .unwrap_err()
+                .parameter,
+            "name"
+        );
+    }
 
     #[test]
     fn printable_ascii_but_the_backslash_is_itself() {
