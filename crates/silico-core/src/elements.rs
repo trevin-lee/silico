@@ -197,7 +197,12 @@ fn entry(map: &ElementMap, id: &FeatureId, element: Element) -> Result<Entry, Er
         apex: None,
         default_x: None,
     };
-    entry.r#type = match element.geometry {
+    entry.r#type = match &element.geometry {
+        Geometry::Face(face) => surface_type(&face.surface),
+        Geometry::Edge(edge) => curve_type(&edge.curve),
+        Geometry::Vertex(_) => ElementType::Point,
+    };
+    match element.geometry {
         Geometry::Face(face) => {
             entry.area = Some(
                 Measure::rounded(face.area)
@@ -208,14 +213,12 @@ fn entry(map: &ElementMap, id: &FeatureId, element: Element) -> Result<Entry, Er
                 Surface::Plane { normal } => {
                     entry.normal = Some(direction(normal));
                     entry.default_x = Some(AxisToken::default_x(normal));
-                    ElementType::Plane
                 }
                 Surface::Cylinder { axis: a, radius } => {
                     entry.axis = Some(axis(&a)?);
                     let r = length(radius)?;
                     entry.radius = Some(r);
                     entry.diameter = Some(twice(id, r)?);
-                    ElementType::Cylinder
                 }
                 Surface::Cone {
                     axis: a,
@@ -228,12 +231,10 @@ fn entry(map: &ElementMap, id: &FeatureId, element: Element) -> Result<Entry, Er
                             .ok_or_else(|| fault(id, "a cone's half-angle isn't an angle"))?,
                     );
                     entry.apex = apex(&a, radius, half_angle);
-                    ElementType::Cone
                 }
                 Surface::Sphere { axis: a, radius } => {
                     entry.axis = Some(axis(&a)?);
                     entry.radius = Some(length(radius)?);
-                    ElementType::Sphere
                 }
                 Surface::Torus {
                     axis: a,
@@ -243,14 +244,13 @@ fn entry(map: &ElementMap, id: &FeatureId, element: Element) -> Result<Entry, Er
                     entry.axis = Some(axis(&a)?);
                     entry.major_radius = Some(length(major_radius)?);
                     entry.minor_radius = Some(length(minor_radius)?);
-                    ElementType::Torus
                 }
-                Surface::Bezier => ElementType::Bezier,
-                Surface::Bspline => ElementType::Bspline,
-                Surface::Revolution => ElementType::Revolution,
-                Surface::Extrusion => ElementType::Extrusion,
-                Surface::Offset => ElementType::Offset,
-                Surface::Other => ElementType::Other,
+                Surface::Bezier
+                | Surface::Bspline
+                | Surface::Revolution
+                | Surface::Extrusion
+                | Surface::Offset
+                | Surface::Other => {}
             }
         }
         Geometry::Edge(edge) => {
@@ -263,31 +263,63 @@ fn entry(map: &ElementMap, id: &FeatureId, element: Element) -> Result<Entry, Er
                 entry.midpoint = Some(point(edge.middle)?);
             }
             match edge.curve {
-                EdgeCurve::Line => ElementType::Line,
+                EdgeCurve::Line => {}
                 EdgeCurve::Circle { axis: a, radius } => {
                     entry.axis = Some(axis(&a)?);
                     let r = length(radius)?;
                     entry.radius = Some(r);
                     entry.diameter = Some(twice(id, r)?);
-                    ElementType::Circle
                 }
                 // The design's entry gives an ellipse no axis or radii (docs/design/m4.4-describe.md).
-                EdgeCurve::Ellipse { .. } => ElementType::Ellipse,
-                EdgeCurve::Hyperbola => ElementType::Hyperbola,
-                EdgeCurve::Parabola => ElementType::Parabola,
-                EdgeCurve::Bezier { .. } => ElementType::Bezier,
-                EdgeCurve::Bspline { .. } => ElementType::Bspline,
-                EdgeCurve::Offset => ElementType::Offset,
-                // A sphere's pole, a cone's apex: no curve to speak of.
-                EdgeCurve::Other | EdgeCurve::Degenerated => ElementType::Other,
+                EdgeCurve::Ellipse { .. } => {}
+                // No fields beyond length and ends (a degenerated edge, a sphere's pole or a
+                // cone's apex, has no curve to speak of).
+                EdgeCurve::Hyperbola
+                | EdgeCurve::Parabola
+                | EdgeCurve::Bezier { .. }
+                | EdgeCurve::Bspline { .. }
+                | EdgeCurve::Offset
+                | EdgeCurve::Other
+                | EdgeCurve::Degenerated => {}
             }
         }
         Geometry::Vertex(at) => {
             entry.position = Some(point(at)?);
-            ElementType::Point
         }
     };
     Ok(entry)
+}
+
+/// A curve's type, as an entry names it.
+pub(crate) fn curve_type(curve: &EdgeCurve) -> ElementType {
+    match curve {
+        EdgeCurve::Line => ElementType::Line,
+        EdgeCurve::Circle { .. } => ElementType::Circle,
+        EdgeCurve::Ellipse { .. } => ElementType::Ellipse,
+        EdgeCurve::Hyperbola => ElementType::Hyperbola,
+        EdgeCurve::Parabola => ElementType::Parabola,
+        EdgeCurve::Bezier { .. } => ElementType::Bezier,
+        EdgeCurve::Bspline { .. } => ElementType::Bspline,
+        EdgeCurve::Offset => ElementType::Offset,
+        EdgeCurve::Other | EdgeCurve::Degenerated => ElementType::Other,
+    }
+}
+
+/// A surface's type, as an entry names it.
+pub(crate) fn surface_type(surface: &Surface) -> ElementType {
+    match surface {
+        Surface::Plane { .. } => ElementType::Plane,
+        Surface::Cylinder { .. } => ElementType::Cylinder,
+        Surface::Cone { .. } => ElementType::Cone,
+        Surface::Sphere { .. } => ElementType::Sphere,
+        Surface::Torus { .. } => ElementType::Torus,
+        Surface::Bezier => ElementType::Bezier,
+        Surface::Bspline => ElementType::Bspline,
+        Surface::Revolution => ElementType::Revolution,
+        Surface::Extrusion => ElementType::Extrusion,
+        Surface::Offset => ElementType::Offset,
+        Surface::Other => ElementType::Other,
+    }
 }
 
 /// A direction as an entry writes it: a zero `0`, never `-0`.

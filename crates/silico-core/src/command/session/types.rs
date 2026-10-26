@@ -136,15 +136,17 @@ impl ModelRead {
     }
 }
 
-/// What a read given to [`Sessions::read_model`] is handed: the model, what was read, and
-/// whether it was stopped (decision 34).
-pub struct Read<'a> {
+/// What a read given to [`Sessions::read_model`] is handed: the model, what was read,
+/// whether it was stopped (decision 34), and a kernel client of the read's own, for a read
+/// that asks the kernel (`distance`).
+pub struct Read<'a, C> {
     pub(super) model: &'a Model,
     pub(super) read: ModelRead,
     pub(super) stop: &'a Ticket,
+    pub(super) kernel: &'a ReadClient<C>,
 }
 
-impl Read<'_> {
+impl<C> Read<'_, C> {
     /// The model read.
     pub fn model(&self) -> &Model {
         self.model
@@ -160,6 +162,62 @@ impl Read<'_> {
     /// this.
     pub fn stopped(&self) -> bool {
         self.stop.cancelled()
+    }
+
+    /// The read's own client of the kernel (M4.1 §2's *What a published read costs*, as
+    /// #125's review settled it): made for this read, never the session's rebuild client, so
+    /// no rebuild's advance supersedes it, and dropped when the read ends, which is all it
+    /// takes to stop its kernel work. Each read in flight is a client of its own, served in
+    /// turn with the others, waiting at most for the first free worker.
+    pub fn kernel(&self) -> &ReadClient<C> {
+        self.kernel
+    }
+}
+
+/// A read's own kernel client, as [`Read::kernel`] gives it: every request it makes is at
+/// the generation the client began at, so once its read's stop interrupts it (a cancel, or
+/// its session's close: advancing it past every generation), each of them is superseded,
+/// whether in flight then or asked for after.
+pub struct ReadClient<C> {
+    pub(super) client: C,
+    generation: crate::kernel::Generation,
+}
+
+impl<C: crate::kernel::Kernel> ReadClient<C> {
+    pub(super) fn new(client: C) -> Self {
+        let generation = client.generation();
+        ReadClient { client, generation }
+    }
+}
+
+/// A cancel or the session's close, either way, stops the read's kernel work: the read
+/// answers `cancelled` or as of a session that closed, as its stop says.
+impl<C: crate::kernel::Kernel> super::cancel::Interrupt for ReadClient<C> {
+    fn interrupt(&self, _why: super::cancel::Why) {
+        self.client.advance(crate::kernel::Generation(u64::MAX));
+    }
+}
+
+impl<C: crate::kernel::Kernel> crate::kernel::Kernel for ReadClient<C> {
+    fn identity(&self) -> &str {
+        self.client.identity()
+    }
+
+    /// The generation the client began at, never advanced for the read.
+    fn generation(&self) -> crate::kernel::Generation {
+        self.generation
+    }
+
+    fn advance(&self, generation: crate::kernel::Generation) {
+        self.client.advance(generation);
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: crate::kernel::Generation,
+        request: crate::kernel::KernelRequest<T>,
+    ) -> crate::pool::Pending<T> {
+        self.client.submit(generation, request)
     }
 }
 

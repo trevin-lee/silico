@@ -995,7 +995,9 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "elements",
                 "query",
                 "schema",
-                "mass_properties"
+                "mass_properties",
+                "distance",
+                "angle"
             ]
         );
         assert!(printable(error.message()), "{of:?}: {:?}", error.message());

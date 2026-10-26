@@ -683,8 +683,8 @@ fn a_measure_that_faulted_is_the_revisions_fault_and_not_measured_again() {
 }
 
 /// A read that gives the box's volume, as its fingerprint says it, and what it read.
-fn volume(
-    read: silico_core::command::Read<'_>,
+fn volume<C>(
+    read: silico_core::command::Read<'_, C>,
 ) -> Result<(Option<Measure>, ModelRead), command::Problems> {
     Ok((
         read.model().fingerprint(&id("k7f2qx3m")).map(|f| f.volume),
