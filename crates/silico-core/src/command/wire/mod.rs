@@ -34,7 +34,7 @@
 //! `status`, and `cancel`; [`transaction`], for `begin`, `commit`, `rollback`, and `format`;
 //! [`edits`], for `add_feature`, `set_field`, `remove_feature`, and `replace_text`;
 //! [`reads`], for `text`, `outline`, and `check`; [`elements`], for `elements` and `query`;
-//! [`schema`]; and [`measure`], for `mass_properties`, `distance`, and `angle`).
+//! [`schema`]; [`measure`], for `mass_properties`, `distance`, and `angle`; and [`render`]).
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -605,6 +605,12 @@ impl<'a> RequestFields<'a> {
         });
     }
 
+    /// Refuses the request for `error`, a reason no one field's reading gives (fields that
+    /// must agree), kept with the rest in the order found.
+    pub fn refuse(&mut self, error: Error) {
+        self.refused.refuse_with(|| error);
+    }
+
     /// A string.
     pub fn string(&mut self, key: &str) -> Option<&'a str> {
         let node = self.take(key)?;
@@ -928,6 +934,86 @@ impl<'a> RequestFields<'a> {
             return None;
         }
         Some(direction)
+    }
+
+    /// A point, in millimetres: three lengths, `[x, y, z]`, each read exactly from its
+    /// digits as [`length`](RequestFields::length) reads one, a member at fault named by
+    /// its place (`eye.2`).
+    pub fn point(&mut self, key: &str) -> Option<[Length; 3]> {
+        let node = self.take(key)?;
+        let what = "a point, three lengths in millimetres [x, y, z]";
+        let Value::Array(items) = &node.value else {
+            self.wrong(key, what, node);
+            return None;
+        };
+        let [x, y, z] = items.as_slice() else {
+            self.refused.refuse_with(|| {
+                let at = join(&self.path, key);
+                invalid(
+                    &at,
+                    format!("{at} must be {what}, got {} of them", items.len()),
+                )
+            });
+            return None;
+        };
+        // Each read, so each member at fault is said.
+        let x = self.quantity(
+            &format!("{key}.0"),
+            x,
+            "a length in millimetres",
+            Length::parse,
+            crate::document::length_suggestion,
+        );
+        let y = self.quantity(
+            &format!("{key}.1"),
+            y,
+            "a length in millimetres",
+            Length::parse,
+            crate::document::length_suggestion,
+        );
+        let z = self.quantity(
+            &format!("{key}.2"),
+            z,
+            "a length in millimetres",
+            Length::parse,
+            crate::document::length_suggestion,
+        );
+        Some([x?, y?, z?])
+    }
+
+    /// The list at `key` of at most `at_most` strings, a member at fault named by its place
+    /// (`highlight.0`). A list of more is refused as `too_many` says, given how many it
+    /// holds, and its members aren't read.
+    pub fn string_list(
+        &mut self,
+        key: &str,
+        at_most: usize,
+        too_many: impl FnOnce(usize) -> Error,
+    ) -> Option<Vec<String>> {
+        let node = self.take(key)?;
+        let Value::Array(items) = &node.value else {
+            self.wrong(key, "a list of strings", node);
+            return None;
+        };
+        if items.len() > at_most {
+            self.refused.refuse_with(|| too_many(items.len()));
+            return None;
+        }
+        let mut strings = Vec::with_capacity(items.len());
+        let mut fine = true;
+        for (i, item) in items.iter().enumerate() {
+            match &item.value {
+                Value::String(text) => strings.push(text.clone()),
+                _ => {
+                    fine = false;
+                    self.refused.refuse_with(|| {
+                        let at = format!("{}.{i}", join(&self.path, key));
+                        invalid(&at, format!("{at} must be a string, got {}", written(item)))
+                    });
+                }
+            }
+        }
+        fine.then_some(strings)
     }
 
     /// The session a request names: its ID, `s1`, `s2`, ...
@@ -1424,7 +1510,7 @@ pub type MakeSnapshot = fn() -> serde_json::Value;
 
 /// The commands whose wire types are built, each by name with what makes its snapshot, in
 /// the design's order (section 7): what `schema` describes besides the document.
-pub const COMMANDS: [(&str, MakeSnapshot); 22] = [
+pub const COMMANDS: [(&str, MakeSnapshot); 23] = [
     (
         "version",
         command_schema::<session::VersionRequestSchema, session::VersionResultSchema>,
@@ -1512,6 +1598,10 @@ pub const COMMANDS: [(&str, MakeSnapshot); 22] = [
     (
         "angle",
         command_schema::<measure::AngleRequestSchema, measure::AngleResultSchema>,
+    ),
+    (
+        "render",
+        command_schema::<render::RenderRequestSchema, render::RenderResultSchema>,
     ),
 ];
 
@@ -1604,6 +1694,7 @@ pub mod edits;
 pub mod elements;
 pub mod measure;
 pub mod reads;
+pub mod render;
 pub mod schema;
 pub mod session;
 pub mod transaction;

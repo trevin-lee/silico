@@ -24,6 +24,12 @@
             "minimum": 0,
             "type": "integer"
           },
+          "highlight": {
+            "description": "The most elements one `render` highlights.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "kernel_seconds": {
             "description": "How long one request to a kernel worker may take, in seconds: past it, the worker is\nstopped, a `worker_timeout`, which is the machine's fault, never the document's.",
             "format": "uint64",
@@ -50,6 +56,18 @@
           },
           "query_measures": {
             "description": "The most ranges a `query`'s `measures` holds: one a measure.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "render_seconds": {
+            "description": "How long one render may take, in seconds: past it, the render worker is stopped, a\n`worker_timeout`, which is the machine's fault, never the document's.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "render_side": {
+            "description": "The most pixels a `render`'s image is across or high.",
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
@@ -88,11 +106,14 @@
         "required": [
           "document_bytes",
           "elements",
+          "highlight",
           "kernel_seconds",
           "listed",
           "published_reads",
           "query",
           "query_measures",
+          "render_seconds",
+          "render_side",
           "request_bytes",
           "request_depth",
           "response_bytes",

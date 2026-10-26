@@ -1,0 +1,7 @@
+{
+  "png_bytes": 48213,
+  "path": null,
+  "width": 800,
+  "height": 600,
+  "camera": {"projection": "orthographic", "eye": [46.457513, -16.457513, 31.457513], "target": [20, 10, 5], "up": [-0.40824829046386313, 0.40824829046386313, 0.8164965809277258], "view_height": 35.92585, "field_of_view": null}
+}

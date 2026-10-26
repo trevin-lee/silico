@@ -20,7 +20,8 @@
           "query",
           "mass_properties",
           "distance",
-          "angle"
+          "angle",
+          "render"
         ],
         "type": "string"
       }
@@ -67,7 +68,8 @@
           "query",
           "mass_properties",
           "distance",
-          "angle"
+          "angle",
+          "render"
         ],
         "type": "string"
       }

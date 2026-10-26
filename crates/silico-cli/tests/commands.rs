@@ -942,7 +942,7 @@ fn schema_prints_the_documents_or_a_commands_as_committed() {
          schema, got envelope (parameter of). Suggestion: give one of the candidates. \
          Candidates: document, version, open, close, status, cancel, begin, commit, rollback, \
          format, add_feature, set_field, remove_feature, replace_text, text, outline, check, \
-         elements, query, schema, mass_properties, distance, angle.\n"
+         elements, query, schema, mass_properties, distance, angle, render.\n"
     );
     // Two names: a usage error.
     let out = schema(&["query", "elements"]);

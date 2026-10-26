@@ -21,6 +21,7 @@ use crate::recompute::{Model, Recompute, RunOutcome};
 mod edit;
 pub mod elements;
 pub mod measure;
+pub mod render;
 pub mod schema;
 mod session;
 pub mod wire;
@@ -72,6 +73,12 @@ pub struct Limits {
     pub query: u32,
     /// The most ranges a `query`'s `measures` holds: as many as there are measures.
     pub query_measures: usize,
+    /// The elements one render highlights.
+    pub highlight: usize,
+    /// A render's side, in pixels, at most.
+    pub render_side: u32,
+    /// A render's time, in seconds, from when its scene is sent.
+    pub render_seconds: u64,
     /// A kernel request's time, in seconds.
     pub kernel_seconds: u64,
     /// A sketch solve's time, in seconds.
@@ -94,6 +101,9 @@ pub const VERSION: Version = Version {
         elements: elements::ENTRIES_AT_MOST,
         query: elements::ENTRIES_AT_MOST,
         query_measures: elements::MEASURES_AT_MOST,
+        highlight: render::MAX_HIGHLIGHTS,
+        render_side: silico_protocol::MAX_RENDER_SIDE,
+        render_seconds: crate::render::RENDER_TIMEOUT.as_secs(),
         kernel_seconds: crate::kernel::DEFAULT_TIMEOUT.as_secs(),
         sketch_seconds: crate::sketch::SKETCH_TIMEOUT.as_secs(),
     },

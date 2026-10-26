@@ -237,3 +237,195 @@ fn a_save_cut_short_leaves_nothing_more_open_than_the_document() {
     let mode = left.expect("no save cut short left its file beside the document");
     assert_eq!(mode, 0o600, "{mode:o}");
 }
+
+/// The rules for a render's PNG in `workspace`, holding `held`.
+fn png_rules<'a>(
+    workspace: Option<&'a std::path::Path>,
+    held: &'a [std::path::PathBuf],
+    replace: bool,
+) -> silico_core::file::Output<'a> {
+    silico_core::file::Output {
+        field: "to",
+        extension: "png",
+        replace,
+        workspace,
+        held,
+    }
+}
+
+/// `path` refused naming `to`, its message saying `says`, by the check before a write and by
+/// the write alike; nothing written there.
+fn refused_output(path: &std::path::Path, rules: &silico_core::file::Output, says: &str) {
+    let before = std::fs::read(path).ok();
+    let checked = silico_core::file::check_output(path, rules).unwrap_err();
+    let e = silico_core::file::write_output(path, b"PNG", rules).unwrap_err();
+    assert_eq!(
+        (checked.message(), checked.parameter()),
+        (e.message(), e.parameter())
+    );
+    assert_eq!(e.code(), ErrorCode::InvalidInput, "{e}");
+    assert_eq!(e.parameter(), Some("to"), "{e}");
+    assert!(e.message().contains(says), "{e}");
+    assert_eq!(std::fs::read(path).ok(), before, "{e}");
+}
+
+#[test]
+fn a_png_is_written_whole_where_asked_and_its_canonical_path_given() {
+    let dir = Scratch::new("output-new");
+    let path = dir.0.join("view.png");
+    // Checked first, it's where it will be written, and nothing is written yet.
+    let checked = silico_core::file::check_output(&path, &png_rules(None, &[], false)).unwrap();
+    assert!(!path.exists());
+    let wrote =
+        silico_core::file::write_output(&path, b"PNG bytes", &png_rules(None, &[], false)).unwrap();
+    assert_eq!(checked, wrote);
+    assert_eq!(wrote, std::fs::canonicalize(&path).unwrap());
+    assert_eq!(std::fs::read(&path).unwrap(), b"PNG bytes");
+    // Nothing left beside it.
+    let others: Vec<_> = std::fs::read_dir(&dir.0)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(others, vec![std::ffi::OsString::from("view.png")]);
+}
+
+#[test]
+fn a_file_there_is_refused_unless_replaced_and_replaced_keeps_its_permissions() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = Scratch::new("output-replace");
+    let path = dir.0.join("view.png");
+    std::fs::write(&path, b"old").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    refused_output(&path, &png_rules(None, &[], false), "is there already");
+    silico_core::file::write_output(&path, b"new", &png_rules(None, &[], true)).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+#[test]
+fn a_document_its_cache_or_a_held_file_is_never_written() {
+    let dir = Scratch::new("output-documents");
+    // A .silico path (any case), whether or not it ends in .png otherwise.
+    refused_output(
+        &dir.0.join("part.silico"),
+        &png_rules(None, &[], true),
+        "is a document's path",
+    );
+    refused_output(
+        &dir.0.join("part.SILICO"),
+        &png_rules(None, &[], true),
+        "is a document's path",
+    );
+    // In a .silico-cache directory.
+    let cache = dir.0.join(".silico-cache");
+    std::fs::create_dir(&cache).unwrap();
+    refused_output(
+        &cache.join("view.png"),
+        &png_rules(None, &[], true),
+        "lies in a .silico-cache directory",
+    );
+    // A document a session holds, reached through a link ending in .png.
+    let held = dir.0.join("held.png");
+    std::fs::write(&held, b"a document's bytes, named .png").unwrap();
+    let link = dir.0.join("alias.png");
+    std::os::unix::fs::symlink(&held, &link).unwrap();
+    let holding = [held.clone()];
+    refused_output(
+        &link,
+        &png_rules(None, &holding, true),
+        "is a document a session holds",
+    );
+    refused_output(
+        &held,
+        &png_rules(None, &holding, true),
+        "is a document a session holds",
+    );
+    // A link to a .silico file.
+    let doc = dir.0.join("real.silico");
+    std::fs::write(&doc, b"{}").unwrap();
+    let to_doc = dir.0.join("sneaky.png");
+    std::os::unix::fs::symlink(&doc, &to_doc).unwrap();
+    refused_output(
+        &to_doc,
+        &png_rules(None, &[], true),
+        "is a link to a document",
+    );
+    assert_eq!(std::fs::read(&doc).unwrap(), b"{}");
+}
+
+#[test]
+fn a_path_without_the_extension_or_out_of_the_workspace_is_refused() {
+    let dir = Scratch::new("output-workspace");
+    let workspace = dir.0.join("work");
+    let outside = dir.0.join("outside");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let rules = png_rules(Some(&workspace), &[], true);
+    refused_output(&workspace.join("view.jpg"), &rules, "doesn't end in .png");
+    refused_output(&workspace.join("view"), &rules, "doesn't end in .png");
+    refused_output(
+        &outside.join("view.png"),
+        &rules,
+        "is outside the workspace",
+    );
+    refused_output(
+        &workspace.join("../outside/view.png"),
+        &rules,
+        "is outside the workspace",
+    );
+    // Through a link out of it: a directory link, and a file link.
+    std::os::unix::fs::symlink(&outside, workspace.join("out")).unwrap();
+    refused_output(
+        &workspace.join("out/view.png"),
+        &rules,
+        "is outside the workspace",
+    );
+    std::os::unix::fs::symlink(outside.join("target.png"), workspace.join("link.png")).unwrap();
+    std::fs::write(outside.join("target.png"), b"theirs").unwrap();
+    refused_output(
+        &workspace.join("link.png"),
+        &rules,
+        "is outside the workspace",
+    );
+    assert_eq!(
+        std::fs::read(outside.join("target.png")).unwrap(),
+        b"theirs"
+    );
+    // A directory that doesn't exist, and a directory where the file would go.
+    refused_output(
+        &workspace.join("nowhere/view.png"),
+        &rules,
+        "its directory can't be reached",
+    );
+    std::fs::create_dir(workspace.join("dir.png")).unwrap();
+    refused_output(&workspace.join("dir.png"), &rules, "isn't a file");
+    // Inside, it's written.
+    silico_core::file::write_output(&workspace.join("view.png"), b"PNG", &rules).unwrap();
+}
+
+#[test]
+fn a_png_link_to_a_file_of_another_kind_is_refused_and_the_file_kept() {
+    // A clone's `view.png` linked to its README: replacing it would write PNG bytes over the
+    // README, kept as it was.
+    let dir = Scratch::new("output-link-kind");
+    let readme = dir.0.join("README.md");
+    std::fs::write(&readme, b"keep me").unwrap();
+    let view = dir.0.join("view.png");
+    std::os::unix::fs::symlink(&readme, &view).unwrap();
+    refused_output(
+        &view,
+        &png_rules(Some(&dir.0), &[], true),
+        "is a link to a file that isn't a .png",
+    );
+    assert_eq!(std::fs::read(&readme).unwrap(), b"keep me");
+    // A link to a .png is written through, as before.
+    let real = dir.0.join("real.png");
+    std::fs::write(&real, b"old").unwrap();
+    let alias = dir.0.join("alias.png");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    silico_core::file::write_output(&alias, b"new", &png_rules(Some(&dir.0), &[], true)).unwrap();
+    assert_eq!(std::fs::read(&real).unwrap(), b"new");
+}

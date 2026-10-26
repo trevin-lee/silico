@@ -30,6 +30,7 @@ use silico_core::command::{ModelChoice, Problems, SessionId};
 use silico_core::document::json::{Node, read};
 use silico_core::document::{Angle, FeatureId, Length, Measure};
 use silico_core::kernel::ElementKind;
+use silico_core::views::NamedView;
 
 fn contract(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -183,7 +184,7 @@ fn each_commands_schemas_are_the_committed_snapshot() {
         );
     }
     // A name that isn't a command's (one the design has, not built yet) has none.
-    assert!(snapshot("render").is_none());
+    assert!(snapshot("export").is_none());
 }
 
 /// Every object of `schema` with properties that isn't closed to them or doesn't require
@@ -346,7 +347,7 @@ fn the_word_lists_in_the_snapshots_are_the_commands_own() {
 #[test]
 fn the_examples_are_the_designs_own_text() {
     // Each section's blocks, in order, each file the block and a newline.
-    let sections: [(&str, &str, &str, &[&str]); 7] = [
+    let sections: [(&str, &str, &str, &[&str]); 8] = [
         (
             "### Element entries",
             "### Warnings",
@@ -407,6 +408,12 @@ fn the_examples_are_the_designs_own_text() {
             "### `render` (M4.6)",
             "angle",
             &["wedge", "wedge-measured", "refused-circle"],
+        ),
+        (
+            "### `render` (M4.6)",
+            "### `read_logs` (M4.7)",
+            "render",
+            &["request", "result", "refused-width", "refused-eye-inside"],
         ),
     ];
     for (from, to, dir, names) in sections {
@@ -741,7 +748,8 @@ fn schema_answers_the_document_and_each_command_as_committed() {
                 "schema",
                 "mass_properties",
                 "distance",
-                "angle"
+                "angle",
+                "render"
             ]
         );
     }
@@ -1210,5 +1218,265 @@ fn the_measures_examples_hold_to_their_results_schemas() {
         &schema_of("distance", "result", None),
         r#"{"distance": 1, "from": [0, 0, 0], "to": [0, 0, 1], "center_distance": null}"#,
         "no normal distance",
+    );
+}
+
+// ---- render (M4.6) ----
+
+/// The design's block, `k7f2qx3m` the 40 x 20 x 10 block alone (its box the one the
+/// design's camera is fitted to: the fake measures a box as a box), on the fake kernel.
+const BLOCK: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
+  ]
+}
+"#;
+
+/// `request` rendered on `text`'s model, on the fake kernel and the fake renderer.
+fn rendered(
+    text: &str,
+    request: &silico_core::command::render::Render,
+) -> Result<silico_core::command::render::Rendering, Problems> {
+    use silico_core::command::render::{RenderOn, render};
+    use silico_core::fake::{FakeKernel, FakeRenderer};
+    use silico_core::meshes::{MESH_CACHE_BYTES, MeshCache};
+    use silico_core::recompute::Recompute;
+    let kernel = std::sync::Arc::new(FakeKernel::new(1).unwrap());
+    let engine = Recompute::new(std::sync::Arc::clone(&kernel));
+    let model = silico_core::command::rebuild(
+        &engine,
+        silico_core::command::gate(text.as_bytes()).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let meshes = MeshCache::new(MESH_CACHE_BYTES);
+    let renderer = FakeRenderer::new();
+    render(
+        &model,
+        request,
+        &RenderOn {
+            kernel: &kernel,
+            meshes: &meshes,
+            renderer: &renderer,
+            workspace: None,
+            held: &[],
+            settle: &|| Ok(()),
+        },
+    )
+}
+
+#[test]
+fn the_designs_render_request_is_read_and_written_back_and_holds_to_its_schema() {
+    use silico_core::command::render::Render;
+    use silico_core::command::wire::render::RenderRequest;
+    let text = example("render/request");
+    let call = RenderRequest::read(&parsed(&text)).unwrap();
+    assert_eq!(
+        call,
+        RenderRequest {
+            session: s1(),
+            model: ModelChoice::Current,
+            render: Render {
+                view: NamedView::named("top_front_right"),
+                camera: None,
+                width: 800,
+                height: 600,
+                highlight: vec!["k7f2qx3m.box.Face6".to_owned()],
+                to: None,
+                replace: false,
+            },
+        }
+    );
+    assert_eq!(written(&call), text);
+    holds(&schema_of("render", "request", None), &text, "render");
+}
+
+#[test]
+fn the_designs_render_result_is_the_commands_own_but_for_its_machines_png_bytes() {
+    // The block's top_front_right at 800 x 600, its top highlighted, as the design's request
+    // asks. The PNG's size is the machine's (the fake's stand-in here): it alone is set to
+    // the design's before comparing, as the design says it isn't a result.
+    use silico_core::command::wire::render::RenderRequest;
+    let call = RenderRequest::read(&parsed(&example("render/request"))).unwrap();
+    let done = rendered(BLOCK, &call.render).unwrap();
+    let mut result = done.result.clone();
+    result.png_bytes = 48_213;
+    let want = example("render/result");
+    assert_eq!(written(&result), want);
+    holds(&schema_of("render", "result", None), &want, "render");
+    // Exactly M4.1's five members, so the ID buffer can't drift into it; their order is the
+    // example's, compared byte for byte above (serde_json's map order depends on the
+    // features a build unifies, so it's sorted here).
+    let value: serde_json::Value = serde_json::from_str(&want).unwrap();
+    let mut keys: Vec<&String> = value.as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(keys, ["camera", "height", "path", "png_bytes", "width"]);
+}
+
+#[test]
+fn the_designs_render_refusals_are_the_commands_own_and_hold_to_the_error_contract() {
+    use silico_core::command::wire::render::RenderRequest;
+    use silico_protocol::{Camera, Projection};
+    let error = error_schema();
+    let check = |name: &str, got: String| {
+        let want = example(name);
+        assert_eq!(got, want, "{name}");
+        holds(&error, &want, name);
+    };
+    let mut call = RenderRequest::read(&parsed(&example("render/request"))).unwrap();
+    call.render.width = 0;
+    check(
+        "render/refused-width",
+        the_refusal(&rendered(BLOCK, &call.render).unwrap_err()),
+    );
+    // A perspective eye inside the design's part (its block, the hole aside).
+    let mut call = RenderRequest::read(&parsed(&example("render/request"))).unwrap();
+    call.render.view = None;
+    call.render.highlight = vec![];
+    call.render.camera = Some(Camera {
+        projection: Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        eye: [5.0, 5.0, 5.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    });
+    check(
+        "render/refused-eye-inside",
+        the_refusal(&rendered(super::example::EXAMPLE, &call.render).unwrap_err()),
+    );
+}
+
+/// A render request around `camera`, a JSON object's text.
+fn with_camera(camera: &str) -> String {
+    format!(
+        r#"{{"session": "s1", "model": "current", "view": null, "camera": {camera}, "width": 10, "height": 10, "highlight": [], "to": null, "replace": false}}"#
+    )
+}
+
+#[test]
+fn a_perspective_camera_is_read_from_its_digits_and_written_back_as_given() {
+    use silico_core::command::wire::render::RenderRequest;
+    use silico_protocol::{Camera, Projection};
+    // Eye and target as lengths, to the nanometre; the angle to the nanodegree; up as a
+    // direction. Read and written back: the same text.
+    let camera = r#"{"projection": "perspective", "eye": [1, 2.000001, -3], "target": [4, 5, 6], "up": [0, 0, 1], "view_height": null, "field_of_view": 37.123456789}"#;
+    let text = with_camera(camera);
+    let call = RenderRequest::read(&parsed(&text)).unwrap();
+    assert_eq!(
+        call.render.camera,
+        Some(Camera {
+            projection: Projection::Perspective {
+                field_of_view: 37.123_456_789,
+            },
+            eye: [1.0, 2.000_001, -3.0],
+            target: [4.0, 5.0, 6.0],
+            up: [0.0, 0.0, 1.0],
+        })
+    );
+    let back: serde_json::Value = serde_json::from_str(&written(&call)).unwrap();
+    let given: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, given);
+    holds(&schema_of("render", "request", None), &text, "perspective");
+}
+
+#[test]
+fn a_cameras_fields_that_dont_fit_its_projection_or_aren_t_numbers_are_refused_by_name() {
+    use silico_core::command::wire::render::RenderRequest;
+    let field = |camera: &str| {
+        let refused = RenderRequest::read(&parsed(&with_camera(camera))).unwrap_err();
+        refused
+            .errors()
+            .iter()
+            .map(|e| e.parameter().unwrap_or_default().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let ortho = |rest: &str| {
+        format!(
+            r#"{{"projection": "orthographic", "eye": [0, -10, 0], "target": [0, 0, 0], "up": [0, 0, 1], {rest}}}"#
+        )
+    };
+    let persp = |rest: &str| {
+        format!(
+            r#"{{"projection": "perspective", "eye": [0, -10, 0], "target": [0, 0, 0], "up": [0, 0, 1], {rest}}}"#
+        )
+    };
+    assert_eq!(
+        field(&ortho(r#""view_height": 10, "field_of_view": 40"#)),
+        ["camera.field_of_view"]
+    );
+    assert_eq!(
+        field(&ortho(r#""view_height": null, "field_of_view": null"#)),
+        ["camera.view_height"]
+    );
+    assert_eq!(
+        field(&persp(r#""view_height": 10, "field_of_view": 40"#)),
+        ["camera.view_height"]
+    );
+    assert_eq!(
+        field(&persp(r#""view_height": null, "field_of_view": null"#)),
+        ["camera.field_of_view"]
+    );
+    // A seventh decimal of a millimetre, and a member that isn't a number, each named.
+    assert_eq!(
+        field(
+            r#"{"projection": "orthographic", "eye": [0, -10, 0.0000001], "target": [0, "0", 0], "up": [0, 0, 1], "view_height": 10, "field_of_view": null}"#
+        ),
+        ["camera.eye.2", "camera.target.1"]
+    );
+    // The article read as the projection is: "an orthographic camera".
+    let refused = RenderRequest::read(&parsed(&with_camera(&ortho(
+        r#""view_height": null, "field_of_view": null"#,
+    ))))
+    .unwrap_err();
+    assert!(
+        refused.errors()[0]
+            .message()
+            .contains("for an orthographic camera"),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn every_reason_a_render_request_is_refused_is_found() {
+    use silico_core::command::wire::render::RenderRequest;
+    let text = r#"{"session": "s1", "model": "current", "view": "isometric", "camera": null, "width": 1.5, "height": 10, "highlight": ["ok", 3], "to": null, "replace": false}"#;
+    let refused = RenderRequest::read(&parsed(text)).unwrap_err();
+    let fields: Vec<Option<&str>> = refused.errors().iter().map(|e| e.parameter()).collect();
+    assert_eq!(fields, [Some("view"), Some("width"), Some("highlight.1")]);
+    assert_eq!(refused.errors()[0].candidates().len(), 14);
+}
+
+#[test]
+fn a_perspective_result_writes_its_angle_and_no_height() {
+    use silico_core::command::render::{AnsweredCamera, RenderResult};
+    use silico_protocol::{Camera, Projection};
+    let camera = AnsweredCamera::of(&Camera {
+        projection: Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        eye: [0.0, -10.0, 0.0],
+        target: [0.0; 3],
+        up: [0.0, 0.0, 1.0],
+    })
+    .unwrap();
+    let out = written(&RenderResult {
+        png_bytes: 1,
+        path: None,
+        width: 10,
+        height: 10,
+        camera,
+    });
+    assert!(
+        out.contains(r#""view_height": null, "field_of_view": 40"#),
+        "{out}"
+    );
+    holds(
+        &schema_of("render", "result", None),
+        &out,
+        "perspective result",
     );
 }
