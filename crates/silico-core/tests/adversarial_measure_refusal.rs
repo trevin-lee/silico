@@ -19,7 +19,7 @@ use super::refusals;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use cache::{HOLE, Scratch, calls, entries_and_partials, hole, session};
+use cache::{HOLE, Scratch, calls, hole, session, subdirectory_files};
 use example::EXAMPLE;
 use model::{WAIT, checked, id, published};
 use proptest::prelude::*;
@@ -380,7 +380,7 @@ fn sessions_racing_to_keep_refusals_leave_entries_a_third_asks_nothing_of() {
         assert!(third.kernel().calls().is_empty(), "{:?}", calls(&third));
         assert_eq!(model.drift(), drifts[0]);
         // Cleared for the next round.
-        for file in entries_and_partials(&dir.0) {
+        for file in subdirectory_files(&dir.0) {
             std::fs::remove_file(file).unwrap();
         }
     }

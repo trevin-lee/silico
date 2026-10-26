@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::cache::{
-    HOLE, Scratch, cache, calls, entries_and_partials, example_with_pin, hole, secret_of, session,
+    HOLE, Scratch, cache, calls, example_with_pin, hole, secret_of, session, subdirectory_files,
 };
 use super::cache_control::{NAME, entries};
 use super::example::EXAMPLE;
@@ -312,7 +312,7 @@ fn a_clear_while_another_process_rebuilds_leaves_no_entry_trusted_half_written()
     let cleared = clearer.join().unwrap();
     assert!(cleared > 0, "the clears raced nothing");
     // What's left is whole: no partial file, and each entry a hit of the right shape.
-    let left = entries_and_partials(&dir.0);
+    let left = subdirectory_files(&dir.0);
     assert!(
         left.iter()
             .all(|p| !p.to_string_lossy().contains(".partial-")),

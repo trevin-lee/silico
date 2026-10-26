@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use cache::{HOLE, Scratch, calls, entries_and_partials, example_with_pin, hole, session};
+use cache::{HOLE, Scratch, calls, example_with_pin, hole, session, subdirectory_files};
 use cache_format::{
     Entry, KeptDescription, MAGIC, Measure, decode, encode, encode_with, entry_path, entry_path_in,
 };
@@ -332,7 +332,7 @@ fn a_cache_directory_removed_while_a_step_runs_is_made_again() {
     // cut, held, runs while its input's entry is written); the cut is held.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        let all = entries_and_partials(&dir.0);
+        let all = subdirectory_files(&dir.0);
         let partial = |p: &PathBuf| p.to_string_lossy().contains(".partial-");
         if all.iter().filter(|p| !partial(p)).count() == 3 && !all.iter().any(partial) {
             break;
@@ -728,7 +728,7 @@ fn sessions_racing_on_one_cache_leave_only_sound_entries() {
         }
     }
     // One box, three pins, three moves, three cuts: ten entries, no partial files left.
-    let all = entries_and_partials(&dir.0);
+    let all = subdirectory_files(&dir.0);
     assert!(
         all.iter()
             .all(|p| !p.to_string_lossy().contains(".partial-")),

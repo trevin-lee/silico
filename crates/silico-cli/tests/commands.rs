@@ -28,7 +28,8 @@ const EXAMPLE: &str = r#"{
 
 /// The entries of the cache `dir`, in order of path, found as the cache finds its own: a
 /// regular file named by 62 lowercase hex digits in a subdirectory named by two, no link
-/// followed.
+/// followed. A copy of silico-core's `tests/common/cache_control.rs` `entries` (this crate's
+/// tests can't load that file): keep the two alike.
 fn entries(dir: &Path) -> Vec<PathBuf> {
     let hex = |name: &str, digits: usize| {
         name.len() == digits && name.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))

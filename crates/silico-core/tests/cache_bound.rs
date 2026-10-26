@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use bound::{bounded, set_time, total};
-use cache::{HOLE, Scratch, calls, entries_and_partials, example_with_pin, hole, session};
+use cache::{HOLE, Scratch, calls, example_with_pin, hole, session, subdirectory_files};
 use example::EXAMPLE;
 use model::{checked, published};
 use silico_core::cache::{DEFAULT_BOUND, STALE_PARTIAL};
@@ -92,7 +92,7 @@ fn a_document_whose_entries_were_evicted_rebuilds_to_the_same_shapes() {
 fn an_entry_larger_than_the_bound_isnt_kept_and_nothing_is_evicted_for_it() {
     let dir = Scratch::new("too-large");
     published(&session(&dir.0), checked(EXAMPLE));
-    let before: Vec<(PathBuf, Vec<u8>)> = entries_and_partials(&dir.0)
+    let before: Vec<(PathBuf, Vec<u8>)> = subdirectory_files(&dir.0)
         .into_iter()
         .map(|file| {
             let bytes = std::fs::read(&file).unwrap();
@@ -104,7 +104,7 @@ fn an_entry_larger_than_the_bound_isnt_kept_and_nothing_is_evicted_for_it() {
     let session = bounded(&dir.0, 47);
     published(&session, example_with_pin("3"));
     assert_eq!(calls(&session), ["Cut", "MakeCylinder", "Translate"]);
-    let after: Vec<(PathBuf, Vec<u8>)> = entries_and_partials(&dir.0)
+    let after: Vec<(PathBuf, Vec<u8>)> = subdirectory_files(&dir.0)
         .into_iter()
         .map(|file| {
             let bytes = std::fs::read(&file).unwrap();
@@ -149,7 +149,7 @@ fn eviction_goes_by_last_use_then_by_path() {
     // The example's own entries, each under 4 KiB (its solids described), so the evictions
     // are the first put's.
     let planted: Vec<PathBuf> = (0..8).map(|n| planted_entry(&dir.0, n)).collect();
-    let own: Vec<PathBuf> = entries_and_partials(&dir.0)
+    let own: Vec<PathBuf> = subdirectory_files(&dir.0)
         .into_iter()
         .filter(|file| !planted.contains(file))
         .collect();
@@ -168,7 +168,7 @@ fn eviction_goes_by_last_use_then_by_path() {
 fn a_scan_removes_partials_an_hour_old_and_keeps_a_writers_and_what_it_doesnt_know() {
     let dir = Scratch::new("partials");
     published(&session(&dir.0), checked(EXAMPLE));
-    let sub = entries_and_partials(&dir.0)[0].parent().unwrap().to_owned();
+    let sub = subdirectory_files(&dir.0)[0].parent().unwrap().to_owned();
     let stale = SystemTime::now() - STALE_PARTIAL - Duration::from_secs(60);
     // A writer's partial, written a moment ago, and its root's: kept.
     let writing = sub.join(".partial-1-1");
@@ -244,7 +244,7 @@ fn a_read_only_cache_still_hits() {
     let read_only = |path: &Path, mode| {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
     };
-    for file in entries_and_partials(&dir.0) {
+    for file in subdirectory_files(&dir.0) {
         read_only(&file, 0o444);
         read_only(file.parent().unwrap(), 0o555);
     }
@@ -258,7 +258,7 @@ fn a_read_only_cache_still_hits() {
 fn a_writers_partial_counts_toward_the_bound() {
     let dir = Scratch::new("partial-counts");
     published(&session(&dir.0), checked(EXAMPLE));
-    let sub = entries_and_partials(&dir.0)[0].parent().unwrap().to_owned();
+    let sub = subdirectory_files(&dir.0)[0].parent().unwrap().to_owned();
     let bound = 4 * one_document("3");
     // A writer's partial, a moment old, of all but 100 bytes of the bound: with it, the
     // next put passes the bound, and what's left must fit in three quarters of it, less
@@ -310,7 +310,7 @@ fn a_partial_dated_an_hour_ahead_is_stale_and_one_half_an_hour_ahead_is_kept() {
     // fresh as a clock a little off can say, is kept.
     let dir = Scratch::new("future-partial");
     published(&session(&dir.0), checked(EXAMPLE));
-    let sub = entries_and_partials(&dir.0)[0].parent().unwrap().to_owned();
+    let sub = subdirectory_files(&dir.0)[0].parent().unwrap().to_owned();
     let bound = 4 * one_document("3");
     let ahead = sub.join(".partial-1-1");
     std::fs::write(&ahead, vec![0; bound as usize]).unwrap();
@@ -339,7 +339,7 @@ fn a_hit_renews_its_entrys_last_use() {
     // use is no earlier than that build's start.
     let dir = Scratch::new("renewed");
     published(&session(&dir.0), checked(EXAMPLE));
-    let entries = entries_and_partials(&dir.0);
+    let entries = subdirectory_files(&dir.0);
     assert!(!entries.is_empty());
     for entry in &entries {
         set_time(entry, SystemTime::now() - Duration::from_secs(3600));
