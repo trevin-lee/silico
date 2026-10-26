@@ -16,7 +16,7 @@ use crate::document::{
     self, Checked, Document, Feature, FeatureId, Fingerprint, NamingScheme, Operation,
 };
 use crate::kernel::Kernel;
-use crate::recompute::{Model, Recompute, RunOutcome};
+use crate::recompute::{Model, Recompute, RunOutcome, Save};
 
 mod edit;
 pub mod elements;
@@ -325,7 +325,8 @@ pub struct Formatted {
     /// values) the solve changed, in timeline order.
     pub resolved: Vec<document::FeatureId>,
     /// What the text can't fix: the features that didn't build, or whose solids couldn't be
-    /// measured, each keeping the fingerprint stored with it, and the drift of each feature
+    /// measured, each keeping the fingerprint stored with it (but, in a session, one its
+    /// edits reached, saved with none: decision 28, amended), and the drift of each feature
     /// whose record it leaves as stored. [`format`] writes every record it can, so its drift
     /// is only of measures a fingerprint can't hold.
     pub problems: Problems,
@@ -346,28 +347,42 @@ pub fn format(model: &Model) -> Result<Formatted, Problems> {
         .iter()
         .map(|f| f.id.clone())
         .collect();
-    formatted(model, &every, &model.drifted())
+    formatted(model, &every, &BTreeSet::new(), &model.drifted())
 }
 
-/// The model's document in canonical form with the fingerprint and solve of each feature in
-/// `writes` as the model rebuilt it (`Model::saved_for`), every other's as stored: what a
-/// session's commit writes (the features its edits reached, decision 28) and its `format`
-/// (every feature but those whose drift it doesn't accept, decision 31), as [`format`]
-/// writes every feature's. Its problems are the failures, the solids that couldn't be
-/// measured, and of `drift` (the model's, `Model::drifted`), that of every feature whose
+/// The model's document in canonical form (`Model::saved_as`): each feature in `reach` (what
+/// a session's edits reached) as the model rebuilt it, with no fingerprint if it didn't
+/// build (decision 28, amended); each other in `writes` with its fingerprint and solve as
+/// the model rebuilt it, or as stored if it didn't build; every other as stored. What a
+/// session's commit writes (its edits' reach for both, decision 28) and its `format` (every
+/// feature but those whose drift it doesn't accept, decision 31), as [`format`] writes
+/// every feature's, with no reach. Its problems are the failures, the solids that couldn't
+/// be measured, and of `drift` (the model's, `Model::drifted`), that of every feature whose
 /// record it doesn't write, which it leaves as stored; a kernel fault set aside (a feature
-/// it stopped keeps what's stored with it, as a failed one does).
+/// it stopped is saved as a failed one is). `refingerprinted` lists only fingerprints
+/// written, never one left out.
 fn formatted(
     model: &Model,
     writes: &BTreeSet<FeatureId>,
+    reach: &BTreeSet<FeatureId>,
     drift: &[(FeatureId, Error)],
 ) -> Result<Formatted, Problems> {
     let mut problems = failures(model);
     let unlisted = model.unlisted_errors();
-    let written = model.saved_for(writes);
+    let written = model.saved_as(|id| {
+        if reach.contains(id) {
+            Save::AsRebuilt
+        } else if writes.contains(id) {
+            Save::Recorded
+        } else {
+            Save::Stored
+        }
+    });
     let pairs = || model.document().features.iter().zip(&written.features);
     let refingerprinted = pairs()
-        .filter(|(before, after)| before.fingerprint != after.fingerprint)
+        .filter(|(before, after)| {
+            after.fingerprint.is_some() && before.fingerprint != after.fingerprint
+        })
         .map(|(before, _)| before.id.clone())
         .collect();
     // Bit for bit, as drift compares them: a coordinate solved to -0 from 0 is written so.

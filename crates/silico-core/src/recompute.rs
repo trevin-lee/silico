@@ -666,34 +666,29 @@ impl Model {
     /// put in its place, and a failure that passes (a worker that hung, say) mustn't lose the
     /// record a later rebuild is checked against.
     pub fn saved(&self) -> Document {
-        self.saved_where(|_| true)
+        self.saved_as(|_| Save::Recorded)
     }
 
-    /// Its document as [`saved`](Self::saved) writes it, but the record of only each feature
-    /// in `writes` as rebuilt; every other keeps the fingerprint, or a sketch the solve,
-    /// stored with it. A session's commit writes the features its edits reached (decision
-    /// 28), and its `format` every feature but those whose drift it isn't told to accept
-    /// (decision 31).
-    pub fn saved_for(&self, writes: &BTreeSet<FeatureId>) -> Document {
-        self.saved_where(|id| writes.contains(id))
-    }
-
-    /// Whether a save writes the record of the feature `id` as rebuilt (the one rule
-    /// [`saved_for`](Self::saved_for) writes by): a fingerprint for a feature that built and
+    /// Whether a save writes the record of the feature `id` as rebuilt (the rule
+    /// [`saved_as`](Self::saved_as) writes by): a fingerprint for a feature that built and
     /// was measured, as a fingerprint can hold it, or the solve of a sketch that solved. Not
     /// for one that failed, was blocked, or couldn't be measured, which keeps what's stored
-    /// with it.
+    /// with it, unless a session's edits reached it ([`Save::AsRebuilt`]).
     pub fn records(&self, id: &FeatureId) -> bool {
         self.outcome(id).and_then(Record::of).is_some()
     }
 
-    /// Its document as a save writes it, each feature `writes` takes as rebuilt, every
-    /// other as stored.
-    fn saved_where(&self, writes: impl Fn(&FeatureId) -> bool) -> Document {
+    /// Its document as a save writes it, each feature as `how` says ([`Save`]): the one
+    /// place the rule is held. A session's commit saves the features its edits reached as
+    /// rebuilt and every other as stored (decision 28); its `format` saves the reached ones
+    /// as rebuilt, those whose drift it isn't told to accept as stored, and the rest as
+    /// recorded (decision 31); [`saved`](Self::saved), every feature as recorded.
+    pub fn saved_as(&self, how: impl Fn(&FeatureId) -> Save) -> Document {
         let mut document = self.document().clone();
         // The model's features are its document's, in order.
         for (feature, (_, outcome)) in document.features.iter_mut().zip(&self.features) {
-            if !writes(&feature.id) {
+            let how = how(&feature.id);
+            if how == Save::Stored {
                 continue;
             }
             match Record::of(outcome) {
@@ -703,11 +698,34 @@ impl Model {
                         *sketch = solution.written(sketch);
                     }
                 }
+                // A sketch's coordinates are its data, not a record of it: kept.
+                None if how == Save::AsRebuilt && feature.operation.makes_solid() => {
+                    feature.fingerprint = None;
+                }
                 None => {}
             }
         }
         document
     }
+}
+
+/// How a save writes a feature ([`Model::saved_as`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Save {
+    /// As the file holds it.
+    Stored,
+    /// Its record if it has one (its fingerprint as rebuilt, or a sketch's solve), or else
+    /// as stored: a feature that didn't build keeps what's stored with it, since a failure
+    /// that passes (a worker that hung, say) mustn't lose the record a later rebuild is
+    /// checked against.
+    Recorded,
+    /// As it rebuilt, for a feature a session's edits reached (decision 28, amended): its
+    /// record if it has one; or, for a feature that makes a solid and didn't build (it
+    /// failed, a reference of its broke, a failure upstream blocked it, a kernel fault
+    /// stopped it) or built to measures a fingerprint can't hold, no fingerprint, since
+    /// what's stored was measured from the values the edit replaced and is no record of it.
+    /// A sketch that didn't solve keeps its stored coordinates, which are its data.
+    AsRebuilt,
 }
 
 /// What a save writes of a feature as rebuilt: its fingerprint, or a sketch's solve.
@@ -719,7 +737,8 @@ enum Record<'a> {
 impl<'a> Record<'a> {
     /// What a save writes for a feature that came to `outcome`: none for one that failed or
     /// was blocked, or whose solid couldn't be measured, or measures past what a fingerprint
-    /// holds.
+    /// holds, which keeps what's stored with it, unless a session's edits reached it
+    /// ([`Save::AsRebuilt`]).
     fn of(outcome: &'a FeatureOutcome) -> Option<Self> {
         match outcome {
             FeatureOutcome::Built { built, .. } => built

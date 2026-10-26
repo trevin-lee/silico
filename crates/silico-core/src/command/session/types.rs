@@ -494,7 +494,9 @@ pub struct Begun {
 /// transaction's edits reached whose fingerprints it wrote anew and the reached sketches
 /// whose solves it wrote, in timeline order (decision 28), and the problems it can't fix:
 /// failed features, solids that couldn't be measured, and the drift of features no edit
-/// reached, which keep what's stored with them.
+/// reached, which keep what's stored with them. A failed feature the edits reached is saved
+/// with no fingerprint (decision 28, amended), and isn't among those whose fingerprints it
+/// wrote.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Committed {
     pub written: bool,
@@ -515,8 +517,10 @@ pub struct RolledBack {
 /// the session read it before the command, reloading a change, decision 2), whether it
 /// wrote it, the path as `open` was given it, the features whose fingerprints it wrote (or,
 /// not writing, would write) anew and the sketches whose solves, the features among them
-/// whose drift it accepted, each in timeline order, and what it can't fix: failed features,
-/// solids that couldn't be measured, and the drift it didn't accept.
+/// whose drift it accepted, each in timeline order, and what it can't fix: failed features
+/// (one the session's edits reached saved with no fingerprint, decision 28 amended; any
+/// other keeping what's stored with it), solids that couldn't be measured, and the drift it
+/// didn't accept.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reformatted {
     pub changed: bool,

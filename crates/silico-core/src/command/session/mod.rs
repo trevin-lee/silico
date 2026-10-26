@@ -826,8 +826,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// read or wrote it or is gone (`conflict`), or can't be read (`io_failed`), if its text
     /// would pass the limit, if it can't be written (`io_failed`), or if it's cancelled
     /// before it writes. A kernel fault is saved around (decision 32): the features it
-    /// stopped keep what's stored with them, as failed ones do, and it's given once, in the
-    /// response's `model`.
+    /// stopped are saved as failed ones are (one its edits reached with no fingerprint,
+    /// decision 28 amended; any other as stored), and it's given once, in the response's
+    /// `model`.
     pub fn commit(&self, session: &SessionId) -> Running<Committed> {
         let registry = Arc::downgrade(&self.registry);
         self.queued_with(

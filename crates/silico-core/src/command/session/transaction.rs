@@ -418,8 +418,9 @@ impl<C: Kernel + 'static> Session<C> {
     /// (its `io_failed`), the model can't be had (the session closed, a recompute that failed,
     /// the commit cancelled), the canonical text is too long, or the save is (a file changed
     /// since: a conflict too). A kernel fault the model holds is saved around (decision 32):
-    /// the features it stopped keep what's stored with them, as failed ones do, and it's
-    /// given once, in the model read, not among the problems. As the command `stop` stops.
+    /// the features it stopped are saved as failed ones are (a reached one with no
+    /// fingerprint, decision 28 amended; any other as stored), and it's given once, in the
+    /// model read, not among the problems. As the command `stop` stops.
     pub(super) fn commit(
         self: &Arc<Self>,
         stop: &Ticket,
@@ -574,7 +575,7 @@ impl<C: Kernel + 'static> Session<C> {
             Through::Candidate => self.candidate_model(stop, revision, checked)?,
         };
         *read = Some(ModelRead::of(revision, ModelChoice::Current, &model));
-        let formatted = crate::command::formatted(&model, reach, &model.drifted())?;
+        let formatted = crate::command::formatted(&model, reach, reach, &model.drifted())?;
         if unchanged {
             if through == Through::Transaction {
                 self.unwritten(stop, &begun, revision)?;
@@ -721,7 +722,7 @@ impl<C: Kernel + 'static> Session<C> {
             .filter(|id| drifted.contains(id) && writes.contains(*id) && model.records(id))
             .cloned()
             .collect();
-        let formatted = crate::command::formatted(&model, &writes, &drift)?;
+        let formatted = crate::command::formatted(&model, &writes, reach, &drift)?;
         let saved = formatted.text.into_bytes();
         let changed = saved != *bytes;
         let written = write && changed;

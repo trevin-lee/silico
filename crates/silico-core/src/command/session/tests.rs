@@ -906,24 +906,185 @@ fn a_reached_feature_that_failed_stays_reached_after_its_commit() {
             (ErrorCode::Drift, Some("k7f2qx3m"))
         ]
     );
-    // Neither's fingerprint written, so both still reached, and their stale fingerprints
-    // kept as stored.
+    // Neither's fingerprint written, so both still reached; and both saved with none,
+    // since what's stored was measured from the lug 10 long (decision 28, amended): the
+    // block, which no edit reached, keeps its own, drift and all.
     assert_eq!(
         *f.session().held.read().carried,
         BTreeSet::from([id("b0000001"), id("f0000001")])
     );
-    let saved = document::read(f.file().as_bytes()).unwrap();
-    let volumes: Vec<Measure> = saved
+    assert_eq!(
+        stored_fingerprints(&f.file()),
+        [Some(millionths(8_000_000_001, 2800)), None, None]
+    );
+    // A feature without an object written on one line (M2.1).
+    assert_eq!(f.file(), REACHED_FAILED);
+}
+
+/// [`STORED`] committed with the lug 20 long, which failed: the block as stored, the lug
+/// and the fuse, which the edit reached, saved with no fingerprint.
+const REACHED_FAILED: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000.000001, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    },\n    {\"id\": \"b0000001\", \"type\": \"box\", \"v\": 1, \"name\": \"Lug\", \"position\": [100, 0, 0], \"length\": 20, \"width\": 10, \"height\": 10},\n    {\"id\": \"f0000001\", \"type\": \"fuse\", \"v\": 1, \"name\": \"Both\", \"base\": \"k7f2qx3m\", \"tool\": \"b0000001\"}\n  ]\n}\n";
+
+/// Each feature's stored volume and area in the document `text`, in timeline order: none
+/// for one saved without a fingerprint.
+fn stored_fingerprints(text: &str) -> Vec<Option<(Measure, Measure)>> {
+    document::read(text.as_bytes())
+        .unwrap()
         .features
         .iter()
-        .map(|feature| feature.fingerprint.unwrap().volume)
-        .collect();
+        .map(|feature| feature.fingerprint.map(|f| (f.volume, f.area)))
+        .collect()
+}
+
+/// A volume in millionths of a mm³, and a whole area in mm².
+fn millionths(volume: i128, area: i128) -> (Measure, Measure) {
+    (
+        Measure::from_millionths(volume),
+        Measure::from_millionths(area * 1_000_000),
+    )
+}
+
+/// The code and feature of each of `problems`.
+fn said(problems: &Problems) -> Vec<(ErrorCode, Option<&str>)> {
+    problems
+        .errors()
+        .iter()
+        .map(|e| (e.code(), e.feature()))
+        .collect()
+}
+
+/// [`STORED`], its lug refused as stored (10 long), the block's note edited and committed:
+/// an edit that reaches nothing.
+fn the_unreached_lug_failed() -> (Fixture, Committed) {
+    let f = opened(STORED);
+    f.kernel.refuse(|op| {
+        matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx > 5.0 && *dx < 15.0)
+            .then(|| Error::new(ErrorCode::KernelFailed, "the lug can't be made"))
+    });
+    f.begin();
+    f.edit(&STORED.replace(
+        r#""name": "Block", "#,
+        r#""name": "Block", "note": "Mount face", "#,
+    ));
+    let committed = f.sessions.commit(&f.id).wait().result.unwrap();
+    (f, committed)
+}
+
+#[test]
+fn a_failed_feature_no_edit_reached_keeps_its_stored_fingerprint() {
+    // The lug fails as stored, and the fuse is blocked on it; the edit, a note, reaches
+    // nothing: all three keep what's stored, measured from the values the file holds.
+    let (f, committed) = the_unreached_lug_failed();
+    assert!(committed.written);
+    assert!(committed.refingerprinted.is_empty());
     assert_eq!(
-        volumes,
+        said(&committed.problems),
         [
-            Measure::from_millionths(8_000_000_001),
-            Measure::from_millionths(1_000_000_000),
-            Measure::from_millionths(9_000_000_000)
+            (ErrorCode::KernelFailed, Some("b0000001")),
+            (ErrorCode::Drift, Some("k7f2qx3m"))
+        ]
+    );
+    assert!(f.session().held.read().carried.is_empty());
+    assert_eq!(
+        stored_fingerprints(&f.file()),
+        [
+            Some(millionths(8_000_000_001, 2800)),
+            Some(millionths(1_000_000_000, 600)),
+            Some(millionths(9_000_000_000, 3400))
+        ]
+    );
+}
+
+#[test]
+fn a_reached_feature_saved_with_no_fingerprint_is_no_drift_in_a_new_session_and_a_reaching_commit_writes_one()
+ {
+    // Saved as `a_reached_feature_that_failed_stays_reached_after_its_commit` saves it,
+    // then opened again: the lug's failure and the block's drift are said, and nothing of
+    // the fuse, which has no fingerprint to hold. The lug made 30 long, which builds: its
+    // commit writes both records. By hand: the lug 30 × 10 × 10 = 3000, area
+    // 2(300 + 100 + 300) = 1400; the fuse 8000 + 3000 = 11000, area 2800 + 1400 = 4200.
+    let f = opened(STORED);
+    refuse_the_longer_lug(&f, ErrorCode::KernelFailed);
+    f.begin();
+    f.edit(&longer());
+    assert!(f.sessions.commit(&f.id).wait().result.unwrap().written);
+    assert_eq!(f.file(), REACHED_FAILED);
+    f.sessions.close(&f.id).wait().result.unwrap();
+    let again = f.sessions.open(&f.path, false).wait().session.unwrap().id;
+    let checked = f.sessions.check(&again, ModelChoice::Current).wait();
+    let problems = checked.result.unwrap().problems;
+    assert_eq!(
+        said(&problems),
+        [
+            (ErrorCode::KernelFailed, Some("b0000001")),
+            (ErrorCode::Drift, Some("k7f2qx3m"))
+        ]
+    );
+    let revision = checked.session.unwrap().revision;
+    let set = f
+        .sessions
+        .set_field(
+            &again,
+            revision,
+            id("b0000001"),
+            "length".to_owned(),
+            crate::document::json::read(b"30").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    let commit = set.commit.unwrap();
+    assert!(commit.written);
+    assert_eq!(commit.refingerprinted, [id("b0000001"), id("f0000001")]);
+    the_blocks_drift(&commit.problems);
+    assert_eq!(
+        stored_fingerprints(&f.file()),
+        [
+            Some(millionths(8_000_000_001, 2800)),
+            Some(millionths(3_000_000_000, 1400)),
+            Some(millionths(11_000_000_000, 4200))
+        ]
+    );
+}
+
+#[test]
+fn a_sessions_format_saves_a_reached_failure_with_no_fingerprint_and_an_unreached_one_as_stored() {
+    // After the reached lug's commit: format accepts the block's drift (8000, as the fake
+    // measures 40 × 20 × 10), and the lug and the fuse, reached and failed still, stay
+    // with none, carried.
+    let f = opened(STORED);
+    refuse_the_longer_lug(&f, ErrorCode::KernelFailed);
+    f.begin();
+    f.edit(&longer());
+    assert!(f.sessions.commit(&f.id).wait().result.unwrap().written);
+    let formatted = f.sessions.format(&f.id, None, true).wait().result.unwrap();
+    assert!(formatted.written);
+    assert_eq!(formatted.accepted, [id("k7f2qx3m")]);
+    assert_eq!(formatted.refingerprinted, [id("k7f2qx3m")]);
+    assert_eq!(
+        said(&formatted.problems),
+        [(ErrorCode::KernelFailed, Some("b0000001"))]
+    );
+    assert_eq!(
+        stored_fingerprints(&f.file()),
+        [Some(millionths(8_000_000_000, 2800)), None, None]
+    );
+    assert_eq!(
+        *f.session().held.read().carried,
+        BTreeSet::from([id("b0000001"), id("f0000001")])
+    );
+    // The lug failing as stored, reached by no edit: format keeps its fingerprint and the
+    // fuse's, as stored, and accepts the block's drift.
+    let (f, _) = the_unreached_lug_failed();
+    let formatted = f.sessions.format(&f.id, None, true).wait().result.unwrap();
+    assert!(formatted.written);
+    assert_eq!(formatted.refingerprinted, [id("k7f2qx3m")]);
+    assert_eq!(
+        stored_fingerprints(&f.file()),
+        [
+            Some(millionths(8_000_000_000, 2800)),
+            Some(millionths(1_000_000_000, 600)),
+            Some(millionths(9_000_000_000, 3400))
         ]
     );
 }
@@ -1313,8 +1474,9 @@ fn the_fault<T>(response: &Response<T>) -> (ErrorCode, Option<String>) {
 #[test]
 fn a_commit_saves_around_a_kernel_fault_given_once_beside_its_result() {
     // Decision 32: the lug, 20 long, crashes the worker; the commit saves all the same, as
-    // it saves around a failed feature, the lug and the fuse it stopped keeping their stored
-    // fingerprints, and the fault given once, in the model read, not among the problems.
+    // it saves around a failed feature: the lug and the fuse it stopped, which the edit
+    // reached, with no fingerprint (decision 28, amended), and the fault given once, in the
+    // model read, not among the problems.
     let f = opened(STORED);
     refuse_the_longer_lug(&f, ErrorCode::WorkerCrashed);
     f.begin();
@@ -1329,17 +1491,7 @@ fn a_commit_saves_around_a_kernel_fault_given_once_beside_its_result() {
     assert!(committed.written);
     assert!(committed.refingerprinted.is_empty());
     the_blocks_drift(&committed.problems);
-    let saved = f.file();
-    assert_ne!(saved, STORED);
-    assert!(saved.contains(r#""length": 20"#));
-    assert_eq!(
-        stored_volumes(&saved),
-        [
-            Measure::from_millionths(8_000_000_001),
-            Measure::from_millionths(1_000_000_000),
-            Measure::from_millionths(9_000_000_000)
-        ]
-    );
+    assert_eq!(f.file(), REACHED_FAILED);
     // Their fingerprints unwritten, the lug and the fuse are still reached.
     assert_eq!(
         *f.session().held.read().carried,
@@ -2112,11 +2264,11 @@ fn a_format_after_a_reached_feature_builds_writes_its_record_and_carries_it_no_m
 #[test]
 fn a_reload_carries_nothing_so_a_hand_edits_drift_is_said_and_not_written_over() {
     // As `a_reached_feature_that_failed_stays_reached_after_its_commit`: the lug and the
-    // fuse carried after the commit, their fingerprints as stored (the lug 1000, the
-    // fuse 9000). Then the lug made 30 long by hand, which builds: 30 × 10 × 10 = 3000,
-    // area 2(300 + 100 + 300) = 1400; the fuse 8000 + 3000 = 11000, area 2800 + 1400 =
-    // 4200. A hand edit reaches nothing, and a reload is as a fresh open: the lug's and
-    // the fuse's stale fingerprints are drift, with the block's (stored 1e-6 over).
+    // fuse carried after the commit, saved with no fingerprint. Then the lug made 30 long
+    // by hand, which builds (30 × 10 × 10 = 3000; the fuse 11000). A hand edit reaches
+    // nothing, and a reload is as a fresh open: the block's drift (stored 1e-6 over) is
+    // said, and nothing of the lug and the fuse, which have no fingerprint to hold; and
+    // nothing is carried, so a commit that reaches nothing writes neither's.
     let f = opened(STORED);
     refuse_the_longer_lug(&f, ErrorCode::KernelFailed);
     f.begin();
@@ -2141,14 +2293,7 @@ fn a_reload_carries_nothing_so_a_hand_edits_drift_is_said_and_not_written_over()
         .iter()
         .map(|e| (e.code(), e.feature()))
         .collect();
-    assert_eq!(
-        drift,
-        [
-            (ErrorCode::Drift, Some("k7f2qx3m")),
-            (ErrorCode::Drift, Some("b0000001")),
-            (ErrorCode::Drift, Some("f0000001"))
-        ]
-    );
+    assert_eq!(drift, [(ErrorCode::Drift, Some("k7f2qx3m"))]);
     assert!(f.session().held.read().carried.is_empty());
     // A note's edit reaches nothing: its commit writes no fingerprint over the drift.
     let note = f
@@ -2166,19 +2311,9 @@ fn a_reload_carries_nothing_so_a_hand_edits_drift_is_said_and_not_written_over()
     let commit = note.commit.unwrap();
     assert!(commit.written);
     assert!(commit.refingerprinted.is_empty(), "{commit:?}");
-    let saved = document::read(f.file().as_bytes()).unwrap();
-    let volumes: Vec<Measure> = saved
-        .features
-        .iter()
-        .map(|feature| feature.fingerprint.unwrap().volume)
-        .collect();
     assert_eq!(
-        volumes,
-        [
-            Measure::from_millionths(8_000_000_001),
-            Measure::from_millionths(1_000_000_000),
-            Measure::from_millionths(9_000_000_000)
-        ]
+        stored_fingerprints(&f.file()),
+        [Some(millionths(8_000_000_001, 2800)), None, None]
     );
 }
 
