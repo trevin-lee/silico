@@ -1,6 +1,7 @@
 //! The `silico` command-line client: `check`, `fmt`, `show`, and `schema`, each a thin client
-//! of the core's commands (`silico_core::command`), which MCP and the app run too, and
-//! `textconv`, for `git diff` (docs/cli.md). `check`, `fmt`, and `show` each open a file as a
+//! of the core's commands (`silico_core::command`), which MCP and the app run too;
+//! `textconv`, for `git diff`; and `serve`, the MCP server on stdin and stdout
+//! (`silico_mcp`, docs/design/m4.9-mcp.md) (docs/cli.md). `check`, `fmt`, and `show` each open a file as a
 //! session, run one session command on it (`check`, `format`, `outline`), and close it
 //! (docs/design/m4.1-command-api.md, section 9), every file on one kernel pool and one
 //! sketch solver.
@@ -34,7 +35,8 @@ const USAGE: &str = "usage: silico check [--json] [--] FILE...
        silico fmt [--check] [--] FILE...
        silico show [--] FILE
        silico textconv [--] FILE
-       silico schema [NAME]";
+       silico schema [NAME]
+       silico serve [--workspace DIR]";
 
 /// How a command ended.
 enum Ended {
@@ -136,6 +138,9 @@ fn main() -> ExitCode {
             files.push(PathBuf::from(arg));
         }
     }
+    if name == "serve" {
+        return serve(rest).code();
+    }
     let command = match Command::parse(&name.to_string_lossy(), &flags) {
         Ok(command) => command,
         Err(why) => {
@@ -167,6 +172,107 @@ fn main() -> ExitCode {
         (Command::Textconv, [file]) => textconv(file),
     };
     ended.code()
+}
+
+/// How often `serve` looks whether SIGTERM came.
+const SIGNAL_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// `silico serve [--workspace DIR]`: the MCP server on stdin and stdout, until stdin ends,
+/// stdout closes, or SIGTERM, its sessions in the workspace `DIR` (or the current
+/// directory), on one kernel pool, sketch solver, and render worker. `/` (or a drive's
+/// root) is refused: some MCP clients start servers there, which would make the whole disk
+/// the workspace. Logs go to stderr; stdout holds nothing but MCP's messages.
+fn serve(args: &[OsString]) -> Ended {
+    let workspace = match args {
+        [] => None,
+        [flag, dir] if flag == "--workspace" => Some(PathBuf::from(dir)),
+        [flag] if flag.to_string_lossy().starts_with("--workspace=") => {
+            let flag = flag.to_string_lossy();
+            Some(PathBuf::from(&flag["--workspace=".len()..]))
+        }
+        _ => {
+            say!("{USAGE}");
+            return Ended::Failed;
+        }
+    };
+    let root = match workspace.map_or_else(std::env::current_dir, Ok) {
+        Ok(root) => root,
+        Err(e) => {
+            say!("silico serve: the current directory can't be read: {e}");
+            return Ended::Failed;
+        }
+    };
+    let root = match std::fs::canonicalize(&root) {
+        Ok(root) => root,
+        Err(e) => {
+            say!(
+                "silico serve: the workspace {} can't be reached: {e}",
+                root.display()
+            );
+            return Ended::Failed;
+        }
+    };
+    if root.parent().is_none() {
+        say!(
+            "silico serve: the workspace can't be {}, the root of a disk: give the directory the documents are in (--workspace DIR, or start silico serve in it)",
+            root.display()
+        );
+        return Ended::Failed;
+    }
+    let mut sessions = Sessions::new(KernelPool::start());
+    match silico_core::render::worker_path().and_then(|exe| {
+        silico_core::render::RenderClient::start(
+            &exe,
+            silico_core::render::RenderSettings::default(),
+        )
+    }) {
+        Ok(renderer) => sessions = sessions.rendering(renderer),
+        Err(e) => tracing::warn!("render is refused: there's no render worker: {e}"),
+    }
+    let sessions = match sessions.in_workspace(&root) {
+        Ok(sessions) => sessions,
+        Err(e) => {
+            say!("silico serve: {e}");
+            return Ended::Failed;
+        }
+    };
+    let server = match silico_mcp::Server::new(sessions) {
+        Ok(server) => server,
+        Err(e) => {
+            say!("silico serve: {e}");
+            return Ended::Failed;
+        }
+    };
+    let stop = server.stopper();
+    let term = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if let Err(e) =
+        signal_hook::flag::register(signal_hook::consts::SIGTERM, std::sync::Arc::clone(&term))
+    {
+        tracing::warn!("SIGTERM can't be caught, so it ends the server at once: {e}");
+    }
+    let watching = std::thread::Builder::new()
+        .name("sigterm".to_owned())
+        .spawn(move || {
+            while !term.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(SIGNAL_POLL);
+            }
+            tracing::info!("SIGTERM: stopping");
+            stop.stop();
+        });
+    if let Err(e) = watching {
+        tracing::warn!("SIGTERM can't be watched for: {e}");
+    }
+    tracing::info!(workspace = %root.display(), "serving MCP on stdin and stdout");
+    match server.serve(std::io::BufReader::new(std::io::stdin()), std::io::stdout()) {
+        silico_mcp::Ended::InputFailed(e) => {
+            say!("silico serve: stdin couldn't be read: {e}");
+            Ended::Failed
+        }
+        ended => {
+            tracing::info!(?ended, "the client went away");
+            Ended::Clean
+        }
+    }
 }
 
 /// `silico schema [NAME]`: the document's JSON Schema, or the command `NAME`'s request and
