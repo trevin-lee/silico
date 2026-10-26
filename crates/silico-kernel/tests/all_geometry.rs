@@ -57,6 +57,8 @@ mod adversarial_export;
 mod adversarial_faces;
 #[path = "adversarial_fillet.rs"]
 mod adversarial_fillet;
+#[path = "adversarial_measure_centred.rs"]
+mod adversarial_measure_centred;
 #[path = "adversarial_mesh.rs"]
 mod adversarial_mesh;
 #[path = "adversarial_profile_faces.rs"]
