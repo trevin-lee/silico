@@ -1,5 +1,5 @@
 Subject: Modeling Algorithms - BOPAlgo_PaveFiller::MakeBlocks leaves out a section edge built without a 3D curve
-Upstream: an issue is drafted for Open-Cascade-SAS/OCCT, not yet posted; its URL goes here once it is.
+Upstream: https://github.com/Open-Cascade-SAS/OCCT/issues/1678
 Applies to: OCCT V7_9_3.
 Why: a crash Silico can't work around. A cone of radius 5 to 0 and height 5, and a level rod of
      radius 1 touching its side at one point (half height, 300 degrees round), fused, cut, or
