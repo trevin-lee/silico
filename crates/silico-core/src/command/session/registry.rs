@@ -18,7 +18,7 @@ use super::rebuilds::Rebuilds;
 use super::threads::{Reads, Threads};
 use super::transaction::{Held, not_reloaded, of_file, put_back, too_long};
 use super::{
-    Gated, Job, Opened, Problems, Response, Revision, Session, SessionId, Turn, closing, shown,
+    Gated, Job, Opened, Problems, Response, Revision, Session, SessionId, Turn, closing, shown_path,
 };
 use crate::cache::Cache;
 use crate::command::edit::FeatureIds;
@@ -92,21 +92,25 @@ pub(super) struct Book<C: Kernel + 'static> {
     /// joined once they've ended (at the next open) or when the registry is dropped, so
     /// none outlives it.
     pub(super) threads: Threads,
-    /// The published reads of sessions released (closed, or their threads ended), each
-    /// session's moved here as it's released, so the drop joins them too.
-    pub(super) reads: Threads,
+    /// The threads of sessions released (closed, or their threads ended): their published
+    /// reads and the threads watching their rebuilds, each session's moved here as it's
+    /// released, so the drop joins them too.
+    pub(super) released: Threads,
     /// The sessions are being dropped: an open that finishes now doesn't open.
     pub(super) stopping: bool,
 }
 
 impl<C: Kernel + 'static> Book<C> {
     /// Session `id` gone from every record but its thread's: open, opening, and the file
-    /// it held; its published reads now the book's to join, and none started after.
+    /// it held; its published reads and its rebuilds' watchers now the book's to join, and
+    /// no read started after.
     pub(super) fn release(&mut self, id: SessionId) {
-        if let Some(session) = self.sessions.remove(&id)
-            && let Some(reads) = lock(&session.reads).threads.take()
-        {
-            self.reads.extend(reads);
+        if let Some(session) = self.sessions.remove(&id) {
+            if let Some(reads) = lock(&session.reads).threads.take() {
+                self.released.extend(reads);
+            }
+            let watchers = std::mem::replace(&mut lock(&session.rebuilds).watchers, Threads::new());
+            self.released.extend(watchers);
         }
         self.opening.remove(&id);
         self.files.retain(|_, (holder, _)| *holder != id);
@@ -116,7 +120,7 @@ impl<C: Kernel + 'static> Book<C> {
     /// The threads that have ended, joined.
     pub(super) fn reap(&mut self) {
         self.threads.reap();
-        self.reads.reap();
+        self.released.reap();
     }
 }
 
@@ -178,6 +182,9 @@ pub(super) fn start<P: Clients + 'static>(
             rebuilt: Condvar::new(),
             reads: Mutex::new(Reads::new()),
             command: Mutex::new(None),
+            newest: Arc::default(),
+            #[cfg(test)]
+            gate: super::Gate::default(),
         });
         book.opening.remove(&id);
         book.sessions.insert(id, Arc::clone(&session));
@@ -316,7 +323,7 @@ fn made<P: Clients + 'static>(
     let name = path.file_name().ok_or_else(|| {
         Error::new(
             ErrorCode::InvalidInput,
-            format!("{} names no file to make", shown(path)),
+            format!("{} names no file to make", shown_path(path)),
         )
         .with_parameter("path")
         .with_suggestion("give the path of the document to make, ending in its file's name")
@@ -342,7 +349,7 @@ fn made<P: Clients + 'static>(
             return Err(Problems::from(
                 Error::new(
                     ErrorCode::InvalidInput,
-                    format!("{} already exists", shown(path)),
+                    format!("{} already exists", shown_path(path)),
                 )
                 .with_parameter("create")
                 .with_suggestion("open it without create, or give another path"),
@@ -428,7 +435,7 @@ impl Unclaimed {
         Problems::from(match self {
             Unclaimed::Held(holder) => Error::new(
                 ErrorCode::InvalidInput,
-                format!("{} is already open in session {holder}", shown(given)),
+                format!("{} is already open in session {holder}", shown_path(given)),
             )
             .with_parameter("path")
             .with_suggestion(format!(
@@ -441,15 +448,15 @@ impl Unclaimed {
     /// The refusal of a command whose session found the file at `path` (as `open` was given
     /// it) not its own (decision 2): another session's, or one it couldn't tell apart.
     pub(super) fn rereading(self, path: &str) -> Error {
-        let shown_path = shown(Path::new(path));
+        let named = shown_path(Path::new(path));
         match self {
             Unclaimed::Held(holder) => not_reloaded(
                 Error::new(
                     ErrorCode::InvalidInput,
-                    format!("{shown_path} is already open in session {holder}"),
+                    format!("{named} is already open in session {holder}"),
                 ),
                 format!(
-                    "put this session's file back at {shown_path}: the file there now is session {holder}'s"
+                    "put this session's file back at {named}: the file there now is session {holder}'s"
                 ),
             ),
             Unclaimed::Unreadable(error) => not_reloaded(of_file(path, &error), put_back(path)),

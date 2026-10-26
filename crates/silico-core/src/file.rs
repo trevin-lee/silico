@@ -82,18 +82,6 @@ fn unwritable(why: impl std::fmt::Display) -> Error {
     )
 }
 
-/// Writes `bytes` over `file`, which held `before` when it was read: the file it names
-/// (through a symbolic link, which stays), keeping its permissions. Whole, to a new file
-/// beside it renamed over it, so a reader never sees a part of it and a write cut short
-/// leaves the old file; or, if it has other names (hard links), which a rename would part
-/// from it, in place, with the old text kept beside it until the new is on disk, and put
-/// back if the write fails (a full disk), so a write cut short never loses the document
-/// (killed mid-write, the old text is in the file beside it, `.NAME.fmt-PID`). Refused if
-/// this process may not write it, or, as a conflict, if it changed since it was read.
-pub fn save(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Error> {
-    save_over(file, before, bytes).map_err(|unsaved| unsaved.error)
-}
-
 /// A save that failed ([`save_over`]): why, and, if its own write in place left the file
 /// part written and its old text couldn't be put back, the file beside it that holds that
 /// text, so whoever saves next can say so rather than take the file for one changed by
@@ -113,8 +101,16 @@ impl From<Error> for Unsaved {
     }
 }
 
-/// [`save`], saying, when it fails, whether its own write left the file part written
-/// ([`Unsaved`]).
+/// Writes `bytes` over `file`, which held `before` when it was read: the file it names
+/// (through a symbolic link, which stays), keeping its permissions. Whole, to a new file
+/// beside it renamed over it, so a reader never sees a part of it and a write cut short
+/// leaves the old file; or, if it has other names (hard links), which a rename would part
+/// from it, in place, with the old text kept beside it until the new is on disk, and put
+/// back if the write fails (a full disk), so a write cut short never loses the document
+/// (killed mid-write, the old text is in the file beside it, `.NAME.fmt-PID`). Refused if
+/// this process may not write it, or, as a conflict, if it changed since it was read; and,
+/// when it fails, saying whether its own write left the file part written ([`Unsaved`]).
+/// What every save of a document goes through: a session's commit, edit, and `format`.
 pub fn save_over(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Unsaved> {
     let _span = tracing::info_span!("save", bytes = bytes.len()).entered();
     let target = std::fs::canonicalize(file).map_err(unwritable)?;
@@ -139,10 +135,7 @@ pub fn save_over(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Unsaved
                 ErrorCode::Conflict,
                 "couldn't be written: it changed while it was rebuilt",
             )
-            .with_suggestion(
-                "it was saved by something else meanwhile: read it again (run `silico fmt` again), \
-             then save",
-            ),
+            .with_suggestion("it was saved by something else meanwhile: read it again, then save"),
         ));
     }
     if metadata.nlink() > 1 {
@@ -155,7 +148,7 @@ pub fn save_over(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Unsaved
         .set_len(bytes.len() as u64)
         .and_then(|()| f.write_all(bytes))
         .and_then(|()| f.set_permissions(metadata.permissions()))
-        .and_then(|()| synced(&f, "the new text beside it"))
+        .and_then(|()| synced(&f, "the new text beside it", &partial))
         .map_err(|e| {
             let why = format!("couldn't write {}: {e}", shown_path(&partial));
             limited(unwritable(why), &e)
@@ -167,7 +160,8 @@ pub fn save_over(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Unsaved
                     shown_path(&partial)
                 ))
             })
-        });
+        })
+        .inspect(|()| directory_synced(&target));
     written
         .inspect_err(|_| {
             let _ = std::fs::remove_file(&partial);
@@ -192,7 +186,7 @@ fn in_place(
     if let Err(e) = copy
         .set_len(before.len() as u64)
         .and_then(|()| copy.write_all(before))
-        .and_then(|()| synced(&copy, "its old text kept beside it"))
+        .and_then(|()| synced(&copy, "its old text kept beside it", &kept))
     {
         let _ = std::fs::remove_file(&kept);
         return Err(Unsaved::from(limited(
@@ -212,7 +206,7 @@ fn in_place(
         file.seek(SeekFrom::Start(0))?;
         file.write_all(text)?;
         file.set_len(text.len() as u64)?;
-        synced(file, what)
+        synced(file, what, target)
     };
     match over(file, bytes, "its new text, in place") {
         Ok(()) => {
@@ -239,16 +233,36 @@ fn in_place(
     }
 }
 
-/// `file` on disk, as `sync_all` puts it, said in the log before and after with how long it
-/// took (debug): a disk that stalls a save shows as the line it stopped at.
-fn synced(file: &std::fs::File, what: &str) -> std::io::Result<()> {
-    tracing::debug!("syncing {what}");
+/// The directory `target` was renamed in synced, so the rename is on disk: a power cut
+/// after the save can't bring back the old file. The file is saved either way, so a
+/// directory that can't be opened or synced (a system that doesn't sync directories) is
+/// only logged.
+fn directory_synced(target: &Path) {
+    let Some(directory) = target.parent() else {
+        return;
+    };
+    if let Err(e) = std::fs::File::open(directory)
+        .and_then(|opened| synced(&opened, "the directory it was renamed in", directory))
+    {
+        tracing::warn!(
+            error = %e,
+            "the file was saved, but its directory couldn't be synced: a power cut soon could bring back the old file"
+        );
+    }
+}
+
+/// `file`, at `path`, on disk, as `sync_all` puts it, said in the log before and after
+/// with its path and how long it took (debug): a disk that stalls a save shows as the line
+/// it stopped at.
+fn synced(file: &std::fs::File, what: &str, path: &Path) -> std::io::Result<()> {
+    let path = path.display();
+    tracing::debug!(%path, "syncing {what}");
     let start = std::time::Instant::now();
     let synced = file.sync_all();
     let sync_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     match &synced {
-        Ok(()) => tracing::debug!(sync_ms, "synced {what}"),
-        Err(e) => tracing::debug!(sync_ms, error = %e, "couldn't sync {what}"),
+        Ok(()) => tracing::debug!(%path, sync_ms, "synced {what}"),
+        Err(e) => tracing::debug!(%path, sync_ms, error = %e, "couldn't sync {what}"),
     }
     synced
 }
@@ -256,9 +270,45 @@ fn synced(file: &std::fs::File, what: &str) -> std::io::Result<()> {
 /// How many names [`beside`] tries.
 const TRIES: u32 = 64;
 
-/// A new file beside `target` (`.NAME.fmt-PID`, or `-1`, `-2`, ... after it if one is
-/// left from a run killed with the same process number), no more open to others than
-/// `target` is.
+/// The longest file name Silico makes, in bytes: Linux's `NAME_MAX`. macOS takes 255
+/// UTF-16 units, which 255 bytes never pass.
+const NAME_MAX: usize = 255;
+
+/// The `n`th name [`beside`] tries for a file beside one named `name`: `.NAME.fmt-PID`,
+/// then `-1`, `-2`, ... after it. A name too long for the last of them is cut short, the
+/// same for every try, at a character's end if it's UTF-8 (as APFS requires every name to
+/// be), so a document whose own name is as long as a name may be is saved all the same
+/// (found by Worker 3), and an error that names the first try names the stem of all. The
+/// file beside it is never another's, since each is made new, and a save that leaves it
+/// says its name.
+fn partial_name(name: &std::ffi::OsStr, n: u32) -> OsString {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut suffix = format!(".fmt-{}", std::process::id());
+    let longest = suffix.len() + format!("-{}", TRIES - 1).len();
+    if n > 0 {
+        suffix.push_str(&format!("-{n}"));
+    }
+    let room = NAME_MAX.saturating_sub(1 + longest);
+    let bytes = name.as_bytes();
+    let kept = match name.to_str() {
+        Some(text) if bytes.len() > room => {
+            let mut end = room;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            &bytes[..end]
+        }
+        _ => &bytes[..bytes.len().min(room)],
+    };
+    let mut partial = OsString::from(".");
+    partial.push(std::ffi::OsStr::from_bytes(kept));
+    partial.push(suffix);
+    partial
+}
+
+/// A new file beside `target` ([`partial_name`]: `.NAME.fmt-PID`, or `-1`, `-2`, ... after
+/// it if one is left from a run killed with the same process number), no more open to
+/// others than `target` is.
 fn beside(target: &Path, metadata: &std::fs::Metadata) -> Result<(PathBuf, std::fs::File), Error> {
     use std::os::unix::fs::PermissionsExt as _;
     let dir = directory(target);
@@ -266,13 +316,7 @@ fn beside(target: &Path, metadata: &std::fs::Metadata) -> Result<(PathBuf, std::
         .file_name()
         .ok_or_else(|| unwritable("it has no file name"))?;
     for n in 0..TRIES {
-        let mut partial_name = OsString::from(".");
-        partial_name.push(name);
-        partial_name.push(format!(".fmt-{}", std::process::id()));
-        if n > 0 {
-            partial_name.push(format!("-{n}"));
-        }
-        let partial = dir.join(partial_name);
+        let partial = dir.join(partial_name(name, n));
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -290,11 +334,7 @@ fn beside(target: &Path, metadata: &std::fs::Metadata) -> Result<(PathBuf, std::
             }
         }
     }
-    let first = dir.join(format!(
-        ".{}.fmt-{}",
-        name.to_string_lossy(),
-        std::process::id()
-    ));
+    let first = dir.join(partial_name(name, 0));
     Err(unwritable(format!(
         "every name for a file beside it is taken ({}, and -1 to -{}): remove those left by runs that were killed",
         shown_path(&first),
@@ -302,16 +342,69 @@ fn beside(target: &Path, metadata: &std::fs::Metadata) -> Result<(PathBuf, std::
     )))
 }
 
-/// A path as an error says it: quoted, with control and invisible characters escaped, as an
+/// A path as a message says it: quoted, with control and invisible characters escaped, as an
 /// outline quotes a document's text, so a file's name can't act on the terminal it's shown
-/// in (found by the milestone's robustness review).
-fn shown_path(path: &Path) -> String {
+/// in. Every error and message that names a file says it so.
+pub(crate) fn shown_path(path: &Path) -> String {
     crate::command::quoted(&path.display().to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_name_beside_a_long_one_is_cut_to_the_most_a_name_may_be_at_a_characters_end() {
+        use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+        let pid = std::process::id();
+        let suffix = format!(".fmt-{pid}");
+        // A short name, as it is.
+        assert_eq!(
+            partial_name(std::ffi::OsStr::new("part.silico"), 0),
+            OsString::from(format!(".part.silico{suffix}"))
+        );
+        assert_eq!(
+            partial_name(std::ffi::OsStr::new("part.silico"), 63),
+            OsString::from(format!(".part.silico{suffix}-63"))
+        );
+        // 255 bytes of ASCII: one stem for every try, cut so the last, `-63`, is 255 in all:
+        // the dot, the name's first bytes, the suffix (the robustness review: an error names
+        // the first try's stem as every try's).
+        let long = "a".repeat(255);
+        let kept = 255 - 1 - suffix.len() - "-63".len();
+        for (n, tail) in [
+            (0, suffix.clone()),
+            (1, format!("{suffix}-1")),
+            (63, format!("{suffix}-63")),
+        ] {
+            let cut = partial_name(std::ffi::OsStr::new(&long), n).into_vec();
+            assert_eq!(cut, format!(".{}{tail}", &long[..kept]).into_bytes(), "{n}");
+        }
+        assert_eq!(partial_name(std::ffi::OsStr::new(&long), 63).len(), 255);
+        // Two-byte characters, cut where a character ends: valid UTF-8, one byte short when
+        // the room ends inside one. Two names, one a byte out of step with the other, so one
+        // of them needs that, whatever the process number's length makes the room (the
+        // mutation run: with an even room, `"é"` alone never did).
+        let room = 255 - 1 - suffix.len() - "-63".len();
+        for (name, inside) in [
+            ("é".repeat(127), room % 2),
+            (format!("a{}", "é".repeat(127)), (room - 1) % 2),
+        ] {
+            let cut =
+                String::from_utf8(partial_name(std::ffi::OsStr::new(&name), 0).into_vec()).unwrap();
+            assert_eq!(
+                cut,
+                format!(".{}{suffix}", &name[..room - inside]),
+                "{name}"
+            );
+        }
+        // Not UTF-8 (Linux allows it): cut by bytes, to 255.
+        let raw = std::ffi::OsStr::from_bytes(&[0xff; 255]);
+        let cut = partial_name(raw, 63).into_vec();
+        assert_eq!(cut.len(), 255);
+        assert!(cut.ends_with(format!("{suffix}-63").as_bytes()));
+        assert!(cut[1..room + 1].iter().all(|b| *b == 0xff));
+    }
 
     #[test]
     fn only_a_size_limit_gets_the_limits_advice() {
@@ -566,7 +659,7 @@ fn write_beside(
             Some(m) => f.set_permissions(m.permissions()),
             None => Ok(()),
         })
-        .and_then(|()| synced(&f, "the new file"))
+        .and_then(|()| synced(&f, "the new file", &partial))
         .map_err(|e| {
             limited(
                 unwritable(format!("couldn't write {}: {e}", shown_path(&partial))),

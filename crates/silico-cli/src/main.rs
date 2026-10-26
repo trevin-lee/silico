@@ -435,7 +435,7 @@ fn failed_line(file: &Path, error: &Error) -> Ended {
 /// `silico fmt FILE`: open, the session's `format` with no features named (every drift
 /// accepted, decision 31) and `write` unless `--check`, close. The session writes the file
 /// (the one it names, through a symbolic link) in canonical form with its fingerprints as
-/// rebuilt and its sketches as solved, through `file::save`; this says on stderr the
+/// rebuilt and its sketches as solved, through `file::save_over`; this says on stderr the
 /// problems it couldn't fix (a feature that didn't build keeps the fingerprint stored with
 /// it, and a sketch that didn't solve keeps what its file holds, and the file is written),
 /// then which fingerprints and sketches' solves it wrote; with `--check`, whether it would
@@ -640,8 +640,8 @@ mod tests {
 
     #[test]
     fn opens_refusal_drops_the_path_its_line_names_and_a_commands_keeps_it() {
-        // Q-M: open's `path` is the file each line names; a later command's parameter is
-        // its own (a document's key), so kept.
+        // Open's `path` is the file each line names, so it's dropped; a later command's
+        // parameter is its own (a document's key), so kept.
         let problems =
             Problems::from(Error::new(ErrorCode::InvalidInput, "too long").with_parameter("path"));
         let opened = Refusal::of_open(Path::new("a.silico"), &problems);
@@ -649,7 +649,7 @@ mod tests {
         assert!(!failed(&opened.ended()));
         let ran = Refusal::of_command("fmt", &problems);
         assert_eq!(ran.errors[0].parameter(), Some("path"));
-        // R-M2: a name that isn't UTF-8 is a file that couldn't be had, its path the
+        // A name that isn't UTF-8 is a file that couldn't be had, its path the
         // parameter at fault.
         let unnamed = PathBuf::from(OsString::from_vec(b"\xff.silico".to_vec()));
         let opened = Refusal::of_open(&unnamed, &problems);
@@ -659,7 +659,7 @@ mod tests {
 
     #[test]
     fn a_commands_refusal_about_its_file_says_how_to_go_on_in_the_clis_words() {
-        // R-M1: a conflict, or a session that couldn't take its file as it is now, says what
+        // A conflict, or a session that couldn't take its file as it is now, says what
         // the CLI's user does (run it again), not what a session's client does; a save that
         // couldn't be written keeps the file's own advice.
         let said = |error: Error| {

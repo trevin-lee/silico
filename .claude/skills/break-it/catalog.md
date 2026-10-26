@@ -121,6 +121,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Mesh checks that trust OCCT's own deviation figure (`Poly_Triangulation::Deflection`, a centroid sample in the face's parameters): on cones it overstates by 10-1000x (a 30 mm, 1 mm tall cone says 0.128 mm at 0.1 mm, its mesh 0.001 mm off), so countersinks and rim chamfers are refused; measure each primitive's mesh against an analytic distance function instead
 - Real parts' cones (NIST CTC 01, FTC 06): OCCT meshes them with two nodes at exactly the same point inside one face, so a weld through B-rep edges and vertices alone leaves triangles of no area that FreeCAD's coordinate merge drops; export the corpus at the default tolerance
 - Fine mesh tolerances where an angular rule takes over (FreeCAD's min(0.1, 5t + 0.005) rad is 0.01 at 1e-3 mm whatever the size): a 1 mm sphere is 805,418 triangles and three minutes of OCCT, past a worker's time limit; time each primitive across the tolerance range
+- An OCCT warning someone proposes refusing (`BOPAlgo_AlertIntersectionOfPairOfShapesFailed` was): hunt right results that raise it, contacts at singular points most of all. A rod resting on a pointed cone's tip (`radius2` 0) raises it, OCCT taking the cone-cylinder pair as not meeting, rightly. Give FreeCAD Silico's exact B-reps, binary, not text: text rounds coordinates, and a result can depend on the last bit (the cone-side crash of patch 0005 does)
 
 ## Feature tree and naming
 
@@ -225,6 +226,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A client dropped (or a cancel given) with requests queued behind a hung one: a queue its thread drains on close sends each in turn, a whole timeout each, and a queued cancel answers only when its turn comes; time the drop and each cancel's answer
 - Resource stops decided by a proxy (pixels, faces) on a worker kept warm: one face of 2 million triangles is "small" and the kept worker holds 1 GB; read the worker's RSS after the request the proxy calls small
 - Idle timers restarted by every request taken from the queue, cancelled ones included: ask-and-cancel in a loop and see whether the worker is ever stopped
+- A list from a worker or OCCT deduplicated with `Vec::contains`: 200,000 distinct entries, 2.4 MB of a 512 MiB frame, are 2·10^10 comparisons; time it, and give exactly one more than its words name ("and 1 more pair", not "pairs"), and none at all
 
 ## Recompute and scheduling
 

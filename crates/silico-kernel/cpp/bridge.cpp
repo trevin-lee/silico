@@ -1,6 +1,7 @@
 #include "silico-kernel/cpp/bridge.h"
 #include "silico-kernel/src/lib.rs.h"
 
+#include <BOPAlgo_Alerts.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <algorithm>
@@ -1561,9 +1562,61 @@ static void expand_compound(const TopoDS_Shape &shape, NCollection_List<TopoDS_S
   }
 }
 
+namespace {
+// The elements of a pair OCCT skipped intersecting, each numbered as its input numbers it
+// (TopExp::MapShapes, as every element is numbered), or as neither input's: an element OCCT
+// made of one (a copy with a larger tolerance, which a non-destructive boolean makes
+// instead of changing its input). Each input's map of a kind is built once, the first time
+// an element of that kind is looked for. OCCT gives only vertices, edges, and faces
+// (AddIntersectionFailedWarning's callers); anything else is Kind::Other, of neither input,
+// for the log to say so: this is for the log alone, so it never throws.
+class SkippedElements {
+public:
+  SkippedElements(const TopoDS_Shape &base, const TopoDS_Shape &tool) : inputs_{&base, &tool} {}
+
+  SkippedElement of(const TopoDS_Shape &element) {
+    int slot;
+    Kind kind;
+    switch (element.ShapeType()) {
+    case TopAbs_VERTEX:
+      slot = 0;
+      kind = Kind::Vertex;
+      break;
+    case TopAbs_EDGE:
+      slot = 1;
+      kind = Kind::Edge;
+      break;
+    case TopAbs_FACE:
+      slot = 2;
+      kind = Kind::Face;
+      break;
+    default:
+      return SkippedElement{Kind::Other, 2, 0};
+    }
+    for (uint8_t input = 0; input < 2; ++input) {
+      if (!built_[input][slot]) {
+        TopExp::MapShapes(*inputs_[input], element.ShapeType(), maps_[input][slot]);
+        built_[input][slot] = true;
+      }
+      const int index = maps_[input][slot].FindIndex(element);
+      if (index > 0) {
+        return SkippedElement{kind, input, static_cast<uint32_t>(index)};
+      }
+    }
+    return SkippedElement{kind, 2, 0};
+  }
+
+private:
+  const TopoDS_Shape *inputs_[2];
+  TopTools_IndexedMapOfShape maps_[2][3];
+  bool built_[2][3] = {};
+};
+} // namespace
+
 std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &tool,
                                rust::Vec<HistoryEntry> &history,
-                               rust::Vec<rust::String> &warnings) {
+                               rust::Vec<rust::String> &warnings,
+                               rust::Vec<SkippedElement> &skipped) {
   std::unique_ptr<BRepAlgoAPI_BooleanOperation> maker;
   switch (op) {
   case BooleanOp::Fuse:
@@ -1614,8 +1667,20 @@ std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &too
     throw Standard_Failure(
         (message.empty() ? std::string("the boolean couldn't be built") : message).c_str());
   }
+  SkippedElements elements(base.shape, tool.shape);
   for (const Handle(Message_Alert) &alert : maker->GetReport()->GetAlerts(Message_Warning)) {
     warnings.push_back(rust::String(alert->GetMessageKey()));
+    // Its shape is a compound of the pair, in OCCT's order (AddIntersectionFailedWarning);
+    // alerts with a shape are never merged, so each pair is its own. A compound of other
+    // than two (none, from 7.9.3) is left to its warning's key.
+    Handle(BOPAlgo_AlertIntersectionOfPairOfShapesFailed) pair =
+        Handle(BOPAlgo_AlertIntersectionOfPairOfShapesFailed)::DownCast(alert);
+    if (pair.IsNull() || pair->GetShape().NbChildren() != 2) {
+      continue;
+    }
+    for (TopoDS_Iterator element(pair->GetShape()); element.More(); element.Next()) {
+      skipped.push_back(elements.of(element.Value()));
+    }
   }
   const TopoDS_Shape result = maker->Shape();
   capture_history(*maker, 0, base.shape, result, history);

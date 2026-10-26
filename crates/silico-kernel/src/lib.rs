@@ -112,6 +112,17 @@ mod ffi {
         position: u32,
     }
 
+    /// One of a pair of elements a boolean's OCCT skipped intersecting
+    /// (`BOPAlgo_AlertIntersectionOfPairOfShapesFailed`): its kind, the input it's of (0
+    /// the base, 1 the tool, 2 neither: an element OCCT made of one), and its number there
+    /// (0 for neither).
+    #[derive(Clone, Copy)]
+    struct SkippedElement {
+        kind: Kind,
+        input: u8,
+        index: u32,
+    }
+
     /// What makes a shape read from bytes unusable, as `brep_defect` finds it.
     #[repr(u8)]
     enum BrepDefect {
@@ -395,6 +406,7 @@ mod ffi {
             tool: &Shape,
             history: &mut Vec<HistoryEntry>,
             warnings: &mut Vec<String>,
+            skipped: &mut Vec<SkippedElement>,
         ) -> Result<UniquePtr<Shape>>;
         fn count_elements(shape: &Shape) -> Result<Counts>;
         fn topology(shape: &Shape) -> Result<TopologyFacts>;
@@ -1678,12 +1690,14 @@ pub fn boolean(op: BooleanOp, base: &Shape, tool: &Shape) -> Result<Built, Kerne
     }
     let mut entries = Vec::new();
     let mut warnings = Vec::new();
+    let mut skipped = Vec::new();
     let built = ffi::boolean(
         bridge_op,
         base_inner,
         tool_inner,
         &mut entries,
         &mut warnings,
+        &mut skipped,
     )
     .map_err(|e| KernelError::from(e).during(operation.clone()))?;
     // FreeCAD accepts whatever valid result OCCT gives, warnings or not, and so does
@@ -1694,6 +1708,17 @@ pub fn boolean(op: BooleanOp, base: &Shape, tool: &Shape) -> Result<Built, Kerne
         tracing::warn!(
             "OCCT warned about the {name}: {}",
             alerts.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+    // One warning says which elements: OCCT skipped intersecting a pair, where the
+    // intersection threw, and took them as not meeting. That's logged by name, and not
+    // refused: a rod resting on a pointed cone's tip raises it with right results, as in
+    // FreeCAD, while a cut of a barrel whose turned face lay outside its own surface raised
+    // it and came back whole (docs/ports/booleans.md).
+    if !skipped.is_empty() {
+        tracing::warn!(
+            "OCCT skipped intersecting {} in the {name}, taking them as not meeting",
+            skipped_words(&skipped)
         );
     }
     if let Some(result) = built.as_ref() {
@@ -1944,6 +1969,60 @@ fn assemble_history(
         }
     }
     Ok(history)
+}
+
+/// How many skipped pairs a boolean's log names; the rest are counted.
+const PAIRS_NAMED: usize = 3;
+
+/// The pairs a boolean's OCCT skipped intersecting, from the bridge's elements two by two,
+/// each once in the order OCCT first gave it (a cut of the barrel raised its pair twice), in
+/// words: "the base's Face2 with the tool's Face3", by each input's own numbering, or "an
+/// edge OCCT made" for an element of neither input. The first few are named, the rest
+/// counted.
+fn skipped_words(elements: &[ffi::SkippedElement]) -> String {
+    let one = |element: &ffi::SkippedElement| {
+        let kind = element_kind(element.kind);
+        match (kind, element.input) {
+            (Some(kind), 0 | 1) => format!(
+                "the {}'s {}",
+                if element.input == 0 { "base" } else { "tool" },
+                ElementRef {
+                    kind,
+                    index: element.index
+                }
+            ),
+            (Some(ElementKind::Edge), _) => "an edge OCCT made".to_owned(),
+            (Some(ElementKind::Vertex), _) => "a vertex OCCT made".to_owned(),
+            (Some(ElementKind::Face), _) => "a face OCCT made".to_owned(),
+            _ => "an element OCCT made".to_owned(),
+        }
+    };
+    // The bridge gives them two by two.
+    let key = |e: &ffi::SkippedElement| (e.kind.repr, e.input, e.index);
+    let mut seen = std::collections::BTreeSet::new();
+    let pairs: Vec<&[ffi::SkippedElement]> = elements
+        .chunks_exact(2)
+        .filter(|pair| seen.insert(pair.iter().map(key).collect::<Vec<_>>()))
+        .collect();
+    let mut named: Vec<String> = pairs
+        .iter()
+        .take(PAIRS_NAMED)
+        .filter_map(|pair| match pair {
+            [first, second] => Some(format!("{} with {}", one(first), one(second))),
+            _ => None,
+        })
+        .collect();
+    match pairs.len().saturating_sub(PAIRS_NAMED) {
+        0 => {}
+        1 => named.push("1 more pair".to_owned()),
+        more => named.push(format!("{more} more pairs")),
+    }
+    match &named[..] {
+        [] => String::new(),
+        [only] => only.clone(),
+        [first, second] => format!("{first} and {second}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    }
 }
 
 fn element_kind(kind: ffi::Kind) -> Option<ElementKind> {
@@ -2280,6 +2359,83 @@ mod imports;
 
 #[cfg(test)]
 mod tests {
+    use super::{ffi, skipped_words};
+
+    /// An element of the bridge's: its kind, its input (0 the base, 1 the tool, 2 neither),
+    /// its number there.
+    fn element(kind: ffi::Kind, input: u8, index: u32) -> ffi::SkippedElement {
+        ffi::SkippedElement { kind, input, index }
+    }
+
+    fn face(input: u8, index: u32) -> ffi::SkippedElement {
+        element(ffi::Kind::Face, input, index)
+    }
+
+    #[test]
+    fn skipped_pairs_are_named_by_kind_and_input_or_as_occts_own() {
+        // Each kind by its input's numbering, and an element of neither input by its kind.
+        let words = skipped_words(&[
+            element(ffi::Kind::Vertex, 0, 4),
+            element(ffi::Kind::Edge, 1, 7),
+        ]);
+        assert_eq!(words, "the base's Vertex4 with the tool's Edge7");
+        let words = skipped_words(&[
+            element(ffi::Kind::Edge, 2, 0),
+            element(ffi::Kind::Vertex, 2, 0),
+        ]);
+        assert_eq!(words, "an edge OCCT made with a vertex OCCT made");
+        let words = skipped_words(&[face(2, 0), element(ffi::Kind::Other, 2, 0)]);
+        assert_eq!(words, "a face OCCT made with an element OCCT made");
+    }
+
+    #[test]
+    fn skipped_pairs_are_listed_once_each_the_first_three_named() {
+        let pair = |n| [face(0, 2), face(1, n)];
+        let named = |n: u32| format!("the base's Face2 with the tool's Face{n}");
+        // One, its repeats counted once.
+        let words = skipped_words(&[pair(3), pair(3), pair(3)].concat());
+        assert_eq!(words, named(3));
+        // Two, and three.
+        assert_eq!(
+            skipped_words(&[pair(1), pair(3)].concat()),
+            format!("{} and {}", named(1), named(3))
+        );
+        assert_eq!(
+            skipped_words(&[pair(1), pair(3), pair(4)].concat()),
+            format!("{}, {}, and {}", named(1), named(3), named(4))
+        );
+        // Four, a repeat among them: three named, one more pair.
+        assert_eq!(
+            skipped_words(&[pair(1), pair(3), pair(1), pair(4), pair(5)].concat()),
+            format!("{}, {}, {}, and 1 more pair", named(1), named(3), named(4))
+        );
+        // Five: two more pairs.
+        assert_eq!(
+            skipped_words(&[pair(1), pair(3), pair(4), pair(5), pair(6)].concat()),
+            format!("{}, {}, {}, and 2 more pairs", named(1), named(3), named(4))
+        );
+        // Pairs that differ only in an element's input, or only in its kind, are two.
+        assert_eq!(
+            skipped_words(&[[face(0, 2), face(1, 3)], [face(0, 2), face(0, 3)]].concat()),
+            format!("{} and the base's Face2 with the base's Face3", named(3))
+        );
+        assert_eq!(
+            skipped_words(
+                &[
+                    [face(0, 2), face(1, 3)],
+                    [face(0, 2), element(ffi::Kind::Edge, 1, 3)]
+                ]
+                .concat()
+            ),
+            format!("{} and the base's Face2 with the tool's Edge3", named(3))
+        );
+        // A pair isn't its own reverse: the same two faces, the other way round, is another.
+        assert_eq!(
+            skipped_words(&[[face(0, 2), face(1, 3)], [face(1, 3), face(0, 2)]].concat()),
+            format!("{} and the tool's Face3 with the base's Face2", named(3))
+        );
+    }
+
     /// This crate's unit-test binary links OCCT and the bridge, so it must import no
     /// inexact platform math either (ARCHITECTURE.md, Deterministic kernel).
     #[test]

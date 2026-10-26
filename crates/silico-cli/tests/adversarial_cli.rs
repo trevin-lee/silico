@@ -169,7 +169,7 @@ fn a_file_name_that_isnt_utf8_is_refused_not_a_panic() {
     // `Result::unwrap()` on an `Err` value: \"\\xFF.silico\""), exit 101. Expected:
     // `args_os`, and the name refused as the session commands every client runs refuse it
     // (`open`: a response couldn't name it exactly), a file that couldn't be had, as one
-    // unreadable is (R-M2: not the document's problem), exit 2, saying so, its `path` the
+    // unreadable is (not the document's problem), exit 2, saying so, its `path` the
     // parameter at fault, whether or not the file system holds such a name (APFS refuses
     // it: EILSEQ), and nothing written; `textconv`, which needs no session, reads it where
     // it can be (docs/cli.md).

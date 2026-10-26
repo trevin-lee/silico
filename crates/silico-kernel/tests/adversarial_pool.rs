@@ -89,9 +89,25 @@ fn fake_handle(
             })?;
             Ok(Reply::Echo { data })
         }
+        // An echo of `hold:DIR` is held: the worker writes its process ID to DIR/started,
+        // then answers only once DIR/release exists. Any other echo is answered at once.
+        ("hold", Op::Echo { data }) if data.as_bytes().starts_with(HOLD) => {
+            let dir = Path::new(std::str::from_utf8(&data.as_bytes()[HOLD.len()..]).unwrap());
+            let started = dir.join("started");
+            let partial = dir.join("started.partial");
+            std::fs::write(&partial, std::process::id().to_string()).unwrap();
+            std::fs::rename(&partial, &started).unwrap();
+            while !dir.join("release").exists() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Ok(Reply::Echo { data })
+        }
         (_, op) => silico_kernel::worker::handle(op),
     }
 }
+
+/// What an echo held by the fake worker's `hold` mode begins with.
+const HOLD: &[u8] = b"hold:";
 
 /// A worker executable that is this test binary in `mode` (see [`fake_worker_entry`]).
 fn fake_worker(mode: &str) -> PathBuf {
@@ -997,6 +1013,17 @@ fn a_killer_ends_a_call_at_once_and_is_harmless_after_the_worker_is_gone() {
     let killer = worker.killer();
     assert_eq!(killer.pid(), worker.pid());
     assert!(!worker.has_exited());
+    // Answered once, so it has started: a kill mid-call is then a crash. A worker killed
+    // before it said it started is `worker_unavailable` (its install, not its request), and
+    // one slow to start (a loaded machine, a binary just built and checked by macOS) took
+    // longer than the 150 ms below to say it.
+    worker
+        .call(
+            Generation(0),
+            Op::Debug(DebugOp::Sleep { millis: 0 }),
+            Duration::from_secs(60),
+        )
+        .unwrap();
     let start = Instant::now();
     let err = std::thread::scope(|scope| {
         scope.spawn(|| {
@@ -1797,6 +1824,48 @@ fn a_request_after_one_that_crashed_its_worker_waits_for_the_slot_not_a_new_one(
     // and a worker (4 runs of 5), two held for work that never ran two at once.
     let pids = wait_full(&pool, pool.pids().len(), &BTreeSet::new());
     assert_eq!(pids.len(), 1, "{pids:?}");
+}
+
+#[test]
+fn a_request_while_the_only_worker_is_busy_starts_a_second_worker_on_demand() {
+    // A request held in the pool's one worker, and another submitted (by another client)
+    // while it's held: the pool, opened on demand with room for two, starts a second slot
+    // and worker for it, rather than leaving it queued behind the held one. The second
+    // comes back while the first is still held, so the two ran at once, on two workers.
+    let exe = fake_worker("hold");
+    let pool = KernelPool::start_on_demand(&exe, 2).unwrap();
+    let dir = scratch_dir("held");
+    let mut hold = HOLD.to_vec();
+    hold.extend_from_slice(dir.to_str().unwrap().as_bytes());
+    // Allowed far longer than the test waits, so it's never stopped and replaced as a
+    // timeout, which would free the slot for the second request.
+    let held = pool.submit(Generation(1), echo(&hold).with_timeout(4 * PATIENCE));
+    let started = dir.join("started");
+    let deadline = Instant::now() + PATIENCE;
+    while !started.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the held request didn't reach its worker within {PATIENCE:?}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let held_pid: u32 = std::fs::read_to_string(&started).unwrap().parse().unwrap();
+    assert_eq!(pool.pids(), vec![held_pid]);
+    // Within PATIENCE, or `done` fails: a pool that didn't grow would leave it queued
+    // behind the held request, which is never let go until it's back.
+    let client = pool.client();
+    assert_eq!(
+        done(client.submit(Generation(1), echo(b"second"))).unwrap(),
+        Blob::inline(b"second".to_vec())
+    );
+    let Err(held) = held.try_take() else {
+        panic!("the held request ended before it was let go");
+    };
+    let pids: BTreeSet<u32> = pool.pids().into_iter().collect();
+    assert_eq!(pids.len(), 2, "{pids:?}");
+    assert!(pids.contains(&held_pid), "{pids:?} without {held_pid}");
+    std::fs::write(dir.join("release"), "").unwrap();
+    assert_eq!(done(held).unwrap(), Blob::inline(hold));
 }
 
 #[test]
