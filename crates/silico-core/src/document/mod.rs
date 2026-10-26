@@ -194,22 +194,27 @@ pub(crate) fn schema_value_of<T: schemars::JsonSchema>() -> serde_json::Value {
 /// `schema` as the protected snapshots hold it: its keys sorted, pretty, with a trailing
 /// newline. `what` names it for the error a schema that couldn't be written gives.
 pub(crate) fn schema_text(schema: &serde_json::Value, what: &str) -> Result<String, Error> {
-    serde_json::to_string_pretty(&sorted(schema))
+    contract_text(schema, &format!("{what}'s schema"))
+}
+
+/// `value` as every protected contract file holds its value (the core's snapshots, MCP's
+/// `tools.json`): its keys sorted, pretty, with a trailing newline. `what` names it for
+/// the error a value that couldn't be written gives.
+pub fn contract_text(value: &serde_json::Value, what: &str) -> Result<String, Error> {
+    serde_json::to_string_pretty(&sorted(value))
         .map(|text| text + "\n")
         .map_err(|e| {
-            Error::new(
-                ErrorCode::Internal,
-                format!("{what}'s schema couldn't be written"),
-            )
-            .with_cause(e.to_string())
-            .with_suggestion(crate::worker::SILICO_BUG)
+            Error::new(ErrorCode::Internal, format!("{what} couldn't be written"))
+                .with_cause(e.to_string())
+                .with_suggestion(crate::worker::SILICO_BUG)
         })
 }
 
 /// `value` with every object's keys in sorted order. serde_json keeps an object's keys in
 /// the order they were added when a crate in the build turns on its `preserve_order`
-/// feature, and sorts them otherwise: sorting here makes the schema the same either way.
-fn sorted(value: &serde_json::Value) -> serde_json::Value {
+/// feature, and sorts them otherwise: sorting here makes the schema (and MCP's tool list)
+/// the same either way.
+pub fn sorted(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(map) => {
             let mut entries: Vec<_> = map.iter().collect();

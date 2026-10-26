@@ -132,6 +132,36 @@ impl Command {
             .into_iter()
             .find(|command| command.as_str() == name)
     }
+
+    /// Whether the command is answered when its [`Calling`] is waited on, on the waiting
+    /// thread, from what the sessions hold then: taking no place in a session's queue, it
+    /// never waits on one (so a transport needn't give it a thread or a slot of its own).
+    /// `status`, `cancel`, `version`, and `schema`; every other command runs off the
+    /// caller's thread, and is waited on. Every command matched, so a new one must say.
+    pub const fn answered_when_waited(self) -> bool {
+        match self {
+            Command::Version | Command::Status | Command::Cancel | Command::Schema => true,
+            Command::Open
+            | Command::Close
+            | Command::Begin
+            | Command::Commit
+            | Command::Rollback
+            | Command::Format
+            | Command::AddFeature
+            | Command::SetField
+            | Command::RemoveFeature
+            | Command::ReplaceText
+            | Command::Text
+            | Command::Outline
+            | Command::Check
+            | Command::Elements
+            | Command::Query
+            | Command::MassProperties
+            | Command::Distance
+            | Command::Angle
+            | Command::Render => false,
+        }
+    }
 }
 
 impl std::fmt::Display for Command {
@@ -205,6 +235,13 @@ impl<T: Send + 'static> Waiting for Typed<T> {
 }
 
 impl Calling {
+    /// Whether it's answered when it's waited on, on the waiting thread, never waiting on a
+    /// session: a command whose [`Command::answered_when_waited`] says so, or a request
+    /// refused before it ran.
+    pub fn answered_when_waited(&self) -> bool {
+        matches!(self.pending, Pending::Later(_))
+    }
+
     /// How far its session's rebuild has got, as the typed handle's
     /// [`Running::progress`] says: none for a command answered when it's waited on, or
     /// refused before it ran.
@@ -263,11 +300,7 @@ impl Calling {
 
     /// A request refused before it ran, for every reason in `problems`.
     fn refused(problems: Problems) -> Self {
-        let answered = answered(Response::<Unread> {
-            session: None,
-            model: None,
-            result: Err(problems),
-        });
+        let answered = Answered::refused(problems);
         Calling::later(move || answered)
     }
 }
@@ -282,6 +315,19 @@ pub struct Answered {
     pub text: String,
     /// `render`'s PNG, if it rendered: beside the envelope, never in it.
     pub png: Option<Vec<u8>>,
+}
+
+impl Answered {
+    /// The answer of a request refused before it ran, for every reason in `problems`: the
+    /// core's refused envelope, with no session and no model, on one line, as every
+    /// refusal is written (a transport's own refusal of a call, or its error's `data`).
+    pub fn refused(problems: Problems) -> Answered {
+        answered(Response::<Unread> {
+            session: None,
+            model: None,
+            result: Err(problems),
+        })
+    }
 }
 
 /// `response` as [`Answered`]: its envelope on one line, and whether it ran.
@@ -376,23 +422,28 @@ fn later<R: Send + 'static, T: ToWire>(
 
 impl<P: Clients + 'static> Sessions<P> {
     /// Runs the command named `name` (exactly as [`Command::as_str`] gives it) on
-    /// `arguments`, its request's text, read by Silico's own reader, then by the command's
-    /// request reader, and its typed method called: [`Call::Unknown`] for a name no command
-    /// has; otherwise the command running, whose answer is its envelope (refused, `ok`
-    /// false, for a request either reader refuses). Never waits on a session: the command
-    /// is queued (or, a published read, started) before this returns, so a caller's
-    /// commands to one session run in the order it sent them. `status`, `cancel`,
-    /// `version`, and `schema` are answered when the call is waited on, on the waiting
-    /// thread.
+    /// `arguments`, as [`call_command`](Self::call_command) does: [`Call::Unknown`] for a
+    /// name no command has.
     pub fn call(&self, name: &str, arguments: &str) -> Call {
-        let Some(command) = Command::named(name) else {
-            return Call::Unknown;
-        };
+        match Command::named(name) {
+            Some(command) => Call::Running(self.call_command(command, arguments)),
+            None => Call::Unknown,
+        }
+    }
+
+    /// Runs `command` on `arguments`, its request's text, read by Silico's own reader, then
+    /// by the command's request reader, and its typed method called: the command running,
+    /// whose answer is its envelope (refused, `ok` false, for a request either reader
+    /// refuses). Never waits on a session: the command is queued (or, a published read,
+    /// started) before this returns, so a caller's commands to one session run in the
+    /// order it sent them. `status`, `cancel`, `version`, and `schema` are answered when the
+    /// call is waited on, on the waiting thread ([`Command::answered_when_waited`]).
+    pub fn call_command(&self, command: Command, arguments: &str) -> Calling {
         let _span = tracing::info_span!("call", command = command.as_str()).entered();
-        Call::Running(match json::read(arguments.as_bytes()) {
+        match json::read(arguments.as_bytes()) {
             Ok(request) => self.dispatch(command, &request),
             Err(e) => Calling::refused(Problems::from(unread(e))),
-        })
+        }
     }
 
     /// `command` run on `request`, through its typed method.
