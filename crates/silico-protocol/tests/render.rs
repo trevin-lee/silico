@@ -421,6 +421,75 @@ fn highlights_out_of_order_repeated_or_past_the_mesh_are_refused() {
 }
 
 #[test]
+fn the_adapter_policy_reads_back_as_written_and_nothing_else() {
+    use silico_protocol::RenderAdapter;
+    use std::ffi::OsString;
+    let read = |args: &[&str]| RenderAdapter::from_args(args.iter().map(OsString::from));
+    for policy in [RenderAdapter::Software, RenderAdapter::Any] {
+        assert_eq!(read(policy.args()), Ok(policy), "{policy:?}");
+    }
+    // By hand: no argument is lavapipe only; the one argument is any adapter.
+    assert_eq!(RenderAdapter::Software.args(), &[] as &[&str]);
+    assert_eq!(RenderAdapter::Any.args(), &["--any-adapter"]);
+    assert_eq!(RenderAdapter::default(), RenderAdapter::Software);
+    for bad in [
+        &["--any"][..],
+        &["--any-adapter", "--any-adapter"],
+        &["--Any-adapter"],
+        &["--any-adapter", "x"],
+        &[""],
+    ] {
+        let e = read(bad).unwrap_err();
+        assert!(e.contains("unexpected argument"), "{bad:?}: {e}");
+    }
+}
+
+#[test]
+fn a_meshs_floor_is_a_ten_thousandth_of_its_diagonal_and_never_under_the_tolerance() {
+    use silico_protocol::mesh_floor;
+    // A 100 mm cube's diagonal, 173.205...: 0.0173205...
+    let diagonal = 100.0 * 3.0f64.sqrt();
+    assert!((mesh_floor(diagonal) - 0.017_320_508_075_688_77).abs() < 1e-15);
+    assert_eq!(mesh_floor(1.0), 1e-4);
+    // Under 1e-3 mm, the length tolerance; over it, a ten-thousandth (1e-3 × 1e-4 rounds
+    // an ulp over 1e-7, so it's the product's).
+    assert_eq!(mesh_floor(5e-4), 1e-7);
+    assert_eq!(mesh_floor(1e-3f64.next_down()), 1e-7);
+    assert_eq!(mesh_floor(1e-3), 1e-7f64.next_up());
+    assert!((mesh_floor(2e-3) - 2e-7).abs() < 1e-22);
+    assert_eq!(mesh_floor(0.0), 1e-7);
+}
+
+#[test]
+fn a_classified_point_is_finite_and_within_a_render_of_the_origin() {
+    use silico_protocol::{MAX_CLASSIFY_COORDINATE, check_classify_point};
+    assert_eq!(MAX_CLASSIFY_COORDINATE, 1e12);
+    for ok in [
+        [1e12, 0.0, 0.0],
+        [0.0, -1e12, 1e12],
+        [0.0; 3],
+        [-0.0, 5e-324, 1.0],
+    ] {
+        assert_eq!(check_classify_point(ok), Ok(()), "{ok:?}");
+    }
+    for bad in [
+        [1e12f64.next_up(), 0.0, 0.0],
+        [0.0, 0.0, -1e12f64.next_up()],
+        [f64::NAN, 0.0, 0.0],
+        [0.0, f64::INFINITY, 0.0],
+        [0.0, 0.0, f64::NEG_INFINITY],
+    ] {
+        let e = check_classify_point(bad).unwrap_err();
+        assert_eq!(e.parameter, "point", "{bad:?}");
+        assert!(
+            e.message.contains("finite and within 1000000000000 mm"),
+            "{}",
+            e.message
+        );
+    }
+}
+
+#[test]
 fn a_cameras_frame_makes_a_long_tilted_up_perpendicular_and_of_unit_length() {
     // By hand: the eye at (0, −3, 4) from the origin, so back is (0, −0.6, 0.8). Up (0, 0, 2)
     // has 1.6 along it; less that, (0, 0.96, 0.72), 1.2 long, so up is (0, 0.8, 0.6).

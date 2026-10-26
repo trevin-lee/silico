@@ -379,6 +379,7 @@ fn a_scene_that_fails_its_check_is_refused_naming_the_field_and_nothing_else_is_
             Op::Tessellate {
                 shape: ShapeData::checked(Blob::inline(vec![1]), true),
                 deflection: 0.1,
+                at_least_the_floor: false,
             },
             TIMEOUT,
         )

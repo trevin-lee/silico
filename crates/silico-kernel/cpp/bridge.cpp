@@ -19,6 +19,7 @@
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepClass3d.hxx>
+#include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepLib_ToolTriangulatedShape.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <IMeshTools_Parameters.hxx>
@@ -1332,6 +1333,29 @@ Bounds tight_bounds(const Shape &shape) {
   Point3 high{0.0, 0.0, 0.0};
   const bool bounded = tight_box(shape.shape, low, high);
   return Bounds{bounded, low, high};
+}
+
+PointState classify_point(const Shape &shape, const Point3 &point) {
+  // The shape's largest tolerance: a vertex's is at least its edges', an edge's at least
+  // its faces', but each is asked, as OCCT doesn't enforce it.
+  double tolerance = Precision::Confusion();
+  for (const TopAbs_ShapeEnum kind : {TopAbs_VERTEX, TopAbs_EDGE, TopAbs_FACE}) {
+    if (TopExp_Explorer(shape.shape, kind).More()) {
+      tolerance = std::max(tolerance, BRep_Tool::MaxTolerance(shape.shape, kind));
+    }
+  }
+  BRepClass3d_SolidClassifier classifier(shape.shape);
+  classifier.Perform(gp_Pnt(point.x, point.y, point.z), tolerance);
+  switch (classifier.State()) {
+  case TopAbs_IN:
+    return PointState::Inside;
+  case TopAbs_ON:
+    return PointState::On;
+  case TopAbs_OUT:
+    return PointState::Outside;
+  default:
+    throw Standard_Failure("OCCT's solid classifier couldn't tell whether the point is inside");
+  }
 }
 
 namespace {

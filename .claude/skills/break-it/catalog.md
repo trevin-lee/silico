@@ -71,6 +71,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 ## Features
 
 - Pad or extrude with length 0, a negative length, or a direction parallel to the sketch plane
+- Points classified far out along an axis (a box and (1e18, 0, 0)): OCCT's solid classifier says inside (FreeCAD's `isInside` too), and past 1e154 throws `gp_Dir() - input vector has zero norm`
 - Pocket that removes nothing, removes everything, or splits the body into two solids
 - Fillet radius larger than the adjacent face allows, exactly equal to the wall thickness, or applied to every edge of a cube
 - Chamfer across a chain of tangent-continuous edges
@@ -211,6 +212,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Error codes decided by a fact (said it started or not) that an earlier check pre-empts (a solve that finds its worker already exited and calls it a crash): the same binary that exits at launch gets two codes by timing; call it at once and 300 ms late, and compare
 - A code split on one fact while its advice is still keyed on another (started or not, against how it ended): a kill from outside before the first frame is "no retry helps" by its code and "try the request again" by its advice
 - A launcher that backgrounds a child (holding the socket) and exits before its first frame: the call waits out its whole timeout, reported as a hang, not as the exit it was
+- A client dropped (or a cancel given) with requests queued behind a hung one: a queue its thread drains on close sends each in turn, a whole timeout each, and a queued cancel answers only when its turn comes; time the drop and each cancel's answer
+- Resource stops decided by a proxy (pixels, faces) on a worker kept warm: one face of 2 million triangles is "small" and the kept worker holds 1 GB; read the worker's RSS after the request the proxy calls small
+- Idle timers restarted by every request taken from the queue, cancelled ones included: ask-and-cancel in a loop and see whether the worker is ever stopped
 
 ## Recompute and scheduling
 

@@ -5,10 +5,17 @@
 #[path = "../../silico-core/tests/common/test_programs.rs"]
 mod test_programs;
 
+#[path = "common/client.rs"]
+mod common;
+
+#[path = "adversarial_client.rs"]
+mod adversarial_client;
 #[path = "adversarial_render.rs"]
 mod adversarial_render;
 #[path = "bench.rs"]
 mod bench;
+#[path = "client.rs"]
+mod client;
 #[path = "worker.rs"]
 mod worker;
 

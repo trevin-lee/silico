@@ -4,8 +4,8 @@
 
 use proptest::prelude::*;
 use silico_protocol::{
-    Algorithm, DragBegin, Geometry, Moved, PointOf, PointValues, SketchGeometry, SketchSystem,
-    SolveStatus, Solved, SolverConstraint, Tag, Value,
+    Algorithm, DragBegin, Geometry, MeshAt, Moved, PointOf, PointPlace, PointValues,
+    SketchGeometry, SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value,
 };
 use silico_protocol::{
     Axis, Blob, BooleanOp, BuiltData, ChamferSize, DebugOp, DressingKind, ElementCounts,
@@ -54,6 +54,7 @@ fn every_op() -> Vec<Op> {
         Op::Tessellate {
             shape: ShapeData::unchecked(Blob::inline(vec![3])),
             deflection: 0.01,
+            at_least_the_floor: false,
         },
         Op::Translate {
             shape: ShapeData::checked(Blob::inline(vec![4]), true),
@@ -290,6 +291,10 @@ fn every_op() -> Vec<Op> {
             height: 1,
             ids: true,
         })),
+        Op::Classify {
+            shape: ShapeData::checked(Blob::inline(vec![9]), false),
+            point: [-0.0, f64::MIN_POSITIVE, -1e300],
+        },
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
@@ -356,9 +361,10 @@ fn every_op() -> Vec<Op> {
             Op::Debug(DebugOp::Misbehave(Misbehavior::EndlessDescription)) => 42,
             Op::Distance { .. } => 43,
             Op::Render(_) => 44,
+            Op::Classify { .. } => 45,
         })
         .collect();
-    assert_eq!(indices, (0..45).collect(), "an operation has no case");
+    assert_eq!(indices, (0..46).collect(), "an operation has no case");
     ops
 }
 
@@ -621,6 +627,27 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             png: vec![0x89, b'P', b'N', b'G', 0, 255],
             ids: Some(vec![[0, 0], [u32::MAX, EDGE_BIT | 7]]),
         }),
+        Ok(Reply::Classified {
+            place: PointPlace::Inside,
+        }),
+        Ok(Reply::Classified {
+            place: PointPlace::OnBoundary,
+        }),
+        Ok(Reply::Classified {
+            place: PointPlace::Outside,
+        }),
+        Ok(Reply::MeshAt(MeshAt {
+            mesh: Mesh {
+                positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                normals: vec![[0.0, 0.0, 1.0]; 3],
+                triangles: vec![[0, 1, 2]],
+                face_triangles: vec![1],
+                edge_points: vec![],
+                edge_point_counts: vec![],
+                valid: Some(true),
+            },
+            deflection: 1.7e-2,
+        })),
         Err(Failure::new(Refusal::NoAdapter {
             cause: "no CPU adapter".to_owned(),
         })),
@@ -651,6 +678,8 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::ExportMesh(_)) => 17,
             Ok(Reply::Distance(_)) => 18,
             Ok(Reply::Rendered { .. }) => 19,
+            Ok(Reply::Classified { .. }) => 21,
+            Ok(Reply::MeshAt(_)) => 22,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
@@ -664,7 +693,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         .collect();
     assert_eq!(
         indices,
-        (0..21).collect(),
+        (0..23).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -1074,6 +1103,7 @@ fn every_op_has_its_own_name() {
             "ExportMesh",
             "Distance",
             "Render",
+            "Classify",
         ]
     );
 }

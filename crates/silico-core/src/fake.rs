@@ -60,8 +60,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use silico_protocol::{
-    Algorithm, Description, EdgeCurve, EdgeDescription, FaceDescription, Reply, ShapeSummary,
-    SketchSystem, SolveStatus, Solved, Surface, Tag, area_and_perimeter, loop_area,
+    Algorithm, Description, EdgeCurve, EdgeDescription, FaceDescription, PointPlace, Reply,
+    ShapeSummary, SketchSystem, SolveStatus, Solved, Surface, Tag, area_and_perimeter, loop_area,
 };
 
 use crate::kernel::{
@@ -772,6 +772,30 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             },
         ),
         Op::Summarize { shape } => Ok(Reply::Summary(Symbolic::read(shape)?.summary())),
+        Op::Tessellate {
+            shape,
+            deflection,
+            at_least_the_floor,
+        } => fake_mesh(&Symbolic::read(shape)?, *deflection, *at_least_the_floor),
+        // The fake's solids are their boxes: a point is inside one if it's strictly within
+        // its box, on it if it's on the box's boundary.
+        Op::Classify { shape, point } => {
+            if let Err(invalid) = silico_protocol::check_classify_point(*point) {
+                return Err(Error::new(ErrorCode::InvalidInput, invalid.message)
+                    .with_parameter(invalid.parameter)
+                    .with_suggestion("change the value the message names"));
+            }
+            let place = match Symbolic::read(shape)?.summary().bounds {
+                Some([low, high]) if (0..3).all(|k| low[k] < point[k] && point[k] < high[k]) => {
+                    PointPlace::Inside
+                }
+                Some([low, high]) if (0..3).all(|k| low[k] <= point[k] && point[k] <= high[k]) => {
+                    PointPlace::OnBoundary
+                }
+                _ => PointPlace::Outside,
+            };
+            Ok(Reply::Classified { place })
+        }
         Op::Describe {
             shape,
             kind,
@@ -798,6 +822,61 @@ fn answer(op: &Op) -> Result<Reply, Error> {
         )
         .with_suggestion("run this test on a real kernel worker")),
     }
+}
+
+/// The fake's display mesh of `made`, as the kernel's is checked: a triangle for each face
+/// and a two-point polyline for each edge, all on its box's corners (a mesh that holds
+/// together, for the core's render, not one of the shape), at `deflection`. Its floor is
+/// the kernel's rule, `mesh_floor`, on the fake's box.
+/// Under it, refused as the kernel refuses, or with `at_least_the_floor` meshed at it and
+/// said.
+fn fake_mesh(made: &Symbolic, deflection: f64, at_least_the_floor: bool) -> Result<Reply, Error> {
+    if !(deflection.is_finite() && deflection > 0.0) {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!("deflection {deflection} must be finite and positive"),
+        )
+        .with_parameter("deflection")
+        .with_suggestion("change the value the message names"));
+    }
+    let summary = made.summary();
+    let [low, high] = summary.bounds.unwrap_or([[0.0; 3]; 2]);
+    let diagonal = (0..3)
+        .map(|k| (high[k] - low[k]) * (high[k] - low[k]))
+        .sum::<f64>()
+        .sqrt();
+    let floor = silico_protocol::mesh_floor(diagonal);
+    let used = if deflection >= floor {
+        deflection
+    } else if at_least_the_floor {
+        floor
+    } else {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!("deflection {deflection} is finer than the shape's floor, {floor}"),
+        )
+        .with_parameter("deflection")
+        .with_suggestion("ask for a coarser deflection"));
+    };
+    let corners = [low, [high[0], low[1], low[2]], [low[0], high[1], high[2]]];
+    let faces = usize::try_from(summary.faces).unwrap_or(0);
+    let edges = usize::try_from(summary.edges).unwrap_or(0);
+    let mesh = silico_protocol::Mesh {
+        positions: corners.to_vec(),
+        normals: vec![[0.0, 0.0, 1.0]; 3],
+        triangles: vec![[0, 1, 2]; faces],
+        face_triangles: vec![1; faces],
+        edge_points: (0..edges).flat_map(|_| [low, high]).collect(),
+        edge_point_counts: vec![2; edges],
+        valid: None,
+    };
+    Ok(match at_least_the_floor {
+        true => Reply::MeshAt(silico_protocol::MeshAt {
+            mesh,
+            deflection: used,
+        }),
+        false => Reply::Mesh(mesh),
+    })
 }
 
 /// The fake's distance between `first`, of a shape whose counts are `first_counts`, and

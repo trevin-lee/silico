@@ -8,6 +8,7 @@
 //! there's no version negotiation.
 
 mod chamfer;
+mod classify;
 mod describe;
 mod distance;
 mod export;
@@ -24,6 +25,7 @@ mod sweep;
 use serde::{Deserialize, Serialize};
 
 pub use chamfer::ChamferSize;
+pub use classify::{MAX_CLASSIFY_COORDINATE, PointPlace, check_classify_point};
 pub use describe::{
     DESCRIBE_BATCH, Description, EdgeCurve, EdgeDescription, FaceDescription, Quantity, Surface,
     What, batches, describe_in_batches,
@@ -44,8 +46,8 @@ pub use history::{
     Topology,
 };
 pub use primitive::{
-    InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, OFFSET_FIELD, Primitive, SIZE_FIELD,
-    check_offset, format_number,
+    InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, MIN_RELATIVE_DEFLECTION, OFFSET_FIELD,
+    Primitive, SIZE_FIELD, check_offset, format_number, mesh_floor,
 };
 pub use profile::{
     Axis, MAX_PROFILE_POINTS, Profile, ProfilePlane, check_fillet_radius, check_revolve,
@@ -58,8 +60,8 @@ pub use refusal::{
 pub use render::{
     Camera, EDGE_BIT, Frame, MAX_FIELD_OF_VIEW, MAX_RENDER_COORDINATE, MAX_RENDER_EDGES,
     MAX_RENDER_FACES, MAX_RENDER_SIDE, MAX_RENDER_TRIANGLES, MIN_EYE_DISTANCE, MIN_FIELD_OF_VIEW,
-    MIN_UP_ACROSS_VIEW, MIN_VIEW_HEIGHT, MIN_VIEW_HEIGHT_OF_REACH, PixelId, Projection, RenderBody,
-    RenderScene,
+    MIN_UP_ACROSS_VIEW, MIN_VIEW_HEIGHT, MIN_VIEW_HEIGHT_OF_REACH, PixelId, Projection,
+    RenderAdapter, RenderBody, RenderScene,
 };
 pub use sketch::{
     Algorithm, DragBegin, Geometry, MAX_DRAG_UNKNOWNS, MAX_JACOBIAN_ENTRIES,
@@ -163,8 +165,14 @@ pub enum Op {
         tool: ShapeData,
     },
     /// A triangle mesh of a shape for display, no further than `deflection` from its
-    /// surface. Replies with [`Reply::Mesh`].
-    Tessellate { shape: ShapeData, deflection: f64 },
+    /// surface. Replies with [`Reply::Mesh`], or a deflection finer than the shape's floor is
+    /// refused; with `at_least_the_floor`, meshes at the larger of the two, never refused for
+    /// that, and replies with [`Reply::MeshAt`], saying which it used (M4.6's renders).
+    Tessellate {
+        shape: ShapeData,
+        deflection: f64,
+        at_least_the_floor: bool,
+    },
     /// Sends `data` straight back as [`Reply::Echo`]: a health check, and the cheapest
     /// round trip, which the IPC benchmark measures.
     Echo { data: Blob },
@@ -254,6 +262,10 @@ pub enum Op {
     /// A scene drawn by the render worker, boxed, as it's every body's mesh. Replies with
     /// [`Reply::Rendered`].
     Render(Box<RenderScene>),
+    /// Where `point` is against the shape, by OCCT's solid classifier (a camera's eye inside
+    /// a body, M4.6), the point checked by [`check_classify_point`]. Replies with
+    /// [`Reply::Classified`].
+    Classify { shape: ShapeData, point: [f64; 3] },
 }
 
 impl Op {
@@ -274,6 +286,7 @@ impl Op {
             Op::Distance { .. } => "Distance",
             Op::ExportMesh { .. } => "ExportMesh",
             Op::Render(_) => "Render",
+            Op::Classify { .. } => "Classify",
             Op::Solve(_) => "Solve",
             Op::DragBegin(_) => "DragBegin",
             Op::DragMove { .. } => "DragMove",
@@ -453,6 +466,13 @@ pub enum Reply {
         png: Vec<u8>,
         ids: Option<Vec<PixelId>>,
     },
+    /// Where a point is against a shape ([`Op::Classify`]).
+    Classified {
+        place: PointPlace,
+    },
+    /// A display mesh, and the deflection it was meshed at ([`Op::Tessellate`] with
+    /// `at_least_the_floor`).
+    MeshAt(MeshAt),
 }
 
 impl Reply {
@@ -468,6 +488,8 @@ impl Reply {
             Reply::Distance(_) => "Distance",
             Reply::ExportMesh(_) => "ExportMesh",
             Reply::Rendered { .. } => "Rendered",
+            Reply::Classified { .. } => "Classified",
+            Reply::MeshAt { .. } => "MeshAt",
             Reply::Solved(_) => "Solved",
             Reply::DragStarted { .. } => "DragStarted",
             Reply::Moved(_) => "Moved",
@@ -511,6 +533,14 @@ pub struct FreecadMeasures {
 /// How far a [`Mesh`] normal's length may be from 1: about ten times what rounding a unit
 /// vector to 32-bit floats can leave (√3 · 2⁻²⁴, about 1e-7).
 pub const NORMAL_LENGTH_TOLERANCE: f64 = 1e-6;
+
+/// A display mesh and the deflection it was meshed at, which is the one asked, or the
+/// shape's floor ([`mesh_floor`]) when that's coarser.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MeshAt {
+    pub mesh: Mesh,
+    pub deflection: f64,
+}
 
 /// A triangle mesh of a shape's faces, and polylines along its edges, for display.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

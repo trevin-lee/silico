@@ -5216,6 +5216,7 @@ dependencies = [
  "re_renderer",
  "silico-core",
  "silico-protocol",
+ "silico-render",
  "silico-worker",
  "smallvec",
  "tracing",

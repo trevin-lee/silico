@@ -19,7 +19,7 @@ use scripts::script;
 use silico_core::worker::Worker;
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{
-    Blob, DebugOp, Generation, Misbehavior, Op, OutOfTurn, Primitive, Reply, ShapeData,
+    Blob, DebugOp, Generation, Misbehavior, Op, OutOfTurn, PointPlace, Primitive, Reply, ShapeData,
     ShapeSummary,
 };
 
@@ -1281,4 +1281,42 @@ fn every_failure_says_what_to_try() {
         sent,
         "a refused radius reached the worker"
     );
+}
+
+#[test]
+fn a_point_is_classified_inside_or_out_through_the_worker() {
+    let mut w = worker();
+    let shape = make_box(&mut w, 40.0, 20.0, 10.0).unwrap();
+    for (point, want) in [
+        ([20.0, 10.0, 5.0], PointPlace::Inside),
+        ([20.0, 0.0, 5.0], PointPlace::OnBoundary),
+        ([20.0, -1.0, 5.0], PointPlace::Outside),
+    ] {
+        match w
+            .call(
+                Generation(1),
+                Op::Classify {
+                    shape: shape.clone(),
+                    point,
+                },
+                TIMEOUT,
+            )
+            .unwrap()
+        {
+            Reply::Classified { place } => assert_eq!(place, want, "{point:?}"),
+            other => panic!("Classify replied {other:?}"),
+        }
+    }
+    let err = w
+        .call(
+            Generation(1),
+            Op::Classify {
+                shape,
+                point: [f64::NAN, 0.0, 0.0],
+            },
+            TIMEOUT,
+        )
+        .unwrap_err();
+    assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
+    assert_eq!(err.parameter(), Some("point"), "{err}");
 }

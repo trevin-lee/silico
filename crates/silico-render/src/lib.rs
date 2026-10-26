@@ -14,6 +14,30 @@ pub mod worker;
 
 use worker::RenderAdapter;
 
+/// The scene sizes the test worker (`silico-render-test-worker`) misbehaves at, named once
+/// for it and the tests: the core's client sends nothing but renders, so sizes no render
+/// needs ask for each misbehaviour. Any other scene it draws as the worker does.
+#[cfg(feature = "test_ops")]
+pub mod test_scenes {
+    /// Hangs for 600 s: a render past its time.
+    pub const HANGS: (u32, u32) = (1, 7);
+    /// Aborts: a worker that crashes.
+    pub const CRASHES: (u32, u32) = (1, 9);
+    /// Draws, and answers with one ID fewer than the scene's pixels.
+    pub const IDS_SHORT: (u32, u32) = (1, 11);
+    /// Answers with an empty PNG.
+    pub const NO_IMAGE: (u32, u32) = (1, 13);
+    /// Answers with the wrong kind of reply (an echo).
+    pub const WRONG_REPLY: (u32, u32) = (1, 15);
+    /// Draws, and answers with an ID buffer when none was asked for, or none when one was.
+    pub const IDS_FLIPPED: (u32, u32) = (1, 17);
+    /// Refuses the scene as invalid, as the worker refuses one that fails its check.
+    pub const REFUSES: (u32, u32) = (1, 19);
+    /// Refuses as having no adapter, its cause naming the policy the worker was started
+    /// with (`policy Software` or `policy Any`).
+    pub const SAYS_POLICY: (u32, u32) = (1, 21);
+}
+
 /// Every adapter on Vulkan or Metal (lavapipe among them where the worker's environment
 /// names it), and their names, for a refusal to list.
 fn all_adapters() -> (Vec<wgpu::Adapter>, Vec<String>) {
