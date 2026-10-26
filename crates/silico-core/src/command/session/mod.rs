@@ -576,7 +576,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 Ok(current) => {
                     *model = Some(current.read);
                     let _span = tracing::info_span!("check").entered();
-                    super::check_except(&current.model, &current.reached, Faults::Aside)
+                    super::check_except(&current.model, current.reached.get(), Faults::Aside)
                         .map_err(Problems::from)
                 }
                 Err(Unbuilt::Gated(problems)) => Ok(problems),
@@ -591,7 +591,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// rebuild or queueing behind its commands, as every published read is
     /// ([`read_model`](Self::read_model)): its revision in the response's `model`, which may
     /// be an older one's. Its drift leaves out what the session's edits reached at that
-    /// model's revision, kept with it ([`Published::reached`]), as a current check's leaves
+    /// model's revision, kept with it ([`Read::reached`]), as a current check's leaves
     /// out what they reach at the current one: exactly that revision's, whatever edits came
     /// since. With nothing published, it's refused
     /// as every published read is: naming `model`, or, for a document the gate refused, with

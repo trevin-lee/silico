@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
-use silico_core::command::{Begun, Revision, SessionId, Sessions};
+use silico_core::command::{
+    Begun, ModelChoice, Published, Response, Revision, SessionId, Sessions,
+};
 use silico_core::fake::FakeKernel;
 use tempfile::TempDir;
 
@@ -375,6 +377,73 @@ fn a_published_read_while_begin_takes_a_large_text_that_didnt_read_answers_promp
             Err(running) => begin = running,
         }
         assert!(Instant::now() < deadline, "begin never answered");
+    }
+    // At once: a second, and ten times the machine's lateness on a loaded one.
+    let most = allowance(Duration::from_secs(1), lateness.most());
+    assert!(
+        slowest < most,
+        "a published read took {slowest:?}, past {most:?}"
+    );
+}
+
+/// `session`'s published read, as the app's frame asks for it, timed: `slowest` the longest
+/// one has taken.
+fn published_timed(
+    f: &Fixture,
+    session: &SessionId,
+    slowest: &mut Duration,
+) -> Response<Published> {
+    let at = Instant::now();
+    let read = f.sessions.published(session);
+    *slowest = (*slowest).max(at.elapsed());
+    read
+}
+
+#[test]
+fn a_published_read_never_waits_on_the_scan_of_a_large_begun_text_that_didnt_read() {
+    // As above, 48 MB of text that didn't read, begun from, and replaced in the transaction
+    // by a block whose stored volume drifts: revision 2, whose edits reach every feature
+    // with an ID the begun text hasn't (a scan of its every string), the block among them.
+    // A published read starts revision 2's rebuild, keeping what its edits reach with it
+    // unworked; a published check of its model works it out, on the check's own thread. A
+    // published read each frame waits on neither.
+    let f = fixture();
+    let text = r#""\n\n\n\n\n""#.repeat(4_000_000);
+    assert_eq!(text.len(), 48_000_000);
+    let (s1, _) = f.open(&text);
+    answer(f.sessions.begin(&s1)).result.unwrap();
+    let second = Revision::OPENED.next().unwrap();
+    let replaced = answer(
+        f.sessions
+            .replace_text(&s1, Revision::OPENED, stored("8000.000001")),
+    );
+    assert_eq!(replaced.session.unwrap().revision, second);
+    let lateness = Lateness::start();
+    let mut slowest = Duration::ZERO;
+    let deadline = Instant::now() + Duration::from_secs(120);
+    // Revision 2's model, published.
+    loop {
+        if let Ok(published) = published_timed(&f, &s1, &mut slowest).result {
+            assert_eq!(published.revision, second);
+            break;
+        }
+        assert!(Instant::now() < deadline, "revision 2 was never published");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // Its check, the scan its own: the block reached, so its drift isn't said.
+    let mut check = f.sessions.check_model(&s1, ModelChoice::Published);
+    loop {
+        assert!(published_timed(&f, &s1, &mut slowest).result.is_ok());
+        match check.wait_timeout(Duration::from_millis(1)) {
+            Ok(checked) => {
+                assert_eq!(checked.model.unwrap().revision, second);
+                let problems = checked.result.unwrap();
+                assert!(problems.is_empty(), "{:?}", problems.errors());
+                break;
+            }
+            Err(running) => check = running,
+        }
+        assert!(Instant::now() < deadline, "the check never answered");
     }
     // At once: a second, and ten times the machine's lateness on a loaded one.
     let most = allowance(Duration::from_secs(1), lateness.most());

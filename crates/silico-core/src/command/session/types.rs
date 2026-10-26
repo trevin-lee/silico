@@ -12,6 +12,7 @@ use super::Problems;
 use super::Sessions;
 use super::cancel::Ticket;
 use super::rebuilds::kept_fault;
+use super::transaction::Reached;
 #[cfg(doc)]
 use crate::document;
 use crate::document::json::Plain;
@@ -145,7 +146,7 @@ pub struct Read<'a, C> {
     pub(super) read: ModelRead,
     pub(super) stop: &'a Ticket,
     pub(super) kernel: &'a ReadClient<C>,
-    pub(super) reached: &'a BTreeSet<FeatureId>,
+    pub(super) reached: &'a Reached,
 }
 
 impl<C> Read<'_, C> {
@@ -160,9 +161,10 @@ impl<C> Read<'_, C> {
     }
 
     /// What the session's edits reached at the model's revision (decision 28): the features
-    /// whose drift a check of the model doesn't say.
+    /// whose drift a check of the model doesn't say. Worked out here, the first time a read
+    /// of the model asks, on the read's own thread.
     pub fn reached(&self) -> &BTreeSet<FeatureId> {
-        self.reached
+        self.reached.get()
     }
 
     /// Whether the read was cancelled (`cancel`, or its handle's [`Running::cancel`]): it
@@ -255,12 +257,13 @@ impl ModelChoice {
 /// rollback, the new revision whose state is the one it was rebuilt from (the design's
 /// section 4). What [`Sessions::published`] gives the app to draw, never waiting for a
 /// rebuild. With it, what the session's edits reached at that revision (decision 28): the
-/// features whose drift a check of it doesn't say, since a commit writes their records anew.
-#[derive(Debug, Clone, PartialEq)]
+/// features whose drift a check of it doesn't say, since a commit writes their records anew,
+/// which a read of it works out if it asks ([`Read::reached`]).
+#[derive(Debug, Clone)]
 pub struct Published {
     pub revision: Revision,
     pub model: Arc<Model>,
-    pub reached: Arc<BTreeSet<FeatureId>>,
+    pub(crate) reached: Reached,
 }
 
 /// A command running on its session's thread: wait for its answer, poll it, cancel it, or

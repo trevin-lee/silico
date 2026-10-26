@@ -2,18 +2,17 @@
 //! published, each rebuild started with a thread watching it ([`watch`]), and an edit's
 //! candidate rebuilt for its commit.
 
-use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError, Weak};
 
 use super::cancel::{Ticket, cancelled};
 use super::threads::Threads;
-use super::transaction::Reaching;
+use super::transaction::{Reached, Reaching};
 use super::{
     Gated, ModelChoice, ModelRead, Problems, Published, Rebuild, RebuildState, Response, Revision,
     Session, SessionId, SessionInfo, not_open,
 };
-use crate::document::{Checked, FeatureId};
+use crate::document::Checked;
 use crate::kernel::Kernel;
 use crate::recompute::{Model, Recompute, Run, RunOutcome};
 use crate::worker::lock;
@@ -148,8 +147,9 @@ pub(super) struct Label {
     revision: Arc<AtomicU64>,
     /// What the session's edits reached at the revision it's of, published with its model:
     /// the same at a revision a rollback gives it to, whose state is the one it was of.
-    /// None reached for a candidate's, which is never published as it is.
-    reached: Arc<BTreeSet<FeatureId>>,
+    /// None reached for a candidate's, which is never published as it is. Carried, never
+    /// worked out, by the rebuild: whoever reads its model works it out, if anyone does.
+    reached: Reached,
     candidate: bool,
     /// Whether the command waiting on it was cancelled and stopped it
     /// ([`Rebuilds::stop_waited`], which says how it ended then): if it ends superseded,
@@ -159,7 +159,7 @@ pub(super) struct Label {
 
 impl Label {
     /// The label of `revision`'s rebuild, what the session's edits reached at it `reached`.
-    pub(super) fn new(revision: Revision, reached: Arc<BTreeSet<FeatureId>>) -> Self {
+    pub(super) fn new(revision: Revision, reached: Reached) -> Self {
         Label {
             revision: Arc::new(AtomicU64::new(revision.0)),
             reached,
@@ -173,7 +173,7 @@ impl Label {
     fn candidate(revision: Revision) -> Self {
         Label {
             candidate: true,
-            ..Label::new(revision, Arc::default())
+            ..Label::new(revision, Reached::default())
         }
     }
 
@@ -263,7 +263,7 @@ impl<C: Kernel + 'static> Session<C> {
         stop: &Ticket,
         revision: Revision,
         checked: &Arc<Checked>,
-        reached: &Arc<BTreeSet<FeatureId>>,
+        reached: &Reached,
     ) -> Result<Arc<Model>, Problems> {
         let _span = tracing::info_span!("rebuild", revision = revision.number()).entered();
         let mut rebuilds = lock(&self.rebuilds);
@@ -335,7 +335,7 @@ impl<C: Kernel + 'static> Session<C> {
         rebuilds: &mut Rebuilds<C>,
         revision: Revision,
         checked: &Arc<Checked>,
-        reached: &Arc<BTreeSet<FeatureId>>,
+        reached: &Reached,
     ) -> Result<bool, Problems> {
         if self.closed() {
             return Err(Problems::from(not_open(self.id)));
@@ -352,7 +352,7 @@ impl<C: Kernel + 'static> Session<C> {
         if let Some(kept) = &mut rebuilds.kept {
             kept.started = true;
         }
-        self.spawn_rebuild(rebuilds, checked, Label::new(revision, Arc::clone(reached)))?;
+        self.spawn_rebuild(rebuilds, checked, Label::new(revision, reached.clone()))?;
         Ok(true)
     }
 
@@ -392,7 +392,8 @@ impl<C: Kernel + 'static> Session<C> {
 
     /// The current revision's model, waited for by the command `stop` stops
     /// ([`model`](Self::model)), what was read, and what the session's edits reach at that
-    /// revision ([`Reaching::reach`]); or why there's none: the gate refused the document
+    /// revision, worked out only if it's asked for ([`Reached`]); or why there's none: the
+    /// gate refused the document
     /// (its problems, the document's, which a check gives as its result), or the model
     /// couldn't be had.
     pub(super) fn current(self: &Arc<Self>, stop: &Ticket) -> Result<Current, Unbuilt> {
@@ -400,7 +401,7 @@ impl<C: Kernel + 'static> Session<C> {
             let held = self.held.read();
             (held.revision, Arc::clone(&held.gated), held.reaching())
         };
-        let reached = Arc::new(reaching.reach());
+        let reached = Reached::of(reaching);
         match &*gated {
             Gated::Checked(checked) => self
                 .model(stop, revision, checked, &reached)
@@ -441,7 +442,7 @@ impl<C: Kernel + 'static> Session<C> {
         }
         let read = match &*gated {
             Gated::Checked(checked) => self
-                .published_read(revision, checked, &reaching)
+                .published_read(revision, checked, reaching)
                 .map_err(Unbuilt::Unavailable),
             refused => lock(&self.rebuilds)
                 .published
@@ -453,9 +454,10 @@ impl<C: Kernel + 'static> Session<C> {
     }
 
     /// The design's published read of the session at `revision`, whose document is
-    /// `checked`, and what the session's edits reach at it `reaching` (worked out only if its
-    /// rebuild starts, whose model it's published with): the newest model published of
-    /// `revision` or an older one, never waiting;
+    /// `checked`, and what the session's edits reach at it `reaching` (taken by its rebuild,
+    /// if it starts, to publish with its model, and never worked out here: on the caller's
+    /// thread, under the rebuilds' lock): the newest model published of `revision` or an
+    /// older one, never waiting;
     /// `revision`'s rebuild started if nothing of it, or newer, is published or running, its
     /// recompute hasn't failed (a failure isn't started again each frame, but left for
     /// `check` to say once and rebuild), and it wasn't cancelled (a stop isn't undone by the
@@ -465,7 +467,7 @@ impl<C: Kernel + 'static> Session<C> {
         self: &Arc<Self>,
         revision: Revision,
         checked: &Arc<Checked>,
-        reaching: &Reaching,
+        reaching: Reaching,
     ) -> Result<Published, Problems> {
         let mut rebuilds = lock(&self.rebuilds);
         let failed = rebuilds
@@ -485,8 +487,7 @@ impl<C: Kernel + 'static> Session<C> {
                 .as_ref()
                 .is_none_or(|published| published.revision < revision)
         {
-            let reached = Arc::new(reaching.reach());
-            self.start_unless_newer(&mut rebuilds, revision, checked, &reached)?;
+            self.start_unless_newer(&mut rebuilds, revision, checked, &Reached::of(reaching))?;
         }
         match rebuilds
             .published
@@ -558,7 +559,7 @@ pub(super) struct Current {
     pub(super) model: Arc<Model>,
     pub(super) read: ModelRead,
     /// What the session's edits reach at its revision.
-    pub(super) reached: Arc<BTreeSet<FeatureId>>,
+    pub(super) reached: Reached,
 }
 
 /// Why a session's model couldn't be read.
@@ -705,7 +706,7 @@ pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Lab
                 rebuilds.published = Some(Published {
                     revision,
                     model,
-                    reached: Arc::clone(&label.reached),
+                    reached: label.reached.clone(),
                 });
             }
         }
