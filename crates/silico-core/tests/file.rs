@@ -113,7 +113,7 @@ fn a_document_whose_name_is_as_long_as_a_name_may_be_is_saved() {
             if linked {
                 std::fs::hard_link(&file, dir.0.join("other")).unwrap();
             }
-            silico_core::file::save(&file, b"as read", b"formatted").unwrap();
+            save(&file, b"as read", b"formatted").unwrap();
             assert_eq!(
                 std::fs::read(&file).unwrap(),
                 b"formatted",
