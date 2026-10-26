@@ -59,11 +59,27 @@ pub fn process_exists(pid: u32) -> bool {
 
 /// Whether `pid` is a zombie (exited, not yet reaped by the client).
 pub fn zombie(pid: u32) -> bool {
+    state(pid).starts_with('Z')
+}
+
+/// Whether `pid` has ended, every thread of it, so its parent can reap it: gone, or a
+/// zombie with no thread left. On Linux a killed process's first thread is a zombie while
+/// its others still end (`ps` says `Zl`, the `l` for more than one thread), and until they
+/// have, `waitpid` doesn't give it to its parent: a render worker killed while idle, its
+/// wgpu and lavapipe threads still ending, isn't yet ended to the client that asks.
+pub fn ended(pid: u32) -> bool {
+    let state = state(pid);
+    state.is_empty() || (state.starts_with('Z') && !state.contains('l'))
+}
+
+/// `ps`'s state of `pid` (`R`, `S`, `Z`, ... with its flags), or nothing if there's no such
+/// process.
+fn state(pid: u32) -> String {
     let out = std::process::Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])
         .output()
         .unwrap();
-    String::from_utf8_lossy(&out.stdout).trim().starts_with('Z')
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
 pub fn signal(pid: u32, sig: &str) {
