@@ -1,0 +1,159 @@
+{
+  "request": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`open`'s request: open a document's file as a session, or make a new, empty one. A\ndocument the gate refuses still opens, its problems in the result, so it can be mended\nwith `replace_text`.",
+    "properties": {
+      "create": {
+        "description": "Whether to make a new, empty document at the path: refused if anything is there.",
+        "type": "boolean"
+      },
+      "path": {
+        "description": "The document's path, as every response names the session's: a regular file, if it\nisn't to be made. A file this process holds open in another session, by any name, is\nrefused.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "create",
+      "path"
+    ],
+    "title": "OpenRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "Error": {
+        "additionalProperties": false,
+        "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+        "properties": {
+          "candidates": {
+            "description": "What might have been meant, such as the names nearest one that found nothing.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cause": {
+            "description": "What lay under it, such as the kernel's own failure, if known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+            "type": "string"
+          },
+          "elements": {
+            "description": "The elements at fault, by name: the first of them, if there are many.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "elements_total": {
+            "description": "How many elements are at fault, listed or not.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "feature": {
+            "description": "The ID of the feature at fault, if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "description": "What went wrong, in a sentence.",
+            "type": "string"
+          },
+          "parameter": {
+            "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suggestion": {
+            "description": "What to do about it, if Silico can say.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "candidates",
+          "cause",
+          "code",
+          "elements",
+          "elements_total",
+          "feature",
+          "message",
+          "parameter",
+          "suggestion"
+        ],
+        "type": "object"
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`open`'s result. The response's `session` is the session opened.",
+    "properties": {
+      "bodies": {
+        "description": "The bodies the timeline ends with: the solids no later feature consumed, in timeline\norder, found without a kernel.",
+        "items": {
+          "$ref": "#/$defs/FeatureId"
+        },
+        "type": "array"
+      },
+      "created": {
+        "description": "Whether the document was made (`create`).",
+        "type": "boolean"
+      },
+      "features": {
+        "description": "How many features the document has: null if its text doesn't read as a document.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "path": {
+        "description": "The path, as given.",
+        "type": "string"
+      },
+      "problems": {
+        "description": "The gate's problems with the document, the first 100. A document with any still\nopens, and the commands that need a document the gate took refuse until\n`replace_text` mends it.",
+        "items": {
+          "$ref": "#/$defs/Error"
+        },
+        "maxItems": 100,
+        "type": "array"
+      },
+      "problems_total": {
+        "description": "How many problems there are, listed or not.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "bodies",
+      "created",
+      "features",
+      "path",
+      "problems",
+      "problems_total"
+    ],
+    "title": "OpenResult",
+    "type": "object"
+  }
+}
