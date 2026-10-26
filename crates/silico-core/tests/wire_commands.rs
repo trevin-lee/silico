@@ -183,7 +183,8 @@ fn each_commands_schemas_are_the_committed_snapshot() {
             "{of}"
         );
     }
-    assert!(snapshot("version").is_none());
+    // A name that isn't a command's (one the design has, not built yet) has none.
+    assert!(snapshot("export").is_none());
 }
 
 /// Every object of `schema` with properties that isn't closed to them or doesn't require
@@ -726,6 +727,11 @@ fn schema_answers_the_document_and_each_command_as_committed() {
             error.candidates(),
             [
                 "document",
+                "version",
+                "open",
+                "close",
+                "status",
+                "cancel",
                 "begin",
                 "commit",
                 "rollback",
@@ -734,6 +740,9 @@ fn schema_answers_the_document_and_each_command_as_committed() {
                 "set_field",
                 "remove_feature",
                 "replace_text",
+                "text",
+                "outline",
+                "check",
                 "elements",
                 "query",
                 "schema",

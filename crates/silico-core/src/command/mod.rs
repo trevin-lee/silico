@@ -28,10 +28,10 @@ mod session;
 pub mod wire;
 
 pub use session::{
-    Added, Begun, Cancelled, Committed, FieldSet, MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice,
-    ModelRead, Opened, Published, Read, ReadClient, Rebuild, RebuildState, Reformatted, Removed,
-    Replaced, Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, Status,
-    Stopper,
+    Added, Begun, Cancelled, CheckAnswer, Closed, Committed, FieldSet, MAX_PUBLISHED_READS,
+    MAX_SESSIONS, ModelChoice, ModelRead, Opened, OutlineAnswer, Published, Read, ReadClient,
+    Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
+    SessionId, SessionInfo, Sessions, Status, Stopper, TextAnswer,
 };
 
 /// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for
@@ -74,16 +74,16 @@ pub struct Limits {
     pub query: u32,
     /// The most ranges a `query`'s `measures` holds: as many as there are measures.
     pub query_measures: usize,
-    /// A kernel request's time, in seconds.
-    pub kernel_seconds: u64,
-    /// A sketch solve's time, in seconds.
-    pub sketch_seconds: u64,
     /// The elements one render highlights.
     pub highlight: usize,
     /// A render's side, in pixels, at most.
     pub render_side: u32,
     /// A render's time, in seconds, from when its scene is sent.
     pub render_seconds: u64,
+    /// A kernel request's time, in seconds.
+    pub kernel_seconds: u64,
+    /// A sketch solve's time, in seconds.
+    pub sketch_seconds: u64,
 }
 
 /// What `version` answers.
@@ -102,11 +102,11 @@ pub const VERSION: Version = Version {
         elements: elements::ENTRIES_AT_MOST,
         query: elements::ENTRIES_AT_MOST,
         query_measures: elements::MEASURES_AT_MOST,
-        kernel_seconds: crate::kernel::DEFAULT_TIMEOUT.as_secs(),
-        sketch_seconds: crate::sketch::SKETCH_TIMEOUT.as_secs(),
         highlight: render::MAX_HIGHLIGHTS,
         render_side: silico_protocol::MAX_RENDER_SIDE,
         render_seconds: crate::render::RENDER_TIMEOUT.as_secs(),
+        kernel_seconds: crate::kernel::DEFAULT_TIMEOUT.as_secs(),
+        sketch_seconds: crate::sketch::SKETCH_TIMEOUT.as_secs(),
     },
 };
 

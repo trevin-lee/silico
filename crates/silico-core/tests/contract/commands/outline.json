@@ -1,0 +1,35 @@
+{
+  "request": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`outline`'s request: the document's outline, one line a feature, as `silico show`\nprints it.",
+    "properties": {
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session"
+    ],
+    "title": "OutlineRequest",
+    "type": "object"
+  },
+  "result": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`outline`'s result.",
+    "properties": {
+      "outline": {
+        "description": "The outline: each feature's ID, name, type, and values, with its stored fingerprint,\na line each, its note on the line after; then the bodies.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "outline"
+    ],
+    "title": "OutlineResult",
+    "type": "object"
+  }
+}
