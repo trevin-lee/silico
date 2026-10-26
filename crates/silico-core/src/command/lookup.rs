@@ -314,4 +314,23 @@ mod tests {
             Some("name a face or an edge of the solid")
         );
     }
+
+    #[test]
+    fn an_error_the_command_refuses_with_is_said_at_the_finish_after_the_lookups_own() {
+        // Render's: a name found in a solid it doesn't draw, refused by the command as it
+        // reads the hit. Said with the lookup's own refusals, in the order they came.
+        let model = model();
+        let mut lookup = Lookup::new(&model, None, FACES_AND_EDGES);
+        lookup.refuse(Error::new(ErrorCode::Internal, "the command's own"));
+        let refused = lookup.finish().unwrap_err();
+        assert_eq!(refused.total(), 1);
+        assert_eq!(refused.errors()[0].message(), "the command's own");
+        let mut lookup = Lookup::new(&model, None, FACES_AND_EDGES);
+        assert!(lookup.find("highlight.0", "k7f2qx3m.box.Vertex1").is_none());
+        lookup.refuse(Error::new(ErrorCode::Internal, "the command's own"));
+        let refused = lookup.finish().unwrap_err();
+        assert_eq!(refused.total(), 2);
+        assert_eq!(refused.errors()[0].parameter(), Some("highlight.0"));
+        assert_eq!(refused.errors()[1].code(), ErrorCode::Internal);
+    }
 }

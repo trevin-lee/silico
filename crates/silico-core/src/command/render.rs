@@ -18,7 +18,7 @@ use silico_protocol::{
 };
 
 use super::lookup::{Kinds, Lookup};
-use super::{ModelChoice, Problems, Running, SessionId, Sessions};
+use super::{ModelChoice, Problems, ReadCommand, Running, SessionId, Sessions};
 use crate::document::{Angle, FeatureId, Length, Position};
 use crate::file::{self, Output};
 use crate::kernel::{Clients, ElementKind, Kernel, KernelRequest};
@@ -194,7 +194,7 @@ impl<P: Clients + 'static> Sessions<P> {
     ) -> Running<Rendering> {
         let (renderer, meshes) = self.render_on();
         let held = self.held_paths();
-        self.read_model(session, "render", model, move |read| {
+        self.read_model(session, ReadCommand::Render, model, move |read| {
             let Some(renderer) = renderer else {
                 return Err(Problems::from(
                     Error::new(
@@ -370,6 +370,8 @@ pub fn render<K: Kernel>(
             })
         })
         .collect();
+    // Whether bodies were left out of view, which changes the advice for a scene too large.
+    let left_out = bodies.len() > kept.len();
     within_caps(
         kept.iter()
             .filter_map(|b| b.built.summary())
@@ -385,7 +387,7 @@ pub fn render<K: Kernel>(
         )
     }))?;
     // And their triangles, before any is copied into the scene: fewer pixels mesh coarser.
-    within_triangles(&meshes, bodies.len() > kept.len(), fit_side)?;
+    within_triangles(&meshes, left_out, fit_side)?;
     let scene = RenderScene {
         bodies: kept
             .iter()
@@ -422,12 +424,7 @@ pub fn render<K: Kernel>(
         };
         return Err(Problems::from(error));
     }
-    within_a_frame(
-        &scene,
-        bodies.len() > kept.len(),
-        fit_side,
-        u64::from(MAX_FRAME_LEN),
-    )?;
+    within_a_frame(&scene, left_out, fit_side, u64::from(MAX_FRAME_LEN))?;
     let png = match on.renderer.render(scene).wait() {
         RenderOutcome::Done(result) => result.map_err(Problems::from)?.png,
         // Stopped by its read's stop, its queued scene never sent or its worker killed: a

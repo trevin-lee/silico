@@ -2,7 +2,9 @@
 # each case in the JSON file SILICO_ORACLE_CASES names, from the one SILICO_ORACLE_FIRST
 # numbers (from 0), with the calls Silico's port notes name, measures it, and prints its
 # outcome as a line, "SILICO_ORACLE_CASE <json>", as soon as it has it, so a crash on one
-# case loses only that one. "SILICO_ORACLE_READY" comes first, once the cases are read.
+# case loses only that one. "SILICO_ORACLE_READY" comes first, once the cases are read. A
+# measure case (silico-oracle's measures.rs) builds the bodies a pair of elements is in and
+# measures the pair instead, its outcome "measured".
 import json
 import os
 
@@ -39,9 +41,17 @@ def unit(v):
     return [c / n for c in v]
 
 
+def edge_numbers(s, edges):
+    """Each of `edges` as its number in `s`, from 1: a number as it is (Silico's numbering,
+    which a case built the same way on both sides shares), or an edge as Silico describes
+    it, found by its geometry (`element`), for a measure case's fillet or chamfer."""
+    return [int(element(s, e)[len("Edge"):]) if isinstance(e, dict) else e for e in edges]
+
+
 def edges(s, numbers):
     # Numbered from 1, as Silico numbers them; 0 or below is no edge (Python would take it
     # from the end).
+    numbers = edge_numbers(s, numbers)
     for i in numbers:
         if i < 1:
             raise IndexError("there's no Edge%d" % i)
@@ -65,6 +75,8 @@ def face(points):
 
 def build(doc, spec):
     (kind, a), = spec.items()
+    if kind == "placed":
+        return MAKE[a["shape"]](V(*a["position"]), a["values"])
     if kind in PRIMITIVES:
         feature, properties = PRIMITIVES[kind]
         o = doc.addObject("Part::" + feature, feature)
@@ -95,8 +107,9 @@ def build(doc, spec):
         # Not refined: its default comes from the user's preferences (RefineModel), and
         # Silico's results are FreeCAD's unrefined ones.
         ch.Refine = False
-        edges(holder.Shape, a["edges"])  # refuses an edge that isn't there
-        ch.Base = (base, ["Edge%d" % i for i in a["edges"]])
+        numbers = edge_numbers(holder.Shape, a["edges"])
+        edges(holder.Shape, numbers)  # refuses an edge that isn't there
+        ch.Base = (base, ["Edge%d" % i for i in numbers])
         (size_type, size), = a["size"].items()
         ch.ChamferType = CHAMFER_TYPES[size_type]
         ch.Size = size["distance"]
@@ -237,6 +250,90 @@ def part_design(doc, features):
     return last.Shape.copy()
 
 
+# Silico's kinds of curve and surface (silico-oracle's measures.rs), as FreeCAD's types.
+CURVES = {"line": "Part::GeomLine", "circle": "Part::GeomCircle", "ellipse": "Part::GeomEllipse"}
+SURFACES = {
+    "plane": "Part::GeomPlane",
+    "cylinder": "Part::GeomCylinder",
+    "cone": "Part::GeomCone",
+    "sphere": "Part::GeomSphere",
+    "torus": "Part::GeomToroid",
+}
+
+# How near FreeCAD's element must be to Silico's description of it, in mm (relative to the
+# larger of 1 and the size measured): both are the same OCCT's geometry of the same solid.
+NEAR = 1e-6
+
+
+def near(a, b, size=1.0):
+    return abs(a - b) <= NEAR * max(1.0, abs(size))
+
+
+def on(shape, p):
+    return shape.distToShape(Part.Vertex(V(*p)))[0] <= NEAR * max(1.0, *(abs(c) for c in p))
+
+
+def element(s, signature):
+    """The sub-element of `s` that `signature` describes, as Silico's rebuild describes it
+    (silico-oracle's measures.rs, `Element`), by its name in `s` ("Face3"): a vertex at its
+    point; an edge on its kind of curve, of its length, with its ends and middle on it; a
+    face on its kind of surface, of its area, with its centre of area. Exactly one must fit:
+    the two builds needn't number their elements alike."""
+    (kind, d), = signature.items()
+    if kind == "vertex":
+        prefix, elements = "Vertex", s.Vertexes
+        fits = lambda v: on(v, d["point"])
+    elif kind == "edge":
+        prefix, elements = "Edge", s.Edges
+        fits = lambda e: (e.Curve.TypeId == CURVES[d["curve"]] and near(e.Length, d["length"], d["length"])
+                          and all(on(e, d[k]) for k in ("start", "end", "middle")))
+    elif kind == "face":
+        prefix, elements = "Face", s.Faces
+        fits = lambda f: (f.Surface.TypeId == SURFACES[d["surface"]] and near(f.Area, d["area"], d["area"])
+                          and all(near(a, b, b) for a, b in zip(f.CenterOfMass, d["centroid"])))
+    else:
+        raise ValueError("unknown element " + kind)
+    found = [i for i, x in enumerate(elements) if fits(x)]
+    if len(found) != 1:
+        raise RuntimeError("%d of its %ss fit %s" % (len(found), kind, json.dumps(signature)))
+    return "%s%d" % (prefix, found[0] + 1)
+
+
+def measure_pair(doc, m):
+    """A measure case (silico-oracle's measures.rs): each body the pair is in built as a
+    Part::Feature, each element found in it by its geometry, and the pair measured by
+    MeasureDistance or MeasureAngle as the GUI's Measure tool makes them; for a distance,
+    also distToShape's least distance, and how far Silico's witness points are from the
+    elements they're on."""
+    bodies = {}
+    for body, spec in sorted(m["bodies"].items()):
+        o = doc.addObject("Part::Feature", "Body")
+        o.Shape = build(doc, spec)
+        bodies[body] = o
+    picked = [(bodies[e["body"]], element(bodies[e["body"]].Shape, e["element"])) for e in m["elements"]]
+    kind = m["kind"]
+    if kind not in ("distance", "angle"):
+        raise ValueError("unknown measure " + kind)
+    o = doc.addObject("Measure::MeasureDistance" if kind == "distance" else "Measure::MeasureAngle", "Measure")
+    o.Element1 = (picked[0][0], [picked[0][1]])
+    o.Element2 = (picked[1][0], [picked[1][1]])
+    doc.recompute()
+    if not o.isValid():
+        raise RuntimeError(o.getStatusString())
+    out = {"elements": [name for _, name in picked]}
+    if kind == "angle":
+        out["angle"] = o.Angle.Value
+        return out
+    shapes = [b.Shape.getElement(name) for b, name in picked]
+    out["distance"] = o.Distance.Value
+    out["from"] = list(o.Position1)
+    out["to"] = list(o.Position2)
+    out["dist_to_shape"] = shapes[0].distToShape(shapes[1])[0]
+    if m["witness"] is not None:
+        out["witness"] = [shape.distToShape(Part.Vertex(V(*p)))[0] for shape, p in zip(shapes, m["witness"])]
+    return out
+
+
 def measure(s):
     # An empty result (a common of shapes that don't overlap) is refused by Silico, which
     # FreeCAD returns as a shape with nothing in it: the same outcome, a failure.
@@ -270,7 +367,10 @@ for case in cases:
     try:
         # Written here, so a measure that isn't finite (a shape too large to measure) is
         # the case's failure.
-        outcome = json.dumps({"built": measure(build(doc, case["shape"]))}, allow_nan=False)
+        if "measure" in case:
+            outcome = json.dumps({"measured": measure_pair(doc, case["measure"])}, allow_nan=False)
+        else:
+            outcome = json.dumps({"built": measure(build(doc, case["shape"]))}, allow_nan=False)
     except Exception as e:
         outcome = json.dumps({"failed": str(e) or type(e).__name__})
     FreeCAD.closeDocument(doc.Name)

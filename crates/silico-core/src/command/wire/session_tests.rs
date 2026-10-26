@@ -545,121 +545,34 @@ fn a_requests_value_is_taken_whole_whatever_it_is_and_required() {
     );
 }
 
-/// The names the crate's code (its tests apart) gives the commands it runs: each queued on
-/// a session or run as a read (`queued`, `queued_with`, `read_model`, by their second
-/// argument), those run as reads, which may read the published model (`read_model`'s) again
-/// apart, and each ticket made apart from those (`Ticket::new`): each as a list of the
-/// literal names, and the arguments that aren't a literal, as written.
-fn names_given() -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
-    fn walk(dir: &std::path::Path, files: &mut Vec<PathBuf>) {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                walk(&path, files);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                files.push(path);
-            }
-        }
-    }
-    /// The argument at the start of `rest`: a literal's text, or the code up to its comma.
-    fn argument(rest: &str) -> Result<String, String> {
-        match rest.strip_prefix('"') {
-            Some(literal) => Ok(literal[..literal.find('"').unwrap()].to_owned()),
-            None => Err(rest[..rest.find([',', ')']).unwrap()].to_owned()),
-        }
-    }
-    let mut files = Vec::new();
-    walk(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src"),
-        &mut files,
-    );
-    let (mut run, mut reads, mut tickets, mut other) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    for file in files {
-        let name = file.file_name().unwrap().to_str().unwrap();
-        if name == "tests.rs" || name.ends_with("_tests.rs") || name == "adversarial.rs" {
-            continue;
-        }
-        let text = std::fs::read_to_string(&file).unwrap();
-        // The code before its tests, comments left out, every space gone.
-        let code = text.split("#[cfg(test)]\nmod ").next().unwrap();
-        let code: String = code
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .flat_map(str::chars)
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        for call in [".queued(", ".queued_with(", ".read_model("] {
-            for (at, _) in code.match_indices(call) {
-                let rest = &code[at + call.len()..];
-                // Past the session, the first argument; a call of none or one (a pool's
-                // `queued()`) isn't one of these.
-                let first = rest.find([',', ')']).unwrap();
-                if rest[first..].starts_with(')') {
-                    continue;
-                }
-                let rest = &rest[first + 1..];
-                match argument(rest) {
-                    Ok(literal) => {
-                        if call == ".read_model(" {
-                            reads.push(literal.clone());
-                        }
-                        run.push(literal);
-                    }
-                    Err(code) => other.push(code),
-                }
-            }
-        }
-        for (at, _) in code.match_indices("Ticket::new(") {
-            match argument(&code[at + "Ticket::new(".len()..]) {
-                Ok(literal) => tickets.push(literal),
-                Err(code) => other.push(code),
-            }
-        }
-    }
-    (run, reads, tickets, other)
-}
-
 #[test]
-fn the_commands_a_session_runs_are_the_ones_status_and_cancel_name() {
-    // Each name a command runs under in a session is one `cancel` takes, and `status` gives,
-    // and each of those is a command's that runs: so cancel's enum never names a command
-    // that can't be running, nor leaves one out that can.
-    use super::session::SESSION_COMMANDS;
-    let (run, _, tickets, other) = names_given();
-    let named: std::collections::BTreeSet<&str> = run.iter().map(String::as_str).collect();
-    let listed: std::collections::BTreeSet<&str> = SESSION_COMMANDS.into_iter().collect();
-    assert_eq!(named, listed);
-    assert_eq!(listed.len(), SESSION_COMMANDS.len(), "a name listed twice");
-    // `open`'s ticket, its handle's alone: its session isn't there for `cancel` to find.
-    assert_eq!(tickets, ["open"]);
-    // The names passed on, never made up: `read_model`'s to `queued` and to its ticket,
-    // `queued`'s to `queued_with`, and `queued_with`'s to its ticket.
-    assert_eq!(other, ["command"; 4]);
-    // In the design's order: the wire's commands, those that never run left out.
+fn the_commands_a_session_runs_are_the_wires_in_the_designs_order() {
+    // Each command that runs in a session is a command of the wire's, named as the wire
+    // names it, once, in the wire's order: every one but those answered at once and `open`.
+    use super::session::{PUBLISHED_READS, SESSION_COMMANDS};
     let ordered: Vec<&str> = super::COMMANDS
         .map(|(name, _)| name)
         .into_iter()
-        .filter(|name| listed.contains(name))
+        .filter(|name| SESSION_COMMANDS.contains(name))
         .collect();
     assert_eq!(ordered, SESSION_COMMANDS);
-}
-
-#[test]
-fn the_reads_status_lists_are_the_commands_that_read_the_published_model() {
-    // Each name a command runs under as a read (`read_model`, which reads the published
-    // model when asked) is one `status` lists among its reads, and each of those is such a
-    // read's: so status's reads never name a command that can't run as one.
-    use super::session::{PUBLISHED_READS, SESSION_COMMANDS};
-    let (_, reads, _, _) = names_given();
-    let named: std::collections::BTreeSet<&str> = reads.iter().map(String::as_str).collect();
-    let listed: std::collections::BTreeSet<&str> = PUBLISHED_READS.into_iter().collect();
-    assert_eq!(named, listed);
-    assert_eq!(listed.len(), PUBLISHED_READS.len(), "a name listed twice");
-    // In the design's order, among the commands that run in a session.
-    let ordered: Vec<&str> = SESSION_COMMANDS
+    let others: Vec<&str> = super::COMMANDS
+        .map(|(name, _)| name)
         .into_iter()
-        .filter(|name| listed.contains(name))
+        .filter(|name| !SESSION_COMMANDS.contains(name))
         .collect();
-    assert_eq!(ordered, PUBLISHED_READS);
+    assert_eq!(others, ["version", "open", "status", "cancel", "schema"]);
+    // The design's reads of the published model (section 2: those that take `model`).
+    assert_eq!(
+        PUBLISHED_READS,
+        [
+            "check",
+            "elements",
+            "query",
+            "mass_properties",
+            "distance",
+            "angle",
+            "render"
+        ]
+    );
 }

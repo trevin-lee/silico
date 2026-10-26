@@ -14,6 +14,8 @@ mod cached;
 mod chamfer_sizes;
 #[path = "common/close.rs"]
 mod close;
+#[path = "common/cube_elements.rs"]
+mod cube_elements;
 #[path = "../../silico-core/tests/common/profile.rs"]
 mod draw;
 #[path = "common/exported.rs"]
@@ -69,6 +71,8 @@ mod adversarial_fillet;
 mod adversarial_measure_refine_u;
 #[path = "adversarial_mesh.rs"]
 mod adversarial_mesh;
+#[path = "adversarial_point_distance.rs"]
+mod adversarial_point_distance;
 #[path = "adversarial_profile_faces.rs"]
 mod adversarial_profile_faces;
 #[path = "adversarial_revolution_measures.rs"]
@@ -107,6 +111,8 @@ mod finite;
 mod mesh;
 #[path = "mesh_floor.rs"]
 mod mesh_floor;
+#[path = "point_distance.rs"]
+mod point_distance;
 #[path = "primitive_numbers.rs"]
 mod primitive_numbers;
 #[path = "primitives.rs"]

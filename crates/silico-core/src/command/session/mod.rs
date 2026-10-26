@@ -15,51 +15,50 @@
 //! links and by the file it is (its device and inode, held open while claimed), so neither
 //! another name for it (a link, a hard link, another name the system gives it) nor another
 //! file put at its path (a save by rename) opens it twice, and two sessions never save one
-//! file over each other. At most [`MAX_SESSIONS`] are open
-//! at once. A document the gate refuses still opens, holding its text and the gate's
-//! problems (decision 21), so it can be mended; a file longer than Silico reads doesn't,
-//! since a session couldn't hold its text whole. Session IDs are `s1`, `s2`, ..., in the
-//! order opens were asked for, never reused within the process. Each session has its own
-//! client of the shared kernel ([`Clients::client`]: its rebuilds never supersede another
-//! session's), and sessions on documents in one directory share one rebuild cache, one
-//! value cloned, so its bound counts every session's writes.
+//! file over each other. At most [`MAX_SESSIONS`] are open at once. A document the gate
+//! refuses still opens, holding its text and the gate's problems (decision 21), so it can
+//! be mended; a file longer than Silico reads doesn't, since a session couldn't hold its
+//! text whole. Session IDs are `s1`, `s2`, ..., in the order opens were asked for, never
+//! reused within the process. Each session has its own client of the shared kernel
+//! ([`Clients::client`]: its rebuilds never supersede another session's), and sessions on
+//! documents in one directory share one rebuild cache, one value cloned, so its bound
+//! counts every session's writes.
 //!
-//! A session's document changes in transactions (the design's section 4): [`Sessions::begin`]
-//! keeps the session's state, [`Sessions::commit`] saves what the transaction's edits
-//! changed through [`file::save`], writing new fingerprints and solves only for the features
-//! they reached (decision 28), and [`Sessions::rollback`] restores what `begin` kept, the
-//! text byte for byte and the model `begin` saw, at a new revision whose state equals the
-//! old. One at a time, never nested; a session isn't closed while one is open, and a client
-//! that goes away (the sessions dropped) leaves its file as it was. An edit made outside a
-//! transaction ([`Sessions::add_feature`], [`Sessions::set_field`],
-//! [`Sessions::remove_feature`], [`Sessions::replace_text`]) is saved as it's made, as its
-//! own transaction (decision 1): so only a commit, such an edit, or [`Sessions::format`],
-//! which accepts drift by name (decision 31), writes the document.
+//! A session's document changes in transactions (the design's section 4):
+//! [`Sessions::begin`] keeps the session's state, [`Sessions::commit`] saves what the
+//! transaction's edits changed through [`file::save_over`], writing new fingerprints and
+//! solves only for the features they reached (decision 28), and [`Sessions::rollback`]
+//! restores what `begin` kept, the text byte for byte and the model `begin` saw, at a new
+//! revision whose state equals the old. One at a time, never nested; a session isn't closed
+//! while one is open, and a client that goes away (the sessions dropped) leaves its file as
+//! it was. An edit made outside a transaction ([`Sessions::add_feature`],
+//! [`Sessions::set_field`], [`Sessions::remove_feature`], [`Sessions::replace_text`]) is
+//! saved as it's made, as its own transaction (decision 1): so only a commit, such an edit,
+//! or [`Sessions::format`], which accepts drift by name (decision 31), writes the document.
 //!
 //! A file can change under a session (decision 2): before each queued command outside a
 //! transaction, the session reads its file again and compares its bytes with those it last
 //! read or wrote, and reloads a change at a new revision, the response's `reloaded` saying
 //! so; a file gone, unreadable, or another session's refuses the command. The reload is the
 //! session's own work, not the command's: it stands whatever the command comes to, so a
-//! command cancelled after it answers `cancelled` with `reloaded` true and the new revision.
-//! Inside a
-//! transaction, only `commit` reads the file, and a change (or a file gone) is its conflict:
-//! every other command runs on what the session holds. `close`, `status`, and published
-//! reads never read the file.
+//! command cancelled after it answers `cancelled` with `reloaded` true and the new
+//! revision. Inside a transaction, only `commit` reads the file, and a change (or a file
+//! gone) is its conflict: every other command runs on what the session holds. `close`,
+//! `status`, and published reads never read the file.
 //!
 //! A session's path is UTF-8, so every response names it exactly: `open` refuses one that
 //! isn't.
 //!
-//! A command can be stopped (decisions 10 and 34): through its handle
-//! ([`Running::cancel`], MCP's cancellation), or by [`Sessions::cancel`], naming the command
-//! running. Either way it stops before its work leaves a trace and answers `cancelled`, or,
-//! if it had done its work (an edit saved), answers with its real result: what the session
-//! holds is changed only once the command's stop is settled (`holding`), and its file
-//! written only so too. A kernel fault
-//! (a worker that crashed, hung, or couldn't be had) is given once, beside a command's
-//! result, in the model it read ([`ModelRead::fault`]), never among the document's problems,
-//! and kept as its revision's outcome: no read of that revision rebuilds it, and a save
-//! writes around it, its features keeping what's stored with them (decision 32).
+//! A command can be stopped (decisions 10 and 34): through its handle ([`Running::cancel`],
+//! MCP's cancellation), or by [`Sessions::cancel`], naming the command running. Either way
+//! it stops before its work leaves a trace and answers `cancelled`, or, if it had done its
+//! work (an edit saved), answers with its real result: what the session holds is changed
+//! only once the command's stop is settled (`holding`), and its file written only so too. A
+//! kernel fault (a worker that crashed, hung, or couldn't be had) is given once, beside a
+//! command's result, in the model it read ([`ModelRead::fault`]), never among the
+//! document's problems, and kept as its revision's outcome: no read of that revision
+//! rebuilds it, and a save writes around it, saving its features as failed ones are
+//! (decision 32).
 //!
 //! What it doesn't bound: the caches, one kept for each directory a session has opened a
 //! document in, for the process's life; and each session's queue, which holds every command
@@ -82,12 +81,13 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use super::edit::{self, FeatureIds};
-use super::{Gated, Problems};
+use super::{Gated, Problems, ReadCommand, SessionCommand};
 use crate::cache::Cache;
 use crate::document::json::Node;
 use crate::document::{self, FeatureId};
 #[cfg(doc)]
 use crate::file;
+use crate::file::shown_path;
 use crate::kernel::{Clients, Kernel};
 use crate::recompute::SketchSolvers;
 use crate::sketch::SketchSolver;
@@ -97,7 +97,7 @@ use crate::{Error, ErrorCode};
 use cancel::{Interrupt, Ticket, Why, not_running};
 use edits::{as_committed, not_given_back};
 use holding::Holding;
-use rebuilds::{Rebuilds, Unbuilt, published_answer};
+use rebuilds::{Newest, Rebuilds, Unbuilt, published_answer};
 pub(super) use rebuilds::{kept_fault, kept_suggestion, retried};
 use registry::{Book, CacheOpener, Registry, Release, Started, claim, reclaim, serve, start};
 pub use threads::MAX_PUBLISHED_READS;
@@ -107,9 +107,9 @@ pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
     Added, Begun, Cancelled, CheckAnswer, Closed, Committed, FieldSet, ModelChoice, ModelRead,
-    Opened, OutlineAnswer, Published, Read, ReadClient, Rebuild, RebuildState, Reformatted,
-    Removed, Replaced, Response, Revision, RolledBack, Running, SessionId, SessionInfo, Status,
-    Stopper, TextAnswer,
+    Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild, RebuildState,
+    Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running, SessionId,
+    SessionInfo, Status, Stopper, TextAnswer,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 
@@ -123,7 +123,9 @@ pub const MAX_SESSIONS: usize = 16;
 /// only a commit or `format` writes), and waits for each session's thread to end, then for
 /// the threads watching its rebuilds and running its published reads, a session's closed
 /// before the drop too (a read blocked in its own code keeps the drop waiting until it
-/// returns).
+/// returns). A rebuild's own recompute thread isn't waited for: its engine, dropped with
+/// its session, stops it, and it may end a little after (naming a model's elements once its
+/// rebuild has answered).
 pub struct Sessions<P: Clients + 'static> {
     registry: Arc<Registry<P>>,
 }
@@ -150,6 +152,50 @@ struct Session<C: Kernel + 'static> {
     reads: Mutex<Reads>,
     /// The queued command running, if one is: its stop, which `cancel` finds here.
     command: Mutex<Option<Arc<Ticket>>>,
+    /// How far its newest rebuild has got, under a lock of its own: what `status` and each
+    /// command's handle read.
+    newest: Arc<Newest>,
+    /// Where its commands wait as each starts, in this crate's tests only.
+    #[cfg(test)]
+    gate: Gate,
+}
+
+/// In this crate's tests only: where a session's commands, queued and published reads,
+/// wait as each starts (its stop recorded, its work not begun), once a test has shut it:
+/// each says it started, then waits until the test lets it through. Its lock is taken
+/// alone.
+#[cfg(test)]
+#[derive(Default)]
+struct Gate(Mutex<Option<Shut>>);
+
+/// A shut [`Gate`]'s ends.
+#[cfg(test)]
+#[derive(Clone)]
+struct Shut {
+    /// Told as each command starts.
+    started: Sender<()>,
+    /// What each waits on until the test lets it through (or goes).
+    through: Arc<Mutex<mpsc::Receiver<()>>>,
+}
+
+#[cfg(test)]
+impl Gate {
+    /// Shut: each command that starts says so on `started`, then waits for one word on
+    /// `through`.
+    fn shut(&self, started: Sender<()>, through: mpsc::Receiver<()>) {
+        *lock(&self.0) = Some(Shut {
+            started,
+            through: Arc::new(Mutex::new(through)),
+        });
+    }
+
+    fn pass(&self) {
+        let shut = lock(&self.0).clone();
+        if let Some(Shut { started, through }) = shut {
+            let _ = started.send(());
+            let _ = lock(&through).recv();
+        }
+    }
 }
 
 /// A command waiting on a session's rebuild is woken by its cancel, to stop it.
@@ -216,7 +262,7 @@ impl<C: Kernel + 'static> Session<C> {
     /// Ends its queue: commands queued after it are told the session closed. And its
     /// published reads interrupted as closed ([`Why::Closed`]), each running now and, since
     /// the session's record of them stays closed, each counted after, at once: so a read's
-    /// own kernel client (M4.5's) is retired however late it's added, and the read answers
+    /// own kernel client is retired however late it's added, and the read answers
     /// as of a session that closed, not `cancelled`. The command running on its thread is
     /// interrupted as closed too, so a current read's kernel work stops with the session
     /// (`Sessions`' drop closes every session); a queued `close` running this is that
@@ -259,13 +305,10 @@ impl<C: Kernel + 'static> Session<C> {
         Ok(())
     }
 
-    /// The names of its published reads running, in the order they started.
-    fn reads_running(&self) -> Vec<&'static str> {
+    /// Its published reads running, in the order they started.
+    fn reads_running(&self) -> Vec<ReadCommand> {
         let reads = lock(&self.reads);
-        lock(&reads.unanswered)
-            .tickets()
-            .map(|ticket| ticket.command())
-            .collect()
+        lock(&reads.unanswered).commands().collect()
     }
 
     /// The stop of the queued command running, if one is: for `status` and `cancel`, never
@@ -325,7 +368,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     paths: BTreeMap::new(),
                     caches: BTreeMap::new(),
                     threads: Threads::new(),
-                    reads: Threads::new(),
+                    released: Threads::new(),
                     stopping: false,
                 }),
                 renderer: Mutex::new(None),
@@ -386,7 +429,7 @@ impl<P: Clients + 'static> Sessions<P> {
                         ErrorCode::InvalidInput,
                         format!(
                             "{} isn't UTF-8, so the API can't name it exactly",
-                            shown(Path::new(&path))
+                            shown_path(Path::new(&path))
                         ),
                     )
                     .with_parameter("path")
@@ -422,7 +465,7 @@ impl<P: Clients + 'static> Sessions<P> {
         let (reply, answer) = mpsc::sync_channel(1);
         let registry = Arc::clone(&self.registry);
         let caller = tracing::Span::current();
-        let ticket = Ticket::new("open");
+        let ticket = Ticket::opening();
         let stop = Arc::clone(&ticket);
         // Spawned with the book held, so the thread is recorded opening before it can end.
         let started = std::thread::Builder::new()
@@ -449,9 +492,9 @@ impl<P: Clients + 'static> Sessions<P> {
             Ok(thread) => {
                 book.opening.insert(id);
                 book.threads.push(thread);
-                Running::new(answer, SESSION_STOPPED, Some(ticket))
+                Running::new(answer, SESSION_STOPPED, Some(ticket), None)
             }
-            Err(e) => Running::answered(refused(crate::pool::thread_error("session", &e))),
+            Err(e) => Running::answered(refused(crate::worker::thread_error("session", &e))),
         }
     }
 
@@ -466,7 +509,7 @@ impl<P: Clients + 'static> Sessions<P> {
         let registry = Arc::downgrade(&self.registry);
         self.queued_with(
             session,
-            "close",
+            SessionCommand::Close,
             Rereads::Never,
             move |session, stop, _, _| {
                 session.shut(stop)?;
@@ -488,15 +531,20 @@ impl<P: Clients + 'static> Sessions<P> {
             return refused(not_open(*session));
         };
         let reads = found.reads_running();
-        let running = found.running().map(|ticket| ticket.command());
+        let running = found.running().and_then(|ticket| ticket.command());
         let held = found.held.read();
         let gated = matches!(*held.gated, Gated::Checked(_));
         let rebuild = if gated {
-            lock(&found.rebuilds).state(held.revision)
+            let state = lock(&found.rebuilds).state(held.revision);
+            Rebuild {
+                progress: found.newest.of(held.revision),
+                ..state
+            }
         } else {
             Rebuild {
                 revision: held.revision,
-                state: RebuildState::None,
+                state: RebuildState::Idle,
+                progress: None,
             }
         };
         Response {
@@ -523,7 +571,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// was stopped before it had). Refused, naming `command`, if no command of that name is
     /// running, what is given as candidates: so a cancel that comes late never stops the
     /// command queued after the one it meant.
-    pub fn cancel(&self, session: &SessionId, command: &str) -> Response<Cancelled> {
+    pub fn cancel(&self, session: &SessionId, command: SessionCommand) -> Response<Cancelled> {
         let _span = tracing::info_span!("session_command", session = %session, command = "cancel")
             .entered();
         let Some(found) = self.find(session) else {
@@ -537,14 +585,14 @@ impl<P: Clients + 'static> Sessions<P> {
         let named: Vec<&Arc<Ticket>> = queued
             .iter()
             .chain(&reads)
-            .filter(|ticket| ticket.command() == command)
+            .filter(|ticket| ticket.command() == Some(command))
             .collect();
         let result = if named.is_empty() {
             // Each, as `status` lists them.
-            let running: Vec<&'static str> = queued
+            let running: Vec<SessionCommand> = queued
                 .iter()
                 .chain(&reads)
-                .map(|ticket| ticket.command())
+                .filter_map(|ticket| ticket.command())
                 .collect();
             Err(Problems::from(not_running(found.id, command, &running)))
         } else {
@@ -552,11 +600,8 @@ impl<P: Clients + 'static> Sessions<P> {
             let stopped = named
                 .iter()
                 .fold(false, |stopped, ticket| ticket.cancel() | stopped);
-            tracing::info!(command, stopped, "cancelled");
-            Ok(Cancelled {
-                command: command.to_owned(),
-                stopped,
-            })
+            tracing::info!(command = command.as_str(), stopped, "cancelled");
+            Ok(Cancelled { command, stopped })
         };
         Response {
             session: Some(found.info(false)),
@@ -570,7 +615,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// the text isn't UTF-8 (the reader refused it), or, for a feature, if the text doesn't
     /// read as a document or hasn't one feature of that ID.
     pub fn text(&self, session: &SessionId, feature: Option<FeatureId>) -> Running<TextAnswer> {
-        self.queued(session, "text", move |session, _, _| {
+        self.queued(session, SessionCommand::Text, move |session, _, _| {
             let (text, gated) = session.document();
             let text = match feature {
                 None => String::from_utf8(text.to_vec()).map_err(|e| {
@@ -622,10 +667,10 @@ impl<P: Clients + 'static> Sessions<P> {
             warnings: Problems::none(),
         };
         match choice {
-            ModelChoice::Current => {
-                self.queued(session, "check", move |session, stop, model| match session
-                    .current(stop)
-                {
+            ModelChoice::Current => self.queued(
+                session,
+                SessionCommand::Check,
+                move |session, stop, model| match session.current(stop) {
                     Ok(current) => {
                         *model = Some(current.read);
                         let _span = tracing::info_span!("check").entered();
@@ -636,14 +681,17 @@ impl<P: Clients + 'static> Sessions<P> {
                     }
                     Err(Unbuilt::Gated(problems)) => Ok(answer(problems)),
                     Err(Unbuilt::Unavailable(problems)) => Err(problems),
-                })
-            }
-            ModelChoice::Published => {
-                self.read_model(session, "check", ModelChoice::Published, move |read| {
+                },
+            ),
+            ModelChoice::Published => self.read_model(
+                session,
+                ReadCommand::Check,
+                ModelChoice::Published,
+                move |read| {
                     let _span = tracing::info_span!("check").entered();
                     Ok(answer(super::check_except(read.model(), read.reached())))
-                })
-            }
+                },
+            ),
         }
     }
 
@@ -662,7 +710,7 @@ impl<P: Clients + 'static> Sessions<P> {
     pub fn read_model<T: Send + 'static>(
         &self,
         session: &SessionId,
-        command: &'static str,
+        command: ReadCommand,
         choice: ModelChoice,
         read: impl FnOnce(Read<'_, P::Client>) -> Result<T, Problems> + Send + 'static,
     ) -> Running<T> {
@@ -671,18 +719,20 @@ impl<P: Clients + 'static> Sessions<P> {
         let kernel: Arc<ReadClient<P::Client>> =
             Arc::new(ReadClient::new(self.registry.kernel.client()));
         match choice {
-            ModelChoice::Current => self.queued(session, command, move |session, stop, model| {
-                stop.interrupt_with(Arc::downgrade(&kernel) as Weak<dyn Interrupt>);
-                let current = session.current(stop).map_err(Unbuilt::problems)?;
-                *model = Some(current.read.clone());
-                read(Read {
-                    model: &current.model,
-                    read: current.read,
-                    stop,
-                    kernel: &kernel,
-                    reached: &current.reached,
+            ModelChoice::Current => {
+                self.queued(session, command.into(), move |session, stop, model| {
+                    stop.interrupt_with(Arc::downgrade(&kernel) as Weak<dyn Interrupt>);
+                    let current = session.current(stop).map_err(Unbuilt::problems)?;
+                    *model = Some(current.read.clone());
+                    read(Read {
+                        model: &current.model,
+                        read: current.read,
+                        stop,
+                        kernel: &kernel,
+                        reached: &current.reached,
+                    })
                 })
-            }),
+            }
             ModelChoice::Published => {
                 let Some(found) = self.find(session) else {
                     return Running::answered(refused(not_open(*session)));
@@ -720,8 +770,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 let (reply, answer) = mpsc::sync_channel(1);
                 let caller = tracing::Span::current();
                 let session = Arc::clone(&found);
-                let ticket = Ticket::new(command);
-                let counted = Counted::count(unanswered, &ticket);
+                let (counted, ticket) = Counted::count(unanswered, command);
                 ticket.interrupt_with(Arc::downgrade(&kernel) as Weak<dyn Interrupt>);
                 let stop = Arc::clone(&ticket);
                 let started = std::thread::Builder::new()
@@ -731,10 +780,12 @@ impl<P: Clients + 'static> Sessions<P> {
                         let _span = tracing::info_span!(
                             "session_command",
                             session = %session.id,
-                            command,
+                            command = command.as_str(),
                             model = "published"
                         )
                         .entered();
+                        #[cfg(test)]
+                        session.gate.pass();
                         let response = stop.answer(
                             || Some(session.info(false)),
                             || {
@@ -756,10 +807,11 @@ impl<P: Clients + 'static> Sessions<P> {
                 match started {
                     Ok(thread) => {
                         threads.push(thread);
-                        Running::new(answer, READ_STOPPED, Some(ticket))
+                        // It waits on no rebuild, so it reports none's progress.
+                        Running::new(answer, READ_STOPPED, Some(ticket), None)
                     }
                     // The read, and its count, dropped with the thread that never started.
-                    Err(e) => refused_here(crate::pool::thread_error("published read", &e)),
+                    Err(e) => refused_here(crate::worker::thread_error("published read", &e)),
                 }
             }
         }
@@ -784,7 +836,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// `session`'s document's outline ([`super::outline`]), as `silico show` prints it.
     /// Refused, with the reader's error, if the text doesn't read as a document.
     pub fn outline(&self, session: &SessionId) -> Running<OutlineAnswer> {
-        self.queued(session, "outline", |session, _, _| {
+        self.queued(session, SessionCommand::Outline, |session, _, _| {
             let (_, gated) = session.document();
             let document = gated.document().map_err(Clone::clone)?;
             Ok(OutlineAnswer {
@@ -798,26 +850,29 @@ impl<P: Clients + 'static> Sessions<P> {
     /// edits reached) for `rollback` to restore. Inside it, edits are applied without being
     /// saved or starting a rebuild. Refused if one is open: transactions don't nest.
     pub fn begin(&self, session: &SessionId) -> Running<Begun> {
-        self.queued(session, "begin", |session, stop, _| session.begin(stop))
+        self.queued(session, SessionCommand::Begin, |session, stop, _| {
+            session.begin(stop)
+        })
     }
 
-    /// Ends `session`'s transaction, saving its document (the design's section 4): waits for
-    /// the current revision's rebuild, then writes the canonical text through `file::save`,
-    /// with new fingerprints and solves only for the features its edits reached (decision
-    /// 28; every other keeps what's stored, and its drift is a problem, never written over),
-    /// and moves the session to a new revision, the text written. A document equal to the
-    /// one `begin` saw writes nothing, even over a file changed outside the session. Refused,
-    /// the transaction left open, if none is open, if the file changed since the session
-    /// read or wrote it or is gone (`conflict`), or can't be read (`io_failed`), if its text
-    /// would pass the limit, if it can't be written (`io_failed`), or if it's cancelled
-    /// before it writes. A kernel fault is saved around (decision 32): the features it
-    /// stopped keep what's stored with them, as failed ones do, and it's given once, in the
-    /// response's `model`.
+    /// Ends `session`'s transaction, saving its document (the design's section 4): waits
+    /// for the current revision's rebuild, then writes the canonical text through
+    /// `file::save_over`, with new fingerprints and solves only for the features its edits
+    /// reached (decision 28; every other keeps what's stored, and its drift is a problem,
+    /// never written over), and moves the session to a new revision, the text written. A
+    /// document equal to the one `begin` saw writes nothing, even over a file changed
+    /// outside the session. Refused, the transaction left open, if none is open, if the
+    /// file changed since the session read or wrote it or is gone (`conflict`), or can't be
+    /// read (`io_failed`), if its text would pass the limit, if it can't be written
+    /// (`io_failed`), or if it's cancelled before it writes. A kernel fault is saved around
+    /// (decision 32): the features it stopped are saved as failed ones are (one its edits
+    /// reached with no fingerprint, decision 28 amended; any other as stored), and it's
+    /// given once, in the response's `model`.
     pub fn commit(&self, session: &SessionId) -> Running<Committed> {
         let registry = Arc::downgrade(&self.registry);
         self.queued_with(
             session,
-            "commit",
+            SessionCommand::Commit,
             Rereads::Always,
             move |session, stop, model, reload| {
                 let id = session.id;
@@ -834,7 +889,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// restored document's rebuild started). Never touches the file. Refused if no
     /// transaction is open.
     pub fn rollback(&self, session: &SessionId) -> Running<RolledBack> {
-        self.queued(session, "rollback", |session, stop, _| {
+        self.queued(session, SessionCommand::Rollback, |session, stop, _| {
             session.rollback(stop)
         })
     }
@@ -843,8 +898,8 @@ impl<P: Clients + 'static> Sessions<P> {
     /// every sketch's solve as rebuilt, edited or not (decision 31: what `silico fmt` runs,
     /// and how drift is accepted, by name): with `features`, only those features' drift is
     /// accepted, and every other drifted feature keeps what's stored with it and is a
-    /// problem. Written through `file::save` only if `write` and the text differs from the
-    /// file; with `write` false, says whether it would be. Refused inside a transaction
+    /// problem. Written through `file::save_over` only if `write` and the text differs from
+    /// the file; with `write` false, says whether it would be. Refused inside a transaction
     /// (commit or roll back first), for a document the gate refuses, and for a feature in
     /// `features` the document hasn't; and, writing, as a commit is.
     pub fn format(
@@ -854,12 +909,16 @@ impl<P: Clients + 'static> Sessions<P> {
         write: bool,
     ) -> Running<Reformatted> {
         let registry = Arc::downgrade(&self.registry);
-        self.queued(session, "format", move |session, stop, model| {
-            let id = session.id;
-            session.format(stop, features.as_deref(), write, model, &|resolved| {
-                reclaim(&registry, id, resolved);
-            })
-        })
+        self.queued(
+            session,
+            SessionCommand::Format,
+            move |session, stop, model| {
+                let id = session.id;
+                session.format(stop, features.as_deref(), write, model, &|resolved| {
+                    reclaim(&registry, id, resolved);
+                })
+            },
+        )
     }
 
     /// Appends `feature`, a feature as the document writes it, to the end of `session`'s
@@ -878,31 +937,35 @@ impl<P: Clients + 'static> Sessions<P> {
     ) -> Running<Added> {
         let registry = Arc::downgrade(&self.registry);
         let ids = Arc::clone(&self.registry.feature_ids);
-        self.queued(session, "add_feature", move |session, stop, model| {
-            let id = session.id;
-            let edited = session.edit(
-                stop,
-                revision,
-                |base| {
-                    let (added, candidate) =
-                        edit::add_feature(base.checked()?, feature, |document| {
-                            lock(&ids).next_free(document)
-                        })?;
-                    Ok((added, Some(candidate)))
-                },
-                model,
-                &|resolved| reclaim(&registry, id, resolved),
-            )?;
-            let id = edited.made.id.clone();
-            let feature = as_committed(edited.saved.as_deref(), edited.made, |saved| {
-                saved.feature(&id).ok().cloned()
-            })?;
-            Ok(Added {
-                feature,
-                changed: edited.changed,
-                commit: edited.commit,
-            })
-        })
+        self.queued(
+            session,
+            SessionCommand::AddFeature,
+            move |session, stop, model| {
+                let id = session.id;
+                let edited = session.edit(
+                    stop,
+                    revision,
+                    |base| {
+                        let (added, candidate) =
+                            edit::add_feature(base.checked()?, feature, |document| {
+                                lock(&ids).next_free(document)
+                            })?;
+                        Ok((added, Some(candidate)))
+                    },
+                    model,
+                    &|resolved| reclaim(&registry, id, resolved),
+                )?;
+                let id = edited.made.id.clone();
+                let feature = as_committed(edited.saved.as_deref(), edited.made, |saved| {
+                    saved.feature(&id).ok().cloned()
+                })?;
+                Ok(Added {
+                    feature,
+                    changed: edited.changed,
+                    commit: edited.commit,
+                })
+            },
+        )
     }
 
     /// Sets `field` of `session`'s feature `feature` to `value` (the design's `set_field`),
@@ -922,32 +985,36 @@ impl<P: Clients + 'static> Sessions<P> {
         value: Node,
     ) -> Running<FieldSet> {
         let registry = Arc::downgrade(&self.registry);
-        self.queued(session, "set_field", move |session, stop, model| {
-            let id = session.id;
-            let edited = session.edit(
-                stop,
-                revision,
-                |base| edit::set_field(base.checked()?, &feature, &field, value),
-                model,
-                &|resolved| reclaim(&registry, id, resolved),
-            )?;
-            let edit::FieldValues {
-                before,
-                after,
-                path,
-            } = edited.made;
-            let after = as_committed(edited.saved.as_deref(), after, |saved| {
-                edit::value_of(saved, &feature, &path)
-            })?;
-            Ok(FieldSet {
-                feature,
-                field,
-                before,
-                after,
-                changed: edited.changed,
-                commit: edited.commit,
-            })
-        })
+        self.queued(
+            session,
+            SessionCommand::SetField,
+            move |session, stop, model| {
+                let id = session.id;
+                let edited = session.edit(
+                    stop,
+                    revision,
+                    |base| edit::set_field(base.checked()?, &feature, &field, value),
+                    model,
+                    &|resolved| reclaim(&registry, id, resolved),
+                )?;
+                let edit::FieldValues {
+                    before,
+                    after,
+                    path,
+                } = edited.made;
+                let after = as_committed(edited.saved.as_deref(), after, |saved| {
+                    edit::value_of(saved, &feature, &path)
+                })?;
+                Ok(FieldSet {
+                    feature,
+                    field,
+                    before,
+                    after,
+                    changed: edited.changed,
+                    commit: edited.commit,
+                })
+            },
+        )
     }
 
     /// Removes `session`'s feature `feature` (the design's `remove_feature`), as an edit made
@@ -962,27 +1029,31 @@ impl<P: Clients + 'static> Sessions<P> {
         feature: FeatureId,
     ) -> Running<Removed> {
         let registry = Arc::downgrade(&self.registry);
-        self.queued(session, "remove_feature", move |session, stop, model| {
-            let id = session.id;
-            let edited = session.edit(
-                stop,
-                revision,
-                |base| {
-                    let (removed, index, candidate) =
-                        edit::remove_feature(base.checked()?, &feature)?;
-                    Ok(((removed, index), Some(candidate)))
-                },
-                model,
-                &|resolved| reclaim(&registry, id, resolved),
-            )?;
-            let (feature, index) = edited.made;
-            Ok(Removed {
-                feature,
-                index,
-                changed: edited.changed,
-                commit: edited.commit,
-            })
-        })
+        self.queued(
+            session,
+            SessionCommand::RemoveFeature,
+            move |session, stop, model| {
+                let id = session.id;
+                let edited = session.edit(
+                    stop,
+                    revision,
+                    |base| {
+                        let (removed, index, candidate) =
+                            edit::remove_feature(base.checked()?, &feature)?;
+                        Ok(((removed, index), Some(candidate)))
+                    },
+                    model,
+                    &|resolved| reclaim(&registry, id, resolved),
+                )?;
+                let (feature, index) = edited.made;
+                Ok(Removed {
+                    feature,
+                    index,
+                    changed: edited.changed,
+                    commit: edited.commit,
+                })
+            },
+        )
     }
 
     /// Replaces `session`'s document's whole text with `text` (the design's `replace_text`),
@@ -999,35 +1070,40 @@ impl<P: Clients + 'static> Sessions<P> {
         text: String,
     ) -> Running<Replaced> {
         let registry = Arc::downgrade(&self.registry);
-        self.queued(session, "replace_text", move |session, stop, model| {
-            let id = session.id;
-            let edited = session.edit(
-                stop,
-                revision,
-                |base| {
-                    let before = if base.transaction {
-                        None
-                    } else {
-                        Some(
-                            std::str::from_utf8(base.text)
-                                .map_err(|e| not_given_back(base.id, e.valid_up_to()))?
-                                .to_owned(),
-                        )
-                    };
-                    let (features, candidate) = edit::replace_text(base.gated, text.as_bytes())?;
-                    Ok(((features, before), candidate))
-                },
-                model,
-                &|resolved| reclaim(&registry, id, resolved),
-            )?;
-            let (features, before) = edited.made;
-            Ok(Replaced {
-                changed: edited.changed,
-                features,
-                before,
-                commit: edited.commit,
-            })
-        })
+        self.queued(
+            session,
+            SessionCommand::ReplaceText,
+            move |session, stop, model| {
+                let id = session.id;
+                let edited = session.edit(
+                    stop,
+                    revision,
+                    |base| {
+                        let before = if base.transaction {
+                            None
+                        } else {
+                            Some(
+                                std::str::from_utf8(base.text)
+                                    .map_err(|e| not_given_back(base.id, e.valid_up_to()))?
+                                    .to_owned(),
+                            )
+                        };
+                        let (features, candidate) =
+                            edit::replace_text(base.gated, text.as_bytes())?;
+                        Ok(((features, before), candidate))
+                    },
+                    model,
+                    &|resolved| reclaim(&registry, id, resolved),
+                )?;
+                let (features, before) = edited.made;
+                Ok(Replaced {
+                    changed: edited.changed,
+                    features,
+                    before,
+                    commit: edited.commit,
+                })
+            },
+        )
     }
 
     fn find(&self, session: &SessionId) -> Option<Arc<Session<P::Client>>> {
@@ -1041,7 +1117,7 @@ impl<P: Clients + 'static> Sessions<P> {
     fn queued<T: Send + 'static>(
         &self,
         session: &SessionId,
-        command: &'static str,
+        command: SessionCommand,
         work: impl FnOnce(
             &Arc<Session<P::Client>>,
             &Ticket,
@@ -1063,7 +1139,7 @@ impl<P: Clients + 'static> Sessions<P> {
     fn queued_with<T: Send + 'static>(
         &self,
         session: &SessionId,
-        command: &'static str,
+        command: SessionCommand,
         rereads: Rereads,
         work: impl FnOnce(
             &Arc<Session<P::Client>>,
@@ -1091,7 +1167,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     let _span = tracing::info_span!(
                         "session_command",
                         session = %session.id,
-                        command
+                        command = command.as_str()
                     )
                     .entered();
                     *lock(&session.command) = Some(Arc::clone(&stop));
@@ -1101,6 +1177,8 @@ impl<P: Clients + 'static> Sessions<P> {
                     if session.closed() {
                         stop.close();
                     }
+                    #[cfg(test)]
+                    session.gate.pass();
                     let response = stop.answer(
                         // Cancelled while it was queued: never run, the file not read.
                         || Some(session.info(false)),
@@ -1141,7 +1219,12 @@ impl<P: Clients + 'static> Sessions<P> {
             };
             let _ = reply.send(response);
         }));
-        Running::new(answer, SESSION_STOPPED, Some(ticket))
+        Running::new(
+            answer,
+            SESSION_STOPPED,
+            Some(ticket),
+            Some(Arc::clone(&found.newest)),
+        )
     }
 }
 
@@ -1164,8 +1247,8 @@ impl<P: Clients + 'static> Drop for Sessions<P> {
         threads.join();
         // And the threads watching its rebuilds, each of which ends once its stopped run
         // does, then its published reads, each of which ends with its read; then the reads
-        // of sessions released before (closed, or their threads ended), which the book
-        // took: so no session's thread outlives it.
+        // and watchers of sessions released before (closed, or their threads ended), which
+        // the book took: so no session's thread outlives it.
         // Each taken from under its lock before it's joined: a watcher ends by taking the
         // rebuilds' lock, and a read may ask the sessions anything.
         for session in sessions.values() {
@@ -1176,7 +1259,7 @@ impl<P: Clients + 'static> Drop for Sessions<P> {
                 reads.join();
             }
         }
-        let released = std::mem::replace(&mut lock(&self.registry.book).reads, Threads::new());
+        let released = std::mem::replace(&mut lock(&self.registry.book).released, Threads::new());
         released.join();
     }
 }
@@ -1204,12 +1287,6 @@ fn closing() -> Error {
         "this process's sessions are closing, so none opens",
     )
     .with_suggestion("open it again once the sessions are made again")
-}
-
-/// A path as a message says it: quoted, its control and invisible characters escaped, as
-/// `file`'s errors and the outline say text, so a file's name can't act on a terminal.
-fn shown(path: &Path) -> String {
-    super::quoted(&path.display().to_string())
 }
 
 #[cfg(test)]

@@ -1,4 +1,10 @@
 {
+  "a_face_and_itself": {
+    "answer": "ebae85e4e8ac6c17"
+  },
+  "adjacent_faces_touch": {
+    "answer": "9b5356d56eaa88fe"
+  },
   "barrel_across_angle_0": {
     "brep": "582faadd72cb6d00",
     "cameras": "65a8a75abd63ce91",
@@ -24,12 +30,30 @@
     "mesh": "187d0191f4112b15",
     "summary": "832436bc21fca858"
   },
+  "box_adjacent_faces": {
+    "answer": "eba51da4c0847a44"
+  },
+  "box_bottom_and_top": {
+    "answer": "e06137e1f220e182"
+  },
+  "box_edges_at_a_corner": {
+    "answer": "1b2885de1bac813e"
+  },
+  "box_edges_skew_perpendicular": {
+    "answer": "eba51da4c0847a44"
+  },
+  "box_opposite_faces": {
+    "answer": "1bb44d7e1c63d581"
+  },
   "box_thin": {
     "brep": "f01a8f5cbfe5099d",
     "cameras": "371fd035278be4cb",
     "measures": "de64e531021c23eb",
     "mesh": "2d2f2cb415a2ccc5",
     "summary": "fbbca0cb55ea50c3"
+  },
+  "box_top_and_bottom": {
+    "answer": "e9d3d08782bd4e42"
   },
   "box_unround": {
     "brep": "6dc876c7047684fa",
@@ -46,6 +70,12 @@
     "mesh": "6a44d5640e90d839",
     "summary": "0a87489828a3a1c1",
     "topology": "507dd3853790ea38"
+  },
+  "chamfer_edge_45_to_the_top": {
+    "answer": "88750f5f7ae1785e"
+  },
+  "chamfer_edge_in_the_side": {
+    "answer": "1bb44d7e1c63d581"
   },
   "chamfer_equal": {
     "brep": "a11f0bf98d3e255a",
@@ -65,6 +95,12 @@
     "summary": "ba8cd2af9a710b77",
     "topology": "7ed143dfef7e4a5c"
   },
+  "chamfer_to_front": {
+    "answer": "da7206aa6b4af298"
+  },
+  "chamfer_to_top": {
+    "answer": "da7206aa6b4af298"
+  },
   "chamfer_two_distances_flipped": {
     "brep": "2b3ee674b2c5d323",
     "cameras": "f950ca5951c4b15c",
@@ -73,6 +109,21 @@
     "mesh": "9c2c22b67bb433fe",
     "summary": "f1a7cfb6adaaf89e",
     "topology": "ddd4de316aeb3ba2"
+  },
+  "circle_and_a_line": {
+    "answer": "c8b935cd9c79ea6b"
+  },
+  "circle_circle": {
+    "answer": "e30f6b2def892cac"
+  },
+  "circle_circle_placed": {
+    "answer": "e04cf0123dce0082"
+  },
+  "collinear_edges_angle": {
+    "answer": "1bb44d7e1c63d581"
+  },
+  "collinear_edges_apart": {
+    "answer": "01d2de216e4b5971"
   },
   "common_box_sphere": {
     "brep": "579f170f1520496a",
@@ -101,6 +152,9 @@
     "summary": "376df8827dd1fc68",
     "topology": "08171133d5f08968"
   },
+  "concentric_rims": {
+    "answer": "a15ffe54430ac9bb"
+  },
   "cone_almost_pointed": {
     "brep": "f07532975ed31c97",
     "cameras": "6b5c5ddb38d605b0",
@@ -121,6 +175,15 @@
     "measures": "9d9ffcfffa743215",
     "mesh": "9a21bfb1c48121e9",
     "summary": "b958904241f2adeb"
+  },
+  "crossing_edges": {
+    "answer": "a73e11800e93f3c8"
+  },
+  "crossing_faces": {
+    "answer": "3e53705aaa728ab0"
+  },
+  "crossing_rims": {
+    "answer": "c9398bc81a49c2c8"
   },
   "cut_box_cylinder": {
     "brep": "660968b1a25ff262",
@@ -179,6 +242,12 @@
     "mesh": "2008f9add6908633",
     "summary": "f191ec6c226363d5"
   },
+  "disc_and_plane": {
+    "answer": "ec36f4db0df12c3a"
+  },
+  "discs_overlapping": {
+    "answer": "61e939da59614f75"
+  },
   "extrude_film": {
     "brep": "b074820d55d62d01",
     "cameras": "371fd035278be4cb",
@@ -205,6 +274,9 @@
     "mesh": "9902b0f782cf1ec5",
     "summary": "a8157a46682b2e11",
     "topology": "fa5d97668685fada"
+  },
+  "faces_a_nanometre_apart": {
+    "answer": "63473801f514b62c"
   },
   "fillet_box_edge1": {
     "brep": "7740454fdbc4e0e2",
@@ -945,6 +1017,36 @@
     "summary": "87e378915dccd8e5",
     "topology": "b7fe2b2d96d27620"
   },
+  "hexagon_top_edges": {
+    "answer": "57d82b5395f9fb2c"
+  },
+  "hole_rims": {
+    "answer": "6e7e9e86783d39b8"
+  },
+  "hole_wall_to_counterbore_wall": {
+    "answer": "ee0db2c1efbb2ed1"
+  },
+  "hole_wall_to_side": {
+    "answer": "5cc19cb12b63639c"
+  },
+  "line_30_off_a_plane": {
+    "answer": "cede4b76889e2a9a"
+  },
+  "line_45_to_a_plane": {
+    "answer": "88750f5f7ae1785e"
+  },
+  "line_along_a_normal": {
+    "answer": "eba51da4c0847a44"
+  },
+  "line_in_a_plane": {
+    "answer": "1bb44d7e1c63d581"
+  },
+  "opposite_quarter_arcs": {
+    "answer": "992f8ed13531cd2b"
+  },
+  "opposite_quarter_arcs_swapped": {
+    "answer": "40e035473ae5ec99"
+  },
   "pad_one_side_reversed_xy": {
     "brep": "26c7f001cfc2bad2",
     "cameras": "703b0ee7313b1510",
@@ -1079,6 +1181,18 @@
     "mesh": "c138237f34d9eae5",
     "summary": "9f2f34951aa336ff",
     "topology": "fa5d97668685fada"
+  },
+  "parallel_edges": {
+    "answer": "f3086c4b4e44cd1b"
+  },
+  "parallel_edges_angle": {
+    "answer": "1bb44d7e1c63d581"
+  },
+  "parallel_faces_apart": {
+    "answer": "259cedf49e3367e2"
+  },
+  "plane_and_a_line_30_off_it": {
+    "answer": "cede4b76889e2a9a"
   },
   "pocket_dimension": {
     "brep": "555fe891b33c947d",
@@ -1278,6 +1392,9 @@
     "summary": "03e62b85b669903e",
     "topology": "e9f9cabcbcadec35"
   },
+  "ramp_from_a_flat": {
+    "answer": "550a561ada72e00f"
+  },
   "rectangle_about_its_side_360_xy": {
     "brep": "9f9053d6e7f48419",
     "cameras": "10a28e7bdf3685c4",
@@ -1323,6 +1440,15 @@
     "summary": "622ddf93f8a287df",
     "topology": "beb131353f8ebf30"
   },
+  "rims_r3_r4": {
+    "answer": "83e13baca05c2b11"
+  },
+  "segment_over_a_segment": {
+    "answer": "f9c817f63d84694e"
+  },
+  "skew_edges": {
+    "answer": "418d39cf7572b39a"
+  },
   "slot_plate": {
     "brep": "003df2bbf29bff54",
     "cameras": "e917e7e137e9323e",
@@ -1355,12 +1481,33 @@
     "mesh": "refused: invalid_input",
     "summary": "60fd03eef9271f11"
   },
+  "sphere_to_a_wall": {
+    "answer": "6832a71bf6d3b8af"
+  },
   "sphere_unround": {
     "brep": "20847dd2ea1d5946",
     "cameras": "90c31d17a5416eb9",
     "measures": "6431e2e39205cd59",
     "mesh": "2b44da78cbc2efe2",
     "summary": "d4656028bb29f436"
+  },
+  "split_edge_halves": {
+    "answer": "89c5b1a536eda71e"
+  },
+  "split_top_halves": {
+    "answer": "d2ff63073ec40045"
+  },
+  "split_top_halves_angle": {
+    "answer": "aec8c1b190f7ab24"
+  },
+  "step_tops": {
+    "answer": "67449aad05833fad"
+  },
+  "step_tops_angle": {
+    "answer": "aec8c1b190f7ab24"
+  },
+  "ten_degrees_one_and_two": {
+    "answer": "c733fbaa295765d2"
   },
   "through_rim": {
     "brep": "05970ec0451a46d0",
@@ -1824,6 +1971,12 @@
     "summary": "5507ad8232d8d64e",
     "topology": "62995adc1d08417e"
   },
+  "two_bodies_edges_at_120": {
+    "answer": "152c3ef7d3abb5b5"
+  },
+  "two_boxes_moved": {
+    "answer": "d9689f2fdf9da00c"
+  },
   "two_holes": {
     "brep": "9ee1b7953cc8dba4",
     "cameras": "1335c154602e006c",
@@ -1850,5 +2003,35 @@
     "mesh": "ddd32d7ccaef8dc5",
     "summary": "a4ceff9cc5a2354d",
     "topology": "fa5d97668685fada"
+  },
+  "v_groove": {
+    "answer": "152c3ef7d3abb5b5"
+  },
+  "vertex_beyond_a_tops_corner": {
+    "answer": "8b106bac2136d528"
+  },
+  "vertex_inside_to_a_top": {
+    "answer": "9b22ee0905b959e3"
+  },
+  "vertex_over_a_top": {
+    "answer": "22843a22e1973ef2"
+  },
+  "vertex_to_rim": {
+    "answer": "2746bf9345953ffb"
+  },
+  "walls_r3_r4": {
+    "answer": "83e13baca05c2b11"
+  },
+  "wedge_30": {
+    "answer": "cede4b76889e2a9a"
+  },
+  "wedge_30_rounded": {
+    "answer": "cede4b76889e2a9a"
+  },
+  "wedge_60": {
+    "answer": "152c3ef7d3abb5b5"
+  },
+  "wedge_90": {
+    "answer": "eba51da4c0847a44"
   }
 }

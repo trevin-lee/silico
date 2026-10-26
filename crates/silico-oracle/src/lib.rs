@@ -6,7 +6,8 @@
 //! difference too. The hand-written cases live in `tests/oracle/`, which is protected;
 //! [`generate`] makes random valid ones. Sketches ([`sketch`]) and sketch features
 //! ([`features`]: pad, pocket, revolve, groove) have cases of their own there, as Silico
-//! documents.
+//! documents, and so do measures ([`measures`]: the core's `distance` and `angle` against
+//! FreeCAD's Measure, pairs of elements of a document's solids).
 
 pub mod case;
 pub mod compare;
@@ -14,6 +15,7 @@ pub mod corpus;
 pub mod features;
 pub mod freecad;
 pub mod generate;
+pub mod measures;
 pub mod silico;
 pub mod sketch;
 

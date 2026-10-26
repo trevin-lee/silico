@@ -83,6 +83,16 @@ pub fn freecadcmd() -> Result<PathBuf, String> {
 /// case FreeCAD crashes or hangs on is [`Outcome::Lost`], saying how FreeCAD ended and what
 /// it last wrote, and the rest run in a new FreeCAD.
 pub fn run<C: serde::Serialize>(cases: &[C]) -> Result<Vec<Outcome>, String> {
+    run_as(cases, Outcome::Lost)
+}
+
+/// What FreeCAD gives for each of `cases`, in order, as [`run`] runs them, each outcome
+/// read as an `O`: `lost` makes the outcome of a case FreeCAD crashed or hung on, from how
+/// it ended.
+pub fn run_as<C: serde::Serialize, O: serde::de::DeserializeOwned>(
+    cases: &[C],
+    lost: fn(String) -> O,
+) -> Result<Vec<O>, String> {
     let scratch = Scratch::new()?;
     let script = scratch.write("oracle.py", ORACLE)?;
     let json = serde_json::to_string(cases).map_err(|e| format!("can't write the cases: {e}"))?;
@@ -128,7 +138,7 @@ pub fn run<C: serde::Serialize>(cases: &[C]) -> Result<Vec<Outcome>, String> {
             ));
         }
         if outcomes.len() < cases.len() {
-            outcomes.push(Outcome::Lost(ended.why("building it")));
+            outcomes.push(lost(ended.why("building it")));
         }
     }
     Ok(outcomes)

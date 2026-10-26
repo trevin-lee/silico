@@ -82,18 +82,6 @@ fn unwritable(why: impl std::fmt::Display) -> Error {
     )
 }
 
-/// Writes `bytes` over `file`, which held `before` when it was read: the file it names
-/// (through a symbolic link, which stays), keeping its permissions. Whole, to a new file
-/// beside it renamed over it, so a reader never sees a part of it and a write cut short
-/// leaves the old file; or, if it has other names (hard links), which a rename would part
-/// from it, in place, with the old text kept beside it until the new is on disk, and put
-/// back if the write fails (a full disk), so a write cut short never loses the document
-/// (killed mid-write, the old text is in the file beside it, `.NAME.fmt-PID`). Refused if
-/// this process may not write it, or, as a conflict, if it changed since it was read.
-pub fn save(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Error> {
-    save_over(file, before, bytes).map_err(|unsaved| unsaved.error)
-}
-
 /// A save that failed ([`save_over`]): why, and, if its own write in place left the file
 /// part written and its old text couldn't be put back, the file beside it that holds that
 /// text, so whoever saves next can say so rather than take the file for one changed by
@@ -113,8 +101,16 @@ impl From<Error> for Unsaved {
     }
 }
 
-/// [`save`], saying, when it fails, whether its own write left the file part written
-/// ([`Unsaved`]).
+/// Writes `bytes` over `file`, which held `before` when it was read: the file it names
+/// (through a symbolic link, which stays), keeping its permissions. Whole, to a new file
+/// beside it renamed over it, so a reader never sees a part of it and a write cut short
+/// leaves the old file; or, if it has other names (hard links), which a rename would part
+/// from it, in place, with the old text kept beside it until the new is on disk, and put
+/// back if the write fails (a full disk), so a write cut short never loses the document
+/// (killed mid-write, the old text is in the file beside it, `.NAME.fmt-PID`). Refused if
+/// this process may not write it, or, as a conflict, if it changed since it was read; and,
+/// when it fails, saying whether its own write left the file part written ([`Unsaved`]).
+/// What every save of a document goes through: a session's commit, edit, and `format`.
 pub fn save_over(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Unsaved> {
     let _span = tracing::info_span!("save", bytes = bytes.len()).entered();
     let target = std::fs::canonicalize(file).map_err(unwritable)?;
@@ -139,10 +135,7 @@ pub fn save_over(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Unsaved
                 ErrorCode::Conflict,
                 "couldn't be written: it changed while it was rebuilt",
             )
-            .with_suggestion(
-                "it was saved by something else meanwhile: read it again (run `silico fmt` again), \
-             then save",
-            ),
+            .with_suggestion("it was saved by something else meanwhile: read it again, then save"),
         ));
     }
     if metadata.nlink() > 1 {
@@ -155,7 +148,7 @@ pub fn save_over(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Unsaved
         .set_len(bytes.len() as u64)
         .and_then(|()| f.write_all(bytes))
         .and_then(|()| f.set_permissions(metadata.permissions()))
-        .and_then(|()| synced(&f, "the new text beside it"))
+        .and_then(|()| synced(&f, "the new text beside it", &partial))
         .map_err(|e| {
             let why = format!("couldn't write {}: {e}", shown_path(&partial));
             limited(unwritable(why), &e)
@@ -167,7 +160,8 @@ pub fn save_over(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Unsaved
                     shown_path(&partial)
                 ))
             })
-        });
+        })
+        .inspect(|()| directory_synced(&target));
     written
         .inspect_err(|_| {
             let _ = std::fs::remove_file(&partial);
@@ -192,7 +186,7 @@ fn in_place(
     if let Err(e) = copy
         .set_len(before.len() as u64)
         .and_then(|()| copy.write_all(before))
-        .and_then(|()| synced(&copy, "its old text kept beside it"))
+        .and_then(|()| synced(&copy, "its old text kept beside it", &kept))
     {
         let _ = std::fs::remove_file(&kept);
         return Err(Unsaved::from(limited(
@@ -212,7 +206,7 @@ fn in_place(
         file.seek(SeekFrom::Start(0))?;
         file.write_all(text)?;
         file.set_len(text.len() as u64)?;
-        synced(file, what)
+        synced(file, what, target)
     };
     match over(file, bytes, "its new text, in place") {
         Ok(()) => {
@@ -239,16 +233,36 @@ fn in_place(
     }
 }
 
-/// `file` on disk, as `sync_all` puts it, said in the log before and after with how long it
-/// took (debug): a disk that stalls a save shows as the line it stopped at.
-fn synced(file: &std::fs::File, what: &str) -> std::io::Result<()> {
-    tracing::debug!("syncing {what}");
+/// The directory `target` was renamed in synced, so the rename is on disk: a power cut
+/// after the save can't bring back the old file. The file is saved either way, so a
+/// directory that can't be opened or synced (a system that doesn't sync directories) is
+/// only logged.
+fn directory_synced(target: &Path) {
+    let Some(directory) = target.parent() else {
+        return;
+    };
+    if let Err(e) = std::fs::File::open(directory)
+        .and_then(|opened| synced(&opened, "the directory it was renamed in", directory))
+    {
+        tracing::warn!(
+            error = %e,
+            "the file was saved, but its directory couldn't be synced: a power cut soon could bring back the old file"
+        );
+    }
+}
+
+/// `file`, at `path`, on disk, as `sync_all` puts it, said in the log before and after
+/// with its path and how long it took (debug): a disk that stalls a save shows as the line
+/// it stopped at.
+fn synced(file: &std::fs::File, what: &str, path: &Path) -> std::io::Result<()> {
+    let path = path.display();
+    tracing::debug!(%path, "syncing {what}");
     let start = std::time::Instant::now();
     let synced = file.sync_all();
     let sync_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     match &synced {
-        Ok(()) => tracing::debug!(sync_ms, "synced {what}"),
-        Err(e) => tracing::debug!(sync_ms, error = %e, "couldn't sync {what}"),
+        Ok(()) => tracing::debug!(%path, sync_ms, "synced {what}"),
+        Err(e) => tracing::debug!(%path, sync_ms, error = %e, "couldn't sync {what}"),
     }
     synced
 }
@@ -328,10 +342,10 @@ fn beside(target: &Path, metadata: &std::fs::Metadata) -> Result<(PathBuf, std::
     )))
 }
 
-/// A path as an error says it: quoted, with control and invisible characters escaped, as an
+/// A path as a message says it: quoted, with control and invisible characters escaped, as an
 /// outline quotes a document's text, so a file's name can't act on the terminal it's shown
-/// in (found by the milestone's robustness review).
-fn shown_path(path: &Path) -> String {
+/// in. Every error and message that names a file says it so.
+pub(crate) fn shown_path(path: &Path) -> String {
     crate::command::quoted(&path.display().to_string())
 }
 
@@ -390,6 +404,25 @@ mod tests {
         assert_eq!(cut.len(), 255);
         assert!(cut.ends_with(format!("{suffix}-63").as_bytes()));
         assert!(cut[1..room + 1].iter().all(|b| *b == 0xff));
+    }
+
+    #[test]
+    fn a_file_written_beside_one_it_replaces_is_made_no_more_open_than_it() {
+        // Its permission bits alone, as they are: a mode's type bits (a regular file's
+        // 0o100000) aren't permissions, and none is added. With none to replace, rw-r--r--.
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("silico-partial-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("view.png");
+        std::fs::write(&file, b"old").unwrap();
+        for mode in [0o600, 0o640, 0o444, 0o751] {
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+            let meta = std::fs::metadata(&file).unwrap();
+            assert_eq!(partial_mode(Some(&meta)), mode, "{mode:o}");
+        }
+        assert_eq!(partial_mode(None), 0o644);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -506,17 +539,24 @@ fn output_target(
             "give a path in a directory that exists",
         )
     })?;
-    // Where it would be written: through a link already at the path, to what it names.
+    // Where it would be written: through a link already at the path, to what it names; and
+    // a file already there by the name it has on disk, as the documents held are named (on
+    // a case-insensitive file system, `HELD.png` is a held `Held.png`).
     let existing = std::fs::symlink_metadata(dir.join(name)).ok();
     let target = match &existing {
-        Some(meta) if meta.file_type().is_symlink() => std::fs::canonicalize(dir.join(name))
-            .map_err(|e| {
-                refuse(
+        Some(meta) => match std::fs::canonicalize(dir.join(name)) {
+            Ok(target) => target,
+            Err(e) if meta.file_type().is_symlink() => {
+                return Err(refuse(
                     format!("is a link to nothing that can be reached: {e}"),
                     "give a path that isn't a broken link",
-                )
-            })?,
-        _ => dir.join(name),
+                ));
+            }
+            // Gone since it was looked at: as if it hadn't been there (the write checks
+            // what's there again).
+            Err(_) => dir.join(name),
+        },
+        None => dir.join(name),
     };
     if target
         .components()
@@ -585,15 +625,23 @@ fn output_target(
     Ok((target, replaced))
 }
 
+/// The permissions [`write_beside`] makes its new file with: those of the file it replaces,
+/// if one, without its type's bits (so never more open than it while it's written), or
+/// `rw-r--r--`.
+fn partial_mode(replaced: Option<&std::fs::Metadata>) -> u32 {
+    use std::os::unix::fs::PermissionsExt as _;
+    replaced.map_or(0o644, |m| m.permissions().mode() & 0o777)
+}
+
 /// `bytes` written to `target` through a new file beside it renamed into place, with the
-/// permissions of the file it replaces, if one (or the new file's own).
+/// permissions of the file it replaces, if one (or the new file's own); the directory it's
+/// renamed in synced after, as a save's is, so a power cut can't bring back the old file.
 fn write_beside(
     target: &Path,
     replaced: Option<&std::fs::Metadata>,
     bytes: &[u8],
 ) -> Result<(), Error> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let mode = replaced.map_or(0o644, |m| m.permissions().mode() & 0o777);
+    let mode = partial_mode(replaced);
     let dir = directory(target);
     let name = target
         .file_name()
@@ -645,7 +693,7 @@ fn write_beside(
             Some(m) => f.set_permissions(m.permissions()),
             None => Ok(()),
         })
-        .and_then(|()| synced(&f, "the new file"))
+        .and_then(|()| synced(&f, "the new file", &partial))
         .map_err(|e| {
             limited(
                 unwritable(format!("couldn't write {}: {e}", shown_path(&partial))),
@@ -659,7 +707,8 @@ fn write_beside(
                     shown_path(&partial)
                 ))
             })
-        });
+        })
+        .inspect(|()| directory_synced(target));
     if written.is_err() {
         let _ = std::fs::remove_file(&partial);
     }
