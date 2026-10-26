@@ -97,6 +97,7 @@
 #include <BRep_TVertex.hxx>
 #include <Poly_Polygon3D.hxx>
 #include <gp_Ax22d.hxx>
+#include <ElCLib.hxx>
 #include <Precision.hxx>
 #include <TopExp.hxx>
 #include <NCollection_IndexedMap.hxx>
@@ -1124,6 +1125,39 @@ std::unique_ptr<Shape> make_polygon_face(rust::Slice<const Point3> points) {
   return std::make_unique<Shape>(Shape{face.Face()});
 }
 
+namespace {
+// An arc of the circle of `radius` in `frame`, from `from` to `to`, over the parameters
+// [first, last] (first < last, any representative of the arc's range): the one way every arc
+// edge is built. Its range is moved by whole turns to the one Geom_TrimmedCurve gives the
+// same arc (ElCLib::AdjustPeriodic, with Geom_TrimmedCurve::SetTrim's precision): a revolve
+// builds its surface on a Geom_TrimmedCurve of the edge's curve, whose domain is that
+// adjusted range and which isn't periodic, so a face whose pcurves used another
+// representative would lie outside its own surface: IntTools_FaceFace skips it (a cut
+// through a revolved barrel came back unchanged, and "valid") and BRepBndLib::AddOptimal
+// boxes it wrong. The precision is at most half the sweep, as SetTrim's, so an arc turning
+// less than 1e-9 radians stays itself, where BRepLib_MakeEdge (a flat PConfusion) makes it a
+// whole turn longer (a 0.05 mm arc of radius 100 m, a circle). Rust checks each end is on
+// the circle where its parameter puts it, a whole turn being the same place.
+TopoDS_Edge make_arc_edge(const gp_Ax2 &frame, double radius, TopoDS_Vertex from,
+                          TopoDS_Vertex to, double first, double last, double tolerance) {
+  if (!(first < last)) {
+    throw Standard_Failure("an arc's range must increase");
+  }
+  Handle(Geom_Circle) circle = new Geom_Circle(frame, radius);
+  ElCLib::AdjustPeriodic(circle->FirstParameter(), circle->LastParameter(),
+                         Min(Abs(last - first) / 2.0, Precision::PConfusion()), first, last);
+  BRep_Builder builder;
+  TopoDS_Edge arc;
+  builder.MakeEdge(arc, circle, tolerance);
+  from.Orientation(TopAbs_FORWARD);
+  to.Orientation(TopAbs_REVERSED);
+  builder.Add(arc, from);
+  builder.Add(arc, to);
+  builder.Range(arc, first, last);
+  return arc;
+}
+} // namespace
+
 std::unique_ptr<Shape> make_faces(Point3 normal, Point3 x_axis, rust::Slice<const Point3> points,
                                   rust::Slice<const FaceCurve> curves,
                                   rust::Slice<const uint32_t> loop_curves,
@@ -1160,24 +1194,8 @@ std::unique_ptr<Shape> make_faces(Point3 normal, Point3 x_axis, rust::Slice<cons
       break;
     }
     case CurveKind::Arc: {
-      // Built as BRepLib_MakeEdge builds an edge between two vertices, but with the range
-      // as given: MakeEdge moves a periodic curve's range into its period
-      // (ElCLib::AdjustPeriodic), and makes an arc turning less than 1e-9 radians a whole
-      // turn longer (a 0.05 mm arc of radius 100 m, a circle). Rust checks each end is on
-      // the circle where its parameter puts it.
-      if (!(curve.first < curve.last)) {
-        throw Standard_Failure("an arc's range must increase");
-      }
-      TopoDS_Edge arc;
-      builder.MakeEdge(arc, new Geom_Circle(frame, curve.radius), tolerance);
-      TopoDS_Vertex from = vertex(curve.start);
-      TopoDS_Vertex to = vertex(curve.end);
-      from.Orientation(TopAbs_FORWARD);
-      to.Orientation(TopAbs_REVERSED);
-      builder.Add(arc, from);
-      builder.Add(arc, to);
-      builder.Range(arc, curve.first, curve.last);
-      edges.push_back(arc);
+      edges.push_back(make_arc_edge(frame, curve.radius, vertex(curve.start), vertex(curve.end),
+                                    curve.first, curve.last, tolerance));
       break;
     }
     case CurveKind::Circle: {

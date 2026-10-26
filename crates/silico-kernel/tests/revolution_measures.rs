@@ -579,3 +579,233 @@ fn a_horn_torus_fused_with_a_box_off_its_axis_measures_as_by_hand() {
     missed.extend(misses_by(&centre, 1e-10));
     assert!(missed.is_empty(), "{}", missed.join("\n"));
 }
+
+// ---- An arc across its circle's angle 0 (Fable, 2026-10-25: arc-range-fable.md) ----
+
+/// The box from (−20, 2, −20) to (20, 20, 20), which cuts y > 2 away.
+fn y_over_2(k: &mut KernelWorker) -> ShapeData {
+    let block = k
+        .make(Primitive::Box {
+            dx: 40.0,
+            dy: 18.0,
+            dz: 40.0,
+        })
+        .unwrap();
+    k.translate(&block, [-20.0, 2.0, -20.0]).unwrap().shape
+}
+
+/// The section, at height z, of a turn `turn` of the annulus 1 ≤ r ≤ xo(z) about z, less
+/// what lies at y > 2: the cap of the disc of radius xo beyond the chord y = 2, which is all
+/// at angles in (0, π), inside every turn from 0 of at least π (the bore, r ≤ 1, is all on
+/// the near side).
+fn cut_section(rho: f64, turn: f64) -> f64 {
+    let cap = rho * rho * libm::acos(2.0 / rho) - 2.0 * libm::sqrt(rho * rho - 4.0);
+    turn / 2.0 * (rho * rho - INNER * INNER) - cap
+}
+
+/// The barrel's arc's x at height z.
+fn barrel_x(z: f64) -> f64 {
+    let (c, r) = barrel_circle();
+    c + libm::sqrt(r * r - z * z)
+}
+
+#[test]
+fn a_barrel_whose_arc_crosses_its_circles_angle_0_is_cut_by_a_box() {
+    // The barrel about z, its arc from −28.07° to 28.07° about its circle's centre: before
+    // the bridge gave the arc the range OCCT's trimmed curves give it, the revolved face's
+    // pcurves lay a turn outside its surface, the boolean skipped it, and the cut came back
+    // whole, 526.334, "valid". By hand, as the barrel about x (the same solid turned).
+    let mut k = kernel();
+    let barrel = barrel_turned(&mut k, TAU);
+    let block = y_over_2(&mut k);
+    let cut = k.boolean(BooleanOp::Cut, &barrel, &block).unwrap().shape;
+    let s = k.summarize(&cut).unwrap();
+    assert!(s.valid);
+    let by_hand = integral(-4.0, 4.0, 64, |z| cut_section(barrel_x(z), TAU));
+    assert_close("by hand", by_hand, 395.477_667_019_499_5, 1e-15);
+    assert_close("the cut", s.volume, by_hand, 2e-9);
+    // Three quarters of a turn, from +x through +y: the cap is still all inside it. Before,
+    // 394.751, another wrong solid.
+    let part = barrel_turned(&mut k, 1.5 * PI);
+    let cut = k.boolean(BooleanOp::Cut, &part, &block).unwrap().shape;
+    let by_hand = integral(-4.0, 4.0, 64, |z| cut_section(barrel_x(z), 1.5 * PI));
+    assert_close(
+        "three quarters cut",
+        k.summarize(&cut).unwrap().volume,
+        by_hand,
+        2e-9,
+    );
+}
+
+#[test]
+fn a_barrel_whose_arc_crosses_its_circles_angle_0_has_its_tight_box() {
+    // From (−5, −5, −4) to (5, 5, 4) by hand: the arc's widest point, x = 5 at z = 0, turned.
+    // Before, the box began at x = −4: the side's face, boxed outside its surface, gave only
+    // its edges.
+    let mut k = kernel();
+    let barrel = barrel_turned(&mut k, TAU);
+    let [low, high] = k.summarize(&barrel).unwrap().bounds.unwrap();
+    for (got, want) in low
+        .iter()
+        .chain(&high)
+        .zip([-5.0, -5.0, -4.0, 5.0, 5.0, 4.0])
+    {
+        assert!((got - want).abs() < 1e-6, "{low:?} {high:?}");
+    }
+}
+
+#[test]
+fn a_loop_walking_the_arc_the_other_way_is_cut_as_by_hand() {
+    // The region outside the barrel's arc, out to x = 6: its loop, counter-clockwise, walks
+    // the arc from (4, 4) down to (4, −4), clockwise about the arc's centre, so the core
+    // sends it end first, its angles swapped. Turned about z it's a ring whose inner wall is
+    // the barrel's side; less y > 2, its section at height z is the annulus xo ≤ r ≤ 6 less
+    // the caps beyond the chord y = 2 of the discs of radius 6 and xo.
+    let (c, r) = barrel_circle();
+    let [x, z] = END;
+    let (low, high) = ([x, -z], [x, z]);
+    let angle = libm::atan2(z, x - c);
+    let line = |start, end| Curve::Line { start, end };
+    let regions = FaceRegions {
+        plane: SketchPlane::Xz,
+        regions: vec![Region {
+            outer: vec![
+                line([6.0, -z], [6.0, z]),
+                line([6.0, z], high),
+                Curve::Arc {
+                    center: [c, 0.0],
+                    start: high,
+                    end: low,
+                    radius: r,
+                    start_angle: angle,
+                    end_angle: -angle,
+                },
+                line(low, [6.0, -z]),
+            ],
+            holes: vec![],
+        }],
+    };
+    let mut k = kernel();
+    let faces = k.make_faces(&regions).unwrap();
+    let z_axis = Axis {
+        origin: [0.0; 3],
+        direction: [0.0, 0.0, 1.0],
+    };
+    let ring = k.revolution(&faces.shape, z_axis, 0.0, TAU).unwrap().shape;
+    let block = y_over_2(&mut k);
+    let cut = k.boolean(BooleanOp::Cut, &ring, &block).unwrap().shape;
+    let beyond = |rho: f64| rho * rho * libm::acos(2.0 / rho) - 2.0 * libm::sqrt(rho * rho - 4.0);
+    let section = |z: f64| {
+        let rho = barrel_x(z);
+        (PI * 36.0 - beyond(6.0)) - (PI * rho * rho - beyond(rho))
+    };
+    let by_hand = integral(-4.0, 4.0, 64, section);
+    assert_close(
+        "converged",
+        integral(-4.0, 4.0, 32, section),
+        by_hand,
+        1e-15,
+    );
+    // To 3e-9: the integration's residual along a trimmed surface of revolution (the cut
+    // barrel's, 1.2e-9) on two cut faces here, the ring's inner wall and its outer cylinder.
+    assert_close("the cut", k.summarize(&cut).unwrap().volume, by_hand, 3e-9);
+}
+
+/// The upper half of a barrel: the arc of the circle about (c, 0) of radius r from its
+/// angle `start` (where it meets z = 0, at x = c + r) up to z = 4, closed by z = 4, the bore
+/// x = 1, and z = `floor` (the start's height); revolved a whole turn about z.
+fn half_barrel(k: &mut KernelWorker, c: f64, r: f64, start: f64, floor: f64) -> ShapeData {
+    let top = libm::asin(4.0 / r);
+    let begin = [c + r * libm::cos(start), r * libm::sin(start)];
+    let end = [c + r * libm::cos(top), 4.0];
+    let line = |start, end| Curve::Line { start, end };
+    let regions = FaceRegions {
+        plane: SketchPlane::Xz,
+        regions: vec![Region {
+            outer: vec![
+                Curve::Arc {
+                    center: [c, 0.0],
+                    start: begin,
+                    end,
+                    radius: r,
+                    start_angle: start,
+                    end_angle: top,
+                },
+                line(end, [INNER, 4.0]),
+                line([INNER, 4.0], [INNER, floor]),
+                line([INNER, floor], begin),
+            ],
+            holes: vec![],
+        }],
+    };
+    let faces = k.make_faces(&regions).unwrap();
+    let z_axis = Axis {
+        origin: [0.0; 3],
+        direction: [0.0, 0.0, 1.0],
+    };
+    k.revolution(&faces.shape, z_axis, 0.0, TAU).unwrap().shape
+}
+
+#[test]
+fn an_arc_starting_at_its_circles_angle_0_or_a_nanometre_below_it_is_cut_as_by_hand() {
+    let mut k = kernel();
+    let block = y_over_2(&mut k);
+    let (c, r) = barrel_circle();
+    // From exactly 0, and from −0 (a solver's zero): the barrel's upper half.
+    let by_hand = integral(0.0, 4.0, 64, |z| cut_section(barrel_x(z), TAU));
+    for start in [0.0, -0.0] {
+        let half = half_barrel(&mut k, c, r, start, 0.0);
+        let cut = k.boolean(BooleanOp::Cut, &half, &block).unwrap().shape;
+        assert_close(
+            &format!("from {start:?}"),
+            k.summarize(&cut).unwrap().volume,
+            by_hand,
+            2e-9,
+        );
+    }
+    // A metre's circle (radius 1,000 mm, its centre 995 mm across the axis, so it reaches
+    // x = 5 at z = 0), from 1e-12 rad below its angle 0: OCCT moves a start within 1e-9 of
+    // 2π down a turn, so its range stays [−1e-12, ...], and a range moved into [0, 2π)
+    // instead would disagree with the surface again.
+    let r = 1e3;
+    let c = 5.0 - r;
+    let start = -1e-12;
+    let floor = r * libm::sin(start);
+    let half = half_barrel(&mut k, c, r, start, floor);
+    let cut = k.boolean(BooleanOp::Cut, &half, &block).unwrap().shape;
+    let x = |z: f64| c + r * libm::sqrt(1.0 - (z / r) * (z / r));
+    let by_hand = integral(floor, 4.0, 64, |z| cut_section(x(z), TAU));
+    assert_close(
+        "a metre's arc",
+        k.summarize(&cut).unwrap().volume,
+        by_hand,
+        2e-9,
+    );
+}
+
+#[test]
+fn a_pad_of_an_arc_across_its_circles_angle_0_is_cut_as_by_hand() {
+    // A pad makes a cylinder of the arc, periodic in its angle, which was never affected:
+    // the barrel's profile padded 10 along y and cut at y > 2 keeps 2 of its 10.
+    let mut k = kernel();
+    let faces = k.make_faces(&barrel_regions()).unwrap();
+    let pad = k
+        .prism(&faces.shape, [0.0; 3], [0.0, 10.0, 0.0])
+        .unwrap()
+        .shape;
+    let block = y_over_2(&mut k);
+    let cut = k.boolean(BooleanOp::Cut, &pad, &block).unwrap().shape;
+    let profile = barrel_by_hand().profile;
+    assert_close(
+        "the pad",
+        k.summarize(&pad).unwrap().volume,
+        10.0 * profile,
+        1e-12,
+    );
+    assert_close(
+        "the cut",
+        k.summarize(&cut).unwrap().volume,
+        2.0 * profile,
+        1e-12,
+    );
+}
