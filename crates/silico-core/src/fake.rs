@@ -135,6 +135,8 @@ struct State {
     clients: ClientQueues<dyn Task>,
     stopping: bool,
     calls: Vec<Call>,
+    /// Every request submitted, in order, whether or not it started.
+    asked: Vec<Call>,
     running: usize,
     most_running: usize,
     holds: Vec<HoldRule>,
@@ -156,6 +158,7 @@ impl FakeKernel {
                 clients: ClientQueues::new(),
                 stopping: false,
                 calls: Vec::new(),
+                asked: Vec::new(),
                 running: 0,
                 most_running: 0,
                 holds: Vec::new(),
@@ -184,6 +187,14 @@ impl FakeKernel {
     /// Every request started so far, in the order they started.
     pub fn calls(&self) -> Vec<Call> {
         lock(&self.shared.state).calls.clone()
+    }
+
+    /// Every request submitted so far, in the order they were, whether or not it started. A
+    /// request its caller dropped (a render that stops at the first body holding its eye) is
+    /// asked at once, but only starts, and is only in [`calls`](Self::calls), once a thread
+    /// takes it, which may be later: dropping it takes nothing from the queue.
+    pub fn asked(&self) -> Vec<Call> {
+        lock(&self.shared.state).asked.clone()
     }
 
     /// The most requests that have run at once.
@@ -414,6 +425,11 @@ impl Shared {
             span: tracing::Span::current(),
         });
         let mut state = lock(&self.state);
+        state.asked.push(Call {
+            client,
+            generation,
+            op: task.op().clone(),
+        });
         if state.stopping {
             // Dropping the task tells the caller the kernel stopped.
             return pending;
