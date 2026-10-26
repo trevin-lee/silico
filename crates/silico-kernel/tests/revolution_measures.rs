@@ -3,12 +3,13 @@
 //! volume, area, and centre of mass, and with part of it cut away by a box; the fixture's
 //! cubic cap revolved 2π and 1.5π, and its centre; and the horn torus primitive, alone and
 //! fused with a box off its axis. Whole turns to round-off, a part turn's centre to 2e-9,
-//! the fused torus to 1e-10 (its cut circles written as B-splines). OCCT 7.9.3's precise integration took such a surface's angle as one span of six
-//! Gauss points, 2.2e-7 low on the barrel and 3.9e-6 on the cap; patch 0003 splits it in
-//! three, as OCCT splits a torus's (docs/ports/measure.md, Known wrong results). Every
-//! expected value is by hand from the profile, independent of OCCT: closed forms, Pappus,
-//! and Gauss–Legendre on polynomials it integrates exactly or on a smooth integrand to
-//! convergence.
+//! the cut barrel to 2e-9 (the residual along its cut, L's), and the fused torus to 1e-10
+//! (its cut circles written as B-splines). OCCT 7.9.3's precise integration took such a
+//! surface's angle as one span of six Gauss points, 2.2e-7 low on the barrel and 3.9e-6 on
+//! the cap; patch 0003 splits it in three, as OCCT splits a torus's (docs/ports/measure.md,
+//! Known wrong results). Every expected value is by hand from the profile, independent of
+//! OCCT: closed forms, Pappus, and Gauss–Legendre on polynomials it integrates exactly or on
+//! a smooth integrand to convergence.
 //! The cap needs the FreeCAD oracle (`pixi install -e oracle`), which makes its face from
 //! the fixture's curve.
 
