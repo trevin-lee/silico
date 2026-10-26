@@ -45,7 +45,7 @@ jobs:
   sweep:
     needs: yield
     if: ${{ !cancelled() }}
-    runs-on: ${{ inputs.filler && fromJSON('["self-hosted", "linux", "x64", "filler"]') || fromJSON('["self-hosted", "linux", "x64", "mutants"]') }}
+    runs-on: ${{ inputs.filler && fromJSON('["self-hosted", "linux", "x64", "filler"]') || fromJSON('["self-hosted", "linux", "x64", "sweep"]') }}
     timeout-minutes: 120
     outputs:
       sweep: ${{ steps.sweep.outcome }}
@@ -56,12 +56,19 @@ jobs:
         run: bash .github/tools.sh
       - name: Sweep
         id: sweep
+        # A filler sweep runs on a runner at the idle CPU weight (mutants.yml), where gates can
+        # starve it: a case's FreeCAD deadline there is half an hour, not two minutes, so a
+        # starved case isn't reported as a failure. (Silico's own conversion keeps its 60 s.)
+        env:
+          SILICO_ORACLE_CASE_DEADLINE: ${{ inputs.filler && '1800' || '' }}
         run: |
           echo "seed ${{ github.run_number }}"
           pixi run oracle-sweep -- --seed ${{ github.run_number }}
       - name: Corpus
         id: corpus
         if: ${{ !cancelled() }}
+        env:
+          SILICO_ORACLE_CASE_DEADLINE: ${{ inputs.filler && '1800' || '' }}
         run: pixi run corpus
 
   report:

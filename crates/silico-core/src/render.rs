@@ -105,6 +105,21 @@ impl RenderTicket {
         self.job.cancel();
     }
 
+    /// A ticket answered already, by a renderer that answers at once (a test's fake).
+    #[cfg(feature = "fake")]
+    pub(crate) fn answered(outcome: RenderOutcome) -> Self {
+        let (sender, outcome_of) = mpsc::channel();
+        let job = Arc::new(JobState {
+            stage: Mutex::new(Stage::default()),
+            outcome: sender,
+        });
+        job.answer(outcome);
+        RenderTicket {
+            job,
+            outcome: outcome_of,
+        }
+    }
+
     /// A handle that cancels the render from another thread, while this one waits on it.
     pub fn canceller(&self) -> RenderCancel {
         RenderCancel(Arc::clone(&self.job))

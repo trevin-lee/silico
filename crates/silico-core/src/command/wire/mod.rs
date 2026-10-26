@@ -34,7 +34,7 @@
 //! `status`, and `cancel`; [`transaction`], for `begin`, `commit`, `rollback`, and `format`;
 //! [`edits`], for `add_feature`, `set_field`, `remove_feature`, and `replace_text`;
 //! [`reads`], for `text`, `outline`, and `check`; [`elements`], for `elements` and `query`;
-//! [`schema`]; and [`measure`], for `mass_properties`, `distance`, and `angle`).
+//! [`schema`]; [`measure`], for `mass_properties`, `distance`, and `angle`; and [`render`]).
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -340,12 +340,19 @@ impl ToWire for SessionInfo {
 
 impl ToWire for ModelRead {
     /// Its revision, whether it was the current or the published, and the kernel fault its
-    /// rebuild met, if it met one, kept as the revision's outcome (decision 32).
+    /// rebuild met, if it met one, kept as the revision's outcome (decision 32): its
+    /// suggestion the worker's own, then how a session's client tries again
+    /// (`kept_suggestion`).
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("revision", self.revision.to_wire()),
             ("of", self.of.to_wire()),
-            ("fault", Json::or_null(self.fault.as_ref(), Error::to_wire)),
+            (
+                "fault",
+                Json::or_null(self.fault.as_ref(), |fault| {
+                    error_with(fault, Json::string(super::session::kept_suggestion(fault)))
+                }),
+            ),
         ])
     }
 }
@@ -353,24 +360,29 @@ impl ToWire for ModelRead {
 impl ToWire for Error {
     /// The error contract's shape (`tests/contract/error-full.json`), field for field.
     fn to_wire(&self) -> Json<'_> {
-        Json::object([
-            ("code", Json::str(self.code().as_str())),
-            ("message", Json::str(self.message())),
-            ("feature", Json::or_null(self.feature(), Json::str)),
-            (
-                "elements",
-                Json::array(self.elements().iter().map(|e| Json::str(e))),
-            ),
-            ("elements_total", Json::whole(self.elements_total())),
-            ("parameter", Json::or_null(self.parameter(), Json::str)),
-            ("cause", Json::or_null(self.cause(), Json::str)),
-            ("suggestion", Json::or_null(self.suggestion(), Json::str)),
-            (
-                "candidates",
-                Json::array(self.candidates().iter().map(|c| Json::str(c))),
-            ),
-        ])
+        error_with(self, Json::or_null(self.suggestion(), Json::str))
     }
+}
+
+/// `error` in the error contract's shape, `suggestion` its suggestion.
+fn error_with<'a>(error: &'a Error, suggestion: Json<'a>) -> Json<'a> {
+    Json::object([
+        ("code", Json::str(error.code().as_str())),
+        ("message", Json::str(error.message())),
+        ("feature", Json::or_null(error.feature(), Json::str)),
+        (
+            "elements",
+            Json::array(error.elements().iter().map(|e| Json::str(e))),
+        ),
+        ("elements_total", Json::whole(error.elements_total())),
+        ("parameter", Json::or_null(error.parameter(), Json::str)),
+        ("cause", Json::or_null(error.cause(), Json::str)),
+        ("suggestion", suggestion),
+        (
+            "candidates",
+            Json::array(error.candidates().iter().map(|c| Json::str(c))),
+        ),
+    ])
 }
 
 /// A list of problems as a result or the envelope writes them: the first
@@ -591,6 +603,12 @@ impl<'a> RequestFields<'a> {
             let at = join(&self.path, key);
             invalid(&at, format!("{at} must be {what}, got {}", written(node)))
         });
+    }
+
+    /// Refuses the request for `error`, a reason no one field's reading gives (fields that
+    /// must agree), kept with the rest in the order found.
+    pub fn refuse(&mut self, error: Error) {
+        self.refused.refuse_with(|| error);
     }
 
     /// A string.
@@ -916,6 +934,86 @@ impl<'a> RequestFields<'a> {
             return None;
         }
         Some(direction)
+    }
+
+    /// A point, in millimetres: three lengths, `[x, y, z]`, each read exactly from its
+    /// digits as [`length`](RequestFields::length) reads one, a member at fault named by
+    /// its place (`eye.2`).
+    pub fn point(&mut self, key: &str) -> Option<[Length; 3]> {
+        let node = self.take(key)?;
+        let what = "a point, three lengths in millimetres [x, y, z]";
+        let Value::Array(items) = &node.value else {
+            self.wrong(key, what, node);
+            return None;
+        };
+        let [x, y, z] = items.as_slice() else {
+            self.refused.refuse_with(|| {
+                let at = join(&self.path, key);
+                invalid(
+                    &at,
+                    format!("{at} must be {what}, got {} of them", items.len()),
+                )
+            });
+            return None;
+        };
+        // Each read, so each member at fault is said.
+        let x = self.quantity(
+            &format!("{key}.0"),
+            x,
+            "a length in millimetres",
+            Length::parse,
+            crate::document::length_suggestion,
+        );
+        let y = self.quantity(
+            &format!("{key}.1"),
+            y,
+            "a length in millimetres",
+            Length::parse,
+            crate::document::length_suggestion,
+        );
+        let z = self.quantity(
+            &format!("{key}.2"),
+            z,
+            "a length in millimetres",
+            Length::parse,
+            crate::document::length_suggestion,
+        );
+        Some([x?, y?, z?])
+    }
+
+    /// The list at `key` of at most `at_most` strings, a member at fault named by its place
+    /// (`highlight.0`). A list of more is refused as `too_many` says, given how many it
+    /// holds, and its members aren't read.
+    pub fn string_list(
+        &mut self,
+        key: &str,
+        at_most: usize,
+        too_many: impl FnOnce(usize) -> Error,
+    ) -> Option<Vec<String>> {
+        let node = self.take(key)?;
+        let Value::Array(items) = &node.value else {
+            self.wrong(key, "a list of strings", node);
+            return None;
+        };
+        if items.len() > at_most {
+            self.refused.refuse_with(|| too_many(items.len()));
+            return None;
+        }
+        let mut strings = Vec::with_capacity(items.len());
+        let mut fine = true;
+        for (i, item) in items.iter().enumerate() {
+            match &item.value {
+                Value::String(text) => strings.push(text.clone()),
+                _ => {
+                    fine = false;
+                    self.refused.refuse_with(|| {
+                        let at = format!("{}.{i}", join(&self.path, key));
+                        invalid(&at, format!("{at} must be a string, got {}", written(item)))
+                    });
+                }
+            }
+        }
+        fine.then_some(strings)
     }
 
     /// The session a request names: its ID, `s1`, `s2`, ...
@@ -1412,7 +1510,7 @@ pub type MakeSnapshot = fn() -> serde_json::Value;
 
 /// The commands whose wire types are built, each by name with what makes its snapshot, in
 /// the design's order (section 7): what `schema` describes besides the document.
-pub const COMMANDS: [(&str, MakeSnapshot); 22] = [
+pub const COMMANDS: [(&str, MakeSnapshot); 23] = [
     (
         "version",
         command_schema::<session::VersionRequestSchema, session::VersionResultSchema>,
@@ -1500,6 +1598,10 @@ pub const COMMANDS: [(&str, MakeSnapshot); 22] = [
     (
         "angle",
         command_schema::<measure::AngleRequestSchema, measure::AngleResultSchema>,
+    ),
+    (
+        "render",
+        command_schema::<render::RenderRequestSchema, render::RenderResultSchema>,
     ),
 ];
 
@@ -1592,6 +1694,7 @@ pub mod edits;
 pub mod elements;
 pub mod measure;
 pub mod reads;
+pub mod render;
 pub mod schema;
 pub mod session;
 pub mod transaction;

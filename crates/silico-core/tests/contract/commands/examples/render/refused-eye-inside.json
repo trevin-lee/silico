@@ -1,0 +1,1 @@
+{"code": "invalid_input", "message": "the camera's eye is inside m3tq8v0z's solid", "feature": "m3tq8v0z", "elements": [], "elements_total": 0, "parameter": "camera.eye", "cause": null, "suggestion": "move the eye outside the part, or use a named view", "candidates": []}

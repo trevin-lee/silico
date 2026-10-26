@@ -145,7 +145,7 @@ fn one_refusal_among_measures_formats_alike_fresh_and_from_disk() {
         vec![("translate(cylinder", ErrorCode::InvalidResult)],
     );
     let model = published(&first, checked(EXAMPLE));
-    let fresh = command::format(&model).unwrap().unwrap();
+    let fresh = command::format(&model).unwrap();
     assert_eq!(
         said(fresh.problems.errors()),
         [(ErrorCode::InvalidResult, "a91cw0de".to_owned())]
@@ -156,14 +156,14 @@ fn one_refusal_among_measures_formats_alike_fresh_and_from_disk() {
     let second = session(&dir.0);
     let again = published(&second, checked(EXAMPLE));
     assert!(second.kernel().calls().is_empty(), "{:?}", calls(&second));
-    let cached = command::format(&again).unwrap().unwrap();
+    let cached = command::format(&again).unwrap();
     assert_eq!(cached, fresh);
     // The formatted text, read back: only the pin's refusal is a problem, and `check` says it
     // without asking.
     let third = session(&dir.0);
     let reread = published(&third, checked(&fresh.text));
     assert!(third.kernel().calls().is_empty());
-    let problems = command::check(&reread).unwrap();
+    let problems = command::check(&reread);
     assert_eq!(
         said(problems.errors()),
         [(ErrorCode::InvalidResult, "a91cw0de".to_owned())]

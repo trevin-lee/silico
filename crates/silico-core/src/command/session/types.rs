@@ -11,7 +11,7 @@ use super::Problems;
 #[cfg(doc)]
 use super::Sessions;
 use super::cancel::Ticket;
-use super::rebuilds::kept_fault;
+use super::rebuilds::met_fault;
 use super::transaction::Reached;
 #[cfg(doc)]
 use crate::document;
@@ -118,7 +118,10 @@ pub struct Response<T> {
 /// from, whether it was read as the current revision's or as the newest published (an older
 /// revision's, maybe), and the kernel fault its rebuild met, if it met one (section 6,
 /// decision 32): given once, beside the command's result, never among the document's
-/// problems, and kept as that revision's outcome, so it's worded for that.
+/// problems, and kept as that revision's outcome. The fault is as it was met, its suggestion
+/// the worker's own: each client says how to try again its own way (the wire, for a
+/// session's, that reading the revision again won't, and what does; the CLI, to run it
+/// again).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRead {
     pub revision: Revision,
@@ -133,7 +136,7 @@ impl ModelRead {
         ModelRead {
             revision,
             of,
-            fault: model.fault().map(kept_fault),
+            fault: model.fault().map(met_fault),
         }
     }
 }
@@ -182,6 +185,55 @@ impl<C> Read<'_, C> {
     /// turn with the others, waiting at most for the first free worker.
     pub fn kernel(&self) -> &ReadClient<C> {
         self.kernel
+    }
+
+    /// Settles the read before it leaves its one trace (a file written, decision 34): from
+    /// here a cancel comes too late, and if one came first, its answer, `cancelled`.
+    pub fn settle(&self) -> Result<(), Error> {
+        self.stop.settle()
+    }
+
+    /// `f` given `renderer`, its renders cancelled with the read: a cancel, or the session
+    /// closing, cancels each render it asked for (a queued one never sent, a running one's
+    /// worker killed).
+    pub(crate) fn rendering<T>(
+        &self,
+        renderer: &dyn crate::command::render::Renderer,
+        f: impl FnOnce(&dyn crate::command::render::Renderer) -> T,
+    ) -> T {
+        let read = ReadRenderer {
+            inner: renderer,
+            stop: self.stop,
+            kept: std::sync::Mutex::new(Vec::new()),
+        };
+        f(&read)
+    }
+}
+
+/// A read's renderer: each render it asks for cancelled when the read is (its stop holds a
+/// weak handle to each render's cancel; this keeps them while the read runs).
+struct ReadRenderer<'a> {
+    inner: &'a dyn crate::command::render::Renderer,
+    stop: &'a Ticket,
+    kept: std::sync::Mutex<Vec<Arc<dyn super::cancel::Interrupt>>>,
+}
+
+impl crate::command::render::Renderer for ReadRenderer<'_> {
+    fn render(&self, scene: silico_protocol::RenderScene) -> crate::render::RenderTicket {
+        let ticket = self.inner.render(scene);
+        let cancel: Arc<dyn super::cancel::Interrupt> = Arc::new(RenderStop(ticket.canceller()));
+        self.stop.interrupt_with(Arc::downgrade(&cancel));
+        crate::worker::lock(&self.kept).push(cancel);
+        ticket
+    }
+}
+
+/// A render's cancel, as a read's stop interrupts it: cancelled or closed, the render stops.
+struct RenderStop(crate::render::RenderCancel);
+
+impl super::cancel::Interrupt for RenderStop {
+    fn interrupt(&self, _why: super::cancel::Why) {
+        self.0.cancel();
     }
 }
 
@@ -375,11 +427,14 @@ fn unanswered<T>(lost: &str) -> Response<T> {
     }
 }
 
-/// What `open` found: the path as given, whether it made the file, how many features the
-/// document has (none if its text doesn't read as a document), the bodies its timeline ends
-/// with (as `silico show` finds them, needing no kernel), and the gate's problems, if any.
+/// What `open` found: the session it opened, the path as given, whether it made the file,
+/// how many features the document has (none if its text doesn't read as a document), the
+/// bodies its timeline ends with (as `silico show` finds them, needing no kernel), and the
+/// gate's problems, if any.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Opened {
+    /// The session opened: the envelope's `session.id`, so not written in the result again.
+    pub session: SessionId,
     pub path: String,
     pub created: bool,
     pub features: Option<usize>,

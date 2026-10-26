@@ -26,25 +26,27 @@ use crate::document::json::MAX_INPUT_LEN;
 use crate::document::{self, Document, FormatVersion, NamingScheme, Units};
 use crate::file;
 use crate::kernel::{Clients, Kernel};
-use crate::recompute::Recompute;
-use crate::sketch::SketchSolver;
+use crate::recompute::{Recompute, SketchSolvers};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
 /// What opens a directory's cache: [`Cache::open`], or a test's.
 pub(super) type CacheOpener = dyn Fn(&Path) -> Cache + Send + Sync;
 
-/// What starts a session's sketch solver, if not the sketch worker: a test's stand-in.
-pub(super) type SketchStarter = dyn Fn() -> Result<Box<dyn SketchSolver>, Error> + Send + Sync;
-
 pub(super) struct Registry<P: Clients + 'static> {
     pub(super) kernel: P,
     pub(super) open_cache: Box<CacheOpener>,
-    /// Given to each session's engine as it opens; none for the sketch worker.
-    pub(super) sketches: Option<Arc<SketchStarter>>,
+    /// The sketch solvers every session's engine shares, as they share the kernel: the
+    /// sketch worker, started when a sketch is first solved, or a test's stand-in.
+    pub(super) sketches: SketchSolvers,
     /// Where `add_feature` takes the IDs of features given none.
     pub(super) feature_ids: Arc<Mutex<FeatureIds>>,
     pub(super) book: Mutex<Book<P::Client>>,
+    /// What draws `render`'s scenes: the render worker's client, given when the sessions are
+    /// made ([`Sessions::rendering`](super::Sessions::rendering)), or none (refused).
+    pub(super) renderer: Mutex<Option<Arc<dyn crate::command::render::Renderer>>>,
+    /// The display meshes `render` makes, shared by the sessions of this kernel.
+    pub(super) meshes: Arc<crate::meshes::MeshCache<crate::recompute::Key>>,
 }
 
 /// A file as the system knows it, whatever path reaches it: its device and inode.
@@ -276,6 +278,7 @@ fn open<P: Clients + 'static>(
     };
     let gated = Gated::of(&text);
     let opened = Opened {
+        session: id,
         path: given.to_owned(),
         created: create,
         features: gated.document().ok().map(|d| d.features.len()),
@@ -491,13 +494,10 @@ pub(super) fn reclaim<P: Clients + 'static>(
 
 impl<P: Clients + 'static> Registry<P> {
     /// A new session's engine: on its own client of the kernel, keeping its steps in
-    /// `cache`, and solving sketches with the registry's starter, if it has one.
+    /// `cache`, and solving sketches with the registry's solvers, which every session
+    /// shares.
     fn engine(&self, cache: Cache) -> Recompute<P::Client> {
-        let engine = Recompute::with_cache(self.kernel.client(), cache);
-        match self.sketches.clone() {
-            Some(start) => engine.with_sketch_starter(move || start()),
-            None => engine,
-        }
+        Recompute::with_cache(self.kernel.client(), cache).with_solvers(self.sketches.clone())
     }
 
     /// The cache in `dir`: the one value its sessions share, opened the first time; one

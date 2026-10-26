@@ -6,11 +6,11 @@
 //! adds, a C⁰ B-spline meridian, a surface of revolution under a
 //! `Geom_RectangularTrimmedSurface`, and the barrel fused to a box and filleted along the
 //! seam; with lines skew to the axis (hyperboloids), ellipses, rational B-splines, faces
-//! whose U starts off 0, and a property over barrels of every proportion. Arcs here keep
-//! clear of their circle's angle 0, where OCCT 7.9.3's booleans ignore the turned face
-//! (docs/ports/measure.md, Known wrong results: a sketch arc across its circle's angle 0),
-//! except where said. The tests that need FreeCAD to make a face (`pixi install -e
-//! oracle`) say so.
+//! whose U starts off 0, and a property over barrels of every proportion. Arcs here were
+//! kept clear of their circle's angle 0, where OCCT 7.9.3's booleans ignored the turned
+//! face until each arc edge took OCCT's own range (docs/ports/measure.md, Known wrong
+//! results: a sketch arc across its circle's angle 0); revolution_measures.rs's tests cross
+//! it. The tests that need FreeCAD to make a face (`pixi install -e oracle`) say so.
 
 use super::close::assert_close;
 use super::kernel::kernel;

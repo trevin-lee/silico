@@ -7,7 +7,10 @@
 //! and prettier --write refuse a read-only file and write through a symlink).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use canonical::canonical;
 use std::ffi::{OsStr, OsString};
+#[path = "common/canonical.rs"]
+mod canonical;
 #[path = "common/run.rs"]
 mod run;
 
@@ -21,6 +24,18 @@ use std::time::Duration;
 const EXAMPLE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
+  ]
+}
+"#;
+
+/// [`EXAMPLE`] in canonical form, as `fmt` writes it with no fingerprint (one a kernel fault
+/// kept it from writing): the header's naming added.
+const EXAMPLE_CANONICAL: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
   ]
@@ -149,18 +164,52 @@ fn mkfifo(path: &Path) {
 // --- Paths ----------------------------------------------------------------------------
 
 #[test]
-fn a_file_name_that_isnt_utf8_is_checked_not_a_panic() {
+fn a_file_name_that_isnt_utf8_is_refused_not_a_panic() {
     // BREAKS: `std::env::args()` panics on an argument that isn't UTF-8 ("called
-    // `Result::unwrap()` on an `Err` value: \"\\xFF.silico\""), exit 101, so a file Linux
-    // or a script names in Latin-1 can't be checked at all. Expected: `args_os`, and the
-    // file checked (exit 0); where the file system refuses such a name (APFS: EILSEQ), the
-    // file can't exist, so exit 2, "couldn't be read".
+    // `Result::unwrap()` on an `Err` value: \"\\xFF.silico\""), exit 101. Expected:
+    // `args_os`, and the name refused as the session commands every client runs refuse it
+    // (`open`: a response couldn't name it exactly), a file that couldn't be had, as one
+    // unreadable is (R-M2: not the document's problem), exit 2, saying so, its `path` the
+    // parameter at fault, whether or not the file system holds such a name (APFS refuses
+    // it: EILSEQ), and nothing written; `textconv`, which needs no session, reads it where
+    // it can be (docs/cli.md).
     let scratch = Scratch::new("non-utf8");
     let name = OsString::from_vec(b"caf\xe9 \xff.silico".to_vec());
     let made = std::fs::write(scratch.0.join(&name), EXAMPLE).is_ok();
-    let out = run(&scratch, &[os("check"), &name]);
-    assert_ne!(out.code(), Some(101), "panicked: {}", out.stderr);
-    assert_eq!(out.code(), Some(if made { 0 } else { 2 }), "{}", out.stderr);
+    for c in ["check", "fmt", "show"] {
+        let out = run(&scratch, &[os(c), &name]);
+        assert_eq!(out.code(), Some(2), "{c}: {}", out.stderr);
+        // The name as the system's bytes read as UTF-8, once on the line and once quoted in
+        // the refusal.
+        assert_eq!(
+            out.stderr,
+            "caf\u{fffd} \u{fffd}.silico: invalid_input: \"caf\u{fffd} \u{fffd}.silico\" isn't \
+             UTF-8, so the API can't name it exactly (parameter path). Suggestion: rename the \
+             file, or open it through a path that is UTF-8.\n",
+            "{c}"
+        );
+    }
+    let out = run(&scratch, &[os("check"), os("--json"), &name]);
+    assert_eq!(out.code(), Some(2), "{}", out.stderr);
+    let line: serde_json::Value = serde_json::from_str(out.stdout.trim()).unwrap();
+    assert_eq!(line["ok"], false, "{line}");
+    assert_eq!(line["file"], "caf\u{fffd} \u{fffd}.silico", "{line}");
+    assert_eq!(line["error"]["code"], "invalid_input", "{line}");
+    assert_eq!(line["error"]["parameter"], "path", "{line}");
+    assert!(line.get("problems").is_none(), "{line}");
+    if made {
+        assert_eq!(
+            std::fs::read_to_string(scratch.0.join(&name)).unwrap(),
+            EXAMPLE
+        );
+        let out = run(&scratch, &[os("textconv"), &name]);
+        assert_eq!(out.code(), Some(0), "{}", out.stderr);
+        assert!(
+            out.stdout.starts_with("k7f2qx3m \"Block\" box"),
+            "{}",
+            out.stdout
+        );
+    }
 }
 
 #[test]
@@ -462,8 +511,26 @@ fn fmt_of_a_hard_linked_document_cut_short_loses_neither_name_of_it() {
     );
     // Killed while keeping the old text: the file it kept it in is left, by the name
     // docs/cli.md gives (here empty: the limit killed it at its first byte).
-    let kept = format!(".a.silico.fmt-{pid}");
-    assert!(ls(&scratch.0).contains(&kept), "{:?}", ls(&scratch.0));
+    let kept = left_by_kill(&scratch.0.join(format!(".a.silico.fmt-{pid}")));
+    assert!(
+        kept.as_deref().is_none_or(str::is_empty),
+        "{:?}",
+        ls(&scratch.0)
+    );
+}
+
+/// What the file a `fmt` killed by a size limit kept the old text in holds, as it was left.
+/// On Linux it's always left: the limit's signal (SIGXFSZ) ends the thread whose write
+/// passed it at once, so the save's cleanup never runs. On macOS the signal can end the
+/// process only after the save's own thread (a session's, never the main thread) has seen
+/// its write refused and removed the file, so it may be gone.
+fn left_by_kill(path: &Path) -> Option<String> {
+    let read = std::fs::read_to_string(path);
+    if cfg!(target_os = "linux") {
+        Some(read.unwrap())
+    } else {
+        read.ok()
+    }
 }
 
 #[test]
@@ -543,8 +610,11 @@ fn fmt_doesnt_overwrite_an_edit_made_while_it_rebuilt() {
         out.stderr
     );
     assert_eq!(out.code(), Some(2), "{}", out.stderr);
+    // The session's conflict (the `format` command's), naming the file.
     assert!(
-        out.stderr.contains("changed while it was rebuilt"),
+        out.stderr.contains(
+            r#"part.silico: conflict: "part.silico" changed outside this session since it was read"#
+        ),
         "{}",
         out.stderr
     );
@@ -565,7 +635,10 @@ fn two_fmts_at_once_leave_one_canonical_file_and_nothing_beside_it() {
     // them (exit 2, saying so), never writing over it: at least one writes.
     let ok_or_left = |out: &Ran| {
         out.code() == Some(0)
-            || (out.code() == Some(2) && out.stderr.contains("changed while it was rebuilt"))
+            || (out.code() == Some(2)
+                && out
+                    .stderr
+                    .contains("changed outside this session since it was read"))
     };
     assert!(ok_or_left(&a), "{}", a.stderr);
     assert!(ok_or_left(&b), "{}", b.stderr);
@@ -591,9 +664,7 @@ fn fmt_of_a_document_its_fingerprints_would_take_past_the_limit_leaves_it_and_sa
     // fingerprint won't fit. fmt says so (exit 1) and the file is as it was.
     let scratch = Scratch::new("at-limit");
     let limit = silico_core::document::json::MAX_DOCUMENT_LEN;
-    let canonical =
-        silico_core::document::write(&silico_core::document::read(EXAMPLE.as_bytes()).unwrap())
-            .unwrap();
+    let canonical = canonical(EXAMPLE);
     let pad = limit - canonical.len() - 64 - r#", "note": """#.len();
     let text = canonical.replacen(
         r#""height": 10}"#,
@@ -627,7 +698,12 @@ fn a_kernel_that_crashes_is_exit_2_not_a_problem_with_the_document() {
     assert_eq!(out.code(), Some(2), "check: {}", out.stderr);
     let out = run_with(&scratch, &dies, &[os("fmt"), os("part.silico")]);
     assert_eq!(out.code(), Some(2), "fmt: {}", out.stderr);
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), EXAMPLE);
+    assert!(out.stderr.contains("worker_unavailable"), "{}", out.stderr);
+    assert!(!out.stderr.contains("the fingerprint of"), "{}", out.stderr);
+    // Saved around the fault (decision 32), as a failed feature is: the block, which the
+    // fault stopped, keeps what it had stored (no fingerprint), and the rest is written in
+    // canonical form (the header's naming).
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), EXAMPLE_CANONICAL);
 }
 
 #[test]
@@ -683,11 +759,13 @@ const SKETCH: &str = r#"{
 "#;
 
 #[test]
-fn a_worker_that_cant_be_had_is_worker_unavailable_exit_2_and_the_file_left_as_it_is() {
+fn a_worker_that_cant_be_had_is_worker_unavailable_exit_2_and_saved_around() {
     // The M3 review's start-code decision: a worker named as a directory, a path with
     // nothing at it, or a file that can't be run can't be had (worker_unavailable), for the
     // kernel and the sketch worker alike. It's Silico's install, not the document: check,
-    // check --json, and fmt exit 2, saying so, and the file is left as it is.
+    // check --json, and fmt exit 2, saying so. check leaves the file as it is; fmt saves
+    // around the fault (decision 32): the feature it stopped keeps what it had stored, and
+    // the rest is in canonical form.
     let scratch = Scratch::new("unavailable");
     let directory = scratch.0.join("a-directory");
     std::fs::create_dir(&directory).unwrap();
@@ -733,7 +811,12 @@ fn a_worker_that_cant_be_had_is_worker_unavailable_exit_2_and_the_file_left_as_i
                 } else {
                     assert!(stderr.contains("worker_unavailable"), "{case}: {stderr}");
                 }
-                assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "{case}");
+                let expected = if args == ["fmt"] {
+                    canonical(text)
+                } else {
+                    text.to_owned()
+                };
+                assert_eq!(std::fs::read_to_string(&file).unwrap(), expected, "{case}");
             }
         }
     }
@@ -1064,8 +1147,8 @@ fn fmt_of_a_hard_linked_document_killed_by_a_size_limit_mid_write_leaves_it_as_i
     // beside the file says it got that far.
     use std::os::unix::process::ExitStatusExt as _;
     assert_eq!(out.status.signal(), Some(25), "{:?}", out.status);
-    let kept = scratch.0.join(format!(".a.silico.fmt-{pid}"));
-    assert_eq!(std::fs::read_to_string(&kept).unwrap(), before);
+    let kept = left_by_kill(&scratch.0.join(format!(".a.silico.fmt-{pid}")));
+    assert!(kept.as_ref().is_none_or(|kept| *kept == before), "{kept:?}");
     for name in [&a, &b] {
         assert_eq!(
             std::fs::read_to_string(name).unwrap(),
@@ -1148,9 +1231,13 @@ fn fmt_whose_copy_a_size_limit_kills_leaves_no_part_of_the_old_text() {
     let (pid, out) = fmt_under_one_block(&scratch, "");
     use std::os::unix::process::ExitStatusExt as _;
     assert_eq!(out.status.signal(), Some(25), "{:?}", out.status);
-    let kept = std::fs::read_to_string(scratch.0.join(format!(".a.silico.fmt-{pid}"))).unwrap();
+    let kept = left_by_kill(&scratch.0.join(format!(".a.silico.fmt-{pid}")));
     // Empty (stopped before a byte) or whole: never a part named as the whole.
-    assert!(kept.is_empty() || kept == before, "{} bytes", kept.len());
+    assert!(
+        kept.as_ref()
+            .is_none_or(|kept| kept.is_empty() || *kept == before),
+        "{kept:?}"
+    );
     for name in [&a, &b] {
         assert_eq!(std::fs::read_to_string(name).unwrap(), before);
     }
@@ -1195,11 +1282,10 @@ fn fmt_of_a_single_named_document_killed_by_a_size_limit_leaves_no_part_of_the_n
     use std::os::unix::process::ExitStatusExt as _;
     assert_eq!(out.status.signal(), Some(25), "{:?}", out.status);
     assert_eq!(std::fs::read_to_string(&a).unwrap(), before);
-    let partial = std::fs::read(scratch.0.join(format!(".a.silico.fmt-{pid}"))).unwrap();
+    let partial = left_by_kill(&scratch.0.join(format!(".a.silico.fmt-{pid}")));
     assert!(
-        partial.is_empty(),
-        "{} bytes of the new text left beside it",
-        partial.len()
+        partial.as_deref().is_none_or(str::is_empty),
+        "{partial:?}: the new text left beside it"
     );
 }
 
@@ -1281,7 +1367,7 @@ fn schema_with_odd_arguments_is_a_schema_a_refusal_or_usage_never_a_panic() {
                  candidates. Candidates: document, version, open, close, status, cancel, \
                  begin, commit, rollback, format, add_feature, set_field, remove_feature, \
                  replace_text, text, outline, check, elements, query, schema, \
-                 mass_properties, distance, angle.\n"
+                 mass_properties, distance, angle, render.\n"
             ),
             "{name:?}"
         );
