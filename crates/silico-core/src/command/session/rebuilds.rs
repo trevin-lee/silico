@@ -16,7 +16,7 @@ use crate::cache::Cache;
 use crate::document::Checked;
 use crate::kernel::Kernel;
 use crate::recompute::{Model, Reads, Recompute, Run, RunOutcome, StepCounter};
-use crate::worker::lock;
+use crate::worker::{Advice, lock};
 use crate::{Error, ErrorCode};
 
 /// A session's rebuilds: its engine, on its own client of the kernel, keeping its steps in
@@ -798,38 +798,42 @@ pub(in crate::command) fn kept_fault(fault: &Error) -> Error {
 }
 
 /// [`kept_fault`]'s suggestion (the design's section 6): reading the revision again won't try
-/// it again, so how to, keeping the worker's own advice. A crash on a feature's values,
-/// which the same values would crash again, says to edit them (an edit makes a new
-/// revision, which rebuilds anyway), as the design's example does; with no feature named,
-/// the worker's advice alone. A timeout says to simplify the operation, or `check` with
-/// `fresh`: the time allowed isn't the command API's to give. Any other advice of the
-/// worker's own (the memory it ran short of, a worker stopped from outside), then `check`
-/// with `fresh`. With none of its own, a crash that met a feature says `check` with
-/// `fresh`, then the document reported if the same feature crashes the worker again; any
-/// other fault, `check` with `fresh` alone. (A fault is never known to have met the same
-/// feature twice running: each model holds the one its rebuild met.)
+/// it again, so how to, keeping the worker's own advice, read as the data it was worded from
+/// ([`Advice`]), never by its words. A crash on a feature's values, which the same values
+/// would crash again, says to edit them (an edit makes a new revision, which rebuilds
+/// anyway), as the design's example does; with no feature named, the worker's advice alone.
+/// A timeout says to simplify the operation, or `check` with `fresh`: the time allowed isn't
+/// the command API's to give. Advice to try the request again says to `check` with `fresh`
+/// in its place, so a retry is said once. Any other advice of the worker's own (the memory
+/// it ran short of, its install), then `check` with `fresh`. With none of its own, a crash
+/// that met a feature says `check` with `fresh`, then the document reported if the same
+/// feature crashes the worker again; any other fault, `check` with `fresh` alone. (A fault
+/// is never known to have met the same feature twice running: each model holds the one its
+/// rebuild met.)
 pub(in crate::command) fn kept_suggestion(fault: &Error) -> String {
     const FRESH: &str = "check with fresh to try it again";
-    let own = fault.suggestion();
-    if let Some(why) = own.and_then(|own| own.strip_prefix(crate::worker::CHANGE_THE_VALUES))
-        && fault.code() == ErrorCode::WorkerCrashed
-    {
-        return match fault.feature() {
-            Some(_) => format!(
-                "edit the feature's values{why}; an edit makes a new revision, which rebuilds it"
+    let Some(own) = fault.suggestion() else {
+        return match (fault.code(), fault.feature()) {
+            (ErrorCode::WorkerCrashed, Some(_)) => format!(
+                "{FRESH}; if the same feature crashes the worker again, report it with the \
+                 document"
             ),
-            None => format!("{}{why}", crate::worker::CHANGE_THE_VALUES),
+            _ => FRESH.to_owned(),
         };
-    }
-    match (own, fault.code(), fault.feature()) {
-        (Some(crate::worker::SIMPLIFY_OR_WAIT), ErrorCode::WorkerTimeout, _) => {
-            format!("simplify the operation, or {FRESH}")
+    };
+    match (fault.advice(), fault.feature()) {
+        (Some(Advice::ChangeTheValues { why }), Some(_)) => {
+            format!(
+                "edit the feature's values: {why}; an edit makes a new revision, which rebuilds it"
+            )
         }
-        (Some(own), _, _) => format!("{own}; then {FRESH}"),
-        (None, ErrorCode::WorkerCrashed, Some(_)) => format!(
-            "{FRESH}; if the same feature crashes the worker again, report it with the document"
-        ),
-        (None, _, _) => FRESH.to_owned(),
+        (Some(Advice::ChangeTheValues { .. }), None) => own.to_owned(),
+        (Some(Advice::SimplifyOrWait), _) => format!("simplify the operation, or {FRESH}"),
+        (Some(Advice::TryAgain { once_more, why }), _) => {
+            let again = if *once_more { "once more" } else { "again" };
+            format!("check with fresh to try it {again}: {why}")
+        }
+        (Some(Advice::Other(_)) | None, _) => format!("{own}; then {FRESH}"),
     }
 }
 

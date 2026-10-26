@@ -1059,9 +1059,19 @@ fn a_models_fault_is_written_in_the_error_contracts_shape() {
     )
     .with_feature("f0000001")
     .with_cause("the worker ended on signal 11 (SIGSEGV) during a fillet")
-    .with_suggestion(
-        "change the operation's values: these crashed the kernel, and the same request would \
-         crash it again",
+    .with_advice(crate::worker::crash_advice(
+        crate::worker::WorkerKind::Kernel,
+        Some(std::os::unix::process::ExitStatusExt::from_raw(
+            libc::SIGSEGV,
+        )),
+        crate::worker::Reached::Request,
+    ));
+    assert_eq!(
+        crashed.suggestion(),
+        Some(
+            "change the operation's values: these crashed the kernel, and the same request \
+             would crash it again"
+        )
     );
     let faulted = Response {
         session: Some(session(7, false)),

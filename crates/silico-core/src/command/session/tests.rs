@@ -2931,11 +2931,14 @@ fn each_change_of_what_the_session_holds_is_past_a_cancel() {
 }
 
 #[test]
-fn a_kept_fault_keeps_the_workers_advice_then_says_to_check_with_fresh() {
+fn a_kept_fault_rewords_the_workers_advice_for_a_session_then_says_to_check_with_fresh() {
     // Decision 32 and the design's section 6: reading the revision again won't run it
-    // again, so the worker's own advice, worded for a session, and how to try again. The
-    // workers' words, written out as worker.rs and silico-protocol give them; the session's,
-    // as the design's note gives them.
+    // again, so the worker's own advice, reworded for a session, and how to try again. The
+    // workers' advice as worker.rs makes it (`crash_advice`, `timeout_advice`), its words
+    // written out as it gives them; the session's, as the design's note gives them.
+    use crate::worker::{Reached, WorkerKind, crash_advice, timeout_advice};
+    use std::os::unix::process::ExitStatusExt;
+    let signalled = |signal| Some(std::process::ExitStatus::from_raw(signal));
     let said = |error: &Error| {
         (
             error.code(),
@@ -2944,14 +2947,22 @@ fn a_kept_fault_keeps_the_workers_advice_then_says_to_check_with_fresh() {
             error.suggestion().map(str::to_owned),
         )
     };
-    // A crash on the request's values (worker.rs, `crash_advice`), which the same values
-    // would crash again: edit them, which rebuilds anyway, never check with fresh.
+    // A crash on the request's values, which the same values would crash again: edit them,
+    // which rebuilds anyway, never check with fresh.
     let crashed = Error::new(ErrorCode::WorkerCrashed, "the worker crashed")
         .with_feature("f0000001")
-        .with_suggestion(
+        .with_advice(crash_advice(
+            WorkerKind::Kernel,
+            signalled(libc::SIGSEGV),
+            Reached::Request,
+        ));
+    assert_eq!(
+        crashed.suggestion(),
+        Some(
             "change the operation's values: these crashed the kernel, and the same request \
-             would crash it again",
-        );
+             would crash it again"
+        )
+    );
     assert_eq!(
         said(&kept_fault(&crashed)),
         (
@@ -2968,10 +2979,11 @@ fn a_kept_fault_keeps_the_workers_advice_then_says_to_check_with_fresh() {
     // The sketch solver's (`WorkerKind::runs`), likewise.
     let solver = Error::new(ErrorCode::WorkerCrashed, "the worker crashed")
         .with_feature("s0000001")
-        .with_suggestion(
-            "change the operation's values: these crashed the sketch solver, and the same \
-             request would crash it again",
-        );
+        .with_advice(crash_advice(
+            WorkerKind::Sketch,
+            signalled(libc::SIGBUS),
+            Reached::Request,
+        ));
     assert_eq!(
         kept_fault(&solver).suggestion(),
         Some(
@@ -2981,11 +2993,12 @@ fn a_kept_fault_keeps_the_workers_advice_then_says_to_check_with_fresh() {
     );
     // With no feature named, the worker's advice alone: there's no feature to edit, and
     // the same request would crash it again.
-    let unnamed_values = Error::new(ErrorCode::WorkerCrashed, "the worker crashed")
-        .with_suggestion(
-            "change the operation's values: these crashed the kernel, and the same request would \
-         crash it again",
-        );
+    let unnamed_values =
+        Error::new(ErrorCode::WorkerCrashed, "the worker crashed").with_advice(crash_advice(
+            WorkerKind::Kernel,
+            signalled(libc::SIGSEGV),
+            Reached::Request,
+        ));
     assert_eq!(
         kept_fault(&unnamed_values).suggestion(),
         Some(
@@ -2993,8 +3006,9 @@ fn a_kept_fault_keeps_the_workers_advice_then_says_to_check_with_fresh() {
              would crash it again"
         )
     );
-    // Advice that begins the same way under another code is no crash's: the code decides,
-    // not the words (a kernel's refusal, worker.rs's `KernelFailed`, here).
+    // Advice in the same words that the worker didn't give as a crash's is no crash's: the
+    // advice as data decides, not the words (a kernel's refusal, worker.rs's
+    // `KernelFailed`, here; and a crash's words given as a suggestion of their own).
     let refused = Error::new(ErrorCode::KernelFailed, "refused")
         .with_feature("f0000001")
         .with_suggestion("change the operation's values: the kernel can't build it from these");
@@ -3005,24 +3019,96 @@ fn a_kept_fault_keeps_the_workers_advice_then_says_to_check_with_fresh() {
              with fresh to try it again"
         )
     );
-    // A timeout once the worker had started (worker.rs, `timed_out`): the time allowed
-    // isn't the command API's to give, so not said.
+    let worded = crashed.clone().with_suggestion(
+        "change the operation's values: these crashed the kernel, and the same request would \
+         crash it again",
+    );
+    assert_eq!(
+        kept_fault(&worded).suggestion(),
+        Some(
+            "change the operation's values: these crashed the kernel, and the same request \
+             would crash it again; then check with fresh to try it again"
+        )
+    );
+    // A timeout once the worker had started: the time allowed isn't the command API's to
+    // give, so not said.
     let timed_out = Error::new(ErrorCode::WorkerTimeout, "timed out")
         .with_feature("f0000001")
-        .with_suggestion("simplify the operation, or allow it more time");
+        .with_advice(timeout_advice(WorkerKind::Kernel, true));
+    assert_eq!(
+        timed_out.suggestion(),
+        Some("simplify the operation, or allow it more time")
+    );
     assert_eq!(
         kept_fault(&timed_out).suggestion(),
         Some("simplify the operation, or check with fresh to try it again")
     );
-    // One that hadn't started: its own advice, then check with fresh.
+    // One that hadn't started: check with fresh in the place of the worker's retry, so a
+    // retry is said once.
     let unstarted = Error::new(ErrorCode::WorkerTimeout, "timed out")
         .with_feature("f0000001")
-        .with_suggestion("try the request again: the kernel worker hadn't started");
+        .with_advice(timeout_advice(WorkerKind::Kernel, false));
+    assert_eq!(
+        unstarted.suggestion(),
+        Some(
+            "try the request again: the kernel worker hadn't started in the time allowed (a \
+             new worker binary's first launch can be slow while the system checks it); if it \
+             never starts, check Silico's install"
+        )
+    );
     assert_eq!(
         kept_fault(&unstarted).suggestion(),
         Some(
-            "try the request again: the kernel worker hadn't started; then check with fresh \
-             to try it again"
+            "check with fresh to try it again: the kernel worker hadn't started in the time \
+             allowed (a new worker binary's first launch can be slow while the system checks \
+             it); if it never starts, check Silico's install"
+        )
+    );
+    // A worker stopped from outside, and one killed (most likely for memory): likewise,
+    // once more for the kill.
+    let outside = Error::new(ErrorCode::WorkerCrashed, "the worker crashed")
+        .with_feature("f0000001")
+        .with_advice(crash_advice(
+            WorkerKind::Kernel,
+            signalled(libc::SIGTERM),
+            Reached::Request,
+        ));
+    assert_eq!(
+        kept_fault(&outside).suggestion(),
+        Some(
+            "check with fresh to try it again: the kernel worker was stopped from outside, \
+             stopped responding, or was gone before the request reached it, not by these values"
+        )
+    );
+    let killed = Error::new(ErrorCode::WorkerCrashed, "the worker crashed")
+        .with_feature("f0000001")
+        .with_advice(crash_advice(
+            WorkerKind::Kernel,
+            signalled(libc::SIGKILL),
+            Reached::Request,
+        ));
+    assert_eq!(
+        kept_fault(&killed).suggestion(),
+        Some(
+            "check with fresh to try it once more: the kernel worker was killed, most likely \
+             by the system for running out of memory; if it's killed again, the request needs \
+             too much memory: simplify it"
+        )
+    );
+    // The worker's install: its advice, then check with fresh.
+    let exited = Error::new(ErrorCode::WorkerCrashed, "the worker crashed")
+        .with_feature("f0000001")
+        .with_advice(crash_advice(
+            WorkerKind::Kernel,
+            Some(std::process::ExitStatus::from_raw(3 << 8)),
+            Reached::Request,
+        ));
+    assert_eq!(
+        kept_fault(&exited).suggestion(),
+        Some(
+            "check Silico's install: the kernel worker exited on its own (see its last \
+             output), which no change to the request will help; report it if it persists; \
+             then check with fresh to try it again"
         )
     );
     // Out of memory (silico-protocol's `OUT_OF_MEMORY`).
