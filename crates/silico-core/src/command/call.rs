@@ -23,7 +23,7 @@
 use std::time::Duration;
 
 use super::render::Rendering;
-use super::session::Later;
+use super::session::WeakSessions;
 use super::wire::edits::{
     AddFeatureRequest, RemoveFeatureRequest, ReplaceTextRequest, SetFieldRequest,
 };
@@ -406,13 +406,13 @@ impl<P: Clients + 'static> Sessions<P> {
             Command::Open => typed(OpenRequest::read(request), |r| self.open(r.path, r.create)),
             Command::Close => typed(SessionRequest::read(request), |r| self.close(&r.session)),
             Command::Status => {
-                let sessions: Later<P> = self.later();
+                let sessions: WeakSessions<P> = self.weak();
                 later(SessionRequest::read(request), move |r| {
                     sessions.status(&r.session)
                 })
             }
             Command::Cancel => {
-                let sessions: Later<P> = self.later();
+                let sessions: WeakSessions<P> = self.weak();
                 later(CancelRequest::read(request), move |r| {
                     sessions.cancel(&r.session, r.command)
                 })

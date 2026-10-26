@@ -555,6 +555,45 @@ fn a_document_made_for_a_session_the_sessions_closing_refuse_is_removed() {
     assert!(book.paths.is_empty());
 }
 
+#[test]
+fn a_workspace_is_refused_once_an_open_was_asked_for_its_thread_ended() {
+    // Found by the review: the integration test's refused open may still have its thread,
+    // and so the registry shared, when the workspace is given, so it's refused for that and
+    // never reaches the check that no open was asked for. Here the thread has certainly
+    // ended (joined), the registry is the sessions' alone, and still it's refused, for the
+    // open asked for (`next` past 1).
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let made = || {
+        let secret = secret.clone();
+        Sessions::with_cache_opener(FakeKernel::new(1).unwrap(), move |cache| {
+            Cache::with_secret(cache, &secret)
+        })
+    };
+    let sessions = made();
+    let refused = sessions
+        .open(dir.path().join("none.silico"), false)
+        .wait_timeout(WAIT)
+        .ok()
+        .unwrap();
+    assert!(refused.result.is_err());
+    let threads = std::mem::replace(&mut lock(&sessions.registry.book).threads, Threads::new());
+    threads.join();
+    assert_eq!(Arc::strong_count(&sessions.registry), 1);
+    assert_eq!(lock(&sessions.registry.book).next, 2);
+    let e = match sessions.in_workspace(dir.path()) {
+        Ok(_) => panic!("given a workspace after an open was asked for"),
+        Err(e) => e,
+    };
+    assert_eq!(e.message(), "these sessions can't be given a workspace now");
+    assert_eq!(
+        e.cause(),
+        Some("a workspace is given once, as the sessions are made, before any document opens")
+    );
+    // The same sessions, no open asked for: given it.
+    assert!(made().in_workspace(dir.path()).is_ok());
+}
+
 /// A session's queue with no command in it, and none to come: its sender gone before
 /// it's given (a temporary's lives to the end of its statement, so `start` would wait on
 /// it).
