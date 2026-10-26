@@ -677,6 +677,8 @@ fn cache_clear_of_a_cache_that_led_out_as_it_opened_and_is_inside_as_it_clears_c
     let link = f.work.join(".silico-cache");
     std::os::unix::fs::symlink(&theirs, &link).unwrap();
     assert!(f.open("part.silico", false).ok);
+    // The stand-in: no cache opened.
+    assert!(f.caches.lock().unwrap().is_empty());
     std::fs::remove_file(&link).unwrap();
     let inside = plant_entries(&link);
     assert_eq!(inside.len(), 2);
