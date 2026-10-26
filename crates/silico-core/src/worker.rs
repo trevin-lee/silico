@@ -1942,6 +1942,21 @@ mod tests {
             late.suggestion(),
             Some("simplify the operation, or allow it more time")
         );
+        // Said to have started only during the call (once it has a byte of the request), then
+        // never answering: past its time as well, as the timeout reads whether it started when
+        // it fires, not when the call began.
+        let dir = scratch("advice-started-mid-call");
+        let path = script(
+            &dir,
+            "head -c 1 <&3 >/dev/null\nprintf '\\0\\0\\0\\0' >&3\nexec sleep 600",
+        );
+        let mut worker = super::Worker::spawn(&path).unwrap();
+        assert!(!worker.has_started());
+        let late = worker
+            .call(generation, echo(), Duration::from_secs(15))
+            .unwrap_err();
+        assert_eq!(late.code(), ErrorCode::WorkerTimeout, "{late}");
+        assert_eq!(late.advice(), Some(&Advice::SimplifyOrWait), "{late}");
         // Never said it started: try again.
         let dir = scratch("advice-unstarted");
         let path = script(&dir, "exec sleep 600");
