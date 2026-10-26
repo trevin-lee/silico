@@ -192,6 +192,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A refusal branch for a kind no element map holds (a solid's name, `box.Solid1`): the dedicated refusal is dead, and the name is "not found" with no candidates, its suggestion still pointing at candidates
 - Snapshots' integers (`"type": "integer"`) against a reader that takes digits only: JSON Schema calls `2.0` and `1e3` integers, and a `uint64` with no `maximum` takes 2^64, so a request the schema validates is refused; validate each refused spelling against the snapshot
 - Values the core derives and sends on (a circle's centre as a point to measure from), refused by the request's own check: the refusal is worded as the caller's (`invalid_input`, "change the value the message names") for a value it never gave; forge a description past the check's bound and read the error as the caller would
+- A command pipelined right after the `open` of the session it names (IDs are given in call order, so predictable): refused "no session s1 is open" when called before the open's thread records the session, run when after; the same calls in the same order, answered by timing
 
 ## Kernel worker and IPC
 
@@ -280,6 +281,10 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A file name at the file system's longest (255 bytes): a temporary file beside it named after it (`.NAME.part-PID`) is past the limit, so a valid path the check took fails at the write, after the work
 - A relative path with a workspace that isn't the working directory: resolved against the process's directory, it's refused as outside the workspace or written where the workspace's rules don't hold
 - Bounds kept by "scan, evict, then write" across threads: entries other threads are writing aren't on disk to evict, so N puts at once leave N entries; bound every entry above half the bound and run parallel leaves
+- A workspace whose root is removed after start: a check that walks up a missing path to the nearest directory that's there reaches the root's parent, so every path inside is "outside the workspace"
+- A walk up a missing path that spends the links' budget (40) on each directory too: past ~40 missing directories below an outside one, whether that one exists decides "outside" against "can't be reached", an oracle for what exists outside the workspace
+- Paths to make ending in `/` or `/.`: `Path::file_name` skips both, so `brand/.` makes a file `brand`, which `open(2)` of the same path never would
+- Paths quoted whole in errors: `../` and a megabyte of `./` is a path under a request's limit whose "outside the workspace" refusal is a megabyte
 
 ## Rendering
 

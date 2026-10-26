@@ -40,6 +40,8 @@ mod test_programs;
 mod adversarial_cache;
 #[path = "adversarial_cache_bound.rs"]
 mod adversarial_cache_bound;
+#[path = "adversarial_call.rs"]
+mod adversarial_call;
 #[path = "adversarial_center_to_element.rs"]
 mod adversarial_center_to_element;
 #[path = "adversarial_command.rs"]
@@ -60,6 +62,8 @@ mod adversarial_render_command;
 mod adversarial_type_words;
 #[path = "adversarial_wire_commands.rs"]
 mod adversarial_wire_commands;
+#[path = "adversarial_workspace.rs"]
+mod adversarial_workspace;
 #[path = "cache_bound.rs"]
 mod cache_bound;
 #[path = "call.rs"]
