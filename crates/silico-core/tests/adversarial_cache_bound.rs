@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use bound::{bounded, bounded_on, set_time, set_time_at, total};
-use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, session};
+use cache::{HOLE, Scratch, calls, entries_and_partials, example_with_pin, hole, session};
 use example::EXAMPLE;
 use model::{checked, published};
 use silico_core::cache::{DEFAULT_BOUND, STALE_PARTIAL};
@@ -173,7 +173,7 @@ fn one_sessions_parallel_puts_keep_the_cache_within_its_bound() {
     let document = boxes(LEAVES);
     let measure = Scratch::new("parallel-measure");
     published(&session(&measure.0), document.clone());
-    let sizes: Vec<u64> = files(&measure.0)
+    let sizes: Vec<u64> = entries_and_partials(&measure.0)
         .iter()
         .map(|file| std::fs::metadata(file).unwrap().len())
         .collect();
@@ -207,7 +207,7 @@ fn one_sessions_parallel_puts_keep_the_cache_within_its_bound() {
 fn a_partial_a_minute_short_of_stale_is_kept_and_a_minute_past_is_removed() {
     let dir = Scratch::new("stale-edge");
     seed(&dir.0);
-    let sub = files(&dir.0)[0].parent().unwrap().to_owned();
+    let sub = entries_and_partials(&dir.0)[0].parent().unwrap().to_owned();
     let now = SystemTime::now();
     let short = sub.join(".partial-1-1");
     std::fs::write(&short, b"almost stale").unwrap();
@@ -467,7 +467,7 @@ fn a_read_only_subdirectory_over_the_bound_fails_nothing_and_the_rest_is_evicted
     assert!(movable.iter().all(|path| !path.exists()));
     // The stuck entries alone are past the bound, so no put found room: nothing new was
     // written (a removal that failed isn't room made).
-    assert_eq!(files(&dir.0), stuck);
+    assert_eq!(entries_and_partials(&dir.0), stuck);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -482,7 +482,7 @@ fn one_box() -> Checked {
 fn a_bound_of_exactly_an_entry_keeps_it_and_one_byte_less_doesnt() {
     let measure = Scratch::new("exact-measure");
     published(&session(&measure.0), one_box());
-    let entries = files(&measure.0);
+    let entries = entries_and_partials(&measure.0);
     assert_eq!(entries.len(), 1, "{entries:?}");
     let size = std::fs::metadata(&entries[0]).unwrap().len();
 
@@ -494,7 +494,11 @@ fn a_bound_of_exactly_an_entry_keeps_it_and_one_byte_less_doesnt() {
 
     let under = Scratch::new("exact-under");
     published(&bounded(&under.0, size - 1), one_box());
-    assert!(files(&under.0).is_empty(), "{:?}", files(&under.0));
+    assert!(
+        entries_and_partials(&under.0).is_empty(),
+        "{:?}",
+        entries_and_partials(&under.0)
+    );
 }
 
 #[test]
@@ -503,7 +507,11 @@ fn bounds_of_zero_and_one_keep_nothing_and_fail_nothing() {
         let dir = Scratch::new(&format!("tiny-{bound}"));
         let engine = bounded(&dir.0, bound);
         assert_eq!(hole(&published(&engine, checked(EXAMPLE))), HOLE);
-        assert!(files(&dir.0).is_empty(), "{:?}", files(&dir.0));
+        assert!(
+            entries_and_partials(&dir.0).is_empty(),
+            "{:?}",
+            entries_and_partials(&dir.0)
+        );
         // And again, the same session: nothing to hit, so built again, the same.
         let again = bounded(&dir.0, bound);
         assert_eq!(hole(&published(&again, checked(EXAMPLE))), HOLE);
@@ -532,7 +540,12 @@ fn one_sessions_puts_one_after_another_keep_the_cache_within_its_bound() {
     let engine = bounded(&dir.0, bound);
     for n in 0..8 {
         published(&engine, one(n));
-        assert_eq!(files(&dir.0).len(), 1, "after box {n}: {:?}", files(&dir.0));
+        assert_eq!(
+            entries_and_partials(&dir.0).len(),
+            1,
+            "after box {n}: {:?}",
+            entries_and_partials(&dir.0)
+        );
         assert!(total(&dir.0) <= bound);
     }
 }
@@ -546,7 +559,7 @@ fn one_sessions_puts_one_after_another_keep_the_cache_within_its_bound() {
 fn a_one_worker_kernels_puts_keep_the_cache_within_its_bound() {
     let measure = Scratch::new("small-measure");
     published(&session(&measure.0), boxes(4));
-    let largest = files(&measure.0)
+    let largest = entries_and_partials(&measure.0)
         .iter()
         .map(|file| std::fs::metadata(file).unwrap().len())
         .max()
@@ -570,7 +583,12 @@ fn a_bound_of_u64_max_keeps_everything_and_overflows_nothing() {
         published(&bounded(&dir.0, u64::MAX), example_with_pin(radius));
     }
     // A block and three entries for each pin: every one kept.
-    assert_eq!(files(&dir.0).len(), 13, "{:?}", files(&dir.0));
+    assert_eq!(
+        entries_and_partials(&dir.0).len(),
+        13,
+        "{:?}",
+        entries_and_partials(&dir.0)
+    );
     let again = bounded(&dir.0, u64::MAX);
     for radius in ["1", "2", "3", "4"] {
         published(&again, example_with_pin(radius));
@@ -622,11 +640,11 @@ fn sessions_at_once(documents: u64, allowance: fn(u64, u64) -> u64) {
         );
     }
     assert!(
-        files(&dir.0)
+        entries_and_partials(&dir.0)
             .iter()
             .all(|p| !p.to_string_lossy().contains(".partial-")),
         "{:?}",
-        files(&dir.0)
+        entries_and_partials(&dir.0)
     );
 }
 

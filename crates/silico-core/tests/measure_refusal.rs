@@ -13,7 +13,7 @@ use super::example;
 use super::model;
 use super::refusals;
 
-use cache::{HOLE, Scratch, calls, example_with_pin, files, hole, session};
+use cache::{HOLE, Scratch, calls, entries_and_partials, example_with_pin, hole, session};
 use example::EXAMPLE;
 use model::{checked, published};
 use refusals::refusing;
@@ -91,14 +91,14 @@ fn a_measure_refused_as_invalid_is_kept_on_disk_and_never_asked_again() {
         assert_eq!(again.drift(), model.drift());
         assert_eq!(hole(&again), HOLE);
         // Nor is anything written again: the entries are as the first session left them.
-        let before: Vec<Vec<u8>> = files(&dir.0)
+        let before: Vec<Vec<u8>> = entries_and_partials(&dir.0)
             .iter()
             .map(|f| std::fs::read(f).unwrap())
             .collect();
         let third = session(&dir.0);
         published(&third, checked(EXAMPLE));
         assert!(third.kernel().calls().is_empty());
-        let after: Vec<Vec<u8>> = files(&dir.0)
+        let after: Vec<Vec<u8>> = entries_and_partials(&dir.0)
             .iter()
             .map(|f| std::fs::read(f).unwrap())
             .collect();

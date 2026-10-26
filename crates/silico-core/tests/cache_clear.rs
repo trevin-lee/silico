@@ -14,9 +14,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::cache::{
-    HOLE, Scratch, cache, calls, example_with_pin, files, hole, secret_of, session,
+    HOLE, Scratch, cache, calls, entries_and_partials, example_with_pin, hole, secret_of, session,
 };
-use super::cache_control::NAME;
+use super::cache_control::{NAME, entries};
 use super::example::EXAMPLE;
 use super::model::{checked, published};
 use silico_core::cache::{Cache, ClearFailure, ClearStep};
@@ -26,9 +26,9 @@ use silico_core::recompute::Recompute;
 /// The cache in `dir` holding the example's four entries, made by a session that's gone.
 fn seeded(dir: &Path) -> Vec<PathBuf> {
     published(&session(dir), checked(EXAMPLE));
-    let entries = files(dir);
-    assert_eq!(entries.len(), 4, "{entries:?}");
-    entries
+    let found = entries(dir);
+    assert_eq!(found.len(), 4, "{found:?}");
+    found
 }
 
 #[test]
@@ -45,11 +45,11 @@ fn a_clear_removes_every_entry_and_says_how_many() {
         ),
     );
     published(&elsewhere, checked(EXAMPLE));
-    assert_eq!(files(&dir.0).len(), 8);
+    assert_eq!(entries(&dir.0).len(), 8);
     // Cleared by a cache that never wrote, of yet another secret: 4 + 4.
     let clearing = Cache::with_secret(&dir.0, &secret_of(&dir.0.join("third")));
     assert_eq!(clearing.clear().unwrap(), 8);
-    assert!(files(&dir.0).is_empty(), "{:?}", files(&dir.0));
+    assert!(entries(&dir.0).is_empty(), "{:?}", entries(&dir.0));
     // A second clear finds none.
     assert_eq!(clearing.clear().unwrap(), 0);
     // An entry removed is only a miss: the next session makes each step again, the same.
@@ -60,7 +60,7 @@ fn a_clear_removes_every_entry_and_says_how_many() {
         calls(&next),
         ["Cut", "MakeBox", "MakeCylinder", "Translate"]
     );
-    assert_eq!(files(&dir.0).len(), 4);
+    assert_eq!(entries(&dir.0).len(), 4);
 }
 
 #[test]
@@ -151,11 +151,11 @@ fn a_cache_through_a_link_or_none_at_all_clears_nothing() {
     let link = Scratch::new("clear-linked");
     std::os::unix::fs::symlink(&real.0, &link.0).unwrap();
     assert_eq!(cache(&link.0).clear().unwrap(), 0);
-    assert_eq!(files(&real.0).len(), 4);
+    assert_eq!(entries(&real.0).len(), 4);
     // So with a trailing slash, through which a link would be followed.
     let slashed = PathBuf::from(format!("{}/", link.0.display()));
     assert_eq!(cache(&slashed).clear().unwrap(), 0);
-    assert_eq!(files(&real.0).len(), 4);
+    assert_eq!(entries(&real.0).len(), 4);
     // No directory, and a file in its place.
     let none = Scratch::new("clear-none");
     assert_eq!(cache(&none.0).clear().unwrap(), 0);
@@ -219,6 +219,54 @@ fn what_a_clear_cant_remove_or_read_is_said_and_the_rest_removed() {
 }
 
 #[test]
+fn an_entry_or_a_subdirectory_a_clear_can_list_but_not_look_at_is_said_and_left() {
+    // A directory that can be read but not searched (0o444) lists its names, but what each
+    // is can't be read. The cache's one entry, `ab/NAME`, by hand.
+    let dir = Scratch::new("clear-unsearchable");
+    let sub = dir.0.join("ab");
+    std::fs::create_dir_all(&sub).unwrap();
+    let entry = sub.join(NAME);
+    std::fs::write(&entry, b"an entry").unwrap();
+    let mode = |path: &Path, mode| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    let said = |uncleared: &silico_core::cache::PartlyCleared| -> Vec<(PathBuf, ClearStep)> {
+        uncleared
+            .failures
+            .iter()
+            .map(|ClearFailure { path, step, why }| {
+                assert_eq!(why.raw_os_error(), Some(libc::EACCES), "{path:?}");
+                (path.clone(), *step)
+            })
+            .collect()
+    };
+    // The subdirectory listed, its entry not looked at: the entry it couldn't remove.
+    mode(&sub, 0o444);
+    if std::fs::symlink_metadata(&entry).is_ok() {
+        mode(&sub, 0o755);
+        return; // root, who may look anyway
+    }
+    let uncleared = cache(&dir.0).clear().unwrap_err();
+    mode(&sub, 0o755);
+    assert_eq!(uncleared.removed, 0);
+    assert_eq!(uncleared.total, 1);
+    assert_eq!(said(&uncleared), [(entry.clone(), ClearStep::Remove)]);
+    assert!(entry.is_file());
+    // The cache's directory listed, the subdirectory not looked at: the directory it
+    // couldn't read.
+    mode(&dir.0, 0o444);
+    let uncleared = cache(&dir.0).clear().unwrap_err();
+    mode(&dir.0, 0o755);
+    assert_eq!(uncleared.removed, 0);
+    assert_eq!(uncleared.total, 1);
+    assert_eq!(said(&uncleared), [(sub.clone(), ClearStep::Read)]);
+    assert!(entry.is_file());
+    // Once it may, the entry is removed.
+    assert_eq!(cache(&dir.0).clear().unwrap(), 1);
+    assert!(!entry.exists());
+}
+
+#[test]
 fn a_clear_while_another_process_rebuilds_leaves_no_entry_trusted_half_written() {
     // Sessions of their own caches (as other processes are: each its own count of the
     // directory) rebuild three documents over and over while another clears the directory
@@ -264,7 +312,7 @@ fn a_clear_while_another_process_rebuilds_leaves_no_entry_trusted_half_written()
     let cleared = clearer.join().unwrap();
     assert!(cleared > 0, "the clears raced nothing");
     // What's left is whole: no partial file, and each entry a hit of the right shape.
-    let left = files(&dir.0);
+    let left = entries_and_partials(&dir.0);
     assert!(
         left.iter()
             .all(|p| !p.to_string_lossy().contains(".partial-")),
