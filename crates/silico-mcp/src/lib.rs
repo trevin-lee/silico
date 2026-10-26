@@ -674,7 +674,7 @@ impl<P: Clients + 'static> Dispatch<'_, P> {
             },
         };
         // A command answered when it's waited on never waits on a session: it takes no
-        // slot, and is answered in turn on the replies' thread.
+        // slot, and is answered here, as it's read, its reply queued with the others.
         let slotted = !command.answered_when_waited();
         let Some(landing) = self.flights.take(id, slotted) else {
             return self.refuse_call(

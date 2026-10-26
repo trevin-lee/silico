@@ -359,8 +359,11 @@ fn a_cancel_read_before_a_command_was_sent_never_stops_it_however_far_behind_the
     }
     c.send_call(11, "cancel", r#"{"session": "s1", "command": "check"}"#);
     c.send_call(12, "check", CHECK);
-    // The first check, cancelled as the cancel was read, ends before the second runs.
+    // The first check, cancelled as the cancel was read, ends before the second runs. Given
+    // time to end before the output is free (as a cancel run late would let it), it still
+    // answers cancelled: the cancel stopped it while it was held.
     hold.release();
+    std::thread::sleep(std::time::Duration::from_millis(300));
     c.release_output();
     let mut seen = std::collections::BTreeMap::new();
     while seen.len() < 8 {
@@ -410,4 +413,26 @@ fn progress_dropped_while_the_output_is_busy_is_sent_once_it_is_free() {
     boxes.release();
     let (line, _) = c.reply_line("2");
     assert!(line.contains(r#""isError":false"#), "{line}");
+}
+
+#[test]
+fn a_slot_free_call_never_holds_serve_while_the_output_is_busy() {
+    // From the review (round 3): a slot-free call's reply written on serve's thread would
+    // hold it on a client that isn't reading, so no later line (a call, a cancel) is read.
+    // It's queued with the other replies.
+    let mut c = Client::opened();
+    let hold = c.kernel.hold(is_box);
+    c.stall_output();
+    c.send(r#"{"jsonrpc": "2.0", "id": 2, "method": "ping"}"#);
+    c.wait_stalled();
+    c.send_call(3, "version", "{}");
+    c.send_call(4, "check", CHECK);
+    // The check after it is read and runs while the output is still stalled.
+    running(&c.kernel, 1);
+    hold.release();
+    c.release_output();
+    let ids: Vec<u64> = (0..3)
+        .map(|_| c.message()["id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(ids[..2], [2, 3]);
 }
