@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::classify::point_beyond;
 use crate::{ElementKind, ElementRef, Refusal};
 
 /// What [`crate::Op::Distance`] found: the least distance between the two elements as
@@ -43,14 +44,12 @@ pub const MAX_POINT_COORDINATE: f64 = 1e12;
 /// core's request, the worker, and the fake kernel each refuse by it.
 pub fn check_point_distance(element: ElementRef, point: [f64; 3]) -> Result<(), Refusal> {
     check_element(element, "element")?;
-    let most = MAX_POINT_COORDINATE;
-    if point.iter().all(|c| c.abs() <= most) {
-        Ok(())
-    } else {
-        Err(Refusal::InvalidParameter {
+    match point_beyond("point", point, MAX_POINT_COORDINATE) {
+        None => Ok(()),
+        Some(message) => Err(Refusal::InvalidParameter {
             parameter: "point".to_owned(),
-            message: format!("point {point:?} must be finite and within {most} mm of the origin"),
-        })
+            message,
+        }),
     }
 }
 
