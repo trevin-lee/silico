@@ -2460,7 +2460,7 @@ mod tests {
     }
 }
 
-// --- Sketches ---------------------------------------------------------------------------
+// --- Renders ----------------------------------------------------------------------------
 
 /// A renderer for the core's tests (docs/design/m4.6-render.md, Tests, the boundary rule):
 /// every scene it's sent recorded, in order, each answered at once with a stand-in PNG that
@@ -2469,7 +2469,7 @@ mod tests {
 pub struct FakeRenderer {
     sent: Mutex<Vec<silico_protocol::RenderScene>>,
     failing: Mutex<Option<Error>>,
-    cancelling: Mutex<bool>,
+    cancelling: std::sync::atomic::AtomicBool,
 }
 
 impl FakeRenderer {
@@ -2489,7 +2489,8 @@ impl FakeRenderer {
 
     /// Answers every render from now on cancelled, as one cancelled while it ran would.
     pub fn cancel_all(&self) {
-        *lock(&self.cancelling) = true;
+        self.cancelling
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -2497,7 +2498,7 @@ impl crate::command::render::Renderer for FakeRenderer {
     fn render(&self, scene: silico_protocol::RenderScene) -> crate::render::RenderTicket {
         let png = format!("PNG {}x{}", scene.width, scene.height).into_bytes();
         lock(&self.sent).push(scene);
-        if *lock(&self.cancelling) {
+        if self.cancelling.load(std::sync::atomic::Ordering::SeqCst) {
             return crate::render::RenderTicket::answered(crate::render::RenderOutcome::Cancelled);
         }
         let outcome = match lock(&self.failing).clone() {
@@ -2507,6 +2508,8 @@ impl crate::command::render::Renderer for FakeRenderer {
         crate::render::RenderTicket::answered(crate::render::RenderOutcome::Done(outcome))
     }
 }
+
+// --- Sketches ---------------------------------------------------------------------------
 
 /// An in-memory sketch solver for tests: the [`SketchSolver`] core tests run recomputes
 /// with, so they need no sketch worker and can see what was asked of it. Unless told how to

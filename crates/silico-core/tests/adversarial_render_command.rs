@@ -10,16 +10,18 @@ use std::sync::Arc;
 use super::example::EXAMPLE;
 use super::sweeps;
 use proptest::prelude::*;
-use silico_core::command::render::{Render, RenderOn, Renderer, Rendering, render};
+use silico_core::command::render::{AnsweredCamera, Render, RenderOn, Renderer, Rendering, render};
 use silico_core::command::{self, Problems};
 use silico_core::fake::{FakeKernel, FakeRenderer, FakeSketches};
-use silico_core::kernel::{Kernel, Op};
+use silico_core::kernel::Op;
 use silico_core::meshes::{MESH_CACHE_BYTES, MeshCache};
 use silico_core::recompute::{Key, Model, Recompute};
 use silico_core::render::RenderTicket;
 use silico_core::views::NamedView;
 use silico_core::{Error, ErrorCode};
-use silico_protocol::{BooleanOp, Camera, Projection, RenderScene};
+use silico_protocol::{
+    BooleanOp, Camera, MAX_RENDER_TRIANGLES, Mesh, MeshAt, Projection, RenderScene, Reply,
+};
 
 /// A model rebuilt on its own fake kernel (configured first), with a mesh cache and a
 /// recording renderer.
@@ -66,11 +68,11 @@ impl Bench {
             request,
             &RenderOn {
                 kernel: &self.kernel,
-                generation: self.kernel.generation(),
                 meshes: &self.meshes,
                 renderer,
                 workspace,
                 held,
+                settle: &|| Ok(()),
             },
         )
     }
@@ -221,26 +223,14 @@ fn a_named_view_of_a_long_rod_seen_end_on_is_never_called_silicos_bug() {
     // the right (x) 1 × 100/100, so the view is 1.1 high, about (0.5, 250000, 0.5). The
     // fake's mesh has a corner at the origin, 250,000 from there.
     let bench = Bench::of(&boxes(&[("aaaaaaaa", [0.0; 3], [1.0, 500_000.0, 1.0])]));
-    match bench.render(&view("front", 100, 100)) {
-        Ok(done) => {
-            let Projection::Orthographic { view_height } = done.result.camera.camera().projection
-            else {
-                panic!("{:?}", done.result.camera.camera());
-            };
-            // Whatever it's drawn at, the rod's end is in it.
-            assert!(view_height >= 1.1, "{view_height}");
-        }
-        Err(problems) => {
-            let e = &problems.errors()[0];
-            assert_ne!(e.code(), ErrorCode::Internal, "{e:?}");
-            assert_eq!(
-                (e.code(), e.parameter()),
-                (ErrorCode::InvalidInput, Some("view")),
-                "{e:?}"
-            );
-            assert!(bench.renderer.sent().is_empty());
-        }
-    }
+    // Drawn, the view held to the scene's reach: 1.01 × 1e-5 of half the rod's diagonal,
+    // √(500,000² + 2)/2 = 250,000.000002, so 2.52500000002, written to the nanometre 2.525,
+    // over the 1.1 its extent across gives.
+    let done = bench.render(&view("front", 100, 100)).unwrap();
+    let Projection::Orthographic { view_height } = done.result.camera.camera().projection else {
+        panic!("{:?}", done.result.camera.camera());
+    };
+    assert_eq!(view_height, 2.525);
     // From the right (+x), the same rod spans 500,000 across: 550,000 high, drawn.
     bench.render(&view("right", 100, 100)).unwrap();
 }
@@ -323,11 +313,14 @@ fn a_body_whose_measure_failed_is_still_drawn_by_a_camera_on_it() {
 #[test]
 fn a_named_view_of_an_unmeasured_body_doesnt_say_the_model_has_none() {
     let bench = unmeasured();
-    if let Err(problems) = bench.render(&view("front", 100, 100)) {
-        let e = &problems.errors()[0];
-        assert!(!e.message().contains("has none"), "{e:?}");
-        assert_eq!(e.feature(), Some("m3tq8v0z"), "{e:?}");
-    }
+    let e = refused(bench.render(&view("front", 100, 100)));
+    assert!(!e.message().contains("has none"), "{e:?}");
+    assert_eq!(
+        (e.code(), e.parameter(), e.feature()),
+        (ErrorCode::InvalidInput, Some("view"), Some("m3tq8v0z")),
+        "{e:?}"
+    );
+    assert!(bench.renderer.sent().is_empty());
 }
 
 // BREAKS (fixed): a perspective eye inside a body that wasn't measured isn't refused: the classifier
@@ -546,8 +539,14 @@ proptest! {
     fn a_cameras_answer_passed_back_is_answered_unchanged(c in a_camera()) {
         let bench = Bench::of(&boxes(&[]));
         let Ok(first) = bench.render(&camera(c.clone(), 64, 48)) else {
-            // Refused: it must be for its camera, and nothing sent.
-            prop_assert!(c.check().is_err(), "{c:?}");
+            // Refused: it must be for its camera (failing its check, or failing it once
+            // rounded as a result writes it: an eye and a target half a nanometre apart),
+            // and nothing sent.
+            let rounded = AnsweredCamera::rounded(&c).map(|a| a.camera());
+            prop_assert!(
+                c.check().is_err() || rounded.is_none_or(|r| r.check().is_err()),
+                "{c:?}"
+            );
             prop_assert!(bench.renderer.sent().is_empty());
             return Ok(());
         };
@@ -854,4 +853,141 @@ fn an_answered_camera_passed_back_is_answered_to_the_bit() {
     };
     let again = bench.render(&camera(answered.clone(), 64, 48)).unwrap();
     assert_eq!(again.result.camera.camera(), answered);
+}
+
+// --- Round 1 of the council ----------------------------------------------------------
+
+#[test]
+fn bodies_in_view_of_more_faces_than_a_render_draws_are_refused_before_meshing() {
+    // 3,334 boxes of 6 faces: 20,004, past the 20,000 a render draws. Counted from the
+    // B-reps, before any is meshed; named `camera`, as a camera on part of the model has
+    // fewer faces in view.
+    let many: Vec<(String, [f64; 3])> = (0..3334)
+        .map(|i| (format!("b{i:07}"), [f64::from(i) * 2.0, 0.0, 0.0]))
+        .collect();
+    let refs: Vec<(&str, [f64; 3], [f64; 3])> = many
+        .iter()
+        .map(|(id, at)| (id.as_str(), *at, [1.0, 1.0, 1.0]))
+        .collect();
+    let bench = Bench::of(&boxes(&refs));
+    let e = refused(bench.render(&view("front", 100, 100)));
+    assert_eq!(
+        (e.code(), e.parameter()),
+        (ErrorCode::InvalidInput, Some("camera")),
+        "{e:?}"
+    );
+    assert!(e.message().contains("20004 faces"), "{e:?}");
+    assert!(bench.meshed().is_empty());
+    assert!(bench.renderer.sent().is_empty());
+}
+
+/// A mesh of one face of `triangles` triangles, at `deflection`.
+fn one_face_of(triangles: usize, deflection: f64) -> Reply {
+    Reply::MeshAt(MeshAt {
+        mesh: Mesh {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            normals: vec![[0.0, -1.0, 0.0]; 3],
+            triangles: vec![[0, 1, 2]; triangles],
+            face_triangles: vec![u32::try_from(triangles).unwrap()],
+            edge_points: vec![],
+            edge_point_counts: vec![],
+            valid: None,
+        },
+        deflection,
+    })
+}
+
+#[test]
+fn meshes_of_more_triangles_than_a_render_draws_name_the_side_that_meshes_coarser() {
+    // The kernel meshing the example's body to 2,000,001 triangles, one past the cap: the
+    // request can mesh coarser, so it's `invalid_input`, never Silico's bug. From the front
+    // at 100 x 100 the fit is bound by the width (40 across against 12 up): `width`.
+    let bench = Bench::with(EXAMPLE, |k| {
+        k.answer_instead(|op| match op {
+            Op::Tessellate { deflection, .. } => {
+                Some(one_face_of(MAX_RENDER_TRIANGLES + 1, *deflection))
+            }
+            _ => None,
+        });
+    });
+    let e = refused(bench.render(&view("front", 100, 100)));
+    assert_eq!(
+        (e.code(), e.parameter()),
+        (ErrorCode::InvalidInput, Some("width")),
+        "{e:?}"
+    );
+    assert!(e.message().contains("2000001 triangles"), "{e:?}");
+    assert!(bench.renderer.sent().is_empty());
+    // A camera's: `height`.
+    let e = refused(bench.render(&camera(front(60.0), 100, 100)));
+    assert_eq!(e.parameter(), Some("height"), "{e:?}");
+    // Exactly at the cap: drawn.
+    let bench = Bench::with(EXAMPLE, |k| {
+        k.answer_instead(|op| match op {
+            Op::Tessellate { deflection, .. } => {
+                Some(one_face_of(MAX_RENDER_TRIANGLES, *deflection))
+            }
+            _ => None,
+        });
+    });
+    bench.render(&view("front", 100, 100)).unwrap();
+}
+
+#[test]
+fn a_camera_whose_eye_and_target_round_to_one_point_is_refused_naming_it() {
+    // 1.7e-6 apart, so it passes its check; written to the nanometre, both are 0, and a
+    // camera at its own target makes no view: refused, nothing sent.
+    let bench = Bench::of(EXAMPLE);
+    let c = Camera {
+        projection: Projection::Orthographic { view_height: 1.0 },
+        eye: [-4.9e-7; 3],
+        target: [4.9e-7; 3],
+        up: [0.0, 0.0, 1.0],
+    };
+    assert!(c.check().is_ok());
+    let e = refused(bench.render(&camera(c, 100, 100)));
+    assert_eq!(
+        (e.code(), e.parameter()),
+        (ErrorCode::InvalidInput, Some("camera")),
+        "{e:?}"
+    );
+    assert!(bench.renderer.sent().is_empty());
+}
+
+#[test]
+fn every_reason_a_render_is_refused_for_its_values_is_found() {
+    let bench = Bench::of(EXAMPLE);
+    let mut request = view("front", 0, 0);
+    request.highlight = vec!["k7f2qx3m.box.Face1".to_owned(); 1001];
+    let problems = bench.render(&request).unwrap_err();
+    let fields: Vec<Option<&str>> = problems.errors().iter().map(|e| e.parameter()).collect();
+    assert_eq!(fields, [Some("width"), Some("height"), Some("highlight")]);
+}
+
+#[test]
+fn a_broken_highlights_candidates_are_the_likeliest_by_m2_8s_rule() {
+    // The cut's side face named with a box face it isn't made from: no element of the Hole
+    // has that name. Its candidates, by M2.8's rule: those sharing the most of what it's
+    // made from (each of these shares one), the name's own feature's first, then by name:
+    // the cut's face of the cylinder alone, then the box's top.
+    let bench = Bench::of(EXAMPLE);
+    let mut request = view("front", 100, 100);
+    request.highlight =
+        vec!["m3tq8v0z.cut.Face(I a91cw0de.cylinder.Face1, I k7f2qx3m.box.Face6)".to_owned()];
+    let e = refused(bench.render(&request));
+    assert_eq!(e.code(), ErrorCode::ReferenceBroken, "{e:?}");
+    assert_eq!(
+        e.candidates(),
+        [
+            "m3tq8v0z.cut.Face(I a91cw0de.cylinder.Face1)",
+            "k7f2qx3m.box.Face6"
+        ],
+        "{e:?}"
+    );
+    // An edge's name: only edges.
+    request.highlight =
+        vec!["m3tq8v0z.cut.Edge(I a91cw0de.cylinder.Edge1, I k7f2qx3m.box.Face6)".to_owned()];
+    let e = refused(bench.render(&request));
+    assert!(!e.candidates().is_empty(), "{e:?}");
+    assert!(e.candidates().iter().all(|c| c.contains(".Edge")), "{e:?}");
 }

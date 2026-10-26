@@ -247,6 +247,7 @@ impl View {
     fn of(camera: &Camera, scene: &RenderScene) -> Result<View, String> {
         let frame = camera.frame().map_err(|e| e.message)?;
         let (back, up) = (vec3(frame.back), vec3(frame.up));
+        let (key, fill) = lights(&frame);
         let view = match camera.projection {
             Projection::Orthographic { view_height } => {
                 // Only the eye's direction counts: the camera is set past every point of the
@@ -264,8 +265,8 @@ impl View {
                         far_plane_distance: (2.0 * (reach + margin)) as f32,
                     },
                     reference: camera.target,
-                    key: lights(&frame).0,
-                    fill: lights(&frame).1,
+                    key,
+                    fill,
                 }
             }
             Projection::Perspective { field_of_view } => {
@@ -282,8 +283,8 @@ impl View {
                         aspect_ratio: scene.width as f32 / scene.height as f32,
                     },
                     reference: camera.eye,
-                    key: lights(&frame).0,
-                    fill: lights(&frame).1,
+                    key,
+                    fill,
                 }
             }
         };

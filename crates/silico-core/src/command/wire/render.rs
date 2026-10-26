@@ -96,7 +96,7 @@ fn read_camera(f: &mut RequestFields<'_>) -> Option<Camera> {
         },
         (Projects::Orthographic, h, a) => {
             f.refuse(projection_fields(
-                "orthographic",
+                "an orthographic",
                 "view_height",
                 "field_of_view",
                 h.is_none(),
@@ -106,7 +106,7 @@ fn read_camera(f: &mut RequestFields<'_>) -> Option<Camera> {
         }
         (Projects::Perspective, h, a) => {
             f.refuse(projection_fields(
-                "perspective",
+                "a perspective",
                 "field_of_view",
                 "view_height",
                 a.is_none(),
@@ -136,19 +136,19 @@ fn projection_fields(
     let (field, message) = if missing {
         (
             own,
-            format!("camera.{own} must be given for a {projection} camera, got null"),
+            format!("camera.{own} must be given for {projection} camera, got null"),
         )
     } else {
         debug_assert!(given);
         (
             other,
-            format!("camera.{other} must be null for a {projection} camera"),
+            format!("camera.{other} must be null for {projection} camera"),
         )
     };
     Error::new(ErrorCode::InvalidInput, message)
         .with_parameter(format!("camera.{field}"))
         .with_suggestion(format!(
-            "give camera.{own} for a {projection} camera, and camera.{other} as null"
+            "give camera.{own} for {projection} camera, and camera.{other} as null"
         ))
 }
 

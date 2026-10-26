@@ -12,7 +12,7 @@ use silico_core::command::render::{Render, RenderOn, Rendering, render};
 use silico_core::command::{self, Problems};
 use silico_core::document::Length;
 use silico_core::fake::{FakeKernel, FakeRenderer};
-use silico_core::kernel::{ElementKind, ElementRef, Kernel, Op};
+use silico_core::kernel::{ElementKind, ElementRef, Op};
 use silico_core::meshes::{MESH_CACHE_BYTES, MeshCache};
 use silico_core::recompute::{Key, Model, Recompute};
 use silico_core::views::NamedView;
@@ -56,11 +56,11 @@ impl Bench {
             request,
             &RenderOn {
                 kernel: &self.kernel,
-                generation: self.kernel.generation(),
                 meshes: &self.meshes,
                 renderer: &self.renderer,
                 workspace,
                 held: &[],
+                settle: &|| Ok(()),
             },
         )
     }

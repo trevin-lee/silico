@@ -454,6 +454,14 @@ fn output_target(
             "write it to a path that isn't a document's",
         ));
     }
+    // A link to a file of another format (a clone's `view.png` linked to its README) would
+    // be replaced by this one's bytes.
+    if !has(&target, rules.extension) {
+        return Err(refuse(
+            format!("is a link to a file that isn't a .{}", rules.extension),
+            "write it to a path that isn't a link to another kind of file",
+        ));
+    }
     let held: Vec<PathBuf> = rules
         .held
         .iter()

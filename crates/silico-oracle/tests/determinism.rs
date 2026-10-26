@@ -15,6 +15,7 @@ use std::path::Path;
 
 use serde::Serialize;
 use silico_core::command::rebuild;
+use silico_core::command::render::AnsweredCamera;
 use silico_core::kernel::{ElementCounts, Ends, History, InputHistory, KernelWorker, ShapeData};
 use silico_core::pool::KernelPool;
 use silico_core::recompute::{FeatureOutcome, Recompute};
@@ -130,19 +131,23 @@ fn digests_of(
         )
         .bytes(&[u8::from(s.valid)]);
     found.insert("summary".to_owned(), d.hex());
-    // Each named view's camera fitted to its tight box (M4.6: a result, computed in f64
-    // with no trigonometry, so the same everywhere), at 800 by 600.
+    // Each named view's camera fitted to its tight box, as a render answers it (M4.6: a
+    // result, rounded as written then its up made perpendicular, in f64 with no
+    // trigonometry, so the same everywhere), at 800 by 600.
     if let Some(bounds) = s.bounds {
         let mut d = Digest::default();
         for view in NAMED_VIEWS {
-            let camera = view.camera(bounds, 800, 600);
-            let Projection::Orthographic { view_height } = camera.projection else {
-                panic!("{} isn't orthographic: {camera:?}", view.name());
+            let fitted = view.camera(bounds, 800, 600);
+            let answered = AnsweredCamera::of(&fitted)
+                .unwrap_or_else(|| panic!("{} can't be answered: {fitted:?}", view.name()))
+                .camera();
+            let Projection::Orthographic { view_height } = answered.projection else {
+                panic!("{} isn't orthographic: {answered:?}", view.name());
             };
             d.f64s([view_height])
-                .f64s(camera.eye)
-                .f64s(camera.target)
-                .f64s(camera.up);
+                .f64s(answered.eye)
+                .f64s(answered.target)
+                .f64s(answered.up);
         }
         found.insert("cameras".to_owned(), d.hex());
     }

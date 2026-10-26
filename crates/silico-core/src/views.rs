@@ -189,15 +189,6 @@ impl NamedView {
     }
 }
 
-/// Half a pixel of `camera`'s image, `height` pixels high, in mm: what a body is meshed to
-/// ([`crate::meshes::mesh_level`]). An orthographic view's is the same everywhere; a
-/// perspective view's is taken at the target's distance. None for a camera that fails its
-/// check.
-pub fn half_pixel(camera: &Camera, height: u32) -> Option<f64> {
-    let frame = camera.frame().ok()?;
-    half_pixel_at(camera, height, frame.distance)
-}
-
 /// Half a pixel of `camera`'s image, `height` pixels high, in mm, at `distance` from a
 /// perspective eye (an orthographic view's is the same at any): a body is meshed to half
 /// a pixel at its nearest point, where its pixels are finest. None for a camera that fails
@@ -213,11 +204,28 @@ pub fn half_pixel_at(camera: &Camera, height: u32, distance: f64) -> Option<f64>
     Some(view_height / f64::from(height) / 2.0)
 }
 
-/// How far `point` is from the box `[low, high]`: 0 inside it.
-pub fn distance_to_box(point: [f64; 3], [low, high]: [[f64; 3]; 2]) -> f64 {
-    let gap = |k: usize| (low[k] - point[k]).max(point[k] - high[k]).max(0.0);
-    let d = [gap(0), gap(1), gap(2)];
-    dot(d, d).sqrt()
+/// How deep along `camera`'s view its nearest point is: the least of its eight corners'
+/// depths from the eye along the view's direction, never under 0 (a box reaching the eye's
+/// plane). A point's pixel scales with its depth, so a body is meshed to half a pixel there.
+pub fn depth_of_box(camera: &Camera, [low, high]: [[f64; 3]; 2]) -> f64 {
+    let Ok(frame) = camera.frame() else {
+        return 0.0;
+    };
+    let mut least = f64::INFINITY;
+    for i in 0..8 {
+        let corner = [
+            if i & 1 == 0 { low[0] } else { high[0] },
+            if i & 2 == 0 { low[1] } else { high[1] },
+            if i & 4 == 0 { low[2] } else { high[2] },
+        ];
+        let d = [
+            corner[0] - camera.eye[0],
+            corner[1] - camera.eye[1],
+            corner[2] - camera.eye[2],
+        ];
+        least = least.min(-dot(d, frame.back));
+    }
+    least.max(0.0)
 }
 
 /// Whether `camera`'s view, `width` by `height` pixels, may see any of a tight box,
@@ -298,7 +306,7 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 
 #[cfg(test)]
 mod tests {
-    use super::{NAMED_VIEWS, NamedView, cross, dot, half_pixel, sees};
+    use super::{NAMED_VIEWS, NamedView, cross, depth_of_box, dot, half_pixel_at, sees};
     use silico_protocol::{Camera, Projection};
 
     const BLOCK: [[f64; 3]; 2] = [[0.0, 0.0, 0.0], [40.0, 20.0, 10.0]];
@@ -469,18 +477,48 @@ mod tests {
     };
 
     #[test]
-    fn half_a_pixel_is_the_view_over_its_pixels_at_the_targets_distance() {
-        assert_eq!(
-            half_pixel(&from_front(ORTHO), 400),
-            Some(44.0 / 400.0 / 2.0)
-        );
-        // 2 × 100 × tan 20° high at the target, over 200 pixels, halved; tan 20° by hand.
+    fn half_a_pixel_is_the_view_over_its_pixels_at_a_depth() {
+        // Orthographic, 44 high over 400 pixels, the same at any depth.
+        for depth in [0.0, 100.0, 1e6] {
+            assert_eq!(
+                half_pixel_at(&from_front(ORTHO), 400, depth),
+                Some(44.0 / 400.0 / 2.0)
+            );
+        }
+        // Perspective, 40° high: 2 × depth × tan 20° over 200 pixels, halved; tan 20° by
+        // hand.
         let tan20 = 0.363_970_234_266_202_4;
-        let got = half_pixel(&from_front(PERSPECTIVE), 200).unwrap();
-        assert!((got - 100.0 * tan20 / 200.0).abs() <= 1e-15, "{got}");
+        for depth in [1.0, 100.0] {
+            let got = half_pixel_at(&from_front(PERSPECTIVE), 200, depth).unwrap();
+            assert!((got - depth * tan20 / 200.0).abs() <= 1e-15, "{got}");
+        }
         let mut bad = from_front(ORTHO);
         bad.eye = bad.target;
-        assert_eq!(half_pixel(&bad, 200), None);
+        assert_eq!(half_pixel_at(&bad, 200, 1.0), None);
+    }
+
+    #[test]
+    fn a_boxs_depth_is_its_nearest_corners_along_the_view_never_under_0() {
+        // From −y at y = −100, looking along +y: a box from y = 0 is 100 deep however far
+        // aside it lies (its distance would grow, its depth doesn't); one reaching y = −150,
+        // behind the eye, is at no depth.
+        let camera = from_front(PERSPECTIVE);
+        assert_eq!(
+            depth_of_box(&camera, [[-1.0, 0.0, -1.0], [1.0, 10.0, 1.0]]),
+            100.0
+        );
+        assert_eq!(
+            depth_of_box(&camera, [[300.0, 0.0, 40.0], [310.0, 5.0, 50.0]]),
+            100.0
+        );
+        assert_eq!(
+            depth_of_box(&camera, [[-1.0, -150.0, -1.0], [1.0, 0.0, 1.0]]),
+            0.0
+        );
+        assert_eq!(
+            depth_of_box(&camera, [[-1.0, -99.5, -1.0], [1.0, 0.0, 1.0]]),
+            0.5
+        );
     }
 
     #[test]

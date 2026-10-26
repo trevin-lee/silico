@@ -1233,7 +1233,6 @@ fn rendered(
 ) -> Result<silico_core::command::render::Rendering, Problems> {
     use silico_core::command::render::{RenderOn, render};
     use silico_core::fake::{FakeKernel, FakeRenderer};
-    use silico_core::kernel::Kernel;
     use silico_core::meshes::{MESH_CACHE_BYTES, MeshCache};
     use silico_core::recompute::Recompute;
     let kernel = std::sync::Arc::new(FakeKernel::new(1).unwrap());
@@ -1251,11 +1250,11 @@ fn rendered(
         request,
         &RenderOn {
             kernel: &kernel,
-            generation: kernel.generation(),
             meshes: &meshes,
             renderer: &renderer,
             workspace: None,
             held: &[],
+            settle: &|| Ok(()),
         },
     )
 }
@@ -1336,5 +1335,136 @@ fn the_designs_render_refusals_are_the_commands_own_and_hold_to_the_error_contra
     check(
         "render/refused-eye-inside",
         the_refusal(&rendered(super::example::EXAMPLE, &call.render).unwrap_err()),
+    );
+}
+
+/// A render request around `camera`, a JSON object's text.
+fn with_camera(camera: &str) -> String {
+    format!(
+        r#"{{"session": "s1", "model": "current", "view": null, "camera": {camera}, "width": 10, "height": 10, "highlight": [], "to": null, "replace": false}}"#
+    )
+}
+
+#[test]
+fn a_perspective_camera_is_read_from_its_digits_and_written_back_as_given() {
+    use silico_core::command::wire::render::RenderRequest;
+    use silico_protocol::{Camera, Projection};
+    // Eye and target as lengths, to the nanometre; the angle to the nanodegree; up as a
+    // direction. Read and written back: the same text.
+    let camera = r#"{"projection": "perspective", "eye": [1, 2.000001, -3], "target": [4, 5, 6], "up": [0, 0, 1], "view_height": null, "field_of_view": 37.123456789}"#;
+    let text = with_camera(camera);
+    let call = RenderRequest::read(&parsed(&text)).unwrap();
+    assert_eq!(
+        call.render.camera,
+        Some(Camera {
+            projection: Projection::Perspective {
+                field_of_view: 37.123_456_789,
+            },
+            eye: [1.0, 2.000_001, -3.0],
+            target: [4.0, 5.0, 6.0],
+            up: [0.0, 0.0, 1.0],
+        })
+    );
+    let back: serde_json::Value = serde_json::from_str(&written(&call)).unwrap();
+    let given: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, given);
+    holds(&schema_of("render", "request", None), &text, "perspective");
+}
+
+#[test]
+fn a_cameras_fields_that_dont_fit_its_projection_or_aren_t_numbers_are_refused_by_name() {
+    use silico_core::command::wire::render::RenderRequest;
+    let field = |camera: &str| {
+        let refused = RenderRequest::read(&parsed(&with_camera(camera))).unwrap_err();
+        refused
+            .errors()
+            .iter()
+            .map(|e| e.parameter().unwrap_or_default().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let ortho = |rest: &str| {
+        format!(
+            r#"{{"projection": "orthographic", "eye": [0, -10, 0], "target": [0, 0, 0], "up": [0, 0, 1], {rest}}}"#
+        )
+    };
+    let persp = |rest: &str| {
+        format!(
+            r#"{{"projection": "perspective", "eye": [0, -10, 0], "target": [0, 0, 0], "up": [0, 0, 1], {rest}}}"#
+        )
+    };
+    assert_eq!(
+        field(&ortho(r#""view_height": 10, "field_of_view": 40"#)),
+        ["camera.field_of_view"]
+    );
+    assert_eq!(
+        field(&ortho(r#""view_height": null, "field_of_view": null"#)),
+        ["camera.view_height"]
+    );
+    assert_eq!(
+        field(&persp(r#""view_height": 10, "field_of_view": 40"#)),
+        ["camera.view_height"]
+    );
+    assert_eq!(
+        field(&persp(r#""view_height": null, "field_of_view": null"#)),
+        ["camera.field_of_view"]
+    );
+    // A seventh decimal of a millimetre, and a member that isn't a number, each named.
+    assert_eq!(
+        field(
+            r#"{"projection": "orthographic", "eye": [0, -10, 0.0000001], "target": [0, "0", 0], "up": [0, 0, 1], "view_height": 10, "field_of_view": null}"#
+        ),
+        ["camera.eye.2", "camera.target.1"]
+    );
+    // The article read as the projection is: "an orthographic camera".
+    let refused = RenderRequest::read(&parsed(&with_camera(&ortho(
+        r#""view_height": null, "field_of_view": null"#,
+    ))))
+    .unwrap_err();
+    assert!(
+        refused.errors()[0]
+            .message()
+            .contains("for an orthographic camera"),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn every_reason_a_render_request_is_refused_is_found() {
+    use silico_core::command::wire::render::RenderRequest;
+    let text = r#"{"session": "s1", "model": "current", "view": "isometric", "camera": null, "width": 1.5, "height": 10, "highlight": ["ok", 3], "to": null, "replace": false}"#;
+    let refused = RenderRequest::read(&parsed(text)).unwrap_err();
+    let fields: Vec<Option<&str>> = refused.errors().iter().map(|e| e.parameter()).collect();
+    assert_eq!(fields, [Some("view"), Some("width"), Some("highlight.1")]);
+    assert_eq!(refused.errors()[0].candidates().len(), 14);
+}
+
+#[test]
+fn a_perspective_result_writes_its_angle_and_no_height() {
+    use silico_core::command::render::{AnsweredCamera, RenderResult};
+    use silico_protocol::{Camera, Projection};
+    let camera = AnsweredCamera::of(&Camera {
+        projection: Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        eye: [0.0, -10.0, 0.0],
+        target: [0.0; 3],
+        up: [0.0, 0.0, 1.0],
+    })
+    .unwrap();
+    let out = written(&RenderResult {
+        png_bytes: 1,
+        path: None,
+        width: 10,
+        height: 10,
+        camera,
+    });
+    assert!(
+        out.contains(r#""view_height": null, "field_of_view": 40"#),
+        "{out}"
+    );
+    holds(
+        &schema_of("render", "result", None),
+        &out,
+        "perspective result",
     );
 }

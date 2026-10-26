@@ -405,3 +405,27 @@ fn a_path_without_the_extension_or_out_of_the_workspace_is_refused() {
     // Inside, it's written.
     silico_core::file::write_output(&workspace.join("view.png"), b"PNG", &rules).unwrap();
 }
+
+#[test]
+fn a_png_link_to_a_file_of_another_kind_is_refused_and_the_file_kept() {
+    // A clone's `view.png` linked to its README: replacing it would write PNG bytes over the
+    // README, kept as it was.
+    let dir = Scratch::new("output-link-kind");
+    let readme = dir.0.join("README.md");
+    std::fs::write(&readme, b"keep me").unwrap();
+    let view = dir.0.join("view.png");
+    std::os::unix::fs::symlink(&readme, &view).unwrap();
+    refused_output(
+        &view,
+        &png_rules(Some(&dir.0), &[], true),
+        "is a link to a file that isn't a .png",
+    );
+    assert_eq!(std::fs::read(&readme).unwrap(), b"keep me");
+    // A link to a .png is written through, as before.
+    let real = dir.0.join("real.png");
+    std::fs::write(&real, b"old").unwrap();
+    let alias = dir.0.join("alias.png");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    silico_core::file::write_output(&alias, b"new", &png_rules(Some(&dir.0), &[], true)).unwrap();
+    assert_eq!(std::fs::read(&real).unwrap(), b"new");
+}

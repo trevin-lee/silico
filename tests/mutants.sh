@@ -60,8 +60,8 @@ render_scale=(
   adversarial_render::the_most_edges_a_scene_may_have_draw_within_the_limit_and_one_more_is_refused
   adversarial_render::the_most_faces_a_scene_may_have_draw_within_the_limit_and_one_more_is_refused
   adversarial_render::a_part_of_ctc_size_at_4096_square_with_highlights_draws_within_the_limit
-  adversarial_render::three_thousand_bodies_draw_within_a_tenth_of_the_limit_each_with_its_number
-  adversarial_render::ten_thousand_highlighted_faces_draw_within_a_tenth_of_the_limit
+  adversarial_render::three_thousand_bodies_draw_within_half_the_limit_each_with_its_number
+  adversarial_render::ten_thousand_highlighted_faces_draw_within_half_the_limit
   worker::the_largest_render_is_the_box_from_the_front_too
 )
 # package(p) & (test(=a) | test(=b) | ...), for a package and its tests.

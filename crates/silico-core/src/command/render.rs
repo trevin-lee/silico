@@ -13,21 +13,21 @@
 use std::path::{Path, PathBuf};
 
 use silico_protocol::{
-    Camera, MAX_FRAME_LEN, MAX_RENDER_EDGES, MAX_RENDER_FACES, MAX_RENDER_SIDE, Mesh, MeshAt,
-    PointPlace, Projection, RenderBody, RenderScene,
+    Camera, MAX_FRAME_LEN, MAX_RENDER_EDGES, MAX_RENDER_FACES, MAX_RENDER_SIDE,
+    MAX_RENDER_TRIANGLES, Mesh, MeshAt, PointPlace, Projection, RenderBody, RenderScene,
 };
 
 use super::Problems;
 use crate::document::{Angle, FeatureId, Length, PROBLEMS_LISTED, Position};
 use crate::file::{self, Output};
-use crate::kernel::{ElementKind, Generation, Kernel, KernelRequest};
+use crate::kernel::{ElementKind, Kernel, KernelRequest};
 use crate::meshes::{MeshCache, mesh_level};
 use crate::naming::{ElementMap, Maker, Name};
 use crate::pool::{Outcome, Pending};
 use crate::recompute::{Built, FeatureOutcome, Key, Model};
 use crate::references::Candidates;
 use crate::render::{RenderClient, RenderOutcome, RenderTicket};
-use crate::views::{NamedView, distance_to_box, half_pixel_at, sees};
+use crate::views::{NamedView, depth_of_box, half_pixel_at, sees};
 use crate::worker::SILICO_BUG;
 use crate::{Error, ErrorCode};
 
@@ -110,6 +110,20 @@ impl AnsweredCamera {
         })
     }
 
+    /// The camera a result answers for `camera`, as the render draws with it: rounded as
+    /// a result writes it, then its up made perpendicular to the view the rounded eye and
+    /// target give, so given back, rounding changes nothing and up is already its frame's.
+    /// None if a number doesn't fit, or the rounded camera fails its check.
+    pub fn of(camera: &Camera) -> Option<Self> {
+        let rounded = Self::rounded(camera)?;
+        let drawn = rounded.camera();
+        drawn.check().ok()?;
+        Some(AnsweredCamera {
+            up: perpendicular(&drawn).up,
+            ..rounded
+        })
+    }
+
     /// The camera it is, as the renderer takes it.
     pub fn camera(&self) -> Camera {
         Camera {
@@ -164,14 +178,18 @@ impl Renderer for RenderClient {
 /// session's read lane), the meshes kept beside the kernel, the renderer, and what a file
 /// written must keep clear of (decision 35).
 pub struct RenderOn<'a, K: Kernel> {
+    /// The read's kernel client, its requests at its own generation.
     pub kernel: &'a K,
-    pub generation: Generation,
     pub meshes: &'a MeshCache<Key>,
     pub renderer: &'a dyn Renderer,
     /// The workspace a file written must be inside, if the sessions have one.
     pub workspace: Option<&'a Path>,
     /// The documents the sessions hold, which a file written is never.
     pub held: &'a [PathBuf],
+    /// Called just before the PNG is written, the render's one trace: refused (the read
+    /// was cancelled, decision 34), nothing is written and its error is the answer. A
+    /// render with no session settles at once.
+    pub settle: &'a dyn Fn() -> Result<(), Error>,
 }
 
 /// The camera asked for: a named view's, fitted once the bodies are known, or one given.
@@ -279,13 +297,8 @@ pub fn render<K: Kernel>(
     // The camera answered is the one drawn, as the wire writes it (lengths to the nanometre,
     // the angle to the nanodegree), so it passes back unchanged; checked again, as rounding
     // a camera at its limits could move it past one.
-    let answered = match AnsweredCamera::rounded(&camera) {
-        // Rounded first, then up made perpendicular to the view the rounded eye and target
-        // give, so passed back, rounding changes nothing and up is already its frame's.
-        Some(rounded) if rounded.camera().check().is_ok() => AnsweredCamera {
-            up: perpendicular(&rounded.camera()).up,
-            ..rounded
-        },
+    let answered = match AnsweredCamera::of(&camera) {
+        Some(answered) => answered,
         _ => {
             let parameter = if fit_side.is_some() { "view" } else { "camera" };
             return Err(Problems::from(
@@ -322,6 +335,8 @@ pub fn render<K: Kernel>(
             u32::try_from(m.edge_point_counts.len()).unwrap_or(u32::MAX),
         )
     }))?;
+    // And their triangles, before any is copied into the scene: fewer pixels mesh coarser.
+    within_triangles(&meshes, bodies.len() > kept.len(), fit_side)?;
     let scene = RenderScene {
         bodies: kept
             .iter()
@@ -372,7 +387,10 @@ pub fn render<K: Kernel>(
         }
     };
     let path = match &request.to {
-        Some(to) => Some(file::write_output(to, &png, &output).map_err(Problems::from)?),
+        Some(to) => {
+            (on.settle)().map_err(Problems::from)?;
+            Some(file::write_output(to, &png, &output).map_err(Problems::from)?)
+        }
         None => None,
     };
     Ok(Rendering {
@@ -593,6 +611,51 @@ fn within_caps(counts: impl Iterator<Item = (u32, u32)>) -> Result<(), Problems>
     Ok(())
 }
 
+/// Refuses meshes of more triangles, across the bodies in view, than a render draws
+/// ([`MAX_RENDER_TRIANGLES`]), naming the side whose fewer pixels would mesh them coarser,
+/// as [`coarser`] says.
+fn within_triangles(
+    meshes: &[std::sync::Arc<Mesh>],
+    left_out: bool,
+    fit_side: Option<&'static str>,
+) -> Result<(), Problems> {
+    let count: u64 = meshes.iter().map(|m| m.triangles.len() as u64).sum();
+    if count <= MAX_RENDER_TRIANGLES as u64 {
+        return Ok(());
+    }
+    let (parameter, suggestion) = coarser(left_out, fit_side);
+    Err(Problems::from(
+        Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "the bodies in view mesh to {count} triangles at this view's pixel, more than the {MAX_RENDER_TRIANGLES} a render draws"
+            ),
+        )
+        .with_parameter(parameter)
+        .with_suggestion(suggestion),
+    ))
+}
+
+/// The field whose smaller value meshes coarser, and the advice: a named view's side that
+/// bound its fit, or a camera's `height`, with a wider view too where no body was left out
+/// (where some were, a wider view brings them in, and the scene can grow).
+fn coarser(left_out: bool, fit_side: Option<&'static str>) -> (&'static str, String) {
+    match fit_side {
+        Some(side) => (
+            side,
+            format!("give a smaller {side}: it meshes the bodies coarser"),
+        ),
+        None if left_out => (
+            "height",
+            "give a smaller height: it meshes the bodies coarser".to_owned(),
+        ),
+        None => (
+            "height",
+            "give a smaller height, or a wider view: either meshes the bodies coarser".to_owned(),
+        ),
+    }
+}
+
 /// Refuses a perspective camera whose eye is inside a body or on its boundary, by the
 /// kernel's classifier, asked only of the bodies whose tight box holds the eye. An
 /// orthographic view uses only the eye's direction, so where its eye is doesn't matter.
@@ -614,7 +677,7 @@ fn eye_outside<K: Kernel>(
         })
         .map(|b| {
             let request = KernelRequest::classify(&b.built.shape, eye);
-            (b, on.kernel.submit(on.generation, request))
+            (b, on.kernel.submit(on.kernel.generation(), request))
         })
         .collect();
     for (body, pending) in asked {
@@ -651,12 +714,11 @@ fn meshed<K: Kernel>(
             .with_suggestion(SILICO_BUG),
         ));
     }
-    // Half a pixel at the body's nearest point to the eye (its box's; none is at the eye),
-    // its power of two; at no distance, the finest there is, which meshes at the floor.
+    // Half a pixel at the body's nearest depth along the view (its box's; a point's pixel
+    // scales with its depth, not its distance), its power of two; at no depth (a box reaching
+    // the eye's plane, or none), the finest there is, which meshes at the floor.
     let level = |b: &Body| {
-        let distance = b
-            .bounds
-            .map_or(0.0, |bounds| distance_to_box(camera.eye, bounds));
+        let distance = b.bounds.map_or(0.0, |bounds| depth_of_box(camera, bounds));
         half_pixel_at(camera, height, distance)
             .and_then(mesh_level)
             .unwrap_or(f64::MIN_POSITIVE)
@@ -674,7 +736,7 @@ fn meshed<K: Kernel>(
                 None => Got::Asked(
                     deflection,
                     on.kernel.submit(
-                        on.generation,
+                        on.kernel.generation(),
                         KernelRequest::tessellate_at_least_the_floor(&b.built.shape, deflection),
                     ),
                 ),
@@ -698,13 +760,9 @@ fn meshed<K: Kernel>(
 fn done<T>(outcome: Outcome<T>) -> Result<T, Problems> {
     match outcome {
         Outcome::Done(result) => result.map_err(Problems::from),
-        Outcome::Superseded => Err(Problems::from(
-            Error::new(
-                ErrorCode::Internal,
-                "the render's kernel request was superseded",
-            )
-            .with_suggestion("render again"),
-        )),
+        // Its read was stopped (a cancel, or its session closing): the read's own answer
+        // is the session's to give, which says which.
+        Outcome::Superseded => Err(Problems::from(super::session::cancelled("render"))),
     }
 }
 
@@ -760,20 +818,7 @@ fn within_a_frame(
     if bound <= most {
         return Ok(());
     }
-    let (parameter, suggestion) = match fit_side {
-        Some(side) => (
-            side,
-            format!("give a smaller {side}: it meshes the bodies coarser"),
-        ),
-        None if left_out => (
-            "height",
-            "give a smaller height: it meshes the bodies coarser".to_owned(),
-        ),
-        None => (
-            "height",
-            "give a smaller height, or a wider view: either meshes the bodies coarser".to_owned(),
-        ),
-    };
+    let (parameter, suggestion) = coarser(left_out, fit_side);
     Err(Problems::from(
         Error::new(
             ErrorCode::InvalidInput,
