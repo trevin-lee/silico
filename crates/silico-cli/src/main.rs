@@ -1,7 +1,7 @@
-//! The `silico` command-line client: `check`, `fmt`, `show`, and `schema`, each a thin client
-//! of the core's commands (`silico_core::command`), which MCP and the app run too;
-//! `textconv`, for `git diff`; and `serve`, the MCP server on stdin and stdout
-//! (`silico_mcp`, docs/design/m4.9-mcp.md) (docs/cli.md). `check`, `fmt`, and `show` each open a file as a
+//! The `silico` command-line client (docs/cli.md): `check`, `fmt`, `show`, and `schema`,
+//! each a thin client of the core's commands (`silico_core::command`), which MCP and the
+//! app run too; `textconv`, for `git diff`; and `serve`, the MCP server on stdin and stdout
+//! (`silico_mcp`; docs/design/m4.9-mcp.md). `check`, `fmt`, and `show` each open a file as a
 //! session, run one session command on it (`check`, `format`, `outline`), and close it
 //! (docs/design/m4.1-command-api.md, section 9), every file on one kernel pool and one
 //! sketch solver.
@@ -13,8 +13,9 @@
 //! start or failed in a way that isn't the document's: a kernel fault, said after the
 //! document's problems).
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::Write as _;
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -84,6 +85,7 @@ enum Command {
     Show,
     Textconv,
     Schema,
+    Serve,
 }
 
 impl Command {
@@ -107,6 +109,7 @@ impl Command {
             "show" => (Command::Show, &[]),
             "textconv" => (Command::Textconv, &[]),
             "schema" => (Command::Schema, &[]),
+            "serve" => (Command::Serve, &[WORKSPACE]),
             _ => return Err(format!("silico: no command {name:?}")),
         };
         match flags.iter().find(|f| !options.contains(&f.as_str())) {
@@ -125,21 +128,31 @@ fn main() -> ExitCode {
         say!("{USAGE}");
         return Ended::Failed.code();
     };
-    // Options, then files; `--` ends the options, so a file may be named like one.
+    // Options, then files; `--` ends the options, so a file may be named like one. An
+    // option's value (`--workspace DIR`, or `--workspace=DIR`) is taken as the OS gives it.
     let mut flags: Vec<String> = Vec::new();
+    let mut workspaces: Vec<PathBuf> = Vec::new();
     let mut files: Vec<PathBuf> = Vec::new();
     let mut options = true;
-    for arg in rest {
+    let mut args = rest.iter();
+    while let Some(arg) = args.next() {
         if options && arg == "--" {
             options = false;
+        } else if options && arg == WORKSPACE {
+            let Some(dir) = args.next() else {
+                say!("silico: {WORKSPACE} needs a directory\n{USAGE}");
+                return Ended::Failed.code();
+            };
+            flags.push(WORKSPACE.to_owned());
+            workspaces.push(PathBuf::from(dir));
+        } else if options && let Some(dir) = valued(arg, WORKSPACE) {
+            flags.push(WORKSPACE.to_owned());
+            workspaces.push(PathBuf::from(dir));
         } else if options && arg.to_string_lossy().starts_with("--") {
             flags.push(arg.to_string_lossy().into_owned());
         } else {
             files.push(PathBuf::from(arg));
         }
-    }
-    if name == "serve" {
-        return serve(rest).code();
     }
     let command = match Command::parse(&name.to_string_lossy(), &flags) {
         Ok(command) => command,
@@ -160,9 +173,19 @@ fn main() -> ExitCode {
             .fold(Ended::Clean, Ended::and)
     };
     let ended = match (command, files.as_slice()) {
+        (Command::Serve, []) => match workspaces.as_slice() {
+            [] => serve(None),
+            [dir] => serve(Some(dir)),
+            [_, _, ..] => {
+                say!("silico serve: {WORKSPACE} is given once\n{USAGE}");
+                Ended::Failed
+            }
+        },
         (Command::Schema, []) => schema("document"),
         (Command::Schema, [name]) => schema(&name.to_string_lossy()),
-        (_, []) | (Command::Show | Command::Textconv | Command::Schema, [_, _, ..]) => {
+        (_, [])
+        | (Command::Show | Command::Textconv | Command::Schema, [_, _, ..])
+        | (Command::Serve, [_, ..]) => {
             say!("{USAGE}");
             Ended::Failed
         }
@@ -174,6 +197,18 @@ fn main() -> ExitCode {
     ended.code()
 }
 
+/// `serve`'s option naming its workspace.
+const WORKSPACE: &str = "--workspace";
+
+/// The value of `arg` if it's the option `name` with its value joined (`--workspace=DIR`):
+/// the value as the OS gives it, whatever its bytes.
+fn valued<'a>(arg: &'a OsStr, name: &str) -> Option<&'a OsStr> {
+    arg.as_bytes()
+        .strip_prefix(name.as_bytes())?
+        .strip_prefix(b"=")
+        .map(OsStr::from_bytes)
+}
+
 /// How often `serve` looks whether SIGTERM came.
 const SIGNAL_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
@@ -181,21 +216,10 @@ const SIGNAL_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 /// stdout closes, or SIGTERM, its sessions in the workspace `DIR` (or the current
 /// directory), on one kernel pool, sketch solver, and render worker. `/` (or a drive's
 /// root) is refused: some MCP clients start servers there, which would make the whole disk
-/// the workspace. Logs go to stderr; stdout holds nothing but MCP's messages.
-fn serve(args: &[OsString]) -> Ended {
-    let workspace = match args {
-        [] => None,
-        [flag, dir] if flag == "--workspace" => Some(PathBuf::from(dir)),
-        [flag] if flag.to_string_lossy().starts_with("--workspace=") => {
-            let flag = flag.to_string_lossy();
-            Some(PathBuf::from(&flag["--workspace=".len()..]))
-        }
-        _ => {
-            say!("{USAGE}");
-            return Ended::Failed;
-        }
-    };
-    let root = match workspace.map_or_else(std::env::current_dir, Ok) {
+/// the workspace. Logs go to stderr; stdout holds nothing but MCP's messages. A second
+/// SIGTERM, while the first is still ending it, ends it at once (exit 1).
+fn serve(workspace: Option<&Path>) -> Ended {
+    let root = match workspace.map_or_else(std::env::current_dir, |dir| Ok(dir.to_owned())) {
         Ok(root) => root,
         Err(e) => {
             say!("silico serve: the current directory can't be read: {e}");
@@ -245,6 +269,14 @@ fn serve(args: &[OsString]) -> Ended {
     };
     let stop = server.stopper();
     let term = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // The second first: a SIGTERM that finds the flag set (the first came) exits at once.
+    if let Err(e) = signal_hook::flag::register_conditional_shutdown(
+        signal_hook::consts::SIGTERM,
+        1,
+        std::sync::Arc::clone(&term),
+    ) {
+        tracing::warn!("a second SIGTERM can't be made to end the server at once: {e}");
+    }
     if let Err(e) =
         signal_hook::flag::register(signal_hook::consts::SIGTERM, std::sync::Arc::clone(&term))
     {
@@ -266,6 +298,10 @@ fn serve(args: &[OsString]) -> Ended {
     match server.serve(std::io::BufReader::new(std::io::stdin()), std::io::stdout()) {
         silico_mcp::Ended::InputFailed(e) => {
             say!("silico serve: stdin couldn't be read: {e}");
+            Ended::Failed
+        }
+        silico_mcp::Ended::ThreadFailed(e) => {
+            say!("silico serve: {e}");
             Ended::Failed
         }
         ended => {
