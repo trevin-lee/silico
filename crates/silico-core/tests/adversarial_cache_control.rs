@@ -307,12 +307,16 @@ fn a_pipe_or_a_socket_named_as_an_entry_is_left_and_never_waited_on() {
         .status()
         .unwrap();
     assert!(made.success());
-    // Bound where a socket's path is short enough, then moved into place.
+    // Bound in place, through a link under /tmp to the subdirectory, so the path given fits
+    // a socket's (104 bytes on macOS, 108 on Linux) wherever the cache is: the socket is
+    // made in the subdirectory itself, never moved there (a rename between filesystems
+    // fails, EXDEV).
     let short = tempfile::tempdir_in("/tmp").unwrap();
-    let bound = short.path().join("s");
-    let _listening = std::os::unix::net::UnixListener::bind(&bound).unwrap();
-    let socket = sub.join(NAME.replace('0', "1"));
-    std::fs::rename(&bound, &socket).unwrap();
+    let link = short.path().join("l");
+    std::os::unix::fs::symlink(&sub, &link).unwrap();
+    let socket_name = NAME.replace('0', "1");
+    let _listening = std::os::unix::net::UnixListener::bind(link.join(&socket_name)).unwrap();
+    let socket = sub.join(&socket_name);
     let cleared = f.clear(&a).result.unwrap();
     assert_eq!(cleared.removed, 4);
     let kind = |path: &Path| std::fs::symlink_metadata(path).unwrap().file_type();
