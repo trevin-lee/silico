@@ -16,6 +16,8 @@ mod cache_format;
 mod commands;
 #[path = "common/example.rs"]
 mod example;
+#[path = "common/forged.rs"]
+mod forged;
 #[path = "common/lateness.rs"]
 mod lateness;
 #[path = "common/entries.rs"]

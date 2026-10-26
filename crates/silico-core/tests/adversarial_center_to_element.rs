@@ -3,15 +3,18 @@
 //! carriers each rule needs: a cylinder's axis a fraction of a nanodegree either side of
 //! parallel to a plane and a line, turned end for end, lying in the plane, through the line;
 //! a point centre asked of the other feature's shape, either way round; a worker's reply to
-//! the centre's distance that no pair has (negative, NaN, no pair, the wrong reply, past
-//! what a length holds), each a structured error and the kernel fine after; a centre past
+//! the centre's distance that no pair has (negative, NaN, no pair, the wrong reply), or that
+//! isn't from the centre or reaches past the point's bound (past what a length holds too),
+//! each the worker's structured error and the kernel fine after; a centre past
 //! the point's bound; and the centre's request held while its session is cancelled or
 //! closed. The fake's point distance is the point's from (n, 0, 0), the element's number n,
 //! so each value is by hand.
 
-use std::sync::Arc;
 use std::time::Duration;
 
+use super::forged::{
+    BOX, circle, cylinder, forge, forged, line_along_x, name, other_edge, other_face, plane_z0,
+};
 use super::listing::{answer, fixture};
 use super::model::{checked, published};
 
@@ -20,13 +23,9 @@ use silico_core::command::ModelChoice;
 use silico_core::command::measure::distance;
 use silico_core::document::Length;
 use silico_core::fake::FakeKernel;
-use silico_core::kernel::{
-    Axis, Description, EdgeCurve, EdgeDescription, ElementKind, FaceDescription, Op, Surface,
-};
+use silico_core::kernel::{Description, Op};
 use silico_core::recompute::{Model, Recompute};
 use silico_protocol::Reply;
-
-const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "bbbbbbbb", "type": "box", "v": 1, "name": "Box", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}]}"#;
 
 const TWO: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "First", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}, {"id": "bbbbbbbb", "type": "box", "v": 1, "name": "Second", "position": [5, 0, 0], "length": 1, "width": 1, "height": 1}]}"#;
 
@@ -38,38 +37,6 @@ fn pair(a: &str, b: &str) -> [String; 2] {
     [a.to_owned(), b.to_owned()]
 }
 
-fn name(element: &str) -> String {
-    format!("bbbbbbbb.box.{element}")
-}
-
-fn cylinder(origin: [f64; 3], direction: [f64; 3]) -> FaceDescription {
-    FaceDescription {
-        surface: Surface::Cylinder {
-            axis: Axis { origin, direction },
-            radius: 1.0,
-        },
-        area: 1.0,
-        centroid: origin,
-    }
-}
-
-fn circle(centre: [f64; 3]) -> EdgeDescription {
-    let on = [centre[0] + 1.0, centre[1], centre[2]];
-    EdgeDescription {
-        curve: EdgeCurve::Circle {
-            axis: Axis {
-                origin: centre,
-                direction: [0.0, 0.0, 1.0],
-            },
-            radius: 1.0,
-        },
-        length: 1.0,
-        start: on,
-        end: on,
-        middle: on,
-    }
-}
-
 /// A direction `degrees` off x toward z, in the xz plane.
 fn off_x(degrees: f64) -> [f64; 3] {
     let r = degrees.to_radians();
@@ -78,49 +45,25 @@ fn off_x(degrees: f64) -> [f64; 3] {
 
 /// The forged box: Face1 the plane z = 0 (centred (1, 0, 0)); Face2–Face5 cylinders whose
 /// axes are given; Face6 of type other. Edge1 the line along x from the origin to (10, 0,
-/// 0); Edge2 a circle centred `far`; the rest of type other. Vertices at (n, 0, 0) but
+/// 0); Edge2 a whole circle centred `far`; the rest of type other. Vertices at (n, 0, 0) but
 /// Vertex1, at (4, 4, 0).
 fn description(axes: [([f64; 3], [f64; 3]); 4], far: [f64; 3]) -> Description {
     let faces = (1..=6u32)
         .map(|n| match n {
-            1 => FaceDescription {
-                surface: Surface::Plane {
-                    normal: [0.0, 0.0, 1.0],
-                },
-                area: 1.0,
-                centroid: [1.0, 0.0, 0.0],
-            },
+            1 => plane_z0(),
             2..=5 => {
                 let (origin, direction) = axes[(n - 2) as usize];
                 cylinder(origin, direction)
             }
-            n => FaceDescription {
-                surface: Surface::Other,
-                area: 1.0,
-                centroid: [f64::from(n), 0.0, 0.0],
-            },
+            n => other_face(n),
         })
         .collect();
+    let on = [far[0] + 1.0, far[1], far[2]];
     let edges = (1..=12u32)
         .map(|n| match n {
-            1 => EdgeDescription {
-                curve: EdgeCurve::Line,
-                length: 10.0,
-                start: [0.0; 3],
-                end: [10.0, 0.0, 0.0],
-                middle: [5.0, 0.0, 0.0],
-            },
-            2 => circle(far),
-            n => {
-                let x = f64::from(n);
-                EdgeDescription {
-                    curve: EdgeCurve::Other,
-                    length: 1.0,
-                    start: [x, 0.0, 0.0],
-                    end: [x, 1.0, 0.0],
-                    middle: [x, 0.5, 0.0],
-                }
-            }
+            1 => line_along_x(),
+            2 => circle(far, on, on),
+            n => other_edge(n),
         })
         .collect();
     let vertices = (1..=8u32)
@@ -134,49 +77,6 @@ fn description(axes: [([f64; 3], [f64; 3]); 4], far: [f64; 3]) -> Description {
         edges,
         vertices,
     }
-}
-
-/// Answers every describe of a box on `kernel` with `whole`'s batch.
-fn forge(kernel: &FakeKernel, whole: Description) {
-    kernel.answer_instead(move |op| match op {
-        Op::Describe {
-            kind, first, count, ..
-        } => {
-            let from = (*first - 1) as usize;
-            let slice = |n: usize| from.min(n)..(from + *count as usize).min(n);
-            let mut batch = Description {
-                faces: Vec::new(),
-                edges: Vec::new(),
-                vertices: Vec::new(),
-            };
-            let total = match kind {
-                ElementKind::Face => {
-                    batch.faces = whole.faces[slice(6)].to_vec();
-                    6
-                }
-                ElementKind::Edge => {
-                    batch.edges = whole.edges[slice(12)].to_vec();
-                    12
-                }
-                _ => {
-                    batch.vertices = whole.vertices[slice(8)].to_vec();
-                    8
-                }
-            };
-            Some(Reply::Described {
-                total,
-                description: batch,
-            })
-        }
-        _ => None,
-    });
-}
-
-fn forged(text: &str, whole: Description) -> (Recompute<FakeKernel>, Arc<Model>) {
-    let engine = Recompute::new(FakeKernel::new(1).unwrap());
-    forge(engine.kernel(), whole);
-    let model = published(&engine, checked(text));
-    (engine, model)
 }
 
 /// Each of `a` and `b`'s `center_to_element`, either way round, the same.
@@ -260,20 +160,20 @@ fn an_axis_turned_end_for_end_lying_in_the_plane_or_through_the_line_is_its_gap(
 
 #[test]
 fn a_centre_is_measured_on_the_other_features_shape_either_way_round() {
-    // Two boxes, both forged: First's Vertex1 (4, 4, 0) against Second's Face1, and the
-    // other way round. The centre's request is on Second's shape, the one the least
-    // distance's request holds for Second, whichever comes first; and its distance the
-    // fake's from (1, 0, 0), 5.
+    // Two boxes, both forged: First's Edge2, a circle centred (1, 3, 4), against Second's
+    // Face1, and the other way round. The centre's request is on Second's shape, the one
+    // the least distance's request holds for Second, whichever comes first; and its
+    // distance the fake's from (1, 0, 0), √(3² + 4²) = 5.
     let engine = Recompute::new(FakeKernel::new(1).unwrap());
     forge(
         engine.kernel(),
-        description([([0.0; 3], [1.0, 0.0, 0.0]); 4], [0.0; 3]),
+        description([([0.0; 3], [1.0, 0.0, 0.0]); 4], [1.0, 3.0, 4.0]),
     );
     let m = published(&engine, checked(TWO));
     let kernel = engine.kernel();
     for (a, b) in [
-        ("aaaaaaaa.box.Vertex1", "bbbbbbbb.box.Face1"),
-        ("bbbbbbbb.box.Face1", "aaaaaaaa.box.Vertex1"),
+        ("aaaaaaaa.box.Edge2", "bbbbbbbb.box.Face1"),
+        ("bbbbbbbb.box.Face1", "aaaaaaaa.box.Edge2"),
     ] {
         let before = kernel.calls().len();
         let d = distance(&m, kernel, &pair(a, b), None).unwrap();
@@ -386,38 +286,103 @@ fn a_reply_to_the_centres_distance_no_pair_has_is_the_workers_fault_said_and_the
 }
 
 #[test]
-fn a_reply_past_what_a_length_holds_is_an_internal_error_naming_both() {
-    // A centre's distance of 1e300: finite, so no protocol error, but past any length: the
-    // core's bug report, naming both, never a wrapped or saturated length.
-    let engine = Recompute::new(FakeKernel::new(1).unwrap());
-    forge(
-        engine.kernel(),
-        description([([0.0; 3], [1.0, 0.0, 0.0]); 4], [1.0, 3.0, 4.0]),
-    );
-    let m = published(&engine, checked(BOX));
-    engine.kernel().answer_instead(|op| {
-        matches!(op, Op::PointDistance { .. }).then(|| {
-            Reply::Distance(silico_protocol::Distance {
-                distance: 1e300,
-                from: [1.0, 3.0, 4.0],
-                to: [1e300, 0.0, 0.0],
-                solutions: 1,
-            })
+fn a_reply_not_from_the_centre_or_past_the_points_bound_is_the_workers_fault() {
+    // Edge2's centre is (1, 3, 4), within 1e12 mm of the origin, as every point on a solid
+    // the gate admits is. A reply from another point (the origin, or −0 where the centre has
+    // 0 is the same point: only a different value is), a point on the element past the
+    // bound, or a distance farther than the bound's cube's diagonal, 2√3 × 1e12 =
+    // 3.464e12, is a protocol error, the worker's, its cause saying which, never the core's
+    // bug or a length.
+    let reply = |from: [f64; 3], to: [f64; 3], distance: f64| {
+        Reply::Distance(silico_protocol::Distance {
+            distance,
+            from,
+            to,
+            solutions: 1,
         })
-    });
-    let refused = distance(
-        &m,
-        engine.kernel(),
-        &pair(&name("Vertex1"), &name("Face1")),
-        None,
-    )
-    .unwrap_err();
-    let error = &refused.errors()[0];
-    assert_eq!(error.code(), ErrorCode::Internal, "{error}");
-    assert_eq!(
-        error.elements(),
-        [name("Vertex1").as_str(), name("Face1").as_str()]
-    );
+    };
+    let centre = [1.0, 3.0, 4.0];
+    for (sent, cause) in [
+        (
+            reply([0.0; 3], [1.0, 0.0, 0.0], 1.0),
+            "its pair is from [0.0, 0.0, 0.0], not the point asked, [1.0, 3.0, 4.0]".to_owned(),
+        ),
+        (
+            reply(centre, [0.0, -2e12, 0.0], 2e12),
+            "its point on the element, [0.0, -2000000000000.0, 0.0], is past 1000000000000 mm \
+             of the origin"
+                .to_owned(),
+        ),
+        (
+            reply(centre, [1.0, 0.0, 0.0], 3.5e12),
+            "its distance is 3500000000000, farther than any two points within 1000000000000 \
+             mm of the origin are apart"
+                .to_owned(),
+        ),
+        // Past what a length holds (about 9.2e12 mm): the worker's nonsense still, never
+        // the core's bug, a wrapped length, or a saturated one.
+        (
+            reply(centre, [1e300, 0.0, 0.0], 1e300),
+            "its point on the element, [1e300, 0.0, 0.0], is past 1000000000000 mm of the \
+             origin"
+                .to_owned(),
+        ),
+        (
+            reply(centre, [1.0, 0.0, 0.0], 1e300),
+            format!(
+                "its distance is {}, farther than any two points within 1000000000000 mm of \
+                 the origin are apart",
+                1e300
+            ),
+        ),
+    ] {
+        let (engine, m) = forged(BOX, description([([0.0; 3], [1.0, 0.0, 0.0]); 4], centre));
+        let answered = sent.clone();
+        engine.kernel().answer_instead(move |op| {
+            matches!(op, Op::PointDistance { .. }).then(|| answered.clone())
+        });
+        let refused = distance(
+            &m,
+            engine.kernel(),
+            &pair(&name("Edge2"), &name("Face1")),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(refused.total(), 1, "{sent:?}");
+        let error = &refused.errors()[0];
+        assert_eq!(error.code(), ErrorCode::ProtocolError, "{error}");
+        assert_eq!(error.cause(), Some(cause.as_str()), "{error}");
+        assert_ne!(error.parameter(), Some("elements"), "{error}");
+        assert_eq!(
+            error.elements(),
+            [name("Edge2").as_str(), name("Face1").as_str()]
+        );
+    }
+    // At the bound, and at the diagonal: the worker's answer, had (a centre at −0 is the
+    // point 0 is): 1 mm to a point on the element at the bound's corner; and the diagonal
+    // itself, 3.464e12 mm, which a length holds.
+    let at_the_bound = |to: [f64; 3], d: f64| {
+        let (engine, m) = forged(
+            BOX,
+            description([([0.0; 3], [1.0, 0.0, 0.0]); 4], [-0.0, 3.0, 4.0]),
+        );
+        let answered = reply([0.0, 3.0, 4.0], to, d);
+        engine.kernel().answer_instead(move |op| {
+            matches!(op, Op::PointDistance { .. }).then(|| answered.clone())
+        });
+        distance(
+            &m,
+            engine.kernel(),
+            &pair(&name("Edge2"), &name("Face1")),
+            None,
+        )
+    };
+    let corner = at_the_bound([1e12, -1e12, 1e12], 1.0).unwrap();
+    assert_eq!(corner.center_to_element, Some(mm(1)));
+    let diagonal = 2.0 * 3f64.sqrt() * 1e12;
+    let far = at_the_bound([1.0, 0.0, 0.0], diagonal).unwrap();
+    assert_eq!(far.center_to_element, Length::rounded(diagonal));
+    assert!(far.center_to_element > Some(Length::from_nm(3_464_101_615_137_754_000)));
 }
 
 // ---- A centre past the point's bound ----
@@ -470,7 +435,7 @@ fn a_circles_centre_past_the_points_bound_is_refused_naming_the_elements_never_a
 
 // ---- The session ----
 
-/// A session's `distance` of Vertex1 to Face1 of the forged box, of its published model, its
+/// A session's `distance` of Edge2 to Face1 of the forged box, of its published model, its
 /// centre's request held in the kernel: the running read.
 fn held_in_session(
     f: &super::listing::Fixture,
@@ -488,7 +453,7 @@ fn held_in_session(
     let reading = f.sessions.distance(
         session,
         ModelChoice::Published,
-        pair(&name("Vertex1"), &name("Face1")),
+        pair(&name("Edge2"), &name("Face1")),
         None,
     );
     // Its least distance answered, its centre's distance held.
@@ -516,7 +481,7 @@ fn a_centres_distance_held_while_its_read_is_cancelled_answers_cancelled() {
     let f = fixture();
     forge(
         &f.kernel,
-        description([([0.0; 3], [1.0, 0.0, 0.0]); 4], [0.0; 3]),
+        description([([0.0; 3], [1.0, 0.0, 0.0]); 4], [1.0, 3.0, 4.0]),
     );
     let s = f.open("part.silico", BOX);
     let hold = f.kernel.hold(|op| matches!(op, Op::PointDistance { .. }));
@@ -527,11 +492,11 @@ fn a_centres_distance_held_while_its_read_is_cancelled_answers_cancelled() {
     let refused = response.result.unwrap_err();
     assert_eq!(refused.errors()[0].code(), ErrorCode::Cancelled);
     hold.release();
-    // The session goes on: the same distance, unheld, is the fake's 5.
+    // The session goes on: the same distance, unheld, is the fake's √(3² + 4²) = 5.
     let again = answer(f.sessions.distance(
         &s,
         ModelChoice::Current,
-        pair(&name("Vertex1"), &name("Face1")),
+        pair(&name("Edge2"), &name("Face1")),
         None,
     ));
     assert_eq!(again.result.unwrap().center_to_element, Some(mm(5)));
@@ -542,7 +507,7 @@ fn a_centres_distance_held_while_its_session_closes_says_the_session_closed() {
     let f = fixture();
     forge(
         &f.kernel,
-        description([([0.0; 3], [1.0, 0.0, 0.0]); 4], [0.0; 3]),
+        description([([0.0; 3], [1.0, 0.0, 0.0]); 4], [1.0, 3.0, 4.0]),
     );
     let s = f.open("part.silico", BOX);
     let hold = f.kernel.hold(|op| matches!(op, Op::PointDistance { .. }));

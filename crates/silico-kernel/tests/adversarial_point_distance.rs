@@ -9,6 +9,7 @@
 //! property test over a cube's every element against the closed form. Every expected value
 //! is by hand, named where it's used.
 
+use super::cube_elements::{cube, edge_between, vertex_at};
 use super::kernel;
 
 use std::path::Path;
@@ -28,15 +29,6 @@ use silico_protocol::{
     Blob, BooleanOp, Distance, ElementKind, ElementRef, Generation, MAX_POINT_COORDINATE, Op,
     Reply, ShapeData, Surface,
 };
-
-fn cube(side: f64) -> Shape {
-    make(&Primitive::Box {
-        dx: side,
-        dy: side,
-        dz: side,
-    })
-    .unwrap()
-}
 
 fn data(shape: &Shape) -> ShapeData {
     ShapeData::checked(Blob::inline(to_brep(shape).unwrap()), true)
@@ -164,7 +156,7 @@ fn a_point_at_the_bound_is_its_distance_from_a_face_an_edge_and_a_vertex_through
         through(&mut w, &d, face(2), [-most, 5.0, 5.0]).distance,
         1e12 + 10.0,
     );
-    let corner = d_vertex(&shape, [10.0, 10.0, 10.0]);
+    let corner = vertex_at(&shape, [10.0, 10.0, 10.0]);
     near(
         "corner",
         through(&mut w, &d, corner, [most; 3]).distance,
@@ -194,21 +186,6 @@ fn a_point_at_the_bound_is_its_distance_from_a_face_an_edge_and_a_vertex_through
             );
         }
     }
-}
-
-fn d_vertex(shape: &Shape, at: [f64; 3]) -> ElementRef {
-    let d = describe_whole(shape).unwrap();
-    vertex(u32::try_from(d.vertices.iter().position(|v| *v == at).unwrap() + 1).unwrap())
-}
-
-fn edge_between(shape: &Shape, a: [f64; 3], b: [f64; 3]) -> ElementRef {
-    let d = describe_whole(shape).unwrap();
-    let i = d
-        .edges
-        .iter()
-        .position(|e| (e.start == a && e.end == b) || (e.start == b && e.end == a))
-        .unwrap();
-    edge(u32::try_from(i + 1).unwrap())
 }
 
 #[test]
@@ -296,7 +273,7 @@ fn a_point_on_the_element_or_its_boundary_is_0_from_it() {
     let mut w = worker();
     let shape = cube(10.0);
     let d = data(&shape);
-    let origin = d_vertex(&shape, [0.0; 3]);
+    let origin = vertex_at(&shape, [0.0; 3]);
     let along_x = edge_between(&shape, [0.0; 3], [10.0, 0.0, 0.0]);
     let bottom = planar_face(&shape, [0.0, 0.0, -1.0], 0.0);
     let top = planar_face(&shape, [0.0, 0.0, 1.0], 10.0);
@@ -594,6 +571,9 @@ fn the_fakes_point_distance_refusals_read_as_a_workers() {
     ] {
         let fake_shape = on_fake(&fake, KernelRequest::make(primitive).unwrap()).unwrap();
         let real_shape = w.make(primitive).unwrap();
+        // Past each shape's elements, among them, and each kind's last of each shape (the
+        // box's face 6, edge 12, and vertex 8; the sphere's face 1, edge 3, and vertex 2):
+        // answered by both, never refused as one past the end.
         for element in [
             face(7),
             face(2),
@@ -601,6 +581,12 @@ fn the_fakes_point_distance_refusals_read_as_a_workers() {
             edge(4),
             vertex(9),
             vertex(3),
+            face(6),
+            edge(12),
+            vertex(8),
+            face(1),
+            edge(3),
+            vertex(2),
         ] {
             let fake_said = on_fake(
                 &fake,

@@ -4,84 +4,19 @@
 //! distance between centres and the normal distance; and the angle between faces, edges, and
 //! one of each. Every expected value by hand from the solids' dimensions.
 
-use std::path::Path;
+use super::measuring::{
+    angled, block, cylinder, engine, facing, measured, mm, model, named, point,
+};
+
 use std::sync::Arc;
 
 use silico_core::ErrorCode;
-use silico_core::command::elements::{ElementType, Entry, entries};
-use silico_core::command::measure::{AngleAnswer, DistanceAnswer, angle, distance};
-use silico_core::document::{Angle, Checked, FeatureId, Length, read};
-use silico_core::fake::FakeSketches;
+use silico_core::command::elements::ElementType;
+use silico_core::command::measure::{AngleAnswer, DistanceAnswer, angle};
+use silico_core::document::{Angle, Length};
 use silico_core::kernel::ElementKind;
 use silico_core::pool::KernelPool;
-use silico_core::recompute::{Model, Recompute, RunOutcome};
-
-const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
-
-fn engine() -> Recompute<KernelPool> {
-    Recompute::new(KernelPool::start_on_demand(Path::new(WORKER), 2).unwrap())
-        .with_sketches(FakeSketches::new())
-}
-
-/// A document of `features`, rebuilt.
-fn model(engine: &Recompute<KernelPool>, features: &[String]) -> Arc<Model> {
-    let text = format!(
-        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
-        features.join(", ")
-    );
-    let checked = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
-    match engine
-        .start(checked)
-        .wait_timeout(std::time::Duration::from_secs(60))
-    {
-        Ok(Ok(RunOutcome::Published(model))) => model,
-        Ok(other) => panic!("{other:?}"),
-        Err(_) => panic!("the rebuild didn't finish within a minute"),
-    }
-}
-
-fn block(id: &str, at: [f64; 3], size: [f64; 3]) -> String {
-    format!(
-        r#"{{"id": "{id}", "type": "box", "v": 1, "name": "B{id}", "position": [{}, {}, {}], "length": {}, "width": {}, "height": {}}}"#,
-        at[0], at[1], at[2], size[0], size[1], size[2]
-    )
-}
-
-fn cylinder(id: &str, at: [f64; 3], radius: f64, height: f64) -> String {
-    format!(
-        r#"{{"id": "{id}", "type": "cylinder", "v": 1, "name": "C{id}", "position": [{}, {}, {}], "radius": {radius}, "height": {height}}}"#,
-        at[0], at[1], at[2]
-    )
-}
-
-/// The name of the feature `feature`'s element that `pick` picks, the one there is.
-fn named(model: &Model, feature: &str, pick: impl Fn(&Entry) -> bool) -> String {
-    let all = entries(model, &FeatureId::new(feature).unwrap()).unwrap();
-    let picked: Vec<&Entry> = all.iter().filter(|e| pick(e)).collect();
-    assert_eq!(picked.len(), 1, "{feature}: {picked:?}");
-    picked[0].name.to_string()
-}
-
-fn mm(nm: i64) -> Length {
-    Length::from_nm(nm)
-}
-
-fn point(p: [f64; 3]) -> [Length; 3] {
-    p.map(|c| Length::rounded(c).unwrap())
-}
-
-fn measured(model: &Model, engine: &Recompute<KernelPool>, a: &str, b: &str) -> DistanceAnswer {
-    distance(model, engine.kernel(), &[a.to_owned(), b.to_owned()], None).unwrap()
-}
-
-fn angled(model: &Model, a: &str, b: &str) -> AngleAnswer {
-    angle(model, &[a.to_owned(), b.to_owned()], None).unwrap()
-}
-
-/// A face whose outward normal is `n`.
-fn facing(n: [f64; 3]) -> impl Fn(&Entry) -> bool {
-    move |e| e.normal == Some(n)
-}
+use silico_core::recompute::{Model, Recompute};
 
 #[test]
 fn a_boxs_bottom_and_top_are_its_height_apart_their_normal_distance_too() {
@@ -547,6 +482,12 @@ fn the_designs_measures_are_written_byte_for_byte_from_real_solids() {
         &bottom_rim(&rims, "dddddddd"),
     );
     assert_eq!(written(&d), example("distance/rims-measured"));
+    // The example's hole's top rim and the top it bounds: 0 apart, the rim's centre 2.5 from
+    // the face as bounded (FreeCAD's Quick Measure's centre to a face).
+    let top_rim = "m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)";
+    let d = measured(&m, &e, top_rim, "k7f2qx3m.box.Face6");
+    assert_eq!(d.center_to_element, Some(mm(2_500_000)));
+    assert_eq!(written(&d), example("distance/rim-and-top-measured"));
     // The design's wedge, its sketch's lines by the design's IDs: the faces from ra000001
     // (along x) and ra000002 (at 30 degrees to it).
     let wedge = wedge()

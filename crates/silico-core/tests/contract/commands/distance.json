@@ -24,7 +24,7 @@
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
-    "description": "`distance`'s request: the least distance between two elements, and their centres' and\nnormal distances where they have them.",
+    "description": "`distance`'s request: the least distance between two elements, and their centres',\nnormal, and centre-to-element distances where they have them.",
     "properties": {
       "elements": {
         "description": "The two elements, by name (as `elements` and `query` give them; an unstable name is\ntaken). The same name twice is 0 apart.",
@@ -95,7 +95,7 @@
             "type": "null"
           }
         ],
-        "description": "Where one element has a centre (a vertex's point, a circle's or arc's centre, a\ncylinder face's axis) and the other is a planar face or a straight edge: a point\ncentre's least distance from the other as bounded, as FreeCAD's Quick Measure gives a\nhole's centre to a face or an edge (so where the foot of its perpendicular falls off\nthe face, the distance to the nearest point of the face's boundary); a cylinder's\naxis's distance from a plane or line it's parallel to, at exactly 0 degrees, and null\nif it isn't. Null otherwise."
+        "description": "Where one element has a centre (a vertex's point, a circle's or arc's centre, a\ncylinder face's axis) and the other is a planar face or a straight edge: a point\ncentre's least distance from the other as bounded, as FreeCAD's Quick Measure gives a\nhole's centre to a face or an edge (so where the foot of its perpendicular falls off\nthe face, the distance to the nearest point of the face's boundary); a cylinder's\naxis's distance from the infinite plane or line it's parallel to, ignoring its\nbounds, at exactly 0 degrees, and null if it isn't (Silico's own, which FreeCAD's\nQuick Measure doesn't give). Null otherwise."
       },
       "distance": {
         "$ref": "#/$defs/Length",

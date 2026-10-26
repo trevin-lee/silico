@@ -192,8 +192,8 @@ impl ToWire for AngleAnswer {
     }
 }
 
-/// `distance`'s request: the least distance between two elements, and their centres' and
-/// normal distances where they have them.
+/// `distance`'s request: the least distance between two elements, and their centres',
+/// normal, and centre-to-element distances where they have them.
 #[derive(JsonSchema)]
 #[schemars(rename = "DistanceRequest", transform = wire_shape)]
 pub struct DistanceRequestSchema {
@@ -233,8 +233,9 @@ pub struct DistanceResultSchema {
     /// centre's least distance from the other as bounded, as FreeCAD's Quick Measure gives a
     /// hole's centre to a face or an edge (so where the foot of its perpendicular falls off
     /// the face, the distance to the nearest point of the face's boundary); a cylinder's
-    /// axis's distance from a plane or line it's parallel to, at exactly 0 degrees, and null
-    /// if it isn't. Null otherwise.
+    /// axis's distance from the infinite plane or line it's parallel to, ignoring its
+    /// bounds, at exactly 0 degrees, and null if it isn't (Silico's own, which FreeCAD's
+    /// Quick Measure doesn't give). Null otherwise.
     pub center_to_element: Option<Length>,
 }
 

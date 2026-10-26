@@ -468,71 +468,31 @@ fn an_unstable_name_is_taken_as_a_measure_answers_once_and_stores_it_nowhere() {
 /// off; Edge1 a circle centred (1, 3, 4), Edge2 an arc centred (4, 6, 8), Edge3 a circle
 /// centred (0, 0, 9); Edge4 the line along x from (0, 0, 0) to (10, 0, 0); Vertex1 at (4, 4,
 /// 0), Vertex2 at (0, 0, 2). The fake's point distance is the point's from (n, 0, 0), the
-/// element's number n, so each value below is by hand.
+/// element's number n, and its least distance how far apart the two numbers are, so each
+/// value below is by hand.
 mod centre_to_element {
-    use super::super::model::{checked, published};
+    use super::super::forged::{
+        BOX, circle, cylinder, forged, line_along_x, name, other_edge, other_face, plane_z0,
+    };
     use super::{mm, pair};
 
     use silico_core::command::measure::distance;
     use silico_core::document::Length;
     use silico_core::fake::FakeKernel;
-    use silico_core::kernel::{
-        Axis, Description, EdgeCurve, EdgeDescription, ElementKind, ElementRef, FaceDescription,
-        Op, Surface,
-    };
+    use silico_core::kernel::{Description, ElementRef, Op};
     use silico_core::recompute::{Model, Recompute};
-    use silico_protocol::Reply;
     use std::sync::Arc;
-
-    const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "bbbbbbbb", "type": "box", "v": 1, "name": "Box", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}]}"#;
-
-    fn cylinder(origin: [f64; 3], direction: [f64; 3]) -> FaceDescription {
-        FaceDescription {
-            surface: Surface::Cylinder {
-                axis: Axis { origin, direction },
-                radius: 1.0,
-            },
-            area: 1.0,
-            centroid: origin,
-        }
-    }
-
-    fn circle(centre: [f64; 3], start: [f64; 3], end: [f64; 3]) -> EdgeDescription {
-        EdgeDescription {
-            curve: EdgeCurve::Circle {
-                axis: Axis {
-                    origin: centre,
-                    direction: [0.0, 0.0, 1.0],
-                },
-                radius: 1.0,
-            },
-            length: 1.0,
-            start,
-            end,
-            middle: start,
-        }
-    }
 
     fn description() -> Description {
         let off = |radians: f64| [libm::cos(radians), 0.0, libm::sin(radians)];
         let faces = (1..=6u32)
             .map(|n| match n {
-                1 => FaceDescription {
-                    surface: Surface::Plane {
-                        normal: [0.0, 0.0, 1.0],
-                    },
-                    area: 1.0,
-                    centroid: [1.0, 0.0, 0.0],
-                },
+                1 => plane_z0(),
                 2 => cylinder([0.0, 4.0, 3.0], [1.0, 0.0, 0.0]),
                 3 => cylinder([0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
                 4 => cylinder([0.0, 0.0, 7.0], off(1e-12)),
                 5 => cylinder([0.0, 0.0, 7.0], off(1e-10)),
-                n => FaceDescription {
-                    surface: Surface::Other,
-                    area: 1.0,
-                    centroid: [f64::from(n), 0.0, 0.0],
-                },
+                n => other_face(n),
             })
             .collect();
         let edges = (1..=12u32)
@@ -541,23 +501,8 @@ mod centre_to_element {
                 1 => circle([1.0, 3.0, 4.0], [2.0, 3.0, 4.0], [2.0, 3.0, 4.0]),
                 2 => circle([4.0, 6.0, 8.0], [5.0, 6.0, 8.0], [4.0, 7.0, 8.0]),
                 3 => circle([0.0, 0.0, 9.0], [1.0, 0.0, 9.0], [1.0, 0.0, 9.0]),
-                4 => EdgeDescription {
-                    curve: EdgeCurve::Line,
-                    length: 10.0,
-                    start: [0.0, 0.0, 0.0],
-                    end: [10.0, 0.0, 0.0],
-                    middle: [5.0, 0.0, 0.0],
-                },
-                n => {
-                    let x = f64::from(n);
-                    EdgeDescription {
-                        curve: EdgeCurve::Other,
-                        length: 1.0,
-                        start: [x, 0.0, 0.0],
-                        end: [x, 1.0, 0.0],
-                        middle: [x, 0.5, 0.0],
-                    }
-                }
+                4 => line_along_x(),
+                n => other_edge(n),
             })
             .collect();
         let vertices = (1..=8u32)
@@ -575,53 +520,14 @@ mod centre_to_element {
     }
 
     /// The box rebuilt on a fake kernel whose descriptions are [`description`]'s.
-    fn forged() -> (Recompute<FakeKernel>, Arc<Model>) {
-        let whole = description();
-        let engine = Recompute::new(FakeKernel::new(1).unwrap());
-        engine.kernel().answer_instead(move |op| match op {
-            Op::Describe {
-                kind, first, count, ..
-            } => {
-                let from = (*first - 1) as usize;
-                let slice = |n: usize| from.min(n)..(from + *count as usize).min(n);
-                let mut batch = Description {
-                    faces: Vec::new(),
-                    edges: Vec::new(),
-                    vertices: Vec::new(),
-                };
-                let total = match kind {
-                    ElementKind::Face => {
-                        batch.faces = whole.faces[slice(6)].to_vec();
-                        6
-                    }
-                    ElementKind::Edge => {
-                        batch.edges = whole.edges[slice(12)].to_vec();
-                        12
-                    }
-                    _ => {
-                        batch.vertices = whole.vertices[slice(8)].to_vec();
-                        8
-                    }
-                };
-                Some(Reply::Described {
-                    total,
-                    description: batch,
-                })
-            }
-            _ => None,
-        });
-        let model = published(&engine, checked(BOX));
-        (engine, model)
-    }
-
-    fn name(element: &str) -> String {
-        format!("bbbbbbbb.box.{element}")
+    fn forged_box() -> (Recompute<FakeKernel>, Arc<Model>) {
+        forged(BOX, description())
     }
 
     /// The `center_to_element` of the two elements, either way round (the same), and each
     /// point distance the kernel was asked for, as (element, point).
     fn centre_to(a: &str, b: &str) -> (Option<Length>, Vec<(ElementRef, [f64; 3])>) {
-        let (engine, model) = forged();
+        let (engine, model) = forged_box();
         let kernel = engine.kernel();
         let before = kernel.calls().len();
         let ab = distance(&model, kernel, &pair(&name(a), &name(b)), None).unwrap();
@@ -638,16 +544,15 @@ mod centre_to_element {
     }
 
     #[test]
-    fn a_vertex_is_measured_to_a_plane_and_to_a_straight_edge_by_the_kernel() {
-        // Vertex1 (4, 4, 0) to Face1, the fake's (1, 0, 0): √(3² + 4²) = 5; asked once each
-        // way round, from the vertex's point to the face.
-        let (d, asked) = centre_to("Vertex1", "Face1");
-        assert_eq!(d, Some(mm(5)));
-        assert_eq!(asked, [(ElementRef::face(1), [4.0, 4.0, 0.0]); 2]);
-        // To Edge4, the line, the fake's (4, 0, 0): 4.
-        let (d, asked) = centre_to("Vertex1", "Edge4");
-        assert_eq!(d, Some(mm(4)));
-        assert_eq!(asked, [(ElementRef::edge(4), [4.0, 4.0, 0.0]); 2]);
+    fn a_vertex_is_its_least_distance_from_a_plane_or_a_straight_edge_asked_once() {
+        // A vertex is its own centre: its distance from the other element as bounded is the
+        // pair's least distance, the fake's |2 − 1| = 1 from Face1 and |2 − 4| = 2 from Edge4,
+        // and no point distance is asked (which would be the fake's √(1² + 2²) = √5 from
+        // (1, 0, 0), and √(4² + 2²) = √20 from (4, 0, 0)).
+        assert_eq!(centre_to("Vertex2", "Face1"), (Some(mm(1)), Vec::new()));
+        assert_eq!(centre_to("Vertex2", "Edge4"), (Some(mm(2)), Vec::new()));
+        // Vertex1 and Face1 are both numbered 1: 0 apart.
+        assert_eq!(centre_to("Vertex1", "Face1"), (Some(mm(0)), Vec::new()));
     }
 
     #[test]
@@ -702,9 +607,9 @@ mod centre_to_element {
 
     #[test]
     fn the_kernels_refusal_of_the_centres_distance_fails_the_measure_naming_both() {
-        // OCCT finding no distance from the centre: said in the design's words, as the
-        // least distance's is, naming both elements, never a null in its place.
-        let (engine, model) = forged();
+        // OCCT finding no distance from the centre: said in its own words, as the least
+        // distance's is in its, naming both elements, never a null in its place.
+        let (engine, model) = forged_box();
         engine.kernel().refuse_as_worker(|op| {
             matches!(op, Op::PointDistance { .. }).then(|| silico_protocol::Failure {
                 refusal: silico_protocol::Refusal::DistanceNotDone,
@@ -723,8 +628,10 @@ mod centre_to_element {
         assert_eq!(error.code(), silico_core::ErrorCode::KernelFailed);
         assert_eq!(
             error.message(),
-            "the kernel couldn't find the least distance between these elements"
+            "the kernel couldn't find the distance from one of these elements' centre to the \
+             other"
         );
+        assert_eq!(error.cause(), Some("BRepExtrema_DistShapeShape: not done"));
         assert_eq!(error.parameter(), Some("elements"));
         assert_eq!(
             error.elements(),

@@ -21,6 +21,7 @@ use silico_core::command::elements::{
     Alias, AxisToken, Cursor, ElementType, EntryAxis, Facing, MeasureName, Order, Quantity,
     Queried, Query, Range, Tied, entries, list, query,
 };
+use silico_core::command::measure::DistanceAnswer;
 use silico_core::command::schema::schema;
 use silico_core::command::wire::elements::{ElementsRequest, QueryRequest};
 use silico_core::command::wire::measure::{MassPropertiesRequest, PairRequest};
@@ -398,6 +399,7 @@ fn the_examples_are_the_designs_own_text() {
                 "box-bottom-and-top",
                 "box-bottom-and-top-measured",
                 "rims-measured",
+                "rim-and-top-measured",
                 "refused-no-such-face",
                 "refused-kernel-failed",
             ],
@@ -1194,6 +1196,7 @@ fn the_measures_examples_hold_to_their_results_schemas() {
         ("mass_properties/every-body-measured", "mass_properties"),
         ("distance/box-bottom-and-top-measured", "distance"),
         ("distance/rims-measured", "distance"),
+        ("distance/rim-and-top-measured", "distance"),
         ("angle/wedge-measured", "angle"),
     ] {
         holds(&schema_of(of, "result", None), &example(name), name);
@@ -1216,9 +1219,43 @@ fn the_measures_examples_hold_to_their_results_schemas() {
         r#"{"distance": 1, "from": [0, 0, 0], "to": [0, 0, 1], "center_distance": null, "normal_distance": null}"#,
         "no centre-to-element distance",
     );
-    holds(
-        &schema_of("distance", "result", None),
-        r#"{"distance": 0, "from": [20, 10, 10], "to": [20, 7.5, 10], "center_distance": null, "normal_distance": null, "center_to_element": 2.5}"#,
-        "a hole's centre to its face",
+}
+
+#[test]
+fn a_distance_from_a_centre_is_written_whole() {
+    // The design's third example: M2.1's part's hole, of radius 2.5 about (20, 10), its top
+    // rim against the top it bounds. They touch, so 0 apart, met at a point of the rim, on
+    // both (a witness: OCCT's, the rim's start, (22.5, 10, 10)); no centres' or normal
+    // distance (a circle and a plane); and the rim's centre, (20, 10, 10), in the hole, off
+    // the face, so the face's nearest point is on the rim, 2.5 away: every field written, in
+    // the result's order.
+    let mm = |text: &str| Length::parse(text).unwrap();
+    let rim = [mm("22.5"), mm("10"), mm("10")];
+    let answer = DistanceAnswer {
+        distance: mm("0"),
+        from: rim,
+        to: rim,
+        center_distance: None,
+        normal_distance: None,
+        center_to_element: Some(mm("2.5")),
+    };
+    let text = example("distance/rim-and-top-measured");
+    assert_eq!(
+        text,
+        "{\"distance\": 0, \"from\": [22.5, 10, 10], \"to\": [22.5, 10, 10], \"center_distance\": \
+         null, \"normal_distance\": null, \"center_to_element\": 2.5}\n"
+    );
+    assert_eq!(written(&answer), text);
+    // Its centre-to-element distance alone changed, the rest as written.
+    let farther = DistanceAnswer {
+        center_to_element: Some(mm("10.307764")),
+        ..answer
+    };
+    assert_eq!(
+        written(&farther),
+        text.replace(
+            "\"center_to_element\": 2.5",
+            "\"center_to_element\": 10.307764"
+        )
     );
 }

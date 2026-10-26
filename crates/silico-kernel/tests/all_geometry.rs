@@ -14,6 +14,8 @@ mod cached;
 mod chamfer_sizes;
 #[path = "common/close.rs"]
 mod close;
+#[path = "common/cube_elements.rs"]
+mod cube_elements;
 #[path = "../../silico-core/tests/common/profile.rs"]
 mod draw;
 #[path = "common/exported.rs"]

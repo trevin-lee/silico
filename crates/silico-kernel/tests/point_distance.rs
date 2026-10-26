@@ -6,46 +6,16 @@
 //! off an edge's end, beside its middle, and at a vertex; each refusal, on the bridge and
 //! through a worker. Every expected value is by hand.
 
+use super::cube_elements::{cube, edge_between, vertex_at};
+
 use std::path::Path;
 use std::time::Duration;
 
 use silico_core::ErrorCode;
 use silico_core::kernel::{Blob, KernelRequest, KernelWorker, ShapeData};
 use silico_core::worker::Worker;
-use silico_kernel::{Primitive, Shape, describe_whole, make, point_distance, to_brep};
+use silico_kernel::{point_distance, to_brep};
 use silico_protocol::{ElementKind, ElementRef, Generation, Op, Refusal, Reply};
-
-/// A 10 mm cube at the origin: Face1 x = 0, Face2 x = 10, Face3 y = 0, Face4 y = 10, Face5
-/// z = 0, Face6 z = 10.
-fn cube() -> Shape {
-    make(&Primitive::Box {
-        dx: 10.0,
-        dy: 10.0,
-        dz: 10.0,
-    })
-    .unwrap()
-}
-
-/// The number of `shape`'s edge from `a` to `b`, either way along it.
-fn edge_between(shape: &Shape, a: [f64; 3], b: [f64; 3]) -> ElementRef {
-    let d = describe_whole(shape).unwrap();
-    let i = d
-        .edges
-        .iter()
-        .position(|e| (e.start == a && e.end == b) || (e.start == b && e.end == a))
-        .unwrap();
-    ElementRef::edge(u32::try_from(i + 1).unwrap())
-}
-
-/// The number of `shape`'s vertex at `at`.
-fn vertex_at(shape: &Shape, at: [f64; 3]) -> ElementRef {
-    let d = describe_whole(shape).unwrap();
-    let i = d.vertices.iter().position(|v| *v == at).unwrap();
-    ElementRef {
-        kind: ElementKind::Vertex,
-        index: u32::try_from(i + 1).unwrap(),
-    }
-}
 
 fn close(what: &str, got: f64, want: f64) {
     assert!((got - want).abs() < 1e-12, "{what}: got {got}, want {want}");
@@ -59,7 +29,7 @@ fn assert_point(what: &str, got: [f64; 3], want: [f64; 3]) {
 #[test]
 fn a_point_over_a_face_is_its_height_above_it_met_at_its_foot() {
     // (3, 4, 25) over the top (z = 10): 15 above it, its foot (3, 4, 10) inside the face.
-    let d = point_distance(&cube(), ElementRef::face(6), [3.0, 4.0, 25.0]).unwrap();
+    let d = point_distance(&cube(10.0), ElementRef::face(6), [3.0, 4.0, 25.0]).unwrap();
     close("distance", d.distance, 15.0);
     assert_eq!(d.from, [3.0, 4.0, 25.0]);
     assert_point("to", d.to, [3.0, 4.0, 10.0]);
@@ -71,7 +41,7 @@ fn a_point_past_a_faces_edge_is_measured_to_the_face_as_bounded_not_its_plane() 
     // (13, 4, 14): 4 above the top's plane, but its foot (13, 4, 10) is 3 past the top's
     // edge at x = 10. As bounded, the nearest point of the face is on that edge, (10, 4,
     // 10): √(3² + 4²) = 5 away, not 4.
-    let d = point_distance(&cube(), ElementRef::face(6), [13.0, 4.0, 14.0]).unwrap();
+    let d = point_distance(&cube(10.0), ElementRef::face(6), [13.0, 4.0, 14.0]).unwrap();
     close("distance", d.distance, 5.0);
     assert_eq!(d.from, [13.0, 4.0, 14.0]);
     assert_point("to", d.to, [10.0, 4.0, 10.0]);
@@ -79,7 +49,7 @@ fn a_point_past_a_faces_edge_is_measured_to_the_face_as_bounded_not_its_plane() 
 
 #[test]
 fn a_point_off_an_edges_end_is_measured_to_its_end_and_one_beside_it_to_its_middle() {
-    let shape = cube();
+    let shape = cube(10.0);
     // The edge along x from (0, 0, 0) to (10, 0, 0).
     let along_x = edge_between(&shape, [0.0, 0.0, 0.0], [10.0, 0.0, 0.0]);
     // (−3, −4, 0) is 3 past its end at the origin along it and 4 off it: its nearest point
@@ -97,7 +67,7 @@ fn a_point_off_an_edges_end_is_measured_to_its_end_and_one_beside_it_to_its_midd
 #[test]
 fn a_point_is_its_straight_line_from_a_vertex() {
     // The corner at (10, 10, 10) and (12, 13, 16): √(2² + 3² + 6²) = √49 = 7.
-    let shape = cube();
+    let shape = cube(10.0);
     let corner = vertex_at(&shape, [10.0, 10.0, 10.0]);
     let d = point_distance(&shape, corner, [12.0, 13.0, 16.0]).unwrap();
     close("distance", d.distance, 7.0);
@@ -111,7 +81,7 @@ fn a_point_is_its_straight_line_from_a_vertex() {
 
 #[test]
 fn an_element_its_shape_hasnt_a_solid_a_0_or_a_point_not_finite_is_refused_naming_it() {
-    let shape = cube();
+    let shape = cube(10.0);
     let missing = point_distance(&shape, ElementRef::face(7), [0.0; 3]).unwrap_err();
     assert_eq!(
         missing.refusal(),
@@ -167,7 +137,7 @@ fn an_element_its_shape_hasnt_a_solid_a_0_or_a_point_not_finite_is_refused_namin
 fn through_a_worker_the_distance_is_the_bridges_and_a_refusal_is_data() {
     let worker_path = Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker"));
     let mut worker = KernelWorker::start_worker(worker_path).unwrap();
-    let shape = cube();
+    let shape = cube(10.0);
     let data = ShapeData::checked(Blob::inline(to_brep(&shape).unwrap()), true);
     let request =
         KernelRequest::point_distance(&data, ElementRef::face(6), [13.0, 4.0, 14.0]).unwrap();
@@ -196,7 +166,7 @@ fn the_worker_refuses_a_point_the_core_would_never_send() {
     // sent to it raw too, as data, naming the point, and goes on.
     let mut w = Worker::spawn(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker"))).unwrap();
     let timeout = Duration::from_secs(30);
-    let shape = ShapeData::checked(Blob::inline(to_brep(&cube()).unwrap()), true);
+    let shape = ShapeData::checked(Blob::inline(to_brep(&cube(10.0)).unwrap()), true);
     for point in [[f64::INFINITY, 0.0, 0.0], [0.0, 0.0, 2e12]] {
         let err = w
             .call(
