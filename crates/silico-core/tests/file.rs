@@ -5,12 +5,18 @@
 
 use silico_core::ErrorCode;
 
+/// `bytes` saved over `file`, which held `before` ([`silico_core::file::save_over`]): why
+/// not, if not.
+fn save(file: &std::path::Path, before: &[u8], bytes: &[u8]) -> Result<(), silico_core::Error> {
+    silico_core::file::save_over(file, before, bytes).map_err(|unsaved| unsaved.error)
+}
+
 #[test]
 fn a_save_over_a_file_changed_since_it_was_read_is_refused_and_says_to_read_it_again() {
     let dir = Scratch::new("save-changed");
     let file = dir.0.join("part.silico");
     std::fs::write(&file, b"edited").unwrap();
-    let error = silico_core::file::save(&file, b"as read", b"formatted").unwrap_err();
+    let error = save(&file, b"as read", b"formatted").unwrap_err();
     // A conflict, not a failure of the disk (decision 16): reading it again is the fix.
     assert_eq!(error.code(), ErrorCode::Conflict);
     assert!(error.to_string().contains("read it again"), "{error}");
@@ -27,7 +33,7 @@ fn a_save_replaces_the_file_whole_rather_than_writing_into_it() {
     let file = scratch.0.join("part.silico");
     std::fs::write(&file, b"as read").unwrap();
     let before = std::fs::metadata(&file).unwrap().ino();
-    silico_core::file::save(&file, b"as read", b"formatted").unwrap();
+    save(&file, b"as read", b"formatted").unwrap();
     assert_eq!(std::fs::read(&file).unwrap(), b"formatted");
     assert_ne!(std::fs::metadata(&file).unwrap().ino(), before);
 }
@@ -83,7 +89,7 @@ fn a_save_takes_the_next_name_beside_the_file_when_one_is_left_from_a_killed_run
     std::fs::write(&file, b"as read").unwrap();
     let left = format!(".part.silico.fmt-{}", std::process::id());
     std::fs::write(dir.0.join(&left), b"left").unwrap();
-    silico_core::file::save(&file, b"as read", b"formatted").unwrap();
+    save(&file, b"as read", b"formatted").unwrap();
     assert_eq!(std::fs::read(&file).unwrap(), b"formatted");
     assert_eq!(dir.names(), [left.clone(), "part.silico".to_owned()]);
     assert_eq!(std::fs::read(dir.0.join(&left)).unwrap(), b"left");
@@ -107,7 +113,7 @@ fn a_document_whose_name_is_as_long_as_a_name_may_be_is_saved() {
             if linked {
                 std::fs::hard_link(&file, dir.0.join("other")).unwrap();
             }
-            silico_core::file::save(&file, b"as read", b"formatted").unwrap();
+            save(&file, b"as read", b"formatted").unwrap();
             assert_eq!(
                 std::fs::read(&file).unwrap(),
                 b"formatted",
@@ -134,7 +140,7 @@ fn a_save_with_every_name_beside_the_file_taken_says_so_and_writes_nothing() {
     for n in 1..64 {
         std::fs::write(dir.0.join(format!(".part.silico.fmt-{pid}-{n}")), b"").unwrap();
     }
-    let error = silico_core::file::save(&file, b"as read", b"formatted").unwrap_err();
+    let error = save(&file, b"as read", b"formatted").unwrap_err();
     assert_eq!(error.code(), ErrorCode::IoFailed);
     // All 64 names tried, and the message names them: the first, and -1 to -63.
     let said = format!(
@@ -148,7 +154,7 @@ fn a_save_with_every_name_beside_the_file_taken_says_so_and_writes_nothing() {
     assert_eq!(dir.names().len(), 65);
     // With the last name free, it's used: every name is tried.
     std::fs::remove_file(dir.0.join(format!(".part.silico.fmt-{pid}-63"))).unwrap();
-    silico_core::file::save(&file, b"as read", b"formatted").unwrap();
+    save(&file, b"as read", b"formatted").unwrap();
     assert_eq!(std::fs::read(&file).unwrap(), b"formatted");
 }
 
@@ -168,7 +174,7 @@ fn a_save_over_a_file_swapped_for_a_pipe_is_refused_not_waited_on() {
     let (tx, rx) = std::sync::mpsc::channel();
     let f = fifo.clone();
     std::thread::spawn(move || {
-        let _ = tx.send(silico_core::file::save(&f, b"", b"x"));
+        let _ = tx.send(save(&f, b"", b"x"));
     });
     let error = rx
         .recv_timeout(std::time::Duration::from_secs(5))
@@ -181,7 +187,7 @@ fn a_save_over_a_file_swapped_for_a_pipe_is_refused_not_waited_on() {
         .write(true)
         .open(&fifo)
         .unwrap();
-    let error = silico_core::file::save(&fifo, b"", b"x").unwrap_err();
+    let error = save(&fifo, b"", b"x").unwrap_err();
     assert!(
         error.to_string().contains("isn't a regular file now"),
         "{error}"
@@ -200,7 +206,7 @@ fn a_save_that_fails_says_its_paths_without_a_terminals_escapes() {
     let file = dir.join("part.silico");
     std::fs::write(&file, b"as read").unwrap();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
-    let error = silico_core::file::save(&file, b"as read", b"formatted").unwrap_err();
+    let error = save(&file, b"as read", b"formatted").unwrap_err();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(error.code(), ErrorCode::IoFailed);
     let words = error.to_string();
@@ -219,7 +225,7 @@ fn save_entry() {
     let Some(file) = std::env::var_os(SAVE_ENV) else {
         return;
     };
-    let _ = silico_core::file::save(std::path::Path::new(&file), b"as read", &[b'x'; 1 << 16]);
+    let _ = save(std::path::Path::new(&file), b"as read", &[b'x'; 1 << 16]);
     std::process::exit(0);
 }
 

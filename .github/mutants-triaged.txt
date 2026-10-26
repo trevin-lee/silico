@@ -107,13 +107,16 @@ crates/silico-core/src/command/session/transaction.rs | Session<C>::rollback | d
 # so it's kept whole either way.
 crates/silico-core/src/file.rs | partial_name | replace match guard bytes.len() > room with true | #159
 crates/silico-core/src/file.rs | partial_name | replace > with >= | #159
+# A place one past the list's end passes the filter, and `items.get` finds nothing there:
+# the same refusal, `missing()`.
+crates/silico-core/src/command/edit.rs | resolve | replace < with <= | #174
+# No caller passes the published revision: the wait loop returns its model first, the
+# rebuild after edits starts only when the published revision is older, and a rollback
+# restores a published revision older than the one it starts.
+crates/silico-core/src/command/session/rebuilds.rs | Session<C>::start_unless_newer | replace > with >= | #174
+# Debug output only, which no result, name, or message reads.
+crates/silico-core/src/command/session/transaction.rs | <impl std::fmt::Debug for Reached>::fmt | replace <impl std::fmt::Debug for Reached>::fmt -> std::fmt::Result with Ok(Default::default()) | #174
 crates/silico-core/src/sketch.rs | moved | replace match guard s.form.value_text().is_some() with true | #157
-# Equivalent until edits: no edit can yet make a document the gate took at begin and
-# refuses now. With the guard always true, such a commit would end the transaction as
-# unchanged and `unwritten` would put begin's text back, throwing the edits away; M4.2
-# PR 6, which adds edits, must test that the commit is refused, the edits stay held, and
-# the transaction stays open, and remove this line.
-crates/silico-core/src/command/session.rs | Session<C>::commit | replace match guard unchanged with true | #144
 crates/silico-render/src/lib.rs | adapters | delete match arm wgpu::DeviceType::Cpu | #147
 crates/silico-render/src/lib.rs | adapters | delete match arm wgpu::DeviceType::DiscreteGpu | #147
 crates/silico-render/src/lib.rs | adapters | replace == with != | #147

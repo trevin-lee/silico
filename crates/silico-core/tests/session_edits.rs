@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
-use silico_core::command::{ModelChoice, ModelRead, Response, Revision, SessionId, Sessions};
+use silico_core::command::{
+    ModelChoice, ModelRead, Rebuild, RebuildState, Response, Revision, SessionId, Sessions,
+};
 use silico_core::document::json::{Node, Plain};
 use silico_core::document::{self, Length, Measure, Operation};
 use silico_core::fake::{FakeKernel, FakeSketches};
@@ -387,6 +389,39 @@ fn a_refused_commit_of_an_edit_outside_a_transaction_leaves_the_session_as_it_wa
 }
 
 #[test]
+fn a_refused_commit_s_ended_rebuild_is_no_progress_of_the_session_s_revision() {
+    let f = opened(BLOCK);
+    // As above: the file changes while the edit's commit rebuilds, so its save is refused
+    // after its candidate's rebuild has ended, built.
+    let hold = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+    let running = f.sessions.set_field(
+        &f.id,
+        Revision::OPENED,
+        id("k7f2qx3m"),
+        "length".to_owned(),
+        value("41"),
+    );
+    assert!(f.kernel.wait_running(1, crate::sessions::HANG));
+    std::fs::write(&f.path, "edited elsewhere").unwrap();
+    hold.release();
+    let error = the_error(&answer(running));
+    assert_eq!(error.code(), ErrorCode::Conflict);
+    // The design's `status` (section 7): the candidate was the revision the save would
+    // have given, never saved, and no command has needed revision 1's model, so its
+    // rebuild is `none`, and `done` and `steps` are null: no rebuild of it has started.
+    assert_eq!(
+        f.sessions.status(&f.id).result.unwrap().rebuild,
+        Rebuild {
+            revision: Revision::OPENED,
+            state: RebuildState::Idle,
+            progress: None,
+        }
+    );
+}
+
+#[test]
 fn a_field_is_read_exactly_as_the_document_reader_reads_it() {
     let f = opened(BLOCK);
     f.begin();
@@ -483,8 +518,20 @@ fn a_feature_s_id_type_version_and_fingerprint_cant_be_set() {
 #[test]
 fn a_field_a_feature_hasnt_is_refused_with_every_field_it_has() {
     let f = opened(BLOCK);
-    for field in ["depth", "position.3", "position.01", "length.x", ""] {
+    // A place is digits only: Rust's `usize` parse takes a leading `+`, which would make
+    // `position.+1` the box's y.
+    for field in [
+        "depth",
+        "position.3",
+        "position.01",
+        "position.+1",
+        "position.-0",
+        "position. 1",
+        "length.x",
+        "",
+    ] {
         let error = the_error(&f.set("k7f2qx3m", field, "1"));
+        assert_eq!(error.code(), ErrorCode::InvalidInput, "{field}");
         assert_eq!(error.parameter(), Some("field"), "{field}");
         assert_eq!(error.suggestion(), Some("name one of the box's fields"));
         assert_eq!(
@@ -497,6 +544,22 @@ fn a_field_a_feature_hasnt_is_refused_with_every_field_it_has() {
         the_error(&f.set("k7f2qx3m", "depth", "1")).message(),
         "a box has no field depth"
     );
+    // A plain path is shown as written up to 80 characters (two names' worth), and quoted,
+    // cut to its first 40, past that.
+    let at_most =
+        "counterbore.depth_under_the_mounting_face.of_the_block_as_drawn_on_the_sheet_abc";
+    let past = "counterbore.depth_under_the_mounting_face.of_the_block_as_drawn_on_the_sheet_abcd";
+    assert_eq!((at_most.len(), past.len()), (80, 81));
+    assert_eq!(
+        the_error(&f.set("k7f2qx3m", at_most, "1")).message(),
+        "a box has no field counterbore.depth_under_the_mounting_face.of_the_block_as_drawn_on_the_sheet_abc"
+    );
+    assert_eq!(
+        the_error(&f.set("k7f2qx3m", past, "1")).message(),
+        "a box has no field \"counterbore.depth_under_the_mounting_fac\"…"
+    );
+    assert_eq!(f.file(), BLOCK);
+    assert_eq!(f.revision(), Revision::OPENED);
     // The design's pad, which has no base here: a base can be given it.
     let pad = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "s0000003", "type": "sketch", "v": 1, "name": "Profile", "plane": "xy", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}, {"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000003", "extent": {"type": "one_side", "length": 6, "reversed": false}}]}"#;
     let f = opened(pad);

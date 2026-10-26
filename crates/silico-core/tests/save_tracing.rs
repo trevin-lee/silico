@@ -12,11 +12,18 @@ use tracing::span::{Attributes, Id};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
-/// An event: the spans it's in, nearest first, its message, and its `sync_ms`.
+/// `bytes` saved over `file`, which held `before` ([`silico_core::file::save_over`]): why
+/// not, if not.
+fn save(file: &std::path::Path, before: &[u8], bytes: &[u8]) -> Result<(), silico_core::Error> {
+    silico_core::file::save_over(file, before, bytes).map_err(|unsaved| unsaved.error)
+}
+
+/// An event: the spans it's in, nearest first, its message, its `path`, and its `sync_ms`.
 #[derive(Debug, PartialEq)]
 struct Said {
     spans: Vec<&'static str>,
     message: String,
+    path: Option<String>,
     sync_ms: Option<u64>,
 }
 
@@ -32,6 +39,7 @@ struct Recorder(Arc<Mutex<Seen>>);
 #[derive(Default)]
 struct Fields {
     message: String,
+    path: Option<String>,
     sync_ms: Option<u64>,
     bytes: Option<u64>,
 }
@@ -46,8 +54,10 @@ impl Visit for Fields {
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "message" {
-            self.message = format!("{value:?}");
+        match field.name() {
+            "message" => self.message = format!("{value:?}"),
+            "path" => self.path = Some(format!("{value:?}")),
+            _ => {}
         }
     }
 }
@@ -71,6 +81,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Recorder {
         self.0.lock().unwrap().said.push(Said {
             spans,
             message: fields.message,
+            path: fields.path,
             sync_ms: fields.sync_ms,
         });
     }
@@ -82,29 +93,31 @@ fn saved(file: &std::path::Path, before: &[u8], bytes: &[u8]) -> (Seen, Duration
     let subscriber = tracing_subscriber::registry().with(Recorder(Arc::clone(&seen)));
     let start = Instant::now();
     tracing::subscriber::with_default(subscriber, || {
-        silico_core::file::save(file, before, bytes).unwrap();
+        save(file, before, bytes).unwrap();
     });
     let took = start.elapsed();
     let seen = std::mem::take(&mut *seen.lock().unwrap());
     (seen, took)
 }
 
-/// The syncing and synced lines, in the order said, each in the save's span, the second with
-/// its time and the first without; and no time longer than the whole save took.
-fn syncs(seen: &Seen, took: Duration, whats: &[&str]) {
-    let expected: Vec<(String, bool)> = whats
+/// The syncing and synced lines, in the order said, each of what's synced at its path, in
+/// the save's span, the second with its time and the first without; and no time longer
+/// than the whole save took.
+fn syncs(seen: &Seen, took: Duration, whats: &[(&str, &std::path::Path)]) {
+    let expected: Vec<(String, Option<String>, bool)> = whats
         .iter()
-        .flat_map(|what| {
+        .flat_map(|(what, path)| {
+            let path = Some(path.display().to_string());
             [
-                (format!("syncing {what}"), false),
-                (format!("synced {what}"), true),
+                (format!("syncing {what}"), path.clone(), false),
+                (format!("synced {what}"), path, true),
             ]
         })
         .collect();
-    let said: Vec<(String, bool)> = seen
+    let said: Vec<(String, Option<String>, bool)> = seen
         .said
         .iter()
-        .map(|s| (s.message.clone(), s.sync_ms.is_some()))
+        .map(|s| (s.message.clone(), s.path.clone(), s.sync_ms.is_some()))
         .collect();
     assert_eq!(said, expected);
     for s in &seen.said {
@@ -144,7 +157,20 @@ fn a_save_says_when_it_syncs_its_new_text_and_how_long_that_took() {
     std::fs::write(&file, b"as read").unwrap();
     let (seen, took) = saved(&file, b"as read", b"the formatted text");
     assert_eq!(seen.saves, [18]);
-    syncs(&seen, took, &["the new text beside it"]);
+    // The new text beside it, `.NAME.fmt-PID`, then the directory it's renamed in, the
+    // file's parent (the temporary directory's links resolved, as the save resolves the
+    // file's), so the rename is on disk too: a power cut after the save can't bring back
+    // the old file.
+    let directory = std::fs::canonicalize(&scratch.0).unwrap();
+    let beside = directory.join(format!(".part.silico.fmt-{}", std::process::id()));
+    syncs(
+        &seen,
+        took,
+        &[
+            ("the new text beside it", &beside),
+            ("the directory it was renamed in", &directory),
+        ],
+    );
 }
 
 #[test]
@@ -155,10 +181,15 @@ fn a_save_in_place_says_when_it_syncs_the_old_text_kept_and_then_the_new() {
     std::fs::hard_link(&file, scratch.0.join("other-name.silico")).unwrap();
     let (seen, took) = saved(&file, b"as read", b"formatted");
     assert_eq!(seen.saves, [9]);
+    let directory = std::fs::canonicalize(&scratch.0).unwrap();
+    let kept = directory.join(format!(".part.silico.fmt-{}", std::process::id()));
     syncs(
         &seen,
         took,
-        &["its old text kept beside it", "its new text, in place"],
+        &[
+            ("its old text kept beside it", &kept),
+            ("its new text, in place", &directory.join("part.silico")),
+        ],
     );
 }
 
@@ -170,7 +201,7 @@ fn a_save_refused_before_it_writes_syncs_nothing() {
     let seen = Arc::new(Mutex::new(Seen::default()));
     let subscriber = tracing_subscriber::registry().with(Recorder(Arc::clone(&seen)));
     tracing::subscriber::with_default(subscriber, || {
-        silico_core::file::save(&file, b"as read", b"formatted").unwrap_err();
+        save(&file, b"as read", b"formatted").unwrap_err();
     });
     let seen = seen.lock().unwrap();
     assert_eq!(seen.saves, [9]);

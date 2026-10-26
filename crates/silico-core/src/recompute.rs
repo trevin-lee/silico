@@ -666,34 +666,29 @@ impl Model {
     /// put in its place, and a failure that passes (a worker that hung, say) mustn't lose the
     /// record a later rebuild is checked against.
     pub fn saved(&self) -> Document {
-        self.saved_where(|_| true)
+        self.saved_as(|_| Save::Recorded)
     }
 
-    /// Its document as [`saved`](Self::saved) writes it, but the record of only each feature
-    /// in `writes` as rebuilt; every other keeps the fingerprint, or a sketch the solve,
-    /// stored with it. A session's commit writes the features its edits reached (decision
-    /// 28), and its `format` every feature but those whose drift it isn't told to accept
-    /// (decision 31).
-    pub fn saved_for(&self, writes: &BTreeSet<FeatureId>) -> Document {
-        self.saved_where(|id| writes.contains(id))
-    }
-
-    /// Whether a save writes the record of the feature `id` as rebuilt (the one rule
-    /// [`saved_for`](Self::saved_for) writes by): a fingerprint for a feature that built and
+    /// Whether a save writes the record of the feature `id` as rebuilt (the rule
+    /// [`saved_as`](Self::saved_as) writes by): a fingerprint for a feature that built and
     /// was measured, as a fingerprint can hold it, or the solve of a sketch that solved. Not
     /// for one that failed, was blocked, or couldn't be measured, which keeps what's stored
-    /// with it.
+    /// with it, unless a session's edits reached it ([`Save::AsRebuilt`]).
     pub fn records(&self, id: &FeatureId) -> bool {
         self.outcome(id).and_then(Record::of).is_some()
     }
 
-    /// Its document as a save writes it, each feature `writes` takes as rebuilt, every
-    /// other as stored.
-    fn saved_where(&self, writes: impl Fn(&FeatureId) -> bool) -> Document {
+    /// Its document as a save writes it, each feature as `how` says ([`Save`]): the one
+    /// place the rule is held. A session's commit saves the features its edits reached as
+    /// rebuilt and every other as stored (decision 28); its `format` saves the reached ones
+    /// as rebuilt, those whose drift it isn't told to accept as stored, and the rest as
+    /// recorded (decision 31); [`saved`](Self::saved), every feature as recorded.
+    pub fn saved_as(&self, how: impl Fn(&FeatureId) -> Save) -> Document {
         let mut document = self.document().clone();
         // The model's features are its document's, in order.
         for (feature, (_, outcome)) in document.features.iter_mut().zip(&self.features) {
-            if !writes(&feature.id) {
+            let how = how(&feature.id);
+            if how == Save::Stored {
                 continue;
             }
             match Record::of(outcome) {
@@ -703,11 +698,34 @@ impl Model {
                         *sketch = solution.written(sketch);
                     }
                 }
+                // A sketch's coordinates are its data, not a record of it: kept.
+                None if how == Save::AsRebuilt && feature.operation.makes_solid() => {
+                    feature.fingerprint = None;
+                }
                 None => {}
             }
         }
         document
     }
+}
+
+/// How a save writes a feature ([`Model::saved_as`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Save {
+    /// As the file holds it.
+    Stored,
+    /// Its record if it has one (its fingerprint as rebuilt, or a sketch's solve), or else
+    /// as stored: a feature that didn't build keeps what's stored with it, since a failure
+    /// that passes (a worker that hung, say) mustn't lose the record a later rebuild is
+    /// checked against.
+    Recorded,
+    /// As it rebuilt, for a feature a session's edits reached (decision 28, amended): its
+    /// record if it has one; or, for a feature that makes a solid and didn't build (it
+    /// failed, a reference of its broke, a failure upstream blocked it, a kernel fault
+    /// stopped it) or built to measures a fingerprint can't hold, no fingerprint, since
+    /// what's stored was measured from the values the edit replaced and is no record of it.
+    /// A sketch that didn't solve keeps its stored coordinates, which are its data.
+    AsRebuilt,
 }
 
 /// What a save writes of a feature as rebuilt: its fingerprint, or a sketch's solve.
@@ -719,7 +737,8 @@ enum Record<'a> {
 impl<'a> Record<'a> {
     /// What a save writes for a feature that came to `outcome`: none for one that failed or
     /// was blocked, or whose solid couldn't be measured, or measures past what a fingerprint
-    /// holds.
+    /// holds, which keeps what's stored with it, unless a session's edits reached it
+    /// ([`Save::AsRebuilt`]).
     fn of(outcome: &'a FeatureOutcome) -> Option<Self> {
         match outcome {
             FeatureOutcome::Built { built, .. } => built
@@ -750,13 +769,104 @@ pub enum RunOutcome {
     Superseded,
 }
 
-/// A recompute running in the background: wait for it, poll it, or drop it (it runs on).
+/// A recompute running in the background: wait for it, poll it, read how far it has got
+/// ([`progress`](Self::progress)), or drop it (it runs on).
 #[must_use = "a recompute's outcome is only had by waiting for it"]
 pub struct Run {
     outcome: Receiver<Result<RunOutcome, Error>>,
+    progress: StepCounter,
+}
+
+/// How far a recompute has got (docs/design/m4.1-command-api.md, section 6): its steps
+/// done, its steps, and the step running, counted as its schedule runs them, under a lock
+/// of its own that's held only to count or to read the count, never across a step: so
+/// reading it never waits on the recompute's work. A diagnostic, not a result (section
+/// 10): which step finishes first depends on scheduling. Clones share the count.
+#[derive(Clone, Default)]
+pub struct StepCounter(Arc<Mutex<Counted>>);
+
+/// A recompute's count of its steps, as [`StepCounter::now`] reads it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StepCount {
+    /// The steps settled: built, failed, kept from before, or never to run (an input
+    /// failed, or only refused features need it). All of them once the recompute finishes.
+    pub done: usize,
+    /// The steps of its plan: none until its plan is made (after the sketches it sweeps are
+    /// solved).
+    pub steps: usize,
+    /// The step started last of those running, as its feature and the feature's type
+    /// (`f0000001 fillet`): none while no step runs.
+    pub running: Option<String>,
+    /// Whether the recompute has ended: finished, superseded, or failed.
+    pub ended: bool,
+}
+
+#[derive(Default)]
+struct Counted {
+    count: StepCount,
+    /// What each step is called, by key: its first feature and that feature's type.
+    labels: BTreeMap<Key, String>,
+    /// The steps running, in the order they started.
+    running: Vec<Key>,
+}
+
+impl StepCounter {
+    /// The count now.
+    pub fn now(&self) -> StepCount {
+        lock(&self.0).count.clone()
+    }
+
+    /// The plan made: `steps` steps, `done` of them settled already, each called as
+    /// `labels` says.
+    fn planned(&self, steps: usize, done: usize, labels: BTreeMap<Key, String>) {
+        let mut counted = lock(&self.0);
+        counted.count.steps = steps;
+        counted.count.done = done;
+        counted.labels = labels;
+    }
+
+    /// The step `key` started.
+    fn started(&self, key: Key) {
+        let mut counted = lock(&self.0);
+        counted.running.push(key);
+        counted.count.running = counted.labels.get(&key).cloned();
+    }
+
+    /// The step `key` settled: run (it was [`started`](Self::started)) or never to be.
+    fn settled(&self, key: Key, ran: bool) {
+        let mut counted = lock(&self.0);
+        let Counted {
+            count,
+            labels,
+            running,
+        } = &mut *counted;
+        count.done = (count.done + 1).min(count.steps);
+        if ran {
+            running.retain(|other| *other != key);
+            count.running = running.last().and_then(|last| labels.get(last)).cloned();
+        }
+    }
+
+    /// The recompute ended: every step settled, if it finished.
+    fn ended(&self, finished: bool) {
+        let mut counted = lock(&self.0);
+        counted.running.clear();
+        let count = &mut counted.count;
+        if finished {
+            count.done = count.steps;
+        }
+        count.running = None;
+        count.ended = true;
+    }
 }
 
 impl Run {
+    /// How far the recompute has got: shared with it, so it may be kept and read after the
+    /// run is waited on, or by another thread.
+    pub fn progress(&self) -> StepCounter {
+        self.progress.clone()
+    }
+
     /// Waits for the outcome.
     pub fn wait(self) -> Result<RunOutcome, Error> {
         self.outcome.recv().unwrap_or_else(|_| Err(stopped()))
@@ -1012,7 +1122,7 @@ fn start_threads(
     for n in 0..threads {
         match spawn(n) {
             Ok(()) => started += 1,
-            Err(e) if started == 0 => return Err(crate::pool::thread_error("recompute", &e)),
+            Err(e) if started == 0 => return Err(crate::worker::thread_error("recompute", &e)),
             Err(_) => break,
         }
     }
@@ -1156,6 +1266,7 @@ impl<K: Kernel + 'static> Recompute<K> {
     pub fn start(&self, document: impl Into<Arc<Checked>>) -> Run {
         let document = document.into();
         let (reply, outcome) = mpsc::sync_channel(1);
+        let progress = StepCounter::default();
         let (generation, later) = {
             let mut state = lock(&self.engine.state);
             let newest = state.generation.0.max(self.engine.kernel.generation().0);
@@ -1165,7 +1276,8 @@ impl<K: Kernel + 'static> Recompute<K> {
                     "the kernel has no generations left to recompute with",
                 )
                 .with_suggestion("start a new kernel")));
-                return Run { outcome };
+                progress.ended(false);
+                return Run { outcome, progress };
             };
             state.generation = Generation(next);
             state.newest_started = Generation(next);
@@ -1180,6 +1292,7 @@ impl<K: Kernel + 'static> Recompute<K> {
         self.engine.sketch_turn.notify_all();
         self.engine.kernel.advance(generation);
         let engine = Arc::clone(&self.engine);
+        let counting = progress.clone();
         // The caller's span, then the recompute's: should the recompute's be filtered out,
         // its work still traces back to the caller.
         let caller = tracing::Span::current();
@@ -1191,7 +1304,8 @@ impl<K: Kernel + 'static> Recompute<K> {
             .spawn(move || {
                 let _caller = caller.enter();
                 let _entered = span.enter();
-                let outcome = engine.run(&document, generation);
+                let outcome = engine.run(&document, generation, &counting);
+                counting.ended(matches!(outcome, Ok(RunOutcome::Published(_))));
                 let published = match &outcome {
                     Ok(RunOutcome::Published(model)) => Some(Arc::clone(model)),
                     _ => None,
@@ -1215,10 +1329,11 @@ impl<K: Kernel + 'static> Recompute<K> {
             });
         if let Err(e) = started {
             let (reply, outcome) = mpsc::sync_channel(1);
-            let _ = reply.send(Err(crate::pool::thread_error("recompute", &e)));
-            return Run { outcome };
+            let _ = reply.send(Err(crate::worker::thread_error("recompute", &e)));
+            progress.ended(false);
+            return Run { outcome, progress };
         }
-        Run { outcome }
+        Run { outcome, progress }
     }
 
     /// Supersedes the recompute running, if any: nothing of it is published.
@@ -2488,7 +2603,12 @@ struct Refusals {
 }
 
 impl<K: Kernel + 'static> Engine<K> {
-    fn run(&self, document: &Arc<Checked>, generation: Generation) -> Result<RunOutcome, Error> {
+    fn run(
+        &self,
+        document: &Arc<Checked>,
+        generation: Generation,
+        progress: &StepCounter,
+    ) -> Result<RunOutcome, Error> {
         // Every sketch a feature sweeps is solved, and its profile made, before the plan
         // (design S3): a sweep's steps depend on its profile. Unchanged sketches cost
         // nothing (their solves and profiles are kept by key).
@@ -2608,6 +2728,24 @@ impl<K: Kernel + 'static> Engine<K> {
         }
         let to_run = schedule.ready.len() + schedule.waiting.len();
         tracing::debug!(steps = plan.order.len(), to_run, "recompute planned");
+        // Settled before any runs: those kept, and those that can't run.
+        let settled = plan
+            .order
+            .iter()
+            .filter(|key| schedule.done.contains_key(key) || doomed.contains(key))
+            .count();
+        let labels = plan
+            .first_feature
+            .iter()
+            .map(|(key, id)| {
+                let kind = document
+                    .document()
+                    .feature(id)
+                    .map_or("", |feature| feature.operation.type_name());
+                (*key, format!("{id} {kind}"))
+            })
+            .collect();
+        progress.planned(plan.order.len(), settled, labels);
         let schedule = Mutex::new(schedule);
         let changed = Condvar::new();
         let threads = to_run.min(MOST_AT_ONCE);
@@ -2626,7 +2764,7 @@ impl<K: Kernel + 'static> Engine<K> {
                             self.solve_sketches(document, &to_solve, generation)
                         }))
                     })
-                    .map_err(|e| crate::pool::thread_error("recompute", &e))?;
+                    .map_err(|e| crate::worker::thread_error("recompute", &e))?;
                 Some(spawned)
             };
             start_threads(threads, |n| {
@@ -2634,7 +2772,7 @@ impl<K: Kernel + 'static> Engine<K> {
                     .name(format!("recompute-{}-{n}", generation.0))
                     .spawn_scoped(scope, || {
                         let _entered = parent.enter();
-                        self.serve(&plan, &schedule, &changed, generation);
+                        self.serve(&plan, &schedule, &changed, generation, progress);
                     })
                     .map(drop)
             })?;
@@ -2939,6 +3077,7 @@ impl<K: Kernel + 'static> Engine<K> {
         schedule: &Mutex<Schedule>,
         changed: &Condvar,
         generation: Generation,
+        progress: &StepCounter,
     ) {
         let known = Arc::clone(&lock(&self.state).known);
         loop {
@@ -2959,6 +3098,7 @@ impl<K: Kernel + 'static> Engine<K> {
                     if let Job::Make(key) = job
                         && !plan.needed(&key, &s.refusals)
                     {
+                        progress.settled(key, false);
                         continue;
                     }
                     // A fillet's or chamfer's base is built: what its elements are named
@@ -2980,6 +3120,9 @@ impl<K: Kernel + 'static> Engine<K> {
                     break (job, sources);
                 };
                 s.running += 1;
+                if let Job::Make(key) = job {
+                    progress.started(key);
+                }
                 // A step's inputs' results; a measure's, its step's own.
                 let keys = match job {
                     Job::Make(key) => plan.steps.get(&key).map(Step::inputs).unwrap_or_default(),
@@ -3058,6 +3201,9 @@ impl<K: Kernel + 'static> Engine<K> {
             };
             let mut woken = 0;
             let mut to_keep = None;
+            if let Job::Make(key) = job {
+                progress.settled(key, true);
+            }
             match ran {
                 Ran::Made(Outcome::Superseded) | Ran::Measured(Outcome::Superseded) => {
                     s.superseded = true;

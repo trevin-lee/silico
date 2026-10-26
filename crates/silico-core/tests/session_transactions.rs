@@ -140,8 +140,20 @@ fn close_is_refused_while_a_transaction_is_open_and_then_closes() {
             Some("commit or roll back the transaction, then close the session".to_owned())
         )
     );
-    // Still open: its file isn't free.
-    assert!(answer(f.sessions.open(&path, false)).result.is_err());
+    // Still open: its file isn't free, and the refusal names the session that holds it.
+    let (code, message, parameter, suggestion) = refusal(&answer(f.sessions.open(&path, false)));
+    assert_eq!(
+        (code, parameter.as_deref(), suggestion.as_deref()),
+        (
+            ErrorCode::InvalidInput,
+            Some("path"),
+            Some("use session s1, which this client opened, or close it first")
+        )
+    );
+    assert!(
+        message.ends_with(" is already open in session s1"),
+        "{message}"
+    );
     let rolled = answer(f.sessions.rollback(&s1));
     assert_eq!(rolled.result.unwrap().restored, Revision::OPENED);
     // A new revision, whose state is the first's.

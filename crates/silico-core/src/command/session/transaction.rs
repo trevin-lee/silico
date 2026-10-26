@@ -1,7 +1,7 @@
 //! What a session holds ([`Held`]) and how it changes in transactions: `begin`, `rollback`,
-//! `commit`, and `format`, each save written through [`file::save`], what a save that finds
-//! the file changed says ([`Saver`]), and the reload of a file changed outside the session
-//! before a command (decision 2).
+//! `commit`, and `format`, each save written through [`file::save_over`], what a save that
+//! finds the file changed says ([`Saver`]), and the reload of a file changed outside the
+//! session before a command (decision 2).
 //!
 //! The order its locks are taken in is on [`Session`].
 
@@ -16,14 +16,14 @@ use super::registry::Unclaimed;
 use super::registry::claim;
 use super::{
     Begun, Committed, Gated, ModelChoice, ModelRead, Problems, Published, Reformatted, Revision,
-    RolledBack, Session, SessionId, shown,
+    RolledBack, Session, SessionId, shown_path,
 };
 use crate::command::edit::Candidate;
 use crate::document::json::MAX_INPUT_LEN;
 use crate::document::{self, Document, FeatureId};
 use crate::file;
 use crate::kernel::Kernel;
-use crate::recompute::Model;
+use crate::recompute::{self, Model};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
@@ -72,6 +72,10 @@ pub(super) struct Snapshot {
     /// thread and outside every lock, so a long text's scan never keeps `status` or a
     /// published read waiting.
     quoted: Arc<OnceLock<document::QuotedIds>>,
+    /// If its text didn't read as a document, the first state the transaction's edits held
+    /// that read as one: its mend, which the edits after it are compared with
+    /// ([`Reaching::reach`]). Not part of what `rollback` restores.
+    mend: Option<Arc<Gated>>,
 }
 
 /// A state of the session's document a commit saves ([`Session::save_state`]): the path as
@@ -123,7 +127,9 @@ impl Held {
 
     /// The session's document changed to `text`, as the reader and the gate found it
     /// (`gated`), at `revision` (from [`next`](Self::next)), carrying `carried`: the one
-    /// place a session's document changes (an edit, a save, a rollback, a reload).
+    /// place a session's document changes (an edit, a save, a rollback, a reload). Inside a
+    /// transaction begun from text that didn't read, the first document that reads is kept
+    /// as its mend.
     pub(super) fn change(
         &mut self,
         revision: Revision,
@@ -131,6 +137,13 @@ impl Held {
         gated: Arc<Gated>,
         carried: Arc<BTreeSet<FeatureId>>,
     ) {
+        if let Some(begun) = &mut self.transaction
+            && begun.mend.is_none()
+            && begun.gated.document().is_err()
+            && gated.document().is_ok()
+        {
+            begun.mend = Some(Arc::clone(&gated));
+        }
         self.revision = revision;
         self.text = text;
         self.gated = gated;
@@ -145,6 +158,7 @@ impl Held {
             revision: self.revision,
             carried: Arc::clone(&self.carried),
             quoted: Arc::new(OnceLock::new()),
+            mend: None,
         }
     }
 
@@ -179,10 +193,11 @@ thread_local! {
 impl Reaching {
     /// What the session's edits reach (the design's section 5, decision 28), net: the
     /// features they changed since the transaction began, compared by ID with the document
-    /// `begin` saw (or, if that didn't read, those with IDs its text hasn't), with those
-    /// carried from before, and every feature that uses one (`document::net_reach`). An
-    /// edit undone reaches nothing. Those a commit writes new records for, and whose drift
-    /// a check doesn't say. Outside a transaction, what's carried.
+    /// `begin` saw (or, if that didn't read, those of its mend with IDs its text hasn't,
+    /// and those changed since the mend), with those carried from before, and every feature
+    /// that uses one (`document::net_reach`). An edit undone reaches nothing. Those a commit
+    /// writes new records for, and whose drift a check doesn't say. Outside a transaction,
+    /// what's carried.
     pub(super) fn reach(&self) -> BTreeSet<FeatureId> {
         #[cfg(test)]
         REACHES.with(|reaches| reaches.set(reaches.get() + 1));
@@ -192,13 +207,19 @@ impl Reaching {
         let Some(begun) = &self.begun else {
             return document::with_users(now, &self.carried);
         };
-        let before = match begun.gated.document() {
-            Ok(before) => document::Before::Read(before),
-            Err(_) => document::Before::Unread(
-                begun
-                    .quoted
-                    .get_or_init(|| document::QuotedIds::of(&begun.text)),
-            ),
+        let unread = || {
+            begun
+                .quoted
+                .get_or_init(|| document::QuotedIds::of(&begun.text))
+        };
+        let mend = begun.mend.as_deref().map(Gated::document);
+        let before = match (begun.gated.document(), mend) {
+            (Ok(before), _) => document::Before::Read(before),
+            (Err(_), Some(Ok(mend))) => document::Before::Mended {
+                unread: unread(),
+                mend,
+            },
+            (Err(_), _) => document::Before::Unread(unread()),
         };
         document::net_reach(before, &self.carried, now)
     }
@@ -384,20 +405,21 @@ impl<C: Kernel + 'static> Session<C> {
     }
 
     /// `commit`: the current revision's rebuild waited for, then the document saved in
-    /// canonical form through `file::save`, with new fingerprints and solves for what the
-    /// transaction's edits reach ([`Reaching::reach`]) and every other feature's as stored
-    /// (decision 28), its new file claimed with `claim`; the transaction ended, and the
-    /// session at a new revision, its saved text, with only the reached features whose
-    /// records couldn't be written still carried. A document equal to the one `begin` saw is
-    /// written nowhere, and the session's text is `begin`'s again (the file's as the session
-    /// last read or wrote it), even if the file was found changed outside the session
-    /// (`changed_outside`, before the command), which then waits for no rebuild. Refused,
-    /// the transaction left open and nothing written, if none is open, the file was found
-    /// changed or gone before the command (a conflict, before any rebuild) or unreadable
-    /// (its `io_failed`), the model can't be had (the session closed, a recompute that failed,
-    /// the commit cancelled), the canonical text is too long, or the save is (a file changed
-    /// since: a conflict too). A kernel fault the model holds is saved around (decision 32):
-    /// the features it stopped keep what's stored with them, as failed ones do, and it's
+    /// canonical form through `file::save_over`, with new fingerprints and solves for what
+    /// the transaction's edits reach ([`Reaching::reach`]) and every other feature's as
+    /// stored (decision 28), its new file claimed with `claim`; the transaction ended, and
+    /// the session at a new revision, its saved text, with only the reached features whose
+    /// records couldn't be written still carried. A document equal to the one `begin` saw
+    /// is written nowhere, and the session's text is `begin`'s again (the file's as the
+    /// session last read or wrote it), even if the file was found changed outside the
+    /// session (`changed_outside`, before the command), which then waits for no rebuild.
+    /// Refused, the transaction left open and nothing written, if none is open, the file
+    /// was found changed or gone before the command (a conflict, before any rebuild) or
+    /// unreadable (its `io_failed`), the model can't be had (the session closed, a
+    /// recompute that failed, the commit cancelled), the canonical text is too long, or the
+    /// save is (a file changed since: a conflict too). A kernel fault the model holds is
+    /// saved around (decision 32): the features it stopped are saved as failed ones are (a
+    /// reached one with no fingerprint, decision 28 amended; any other as stored), and it's
     /// given once, in the model read, not among the problems. As the command `stop` stops.
     pub(super) fn commit(
         self: &Arc<Self>,
@@ -459,17 +481,17 @@ impl<C: Kernel + 'static> Session<C> {
         committed
     }
 
-    /// `state` saved (a commit's body): its model, of `state.revision`, waited for, then its
-    /// document in canonical form through `file::save`, with new fingerprints and solves for
-    /// what the edits since `state.begun` reach and every other feature's as stored, the new
-    /// file claimed with `claim`, and the session at a new revision, its saved text (and the
-    /// transaction, if one is open, ended). A document equal to `begun`'s is written nowhere.
-    /// `through` says whose state it is: a transaction's (held, its model the session's
-    /// revision's, and a commit that writes nothing ends it), or an edit's candidate (held
-    /// only once saved, its model rebuilt for this commit alone). With the commit's result,
-    /// the document saved, as the session then holds it ([`write`](Self::write)), if one was
-    /// written. Refused, nothing written and nothing held changed, as
-    /// [`commit`](Self::commit) is. As the command `stop` stops.
+    /// `state` saved (a commit's body): its model, of `state.revision`, waited for, then
+    /// its document in canonical form through `file::save_over`, with new fingerprints and
+    /// solves for what the edits since `state.begun` reach and every other feature's as
+    /// stored, the new file claimed with `claim`, and the session at a new revision, its
+    /// saved text (and the transaction, if one is open, ended). A document equal to
+    /// `begun`'s is written nowhere. `through` says whose state it is: a transaction's
+    /// (held, its model the session's revision's, and a commit that writes nothing ends
+    /// it), or an edit's candidate (held only once saved, its model rebuilt for this commit
+    /// alone). With the commit's result, the document saved, as the session then holds it
+    /// ([`write`](Self::write)), if one was written. Refused, nothing written and nothing
+    /// held changed, as [`commit`](Self::commit) is. As the command `stop` stops.
     fn save_state(
         self: &Arc<Self>,
         stop: &Ticket,
@@ -517,16 +539,7 @@ impl<C: Kernel + 'static> Session<C> {
             }
             // Only a transaction's commit is given what was found outside.
             self.unwritten(stop, &begun, revision)?;
-            return Ok((
-                Committed {
-                    written: false,
-                    path,
-                    refingerprinted: Vec::new(),
-                    resolved: Vec::new(),
-                    problems: gated.problems(),
-                },
-                None,
-            ));
+            return Ok((Committed::unwritten(path, gated.problems()), None));
         }
         let checked = match &*gated {
             Gated::Checked(checked) => checked,
@@ -535,16 +548,7 @@ impl<C: Kernel + 'static> Session<C> {
                 if through == Through::Transaction {
                     self.unwritten(stop, &begun, revision)?;
                 }
-                return Ok((
-                    Committed {
-                        written: false,
-                        path,
-                        refingerprinted: Vec::new(),
-                        resolved: Vec::new(),
-                        problems,
-                    },
-                    None,
-                ));
+                return Ok((Committed::unwritten(path, problems), None));
             }
             refused => return Err(refused.problems()),
         };
@@ -553,21 +557,22 @@ impl<C: Kernel + 'static> Session<C> {
             Through::Candidate => self.candidate_model(stop, revision, checked)?,
         };
         *read = Some(ModelRead::of(revision, ModelChoice::Current, &model));
-        let formatted = crate::command::formatted(&model, reach, &model.drifted())?;
+        let formatted = crate::command::formatted(
+            &model,
+            |id| {
+                if reach.contains(id) {
+                    recompute::Save::AsRebuilt
+                } else {
+                    recompute::Save::Stored
+                }
+            },
+            &model.drifted(),
+        )?;
         if unchanged {
             if through == Through::Transaction {
                 self.unwritten(stop, &begun, revision)?;
             }
-            return Ok((
-                Committed {
-                    written: false,
-                    path,
-                    refingerprinted: Vec::new(),
-                    resolved: Vec::new(),
-                    problems: formatted.problems,
-                },
-                None,
-            ));
+            return Ok((Committed::unwritten(path, formatted.problems), None));
         }
         let saved = Arc::new(formatted.text.into_bytes());
         let publish = formatted.resolved.is_empty();
@@ -639,7 +644,7 @@ impl<C: Kernel + 'static> Session<C> {
     /// `format` (decision 31): the current revision's rebuild waited for, and the document
     /// in canonical form with every feature's fingerprint and every sketch's solve as
     /// rebuilt, but those of a drifted feature `accept` doesn't name (all, if it's none),
-    /// which keep what's stored with them and are problems; written through `file::save`
+    /// which keep what's stored with them and are problems; written through `file::save_over`
     /// if `write` and it differs from the file as the session last read or wrote it (a
     /// change made outside the session before the command was reloaded, decision 2), the
     /// new file claimed with `claim`, the session then at a new revision, its saved
@@ -700,7 +705,19 @@ impl<C: Kernel + 'static> Session<C> {
             .filter(|id| drifted.contains(id) && writes.contains(*id) && model.records(id))
             .cloned()
             .collect();
-        let formatted = crate::command::formatted(&model, &writes, &drift)?;
+        let formatted = crate::command::formatted(
+            &model,
+            |id| {
+                if reach.contains(id) {
+                    recompute::Save::AsRebuilt
+                } else if writes.contains(id) {
+                    recompute::Save::Recorded
+                } else {
+                    recompute::Save::Stored
+                }
+            },
+            &drift,
+        )?;
         let saved = formatted.text.into_bytes();
         let changed = saved != *bytes;
         let written = write && changed;
@@ -891,7 +908,7 @@ impl<C: Kernel + 'static> Session<C> {
             } else {
                 format!(
                     "make the file at {} a regular file this user may read, or close the session and open the file where it is now",
-                    shown(Path::new(&path))
+                    shown_path(Path::new(&path))
                 )
             };
             Problems::from(not_reloaded(of_file(&path, &error), suggestion))
@@ -989,7 +1006,7 @@ impl Saver {
             ErrorCode::Conflict,
             format!(
                 "{} changed outside this session since it was read",
-                shown(Path::new(path))
+                shown_path(Path::new(path))
             ),
         )
         .with_parameter("path");
@@ -1019,7 +1036,7 @@ pub(super) fn too_long(path: &Path) -> Error {
         ErrorCode::InvalidInput,
         format!(
             "{} is more than the {MAX_INPUT_LEN} bytes Silico reads of a document",
-            shown(path)
+            shown_path(path)
         ),
     )
     .with_parameter("path")
@@ -1037,7 +1054,7 @@ pub const TOO_LONG: &str = "check it's the document you mean: no document is thi
 pub(super) fn of_file(path: &str, error: &Error) -> Error {
     Error::new(
         error.code(),
-        format!("{} {}", shown(Path::new(path)), error.message()),
+        format!("{} {}", shown_path(Path::new(path)), error.message()),
     )
 }
 
@@ -1062,7 +1079,7 @@ pub const NOT_RELOADED: &str =
 pub(super) fn put_back(path: &str) -> String {
     format!(
         "put the file back at {}, or close the session and open the file where it is now",
-        shown(Path::new(path))
+        shown_path(Path::new(path))
     )
 }
 
@@ -1082,8 +1099,8 @@ pub(super) fn part_written(path: &str, old: &Path) -> Error {
         ErrorCode::IoFailed,
         format!(
             "{} was left part written by this session's own save, which couldn't put its text back: its text before is in {}",
-            shown(Path::new(path)),
-            shown(old)
+            shown_path(Path::new(path)),
+            shown_path(old)
         ),
     )
     .with_parameter("path")

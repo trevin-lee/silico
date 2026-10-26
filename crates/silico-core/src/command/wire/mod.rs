@@ -561,7 +561,11 @@ impl<'a> RequestFields<'a> {
             }),
             other => Err(invalid(
                 &path,
-                format!("{} must be an object, got {}", shown(&path), other.kind()),
+                format!(
+                    "{} must be an object, got {}",
+                    the_field(&path),
+                    other.kind()
+                ),
             )),
         }
     }
@@ -1319,7 +1323,7 @@ fn invalid(path: &str, message: String) -> Error {
 }
 
 /// The request, or its field `path`, for a message.
-fn shown(path: &str) -> &str {
+fn the_field(path: &str) -> &str {
     if path.is_empty() { "the request" } else { path }
 }
 

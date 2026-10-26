@@ -718,18 +718,7 @@ fn spawn_thread(
     std::thread::Builder::new()
         .name(name)
         .spawn(run)
-        .map_err(|e| thread_error(KERNEL, &e))
-}
-
-/// A thread of `kernel` (`kernel pool`, `fake kernel`) that couldn't start: the system short
-/// of threads (`resource_exhausted`), or a bug.
-pub(crate) fn thread_error(kernel: &str, e: &std::io::Error) -> Error {
-    let message = format!("couldn't start a {kernel} thread");
-    crate::worker::shortage(e, &message).unwrap_or_else(|| {
-        Error::new(ErrorCode::Internal, message)
-            .with_cause(e.to_string())
-            .with_suggestion(crate::worker::SILICO_BUG)
-    })
+        .map_err(|e| crate::worker::thread_error(KERNEL, &e))
 }
 
 /// What the pool's threads share. Its locks are taken in the order `state`, then `slots`
@@ -1677,8 +1666,8 @@ mod tests {
     fn a_pool_thread_that_cant_start_is_a_shortage_or_a_bug() {
         use std::io;
 
-        use super::thread_error;
         use crate::ErrorCode;
+        use crate::worker::thread_error;
         let short = thread_error(super::KERNEL, &io::Error::from_raw_os_error(libc::EAGAIN));
         assert_eq!(short.code(), ErrorCode::ResourceExhausted, "{short}");
         assert_eq!(short.message(), "couldn't start a kernel pool thread");
