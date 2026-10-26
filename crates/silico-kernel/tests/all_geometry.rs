@@ -61,6 +61,8 @@ mod adversarial_faces;
 mod adversarial_fillet;
 #[path = "adversarial_mesh.rs"]
 mod adversarial_mesh;
+#[path = "adversarial_point_distance.rs"]
+mod adversarial_point_distance;
 #[path = "adversarial_profile_faces.rs"]
 mod adversarial_profile_faces;
 #[path = "adversarial_revolution_measures.rs"]

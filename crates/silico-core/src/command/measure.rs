@@ -433,8 +433,21 @@ pub fn distance<K: Kernel>(
         Some(CentreTo::Axis(Some(gap))) => Some(length(gap)?),
         Some(CentreTo::Point { point, of }) => {
             let other = if of == 0 { &b } else { &a };
+            // Refused only for a centre no solid the gate admits has, or an element the
+            // pair's lookup didn't find: the core's bug, never the request's (break-it).
             let request = KernelRequest::point_distance(other.shape, other.element, point)
-                .map_err(|e| Problems::from(named(e, &a, &b)))?;
+                .map_err(|e| {
+                    Problems::from(named(
+                        Error::new(
+                            ErrorCode::Internal,
+                            "a centre of these elements is past what the kernel measures",
+                        )
+                        .with_cause(e.message())
+                        .with_suggestion(crate::worker::SILICO_BUG),
+                        &a,
+                        &b,
+                    ))
+                })?;
             Some(length(on_kernel(kernel, request, &a, &b)?.distance)?)
         }
     };

@@ -38,6 +38,8 @@ mod test_programs;
 mod adversarial_cache;
 #[path = "adversarial_cache_bound.rs"]
 mod adversarial_cache_bound;
+#[path = "adversarial_center_to_element.rs"]
+mod adversarial_center_to_element;
 #[path = "adversarial_command.rs"]
 mod adversarial_command;
 #[path = "adversarial_document.rs"]

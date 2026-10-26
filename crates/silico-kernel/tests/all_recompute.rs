@@ -16,6 +16,8 @@ mod model;
 
 #[path = "adversarial_cache.rs"]
 mod adversarial_cache;
+#[path = "adversarial_center_to_element.rs"]
+mod adversarial_center_to_element;
 #[path = "adversarial_entries.rs"]
 mod adversarial_entries;
 #[path = "adversarial_fake_kernel.rs"]
