@@ -825,3 +825,67 @@ fn a_groove_whose_other_region_is_off_the_axis_is_refused_for_its_narrow_slit() 
         "{message}"
     );
 }
+
+/// `silico schema ARGS`, which needs no worker and no file.
+fn schema(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_silico"))
+        .arg("schema")
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+/// The core's committed contract file `name`.
+fn core_contract(name: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../silico-core/tests/contract")
+        .join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+#[test]
+fn schema_prints_the_documents_or_a_commands_as_committed() {
+    // Without a name, the document's: exactly its committed snapshot.
+    let out = schema(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        core_contract("document-schema.json")
+    );
+    assert_eq!(
+        String::from_utf8(schema(&["document"]).stdout).unwrap(),
+        core_contract("document-schema.json")
+    );
+    for (command, _) in silico_core::command::wire::COMMANDS {
+        let out = schema(&[command]);
+        assert_eq!(out.status.code(), Some(0), "{command}: {}", stderr(&out));
+        assert!(out.stderr.is_empty(), "{command}");
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            core_contract(&format!("commands/{command}.json")),
+            "{command}"
+        );
+    }
+    // A name that's neither: exit 2, the core's refusal, its candidates, and nothing on
+    // stdout.
+    let out = schema(&["envelope"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    assert_eq!(
+        stderr(&out),
+        "silico schema: invalid_input: of must be document or the name of a command with a \
+         schema, got envelope (parameter of). Suggestion: give one of the candidates. \
+         Candidates: document, begin, commit, rollback, format, add_feature, set_field, \
+         remove_feature, replace_text, elements, query, schema, mass_properties.\n"
+    );
+    // Two names: a usage error.
+    let out = schema(&["query", "elements"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("silico schema [NAME]"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(out.stdout.is_empty());
+}

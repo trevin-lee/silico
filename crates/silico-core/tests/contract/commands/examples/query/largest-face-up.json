@@ -1,0 +1,12 @@
+{
+  "session": "s1",
+  "model": "current",
+  "feature": null,
+  "kind": "face",
+  "type": "plane",
+  "stable": true,
+  "facing": {"direction": [0, 0, 1], "within": 1},
+  "measures": [],
+  "order": {"by": "area", "descending": true},
+  "limit": 1
+}

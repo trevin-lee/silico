@@ -1,4 +1,6 @@
-//! For tests that recompute: documents from text, and what a recompute published.
+//! For tests that recompute: documents from text, and what a recompute published. Shared
+//! with silico-kernel's tests, which use only some of it.
+#![allow(dead_code)]
 
 use std::sync::Arc;
 use std::time::Duration;

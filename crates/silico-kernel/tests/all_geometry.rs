@@ -49,6 +49,8 @@ mod adversarial_chamfer_report;
 mod adversarial_classify;
 #[path = "adversarial_describe.rs"]
 mod adversarial_describe;
+#[path = "adversarial_distance.rs"]
+mod adversarial_distance;
 #[path = "adversarial_export.rs"]
 mod adversarial_export;
 #[path = "adversarial_faces.rs"]
@@ -75,6 +77,8 @@ mod chamfer;
 mod classify;
 #[path = "describe.rs"]
 mod describe;
+#[path = "distance.rs"]
+mod distance;
 #[path = "export.rs"]
 mod export;
 #[path = "faces.rs"]

@@ -15,7 +15,7 @@ use silico_protocol::{
     RequestId, Response, ShapeData, ShapeSummary, Topology, TraceId, write_message,
 };
 use silico_protocol::{Camera, EDGE_BIT, Projection, RenderBody, RenderScene};
-use silico_protocol::{Curve, FaceRegions, Region, SketchPlane};
+use silico_protocol::{Curve, Distance, FaceRegions, Region, SketchPlane};
 use silico_protocol::{Description, EdgeCurve, EdgeDescription, FaceDescription, Surface};
 
 /// One request per operation. The match gives each variant its own index and every
@@ -255,6 +255,15 @@ fn every_op() -> Vec<Op> {
             tolerance: 0.1,
             force_face_deflection: true,
         },
+        Op::Distance {
+            shape: ShapeData::checked(Blob::inline(vec![8, 1]), true),
+            first: ElementRef::face(u32::MAX),
+            other: Some(ShapeData::checked(Blob::inline(vec![7]), false)),
+            second: ElementRef {
+                kind: ElementKind::Vertex,
+                index: 1,
+            },
+        },
         Op::Render(Box::new(RenderScene {
             bodies: vec![RenderBody {
                 body: u32::MAX,
@@ -350,11 +359,12 @@ fn every_op() -> Vec<Op> {
             Op::Describe { .. } => 40,
             Op::ExportMesh { .. } => 41,
             Op::Debug(DebugOp::Misbehave(Misbehavior::EndlessDescription)) => 42,
-            Op::Render(_) => 43,
-            Op::Classify { .. } => 44,
+            Op::Distance { .. } => 43,
+            Op::Render(_) => 44,
+            Op::Classify { .. } => 45,
         })
         .collect();
-    assert_eq!(indices, (0..45).collect(), "an operation has no case");
+    assert_eq!(indices, (0..46).collect(), "an operation has no case");
     ops
 }
 
@@ -506,6 +516,13 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         Ok(Reply::Moved(Moved {
             status: SolveStatus::Failed,
             values: None,
+        })),
+        // A distance at extremes a frame must carry exactly: -0, subnormal, and the largest.
+        Ok(Reply::Distance(Distance {
+            distance: 5e-324,
+            from: [-0.0, f64::MAX, -f64::MAX],
+            to: [1e-300, 0.1, 13.0],
+            solutions: u32::MAX,
         })),
         // Every kind of surface and curve, at extremes a frame must carry exactly.
         Ok(Reply::Described {
@@ -659,9 +676,10 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::Moved(_)) => 15,
             Ok(Reply::Described { .. }) => 16,
             Ok(Reply::ExportMesh(_)) => 17,
-            Ok(Reply::Rendered { .. }) => 18,
-            Ok(Reply::Classified { .. }) => 20,
-            Ok(Reply::MeshAt(_)) => 21,
+            Ok(Reply::Distance(_)) => 18,
+            Ok(Reply::Rendered { .. }) => 19,
+            Ok(Reply::Classified { .. }) => 21,
+            Ok(Reply::MeshAt(_)) => 22,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
@@ -669,13 +687,13 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
                 FailureKind::UnknownOp => 8,
                 FailureKind::Internal => 9,
                 FailureKind::ResourceExhausted => 12,
-                FailureKind::Unavailable => 19,
+                FailureKind::Unavailable => 20,
             },
         })
         .collect();
     assert_eq!(
         indices,
-        (0..22).collect(),
+        (0..23).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -1083,8 +1101,9 @@ fn every_op_has_its_own_name() {
             "Revolution",
             "Describe",
             "ExportMesh",
+            "Distance",
             "Render",
-            "Classify"
+            "Classify",
         ]
     );
 }

@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::document::{ElementName, FeatureId, PROBLEMS_LISTED};
-use crate::kernel::{ElementKind, ElementRef};
+use crate::kernel::ElementKind;
 use crate::naming::{ElementMap, Maker, Name, OpCode, TypeWord};
 use crate::{Error, ErrorCode};
 
@@ -101,7 +101,7 @@ pub(crate) fn resolve(
                 Some(element) if map.is_unstable(name) => format!(
                     "names {}, whose name is unstable (it came about as another element did, or \
                      is its number): an edit could make it another element",
-                    element_word(element)
+                    element.kind.a_word()
                 ),
                 Some(element) if element.kind == ElementKind::Edge => {
                     if seen.insert(element.index) {
@@ -110,7 +110,7 @@ pub(crate) fn resolve(
                     names.insert(element.index, i, edge.as_str());
                     continue;
                 }
-                Some(element) => format!("names {}, not an edge", element_word(element)),
+                Some(element) => format!("names {}, not an edge", element.kind.a_word()),
                 None => match retyped(name, makers) {
                     Some((feature, said, made)) => format!(
                         "names an element a {said} made, but {feature} is a {made} now: its \
@@ -275,16 +275,6 @@ fn retyped<'a>(
     None
 }
 
-/// `a face`, `an edge`, `a vertex`, `a solid`.
-fn element_word(element: ElementRef) -> &'static str {
-    match element.kind {
-        ElementKind::Face => "a face",
-        ElementKind::Edge => "an edge",
-        ElementKind::Vertex => "a vertex",
-        ElementKind::Solid => "a solid",
-    }
-}
-
 /// The elements a name is made from, all the way down (itself, if it's one): each named by
 /// its number, or a sketch's by its ID.
 fn leaves(name: &Name) -> BTreeSet<Name> {
@@ -305,7 +295,8 @@ fn leaves(name: &Name) -> BTreeSet<Name> {
 mod tests {
     use super::*;
     use crate::kernel::{
-        ElementCounts, ElementFate, History, InputHistory, Primitive, Reported, Topology,
+        ElementCounts, ElementFate, ElementRef, History, InputHistory, Primitive, Reported,
+        Topology,
     };
     use crate::naming::{OpCode, PrimitiveKind};
 

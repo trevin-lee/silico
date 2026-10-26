@@ -10,6 +10,7 @@
 mod chamfer;
 mod classify;
 mod describe;
+mod distance;
 mod export;
 mod faces;
 pub mod frame;
@@ -29,6 +30,7 @@ pub use describe::{
     DESCRIBE_BATCH, Description, EdgeCurve, EdgeDescription, FaceDescription, Quantity, Surface,
     What, batches, describe_in_batches,
 };
+pub use distance::{Distance, check_distance, witness, witness_within};
 pub use export::{
     DEFAULT_EXPORT_TOLERANCE, ExportMesh, MAX_EXPORT_TOLERANCE, MAX_EXPORT_TRIANGLES,
     MIN_EXPORT_TOLERANCE, check_export_tolerance, check_export_triangles, export_angle,
@@ -57,9 +59,9 @@ pub use refusal::{
 };
 pub use render::{
     Camera, EDGE_BIT, Frame, MAX_FIELD_OF_VIEW, MAX_RENDER_COORDINATE, MAX_RENDER_EDGES,
-    MAX_RENDER_FACES, MAX_RENDER_SIDE, MIN_EYE_DISTANCE, MIN_FIELD_OF_VIEW, MIN_UP_ACROSS_VIEW,
-    MIN_VIEW_HEIGHT, MIN_VIEW_HEIGHT_OF_REACH, PixelId, Projection, RenderAdapter, RenderBody,
-    RenderScene,
+    MAX_RENDER_FACES, MAX_RENDER_SIDE, MAX_RENDER_TRIANGLES, MIN_EYE_DISTANCE, MIN_FIELD_OF_VIEW,
+    MIN_UP_ACROSS_VIEW, MIN_VIEW_HEIGHT, MIN_VIEW_HEIGHT_OF_REACH, PixelId, Projection,
+    RenderAdapter, RenderBody, RenderScene,
 };
 pub use sketch::{
     Algorithm, DragBegin, Geometry, MAX_DRAG_UNKNOWNS, MAX_JACOBIAN_ENTRIES,
@@ -228,6 +230,16 @@ pub enum Op {
         start: f64,
         angle: f64,
     },
+    /// The least distance between two elements as bounded: `first` of `shape`, and `second`
+    /// of `other`, or of `shape` if there's no other, each a face, edge, or vertex numbered
+    /// from 1 in `TopExp::MapShapes` order. OCCT's `BRepExtrema_DistShapeShape`, on one
+    /// thread, at its default precision. Replies with [`Reply::Distance`].
+    Distance {
+        shape: ShapeData,
+        first: ElementRef,
+        other: Option<ShapeData>,
+        second: ElementRef,
+    },
     /// The geometry and measures of `shape`'s elements of `kind` numbered from `first` (from
     /// 1, in `TopExp::MapShapes` order), `count` of them or as many as there are
     /// (docs/design/m4.4-describe.md): one batch, at most [`DESCRIBE_BATCH`]. Replies with
@@ -271,6 +283,7 @@ impl Op {
             Op::Boolean { op, .. } => op.name(),
             Op::Tessellate { .. } => "Tessellate",
             Op::Describe { .. } => "Describe",
+            Op::Distance { .. } => "Distance",
             Op::ExportMesh { .. } => "ExportMesh",
             Op::Render(_) => "Render",
             Op::Classify { .. } => "Classify",
@@ -442,6 +455,8 @@ pub enum Reply {
         total: u32,
         description: Description,
     },
+    /// The least distance between two elements ([`Op::Distance`]).
+    Distance(Distance),
     /// A shape's solids meshed for export ([`Op::ExportMesh`]), boxed, as it's many lists.
     ExportMesh(Box<ExportMesh>),
     /// A scene drawn ([`Op::Render`]): the image, an 8-bit sRGB PNG, and the ID buffer, one
@@ -470,6 +485,7 @@ impl Reply {
             Reply::FreecadMeasures(_) => "FreecadMeasures",
             Reply::Mesh(_) => "Mesh",
             Reply::Described { .. } => "Described",
+            Reply::Distance(_) => "Distance",
             Reply::ExportMesh(_) => "ExportMesh",
             Reply::Rendered { .. } => "Rendered",
             Reply::Classified { .. } => "Classified",

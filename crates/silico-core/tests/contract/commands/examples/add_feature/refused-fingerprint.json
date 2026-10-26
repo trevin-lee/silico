@@ -1,0 +1,1 @@
+{"code": "invalid_input", "message": "a new feature has no fingerprint: a commit writes it", "feature": null, "elements": [], "elements_total": 0, "parameter": "feature.fingerprint", "cause": null, "suggestion": "leave fingerprint out", "candidates": []}

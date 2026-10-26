@@ -1,0 +1,37 @@
+{
+  "request": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`rollback`'s request: end the session's transaction, undoing every edit made in it.",
+    "properties": {
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session"
+    ],
+    "title": "RollbackRequest",
+    "type": "object"
+  },
+  "result": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`rollback`'s result. The session is at a new revision, whose state equals the restored\none's.",
+    "properties": {
+      "restored": {
+        "description": "The revision whose state is restored: the one the transaction began from.",
+        "format": "uint64",
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "restored"
+    ],
+    "title": "RollbackResult",
+    "type": "object"
+  }
+}

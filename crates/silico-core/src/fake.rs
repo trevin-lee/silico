@@ -194,10 +194,22 @@ impl FakeKernel {
     /// Waits up to `timeout` until at least `count` requests are running at once: whether
     /// they were. A request has stopped running once its outcome is sent.
     pub fn wait_running(&self, count: usize, timeout: Duration) -> bool {
+        self.wait_until(|running| running >= count, timeout)
+    }
+
+    /// Waits up to `timeout` until no request is running: whether none was. A held request
+    /// stops running once it's superseded, its hold still in place.
+    pub fn wait_idle(&self, timeout: Duration) -> bool {
+        self.wait_until(|running| running == 0, timeout)
+    }
+
+    /// Waits up to `timeout` until `done` holds of how many requests are running: whether
+    /// it did.
+    fn wait_until(&self, done: impl Fn(usize) -> bool, timeout: Duration) -> bool {
         // No deadline: a timeout too long to add to now is forever.
         let deadline = Instant::now().checked_add(timeout);
         let mut state = lock(&self.shared.state);
-        while state.running < count {
+        while !done(state.running) {
             state = match deadline {
                 Some(deadline) => {
                     let left = deadline.saturating_duration_since(Instant::now());
@@ -790,6 +802,19 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             first,
             count,
         } => described(&Symbolic::read(shape)?.counts(), *kind, *first, *count),
+        Op::Distance {
+            shape,
+            first,
+            other,
+            second,
+        } => {
+            let first_counts = Symbolic::read(shape)?.counts();
+            let second_counts = match other {
+                Some(other) => Symbolic::read(other)?.counts(),
+                None => first_counts,
+            };
+            distance(&first_counts, *first, &second_counts, *second)
+        }
         Op::Echo { data } => Ok(Reply::Echo { data: data.clone() }),
         other => Err(Error::new(
             ErrorCode::Internal,
@@ -852,6 +877,49 @@ fn fake_mesh(made: &Symbolic, deflection: f64, at_least_the_floor: bool) -> Resu
         }),
         false => Reply::Mesh(mesh),
     })
+}
+
+/// The fake's distance between `first`, of a shape whose counts are `first_counts`, and
+/// `second`, of one whose counts are `second_counts`: each element at (n, 0, 0), its number
+/// `n`, as its description has a face's centre and a vertex (`described`), so the distance
+/// is how far apart the numbers are, met there, once. An element the shape hasn't is
+/// refused, naming `first` or `second`, as a worker refuses it, in the same words.
+fn distance(
+    first_counts: &ElementCounts,
+    first: ElementRef,
+    second_counts: &ElementCounts,
+    second: ElementRef,
+) -> Result<Reply, Error> {
+    // As a worker refuses them, worded as the worker client words a worker's refusal.
+    let refused = |refusal| {
+        Err(crate::worker::failure_error(
+            "Distance",
+            silico_protocol::Failure::new(refusal),
+        ))
+    };
+    if let Err(refusal) = silico_protocol::check_distance(first, second) {
+        return refused(refusal);
+    }
+    for (element, counts, parameter) in [
+        (first, first_counts, "first"),
+        (second, second_counts, "second"),
+    ] {
+        let count = counts.of(element.kind);
+        if element.index > count {
+            return refused(silico_protocol::Refusal::ElementMissing {
+                parameter: parameter.to_owned(),
+                element,
+                count,
+            });
+        }
+    }
+    let at = |element: ElementRef| [f64::from(element.index), 0.0, 0.0];
+    Ok(Reply::Distance(silico_protocol::Distance {
+        distance: (f64::from(first.index) - f64::from(second.index)).abs(),
+        from: at(first),
+        to: at(second),
+        solutions: 1,
+    }))
 }
 
 /// The fake's description of a shape whose counts are `counts`: its `kind`'s elements from

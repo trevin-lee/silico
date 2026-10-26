@@ -74,9 +74,15 @@ pub const MIN_EYE_DISTANCE: f64 = 1e-6;
 
 /// The most faces a scene may have, across its bodies. Each is drawn as a mesh of its own
 /// (its own ID in the ID buffer), at about 75 KiB of the worker's memory each: 100,000
-/// held 7.5 GiB, and a million took past the 30 s a render has. 20,000, about 1.4 GiB, is
-/// far past a real part's hundreds to thousands.
+/// held 7.5 GiB, and a million took past the 30 s a render has. 20,000 faces hold about
+/// 1.4 GiB themselves, and peaked at 3.4 GiB drawn at 4,096² with the ID buffer: far past
+/// a real part's hundreds to thousands.
 pub const MAX_RENDER_FACES: usize = 20_000;
+
+/// The most triangles a scene may have, across its bodies: 4 million drew in 12.5 s (a
+/// release build) but 34 s in a debug one, past the 30 s a render has; NIST's CTC 02 has
+/// 54,126 at its floor.
+pub const MAX_RENDER_TRIANGLES: usize = 2_000_000;
 
 /// The most edges a scene may have, across its bodies: a million held 0.6 GiB and drew in
 /// 6.5 s (a debug build); 200,000 leaves room beside the faces.
@@ -304,10 +310,10 @@ impl RenderScene {
     /// ascending), each mesh's structure (positions and normals finite, within
     /// [`MAX_RENDER_COORDINATE`], and one each, every index in range, the faces' and edges'
     /// counts adding up, every number fitting the ID buffer), the highlights (ascending, each
-    /// once, in range), the faces and edges across the bodies (at most [`MAX_RENDER_FACES`]
-    /// and [`MAX_RENDER_EDGES`]), and an orthographic view's height against the bodies'
-    /// reach ([`MIN_VIEW_HEIGHT_OF_REACH`]). Only structure: what needs the model is the
-    /// core's.
+    /// once, in range), the faces, edges, and triangles across the bodies (at most
+    /// [`MAX_RENDER_FACES`], [`MAX_RENDER_EDGES`], and [`MAX_RENDER_TRIANGLES`]), and an
+    /// orthographic view's height against the bodies' reach ([`MIN_VIEW_HEIGHT_OF_REACH`]).
+    /// Only structure: what needs the model is the core's.
     pub fn check(&self) -> Result<(), InvalidParameter> {
         for (parameter, side) in [("width", self.width), ("height", self.height)] {
             if !(1..=MAX_RENDER_SIDE).contains(&side) {
@@ -348,6 +354,11 @@ impl RenderScene {
                     .map(|b| b.mesh.edge_point_counts.len())
                     .sum(),
                 MAX_RENDER_EDGES,
+            ),
+            (
+                "triangles",
+                self.bodies.iter().map(|b| b.mesh.triangles.len()).sum(),
+                MAX_RENDER_TRIANGLES,
             ),
         ] {
             if count > most {

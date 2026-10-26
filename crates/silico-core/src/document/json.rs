@@ -6,6 +6,7 @@
 //! errors that say where.
 
 use std::fmt;
+use std::fmt::Write as _;
 use std::mem::size_of;
 
 /// The deepest arrays and objects may nest. A document nests four deep (a feature's
@@ -43,14 +44,38 @@ const ALLOCATION: usize = 16;
 
 /// `text` as an error shows it: quoted, with control and invisible characters escaped, and
 /// cut short (`…`) if it's long, so no string in a document makes its error unreadable or
-/// unsafe to print.
+/// unsafe to print. Escaped as Rust's `{:?}` escapes a string (`\n`, `\"`, `\u{202e}`),
+/// and every other character [`unseen`] holds too (a Hangul filler, a space that isn't the
+/// plain one), which `{:?}` leaves raw: so it escapes all that `command::quoted` does.
 pub fn shown(text: &str) -> String {
     let mut chars = text.chars();
     let start: String = chars.by_ref().take(SHOWN_CHARS).collect();
-    match chars.next() {
-        Some(_) => format!("{start:?}…"),
-        None => format!("{start:?}"),
+    let cut = chars.next().is_some();
+    let debug = format!("{start:?}");
+    let mut out = String::with_capacity(debug.len() + '…'.len_utf8());
+    // `{:?}`'s escapes are ASCII, so a character `unseen` holds is one it left raw.
+    for c in debug.chars() {
+        if unseen(c) {
+            // Writing to a String can't fail.
+            let _ = write!(out, "\\u{{{:x}}}", c as u32);
+        } else {
+            out.push(c);
+        }
     }
+    if cut {
+        out.push('…');
+    }
+    out
+}
+
+/// Whether `c` is a character a message shows by its code point, never raw: a control, the
+/// line or paragraph separator, every character Unicode draws as nothing ([`invisible`]),
+/// and every space but the plain one, which would look like it.
+pub(crate) fn unseen(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{2028}' | '\u{2029}')
+        || (c.is_whitespace() && c != ' ')
+        || invisible(c)
 }
 
 /// Where a value starts: a line and a column, both from 1, the column in characters.
@@ -63,6 +88,67 @@ pub struct At {
 impl fmt::Display for At {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "line {}, column {}", self.line, self.column)
+    }
+}
+
+impl At {
+    /// Where a value no one wrote is: one an edit made, or took apart and put back
+    /// together ([`unplace`]), whose line and column in a text would name a text no one
+    /// has. Line 0, which no value read is at, so an error about it says no place.
+    pub const UNPLACED: At = At { line: 0, column: 0 };
+}
+
+/// `node`, and every value and key in it, at [`At::UNPLACED`]: so a tree an edit made, of
+/// a request's values and a document's, is read with errors that name fields by their
+/// paths alone. An explicit stack, so a tree of any depth is walked.
+pub fn unplace(node: &mut Node) {
+    let mut stack = vec![node];
+    while let Some(node) = stack.pop() {
+        node.at = At::UNPLACED;
+        match &mut node.value {
+            Value::Array(items) => stack.extend(items.iter_mut()),
+            Value::Object(members) => {
+                for member in members {
+                    member.at = At::UNPLACED;
+                    stack.push(&mut member.value);
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        }
+    }
+}
+
+/// A JSON value with no place in a text: what a command gives back of a document's
+/// values (`set_field`'s field before and after), each object's members in the order the
+/// document writes them and each number as its text writes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Plain {
+    Null,
+    Bool(bool),
+    /// The number's text, as written.
+    Number(String),
+    String(String),
+    Array(Vec<Plain>),
+    /// Members in order, no key twice.
+    Object(Vec<(String, Plain)>),
+}
+
+impl Plain {
+    /// What `node` holds, without where it was.
+    pub fn of(node: &Node) -> Plain {
+        match &node.value {
+            Value::Null => Plain::Null,
+            Value::Bool(b) => Plain::Bool(*b),
+            Value::Number(text) => Plain::Number(text.clone()),
+            Value::String(text) => Plain::String(text.clone()),
+            Value::Array(items) => Plain::Array(items.iter().map(Plain::of).collect()),
+            Value::Object(members) => Plain::Object(
+                members
+                    .iter()
+                    .map(|m| (m.key.clone(), Plain::of(&m.value)))
+                    .collect(),
+            ),
+        }
     }
 }
 
@@ -809,6 +895,35 @@ mod tests {
         assert_eq!(r.spent, MAX_TREE_BYTES);
         let err = r.charge(1).unwrap_err();
         assert_eq!(err.cause, Cause::Size);
+    }
+
+    #[test]
+    fn a_string_an_error_shows_escapes_every_character_quoted_does() {
+        // By hand: Rust's `{:?}` escapes the controls and the bidirectional overrides, but
+        // left the Hangul fillers (U+3164, U+115F, letters to Unicode, drawn as nothing)
+        // and the spaces that aren't the plain one raw, which `command::quoted` escapes.
+        for (text, want) in [
+            ("a\u{3164}b", r#""a\u{3164}b""#),
+            ("\u{115f}", r#""\u{115f}""#),
+            ("\u{ffa0}x", r#""\u{ffa0}x""#),
+            ("no\u{a0}break", r#""no\u{a0}break""#),
+            ("em\u{2003}space", r#""em\u{2003}space""#),
+            ("ideographic\u{3000}", r#""ideographic\u{3000}""#),
+            ("tag\u{e0041}", r#""tag\u{e0041}""#),
+            // `{:?}`'s own escapes are kept as they were.
+            ("a\nb\t\"c\\", r#""a\nb\t\"c\\""#),
+            ("evil\u{202e}txt", r#""evil\u{202e}txt""#),
+            ("zero\u{200b}width", r#""zero\u{200b}width""#),
+            ("plain spaces and é", r#""plain spaces and é""#),
+        ] {
+            assert_eq!(shown(text), want, "{text:?}");
+            // No character it leaves raw is one `quoted` escapes.
+            assert!(shown(text).chars().all(|c| !unseen(c)), "{text:?}");
+        }
+        // Cut at 40 characters, each counted once, escaped or not.
+        let long = "\u{3164}".repeat(41);
+        let want = format!("\"{}\"…", r"\u{3164}".repeat(40));
+        assert_eq!(shown(&long), want);
     }
 
     #[test]

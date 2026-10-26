@@ -19,13 +19,18 @@ use crate::document::{
 use crate::kernel::Kernel;
 use crate::recompute::{Model, Recompute, RunOutcome};
 
+mod edit;
+pub mod elements;
+pub mod measure;
 pub mod render;
+pub mod schema;
 mod session;
+pub mod wire;
 
 pub use session::{
-    Begun, Committed, MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, Opened, Published,
-    Read, Reformatted, Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions,
-    Status,
+    Added, Begun, Cancelled, Committed, FieldSet, MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice,
+    ModelRead, Opened, Published, Read, Rebuild, RebuildState, Reformatted, Removed, Replaced,
+    Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, Status, Stopper,
 };
 
 /// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for
@@ -34,8 +39,8 @@ const API_VERSION: u32 = 1;
 
 /// What `version` answers: the API's version, the document format's and naming scheme's,
 /// and the limits (the design's section 6) of the commands built so far, as data. Each
-/// later step adds its own command's limits as it comes (responses' bytes and elements
-/// listed with M4.4, renders with M4.6, logs with M4.7, exports with M4.8).
+/// later step adds its own command's limits as it comes (renders with M4.6, logs with M4.7,
+/// exports with M4.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Version {
     pub api: u32,
@@ -53,12 +58,21 @@ pub struct Limits {
     pub request_bytes: usize,
     /// How deeply a request's (or a document's) values may nest.
     pub request_depth: usize,
+    /// A response's text, in bytes.
+    pub response_bytes: usize,
     /// The errors and warnings listed, the rest counted.
     pub listed: usize,
     /// The sessions open in one process.
     pub sessions: usize,
     /// The published reads running at once in one session.
     pub published_reads: usize,
+    /// The most entries an `elements` call lists, and the most its `limit` asks for.
+    pub elements: u32,
+    /// The most entries a `query` returns, ties at the cut and all, and the most its
+    /// `limit` asks for.
+    pub query: u32,
+    /// The most ranges a `query`'s `measures` holds: as many as there are measures.
+    pub query_measures: usize,
     /// A kernel request's time, in seconds.
     pub kernel_seconds: u64,
     /// A sketch solve's time, in seconds.
@@ -80,9 +94,13 @@ pub const VERSION: Version = Version {
         document_bytes: document::json::MAX_DOCUMENT_LEN,
         request_bytes: document::json::MAX_INPUT_LEN,
         request_depth: document::json::MAX_DEPTH,
+        response_bytes: wire::MAX_RESPONSE_LEN,
         listed: document::PROBLEMS_LISTED,
         sessions: MAX_SESSIONS,
         published_reads: MAX_PUBLISHED_READS,
+        elements: elements::ENTRIES_AT_MOST,
+        query: elements::ENTRIES_AT_MOST,
+        query_measures: elements::MEASURES_AT_MOST,
         kernel_seconds: crate::kernel::DEFAULT_TIMEOUT.as_secs(),
         sketch_seconds: crate::sketch::SKETCH_TIMEOUT.as_secs(),
         highlight: render::MAX_HIGHLIGHTS,
@@ -129,6 +147,44 @@ impl Problems {
     /// Whether there are none.
     pub fn is_empty(&self) -> bool {
         self.total == 0
+    }
+
+    /// None yet, to be added to as they're found ([`Problems::push`]), so every command
+    /// keeps the same rule: the first [`document::PROBLEMS_LISTED`] listed, all counted.
+    pub(crate) fn none() -> Self {
+        Problems::of(Vec::new())
+    }
+
+    /// Whether it lists all it can: any more are only counted.
+    pub(crate) fn is_full(&self) -> bool {
+        self.errors.len() >= document::PROBLEMS_LISTED
+    }
+
+    /// `error` counted, and listed if there's room.
+    pub(crate) fn push(&mut self, error: Error) {
+        self.push_with(|| error);
+    }
+
+    /// The error `error` makes counted, and listed if there's room: made only then, so a
+    /// request with a million reasons it's refused builds a hundred errors, not a million.
+    pub(crate) fn push_with(&mut self, error: impl FnOnce() -> Error) {
+        self.total += 1;
+        if !self.is_full() {
+            self.errors.push(error());
+        }
+    }
+
+    /// `more` added: as many of its listed as there's room for, and every one counted,
+    /// listed or not.
+    pub(crate) fn absorb(&mut self, more: Problems) {
+        let room = document::PROBLEMS_LISTED.saturating_sub(self.errors.len());
+        self.errors.extend(more.errors.into_iter().take(room));
+        self.total += more.total;
+    }
+
+    /// Nothing, if none were found; otherwise them all.
+    pub(crate) fn into_result(self) -> Result<(), Problems> {
+        if self.is_empty() { Ok(()) } else { Err(self) }
     }
 }
 
@@ -221,30 +277,54 @@ pub fn rebuild<K: Kernel + 'static>(
 /// failure, not the document's.
 pub fn check(model: &Model) -> Result<Problems, Error> {
     let _span = tracing::info_span!("check").entered();
-    check_except(model, &BTreeSet::new())
+    check_except(model, &BTreeSet::new(), Faults::Refuse)
+}
+
+/// What a command does with a kernel fault its model holds (docs/design/m4.1-command-api.md,
+/// section 6): one that says nothing about the document, so is never one of its problems.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Faults {
+    /// The command's failure, as [`check`] and [`format`] give it: the first fault met.
+    Refuse,
+    /// Set aside: the document's own problems given without it, and a save made around it,
+    /// as a session's commands do, which give the fault once, beside their result, in the
+    /// model read (`ModelRead::fault`, decision 32).
+    Aside,
 }
 
 /// [`check`], but no drift of a feature in `except` (`Model::drift_except`): one a
-/// session's edits reached since its last save, which its commit writes anew (decision 28).
-fn check_except(model: &Model, except: &BTreeSet<FeatureId>) -> Result<Problems, Error> {
-    let mut problems = failures(model)?;
+/// session's edits reached since its last save, which its commit writes anew (decision 28);
+/// a kernel fault as `faults` says.
+fn check_except(
+    model: &Model,
+    except: &BTreeSet<FeatureId>,
+    faults: Faults,
+) -> Result<Problems, Error> {
+    let mut problems = failures(model, faults)?;
     let unlisted = model.unlisted_errors();
-    problems.extend(own(model.drift_except(except))?);
+    problems.extend(own(model.drift_except(except), faults)?);
     Ok(Problems::with_unlisted(problems, unlisted))
 }
 
-/// The model's failed features, as problems of the document; or, if one failed for a
-/// reason that isn't the document's, that.
-fn failures(model: &Model) -> Result<Vec<Error>, Error> {
-    own(model.errors().cloned().collect())
+/// The model's failed features, as problems of the document; a kernel fault among them as
+/// `faults` says.
+fn failures(model: &Model, faults: Faults) -> Result<Vec<Error>, Error> {
+    own(model.errors().cloned().collect(), faults)
 }
 
-/// `errors`, the document's own problems; or the first that's the kernel's (a solid whose
-/// measure timed out, say), which isn't.
-fn own(errors: Vec<Error>) -> Result<Vec<Error>, Error> {
-    match errors.iter().find(|e| e.code().is_kernel_fault()) {
-        Some(fault) => Err(fault.clone()),
-        None => Ok(errors),
+/// `errors`, the document's own problems, and any that's the kernel's (a solid whose
+/// measure timed out, say), which isn't: the first of those the refusal, or every one set
+/// aside, as `faults` says.
+fn own(errors: Vec<Error>, faults: Faults) -> Result<Vec<Error>, Error> {
+    match faults {
+        Faults::Refuse => match errors.iter().find(|e| e.code().is_kernel_fault()) {
+            Some(fault) => Err(fault.clone()),
+            None => Ok(errors),
+        },
+        Faults::Aside => Ok(errors
+            .into_iter()
+            .filter(|e| !e.code().is_kernel_fault())
+            .collect()),
     }
 }
 
@@ -280,7 +360,7 @@ pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
         .iter()
         .map(|f| f.id.clone())
         .collect();
-    formatted(model, &every, &model.drifted())
+    formatted(model, &every, &model.drifted(), Faults::Refuse)
 }
 
 /// The model's document in canonical form with the fingerprint and solve of each feature in
@@ -289,13 +369,15 @@ pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
 /// (every feature but those whose drift it doesn't accept, decision 31), as [`format`]
 /// writes every feature's. Its problems are the failures, the solids that couldn't be
 /// measured, and of `drift` (the model's, `Model::drifted`), that of every feature whose
-/// record it doesn't write, which it leaves as stored.
+/// record it doesn't write, which it leaves as stored; a kernel fault as `faults` says (a
+/// feature it stopped keeps what's stored with it, as a failed one does).
 fn formatted(
     model: &Model,
     writes: &BTreeSet<FeatureId>,
     drift: &[(FeatureId, Error)],
+    faults: Faults,
 ) -> Result<Result<Formatted, Problems>, Error> {
-    let mut problems = failures(model)?;
+    let mut problems = failures(model, faults)?;
     let unlisted = model.unlisted_errors();
     let written = model.saved_for(writes);
     let pairs = || model.document().features.iter().zip(&written.features);
@@ -333,10 +415,13 @@ fn formatted(
     };
     // Problems the save can't fix: the failures, the solids that couldn't be measured, and
     // the drift of what it leaves as stored; drift of what it writes is what it fixes.
-    problems.extend(own(model
-        .drift_left(drift, writes)
-        .map(|(_, error)| error.clone())
-        .collect())?);
+    problems.extend(own(
+        model
+            .drift_left(drift, writes)
+            .map(|(_, error)| error.clone())
+            .collect(),
+        faults,
+    )?);
     Ok(Ok(Formatted {
         text,
         refingerprinted,
@@ -523,6 +608,18 @@ fn bodies(document: &Document) -> Vec<&document::FeatureId> {
         .collect()
 }
 
+/// A number's text as a whole number: digits only, with no leading zero but `0` itself, and
+/// at most `u64::MAX`; none for anything else. A request's whole numbers and a session's ID
+/// are read so.
+fn whole_number(text: &str) -> Option<u64> {
+    let digits = !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    let leading_zero = text.len() > 1 && text.starts_with('0');
+    if !digits || leading_zero {
+        return None;
+    }
+    text.parse().ok()
+}
+
 /// `text` in double quotes, its quotes, backslashes, and control and invisible characters
 /// escaped, so a name or note can't break the outline's lines or hide in them; and a client
 /// printing other text (a file's name) can do the same.
@@ -533,13 +630,7 @@ pub fn quoted(text: &str) -> String {
         match c {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
-            // Controls, the line and paragraph separators, every character Unicode draws
-            // as nothing, and every space but the plain one, which would look like it.
-            c if c.is_control()
-                || matches!(c, '\u{2028}' | '\u{2029}')
-                || (c.is_whitespace() && c != ' ')
-                || document::json::invisible(c) =>
-            {
+            c if document::json::unseen(c) => {
                 let _ = write!(out, "\\u{{{:x}}}", c as u32);
             }
             c => out.push(c),
@@ -547,4 +638,54 @@ pub fn quoted(text: &str) -> String {
     }
     out.push('"');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ErrorCode;
+
+    fn error(n: usize) -> Error {
+        Error::new(ErrorCode::InvalidInput, format!("reason {n}"))
+    }
+
+    #[test]
+    fn problems_list_the_first_hundred_and_count_every_one() {
+        let mut problems = Problems::none();
+        assert_eq!(problems.clone().into_result(), Ok(()));
+        let mut made = 0;
+        for n in 0..150 {
+            problems.push_with(|| {
+                made += 1;
+                error(n)
+            });
+        }
+        // 150 counted, 100 listed, and only the listed made.
+        assert_eq!(
+            (problems.errors().len(), problems.total(), made),
+            (100, 150, 100)
+        );
+        assert!(problems.is_full());
+        assert_eq!(problems.errors()[99].message(), "reason 99");
+        problems.push(error(150));
+        assert_eq!(problems.total(), 151);
+        assert_eq!(problems.into_result().unwrap_err().total(), 151);
+    }
+
+    #[test]
+    fn problems_absorbed_keep_their_totals_and_fill_only_the_room_left() {
+        // 60 found, then a feature's 100 listed of 150: 40 of those listed, 210 counted.
+        let mut problems = Problems::none();
+        for n in 0..60 {
+            problems.push(error(n));
+        }
+        problems.absorb(Problems::with_unlisted((0..100).map(error).collect(), 50));
+        assert_eq!((problems.errors().len(), problems.total()), (100, 210));
+        assert_eq!(problems.errors()[60].message(), "reason 0");
+        assert_eq!(problems.errors()[99].message(), "reason 39");
+        // Absorbed into none: every one of its own.
+        let mut fresh = Problems::none();
+        fresh.absorb(Problems::with_unlisted(vec![error(0)], 7));
+        assert_eq!((fresh.errors().len(), fresh.total()), (1, 8));
+    }
 }

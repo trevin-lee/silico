@@ -54,6 +54,7 @@ use crate::document::{
     Checked, Document, ElementId, ElementName, FeatureId, Fingerprint, Made, Operation,
     SweepFeature,
 };
+use crate::elements::Entry;
 use crate::kernel::{
     BooleanOp, BuiltData, DESCRIBE_BATCH, FaceRegions, Generation, History, Kernel, KernelRequest,
     Primitive, ShapeData, ShapeSummary, SweepKind,
@@ -250,6 +251,20 @@ pub enum FeatureOutcome {
     Sketch(Arc<SketchSolution>),
 }
 
+impl FeatureOutcome {
+    /// Why it failed, each error naming the feature: its failure, or its broken references
+    /// (the first hundred); none if it built, is blocked on another, or is a sketch.
+    pub fn errors(&self) -> &[Error] {
+        match self {
+            FeatureOutcome::Failed(error) => std::slice::from_ref(error),
+            FeatureOutcome::Broken { errors, .. } => errors,
+            FeatureOutcome::Built { .. }
+            | FeatureOutcome::Blocked { .. }
+            | FeatureOutcome::Sketch(_) => &[],
+        }
+    }
+}
+
 /// A document as rebuilt: what became of each feature, in timeline order, and its bodies.
 #[derive(Debug, Clone)]
 pub struct Model {
@@ -270,6 +285,10 @@ pub struct Model {
     /// a function of the model's own data alone, so they're the same whenever they're
     /// named.
     maps: Vec<OnceLock<Option<Arc<ElementMap>>>>,
+    /// Each feature's solid's elements as entries (`elements` and `query`'s), built from its
+    /// description and its names the first time they're read, once for the model, so paging
+    /// through a large solid costs one build and a copy of each page, not a build a page.
+    entries: Vec<OnceLock<Result<Arc<[Entry]>, Error>>>,
     /// The engine's maps named so far.
     known: NamedMaps,
 }
@@ -358,13 +377,30 @@ impl Model {
     /// across it) has one error, naming it, whose elements are the sketch's at fault; the
     /// sketch, solved, has none (design S3, S5, S6).
     pub fn errors(&self) -> impl Iterator<Item = &Error> {
-        self.features.iter().flat_map(|(_, outcome)| match outcome {
-            FeatureOutcome::Failed(error) => std::slice::from_ref(error),
-            FeatureOutcome::Broken { errors, .. } => errors.as_slice(),
-            FeatureOutcome::Built { .. }
-            | FeatureOutcome::Blocked { .. }
-            | FeatureOutcome::Sketch(_) => &[],
-        })
+        self.features
+            .iter()
+            .flat_map(|(_, outcome)| outcome.errors())
+    }
+
+    /// The first kernel fault the rebuild met, in timeline order: a failure that says
+    /// nothing about the document (a worker that crashed, hung, or couldn't be had, a reply
+    /// that couldn't be read, a shortage, a bug), in a feature's failure or in a measure of
+    /// its solid. One, however many features it stopped: a sketch solver that couldn't
+    /// start fails every sketch with it, and is still one fault (docs/design/m4.1-command-api.md,
+    /// section 6, after AR1). None if the rebuild met none.
+    pub fn fault(&self) -> Option<&Error> {
+        let mut unmeasured = self.unmeasured.iter().peekable();
+        for (id, outcome) in &self.features {
+            if let Some(fault) = outcome.errors().iter().find(|e| e.code().is_kernel_fault()) {
+                return Some(fault);
+            }
+            if let Some((_, error)) = unmeasured.next_if(|(feature, _)| feature == id)
+                && error.code().is_kernel_fault()
+            {
+                return Some(error);
+            }
+        }
+        None
     }
 
     /// The names of the elements of the feature `id`'s solid, if it built. The recompute
@@ -404,6 +440,23 @@ impl Model {
             | FeatureOutcome::Blocked { .. }
             | FeatureOutcome::Sketch(_) => None,
         }
+    }
+
+    /// Each of the feature `id`'s solid's elements as an entry, in the element list's order
+    /// (`elements::entries`), if it built and was described ([`Model::description`]): built
+    /// the first time they're asked for, naming its elements if they aren't yet, and kept for
+    /// the model. A fault if they couldn't be named, or don't fit an entry.
+    pub fn entries(&self, id: &FeatureId) -> Option<Result<&[Entry], &Error>> {
+        let description = self.description(id)?;
+        let slot = self.entries.get(self.index(id)?)?;
+        let built = slot.get_or_init(|| match self.element_map(id) {
+            Some(map) => crate::elements::entries(map, id, description).map(Arc::from),
+            None => Err(crate::elements::fault(
+                id,
+                "its solid built, but its elements couldn't be named",
+            )),
+        });
+        Some(built.as_deref())
     }
 
     /// The names of the elements of the feature `id`'s solid if they've been named
@@ -448,6 +501,18 @@ impl Model {
     /// The document it was built from.
     pub fn document(&self) -> &Document {
         self.source.document()
+    }
+
+    /// This model as `source`'s: the same steps and outcomes, its document `source`. For a
+    /// document that differs from the one it was built from only in what a save writes from
+    /// it (its fingerprints, with no sketch's solve written), whose rebuild would take every
+    /// step from those this one took: a session's save (a commit, an edit's, `format`'s),
+    /// whose model is the saved revision's (the design's section 4).
+    pub(crate) fn rebound(&self, source: Arc<Checked>) -> Model {
+        Model {
+            source,
+            ..self.clone()
+        }
     }
 
     /// The fingerprint of the feature `id`'s solid, if it built and was measured: none if it
@@ -498,6 +563,17 @@ impl Model {
         drift.iter().filter(|(id, error)| {
             !(error.code() == ErrorCode::Drift && except.contains(id) && self.records(id))
         })
+    }
+
+    /// Why the feature `id`'s built solid couldn't be measured, if it couldn't: the kernel's
+    /// refusal of its values (which its [`Built::measure_refused`] holds too, once kept) or
+    /// a worker's failure (a crash, a timeout, a reply no shape has), as
+    /// [`drift`](Self::drift) says it.
+    pub fn unmeasured(&self, id: &FeatureId) -> Option<&Error> {
+        self.unmeasured
+            .iter()
+            .find(|(unmeasured, _)| unmeasured == id)
+            .map(|(_, error)| error)
     }
 
     /// [`drift`](Self::drift), each error with the ID of the feature it's of, computed once
@@ -3363,6 +3439,7 @@ fn model(
         .collect();
     let naming = naming(plan, &features, done);
     let maps = (0..features.len()).map(|_| OnceLock::new()).collect();
+    let entries = (0..features.len()).map(|_| OnceLock::new()).collect();
     Model {
         source: Arc::clone(source),
         generation,
@@ -3371,6 +3448,7 @@ fn model(
         unmeasured,
         naming,
         maps,
+        entries,
         known,
     }
 }
