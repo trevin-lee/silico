@@ -1,0 +1,155 @@
+{
+  "request": {
+    "$defs": {
+      "ExportFormat": {
+        "description": "What `export` writes: 3MF, each body a mesh, as a slicer prints it.",
+        "enum": [
+          "3mf"
+        ],
+        "type": "string"
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "Length": {
+        "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+        "type": "number"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`export`'s request: the current model's bodies, or the features named, written as a\nfile, each solid meshed at the tolerance.",
+    "properties": {
+      "features": {
+        "description": "The features whose solids to write, each by its ID, in the file's order; or null,\nfor every body.",
+        "items": {
+          "$ref": "#/$defs/FeatureId"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "format": {
+        "$ref": "#/$defs/ExportFormat"
+      },
+      "path": {
+        "description": "Where to write it: a path in the workspace ending in the format's extension, never a\ndocument or its cache.",
+        "type": "string"
+      },
+      "replace": {
+        "description": "Whether to replace a file already at `path`.",
+        "type": "boolean"
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      },
+      "tolerance": {
+        "$ref": "#/$defs/Length",
+        "description": "The mesh's tolerance, in mm, from 0.00001 to 100000000: the mesher's linear\ndeflection, as FreeCAD's export takes it (its default is 0.1)."
+      }
+    },
+    "required": [
+      "features",
+      "format",
+      "path",
+      "replace",
+      "session",
+      "tolerance"
+    ],
+    "title": "ExportRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "ExportedObject": {
+        "additionalProperties": false,
+        "description": "An object of an export: one solid's mesh.",
+        "properties": {
+          "feature": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The feature whose solid it is."
+          },
+          "left_out": {
+            "description": "The faces left out of the mesh as bounding no material (OCCT's INTERNAL and\nEXTERNAL), by their names: none for most parts.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "The feature's name, the object's name in the file.",
+            "type": "string"
+          },
+          "triangles": {
+            "description": "The mesh's triangles.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "vertices": {
+            "description": "The mesh's vertices.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "volume": {
+            "$ref": "#/$defs/Measure",
+            "description": "The mesh's volume, in mm³, computed in doubles from the coordinates as written."
+          }
+        },
+        "required": [
+          "feature",
+          "left_out",
+          "name",
+          "triangles",
+          "vertices",
+          "volume"
+        ],
+        "type": "object"
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "Measure": {
+        "description": "A volume (mm³) or area (mm²): a number, to at most 6 decimals.",
+        "type": "number"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`export`'s result.",
+    "properties": {
+      "bytes": {
+        "description": "The file's size, in bytes.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "objects": {
+        "description": "Each object in the file, in its order.",
+        "items": {
+          "$ref": "#/$defs/ExportedObject"
+        },
+        "type": "array"
+      },
+      "path": {
+        "description": "Where the file was written, as the request gave it.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "bytes",
+      "objects",
+      "path"
+    ],
+    "title": "ExportResult",
+    "type": "object"
+  }
+}

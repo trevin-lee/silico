@@ -54,8 +54,8 @@ fn the_commands_are_one_list_in_one_order() {
     let names: Vec<&str> = Command::ALL.iter().map(|c| c.as_str()).collect();
     let listed: Vec<&str> = COMMANDS.iter().map(|(name, _)| *name).collect();
     assert_eq!(names, listed);
-    // The design's section 7, in its order, written out by hand (export, read_logs, and
-    // cache_clear come with their commands).
+    // The design's section 7, in its order, written out by hand (read_logs and cache_clear
+    // come with their commands).
     assert_eq!(
         names,
         [
@@ -82,6 +82,7 @@ fn the_commands_are_one_list_in_one_order() {
             "distance",
             "angle",
             "render",
+            "export",
         ]
     );
     for command in Command::ALL {
@@ -146,7 +147,7 @@ fn a_name_no_command_has_is_unknown() {
         "check ",
         " check",
         "tools/call",
-        "export",
+        "Export",
         "read_logs",
         "cache_clear",
         "versions",

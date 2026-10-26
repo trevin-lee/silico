@@ -321,7 +321,7 @@ pub struct RenderResultSchema {
     /// The PNG's size, in bytes. It depends on the machine (its renderer), so it isn't a
     /// result to compare.
     pub png_bytes: u64,
-    /// Where the PNG was written, through any links; null if `to` was.
+    /// Where the PNG was written, as the request gave it; null if `to` was.
     pub path: Option<String>,
     /// The image's width in pixels.
     pub width: u32,

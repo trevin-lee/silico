@@ -483,8 +483,10 @@ fn a_render_with_to_writes_the_png_there_and_says_where() {
     let mut request = view("front", 40, 30);
     request.to = Some(dir.join("front.png"));
     let done = bench.render_in(&request, Some(&dir)).unwrap();
-    let wrote = std::fs::canonicalize(dir.join("front.png")).unwrap();
-    assert_eq!(done.result.path.as_deref(), Some(wrote.as_path()));
+    // Answered as the request gave it, as `export`, `open`, and `commit` answer theirs: not
+    // through links (the temporary directory is reached through one on macOS).
+    assert_eq!(done.result.path, request.to);
+    let wrote = dir.join("front.png");
     assert_eq!(std::fs::read(&wrote).unwrap(), b"PNG 40x30");
     // Again, without replace: refused before anything is sent; with it, written.
     let e = refused(bench.render_in(&request, Some(&dir)));

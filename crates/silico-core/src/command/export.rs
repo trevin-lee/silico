@@ -1,0 +1,453 @@
+//! `export` (docs/design/m4.1-command-api.md, `export`; docs/ports/mesh-export.md): the
+//! current model's bodies, or the features asked, as a printable 3MF file. The request is
+//! checked in M4.1's order (the format, the tolerance, the path, the features), every reason
+//! found refused at once; then each feature's solid is meshed at the tolerance on the read's
+//! own client of the kernel (as many at once as the machine runs), joined and checked as a
+//! slicer needs
+//! ([`crate::export::printable`]), written as one 3MF archive ([`crate::export::three_mf`]),
+//! and, once the read settles, saved through the writer every command's files share
+//! (decision 35). Nothing is written for a request refused.
+
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::PathBuf;
+
+use super::{Problems, Running, SessionCommand, SessionId, Sessions};
+use crate::document::{FeatureId, Length, Measure};
+use crate::export::{
+    Object, PrintableMesh, UNHOLDABLE_ADVICE, holds_in_3mf, printable, three_mf, unholdable,
+    within_triangles,
+};
+use crate::file::{self, Output};
+use crate::kernel::{Clients, Kernel, KernelRequest};
+use crate::pool::{Outcome, Pending};
+use crate::recompute::Model;
+use crate::{Error, ErrorCode};
+
+/// The formats `export` writes, by the words a request gives them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ExportFormat {
+    /// 3MF (3MF Core 1.4.0): each body a mesh, as a slicer prints it.
+    ThreeMf,
+}
+
+impl ExportFormat {
+    /// The format's word, as a request gives it, and its file's extension.
+    pub const fn name(self) -> &'static str {
+        match self {
+            ExportFormat::ThreeMf => "3mf",
+        }
+    }
+}
+
+/// The tolerance an export is meshed at when a client gives none (a request always gives
+/// one; `silico export` without `--tolerance`): FreeCAD's 0.1 mm
+/// ([`silico_protocol::DEFAULT_EXPORT_TOLERANCE`]), as a length.
+pub const DEFAULT_TOLERANCE: Length = Length::from_nm(100_000);
+
+/// An export asked for (M4.1's request, its session aside: an export reads the current
+/// model only).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Export {
+    pub format: ExportFormat,
+    /// Where to write the file: in the workspace, ending in the format's extension.
+    pub path: PathBuf,
+    /// Whether to replace a file already at `path`.
+    pub replace: bool,
+    /// The features whose solids to write, each by its ID, in the file's order; or none,
+    /// for every body, in the timeline's order.
+    pub features: Option<Vec<FeatureId>>,
+    /// The mesh's tolerance: the mesher's linear deflection, as FreeCAD's export takes it.
+    pub tolerance: Length,
+}
+
+/// What an export answers (M4.1's result): where the file was written, as the request gave
+/// it (as `open` and `commit` answer theirs), its size, and each object in it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Exported {
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub objects: Vec<ExportedObject>,
+}
+
+/// One object of an export: its feature and name, its mesh's triangles and vertices, the
+/// mesh's volume (computed in doubles from the coordinates as written), and the faces left
+/// out of it as bounding no material, by their names.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportedObject {
+    pub feature: FeatureId,
+    pub name: String,
+    pub triangles: u64,
+    pub vertices: u64,
+    pub volume: Measure,
+    pub left_out: Vec<String>,
+}
+
+impl<P: Clients + 'static> Sessions<P> {
+    /// `export` (M4.8): the current model's bodies (or the features `request` names) as a
+    /// file, as [`export`] writes one: meshed on the read's own client of the kernel, the
+    /// file written once the read settles, so a cancelled export leaves no trace.
+    pub fn export(&self, session: &SessionId, request: Export) -> Running<Exported> {
+        let rules = self.write_rules();
+        self.read_current(session, SessionCommand::Export, move |read| {
+            export(
+                read.model(),
+                &request,
+                &ExportOn {
+                    kernel: read.kernel(),
+                    workspace: rules.workspace.as_ref(),
+                    held: &rules.held,
+                    settle: &|| read.settle(),
+                },
+            )
+        })
+    }
+}
+
+/// What an export runs on: a kernel client (the session's read lane), what a file written
+/// must keep clear of (decision 35), and the settle that comes before it.
+pub struct ExportOn<'a, K: Kernel> {
+    pub kernel: &'a K,
+    /// The workspace a file written must be inside, if the sessions have one: a relative
+    /// path is relative to its root.
+    pub workspace: Option<&'a file::Workspace>,
+    /// The documents the sessions hold, which a file written is never.
+    pub held: &'a [PathBuf],
+    /// Called just before the file is written, the export's one trace: refused (the read
+    /// was cancelled, decision 34), nothing is written and its error is the answer.
+    pub settle: &'a dyn Fn() -> Result<(), Error>,
+}
+
+/// Exports `model` as `request` asks, on `on` (the module's steps). Refused, each reason
+/// named by its field, for a request that can't be written: a tolerance out of range, a
+/// path decision 35 refuses, an empty or repeated list of features, a feature that has no
+/// solid (its own failure, as `check` gives it), a name a 3MF file can't hold, or every
+/// body of a model whose features didn't all build; and for a solid that isn't printable
+/// at the tolerance, naming its feature and the faces at fault, or meshes of more triangles
+/// in all than a file holds, refused once they're past it.
+pub fn export<K: Kernel>(
+    model: &Model,
+    request: &Export,
+    on: &ExportOn<'_, K>,
+) -> Result<Exported, Problems> {
+    let _span = tracing::info_span!(
+        "export",
+        format = request.format.name(),
+        tolerance = request.tolerance.mm()
+    )
+    .entered();
+    let output = Output {
+        field: "path",
+        extension: request.format.name(),
+        writer: "an export",
+        replace: request.replace,
+        workspace: on.workspace,
+        held: on.held,
+    };
+    let solids = checked(model, request, &output)?;
+    let tolerance = request.tolerance.mm();
+    let ask = |solid: &Solid| {
+        KernelRequest::export_mesh(&solid.built.shape, tolerance)
+            .map(|request| on.kernel.submit(on.kernel.generation(), request))
+            .map_err(|e| Problems::from(e.with_feature(solid.id.as_str())))
+    };
+    // A few solids asked of the kernel ahead, as many as the machine runs at once, so meshes
+    // done but not yet taken are never more than that; each taken, checked, and counted in
+    // turn, so a file past the triangles one may hold is refused once it's past them.
+    let ahead = std::thread::available_parallelism().map_or(1, usize::from);
+    let mut asked: VecDeque<Pending<_>> = VecDeque::with_capacity(ahead);
+    let mut meshes = Vec::with_capacity(solids.len());
+    let mut triangles = 0_u64;
+    for (n, solid) in solids.iter().enumerate() {
+        while asked.len() < ahead {
+            let Some(next) = solids.get(n + asked.len()) else {
+                break;
+            };
+            asked.push_back(ask(next)?);
+        }
+        let Some(pending) = asked.pop_front() else {
+            return Err(Problems::from(
+                Error::new(
+                    ErrorCode::Internal,
+                    format!("{}'s mesh was never asked of the kernel", solid.id),
+                )
+                .with_suggestion(crate::worker::SILICO_BUG),
+            ));
+        };
+        // Each refusal names the feature whose solid it's of; a mesh that took past a kernel
+        // request's time is the tolerance's to change (M4.1's `export`).
+        let at_feature = |e: Error| {
+            let e = match e.code() {
+                ErrorCode::WorkerTimeout => e.with_suggestion(TIMED_OUT),
+                _ => e,
+            };
+            super::of_solid(solid.id, e)
+        };
+        let mesh = super::done(pending.wait(), session_closed).map_err(|p| p.map(at_feature))?;
+        // Asked by `printable` only when a face was raised.
+        let unraised = || {
+            let request = KernelRequest::unraised_export_mesh(&solid.built.shape, tolerance)?;
+            match on.kernel.submit(on.kernel.generation(), request).wait() {
+                Outcome::Done(result) => result,
+                Outcome::Superseded => Err(session_closed()),
+            }
+        };
+        let printable = printable(&mesh, unraised, model.element_map(solid.id))
+            .map_err(|e| Problems::from(at_feature(e)))?;
+        triangles = triangles.saturating_add(printable.triangles().len() as u64);
+        within_triangles(triangles).map_err(Problems::from)?;
+        meshes.push(printable);
+    }
+    let objects: Vec<Object<'_>> = solids
+        .iter()
+        .zip(&meshes)
+        .map(|(solid, mesh)| Object {
+            name: solid.name,
+            part_number: solid.id.as_str(),
+            mesh,
+        })
+        .collect();
+    let bytes = three_mf(&objects).map_err(Problems::from)?;
+    let answered = solids
+        .iter()
+        .zip(&meshes)
+        .map(|(solid, mesh)| object(solid, mesh))
+        .collect::<Result<Vec<_>, _>>()?;
+    (on.settle)().map_err(Problems::from)?;
+    file::write_output(&request.path, &bytes, &output).map_err(Problems::from)?;
+    Ok(Exported {
+        path: request.path.clone(),
+        bytes: bytes.len() as u64,
+        objects: answered,
+    })
+}
+
+/// What an export whose mesh took past a kernel request's time suggests.
+const TIMED_OUT: &str =
+    "export with a coarser tolerance: a finer one makes a larger mesh, which takes longer";
+
+/// A solid to export: its feature, its name, and its build.
+struct Solid<'m> {
+    id: &'m FeatureId,
+    name: &'m str,
+    built: &'m crate::recompute::Built,
+}
+
+/// The solids `request` asks for, or every reason it's refused, in M4.1's order: the
+/// tolerance, the path (as it would be written, nothing written yet), the features (none
+/// listed; each listed, in the list's order, if it's listed already, the document hasn't
+/// it, it has no solid, or its name is one a 3MF file can't hold), and, for every body, a
+/// model whose features didn't all build, whose bodies aren't the ones its document
+/// describes: each failure, as `check` gives it.
+fn checked<'m>(
+    model: &'m Model,
+    request: &Export,
+    output: &Output,
+) -> Result<Vec<Solid<'m>>, Problems> {
+    let mut refused = Problems::none();
+    if silico_protocol::check_export_tolerance(request.tolerance.mm()).is_err() {
+        // In the document's own numbers, as the request wrote it.
+        let bound = |mm: f64| Length::rounded(mm).map_or_else(|| mm.to_string(), |l| l.to_string());
+        refused.push(
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!(
+                    "tolerance must be a length from {} mm to {} mm, got {}",
+                    bound(silico_protocol::MIN_EXPORT_TOLERANCE),
+                    bound(silico_protocol::MAX_EXPORT_TOLERANCE),
+                    request.tolerance
+                ),
+            )
+            .with_parameter("tolerance")
+            .with_suggestion("give a tolerance in range; 0.1 mm is FreeCAD's default"),
+        );
+    }
+    if let Err(e) = file::check_output(&request.path, output) {
+        refused.push(e);
+    }
+    // Each feature of the document by its ID, its name with it, found once each.
+    let features: BTreeMap<&FeatureId, &str> = model
+        .document()
+        .features
+        .iter()
+        .map(|f| (&f.id, f.name.as_str()))
+        .collect();
+    let mut solids = Vec::new();
+    // A kernel fault stops every feature that uses what it stopped with the same error: each
+    // fault said once, for the first feature it stopped.
+    let mut faults_said: BTreeSet<(ErrorCode, String)> = BTreeSet::new();
+    let mut solid = |id: &'m FeatureId, parameter: Option<String>, refused: &mut Problems| {
+        let built = match super::elements::built(model, id, parameter.is_some()) {
+            Ok(built) => built,
+            Err(problems) => {
+                let unlisted = problems.total() - problems.errors().len() as u64;
+                for e in problems.errors() {
+                    if e.code().is_kernel_fault()
+                        && !faults_said.insert((e.code(), e.message().to_owned()))
+                    {
+                        continue;
+                    }
+                    // Named by its place in the request's list, not as `feature`.
+                    refused.push_with(|| match (&parameter, e.parameter()) {
+                        (Some(at), Some("feature")) => e.clone().with_parameter(at.clone()),
+                        _ => e.clone(),
+                    });
+                }
+                refused.absorb(Problems::with_unlisted(Vec::new(), unlisted));
+                return;
+            }
+        };
+        let name = features.get(id).copied().unwrap_or(id.as_str());
+        if !holds_in_3mf(name) {
+            refused.push_with(|| {
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    unholdable(&format!("name of {id}"), name),
+                )
+                .with_feature(id.as_str())
+                .with_parameter("name")
+                .with_suggestion(UNHOLDABLE_ADVICE)
+            });
+            return;
+        }
+        solids.push(Solid { id, name, built });
+    };
+    match &request.features {
+        None => {
+            if model.errors().next().is_some() {
+                every_body_failed(model, &mut refused);
+            } else {
+                for id in model.bodies() {
+                    solid(id, None, &mut refused);
+                }
+            }
+        }
+        Some(listed) => {
+            if listed.is_empty() {
+                refused.push(
+                    Error::new(
+                        ErrorCode::InvalidInput,
+                        "features must name at least one feature, or be null for every body",
+                    )
+                    .with_parameter("features")
+                    .with_suggestion("give the features to export, or null for every body"),
+                );
+            }
+            let mut seen = BTreeSet::new();
+            for (n, id) in listed.iter().enumerate() {
+                if !seen.insert(id) {
+                    refused.push_with(|| {
+                        Error::new(
+                            ErrorCode::InvalidInput,
+                            format!("features.{n}, {id}, is listed already"),
+                        )
+                        .with_feature(id.as_str())
+                        .with_parameter(format!("features.{n}"))
+                        .with_suggestion("list each feature once")
+                    });
+                    continue;
+                }
+                // The model's own ID, which lives as long as it does.
+                match features.get_key_value(id) {
+                    Some((&id, _)) => solid(id, Some(format!("features.{n}")), &mut refused),
+                    None => refused.push_with(|| {
+                        Error::new(
+                            ErrorCode::InvalidInput,
+                            format!("the document has no feature {id}"),
+                        )
+                        .with_parameter(format!("features.{n}"))
+                        .with_suggestion("name a feature of the document, by its ID")
+                    }),
+                }
+            }
+        }
+    }
+    if refused.total() == 0 && solids.is_empty() {
+        // As FreeCAD refuses an export with nothing to mesh (04005b5e45).
+        refused.push(
+            Error::new(ErrorCode::InvalidInput, "the model has no bodies to export")
+                .with_suggestion("add a feature that makes a solid, then export"),
+        );
+    }
+    refused.into_result()?;
+    Ok(solids)
+}
+
+/// Why every body of `model`, some of whose features didn't build, isn't exported: its
+/// bodies aren't the document's (a failed feature consumes nothing, so what it would have
+/// changed is a body as it was), and SolidWorks warns before it saves a part with rebuild
+/// errors as a mesh. Said first, then the kernel fault that stopped a feature, if one did,
+/// once (as `check` sets it aside), then each failure of the document's as `check` gives it.
+/// If a fault alone stopped them, refused with it alone, as a read of a solid it stopped is
+/// (`elements::built`): nothing of the document's needs mending.
+fn every_body_failed(model: &Model, refused: &mut Problems) {
+    let fault = model.errors().find(|e| e.code().is_kernel_fault());
+    let mut own = model
+        .errors()
+        .filter(|e| !e.code().is_kernel_fault())
+        .peekable();
+    if own.peek().is_none() {
+        if let Some(fault) = fault {
+            refused.push(super::elements::worded(fault));
+        }
+        return;
+    }
+    refused.push(
+        Error::new(
+            ErrorCode::InvalidInput,
+            "every body was asked for, but some of the document's features didn't build, so \
+             the bodies aren't the ones it describes",
+        )
+        .with_parameter("features")
+        .with_suggestion(
+            "mend each feature that didn't build (each is listed after this), or list the \
+             features to export",
+        ),
+    );
+    if let Some(fault) = fault {
+        refused.push(super::elements::worded(fault));
+    }
+    for error in own {
+        refused.push_with(|| error.clone());
+    }
+    refused.absorb(Problems::with_unlisted(Vec::new(), model.unlisted_errors()));
+}
+
+/// The object `solid`'s `mesh` is in the result.
+fn object(solid: &Solid, mesh: &PrintableMesh) -> Result<ExportedObject, Problems> {
+    let volume = Measure::rounded(mesh.volume()).ok_or_else(|| {
+        Problems::from(
+            Error::new(
+                ErrorCode::Internal,
+                format!("{}'s mesh has a volume a measure can't hold", solid.id),
+            )
+            .with_feature(solid.id.as_str())
+            .with_suggestion(crate::worker::SILICO_BUG),
+        )
+    })?;
+    Ok(ExportedObject {
+        feature: solid.id.clone(),
+        name: solid.name.to_owned(),
+        triangles: mesh.triangles().len() as u64,
+        vertices: mesh.vertices().len() as u64,
+        volume,
+        left_out: mesh.left_out().to_vec(),
+    })
+}
+
+/// The answer of an export stopped by its session closing, as `render` answers one.
+fn session_closed() -> Error {
+    super::session_closed("the export finished", "export")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DEFAULT_TOLERANCE;
+
+    #[test]
+    fn the_default_tolerance_is_freecads() {
+        assert_eq!(
+            DEFAULT_TOLERANCE.mm(),
+            silico_protocol::DEFAULT_EXPORT_TOLERANCE
+        );
+    }
+}

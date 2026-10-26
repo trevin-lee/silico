@@ -28,6 +28,7 @@ use super::wire::edits::{
     AddFeatureRequest, RemoveFeatureRequest, ReplaceTextRequest, SetFieldRequest,
 };
 use super::wire::elements::{ElementsRequest, QueryRequest};
+use super::wire::export::ExportRequest;
 use super::wire::measure::{MassPropertiesRequest, PairRequest};
 use super::wire::reads::{CheckRequest, TextRequest};
 use super::wire::render::RenderRequest;
@@ -67,11 +68,12 @@ pub enum Command {
     Distance,
     Angle,
     Render,
+    Export,
 }
 
 impl Command {
     /// Every command, in the design's order.
-    pub const ALL: [Command; 23] = [
+    pub const ALL: [Command; 24] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -95,6 +97,7 @@ impl Command {
         Command::Distance,
         Command::Angle,
         Command::Render,
+        Command::Export,
     ];
 
     /// The command's name, as requests and tools give it.
@@ -123,6 +126,7 @@ impl Command {
             Command::Distance => "distance",
             Command::Angle => "angle",
             Command::Render => "render",
+            Command::Export => "export",
         }
     }
 
@@ -468,6 +472,9 @@ impl<P: Clients + 'static> Sessions<P> {
                 Ok(r) => Calling::waiting(self.render(&r.session, r.model, r.render), rendered),
                 Err(problems) => Calling::refused(problems),
             },
+            Command::Export => typed(ExportRequest::read(request), |r| {
+                self.export(&r.session, r.export)
+            }),
         }
     }
 }

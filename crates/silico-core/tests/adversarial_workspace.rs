@@ -796,7 +796,7 @@ fn a_renders_to_that_is_a_link_is_resolved_as_every_path_is() {
         error(&render(&f.sessions, "in.png", false)),
         (
             "invalid_input".to_owned(),
-            "to \"in.png\": is there already".to_owned(),
+            "\"in.png\" exists".to_owned(),
             Some("to".to_owned())
         )
     );
@@ -843,7 +843,7 @@ fn without_a_workspace_a_renders_to_that_is_a_link_is_written_through_it_anywher
         error(&render(&sessions, out, false)),
         (
             "invalid_input".to_owned(),
-            format!("to \"{out}\": is there already"),
+            format!("\"{out}\" exists"),
             Some("to".to_owned())
         )
     );

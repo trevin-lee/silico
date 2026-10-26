@@ -34,7 +34,8 @@
 //! `status`, and `cancel`; [`transaction`], for `begin`, `commit`, `rollback`, and `format`;
 //! [`edits`], for `add_feature`, `set_field`, `remove_feature`, and `replace_text`;
 //! [`reads`], for `text`, `outline`, and `check`; [`elements`], for `elements` and `query`;
-//! [`schema`]; [`measure`], for `mass_properties`, `distance`, and `angle`; and [`render`]).
+//! [`schema`]; [`measure`], for `mass_properties`, `distance`, and `angle`; [`render`]; and
+//! [`export`]).
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -1611,6 +1612,9 @@ const fn snapshot_of(command: Command) -> MakeSnapshot {
         Command::Render => {
             command_schema::<render::RenderRequestSchema, render::RenderResultSchema>
         }
+        Command::Export => {
+            command_schema::<export::ExportRequestSchema, export::ExportResultSchema>
+        }
     }
 }
 
@@ -1701,6 +1705,7 @@ pub fn snapshot(of: &str) -> Option<Result<String, Error>> {
 
 pub mod edits;
 pub mod elements;
+pub mod export;
 pub mod measure;
 pub mod reads;
 pub mod render;

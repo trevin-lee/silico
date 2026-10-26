@@ -1,0 +1,1 @@
+{"code": "invalid_input", "message": "tolerance must be a length from 0.00001 mm to 100000000 mm, got 0", "feature": null, "elements": [], "elements_total": 0, "parameter": "tolerance", "cause": null, "suggestion": "give a tolerance in range; 0.1 mm is FreeCAD's default", "candidates": []}

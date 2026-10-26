@@ -185,7 +185,7 @@ fn each_commands_schemas_are_the_committed_snapshot() {
         );
     }
     // A name that isn't a command's (one the design has, not built yet) has none.
-    assert!(snapshot("export").is_none());
+    assert!(snapshot("read_logs").is_none());
 }
 
 /// Every object of `schema` with properties that isn't closed to them or doesn't require
@@ -348,7 +348,7 @@ fn the_word_lists_in_the_snapshots_are_the_commands_own() {
 #[test]
 fn the_examples_are_the_designs_own_text() {
     // Each section's blocks, in order, each file the block and a newline.
-    let sections: [(&str, &str, &str, &[&str]); 8] = [
+    let sections: [(&str, &str, &str, &[&str]); 9] = [
         (
             "### Element entries",
             "### Warnings",
@@ -416,6 +416,21 @@ fn the_examples_are_the_designs_own_text() {
             "### `read_logs` (M4.7)",
             "render",
             &["request", "result", "refused-width", "refused-eye-inside"],
+        ),
+        (
+            "### `export` (M4.8)",
+            "## 8. Versioning",
+            "export",
+            &[
+                "request",
+                "result",
+                "refused-unclosed",
+                "refused-tolerance",
+                "refused-raised-face",
+                "refused-exists",
+                "refused-document",
+                "refused-format",
+            ],
         ),
     ];
     for (from, to, dir, names) in sections {
@@ -751,7 +766,8 @@ fn schema_answers_the_document_and_each_command_as_committed() {
                 "mass_properties",
                 "distance",
                 "angle",
-                "render"
+                "render",
+                "export"
             ]
         );
     }
@@ -1395,6 +1411,209 @@ fn the_designs_render_refusals_are_the_commands_own_and_hold_to_the_error_contra
         "render/refused-eye-inside",
         the_refusal(&rendered(super::example::EXAMPLE, &call.render).unwrap_err()),
     );
+}
+
+/// `request` exported from `text`'s model on the fake kernel, whose export meshes are
+/// `mesh`'s, in the workspace `workspace`.
+fn exported(
+    text: &str,
+    request: &silico_core::command::export::Export,
+    workspace: &std::path::Path,
+    mesh: Option<silico_protocol::ExportMesh>,
+) -> Result<silico_core::command::export::Exported, Problems> {
+    use silico_core::command::export::{ExportOn, export};
+    use silico_core::fake::FakeKernel;
+    use silico_core::recompute::Recompute;
+    let kernel = std::sync::Arc::new(FakeKernel::new(1).unwrap());
+    if let Some(mesh) = mesh {
+        kernel.answer_instead(move |op| match op {
+            silico_core::kernel::Op::ExportMesh { .. } => {
+                Some(silico_protocol::Reply::ExportMesh(Box::new(mesh.clone())))
+            }
+            _ => None,
+        });
+    }
+    let engine = Recompute::new(std::sync::Arc::clone(&kernel));
+    let model = silico_core::command::rebuild(
+        &engine,
+        silico_core::command::gate(text.as_bytes()).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    export(
+        &model,
+        request,
+        &ExportOn {
+            kernel: &kernel,
+            workspace: Some(&silico_core::file::Workspace::new(workspace).unwrap()),
+            held: &[],
+            settle: &|| Ok(()),
+        },
+    )
+}
+
+#[test]
+fn the_designs_export_request_is_read_and_written_back_and_holds_to_its_schema() {
+    use silico_core::command::export::{Export, ExportFormat};
+    use silico_core::command::wire::export::ExportRequest;
+    let text = example("export/request");
+    let call = ExportRequest::read(&parsed(&text)).unwrap();
+    assert_eq!(
+        call.export,
+        Export {
+            format: ExportFormat::ThreeMf,
+            path: std::path::PathBuf::from("out/bracket.3mf"),
+            replace: false,
+            features: None,
+            tolerance: Length::from_nm(100_000),
+        }
+    );
+    assert_eq!(written(&call), text);
+    holds(&schema_of("export", "request", None), &text, "export");
+}
+
+#[test]
+fn an_export_request_naming_features_and_replacing_is_read_as_it_says_and_written_back() {
+    // The design's example gives `false` and `null`; one with `replace: true`, two features
+    // (the second before the first, as the file's order), and another tolerance is read
+    // as given, each field its own, and written back byte for byte.
+    use silico_core::command::export::{Export, ExportFormat};
+    use silico_core::command::wire::export::ExportRequest;
+    let text = r#"{"session": "s1", "format": "3mf", "path": "out/two.3mf", "replace": true, "features": ["b2b2b2b2", "a1a1a1a1"], "tolerance": 0.025}"#;
+    let call = ExportRequest::read(&parsed(text)).unwrap();
+    assert_eq!(
+        call.export,
+        Export {
+            format: ExportFormat::ThreeMf,
+            path: std::path::PathBuf::from("out/two.3mf"),
+            replace: true,
+            features: Some(vec![
+                silico_core::document::FeatureId::new("b2b2b2b2").unwrap(),
+                silico_core::document::FeatureId::new("a1a1a1a1").unwrap(),
+            ]),
+            tolerance: Length::from_nm(25_000),
+        }
+    );
+    assert_eq!(written(&call), format!("{text}\n"));
+    holds(&schema_of("export", "request", None), text, "export");
+}
+
+#[test]
+fn the_designs_export_result_is_the_writers_and_holds_to_its_schema() {
+    use silico_core::command::export::{Exported, ExportedObject};
+    let want = example("export/result");
+    let result = Exported {
+        path: std::path::PathBuf::from("out/bracket.3mf"),
+        bytes: 48_213,
+        objects: vec![ExportedObject {
+            feature: silico_core::document::FeatureId::new("f0000003").unwrap(),
+            name: "Bracket".to_owned(),
+            triangles: 1204,
+            vertices: 596,
+            volume: silico_core::document::Measure::parse("15187.442817").unwrap(),
+            left_out: vec![],
+        }],
+    };
+    assert_eq!(written(&result), want);
+    holds(&schema_of("export", "result", None), &want, "export");
+    // Exactly M4.1's three members, and an object's six, checked as sets: their order is
+    // the example's, compared byte for byte above.
+    let value: serde_json::Value = serde_json::from_str(&want).unwrap();
+    let mut keys: Vec<&String> = value.as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(keys, ["bytes", "objects", "path"]);
+    let mut keys: Vec<&String> = value["objects"][0].as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "feature",
+            "left_out",
+            "name",
+            "triangles",
+            "vertices",
+            "volume"
+        ]
+    );
+}
+
+#[test]
+fn the_designs_export_refusals_are_the_commands_own_and_hold_to_the_error_contract() {
+    use silico_core::command::wire::export::ExportRequest;
+    let error = error_schema();
+    let check = |name: &str, got: String| {
+        let want = example(name);
+        assert_eq!(got, want, "{name}");
+        holds(&error, &want, name);
+    };
+    let workspace = std::env::temp_dir().join(format!("silico-wire-export-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(workspace.join("out")).unwrap();
+    let request = || ExportRequest::read(&parsed(&example("export/request"))).unwrap();
+    // A tolerance of 0.
+    let mut call = request();
+    call.export.tolerance = Length::from_nm(0);
+    check(
+        "export/refused-tolerance",
+        the_refusal(&exported(BLOCK, &call.export, &workspace, None).unwrap_err()),
+    );
+    // A file at the path, not to be replaced.
+    std::fs::write(workspace.join("out/bracket.3mf"), b"someone's").unwrap();
+    check(
+        "export/refused-exists",
+        the_refusal(&exported(BLOCK, &request().export, &workspace, None).unwrap_err()),
+    );
+    // A document as the path.
+    let mut call = request();
+    call.export.path = std::path::PathBuf::from("bracket.silico");
+    check(
+        "export/refused-document",
+        the_refusal(&exported(BLOCK, &call.export, &workspace, None).unwrap_err()),
+    );
+    // A format it doesn't write, refused as the request is read.
+    let text = example("export/request").replace("\"3mf\"", "\"stl\"");
+    check(
+        "export/refused-format",
+        the_refusal(&ExportRequest::read(&parsed(&text)).unwrap_err()),
+    );
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[test]
+fn the_designs_export_refusals_of_meshes_say_the_commands_words_and_hold_to_the_contract() {
+    // A face the kernel didn't mesh: the command's refusal is the example's but for which
+    // feature and face it names (the example's are illustrative: a pocket's face of
+    // another feature than the one named). The raised face's is pinned on the real sphere
+    // the example is of (silico-kernel's tests/adversarial_export.rs).
+    let error = error_schema();
+    for name in ["export/refused-unclosed", "export/refused-raised-face"] {
+        holds(&error, &example(name), name);
+    }
+    let workspace =
+        std::env::temp_dir().join(format!("silico-wire-export-mesh-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(workspace.join("out")).unwrap();
+    let mut open = super::export_report::tetra();
+    open.triangles.pop();
+    open.face_triangles[3] = 0;
+    let call = silico_core::command::wire::export::ExportRequest::read(&parsed(&example(
+        "export/request",
+    )))
+    .unwrap();
+    let got = the_refusal(&exported(BLOCK, &call.export, &workspace, Some(open)).unwrap_err());
+    let mut got: serde_json::Value = serde_json::from_str(&got).unwrap();
+    let mut want: serde_json::Value =
+        serde_json::from_str(&example("export/refused-unclosed")).unwrap();
+    assert_eq!(got["feature"], "k7f2qx3m");
+    assert_eq!(got["elements"].as_array().unwrap().len(), 1);
+    for value in [&mut got, &mut want] {
+        let fields = value.as_object_mut().unwrap();
+        fields.remove("feature");
+        fields.remove("elements");
+    }
+    assert_eq!(got, want);
+    assert!(!workspace.join("out/bracket.3mf").exists());
+    let _ = std::fs::remove_dir_all(&workspace);
 }
 
 /// A render request around `camera`, a JSON object's text.

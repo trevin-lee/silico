@@ -1,0 +1,7 @@
+{
+  "path": "out/bracket.3mf",
+  "bytes": 48213,
+  "objects": [
+    {"feature": "f0000003", "name": "Bracket", "triangles": 1204, "vertices": 596, "volume": 15187.442817, "left_out": []}
+  ]
+}

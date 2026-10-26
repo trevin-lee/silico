@@ -9,6 +9,8 @@
 mod draw;
 #[path = "common/echo.rs"]
 mod echo;
+#[path = "common/example.rs"]
+mod example;
 #[path = "common/export_report.rs"]
 mod export_report;
 #[path = "common/sketch.rs"]
@@ -44,6 +46,8 @@ mod distance_request;
 mod error;
 #[path = "export.rs"]
 mod export;
+#[path = "export_command.rs"]
+mod export_command;
 #[path = "fake_kernel.rs"]
 mod fake_kernel;
 #[path = "pool.rs"]

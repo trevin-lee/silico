@@ -23,7 +23,7 @@ use crate::document::{Angle, FeatureId, Length, Position};
 use crate::file::{self, Output};
 use crate::kernel::{Clients, ElementKind, Kernel, KernelRequest};
 use crate::meshes::{MeshCache, mesh_level};
-use crate::pool::{Outcome, Pending};
+use crate::pool::Pending;
 use crate::recompute::{Built, FeatureOutcome, Key, Model};
 use crate::render::{RenderClient, RenderOutcome, RenderTicket};
 use crate::views::{NamedView, depth_of_box, half_pixel_at, sees};
@@ -51,8 +51,8 @@ pub struct Render {
     pub replace: bool,
 }
 
-/// What a render answers (M4.1's result): the PNG's size in bytes, where it was written,
-/// the image's size, and the camera it was taken with, its `up` made perpendicular to the
+/// What a render answers (M4.1's result): the PNG's size in bytes, where it was written
+/// (as the request gave it), the image's size, and the camera it was taken with, its `up` made perpendicular to the
 /// view and of unit length, so it can be passed back unchanged.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderResult {
@@ -193,8 +193,7 @@ impl<P: Clients + 'static> Sessions<P> {
         request: Render,
     ) -> Running<Rendering> {
         let (renderer, meshes) = self.render_on();
-        let held = self.held_paths();
-        let workspace = self.workspace().cloned();
+        let rules = self.write_rules();
         self.read_model(session, ReadCommand::Render, model, move |read| {
             let Some(renderer) = renderer else {
                 return Err(Problems::from(
@@ -213,8 +212,8 @@ impl<P: Clients + 'static> Sessions<P> {
                         kernel: read.kernel(),
                         meshes: &meshes,
                         renderer,
-                        workspace: workspace.as_ref(),
-                        held: &held,
+                        workspace: rules.workspace.as_ref(),
+                        held: &rules.held,
                         settle: &|| read.settle(),
                     },
                 )
@@ -286,6 +285,7 @@ pub fn render<K: Kernel>(
     let output = Output {
         field: "to",
         extension: "png",
+        writer: "a render",
         replace: request.replace,
         workspace: on.workspace,
         held: on.held,
@@ -436,7 +436,9 @@ pub fn render<K: Kernel>(
     let path = match &request.to {
         Some(to) => {
             (on.settle)().map_err(Problems::from)?;
-            Some(file::write_output(to, &png, &output).map_err(Problems::from)?)
+            file::write_output(to, &png, &output).map_err(Problems::from)?;
+            // As the request gave it, as `export`, `open`, and `commit` answer theirs.
+            Some(to.clone())
         }
         None => None,
     };
@@ -682,7 +684,9 @@ fn eye_outside<K: Kernel>(
         .collect();
     for (body, pending) in asked {
         // On its boundary counts as inside (the design: an eye on a face is refused too).
-        if done(pending.wait()).map_err(|p| naming_the_body(p, body.id))? != PointPlace::Outside {
+        if super::done(pending.wait(), session_closed).map_err(|p| naming_the_body(p, body.id))?
+            != PointPlace::Outside
+        {
             return Err(Problems::from(
                 Error::new(
                     ErrorCode::InvalidInput,
@@ -748,33 +752,17 @@ fn meshed<K: Kernel>(
         .map(|(b, got)| match got {
             Got::Kept(mesh) => Ok(mesh),
             Got::Asked(asked, pending) => {
-                let made = done(pending.wait()).map_err(|p| naming_the_body(p, b.id))?;
+                let made = super::done(pending.wait(), session_closed)
+                    .map_err(|p| naming_the_body(p, b.id))?;
                 Ok(on.meshes.put(&b.key, asked, made))
             }
         })
         .collect()
 }
 
-/// A kernel request's result: its error as the refusal, and one superseded as its session
-/// closing.
-fn done<T>(outcome: Outcome<T>) -> Result<T, Problems> {
-    match outcome {
-        Outcome::Done(result) => result.map_err(Problems::from),
-        // A read's own client is advanced only when its read is stopped: a cancel, whose
-        // answer the session gives (`cancelled`), or its session closing, this.
-        Outcome::Superseded => Err(Problems::from(session_closed())),
-    }
-}
-
-/// The answer of a render stopped by its session closing, as `distance` answers one:
-/// a published read answers as of a session that closed, never `cancelled` (decision 34).
+/// The answer of a render stopped by its session closing, as `distance` answers one.
 fn session_closed() -> Error {
-    Error::new(
-        ErrorCode::InvalidInput,
-        "the session closed before the render finished",
-    )
-    .with_parameter("session")
-    .with_suggestion("open the document again, and render it there")
+    super::session_closed("the render finished", "render")
 }
 
 /// The scene's body for `body`: its number, its mesh, and its faces and edges `lit`, each
@@ -904,18 +892,7 @@ fn a_kind(kind: ElementKind) -> &'static str {
 
 /// `problems`, each naming `feature` if it names none: a body's kernel request's.
 fn naming_the_body(problems: Problems, feature: &FeatureId) -> Problems {
-    let total = problems.total();
-    let errors: Vec<Error> = problems
-        .errors()
-        .iter()
-        // A session's close isn't the body's.
-        .map(|e| match (e.feature(), e.parameter()) {
-            (Some(_), _) | (None, Some("session")) => e.clone(),
-            (None, _) => e.clone().with_feature(feature.as_str()),
-        })
-        .collect();
-    let listed = errors.len() as u64;
-    Problems::with_unlisted(errors, total - listed)
+    problems.map(|e| super::of_solid(feature, e))
 }
 
 #[cfg(test)]

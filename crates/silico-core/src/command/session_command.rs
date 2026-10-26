@@ -27,11 +27,12 @@ pub enum SessionCommand {
     Distance,
     Angle,
     Render,
+    Export,
 }
 
 impl SessionCommand {
     /// Every command that runs in a session, in the design's order.
-    pub const ALL: [SessionCommand; 18] = [
+    pub const ALL: [SessionCommand; 19] = [
         SessionCommand::Close,
         SessionCommand::Begin,
         SessionCommand::Commit,
@@ -50,6 +51,7 @@ impl SessionCommand {
         SessionCommand::Distance,
         SessionCommand::Angle,
         SessionCommand::Render,
+        SessionCommand::Export,
     ];
 
     /// The command's name, as requests, `status`, and `cancel` give it.
@@ -73,6 +75,7 @@ impl SessionCommand {
             SessionCommand::Distance => "distance",
             SessionCommand::Angle => "angle",
             SessionCommand::Render => "render",
+            SessionCommand::Export => "export",
         }
     }
 }
@@ -86,7 +89,9 @@ impl std::fmt::Display for SessionCommand {
 /// A command that reads a model, the current one or the published one
 /// ([`Sessions::read_model`](super::Sessions::read_model)'s): as a read of the published
 /// model, what `status` lists among its reads, and `cancel` stops as the session command it
-/// is ([`SessionCommand::from`]).
+/// is ([`SessionCommand::from`]). A command that reads the current model only (`export`)
+/// isn't one: it's queued as its session command
+/// (`Sessions::read_current`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReadCommand {
     Check,

@@ -958,6 +958,34 @@ print("SILICO_ORACLE " + json.dumps({{"tolerance": s.getTolerance(1)}}))
     assert!(suggested > 0.04 && suggested < 0.0401, "{suggested}");
     // 0.04 plus the margin, 5.16e-6 mm (the sphere's box reaches 50.02 mm), rounded up.
     assert_eq!(suggested, 0.040006);
+    // The refusal M4.1's `export` shows of this very sphere, word for word but for the
+    // feature and face it names (the design's are a document's; this sphere has none).
+    let example: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../silico-core/tests/contract/commands/examples/export/refused-raised-face.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            error.code().as_str(),
+            error.message(),
+            error.parameter(),
+            error.suggestion(),
+            error.cause(),
+            error.elements_total()
+        ),
+        (
+            example["code"].as_str().unwrap(),
+            example["message"].as_str().unwrap(),
+            example["parameter"].as_str(),
+            example["suggestion"].as_str(),
+            example["cause"].as_str(),
+            example["elements_total"].as_u64().unwrap()
+        )
+    );
     let at = kernel().export_mesh(&shape, suggested).unwrap();
     assert!(2.0 * at.face_tolerances[0] <= at.deflection, "{suggested}");
     assert!(!silico_core::export::needs_unraised(&at), "{suggested}");

@@ -714,7 +714,8 @@ fn a_relative_to_is_written_in_the_workspace() {
     let done = bench
         .render_on(&request, Some(&dir.0), &[], &bench.renderer)
         .unwrap();
-    assert_eq!(done.result.path, Some(dir.0.join("view.png")));
+    // Answered as given, relative to the workspace, as the request named it.
+    assert_eq!(done.result.path, Some(PathBuf::from("view.png")));
     assert_eq!(std::fs::read(dir.0.join("view.png")).unwrap(), b"PNG 40x30");
 }
 
@@ -760,7 +761,7 @@ fn a_file_put_at_to_while_rendering_is_refused_and_left_as_it_is() {
         (e.code(), e.parameter()),
         (ErrorCode::InvalidInput, Some("to"))
     );
-    assert!(e.message().contains("is there already"), "{e:?}");
+    assert_eq!(e.message(), format!("\"{}\" exists", to.display()), "{e:?}");
     assert_eq!(std::fs::read(&to).unwrap(), b"theirs");
     assert_eq!(renderer.inner.sent().len(), 1);
 }
