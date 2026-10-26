@@ -17,6 +17,7 @@ silico-protocol = { path = "crates/silico-protocol" }
 silico-kernel = { path = "crates/silico-kernel" }
 silico-oracle = { path = "crates/silico-oracle" }
 silico-worker = { path = "crates/silico-worker" }
+silico-mcp = { path = "crates/silico-mcp" }
 cxx = "1.0"
 cxx-build = "1.0"
 serde = { version = "1.0", features = ["derive"] }

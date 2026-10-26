@@ -5178,6 +5178,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "silico-mcp"
+version = "0.0.0"
+dependencies = [
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "silico-core",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "silico-oracle"
 version = "0.0.0"
 dependencies = [
