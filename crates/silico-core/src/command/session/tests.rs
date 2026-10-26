@@ -3480,6 +3480,13 @@ fn counting_a_rebuilds_steps_never_keeps_status_or_a_published_read_waiting() {
             running: Some("b0000001 box".to_owned()),
         }),
     );
+    // A step counts as running as its job starts, before its request reaches the kernel
+    // (recompute's `serve`): held only once the kernel has it, so wait for that, or the
+    // answers below could come before the lug was ever held, not while it was.
+    assert!(
+        f.kernel.wait_running(1, WAIT),
+        "the lug never reached the kernel"
+    );
     let quick = Duration::from_secs(5);
     let (said, heard) = mpsc::channel();
     let answered = std::thread::scope(|scope| {
