@@ -511,7 +511,9 @@ impl CheckAnswer {
 /// another directory), and how many entries it removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheCleared {
+    /// The cache's directory, as the session's path names it.
     pub directory: String,
+    /// How many entries this clear removed (not those another process removed first).
     pub removed: u64,
 }
 

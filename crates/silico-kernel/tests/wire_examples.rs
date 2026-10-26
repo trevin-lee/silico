@@ -180,13 +180,13 @@ fn the_designs_check_of_a_fillet_whose_edge_an_edit_removed_is_its_example_byte_
     let sessions =
         Sessions::with_cache_opener(pool, move |cache| Cache::with_secret(cache, &secret));
     let request = CheckRequest::read(&read(example("check/request").as_bytes()).unwrap()).unwrap();
-    assert_eq!(request.model, ModelChoice::Current);
+    assert_eq!(request.model.choice(), ModelChoice::Current);
     // `document` saved as `file` and checked, in the next session (s1, then s2).
     let check = |file: &str, document: &str| {
         let path = dir.path().join(file);
         std::fs::write(&path, document).unwrap();
         let session = answer(sessions.open(&path, false)).session.unwrap().id;
-        let checked = answer(sessions.check(&session, request.model));
+        let checked = answer(sessions.check(&session, request.model.choice()));
         // No kernel fault: any problem is the document's.
         assert_eq!(checked.model.as_ref().unwrap().fault, None);
         (session, written(&checked.result.unwrap()))

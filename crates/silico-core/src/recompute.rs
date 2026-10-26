@@ -908,7 +908,7 @@ fn stopped() -> Error {
 /// What a recompute reads of what was kept before it: everything it may ([`Recompute::start`]),
 /// or nothing ([`Recompute::start_fresh`]), every step built anew.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Reads {
+pub(crate) enum Reads {
     /// The engine's results, solves, profiles, and named maps, and the cache's entries.
     Kept,
     /// None of them: each is made again, and kept as any recompute's are.
@@ -1295,8 +1295,9 @@ impl<K: Kernel + 'static> Recompute<K> {
         self.begin(document.into(), Reads::Nothing)
     }
 
-    /// [`start`](Self::start), reading what's kept as `reads` says.
-    fn begin(&self, document: Arc<Checked>, reads: Reads) -> Run {
+    /// [`start`](Self::start), reading what's kept as `reads` says
+    /// ([`start_fresh`](Self::start_fresh) for [`Reads::Nothing`]).
+    pub(crate) fn begin(&self, document: Arc<Checked>, reads: Reads) -> Run {
         let (reply, outcome) = mpsc::sync_channel(1);
         let progress = StepCounter::default();
         let (generation, later) = {

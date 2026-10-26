@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
-use silico_core::command::wire::reads::{CheckRequest, TextRequest};
+use silico_core::command::wire::reads::{CheckModel, CheckRequest, TextRequest};
 use silico_core::command::wire::session::{
     CancelRequest, OpenRequest, PUBLISHED_READS, SESSION_COMMANDS, VersionRequest,
 };
@@ -290,8 +290,7 @@ fn the_designs_requests_are_read_written_back_byte_for_byte_and_hold_to_their_sc
         request,
         CheckRequest {
             session: s1(),
-            model: ModelChoice::Current,
-            fresh: false,
+            model: CheckModel::Current { fresh: false },
         }
     );
     assert_eq!(written(&request), text);
@@ -338,7 +337,7 @@ fn requests_with_their_other_values_are_read_and_written_back() {
     holds(&schema_of("text", "request"), text, "a feature");
     let text = "{\"session\": \"s2\", \"model\": \"published\", \"fresh\": false}\n";
     let request = CheckRequest::read(&parsed(text)).unwrap();
-    assert_eq!(request.model, ModelChoice::Published);
+    assert_eq!(request.model, CheckModel::Published);
     assert_eq!(written(&request), text);
     holds(&schema_of("check", "request"), text, "published");
     // A fresh check, of the current model (M4.3).
@@ -348,8 +347,7 @@ fn requests_with_their_other_values_are_read_and_written_back() {
         request,
         CheckRequest {
             session: SessionId::parse("s3").unwrap(),
-            model: ModelChoice::Current,
-            fresh: true,
+            model: CheckModel::Current { fresh: true },
         }
     );
     assert_eq!(written(&request), text);
@@ -523,7 +521,10 @@ fn checks_fresh_is_refused_with_the_published_model_and_taken_with_the_current()
     );
     // The same with current is read, and true.
     let current = example("check/request").replace("false", "true");
-    assert!(CheckRequest::read(&parsed(&current)).unwrap().fresh);
+    assert_eq!(
+        CheckRequest::read(&parsed(&current)).unwrap().model,
+        CheckModel::Current { fresh: true }
+    );
     // A session that isn't one is refused beside it, every reason at once.
     let both = text.replace("s1", "s0");
     assert_eq!(
@@ -921,7 +922,7 @@ fn text_outline_and_check_answer_as_the_design_gives_them() {
     // A box with nothing wrong: no problems, no warnings.
     let f = opened(BOX);
     let request = CheckRequest::read(&parsed(&example("check/request"))).unwrap();
-    assert_eq!(request.model, ModelChoice::Current);
+    assert_eq!(request.model, CheckModel::Current { fresh: false });
     let checked = answer(f.sessions.check(&request.session, ModelChoice::Current));
     assert_eq!(checked.model.as_ref().unwrap().of, ModelChoice::Current);
     let text = written(&checked.result.unwrap());
@@ -1110,8 +1111,8 @@ fn a_published_check_answers_at_once_from_the_older_revision_while_the_current_r
     // from revision 1's model.
     let text = example("check/request").replace("current", "published");
     let request = CheckRequest::read(&parsed(&text)).unwrap();
-    assert_eq!(request.model, ModelChoice::Published);
-    let published = answer(f.sessions.check(&request.session, request.model));
+    assert_eq!(request.model, CheckModel::Published);
+    let published = answer(f.sessions.check(&request.session, request.model.choice()));
     let model = published.model.as_ref().unwrap();
     assert_eq!(
         (model.revision, model.of, &model.fault),

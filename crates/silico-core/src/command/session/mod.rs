@@ -95,7 +95,7 @@ use crate::document::{self, FeatureId};
 use crate::file;
 use crate::file::{Workspace, shown_path};
 use crate::kernel::{Clients, Kernel};
-use crate::recompute::SketchSolvers;
+use crate::recompute::{self, SketchSolvers};
 use crate::sketch::SketchSolver;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
@@ -684,7 +684,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// (decision 32).
     pub fn check(&self, session: &SessionId, choice: ModelChoice) -> Running<CheckAnswer> {
         match choice {
-            ModelChoice::Current => self.check_current(session, false),
+            ModelChoice::Current => self.check_current(session, recompute::Reads::Kept),
             ModelChoice::Published => self.read_model(
                 session,
                 ReadCommand::Check,
@@ -739,17 +739,18 @@ impl<P: Clients + 'static> Sessions<P> {
     /// published read never rebuilds (the wire refuses `fresh` with `published`). For a
     /// document the gate refused, the gate's problems, nothing rebuilt.
     pub fn check_fresh(&self, session: &SessionId) -> Running<CheckAnswer> {
-        self.check_current(session, true)
+        self.check_current(session, recompute::Reads::Nothing)
     }
 
-    /// `check` of `session`'s current model, its rebuild reading nothing kept if `fresh`.
-    fn check_current(&self, session: &SessionId, fresh: bool) -> Running<CheckAnswer> {
+    /// `check` of `session`'s current model, its rebuild reading what's kept as `reads` says.
+    fn check_current(&self, session: &SessionId, reads: recompute::Reads) -> Running<CheckAnswer> {
         self.queued(
             session,
             SessionCommand::Check,
-            move |session, stop, model| match session.current_with(stop, fresh) {
+            move |session, stop, model| match session.current_with(stop, reads) {
                 Ok(current) => {
                     *model = Some(current.read);
+                    let fresh = reads == recompute::Reads::Nothing;
                     let _span = tracing::info_span!("check", fresh).entered();
                     Ok(CheckAnswer::of(super::check_except(
                         &current.model,

@@ -55,17 +55,38 @@ impl ToWire for TextRequest {
     }
 }
 
-/// A `check` request: the session, the model it reads, and whether the current one is
-/// rebuilt with every step built anew, as
+/// A `check` request: the session, and the model it reads, as
 /// [`Sessions::check`](crate::command::Sessions::check) and
-/// [`Sessions::check_fresh`](crate::command::Sessions::check_fresh) take them. `fresh` is
-/// only ever true with [`ModelChoice::Current`]: the reader refuses it with the published
-/// model.
+/// [`Sessions::check_fresh`](crate::command::Sessions::check_fresh) take them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CheckRequest {
     pub session: SessionId,
-    pub model: ModelChoice,
-    pub fresh: bool,
+    pub model: CheckModel,
+}
+
+/// The model a `check` reads: the current one, rebuilt with every step built anew if
+/// `fresh`; or the published one, read as it is, never rebuilt, so never fresh (the
+/// reader refuses `fresh` true with it). On the wire, `model` and `fresh`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckModel {
+    Current { fresh: bool },
+    Published,
+}
+
+impl CheckModel {
+    /// Which model it reads: the wire's `model`.
+    pub fn choice(self) -> ModelChoice {
+        match self {
+            CheckModel::Current { .. } => ModelChoice::Current,
+            CheckModel::Published => ModelChoice::Published,
+        }
+    }
+
+    /// Whether the current model is rebuilt with every step built anew: the wire's
+    /// `fresh`, false for the published model.
+    pub fn fresh(self) -> bool {
+        matches!(self, CheckModel::Current { fresh: true })
+    }
 }
 
 impl CheckRequest {
@@ -74,16 +95,18 @@ impl CheckRequest {
     pub fn read(node: &Node) -> Result<Self, Problems> {
         RequestFields::read(node, |f| {
             let session = f.session();
-            let model = f.model();
-            let fresh = f.bool("fresh");
-            if model == Some(ModelChoice::Published) && fresh == Some(true) {
-                f.refuse(fresh_published());
-                return None;
-            }
+            let model = match (f.model(), f.bool("fresh")) {
+                (Some(ModelChoice::Current), Some(fresh)) => CheckModel::Current { fresh },
+                (Some(ModelChoice::Published), Some(false)) => CheckModel::Published,
+                (Some(ModelChoice::Published), Some(true)) => {
+                    f.refuse(fresh_published());
+                    return None;
+                }
+                (None, _) | (_, None) => return None,
+            };
             Some(CheckRequest {
                 session: session?,
-                model: model?,
-                fresh: fresh?,
+                model,
             })
         })
     }
@@ -112,8 +135,8 @@ impl ToWire for CheckRequest {
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("session", self.session.to_wire()),
-            ("model", self.model.to_wire()),
-            ("fresh", Json::bool(self.fresh)),
+            ("model", Json::str(self.model.choice().as_str())),
+            ("fresh", Json::bool(self.model.fresh())),
         ])
     }
 }

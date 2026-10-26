@@ -15,7 +15,7 @@ use super::{
 use crate::cache::Cache;
 use crate::document::Checked;
 use crate::kernel::Kernel;
-use crate::recompute::{Model, Recompute, Run, RunOutcome, StepCounter};
+use crate::recompute::{Model, Reads, Recompute, Run, RunOutcome, StepCounter};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
@@ -194,9 +194,9 @@ pub(super) struct Label {
     /// ([`Rebuilds::stop_waited`], which says how it ended then): if it ends superseded,
     /// that's why.
     cancelled: Arc<AtomicBool>,
-    /// Whether it reads nothing kept (`check`'s `fresh`): every step built anew
+    /// What it reads of what was kept: nothing for `check`'s `fresh`, every step built anew
     /// ([`Recompute::start_fresh`]).
-    fresh: bool,
+    reads: Reads,
 }
 
 impl Label {
@@ -207,15 +207,15 @@ impl Label {
             reached,
             candidate: false,
             cancelled: Arc::new(AtomicBool::new(false)),
-            fresh: false,
+            reads: Reads::Kept,
         }
     }
 
-    /// The label of `revision`'s rebuild with every step built anew, reading nothing kept
-    /// (`check`'s `fresh`), what the session's edits reached at it `reached`.
-    fn fresh(revision: Revision, reached: Reached) -> Self {
+    /// The label of `revision`'s rebuild reading what was kept as `reads` says (nothing,
+    /// for `check`'s `fresh`), what the session's edits reached at it `reached`.
+    fn reading(revision: Revision, reached: Reached, reads: Reads) -> Self {
         Label {
-            fresh: true,
+            reads,
             ..Label::new(revision, reached)
         }
     }
@@ -318,11 +318,12 @@ impl<C: Kernel + 'static> Session<C> {
         checked: &Arc<Checked>,
         reached: &Reached,
     ) -> Result<Arc<Model>, Problems> {
-        self.model_with(stop, revision, checked, reached, false)
+        self.model_with(stop, revision, checked, reached, Reads::Kept)
     }
 
-    /// [`model`](Self::model), or, `fresh`, the model of a rebuild of `revision` that reads
-    /// nothing kept (`check`'s `fresh`, the design's section 7: every step built anew,
+    /// [`model`](Self::model), or, reading [`Reads::Nothing`], the model of a rebuild of
+    /// `revision` that reads nothing kept (`check`'s `fresh`, the design's section 7: every
+    /// step built anew,
     /// [`Recompute::start_fresh`]), started now whatever the revision has: never the model
     /// published of it before (a kernel fault kept as its outcome is tried again, decision
     /// 32), nor one of a rebuild running that reads what's kept, which it supersedes, even
@@ -335,8 +336,9 @@ impl<C: Kernel + 'static> Session<C> {
         revision: Revision,
         checked: &Arc<Checked>,
         reached: &Reached,
-        fresh: bool,
+        reads: Reads,
     ) -> Result<Arc<Model>, Problems> {
+        let fresh = reads == Reads::Nothing;
         let _span = tracing::info_span!("rebuild", revision = revision.number(), fresh).entered();
         let mut rebuilds = lock(&self.rebuilds);
         // The rebuild this read last waited on or started, which a cancel stops.
@@ -390,11 +392,7 @@ impl<C: Kernel + 'static> Session<C> {
             // once (the next turn of the loop stops what it started): accepted, since
             // checking again here would only narrow that window, never close it. A fresh
             // read starts its own, superseding any running.
-            let label = if fresh {
-                Label::fresh(revision, reached.clone())
-            } else {
-                Label::new(revision, reached.clone())
-            };
+            let label = Label::reading(revision, reached.clone(), reads);
             if self.start_labelled(&mut rebuilds, checked, label.clone())? {
                 waited.clone_from(&rebuilds.running);
                 if fresh {
@@ -474,11 +472,7 @@ impl<C: Kernel + 'static> Session<C> {
         label: Label,
     ) -> Result<(), Problems> {
         rebuilds.watchers.reap();
-        let run = if label.fresh {
-            rebuilds.engine.start_fresh(Arc::clone(checked))
-        } else {
-            rebuilds.engine.start(Arc::clone(checked))
-        };
+        let run = rebuilds.engine.begin(Arc::clone(checked), label.reads);
         self.newest.started(label.clone(), run.progress());
         rebuilds.running = Some(label.clone());
         let session = Arc::downgrade(self);
@@ -508,15 +502,16 @@ impl<C: Kernel + 'static> Session<C> {
     /// (its problems, the document's, which a check gives as its result), or the model
     /// couldn't be had.
     pub(super) fn current(self: &Arc<Self>, stop: &Ticket) -> Result<Current, Unbuilt> {
-        self.current_with(stop, false)
+        self.current_with(stop, Reads::Kept)
     }
 
-    /// [`current`](Self::current), or, `fresh`, the current revision rebuilt with every step
-    /// built anew ([`model_with`](Self::model_with)), its model the revision's from then on.
+    /// [`current`](Self::current), or, reading [`Reads::Nothing`], the current revision
+    /// rebuilt with every step built anew ([`model_with`](Self::model_with)), its model the
+    /// revision's from then on.
     pub(super) fn current_with(
         self: &Arc<Self>,
         stop: &Ticket,
-        fresh: bool,
+        reads: Reads,
     ) -> Result<Current, Unbuilt> {
         let (revision, gated, reaching) = {
             let held = self.held.read();
@@ -525,7 +520,7 @@ impl<C: Kernel + 'static> Session<C> {
         let reached = Reached::of(reaching);
         match &*gated {
             Gated::Checked(checked) => self
-                .model_with(stop, revision, checked, &reached, fresh)
+                .model_with(stop, revision, checked, &reached, reads)
                 .map(|model| Current {
                     read: ModelRead::of(revision, ModelChoice::Current, &model),
                     model,

@@ -96,7 +96,7 @@ fn a_fresh_read_answers_with_its_own_rebuilds_model_never_one_recorded_after_it_
                 Revision::OPENED,
                 &checked(BOX),
                 &Reached::default(),
-                true,
+                crate::recompute::Reads::Nothing,
             );
             let _ = said.send(model.map(|model| built_from(&model)));
         })
