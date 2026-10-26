@@ -218,10 +218,19 @@ fn cancel_naming_another_command_is_refused_with_whats_running_as_the_candidate(
             &["set_field".to_owned()][..]
         )
     );
-    // The edit runs on, then is stopped by name: it saved nothing, so it left no trace.
+    // The edit runs on, its commit's rebuild of the block 41 long, one step, held: none
+    // done, the block's running, shown as the session's revision's until the edit saves.
+    // Then it's stopped by name: it saved nothing, so it left no trace.
+    let status = f.sessions.status(&f.id).result.unwrap();
+    assert_eq!(status.running, Some(SessionCommand::SetField));
+    assert_eq!(status.rebuild.revision, Revision::OPENED);
     assert_eq!(
-        f.sessions.status(&f.id).result.unwrap().running,
-        Some(SessionCommand::SetField)
+        status.rebuild.progress,
+        Some(Progress {
+            done: 0,
+            steps: 1,
+            running: Some("k7f2qx3m box".to_owned()),
+        })
     );
     assert!(
         f.sessions
