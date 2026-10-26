@@ -16,14 +16,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::cache::{
     HOLE, Scratch, cache, calls, example_with_pin, files, hole, secret_of, session,
 };
+use super::cache_control::NAME;
 use super::example::EXAMPLE;
 use super::model::{checked, published};
 use silico_core::cache::{Cache, ClearFailure, ClearStep};
 use silico_core::fake::FakeKernel;
 use silico_core::recompute::Recompute;
-
-/// An entry's name in a subdirectory: 62 lowercase hex digits.
-const NAME: &str = "00000000000000000000000000000000000000000000000000000000000000";
 
 /// The cache in `dir` holding the example's four entries, made by a session that's gone.
 fn seeded(dir: &Path) -> Vec<PathBuf> {

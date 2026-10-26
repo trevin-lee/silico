@@ -7,93 +7,20 @@
 //! kernel's and solver's call records, and counts of the entries planted.
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
 
 use silico_core::ErrorCode;
-use silico_core::cache::Cache;
 use silico_core::command::wire::reads::CheckRequest;
-use silico_core::command::{CacheCleared, ModelChoice, Response, SessionId, Sessions};
+use silico_core::command::{CacheCleared, ModelChoice, Response, SessionId};
 use silico_core::document::json::read;
-use silico_core::fake::{FakeKernel, FakeSketches};
-use silico_core::sketch::SketchSolver;
-use tempfile::TempDir;
 
+use crate::cache_control::{Fixture, NAME, fixture};
 use crate::example::EXAMPLE;
 use crate::sessions::{HANG, answer};
 
-/// An entry's name in a subdirectory: 62 lowercase hex digits.
-const NAME: &str = "00000000000000000000000000000000000000000000000000000000000000";
-
-struct Fixture {
-    dir: TempDir,
-    kernel: Arc<FakeKernel>,
-    sketches: FakeSketches,
-    sessions: Sessions<Arc<FakeKernel>>,
-}
-
-fn fixture() -> Fixture {
-    let dir = tempfile::tempdir().unwrap();
-    let secret = dir.path().join("secret");
-    let kernel = Arc::new(FakeKernel::new(2).unwrap());
-    let sketches = FakeSketches::new();
-    let solver = sketches.clone();
-    let sessions = Sessions::with_stand_ins(
-        Arc::clone(&kernel),
-        move |cache| Cache::with_secret(cache, &secret),
-        move || Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>),
-    );
-    Fixture {
-        dir,
-        kernel,
-        sketches,
-        sessions,
-    }
-}
-
 impl Fixture {
-    fn docs(&self) -> PathBuf {
-        self.dir.path().join("docs")
-    }
-
-    fn cache(&self) -> PathBuf {
-        self.docs().join(".silico-cache")
-    }
-
-    fn open(&self, name: &str, text: &str) -> SessionId {
-        std::fs::create_dir_all(self.docs()).unwrap();
-        let path = self.docs().join(name);
-        std::fs::write(&path, text).unwrap();
-        let response = answer(self.sessions.open(&path, false));
-        assert!(response.result.is_ok(), "{response:?}");
-        response.session.unwrap().id
-    }
-
     fn clear(&self, id: &SessionId) -> Response<CacheCleared> {
         answer(self.sessions.cache_clear(id))
-    }
-
-    /// The entries in the cache: regular files in its subdirectories, by name.
-    fn entries(&self) -> Vec<PathBuf> {
-        let mut found = Vec::new();
-        for sub in std::fs::read_dir(self.cache())
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
-            let meta = std::fs::symlink_metadata(sub.path()).unwrap();
-            if meta.is_dir() {
-                for file in std::fs::read_dir(sub.path()).unwrap().flatten() {
-                    if file.file_name().len() == 62
-                        && std::fs::symlink_metadata(file.path()).unwrap().is_file()
-                    {
-                        found.push(file.path());
-                    }
-                }
-            }
-        }
-        found.sort();
-        found
     }
 }
 

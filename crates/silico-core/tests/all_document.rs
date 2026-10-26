@@ -10,6 +10,8 @@
 mod bound;
 #[path = "common/cache.rs"]
 mod cache;
+#[path = "common/cache_control.rs"]
+mod cache_control;
 #[path = "common/cache_format.rs"]
 mod cache_format;
 #[path = "common/call.rs"]

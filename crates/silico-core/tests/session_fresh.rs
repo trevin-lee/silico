@@ -10,20 +10,17 @@
 //! `MakeFaces` and its `Prism`, after one solve of the sketch; a sphere at the origin is one
 //! `MakeSphere`; each feature's solid that's made is summarized once.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use silico_core::ErrorCode;
-use silico_core::cache::Cache;
 use silico_core::command::{
     CacheCleared, CheckAnswer, ModelChoice, ModelRead, RebuildState, Response, Revision,
-    SessionCommand, SessionId, Sessions,
+    SessionCommand, SessionId,
 };
-use silico_core::fake::{FakeKernel, FakeSketches};
-use silico_core::sketch::SketchSolver;
-use tempfile::TempDir;
 
+use crate::cache_control::{Fixture, fixture};
 use crate::sessions::{HANG, answer};
 
 /// A sketch of a 4 by 2 rectangle on xy, with no constraints, and its pad, 10 long.
@@ -43,34 +40,6 @@ fn document(features: &[&str]) -> String {
     )
 }
 
-/// Sessions on a fake kernel and a fake sketch solver, which the test keeps handles on,
-/// each directory's cache sealed with a secret outside the documents' directory.
-struct Fixture {
-    dir: TempDir,
-    kernel: Arc<FakeKernel>,
-    sketches: FakeSketches,
-    sessions: Sessions<Arc<FakeKernel>>,
-}
-
-fn fixture() -> Fixture {
-    let dir = tempfile::tempdir().unwrap();
-    let secret = dir.path().join("secret");
-    let kernel = Arc::new(FakeKernel::new(2).unwrap());
-    let sketches = FakeSketches::new();
-    let solver = sketches.clone();
-    let sessions = Sessions::with_stand_ins(
-        Arc::clone(&kernel),
-        move |cache| Cache::with_secret(cache, &secret),
-        move || Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>),
-    );
-    Fixture {
-        dir,
-        kernel,
-        sketches,
-        sessions,
-    }
-}
-
 /// The kernel's and the solver's work so far: how far into each record a step begins.
 #[derive(Clone, Copy)]
 struct Mark {
@@ -79,20 +48,6 @@ struct Mark {
 }
 
 impl Fixture {
-    /// `text` written to `docs/name` and opened.
-    fn open(&self, name: &str, text: &str) -> SessionId {
-        let path = self.path(name);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, text).unwrap();
-        let response = answer(self.sessions.open(&path, false));
-        assert!(response.result.is_ok(), "{response:?}");
-        response.session.unwrap().id
-    }
-
-    fn path(&self, name: &str) -> PathBuf {
-        self.dir.path().join("docs").join(name)
-    }
-
     fn mark(&self) -> Mark {
         Mark {
             calls: self.kernel.calls().len(),
@@ -383,37 +338,14 @@ fn boxes(f: &Fixture) -> usize {
         .count()
 }
 
-/// Every file in the cache beside `docs/` (its subdirectories' entries).
-fn entries(f: &Fixture) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    let cache = f.dir.path().join("docs").join(".silico-cache");
-    for sub in std::fs::read_dir(&cache).into_iter().flatten().flatten() {
-        if sub.path().is_dir() {
-            for file in std::fs::read_dir(sub.path())
-                .into_iter()
-                .flatten()
-                .flatten()
-            {
-                found.push(file.path());
-            }
-        }
-    }
-    found
-}
-
 #[test]
 fn cache_clear_removes_the_entries_beside_the_document_and_a_second_removes_none() {
     let f = fixture();
     let a = f.open("a.silico", &document(&[PADDED, BLOCK]));
     assert_eq!(problems(&f.check(&a)), []);
     // An entry a step: the faces, the prism, and the box.
-    assert_eq!(entries(&f).len(), 3);
-    let stray = f
-        .dir
-        .path()
-        .join("docs")
-        .join(".silico-cache")
-        .join("notes.txt");
+    assert_eq!(f.entries().len(), 3);
+    let stray = f.cache().join("notes.txt");
     std::fs::write(&stray, b"mine").unwrap();
     let directory = f.path(".silico-cache").to_str().unwrap().to_owned();
     let cleared = answer(f.sessions.cache_clear(&a));
@@ -426,7 +358,7 @@ fn cache_clear_removes_the_entries_beside_the_document_and_a_second_removes_none
             removed: 3
         }
     );
-    assert!(entries(&f).is_empty());
+    assert!(f.entries().is_empty());
     assert_eq!(std::fs::read(&stray).unwrap(), b"mine");
     assert_eq!(
         answer(f.sessions.cache_clear(&a)).result.unwrap(),
@@ -447,7 +379,7 @@ fn cache_clear_removes_the_entries_beside_the_document_and_a_second_removes_none
         f.made_since(missed),
         (vec!["MakeBox", "MakeFaces", "Prism"], 2)
     );
-    assert_eq!(entries(&f).len(), 3);
+    assert_eq!(f.entries().len(), 3);
 }
 
 #[test]
