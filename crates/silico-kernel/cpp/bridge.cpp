@@ -1136,16 +1136,32 @@ namespace {
 // through a revolved barrel came back unchanged, and "valid") and BRepBndLib::AddOptimal
 // boxes it wrong. The precision is at most half the sweep, as SetTrim's, so an arc turning
 // less than 1e-9 radians stays itself, where BRepLib_MakeEdge (a flat PConfusion) makes it a
-// whole turn longer (a 0.05 mm arc of radius 100 m, a circle). Rust checks each end is on
-// the circle where its parameter puts it, a whole turn being the same place.
+// whole turn longer (a 0.05 mm arc of radius 100 m, a circle). The adjustment runs until it
+// changes nothing, since SetTrim adjusts again from the range given: under 2e-9 radians, a
+// start a turn up, rounded, can make the sweep a few ulps shorter, its precision with it, and
+// the start then outside it (an arc from -5.549279854515954e-10 to 5.549273573009629e-10).
+// It settles on the second run. Rust checks each end is on the circle where its parameter
+// puts it, a whole turn being the same place.
 TopoDS_Edge make_arc_edge(const gp_Ax2 &frame, double radius, TopoDS_Vertex from,
                           TopoDS_Vertex to, double first, double last, double tolerance) {
   if (!(first < last)) {
     throw Standard_Failure("an arc's range must increase");
   }
   Handle(Geom_Circle) circle = new Geom_Circle(frame, radius);
-  ElCLib::AdjustPeriodic(circle->FirstParameter(), circle->LastParameter(),
-                         Min(Abs(last - first) / 2.0, Precision::PConfusion()), first, last);
+  for (int run = 0;; ++run) {
+    double u1 = first;
+    double u2 = last;
+    ElCLib::AdjustPeriodic(circle->FirstParameter(), circle->LastParameter(),
+                           Min(Abs(u2 - u1) / 2.0, Precision::PConfusion()), u1, u2);
+    if (u1 == first && u2 == last) {
+      break;
+    }
+    if (run == 3) {
+      throw Standard_Failure("an arc's range doesn't settle on one turn of its circle");
+    }
+    first = u1;
+    last = u2;
+  }
   BRep_Builder builder;
   TopoDS_Edge arc;
   builder.MakeEdge(arc, circle, tolerance);
