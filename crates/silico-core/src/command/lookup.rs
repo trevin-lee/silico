@@ -25,8 +25,8 @@ use crate::{Error, ErrorCode};
 pub(crate) struct Kinds {
     /// Those it takes.
     pub(crate) taken: &'static [ElementKind],
-    /// Why another isn't, after "names a face: " (`a measure is between faces, edges, and
-    /// vertices`).
+    /// Why another isn't, after "names <a kind>: " (a measure's, after "names a solid: ",
+    /// is `a measure is between faces, edges, and vertices`).
     pub(crate) why: &'static str,
     /// What to do instead.
     pub(crate) suggestion: &'static str,
@@ -38,9 +38,11 @@ pub(crate) struct Hit<'m> {
     pub(crate) feature: &'m FeatureId,
     /// The element, in its solid's numbering.
     pub(crate) element: ElementRef,
-    /// Its solid's element map, and description and build (whose shape the kernel takes).
+    /// Its solid's element map.
     pub(crate) map: &'m ElementMap,
+    /// Its solid's description: each element's geometry.
     pub(crate) description: &'m Description,
+    /// Its solid's build, whose shape the kernel takes.
     pub(crate) built: &'m Built,
 }
 
@@ -146,7 +148,7 @@ impl<'m> Lookup<'m> {
                     format!(
                         "{parameter}, {}, names {}: {}",
                         crate::document::json::shown(text),
-                        kind_word(name.kind()),
+                        name.kind().a_word(),
                         self.kinds.why
                     ),
                 )
@@ -230,16 +232,6 @@ impl<'m> Lookup<'m> {
     /// Every refusal kept, in the order they came; none if every name was found.
     pub(crate) fn finish(self) -> Result<(), Problems> {
         self.refused.into_result()
-    }
-}
-
-/// A kind, as a refusal says a name names one (`names a solid`).
-fn kind_word(kind: ElementKind) -> &'static str {
-    match kind {
-        ElementKind::Face => "a face",
-        ElementKind::Edge => "an edge",
-        ElementKind::Vertex => "a vertex",
-        ElementKind::Solid => "a solid",
     }
 }
 

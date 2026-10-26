@@ -193,10 +193,8 @@ const MEASURED: Kinds = Kinds {
     suggestion: "name a face, an edge, or a vertex of the solid",
 };
 
-/// The two elements `names` name, each looked for in the solids the request reads, as
-/// [`Lookup`] finds them: the feature `feature`'s, or, for none, every body (the solids no
-/// later feature consumed), in timeline order; every reason one isn't found said, in the
-/// request's order.
+/// The two elements `names` name, each looked for by [`Lookup`] with [`MEASURED`], and
+/// their geometry.
 fn find<'m>(
     model: &'m Model,
     names: &'m [String; 2],
