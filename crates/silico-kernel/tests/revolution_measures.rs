@@ -783,6 +783,42 @@ fn an_arc_starting_at_its_circles_angle_0_or_a_nanometre_below_it_is_cut_as_by_h
 }
 
 #[test]
+fn a_kilometres_half_barrel_is_cut_as_by_hand_or_is_occts_known_wrong_answer() {
+    // The metre's half barrel above, of a kilometre's circle (radius 1e6 mm, its centre
+    // 999,995 mm across the axis), its arc turning 4e-6 rad from 1e-12 rad below its angle
+    // 0: OCCT 7.9.3's cut at y > 2 removes nothing, valid, warning only
+    // BOPAlgo_AlertFaceBuilderUnusedEdges, and FreeCAD 1.1.3's `Shape.cut` gives the same
+    // (301.593, the half whole) with its arc built as its sketcher builds it, a turn on, or
+    // through three points (2026-10-25): a known wrong result (docs/ports/booleans.md),
+    // taken as FreeCAD takes it; a pocket of it is refused as removing nothing. The whole
+    // barrel, z from −4 to 4, is cut right by both. Right or that wrong answer, so OCCT
+    // giving any other fails here, and a fixed OCCT passes.
+    let mut k = kernel();
+    let block = y_over_2(&mut k);
+    let r = 1e6;
+    let c = 5.0 - r;
+    let start = -1e-12;
+    let floor = r * libm::sin(start);
+    let half = half_barrel(&mut k, c, r, start, floor);
+    let whole = k.summarize(&half).unwrap().volume;
+    let x = |z: f64| c + r * libm::sqrt(1.0 - (z / r) * (z / r));
+    let by_hand = integral(floor, 4.0, 64, |z| cut_section(x(z), TAU));
+    // The half's own volume, π ∫ (x² − 1) dz, by hand: OCCT's whole is the uncut half.
+    let half_by_hand = integral(floor, 4.0, 64, |z| PI * (x(z) * x(z) - INNER * INNER));
+    assert_close("the half", whole, half_by_hand, 2e-9);
+    let cut = k.boolean(BooleanOp::Cut, &half, &block).unwrap().shape;
+    let s = k.summarize(&cut).unwrap();
+    let right = (s.volume - by_hand).abs() <= 2e-9 * by_hand;
+    let known = (s.volume - whole).abs() <= 1e-12 * whole;
+    assert!(
+        s.valid && (right || known),
+        "{} for {by_hand} (or {whole} uncut), valid {}",
+        s.volume,
+        s.valid
+    );
+}
+
+#[test]
 fn a_pad_of_an_arc_across_its_circles_angle_0_is_cut_as_by_hand() {
     // A pad makes a cylinder of the arc, periodic in its angle, which was never affected:
     // the barrel's profile padded 10 along y and cut at y > 2 keeps 2 of its 10.
