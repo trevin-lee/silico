@@ -16,16 +16,16 @@ use std::sync::Arc;
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
-use silico_core::command::wire::reads::{CheckModel, CheckRequest, TextRequest};
+use silico_core::command::wire::reads::{CheckRequest, TextRequest};
 use silico_core::command::wire::session::{
     CancelRequest, OpenRequest, PUBLISHED_READS, SESSION_COMMANDS, VersionRequest,
 };
 use silico_core::command::wire::transaction::SessionRequest;
 use silico_core::command::wire::{Layout, ToWire, response, response_text, snapshot_value, write};
 use silico_core::command::{
-    Begun, Cancelled, Limits, MAX_SESSIONS, ModelChoice, Opened, OutlineAnswer, Problems, Progress,
-    ReadCommand, Rebuild, RebuildState, Response, Revision, SessionCommand, SessionId, Sessions,
-    Status, TextAnswer, VERSION, Version,
+    Begun, Cancelled, CheckModel, Limits, MAX_SESSIONS, ModelChoice, Opened, OutlineAnswer,
+    Problems, Progress, ReadCommand, Rebuild, RebuildState, Response, Revision, SessionCommand,
+    SessionId, Sessions, Status, TextAnswer, VERSION, Version,
 };
 use silico_core::document::json::{Node, read};
 use silico_core::fake::{FakeKernel, FakeSketches, Hold};
@@ -854,7 +854,10 @@ fn cancel_answers_and_refuses_as_the_design_gives_it() {
     let error = error_schema();
     // A check waits for its rebuild, its box held: cancelled by the design's request.
     let f = opened(BOX);
-    let (_hold, check) = f.running_held(|| f.sessions.check(&s1(), ModelChoice::Current));
+    let (_hold, check) = f.running_held(|| {
+        f.sessions
+            .check(&s1(), CheckModel::Current { fresh: false })
+    });
     let request = CancelRequest::read(&parsed(&example("cancel/request"))).unwrap();
     let cancelled = f.sessions.cancel(&request.session, request.command);
     let text = written(cancelled.result.as_ref().unwrap());
@@ -923,7 +926,10 @@ fn text_outline_and_check_answer_as_the_design_gives_them() {
     let f = opened(BOX);
     let request = CheckRequest::read(&parsed(&example("check/request"))).unwrap();
     assert_eq!(request.model, CheckModel::Current { fresh: false });
-    let checked = answer(f.sessions.check(&request.session, ModelChoice::Current));
+    let checked = answer(
+        f.sessions
+            .check(&request.session, CheckModel::Current { fresh: false }),
+    );
     assert_eq!(checked.model.as_ref().unwrap().of, ModelChoice::Current);
     let text = written(&checked.result.unwrap());
     assert_eq!(text, example("check/result"));
@@ -1090,11 +1096,14 @@ fn a_published_check_answers_at_once_from_the_older_revision_while_the_current_r
     let f = opened(BOX);
     // Revision 1's model, built and published.
     assert!(
-        answer(f.sessions.check(&s1(), ModelChoice::Current))
-            .result
-            .unwrap()
-            .problems
-            .is_empty()
+        answer(
+            f.sessions
+                .check(&s1(), CheckModel::Current { fresh: false })
+        )
+        .result
+        .unwrap()
+        .problems
+        .is_empty()
     );
     // Revision 2, an edit in a transaction, its rebuild held by a current check.
     answer(f.sessions.begin(&s1())).result.unwrap();
@@ -1106,13 +1115,16 @@ fn a_published_check_answers_at_once_from_the_older_revision_while_the_current_r
         parsed("41"),
     ));
     assert_eq!(edit.session.unwrap().revision, revision(2));
-    let (hold, current) = f.running_held(|| f.sessions.check(&s1(), ModelChoice::Current));
+    let (hold, current) = f.running_held(|| {
+        f.sessions
+            .check(&s1(), CheckModel::Current { fresh: false })
+    });
     // The design's request, reading the published model: answered while the rebuild is held,
     // from revision 1's model.
     let text = example("check/request").replace("current", "published");
     let request = CheckRequest::read(&parsed(&text)).unwrap();
     assert_eq!(request.model, CheckModel::Published);
-    let published = answer(f.sessions.check(&request.session, request.model.choice()));
+    let published = answer(f.sessions.check(&request.session, request.model));
     let model = published.model.as_ref().unwrap();
     assert_eq!(
         (model.revision, model.of, &model.fault),
@@ -1134,7 +1146,10 @@ fn a_published_check_answers_at_once_from_the_older_revision_while_the_current_r
     );
     assert!(current.result.unwrap().problems.is_empty());
     // The current choice is the current check's.
-    let again = answer(f.sessions.check(&s1(), ModelChoice::Current));
+    let again = answer(
+        f.sessions
+            .check(&s1(), CheckModel::Current { fresh: false }),
+    );
     assert_eq!(again.model.unwrap().of, ModelChoice::Current);
 }
 
@@ -1145,10 +1160,13 @@ fn a_published_check_of_a_document_the_gate_refused_follows_the_published_rule()
     let zero = BOX.replace("\"length\": 40", "\"length\": 0");
     assert_ne!(zero, BOX);
     let f = opened(&zero);
-    let published = answer(f.sessions.check(&s1(), ModelChoice::Published));
+    let published = answer(f.sessions.check(&s1(), CheckModel::Published));
     assert_eq!(published.model, None);
     let refused = published.result.unwrap_err();
-    let current = answer(f.sessions.check(&s1(), ModelChoice::Current));
+    let current = answer(
+        f.sessions
+            .check(&s1(), CheckModel::Current { fresh: false }),
+    );
     assert_eq!(current.model, None);
     let problems = current.result.unwrap().problems;
     assert_eq!(refused, problems);
@@ -1164,11 +1182,14 @@ fn a_published_check_of_a_document_the_gate_refused_follows_the_published_rule()
     // revision 2: the published check answers from revision 1's model.
     let f = opened(BOX);
     assert!(
-        answer(f.sessions.check(&s1(), ModelChoice::Current))
-            .result
-            .unwrap()
-            .problems
-            .is_empty()
+        answer(
+            f.sessions
+                .check(&s1(), CheckModel::Current { fresh: false })
+        )
+        .result
+        .unwrap()
+        .problems
+        .is_empty()
     );
     std::fs::write(f.path(), &zero).unwrap();
     assert!(
@@ -1177,7 +1198,7 @@ fn a_published_check_of_a_document_the_gate_refused_follows_the_published_rule()
             .unwrap()
             .reloaded
     );
-    let published = answer(f.sessions.check(&s1(), ModelChoice::Published));
+    let published = answer(f.sessions.check(&s1(), CheckModel::Published));
     let model = published.model.as_ref().unwrap();
     assert_eq!(
         (model.revision, model.of),
@@ -1185,7 +1206,10 @@ fn a_published_check_of_a_document_the_gate_refused_follows_the_published_rule()
     );
     assert_eq!(published.session.as_ref().unwrap().revision, revision(2));
     assert!(published.result.unwrap().problems.is_empty());
-    let current = answer(f.sessions.check(&s1(), ModelChoice::Current));
+    let current = answer(
+        f.sessions
+            .check(&s1(), CheckModel::Current { fresh: false }),
+    );
     assert_eq!(current.result.unwrap().problems.total(), 1);
 }
 
@@ -1212,15 +1236,21 @@ fn a_published_check_leaves_out_the_drift_its_own_revisions_edits_reached() {
     // fingerprint, the shorter box's, isn't drift; its model published.
     answer(f.sessions.begin(&s1())).result.unwrap();
     length(1, "41");
-    let checked = answer(f.sessions.check(&s1(), ModelChoice::Current));
+    let checked = answer(
+        f.sessions
+            .check(&s1(), CheckModel::Current { fresh: false }),
+    );
     assert_eq!(checked.model.unwrap().revision, revision(2));
     assert!(checked.result.unwrap().problems.is_empty());
     // Revision 3: the edit undone, so nothing is reached, its rebuild held by a current check.
     length(2, "40");
-    let (hold, current) = f.running_held(|| f.sessions.check(&s1(), ModelChoice::Current));
+    let (hold, current) = f.running_held(|| {
+        f.sessions
+            .check(&s1(), CheckModel::Current { fresh: false })
+    });
     // The published check reads revision 2's model, as revision 2's edits reached it: no
     // drift, though nothing is reached now.
-    let published = answer(f.sessions.check(&s1(), ModelChoice::Published));
+    let published = answer(f.sessions.check(&s1(), CheckModel::Published));
     let model = published.model.as_ref().unwrap();
     assert_eq!(
         (model.revision, model.of),
@@ -1236,7 +1266,7 @@ fn a_published_check_leaves_out_the_drift_its_own_revisions_edits_reached() {
     let problems = current.result.unwrap().problems;
     assert!(problems.is_empty(), "{:?}", problems.errors());
     // And revision 3's model, published, checks as its own: still nothing reached, no drift.
-    let published = answer(f.sessions.check(&s1(), ModelChoice::Published));
+    let published = answer(f.sessions.check(&s1(), CheckModel::Published));
     assert_eq!(published.model.unwrap().revision, revision(3));
     assert!(published.result.unwrap().problems.is_empty());
 }
@@ -1278,13 +1308,16 @@ fn a_published_check_says_the_drift_no_edit_reached() {
     // The box as stored drifts, and no edit reaches it: a current check says so, and
     // publishes its model; a published check of that model says the same drift.
     let f = opened(&stale());
-    let current = answer(f.sessions.check(&s1(), ModelChoice::Current));
+    let current = answer(
+        f.sessions
+            .check(&s1(), CheckModel::Current { fresh: false }),
+    );
     let current = current.result.unwrap();
     assert_eq!(
         codes(&current.problems),
         [(ErrorCode::Drift, Some("k7f2qx3m"))]
     );
-    let published = answer(f.sessions.check(&s1(), ModelChoice::Published));
+    let published = answer(f.sessions.check(&s1(), CheckModel::Published));
     let model = published.model.as_ref().unwrap();
     assert_eq!(
         (model.revision, model.of),
@@ -1300,20 +1333,26 @@ fn after_a_rollback_a_published_check_says_the_drift_the_transaction_reached() {
     // revision 1's state, revision 1's model published as its own: nothing reached, so a
     // published check of it says the drift again.
     let f = opened(&stale());
-    let first = answer(f.sessions.check(&s1(), ModelChoice::Current));
+    let first = answer(
+        f.sessions
+            .check(&s1(), CheckModel::Current { fresh: false }),
+    );
     assert_eq!(
         codes(&first.result.unwrap().problems),
         [(ErrorCode::Drift, Some("k7f2qx3m"))]
     );
     answer(f.sessions.begin(&s1())).result.unwrap();
     set(&f, 1, "width", "21");
-    let reached = answer(f.sessions.check(&s1(), ModelChoice::Current));
+    let reached = answer(
+        f.sessions
+            .check(&s1(), CheckModel::Current { fresh: false }),
+    );
     assert_eq!(reached.model.unwrap().revision, revision(2));
     let problems = reached.result.unwrap().problems;
     assert!(problems.is_empty(), "{:?}", problems.errors());
     let rolled = answer(f.sessions.rollback(&s1()));
     assert_eq!(rolled.session.unwrap().revision, revision(3));
-    let published = answer(f.sessions.check(&s1(), ModelChoice::Published));
+    let published = answer(f.sessions.check(&s1(), CheckModel::Published));
     let model = published.model.as_ref().unwrap();
     assert_eq!(
         (model.revision, model.of),
@@ -1340,7 +1379,7 @@ fn a_rebuild_a_published_check_starts_keeps_its_revisions_reach() {
     set(&f, 1, "length", "41");
     let deadline = std::time::Instant::now() + HANG;
     let published = loop {
-        let published = answer(f.sessions.check(&s1(), ModelChoice::Published));
+        let published = answer(f.sessions.check(&s1(), CheckModel::Published));
         if published.result.is_ok() {
             break published;
         }
@@ -1370,11 +1409,14 @@ fn a_published_check_lists_problems_beside_a_kernel_fault() {
     let f = opened(BOX);
     f.kernel
         .refuse(|_| Some(Error::new(ErrorCode::WorkerCrashed, "crashed")));
-    let current = answer(f.sessions.check(&s1(), ModelChoice::Current));
+    let current = answer(
+        f.sessions
+            .check(&s1(), CheckModel::Current { fresh: false }),
+    );
     let fault = current.model.as_ref().unwrap().fault.as_ref().unwrap();
     assert_eq!(fault.code(), ErrorCode::WorkerCrashed);
     assert!(current.result.unwrap().problems.is_empty());
-    let published = answer(f.sessions.check(&s1(), ModelChoice::Published));
+    let published = answer(f.sessions.check(&s1(), CheckModel::Published));
     let model = published.model.as_ref().unwrap();
     assert_eq!(
         (model.revision, model.of),

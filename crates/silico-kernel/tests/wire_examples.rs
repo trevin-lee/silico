@@ -21,7 +21,7 @@ use silico_core::command::elements::{
 use silico_core::command::measure::mass_properties;
 use silico_core::command::wire::reads::CheckRequest;
 use silico_core::command::wire::{Layout, ToWire, write};
-use silico_core::command::{ModelChoice, Response, Revision, Running, Sessions};
+use silico_core::command::{CheckModel, Response, Revision, Running, Sessions};
 use silico_core::document::json::read;
 use silico_core::document::{Angle, FeatureId};
 use silico_core::kernel::ElementKind;
@@ -180,13 +180,13 @@ fn the_designs_check_of_a_fillet_whose_edge_an_edit_removed_is_its_example_byte_
     let sessions =
         Sessions::with_cache_opener(pool, move |cache| Cache::with_secret(cache, &secret));
     let request = CheckRequest::read(&read(example("check/request").as_bytes()).unwrap()).unwrap();
-    assert_eq!(request.model.choice(), ModelChoice::Current);
+    assert_eq!(request.model, CheckModel::Current { fresh: false });
     // `document` saved as `file` and checked, in the next session (s1, then s2).
     let check = |file: &str, document: &str| {
         let path = dir.path().join(file);
         std::fs::write(&path, document).unwrap();
         let session = answer(sessions.open(&path, false)).session.unwrap().id;
-        let checked = answer(sessions.check(&session, request.model.choice()));
+        let checked = answer(sessions.check(&session, request.model));
         // No kernel fault: any problem is the document's.
         assert_eq!(checked.model.as_ref().unwrap().fault, None);
         (session, written(&checked.result.unwrap()))

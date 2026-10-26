@@ -306,6 +306,17 @@ impl ModelChoice {
     }
 }
 
+/// The model a `check` reads (decision 33; the design's section 7): the current one,
+/// rebuilt with every step built anew if `fresh` (M4.3, as SolidWorks' forced rebuild,
+/// Ctrl+Q), or the published one, read as it is, never rebuilt, so never fresh. On the
+/// wire, `model` and `fresh` (`wire::reads::CheckRequest`, whose reader refuses `fresh` true
+/// with the published model): what [`Sessions::check`](super::Sessions::check) takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckModel {
+    Current { fresh: bool },
+    Published,
+}
+
 /// The newest model a session's rebuilds published, and the revision it's the model of (the
 /// same as its response's `model.revision`): the revision it was rebuilt from, or, after a
 /// rollback, the new revision whose state is the one it was rebuilt from (the design's

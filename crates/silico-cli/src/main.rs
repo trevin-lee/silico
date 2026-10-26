@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use silico_core::cache::Cache;
-use silico_core::command::{self, ModelChoice, Problems, Response, SessionId, Sessions};
+use silico_core::command::{self, CheckModel, Problems, Response, SessionId, Sessions};
 use silico_core::file::opened_and_read;
 use silico_core::pool::KernelPool;
 use silico_core::{Error, ErrorCode};
@@ -522,12 +522,8 @@ fn check(sessions: &Sessions<KernelPool>, file: &Path, json: bool, fresh: bool) 
         }
     };
     in_session(sessions, file, "check", refused, |id| {
-        let running = if fresh {
-            sessions.check_fresh(id)
-        } else {
-            sessions.check(id, ModelChoice::Current)
-        };
-        let Response { model, result, .. } = running.wait();
+        let Response { model, result, .. } =
+            sessions.check(id, CheckModel::Current { fresh }).wait();
         let problems = match result {
             Ok(answer) => answer.problems,
             Err(problems) => {

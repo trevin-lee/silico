@@ -6,16 +6,18 @@
 //! mirrors their snapshots, `commands/text.json`, `outline.json`, and `check.json`, are
 //! generated from.
 //!
-//! `check`'s `fresh` (M4.3: the current revision rebuilt with every step built anew,
-//! [`Sessions::check_fresh`](crate::command::Sessions::check_fresh)) is taken only with the
-//! current model: a published read never rebuilds.
+//! `check`'s `fresh` (M4.3: the current revision rebuilt with every step built anew) is
+//! taken only with the current model: a published read never rebuilds. The request's
+//! [`CheckModel`] is what [`Sessions::check`](crate::command::Sessions::check) takes.
 
 use schemars::JsonSchema;
 
 use super::elements::ModelChoiceSchema;
 use super::{ErrorSchema, Json, RequestFields, ToWire, problems, wire_shape};
 use crate::command::session::SESSION_ID_PATTERN;
-use crate::command::{CheckAnswer, ModelChoice, OutlineAnswer, Problems, SessionId, TextAnswer};
+use crate::command::{
+    CheckAnswer, CheckModel, ModelChoice, OutlineAnswer, Problems, SessionId, TextAnswer,
+};
 use crate::document::json::Node;
 use crate::document::{FeatureId, PROBLEMS_LISTED};
 use crate::{Error, ErrorCode};
@@ -55,38 +57,12 @@ impl ToWire for TextRequest {
     }
 }
 
-/// A `check` request: the session, and the model it reads, as
-/// [`Sessions::check`](crate::command::Sessions::check) and
-/// [`Sessions::check_fresh`](crate::command::Sessions::check_fresh) take them.
+/// A `check` request: the session, and the model it reads (the wire's `model` and
+/// `fresh`), as [`Sessions::check`](crate::command::Sessions::check) takes them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CheckRequest {
     pub session: SessionId,
     pub model: CheckModel,
-}
-
-/// The model a `check` reads: the current one, rebuilt with every step built anew if
-/// `fresh`; or the published one, read as it is, never rebuilt, so never fresh (the
-/// reader refuses `fresh` true with it). On the wire, `model` and `fresh`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CheckModel {
-    Current { fresh: bool },
-    Published,
-}
-
-impl CheckModel {
-    /// Which model it reads: the wire's `model`.
-    pub fn choice(self) -> ModelChoice {
-        match self {
-            CheckModel::Current { .. } => ModelChoice::Current,
-            CheckModel::Published => ModelChoice::Published,
-        }
-    }
-
-    /// Whether the current model is rebuilt with every step built anew: the wire's
-    /// `fresh`, false for the published model.
-    pub fn fresh(self) -> bool {
-        matches!(self, CheckModel::Current { fresh: true })
-    }
 }
 
 impl CheckRequest {
@@ -133,10 +109,14 @@ fn fresh_published() -> Error {
 impl ToWire for CheckRequest {
     /// The request as a client writes it, every field in the shape's order.
     fn to_wire(&self) -> Json<'_> {
+        let (choice, fresh) = match self.model {
+            CheckModel::Current { fresh } => (ModelChoice::Current, fresh),
+            CheckModel::Published => (ModelChoice::Published, false),
+        };
         Json::object([
             ("session", self.session.to_wire()),
-            ("model", Json::str(self.model.choice().as_str())),
-            ("fresh", Json::bool(self.model.fresh())),
+            ("model", Json::str(choice.as_str())),
+            ("fresh", Json::bool(fresh)),
         ])
     }
 }

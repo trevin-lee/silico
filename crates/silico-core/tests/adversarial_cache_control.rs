@@ -11,7 +11,7 @@ use std::path::Path;
 
 use silico_core::ErrorCode;
 use silico_core::command::wire::reads::CheckRequest;
-use silico_core::command::{CacheCleared, ModelChoice, Response, SessionId};
+use silico_core::command::{CacheCleared, CheckModel, Response, SessionId};
 use silico_core::document::json::read;
 
 use crate::cache_control::{Fixture, NAME, fixture};
@@ -99,7 +99,7 @@ fn a_fresh_check_solves_again_a_sketch_whose_failure_the_engine_kept() {
     });
     let sketch = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "A", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}]}"#;
     let a = f.open("a.silico", sketch);
-    let first = answer(f.sessions.check(&a, ModelChoice::Current));
+    let first = answer(f.sessions.check(&a, CheckModel::Current { fresh: false }));
     let codes = |r: &Response<silico_core::command::CheckAnswer>| -> Vec<ErrorCode> {
         r.result
             .as_ref()
@@ -112,10 +112,10 @@ fn a_fresh_check_solves_again_a_sketch_whose_failure_the_engine_kept() {
     };
     assert_eq!(codes(&first), [ErrorCode::OverConstrained]);
     assert_eq!(f.sketches.requests().len(), 1);
-    let again = answer(f.sessions.check(&a, ModelChoice::Current));
+    let again = answer(f.sessions.check(&a, CheckModel::Current { fresh: false }));
     assert_eq!(codes(&again), [ErrorCode::OverConstrained]);
     assert_eq!(f.sketches.requests().len(), 1);
-    let fresh = answer(f.sessions.check_fresh(&a));
+    let fresh = answer(f.sessions.check(&a, CheckModel::Current { fresh: true }));
     assert_eq!(codes(&fresh), [ErrorCode::OverConstrained]);
     assert_eq!(f.sketches.requests().len(), 2);
     assert!(f.kernel.calls().is_empty());
@@ -128,7 +128,9 @@ fn fresh_checks_one_after_another_each_build_every_step() {
     let f = fixture();
     let block = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
     let a = f.open("a.silico", block);
-    let checks: Vec<_> = (0..3).map(|_| f.sessions.check_fresh(&a)).collect();
+    let checks: Vec<_> = (0..3)
+        .map(|_| f.sessions.check(&a, CheckModel::Current { fresh: true }))
+        .collect();
     for check in checks {
         let checked = answer(check);
         assert!(checked.result.unwrap().problems.is_empty());
@@ -148,7 +150,7 @@ fn sessions_dropped_while_a_fresh_check_waits_answer_it_and_hang_nothing() {
     let f = fixture();
     let a = f.open("a.silico", EXAMPLE);
     let hold = f.kernel.hold(|op| op.name() == "Cut");
-    let check = f.sessions.check_fresh(&a);
+    let check = f.sessions.check(&a, CheckModel::Current { fresh: true });
     assert!(f.kernel.wait_running(1, HANG));
     let Fixture {
         dir: _dir,
@@ -187,7 +189,7 @@ fn a_cache_directory_thats_a_file_a_link_or_unreadable_is_cleared_safely() {
     assert_eq!(std::fs::read(&planted).unwrap(), b"someone's file");
     std::fs::remove_file(f.cache()).unwrap();
     // Built, then made unreadable: refused, naming the directory, nothing removed.
-    let checked = answer(f.sessions.check(&a, ModelChoice::Current));
+    let checked = answer(f.sessions.check(&a, CheckModel::Current { fresh: false }));
     assert!(checked.result.unwrap().problems.is_empty());
     assert_eq!(f.entries().len(), 4);
     std::fs::set_permissions(f.cache(), std::fs::Permissions::from_mode(0o333)).unwrap();
@@ -219,7 +221,7 @@ fn a_pipe_or_a_socket_named_as_an_entry_is_left_and_never_waited_on() {
     let f = fixture();
     let a = f.open("a.silico", EXAMPLE);
     assert!(
-        answer(f.sessions.check(&a, ModelChoice::Current))
+        answer(f.sessions.check(&a, CheckModel::Current { fresh: false }))
             .result
             .unwrap()
             .problems
@@ -261,7 +263,7 @@ fn a_clear_during_a_rebuild_of_the_same_session_leaves_only_sound_entries() {
     let f = fixture();
     let a = f.open("a.silico", EXAMPLE);
     assert!(
-        answer(f.sessions.check(&a, ModelChoice::Current))
+        answer(f.sessions.check(&a, CheckModel::Current { fresh: false }))
             .result
             .unwrap()
             .problems
@@ -275,7 +277,7 @@ fn a_clear_during_a_rebuild_of_the_same_session_leaves_only_sound_entries() {
     assert!(answer(f.sessions.begin(&a)).result.is_ok());
     let edit = answer(f.sessions.replace_text(&a, revision, edited.clone()));
     assert!(edit.result.is_ok(), "{edit:?}");
-    let started = answer(f.sessions.check(&a, ModelChoice::Published));
+    let started = answer(f.sessions.check(&a, CheckModel::Published));
     assert!(started.result.is_ok());
     assert!(f.kernel.wait_running(1, HANG));
     let cleared = f.clear(&a).result.unwrap();
@@ -283,13 +285,13 @@ fn a_clear_during_a_rebuild_of_the_same_session_leaves_only_sound_entries() {
     // (its pin and the pin's move): four to six.
     assert!((4..=6).contains(&cleared.removed), "{cleared:?}");
     drop(hold);
-    let checked = answer(f.sessions.check(&a, ModelChoice::Current));
+    let checked = answer(f.sessions.check(&a, CheckModel::Current { fresh: false }));
     assert!(checked.result.unwrap().problems.is_empty());
     assert!(answer(f.sessions.rollback(&a)).result.is_ok());
     // Every entry on disk now is whole: a session of its own on the edited document takes
     // what's there and builds the rest, the same shapes.
     let b = f.open("b.silico", &edited);
-    let rebuilt = answer(f.sessions.check(&b, ModelChoice::Current));
+    let rebuilt = answer(f.sessions.check(&b, CheckModel::Current { fresh: false }));
     assert!(rebuilt.result.unwrap().problems.is_empty());
     assert_eq!(rebuilt.model.unwrap().fault, None);
 }
@@ -302,7 +304,7 @@ fn a_clear_of_a_session_whose_file_has_gone_or_changed_clears_and_reads_nothing(
     let f = fixture();
     let a = f.open("a.silico", EXAMPLE);
     assert!(
-        answer(f.sessions.check(&a, ModelChoice::Current))
+        answer(f.sessions.check(&a, CheckModel::Current { fresh: false }))
             .result
             .unwrap()
             .problems
@@ -320,7 +322,7 @@ fn a_clear_of_a_session_whose_file_has_gone_or_changed_clears_and_reads_nothing(
     // Changed outside the session: not reloaded either.
     let b = f.open("b.silico", EXAMPLE);
     assert!(
-        answer(f.sessions.check(&b, ModelChoice::Current))
+        answer(f.sessions.check(&b, CheckModel::Current { fresh: false }))
             .result
             .unwrap()
             .problems

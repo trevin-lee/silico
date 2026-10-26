@@ -115,10 +115,10 @@ use transaction::{Claim, Held, Reload, Rereads, transaction_open};
 pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
-    Added, Begun, CacheCleared, Cancelled, CheckAnswer, Closed, Committed, FieldSet, ModelChoice,
-    ModelRead, Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild, RebuildState,
-    Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running, SessionId,
-    SessionInfo, Status, Stopper, TextAnswer,
+    Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, FieldSet,
+    ModelChoice, ModelRead, Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild,
+    RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
+    SessionId, SessionInfo, Status, Stopper, TextAnswer,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 
@@ -660,14 +660,25 @@ impl<P: Clients + 'static> Sessions<P> {
         })
     }
 
-    /// `session`'s document's problems ([`super::check`]) from the model `choice` names
-    /// (decision 33), and its warnings (none yet).
+    /// `session`'s document's problems ([`super::check`]) from the model `model` names
+    /// (decision 33), and its warnings (none yet): a `check` request's `model` and `fresh`,
+    /// as the wire reads them (`CheckRequest::model`).
     ///
     /// The current revision's: the gate's problems, if it refused the document, or, from the
     /// session's current revision rebuilt (waited for, and started if it hasn't been:
     /// decision 13), each failed feature's and each drift of a feature no edit reached since
     /// the last save (decision 28: a reached feature's stored fingerprint was measured from
     /// other inputs, and a commit writes its new one).
+    ///
+    /// With `fresh` (the design's section 7, M4.3), the current revision rebuilt with every
+    /// step built anew, as SolidWorks' forced rebuild (Ctrl+Q) does, reading nothing kept,
+    /// neither in the session's engine (its steps' results, the refusals among them, its
+    /// sketches' solves) nor in the cache on disk
+    /// ([`Recompute::start_fresh`](crate::recompute::Recompute::start_fresh)), though what it
+    /// builds is kept in both, so the next rebuild hits it. A kernel fault the revision kept
+    /// as its outcome (decision 32) is tried again, and the model this rebuild publishes is
+    /// the revision's from then on, the fault's or not. For a document the gate refused, the
+    /// gate's problems, nothing rebuilt.
     ///
     /// Or the newest published model's, answered at once from what the session's rebuilds
     /// have published, never waiting for a rebuild or queueing behind its commands, as every
@@ -682,10 +693,17 @@ impl<P: Clients + 'static> Sessions<P> {
     /// given once, beside them, in the response's `model` ([`ModelRead::fault`]), and kept as
     /// the revision's outcome, so the next check of the revision reads the same model
     /// (decision 32).
-    pub fn check(&self, session: &SessionId, choice: ModelChoice) -> Running<CheckAnswer> {
-        match choice {
-            ModelChoice::Current => self.check_current(session, recompute::Reads::Kept),
-            ModelChoice::Published => self.read_model(
+    pub fn check(&self, session: &SessionId, model: CheckModel) -> Running<CheckAnswer> {
+        match model {
+            CheckModel::Current { fresh } => self.check_current(
+                session,
+                if fresh {
+                    recompute::Reads::Nothing
+                } else {
+                    recompute::Reads::Kept
+                },
+            ),
+            CheckModel::Published => self.read_model(
                 session,
                 ReadCommand::Check,
                 ModelChoice::Published,
@@ -725,21 +743,6 @@ impl<P: Clients + 'static> Sessions<P> {
                 reached: &current.reached,
             })
         })
-    }
-
-    /// `check` with `fresh` (the design's section 7, M4.3): `session`'s current revision
-    /// rebuilt with every step built anew, as SolidWorks' forced rebuild (Ctrl+Q) does,
-    /// reading nothing kept, neither in the session's engine (its steps' results, the
-    /// refusals among them, its sketches' solves) nor in the cache on disk
-    /// ([`Recompute::start_fresh`](crate::recompute::Recompute::start_fresh)), though what it
-    /// builds is kept in both, so the next rebuild hits it; and the document's problems found
-    /// as [`check`](Self::check) of the current model finds them. A kernel fault the revision
-    /// kept as its outcome (decision 32) is tried again, and the model this rebuild publishes
-    /// is the revision's from then on, the fault's or not. Only of the current model: a
-    /// published read never rebuilds (the wire refuses `fresh` with `published`). For a
-    /// document the gate refused, the gate's problems, nothing rebuilt.
-    pub fn check_fresh(&self, session: &SessionId) -> Running<CheckAnswer> {
-        self.check_current(session, recompute::Reads::Nothing)
     }
 
     /// `check` of `session`'s current model, its rebuild reading what's kept as `reads` says.

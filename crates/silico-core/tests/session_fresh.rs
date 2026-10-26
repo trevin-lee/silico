@@ -16,8 +16,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use silico_core::ErrorCode;
 use silico_core::command::{
-    CacheCleared, CheckAnswer, ModelChoice, ModelRead, RebuildState, Response, Revision,
-    SessionCommand, SessionId,
+    CacheCleared, CheckAnswer, CheckModel, ModelChoice, ModelRead, RebuildState, Response,
+    Revision, SessionCommand, SessionId,
 };
 
 use crate::cache_control::{Fixture, fixture};
@@ -79,11 +79,14 @@ impl Fixture {
     }
 
     fn check(&self, id: &SessionId) -> Response<CheckAnswer> {
-        answer(self.sessions.check(id, ModelChoice::Current))
+        answer(
+            self.sessions
+                .check(id, CheckModel::Current { fresh: false }),
+        )
     }
 
     fn fresh(&self, id: &SessionId) -> Response<CheckAnswer> {
-        answer(self.sessions.check_fresh(id))
+        answer(self.sessions.check(id, CheckModel::Current { fresh: true }))
     }
 }
 
@@ -237,7 +240,7 @@ fn a_fresh_check_tries_again_a_fault_the_revision_kept_and_its_model_is_the_revi
         f.sessions.status(&a).result.unwrap().rebuild.state,
         RebuildState::Done
     );
-    let published = answer(f.sessions.check(&a, ModelChoice::Published));
+    let published = answer(f.sessions.check(&a, CheckModel::Published));
     assert_eq!(
         published.model,
         Some(ModelRead {
@@ -275,7 +278,7 @@ fn a_fresh_check_is_cancelled_by_name_and_its_rebuild_stopped() {
     let f = fixture();
     let a = f.open("a.silico", &document(&[BLOCK]));
     let hold = f.kernel.hold(|op| op.name() == "MakeBox");
-    let running = f.sessions.check_fresh(&a);
+    let running = f.sessions.check(&a, CheckModel::Current { fresh: true });
     assert!(f.kernel.wait_running(1, HANG));
     let status = f.sessions.status(&a).result.unwrap();
     assert_eq!(status.running, Some(SessionCommand::Check));
@@ -303,14 +306,14 @@ fn a_fresh_check_supersedes_a_rebuild_running_that_reads_what_was_kept() {
     let f = fixture();
     let a = f.open("a.silico", &document(&[BLOCK]));
     let hold = f.kernel.hold(|op| op.name() == "MakeBox");
-    let read = answer(f.sessions.check(&a, ModelChoice::Published));
+    let read = answer(f.sessions.check(&a, CheckModel::Published));
     assert_eq!(
         read.result.unwrap_err().errors()[0].parameter(),
         Some("model")
     );
     assert!(f.kernel.wait_running(1, HANG));
     let start = f.mark();
-    let fresh = f.sessions.check_fresh(&a);
+    let fresh = f.sessions.check(&a, CheckModel::Current { fresh: true });
     // The fresh one's box asked, and held in turn; the first superseded (the fake ends a
     // held request of a superseded generation).
     let deadline = std::time::Instant::now() + HANG;

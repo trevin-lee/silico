@@ -280,7 +280,7 @@ fn at_two(
     let id = sessions.open(&path, false).wait().session.unwrap().id;
     assert!(
         sessions
-            .check(&id, ModelChoice::Current)
+            .check(&id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .unwrap()
@@ -379,7 +379,7 @@ fn a_published_read_of_a_refused_revision_gives_the_older_model_and_check_its_pr
     );
     // The gate's problems are check's; nothing is rebuilt.
     let problems = sessions
-        .check(&id, ModelChoice::Current)
+        .check(&id, CheckModel::Current { fresh: false })
         .wait()
         .result
         .unwrap()
@@ -918,7 +918,7 @@ fn a_commit_writes_new_fingerprints_only_for_what_edits_reached_and_keeps_drift_
     // So a check of the saved revision finds the block's drift alone.
     the_blocks_drift(
         &f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .unwrap()
@@ -933,7 +933,10 @@ fn a_check_says_no_drift_of_what_edits_reached() {
     let f = opened(STORED);
     f.begin();
     f.edit(&longer());
-    let response = f.sessions.check(&f.id, ModelChoice::Current).wait();
+    let response = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false })
+        .wait();
     the_blocks_drift(&response.result.unwrap().problems);
     assert_eq!(response.model.unwrap().revision, Revision(2));
     assert_eq!(
@@ -1188,7 +1191,10 @@ fn a_reached_feature_saved_with_no_fingerprint_is_no_drift_in_a_new_session_and_
     assert_eq!(f.file(), REACHED_FAILED);
     f.sessions.close(&f.id).wait().result.unwrap();
     let again = f.sessions.open(&f.path, false).wait().session.unwrap().id;
-    let checked = f.sessions.check(&again, ModelChoice::Current).wait();
+    let checked = f
+        .sessions
+        .check(&again, CheckModel::Current { fresh: false })
+        .wait();
     let problems = checked.result.unwrap().problems;
     assert_eq!(
         said(&problems),
@@ -1272,7 +1278,7 @@ fn a_rollback_restores_the_text_byte_for_byte_and_the_same_model_at_a_new_revisi
     let f = opened(BOX);
     assert!(
         f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .unwrap()
@@ -1284,7 +1290,7 @@ fn a_rollback_restores_the_text_byte_for_byte_and_the_same_model_at_a_new_revisi
     f.edit(SPHERE);
     assert!(
         f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .unwrap()
@@ -1313,7 +1319,10 @@ fn a_rollback_restores_the_text_byte_for_byte_and_the_same_model_at_a_new_revisi
     assert_eq!(published.revision, Revision(3));
     assert!(Arc::ptr_eq(&published.model, &model));
     // A check reads it, and asks the kernel nothing.
-    let check = f.sessions.check(&f.id, ModelChoice::Current).wait();
+    let check = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false })
+        .wait();
     assert!(check.result.unwrap().problems.is_empty());
     assert_eq!(
         check.model,
@@ -1335,7 +1344,7 @@ fn a_rollback_whose_begin_came_mid_rebuild_and_whose_rebuild_was_superseded_star
     let f = opened(BOX);
     assert!(
         f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .unwrap()
@@ -1355,7 +1364,7 @@ fn a_rollback_whose_begin_came_mid_rebuild_and_whose_rebuild_was_superseded_star
     f.edit(SPHERE);
     assert!(
         f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .unwrap()
@@ -1367,7 +1376,10 @@ fn a_rollback_whose_begin_came_mid_rebuild_and_whose_rebuild_was_superseded_star
     // The rollback started the restored document's rebuild, as revision 4's.
     assert_eq!(lock(&f.session().rebuilds).running(), Some(Revision(4)));
     hold.release();
-    let check = f.sessions.check(&f.id, ModelChoice::Current).wait();
+    let check = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false })
+        .wait();
     assert!(check.result.unwrap().problems.is_empty());
     assert_eq!(check.model.unwrap().revision, Revision(4));
     // The block, built before, is never asked for again; the pin, stopped, is.
@@ -1380,7 +1392,7 @@ fn a_rollback_restores_the_model_begins_rebuild_published_inside_the_transaction
     let f = opened(BOX);
     assert!(
         f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .unwrap()
@@ -1427,7 +1439,7 @@ fn dropping_the_sessions_mid_transaction_leaves_the_file_as_it_was() {
     f.edit(&longer());
     assert!(
         f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .is_ok()
@@ -1570,7 +1582,7 @@ fn a_rollback_restores_what_edits_reached_so_drift_is_said_again() {
     assert!(f.session().held.read().reach().is_empty());
     the_blocks_drift(
         &f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .unwrap()
@@ -1668,7 +1680,10 @@ fn a_commit_saves_around_a_kernel_fault_given_once_beside_its_result() {
     // check of it asks the kernel nothing, and gives the same fault.
     let saved = response.session.unwrap().revision;
     let asked = f.kernel.calls().len();
-    let checked = f.sessions.check(&f.id, ModelChoice::Current).wait();
+    let checked = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false })
+        .wait();
     assert_eq!(f.kernel.calls().len(), asked);
     assert_eq!(checked.model.as_ref().unwrap().revision, saved);
     assert_eq!(
@@ -1712,7 +1727,10 @@ fn a_format_saves_around_a_kernel_fault_accepting_the_drift_it_can() {
     let saved = response.session.unwrap().revision;
     assert_eq!(saved, Revision(2));
     let asked = f.kernel.calls().len();
-    let checked = f.sessions.check(&f.id, ModelChoice::Current).wait();
+    let checked = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false })
+        .wait();
     assert_eq!(f.kernel.calls().len(), asked);
     assert_eq!(checked.model.as_ref().unwrap().revision, saved);
     assert_eq!(
@@ -1740,7 +1758,10 @@ fn a_one_edit_commits_fault_is_the_saved_revisions_and_never_met_again() {
     let saved = edited.session.as_ref().unwrap().revision;
     assert!(edited.result.unwrap().commit.unwrap().written);
     let asked = f.kernel.calls().len();
-    let checked = f.sessions.check(&f.id, ModelChoice::Current).wait();
+    let checked = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false })
+        .wait();
     assert_eq!(f.kernel.calls().len(), asked);
     assert_eq!(checked.model.as_ref().unwrap().revision, saved);
     assert_eq!(
@@ -1803,7 +1824,10 @@ fn a_one_edit_commits_model_isnt_the_saved_revisions_once_it_writes_a_solve_faul
     assert!(commit.problems.is_empty(), "{:?}", commit.problems);
     assert_eq!(pb_x(&f.file(), "s0000001"), 13.0);
     let (asked, solved) = (f.kernel.calls().len(), sketches.requests().len());
-    let checked = f.sessions.check(&f.id, ModelChoice::Current).wait();
+    let checked = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false })
+        .wait();
     // Rebuilt: the box asked for again, and the sketch solved again from 13.
     assert_eq!(
         (f.kernel.calls().len(), sketches.requests().len()),
@@ -1822,7 +1846,7 @@ fn a_rollback_stops_the_transactions_rebuild() {
     let f = opened(BOX);
     assert!(
         f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .unwrap()
@@ -1979,7 +2003,7 @@ fn a_rollback_gives_begins_still_running_rebuild_to_the_new_revision() {
     let f = opened(BOX);
     assert!(
         f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .unwrap()
@@ -1995,7 +2019,10 @@ fn a_rollback_gives_begins_still_running_rebuild_to_the_new_revision() {
     f.sessions.rollback(&f.id).wait().result.unwrap();
     assert_eq!(lock(&f.session().rebuilds).running(), Some(Revision(4)));
     hold.release();
-    let check = f.sessions.check(&f.id, ModelChoice::Current).wait();
+    let check = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false })
+        .wait();
     assert!(check.result.unwrap().problems.is_empty());
     assert_eq!(check.model.unwrap().revision, Revision(4));
     assert_eq!(f.made(is_cylinder), 1);
@@ -2007,7 +2034,7 @@ fn a_rollback_gives_begins_still_running_rebuild_to_the_new_revision() {
 fn check_in_time(f: Fixture) -> (Fixture, Response<CheckAnswer>) {
     match f
         .sessions
-        .check(&f.id, ModelChoice::Current)
+        .check(&f.id, CheckModel::Current { fresh: false })
         .wait_timeout(WAIT)
     {
         Ok(check) => (f, check),
@@ -2026,7 +2053,7 @@ fn rollbacks_while_begins_rebuild_runs(rollbacks: u64) {
     let f = opened(BOX);
     assert!(
         f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .unwrap()
@@ -2070,7 +2097,7 @@ fn a_rollback_after_the_rebuild_a_rollback_was_given_published_restores_its_mode
     let f = opened(BOX);
     assert!(
         f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .unwrap()
@@ -2131,7 +2158,7 @@ fn a_rollback_restores_what_begin_saw_published_and_no_transaction_model_comes_a
     f.edit(BOX);
     assert!(
         f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .unwrap()
@@ -2283,7 +2310,7 @@ fn a_rollback_of_a_closed_session_starts_no_rebuild() {
     f.edit(SPHERE);
     assert!(
         f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .unwrap()
@@ -2308,7 +2335,7 @@ const CUBE: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm
 fn plant_unholdable(f: &Fixture) {
     let revision = f
         .sessions
-        .check(&f.id, ModelChoice::Current)
+        .check(&f.id, CheckModel::Current { fresh: false })
         .wait()
         .model
         .unwrap()
@@ -2357,7 +2384,7 @@ fn measures_no_fingerprint_holds_are_drift_however_reached_or_accepted() {
     plant_unholdable(&f);
     the_cubes_unholdable_drift(
         &f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .unwrap()
@@ -2454,7 +2481,10 @@ fn a_reload_carries_nothing_so_a_hand_edits_drift_is_said_and_not_written_over()
     let by_hand = f.file().replace("\"length\": 20,", "\"length\": 30,");
     assert_ne!(by_hand, f.file());
     std::fs::write(&f.path, &by_hand).unwrap();
-    let check = f.sessions.check(&f.id, ModelChoice::Current).wait();
+    let check = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false })
+        .wait();
     let session = check.session.unwrap();
     assert!(session.reloaded);
     let drift: Vec<(ErrorCode, Option<&str>)> = check
@@ -2617,7 +2647,7 @@ fn published_reads_that_ended_are_joined_as_the_next_starts() {
     let f = opened(BOX);
     assert!(
         f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .unwrap()
@@ -2775,7 +2805,7 @@ fn a_transactions_work_a_cancel_came_before_leaves_no_trace() {
     let edited = f.edit(&longer());
     assert!(
         f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .is_ok()
@@ -2800,7 +2830,7 @@ fn a_commit_writing_nothing_a_cancel_came_before_leaves_the_transaction_open() {
     f.begin();
     assert!(
         f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .is_ok()
@@ -2817,7 +2847,7 @@ fn work_outside_a_transaction_a_cancel_came_before_leaves_no_trace() {
     let f = opened(STORED);
     assert!(
         f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .is_ok()
@@ -2848,7 +2878,7 @@ fn a_cancel_that_comes_during_a_save_is_too_late_and_the_save_stands() {
     let f = opened(STORED);
     assert!(
         f.sessions
-            .check(&f.id, ModelChoice::Current)
+            .check(&f.id, CheckModel::Current { fresh: false })
             .wait()
             .result
             .is_ok()
@@ -3010,7 +3040,9 @@ fn a_rebuild_a_cancel_stopped_stays_stopped_once_its_watcher_has_ended() {
     // joined here, so what it recorded is what status and the published read see.
     let f = opened(BOX);
     let _hold = f.kernel.hold(is_box);
-    let check = f.sessions.check(&f.id, ModelChoice::Current);
+    let check = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false });
     assert!(f.kernel.wait_running(1, WAIT));
     assert!(
         f.sessions
@@ -3143,7 +3175,10 @@ fn a_format_that_writes_a_solve_publishes_no_model_and_the_next_check_solves_aga
     assert_eq!(formatted.resolved, [id("s0000001")]);
     assert_eq!(pb_x(&f.file(), "s0000001"), 11.0);
     let solved = sketches.requests().len();
-    let checked = f.sessions.check(&f.id, ModelChoice::Current).wait();
+    let checked = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false })
+        .wait();
     assert_eq!(sketches.requests().len(), solved + 1);
     assert_eq!(checked.model.unwrap().revision, saved);
     assert!(checked.result.unwrap().problems.is_empty());
@@ -3228,7 +3263,9 @@ fn a_held_rebuild_shows_its_steps_done_below_its_steps_then_all_of_them() {
     // settles, and the move and the fuse wait on the lug.
     let f = opened(STORED);
     let hold = f.kernel.hold(is_lug);
-    let check = f.sessions.check(&f.id, ModelChoice::Current);
+    let check = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false });
     let one_of_four = Some(Progress {
         done: 1,
         steps: 4,
@@ -3270,14 +3307,16 @@ fn counting_a_rebuilds_steps_never_keeps_status_or_a_published_read_waiting() {
     // the published model each answer while the step is held, none waiting for it.
     let f = opened(STORED);
     f.sessions
-        .check(&f.id, ModelChoice::Current)
+        .check(&f.id, CheckModel::Current { fresh: false })
         .wait()
         .result
         .unwrap();
     f.begin();
     f.edit(&longer());
     let hold = f.kernel.hold(is_lug);
-    let check = f.sessions.check(&f.id, ModelChoice::Current);
+    let check = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false });
     // Revision 2's: the block and the fuse unchanged, but the fuse uses the lug, so only
     // the block's step is kept; the lug's box is held.
     until_progress(
@@ -3332,14 +3371,16 @@ fn a_published_reads_handle_reports_no_rebuilds_progress() {
     // model, running while the step is held, waits on no rebuild and reports none.
     let f = opened(STORED);
     f.sessions
-        .check(&f.id, ModelChoice::Current)
+        .check(&f.id, CheckModel::Current { fresh: false })
         .wait()
         .result
         .unwrap();
     f.begin();
     f.edit(&longer());
     let hold = f.kernel.hold(is_lug);
-    let check = f.sessions.check(&f.id, ModelChoice::Current);
+    let check = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false });
     let lug_held = Some(Progress {
         done: 1,
         steps: 4,
@@ -3404,7 +3445,7 @@ fn a_closed_sessions_rebuild_watchers_are_the_books_to_join() {
     std::fs::write(&other, BOX).unwrap();
     let id = f.sessions.open(&other, false).wait().session.unwrap().id;
     f.sessions
-        .check(&id, ModelChoice::Current)
+        .check(&id, CheckModel::Current { fresh: false })
         .wait()
         .result
         .unwrap();
@@ -3455,7 +3496,15 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
         vec![
             (
                 ReadCommand::Check,
-                Box::new(move || erased(s.check(at, model))),
+                Box::new(move || {
+                    erased(s.check(
+                        at,
+                        match model {
+                            ModelChoice::Current => CheckModel::Current { fresh: false },
+                            ModelChoice::Published => CheckModel::Published,
+                        },
+                    ))
+                }),
             ),
             (
                 ReadCommand::Elements,
@@ -3615,7 +3664,10 @@ fn a_cancel_after_cache_clear_settles_comes_too_late_and_the_clear_answers_with_
     // Held once it has settled, before it removes anything: a cancel by name stops nothing,
     // and the clear, let through, removes the box's one entry and answers so.
     let f = opened(BOX);
-    let checked = f.sessions.check(&f.id, ModelChoice::Current).wait();
+    let checked = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false })
+        .wait();
     assert!(checked.result.unwrap().problems.is_empty());
     let cache = f.path.parent().unwrap().join(".silico-cache");
     let entries = || {

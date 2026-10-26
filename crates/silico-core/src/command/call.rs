@@ -449,11 +449,7 @@ impl<P: Clients + 'static> Sessions<P> {
             }),
             Command::Outline => typed(SessionRequest::read(request), |r| self.outline(&r.session)),
             Command::Check => typed(CheckRequest::read(request), |r| {
-                if r.fresh {
-                    self.check_fresh(&r.session)
-                } else {
-                    self.check(&r.session, r.model)
-                }
+                self.check(&r.session, r.model)
             }),
             Command::CacheClear => {
                 typed(SessionRequest::read(request), |r| self.cache_clear(&r.session))

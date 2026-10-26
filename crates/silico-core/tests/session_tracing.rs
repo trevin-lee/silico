@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 
 use silico_core::cache::Cache;
-use silico_core::command::{ModelChoice, Sessions};
+use silico_core::command::{CheckModel, Sessions};
 use silico_core::fake::FakeKernel;
 use tracing::Subscriber;
 use tracing::span::{Attributes, Id};
@@ -68,7 +68,9 @@ fn an_opens_read_and_gate_run_on_its_sessions_thread_and_each_command_under_its_
     let text = sessions.text(&s1, None).wait();
     assert!(text.result.is_ok(), "{text:?}");
     // A check rebuilds the document, on the session's thread too.
-    let check = sessions.check(&s1, ModelChoice::Current).wait();
+    let check = sessions
+        .check(&s1, CheckModel::Current { fresh: false })
+        .wait();
     assert!(check.result.is_ok(), "{check:?}");
     // A document made, as `create` makes it, on its session's thread too.
     let made = sessions.open(dir.path().join("new.silico"), true).wait();
