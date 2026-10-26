@@ -497,12 +497,19 @@ fn a_render_with_to_writes_the_png_there_and_says_where() {
 }
 
 #[test]
-fn a_render_cancelled_while_it_runs_answers_cancelled() {
+fn a_render_its_renderer_cancels_answers_as_of_a_session_that_closed() {
+    // A render's ticket is cancelled only by its read's stop: a cancel, whose answer the
+    // session gives (`cancelled`), or its session closing, which the render answers itself,
+    // as `distance` does, naming the session.
     let bench = Bench::of(EXAMPLE);
     bench.renderer.cancel_all();
     let e = refused(bench.render(&view("front", 100, 100)));
-    assert_eq!(e.code(), ErrorCode::Cancelled, "{e:?}");
-    assert_eq!(e.message(), "render was cancelled before it finished");
+    assert_eq!(
+        (e.code(), e.parameter(), e.feature()),
+        (ErrorCode::InvalidInput, Some("session"), None),
+        "{e:?}"
+    );
+    assert_eq!(e.message(), "the session closed before the render finished");
 }
 
 #[test]

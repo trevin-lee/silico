@@ -93,7 +93,6 @@ use crate::sketch::SketchSolver;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
-pub(crate) use cancel::cancelled;
 use cancel::{Interrupt, Ticket, Why, not_running};
 use edits::{as_committed, not_given_back};
 use holding::Holding;

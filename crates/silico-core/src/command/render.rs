@@ -430,10 +430,9 @@ pub fn render<K: Kernel>(
     )?;
     let png = match on.renderer.render(scene).wait() {
         RenderOutcome::Done(result) => result.map_err(Problems::from)?.png,
-        // Cancelled (decision 34): its queued scene never sent, or its worker killed.
-        RenderOutcome::Cancelled => {
-            return Err(Problems::from(super::session::cancelled("render")));
-        }
+        // Stopped by its read's stop, its queued scene never sent or its worker killed: a
+        // cancel's answer the session gives (`cancelled`), so this is a close's.
+        RenderOutcome::Cancelled => return Err(Problems::from(session_closed())),
     };
     let path = match &request.to {
         Some(to) => {
@@ -804,15 +803,26 @@ fn meshed<K: Kernel>(
         .collect()
 }
 
-/// A kernel request's result: its error as the refusal, and one superseded (the read lane's
-/// generation is never advanced, so it isn't) said so.
+/// A kernel request's result: its error as the refusal, and one superseded as its session
+/// closing.
 fn done<T>(outcome: Outcome<T>) -> Result<T, Problems> {
     match outcome {
         Outcome::Done(result) => result.map_err(Problems::from),
-        // Its read was stopped (a cancel, or its session closing): the read's own answer
-        // is the session's to give, which says which.
-        Outcome::Superseded => Err(Problems::from(super::session::cancelled("render"))),
+        // A read's own client is advanced only when its read is stopped: a cancel, whose
+        // answer the session gives (`cancelled`), or its session closing, this.
+        Outcome::Superseded => Err(Problems::from(session_closed())),
     }
+}
+
+/// The answer of a render stopped by its session closing, as `distance` answers one:
+/// a published read answers as of a session that closed, never `cancelled` (decision 34).
+fn session_closed() -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        "the session closed before the render finished",
+    )
+    .with_parameter("session")
+    .with_suggestion("open the document again, and render it there")
 }
 
 /// The scene's body for `body`: its number, its mesh, and its faces and edges `lit`, each
@@ -946,9 +956,10 @@ fn naming_the_body(problems: Problems, feature: &FeatureId) -> Problems {
     let errors: Vec<Error> = problems
         .errors()
         .iter()
-        .map(|e| match e.feature() {
-            Some(_) => e.clone(),
-            None => e.clone().with_feature(feature.as_str()),
+        // A session's close isn't the body's.
+        .map(|e| match (e.feature(), e.parameter()) {
+            (Some(_), _) | (None, Some("session")) => e.clone(),
+            (None, _) => e.clone().with_feature(feature.as_str()),
         })
         .collect();
     let listed = errors.len() as u64;

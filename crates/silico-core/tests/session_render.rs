@@ -104,3 +104,57 @@ fn a_render_refused_for_its_values_sends_nothing_through_the_session() {
     assert_eq!(problems.errors()[0].parameter(), Some("width"));
     assert!(renderer.sent().is_empty());
 }
+
+#[test]
+fn a_published_render_whose_session_closes_mid_mesh_answers_closed_not_cancelled() {
+    // Found by round 2: the render answered `cancelled`, though nobody cancelled it. A
+    // published read answers as of a session that closed (decision 34), as `distance` does.
+    use std::time::Duration;
+    let (f, renderer, s) = rendering();
+    answer(f.sessions.render(&s, ModelChoice::Current, front()))
+        .result
+        .unwrap();
+    // Meshed afresh (another size's level), held in the kernel.
+    let hold = f.kernel.hold(|op| op.name() == "Tessellate");
+    let mut wider = front();
+    wider.width = 1000;
+    wider.height = 1000;
+    let held = f.sessions.render(&s, ModelChoice::Published, wider);
+    let held = match held.wait_timeout(Duration::from_millis(300)) {
+        Ok(r) => panic!("answered while held: {:?}", r.result),
+        Err(running) => running,
+    };
+    assert!(answer(f.sessions.close(&s)).result.is_ok());
+    let refused = answer(held).result.unwrap_err();
+    hold.release();
+    let e = &refused.errors()[0];
+    assert_eq!(
+        (e.code(), e.parameter(), e.feature()),
+        (ErrorCode::InvalidInput, Some("session"), None),
+        "{e:?}"
+    );
+    assert_eq!(renderer.sent().len(), 1);
+}
+
+#[test]
+fn a_render_cancelled_through_its_session_answers_cancelled() {
+    // A cancel's answer is the session's: `cancelled`, the render stopped as a close stops
+    // it.
+    use std::time::Duration;
+    let (f, renderer, s) = rendering();
+    let hold = f.kernel.hold(|op| op.name() == "Tessellate");
+    let held = f.sessions.render(&s, ModelChoice::Current, front());
+    let held = match held.wait_timeout(Duration::from_millis(300)) {
+        Ok(r) => panic!("answered while held: {:?}", r.result),
+        Err(running) => running,
+    };
+    assert!(held.cancel());
+    let refused = answer(held).result.unwrap_err();
+    hold.release();
+    assert_eq!(
+        refused.errors()[0].code(),
+        ErrorCode::Cancelled,
+        "{refused:?}"
+    );
+    assert!(renderer.sent().is_empty());
+}
