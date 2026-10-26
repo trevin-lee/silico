@@ -72,11 +72,11 @@ pub struct Workspace {
     root: PathBuf,
 }
 
-/// How many links [`Workspace::leads_out`] follows through a path before it decides by the
+/// How many links [`Workspace::walk`] follows through a path before it decides by the
 /// path's form: Linux's and macOS's own limit on links followed in one lookup.
 const LINKS_FOLLOWED: u32 = 40;
 
-/// The longest path, in bytes, [`Workspace::leads_out`] walks on the file system; a longer
+/// The longest path, in bytes, [`Workspace::walk`] walks on the file system; a longer
 /// one it decides by its form: Linux's `PATH_MAX`, the longest path it resolves (macOS's is
 /// shorter). So a path of millions of names costs no more than reading it once.
 const WALKED_PATH_BYTES: usize = 4096;
@@ -90,7 +90,7 @@ enum Walked {
     ThroughAFile,
 }
 
-/// One step of a path walked as the system resolves it ([`Workspace::leads_out`]).
+/// One step of a path walked as the system resolves it ([`Workspace::walk`]).
 enum Step {
     /// Start again from here: the file system's top (and on Windows, the drive).
     From(PathBuf),
@@ -170,11 +170,12 @@ impl Workspace {
     /// unreachable, never outside. A path longer than the system resolves
     /// ([`WALKED_PATH_BYTES`]), or through more links than it follows ([`LINKS_FOLLOWED`]),
     /// is decided by its form alone ([`Workspace::leaves`]), so the walk is bounded.
+    #[cfg(test)]
     fn leads_out(&self, path: &Path) -> bool {
         self.walk(path) == Walked::Out
     }
 
-    /// Where `path`'s walk ends ([`Workspace::leads_out`]): out of the workspace, in it, or
+    /// Where `path`'s walk ends: out of the workspace, in it, or
     /// in it at a file with more of the path to go, where the system stops (`ENOTDIR`).
     /// That last isn't left to `canonicalize`: macOS's `realpath` takes a `..` after a file
     /// by its text and goes on, outside the workspace, where glibc's stops (review).
@@ -258,7 +259,7 @@ impl Workspace {
     }
 
     /// Whether `path`, its `.`s and `..`s taken as written, links not followed, leaves the
-    /// workspace: what [`Workspace::leads_out`] decides when walking the path would cost
+    /// workspace: what [`Workspace::walk`] decides when walking the path would cost
     /// more than the system itself spends on one. Nothing on the file system decides it.
     fn leaves(&self, path: &Path) -> bool {
         let mut normal = PathBuf::new();
