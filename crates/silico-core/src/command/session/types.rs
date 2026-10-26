@@ -342,6 +342,13 @@ pub struct Stopper {
 }
 
 impl Stopper {
+    /// The stopper of a command that's never stopped, being answered at once when it's
+    /// waited on (`status`, `cancel`, `version`, `schema`, through `Sessions::call`), or
+    /// refused before it ran: its [`cancel`](Self::cancel) stops nothing.
+    pub(crate) const fn none() -> Self {
+        Stopper { ticket: None }
+    }
+
     /// Cancels the command, as [`Running::cancel`] does: whether it was stopped before it
     /// had done its work.
     pub fn cancel(&self) -> bool {

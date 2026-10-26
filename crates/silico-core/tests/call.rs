@@ -1,0 +1,898 @@
+//! `Sessions::call` (docs/design/m4.9-mcp.md, *`Call`*): every command by its name, its
+//! request's text read by Silico's own reader and its command's, its typed method run, and
+//! its envelope written on one line, `render`'s PNG beside it. Expected values: the committed
+//! snapshots (each command's request's required fields, which `{}` must be refused for, each
+//! named), the typed methods' own responses on sessions of their own, written as
+//! `response_text` writes them (call adds nothing and drops nothing), the reader's refusals
+//! as written here by hand, and lengths in nanometres worked out by hand.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use silico_core::cache::Cache;
+use silico_core::command::render::Render;
+use silico_core::command::wire::{COMMANDS, Layout, response_text};
+use silico_core::command::{
+    Answered, Call, Calling, Command, ModelChoice, Response, Revision, SessionId, Sessions, VERSION,
+};
+use silico_core::document::json::Node;
+use silico_core::document::{Length, Operation};
+use silico_core::fake::{FakeKernel, FakeRenderer};
+use silico_core::kernel::{Op, Primitive};
+use silico_core::views::NamedView;
+use tempfile::TempDir;
+
+use crate::example::EXAMPLE;
+use crate::sessions::{HANG, answer, id};
+
+/// A 40 × 20 × 10 box.
+const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
+
+/// Sessions on a fake kernel, drawing with a fake renderer, in a workspace of their own.
+struct Fixture {
+    _dir: TempDir,
+    work: PathBuf,
+    kernel: Arc<FakeKernel>,
+    sessions: Sessions<Arc<FakeKernel>>,
+}
+
+fn fixture() -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    let work = std::fs::canonicalize(dir.path()).unwrap().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let secret = dir.path().join("secret");
+    let kernel = Arc::new(FakeKernel::new(2).unwrap());
+    let sessions = Sessions::with_cache_opener(Arc::clone(&kernel), move |cache| {
+        Cache::with_secret(cache, &secret)
+    })
+    .rendering(FakeRenderer::new())
+    .in_workspace(&work)
+    .unwrap();
+    Fixture {
+        _dir: dir,
+        work,
+        kernel,
+        sessions,
+    }
+}
+
+impl Fixture {
+    /// `text` written at `name` in the workspace.
+    fn file(&self, name: &str, text: &str) {
+        std::fs::write(self.work.join(name), text).unwrap();
+    }
+
+    /// The command `name` called on `arguments`, which must be a command's.
+    fn calling(&self, name: &str, arguments: &str) -> Calling {
+        match self.sessions.call(name, arguments) {
+            Call::Running(calling) => calling,
+            Call::Unknown => panic!("{name} is no command"),
+        }
+    }
+
+    /// The answer of the command `name` called on `arguments`.
+    fn call(&self, name: &str, arguments: &str) -> Answered {
+        answered(self.calling(name, arguments))
+    }
+}
+
+/// The call's answer, failing if it hangs.
+fn answered(calling: Calling) -> Answered {
+    match calling.wait_timeout(HANG) {
+        Ok(answered) => answered,
+        Err(_) => panic!("the call didn't answer in {HANG:?}"),
+    }
+}
+
+/// What `call` must answer for the typed method's `response`: its envelope on one line, and
+/// whether it ran.
+fn as_written<T: silico_core::command::wire::ToWire>(response: &Response<T>) -> Answered {
+    Answered {
+        ok: response.result.is_ok(),
+        text: response_text(response, Layout::OneLine),
+        png: None,
+    }
+}
+
+fn value(text: &str) -> Node {
+    silico_core::document::json::read(text.as_bytes()).unwrap()
+}
+
+fn s(n: &str) -> SessionId {
+    SessionId::parse(n).unwrap()
+}
+
+/// The answer's envelope, as a value.
+fn envelope(answered: &Answered) -> serde_json::Value {
+    serde_json::from_str(&answered.text).unwrap()
+}
+
+/// The committed snapshot of `command`'s request.
+fn request_schema(command: &str) -> serde_json::Value {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/contract/commands")
+        .join(format!("{command}.json"));
+    let text = std::fs::read_to_string(&path).unwrap();
+    serde_json::from_str::<serde_json::Value>(&text).unwrap()["request"].clone()
+}
+
+#[test]
+fn the_commands_are_one_list_in_one_order() {
+    let names: Vec<&str> = Command::ALL.iter().map(|c| c.as_str()).collect();
+    let listed: Vec<&str> = COMMANDS.iter().map(|(name, _)| *name).collect();
+    assert_eq!(names, listed);
+    // The design's section 7, in its order, written out by hand (export, read_logs, and
+    // cache_clear come with their commands).
+    assert_eq!(
+        names,
+        [
+            "version",
+            "open",
+            "close",
+            "status",
+            "cancel",
+            "begin",
+            "commit",
+            "rollback",
+            "format",
+            "add_feature",
+            "set_field",
+            "remove_feature",
+            "replace_text",
+            "text",
+            "outline",
+            "check",
+            "elements",
+            "query",
+            "schema",
+            "mass_properties",
+            "distance",
+            "angle",
+            "render",
+        ]
+    );
+    for command in Command::ALL {
+        assert_eq!(Command::named(command.as_str()), Some(command));
+        assert_eq!(command.to_string(), command.as_str());
+    }
+}
+
+#[test]
+fn every_command_dispatches_by_its_name_to_its_own_request_reader() {
+    // `{}` is every command's request with each field missing: refused for each field its
+    // snapshot requires, each named, so the reader that refused it is the command's own.
+    // `version`'s takes none, so it runs.
+    let f = fixture();
+    for (name, _) in COMMANDS {
+        let answer = f.call(name, "{}");
+        assert_eq!(answer.png, None, "{name}");
+        if name == "version" {
+            let version: Response<_> = Response {
+                session: None,
+                model: None,
+                result: Ok(VERSION),
+            };
+            assert_eq!(answer, as_written(&version));
+            continue;
+        }
+        assert!(!answer.ok, "{name}: {}", answer.text);
+        let envelope = envelope(&answer);
+        let mut named: Vec<String> = envelope["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                assert_eq!(e["code"], "invalid_input", "{name}");
+                assert_eq!(
+                    e["message"],
+                    format!("{} is missing", e["parameter"].as_str().unwrap()),
+                    "{name}"
+                );
+                e["parameter"].as_str().unwrap().to_owned()
+            })
+            .collect();
+        named.sort();
+        let required: Vec<String> = request_schema(name)["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(named, required, "{name}");
+        assert_eq!(envelope["total"], required.len(), "{name}");
+        assert_eq!(envelope["session"], serde_json::Value::Null, "{name}");
+    }
+}
+
+#[test]
+fn a_name_no_command_has_is_unknown() {
+    let f = fixture();
+    for name in [
+        "",
+        "Check",
+        "check ",
+        " check",
+        "tools/call",
+        "export",
+        "read_logs",
+        "cache_clear",
+        "versions",
+        "check\0",
+    ] {
+        assert!(
+            matches!(f.sessions.call(name, "{}"), Call::Unknown),
+            "{name:?}"
+        );
+    }
+}
+
+#[test]
+fn a_call_answers_as_its_typed_method_does_written_on_one_line() {
+    // Two sessions of their own, each in a workspace holding the same `part.silico`: one
+    // driven by name, one by the typed methods, command for command.
+    let by_name = fixture();
+    let typed = fixture();
+    for f in [&by_name, &typed] {
+        f.file("part.silico", EXAMPLE);
+    }
+    let t = &typed.sessions;
+    let s1 = s("s1");
+    let pairs: Vec<(&str, &str, Answered)> = vec![
+        (
+            "open",
+            r#"{"path": "part.silico", "create": false}"#,
+            as_written(&answer(t.open("part.silico", false))),
+        ),
+        ("status", r#"{"session": "s1"}"#, as_written(&t.status(&s1))),
+        (
+            "text",
+            r#"{"session": "s1", "feature": null}"#,
+            as_written(&answer(t.text(&s1, None))),
+        ),
+        (
+            "text",
+            r#"{"session": "s1", "feature": "a91cw0de"}"#,
+            as_written(&answer(t.text(&s1, Some(id("a91cw0de"))))),
+        ),
+        (
+            "outline",
+            r#"{"session": "s1"}"#,
+            as_written(&answer(t.outline(&s1))),
+        ),
+        (
+            "check",
+            r#"{"session": "s1", "model": "current", "fresh": false}"#,
+            as_written(&answer(t.check(&s1, ModelChoice::Current))),
+        ),
+        (
+            "mass_properties",
+            r#"{"session": "s1", "model": "current", "feature": null}"#,
+            as_written(&answer(t.mass_properties(&s1, ModelChoice::Current, None))),
+        ),
+        (
+            "elements",
+            r#"{"session": "s1", "model": "current", "feature": null, "after": null, "limit": 3}"#,
+            as_written(&answer(t.elements(
+                &s1,
+                ModelChoice::Current,
+                None,
+                None,
+                3,
+            ))),
+        ),
+        (
+            "begin",
+            r#"{"session": "s1"}"#,
+            as_written(&answer(t.begin(&s1))),
+        ),
+        (
+            "set_field",
+            r#"{"session": "s1", "revision": 1, "feature": "k7f2qx3m", "field": "length", "value": 41}"#,
+            as_written(&answer(t.set_field(
+                &s1,
+                Revision::OPENED,
+                id("k7f2qx3m"),
+                "length".to_owned(),
+                value("41"),
+            ))),
+        ),
+        (
+            "commit",
+            r#"{"session": "s1"}"#,
+            as_written(&answer(t.commit(&s1))),
+        ),
+        (
+            "check",
+            r#"{"session": "s1", "model": "current", "fresh": false}"#,
+            as_written(&answer(t.check(&s1, ModelChoice::Current))),
+        ),
+        (
+            "schema",
+            r#"{"of": "close"}"#,
+            as_written(&Response {
+                session: None,
+                model: None,
+                result: silico_core::command::schema::schema("close"),
+            }),
+        ),
+        (
+            "schema",
+            r#"{"of": "nothing"}"#,
+            as_written(&Response {
+                session: None,
+                model: None,
+                result: silico_core::command::schema::schema("nothing"),
+            }),
+        ),
+        (
+            "close",
+            r#"{"session": "s1"}"#,
+            as_written(&answer(t.close(&s1))),
+        ),
+        (
+            "close",
+            r#"{"session": "s1"}"#,
+            as_written(&answer(t.close(&s1))),
+        ),
+    ];
+    for (name, arguments, expected) in pairs {
+        // Each ran but the second close, of a session closed.
+        assert!(
+            expected.ok || name == "close" || arguments.contains("nothing"),
+            "{name}"
+        );
+        assert_eq!(
+            by_name.call(name, arguments),
+            expected,
+            "{name} {arguments}"
+        );
+    }
+    // The edit was saved alike.
+    assert_eq!(
+        std::fs::read(by_name.work.join("part.silico")).unwrap(),
+        std::fs::read(typed.work.join("part.silico")).unwrap()
+    );
+}
+
+#[test]
+fn the_measures_queries_and_the_rest_of_the_edits_answer_as_their_typed_methods_do() {
+    use silico_core::command::SessionCommand;
+    use silico_core::command::wire::elements::QueryRequest;
+    let by_name = fixture();
+    let typed = fixture();
+    for f in [&by_name, &typed] {
+        f.file("part.silico", BOX);
+        answer(f.sessions.open("part.silico", false))
+            .result
+            .unwrap();
+    }
+    let t = &typed.sessions;
+    let s1 = s("s1");
+    // Two of the box's faces, by name, as `elements` gives them.
+    let listed = answer(t.elements(&s1, ModelChoice::Current, None, None, 2))
+        .result
+        .unwrap();
+    let [a, b] = [0, 1].map(|i| listed.entries[i].name.to_string());
+    let pair = serde_json::to_string(&[&a, &b]).unwrap();
+    let query = r#"{"session": "s1", "model": "current", "feature": null, "kind": "face", "type": null, "stable": null, "facing": null, "measures": [], "order": null, "limit": 4}"#;
+    let added = r#"{"id": "q0000001", "type": "box", "name": "Second", "position": [50, 0, 0], "length": 1, "width": 1, "height": 1}"#;
+    let pairs: Vec<(&str, String, Answered)> = vec![
+        (
+            "distance",
+            format!(
+                r#"{{"session": "s1", "model": "current", "elements": {pair}, "feature": null}}"#
+            ),
+            as_written(&answer(t.distance(
+                &s1,
+                ModelChoice::Current,
+                [a.clone(), b.clone()],
+                None,
+            ))),
+        ),
+        (
+            "angle",
+            format!(
+                r#"{{"session": "s1", "model": "current", "elements": {pair}, "feature": null}}"#
+            ),
+            as_written(&answer(t.angle(
+                &s1,
+                ModelChoice::Current,
+                [a.clone(), b.clone()],
+                None,
+            ))),
+        ),
+        (
+            "query",
+            query.to_owned(),
+            as_written(&answer(t.query(
+                &s1,
+                ModelChoice::Current,
+                QueryRequest::read(&value(query)).unwrap().query,
+            ))),
+        ),
+        (
+            "cancel",
+            r#"{"session": "s1", "command": "check"}"#.to_owned(),
+            as_written(&t.cancel(&s1, SessionCommand::Check)),
+        ),
+        (
+            "format",
+            r#"{"session": "s1", "features": null, "write": false}"#.to_owned(),
+            as_written(&answer(t.format(&s1, None, false))),
+        ),
+        (
+            "begin",
+            r#"{"session": "s1"}"#.to_owned(),
+            as_written(&answer(t.begin(&s1))),
+        ),
+        (
+            "add_feature",
+            format!(r#"{{"session": "s1", "revision": 1, "feature": {added}}}"#),
+            as_written(&answer(t.add_feature(&s1, Revision::OPENED, value(added)))),
+        ),
+        (
+            "rollback",
+            r#"{"session": "s1"}"#.to_owned(),
+            as_written(&answer(t.rollback(&s1))),
+        ),
+        (
+            "add_feature",
+            format!(r#"{{"session": "s1", "revision": 3, "feature": {added}}}"#),
+            as_written(&answer(t.add_feature(
+                &s1,
+                Revision::OPENED.next().unwrap().next().unwrap(),
+                value(added),
+            ))),
+        ),
+        (
+            "remove_feature",
+            r#"{"session": "s1", "revision": 4, "feature": "q0000001"}"#.to_owned(),
+            as_written(&answer(t.remove_feature(
+                &s1,
+                Revision::from_number(4).unwrap(),
+                id("q0000001"),
+            ))),
+        ),
+        (
+            "replace_text",
+            format!(
+                r#"{{"session": "s1", "revision": 5, "text": {}}}"#,
+                serde_json::to_string(BOX).unwrap()
+            ),
+            as_written(&answer(t.replace_text(
+                &s1,
+                Revision::from_number(5).unwrap(),
+                BOX.to_owned(),
+            ))),
+        ),
+    ];
+    for (name, arguments, expected) in pairs {
+        // Each ran but the cancel, which nothing was running for, and the angle: the fake
+        // kernel's faces are on no plane, which an angle refuses as its own.
+        assert_eq!(
+            expected.ok,
+            !matches!(name, "cancel" | "angle"),
+            "{name}: {}",
+            expected.text
+        );
+        assert_eq!(
+            by_name.call(name, &arguments),
+            expected,
+            "{name} {arguments}"
+        );
+    }
+    // Each command's own answer, not another's: the distance's result is a distance's, the
+    // angle's an angle's.
+    let distance = envelope(&by_name.call(
+        "distance",
+        &format!(r#"{{"session": "s1", "model": "current", "elements": {pair}, "feature": null}}"#),
+    ));
+    let angle = envelope(&by_name.call(
+        "angle",
+        &format!(r#"{{"session": "s1", "model": "current", "elements": {pair}, "feature": null}}"#),
+    ));
+    assert_ne!(distance, angle);
+}
+
+fn front(to: Option<&str>) -> Render {
+    Render {
+        view: Some(NamedView::Front),
+        camera: None,
+        width: 40,
+        height: 30,
+        highlight: vec![],
+        to: to.map(PathBuf::from),
+        replace: false,
+    }
+}
+
+#[test]
+fn a_renders_png_comes_beside_its_envelope_never_in_it() {
+    let (by_name, typed) = (fixture(), fixture());
+    for f in [&by_name, &typed] {
+        f.file("part.silico", EXAMPLE);
+        answer(f.sessions.open("part.silico", false))
+            .result
+            .unwrap();
+    }
+    let rendered = answer(
+        typed
+            .sessions
+            .render(&s("s1"), ModelChoice::Current, front(None)),
+    );
+    let Response {
+        session,
+        model,
+        result,
+    } = rendered;
+    let rendering = result.unwrap();
+    let expected = response_text(
+        &Response {
+            session,
+            model,
+            result: Ok(rendering.result),
+        },
+        Layout::OneLine,
+    );
+    let answer = by_name.call(
+        "render",
+        r#"{"session": "s1", "model": "current", "view": "front", "camera": null, "width": 40, "height": 30, "highlight": [], "to": null, "replace": false}"#,
+    );
+    assert!(answer.ok);
+    assert_eq!(answer.text, expected);
+    // The fake renderer's PNG, `PNG 40x30`: its 9 bytes counted in the result, not in it.
+    assert_eq!(answer.png.as_deref(), Some(&b"PNG 40x30"[..]));
+    assert_eq!(rendering.png, b"PNG 40x30");
+    assert_eq!(envelope(&answer)["result"]["png_bytes"], 9);
+    assert!(!answer.text.contains("PNG 40x30"));
+    // Refused (its `to` out of the workspace), it has none.
+    let refused = by_name.call(
+        "render",
+        r#"{"session": "s1", "model": "current", "view": "front", "camera": null, "width": 40, "height": 30, "highlight": [], "to": "../view.png", "replace": false}"#,
+    );
+    assert!(!refused.ok);
+    assert_eq!(refused.png, None);
+    assert_eq!(envelope(&refused)["errors"][0]["parameter"], "to");
+    // And with a `to`, written in the workspace, the PNG beside the envelope too.
+    let written = by_name.call(
+        "render",
+        r#"{"session": "s1", "model": "current", "view": "front", "camera": null, "width": 40, "height": 30, "highlight": [], "to": "view.png", "replace": false}"#,
+    );
+    assert_eq!(written.png.as_deref(), Some(&b"PNG 40x30"[..]));
+    assert_eq!(
+        std::fs::read(by_name.work.join("view.png")).unwrap(),
+        b"PNG 40x30"
+    );
+}
+
+/// A refusal of a request no session was found for: `ok` false, `session` and `model`
+/// null, and the one error, as the error contract writes it (written out by hand).
+fn refusal(message: &str, parameter: Option<&str>, suggestion: Option<&str>) -> String {
+    let quoted = |text: Option<&str>| text.map_or("null".to_owned(), |t| format!("\"{t}\""));
+    let (parameter, suggestion) = (quoted(parameter), quoted(suggestion));
+    format!(
+        r#"{{"ok": false, "session": null, "model": null, "errors": [{{"code": "invalid_input", "message": "{message}", "feature": null, "elements": [], "elements_total": 0, "parameter": {parameter}, "cause": null, "suggestion": {suggestion}, "candidates": []}}], "total": 1}}"#
+    )
+}
+
+const NOT_JSON: Option<&str> =
+    Some("fix the request there: a request is strict JSON (RFC 8259), each key given once");
+
+#[test]
+fn a_request_the_reader_refuses_is_answered_with_the_cores_refused_envelope() {
+    let f = fixture();
+    for (name, arguments, expected) in [
+        (
+            "status",
+            r#"{"session": }"#,
+            refusal(
+                "the request isn't valid JSON: expected a value, found `}`, at line 1, column 13",
+                None,
+                NOT_JSON,
+            ),
+        ),
+        (
+            "status",
+            r#"{"session": "s1", "session": "s1"}"#,
+            refusal(
+                "the request isn't valid JSON: the key \\\"session\\\" is written twice in one object, at line 1, column 19",
+                None,
+                NOT_JSON,
+            ),
+        ),
+        (
+            "version",
+            "",
+            refusal(
+                "the request isn't valid JSON: expected a value, found the end of the text, at line 1, column 1",
+                None,
+                NOT_JSON,
+            ),
+        ),
+        (
+            "version",
+            "[]",
+            refusal("the request must be an object, got an array", None, None),
+        ),
+        (
+            "status",
+            r#"{"session": "s1", "extra": 1}"#,
+            refusal(
+                "extra isn't a field of this request",
+                Some("extra"),
+                Some("leave it out: a request has only the fields its shape gives"),
+            ),
+        ),
+    ] {
+        let answer = f.call(name, arguments);
+        assert!(!answer.ok, "{arguments}");
+        assert_eq!(answer.text, expected, "{arguments}");
+        assert_eq!(answer.png, None);
+    }
+}
+
+#[test]
+fn a_request_nested_past_the_limit_or_longer_than_it_is_refused_unread() {
+    let f = fixture();
+    // 64 deep is read (and refused for its shape); 65 is refused by the reader.
+    let nested = |depth: usize| {
+        format!(
+            r#"{{"of": {}{}}}"#,
+            "[".repeat(depth - 1),
+            "]".repeat(depth - 1)
+        )
+    };
+    let at_most = envelope(&f.call("schema", &nested(64)));
+    assert_eq!(at_most["errors"][0]["parameter"], "of");
+    let past = f.call("schema", &nested(65));
+    assert_eq!(
+        envelope(&past)["errors"][0]["message"],
+        "the request isn't valid JSON: arrays and objects nest more than 64 deep, at line 1, column 71"
+    );
+    assert_eq!(
+        envelope(&past)["errors"][0]["parameter"],
+        serde_json::Value::Null
+    );
+    // One byte past what's read: refused for its size, its text never parsed.
+    let most = silico_core::document::json::MAX_INPUT_LEN;
+    let long = format!(r#"{{"of": "{}"}}"#, "x".repeat(most - 10 + 1));
+    assert_eq!(long.len(), most + 1);
+    let past = envelope(&f.call("schema", &long));
+    assert_eq!(
+        past["errors"][0]["message"],
+        format!(
+            "the request is too large for Silico to read: the text is {} bytes, more than the {most} Silico reads",
+            most + 1
+        )
+    );
+    assert_eq!(past["errors"][0]["parameter"], serde_json::Value::Null);
+}
+
+#[test]
+fn a_number_is_read_from_its_digits_never_rounded() {
+    let f = fixture();
+    f.file("part.silico", BOX);
+    assert!(
+        f.call("open", r#"{"path": "part.silico", "create": false}"#)
+            .ok
+    );
+    // A length with more decimals than a nanometre's: refused for them, not rounded to 0.1.
+    let refused = f.call(
+        "set_field",
+        r#"{"session": "s1", "revision": 1, "feature": "k7f2qx3m", "field": "length", "value": 0.10000000000000000001}"#,
+    );
+    assert!(!refused.ok);
+    let error = &envelope(&refused)["errors"][0];
+    assert_eq!(error["code"], "invalid_input");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("has more than 6 decimals"),
+        "{error}"
+    );
+    // And a request's own length field alike (a camera's view height).
+    let camera = f.call(
+        "render",
+        r#"{"session": "s1", "model": "current", "view": null, "camera": {"projection": "orthographic", "eye": [0, -100, 0], "target": [0, 0, 0], "up": [0, 0, 1], "view_height": 0.10000000000000000001, "field_of_view": null}, "width": 40, "height": 30, "highlight": [], "to": null, "replace": false}"#,
+    );
+    let error = &envelope(&camera)["errors"][0];
+    assert_eq!(error["parameter"], "camera.view_height");
+    assert_eq!(
+        error["message"],
+        "camera.view_height must be a length in millimetres or null, got 0.10000000000000000001, which has more than 6 decimals"
+    );
+    assert_eq!(camera.png, None);
+    // `0.1` is 100,000 nm exactly, as the document holds it and the kernel is sent it.
+    let set = f.call(
+        "set_field",
+        r#"{"session": "s1", "revision": 1, "feature": "k7f2qx3m", "field": "length", "value": 0.1}"#,
+    );
+    assert!(set.ok, "{}", set.text);
+    assert_eq!(envelope(&set)["result"]["after"], 0.1);
+    let published = f.sessions.published(&s("s1")).result.unwrap();
+    let Operation::Box { length, .. } = &published.model.document().features[0].operation else {
+        panic!("not a box");
+    };
+    assert_eq!(*length, Length::from_nm(100_000));
+    let sent: Vec<f64> = f
+        .kernel
+        .calls()
+        .iter()
+        .filter_map(|call| match call.op {
+            Op::MakePrimitive(Primitive::Box { dx, .. }) => Some(dx),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sent, [0.1]);
+}
+
+#[test]
+fn calls_to_one_session_run_in_the_order_sent_and_opens_take_ids_in_that_order() {
+    let f = fixture();
+    for name in ["a", "b", "c", "d", "e"] {
+        f.file(&format!("{name}.silico"), BOX);
+    }
+    // Each queued as it's called; waited on last first, so no answer orders the next.
+    let opens: Vec<Calling> = ["a", "b", "c", "d", "e"]
+        .iter()
+        .map(|name| {
+            f.calling(
+                "open",
+                &format!(r#"{{"path": "{name}.silico", "create": false}}"#),
+            )
+        })
+        .collect();
+    let mut ids: Vec<(String, String)> = opens
+        .into_iter()
+        .rev()
+        .map(|calling| {
+            let envelope = envelope(&answered(calling));
+            (
+                envelope["result"]["path"].as_str().unwrap().to_owned(),
+                envelope["session"]["id"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    ids.reverse();
+    assert_eq!(
+        ids,
+        [
+            ("a.silico", "s1"),
+            ("b.silico", "s2"),
+            ("c.silico", "s3"),
+            ("d.silico", "s4"),
+            ("e.silico", "s5"),
+        ]
+        .map(|(p, s)| (p.to_owned(), s.to_owned()))
+    );
+    // An edit then a check, called back to back, each time: the check reads the edit's
+    // revision, and the text its length.
+    for (at, length) in (1..=10).zip(41..) {
+        let edit = f.calling(
+            "set_field",
+            &format!(
+                r#"{{"session": "s1", "revision": {at}, "feature": "k7f2qx3m", "field": "length", "value": {length}}}"#
+            ),
+        );
+        let check = f.calling(
+            "check",
+            r#"{"session": "s1", "model": "current", "fresh": false}"#,
+        );
+        let text = f.calling("text", r#"{"session": "s1", "feature": "k7f2qx3m"}"#);
+        let (text, check, edit) = (answered(text), answered(check), answered(edit));
+        assert!(edit.ok, "{}", edit.text);
+        let check = envelope(&check);
+        assert_eq!(check["session"]["revision"], at + 1);
+        assert_eq!(check["model"]["revision"], at + 1);
+        let text = envelope(&text);
+        assert!(
+            text["result"]["text"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("\"length\": {length},")),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn status_and_cancel_are_answered_when_waited_on_not_when_called() {
+    let f = fixture();
+    f.file("part.silico", BOX);
+    // Called before s1 is open, waited on after: it answers of s1 open, so it ran then.
+    let status = f.calling("status", r#"{"session": "s1"}"#);
+    assert!(status.progress().is_none());
+    assert!(!status.stopper().cancel());
+    answer(f.sessions.open("part.silico", false))
+        .result
+        .unwrap();
+    let status = envelope(&answered(status));
+    assert_eq!(status["ok"], true);
+    assert_eq!(status["session"]["id"], "s1");
+    // A cancel called before the check it names is queued, waited on while that check
+    // waits on the kernel: it finds it running, and stops it.
+    let cancel = f.calling("cancel", r#"{"session": "s1", "command": "check"}"#);
+    let hold = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+    let check = f.calling(
+        "check",
+        r#"{"session": "s1", "model": "current", "fresh": false}"#,
+    );
+    assert!(f.kernel.wait_running(1, HANG));
+    let cancel = envelope(&answered(cancel));
+    assert_eq!(cancel["result"]["command"], "check");
+    assert_eq!(cancel["result"]["stopped"], true);
+    hold.release();
+    let check = envelope(&answered(check));
+    assert_eq!(check["errors"][0]["code"], "cancelled");
+    // `version` and `schema` likewise: nothing to stop, and no progress.
+    for (name, arguments) in [("version", "{}"), ("schema", r#"{"of": "document"}"#)] {
+        let calling = f.calling(name, arguments);
+        assert!(calling.progress().is_none());
+        assert!(!calling.stopper().cancel());
+        assert!(answered(calling).ok);
+    }
+}
+
+#[test]
+fn a_call_running_gives_its_progress_waits_again_and_is_stopped_by_its_stopper() {
+    let f = fixture();
+    f.file("part.silico", BOX);
+    answer(f.sessions.open("part.silico", false))
+        .result
+        .unwrap();
+    let hold = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+    let mut check = f.calling(
+        "check",
+        r#"{"session": "s1", "model": "current", "fresh": false}"#,
+    );
+    assert!(f.kernel.wait_running(1, HANG));
+    // One step, the box's, running and not done.
+    let deadline = std::time::Instant::now() + HANG;
+    let progress = loop {
+        if let Some(progress) = check.progress()
+            && progress.steps == 1
+        {
+            break progress;
+        }
+        assert!(std::time::Instant::now() < deadline, "no progress");
+        std::thread::yield_now();
+    };
+    assert_eq!((progress.done, progress.steps), (0, 1));
+    assert_eq!(progress.running.as_deref(), Some("k7f2qx3m box"));
+    // Not answered yet: the call comes back to be waited on again.
+    check = match check.wait_timeout(std::time::Duration::from_millis(20)) {
+        Err(check) => check,
+        Ok(answered) => panic!("answered while held: {}", answered.text),
+    };
+    let stopper = check.stopper();
+    assert!(stopper.cancel());
+    hold.release();
+    let answered = check.wait();
+    assert!(!answered.ok);
+    assert_eq!(envelope(&answered)["errors"][0]["code"], "cancelled");
+    // A request refused before it ran has nothing to stop.
+    let refused = f.calling("check", "{}");
+    assert!(refused.progress().is_none());
+    assert!(!refused.stopper().cancel());
+}
+
+#[test]
+fn a_call_is_waited_on_by_another_thread_than_the_one_that_called() {
+    // As MCP's server waits: the reader calls, a waiter waits.
+    let f = fixture();
+    f.file("part.silico", BOX);
+    let open = f.calling("open", r#"{"path": "part.silico", "create": false}"#);
+    let status = f.calling("status", r#"{"session": "s1"}"#);
+    let (open, status) = std::thread::scope(|scope| {
+        let open = scope.spawn(move || answered(open));
+        let opened = open.join().unwrap();
+        let status = scope.spawn(move || answered(status));
+        (opened, status.join().unwrap())
+    });
+    assert!(open.ok && status.ok, "{} {}", open.text, status.text);
+}

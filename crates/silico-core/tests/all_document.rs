@@ -62,6 +62,8 @@ mod adversarial_type_words;
 mod adversarial_wire_commands;
 #[path = "cache_bound.rs"]
 mod cache_bound;
+#[path = "call.rs"]
+mod call;
 #[path = "command.rs"]
 mod command;
 #[path = "document.rs"]

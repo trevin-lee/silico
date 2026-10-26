@@ -1009,6 +1009,16 @@ fn a_response_past_its_limit_is_answered_with_a_refusal_saying_so() {
         whole
     );
     let limit = whole.len() - 1;
+    // What `call` answers says which: the answer, ok; or its refusal, not ok, though the
+    // command ran.
+    assert_eq!(
+        super::answer_within(&answer, Layout::OneLine, whole.len()),
+        (true, whole.clone())
+    );
+    assert_eq!(
+        super::answer_within(&answer, Layout::OneLine, limit),
+        (false, response_text_within(&answer, Layout::OneLine, limit))
+    );
     assert_eq!(
         response_text_within(&answer, Layout::OneLine, limit),
         format!(

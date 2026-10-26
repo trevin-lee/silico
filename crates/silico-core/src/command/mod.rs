@@ -2,7 +2,9 @@
 //! exactly what the others do: a session's ([`Sessions`]: a document held open between
 //! commands, each session's commands run in turn on a thread of its own, each answered by a
 //! [`Running`] handle; docs/design/m4.1-command-api.md, section 3), which reads and writes
-//! its document's file. Beneath them, for a caller with a document or a model of its own (a
+//! its document's file; and every command by its name, for a transport that has a command's
+//! name and its request's text ([`Sessions::call`], MCP's), built on the typed methods.
+//! Beneath them, for a caller with a document or a model of its own (a
 //! test, a tool on an engine it holds): a document's bytes through the gate ([`gate`]),
 //! rebuilt ([`rebuild`]), checked ([`check`]), written in canonical form with its
 //! fingerprints ([`format`]), and its outline ([`outline`]), each giving structured errors.
@@ -18,6 +20,7 @@ use crate::document::{
 use crate::kernel::Kernel;
 use crate::recompute::{Model, Recompute, RunOutcome, Save};
 
+mod call;
 mod edit;
 pub mod elements;
 mod lookup;
@@ -28,6 +31,7 @@ mod session;
 mod session_command;
 pub mod wire;
 
+pub use call::{Answered, Call, Calling, Command};
 pub use session::{
     Added, Begun, Cancelled, CheckAnswer, Closed, Committed, FieldSet, MAX_PUBLISHED_READS,
     MAX_SESSIONS, ModelChoice, ModelRead, NOT_RELOADED, Opened, OutlineAnswer, Progress, Published,

@@ -575,40 +575,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// current revision's rebuild: `faulted` if its model holds a kernel fault, kept as the
     /// revision's outcome (decision 32), `stopped` if it was cancelled.
     pub fn status(&self, session: &SessionId) -> Response<Status> {
-        let Some(found) = self.find(session) else {
-            return refused(not_open(*session));
-        };
-        let reads = found.reads_running();
-        let running = found.running().and_then(|ticket| ticket.command());
-        let held = found.held.read();
-        let gated = matches!(*held.gated, Gated::Checked(_));
-        let rebuild = if gated {
-            let state = lock(&found.rebuilds).state(held.revision);
-            Rebuild {
-                progress: found.newest.of(held.revision),
-                ..state
-            }
-        } else {
-            Rebuild {
-                revision: held.revision,
-                state: RebuildState::Idle,
-                progress: None,
-            }
-        };
-        Response {
-            session: Some(found.info_of(&held, false)),
-            model: None,
-            result: Ok(Status {
-                features: held.gated.document().ok().map(|d| d.features.len()),
-                gated,
-                transaction: held.transaction.as_ref().map(|begun| Begun {
-                    base: begun.revision,
-                }),
-                running,
-                reads,
-                rebuild,
-            }),
-        }
+        status_in(&self.registry, session)
     }
 
     /// Stops `session`'s command named `command` (decision 34), answered at once on the
@@ -620,42 +587,14 @@ impl<P: Clients + 'static> Sessions<P> {
     /// running, what is given as candidates: so a cancel that comes late never stops the
     /// command queued after the one it meant.
     pub fn cancel(&self, session: &SessionId, command: SessionCommand) -> Response<Cancelled> {
-        let _span = tracing::info_span!("session_command", session = %session, command = "cancel")
-            .entered();
-        let Some(found) = self.find(session) else {
-            return refused(not_open(*session));
-        };
-        let queued = found.running();
-        let reads: Vec<Arc<Ticket>> = {
-            let reads = lock(&found.reads);
-            lock(&reads.unanswered).tickets().cloned().collect()
-        };
-        let named: Vec<&Arc<Ticket>> = queued
-            .iter()
-            .chain(&reads)
-            .filter(|ticket| ticket.command() == Some(command))
-            .collect();
-        let result = if named.is_empty() {
-            // Each, as `status` lists them.
-            let running: Vec<SessionCommand> = queued
-                .iter()
-                .chain(&reads)
-                .filter_map(|ticket| ticket.command())
-                .collect();
-            Err(Problems::from(not_running(found.id, command, &running)))
-        } else {
-            // Every one stopped, none passed over once one is.
-            let stopped = named
-                .iter()
-                .fold(false, |stopped, ticket| ticket.cancel() | stopped);
-            tracing::info!(command = command.as_str(), stopped, "cancelled");
-            Ok(Cancelled { command, stopped })
-        };
-        Response {
-            session: Some(found.info(false)),
-            model: None,
-            result,
-        }
+        cancel_in(&self.registry, session, command)
+    }
+
+    /// What answers [`status`](Self::status) and [`cancel`](Self::cancel) later, on whichever
+    /// thread asks, as they're answered here: for `call`, whose caller (MCP's reader) never
+    /// waits on what a session holds.
+    pub(crate) fn later(&self) -> Later<P> {
+        Later(Arc::downgrade(&self.registry))
     }
 
     /// The text `session`'s document is: the file's bytes exactly, until an edit; or, given
@@ -1155,7 +1094,7 @@ impl<P: Clients + 'static> Sessions<P> {
     }
 
     fn find(&self, session: &SessionId) -> Option<Arc<Session<P::Client>>> {
-        lock(&self.registry.book).sessions.get(session).cloned()
+        find_in(&self.registry, session)
     }
 
     /// `work` queued on `session`'s thread, under the caller's span and the command's, after
@@ -1273,6 +1212,126 @@ impl<P: Clients + 'static> Sessions<P> {
             Some(ticket),
             Some(Arc::clone(&found.newest)),
         )
+    }
+}
+
+/// The session `session` of `registry`, if it's open.
+fn find_in<P: Clients + 'static>(
+    registry: &Registry<P>,
+    session: &SessionId,
+) -> Option<Arc<Session<P::Client>>> {
+    lock(&registry.book).sessions.get(session).cloned()
+}
+
+/// [`Sessions::status`], of `registry`'s sessions.
+fn status_in<P: Clients + 'static>(
+    registry: &Registry<P>,
+    session: &SessionId,
+) -> Response<Status> {
+    let Some(found) = find_in(registry, session) else {
+        return refused(not_open(*session));
+    };
+    let reads = found.reads_running();
+    let running = found.running().and_then(|ticket| ticket.command());
+    let held = found.held.read();
+    let gated = matches!(*held.gated, Gated::Checked(_));
+    let rebuild = if gated {
+        let state = lock(&found.rebuilds).state(held.revision);
+        Rebuild {
+            progress: found.newest.of(held.revision),
+            ..state
+        }
+    } else {
+        Rebuild {
+            revision: held.revision,
+            state: RebuildState::Idle,
+            progress: None,
+        }
+    };
+    Response {
+        session: Some(found.info_of(&held, false)),
+        model: None,
+        result: Ok(Status {
+            features: held.gated.document().ok().map(|d| d.features.len()),
+            gated,
+            transaction: held.transaction.as_ref().map(|begun| Begun {
+                base: begun.revision,
+            }),
+            running,
+            reads,
+            rebuild,
+        }),
+    }
+}
+
+/// [`Sessions::cancel`], of `registry`'s sessions.
+fn cancel_in<P: Clients + 'static>(
+    registry: &Registry<P>,
+    session: &SessionId,
+    command: SessionCommand,
+) -> Response<Cancelled> {
+    let _span =
+        tracing::info_span!("session_command", session = %session, command = "cancel").entered();
+    let Some(found) = find_in(registry, session) else {
+        return refused(not_open(*session));
+    };
+    let queued = found.running();
+    let reads: Vec<Arc<Ticket>> = {
+        let reads = lock(&found.reads);
+        lock(&reads.unanswered).tickets().cloned().collect()
+    };
+    let named: Vec<&Arc<Ticket>> = queued
+        .iter()
+        .chain(&reads)
+        .filter(|ticket| ticket.command() == Some(command))
+        .collect();
+    let result = if named.is_empty() {
+        // Each, as `status` lists them.
+        let running: Vec<SessionCommand> = queued
+            .iter()
+            .chain(&reads)
+            .filter_map(|ticket| ticket.command())
+            .collect();
+        Err(Problems::from(not_running(found.id, command, &running)))
+    } else {
+        // Every one stopped, none passed over once one is.
+        let stopped = named
+            .iter()
+            .fold(false, |stopped, ticket| ticket.cancel() | stopped);
+        tracing::info!(command = command.as_str(), stopped, "cancelled");
+        Ok(Cancelled { command, stopped })
+    };
+    Response {
+        session: Some(found.info(false)),
+        model: None,
+        result,
+    }
+}
+
+/// `status` and `cancel` of a [`Sessions`], answered later, on whichever thread asks
+/// ([`Sessions::later`]): as the sessions answer them, or, once they're dropped, refused as
+/// closing. It holds them only weakly, so it keeps nothing of theirs alive.
+pub(crate) struct Later<P: Clients + 'static>(Weak<Registry<P>>);
+
+impl<P: Clients + 'static> Later<P> {
+    /// [`Sessions::status`].
+    pub(crate) fn status(&self, session: &SessionId) -> Response<Status> {
+        match self.0.upgrade() {
+            Some(registry) => status_in(&registry, session),
+            None => refused(closing()),
+        }
+    }
+
+    /// [`Sessions::cancel`].
+    pub(crate) fn cancel(
+        &self,
+        session: &SessionId,
+        command: SessionCommand,
+    ) -> Response<Cancelled> {
+        match self.0.upgrade() {
+            Some(registry) => cancel_in(&registry, session, command),
+            None => refused(closing()),
+        }
     }
 }
 
