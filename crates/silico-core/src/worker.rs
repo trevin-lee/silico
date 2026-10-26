@@ -749,7 +749,7 @@ impl Worker {
         );
         // A worker that hadn't started never had the request to work on.
         let error = if self.has_started() {
-            error.with_suggestion("simplify the operation, or allow it more time")
+            error.with_suggestion(SIMPLIFY_OR_WAIT)
         } else {
             error
                 .with_cause(format!("the {} hadn't started", self.kind.noun()))
@@ -1415,6 +1415,17 @@ enum Reached {
     Request,
 }
 
+/// What a timeout of a worker that had started suggests. A session's kept fault words it
+/// its own way (`command::session`'s `kept_suggestion`): the time allowed isn't the command
+/// API's to give.
+pub(crate) const SIMPLIFY_OR_WAIT: &str = "simplify the operation, or allow it more time";
+
+/// How the advice for a crash on the request's values begins ([`crash_advice`]). A session's
+/// kept fault words it its own way (`command::session`'s `kept_suggestion`): an edit of the
+/// values makes a new revision, which rebuilds anyway, and the same values would crash it
+/// again.
+pub(crate) const CHANGE_THE_VALUES: &str = "change the operation's values";
+
 /// What to try after a worker crashed, by how it ended, and how far it got. A fault of its
 /// own (SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP, SIGSYS) before it started is
 /// its install (a missing library: dyld aborts it), and once the request reached it is the
@@ -1442,8 +1453,7 @@ fn crash_advice(kind: WorkerKind, status: Option<ExitStatus>, reached: Reached) 
             )
         }
         Some((None, Some(signal))) if request && FAULTS.contains(&signal) => format!(
-            "change the operation's values: these crashed {}, and the same request would \
-             crash it again",
+            "{CHANGE_THE_VALUES}: these crashed {}, and the same request would crash it again",
             kind.runs()
         ),
         Some((None, Some(libc::SIGKILL))) if matches!(reached, Reached::NotStarted) => format!(

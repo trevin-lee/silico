@@ -798,16 +798,33 @@ pub(in crate::command) fn kept_fault(fault: &Error) -> Error {
 }
 
 /// [`kept_fault`]'s suggestion (the design's section 6): reading the revision again won't try
-/// it again, so how to: the worker's own suggestion, which says what to change, free, or
-/// allow (the values that crashed it, the memory it ran short of, the time it ran past),
-/// then `check` with `fresh`. With none of its own, a crash that met a feature says it as
-/// the design's example does, `check` with `fresh`, then the document reported if the same
-/// feature crashes the worker again; any other fault, `check` with `fresh` alone. (A fault
-/// is never known to have met the same feature twice running: each model holds the one
-/// its rebuild met.)
+/// it again, so how to, keeping the worker's own advice. A crash on a feature's values,
+/// which the same values would crash again, says to edit them (an edit makes a new
+/// revision, which rebuilds anyway), as the design's example does; with no feature named,
+/// the worker's advice alone. A timeout says to simplify the operation, or `check` with
+/// `fresh`: the time allowed isn't the command API's to give. Any other advice of the
+/// worker's own (the memory it ran short of, a worker stopped from outside), then `check`
+/// with `fresh`. With none of its own, a crash that met a feature says `check` with
+/// `fresh`, then the document reported if the same feature crashes the worker again; any
+/// other fault, `check` with `fresh` alone. (A fault is never known to have met the same
+/// feature twice running: each model holds the one its rebuild met.)
 pub(in crate::command) fn kept_suggestion(fault: &Error) -> String {
     const FRESH: &str = "check with fresh to try it again";
-    match (fault.suggestion(), fault.code(), fault.feature()) {
+    let own = fault.suggestion();
+    if let Some(why) = own.and_then(|own| own.strip_prefix(crate::worker::CHANGE_THE_VALUES))
+        && fault.code() == ErrorCode::WorkerCrashed
+    {
+        return match fault.feature() {
+            Some(_) => format!(
+                "edit the feature's values{why}; an edit makes a new revision, which rebuilds it"
+            ),
+            None => format!("{}{why}", crate::worker::CHANGE_THE_VALUES),
+        };
+    }
+    match (own, fault.code(), fault.feature()) {
+        (Some(crate::worker::SIMPLIFY_OR_WAIT), ErrorCode::WorkerTimeout, _) => {
+            format!("simplify the operation, or {FRESH}")
+        }
         (Some(own), _, _) => format!("{own}; then {FRESH}"),
         (None, ErrorCode::WorkerCrashed, Some(_)) => format!(
             "{FRESH}; if the same feature crashes the worker again, report it with the document"

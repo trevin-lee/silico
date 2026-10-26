@@ -2933,8 +2933,9 @@ fn each_change_of_what_the_session_holds_is_past_a_cancel() {
 #[test]
 fn a_kept_fault_keeps_the_workers_advice_then_says_to_check_with_fresh() {
     // Decision 32 and the design's section 6: reading the revision again won't run it
-    // again, so the worker's own advice (what to change, free, or allow), then `check` with
-    // `fresh`. The workers' words, written out as worker.rs and silico-protocol give them.
+    // again, so the worker's own advice, worded for a session, and how to try again. The
+    // workers' words, written out as worker.rs and silico-protocol give them; the session's,
+    // as the design's note gives them.
     let said = |error: &Error| {
         (
             error.code(),
@@ -2943,7 +2944,8 @@ fn a_kept_fault_keeps_the_workers_advice_then_says_to_check_with_fresh() {
             error.suggestion().map(str::to_owned),
         )
     };
-    // A crash on the request's values (worker.rs, `crash_advice`).
+    // A crash on the request's values (worker.rs, `crash_advice`), which the same values
+    // would crash again: edit them, which rebuilds anyway, never check with fresh.
     let crashed = Error::new(ErrorCode::WorkerCrashed, "the worker crashed")
         .with_feature("f0000001")
         .with_suggestion(
@@ -2957,21 +2959,70 @@ fn a_kept_fault_keeps_the_workers_advice_then_says_to_check_with_fresh() {
             "the worker crashed".to_owned(),
             Some("f0000001".to_owned()),
             Some(
-                "change the operation's values: these crashed the kernel, and the same request \
-                 would crash it again; then check with fresh to try it again"
+                "edit the feature's values: these crashed the kernel, and the same request \
+                 would crash it again; an edit makes a new revision, which rebuilds it"
                     .to_owned()
             )
         )
     );
-    // A timeout once the worker had started (worker.rs, `timed_out`).
+    // The sketch solver's (`WorkerKind::runs`), likewise.
+    let solver = Error::new(ErrorCode::WorkerCrashed, "the worker crashed")
+        .with_feature("s0000001")
+        .with_suggestion(
+            "change the operation's values: these crashed the sketch solver, and the same \
+             request would crash it again",
+        );
+    assert_eq!(
+        kept_fault(&solver).suggestion(),
+        Some(
+            "edit the feature's values: these crashed the sketch solver, and the same request \
+             would crash it again; an edit makes a new revision, which rebuilds it"
+        )
+    );
+    // With no feature named, the worker's advice alone: there's no feature to edit, and
+    // the same request would crash it again.
+    let unnamed_values = Error::new(ErrorCode::WorkerCrashed, "the worker crashed")
+        .with_suggestion(
+            "change the operation's values: these crashed the kernel, and the same request would \
+         crash it again",
+        );
+    assert_eq!(
+        kept_fault(&unnamed_values).suggestion(),
+        Some(
+            "change the operation's values: these crashed the kernel, and the same request \
+             would crash it again"
+        )
+    );
+    // Advice that begins the same way under another code is no crash's: the code decides,
+    // not the words (a kernel's refusal, worker.rs's `KernelFailed`, here).
+    let refused = Error::new(ErrorCode::KernelFailed, "refused")
+        .with_feature("f0000001")
+        .with_suggestion("change the operation's values: the kernel can't build it from these");
+    assert_eq!(
+        kept_fault(&refused).suggestion(),
+        Some(
+            "change the operation's values: the kernel can't build it from these; then check \
+             with fresh to try it again"
+        )
+    );
+    // A timeout once the worker had started (worker.rs, `timed_out`): the time allowed
+    // isn't the command API's to give, so not said.
     let timed_out = Error::new(ErrorCode::WorkerTimeout, "timed out")
         .with_feature("f0000001")
         .with_suggestion("simplify the operation, or allow it more time");
     assert_eq!(
         kept_fault(&timed_out).suggestion(),
+        Some("simplify the operation, or check with fresh to try it again")
+    );
+    // One that hadn't started: its own advice, then check with fresh.
+    let unstarted = Error::new(ErrorCode::WorkerTimeout, "timed out")
+        .with_feature("f0000001")
+        .with_suggestion("try the request again: the kernel worker hadn't started");
+    assert_eq!(
+        kept_fault(&unstarted).suggestion(),
         Some(
-            "simplify the operation, or allow it more time; then check with fresh to try it \
-             again"
+            "try the request again: the kernel worker hadn't started; then check with fresh \
+             to try it again"
         )
     );
     // Out of memory (silico-protocol's `OUT_OF_MEMORY`).
@@ -3670,12 +3721,20 @@ fn a_cancel_after_cache_clear_settles_comes_too_late_and_the_clear_answers_with_
         .wait();
     assert!(checked.result.unwrap().problems.is_empty());
     let cache = f.path.parent().unwrap().join(".silico-cache");
+    // Its entries, as the cache finds its own: a regular file named by 62 lowercase hex
+    // digits in a subdirectory named by two.
+    let hex = |name: &std::ffi::OsStr, digits: usize| {
+        name.to_str().is_some_and(|name| {
+            name.len() == digits && name.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        })
+    };
     let entries = || {
         std::fs::read_dir(&cache)
             .unwrap()
             .flatten()
-            .filter(|sub| sub.path().is_dir())
+            .filter(|sub| hex(&sub.file_name(), 2) && sub.file_type().unwrap().is_dir())
             .flat_map(|sub| std::fs::read_dir(sub.path()).unwrap().flatten())
+            .filter(|file| hex(&file.file_name(), 62) && file.file_type().unwrap().is_file())
             .count()
     };
     assert_eq!(entries(), 1);
