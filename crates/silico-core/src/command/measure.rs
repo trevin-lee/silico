@@ -274,9 +274,6 @@ pub fn distance<K: Kernel>(
     let other = (a.feature != b.feature).then_some(b.shape);
     let request = KernelRequest::distance(a.shape, a.element, other, b.element)
         .map_err(|e| Problems::from(named(e, &a, &b)))?;
-    // Both asked before either is waited for, at the generation the read began at.
-    let generation = kernel.generation();
-    let least = kernel.submit(generation, request);
     let from_centre = match centre_to(&a.geometry, &b.geometry) {
         None | Some(CentreTo::Axis(None)) => FromCentre::Nothing,
         Some(CentreTo::Vertex) => FromCentre::Least,
@@ -303,8 +300,18 @@ pub fn distance<K: Kernel>(
                         &b,
                     ))
                 })?;
-            FromCentre::Asked(kernel.submit(generation, request))
+            FromCentre::Asked(request)
         }
+    };
+    // Both asked before either is waited for, at the generation the read began at, once
+    // nothing more can fail.
+    let generation = kernel.generation();
+    let least = kernel.submit(generation, request);
+    let from_centre = match from_centre {
+        FromCentre::Nothing => FromCentre::Nothing,
+        FromCentre::Least => FromCentre::Least,
+        FromCentre::Gap(gap) => FromCentre::Gap(gap),
+        FromCentre::Asked(request) => FromCentre::Asked(kernel.submit(generation, request)),
     };
     let measured = waited(least.wait(), LEAST_NOT_DONE, &a, &b)?;
     let length = |value: f64| Length::rounded(value).ok_or_else(|| too_far(&a, &b));
@@ -511,9 +518,9 @@ enum CentreTo {
     Axis(Option<f64>),
 }
 
-/// Where `center_to_element` comes from, once its centre's distance, if it needs one, is
-/// asked: none; the pair's least distance (a vertex); an axis's gap; or the kernel's answer
-/// for a circle's or arc's centre, `P`, pending.
+/// Where `center_to_element` comes from: none; the pair's least distance (a vertex); an
+/// axis's gap; or the kernel's answer for a circle's or arc's centre, `P`: its request, then
+/// the request pending.
 enum FromCentre<P> {
     Nothing,
     Least,
