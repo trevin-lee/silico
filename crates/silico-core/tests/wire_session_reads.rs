@@ -885,6 +885,13 @@ fn text_outline_and_check_answer_as_the_design_gives_them() {
         text,
         "{\"problems\": [], \"problems_total\": 0, \"warnings\": [], \"warnings_total\": 0}\n"
     );
+    // A fillet whose edge an edit removed, a real kernel's (silico-kernel's wire_examples.rs
+    // writes it on kernel workers), holds to the result's snapshot too.
+    holds(
+        &schema_of("check", "result"),
+        &example("check/reference-broken"),
+        "reference broken",
+    );
 }
 
 #[test]
