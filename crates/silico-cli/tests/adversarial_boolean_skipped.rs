@@ -1,6 +1,6 @@
-//! break-it for PR #171 (a boolean whose OCCT skipped intersecting a pair of elements is
-//! refused): a document a user could write, a pointed cone with a padded rod resting on its
-//! tip, cut. The rod touches the cone at one point and nowhere else, so the cut is the cone
+//! break-it for OCCT's skipped-pair warning, which the kernel logs and doesn't refuse
+//! (docs/ports/booleans.md): a document a user could write, a pointed cone with a padded rod
+//! resting on its tip, cut, for which OCCT raises it with a right result. The rod touches the cone at one point and nowhere else, so the cut is the cone
 //! whole: 125π/3 = 130.899694 (by hand; FreeCAD 1.1.3, on the same OCCT, gives 130.8996939
 //! for the same solids). Exit codes from docs/cli.md: 0 clean, 1 the document has problems.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -84,9 +84,10 @@ impl Drop for Scratch {
 
 #[test]
 fn a_rod_padded_onto_a_pointed_cones_tip_cuts_and_checks_clean() {
-    // BREAKS: `silico check` exits 1: "kernel_failed: Cut failed (feature hhhhhhhh, element
-    // Face1): OCCT skipped intersecting the base's Face1 with the tool's face 1 in the cut",
-    // for a cut whose right result is the cone whole, which `fmt` would then fingerprint.
+    // BREAKS (fixed): `silico check` exited 1 while the warning was refused: "kernel_failed:
+    // Cut failed (feature hhhhhhhh, element Face1): OCCT skipped intersecting the base's
+    // Face1 with the tool's face 1 in the cut", for a cut whose right result is the cone
+    // whole, which `fmt` fingerprints.
     let scratch = Scratch::new("rod-on-point");
     let file = scratch.0.join("part.silico");
     std::fs::write(&file, ROD_ON_THE_POINT.trim_start()).unwrap();

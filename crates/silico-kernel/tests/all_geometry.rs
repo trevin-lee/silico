@@ -32,6 +32,8 @@ mod hostile;
 mod imports;
 #[path = "common/kernel.rs"]
 mod kernel;
+#[path = "common/logs.rs"]
+mod logs;
 #[path = "common/numbers.rs"]
 mod numbers;
 #[path = "common/oracle.rs"]

@@ -10,8 +10,6 @@ mod test_programs;
 mod adversarial_describe;
 #[path = "adversarial_export.rs"]
 mod adversarial_export;
-#[path = "adversarial_pairs_skipped.rs"]
-mod adversarial_pairs_skipped;
 #[path = "adversarial_parts.rs"]
 mod adversarial_parts;
 #[path = "adversarial_profile.rs"]

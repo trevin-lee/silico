@@ -55,7 +55,7 @@ pub use profile::{
 };
 pub use refusal::{
     BrepDefect, ChamferKind, Described, DressingKind, EdgeTrouble, FACES_NAMED, HistoryDefect,
-    OUT_OF_MEMORY, Operation, PAIRS_NAMED, Refusal, Returned, Role, Skipped, Trouble,
+    OUT_OF_MEMORY, Operation, Refusal, Returned, Role, Trouble,
 };
 pub use render::{
     Camera, EDGE_BIT, Frame, MAX_FIELD_OF_VIEW, MAX_RENDER_COORDINATE, MAX_RENDER_EDGES,

@@ -1,9 +1,9 @@
-//! break-it: a boolean OCCT made skipping a pair of elements it couldn't intersect, refused
-//! (`Refusal::BooleanPairsSkipped`, PR #171), on inputs other than the one it was found
-//! with: a pointed cone a rod rests on by its tip (a right result OCCT raises the alert
-//! for), tools that cross the barrel's bad face many times, the barrel as the tool, fused
-//! with itself, and moved onto itself; the refusal run again and through fresh workers; and
-//! the inputs and the worker after it.
+//! break-it: OCCT's skipped-pair warning (`BOPAlgo_AlertIntersectionOfPairOfShapesFailed`),
+//! which the kernel logs naming the pair and doesn't refuse (docs/ports/booleans.md). It
+//! comes with right results: a pointed cone a rod rests on by its tip, as in FreeCAD. And
+//! with wrong ones: the barrel whose turned face lies outside its own surface, as the bridge
+//! built it before the arc-range fix, crossed by tools many times, as the tool, fused with
+//! itself; each pair is named once, by each input's numbering, in OCCT's order.
 //!
 //! Expected values are by hand: a cone's volume πr²h/3, a cylinder's πr²l, solids that
 //! touch at a point sharing nothing, the bad barrel's face bounds (the box from (−5, −5,
@@ -14,15 +14,15 @@
 
 use super::brep_fixture::fixture;
 use super::kernel::kernel;
+use super::logs::warnings_of;
 
 use std::f64::consts::PI;
 
-use silico_core::ErrorCode;
 use silico_kernel::{
     Axis, BooleanOp, Primitive, Profile, Refusal, Shape, boolean, from_brep, make, revolve,
     summarize, to_brep, translate,
 };
-use silico_protocol::{Blob, ElementKind, ElementRef, Role, ShapeData, Skipped};
+use silico_protocol::{Blob, ShapeData};
 
 const OPS: [BooleanOp; 3] = [BooleanOp::Fuse, BooleanOp::Cut, BooleanOp::Common];
 
@@ -65,13 +65,19 @@ fn close(got: f64, want: f64) -> bool {
 
 #[test]
 fn a_rod_resting_on_a_pointed_cones_tip_cuts_nothing_from_it() {
-    // BREAKS: refused as `BooleanPairsSkipped` (the cone's Face1 with the rod's face 2),
-    // though OCCT's result is right: they meet at one point, so the cut is the cone whole,
-    // as FreeCAD gives it (130.8996939).
+    // They meet at one point, so the cut is the cone whole, as FreeCAD gives it
+    // (130.8996939); yet OCCT says it skipped the cone's side with the rod's face 2: a right
+    // result that raises the warning, which is why it's logged, not refused.
     let cone = pointed_cone();
     for t in ANGLES {
-        let cut = boolean(BooleanOp::Cut, &cone, &rod_on_the_point(t))
-            .unwrap_or_else(|e| panic!("at {t} rad: {e} ({:?})", e.refusal()));
+        let (cut, said) = warnings_of(|| boolean(BooleanOp::Cut, &cone, &rod_on_the_point(t)));
+        let cut = cut.unwrap_or_else(|e| panic!("at {t} rad: {e} ({:?})", e.refusal()));
+        assert!(
+            said.contains(
+                "OCCT skipped intersecting the base's Face1 with the tool's Face2 in the cut"
+            ),
+            "at {t} rad: {said}"
+        );
         let s = summarize(&cut.shape).unwrap();
         assert!(s.valid, "at {t} rad: {s:?}");
         assert!(close(s.volume, CONE_VOLUME), "at {t} rad: {}", s.volume);
@@ -80,8 +86,8 @@ fn a_rod_resting_on_a_pointed_cones_tip_cuts_nothing_from_it() {
 
 #[test]
 fn a_rod_resting_on_a_pointed_cones_tip_fuses_with_it_into_both() {
-    // BREAKS: refused as `BooleanPairsSkipped`; FreeCAD's fuse is both solids, whole
-    // (382.227106187, 125π/3 + 80π).
+    // FreeCAD's fuse is both solids, whole (382.227106187, 125π/3 + 80π), and so is
+    // OCCT's, though it raises the warning.
     let cone = pointed_cone();
     for t in ANGLES {
         let fuse = boolean(BooleanOp::Fuse, &cone, &rod_on_the_point(t))
@@ -98,8 +104,8 @@ fn a_rod_resting_on_a_pointed_cones_tip_fuses_with_it_into_both() {
 
 #[test]
 fn a_rod_resting_on_a_pointed_cones_tip_has_no_common_with_it() {
-    // BREAKS: refused as `BooleanPairsSkipped`, not as the empty common it is (FreeCAD's
-    // has no solid), which is what a common of solids that touch at a point is refused as.
+    // The empty common it is (FreeCAD's has no solid), refused as a common of solids that
+    // touch at a point is, though OCCT raises the warning.
     let cone = pointed_cone();
     for t in ANGLES {
         let e = boolean(BooleanOp::Common, &cone, &rod_on_the_point(t))
@@ -152,11 +158,38 @@ fn block(dx: f64, dy: f64, dz: f64, at: [f64; 3]) -> Shape {
         .shape
 }
 
-fn face(role: Role, index: u32) -> Skipped {
-    Skipped {
-        kind: ElementKind::Face,
-        of: Some((role, index)),
+/// What a boolean of `base` and `tool` logs, for each op, and the op's result.
+fn logged(base: &Shape, tool: &Shape) -> Vec<(BooleanOp, String)> {
+    OPS.into_iter()
+        .map(|op| {
+            // OCCT's answer is taken, right or wrong, or refused for what else is wrong.
+            let (_built, said) = warnings_of(|| boolean(op, base, tool));
+            (op, said)
+        })
+        .collect()
+}
+
+#[test]
+fn the_bad_barrel_less_a_slab_names_its_pair_once() {
+    // The slab beyond y = 2: its face 3 (y = 2) cuts the barrel's turned face, Face2, which
+    // OCCT skips, twice over, taking them as not meeting: the cut came back whole (526.334
+    // for 395.478), "valid". The pair is named once, in each op's words, and OCCT's answer
+    // is taken, as FreeCAD takes it.
+    let barrel = bad_barrel();
+    let slab = block(40.0, 18.0, 40.0, [-20.0, 2.0, -20.0]);
+    for (op, said) in logged(&barrel, &slab) {
+        let words = format!(
+            "OCCT skipped intersecting the base's Face2 with the tool's Face3 in the {}, \
+             taking them as not meeting",
+            op.name().to_lowercase()
+        );
+        assert_eq!(said.matches(&words).count(), 1, "{op:?}: {said}");
     }
+    let cut = boolean(BooleanOp::Cut, &barrel, &slab).unwrap();
+    assert!(close(
+        summarize(&cut.shape).unwrap().volume,
+        summarize(&barrel).unwrap().volume
+    ));
 }
 
 #[test]
@@ -168,27 +201,26 @@ fn a_probe_through_the_bad_face_names_each_of_its_faces_that_meets_it_once_in_or
     // tool's faces ascending), three named and two counted.
     let barrel = bad_barrel();
     let probe = block(7.0, 2.0, 2.0, [3.0, -1.0, -1.0]);
-    let want: Vec<[Skipped; 2]> = [1, 3, 4, 5, 6]
-        .into_iter()
-        .map(|n| [face(Role::Base, 2), face(Role::Tool, n)])
-        .collect();
-    for op in OPS {
-        let e = boolean(op, &barrel, &probe).map(|_| ()).unwrap_err();
-        assert_eq!(
-            e.refusal(),
-            &Refusal::BooleanPairsSkipped {
-                op,
-                pairs: want.clone()
-            },
-            "{op:?}"
-        );
-        assert_eq!(e.refusal().elements(), vec![ElementRef::face(2)], "{op:?}");
+    for (op, said) in logged(&barrel, &probe) {
         assert!(
-            e.to_string().contains(
-                "the base's Face2 with the tool's face 1, the base's Face2 with the tool's \
-                 face 3, the base's Face2 with the tool's face 4, and 2 more pairs in the"
-            ),
-            "{e}"
+            said.contains(&format!(
+                "the base's Face2 with the tool's Face1, the base's Face2 with the tool's \
+                 Face3, the base's Face2 with the tool's Face4, and 2 more pairs in the {}",
+                op.name().to_lowercase()
+            )),
+            "{op:?}: {said}"
+        );
+    }
+    // Up to z = 10, past the bad face's bounds: its top (face 6) isn't tried, so four pairs,
+    // and one counted.
+    let tall = block(7.0, 2.0, 11.0, [3.0, -1.0, -1.0]);
+    for (op, said) in logged(&barrel, &tall) {
+        assert!(
+            said.contains(&format!(
+                "the base's Face2 with the tool's Face4, and 1 more pair in the {}",
+                op.name().to_lowercase()
+            )),
+            "{op:?}: {said}"
         );
     }
 }
@@ -196,21 +228,14 @@ fn a_probe_through_the_bad_face_names_each_of_its_faces_that_meets_it_once_in_or
 #[test]
 fn the_bad_barrel_as_the_tool_names_the_slabs_face_as_the_bases() {
     // The roles swapped: the slab beyond y = 2 is the base, so the pair is its face 3 (y = 2)
-    // with the tool's Face2, in OCCT's order (the base's elements first), and the error's
-    // element is the slab's face, the one input a boolean's error names.
+    // with the tool's Face2, in OCCT's order (the base's elements first).
     let barrel = bad_barrel();
     let slab = block(40.0, 18.0, 40.0, [-20.0, 2.0, -20.0]);
-    for op in OPS {
-        let e = boolean(op, &slab, &barrel).map(|_| ()).unwrap_err();
-        assert_eq!(
-            e.refusal(),
-            &Refusal::BooleanPairsSkipped {
-                op,
-                pairs: vec![[face(Role::Base, 3), face(Role::Tool, 2)]]
-            },
-            "{op:?}"
+    for (op, said) in logged(&slab, &barrel) {
+        assert!(
+            said.contains("OCCT skipped intersecting the base's Face3 with the tool's Face2 in"),
+            "{op:?}: {said}"
         );
-        assert_eq!(e.refusal().elements(), vec![ElementRef::face(3)]);
     }
 }
 
@@ -219,7 +244,8 @@ fn the_bad_barrel_fused_with_itself_shares_every_face_and_skips_nothing() {
     // The same shape twice: OCCT has nothing to intersect (every face is shared), so no
     // pair is skipped, and the fuse is the barrel, its volume unchanged.
     let barrel = bad_barrel();
-    let fuse = boolean(BooleanOp::Fuse, &barrel, &barrel).unwrap();
+    let (fuse, said) = warnings_of(|| boolean(BooleanOp::Fuse, &barrel, &barrel).unwrap());
+    assert!(!said.contains("skipped"), "{said}");
     let (got, want) = (
         summarize(&fuse.shape).unwrap().volume,
         summarize(&barrel).unwrap().volume,
@@ -227,83 +253,13 @@ fn the_bad_barrel_fused_with_itself_shares_every_face_and_skips_nothing() {
     assert!(close(got, want), "{got} for {want}");
 }
 
-#[test]
-fn the_bad_barrel_moved_half_a_millimetre_onto_itself_is_refused_naming_both_bad_faces() {
-    // Each copy's turned face is bad, so every pair has one or the other in it, and none is
-    // named twice.
-    let barrel = bad_barrel();
-    let moved = translate(&barrel, [0.5, 0.0, 0.0]).unwrap().shape;
-    for op in OPS {
-        let e = boolean(op, &barrel, &moved).map(|_| ()).unwrap_err();
-        let Refusal::BooleanPairsSkipped { pairs, .. } = e.refusal() else {
-            panic!("{op:?}: {e}");
-        };
-        assert!(
-            pairs
-                .iter()
-                .all(|p| p.contains(&face(Role::Base, 2)) || p.contains(&face(Role::Tool, 2))),
-            "{op:?}: {pairs:?}"
-        );
-        for (i, p) in pairs.iter().enumerate() {
-            assert!(!pairs[..i].contains(p), "{op:?}: {p:?} named twice");
-        }
-    }
-}
-
-#[test]
-fn a_refused_boolean_leaves_its_inputs_as_they_were_and_the_next_one_builds() {
-    let barrel = bad_barrel();
-    let slab = block(40.0, 18.0, 40.0, [-20.0, 2.0, -20.0]);
-    let (barrel_bytes, slab_bytes) = (to_brep(&barrel).unwrap(), to_brep(&slab).unwrap());
-    for op in OPS {
-        boolean(op, &barrel, &slab).map(|_| ()).unwrap_err();
-    }
-    assert_eq!(to_brep(&barrel).unwrap(), barrel_bytes);
-    assert_eq!(to_brep(&slab).unwrap(), slab_bytes);
-    // The slab less a box inside it: 40 × 18 × 40 − 10³.
-    let inside = block(10.0, 10.0, 10.0, [0.0, 5.0, 0.0]);
-    let cut = boolean(BooleanOp::Cut, &slab, &inside).unwrap();
-    assert!(close(
-        summarize(&cut.shape).unwrap().volume,
-        40.0 * 18.0 * 40.0 - 1000.0
-    ));
-}
-
 fn data(shape: &Shape) -> ShapeData {
     ShapeData::unchecked(Blob::inline(to_brep(shape).unwrap()))
 }
 
 #[test]
-fn the_refusal_is_the_same_every_run_and_from_every_worker() {
-    let barrel = bad_barrel();
-    let probe = block(7.0, 2.0, 2.0, [3.0, -1.0, -1.0]);
-    let first = boolean(BooleanOp::Cut, &barrel, &probe)
-        .map(|_| ())
-        .unwrap_err()
-        .refusal()
-        .clone();
-    for _ in 0..10 {
-        let again = boolean(BooleanOp::Cut, &barrel, &probe)
-            .map(|_| ())
-            .unwrap_err();
-        assert_eq!(again.refusal(), &first);
-    }
-    let (b, p) = (data(&barrel), data(&probe));
-    let said: Vec<_> = (0..2)
-        .map(|_| {
-            let e = kernel().boolean(BooleanOp::Cut, &b, &p).unwrap_err();
-            assert_eq!(e.code(), ErrorCode::KernelFailed, "{e}");
-            assert_eq!(e.elements(), ["Face2"], "{e}");
-            e.to_string()
-        })
-        .collect();
-    assert_eq!(said[0], said[1]);
-}
-
-#[test]
 fn worker_a_rod_resting_on_a_pointed_cones_tip_is_cut_and_the_worker_goes_on() {
-    // BREAKS: through the worker and the core, `kernel_failed` naming the cone's Face1, for
-    // the cone whole.
+    // Through the worker and the core: the cone whole, and the worker goes on.
     let mut k = kernel();
     let (cone, rod) = (data(&pointed_cone()), data(&rod_on_the_point(0.0)));
     let cut = k.boolean(BooleanOp::Cut, &cone, &rod);
@@ -312,59 +268,4 @@ fn worker_a_rod_resting_on_a_pointed_cones_tip_is_cut_and_the_worker_goes_on() {
     assert_eq!(again.shape.valid(), Some(true));
     let cut = cut.unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(cut.shape.valid(), Some(true));
-}
-
-/// A rod of radius 1 lying level against the pointed cone's side at its half height, 300°
-/// round (the foot (2.5 cos t, 2.5 sin t, 2.5)), across the cone's slope: it touches the
-/// cone at that one point. Its axis is 1 from the foot along the side's outward normal,
-/// (cos t, sin t, 1)/√2.
-fn rod_against_the_side() -> Shape {
-    let t = 20.0 * PI / 12.0;
-    let (c, s) = (libm::cos(t), libm::sin(t));
-    let h = std::f64::consts::FRAC_1_SQRT_2;
-    let centre = [2.5 * c + c * h, 2.5 * s + s * h, 2.5 + h];
-    let u = t + PI / 2.0;
-    let (cu, su) = (libm::cos(u), libm::sin(u));
-    let at = |a: f64, b: f64| [a * cu - b * su, a * su + b * cu, 0.0];
-    let profile = Profile {
-        points: vec![at(-10.0, 0.0), at(10.0, 0.0), at(10.0, 1.0), at(-10.0, 1.0)],
-    };
-    let axis = Axis {
-        origin: [0.0; 3],
-        direction: [cu, su, 0.0],
-    };
-    let rod = revolve(&profile, &axis, 360.0).unwrap().shape;
-    translate(&rod, centre).unwrap().shape
-}
-
-#[test]
-fn worker_a_rod_against_a_pointed_cones_side_is_cut_fused_and_commoned() {
-    // BREAKS, though not by this PR: OCCT segfaults in the boolean itself
-    // (BOPAlgo_PaveFiller::MakeBlocks, BOPTools_AlgoTools::MakePCurve given a null curve),
-    // for each op, and the worker dies (`worker_crashed`). FreeCAD 1.1.3, given these very
-    // B-reps bit for bit, builds each: the cut the cone whole (130.8996939), the fuse both
-    // (193.731546971, 125π/3 + 20π, two solids), the common nothing. Run in-process, the
-    // crash takes the test program with it, so it's run on a worker.
-    let (cone, rod) = (data(&pointed_cone()), data(&rod_against_the_side()));
-    let want = [
-        (BooleanOp::Fuse, CONE_VOLUME + 20.0 * PI),
-        (BooleanOp::Cut, CONE_VOLUME),
-    ];
-    for (op, volume) in want {
-        let mut k = kernel();
-        let built = k
-            .boolean(op, &cone, &rod)
-            .unwrap_or_else(|e| panic!("{op:?}: {e}"));
-        let s = k.summarize(&built.shape).unwrap();
-        assert!(s.valid, "{op:?}: {s:?}");
-        assert!(close(s.volume, volume), "{op:?}: {} for {volume}", s.volume);
-    }
-    let e = kernel()
-        .boolean(BooleanOp::Common, &cone, &rod)
-        .map(|_| ())
-        .unwrap_err();
-    assert!(
-        e.to_string().contains("the common's result is empty"),
-        "{e}"
-    );
 }

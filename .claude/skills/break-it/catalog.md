@@ -221,7 +221,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A client dropped (or a cancel given) with requests queued behind a hung one: a queue its thread drains on close sends each in turn, a whole timeout each, and a queued cancel answers only when its turn comes; time the drop and each cancel's answer
 - Resource stops decided by a proxy (pixels, faces) on a worker kept warm: one face of 2 million triangles is "small" and the kept worker holds 1 GB; read the worker's RSS after the request the proxy calls small
 - Idle timers restarted by every request taken from the queue, cancelled ones included: ask-and-cancel in a loop and see whether the worker is ever stopped
-- A worker's refusal holding a list the core dedups with `Vec::contains` (a boolean's skipped pairs): 200,000 distinct entries, 2.4 MB of a 512 MiB frame, are 2·10^10 comparisons; time it, and send exactly one more than the words name (`and 1 more pairs`) and none at all
+- A worker's reply holding a list the core dedups with `Vec::contains`: 200,000 distinct entries, 2.4 MB of a 512 MiB frame, are 2·10^10 comparisons; time it, and send exactly one more than the words name (`and 1 more pairs`) and none at all
 
 ## Recompute and scheduling
 
