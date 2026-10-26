@@ -1,0 +1,42 @@
+Subject: Modeling Algorithms - BOPAlgo_PaveFiller::MakeBlocks leaves out a section edge built without a 3D curve
+Upstream: https://github.com/Open-Cascade-SAS/OCCT/issues/1678
+Applies to: OCCT V7_9_3.
+Why: a crash Silico can't work around. A cone of radius 5 to 0 and height 5, and a level rod of
+     radius 1 touching its side at one point (half height, 300 degrees round), fused, cut, or
+     commoned: the face-face intersection gives a section curve whose pave block's ends meet at
+     one vertex (a B-spline 3.5e-6 long, never more than 2.0e-7 from its start, against a
+     tolerance of 1.5e-7: noise at a true point contact), BRepLib_MakeEdge marks it
+     degenerated, BOPTools_AlgoTools::MakeEdge so builds it without a 3D curve, and
+     BOPTools_AlgoTools::MakePCurve wraps that null curve in a Geom_TrimmedCurve, which
+     dereferences it (SIGSEGV). It's reached on Silico's deterministic build's floating-point
+     path; FreeCAD 1.1.3's conda-forge OCCT 7.9.3 doesn't reach it from the same B-reps, and
+     builds each: the fuse both solids, 193.731546971 (125*pi/3 + 20*pi), the cut the cone whole,
+     130.8996939, the common nothing. A section with no curve is no section: it's left out, as a
+     pave block with no valid range is, so the operation goes on as FreeCAD's does.
+Moves: nothing expected (no stress, oracle, or fingerprint digest; a boolean that reaches it
+     crashed before).
+Drop when: an OCCT release checks the section edge's 3D curve before MakePCurve (read MakeBlocks
+     and MakePCurve; OCCT master doesn't, 2026-10-26), and boolean_degenerate_section.rs still
+     passes without the patch. The test alone isn't enough: the crash depends on the exact
+     floating-point path, so a release or recipe that moves the intersection's numbers can pass
+     it with the dereference still there.
+
+--- a/src/BOPAlgo/BOPAlgo_PaveFiller_6.cxx
++++ b/src/BOPAlgo/BOPAlgo_PaveFiller_6.cxx
+@@ -999,6 +999,16 @@
+         //
+         // Make Edge
+         BOPTools_AlgoTools::MakeEdge(aIC, aV1, aT1, aV2, aT2, aTolR3D, aES);
++        // A section edge built without a 3D curve (degenerated: faces that touch at a point,
++        // its ends on one vertex) is no section, and MakePCurve would dereference its null
++        // curve: it's left out, as a block with no valid range is.
++        {
++          Standard_Real aTF, aTL;
++          if (BRep_Tool::Curve(aES, aTF, aTL).IsNull())
++          {
++            continue;
++          }
++        }
+         // Make p-curves
+         BOPTools_AlgoTools::MakePCurve(aES,
+                                        aF1,
