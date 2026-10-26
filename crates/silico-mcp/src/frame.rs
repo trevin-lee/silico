@@ -34,6 +34,8 @@ pub enum Line {
 pub fn read_line(input: &mut impl BufRead, max: usize) -> Line {
     let mut line = Vec::new();
     let mut length: u64 = 0;
+    // The line's last byte before its newline, read or dropped.
+    let mut last = None;
     loop {
         let chunk = match input.fill_buf() {
             Ok(chunk) => chunk,
@@ -45,7 +47,7 @@ pub fn read_line(input: &mut impl BufRead, max: usize) -> Line {
             if length == 0 {
                 return Line::End;
             }
-            return ended(line, length, max);
+            return ended(line, length, last, max);
         }
         let (taken, done) = match chunk.iter().position(|&b| b == b'\n') {
             Some(at) => (at, true),
@@ -53,28 +55,36 @@ pub fn read_line(input: &mut impl BufRead, max: usize) -> Line {
         };
         let room = max.saturating_sub(line.len()).min(taken);
         line.extend_from_slice(&chunk[..room]);
+        if let Some(&byte) = chunk[..taken].last() {
+            last = Some(byte);
+        }
         length = length.saturating_add(taken as u64);
         input.consume(if done { taken + 1 } else { taken });
         if done {
-            return ended(line, length, max);
+            return ended(line, length, last, max);
         }
     }
 }
 
-/// A line read whole, or, past `max`, its head.
-fn ended(mut line: Vec<u8>, length: u64, max: usize) -> Line {
+/// A line read whole, or, past `max`, its head: `length` bytes long, its last `last`. A
+/// carriage return ending it (CRLF) isn't the message's, so it isn't counted against `max`.
+fn ended(mut line: Vec<u8>, mut length: u64, last: Option<u8>, max: usize) -> Line {
+    if last == Some(b'\r') {
+        length = length.saturating_sub(1);
+        // Read, unless it was the one byte past `max`, dropped.
+        if line.len() as u64 > length {
+            line.pop();
+        }
+    }
     if length > max as u64 {
         return Line::TooLong { head: line, length };
-    }
-    if line.last() == Some(&b'\r') {
-        line.pop();
     }
     Line::Whole(line)
 }
 
 /// A request's ID: a string or a number, kept as the client wrote it, so its reply carries
 /// it back byte for byte. Two IDs are the same if they're the same string (however it's
-/// escaped) or the same number as written.
+/// escaped; one that's no Unicode text, as written) or the same number as written.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Id {
     key: IdKey,
@@ -85,6 +95,9 @@ pub struct Id {
 enum IdKey {
     Number(String),
     Text(String),
+    /// A string that's no Unicode text (a lone surrogate, escaped: RFC 8259's grammar
+    /// allows one), so can't be decoded: the same only as written.
+    Undecoded(String),
 }
 
 impl Id {
@@ -92,7 +105,10 @@ impl Id {
     pub fn of(raw: &RawValue) -> Option<Id> {
         let text = raw.get();
         let key = match text.as_bytes().first()? {
-            b'"' => IdKey::Text(serde_json::from_str::<String>(text).ok()?),
+            b'"' => match serde_json::from_str::<String>(text) {
+                Ok(decoded) => IdKey::Text(decoded),
+                Err(_) => IdKey::Undecoded(text.to_owned()),
+            },
             b'-' | b'0'..=b'9' => IdKey::Number(text.to_owned()),
             _ => return None,
         };
@@ -180,8 +196,14 @@ pub fn parse(line: &[u8]) -> Result<Message<'_>, Bad> {
         }
         _ => return Err(invalid(None, "the message isn't an object")),
     }
-    let frame: Frame<'_> = serde_json::from_str(whole.get())
-        .map_err(|e| invalid(None, &format!("the message isn't JSON-RPC: {e}")))?;
+    // Refused only for a member given twice: answered by its ID, if that's given once.
+    let frame: Frame<'_> = serde_json::from_str(whole.get()).map_err(|e| {
+        let id = match id_members(whole.get().as_bytes()).as_slice() {
+            [id] => id.clone(),
+            _ => None,
+        };
+        invalid(id, &format!("the message isn't JSON-RPC: {e}"))
+    })?;
     let id =
         match frame.id {
             None => None,
@@ -221,24 +243,41 @@ pub fn parse(line: &[u8]) -> Result<Message<'_>, Bad> {
 /// a member of the line's object before the line was cut: found by walking the object's
 /// members, each value skipped unread.
 pub fn find_id(head: &[u8]) -> Option<Id> {
-    let mut at = Walk { text: head, at: 0 };
+    id_members(head).into_iter().next().flatten()
+}
+
+/// The `id` members of the object `text` begins, in order, as far as its members can be
+/// walked whole (each value skipped unread): each the ID it is, if it's a string or a
+/// number.
+fn id_members(text: &[u8]) -> Vec<Option<Id>> {
+    let mut ids = Vec::new();
+    let mut at = Walk { text, at: 0 };
     at.space();
-    at.byte(b'{')?;
+    if at.byte(b'{').is_none() {
+        return ids;
+    }
     loop {
         at.space();
-        let key = at.string()?;
+        let Some(key) = at.string() else {
+            return ids;
+        };
         at.space();
-        at.byte(b':')?;
-        at.space();
-        let start = at.at;
-        at.value()?;
-        let value = &head[start..at.at];
-        if serde_json::from_slice::<String>(key).ok().as_deref() == Some("id") {
-            let raw: &RawValue = serde_json::from_slice(value).ok()?;
-            return Id::of(raw);
+        if at.byte(b':').is_none() {
+            return ids;
         }
         at.space();
-        at.byte(b',')?;
+        let start = at.at;
+        if at.value().is_none() {
+            return ids;
+        }
+        if serde_json::from_slice::<String>(key).ok().as_deref() == Some("id") {
+            let raw = serde_json::from_slice::<&RawValue>(&text[start..at.at]).ok();
+            ids.push(raw.and_then(Id::of));
+        }
+        at.space();
+        if at.byte(b',').is_none() {
+            return ids;
+        }
     }
 }
 
@@ -350,6 +389,14 @@ mod tests {
             lines(b"123456\n1234567\n", 6),
             ["whole 123456", "long 123456 7"]
         );
+        // A carriage return ending a line isn't counted: exactly the most with CRLF is whole,
+        // one past it isn't, and its length is the message's.
+        assert_eq!(
+            lines(b"123456\r\n1234567\r\n12345678\r\n12\r", 6),
+            ["whole 123456", "long 123456 7", "long 123456 8", "whole 12"]
+        );
+        // One inside a line is the line's.
+        assert_eq!(lines(b"12\r3\r\n", 6), ["whole 12\r3"]);
         assert!(lines(b"", 6).is_empty());
     }
 
@@ -386,5 +433,10 @@ mod tests {
         assert_eq!(of("null"), None);
         assert_eq!(of("true"), None);
         assert_eq!(of("[1]"), None);
+        // A string that's no Unicode text is an ID, the same only as written.
+        assert_eq!(of(r#""\ud800""#).unwrap().raw(), r#""\ud800""#);
+        assert_eq!(of(r#""\ud800""#), of(r#""\ud800""#));
+        assert_ne!(of(r#""\ud800""#), of(r#""\uD800""#));
+        assert_ne!(of(r#""\ud800""#), of(r#""\\ud800""#));
     }
 }

@@ -5,6 +5,7 @@
 #[path = "common/client.rs"]
 mod client;
 
+mod adversarial_server;
 mod calls;
 mod contract;
 mod errors;

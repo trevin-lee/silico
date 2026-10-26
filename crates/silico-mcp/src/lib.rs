@@ -802,7 +802,10 @@ impl<P: Clients + 'static> Dispatch<'_, P> {
                     invalid(format!(
                         "tools/call's params must be an object, each key once: {e}"
                     ))
-                    .with_parameter("params"),
+                    .with_parameter("params")
+                    .with_suggestion(
+                        "give tools/call's params as an object: the tool's name, its arguments, and _meta if you want progress",
+                    ),
                 );
             }
         };
@@ -858,7 +861,11 @@ impl<P: Clients + 'static> Dispatch<'_, P> {
                 None | Some(Err(_)) => {
                     return self.invalid_params(
                         id,
-                        invalid("_meta must be an object, each key once").with_parameter("_meta"),
+                        invalid("_meta must be an object, each key once")
+                            .with_parameter("_meta")
+                            .with_suggestion(
+                                "give _meta as an object, each key once (its progressToken a string or a number), or leave it out",
+                            ),
                     );
                 }
                 Some(Ok(Meta {
@@ -872,7 +879,10 @@ impl<P: Clients + 'static> Dispatch<'_, P> {
                         return self.invalid_params(
                             id,
                             invalid("_meta.progressToken must be a string or a number")
-                                .with_parameter("_meta.progressToken"),
+                                .with_parameter("_meta.progressToken")
+                                .with_suggestion(
+                                    "give a progress token that's a string or a number, or leave it out for no progress",
+                                ),
                         );
                     }
                 },
