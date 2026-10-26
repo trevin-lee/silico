@@ -306,6 +306,50 @@ fn a_body_whose_measure_failed_is_still_drawn_by_a_camera_on_it() {
     }
 }
 
+#[test]
+fn a_highlight_on_a_body_that_couldnt_be_described_is_lit() {
+    // The cut built but its description was refused: it's drawn, and a face of it is lit
+    // by name, which needs the element map, not the geometry a description holds.
+    let bench = Bench::with(EXAMPLE, |k| {
+        k.refuse(|op| {
+            matches!(op, Op::Describe { .. }).then(|| {
+                Error::new(ErrorCode::KernelFailed, "no describing today")
+                    .with_suggestion("describe again")
+            })
+        });
+    });
+    let mut request = view("front", 100, 100);
+    request.highlight = vec!["m3tq8v0z.cut.Face(I a91cw0de.cylinder.Face1)".to_owned()];
+    bench
+        .render(&request)
+        .unwrap_or_else(|p| panic!("{:?}", p.errors()));
+    let sent = &bench.renderer.sent()[0];
+    assert_eq!(sent.bodies.len(), 1);
+    assert_eq!(
+        sent.bodies[0].highlight_faces.len(),
+        1,
+        "{:?}",
+        sent.bodies[0]
+    );
+}
+
+#[test]
+fn a_highlight_of_a_solid_is_refused_naming_it() {
+    // A solid has no pixels of its own to light: `invalid_input` at `highlight.0`, never
+    // looked for as a face (a solid taken would be `reference_broken`, or drawn).
+    let bench = Bench::of(EXAMPLE);
+    let mut request = view("front", 100, 100);
+    request.highlight = vec!["m3tq8v0z.cut.Solid1".to_owned()];
+    let e = refused(bench.render(&request));
+    assert_eq!(
+        (e.code(), e.parameter()),
+        (ErrorCode::InvalidInput, Some("highlight.0")),
+        "{e:?}"
+    );
+    assert!(e.message().contains("names a solid"), "{e:?}");
+    assert!(bench.renderer.sent().is_empty());
+}
+
 // BREAKS (fixed): a named view of a model whose one body wasn't measured says the model has no
 // bodies to fit ("view front fits the model's bodies, and it has none to fit"), and advises
 // a camera, which (above) renders nothing either. It has a body; the error should say that
@@ -346,9 +390,9 @@ fn a_perspective_eye_inside_an_unmeasured_body_is_refused() {
 #[test]
 fn a_failed_cut_leaves_its_inputs_as_bodies_numbered_in_order_and_its_names_say_its_failure() {
     // The cut refused: the block and the pin stay bodies (a failed feature consumes
-    // nothing), 1 and 2; a name of the cut's own is answered with the cut's failure (design
-    // §2's A1, as every lookup by name answers it); each input's first face is its own,
-    // index 0, by body.
+    // nothing), 1 and 2; a name of the cut's own is answered with the cut's failure, as
+    // `elements` and the measures answer one (M4.1 section 7, M4.5); each input's first face
+    // is its own, index 0, by body.
     let bench = Bench::with(EXAMPLE, |k| {
         k.refuse(|op| {
             matches!(

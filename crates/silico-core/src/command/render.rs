@@ -271,7 +271,7 @@ struct Lit {
 /// no bodies, a camera that fails its check or whose perspective eye is inside a body
 /// (`camera.eye`, a point on a face counting as inside), more highlights than
 /// [`MAX_HIGHLIGHTS`], a highlight that names nothing (`reference_broken`, with candidates)
-/// or a vertex or solid, a `to` that decision 35 refuses, and a scene past what a render
+/// or a vertex or solid, or an element of a feature that didn't build (its failure), a `to` that decision 35 refuses, and a scene past what a render
 /// draws (`camera`) or one frame holds (the side whose pixels would make it coarser).
 pub fn render<K: Kernel>(
     model: &Model,
@@ -556,24 +556,25 @@ fn highlighted(model: &Model, bodies: &[Body], highlight: &[String]) -> Result<V
     let mut lookup = Lookup::new(model, None, HIGHLIGHTED);
     let mut lit = Vec::new();
     for (i, text) in highlight.iter().enumerate() {
-        let Some(hit) = lookup.find(&format!("highlight.{i}"), text) else {
+        // Which element only: a body is drawn, and its faces lit, though its measure failed.
+        let Some((feature, element)) = lookup.find_element(&format!("highlight.{i}"), text) else {
             continue;
         };
         // A solid the lookup finds is one of the bodies that built, which are drawn.
-        match bodies.iter().position(|b| b.id == hit.feature) {
+        match bodies.iter().position(|b| b.id == feature) {
             Some(body) => lit.push(Lit {
                 body,
-                kind: hit.element.kind,
-                index: hit.element.index.saturating_sub(1),
+                kind: element.kind,
+                index: element.index.saturating_sub(1),
             }),
             None => lookup.refuse(
                 Error::new(
                     ErrorCode::Internal,
                     format!(
-                        "highlight.{i} was found in {}'s solid, which isn't among the bodies drawn",
-                        hit.feature
+                        "highlight.{i} was found in {feature}'s solid, which isn't among the bodies drawn"
                     ),
                 )
+                .with_parameter(format!("highlight.{i}"))
                 .with_suggestion(SILICO_BUG),
             ),
         }
