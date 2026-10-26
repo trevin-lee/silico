@@ -152,3 +152,6 @@ crates/silico-core/src/views.rs | sees | replace == with != | #181
 crates/silico-core/src/views.rs | sees | replace == with != | #181
 # An absolute path joined to the workspace is itself.
 crates/silico-core/src/file.rs | output_target | replace match guard given.is_relative() with true | #181
+# Asking one more mesh ahead than the machine runs only widens the window: every mesh is
+# still taken in order and counted (tested past the first fill).
+crates/silico-core/src/command/export.rs | export | replace < with <= | #182

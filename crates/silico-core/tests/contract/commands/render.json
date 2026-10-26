@@ -305,7 +305,7 @@
         "type": "integer"
       },
       "path": {
-        "description": "Where the PNG was written, through any links; null if `to` was.",
+        "description": "Where the PNG was written, as the request gave it; null if `to` was.",
         "type": [
           "string",
           "null"

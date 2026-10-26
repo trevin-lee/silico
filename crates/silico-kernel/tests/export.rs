@@ -166,6 +166,14 @@ fn a_solid_with_faces_the_kernel_cant_mesh_is_refused_naming_them() {
         assert_eq!(error.code(), ErrorCode::InvalidResult, "{error}");
         assert_eq!(error.elements(), ["Face8", "Face13"], "{error}");
         assert_eq!(error.elements_total(), 2, "{error}");
+        assert_eq!(
+            (error.message(), error.cause()),
+            (
+                "the export mesh isn't closed: 2 faces have no triangles",
+                Some("OCCT made no triangles for the faces")
+            ),
+            "{error}"
+        );
     }
 }
 

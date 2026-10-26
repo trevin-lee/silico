@@ -328,7 +328,7 @@ pub fn list(
 /// `error`, met in the model read, as the read gives it: a kernel fault worded as the
 /// revision's outcome ([`kept_fault`]), since reading the revision again won't try again; any
 /// other as it is.
-fn worded(error: &Error) -> Error {
+pub(crate) fn worded(error: &Error) -> Error {
     if error.code().is_kernel_fault() {
         kept_fault(error)
     } else {

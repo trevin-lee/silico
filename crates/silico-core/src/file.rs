@@ -1020,6 +1020,8 @@ pub struct Output<'a> {
     pub field: &'a str,
     /// The format's extension, without its dot (`png`, `3mf`).
     pub extension: &'a str,
+    /// What writes it, as a refusal says it (`an export`, `a render`).
+    pub writer: &'a str,
     /// Whether a file already at the path may be replaced.
     pub replace: bool,
     /// The workspace the path must be inside, never through a link out of it, if the
@@ -1071,10 +1073,23 @@ fn output_target(
             .and_then(|e| e.to_str())
             .is_some_and(|e| e.eq_ignore_ascii_case(ext))
     };
+    // A document, however it's reached: never written over, each said alike.
+    let a_document = |what: &str, suggestion: String| {
+        Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "{} {what}: {} never writes over one",
+                shown_path(given),
+                rules.writer
+            ),
+        )
+        .with_parameter(rules.field)
+        .with_suggestion(suggestion)
+    };
     if has(path, "silico") {
-        return Err(refuse(
-            "is a document's path: only commit and format write a document".to_owned(),
-            "write it to a path that isn't a document's",
+        return Err(a_document(
+            "is a document",
+            format!("give a path ending in .{}", rules.extension),
         ));
     }
     if !has(path, rules.extension) {
@@ -1134,9 +1149,9 @@ fn output_target(
         ));
     }
     if has(&target, "silico") {
-        return Err(refuse(
-            "is a link to a document".to_owned(),
-            "write it to a path that isn't a document's",
+        return Err(a_document(
+            "is a link to a document",
+            "write it to a path that isn't a document's".to_owned(),
         ));
     }
     // A link to a file of another format (a clone's `view.png` linked to its README) would
@@ -1153,9 +1168,9 @@ fn output_target(
         .filter_map(|p| std::fs::canonicalize(p).ok())
         .collect();
     if held.contains(&target) {
-        return Err(refuse(
-            "is a document a session holds".to_owned(),
-            "write it to a path that isn't a document's",
+        return Err(a_document(
+            "is a document a session holds",
+            "write it to a path that isn't a document's".to_owned(),
         ));
     }
     let replaced = match std::fs::metadata(&target) {
@@ -1166,16 +1181,22 @@ fn output_target(
             ));
         }
         Ok(_) if !rules.replace => {
-            return Err(refuse(
-                "is there already".to_owned(),
-                "give another path, or replace: true to replace it",
-            ));
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                format!("{} exists", shown_path(given)),
+            )
+            .with_parameter(rules.field)
+            .with_suggestion(REPLACE_ADVICE));
         }
         Ok(meta) => Some(meta),
         Err(_) => None,
     };
     Ok((target, replaced))
 }
+
+/// What a file already at a path a command writes, without `replace`, suggests: a
+/// client with its own way of saying `replace` (the CLI's `--replace`) says it its way.
+pub const REPLACE_ADVICE: &str = "give replace: true to replace it, or another path";
 
 /// The permissions [`write_beside`] makes its new file with: those of the file it replaces,
 /// if one, without its type's bits (so never more open than it while it's written), or

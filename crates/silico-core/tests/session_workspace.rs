@@ -401,7 +401,8 @@ fn a_renders_to_is_relative_to_the_workspace_and_refused_outside_it() {
         .id;
     let done = answer(sessions.render(&s, ModelChoice::Current, view("view.png")));
     let rendering = done.result.unwrap();
-    assert_eq!(rendering.result.path, Some(work.join("view.png")));
+    // Answered as the request gave it, relative to the workspace.
+    assert_eq!(rendering.result.path, Some(PathBuf::from("view.png")));
     assert_eq!(std::fs::read(work.join("view.png")).unwrap(), b"PNG 40x30");
     std::os::unix::fs::symlink(&out, work.join("out")).unwrap();
     for given in [
@@ -418,6 +419,59 @@ fn a_renders_to_is_relative_to_the_workspace_and_refused_outside_it() {
     // Refused before anything was drawn.
     assert_eq!(renderer.sent().len(), 1);
     assert!(!out.join("view.png").exists());
+}
+
+#[test]
+fn an_exports_path_is_relative_to_the_workspace_and_refused_outside_it() {
+    // As a render's `to`: written inside the workspace, answered as given; refused outside
+    // it, or through a link out of it, before anything is meshed.
+    use silico_core::command::export::{Export, ExportFormat};
+    let Fixture {
+        _dir,
+        work,
+        outside: out,
+        kernel,
+        sessions,
+        ..
+    } = fixture();
+    kernel.answer_instead(|op| match op {
+        Op::ExportMesh { .. } => Some(silico_protocol::Reply::ExportMesh(Box::new(
+            crate::export_report::tetra(),
+        ))),
+        _ => None,
+    });
+    std::fs::write(work.join("part.silico"), BOX).unwrap();
+    let s = answer(sessions.open("part.silico", false))
+        .session
+        .unwrap()
+        .id;
+    let export = |path: &str| Export {
+        format: ExportFormat::ThreeMf,
+        path: PathBuf::from(path),
+        replace: false,
+        features: None,
+        tolerance: silico_core::document::Length::from_nm(100_000),
+    };
+    let done = answer(sessions.export(&s, export("part.3mf")))
+        .result
+        .unwrap();
+    assert_eq!(done.path, PathBuf::from("part.3mf"));
+    assert!(work.join("part.3mf").is_file());
+    let meshed = || {
+        kernel
+            .calls()
+            .iter()
+            .filter(|c| matches!(c.op, Op::ExportMesh { .. }))
+            .count()
+    };
+    assert_eq!(meshed(), 1);
+    std::os::unix::fs::symlink(&out, work.join("out")).unwrap();
+    for given in ["../outside/part.3mf", "out/part.3mf"] {
+        let response = answer(sessions.export(&s, export(given)));
+        assert_eq!(refusal(&response), outside(given, "path"), "{given}");
+    }
+    assert_eq!(meshed(), 1);
+    assert!(!out.join("part.3mf").exists());
 }
 
 /// `path`, a path through its links, as a path relative to the working directory.

@@ -3356,6 +3356,23 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
             .into_iter()
             .map(|(read, start)| (SessionCommand::from(read), start)),
     );
+    // Stopped before it meshes anything, so its path is never written.
+    let never = std::env::temp_dir().join(format!("silico-never-{}.3mf", std::process::id()));
+    queued.push((
+        SessionCommand::Export,
+        Box::new(move || {
+            erased(s.export(
+                at,
+                crate::command::export::Export {
+                    format: crate::command::export::ExportFormat::ThreeMf,
+                    path: never.clone(),
+                    replace: false,
+                    features: None,
+                    tolerance: crate::document::Length::from_nm(100_000),
+                },
+            ))
+        }),
+    ));
     // Every one, in the design's order.
     assert_eq!(
         queued

@@ -1,0 +1,1 @@
+{"code": "invalid_input", "message": "\"bracket.silico\" is a document: an export never writes over one", "feature": null, "elements": [], "elements_total": 0, "parameter": "path", "cause": null, "suggestion": "give a path ending in .3mf", "candidates": []}

@@ -40,9 +40,11 @@ fn a_face_the_kernel_couldnt_mesh_is_refused_naming_it() {
     refused(
         &m,
         ErrorCode::InvalidResult,
-        "couldn't mesh 1 of the faces",
+        "the export mesh isn't closed: a face has no triangles",
         &["Face4"],
     );
+    let error = printable(&m, unasked, None).unwrap_err();
+    assert_eq!(error.cause(), Some("OCCT made no triangles for the face"));
 }
 
 #[test]
