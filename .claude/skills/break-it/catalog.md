@@ -93,6 +93,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Features applied to an empty or invalid base shape
 - Transforms chained many times, including a move and its inverse: location chains that grow without bound, and bytes that differ from the original
 - Measured volumes of results with curved faces trimmed by curves: compare with a closed form (sphere lens), as fixed-order integration is off by 1e-4
+- Faces whose periodic U doesn't start at 0 (a whole-turn surface of revolution or torus rebuilt over [6.2, 6.2 + 2π], as a B-rep or STEP file from elsewhere can hold it): OCCT's precise measure splits the angle at the fixed 0, 2π/3, 4π/3, not the face's own thirds, so it gets nearly one span and is 2.2e-7 low
+- Surfaces of revolution of many-span B-spline meridians (17 spans: 6.6e-7 off; 400: 1.3e-3, at every angle): the precise measure follows the meridian along the seam's knotless straight pcurve, in at most 33 pieces; FreeCAD's default is 33% low at 400 spans. Check against Pappus with de Boor by hand
+- Revolve an arc whose circle's centre is within 1e-7 of the axis: OCCT builds a sphere centred on the axis, so the solid is the δ = 0 one (4.4e-8 of its volume off the profile's at δ = 1e-7); hold the value to the kind OCCT chose
 - Measured volumes of slender slanted prisms (travel 1e6 times their width) and tiny features far from the origin: each face's integral dwarfs the volume and cancels; check flat-faced solids against their mesh
 - Meshes of thin valid solids (100 × 100 × 1e-6, or 1.1e-7 thick 10 mm from the origin): meshing fails, or gives faces too few triangles that still pass validation
 - Mesh checks done triangle by triangle or shell by shell (each shell's signed volume): a solid whose shell has no faces, or whose triangles all weld into one point, passes with no triangles; a cavity larger than its outer shell, or a lone shell flagged a cavity, passes with a negative total

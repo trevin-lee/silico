@@ -15,6 +15,7 @@ pixi run stress        # 605-case stress test, byte-identical to the reference
 ## Patch policy
 
 - A patch must fix determinism or a crash that Silico can't work around, or expose what OCCT already computes as accessors that change no result (`pixi run stress` stays byte-identical). No other features.
+- A patch may also fix a wrong result of OCCT's precise measurement (`BRepGProp` with an `Eps`) that Silico can't work around exactly on its own side, if it leaves the default integration (FreeCAD's: `measure_as_freecad`, the oracle, the stress reference) byte-identical, its expected values are by hand and independent of OCCT, and it names every committed fingerprint and protected reference it moves.
 - Every patch must exist upstream as a pull request or issue, and its header says where.
 - Each patch header states why Silico carries it and when to drop it.
 - When OCCT is upgraded, drop patches the new release includes, re-apply the rest, and run `pixi run test` and `pixi run stress` on macOS and Linux.
@@ -25,6 +26,7 @@ pixi run stress        # 605-case stress test, byte-identical to the reference
 |---|---|---|
 | [0001](patches/0001-offset-deterministic-face-order.patch) | [PR #1600](https://github.com/Open-Cascade-SAS/OCCT/pull/1600), backported to 7.9.3 | Arc-join offsets returned their faces in an order that depended on memory addresses, so results changed from run to run. |
 | [0002](patches/0002-chamfer-faulty-report.patch) | [issue #1632](https://github.com/Open-Cascade-SAS/OCCT/issues/1632) | `BRepFilletAPI_MakeChamfer` didn't pass on its builder's report of where a failed build failed, as `BRepFilletAPI_MakeFillet` does. Accessors only. |
+| [0003](patches/0003-gprop-revolution-u-spans.patch) | [issue #1675](https://github.com/Open-Cascade-SAS/OCCT/issues/1675) | The precise measurement (`BRepGProp` with an `Eps`) integrated a surface of revolution's angle as one span where it splits a torus's into three, so a full-turn barrel measured 2.2e-7 low and a revolved two-span B-spline 3.9e-6 low, their centres of mass 9.3e-4 and 0.033 off their axes, and the horn torus primitive's centre 7.46e-6 off. The knots are fixed at 0, 2π/3, 4π/3, as a torus's, so a face whose angle starts past 4π/3 gets a short span and a long one, up to 2.2e-7 low as before. Moves the determinism sweep's `torus_horn` summary hash, re-recorded with the maintainer's approval; no committed fingerprint. The default integration is unchanged. |
 
 ## Applying the patches by hand (inspection only)
 
