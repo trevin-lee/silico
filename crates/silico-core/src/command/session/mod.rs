@@ -155,6 +155,28 @@ struct Session<C: Kernel + 'static> {
     /// How far its newest rebuild has got, under a lock of its own: what `status` and each
     /// command's handle read.
     newest: Arc<Newest>,
+    /// Where its commands wait as each starts, in this crate's tests only.
+    #[cfg(test)]
+    gate: Gate,
+}
+
+/// In this crate's tests only: where a session's commands, queued and published reads,
+/// wait as each starts (its stop recorded, its work not begun), once a test has shut it:
+/// each says it started, then waits until the test lets it through. Its lock is taken
+/// alone.
+#[cfg(test)]
+#[derive(Default)]
+struct Gate(Mutex<Option<(Sender<()>, Arc<Mutex<mpsc::Receiver<()>>>)>>);
+
+#[cfg(test)]
+impl Gate {
+    fn pass(&self) {
+        let shut = lock(&self.0).clone();
+        if let Some((started, through)) = shut {
+            let _ = started.send(());
+            let _ = lock(&through).recv();
+        }
+    }
 }
 
 /// A command waiting on a session's rebuild is woken by its cancel, to stop it.
@@ -744,6 +766,8 @@ impl<P: Clients + 'static> Sessions<P> {
                             model = "published"
                         )
                         .entered();
+                        #[cfg(test)]
+                        session.gate.pass();
                         let response = stop.answer(
                             || Some(session.info(false)),
                             || {
@@ -1135,6 +1159,8 @@ impl<P: Clients + 'static> Sessions<P> {
                     if session.closed() {
                         stop.close();
                     }
+                    #[cfg(test)]
+                    session.gate.pass();
                     let response = stop.answer(
                         // Cancelled while it was queued: never run, the file not read.
                         || Some(session.info(false)),

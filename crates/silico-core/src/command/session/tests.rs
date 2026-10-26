@@ -62,6 +62,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
         reads: Mutex::new(Reads::new()),
         command: Mutex::new(None),
         newest: Arc::default(),
+        gate: Gate::default(),
     });
     (session, jobs)
 }
@@ -3200,4 +3201,167 @@ fn a_closed_sessions_rebuild_watchers_are_the_books_to_join() {
     f.sessions.close(&id).wait().result.unwrap();
     assert!(lock(&session.rebuilds).watchers.running.is_empty());
     assert_eq!(lock(&f.sessions.registry.book).released.running.len(), 1);
+}
+
+/// A command's handle, its answer's result alone, whatever it answers.
+type Started<'a> = Box<dyn Fn() -> Box<dyn FnOnce() -> Result<(), Problems>> + 'a>;
+
+/// What a command's handle answers, its value dropped.
+fn erased<T: Send + 'static>(running: Running<T>) -> Box<dyn FnOnce() -> Result<(), Problems>> {
+    Box::new(move || running.wait().result.map(|_| ()))
+}
+
+#[test]
+fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
+    // Every command that runs in a session, started by its own call and held at the gate
+    // as it starts: status names it (the queued command running, or, read of the published
+    // model, among the reads), and cancel by that name stops it before it has done
+    // anything, so it answers cancelled. The reads, queued, read the current model.
+    let f = opened(BOX);
+    let (started, was_started) = mpsc::channel();
+    let (through, wait) = mpsc::channel();
+    *lock(&f.session().gate.0) = Some((started, Arc::new(Mutex::new(wait))));
+    let s = &f.sessions;
+    let at = &f.id;
+    let length = || crate::document::json::read(b"41").unwrap();
+    let pair = || ["Face1".to_owned(), "Face2".to_owned()];
+    let front = || crate::command::render::Render {
+        view: Some(crate::views::NamedView::Front),
+        camera: None,
+        width: 100,
+        height: 100,
+        highlight: vec![],
+        to: None,
+        replace: false,
+    };
+    // Drawn by a fake renderer, as the sessions' render tests draw.
+    let renderer = Arc::new(crate::fake::FakeRenderer::new());
+    *lock(&f.sessions.registry.renderer) = Some(Arc::new(Arc::clone(&renderer)));
+    let reads = |model: ModelChoice| -> Vec<(PublishedRead, Started<'_>)> {
+        vec![
+            (
+                PublishedRead::Check,
+                Box::new(move || erased(s.check(at, model))),
+            ),
+            (
+                PublishedRead::Elements,
+                Box::new(move || erased(s.elements(at, model, None, None, 10))),
+            ),
+            (
+                PublishedRead::Query,
+                Box::new(move || {
+                    erased(s.query(
+                        at,
+                        model,
+                        crate::command::elements::Query::of(crate::kernel::ElementKind::Face, 10),
+                    ))
+                }),
+            ),
+            (
+                PublishedRead::MassProperties,
+                Box::new(move || erased(s.mass_properties(at, model, None))),
+            ),
+            (
+                PublishedRead::Distance,
+                Box::new(move || erased(s.distance(at, model, pair(), None))),
+            ),
+            (
+                PublishedRead::Angle,
+                Box::new(move || erased(s.angle(at, model, pair(), None))),
+            ),
+            (
+                PublishedRead::Render,
+                Box::new(move || erased(s.render(at, model, front()))),
+            ),
+        ]
+    };
+    let mut queued: Vec<(SessionCommand, Started<'_>)> = vec![
+        (SessionCommand::Close, Box::new(|| erased(s.close(at)))),
+        (SessionCommand::Begin, Box::new(|| erased(s.begin(at)))),
+        (SessionCommand::Commit, Box::new(|| erased(s.commit(at)))),
+        (
+            SessionCommand::Rollback,
+            Box::new(|| erased(s.rollback(at))),
+        ),
+        (
+            SessionCommand::Format,
+            Box::new(|| erased(s.format(at, None, true))),
+        ),
+        (
+            SessionCommand::AddFeature,
+            Box::new(|| erased(s.add_feature(at, Revision::OPENED, length()))),
+        ),
+        (
+            SessionCommand::SetField,
+            Box::new(|| {
+                erased(s.set_field(
+                    at,
+                    Revision::OPENED,
+                    id("k7f2qx3m"),
+                    "length".to_owned(),
+                    length(),
+                ))
+            }),
+        ),
+        (
+            SessionCommand::RemoveFeature,
+            Box::new(|| erased(s.remove_feature(at, Revision::OPENED, id("k7f2qx3m")))),
+        ),
+        (
+            SessionCommand::ReplaceText,
+            Box::new(|| erased(s.replace_text(at, Revision::OPENED, BOX.to_owned()))),
+        ),
+        (SessionCommand::Text, Box::new(|| erased(s.text(at, None)))),
+        (SessionCommand::Outline, Box::new(|| erased(s.outline(at)))),
+    ];
+    queued.extend(
+        reads(ModelChoice::Current)
+            .into_iter()
+            .map(|(read, start)| (SessionCommand::from(read), start)),
+    );
+    // Every one, in the design's order.
+    assert_eq!(
+        queued
+            .iter()
+            .map(|(command, _)| *command)
+            .collect::<Vec<_>>(),
+        SessionCommand::ALL
+    );
+    let stops = |command: SessionCommand, start: &Started<'_>, running, reads: Vec<_>| {
+        let answer = start();
+        was_started.recv_timeout(WAIT).unwrap();
+        let status = s.status(at).result.unwrap();
+        assert_eq!(
+            (status.running, status.reads),
+            (running, reads),
+            "{command}"
+        );
+        assert_eq!(
+            s.cancel(at, command).result.unwrap(),
+            Cancelled {
+                command,
+                stopped: true
+            },
+            "{command}"
+        );
+        through.send(()).unwrap();
+        assert_eq!(
+            answer().unwrap_err().errors(),
+            [cancelled(command.as_str())],
+            "{command}"
+        );
+        let status = s.status(at).result.unwrap();
+        assert_eq!((status.running, status.reads), (None, vec![]), "{command}");
+    };
+    for (command, start) in &queued {
+        stops(*command, start, Some(*command), vec![]);
+    }
+    for (read, start) in &reads(ModelChoice::Published) {
+        stops(SessionCommand::from(*read), start, None, vec![*read]);
+    }
+    // Nothing was done: the file is as it was, the session open at its first revision, and
+    // nothing drawn.
+    assert_eq!(f.file(), BOX);
+    assert_eq!(f.session().held.read().revision, Revision::OPENED);
+    assert!(renderer.sent().is_empty());
 }

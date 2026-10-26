@@ -183,6 +183,8 @@ pub(super) fn start<P: Clients + 'static>(
             reads: Mutex::new(Reads::new()),
             command: Mutex::new(None),
             newest: Arc::default(),
+            #[cfg(test)]
+            gate: super::Gate::default(),
         });
         book.opening.remove(&id);
         book.sessions.insert(id, Arc::clone(&session));
