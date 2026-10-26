@@ -10,7 +10,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use serde::Deserialize;
 use serde_json::Value;
+use serde_json::value::RawValue;
 use silico_core::cache::Cache;
 use silico_core::command::Sessions;
 use silico_core::fake::{FakeKernel, FakeRenderer};
@@ -23,6 +25,44 @@ pub const HANG: Duration = Duration::from_secs(60);
 
 /// A 40 × 20 × 10 box.
 pub const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
+
+/// `check`'s request of s1's current model.
+pub const CHECK: &str = r#"{"session": "s1", "model": "current", "fresh": false}"#;
+
+/// A reply to `tools/call`, its result a tool's answer.
+#[derive(Deserialize)]
+pub struct Reply<'a> {
+    #[serde(borrow)]
+    pub result: Answer<'a>,
+}
+
+/// A tool's answer, its `structuredContent` as written.
+#[derive(Deserialize)]
+pub struct Answer<'a> {
+    pub content: Vec<Block>,
+    #[serde(borrow, rename = "structuredContent")]
+    pub structured: &'a RawValue,
+    #[serde(rename = "isError")]
+    pub is_error: bool,
+}
+
+/// One of an answer's content blocks.
+#[derive(Deserialize)]
+pub struct Block {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub text: Option<String>,
+}
+
+/// A JSON-RPC error's code, ID, and its data's first error.
+pub fn rpc_error(message: &Value) -> (i64, Value, Value) {
+    assert!(message.get("result").is_none(), "{message}");
+    (
+        message["error"]["code"].as_i64().unwrap(),
+        message["id"].clone(),
+        message["error"]["data"]["errors"][0].clone(),
+    )
+}
 
 pub fn is_box(op: &Op) -> bool {
     matches!(op, Op::MakePrimitive(Primitive::Box { .. }))
@@ -136,6 +176,14 @@ impl Client {
         client
     }
 
+    /// A server, initialized, with `part.silico` ([`BOX`]) open as s1 (by the call `1`).
+    pub fn opened() -> Client {
+        let mut client = Client::initialized();
+        client.file("part.silico", BOX);
+        client.open(1, "part.silico");
+        client
+    }
+
     /// `name` in the workspace, holding `text`.
     pub fn file(&self, name: &str, text: &str) {
         std::fs::write(self.work.join(name), text).unwrap();
@@ -205,6 +253,12 @@ impl Client {
 
     /// Sends `tools/call` of `name` on `arguments` (JSON text) as `id`, not waiting.
     pub fn send_call(&mut self, id: u64, name: &str, arguments: &str) {
+        self.send_call_as(&id.to_string(), name, arguments);
+    }
+
+    /// Sends `tools/call` of `name` on `arguments` (JSON text) as `id` (JSON text), not
+    /// waiting.
+    pub fn send_call_as(&mut self, id: &str, name: &str, arguments: &str) {
         self.send(&format!(
             r#"{{"jsonrpc": "2.0", "id": {id}, "method": "tools/call", "params": {{"name": "{name}", "arguments": {arguments}}}}}"#
         ));
@@ -248,6 +302,18 @@ impl Client {
     /// Every write to the output blocks from now, as a client's that stopped reading does.
     pub fn stall_output(&self) {
         self.stall.state.lock().unwrap().0 = true;
+    }
+
+    /// Writes to the output go on again, a blocked one first.
+    pub fn release_output(&self) {
+        let mut state = self.stall.state.lock().unwrap();
+        *state = (false, false);
+        self.stall.changed.notify_all();
+    }
+
+    /// Whether `serve` has returned.
+    pub fn has_ended(&self) -> bool {
+        self.server.as_ref().is_none_or(JoinHandle::is_finished)
     }
 
     /// Waits until a write is blocked, failing if none is within [`HANG`].

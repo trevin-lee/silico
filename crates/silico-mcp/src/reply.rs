@@ -1,19 +1,33 @@
 //! Replies, written line by line (docs/design/m4.9-mcp.md, *Exact JSON both ways* and
 //! *Running a call*): one lock on the blocking output, each message written whole under it
-//! and flushed. A tool's answer splices the core's envelope in raw as `structuredContent`,
-//! and streams the same text, escaped, as `content`'s text block; a JSON-RPC error's
-//! `data` is a refused envelope, spliced the same way.
+//! and flushed. Each message is a [`Message`], which writes it to the output: a tool's
+//! answer splices the core's envelope in raw as `structuredContent`, and streams the same
+//! text, escaped, as `content`'s text block; a JSON-RPC error's `message` is the core
+//! error's, its `data` the core's refused envelope of it, spliced the same way.
 
 use std::io::{self, BufWriter, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 
 use silico_core::Error;
-use silico_core::command::wire::{self, Layout};
 use silico_core::command::{Answered, Problems};
 
 use crate::Control;
 use crate::frame::Id;
+
+/// What writes one message, without its newline.
+pub trait Message: FnOnce(&mut dyn Write) -> io::Result<()> {}
+
+impl<F: FnOnce(&mut dyn Write) -> io::Result<()>> Message for F {}
+
+/// `message` written, as text: a reply made now, written later.
+pub fn written(message: impl Message) -> String {
+    let mut text = Vec::new();
+    // Writing to a `Vec` fails only for the serde_json writes a message makes of strings,
+    // which can't fail.
+    let _ = message(&mut text);
+    String::from_utf8_lossy(&text).into_owned()
+}
 
 /// JSON-RPC's error codes.
 pub const PARSE_ERROR: i32 = -32700;
@@ -39,14 +53,14 @@ impl Output {
 
     /// Writes one message (`message` writes it, without its newline), waiting for the
     /// output: false if it couldn't be, the client gone.
-    pub fn send(&self, message: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> bool {
+    pub fn send(&self, message: impl Message) -> bool {
         let out = self.out.lock().unwrap_or_else(PoisonError::into_inner);
         self.write(out, message)
     }
 
     /// Writes one message if the output is free now; otherwise drops it (progress, which
     /// is never queued): whether it was written.
-    pub fn send_if_free(&self, message: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> bool {
+    pub fn send_if_free(&self, message: impl Message) -> bool {
         let out = match self.out.try_lock() {
             Ok(out) => out,
             Err(TryLockError::Poisoned(e)) => e.into_inner(),
@@ -58,7 +72,7 @@ impl Output {
     fn write(
         &self,
         mut out: MutexGuard<'_, BufWriter<Box<dyn Write + Send>>>,
-        message: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+        message: impl Message,
     ) -> bool {
         if self.failed.load(Ordering::SeqCst) {
             return false;
@@ -80,10 +94,7 @@ impl Output {
 }
 
 /// A result: `{"jsonrpc": "2.0", "id": ID, "result": RESULT}`, `result` its raw text.
-pub fn result<'a>(
-    id: &'a Id,
-    result: &'a str,
-) -> impl FnOnce(&mut dyn Write) -> io::Result<()> + 'a {
+pub fn result<'a>(id: &'a Id, result: &'a str) -> impl Message + 'a {
     move |out| {
         write!(out, r#"{{"jsonrpc":"2.0","id":{},"result":"#, id.raw())?;
         out.write_all(result.as_bytes())?;
@@ -91,38 +102,26 @@ pub fn result<'a>(
     }
 }
 
-/// A JSON-RPC error, its `data` a refused envelope of `error` (or of every error in
-/// `problems`): `id` null when none could be read.
-pub fn error(id: Option<&Id>, code: i32, message: &str, data: &Problems) -> String {
-    let id = id.map_or("null", Id::raw);
-    let message = serde_json::to_string(message).unwrap_or_else(|_| "\"\"".to_owned());
-    format!(
-        r#"{{"jsonrpc":"2.0","id":{id},"error":{{"code":{code},"message":{message},"data":{}}}}}"#,
-        refused(data)
-    )
-}
-
-/// A refused envelope of `problems`, on one line, as the core's wire writes it.
-pub fn refused(problems: &Problems) -> String {
-    wire::write(&wire::refused(None, None, problems), Layout::OneLine)
-        .or_else(|_| {
-            // A refusal past the core's response limit (no refusal here comes near it).
-            let short = Problems::from(Error::new(
-                silico_core::ErrorCode::Internal,
-                "the refusal was too long to write",
-            ));
-            wire::write(&wire::refused(None, None, &short), Layout::OneLine)
-        })
-        .unwrap_or_default()
+/// A JSON-RPC error of `code` for `error`: its `message` the error's, its `data` the core's
+/// refused envelope of it; `id` null when none could be read.
+pub fn error(id: Option<&Id>, code: i32, error: Error) -> impl Message + '_ {
+    move |out| {
+        write!(
+            out,
+            r#"{{"jsonrpc":"2.0","id":{},"error":{{"code":{code},"message":"#,
+            id.map_or("null", Id::raw)
+        )?;
+        serde_json::to_writer(&mut *out, error.message()).map_err(io::Error::from)?;
+        out.write_all(br#","data":"#)?;
+        out.write_all(Answered::refused(Problems::from(error)).text.as_bytes())?;
+        out.write_all(b"}}")
+    }
 }
 
 /// A tool's answer: `{"jsonrpc": "2.0", "id": ID, "result": {"content": [the envelope as
 /// text, and `render`'s PNG as an image], "structuredContent": the envelope, "isError":
 /// !ok}}`.
-pub fn answer<'a>(
-    id: &'a Id,
-    answered: &'a Answered,
-) -> impl FnOnce(&mut dyn Write) -> io::Result<()> + 'a {
+pub fn answer<'a>(id: &'a Id, answered: &'a Answered) -> impl Message + 'a {
     move |out| {
         write!(
             out,
@@ -142,16 +141,14 @@ pub fn answer<'a>(
     }
 }
 
-/// A progress notification: the call's count so far, and the step running.
-pub fn progress<'a>(
-    token: &'a str,
-    count: u64,
-    running: Option<&'a str>,
-) -> impl FnOnce(&mut dyn Write) -> io::Result<()> + 'a {
+/// A progress notification: the call's token, as the client wrote it, its count so far,
+/// and the step running.
+pub fn progress<'a>(token: &'a Id, count: u64, running: Option<&'a str>) -> impl Message + 'a {
     move |out| {
         write!(
             out,
-            r#"{{"jsonrpc":"2.0","method":"notifications/progress","params":{{"progressToken":{token},"progress":{count}"#
+            r#"{{"jsonrpc":"2.0","method":"notifications/progress","params":{{"progressToken":{},"progress":{count}"#,
+            token.raw()
         )?;
         if let Some(running) = running {
             out.write_all(br#","message":"#)?;
@@ -161,8 +158,8 @@ pub fn progress<'a>(
     }
 }
 
-/// A message already written, as text.
-pub fn text(text: &str) -> impl FnOnce(&mut dyn Write) -> io::Result<()> + '_ {
+/// A message already written, as text ([`written`]).
+pub fn text(text: &str) -> impl Message + '_ {
     move |out| out.write_all(text.as_bytes())
 }
 

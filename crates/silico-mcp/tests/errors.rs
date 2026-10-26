@@ -6,6 +6,7 @@
 
 use serde_json::{Value, json};
 
+use crate::client::rpc_error as parts;
 use crate::client::{Client, is_box, running};
 use crate::contract::{committed_core, holds};
 
@@ -13,11 +14,14 @@ use crate::contract::{committed_core, holds};
 /// is a refused envelope of one error: that error.
 fn rpc_error(reply: &Value, code: i64, id: Value) -> Value {
     assert_eq!(reply["jsonrpc"], "2.0", "{reply}");
-    assert_eq!(reply["id"], id, "{reply}");
-    assert!(reply.get("result").is_none(), "{reply}");
+    let (was, with, _) = parts(reply);
+    assert_eq!((was, with), (code, id), "{reply}");
     let error = &reply["error"];
-    assert_eq!(error["code"], code, "{reply}");
-    assert!(error["message"].is_string(), "{reply}");
+    // The error's own message, JSON-RPC's generic one never.
+    assert_eq!(
+        error["message"], error["data"]["errors"][0]["message"],
+        "{reply}"
+    );
     let data = &error["data"];
     let envelope: Value = serde_json::from_str(&committed_core("commands/envelope.json")).unwrap();
     holds(&envelope, data, "the error's data");
@@ -302,9 +306,34 @@ fn a_request_id_in_flight_is_refused_and_free_once_answered() {
     // The same number written otherwise, and the string "2", are other IDs.
     c.send(r#"{"jsonrpc": "2.0", "id": "2", "method": "ping"}"#);
     assert_eq!(c.line(), r#"{"jsonrpc":"2.0","id":"2","result":{}}"#);
+    // A string in flight is the same ID however it's escaped: refused by its own spelling.
+    c.send_call_as(
+        r#""ab""#,
+        "check",
+        r#"{"session": "s1", "model": "current", "fresh": false}"#,
+    );
+    for spelling in [r#""\u0061b""#, r#""a\u0062""#, r#""ab""#] {
+        c.send(&format!(
+            r#"{{"jsonrpc": "2.0", "id": {spelling}, "method": "ping"}}"#
+        ));
+        let error = rpc_error(&c.message(), -32600, json!("ab"));
+        let message = error["message"].as_str().unwrap();
+        assert!(message.starts_with("the ID "), "{spelling}: {message}");
+        assert!(
+            message.ends_with(" is a request's still in flight"),
+            "{spelling}: {message}"
+        );
+    }
     hold.release();
-    let (line, _) = c.reply_line("2");
-    assert!(line.contains(r#""isError":false"#), "{line}");
+    // Each answered once.
+    let mut answered = Vec::new();
+    while answered.len() < 2 {
+        let reply = c.message();
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        answered.push(reply["id"].clone());
+    }
+    answered.sort_by_key(|id| id.to_string());
+    assert_eq!(answered, [json!("ab"), json!(2)]);
     // Answered, its ID is free.
     c.send(r#"{"jsonrpc": "2.0", "id": 2, "method": "ping"}"#);
     assert_eq!(c.line(), r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);

@@ -8,36 +8,12 @@
 
 use std::sync::Arc;
 
-use serde::Deserialize;
-use serde_json::value::RawValue;
 use silico_core::cache::Cache;
 use silico_core::command::{Call, Sessions};
 use silico_core::fake::{FakeKernel, FakeRenderer};
 use silico_core::kernel::{Op, Primitive};
 
-use crate::client::{BOX, Client, HANG};
-
-#[derive(Deserialize)]
-struct Reply<'a> {
-    #[serde(borrow)]
-    result: Answer<'a>,
-}
-
-#[derive(Deserialize)]
-struct Answer<'a> {
-    content: Vec<Block>,
-    #[serde(borrow, rename = "structuredContent")]
-    structured: &'a RawValue,
-    #[serde(rename = "isError")]
-    is_error: bool,
-}
-
-#[derive(Deserialize)]
-struct Block {
-    #[serde(rename = "type")]
-    kind: String,
-    text: Option<String>,
-}
+use crate::client::{BOX, Client, HANG, Reply};
 
 /// The answer's `structuredContent` as written, checked to be `content`'s one text block's
 /// text, byte for byte; and `isError`.

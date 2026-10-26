@@ -24,7 +24,7 @@ pub fn list() -> Result<Value, Error> {
             Command::named(name).ok_or_else(|| bug(format!("{name} is listed, not a command")))?;
         tools.push(tool(command, &envelope, &snapshot())?);
     }
-    Ok(sorted(&json!({ "tools": tools })))
+    Ok(silico_core::document::sorted(&json!({ "tools": tools })))
 }
 
 /// The tool for `command`, from the envelope's snapshot and the command's own
@@ -125,31 +125,10 @@ pub fn output_schema(envelope: &Value, result: &Value) -> Result<Value, Error> {
     }))
 }
 
-/// `value` written as the protected contract files are: every object's keys sorted, pretty,
-/// with a trailing newline.
+/// `value` written as the protected contract files are, by the core's writer of them:
+/// every object's keys sorted, pretty, with a trailing newline.
 pub fn canonical(value: &Value) -> Result<String, Error> {
-    serde_json::to_string_pretty(&sorted(value))
-        .map(|text| text + "\n")
-        .map_err(|e| bug(format!("the tool list couldn't be written: {e}")))
-}
-
-/// `value` with every object's keys in sorted order, whether or not a crate in the build
-/// turns on serde_json's `preserve_order`.
-pub fn sorted(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => {
-            let mut entries: Vec<_> = map.iter().collect();
-            entries.sort_by(|a, b| a.0.cmp(b.0));
-            Value::Object(
-                entries
-                    .into_iter()
-                    .map(|(k, v)| (k.clone(), sorted(v)))
-                    .collect(),
-            )
-        }
-        Value::Array(items) => Value::Array(items.iter().map(sorted).collect()),
-        other => other.clone(),
-    }
+    silico_core::document::contract_text(value, "the tool list")
 }
 
 fn bug(message: String) -> Error {

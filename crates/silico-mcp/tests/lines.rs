@@ -8,7 +8,7 @@
 use serde_json::{Value, json};
 use silico_mcp::{Ended, FRAME_ROOM, MAX_LINE};
 
-use crate::client::{BOX, Client, HANG, is_box, running};
+use crate::client::{BOX, Client, HANG, is_box, rpc_error, running};
 
 /// A session on [`BOX`] with a transaction open and an edit in it, and a check held on the
 /// kernel's box.
@@ -88,16 +88,42 @@ fn replies_queued_before_the_inputs_end_are_still_written() {
     }
 }
 
-/// The error a reply carries: its code, ID, and its data's one error's message.
-fn error(reply: &Value) -> (i64, Value, String) {
-    (
-        reply["error"]["code"].as_i64().unwrap(),
-        reply["id"].clone(),
-        reply["error"]["data"]["errors"][0]["message"]
-            .as_str()
-            .unwrap()
-            .to_owned(),
-    )
+#[test]
+fn an_answer_being_written_as_the_input_ends_is_written_whole_before_serve_ends() {
+    let mut c = Client::initialized();
+    c.file("part.silico", BOX);
+    c.open(1, "part.silico");
+    // The document's text, answered, its write held by a client that's stopped reading;
+    // then the input ends.
+    c.stall_output();
+    c.send_call(2, "text", r#"{"session": "s1", "feature": null}"#);
+    c.wait_stalled();
+    c.close_input();
+    // `serve` waits for it, however long the client takes to read (a while, here).
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!c.has_ended(), "serve ended with an answer half written");
+    c.release_output();
+    let (line, _) = c.reply_line("2");
+    let reply: Value = serde_json::from_str(&line).unwrap();
+    let envelope = &reply["result"]["structuredContent"];
+    assert_eq!(envelope["ok"], true, "{line}");
+    let text = envelope["result"]["text"].as_str().unwrap();
+    assert!(text.contains(r#""id": "k7f2qx3m""#), "{text}");
+    assert_eq!(c.ended(), Ended::Input);
+}
+
+#[test]
+fn a_stop_ends_serve_at_once_though_an_answer_is_being_written() {
+    let mut c = Client::initialized();
+    c.file("part.silico", BOX);
+    c.open(1, "part.silico");
+    c.stall_output();
+    c.send_call(2, "text", r#"{"session": "s1", "feature": null}"#);
+    c.wait_stalled();
+    c.close_input();
+    c.stop.stop();
+    assert!(matches!(c.ended(), Ended::Input | Ended::Stopped));
+    c.release_output();
 }
 
 #[test]
@@ -114,15 +140,13 @@ fn a_line_past_the_most_read_is_skipped_and_answered_by_its_id_if_it_was_read() 
     );
     assert_eq!(line.len(), most + 1);
     c.send(&line);
+    let (code, id, error) = rpc_error(&c.message());
+    assert_eq!((code, id), (-32600, json!(5)));
     assert_eq!(
-        error(&c.message()),
-        (
-            -32600,
-            json!(5),
-            format!(
-                "the message is {} bytes, more than the {most} a message may be",
-                most + 1
-            )
+        error["message"],
+        format!(
+            "the message is {} bytes, more than the {most} a message may be",
+            most + 1
         )
     );
     // Its ID past what was read: answered with none.
@@ -132,7 +156,7 @@ fn a_line_past_the_most_read_is_skipped_and_answered_by_its_id_if_it_was_read() 
         "x".repeat(most)
     );
     c.send(&line);
-    let (code, id, _) = error(&c.message());
+    let (code, id, _) = rpc_error(&c.message());
     assert_eq!((code, id), (-32600, Value::Null));
     // The next line is read whole.
     c.send(r#"{"jsonrpc": "2.0", "id": 7, "method": "ping"}"#);

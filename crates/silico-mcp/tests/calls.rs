@@ -5,21 +5,13 @@
 //! clock. Expected values: the note's rules and messages, written here by hand.
 
 use serde_json::{Value, json};
+use silico_core::kernel::{Op, Primitive};
 
-use crate::client::{BOX, Client, is_box, running};
-
-const CHECK: &str = r#"{"session": "s1", "model": "current", "fresh": false}"#;
-
-fn opened() -> Client {
-    let mut c = Client::initialized();
-    c.file("part.silico", BOX);
-    c.open(1, "part.silico");
-    c
-}
+use crate::client::{BOX, CHECK, Client, is_box, running};
 
 #[test]
 fn a_cancelled_call_is_stopped_and_never_answered() {
-    let mut c = opened();
+    let mut c = Client::opened();
     let hold = c.kernel.hold(is_box);
     c.send_call(2, "check", CHECK);
     running(&c.kernel, 1);
@@ -101,6 +93,137 @@ fn progress_only_grows_carries_its_token_and_comes_before_the_answer() {
     c.reply_line("5");
 }
 
+/// A box and a cylinder: two steps, each its own primitive.
+const TWO: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "c0000001", "type": "cylinder", "v": 1, "name": "Pin", "position": [100, 0, 0], "radius": 1, "height": 1}]}"#;
+
+fn is_cylinder(op: &Op) -> bool {
+    matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. }))
+}
+
+/// The progress notification `message` is, its token and count; none if it's another
+/// message.
+fn progress(message: &Value) -> Option<(Value, u64)> {
+    (message["method"] == "notifications/progress").then(|| {
+        (
+            message["params"]["progressToken"].clone(),
+            message["params"]["progress"].as_u64().unwrap(),
+        )
+    })
+}
+
+#[test]
+fn progress_is_sent_once_for_each_count_and_only_as_steps_are_done() {
+    let mut c = Client::initialized();
+    c.file("two.silico", TWO);
+    c.open(1, "two.silico");
+    let hold = c.kernel.hold(is_box);
+    c.send(r#"{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "check", "arguments": {"session": "s1", "model": "current", "fresh": false}, "_meta": {"progressToken": "t"}}}"#);
+    let first = c.message();
+    let (token, mut last) = progress(&first).unwrap();
+    assert_eq!(token, "t");
+    // Every step that can be done with the box held, as `status` counts them: the
+    // notifications up to it each greater than the last, the last of them that count.
+    c.send(r#"{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "status", "arguments": {"session": "s1"}}}"#);
+    let (line, before) = c.reply_line("3");
+    let status: Value = serde_json::from_str(&line).unwrap();
+    let done = status["result"]["structuredContent"]["result"]["rebuild"]["done"]
+        .as_u64()
+        .unwrap();
+    for message in before {
+        let (_, count) = progress(&message).unwrap();
+        assert!(count > last, "{count} after {last}");
+        last = count;
+    }
+    while last < done {
+        let (_, count) = progress(&c.message()).unwrap();
+        assert!(count > last, "{count} after {last}");
+        last = count;
+    }
+    assert_eq!(last, done);
+    // No step more done while the box is held: nothing more is sent, however often the
+    // waiter looks (ten times over), neither the same count again nor a greater.
+    assert_eq!(c.line_within(silico_mcp::PROGRESS_STEP * 10), None);
+    hold.release();
+    let (line, before) = c.reply_line("2");
+    assert!(line.contains(r#""isError":false"#), "{line}");
+    // The box's step at most, once.
+    for message in before {
+        let (_, count) = progress(&message).unwrap();
+        assert!(count > last && count <= done + 1, "{count} after {last}");
+        last = count;
+    }
+}
+
+#[test]
+fn a_cancelled_call_sends_no_progress_though_its_session_rebuilds_on() {
+    let mut c = Client::initialized();
+    c.file("two.silico", TWO);
+    c.open(1, "two.silico");
+    let boxes = c.kernel.hold(is_box);
+    let cylinders = c.kernel.hold(is_cylinder);
+    c.send_call(2, "check", CHECK);
+    running(&c.kernel, 2);
+    // Two checks queued behind it, each asking for progress, which is the rebuild the
+    // first waits on; the first of them cancelled, so it's answered (`cancelled`, unsent)
+    // only when it's taken from the queue, and its waiter looks at progress till then.
+    for (id, token) in [(3, "gone"), (4, "seen")] {
+        c.send(&format!(
+            r#"{{"jsonrpc": "2.0", "id": {id}, "method": "tools/call", "params": {{"name": "check", "arguments": {CHECK}, "_meta": {{"progressToken": "{token}"}}}}}}"#
+        ));
+    }
+    c.send(
+        r#"{"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 3}}"#,
+    );
+    c.send(r#"{"jsonrpc": "2.0", "id": 5, "method": "ping"}"#);
+    assert_eq!(c.line(), r#"{"jsonrpc":"2.0","id":5,"result":{}}"#);
+    // A step done: the call still running is told, and the cancelled one, which has
+    // looked as often since (three times over), isn't.
+    cylinders.release();
+    let mut seen = Vec::new();
+    loop {
+        let message = c.message();
+        let (token, _) = progress(&message).unwrap();
+        seen.push(token.clone());
+        if token == "seen" {
+            break;
+        }
+    }
+    while let Some(line) = c.line_within(silico_mcp::PROGRESS_STEP * 3) {
+        seen.push(progress(&serde_json::from_str(&line).unwrap()).unwrap().0);
+    }
+    boxes.release();
+    let mut answered = Vec::new();
+    while answered.len() < 2 {
+        let message = c.message();
+        match progress(&message) {
+            Some((token, _)) => seen.push(token),
+            None => answered.push(message["id"].as_u64().unwrap()),
+        }
+    }
+    answered.sort_unstable();
+    assert_eq!(answered, [2, 4]);
+    assert!(seen.iter().all(|token| token == "seen"), "{seen:?}");
+    // Nothing for the cancelled call after: the next line is the pong.
+    c.send(r#"{"jsonrpc": "2.0", "id": 6, "method": "ping"}"#);
+    assert_eq!(c.line(), r#"{"jsonrpc":"2.0","id":6,"result":{}}"#);
+}
+
+#[test]
+fn a_cancel_naming_the_call_by_another_spelling_of_its_id_cancels_it() {
+    let mut c = Client::opened();
+    let hold = c.kernel.hold(is_box);
+    c.send_call_as(r#""ab""#, "check", CHECK);
+    running(&c.kernel, 1);
+    c.send(r#"{"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "\u0061b"}}"#);
+    // Stopped, though its hold is held, and never answered: the next line is the call
+    // after it's.
+    assert!(c.kernel.wait_idle(crate::client::HANG));
+    c.send_call(3, "outline", r#"{"session": "s1"}"#);
+    let reply = c.message();
+    assert_eq!(reply["id"], 3, "{reply}");
+    drop(hold);
+}
+
 /// The refusal a call past the bound gets, as the note words it.
 fn past_the_bound() -> Value {
     json!({"ok": false, "session": null, "model": null, "errors": [{"code": "invalid_input", "message": "64 calls are already running in this server, the most it runs at once", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": null, "suggestion": "wait for one to answer, or cancel one, and call again", "candidates": []}], "total": 1})
@@ -108,7 +231,7 @@ fn past_the_bound() -> Value {
 
 #[test]
 fn past_64_calls_waiting_a_call_is_refused_at_once_but_status_and_cancel_still_answer() {
-    let mut c = opened();
+    let mut c = Client::opened();
     let hold = c.kernel.hold(is_box);
     // 64 checks: the first held on the kernel, the rest queued behind it.
     for id in 100..164 {

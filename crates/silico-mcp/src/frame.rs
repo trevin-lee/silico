@@ -21,7 +21,8 @@ pub const MAX_LINE: usize = MAX_INPUT_LEN + FRAME_ROOM;
 pub enum Line {
     /// A line, its newline (and a carriage return before it) taken off.
     Whole(Vec<u8>),
-    /// A line longer than the most read: its first `MAX_LINE` bytes, and how long it was.
+    /// A line longer than the most read: its first bytes, as many as the most read, and how
+    /// long it was.
     TooLong { head: Vec<u8>, length: u64 },
     /// The input ended.
     End,
@@ -82,13 +83,34 @@ fn ended(mut line: Vec<u8>, mut length: u64, last: Option<u8>, max: usize) -> Li
     Line::Whole(line)
 }
 
-/// A request's ID: a string or a number, kept as the client wrote it, so its reply carries
-/// it back byte for byte. Two IDs are the same if they're the same string (however it's
-/// escaped; one that's no Unicode text, as written) or the same number as written.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// A request's ID (or a progress token, which is written as one): a string or a number,
+/// kept as the client wrote it, so its reply carries it back byte for byte. Two IDs are the
+/// same if they're the same string (however it's escaped; one that's no Unicode text, as
+/// written) or the same number as written: compared by that alone, never by their raw text.
+#[derive(Debug, Clone)]
 pub struct Id {
     key: IdKey,
     raw: String,
+}
+
+impl PartialEq for Id {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+
+impl Eq for Id {}
+
+impl PartialOrd for Id {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Id {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key.cmp(&other.key)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -137,7 +159,8 @@ pub enum Message<'a> {
         method: String,
         params: Option<&'a RawValue>,
     },
-    /// A response (the server asks the client nothing, so it answers nothing it's sent).
+    /// A response, a result or an error, whatever its ID (the server asks the client
+    /// nothing, so it answers nothing it's sent: JSON-RPC answers no response).
     Response,
 }
 
@@ -204,6 +227,11 @@ pub fn parse(line: &[u8]) -> Result<Message<'_>, Bad> {
         };
         invalid(id, &format!("the message isn't JSON-RPC: {e}"))
     })?;
+    // A response is never answered, an error saying so least of all: whatever its ID (an
+    // error's may be null) and its version.
+    if frame.method.is_none() && (frame.result.is_some() || frame.error.is_some()) {
+        return Ok(Message::Response);
+    }
     let id =
         match frame.id {
             None => None,
@@ -218,9 +246,6 @@ pub fn parse(line: &[u8]) -> Result<Message<'_>, Bad> {
         return Err(invalid(id, "the message's jsonrpc isn't \"2.0\""));
     }
     let Some(method) = frame.method else {
-        if id.is_some() && (frame.result.is_some() || frame.error.is_some()) {
-            return Ok(Message::Response);
-        }
         return Err(invalid(id, "the message has no method"));
     };
     let Ok(method) = serde_json::from_str::<String>(method.get()) else {
@@ -426,8 +451,14 @@ mod tests {
     #[test]
     fn ids_are_the_same_string_however_escaped_and_the_same_number_as_written() {
         let of = |text: &str| Id::of(serde_json::from_str::<&RawValue>(text).unwrap());
-        assert_eq!(of(r#""ab""#), of(r#""ab""#));
-        assert_eq!(of(r#""ab""#).unwrap().raw(), r#""ab""#);
+        assert_eq!(of(r#""ab""#), of(r#""\u0061b""#));
+        assert_eq!(of(r#""ab""#), of(r#""\u0061\u0062""#));
+        assert_eq!(
+            of(r#""ab""#).cmp(&of(r#""\u0061b""#)),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(of(r#""\u0061b""#).unwrap().raw(), r#""\u0061b""#);
+        assert_ne!(of(r#""ab""#), of(r#""ac""#));
         assert_ne!(of("1"), of(r#""1""#));
         assert_ne!(of("1"), of("1.0"));
         assert_eq!(of("null"), None);

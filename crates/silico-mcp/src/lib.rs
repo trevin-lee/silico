@@ -1,8 +1,8 @@
 //! Silico's MCP server (docs/design/m4.9-mcp.md): the core's commands as MCP tools, over
 //! JSON-RPC 2.0, one message a line, revision 2025-06-18. A client of the core's command
 //! API like the CLI and the app: every tool is a command run through
-//! [`Sessions::call`](silico_core::command::Sessions::call), whose envelope is the tool's
-//! answer, byte for byte.
+//! [`Sessions::call_command`](silico_core::command::Sessions::call_command), whose envelope
+//! is the tool's answer, byte for byte.
 //!
 //! [`Server::new`] takes the sessions (in their workspace, as `silico serve` makes them);
 //! [`Server::serve`] reads requests from its input and writes replies to its output until
@@ -13,7 +13,7 @@
 //! **How it runs.** A reader thread reads lines, each at most [`MAX_LINE`] bytes (a
 //! longer one skipped to its end, never held past that), and hands each to `serve`'s own
 //! thread, which handles them in line order: it answers the handshake, `ping`, and
-//! `tools/list` itself, and starts each `tools/call` through `Sessions::call`, which queues
+//! `tools/list` itself, and starts each `tools/call` through `Sessions::call_command`, which queues
 //! the command and returns at once, so commands reach a session in the order the client
 //! sent them. Because it reads (parses) each call's arguments to queue them, the time it
 //! takes to get to the next line grows with a request's size; that's by design, so a
@@ -29,7 +29,6 @@
 //! the replies it has queued pass [`MAX_QUEUED_REPLIES`] (backpressure, never an unbounded
 //! queue).
 
-use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
@@ -39,16 +38,18 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::json;
 use serde_json::value::RawValue;
-use silico_core::command::{Answered, Call, Calling, Command, Problems, Sessions, Stopper};
+use silico_core::command::{Answered, Calling, Command, Problems, Sessions};
 use silico_core::kernel::Clients;
 use silico_core::{Error, ErrorCode};
 
+mod flight;
 mod frame;
 mod reply;
 pub mod tools;
 
 pub use frame::{FRAME_ROOM, MAX_LINE};
 
+use flight::{Flights, Waiter};
 use frame::{Bad, Id, Line, Message};
 use reply::{INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, Output, PARSE_ERROR};
 
@@ -79,6 +80,9 @@ pub enum Ended {
     Input,
     /// Reading the input failed.
     InputFailed(String),
+    /// A thread of the server's couldn't be started, or ended before its work was done
+    /// (Silico's bug).
+    ThreadFailed(String),
     /// A write failed: the client closed its end.
     Output,
     /// [`Stop::stop`] was called.
@@ -116,8 +120,11 @@ enum Event {
     Line(Line),
     Stop,
     OutputFailed,
-    /// The replies' thread has written every reply queued, and ended.
+    /// The replies' thread has written every reply queued, and ended (or, Silico's bug,
+    /// panicked).
     Drained,
+    /// No answer is being written now ([`Flights::writing`]).
+    Written,
 }
 
 /// How `serve` is told to end, shared by everything that can end it.
@@ -139,6 +146,11 @@ impl Control {
         self.end(Ended::Output, Event::OutputFailed);
     }
 
+    /// No answer is being written now.
+    pub(crate) fn written(&self) {
+        let _ = self.events.send(Event::Written);
+    }
+
     fn ending(&self) -> bool {
         self.soon.load(Ordering::SeqCst)
     }
@@ -148,7 +160,7 @@ impl Control {
     }
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -224,7 +236,7 @@ impl<P: Clients + 'static> Server<P> {
         };
         if let Err(e) = reader {
             tracing::error!("couldn't start the reader's thread: {e}");
-            return Ended::InputFailed(format!("couldn't start the reader's thread: {e}"));
+            return Ended::ThreadFailed(format!("couldn't start the reader's thread: {e}"));
         }
         let (lane, jobs) = mpsc::sync_channel::<Job>(MAX_QUEUED_REPLIES);
         let replier = {
@@ -233,6 +245,9 @@ impl<P: Clients + 'static> Server<P> {
             std::thread::Builder::new()
                 .name("mcp-replies".to_owned())
                 .spawn(move || {
+                    // Said when the thread ends, however it ends, so `serve` never waits on
+                    // it after.
+                    let _drained = Drained(control);
                     for job in jobs {
                         match job {
                             Job::Text(text) => {
@@ -241,19 +256,19 @@ impl<P: Clients + 'static> Server<P> {
                             Job::Call(waiter, calling) => waiter.run(calling),
                         }
                     }
-                    let _ = control.events.send(Event::Drained);
                 })
         };
         if let Err(e) = replier {
             tracing::error!("couldn't start the replies' thread: {e}");
-            return Ended::InputFailed(format!("couldn't start the replies' thread: {e}"));
+            return Ended::ThreadFailed(format!("couldn't start the replies' thread: {e}"));
         }
+        let flights = Arc::new(Flights::new(Arc::clone(&control)));
         let mut dispatch = Dispatch {
             sessions: &sessions,
             tools,
             initialized_text: initialized,
             initialized: false,
-            flights: Arc::new(Flights::default()),
+            flights: Arc::clone(&flights),
             output,
             lane,
             control: Arc::clone(&control),
@@ -275,18 +290,32 @@ impl<P: Clients + 'static> Server<P> {
                 }
                 Ok(Event::Stop) => break Ended::Stopped,
                 Ok(Event::OutputFailed) => break Ended::Output,
-                // Never: the replies' thread ends only once `dispatch` is dropped, and the
-                // control holds a sender.
-                Ok(Event::Drained) | Err(_) => break Ended::Input,
+                Ok(Event::Written) => {}
+                // The replies' thread ends only once `dispatch` is dropped, unless it
+                // panicked: no reply can be written after.
+                Ok(Event::Drained) => {
+                    tracing::error!("the replies' thread ended early: Silico's bug");
+                    break Ended::ThreadFailed("the replies' thread ended early".to_owned());
+                }
+                // Never: the control holds a sender.
+                Err(_) => break Ended::Input,
             }
         };
         tracing::info!(?ended, "the client went away: cancelling its calls");
-        dispatch.flights.cancel_all();
+        flights.cancel_all();
         drop(dispatch);
         // A client that closed its input may still read what it was answered before: the
-        // replies queued are written, unless it's stopped or its output fails meanwhile.
+        // replies queued are written, and every answer being written, unless it's stopped
+        // or its output fails meanwhile.
         if matches!(ended, Ended::Input | Ended::InputFailed(_)) {
-            while let Ok(Event::Line(_)) = events.recv() {}
+            let mut drained = false;
+            while !(drained && flights.writing() == 0) {
+                match events.recv() {
+                    Ok(Event::Drained) => drained = true,
+                    Ok(Event::Line(_) | Event::Written) => {}
+                    Ok(Event::Stop | Event::OutputFailed) | Err(_) => break,
+                }
+            }
         }
         drop(sessions);
         ended
@@ -320,216 +349,21 @@ fn read(mut input: impl BufRead, events: &Sender<Event>, credits: &Receiver<()>)
     }
 }
 
+/// Tells `serve` the replies' thread has ended, when it's dropped.
+struct Drained(Arc<Control>);
+
+impl Drop for Drained {
+    fn drop(&mut self) {
+        let _ = self.0.events.send(Event::Drained);
+    }
+}
+
 /// What the replies' thread does, in turn.
 enum Job {
     /// Writes a reply already made.
     Text(String),
     /// Answers a call that waits on no session.
     Call(Waiter, Calling),
-}
-
-/// The calls in flight: by their IDs, those not yet answered or cancelled; and how many
-/// hold a slot, until their waiters end.
-#[derive(Default)]
-struct Flights {
-    table: Mutex<Table>,
-}
-
-#[derive(Default)]
-struct Table {
-    calls: BTreeMap<Id, Arc<Flight>>,
-    slotted: usize,
-}
-
-/// A call in flight.
-struct Flight {
-    fate: Mutex<Fate>,
-    stopper: Mutex<Option<Stopper>>,
-    slotted: bool,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Fate {
-    Running,
-    Answered,
-    Cancelled,
-}
-
-impl Flights {
-    fn contains(&self, id: &Id) -> bool {
-        lock(&self.table).calls.contains_key(id)
-    }
-
-    /// A new call `id`, holding a slot if `slotted`: none if every slot is held.
-    fn take(self: &Arc<Self>, id: &Id, slotted: bool) -> Option<Landing> {
-        let mut table = lock(&self.table);
-        if slotted {
-            if table.slotted >= MAX_IN_FLIGHT {
-                return None;
-            }
-            table.slotted += 1;
-        }
-        let flight = Arc::new(Flight {
-            fate: Mutex::new(Fate::Running),
-            stopper: Mutex::new(None),
-            slotted,
-        });
-        table.calls.insert(id.clone(), Arc::clone(&flight));
-        Some(Landing {
-            flights: Arc::clone(self),
-            id: id.clone(),
-            flight,
-        })
-    }
-
-    /// `flight`, if it's still the call `id`, no longer in flight by that ID.
-    fn forget(&self, id: &Id, flight: &Arc<Flight>) {
-        let mut table = lock(&self.table);
-        if table.calls.get(id).is_some_and(|f| Arc::ptr_eq(f, flight)) {
-            table.calls.remove(id);
-        }
-    }
-
-    /// Cancels the call `id`, if it's in flight and not answered (MCP's cancellation): it
-    /// gets no reply. Whether it was.
-    fn cancel(&self, id: &Id) -> bool {
-        let flight = lock(&self.table).calls.get(id).cloned();
-        match flight {
-            Some(flight) => {
-                let cancelled = flight.cancel();
-                self.forget(id, &flight);
-                cancelled
-            }
-            None => false,
-        }
-    }
-
-    /// Cancels every call in flight.
-    fn cancel_all(&self) {
-        let calls = std::mem::take(&mut lock(&self.table).calls);
-        for flight in calls.values() {
-            flight.cancel();
-        }
-    }
-}
-
-impl Flight {
-    /// Marks it cancelled and stops it, unless it's answered: whether it was cancelled.
-    fn cancel(&self) -> bool {
-        {
-            let mut fate = lock(&self.fate);
-            if *fate != Fate::Running {
-                return false;
-            }
-            *fate = Fate::Cancelled;
-        }
-        if let Some(stopper) = lock(&self.stopper).as_ref() {
-            stopper.cancel();
-        }
-        true
-    }
-
-    /// Marks it answered, unless it's cancelled: whether its answer is to be written.
-    fn answer(&self) -> bool {
-        let mut fate = lock(&self.fate);
-        if *fate != Fate::Running {
-            return false;
-        }
-        *fate = Fate::Answered;
-        true
-    }
-
-    fn cancelled(&self) -> bool {
-        *lock(&self.fate) == Fate::Cancelled
-    }
-}
-
-/// A call's place in flight, given up when it's dropped (its waiter ends): its slot, and
-/// its ID if it's still in flight.
-struct Landing {
-    flights: Arc<Flights>,
-    id: Id,
-    flight: Arc<Flight>,
-}
-
-impl Drop for Landing {
-    fn drop(&mut self) {
-        let mut table = lock(&self.flights.table);
-        if table
-            .calls
-            .get(&self.id)
-            .is_some_and(|f| Arc::ptr_eq(f, &self.flight))
-        {
-            table.calls.remove(&self.id);
-        }
-        if self.flight.slotted {
-            table.slotted = table.slotted.saturating_sub(1);
-        }
-    }
-}
-
-/// What waits for a call's answer and writes it.
-struct Waiter {
-    id: Id,
-    landing: Landing,
-    /// The call's progress token, as the client wrote it, if it asked for progress.
-    token: Option<String>,
-    output: Arc<Output>,
-}
-
-impl Waiter {
-    fn run(self, calling: Calling) {
-        let _span = tracing::info_span!("tools/call", id = self.id.raw()).entered();
-        let answered = match &self.token {
-            None => calling.wait(),
-            Some(token) => self.with_progress(calling, token),
-        };
-        let flight = &self.landing.flight;
-        if flight.answer() {
-            // No longer in flight by its ID before its answer is written, so the client
-            // may give the ID again as soon as it reads it.
-            self.landing.flights.forget(&self.id, flight);
-            self.output.send(reply::answer(&self.id, &answered));
-        } else {
-            tracing::debug!("cancelled: its answer isn't sent");
-        }
-    }
-
-    /// The call's answer, waited for in steps, its progress sent between: a count that
-    /// grows by each step seen done and never falls (the session's newest rebuild may be
-    /// another than the call's own, whose `done` can fall), with the step running as its
-    /// message, sent only when it grows and the output is free.
-    fn with_progress(&self, mut calling: Calling, token: &str) -> Answered {
-        let (mut count, mut sent, mut last) = (0u64, 0u64, 0usize);
-        loop {
-            match calling.wait_timeout(PROGRESS_STEP) {
-                Ok(answered) => return answered,
-                Err(still) => calling = still,
-            }
-            let Some(progress) = calling.progress() else {
-                continue;
-            };
-            count = grown(count, last, progress.done);
-            last = progress.done;
-            if count > sent
-                && !self.landing.flight.cancelled()
-                && self.output.send_if_free(reply::progress(
-                    token,
-                    count,
-                    progress.running.as_deref(),
-                ))
-            {
-                sent = count;
-            }
-        }
-    }
-}
-
-/// A call's progress `count`, its newest rebuild's `done` steps having been `last` and now
-/// `done`: grown by each step done since, never fallen (a `done` that falls is another
-/// rebuild's, begun since, whose steps are counted from it).
-fn grown(count: u64, last: usize, done: usize) -> u64 {
-    count.saturating_add(done.saturating_sub(last) as u64)
 }
 
 /// `serve`'s own thread's work: each message handled in line order.
@@ -590,37 +424,9 @@ fn quoted(text: &str) -> String {
     }
 }
 
-/// Whether `command` waits on a session, and so takes a slot: every command matched, so a
-/// new one must say.
-fn takes_a_slot(command: Command) -> bool {
-    match command {
-        // Answered from what the sessions hold when asked, never queued.
-        Command::Version | Command::Status | Command::Cancel | Command::Schema => false,
-        Command::Open
-        | Command::Close
-        | Command::Begin
-        | Command::Commit
-        | Command::Rollback
-        | Command::Format
-        | Command::AddFeature
-        | Command::SetField
-        | Command::RemoveFeature
-        | Command::ReplaceText
-        | Command::Text
-        | Command::Outline
-        | Command::Check
-        | Command::Elements
-        | Command::Query
-        | Command::MassProperties
-        | Command::Distance
-        | Command::Angle
-        | Command::Render => true,
-    }
-}
-
 impl<P: Clients + 'static> Dispatch<'_, P> {
-    /// Queues `text` for the output, waiting while the queue is full: unless the server is
-    /// ending, whose end mustn't wait on a client that stopped reading.
+    /// Queues `job` for the replies' thread, waiting while the queue is full: unless the
+    /// server is ending, whose end mustn't wait on a client that stopped reading.
     fn queue(&self, mut job: Job) {
         loop {
             match self.lane.try_send(job) {
@@ -638,31 +444,19 @@ impl<P: Clients + 'static> Dispatch<'_, P> {
     }
 
     fn reply(&self, id: &Id, result: &str) {
-        let mut text = Vec::new();
-        let _ = reply::result(id, result)(&mut text);
-        self.queue(Job::Text(String::from_utf8_lossy(&text).into_owned()));
+        self.queue(Job::Text(reply::written(reply::result(id, result))));
     }
 
-    fn error(&self, id: Option<&Id>, code: i32, message: &str, error: Error) {
-        self.queue(Job::Text(reply::error(
-            id,
-            code,
-            message,
-            &Problems::from(error),
-        )));
+    /// A JSON-RPC error of `code` for `error`.
+    fn error(&self, id: Option<&Id>, code: i32, error: Error) {
+        self.queue(Job::Text(reply::written(reply::error(id, code, error))));
     }
 
     /// A tool's answer, written now (in turn with the other replies): a refusal before the
     /// command ran.
     fn refuse_call(&self, id: &Id, error: Error) {
-        let answered = Answered {
-            ok: false,
-            text: reply::refused(&Problems::from(error)),
-            png: None,
-        };
-        let mut text = Vec::new();
-        let _ = reply::answer(id, &answered)(&mut text);
-        self.queue(Job::Text(String::from_utf8_lossy(&text).into_owned()));
+        let answered = Answered::refused(Problems::from(error));
+        self.queue(Job::Text(reply::written(reply::answer(id, &answered))));
     }
 
     fn message(&mut self, line: &[u8]) {
@@ -673,7 +467,6 @@ impl<P: Clients + 'static> Dispatch<'_, P> {
             Err(Bad::Parse(why)) => self.error(
                 None,
                 PARSE_ERROR,
-                "Parse error",
                 invalid(why).with_suggestion(
                     "send one JSON-RPC message a line, each strict JSON (RFC 8259) in UTF-8",
                 ),
@@ -681,7 +474,6 @@ impl<P: Clients + 'static> Dispatch<'_, P> {
             Err(Bad::Invalid { id, why }) => self.error(
                 id.as_ref(),
                 INVALID_REQUEST,
-                "Invalid Request",
                 invalid(why).with_suggestion(
                     "send a JSON-RPC 2.0 request: an object with jsonrpc \"2.0\", an id that's a string or a number, a method, and its params",
                 ),
@@ -702,7 +494,6 @@ impl<P: Clients + 'static> Dispatch<'_, P> {
         self.error(
             id.as_ref(),
             INVALID_REQUEST,
-            "Invalid Request",
             invalid(format!(
                 "the message is {length} bytes, more than the {} a message may be",
                 frame::MAX_LINE
@@ -734,7 +525,6 @@ impl<P: Clients + 'static> Dispatch<'_, P> {
             self.error(
                 Some(id),
                 INVALID_REQUEST,
-                "Invalid Request",
                 invalid(format!(
                     "the ID {} is a request's still in flight",
                     quoted(id.raw())
@@ -754,7 +544,6 @@ impl<P: Clients + 'static> Dispatch<'_, P> {
             _ => self.error(
                 Some(id),
                 METHOD_NOT_FOUND,
-                "Method not found",
                 invalid(format!("no method is named {}", quoted(method)))
                     .with_parameter("method")
                     .with_candidates(METHODS)
@@ -764,7 +553,7 @@ impl<P: Clients + 'static> Dispatch<'_, P> {
     }
 
     fn invalid_params(&self, id: &Id, error: Error) {
-        self.error(Some(id), INVALID_PARAMS, "Invalid params", error);
+        self.error(Some(id), INVALID_PARAMS, error);
     }
 
     fn call(&mut self, id: &Id, params: Option<&RawValue>) {
@@ -772,7 +561,6 @@ impl<P: Clients + 'static> Dispatch<'_, P> {
             self.error(
                 Some(id),
                 INVALID_REQUEST,
-                "Invalid Request",
                 invalid("tools/call came before initialize")
                     .with_parameter("method")
                     .with_suggestion(
@@ -874,7 +662,7 @@ impl<P: Clients + 'static> Dispatch<'_, P> {
                 Some(Ok(Meta {
                     progress_token: Some(token),
                 })) => match Id::of(token) {
-                    Some(_) => Some(token.get().to_owned()),
+                    Some(token) => Some(token),
                     None => {
                         return self.invalid_params(
                             id,
@@ -888,7 +676,9 @@ impl<P: Clients + 'static> Dispatch<'_, P> {
                 },
             },
         };
-        let slotted = takes_a_slot(command);
+        // A command answered when it's waited on never waits on a session: it takes no
+        // slot, and is answered in turn on the replies' thread.
+        let slotted = !command.answered_when_waited();
         let Some(landing) = self.flights.take(id, slotted) else {
             return self.refuse_call(
                 id,
@@ -904,73 +694,40 @@ impl<P: Clients + 'static> Dispatch<'_, P> {
             token,
             output: Arc::clone(&self.output),
         };
-        if slotted {
-            // The waiter's thread first, so a call is only started once it can be waited for.
-            let (give, calling) = mpsc::sync_channel::<Calling>(1);
-            let flight = Arc::clone(&waiter.landing.flight);
-            let started = std::thread::Builder::new()
-                .name(format!("mcp-call-{}", command.as_str()))
-                .spawn(move || {
-                    if let Ok(calling) = calling.recv() {
-                        waiter.run(calling);
-                    }
-                });
-            if let Err(e) = started {
-                // The waiter, and its landing, dropped with the closure.
-                return self.refuse_call(
-                    id,
-                    Error::new(
-                        ErrorCode::ResourceExhausted,
-                        format!("couldn't start a thread to wait for the call: {e}"),
-                    )
-                    .with_suggestion("wait for a call to answer, and call again"),
-                );
-            }
-            match self.sessions.call(&name, arguments) {
-                Call::Running(running) => {
-                    *lock(&flight.stopper) = Some(running.stopper());
-                    let _ = give.send(running);
-                }
-                Call::Unknown => {
-                    tracing::error!(name, "a command named, then not one: Silico's bug");
-                    drop(give);
-                }
-            }
-        } else {
-            match self.sessions.call(&name, arguments) {
-                Call::Running(running) => {
-                    *lock(&waiter.landing.flight.stopper) = Some(running.stopper());
-                    self.queue(Job::Call(waiter, running));
-                }
-                Call::Unknown => {
-                    tracing::error!(name, "a command named, then not one: Silico's bug");
-                    drop(waiter);
-                }
-            }
+        if !slotted {
+            let calling = self.sessions.call_command(command, arguments);
+            waiter.landing.stopped_by(calling.stopper());
+            self.queue(Job::Call(waiter, calling));
+            return;
         }
+        // The waiter's thread first, so a call is only started once it can be waited for.
+        let (give, given) = mpsc::sync_channel::<(Waiter, Calling)>(1);
+        let started = std::thread::Builder::new()
+            .name(format!("mcp-call-{}", command.as_str()))
+            .spawn(move || {
+                if let Ok((waiter, calling)) = given.recv() {
+                    waiter.run(calling);
+                }
+            });
+        if let Err(e) = started {
+            // The waiter, and its landing, given up.
+            drop(waiter);
+            return self.refuse_call(
+                id,
+                Error::new(
+                    ErrorCode::ResourceExhausted,
+                    format!("couldn't start a thread to wait for the call: {e}"),
+                )
+                .with_suggestion("wait for a call to answer, and call again"),
+            );
+        }
+        let calling = self.sessions.call_command(command, arguments);
+        waiter.landing.stopped_by(calling.stopper());
+        let _ = give.send((waiter, calling));
     }
 }
 
 /// Every tool's name, in the list's order.
 fn tools_named() -> Vec<&'static str> {
     Command::ALL.iter().map(|c| c.as_str()).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn progress_counts_each_step_seen_done_and_never_falls() {
-        // A check behind an edit: the edit's 9 of 9, then its own from 0 to 12.
-        let mut count = 0;
-        let mut last = 0;
-        let mut counts = Vec::new();
-        for done in [3, 9, 9, 0, 1, 1, 5, 12] {
-            count = grown(count, last, done);
-            last = done;
-            counts.push(count);
-        }
-        assert_eq!(counts, [3, 9, 9, 9, 10, 10, 14, 21]);
-    }
 }

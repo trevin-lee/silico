@@ -78,8 +78,13 @@ fn notifications_are_never_answered_known_or_not() {
         r#"{"jsonrpc": "2.0", "method": "notifications/cancelled", "params": "garbage"}"#,
         r#"{"jsonrpc": "2.0", "method": "no/such/thing", "params": [1, 2]}"#,
         r#"{"jsonrpc": "2.0", "method": "ping"}"#,
-        // A response, to nothing the server asked.
+        // Responses, to nothing the server asked, whatever their IDs (an error's may be
+        // null, JSON-RPC says) and their versions: never answered, an error least of all.
         r#"{"jsonrpc": "2.0", "id": 4, "result": {}}"#,
+        r#"{"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "no"}}"#,
+        r#"{"jsonrpc": "2.0", "id": true, "result": 1}"#,
+        r#"{"jsonrpc": "2.0", "result": null}"#,
+        r#"{"id": 4, "error": "no"}"#,
     ] {
         c.send(notification);
     }

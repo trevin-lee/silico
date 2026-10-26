@@ -11,28 +11,10 @@
 
 use std::io::Write;
 
-use serde::Deserialize;
-use serde_json::value::RawValue;
 use serde_json::{Value, json};
 use silico_mcp::{Ended, MAX_LINE};
 
-use crate::client::{BOX, Client, HANG, is_box, running};
-
-#[derive(Deserialize)]
-struct Answer<'a> {
-    content: Vec<Block>,
-    #[serde(borrow, rename = "structuredContent")]
-    structured: &'a RawValue,
-    #[serde(rename = "isError")]
-    is_error: bool,
-}
-
-#[derive(Deserialize)]
-struct Block {
-    #[serde(rename = "type")]
-    kind: String,
-    text: Option<String>,
-}
+use crate::client::{BOX, CHECK, Client, HANG, Reply, is_box, rpc_error, running};
 
 /// `line`, checked to be one JSON-RPC 2.0 message as MCP has the server write them: a
 /// progress notification, a result, or an error with a refused envelope as its data; a
@@ -59,11 +41,6 @@ fn checked(line: &str) -> Value {
     match (message.get("result"), message.get("error")) {
         (Some(result), None) => {
             if result.get("structuredContent").is_some() {
-                #[derive(Deserialize)]
-                struct Reply<'a> {
-                    #[serde(borrow)]
-                    result: Answer<'a>,
-                }
                 let reply: Reply<'_> = serde_json::from_str(line).unwrap();
                 let answer = reply.result;
                 assert!(!answer.content.is_empty(), "{line}");
@@ -107,25 +84,6 @@ fn pong(c: &mut Client, id: &str) {
         c.line(),
         format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{{}}}}"#)
     );
-}
-
-/// A JSON-RPC error's code, ID, and its data's first error.
-fn rpc_error(message: &Value) -> (i64, Value, Value) {
-    assert!(message.get("result").is_none(), "{message}");
-    (
-        message["error"]["code"].as_i64().unwrap(),
-        message["id"].clone(),
-        message["error"]["data"]["errors"][0].clone(),
-    )
-}
-
-const CHECK: &str = r#"{"session": "s1", "model": "current", "fresh": false}"#;
-
-fn opened() -> Client {
-    let mut c = Client::initialized();
-    c.file("part.silico", BOX);
-    c.open(1, "part.silico");
-    c
 }
 
 /// A ping of `id` padded to exactly `length` bytes, in a `params` the server ignores.
@@ -398,7 +356,7 @@ fn progress_tokens_of_every_json_type_are_taken_if_a_string_or_a_number() {
 
 #[test]
 fn progress_on_a_call_that_answers_at_once_sends_none() {
-    let mut c = opened();
+    let mut c = Client::opened();
     for (id, name, arguments) in [
         (2, "version", "{}"),
         (3, "schema", r#"{"of": "close"}"#),
@@ -516,7 +474,7 @@ fn cancellations_of_nothing_in_every_shape_and_in_storms_are_ignored() {
 
 #[test]
 fn a_cancel_that_comes_before_its_call_or_after_its_answer_changes_nothing() {
-    let mut c = opened();
+    let mut c = Client::opened();
     // Before: the call that comes after it runs and answers.
     c.send(
         r#"{"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 2}}"#,
@@ -533,7 +491,7 @@ fn a_cancel_that_comes_before_its_call_or_after_its_answer_changes_nothing() {
 
 #[test]
 fn an_id_given_again_right_after_its_cancel_is_answered_once_by_the_new_call() {
-    let mut c = opened();
+    let mut c = Client::opened();
     let hold = c.kernel.hold(is_box);
     c.send_call(2, "check", CHECK);
     running(&c.kernel, 1);
@@ -587,7 +545,7 @@ fn ten_thousand_pings_are_each_answered_once_and_in_order() {
 
 #[test]
 fn a_cancel_is_read_while_the_client_has_stopped_reading() {
-    let mut c = opened();
+    let mut c = Client::opened();
     let hold = c.kernel.hold(is_box);
     c.send_call(2, "check", CHECK);
     running(&c.kernel, 1);
@@ -624,7 +582,7 @@ fn listed(c: &Client) -> Vec<String> {
 
 #[test]
 fn a_stop_mid_commit_leaves_the_document_as_it_was_and_no_partial_file() {
-    let mut c = opened();
+    let mut c = Client::opened();
     assert_eq!(c.envelope(2, "begin", r#"{"session": "s1"}"#)["ok"], true);
     let set = c.envelope(
         3,
@@ -649,7 +607,7 @@ fn a_stop_mid_commit_leaves_the_document_as_it_was_and_no_partial_file() {
 
 #[test]
 fn a_stop_racing_a_commit_leaves_the_document_whole_either_way() {
-    let mut c = opened();
+    let mut c = Client::opened();
     assert_eq!(c.envelope(2, "begin", r#"{"session": "s1"}"#)["ok"], true);
     let set = c.envelope(
         3,
@@ -701,7 +659,7 @@ fn a_document_that_is_a_pipe_is_refused_and_the_server_reads_on() {
 
 #[test]
 fn a_battery_of_garbage_and_calls_is_answered_one_json_rpc_line_each() {
-    let mut c = opened();
+    let mut c = Client::opened();
     let lines: Vec<&[u8]> = vec![
         b"{\"jsonrpc\": \"2.0\", \"id\": 1}",
         b"\xff",
