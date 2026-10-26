@@ -206,6 +206,10 @@ jobs:
           # make each switch between them rebuild everything.
           running=7
           priority=(nice -n 19)
+          # A Cargo home of its own, filler's or a real shard's: at the idle CPU weight a shard
+          # can stall while gates fill the VM, and a stalled shard holding the package cache's
+          # lock (which locks don't lend priority to) would stall every gate's Cargo behind it.
+          export CARGO_HOME=$HOME/.cargo-mutants
           if [ -n "$FILLER" ]; then
             running=4
             priority=(chrt --idle 0 ionice -c 3 nice -n 19)
