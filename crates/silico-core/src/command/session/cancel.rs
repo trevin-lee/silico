@@ -228,3 +228,48 @@ fn plain(command: &str) -> String {
         crate::command::quoted(command)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What a cancel interrupts, as M4.5's read client would be: each why it's told.
+    struct Told(Mutex<Vec<Why>>);
+
+    impl Interrupt for Told {
+        fn interrupt(&self, why: Why) {
+            lock(&self.0).push(why);
+        }
+    }
+
+    fn told() -> Arc<Told> {
+        Arc::new(Told(Mutex::new(Vec::new())))
+    }
+
+    fn weak(told: &Arc<Told>) -> Weak<dyn Interrupt> {
+        Arc::downgrade(told) as Weak<dyn Interrupt>
+    }
+
+    #[test]
+    fn an_interrupt_whose_owner_has_gone_is_let_go_as_the_next_is_added_and_the_rest_are_told() {
+        // `interrupt_with`'s rule: "none whose owner has gone kept". Three added, the second's
+        // owner gone before the third: two kept, the first and the third, each told of the
+        // cancel once.
+        let ticket = Ticket::new("probe");
+        let first = told();
+        let gone = told();
+        ticket.interrupt_with(weak(&first));
+        ticket.interrupt_with(weak(&gone));
+        assert_eq!(lock(&ticket.interrupts).len(), 2);
+        drop(gone);
+        let third = told();
+        ticket.interrupt_with(weak(&third));
+        let kept = lock(&ticket.interrupts).clone();
+        assert_eq!(kept.len(), 2);
+        assert!(Weak::ptr_eq(&kept[0], &weak(&first)));
+        assert!(Weak::ptr_eq(&kept[1], &weak(&third)));
+        assert!(ticket.cancel());
+        assert_eq!(lock(&first.0).as_slice(), [Why::Cancelled]);
+        assert_eq!(lock(&third.0).as_slice(), [Why::Cancelled]);
+    }
+}
