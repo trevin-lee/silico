@@ -197,7 +197,7 @@ fn requests_run_in_parallel() {
 fn the_pool_finds_its_worker_and_has_one_per_core_started_as_requests_need_them() {
     // As KernelWorker::start does: next to the test binary's directory. A slot for each
     // core, none started until a request needs it; requests one at a time need one.
-    let pool = KernelPool::start().unwrap();
+    let pool = KernelPool::start();
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
     assert_eq!(pool.size(), cores.min(silico_core::pool::MAX_WORKERS));
     assert_eq!(pool.pids(), Vec::<u32>::new());

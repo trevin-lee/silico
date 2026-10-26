@@ -35,7 +35,7 @@
 //! Every sketch is solved too, from the coordinates its document stores
 //! (docs/design/m3.4-stored-coordinates.md), on the engine's [`SketchSolver`] (the sketch
 //! worker, started at the first sketch, unless [`Recompute::with_sketches`] or
-//! [`Recompute::with_sketch_starter`] gave another),
+//! [`Recompute::with_solvers`] gave another),
 //! one at a time: those a feature sweeps before the plan, the rest beside the kernel's
 //! steps. A solve is keyed by its feature's ID and the
 //! sketch's canonical text, and kept as steps' results are, so an unchanged sketch isn't
@@ -800,46 +800,118 @@ struct Engine<K> {
     /// Where results are kept on disk, if anywhere.
     cache: Option<Cache>,
     state: Mutex<EngineState>,
-    /// Signalled when the sketch solver is given back, or a recompute starts or is
-    /// cancelled: a recompute waiting for the solver wakes to take it, or to find it's
-    /// superseded and wait no longer.
+    /// Signalled when a recompute's sketch thread gives back its turn at the solvers, or a
+    /// recompute starts or is cancelled: a recompute waiting for its turn wakes to take it,
+    /// or to find it's superseded and wait no longer.
     sketch_turn: Condvar,
-    /// Starts the sketch solver for the first sketch: the sketch worker, unless
-    /// [`Recompute::with_sketch_starter`] gave another. Called only by the recompute the
-    /// solver is lent to.
-    start_solver: Mutex<SolverStarter>,
+    /// Where its sketch solver comes from: its own (the sketch worker, unless
+    /// [`Recompute::with_sketches`] gave another), or those [`Recompute::with_solvers`] gave,
+    /// which other engines may share. Taken only by the
+    /// recompute whose turn it is.
+    solvers: Mutex<SketchSolvers>,
 }
 
 /// Starts a sketch solver.
 type SolverStarter = Box<dyn FnMut() -> Result<Box<dyn SketchSolver>, Error> + Send>;
 
-/// The engine's sketch solver: one recompute's at a time, for all its sketches.
-enum Solver {
-    /// None yet: the first sketch starts one with the engine's starter (the sketch worker,
-    /// unless [`Recompute::with_sketch_starter`] gave another).
-    Unstarted,
-    Here(Box<dyn SketchSolver>),
-    /// A recompute's sketch thread has it.
-    Lent,
+/// Sketch solvers, idle, and how to start another: an engine's own, or shared by engines
+/// ([`Recompute::with_solvers`]: a [`Sessions`](crate::command::Sessions)' sessions share
+/// one, as they share the kernel pool). Each is lent to one recompute's sketch thread at a
+/// time, for all its sketches, and given back when they're solved; another is started only
+/// when none is idle. So engines that solve one after another (`silico check` of many
+/// files) start one solver between them, and engines that solve at once each have one,
+/// none waiting for another's solve. A solver keeps nothing of a solve once it's given
+/// back (each solve carries its whole sketch). Clones share the same solvers.
+#[derive(Clone)]
+pub struct SketchSolvers(Arc<SharedSolvers>);
+
+struct SharedSolvers {
+    /// The solvers given back, the last given back taken first. Taken alone, or after an
+    /// engine's state or `start`, never before either.
+    idle: Mutex<Vec<Box<dyn SketchSolver>>>,
+    /// Starts another when none is idle. Taken alone, or before `idle`; held across the
+    /// start, so engines that find none idle start one at a time.
+    start: Mutex<SolverStarter>,
 }
 
-/// The solver, lent to a recompute's sketch thread: given back when it's dropped, even by
-/// a panic under a solve, so the next recompute doesn't wait for it forever.
+impl SketchSolvers {
+    /// Solvers started as the sketch worker ([`SketchWorker::start`]), the first when a
+    /// sketch is first solved.
+    pub fn workers() -> Self {
+        Self::starting(|| {
+            SketchWorker::start().map(|worker| Box::new(worker) as Box<dyn SketchSolver>)
+        })
+    }
+
+    /// Solvers started with `start` (a stand-in, or one that fails to start, in tests). A
+    /// start that fails fails the sketches of the recompute that asked, and isn't kept:
+    /// the next recompute to ask starts one again.
+    pub fn starting(
+        start: impl FnMut() -> Result<Box<dyn SketchSolver>, Error> + Send + 'static,
+    ) -> Self {
+        Self::of(Vec::new(), Box::new(start))
+    }
+
+    /// `solver`, idle, and others started as the sketch worker.
+    fn holding(solver: Box<dyn SketchSolver>) -> Self {
+        let workers =
+            || SketchWorker::start().map(|worker| Box::new(worker) as Box<dyn SketchSolver>);
+        Self::of(vec![solver], Box::new(workers))
+    }
+
+    fn of(idle: Vec<Box<dyn SketchSolver>>, start: SolverStarter) -> Self {
+        SketchSolvers(Arc::new(SharedSolvers {
+            idle: Mutex::new(idle),
+            start: Mutex::new(start),
+        }))
+    }
+
+    /// An idle solver, or, with none idle, one started now. The idle list is looked at
+    /// again once the start is this one's: a solver given back while another engine's start
+    /// ran is taken, not one more started.
+    fn take(&self) -> Result<Box<dyn SketchSolver>, Error> {
+        if let Some(solver) = lock(&self.0.idle).pop() {
+            return Ok(solver);
+        }
+        let mut start = lock(&self.0.start);
+        if let Some(solver) = lock(&self.0.idle).pop() {
+            return Ok(solver);
+        }
+        let started = (*start)();
+        if started.is_ok() {
+            tracing::debug!("started a sketch solver");
+        }
+        started
+    }
+
+    /// `solver`, idle again.
+    fn give_back(&self, solver: Box<dyn SketchSolver>) {
+        lock(&self.0.idle).push(solver);
+    }
+}
+
+/// A solver, lent to a recompute's sketch thread: given back to its solvers when it's
+/// dropped, even by a panic under a solve, and the engine's turn at them with it, so the
+/// next recompute doesn't wait for it forever.
 struct LentSolver<'a> {
     state: &'a Mutex<EngineState>,
     turn: &'a Condvar,
+    solvers: SketchSolvers,
     solver: Option<Box<dyn SketchSolver>>,
 }
 
 impl Drop for LentSolver<'_> {
     fn drop(&mut self) {
         let mut state = lock(self.state);
-        // A solve that panicked left its stop handle: nothing of it runs now.
+        // A solve that panicked left its stop handle: nothing of it runs now. Cleared before
+        // the solver is given back, so no stop of this engine's reaches another's solve.
         state.solving = None;
-        state.solver = match self.solver.take() {
-            Some(solver) => Solver::Here(solver),
-            None => Solver::Unstarted,
-        };
+        // Given back before the turn, so the engine's next recompute finds it idle, and
+        // starts none.
+        if let Some(solver) = self.solver.take() {
+            self.solvers.give_back(solver);
+        }
+        state.sketching = false;
         drop(state);
         self.turn.notify_all();
     }
@@ -864,7 +936,9 @@ struct EngineState {
     solutions: BTreeMap<Key, SketchResult>,
     /// The profile of each sketch a feature sweeps, by its solve's key, kept as solves are.
     profiles: BTreeMap<Key, ProfileResult>,
-    solver: Solver,
+    /// Whether a recompute's sketch thread has the engine's turn at its solvers: one
+    /// recompute's at a time.
+    sketching: bool,
     /// The sketch being solved, and how to stop it once a newer recompute starts.
     solving: Option<Solving>,
     /// How many solves have been started: each solve's number.
@@ -1020,20 +1094,21 @@ impl<K: Kernel + 'static> Recompute<K> {
     }
 
     /// Solves sketches with `sketches` rather than the sketch worker (a stand-in, in tests).
+    /// It replaces what [`with_solvers`](Self::with_solvers) gave: whichever is called last
+    /// holds.
     pub fn with_sketches(self, sketches: impl SketchSolver + 'static) -> Self {
-        lock(&self.engine.state).solver = Solver::Here(Box::new(sketches));
+        *lock(&self.engine.solvers) = SketchSolvers::holding(Box::new(sketches));
         self
     }
 
-    /// Starts the sketch solver with `start` at the first sketch, rather than the sketch
-    /// worker (a stand-in that fails to start, in tests). It replaces a solver given with
-    /// [`with_sketches`](Self::with_sketches): whichever is called last holds.
-    pub fn with_sketch_starter(
-        self,
-        start: impl FnMut() -> Result<Box<dyn SketchSolver>, Error> + Send + 'static,
-    ) -> Self {
-        lock(&self.engine.state).solver = Solver::Unstarted;
-        *lock(&self.engine.start_solver) = Box::new(start);
+    /// Solves sketches with `solvers`, which other engines may share (a
+    /// [`Sessions`](crate::command::Sessions)' sessions do): a solver lent from them for
+    /// each recompute's sketches, and given back after; or, with
+    /// [`SketchSolvers::starting`], its own, started another way (a stand-in that fails to
+    /// start, in tests). It replaces what [`with_sketches`](Self::with_sketches) gave:
+    /// whichever is called last holds.
+    pub fn with_solvers(self, solvers: SketchSolvers) -> Self {
+        *lock(&self.engine.solvers) = solvers;
         self
     }
 
@@ -1044,9 +1119,7 @@ impl<K: Kernel + 'static> Recompute<K> {
                 kernel,
                 cache,
                 sketch_turn: Condvar::new(),
-                start_solver: Mutex::new(Box::new(|| {
-                    SketchWorker::start().map(|worker| Box::new(worker) as Box<dyn SketchSolver>)
-                })),
+                solvers: Mutex::new(SketchSolvers::workers()),
                 state: Mutex::new(EngineState {
                     generation,
                     newest_started: generation,
@@ -1055,7 +1128,7 @@ impl<K: Kernel + 'static> Recompute<K> {
                     results: BTreeMap::new(),
                     solutions: BTreeMap::new(),
                     profiles: BTreeMap::new(),
-                    solver: Solver::Unstarted,
+                    sketching: false,
                     solving: None,
                     solves: 0,
                     published_plans: VecDeque::new(),
@@ -2787,42 +2860,39 @@ impl<K: Kernel + 'static> Engine<K> {
     ) -> Option<SketchRun> {
         let mut solved = SketchRun::new();
         let superseded = |state: &EngineState| state.generation != generation || state.cancelled;
-        // The solver, once no other recompute has it; or none, once this one is superseded
-        // (a newer recompute's start wakes the wait), never waiting for a newer one's solve.
-        let here = {
+        // The engine's turn at its solvers, once no other recompute of its has it; or none,
+        // once this one is superseded (a newer recompute's start wakes the wait), never
+        // waiting for a newer one's solve.
+        {
             let mut state = lock(&self.state);
             loop {
                 if superseded(&state) {
                     return None;
                 }
-                match std::mem::replace(&mut state.solver, Solver::Lent) {
-                    Solver::Here(solver) => break Some(solver),
-                    Solver::Unstarted => break None,
-                    Solver::Lent => {
-                        state = self
-                            .sketch_turn
-                            .wait(state)
-                            .unwrap_or_else(PoisonError::into_inner);
-                    }
+                if !state.sketching {
+                    state.sketching = true;
+                    break;
                 }
+                state = self
+                    .sketch_turn
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
             }
-        };
+        }
         let mut lent = LentSolver {
             state: &self.state,
             turn: &self.sketch_turn,
-            solver: here,
+            solvers: lock(&self.solvers).clone(),
+            solver: None,
         };
-        if lent.solver.is_none() {
-            let started = (lock(&self.start_solver))();
-            match started {
-                Ok(solver) => lent.solver = Some(solver),
-                // Every sketch fails with it, not kept: the next recompute tries again.
-                Err(error) => {
-                    for (id, key) in to_solve {
-                        solved.insert(*key, solver_failure(error.clone(), id));
-                    }
-                    return Some(solved);
+        match lent.solvers.take() {
+            Ok(solver) => lent.solver = Some(solver),
+            // Every sketch fails with it, not kept: the next recompute tries again.
+            Err(error) => {
+                for (id, key) in to_solve {
+                    solved.insert(*key, solver_failure(error.clone(), id));
                 }
+                return Some(solved);
             }
         }
         let solver = lent.solver.as_mut()?;

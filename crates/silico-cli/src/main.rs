@@ -1,25 +1,26 @@
 //! The `silico` command-line client: `check`, `fmt`, `show`, and `schema`, each a thin client
-//! of the core's commands (`silico_core::command`), which the app and MCP run too, and
-//! `textconv`, for `git diff` (docs/cli.md).
+//! of the core's commands (`silico_core::command`), which MCP and the app run too, and
+//! `textconv`, for `git diff` (docs/cli.md). `check`, `fmt`, and `show` each open a file as a
+//! session, run one session command on it (`check`, `format`, `outline`), and close it
+//! (docs/design/m4.1-command-api.md, section 9), every file on one kernel pool and one
+//! sketch solver.
 //!
 //! Exit codes: 0, nothing wrong; 1, a document has problems (or, with `fmt --check`, isn't
-//! in canonical form); 2, the command couldn't run (a usage error, a file that couldn't be
-//! read or written, a kernel that couldn't start or failed in a way that isn't the
-//! document's).
+//! in canonical form, or a file is longer than a document may be); 2, the command couldn't
+//! run (a usage error, a file that couldn't be read or written, or whose name isn't UTF-8,
+//! a file that changed while `fmt` rebuilt it, or a kernel or sketch solver that couldn't
+//! start or failed in a way that isn't the document's: a kernel fault, said after the
+//! document's problems).
 
 use std::ffi::OsString;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use silico_core::cache::Cache;
-use silico_core::command::{self, Problems};
-use silico_core::document::Checked;
-use silico_core::file::{self, opened_and_read, read};
+use silico_core::command::{self, ModelChoice, Problems, Response, SessionId, Sessions};
+use silico_core::file::opened_and_read;
 use silico_core::pool::KernelPool;
-use silico_core::recompute::Model;
-use silico_core::recompute::Recompute;
 use silico_core::{Error, ErrorCode};
 
 /// A line on stderr (the workspace forbids `eprintln!`, which panics if stderr is closed).
@@ -51,6 +52,16 @@ impl Ended {
             Ended::Clean => ExitCode::SUCCESS,
             Ended::Problems => ExitCode::from(1),
             Ended::Failed => ExitCode::from(2),
+        }
+    }
+
+    /// How a command whose result is `problems` ended: clean, or with the document's
+    /// problems.
+    fn of(problems: &Problems) -> Ended {
+        if problems.is_empty() {
+            Ended::Clean
+        } else {
+            Ended::Problems
         }
     }
 
@@ -132,7 +143,17 @@ fn main() -> ExitCode {
             return Ended::Failed.code();
         }
     };
-    let mut engines = Engines::default();
+    // `check` and `fmt` run every file on one kernel pool, started once, whatever
+    // directories they're in (each directory's cache beside its files), and one sketch
+    // solver. A pool that couldn't be started fails each rebuild that needs it, so the
+    // problems the gate finds are still said, needing no kernel.
+    let each = |run: &dyn Fn(&Sessions<KernelPool>, &Path) -> Ended| {
+        let sessions = Sessions::new(KernelPool::start());
+        files
+            .iter()
+            .map(|file| run(&sessions, file))
+            .fold(Ended::Clean, Ended::and)
+    };
     let ended = match (command, files.as_slice()) {
         (Command::Schema, []) => schema("document"),
         (Command::Schema, [name]) => schema(&name.to_string_lossy()),
@@ -140,14 +161,8 @@ fn main() -> ExitCode {
             say!("{USAGE}");
             Ended::Failed
         }
-        (Command::Check { json }, files) => files
-            .iter()
-            .map(|file| check(&mut engines, file, json))
-            .fold(Ended::Clean, Ended::and),
-        (Command::Fmt { check }, files) => files
-            .iter()
-            .map(|file| fmt(&mut engines, file, check))
-            .fold(Ended::Clean, Ended::and),
+        (Command::Check { json }, _) => each(&|sessions, file| check(sessions, file, json)),
+        (Command::Fmt { check }, _) => each(&|sessions, file| fmt(sessions, file, check)),
         (Command::Show, [file]) => show(file),
         (Command::Textconv, [file]) => textconv(file),
     };
@@ -185,194 +200,343 @@ fn schema(of: &str) -> Ended {
     }
 }
 
-/// `silico check FILE`: its problems (failed features and sketches, and drift of
-/// fingerprints and of sketches' stored solves), each on stderr; or, with `--json`, one line of JSON
-/// on stdout for each file: `{"file", "ok", "problems", "total"}`, each problem an error as
-/// the core's error contract has it, or, for a file that couldn't be checked,
-/// `{"file", "ok": false, "error"}`, the error that stopped it, in the same shape
-/// (tests/contract/check-line.json).
-fn check(engines: &mut Engines, file: &Path, json: bool) -> Ended {
-    let failed = |error: Error| {
-        if json {
-            line(serde_json::json!({"file": named(file), "ok": false, "error": error}));
+/// `file` opened as a session of `sessions` (`open`), `then` run on it, and the session
+/// closed (`close`): how `then` ended; or, if the file couldn't be opened, how `unopened`,
+/// given open's refusal as the CLI says it, ended. `command` is the `silico` command run,
+/// for a refusal's advice.
+fn in_session(
+    sessions: &Sessions<KernelPool>,
+    file: &Path,
+    command: &str,
+    unopened: impl FnOnce(Refusal) -> Ended,
+    then: impl FnOnce(&SessionId) -> Ended,
+) -> Ended {
+    let id = match sessions.open(file, false).wait().result {
+        Ok(opened) => opened.session,
+        Err(problems) => return unopened(Refusal::of_open(file, &problems)),
+    };
+    let ended = then(&id);
+    match sessions.close(&id).wait().result {
+        Ok(_) => ended,
+        Err(problems) => ended.and(Refusal::of_command(command, &problems).said(file)),
+    }
+}
+
+/// Whether `error`, a command's refusal, says it couldn't run, not that the document has
+/// problems: a file that couldn't be read or written, or changed while it was rebuilt, a
+/// command cancelled, or a kernel fault (docs/cli.md's exit 2).
+fn couldnt_run(error: &Error) -> bool {
+    let code = error.code();
+    code.is_kernel_fault()
+        || matches!(
+            code,
+            ErrorCode::IoFailed | ErrorCode::Conflict | ErrorCode::Cancelled
+        )
+}
+
+/// A command's refusal of a file, as the CLI says it: each reason, the first listed and
+/// all counted; a kernel fault the rebuild met, if the refusal carries one, said after
+/// them; and whether it says the command couldn't run (exit 2), not that the document, or
+/// the file, has problems (exit 1).
+struct Refusal {
+    errors: Vec<Error>,
+    total: u64,
+    fault: Option<Error>,
+    failed: bool,
+}
+
+impl Refusal {
+    /// `open`'s refusal of `file`. Its `path` is the file each line already names, so isn't
+    /// named again; but a name that isn't UTF-8 is a file that couldn't be had, as one
+    /// unreadable is (exit 2), its `path` the parameter at fault.
+    fn of_open(file: &Path, problems: &Problems) -> Self {
+        let unnamed = file.to_str().is_none();
+        let errors: Vec<Error> = problems
+            .errors()
+            .iter()
+            .map(|error| {
+                if !unnamed && error.parameter() == Some("path") {
+                    error.clone().without_parameter()
+                } else {
+                    error.clone()
+                }
+            })
+            .collect();
+        Self::of(errors, problems.total(), unnamed)
+    }
+
+    /// The refusal of a command, `silico command`'s, on a file its session opened: as the
+    /// session gives it, but how to go on about the file (a save that found it changed, a
+    /// session that couldn't take it as it is now) said as the CLI does, which opens a
+    /// session for each run, not as a session's client goes on. A file it couldn't read
+    /// again is to be checked and the command run again; one grown longer than a document
+    /// may be is to be checked as open's refusal of it says. (A file another session holds
+    /// can't be one: the CLI holds one session at a time.)
+    fn of_command(command: &str, problems: &Problems) -> Self {
+        let errors = problems
+            .errors()
+            .iter()
+            .map(|error| {
+                let about_the_file = error.parameter() == Some("path");
+                if about_the_file && error.code() == ErrorCode::Conflict {
+                    error.clone().with_suggestion(format!(
+                        "nothing was written: run `silico {command}` again, on the file as it \
+                         is now"
+                    ))
+                } else if about_the_file && error.cause() == Some(command::NOT_RELOADED) {
+                    let suggestion = match error.code() {
+                        ErrorCode::IoFailed => "check the file is there and run it again",
+                        _ => command::TOO_LONG,
+                    };
+                    error.clone().with_suggestion(suggestion)
+                } else {
+                    error.clone()
+                }
+            })
+            .collect();
+        Self::of(errors, problems.total(), false)
+    }
+
+    fn of(errors: Vec<Error>, total: u64, failed: bool) -> Self {
+        let failed = failed || errors.iter().any(couldnt_run);
+        Refusal {
+            errors,
+            total,
+            fault: None,
+            failed,
+        }
+    }
+
+    /// This refusal of `silico command`, with `fault`, a kernel fault its response's model
+    /// read carries: the command's failure (exit 2), as a fault beside a result is, with
+    /// the CLI's advice to run it again.
+    fn with_fault(self, fault: Option<Error>, command: &str) -> Self {
+        match fault {
+            Some(fault) => Refusal {
+                fault: Some(with_retry(&fault, command)),
+                failed: true,
+                ..self
+            },
+            None => self,
+        }
+    }
+
+    fn ended(&self) -> Ended {
+        if self.failed {
+            Ended::Failed
         } else {
-            say!("{}: {error}", shown(file));
-        }
-        Ended::Failed
-    };
-    let bytes = match read(file) {
-        Ok(bytes) => bytes,
-        Err(error) => return failed(error),
-    };
-    // What's wrong with the document needs no kernel: said even when none can start.
-    let problems = match command::gate(&bytes) {
-        Err(problems) => problems,
-        Ok(checked) => match engines
-            .rebuild(file, checked)
-            .and_then(|model| command::check(&model))
-        {
-            Ok(problems) => problems,
-            Err(error) => return failed(error),
-        },
-    };
-    if json {
-        line(serde_json::json!({
-            "file": named(file),
-            "ok": problems.is_empty(),
-            "problems": problems.errors(),
-            "total": problems.total(),
-        }));
-    } else {
-        print_problems(file, &problems);
-    }
-    if problems.is_empty() {
-        Ended::Clean
-    } else {
-        Ended::Problems
-    }
-}
-
-/// `silico fmt FILE`: rewrites the file (the one it names, through a symbolic link) in
-/// canonical form with its fingerprints as rebuilt and its sketches as solved, then says on
-/// stderr which fingerprints and sketches' solves it wrote, and the problems it couldn't fix
-/// (a feature that didn't build keeps the fingerprint stored with it, and a sketch that
-/// didn't solve keeps what its file holds, and the file is written); with `--check`, writes
-/// nothing,
-/// and says whether it would. A read-only file, one changed while it was rebuilt, or one
-/// whose rebuild failed for the kernel's own reasons (a worker that crashed or hung), isn't
-/// written.
-fn fmt(engines: &mut Engines, file: &Path, check_only: bool) -> Ended {
-    let bytes = match read(file) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            say!("{}: {error}", shown(file));
-            return Ended::Failed;
-        }
-    };
-    let checked = match command::gate(&bytes) {
-        Ok(checked) => checked,
-        Err(problems) => {
-            print_problems(file, &problems);
-            return Ended::Problems;
-        }
-    };
-    let formatted = match engines
-        .rebuild(file, checked)
-        .and_then(|model| command::format(&model))
-    {
-        Ok(Ok(formatted)) => formatted,
-        Ok(Err(problems)) => {
-            print_problems(file, &problems);
-            return Ended::Problems;
-        }
-        Err(error) => {
-            say!("{}: {error}", shown(file));
-            return Ended::Failed;
-        }
-    };
-    print_problems(file, &formatted.problems);
-    let problems = if formatted.problems.is_empty() {
-        Ended::Clean
-    } else {
-        Ended::Problems
-    };
-    let same = formatted.text.as_bytes() == bytes.as_slice();
-    if check_only {
-        if same {
-            return problems;
-        }
-        say!(
-            "{}: not in canonical form; `silico fmt` would rewrite it",
-            shown(file)
-        );
-        return Ended::Problems;
-    }
-    if !same && let Err(error) = file::save(file, &bytes, formatted.text.as_bytes()) {
-        say!("{}: {error}", shown(file));
-        return Ended::Failed;
-    }
-    for (id, before) in &formatted.refingerprinted {
-        let what = if before.is_some() { "rewrote" } else { "wrote" };
-        say!("{}: {what} the fingerprint of {id}", shown(file));
-    }
-    for id in &formatted.resolved {
-        say!("{}: wrote the solve of sketch {id}", shown(file));
-    }
-    problems
-}
-
-/// The kernel pool every file is rebuilt on, started for the first file that needs one,
-/// and the engine of the last file's cache directory: a file whose cache is elsewhere gets
-/// an engine of its own over the same pool (the files are rebuilt in turn, each recompute a
-/// generation newer than the last, so none supersedes another's), so `silico check` starts
-/// its kernel workers once, whatever directories its files are in.
-#[derive(Default)]
-struct Engines {
-    pool: Option<Arc<KernelPool>>,
-    current: Option<(PathBuf, Recompute<Arc<KernelPool>>)>,
-}
-
-impl Engines {
-    /// `checked`, read from `file`, rebuilt: on kernel workers, with the rebuild cache
-    /// beside the file (`.silico-cache/`, beside the file a link names).
-    fn rebuild(&mut self, file: &Path, checked: Checked) -> Result<Arc<Model>, Error> {
-        let dir = file::cache_directory(file);
-        let kept = self.current.take().filter(|(of, _)| *of == dir);
-        let (dir, engine) = match kept {
-            Some(current) => current,
-            None => {
-                let pool = match &self.pool {
-                    Some(pool) => Arc::clone(pool),
-                    None => Arc::clone(self.pool.insert(Arc::new(KernelPool::start()?))),
-                };
-                let engine = Recompute::with_cache(pool, Cache::open(dir.clone()));
-                (dir, engine)
-            }
-        };
-        let engine = &self.current.insert((dir, engine)).1;
-        command::rebuild(engine, checked)?.ok_or_else(|| {
-            Error::new(
-                ErrorCode::Internal,
-                "the rebuild was superseded, though nothing else uses its engine",
-            )
-            .with_suggestion(silico_core::worker::SILICO_BUG)
-        })
-    }
-}
-
-/// `silico show FILE`: its outline, on stdout. Needs no kernel: it's the document as
-/// written, for reading and for `git diff`.
-fn show(file: &Path) -> Ended {
-    let bytes = match read(file) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            say!("{}: {error}", shown(file));
-            return Ended::Failed;
-        }
-    };
-    match silico_core::document::read(&bytes) {
-        Ok(document) => {
-            let mut out = std::io::stdout().lock();
-            if out
-                .write_all(command::outline(&document).as_bytes())
-                .and_then(|()| out.flush())
-                .is_err()
-            {
-                return Ended::Failed;
-            }
-            Ended::Clean
-        }
-        Err(error) => {
-            say!("{}: {error}", shown(file));
             Ended::Problems
         }
     }
+
+    /// Each reason on stderr, after `file`, then the kernel fault, if any.
+    fn said(&self, file: &Path) -> Ended {
+        print_problems(file, &self.errors, self.total);
+        if let Some(fault) = &self.fault {
+            say!("{}: {fault}", shown(file));
+        }
+        self.ended()
+    }
+
+    /// The error that stopped the command, if it couldn't run: a reason that says so, or
+    /// else the kernel fault, or else the first reason.
+    fn stopped(&self) -> Option<&Error> {
+        self.errors
+            .iter()
+            .find(|error| couldnt_run(error))
+            .or(self.fault.as_ref())
+            .or_else(|| self.errors.first().filter(|_| self.failed))
+    }
+
+    /// `check --json`'s line for `file`: the reason it couldn't run, or the problems.
+    fn line(&self, file: &Path) -> Ended {
+        match self.stopped() {
+            Some(error) => failed_line(file, error),
+            None => {
+                problems_line(file, &self.errors, self.total);
+                Ended::Problems
+            }
+        }
+    }
+}
+
+/// `fault`, a kernel fault the rebuild of a file met (its suggestion the worker's own), as
+/// `silico command` says it: then, to run the command again, which rebuilds the file anew.
+fn with_retry(fault: &Error, command: &str) -> Error {
+    let again = format!("run `silico {command}` again to retry it");
+    let suggestion = match fault.suggestion() {
+        Some(own) => format!("{own}; {again}"),
+        None => again,
+    };
+    fault.clone().with_suggestion(suggestion)
+}
+
+/// `silico check FILE`: open, the session's `check` of its current revision, close. Its
+/// problems (failed features and sketches, and drift of fingerprints and of sketches' stored
+/// solves), each on stderr, and a kernel fault the rebuild met after them; or, with
+/// `--json`, one line of JSON on stdout for each file: `{"file", "ok", "problems", "total"}`,
+/// each problem an error as the core's error contract has it, or, for a file that couldn't
+/// be checked (a refusal that says it couldn't run, or a kernel fault), `{"file", "ok":
+/// false, "error"}`, the error that stopped it, in the same shape
+/// (tests/contract/check-line.json).
+fn check(sessions: &Sessions<KernelPool>, file: &Path, json: bool) -> Ended {
+    let refused = |refusal: Refusal| {
+        if json {
+            refusal.line(file)
+        } else {
+            refusal.said(file)
+        }
+    };
+    in_session(sessions, file, "check", refused, |id| {
+        let Response { model, result, .. } = sessions.check(id, ModelChoice::Current).wait();
+        let problems = match result {
+            Ok(answer) => answer.problems,
+            Err(problems) => {
+                let fault = model.and_then(|read| read.fault);
+                return refused(Refusal::of_command("check", &problems).with_fault(fault, "check"));
+            }
+        };
+        // A kernel fault isn't the document's: given after its problems, and the check's
+        // failure (exit 2), as a file that couldn't be checked.
+        if let Some(fault) = model.and_then(|read| read.fault) {
+            let fault = with_retry(&fault, "check");
+            if json {
+                return failed_line(file, &fault);
+            }
+            print_problems(file, problems.errors(), problems.total());
+            say!("{}: {fault}", shown(file));
+            return Ended::Failed;
+        }
+        if json {
+            problems_line(file, problems.errors(), problems.total());
+        } else {
+            print_problems(file, problems.errors(), problems.total());
+        }
+        Ended::of(&problems)
+    })
+}
+
+/// `check --json`'s line for a file it checked: `{"file", "ok", "problems", "total"}`.
+fn problems_line(file: &Path, errors: &[Error], total: u64) {
+    line(serde_json::json!({
+        "file": named(file),
+        "ok": total == 0,
+        "problems": errors,
+        "total": total,
+    }));
+}
+
+/// `check --json`'s line for a file it couldn't check: `{"file", "ok": false, "error"}`.
+fn failed_line(file: &Path, error: &Error) -> Ended {
+    line(serde_json::json!({"file": named(file), "ok": false, "error": error}));
+    Ended::Failed
+}
+
+/// `silico fmt FILE`: open, the session's `format` with no features named (every drift
+/// accepted, decision 31) and `write` unless `--check`, close. The session writes the file
+/// (the one it names, through a symbolic link) in canonical form with its fingerprints as
+/// rebuilt and its sketches as solved, through `file::save`; this says on stderr the
+/// problems it couldn't fix (a feature that didn't build keeps the fingerprint stored with
+/// it, and a sketch that didn't solve keeps what its file holds, and the file is written),
+/// then which fingerprints and sketches' solves it wrote; with `--check`, whether it would
+/// write. A read-only file, or one changed while it was rebuilt, isn't written (exit 2). A
+/// kernel fault the rebuild met is said last (exit 2): the features it stopped keep what's
+/// stored with them, as failed ones do, and the rest is written (decision 32).
+fn fmt(sessions: &Sessions<KernelPool>, file: &Path, check_only: bool) -> Ended {
+    in_session(
+        sessions,
+        file,
+        "fmt",
+        |refusal| refusal.said(file),
+        |id| {
+            let Response { model, result, .. } = sessions.format(id, None, !check_only).wait();
+            let formatted = match result {
+                Ok(formatted) => formatted,
+                Err(problems) => {
+                    let fault = model.and_then(|read| read.fault);
+                    return Refusal::of_command("fmt", &problems)
+                        .with_fault(fault, "fmt")
+                        .said(file);
+                }
+            };
+            let problems = &formatted.problems;
+            print_problems(file, problems.errors(), problems.total());
+            let mut ended = Ended::of(problems);
+            if check_only {
+                if formatted.changed {
+                    say!(
+                        "{}: not in canonical form; `silico fmt` would rewrite it",
+                        shown(file)
+                    );
+                    ended = ended.and(Ended::Problems);
+                }
+            } else {
+                // A feature whose drift it accepted had a fingerprint stored, which it
+                // rewrote; every other had none.
+                for id in &formatted.refingerprinted {
+                    let what = if formatted.accepted.contains(id) {
+                        "rewrote"
+                    } else {
+                        "wrote"
+                    };
+                    say!("{}: {what} the fingerprint of {id}", shown(file));
+                }
+                for id in &formatted.resolved {
+                    say!("{}: wrote the solve of sketch {id}", shown(file));
+                }
+            }
+            if let Some(fault) = model.and_then(|read| read.fault) {
+                say!("{}: {}", shown(file), with_retry(&fault, "fmt"));
+                ended = Ended::Failed;
+            }
+            ended
+        },
+    )
+}
+
+/// `silico show FILE`: open, the session's `outline`, close; the outline on stdout. Needs no
+/// kernel: it's the document as written, for reading and for `git diff`.
+fn show(file: &Path) -> Ended {
+    // A kernel and a cache it never uses: nothing is rebuilt, no worker is looked for, and
+    // the user's cache secret is neither read nor made.
+    let sessions = Sessions::with_cache_opener(
+        KernelPool::refusing(
+            Error::new(ErrorCode::Internal, "`silico show` starts no kernel")
+                .with_suggestion(silico_core::worker::SILICO_BUG),
+        ),
+        |dir| Cache::unsealed(dir),
+    );
+    in_session(
+        &sessions,
+        file,
+        "show",
+        |refusal| refusal.said(file),
+        |id| match sessions.outline(id).wait().result {
+            Ok(answer) => {
+                let mut out = std::io::stdout().lock();
+                if out
+                    .write_all(answer.outline.as_bytes())
+                    .and_then(|()| out.flush())
+                    .is_err()
+                {
+                    return Ended::Failed;
+                }
+                Ended::Clean
+            }
+            Err(problems) => Refusal::of_command("show", &problems).said(file),
+        },
+    )
 }
 
 /// `silico textconv FILE`, git's text conversion for `*.silico` (docs/cli.md): the outline,
 /// as `show` prints it, if the file reads as a document; if not (a merge's conflict
 /// markers, an edit half made), the file as it is, so `git diff` still shows it. Fails only
 /// if the file can't be read or stdout written.
+///
+/// Not a session's: the file as it is must be passed through whatever it holds, and a
+/// session holds neither a file longer than a document may be nor one whose name isn't
+/// UTF-8 (`open` refuses both), so this reads the file once, itself, and outlines it with
+/// the core's `command::outline`, which a session's `outline` gives too.
 fn textconv(file: &Path) -> Ended {
     let fail = |error: Error| {
         say!("{}: {error}", shown(file));
@@ -424,19 +588,156 @@ fn line(value: serde_json::Value) {
     let _ = writeln!(std::io::stdout().lock(), "{value}");
 }
 
-/// Each problem on stderr, after the file it's about: its code and words, then the
+/// Each of `errors` on stderr, after the file it's about: its code and words, then the
 /// feature, elements, and parameter at fault, and what to do (the error's own `Display`);
-/// and how many more there are, if not all are listed.
-fn print_problems(file: &Path, problems: &Problems) {
-    for error in problems.errors() {
+/// and how many more there are, of `total`, if not all are listed.
+fn print_problems(file: &Path, errors: &[Error], total: u64) {
+    for error in errors {
         say!("{}: {error}", shown(file));
     }
-    let listed = problems.errors().len() as u64;
-    if problems.total() > listed {
-        say!(
-            "{}: and {} more problems",
-            shown(file),
-            problems.total() - listed
+    let listed = errors.len() as u64;
+    if total > listed {
+        say!("{}: and {} more problems", shown(file), total - listed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+    use std::path::{Path, PathBuf};
+
+    use silico_core::command::{NOT_RELOADED, Problems};
+    use silico_core::{Error, ErrorCode};
+
+    use super::{Ended, Refusal, with_retry};
+
+    fn failed(ended: &Ended) -> bool {
+        matches!(ended, Ended::Failed)
+    }
+
+    #[test]
+    fn a_refusal_that_says_the_command_couldnt_run_is_exit_2_and_the_documents_is_1() {
+        // Each kind docs/cli.md's exit 2 names: a file that couldn't be read or written, or
+        // changed while it was rebuilt, a command cancelled, and a kernel fault (a shortage,
+        // a crash); a document's problem, or its drift, is exit 1.
+        for (code, couldnt) in [
+            (ErrorCode::IoFailed, true),
+            (ErrorCode::Conflict, true),
+            (ErrorCode::Cancelled, true),
+            (ErrorCode::ResourceExhausted, true),
+            (ErrorCode::WorkerCrashed, true),
+            (ErrorCode::InvalidInput, false),
+            (ErrorCode::Drift, false),
+        ] {
+            let problems = Problems::from(Error::new(code, "m"));
+            let refusal = Refusal::of_command("check", &problems);
+            assert_eq!(failed(&refusal.ended()), couldnt, "{code:?}");
+            let refusal = Refusal::of_open(Path::new("a.silico"), &problems);
+            assert_eq!(failed(&refusal.ended()), couldnt, "{code:?}");
+        }
+    }
+
+    #[test]
+    fn opens_refusal_drops_the_path_its_line_names_and_a_commands_keeps_it() {
+        // Q-M: open's `path` is the file each line names; a later command's parameter is
+        // its own (a document's key), so kept.
+        let problems =
+            Problems::from(Error::new(ErrorCode::InvalidInput, "too long").with_parameter("path"));
+        let opened = Refusal::of_open(Path::new("a.silico"), &problems);
+        assert_eq!(opened.errors[0].parameter(), None);
+        assert!(!failed(&opened.ended()));
+        let ran = Refusal::of_command("fmt", &problems);
+        assert_eq!(ran.errors[0].parameter(), Some("path"));
+        // R-M2: a name that isn't UTF-8 is a file that couldn't be had, its path the
+        // parameter at fault.
+        let unnamed = PathBuf::from(OsString::from_vec(b"\xff.silico".to_vec()));
+        let opened = Refusal::of_open(&unnamed, &problems);
+        assert_eq!(opened.errors[0].parameter(), Some("path"));
+        assert!(failed(&opened.ended()));
+    }
+
+    #[test]
+    fn a_commands_refusal_about_its_file_says_how_to_go_on_in_the_clis_words() {
+        // R-M1: a conflict, or a session that couldn't take its file as it is now, says what
+        // the CLI's user does (run it again), not what a session's client does; a save that
+        // couldn't be written keeps the file's own advice.
+        let said = |error: Error| {
+            Refusal::of_command("fmt", &Problems::from(error)).errors[0]
+                .suggestion()
+                .map(str::to_owned)
+        };
+        let conflict = Error::new(ErrorCode::Conflict, "changed")
+            .with_parameter("path")
+            .with_suggestion("nothing was written: run format again, on the file as it is now");
+        assert_eq!(
+            said(conflict).as_deref(),
+            Some("nothing was written: run `silico fmt` again, on the file as it is now")
+        );
+        let gone = Error::new(ErrorCode::IoFailed, "gone")
+            .with_parameter("path")
+            .with_cause(NOT_RELOADED)
+            .with_suggestion("close the session and open the file where it is now");
+        assert_eq!(
+            said(gone).as_deref(),
+            Some("check the file is there and run it again")
+        );
+        // R2-L2: a file grown past the limit is no matter of whether it's there: as open's
+        // refusal of it says, with no session's advice.
+        let grown = Error::new(ErrorCode::InvalidInput, "too long")
+            .with_parameter("path")
+            .with_cause(NOT_RELOADED)
+            .with_suggestion("put the file back at a.silico, or close the session and open the file where it is now");
+        assert_eq!(
+            said(grown).as_deref(),
+            Some("check it's the document you mean: no document is this long")
+        );
+        let unwritable = Error::new(ErrorCode::IoFailed, "couldn't be written")
+            .with_parameter("path")
+            .with_suggestion("check that this user may write the file");
+        assert_eq!(
+            said(unwritable).as_deref(),
+            Some("check that this user may write the file")
+        );
+    }
+
+    #[test]
+    fn a_refusal_carrying_a_kernel_fault_is_exit_2_and_says_it_after_its_reasons() {
+        // R2-L1: a document's refusal (exit 1 on its own) whose response's model met a
+        // kernel fault is the command's failure, the fault said with the CLI's advice; the
+        // fault is what stopped it, unless a reason says it couldn't run.
+        let too_long = Problems::from(Error::new(ErrorCode::InvalidInput, "too long"));
+        let fault = Error::new(ErrorCode::WorkerCrashed, "crashed").with_suggestion("report it");
+        let plain = Refusal::of_command("fmt", &too_long).with_fault(None, "fmt");
+        assert!(!failed(&plain.ended()));
+        assert!(plain.stopped().is_none());
+        let faulted = Refusal::of_command("fmt", &too_long).with_fault(Some(fault.clone()), "fmt");
+        assert!(failed(&faulted.ended()));
+        let stopped = faulted.stopped().unwrap();
+        assert_eq!(
+            (stopped.code(), stopped.suggestion()),
+            (
+                ErrorCode::WorkerCrashed,
+                Some("report it; run `silico fmt` again to retry it")
+            )
+        );
+        let cancelled = Problems::from(Error::new(ErrorCode::Cancelled, "cancelled"));
+        let both = Refusal::of_command("check", &cancelled).with_fault(Some(fault), "check");
+        assert_eq!(both.stopped().unwrap().code(), ErrorCode::Cancelled);
+    }
+
+    #[test]
+    fn a_fault_with_no_suggestion_of_its_own_gets_the_clis_retry_line_alone() {
+        // R2-L5: a timeout says nothing of what to do; the CLI's line is all of it.
+        let timeout = Error::new(ErrorCode::WorkerTimeout, "timed out");
+        assert_eq!(
+            with_retry(&timeout, "check").suggestion(),
+            Some("run `silico check` again to retry it")
+        );
+        let own = timeout.with_suggestion("simplify the part");
+        assert_eq!(
+            with_retry(&own, "check").suggestion(),
+            Some("simplify the part; run `silico check` again to retry it")
         );
     }
 }

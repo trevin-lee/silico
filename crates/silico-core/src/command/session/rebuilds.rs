@@ -614,25 +614,38 @@ pub(in crate::command) fn retried(done: &str) -> String {
     )
 }
 
-/// A kernel fault as the model read gives it (the envelope's `model.fault`, decision 32), and
-/// as a command that needs a faulted feature's solid is refused with it: kept as the
-/// revision's outcome, so its suggestion, the worker's own kept, goes on to say that reading
-/// it again won't try again, and what does ([`retried`]). A worker that couldn't be had says
-/// nothing of the feature that asked for it, so it names none.
+/// A kernel fault as the model read holds it ([`ModelRead::fault`](super::ModelRead)): as
+/// it was met, its suggestion the worker's own, but a worker that couldn't be had, which
+/// says nothing of the feature that asked for it, naming none. A session's client words
+/// how to try again its own way: the wire, and a session command refused with it, with
+/// [`kept_fault`]; the CLI with its own.
+pub(in crate::command) fn met_fault(fault: &Error) -> Error {
+    match fault.code() {
+        ErrorCode::WorkerUnavailable => fault.clone().without_feature(),
+        _ => fault.clone(),
+    }
+}
+
+/// A kernel fault as a session's client reads it (the envelope's `model.fault`, decision
+/// 32), and as a command that needs a faulted feature's solid is refused with it: kept as
+/// the revision's outcome, so its suggestion ([`kept_suggestion`]), the worker's own kept,
+/// goes on to say that reading it again won't try again, and what does ([`retried`]).
 pub(in crate::command) fn kept_fault(fault: &Error) -> Error {
+    let fault = met_fault(fault);
+    let suggestion = kept_suggestion(&fault);
+    fault.with_suggestion(suggestion)
+}
+
+/// [`kept_fault`]'s suggestion: `fault`'s own, then how to try again in a session.
+pub(in crate::command) fn kept_suggestion(fault: &Error) -> String {
     let kept = format!(
         "reading this revision again won't, since it keeps the fault; {}",
         retried("tries again")
     );
-    let fault = match fault.code() {
-        ErrorCode::WorkerUnavailable => fault.clone().without_feature(),
-        _ => fault.clone(),
-    };
-    let suggestion = match fault.suggestion() {
+    match fault.suggestion() {
         Some(own) => format!("{own}; to try again here: {kept}"),
         None => kept,
-    };
-    fault.with_suggestion(suggestion)
+    }
 }
 
 /// The refusal of a published read with nothing published yet, its rebuild started or

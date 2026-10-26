@@ -743,7 +743,6 @@ fn a_save_is_refused_exactly_when_the_fingerprints_it_writes_take_the_document_p
         let (document, model) = rebuilt(&block(size - base));
         assert!(document.features[0].fingerprint.is_none());
         let formatted = silico_core::command::format(&model)
-            .unwrap()
             .unwrap_or_else(|p| panic!("{size}: {:?}", p.errors()));
         assert_eq!(formatted.text.len(), size);
         // And what it saved opens, fingerprint and all.
@@ -755,7 +754,7 @@ fn a_save_is_refused_exactly_when_the_fingerprints_it_writes_take_the_document_p
     }
     let (document, model) = rebuilt(&block(limit + 1 - base));
     assert!(write(&document).is_ok(), "as it was read, it fits");
-    let problems = silico_core::command::format(&model).unwrap().unwrap_err();
+    let problems = silico_core::command::format(&model).unwrap_err();
     assert_eq!(problems.total(), 1);
     let err = &problems.errors()[0];
     assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
@@ -778,7 +777,7 @@ fn a_save_of_a_document_already_past_the_limit_doesnt_blame_the_fingerprints() {
     document.features[0].note = Some("n".repeat(limit));
     assert!(write(&document).is_err());
     let model = published(&engine(), Checked::new(document).unwrap());
-    let problems = silico_core::command::format(&model).unwrap().unwrap_err();
+    let problems = silico_core::command::format(&model).unwrap_err();
     let err = &problems.errors()[0];
     assert!(err.message().contains("too large to write"), "{err}");
     assert_eq!(err.feature(), Some("k7f2qx3m"), "{err}");

@@ -1,12 +1,11 @@
-//! The core's commands, which every client (the CLI, and MCP and the app as they arrive)
-//! runs, so each does exactly what the others do: a document's bytes through the gate
-//! ([`gate`]), rebuilt ([`rebuild`]), checked ([`check`]), written in canonical form with
-//! its fingerprints ([`format`]), and its outline ([`outline`]). [`check`] and [`format`]
-//! take a model, so a client with a live model (the app's, of the document it saves) uses
-//! that one, and one with none rebuilds it. Each gives structured errors; reading and
-//! writing files is the client's, or a session's ([`Sessions`]: a document held open between
+//! The core's commands, which every client (the CLI, MCP, and the app) runs, so each does
+//! exactly what the others do: a session's ([`Sessions`]: a document held open between
 //! commands, each session's commands run in turn on a thread of its own, each answered by a
-//! [`Running`] handle; docs/design/m4.1-command-api.md, section 3).
+//! [`Running`] handle; docs/design/m4.1-command-api.md, section 3), which reads and writes
+//! its document's file. Beneath them, for a caller with a document or a model of its own (a
+//! test, a tool on an engine it holds): a document's bytes through the gate ([`gate`]),
+//! rebuilt ([`rebuild`]), checked ([`check`]), written in canonical form with its
+//! fingerprints ([`format`]), and its outline ([`outline`]), each giving structured errors.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -28,9 +27,9 @@ pub mod wire;
 
 pub use session::{
     Added, Begun, Cancelled, CheckAnswer, Closed, Committed, FieldSet, MAX_PUBLISHED_READS,
-    MAX_SESSIONS, ModelChoice, ModelRead, Opened, OutlineAnswer, Published, Read, ReadClient,
-    Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
-    SessionId, SessionInfo, Sessions, Status, Stopper, TextAnswer,
+    MAX_SESSIONS, ModelChoice, ModelRead, NOT_RELOADED, Opened, OutlineAnswer, Published, Read,
+    ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision,
+    RolledBack, Running, SessionId, SessionInfo, Sessions, Status, Stopper, TOO_LONG, TextAnswer,
 };
 
 /// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for
@@ -262,61 +261,42 @@ pub fn rebuild<K: Kernel + 'static>(
 
 /// A model's problems: each failed feature, and each fingerprint the rebuild doesn't
 /// match (`Model::drift`), if any. A feature blocked by another's failure isn't a problem
-/// of its own (the failure at its root is). An error is a check that couldn't be done:
-/// the kernel failed in a way that says nothing about the document (a worker that crashed
-/// or hung, a shortage, a reply that couldn't be read), which a client reports as its own
-/// failure, not the document's.
-pub fn check(model: &Model) -> Result<Problems, Error> {
+/// of its own (the failure at its root is). A kernel fault the rebuild met (a worker that
+/// crashed or hung, a shortage, a reply that couldn't be read) says nothing about the
+/// document, so is never one of its problems: it's set aside, as a session's `check` sets
+/// it aside, and the model holds it (`Model::fault`), which a session gives once, beside
+/// the problems (docs/design/m4.1-command-api.md, section 6, decision 32).
+///
+/// For a caller with a model of its own (a test, a tool rebuilding on an engine it holds).
+/// Every client of the command API checks through a session ([`Sessions::check`]); the
+/// CLI's `silico check` is one.
+pub fn check(model: &Model) -> Problems {
     let _span = tracing::info_span!("check").entered();
-    check_except(model, &BTreeSet::new(), Faults::Refuse)
-}
-
-/// What a command does with a kernel fault its model holds (docs/design/m4.1-command-api.md,
-/// section 6): one that says nothing about the document, so is never one of its problems.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Faults {
-    /// The command's failure, as [`check`] and [`format`] give it: the first fault met.
-    Refuse,
-    /// Set aside: the document's own problems given without it, and a save made around it,
-    /// as a session's commands do, which give the fault once, beside their result, in the
-    /// model read (`ModelRead::fault`, decision 32).
-    Aside,
+    check_except(model, &BTreeSet::new())
 }
 
 /// [`check`], but no drift of a feature in `except` (`Model::drift_except`): one a
-/// session's edits reached since its last save, which its commit writes anew (decision 28);
-/// a kernel fault as `faults` says.
-fn check_except(
-    model: &Model,
-    except: &BTreeSet<FeatureId>,
-    faults: Faults,
-) -> Result<Problems, Error> {
-    let mut problems = failures(model, faults)?;
+/// session's edits reached since its last save, which its commit writes anew (decision 28).
+fn check_except(model: &Model, except: &BTreeSet<FeatureId>) -> Problems {
+    let mut problems = failures(model);
     let unlisted = model.unlisted_errors();
-    problems.extend(own(model.drift_except(except), faults)?);
-    Ok(Problems::with_unlisted(problems, unlisted))
+    problems.extend(own(model.drift_except(except)));
+    Problems::with_unlisted(problems, unlisted)
 }
 
-/// The model's failed features, as problems of the document; a kernel fault among them as
-/// `faults` says.
-fn failures(model: &Model, faults: Faults) -> Result<Vec<Error>, Error> {
-    own(model.errors().cloned().collect(), faults)
+/// The model's failed features, as problems of the document, a kernel fault among them
+/// set aside.
+fn failures(model: &Model) -> Vec<Error> {
+    own(model.errors().cloned().collect())
 }
 
-/// `errors`, the document's own problems, and any that's the kernel's (a solid whose
-/// measure timed out, say), which isn't: the first of those the refusal, or every one set
-/// aside, as `faults` says.
-fn own(errors: Vec<Error>, faults: Faults) -> Result<Vec<Error>, Error> {
-    match faults {
-        Faults::Refuse => match errors.iter().find(|e| e.code().is_kernel_fault()) {
-            Some(fault) => Err(fault.clone()),
-            None => Ok(errors),
-        },
-        Faults::Aside => Ok(errors
-            .into_iter()
-            .filter(|e| !e.code().is_kernel_fault())
-            .collect()),
-    }
+/// `errors`, the document's own problems, without any that's the kernel's (a solid whose
+/// measure timed out, say), which isn't: set aside, the model holding it.
+fn own(errors: Vec<Error>) -> Vec<Error> {
+    errors
+        .into_iter()
+        .filter(|e| !e.code().is_kernel_fault())
+        .collect()
 }
 
 /// A document written in canonical form, its fingerprints as `engine` rebuilt it and its
@@ -326,8 +306,8 @@ pub struct Formatted {
     /// The canonical text.
     pub text: String,
     /// The features whose fingerprints the rebuild changed (written new, or rewritten),
-    /// in timeline order, each with what was stored before, if anything.
-    pub refingerprinted: Vec<(document::FeatureId, Option<Fingerprint>)>,
+    /// in timeline order.
+    pub refingerprinted: Vec<document::FeatureId>,
     /// The sketches whose stored values (points, circles' radii, reference dimensions'
     /// values) the solve changed, in timeline order.
     pub resolved: Vec<document::FeatureId>,
@@ -339,11 +319,13 @@ pub struct Formatted {
 }
 
 /// The model's document in canonical form with each feature's fingerprint as the model
-/// rebuilt it and each sketch as it solved (`Model::saved`): what `silico fmt` writes, and a
-/// session's `format` with no features named; or, if its canonical text would be too long,
-/// that problem. An error is a format that couldn't be done, as for [`check`]: nothing
-/// should be written then.
-pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
+/// rebuilt it and each sketch as it solved (`Model::saved`): the text a session's `format`
+/// with no features named writes (what `silico fmt` runs); or, if its canonical text would
+/// be too long, that problem. A kernel fault is set aside, as [`check`] sets it aside: each
+/// feature it stopped keeps what's stored with it, as a failed one does, and the rest is
+/// written, as the session's `format` saves around it (decision 32). For a caller with a
+/// model of its own, as [`check`] is.
+pub fn format(model: &Model) -> Result<Formatted, Problems> {
     let _span = tracing::info_span!("format").entered();
     let every = model
         .document()
@@ -351,7 +333,7 @@ pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
         .iter()
         .map(|f| f.id.clone())
         .collect();
-    formatted(model, &every, &model.drifted(), Faults::Refuse)
+    formatted(model, &every, &model.drifted())
 }
 
 /// The model's document in canonical form with the fingerprint and solve of each feature in
@@ -360,21 +342,20 @@ pub fn format(model: &Model) -> Result<Result<Formatted, Problems>, Error> {
 /// (every feature but those whose drift it doesn't accept, decision 31), as [`format`]
 /// writes every feature's. Its problems are the failures, the solids that couldn't be
 /// measured, and of `drift` (the model's, `Model::drifted`), that of every feature whose
-/// record it doesn't write, which it leaves as stored; a kernel fault as `faults` says (a
-/// feature it stopped keeps what's stored with it, as a failed one does).
+/// record it doesn't write, which it leaves as stored; a kernel fault set aside (a feature
+/// it stopped keeps what's stored with it, as a failed one does).
 fn formatted(
     model: &Model,
     writes: &BTreeSet<FeatureId>,
     drift: &[(FeatureId, Error)],
-    faults: Faults,
-) -> Result<Result<Formatted, Problems>, Error> {
-    let mut problems = failures(model, faults)?;
+) -> Result<Formatted, Problems> {
+    let mut problems = failures(model);
     let unlisted = model.unlisted_errors();
     let written = model.saved_for(writes);
     let pairs = || model.document().features.iter().zip(&written.features);
     let refingerprinted = pairs()
         .filter(|(before, after)| before.fingerprint != after.fingerprint)
-        .map(|(before, _)| (before.id.clone(), before.fingerprint))
+        .map(|(before, _)| before.id.clone())
         .collect();
     // Bit for bit, as drift compares them: a coordinate solved to -0 from 0 is written so.
     let resolved = pairs()
@@ -401,24 +382,21 @@ fn formatted(
             } else {
                 error
             };
-            return Ok(Err(Problems::of(vec![error])));
+            return Err(Problems::of(vec![error]));
         }
     };
     // Problems the save can't fix: the failures, the solids that couldn't be measured, and
     // the drift of what it leaves as stored; drift of what it writes is what it fixes.
-    problems.extend(own(
-        model
-            .drift_left(drift, writes)
-            .map(|(_, error)| error.clone())
-            .collect(),
-        faults,
-    )?);
-    Ok(Ok(Formatted {
+    problems.extend(own(model
+        .drift_left(drift, writes)
+        .map(|(_, error)| error.clone())
+        .collect()));
+    Ok(Formatted {
         text,
         refingerprinted,
         resolved,
         problems: Problems::with_unlisted(problems, unlisted),
-    }))
+    })
 }
 
 /// The document's outline, for reading and for `git diff` (`silico show`): one line per
