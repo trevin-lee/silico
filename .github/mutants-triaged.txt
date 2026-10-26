@@ -152,4 +152,3 @@ crates/silico-core/src/views.rs | sees | replace == with != | #TBD
 crates/silico-core/src/file.rs | output_target | replace match guard given.is_relative() with true | #TBD
 # A file that isn't a link, in a canonical directory, canonicalizes to itself on a
 # case-sensitive file system (CI's); on a case-insensitive one the code is the bug (#TBD).
-crates/silico-core/src/file.rs | output_target | replace match guard meta.file_type().is_symlink() with true | #TBD

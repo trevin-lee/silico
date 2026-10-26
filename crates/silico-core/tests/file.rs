@@ -311,6 +311,28 @@ fn refused_output(path: &std::path::Path, rules: &silico_core::file::Output, say
 }
 
 #[test]
+fn a_png_spelled_otherwise_than_a_held_document_on_disk_is_that_document_and_refused() {
+    // A held document named `Held.png` (the session's path, canonical, as it's on disk)
+    // and a render to `HELD.png`, replacing what's there. On a case-insensitive file system
+    // (macOS's default) that's the same file: refused, the document kept. On a
+    // case-sensitive one (CI's Linux) it's another file, written beside it.
+    let dir = Scratch::new("held-case");
+    let held = dir.0.join("Held.png");
+    std::fs::write(&held, b"a document").unwrap();
+    let held = [std::fs::canonicalize(&held).unwrap()];
+    let other = dir.0.join("HELD.png");
+    let rules = png_rules(None, &held, true);
+    if other.exists() {
+        refused_output(&other, &rules, "document");
+        assert_eq!(std::fs::read(&held[0]).unwrap(), b"a document");
+    } else {
+        let wrote = silico_core::file::write_output(&other, b"PNG", &rules).unwrap();
+        assert_eq!(wrote, std::fs::canonicalize(&other).unwrap());
+        assert_eq!(std::fs::read(&held[0]).unwrap(), b"a document");
+    }
+}
+
+#[test]
 fn a_png_is_written_whole_where_asked_and_its_canonical_path_given() {
     let dir = Scratch::new("output-new");
     let path = dir.0.join("view.png");

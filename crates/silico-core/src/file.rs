@@ -539,17 +539,25 @@ fn output_target(
             "give a path in a directory that exists",
         )
     })?;
-    // Where it would be written: through a link already at the path, to what it names.
+    // Where it would be written: through a link already at the path, to what it names; and
+    // a file already there by the name it has on disk, as the documents held are named (on
+    // a case-insensitive file system, `HELD.png` is a held `Held.png`).
     let existing = std::fs::symlink_metadata(dir.join(name)).ok();
     let target = match &existing {
-        Some(meta) if meta.file_type().is_symlink() => std::fs::canonicalize(dir.join(name))
-            .map_err(|e| {
+        Some(meta) => std::fs::canonicalize(dir.join(name)).map_err(|e| {
+            if meta.file_type().is_symlink() {
                 refuse(
                     format!("is a link to nothing that can be reached: {e}"),
                     "give a path that isn't a broken link",
                 )
-            })?,
-        _ => dir.join(name),
+            } else {
+                refuse(
+                    format!("can't be reached: {e}"),
+                    "give a path this user may read",
+                )
+            }
+        })?,
+        None => dir.join(name),
     };
     if target
         .components()
