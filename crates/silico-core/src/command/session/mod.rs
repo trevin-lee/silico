@@ -26,7 +26,7 @@
 //!
 //! A session's document changes in transactions (the design's section 4): [`Sessions::begin`]
 //! keeps the session's state, [`Sessions::commit`] saves what the transaction's edits
-//! changed through [`file::save`], writing new fingerprints and solves only for the features
+//! changed through [`file::save_over`], writing new fingerprints and solves only for the features
 //! they reached (decision 28), and [`Sessions::rollback`] restores what `begin` kept, the
 //! text byte for byte and the model `begin` saw, at a new revision whose state equals the
 //! old. One at a time, never nested; a session isn't closed while one is open, and a client
@@ -817,7 +817,7 @@ impl<P: Clients + 'static> Sessions<P> {
     }
 
     /// Ends `session`'s transaction, saving its document (the design's section 4): waits for
-    /// the current revision's rebuild, then writes the canonical text through `file::save`,
+    /// the current revision's rebuild, then writes the canonical text through `file::save_over`,
     /// with new fingerprints and solves only for the features its edits reached (decision
     /// 28; every other keeps what's stored, and its drift is a problem, never written over),
     /// and moves the session to a new revision, the text written. A document equal to the
@@ -859,7 +859,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// every sketch's solve as rebuilt, edited or not (decision 31: what `silico fmt` runs,
     /// and how drift is accepted, by name): with `features`, only those features' drift is
     /// accepted, and every other drifted feature keeps what's stored with it and is a
-    /// problem. Written through `file::save` only if `write` and the text differs from the
+    /// problem. Written through `file::save_over` only if `write` and the text differs from the
     /// file; with `write` false, says whether it would be. Refused inside a transaction
     /// (commit or roll back first), for a document the gate refuses, and for a feature in
     /// `features` the document hasn't; and, writing, as a commit is.

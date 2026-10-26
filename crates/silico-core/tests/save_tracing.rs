@@ -12,6 +12,12 @@ use tracing::span::{Attributes, Id};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
+/// `bytes` saved over `file`, which held `before` ([`silico_core::file::save_over`]): why
+/// not, if not.
+fn save(file: &std::path::Path, before: &[u8], bytes: &[u8]) -> Result<(), silico_core::Error> {
+    silico_core::file::save_over(file, before, bytes).map_err(|unsaved| unsaved.error)
+}
+
 /// An event: the spans it's in, nearest first, its message, and its `sync_ms`.
 #[derive(Debug, PartialEq)]
 struct Said {
@@ -82,7 +88,7 @@ fn saved(file: &std::path::Path, before: &[u8], bytes: &[u8]) -> (Seen, Duration
     let subscriber = tracing_subscriber::registry().with(Recorder(Arc::clone(&seen)));
     let start = Instant::now();
     tracing::subscriber::with_default(subscriber, || {
-        silico_core::file::save(file, before, bytes).unwrap();
+        save(file, before, bytes).unwrap();
     });
     let took = start.elapsed();
     let seen = std::mem::take(&mut *seen.lock().unwrap());
@@ -144,7 +150,13 @@ fn a_save_says_when_it_syncs_its_new_text_and_how_long_that_took() {
     std::fs::write(&file, b"as read").unwrap();
     let (seen, took) = saved(&file, b"as read", b"the formatted text");
     assert_eq!(seen.saves, [18]);
-    syncs(&seen, took, &["the new text beside it"]);
+    // Then its directory, so the rename is on disk too: a power cut after the save can't
+    // bring back the old file.
+    syncs(
+        &seen,
+        took,
+        &["the new text beside it", "the directory it was renamed in"],
+    );
 }
 
 #[test]
@@ -170,7 +182,7 @@ fn a_save_refused_before_it_writes_syncs_nothing() {
     let seen = Arc::new(Mutex::new(Seen::default()));
     let subscriber = tracing_subscriber::registry().with(Recorder(Arc::clone(&seen)));
     tracing::subscriber::with_default(subscriber, || {
-        silico_core::file::save(&file, b"as read", b"formatted").unwrap_err();
+        save(&file, b"as read", b"formatted").unwrap_err();
     });
     let seen = seen.lock().unwrap();
     assert_eq!(seen.saves, [9]);

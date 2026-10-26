@@ -82,18 +82,6 @@ fn unwritable(why: impl std::fmt::Display) -> Error {
     )
 }
 
-/// Writes `bytes` over `file`, which held `before` when it was read: the file it names
-/// (through a symbolic link, which stays), keeping its permissions. Whole, to a new file
-/// beside it renamed over it, so a reader never sees a part of it and a write cut short
-/// leaves the old file; or, if it has other names (hard links), which a rename would part
-/// from it, in place, with the old text kept beside it until the new is on disk, and put
-/// back if the write fails (a full disk), so a write cut short never loses the document
-/// (killed mid-write, the old text is in the file beside it, `.NAME.fmt-PID`). Refused if
-/// this process may not write it, or, as a conflict, if it changed since it was read.
-pub fn save(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Error> {
-    save_over(file, before, bytes).map_err(|unsaved| unsaved.error)
-}
-
 /// A save that failed ([`save_over`]): why, and, if its own write in place left the file
 /// part written and its old text couldn't be put back, the file beside it that holds that
 /// text, so whoever saves next can say so rather than take the file for one changed by
@@ -113,8 +101,16 @@ impl From<Error> for Unsaved {
     }
 }
 
-/// [`save`], saying, when it fails, whether its own write left the file part written
-/// ([`Unsaved`]).
+/// Writes `bytes` over `file`, which held `before` when it was read: the file it names
+/// (through a symbolic link, which stays), keeping its permissions. Whole, to a new file
+/// beside it renamed over it, so a reader never sees a part of it and a write cut short
+/// leaves the old file; or, if it has other names (hard links), which a rename would part
+/// from it, in place, with the old text kept beside it until the new is on disk, and put
+/// back if the write fails (a full disk), so a write cut short never loses the document
+/// (killed mid-write, the old text is in the file beside it, `.NAME.fmt-PID`). Refused if
+/// this process may not write it, or, as a conflict, if it changed since it was read; and,
+/// when it fails, saying whether its own write left the file part written ([`Unsaved`]).
+/// What every save of a document goes through: a session's commit, edit, and `format`.
 pub fn save_over(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Unsaved> {
     let _span = tracing::info_span!("save", bytes = bytes.len()).entered();
     let target = std::fs::canonicalize(file).map_err(unwritable)?;
@@ -139,10 +135,7 @@ pub fn save_over(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Unsaved
                 ErrorCode::Conflict,
                 "couldn't be written: it changed while it was rebuilt",
             )
-            .with_suggestion(
-                "it was saved by something else meanwhile: read it again (run `silico fmt` again), \
-             then save",
-            ),
+            .with_suggestion("it was saved by something else meanwhile: read it again, then save"),
         ));
     }
     if metadata.nlink() > 1 {
@@ -167,7 +160,8 @@ pub fn save_over(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Unsaved
                     shown_path(&partial)
                 ))
             })
-        });
+        })
+        .inspect(|()| directory_synced(&target));
     written
         .inspect_err(|_| {
             let _ = std::fs::remove_file(&partial);
@@ -241,6 +235,24 @@ fn in_place(
 
 /// `file` on disk, as `sync_all` puts it, said in the log before and after with how long it
 /// took (debug): a disk that stalls a save shows as the line it stopped at.
+/// The directory `target` was renamed in synced, so the rename is on disk: a power cut
+/// after the save can't bring back the old file. The file is saved either way, so a
+/// directory that can't be opened or synced (a system that doesn't sync directories) is
+/// only logged.
+fn directory_synced(target: &Path) {
+    let Some(directory) = target.parent() else {
+        return;
+    };
+    if let Err(e) = std::fs::File::open(directory)
+        .and_then(|opened| synced(&opened, "the directory it was renamed in"))
+    {
+        tracing::warn!(
+            error = %e,
+            "the file was saved, but its directory couldn't be synced: a power cut soon could bring back the old file"
+        );
+    }
+}
+
 fn synced(file: &std::fs::File, what: &str) -> std::io::Result<()> {
     tracing::debug!("syncing {what}");
     let start = std::time::Instant::now();

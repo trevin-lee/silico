@@ -1,5 +1,5 @@
 //! What a session holds ([`Held`]) and how it changes in transactions: `begin`, `rollback`,
-//! `commit`, and `format`, each save written through [`file::save`], what a save that finds
+//! `commit`, and `format`, each save written through [`file::save_over`], what a save that finds
 //! the file changed says ([`Saver`]), and the reload of a file changed outside the session
 //! before a command (decision 2).
 //!
@@ -405,7 +405,7 @@ impl<C: Kernel + 'static> Session<C> {
     }
 
     /// `commit`: the current revision's rebuild waited for, then the document saved in
-    /// canonical form through `file::save`, with new fingerprints and solves for what the
+    /// canonical form through `file::save_over`, with new fingerprints and solves for what the
     /// transaction's edits reach ([`Reaching::reach`]) and every other feature's as stored
     /// (decision 28), its new file claimed with `claim`; the transaction ended, and the
     /// session at a new revision, its saved text, with only the reached features whose
@@ -482,7 +482,7 @@ impl<C: Kernel + 'static> Session<C> {
     }
 
     /// `state` saved (a commit's body): its model, of `state.revision`, waited for, then its
-    /// document in canonical form through `file::save`, with new fingerprints and solves for
+    /// document in canonical form through `file::save_over`, with new fingerprints and solves for
     /// what the edits since `state.begun` reach and every other feature's as stored, the new
     /// file claimed with `claim`, and the session at a new revision, its saved text (and the
     /// transaction, if one is open, ended). A document equal to `begun`'s is written nowhere.
@@ -661,7 +661,7 @@ impl<C: Kernel + 'static> Session<C> {
     /// `format` (decision 31): the current revision's rebuild waited for, and the document
     /// in canonical form with every feature's fingerprint and every sketch's solve as
     /// rebuilt, but those of a drifted feature `accept` doesn't name (all, if it's none),
-    /// which keep what's stored with them and are problems; written through `file::save`
+    /// which keep what's stored with them and are problems; written through `file::save_over`
     /// if `write` and it differs from the file as the session last read or wrote it (a
     /// change made outside the session before the command was reloaded, decision 2), the
     /// new file claimed with `claim`, the session then at a new revision, its saved

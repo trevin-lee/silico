@@ -435,7 +435,7 @@ fn failed_line(file: &Path, error: &Error) -> Ended {
 /// `silico fmt FILE`: open, the session's `format` with no features named (every drift
 /// accepted, decision 31) and `write` unless `--check`, close. The session writes the file
 /// (the one it names, through a symbolic link) in canonical form with its fingerprints as
-/// rebuilt and its sketches as solved, through `file::save`; this says on stderr the
+/// rebuilt and its sketches as solved, through `file::save_over`; this says on stderr the
 /// problems it couldn't fix (a feature that didn't build keeps the fingerprint stored with
 /// it, and a sketch that didn't solve keeps what its file holds, and the file is written),
 /// then which fingerprints and sketches' solves it wrote; with `--check`, whether it would
