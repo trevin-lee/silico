@@ -80,7 +80,7 @@ mod threads;
 mod transaction;
 mod types;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Condvar, Mutex, Weak};
@@ -104,7 +104,9 @@ use edits::{as_committed, not_given_back};
 use holding::Holding;
 use rebuilds::{Newest, Rebuilds, Unbuilt, published_answer};
 pub(super) use rebuilds::{kept_fault, kept_suggestion, retried};
-use registry::{Book, CacheOpener, Registry, Release, Started, claim, reclaim, serve, start};
+use registry::{
+    Book, CacheOpener, Opening, Registry, Release, Started, claim, reclaim, serve, start,
+};
 pub use threads::MAX_PUBLISHED_READS;
 use threads::{Counted, Reads, Threads};
 use transaction::{Claim, Held, Reload, Rereads, transaction_open};
@@ -222,6 +224,9 @@ type Job<C> = Box<dyn FnOnce(Turn<'_, C>) + Send>;
 
 enum Turn<'a, C: Kernel + 'static> {
     Run(&'a Arc<Session<C>>),
+    /// The session closed before its turn, or, for a command sent while it opened, never
+    /// opened (its open refused or cancelled): either way it isn't open, which is all the
+    /// command is told, as one sent after is.
     Closed(SessionId),
 }
 
@@ -371,7 +376,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 book: Mutex::new(Book {
                     next: 1,
                     sessions: BTreeMap::new(),
-                    opening: BTreeSet::new(),
+                    opening: BTreeMap::new(),
                     files: BTreeMap::new(),
                     paths: BTreeMap::new(),
                     caches: BTreeMap::new(),
@@ -465,7 +470,11 @@ impl<P: Clients + 'static> Sessions<P> {
     /// session's ID is taken when the open is asked for, since its thread is named by it:
     /// an open refused on that thread (no such file, open already) uses an ID no session
     /// then has, and one refused here (a path not UTF-8, too many open, the sessions
-    /// closing) uses none.
+    /// closing) uses none. From the call, the session is opening: a command naming it,
+    /// sent before the open answers, waits behind the open and runs once it opens, as if
+    /// sent after (a queued command in the session's queue, first; a published read
+    /// started as it opens), or, if it doesn't open, is refused as naming no session open,
+    /// exactly as one sent after the refusal is, whatever the open came to.
     pub fn open(&self, path: impl Into<PathBuf>, create: bool) -> Running<Opened> {
         // Every response names the session's path exactly, so one it can't name isn't opened
         // (or made), and takes no ID; from here on it's UTF-8, as the session holds it.
@@ -515,6 +524,8 @@ impl<P: Clients + 'static> Sessions<P> {
         let caller = tracing::Span::current();
         let ticket = Ticket::opening();
         let stop = Arc::clone(&ticket);
+        // Its queue, made now, so a command sent before it opens waits in it.
+        let (queue, jobs) = mpsc::channel();
         // Spawned with the book held, so the thread is recorded opening before it can end.
         let started = std::thread::Builder::new()
             .name(format!("session-{id}"))
@@ -530,7 +541,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     let _span =
                         tracing::info_span!("session_command", session = %id, command = "open")
                             .entered();
-                    start(registry, id, &path, create, &stop, &reply)
+                    start(registry, id, &path, create, &stop, &reply, jobs)
                 };
                 if let Some(Started { session, jobs }) = started {
                     serve(&session, &jobs);
@@ -538,7 +549,14 @@ impl<P: Clients + 'static> Sessions<P> {
             });
         match started {
             Ok(thread) => {
-                book.opening.insert(id);
+                book.opening.insert(
+                    id,
+                    Opening {
+                        queue,
+                        newest: Arc::default(),
+                        reads: Vec::new(),
+                    },
+                );
                 book.threads.push(thread);
                 Running::new(answer, SESSION_STOPPED, Some(ticket), None)
             }
@@ -721,85 +739,41 @@ impl<P: Clients + 'static> Sessions<P> {
                 })
             }
             ModelChoice::Published => {
-                let Some(found) = self.find(session) else {
-                    return Running::answered(refused(not_open(*session)));
-                };
-                let mut reads = lock(&found.reads);
-                let Reads {
-                    unanswered,
-                    threads,
-                } = &mut *reads;
-                // Released (closed) since it was found: its reads are the registry's now.
-                let Some(threads) = threads else {
-                    return Running::answered(refused(not_open(found.id)));
-                };
-                threads.reap();
-                // Refusals of an open session say it, as every command's do.
-                let refused_here = |error: Error| {
-                    Running::answered(Response {
-                        session: Some(found.info(false)),
-                        model: None,
-                        result: Err(Problems::from(error)),
-                    })
-                };
-                if lock(unanswered).len() >= MAX_PUBLISHED_READS {
-                    return refused_here(
-                        Error::new(
-                            ErrorCode::InvalidInput,
-                            format!(
-                                "{MAX_PUBLISHED_READS} published reads are running in session {}, the most one session runs at once",
-                                found.id
-                            ),
-                        )
-                        .with_suggestion("wait for one to answer, then read again"),
-                    );
-                }
+                let ticket = Ticket::new(command.into());
                 let (reply, answer) = mpsc::sync_channel(1);
                 let caller = tracing::Span::current();
-                let session = Arc::clone(&found);
-                let (counted, ticket) = Counted::count(unanswered, command);
-                ticket.interrupt_with(Arc::downgrade(&kernel) as Weak<dyn Interrupt>);
-                let stop = Arc::clone(&ticket);
-                let started = std::thread::Builder::new()
-                    .name(format!("session-{}-read", found.id))
-                    .spawn(move || {
-                        let _caller = caller.enter();
-                        let _span = tracing::info_span!(
-                            "session_command",
-                            session = %session.id,
-                            command = command.as_str(),
-                            model = "published"
-                        )
-                        .entered();
-                        #[cfg(test)]
-                        session.gate.pass();
-                        let response = stop.answer(
-                            || Some(session.info(false)),
-                            || {
-                                let (info, published) = session.published_now();
-                                published_answer(info, published, |published, model| {
-                                    read(Read {
-                                        model: &published.model,
-                                        read: model,
-                                        stop: &stop,
-                                        kernel: &kernel,
-                                        reached: &published.reached,
-                                    })
-                                })
-                            },
-                        );
-                        drop(counted);
-                        let _ = reply.send(response);
-                    });
-                match started {
-                    Ok(thread) => {
-                        threads.push(thread);
-                        // It waits on no rebuild, so it reports none's progress.
-                        Running::new(answer, READ_STOPPED, Some(ticket), None)
-                    }
-                    // The read, and its count, dropped with the thread that never started.
-                    Err(e) => refused_here(crate::worker::thread_error("published read", &e)),
+                let mut book = lock(&self.registry.book);
+                if let Some(found) = book.sessions.get(session).cloned() {
+                    drop(book);
+                    return match start_published(
+                        &found, command, kernel, read, &ticket, &reply, caller,
+                    ) {
+                        Ok(()) => Running::new(answer, READ_STOPPED, Some(ticket), None),
+                        Err(response) => Running::answered(response),
+                    };
                 }
+                // Opening: started as it opens, before any read sent after it opens, or
+                // refused if it doesn't.
+                let Some(opening) = book.opening.get_mut(session) else {
+                    return Running::answered(refused(not_open(*session)));
+                };
+                let stop = Arc::clone(&ticket);
+                opening.reads.push(Box::new(move |turn| {
+                    let refusal = match turn {
+                        Turn::Run(found) => {
+                            match start_published(
+                                found, command, kernel, read, &stop, &reply, caller,
+                            ) {
+                                Ok(()) => return,
+                                Err(response) => response,
+                            }
+                        }
+                        Turn::Closed(id) => refused(not_open(id)),
+                    };
+                    // Never run: cancelled, if it was first, or refused, and either way settled.
+                    let _ = reply.send(stop.answer(|| None, || refusal));
+                }));
+                Running::new(answer, READ_STOPPED, Some(ticket), None)
             }
         }
     }
@@ -1137,17 +1111,12 @@ impl<P: Clients + 'static> Sessions<P> {
         + Send
         + 'static,
     ) -> Running<T> {
-        let Some(found) = self.find(session) else {
-            return Running::answered(refused(not_open(*session)));
-        };
         let (reply, answer) = mpsc::sync_channel(1);
         let caller = tracing::Span::current();
         let registry = Arc::downgrade(&self.registry);
         let ticket = Ticket::new(command);
-        let woken: Weak<dyn Interrupt> = Arc::downgrade(&found) as Weak<dyn Interrupt>;
-        ticket.interrupt_with(woken);
         let stop = Arc::clone(&ticket);
-        found.queue(Box::new(move |turn| {
+        let job: Job<P::Client> = Box::new(move |turn| {
             let response = match turn {
                 Turn::Run(session) => {
                     let _caller = caller.enter();
@@ -1157,6 +1126,9 @@ impl<P: Clients + 'static> Sessions<P> {
                         command = command.as_str()
                     )
                     .entered();
+                    // A cancel wakes it from a wait on the session's rebuild (at once, if
+                    // one came while it was queued).
+                    stop.interrupt_with(Arc::downgrade(session) as Weak<dyn Interrupt>);
                     *lock(&session.command) = Some(Arc::clone(&stop));
                     // Closed as it started (after `serve` found it open, before it was
                     // recorded): closed now, as `close` would have, since `close` ends the
@@ -1205,13 +1177,130 @@ impl<P: Clients + 'static> Sessions<P> {
                 Turn::Closed(id) => stop.answer(|| None, || refused(not_open(id))),
             };
             let _ = reply.send(response);
-        }));
-        Running::new(
-            answer,
-            SESSION_STOPPED,
-            Some(ticket),
-            Some(Arc::clone(&found.newest)),
-        )
+        });
+        let newest = match self.queue_on(session, job) {
+            Some(newest) => newest,
+            None => return Running::answered(refused(not_open(*session))),
+        };
+        Running::new(answer, SESSION_STOPPED, Some(ticket), Some(newest))
+    }
+
+    /// `job` queued on `session`, open or opening (behind its open), and the session's
+    /// newest rebuild, which the job's handle reads; none if no session of that ID is open
+    /// or opening (`job` dropped, never run).
+    fn queue_on(&self, session: &SessionId, job: Job<P::Client>) -> Option<Arc<Newest>> {
+        let book = lock(&self.registry.book);
+        if let Some(found) = book.sessions.get(session).cloned() {
+            // Let go first: the queue's lock comes after the book's, but `queue` runs a job
+            // told its session closed at once, and that may take anything.
+            drop(book);
+            found.queue(job);
+            return Some(Arc::clone(&found.newest));
+        }
+        let opening = book.opening.get(session)?;
+        let newest = Arc::clone(&opening.newest);
+        // Sent with the book held, so it's in the queue before the session can be recorded
+        // open, and before any command sent after.
+        match opening.queue.send(job) {
+            Ok(()) => {}
+            // Its thread gone (it ended without opening, by a panic, before its record went):
+            // as never opened.
+            Err(mpsc::SendError(job)) => {
+                drop(book);
+                job(Turn::Closed(*session));
+            }
+        }
+        Some(newest)
+    }
+}
+
+/// `read`, the published read named `command`, started on `found` on a thread of its own
+/// (`session-sN-read`), stopped by `ticket`, answered through `reply`, under the caller's
+/// span: or, refused before it starts, the refusal (the session closed since it was found,
+/// [`MAX_PUBLISHED_READS`] unanswered, or no thread to be had), never sent.
+fn start_published<C: Kernel + 'static, T: Send + 'static>(
+    found: &Arc<Session<C>>,
+    command: ReadCommand,
+    kernel: Arc<ReadClient<C>>,
+    read: impl FnOnce(Read<'_, C>) -> Result<T, Problems> + Send + 'static,
+    ticket: &Arc<Ticket>,
+    reply: &mpsc::SyncSender<Response<T>>,
+    caller: tracing::Span,
+) -> Result<(), Response<T>> {
+    let mut reads = lock(&found.reads);
+    let Reads {
+        unanswered,
+        threads,
+    } = &mut *reads;
+    // Released (closed) since it was found: its reads are the registry's now.
+    let Some(threads) = threads else {
+        return Err(refused(not_open(found.id)));
+    };
+    threads.reap();
+    // Refusals of an open session say it, as every command's do.
+    let refused_here = |error: Error| Response {
+        session: Some(found.info(false)),
+        model: None,
+        result: Err(Problems::from(error)),
+    };
+    if lock(unanswered).len() >= MAX_PUBLISHED_READS {
+        return Err(refused_here(
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!(
+                    "{MAX_PUBLISHED_READS} published reads are running in session {}, the most one session runs at once",
+                    found.id
+                ),
+            )
+            .with_suggestion("wait for one to answer, then read again"),
+        ));
+    }
+    let session = Arc::clone(found);
+    let counted = Counted::count(unanswered, command, ticket);
+    ticket.interrupt_with(Arc::downgrade(&kernel) as Weak<dyn Interrupt>);
+    let stop = Arc::clone(ticket);
+    let reply = reply.clone();
+    let started = std::thread::Builder::new()
+        .name(format!("session-{}-read", found.id))
+        .spawn(move || {
+            let _caller = caller.enter();
+            let _span = tracing::info_span!(
+                "session_command",
+                session = %session.id,
+                command = command.as_str(),
+                model = "published"
+            )
+            .entered();
+            #[cfg(test)]
+            session.gate.pass();
+            let response = stop.answer(
+                || Some(session.info(false)),
+                || {
+                    let (info, published) = session.published_now();
+                    published_answer(info, published, |published, model| {
+                        read(Read {
+                            model: &published.model,
+                            read: model,
+                            stop: &stop,
+                            kernel: &kernel,
+                            reached: &published.reached,
+                        })
+                    })
+                },
+            );
+            drop(counted);
+            let _ = reply.send(response);
+        });
+    match started {
+        Ok(thread) => {
+            threads.push(thread);
+            Ok(())
+        }
+        // The read, and its count, dropped with the thread that never started.
+        Err(e) => Err(refused_here(crate::worker::thread_error(
+            "published read",
+            &e,
+        ))),
     }
 }
 

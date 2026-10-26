@@ -11,6 +11,7 @@ use crate::file;
 use crate::kernel::{Kernel, KernelRequest, Op, Primitive};
 use crate::pool::Outcome;
 use crate::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
+use std::collections::BTreeSet;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -528,6 +529,7 @@ fn a_document_made_for_a_session_the_sessions_closing_refuse_is_removed() {
         true,
         &crate::command::session::cancel::Ticket::opening(),
         &reply,
+        unqueued(),
     );
     assert!(started.is_none());
     let response = answer.recv().unwrap();
@@ -542,7 +544,8 @@ fn a_document_made_for_a_session_the_sessions_closing_refuse_is_removed() {
             kept.to_str().unwrap(),
             false,
             &crate::command::session::cancel::Ticket::opening(),
-            &reply
+            &reply,
+            unqueued(),
         )
         .is_none()
     );
@@ -550,6 +553,13 @@ fn a_document_made_for_a_session_the_sessions_closing_refuse_is_removed() {
     let book = lock(&sessions.registry.book);
     assert!(book.files.is_empty());
     assert!(book.paths.is_empty());
+}
+
+/// A session's queue with no command in it, and none to come: its sender gone before
+/// it's given (a temporary's lives to the end of its statement, so `start` would wait on
+/// it).
+fn unqueued() -> Receiver<Job<FakeClient>> {
+    mpsc::channel().1
 }
 
 impl Held {
@@ -2873,7 +2883,8 @@ fn a_sessions_close_interrupts_its_reads_as_closed_and_each_counted_after_at_onc
     let f = opened(BOX);
     let session = f.session();
     let unanswered = Arc::clone(&lock(&session.reads).unanswered);
-    let (_counted, running) = Counted::count(&unanswered, ReadCommand::Check);
+    let running = Ticket::new(ReadCommand::Check.into());
+    let _counted = Counted::count(&unanswered, ReadCommand::Check, &running);
     let before = Told::new();
     // Given twice, told once.
     running.interrupt_with(before.weak());
@@ -2885,7 +2896,8 @@ fn a_sessions_close_interrupts_its_reads_as_closed_and_each_counted_after_at_onc
     assert!(!running.cancelled());
     // Sticky: a read counted after the close is closed at once, so what it adds is told at
     // once.
-    let (_late, late) = Counted::count(&unanswered, ReadCommand::Check);
+    let late = Ticket::new(ReadCommand::Check.into());
+    let _late = Counted::count(&unanswered, ReadCommand::Check, &late);
     let after = Told::new();
     late.interrupt_with(after.weak());
     assert_eq!(after.whys(), [Why::Closed]);
