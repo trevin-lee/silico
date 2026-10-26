@@ -606,11 +606,12 @@ pub(super) fn published_answer<T>(
 /// What does `done` for a revision whose model holds a kernel fault, kept as its outcome
 /// (decision 32), and what doesn't: so every suggestion that says how to try again says it
 /// alike. A save that writes only fingerprints keeps the fault for the revision it saves
-/// (its model, rebound, is that revision's).
+/// (its model, rebound, is that revision's). `check`'s `fresh` (M4.3) joins them once it's
+/// built.
 pub(in crate::command) fn retried(done: &str) -> String {
     format!(
-        "an edit that changes the document, reopening the session, or (M4.3) check with fresh \
-         {done}; a save that writes only fingerprints keeps the fault"
+        "an edit that changes the document, or reopening the session, {done}; a save that \
+         writes only fingerprints keeps the fault"
     )
 }
 

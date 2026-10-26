@@ -2579,7 +2579,7 @@ fn each_change_of_what_the_session_holds_is_past_a_cancel() {
 fn a_kept_fault_keeps_the_workers_own_suggestion_and_says_how_to_try_again() {
     // Decision 32: reading the revision again won't run it again, so the suggestion says
     // so after the worker's own, and what does.
-    const KEPT: &str = "reading this revision again won't, since it keeps the fault; an edit that changes the document, reopening the session, or (M4.3) check with fresh tries again; a save that writes only fingerprints keeps the fault";
+    const KEPT: &str = "reading this revision again won't, since it keeps the fault; an edit that changes the document, or reopening the session, tries again; a save that writes only fingerprints keeps the fault";
     let said = |error: &Error| {
         (
             error.code(),

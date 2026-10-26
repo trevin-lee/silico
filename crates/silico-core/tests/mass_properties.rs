@@ -101,7 +101,7 @@ fn a_feature_a_fault_stopped_or_blocked_is_refused_with_the_fault_as_elements_re
         "crashed".to_owned(),
         Some("a91cw0de".to_owned()),
         Some(
-            "reading this revision again won't, since it keeps the fault; an edit that changes the document, reopening the session, or (M4.3) check with fresh tries again; a save that writes only fingerprints keeps the fault"
+            "reading this revision again won't, since it keeps the fault; an edit that changes the document, or reopening the session, tries again; a save that writes only fingerprints keeps the fault"
                 .to_owned(),
         ),
     );
@@ -177,7 +177,7 @@ fn a_solid_a_worker_failed_to_measure_is_refused_with_that_failure_as_check_says
         // The worker's own advice, then that the revision keeps the fault, as `elements`
         // gives it for the same solid.
         let advice = Some(
-            "check again: a new worker is started; to try again here: reading this revision again won't, since it keeps the fault; an edit that changes the document, reopening the session, or (M4.3) check with fresh tries again; a save that writes only fingerprints keeps the fault",
+            "check again: a new worker is started; to try again here: reading this revision again won't, since it keeps the fault; an edit that changes the document, or reopening the session, tries again; a save that writes only fingerprints keeps the fault",
         );
         assert_eq!(
             said,
