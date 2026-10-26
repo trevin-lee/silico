@@ -76,6 +76,8 @@ mod adversarial_workspace;
 mod cache_bound;
 #[path = "cache_clear.rs"]
 mod cache_clear;
+#[path = "cache_workspace.rs"]
+mod cache_workspace;
 #[path = "call.rs"]
 mod call;
 #[path = "command.rs"]
