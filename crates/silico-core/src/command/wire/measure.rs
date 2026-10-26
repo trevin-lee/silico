@@ -174,6 +174,10 @@ impl ToWire for DistanceAnswer {
                 "normal_distance",
                 Json::or_null(self.normal_distance, Json::length),
             ),
+            (
+                "center_to_element",
+                Json::or_null(self.center_to_element, Json::length),
+            ),
         ])
     }
 }
@@ -224,6 +228,14 @@ pub struct DistanceResultSchema {
     /// centre of area, an edge's midpoint) to the first's plane or line; an edge and a face,
     /// the edge's midpoint's from the face's plane, whichever comes first. Null otherwise.
     pub normal_distance: Option<Length>,
+    /// Where one element has a centre (a vertex's point, a circle's or arc's centre, a
+    /// cylinder face's axis) and the other is a planar face or a straight edge: a point
+    /// centre's least distance from the other as bounded, as FreeCAD's Quick Measure gives a
+    /// hole's centre to a face or an edge (so where the foot of its perpendicular falls off
+    /// the face, the distance to the nearest point of the face's boundary); a cylinder's
+    /// axis's distance from a plane or line it's parallel to, at exactly 0 degrees, and null
+    /// if it isn't. Null otherwise.
+    pub center_to_element: Option<Length>,
 }
 
 /// `angle`'s request: the angle between two elements, each a straight edge or a planar face.

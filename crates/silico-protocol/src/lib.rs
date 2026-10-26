@@ -30,7 +30,9 @@ pub use describe::{
     DESCRIBE_BATCH, Description, EdgeCurve, EdgeDescription, FaceDescription, Quantity, Surface,
     What, batches, describe_in_batches,
 };
-pub use distance::{Distance, check_distance, witness, witness_within};
+pub use distance::{
+    Distance, MAX_POINT_COORDINATE, check_distance, check_point_distance, witness, witness_within,
+};
 pub use export::{
     DEFAULT_EXPORT_TOLERANCE, ExportMesh, MAX_EXPORT_TOLERANCE, MAX_EXPORT_TRIANGLES,
     MIN_EXPORT_TOLERANCE, check_export_tolerance, check_export_triangles, export_angle,
@@ -266,6 +268,17 @@ pub enum Op {
     /// a body, M4.6), the point checked by [`check_classify_point`]. Replies with
     /// [`Reply::Classified`].
     Classify { shape: ShapeData, point: [f64; 3] },
+    /// The least distance from `point` to `element` of `shape` as bounded, the element a
+    /// face, edge, or vertex numbered from 1 in `TopExp::MapShapes` order, the point checked
+    /// by [`check_point_distance`] (a centre's `center_to_element`, as FreeCAD's QuickMeasure
+    /// measures a circle's centre against a face or an edge): a vertex made at the point and
+    /// OCCT's `BRepExtrema_DistShapeShape` from it to the element, on one thread, at its
+    /// default precision. Replies with [`Reply::Distance`], `from` the point.
+    PointDistance {
+        shape: ShapeData,
+        element: ElementRef,
+        point: [f64; 3],
+    },
 }
 
 impl Op {
@@ -287,6 +300,7 @@ impl Op {
             Op::ExportMesh { .. } => "ExportMesh",
             Op::Render(_) => "Render",
             Op::Classify { .. } => "Classify",
+            Op::PointDistance { .. } => "PointDistance",
             Op::Solve(_) => "Solve",
             Op::DragBegin(_) => "DragBegin",
             Op::DragMove { .. } => "DragMove",
@@ -455,7 +469,8 @@ pub enum Reply {
         total: u32,
         description: Description,
     },
-    /// The least distance between two elements ([`Op::Distance`]).
+    /// The least distance between two elements ([`Op::Distance`]), or a point and an element
+    /// ([`Op::PointDistance`]).
     Distance(Distance),
     /// A shape's solids meshed for export ([`Op::ExportMesh`]), boxed, as it's many lists.
     ExportMesh(Box<ExportMesh>),

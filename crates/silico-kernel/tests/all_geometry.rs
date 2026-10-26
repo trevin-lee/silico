@@ -95,6 +95,8 @@ mod finite;
 mod mesh;
 #[path = "mesh_floor.rs"]
 mod mesh_floor;
+#[path = "point_distance.rs"]
+mod point_distance;
 #[path = "primitive_numbers.rs"]
 mod primitive_numbers;
 #[path = "primitives.rs"]

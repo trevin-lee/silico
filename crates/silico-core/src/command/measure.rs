@@ -6,8 +6,8 @@
 //! `format` writes it, to a millionth of a mm³ and mm² (a stored fingerprint that differs
 //! is `check`'s drift); the centre, which no fingerprint holds, rounded to the nanometre,
 //! as a fingerprint's box is. `distance` between two elements by name, the least as OCCT
-//! measures it, with their centres' and normal distances; and `angle` between two, from
-//! their geometry.
+//! measures it, with their centres', normal, and centre-to-element distances; and `angle`
+//! between two, from their geometry.
 
 use std::collections::BTreeMap;
 
@@ -140,8 +140,9 @@ fn properties(model: &Model, id: &FeatureId, asked: bool) -> Result<MassProperti
 /// What `distance` answers (M4.5; Fable's decision, `m4-measure-fable.md`): the least
 /// distance between the two elements as bounded, a pair of points where it's met (a witness,
 /// not an identity: [`silico_protocol::witness_within`]), the distance between their centres
-/// where both have one, and the normal distance where both are straight edges or planar
-/// faces at exactly 0 or 180 degrees.
+/// where both have one, the normal distance where both are straight edges or planar faces at
+/// exactly 0 or 180 degrees, and the distance from one's centre to the other where one has a
+/// centre and the other is a planar face or a straight edge (the maintainer's, 2026-10-25).
 #[derive(Debug, Clone, PartialEq)]
 pub struct DistanceAnswer {
     pub distance: Length,
@@ -155,6 +156,13 @@ pub struct DistanceAnswer {
     /// an edge's midpoint) distance from the first's plane or line; an edge and a face, the
     /// edge's midpoint's from the face's plane, whichever comes first.
     pub normal_distance: Option<Length>,
+    /// Where one element has a centre (as `center_distance` has them) and the other is a
+    /// planar face or a straight edge: a point centre's least distance from the other as
+    /// bounded, as FreeCAD's QuickMeasure measures a circle's centre against a face or an
+    /// edge (`Measurement::circleCenterDistance`, 0c4e125e44); a cylinder's axis's from a
+    /// plane or line it's parallel to (at exactly 0 degrees, at the nanodegree), or none if
+    /// it isn't.
+    pub center_to_element: Option<Length>,
 }
 
 /// What `angle` answers: the angle in degrees, and, for two straight edges that share one
@@ -373,8 +381,10 @@ fn find<'m>(
 
 /// `distance` on `model` (M4.5): the elements `names` names, found as [`find`] finds them,
 /// measured by `kernel` ([`KernelRequest::distance`], OCCT's least distance), and their
-/// centre and normal distances worked out from their geometry. Everything is rounded once,
-/// at the end: lengths to the nanometre.
+/// centre and normal distances worked out from their geometry; and the distance from one's
+/// centre to the other ([`centre_to`]), a point centre's measured by `kernel` too
+/// ([`KernelRequest::point_distance`]). Everything is rounded once, at the end: lengths to
+/// the nanometre.
 pub fn distance<K: Kernel>(
     model: &Model,
     kernel: &K,
@@ -386,21 +396,7 @@ pub fn distance<K: Kernel>(
     let other = (a.feature != b.feature).then_some(b.shape);
     let request = KernelRequest::distance(a.shape, a.element, other, b.element)
         .map_err(|e| Problems::from(named(e, &a, &b)))?;
-    let measured = match kernel.submit(kernel.generation(), request).wait() {
-        Outcome::Done(Ok(measured)) => measured,
-        Outcome::Done(Err(error)) => return Err(named(kernel_words(error), &a, &b).into()),
-        // A read's own client is advanced only when its session closes (and, with decision
-        // 34's cancel, when the read is cancelled, which will say `cancelled`).
-        Outcome::Superseded => {
-            return Err(Error::new(
-                ErrorCode::InvalidInput,
-                "the session closed before the kernel measured the distance",
-            )
-            .with_parameter("session")
-            .with_suggestion("open the document again, and measure it there")
-            .into());
-        }
-    };
+    let measured = on_kernel(kernel, request, &a, &b)?;
     let length = |value: f64| Length::rounded(value).ok_or_else(|| too_far(&a, &b));
     let point = |p: [f64; 3]| -> Result<[Length; 3], Problems> {
         Ok([length(p[0])?, length(p[1])?, length(p[2])?])
@@ -432,13 +428,47 @@ pub fn distance<K: Kernel>(
         }
         _ => None,
     };
+    let center_to_element = match centre_to(&a.geometry, &b.geometry) {
+        None | Some(CentreTo::Axis(None)) => None,
+        Some(CentreTo::Axis(Some(gap))) => Some(length(gap)?),
+        Some(CentreTo::Point { point, of }) => {
+            let other = if of == 0 { &b } else { &a };
+            let request = KernelRequest::point_distance(other.shape, other.element, point)
+                .map_err(|e| Problems::from(named(e, &a, &b)))?;
+            Some(length(on_kernel(kernel, request, &a, &b)?.distance)?)
+        }
+    };
     Ok(DistanceAnswer {
         distance: length(measured.distance)?,
         from: point(measured.from)?,
         to: point(measured.to)?,
         center_distance,
         normal_distance,
+        center_to_element,
     })
+}
+
+/// `request`, a distance about the elements `a` and `b`, measured on `kernel`, the read's
+/// own client; its failure named for both elements, in the design's words where it has them.
+fn on_kernel<K: Kernel>(
+    kernel: &K,
+    request: KernelRequest<silico_protocol::Distance>,
+    a: &Found<'_>,
+    b: &Found<'_>,
+) -> Result<silico_protocol::Distance, Problems> {
+    match kernel.submit(kernel.generation(), request).wait() {
+        Outcome::Done(Ok(measured)) => Ok(measured),
+        Outcome::Done(Err(error)) => Err(named(kernel_words(error), a, b).into()),
+        // A read's own client is advanced only when its session closes (and, with decision
+        // 34's cancel, when the read is cancelled, which will say `cancelled`).
+        Outcome::Superseded => Err(Error::new(
+            ErrorCode::InvalidInput,
+            "the session closed before the kernel measured the distance",
+        )
+        .with_parameter("session")
+        .with_suggestion("open the document again, and measure it there")
+        .into()),
+    }
 }
 
 /// `error`, a kernel's about the pair, naming both elements, as the request names them;
@@ -550,6 +580,49 @@ fn centre_gap(p: &Centre, q: &Centre) -> f64 {
     }
 }
 
+/// What `center_to_element` measures for two elements (the maintainer's, 2026-10-25): where
+/// one has a centre ([`centre`]) and the other is a planar face or a straight edge
+/// ([`carrier`]). (No element has both, so at most one way round applies.)
+enum CentreTo {
+    /// A point centre, a vertex's point or a circle's or arc's centre, of the element `of`
+    /// (0 or 1, as the request has them): its least distance from the other element as
+    /// bounded is the kernel's, as FreeCAD's QuickMeasure measures it
+    /// (`Measurement::circleCenterDistance`: a vertex made at the centre, and
+    /// `BRepExtrema_DistShapeShape` from it to the face or edge).
+    Point { point: [f64; 3], of: usize },
+    /// A cylinder face's axis: its gap from the plane or line, if they're parallel.
+    Axis(Option<f64>),
+}
+
+fn centre_to(a: &Seen<'_>, b: &Seen<'_>) -> Option<CentreTo> {
+    [(a, b), (b, a)]
+        .into_iter()
+        .enumerate()
+        .find_map(|(of, (with, other))| {
+            let (centre, carrier) = (centre(with)?, carrier(other)?);
+            Some(match centre {
+                Centre::Point(point) => CentreTo::Point { point, of },
+                Centre::Line { point, direction } => {
+                    CentreTo::Axis(axis_gap(point, direction, &carrier))
+                }
+            })
+        })
+}
+
+/// The gap between an axis, through `point` along `direction`, and `carrier`, if they're
+/// parallel as `angle` reads it, 0 between them at the nanodegree (the one test of
+/// parallel lines, [`lines_angle`], and of a line and a plane, [`line_plane_angle`]): the
+/// distance of the axis's point from the line or plane. None if they aren't parallel.
+fn axis_gap(point: [f64; 3], direction: [f64; 3], carrier: &Carrier) -> Option<f64> {
+    let angle = match carrier {
+        Carrier::Line { start, end, .. } => lines_angle(direction, sub(*end, *start)),
+        Carrier::Plane { normal, .. } => line_plane_angle(direction, *normal),
+    };
+    angle
+        .is_some_and(|a| a.ndeg() == 0)
+        .then(|| carrier.distance_to(point))
+}
+
 /// A straight edge's or a planar face's carrier, for `angle` and `normal_distance`: a line
 /// through its start in its direction, or a plane through its centre of area with its
 /// outward unit normal; with its reference point (an edge's midpoint, a face's centre).
@@ -619,16 +692,21 @@ fn carriers_angle(a: &Carrier, b: &Carrier) -> Option<Angle> {
         ) => return lines_angle(sub(*e1, *s1), sub(*e2, *s2)),
         (Carrier::Line { start, end, .. }, Carrier::Plane { normal, .. })
         | (Carrier::Plane { normal, .. }, Carrier::Line { start, end, .. }) => {
-            let d = sub(*end, *start);
-            libm::atan2(dot(d, *normal).abs(), norm(cross(d, *normal)))
+            return line_plane_angle(sub(*end, *start), *normal);
         }
     };
     Angle::rounded(radians.to_degrees())
 }
 
+/// The angle between a line of direction `d` and a plane of normal `n`, 0 to 90, rounded to
+/// the nanodegree: 0 where the line is parallel to the plane.
+fn line_plane_angle(d: [f64; 3], n: [f64; 3]) -> Option<Angle> {
+    Angle::rounded(libm::atan2(dot(d, n).abs(), norm(cross(d, n))).to_degrees())
+}
+
 /// The angle between two lines of directions `d1` and `d2`, 0 to 90, rounded to the
 /// nanodegree: the one test of whether two lines are parallel, for `angle`,
-/// `normal_distance`, and `center_distance` alike.
+/// `normal_distance`, `center_distance`, and `center_to_element` alike.
 fn lines_angle(d1: [f64; 3], d2: [f64; 3]) -> Option<Angle> {
     Angle::rounded(libm::atan2(norm(cross(d1, d2)), dot(d1, d2).abs()).to_degrees())
 }

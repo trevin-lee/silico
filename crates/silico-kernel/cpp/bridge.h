@@ -119,6 +119,15 @@ DescribeOut describe(const Shape &shape, Kind kind, uint32_t first, uint32_t cou
 DistanceOut distance(const Shape &first_shape, Kind first_kind, uint32_t first,
                      const Shape &second_shape, Kind second_kind, uint32_t second);
 
+// The least distance from `point` to the element of `kind` numbered `index` (from 1, in
+// TopExp::MapShapes order) of `shape`, as bounded, as FreeCAD's QuickMeasure measures a
+// circle's centre against a face or an edge: a vertex made at the point, and
+// BRepExtrema_DistShapeShape from it to the element, on one thread, at OCCT's default
+// precision, with every pair of points where it found it met (on the vertex, then on the
+// element), in OCCT's order. The vertex is the first element (`first_total` 1), the element
+// the second; if `index` isn't an element's, `found` is false and only the totals are set.
+DistanceOut point_distance(const Shape &shape, Kind kind, uint32_t index, const Point3 &point);
+
 // A triangle mesh of a shape's faces and polylines along its edges, for display. Faces
 // and edges are in TopExp::MapShapes order (edges numbered as edge_facts's). Built whole in
 // C++ and read from Rust as slices, so each array crosses the bridge in one copy.

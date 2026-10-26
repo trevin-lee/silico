@@ -413,6 +413,12 @@ mod ffi {
             second_kind: Kind,
             second: u32,
         ) -> Result<DistanceOut>;
+        fn point_distance(
+            shape: &Shape,
+            kind: Kind,
+            index: u32,
+            point: &Point3,
+        ) -> Result<DistanceOut>;
         fn is_valid_where_changed(input: &Shape, result: &Shape) -> Result<bool>;
         fn is_valid_where_changed_from_two(
             first: &Shape,
@@ -1066,20 +1072,12 @@ pub fn distance(
     second: silico_protocol::ElementRef,
 ) -> Result<silico_protocol::Distance, KernelError> {
     silico_protocol::check_distance(first, second).map_err(KernelError::new)?;
-    let kind = |element: silico_protocol::ElementRef| match element.kind {
-        ElementKind::Face => ffi::Kind::Face,
-        ElementKind::Edge => ffi::Kind::Edge,
-        ElementKind::Vertex => ffi::Kind::Vertex,
-        // Refused above; the bridge refuses one too.
-        ElementKind::Solid => ffi::Kind::Solid,
-    };
-    let (first_kind, second_kind) = (kind(first), kind(second));
     let out = ffi::distance(
         shape.get()?,
-        first_kind,
+        bridge_kind(first),
         first.index,
         other.unwrap_or(shape).get()?,
-        second_kind,
+        bridge_kind(second),
         second.index,
     )?;
     if !out.found {
@@ -1100,6 +1098,54 @@ pub fn distance(
                 })
             }));
     }
+    measured(out)
+}
+
+/// The least distance from `point` to `element`, of `shape`, as bounded, as FreeCAD's
+/// QuickMeasure measures a circle's centre against a face or an edge
+/// (`Measurement::circleCenterDistance`, 0c4e125e44): a vertex made at the point, and OCCT's
+/// `BRepExtrema_DistShapeShape` from it to the element on one thread; its distance, one pair
+/// of points where it's met, `from` the point, chosen as [`distance`] chooses it, and how
+/// many pairs OCCT found. Refused, naming `element` or `point`, by
+/// [`check_point_distance`](silico_protocol::check_point_distance); naming `element`, for
+/// one its shape hasn't; and if OCCT finds no distance.
+pub fn point_distance(
+    shape: &Shape,
+    element: silico_protocol::ElementRef,
+    point: [f64; 3],
+) -> Result<silico_protocol::Distance, KernelError> {
+    silico_protocol::check_point_distance(element, point).map_err(KernelError::new)?;
+    let out = ffi::point_distance(
+        shape.get()?,
+        bridge_kind(element),
+        element.index,
+        &point3(point),
+    )?;
+    if !out.found {
+        return Err(KernelError::new(Refusal::ElementMissing {
+            parameter: "element".to_owned(),
+            element,
+            count: out.second_total,
+        }));
+    }
+    measured(out)
+}
+
+/// The bridge's kind for an element: a solid is refused before the bridge is asked, and the
+/// bridge refuses one too.
+fn bridge_kind(element: silico_protocol::ElementRef) -> ffi::Kind {
+    match element.kind {
+        ElementKind::Face => ffi::Kind::Face,
+        ElementKind::Edge => ffi::Kind::Edge,
+        ElementKind::Vertex => ffi::Kind::Vertex,
+        ElementKind::Solid => ffi::Kind::Solid,
+    }
+}
+
+/// A distance the bridge found, both elements found: refused if OCCT isn't done or found no
+/// pair; otherwise its value, its witness among the pairs within OCCT's precision of it
+/// ([`silico_protocol::witness_within`]), and how many pairs there were.
+fn measured(out: ffi::DistanceOut) -> Result<silico_protocol::Distance, KernelError> {
     if !out.done {
         return Err(KernelError::caused(
             Refusal::DistanceNotDone,

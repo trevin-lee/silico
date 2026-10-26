@@ -101,6 +101,7 @@ fn a_boxs_bottom_and_top_are_its_height_apart_their_normal_distance_too() {
             to: point([0.0, 0.0, 10.0]),
             center_distance: None,
             normal_distance: Some(mm(10_000_000)),
+            center_to_element: None,
         }
     );
     let back = measured(&m, &e, &top, &bottom);
@@ -232,6 +233,125 @@ fn a_vertex_is_its_distance_from_a_rims_centre() {
     assert_eq!(d.distance, mm(4_000_000));
     assert_eq!(d.from, point([3.0, 4.0, 0.0]));
     assert_eq!(d.to, point([0.6, 0.8, 0.0]));
+}
+
+/// M2.1's example: a 40 × 20 × 10 block, a hole of radius 2.5 cut through it at (20, 10).
+fn plate(e: &Recompute<KernelPool>) -> Arc<Model> {
+    model(
+        e,
+        &[
+            block("k7f2qx3m", [0.0; 3], [40.0, 20.0, 10.0]),
+            cylinder("a91cw0de", [20.0, 10.0, -1.0], 2.5, 12.0),
+            r#"{"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de"}"#.to_owned(),
+        ],
+    )
+}
+
+/// The plate's hole's rim at height `z`.
+fn rim(m: &Model, z: f64) -> String {
+    named(m, "m3tq8v0z", |e| {
+        e.r#type == ElementType::Circle
+            && e.start.is_some_and(|p| p[2] == Length::rounded(z).unwrap())
+    })
+}
+
+#[test]
+fn a_holes_rim_centre_is_measured_to_the_plates_faces_as_bounded_as_freecad_measures_it() {
+    // The top rim's centre, (20, 10, 10): 20 from the side x = 0 (its foot (0, 10, 10) on
+    // the face's top edge), 10 from the side y = 0, either way round. The rim itself is
+    // 17.5 from x = 0, where it's nearest, (17.5, 10, 10); a circle and a plane have no
+    // centres' or normal distance.
+    let e = engine();
+    let m = plate(&e);
+    let top_rim = rim(&m, 10.0);
+    let x0 = named(&m, "m3tq8v0z", facing([-1.0, 0.0, 0.0]));
+    let y0 = named(&m, "m3tq8v0z", facing([0.0, -1.0, 0.0]));
+    let d = measured(&m, &e, &top_rim, &x0);
+    assert_eq!(d.center_to_element, Some(mm(20_000_000)));
+    assert_eq!(d.distance, mm(17_500_000));
+    assert_eq!(d.from, point([17.5, 10.0, 10.0]));
+    assert_eq!(d.to, point([0.0, 10.0, 10.0]));
+    assert_eq!((d.center_distance, d.normal_distance), (None, None));
+    let back = measured(&m, &e, &x0, &top_rim);
+    assert_eq!(back.center_to_element, Some(mm(20_000_000)));
+    assert_eq!(
+        measured(&m, &e, &top_rim, &y0).center_to_element,
+        Some(mm(10_000_000))
+    );
+    // The top face, the hole cut from it: the rim bounds it, so the rim is 0 from it; its
+    // centre is in the hole, off the face, so the face's nearest point is on the rim, 2.5
+    // away, where the face's plane would be 0 (FreeCAD's QuickMeasure measures the face as
+    // bounded too).
+    let top = named(&m, "m3tq8v0z", facing([0.0, 0.0, 1.0]));
+    let d = measured(&m, &e, &top_rim, &top);
+    assert_eq!(d.distance, mm(0));
+    assert_eq!(d.center_to_element, Some(mm(2_500_000)));
+    // The bottom rim's centre, (20, 10, 0), to the top: its foot (20, 10, 10) in the hole
+    // too, so the nearest point is on the top rim, √(2.5² + 10²) = √106.25 = 10.307764064
+    // away, not the plane's 10.
+    let d = measured(&m, &e, &rim(&m, 0.0), &top);
+    assert_eq!(d.center_to_element, Length::rounded(106.25f64.sqrt()));
+    assert_eq!(d.center_to_element, Some(mm(10_307_764)));
+    // A corner, (0, 0, 0), to the top: 10, as its own distance is.
+    let corner = named(&m, "m3tq8v0z", |e| e.position == Some(point([0.0; 3])));
+    let d = measured(&m, &e, &corner, &top);
+    assert_eq!(d.center_to_element, Some(mm(10_000_000)));
+    assert_eq!(d.distance, mm(10_000_000));
+}
+
+#[test]
+fn a_holes_axis_is_its_gap_from_a_face_or_edge_it_runs_beside_and_null_across_one() {
+    // The hole's wall, its axis the vertical line through (20, 10): 20 from the side x = 0
+    // and 10 from y = 0, which it runs beside; the top, which it crosses, has none.
+    let e = engine();
+    let m = plate(&e);
+    let wall = named(&m, "m3tq8v0z", |e| e.r#type == ElementType::Cylinder);
+    let gap = |other: &str| measured(&m, &e, &wall, other).center_to_element;
+    assert_eq!(
+        gap(&named(&m, "m3tq8v0z", facing([-1.0, 0.0, 0.0]))),
+        Some(mm(20_000_000))
+    );
+    assert_eq!(
+        gap(&named(&m, "m3tq8v0z", facing([0.0, -1.0, 0.0]))),
+        Some(mm(10_000_000))
+    );
+    assert_eq!(gap(&named(&m, "m3tq8v0z", facing([0.0, 0.0, 1.0]))), None);
+    // The vertical edge at (0, 0), beside it: √(20² + 10²) = √500 = 22.360679775. The edge
+    // along x at y = z = 0, across it: none.
+    let along = |a: [f64; 3], b: [f64; 3]| {
+        let ends = [Some(point(a)), Some(point(b))];
+        named(&m, "m3tq8v0z", move |e| {
+            e.r#type == ElementType::Line && ([e.start, e.end] == ends || [e.end, e.start] == ends)
+        })
+    };
+    let upright = along([0.0, 0.0, 0.0], [0.0, 0.0, 10.0]);
+    assert_eq!(gap(&upright), Some(mm(22_360_680)));
+    assert_eq!(gap(&upright), Length::rounded(500f64.sqrt()));
+    assert_eq!(gap(&along([0.0, 0.0, 0.0], [40.0, 0.0, 0.0])), None);
+}
+
+#[test]
+fn a_cylinders_axis_parallel_to_a_box_face_is_their_gap() {
+    // A cylinder of radius 2 about z, and a 10 mm cube from (5, −5, 0): the cube's side
+    // x = 5 is 5 from the axis, 3 from the wall; its bottom, which the axis crosses, has no
+    // gap from it (the wall is 3 from it too, at (2, 0, 0) and (5, 0, 0)).
+    let e = engine();
+    let m = model(
+        &e,
+        &[
+            cylinder("cccccccc", [0.0; 3], 2.0, 10.0),
+            block("bbbbbbbb", [5.0, -5.0, 0.0], [10.0; 3]),
+        ],
+    );
+    let wall = named(&m, "cccccccc", |e| e.r#type == ElementType::Cylinder);
+    let side = named(&m, "bbbbbbbb", facing([-1.0, 0.0, 0.0]));
+    let d = measured(&m, &e, &wall, &side);
+    assert_eq!(d.center_to_element, Some(mm(5_000_000)));
+    assert_eq!(d.distance, mm(3_000_000));
+    let bottom = named(&m, "bbbbbbbb", facing([0.0, 0.0, -1.0]));
+    let d = measured(&m, &e, &bottom, &wall);
+    assert_eq!(d.center_to_element, None);
+    assert_eq!(d.distance, mm(3_000_000));
 }
 
 #[test]

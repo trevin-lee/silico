@@ -43,6 +43,7 @@
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
@@ -540,6 +541,44 @@ DistanceOut distance(const Shape &first_shape, Kind first_kind, uint32_t first,
     const gp_Pnt &on_b = reversed ? extrema.PointOnShape1(i) : extrema.PointOnShape2(i);
     out.pairs.push_back(point3(on_a.XYZ()));
     out.pairs.push_back(point3(on_b.XYZ()));
+  }
+  return out;
+}
+
+DistanceOut point_distance(const Shape &shape, Kind kind, uint32_t index, const Point3 &point) {
+  DistanceOut out;
+  out.found = false;
+  out.done = false;
+  out.value = 0.0;
+  TopAbs_ShapeEnum type = TopAbs_FACE;
+  if (!element_type(kind, type)) {
+    throw Standard_Failure("distance takes faces, edges, or vertices");
+  }
+  TopTools_IndexedMapOfShape elements;
+  TopExp::MapShapes(shape.shape, type, elements);
+  out.first_total = 1;
+  out.second_total = static_cast<uint32_t>(elements.Extent());
+  if (index == 0 || index > out.second_total) {
+    return out;
+  }
+  out.found = true;
+  // FreeCAD's Measurement::circleCenterDistance (CircleToEdge, CircleToSurface): the centre
+  // made a vertex, measured against the element. One order, the vertex first, so nothing
+  // but the point and the element decides the answer.
+  const TopoDS_Vertex vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(point.x, point.y, point.z));
+  BRepExtrema_DistShapeShape extrema;
+  extrema.SetMultiThread(Standard_False);
+  extrema.LoadS1(vertex);
+  extrema.LoadS2(elements(static_cast<int>(index)));
+  extrema.Perform();
+  if (!extrema.IsDone()) {
+    return out;
+  }
+  out.done = true;
+  out.value = extrema.Value();
+  for (int i = 1; i <= extrema.NbSolution(); ++i) {
+    out.pairs.push_back(point3(extrema.PointOnShape1(i).XYZ()));
+    out.pairs.push_back(point3(extrema.PointOnShape2(i).XYZ()));
   }
   return out;
 }

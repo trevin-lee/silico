@@ -605,18 +605,52 @@ impl KernelRequest<Distance> {
             other: other.cloned(),
             second,
         };
-        Ok(Self::new(op, |name, reply| match reply {
-            Reply::Distance(distance) => match distance_fault(&distance) {
-                None => Ok(distance),
-                Some(fault) => Err(Error::new(
-                    ErrorCode::ProtocolError,
-                    format!("the kernel worker answered {name} with a distance no pair has"),
-                )
-                .with_cause(fault)
-                .with_suggestion("start a new kernel worker")),
-            },
-            other => Err(unexpected(name, &other)),
-        }))
+        Ok(Self::new(op, distance_reply))
+    }
+}
+
+impl KernelRequest<Distance> {
+    /// The least distance from `point` to `element` of `shape`, as bounded, with a pair of
+    /// points where it's met, `from` the point ([`Op::PointDistance`]: `distance`'s
+    /// `center_to_element`, as FreeCAD's QuickMeasure measures a circle's centre against a
+    /// face or an edge). The reply is checked as [`KernelRequest::distance`]'s is.
+    ///
+    /// Refused, naming `element` or `point`, for a solid or an element numbered 0, or a point
+    /// that isn't finite or is past [`silico_protocol::MAX_POINT_COORDINATE`] of the origin
+    /// ([`silico_protocol::check_point_distance`]).
+    pub fn point_distance(
+        shape: &ShapeData,
+        element: ElementRef,
+        point: [f64; 3],
+    ) -> Result<Self, Error> {
+        if let Err(refusal) = silico_protocol::check_point_distance(element, point) {
+            return Err(crate::worker::failure_error(
+                "PointDistance",
+                Failure::new(refusal),
+            ));
+        }
+        let op = Op::PointDistance {
+            shape: shape.clone(),
+            element,
+            point,
+        };
+        Ok(Self::new(op, distance_reply))
+    }
+}
+
+/// [`Reply::Distance`], checked ([`distance_fault`]), as the answer to the request `name`.
+fn distance_reply(name: &str, reply: Reply) -> Result<Distance, Error> {
+    match reply {
+        Reply::Distance(distance) => match distance_fault(&distance) {
+            None => Ok(distance),
+            Some(fault) => Err(Error::new(
+                ErrorCode::ProtocolError,
+                format!("the kernel worker answered {name} with a distance no pair has"),
+            )
+            .with_cause(fault)
+            .with_suggestion("start a new kernel worker")),
+        },
+        other => Err(unexpected(name, &other)),
     }
 }
 

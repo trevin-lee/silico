@@ -86,6 +86,17 @@
         ],
         "description": "The least distance between the elements' centres (a vertex's point, a circle's or\narc's centre, a cylinder face's axis as an infinite line), if both have one."
       },
+      "center_to_element": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Length"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Where one element has a centre (a vertex's point, a circle's or arc's centre, a\ncylinder face's axis) and the other is a planar face or a straight edge: a point\ncentre's least distance from the other as bounded, as FreeCAD's Quick Measure gives a\nhole's centre to a face or an edge (so where the foot of its perpendicular falls off\nthe face, the distance to the nearest point of the face's boundary); a cylinder's\naxis's distance from a plane or line it's parallel to, at exactly 0 degrees, and null\nif it isn't. Null otherwise."
+      },
       "distance": {
         "$ref": "#/$defs/Length",
         "description": "The least distance between the elements as bounded (never their infinite carriers),\nin mm: 0 where they touch or cross."
@@ -122,6 +133,7 @@
     },
     "required": [
       "center_distance",
+      "center_to_element",
       "distance",
       "from",
       "normal_distance",

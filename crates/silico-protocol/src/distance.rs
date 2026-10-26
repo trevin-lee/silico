@@ -1,8 +1,9 @@
 //! The least distance between two elements ([`crate::Op::Distance`], M4.5;
-//! docs/ports/measure.md): OCCT's `BRepExtrema_DistShapeShape` gives the distance and every
-//! pair of points where it found it met, in its own traversal's order; the worker sends the
-//! distance, one of those pairs, chosen by its points' coordinates ([`witness`]), so the
-//! pair is the same whatever order OCCT finds them in, and how many there were.
+//! docs/ports/measure.md), or between a point and an element ([`crate::Op::PointDistance`],
+//! a centre's `center_to_element`): OCCT's `BRepExtrema_DistShapeShape` gives the distance
+//! and every pair of points where it found it met, in its own traversal's order; the worker
+//! sends the distance, one of those pairs, chosen by its points' coordinates ([`witness`]),
+//! so the pair is the same whatever order OCCT finds them in, and how many there were.
 
 use serde::{Deserialize, Serialize};
 
@@ -10,7 +11,8 @@ use crate::{ElementKind, ElementRef, Refusal};
 
 /// What [`crate::Op::Distance`] found: the least distance between the two elements as
 /// bounded (never their infinite carriers), a pair of points where it's met, `from` on the
-/// first element and `to` on the second, and how many pairs OCCT found it met at.
+/// first element and `to` on the second, and how many pairs OCCT found it met at. What
+/// [`crate::Op::PointDistance`] found, the same, `from` the point.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Distance {
     pub distance: f64,
@@ -24,20 +26,48 @@ pub struct Distance {
 /// (elements are numbered from 1); the first's reason before the second's. The core's
 /// request, the worker, and the fake kernel each refuse by it, in one set of words.
 pub fn check_distance(first: ElementRef, second: ElementRef) -> Result<(), Refusal> {
-    for (element, parameter) in [(first, "first"), (second, "second")] {
-        let message = if element.kind == ElementKind::Solid {
-            format!("{parameter} must be a face, an edge, or a vertex, not a solid")
-        } else if element.index == 0 {
-            format!("elements are numbered from 1, so {parameter} can't be 0")
-        } else {
-            continue;
-        };
-        return Err(Refusal::InvalidParameter {
-            parameter: parameter.to_owned(),
-            message,
-        });
+    check_element(first, "first")?;
+    check_element(second, "second")
+}
+
+/// The farthest from the origin, in mm, along any axis, that a point measured from
+/// ([`crate::Op::PointDistance`]) may be: far past any solid the gate admits (each within a
+/// kilometre, [`crate::MAX_LENGTH`]), so a centre of one is never refused, and near enough
+/// that its distance from any such solid is a length the core holds.
+pub const MAX_POINT_COORDINATE: f64 = 1e12;
+
+/// Why a distance between `point` and `element` can't be asked, if it can't
+/// ([`crate::Op::PointDistance`]): the element is a solid or numbered 0, as
+/// [`check_distance`] refuses them, or the point isn't finite or is past
+/// [`MAX_POINT_COORDINATE`] of the origin along an axis; the element's reason first. The
+/// core's request, the worker, and the fake kernel each refuse by it.
+pub fn check_point_distance(element: ElementRef, point: [f64; 3]) -> Result<(), Refusal> {
+    check_element(element, "element")?;
+    let most = MAX_POINT_COORDINATE;
+    if point.iter().all(|c| c.abs() <= most) {
+        Ok(())
+    } else {
+        Err(Refusal::InvalidParameter {
+            parameter: "point".to_owned(),
+            message: format!("point {point:?} must be finite and within {most} mm of the origin"),
+        })
     }
-    Ok(())
+}
+
+/// Why `element`, named `parameter`, isn't one a distance is measured to: a solid, or
+/// numbered 0.
+fn check_element(element: ElementRef, parameter: &str) -> Result<(), Refusal> {
+    let message = if element.kind == ElementKind::Solid {
+        format!("{parameter} must be a face, an edge, or a vertex, not a solid")
+    } else if element.index == 0 {
+        format!("elements are numbered from 1, so {parameter} can't be 0")
+    } else {
+        return Ok(());
+    };
+    Err(Refusal::InvalidParameter {
+        parameter: parameter.to_owned(),
+        message,
+    })
 }
 
 /// The pair of `pairs` (each from the first element to the second) whose two points, as an
@@ -99,7 +129,9 @@ fn by_coordinates(a: &[f64; 3], b: &[f64; 3]) -> std::cmp::Ordering {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_distance, witness, witness_within};
+    use super::{
+        MAX_POINT_COORDINATE, check_distance, check_point_distance, witness, witness_within,
+    };
     use crate::{ElementKind, ElementRef, Refusal};
 
     #[test]
@@ -155,6 +187,60 @@ mod tests {
             )
         );
         assert_eq!(check_distance(edge(1), edge(1)), Ok(()));
+    }
+
+    #[test]
+    fn a_point_distance_refuses_a_solid_a_0_and_a_point_not_finite_or_too_far() {
+        let refused = |parameter: &str, message: &str| {
+            Err(Refusal::InvalidParameter {
+                parameter: parameter.to_owned(),
+                message: message.to_owned(),
+            })
+        };
+        let solid = ElementRef {
+            kind: ElementKind::Solid,
+            index: 1,
+        };
+        let face = ElementRef::face;
+        assert_eq!(
+            check_point_distance(solid, [0.0; 3]),
+            refused(
+                "element",
+                "element must be a face, an edge, or a vertex, not a solid"
+            )
+        );
+        // The element's reason before the point's.
+        assert_eq!(
+            check_point_distance(face(0), [f64::NAN; 3]),
+            refused(
+                "element",
+                "elements are numbered from 1, so element can't be 0"
+            )
+        );
+        // Each coordinate is checked: NaN, an infinity, and just past 1e12 in z alone.
+        for (point, shown) in [
+            ([f64::NAN, 0.0, 0.0], "[NaN, 0.0, 0.0]"),
+            ([0.0, f64::NEG_INFINITY, 0.0], "[0.0, -inf, 0.0]"),
+            (
+                [0.0, 0.0, 1.000_000_000_001e12],
+                "[0.0, 0.0, 1000000000001.0]",
+            ),
+        ] {
+            assert_eq!(
+                check_point_distance(face(1), point),
+                refused(
+                    "point",
+                    &format!(
+                        "point {shown} must be finite and within 1000000000000 mm of the origin"
+                    )
+                ),
+                "{point:?}"
+            );
+        }
+        // At the bound, either side of the origin: asked.
+        let most = MAX_POINT_COORDINATE;
+        assert_eq!(check_point_distance(face(1), [-most, most, -most]), Ok(()));
+        assert_eq!(check_point_distance(face(1), [0.0, -0.0, 5.0]), Ok(()));
     }
 
     #[test]

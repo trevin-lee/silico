@@ -1211,4 +1211,14 @@ fn the_measures_examples_hold_to_their_results_schemas() {
         r#"{"distance": 1, "from": [0, 0, 0], "to": [0, 0, 1], "center_distance": null}"#,
         "no normal distance",
     );
+    fails(
+        &schema_of("distance", "result", None),
+        r#"{"distance": 1, "from": [0, 0, 0], "to": [0, 0, 1], "center_distance": null, "normal_distance": null}"#,
+        "no centre-to-element distance",
+    );
+    holds(
+        &schema_of("distance", "result", None),
+        r#"{"distance": 0, "from": [20, 10, 10], "to": [20, 7.5, 10], "center_distance": null, "normal_distance": null, "center_to_element": 2.5}"#,
+        "a hole's centre to its face",
+    );
 }
