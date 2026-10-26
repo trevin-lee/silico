@@ -17,6 +17,10 @@ deny = [
     { crate = "cxx", wrappers = ["silico-kernel", "silico-sketch"], reason = "C++ belongs in worker crates only" },
     { crate = "cxx-build", wrappers = ["silico-kernel", "silico-sketch"], reason = "C++ belongs in worker crates only" },
     { crate = "link-cplusplus", wrappers = ["cxx"], reason = "C++ belongs in worker crates only" },
+    # Until M5's viewport, only the render worker draws: a crate linking the renderer would
+    # load a GPU driver into its own process (docs/design/m4.6-render.md).
+    { crate = "re_renderer", wrappers = ["silico-render"], reason = "only the render worker draws until M5's viewport" },
+    { crate = "wgpu", wrappers = ["silico-render", "re_renderer"], reason = "only the render worker draws until M5's viewport" },
 ]
 
 [licenses]
