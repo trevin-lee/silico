@@ -644,10 +644,12 @@ fn a_sketch_edited_by_hand_is_drift_until_fmt_writes_its_solve_and_then_nothing_
 }
 
 #[test]
-fn a_sketch_worker_that_cant_be_found_is_exit_2_and_nothing_is_written() {
+fn a_sketch_worker_that_cant_be_found_is_exit_2_and_its_sketch_kept_as_stored() {
     // Round 2's architecture and quality lenses: SILICO_SKETCH_WORKER naming no file blamed
     // the sketch (exit 1, and fmt wrote the file); it's the solver's failure, as the
-    // kernel's is: exit 2 (worker_unavailable: it can't be had), and the file as it was.
+    // kernel's is: exit 2 (worker_unavailable: it can't be had). fmt saves around it, as
+    // the `format` command does (decision 32): the sketch the fault stopped keeps what its
+    // file holds, so the file is written only into canonical form, and no solve is said.
     let scratch = Scratch::new("no-sketch-worker");
     let file = scratch.file(RECTANGLE);
     let run = |args: &[&str]| silico_with(&scratch, args, &file, Path::new("/nowhere"));
@@ -660,7 +662,16 @@ fn a_sketch_worker_that_cant_be_found_is_exit_2_and_nothing_is_written() {
     );
     let out = run(&["fmt"]);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), RECTANGLE);
+    assert!(
+        stderr(&out).contains("worker_unavailable"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!stderr(&out).contains("wrote"), "{}", stderr(&out));
+    let canonical =
+        silico_core::document::write(&silico_core::document::read(RECTANGLE.as_bytes()).unwrap())
+            .unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), canonical);
 }
 
 /// How many kernel workers `silico check FILES` started (from the workers' start log),
@@ -935,4 +946,113 @@ fn schema_prints_the_documents_or_a_commands_as_committed() {
         stderr(&out)
     );
     assert!(out.stdout.is_empty());
+}
+
+/// `silico ARGS FILE` with the sketch worker beside it and the kernel worker `kernel` (one
+/// that can't be had, say), the cache's secret in `scratch`.
+fn silico_on_kernel(scratch: &Scratch, args: &[&str], file: &Path, kernel: &Path) -> Output {
+    let exe = Path::new(env!("CARGO_BIN_EXE_silico"));
+    let mut cmd = Command::new(exe);
+    cmd.args(args)
+        .arg(file)
+        .env("SILICO_KERNEL_WORKER", kernel)
+        .env(
+            "SILICO_SKETCH_WORKER",
+            exe.with_file_name("silico-sketch-worker"),
+        )
+        .env("XDG_CACHE_HOME", scratch.0.join("cache-home"))
+        .env_remove("SILICO_LOG")
+        .stdin(Stdio::null());
+    run::output(cmd)
+}
+
+#[test]
+fn a_kernel_fault_is_said_beside_the_documents_own_problems_and_is_exit_2() {
+    // M4.2's thin client (decision 32, the design's section 6): a kernel fault isn't the
+    // document's, so it's given once, beside the problems the rebuild found without the
+    // kernel, never instead of them. Here the kernel can't be had (no worker at the path
+    // named); an open outline's pad fails on its own (the sketch worker solves it, and the
+    // profile it makes is refused before any kernel request), and the block after it needs
+    // the kernel. check: the pad's problem, then the fault, exit 2; --json: the fault as
+    // the line's error (a file that couldn't be checked, the contract's second shape).
+    let scratch = Scratch::new("fault-beside");
+    let points = [
+        fixture::point("p0000001", 0.0, 0.0),
+        fixture::point("p0000002", 10.0, 0.0),
+        fixture::point("p0000003", 10.0, 10.0),
+    ];
+    let lines = [
+        fixture::line("n0000001", "p0000001", "p0000002"),
+        fixture::line("n0000002", "p0000002", "p0000003"),
+    ];
+    let sketch = sweeps::sketch_of("s0000001", "xy", &points, &lines, &[], &[]);
+    let block = r#"{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}"#;
+    let text = sweeps::document(&[
+        &sketch,
+        &sweeps::pad("d0000001", None, "s0000001", &sweeps::one_side("1")),
+        block,
+    ]);
+    let file = scratch.file(&text);
+    let nowhere = scratch.0.join("no-kernel-worker");
+    let out = silico_on_kernel(&scratch, &["check"], &file, &nowhere);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let said = stderr(&out);
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(lines.len(), 2, "{said}");
+    assert!(
+        lines[0].starts_with(&format!(
+            "{}: invalid_input: pad d0000001 sweeps sketch s0000001, which makes no profile",
+            file.display()
+        )),
+        "{said}"
+    );
+    assert!(
+        lines[1].starts_with(&format!(
+            "{}: worker_unavailable: SILICO_KERNEL_WORKER names",
+            file.display()
+        )),
+        "{said}"
+    );
+    let out = silico_on_kernel(&scratch, &["check", "--json"], &file, &nowhere);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(line["ok"], false, "{line}");
+    assert_eq!(line["error"]["code"], "worker_unavailable", "{line}");
+    // A worker that can't be had says nothing of the feature that asked for it.
+    assert_eq!(line["error"]["feature"], serde_json::Value::Null, "{line}");
+    assert!(line.get("problems").is_none(), "{line}");
+    // fmt --check writes nothing, saying the problem and the fault, exit 2.
+    let out = silico_on_kernel(&scratch, &["fmt", "--check"], &file, &nowhere);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let said = stderr(&out);
+    assert!(
+        said.contains("pad d0000001 sweeps sketch s0000001"),
+        "{said}"
+    );
+    assert!(said.contains("not in canonical form"), "{said}");
+    assert!(said.contains("worker_unavailable"), "{said}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+}
+
+#[test]
+fn show_needs_no_cache_and_writes_nothing() {
+    // `show` reads the document as written: it opens a session, but rebuilds nothing, so
+    // it neither reads nor makes the cache's secret, and leaves no cache beside the file.
+    let scratch = Scratch::new("show-writes-nothing");
+    let file = scratch.file(EXAMPLE);
+    let out = Command::new(env!("CARGO_BIN_EXE_silico"))
+        .arg("show")
+        .arg(&file)
+        .env("SILICO_KERNEL_WORKER", "/nonexistent")
+        .env("XDG_CACHE_HOME", scratch.0.join("cache-home"))
+        .env_remove("SILICO_LOG")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let left: Vec<String> = std::fs::read_dir(&scratch.0)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(left, ["part.silico"]);
 }
