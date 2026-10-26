@@ -250,16 +250,22 @@ fn past_64_calls_waiting_a_call_is_refused_at_once_but_status_and_cancel_still_a
     assert_eq!(c.envelope(202, "version", "{}")["ok"], true);
     assert_eq!(c.envelope(203, "schema", r#"{"of": "close"}"#)["ok"], true);
     assert_eq!(c.kernel.asked().len(), asked);
-    let cancel = c.envelope(204, "cancel", r#"{"session": "s1", "command": "check"}"#);
+    // The cancel's reply is queued with the others, and the check it stops answers from
+    // its own thread, so that answer may come first: kept, and counted, not passed over
+    // (the review, round 4: a test that skipped it waited for an answer already read).
+    c.send_call(204, "cancel", r#"{"session": "s1", "command": "check"}"#);
+    let (line, before) = c.reply_line("204");
+    let cancel: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(
-        cancel["result"],
+        cancel["result"]["structuredContent"]["result"],
         json!({"command": "check", "stopped": true})
     );
     // The cancelled check answers `cancelled`; the rest run once the box is let go.
     hold.release();
+    let mut early = before.into_iter();
     let mut answered = 0;
     while answered < 64 {
-        let reply = c.message();
+        let reply = early.next().unwrap_or_else(|| c.message());
         let id = reply["id"].as_u64().unwrap();
         assert!((100..164).contains(&id), "{reply}");
         let envelope = &reply["result"]["structuredContent"];
