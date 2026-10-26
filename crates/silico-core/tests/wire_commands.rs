@@ -30,6 +30,7 @@ use silico_core::command::{ModelChoice, Problems, SessionId};
 use silico_core::document::json::{Node, read};
 use silico_core::document::{Angle, FeatureId, Length, Measure};
 use silico_core::kernel::ElementKind;
+use silico_core::views::NamedView;
 
 fn contract(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1074,7 +1075,7 @@ const BLOCK: &str = r#"{
 /// `request` rendered on `text`'s model, on the fake kernel and the fake renderer.
 fn rendered(
     text: &str,
-    request: &silico_core::command::render::RenderRequest,
+    request: &silico_core::command::render::Render,
 ) -> Result<silico_core::command::render::Rendering, Problems> {
     use silico_core::command::render::{RenderOn, render};
     use silico_core::fake::{FakeKernel, FakeRenderer};
@@ -1107,17 +1108,17 @@ fn rendered(
 
 #[test]
 fn the_designs_render_request_is_read_and_written_back_and_holds_to_its_schema() {
-    use silico_core::command::render::RenderRequest;
-    use silico_core::command::wire::render::RenderCall;
+    use silico_core::command::render::Render;
+    use silico_core::command::wire::render::RenderRequest;
     let text = example("render/request");
-    let call = RenderCall::read(&parsed(&text)).unwrap();
+    let call = RenderRequest::read(&parsed(&text)).unwrap();
     assert_eq!(
         call,
-        RenderCall {
+        RenderRequest {
             session: s1(),
             model: ModelChoice::Current,
-            render: RenderRequest {
-                view: Some("top_front_right".to_owned()),
+            render: Render {
+                view: NamedView::named("top_front_right"),
                 camera: None,
                 width: 800,
                 height: 600,
@@ -1136,8 +1137,8 @@ fn the_designs_render_result_is_the_commands_own_but_for_its_machines_png_bytes(
     // The block's top_front_right at 800 x 600, its top highlighted, as the design's request
     // asks. The PNG's size is the machine's (the fake's stand-in here): it alone is set to
     // the design's before comparing, as the design says it isn't a result.
-    use silico_core::command::wire::render::RenderCall;
-    let call = RenderCall::read(&parsed(&example("render/request"))).unwrap();
+    use silico_core::command::wire::render::RenderRequest;
+    let call = RenderRequest::read(&parsed(&example("render/request"))).unwrap();
     let done = rendered(BLOCK, &call.render).unwrap();
     let mut result = done.result.clone();
     result.png_bytes = 48_213;
@@ -1152,7 +1153,7 @@ fn the_designs_render_result_is_the_commands_own_but_for_its_machines_png_bytes(
 
 #[test]
 fn the_designs_render_refusals_are_the_commands_own_and_hold_to_the_error_contract() {
-    use silico_core::command::wire::render::RenderCall;
+    use silico_core::command::wire::render::RenderRequest;
     use silico_protocol::{Camera, Projection};
     let error = error_schema();
     let check = |name: &str, got: String| {
@@ -1160,14 +1161,14 @@ fn the_designs_render_refusals_are_the_commands_own_and_hold_to_the_error_contra
         assert_eq!(got, want, "{name}");
         holds(&error, &want, name);
     };
-    let mut call = RenderCall::read(&parsed(&example("render/request"))).unwrap();
+    let mut call = RenderRequest::read(&parsed(&example("render/request"))).unwrap();
     call.render.width = 0;
     check(
         "render/refused-width",
         the_refusal(&rendered(BLOCK, &call.render).unwrap_err()),
     );
     // A perspective eye inside the design's part (its block, the hole aside).
-    let mut call = RenderCall::read(&parsed(&example("render/request"))).unwrap();
+    let mut call = RenderRequest::read(&parsed(&example("render/request"))).unwrap();
     call.render.view = None;
     call.render.highlight = vec![];
     call.render.camera = Some(Camera {

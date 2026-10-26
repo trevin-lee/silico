@@ -10,13 +10,14 @@ use std::sync::Arc;
 use super::example::EXAMPLE;
 use super::sweeps;
 use proptest::prelude::*;
-use silico_core::command::render::{RenderOn, RenderRequest, Renderer, Rendering, render};
+use silico_core::command::render::{Render, RenderOn, Renderer, Rendering, render};
 use silico_core::command::{self, Problems};
 use silico_core::fake::{FakeKernel, FakeRenderer, FakeSketches};
 use silico_core::kernel::{Kernel, Op};
 use silico_core::meshes::{MESH_CACHE_BYTES, MeshCache};
 use silico_core::recompute::{Key, Model, Recompute};
 use silico_core::render::RenderTicket;
+use silico_core::views::NamedView;
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{BooleanOp, Camera, Projection, RenderScene};
 
@@ -49,13 +50,13 @@ impl Bench {
         }
     }
 
-    fn render(&self, request: &RenderRequest) -> Result<Rendering, Problems> {
+    fn render(&self, request: &Render) -> Result<Rendering, Problems> {
         self.render_on(request, None, &[], &self.renderer)
     }
 
     fn render_on(
         &self,
-        request: &RenderRequest,
+        request: &Render,
         workspace: Option<&Path>,
         held: &[PathBuf],
         renderer: &dyn Renderer,
@@ -143,9 +144,9 @@ impl Drop for Scratch {
     }
 }
 
-fn view(name: &str, width: u32, height: u32) -> RenderRequest {
-    RenderRequest {
-        view: Some(name.to_owned()),
+fn view(name: &str, width: u32, height: u32) -> Render {
+    Render {
+        view: NamedView::named(name),
         camera: None,
         width,
         height,
@@ -155,8 +156,8 @@ fn view(name: &str, width: u32, height: u32) -> RenderRequest {
     }
 }
 
-fn camera(camera: Camera, width: u32, height: u32) -> RenderRequest {
-    RenderRequest {
+fn camera(camera: Camera, width: u32, height: u32) -> Render {
+    Render {
         view: None,
         camera: Some(camera),
         ..view("front", width, height)
@@ -222,8 +223,9 @@ fn a_named_view_of_a_long_rod_seen_end_on_is_never_called_silicos_bug() {
     let bench = Bench::of(&boxes(&[("aaaaaaaa", [0.0; 3], [1.0, 500_000.0, 1.0])]));
     match bench.render(&view("front", 100, 100)) {
         Ok(done) => {
-            let Projection::Orthographic { view_height } = done.result.camera.projection else {
-                panic!("{:?}", done.result.camera);
+            let Projection::Orthographic { view_height } = done.result.camera.camera().projection
+            else {
+                panic!("{:?}", done.result.camera.camera());
             };
             // Whatever it's drawn at, the rod's end is in it.
             assert!(view_height >= 1.1, "{view_height}");
@@ -271,8 +273,9 @@ fn every_named_view_of_a_nanometre_cube_at_either_extreme_aspect_is_drawn() {
             });
             // The cube's centre, half a nanometre, as a result writes it: to the nanometre,
             // half to even, so 0; its view at least the nanometre a view may be.
-            assert_eq!(done.result.camera.target, [0.0; 3], "{name}");
-            let Projection::Orthographic { view_height } = done.result.camera.projection else {
+            assert_eq!(done.result.camera.camera().target, [0.0; 3], "{name}");
+            let Projection::Orthographic { view_height } = done.result.camera.camera().projection
+            else {
                 panic!();
             };
             assert!(view_height >= 1e-6, "{name} {w}x{h}");
@@ -383,7 +386,7 @@ fn a_failed_cut_leaves_its_inputs_as_bodies_numbered_in_order_and_its_names_brok
     assert_eq!(sent.bodies[1].highlight_faces, [0]);
     // The view fits both: the block (0, 0, 0)-(40, 20, 10) and the pin's box (17.5, 7.5,
     // −1)-(22.5, 12.5, 11), so (0, 0, −1)-(40, 20, 11), centred at (20, 10, 5).
-    assert_eq!(done.result.camera.target, [20.0, 10.0, 5.0]);
+    assert_eq!(done.result.camera.camera().target, [20.0, 10.0, 5.0]);
 }
 
 // --- Given cameras -----------------------------------------------------------------------
@@ -396,7 +399,7 @@ fn an_up_just_across_the_view_is_taken_and_one_just_under_refused() {
     let mut c = front(60.0);
     c.up = [0.0, 1.0, 2e-9];
     let done = bench.render(&camera(c.clone(), 100, 100)).unwrap();
-    assert_eq!(done.result.camera.up, [0.0, 0.0, 1.0]);
+    assert_eq!(done.result.camera.camera().up, [0.0, 0.0, 1.0]);
     // 5e-10 across: refused, nothing sent.
     c.up = [0.0, 1.0, 5e-10];
     let e = refused(bench.render(&camera(c, 100, 100)));
@@ -548,8 +551,8 @@ proptest! {
             prop_assert!(bench.renderer.sent().is_empty());
             return Ok(());
         };
-        let answered = first.result.camera;
-        let again = bench.render(&camera(answered.clone(), 64, 48)).unwrap().result.camera;
+        let answered = first.result.camera.camera();
+        let again = bench.render(&camera(answered.clone(), 64, 48)).unwrap().result.camera.camera();
         prop_assert_eq!(&again, &answered, "from {:?}", c);
         let up = answered.up;
         let length = (up[0] * up[0] + up[1] * up[1] + up[2] * up[2]).sqrt();
@@ -850,5 +853,5 @@ fn an_answered_camera_passed_back_is_answered_to_the_bit() {
         up: [0.21383887929413314, 0.9768689439746917, 0.0],
     };
     let again = bench.render(&camera(answered.clone(), 64, 48)).unwrap();
-    assert_eq!(again.result.camera, answered);
+    assert_eq!(again.result.camera.camera(), answered);
 }

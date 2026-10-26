@@ -6,13 +6,14 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use silico_core::command::render::{RenderOn, RenderRequest, render};
+use silico_core::command::render::{Render, RenderOn, render};
 use silico_core::command::{self};
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::Kernel;
 use silico_core::meshes::{MESH_CACHE_BYTES, MeshCache};
 use silico_core::recompute::Recompute;
 use silico_core::render::{RenderClient, RenderSettings};
+use silico_core::views::NamedView;
 
 use crate::common::WORKER;
 
@@ -40,8 +41,8 @@ fn a_render_to_a_file_is_a_png_of_the_size_asked_and_the_result_says_its_bytes()
         .unwrap();
     let meshes = MeshCache::new(MESH_CACHE_BYTES);
     let renderer = RenderClient::start(Path::new(WORKER), RenderSettings::default()).unwrap();
-    let request = RenderRequest {
-        view: Some("top_front_right".to_owned()),
+    let request = Render {
+        view: NamedView::named("top_front_right"),
         camera: None,
         width: 120,
         height: 90,

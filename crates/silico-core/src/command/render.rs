@@ -18,7 +18,7 @@ use silico_protocol::{
 };
 
 use super::Problems;
-use crate::document::{Angle, FeatureId, Length, PROBLEMS_LISTED};
+use crate::document::{Angle, FeatureId, Length, PROBLEMS_LISTED, Position};
 use crate::file::{self, Output};
 use crate::kernel::{ElementKind, Generation, Kernel, KernelRequest};
 use crate::meshes::{MeshCache, mesh_level};
@@ -26,7 +26,7 @@ use crate::naming::{ElementMap, Maker, Name};
 use crate::pool::{Outcome, Pending};
 use crate::recompute::{Built, FeatureOutcome, Key, Model};
 use crate::render::{RenderClient, RenderOutcome, RenderTicket};
-use crate::views::{NAMED_VIEWS, NamedView, distance_to_box, half_pixel, half_pixel_at, sees};
+use crate::views::{NamedView, distance_to_box, half_pixel_at, sees};
 use crate::worker::SILICO_BUG;
 use crate::{Error, ErrorCode};
 
@@ -35,9 +35,9 @@ pub const MAX_HIGHLIGHTS: usize = 1000;
 
 /// A render asked for (M4.1's request, its session and model aside).
 #[derive(Debug, Clone, PartialEq)]
-pub struct RenderRequest {
+pub struct Render {
     /// A named view (`front`, `top_front_right`, ...), or none with a camera.
-    pub view: Option<String>,
+    pub view: Option<NamedView>,
     /// A camera, or none with a named view.
     pub camera: Option<Camera>,
     /// The image's size in pixels, each from 1 to [`MAX_RENDER_SIDE`].
@@ -60,7 +60,82 @@ pub struct RenderResult {
     pub path: Option<PathBuf>,
     pub width: u32,
     pub height: u32,
-    pub camera: Camera,
+    pub camera: AnsweredCamera,
+}
+
+/// A camera as a result gives it, in the document's quantities: its eye and target to the
+/// nanometre, its view's height to the nanometre or its angle to the nanodegree, and its up
+/// a direction, made perpendicular to the view. It's the camera the render drew with
+/// ([`AnsweredCamera::camera`]), so given back it draws the same.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnsweredCamera {
+    pub projection: AnsweredProjection,
+    pub eye: Position,
+    pub target: Position,
+    pub up: [f64; 3],
+}
+
+/// An answered camera's projection, in the document's quantities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnsweredProjection {
+    Orthographic { view_height: Length },
+    Perspective { field_of_view: Angle },
+}
+
+impl AnsweredCamera {
+    /// `camera` rounded as a result writes it: its eye, target, and view height to the
+    /// nanometre, its angle to the nanodegree, its up as it is. None if a number doesn't fit.
+    pub fn rounded(camera: &Camera) -> Option<Self> {
+        let point = |p: [f64; 3]| {
+            Some([
+                Length::rounded(p[0])?,
+                Length::rounded(p[1])?,
+                Length::rounded(p[2])?,
+            ])
+        };
+        let projection = match camera.projection {
+            Projection::Orthographic { view_height } => AnsweredProjection::Orthographic {
+                view_height: Length::rounded(view_height)?,
+            },
+            Projection::Perspective { field_of_view } => AnsweredProjection::Perspective {
+                field_of_view: Angle::rounded(field_of_view)?,
+            },
+        };
+        Some(AnsweredCamera {
+            projection,
+            eye: point(camera.eye)?,
+            target: point(camera.target)?,
+            up: camera.up,
+        })
+    }
+
+    /// The camera it is, as the renderer takes it.
+    pub fn camera(&self) -> Camera {
+        Camera {
+            projection: match self.projection {
+                AnsweredProjection::Orthographic { view_height } => Projection::Orthographic {
+                    view_height: view_height.mm(),
+                },
+                AnsweredProjection::Perspective { field_of_view } => Projection::Perspective {
+                    field_of_view: field_of_view.degrees(),
+                },
+            },
+            eye: self.eye.map(Length::mm),
+            target: self.target.map(Length::mm),
+            up: self.up,
+        }
+    }
+}
+
+/// The refusal of `count` highlights, past [`MAX_HIGHLIGHTS`]: the request's reader's and
+/// the command's, in one form.
+pub(crate) fn too_many_highlights(count: usize) -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!("{count} elements highlighted, more than the {MAX_HIGHLIGHTS} a render highlights"),
+    )
+    .with_parameter("highlight")
+    .with_suggestion(format!("highlight at most {MAX_HIGHLIGHTS} elements"))
 }
 
 /// A render's result, and its PNG, which is never in the result: an MCP reply's image
@@ -133,7 +208,7 @@ struct Lit {
 /// draws (`camera`) or one frame holds (the side whose pixels would make it coarser).
 pub fn render<K: Kernel>(
     model: &Model,
-    request: &RenderRequest,
+    request: &Render,
     on: &RenderOn<'_, K>,
 ) -> Result<Rendering, Problems> {
     let _span =
@@ -203,10 +278,13 @@ pub fn render<K: Kernel>(
     // The camera answered is the one drawn, as the wire writes it (lengths to the nanometre,
     // the angle to the nanodegree), so it passes back unchanged; checked again, as rounding
     // a camera at its limits could move it past one.
-    let camera = match written_as_answered(&camera) {
+    let answered = match AnsweredCamera::rounded(&camera) {
         // Rounded first, then up made perpendicular to the view the rounded eye and target
         // give, so passed back, rounding changes nothing and up is already its frame's.
-        Some(written) if written.check().is_ok() => perpendicular(&written),
+        Some(rounded) if rounded.camera().check().is_ok() => AnsweredCamera {
+            up: perpendicular(&rounded.camera()).up,
+            ..rounded
+        },
         _ => {
             let parameter = if fit_side.is_some() { "view" } else { "camera" };
             return Err(Problems::from(
@@ -219,6 +297,7 @@ pub fn render<K: Kernel>(
             ));
         }
     };
+    let camera = answered.camera();
     let kept: Vec<&Body> = bodies
         .iter()
         // A body with no box (its measure failed) can't be shown out of view: it's kept.
@@ -242,7 +321,6 @@ pub fn render<K: Kernel>(
             u32::try_from(m.edge_point_counts.len()).unwrap_or(u32::MAX),
         )
     }))?;
-    let taken = camera.clone();
     let scene = RenderScene {
         bodies: kept
             .iter()
@@ -302,7 +380,7 @@ pub fn render<K: Kernel>(
             path,
             width: request.width,
             height: request.height,
-            camera: taken,
+            camera: answered,
         },
         png,
     })
@@ -310,7 +388,7 @@ pub fn render<K: Kernel>(
 
 /// The request's own values checked, in M4.1's order, every reason it's refused for found:
 /// the view or the camera, the size, the highlights' count, and `to`.
-fn checked(request: &RenderRequest, output: &Output) -> Result<Asked, Problems> {
+fn checked(request: &Render, output: &Output) -> Result<Asked, Problems> {
     let mut errors = Vec::new();
     let invalid = |parameter: &str, message: String, suggestion: &str| {
         Error::new(ErrorCode::InvalidInput, message)
@@ -329,21 +407,7 @@ fn checked(request: &RenderRequest, output: &Output) -> Result<Asked, Problems> 
             "give a named view or a camera".to_owned(),
             "give a view, such as top_front_right, or a camera",
         )),
-        (Some(view), None) => match NamedView::named(view) {
-            Some(named) => asked = Some(Asked::Named(named)),
-            None => {
-                let names: Vec<&str> = NAMED_VIEWS.iter().map(|v| v.name()).collect();
-                errors.push(invalid(
-                    "view",
-                    format!(
-                        "view {} isn't a named view: they're {}",
-                        crate::document::json::shown(view),
-                        names.join(", ")
-                    ),
-                    "give one of the named views",
-                ));
-            }
-        },
+        (Some(view), None) => asked = Some(Asked::Named(*view)),
         (None, Some(camera)) => match camera.check() {
             Ok(()) => asked = Some(Asked::Given(camera.clone())),
             Err(e) => errors.push(invalid(
@@ -363,14 +427,7 @@ fn checked(request: &RenderRequest, output: &Output) -> Result<Asked, Problems> 
         }
     }
     if request.highlight.len() > MAX_HIGHLIGHTS {
-        errors.push(invalid(
-            "highlight",
-            format!(
-                "{} elements highlighted, more than the {MAX_HIGHLIGHTS} a render highlights",
-                request.highlight.len()
-            ),
-            &format!("highlight at most {MAX_HIGHLIGHTS} elements"),
-        ));
+        errors.push(too_many_highlights(request.highlight.len()));
     }
     if let Some(to) = &request.to
         && let Err(e) = file::check_output(to, output)
@@ -492,10 +549,8 @@ fn highlighted(model: &Model, bodies: &[Body], highlight: &[String]) -> Result<V
         lit.dedup();
         Ok(lit)
     } else {
-        Err(Problems::with_unlisted(
-            errors.clone(),
-            total - errors.len() as u64,
-        ))
+        let unlisted = total - errors.len() as u64;
+        Err(Problems::with_unlisted(errors, unlisted))
     }
 }
 
@@ -551,7 +606,7 @@ fn eye_outside<K: Kernel>(
         .collect();
     for (body, pending) in asked {
         // On its boundary counts as inside (the design: an eye on a face is refused too).
-        if done(pending.wait()).map_err(|p| naming(p, body.id))? != PointPlace::Outside {
+        if done(pending.wait()).map_err(|p| naming_the_body(p, body.id))? != PointPlace::Outside {
             return Err(Problems::from(
                 Error::new(
                     ErrorCode::InvalidInput,
@@ -574,7 +629,7 @@ fn meshed<K: Kernel>(
     kept: &[&Body],
     on: &RenderOn<'_, K>,
 ) -> Result<Vec<std::sync::Arc<Mesh>>, Problems> {
-    if half_pixel(camera, height).is_none() {
+    if camera.frame().is_err() {
         return Err(Problems::from(
             Error::new(
                 ErrorCode::Internal,
@@ -618,7 +673,7 @@ fn meshed<K: Kernel>(
         .map(|(b, got)| match got {
             Got::Kept(mesh) => Ok(mesh),
             Got::Asked(asked, pending) => {
-                let made = done(pending.wait()).map_err(|p| naming(p, b.id))?;
+                let made = done(pending.wait()).map_err(|p| naming_the_body(p, b.id))?;
                 Ok(on.meshes.put(&b.key, asked, made))
             }
         })
@@ -778,30 +833,8 @@ fn a_kind(kind: ElementKind) -> &'static str {
     }
 }
 
-/// `camera` as a result writes it: its eye, target, and view height rounded to the
-/// nanometre, its angle to the nanodegree, its up as it is (a direction is written exactly).
-/// None if a number doesn't fit.
-fn written_as_answered(camera: &Camera) -> Option<Camera> {
-    let mm = |v: f64| Length::rounded(v).map(Length::mm);
-    let point = |p: [f64; 3]| Some([mm(p[0])?, mm(p[1])?, mm(p[2])?]);
-    let projection = match camera.projection {
-        Projection::Orthographic { view_height } => Projection::Orthographic {
-            view_height: mm(view_height)?,
-        },
-        Projection::Perspective { field_of_view } => Projection::Perspective {
-            field_of_view: Angle::rounded(field_of_view)?.degrees(),
-        },
-    };
-    Some(Camera {
-        projection,
-        eye: point(camera.eye)?,
-        target: point(camera.target)?,
-        up: camera.up,
-    })
-}
-
 /// `problems`, each naming `feature` if it names none: a body's kernel request's.
-fn naming(problems: Problems, feature: &FeatureId) -> Problems {
+fn naming_the_body(problems: Problems, feature: &FeatureId) -> Problems {
     let total = problems.total();
     let errors: Vec<Error> = problems
         .errors()

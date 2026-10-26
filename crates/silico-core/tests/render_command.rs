@@ -8,13 +8,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::example::EXAMPLE;
-use silico_core::command::render::{RenderOn, RenderRequest, Rendering, render};
+use silico_core::command::render::{Render, RenderOn, Rendering, render};
 use silico_core::command::{self, Problems};
 use silico_core::document::Length;
 use silico_core::fake::{FakeKernel, FakeRenderer};
 use silico_core::kernel::{ElementKind, ElementRef, Kernel, Op};
 use silico_core::meshes::{MESH_CACHE_BYTES, MeshCache};
 use silico_core::recompute::{Key, Model, Recompute};
+use silico_core::views::NamedView;
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{Camera, Projection};
 
@@ -41,13 +42,13 @@ impl Bench {
         }
     }
 
-    fn render(&self, request: &RenderRequest) -> Result<Rendering, Problems> {
+    fn render(&self, request: &Render) -> Result<Rendering, Problems> {
         self.render_in(request, None)
     }
 
     fn render_in(
         &self,
-        request: &RenderRequest,
+        request: &Render,
         workspace: Option<&std::path::Path>,
     ) -> Result<Rendering, Problems> {
         render(
@@ -100,9 +101,9 @@ impl Bench {
     }
 }
 
-fn view(name: &str, width: u32, height: u32) -> RenderRequest {
-    RenderRequest {
-        view: Some(name.to_owned()),
+fn view(name: &str, width: u32, height: u32) -> Render {
+    Render {
+        view: NamedView::named(name),
         camera: None,
         width,
         height,
@@ -112,8 +113,8 @@ fn view(name: &str, width: u32, height: u32) -> RenderRequest {
     }
 }
 
-fn camera(camera: Camera, width: u32, height: u32) -> RenderRequest {
-    RenderRequest {
+fn camera(camera: Camera, width: u32, height: u32) -> Render {
+    Render {
         view: None,
         camera: Some(camera),
         ..view("front", width, height)
@@ -157,7 +158,7 @@ fn a_named_view_fits_the_bodies_and_the_renderer_is_sent_their_scene() {
     // 31.82, under 34.29, so the view is 1.1 × 84/√6 high, about the box's centre.
     let bench = Bench::of(EXAMPLE);
     let done = bench.render(&view("top_front_right", 800, 600)).unwrap();
-    let c = &done.result.camera;
+    let c = &done.result.camera.camera();
     assert_eq!(c.target, [20.0, 10.0, 5.0]);
     let s6 = 6f64.sqrt();
     // Answered as a result writes it: the eye to the nanometre, which tilts the view by
@@ -227,16 +228,16 @@ fn a_camera_given_is_answered_with_its_up_made_perpendicular_and_drawn_as_given(
     // Up tilted toward the view, and long: made (0, 0, 1).
     given.up = [0.0, 3.0, 4.0];
     let done = bench.render(&camera(given.clone(), 300, 200)).unwrap();
-    assert_eq!(done.result.camera.up, [0.0, 0.0, 1.0]);
-    assert_eq!(done.result.camera.eye, given.eye);
-    assert_eq!(done.result.camera.target, given.target);
+    assert_eq!(done.result.camera.camera().up, [0.0, 0.0, 1.0]);
+    assert_eq!(done.result.camera.camera().eye, given.eye);
+    assert_eq!(done.result.camera.camera().target, given.target);
     // Passed back, it's the same render.
     let again = bench
-        .render(&camera(done.result.camera.clone(), 300, 200))
+        .render(&camera(done.result.camera.camera().clone(), 300, 200))
         .unwrap();
-    assert_eq!(again.result.camera, done.result.camera);
+    assert_eq!(again.result.camera.camera(), done.result.camera.camera());
     let sent = bench.renderer.sent();
-    assert_eq!(sent[1].camera, done.result.camera);
+    assert_eq!(sent[1].camera, done.result.camera.camera());
 }
 
 #[test]
@@ -324,7 +325,7 @@ fn a_perspective_eye_inside_the_body_or_on_its_face_is_refused_and_one_outside_d
 #[test]
 fn every_request_refused_names_its_field_and_nothing_is_meshed_or_sent() {
     let bench = Bench::of(EXAMPLE);
-    let with = |f: fn(&mut RenderRequest)| {
+    let with = |f: fn(&mut Render)| {
         let mut r = view("front", 100, 100);
         f(&mut r);
         r
@@ -341,7 +342,7 @@ fn every_request_refused_names_its_field_and_nothing_is_meshed_or_sent() {
     };
     let mut narrow = wide.clone();
     narrow.projection = Projection::Perspective { field_of_view: 0.0 };
-    let cases: Vec<(RenderRequest, ErrorCode, &str)> = vec![
+    let cases: Vec<(Render, ErrorCode, &str)> = vec![
         (with(|r| r.width = 0), ErrorCode::InvalidInput, "width"),
         (with(|r| r.height = 4097), ErrorCode::InvalidInput, "height"),
         (
@@ -350,11 +351,6 @@ fn every_request_refused_names_its_field_and_nothing_is_meshed_or_sent() {
             "camera",
         ),
         (with(|r| r.view = None), ErrorCode::InvalidInput, "view"),
-        (
-            with(|r| r.view = Some("isometric".to_owned())),
-            ErrorCode::InvalidInput,
-            "view",
-        ),
         (camera(nan, 100, 100), ErrorCode::InvalidInput, "camera.eye"),
         (
             camera(at_target, 100, 100),

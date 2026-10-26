@@ -10,32 +10,44 @@ use silico_protocol::{Camera, Projection};
 
 use super::elements::ModelChoiceSchema;
 use super::{Json, RequestFields, ToWire, wire_shape};
-use crate::command::render::{MAX_HIGHLIGHTS, RenderRequest, RenderResult};
+use crate::command::render::{
+    AnsweredCamera, AnsweredProjection, MAX_HIGHLIGHTS, Render, RenderResult, too_many_highlights,
+};
 use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{ModelChoice, Problems, SessionId};
 use crate::document::json::Node;
 use crate::document::{Angle, Length};
-use crate::views::NAMED_VIEWS;
+use crate::views::{NAMED_VIEWS, NamedView};
 use crate::{Error, ErrorCode};
 
 /// A `render` request: the session, the model it reads, and what to render.
 #[derive(Debug, Clone, PartialEq)]
-pub struct RenderCall {
+pub struct RenderRequest {
     pub session: SessionId,
     pub model: ModelChoice,
-    pub render: RenderRequest,
+    pub render: Render,
+}
+
+/// How a request's camera projects, before its height or angle is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Projects {
+    Orthographic,
+    Perspective,
 }
 
 /// The projections, by the words a request writes them in.
-const PROJECTIONS: [(&str, bool); 2] = [("orthographic", true), ("perspective", false)];
+const PROJECTIONS: [(&str, Projects); 2] = [
+    ("orthographic", Projects::Orthographic),
+    ("perspective", Projects::Perspective),
+];
 
-impl RenderCall {
+impl RenderRequest {
     /// The request `node` holds, or every reason its shape is refused. Its values are the
     /// command's to check (the sizes, the camera's numbers, the view and camera given
     /// together), in the design's order, as one refusal.
     pub fn read(node: &Node) -> Result<Self, Problems> {
-        let views: Vec<(&'static str, &'static str)> =
-            NAMED_VIEWS.iter().map(|v| (v.name(), v.name())).collect();
+        let views: Vec<(&'static str, NamedView)> =
+            NAMED_VIEWS.iter().map(|&v| (v.name(), v)).collect();
         RequestFields::read(node, |f| {
             let session = f.session();
             let model = f.model();
@@ -43,23 +55,14 @@ impl RenderCall {
             let camera = f.nullable_object("camera", read_camera);
             let width = f.u32("width");
             let height = f.u32("height");
-            let highlight = f.strings("highlight", MAX_HIGHLIGHTS, |n| {
-                Error::new(
-                    ErrorCode::InvalidInput,
-                    format!(
-                        "{n} elements highlighted, more than the {MAX_HIGHLIGHTS} a render highlights"
-                    ),
-                )
-                .with_parameter("highlight")
-                .with_suggestion(format!("highlight at most {MAX_HIGHLIGHTS} elements"))
-            });
+            let highlight = f.strings("highlight", MAX_HIGHLIGHTS, too_many_highlights);
             let to = f.nullable_string("to");
             let replace = f.bool("replace");
-            Some(RenderCall {
+            Some(RenderRequest {
                 session: session?,
                 model: model?,
-                render: RenderRequest {
-                    view: view?.map(str::to_owned),
+                render: Render {
+                    view: view?,
                     camera: camera?,
                     width: width?,
                     height: height?,
@@ -76,22 +79,22 @@ impl RenderCall {
 /// as a direction, and the field of the projection given, the other `null`. A field that
 /// doesn't belong to its projection, or one of its own missing, is refused naming it.
 fn read_camera(f: &mut RequestFields<'_>) -> Option<Camera> {
-    let orthographic = f.word("projection", &PROJECTIONS, "projections");
+    let projects = f.word("projection", &PROJECTIONS, "projections");
     let eye = f.point("eye");
     let target = f.point("target");
     let up = f.direction("up");
     let view_height = f.nullable_length("view_height");
     let field_of_view = f.nullable_angle("field_of_view");
-    let orthographic = orthographic?;
+    let projects = projects?;
     let (view_height, field_of_view) = (view_height?, field_of_view?);
-    let projection = match (orthographic, view_height, field_of_view) {
-        (true, Some(h), None) => Projection::Orthographic {
+    let projection = match (projects, view_height, field_of_view) {
+        (Projects::Orthographic, Some(h), None) => Projection::Orthographic {
             view_height: h.mm(),
         },
-        (false, None, Some(a)) => Projection::Perspective {
+        (Projects::Perspective, None, Some(a)) => Projection::Perspective {
             field_of_view: a.degrees(),
         },
-        (true, h, a) => {
+        (Projects::Orthographic, h, a) => {
             f.refuse(projection_fields(
                 "orthographic",
                 "view_height",
@@ -101,7 +104,7 @@ fn read_camera(f: &mut RequestFields<'_>) -> Option<Camera> {
             ));
             return None;
         }
-        (false, h, a) => {
+        (Projects::Perspective, h, a) => {
             f.refuse(projection_fields(
                 "perspective",
                 "field_of_view",
@@ -149,40 +152,48 @@ fn projection_fields(
         ))
 }
 
-/// A camera as a result writes it, or a request: the eye and the target as lengths, `up`
-/// as a direction, and the height or the angle as the projection takes.
-fn camera_to_wire(camera: &Camera) -> Json<'static> {
-    let length = |mm: f64| Json::or_null(Length::rounded(mm), Json::length);
-    let point = |p: [f64; 3]| Json::array(p.map(length));
+/// A camera as a result writes it: in the document's quantities, as it was drawn, so
+/// nothing is rounded here.
+fn answered_to_wire(camera: &AnsweredCamera) -> Json<'static> {
     let (projection, view_height, field_of_view) = match camera.projection {
-        Projection::Orthographic { view_height } => {
-            ("orthographic", length(view_height), Json::null())
+        AnsweredProjection::Orthographic { view_height } => {
+            ("orthographic", Json::length(view_height), Json::null())
         }
-        Projection::Perspective { field_of_view } => (
-            "perspective",
-            Json::null(),
-            Json::or_null(Angle::rounded(field_of_view), Json::angle),
-        ),
+        AnsweredProjection::Perspective { field_of_view } => {
+            ("perspective", Json::null(), Json::angle(field_of_view))
+        }
     };
     Json::object([
         ("projection", Json::str(projection)),
-        ("eye", point(camera.eye)),
-        ("target", point(camera.target)),
+        ("eye", Json::point(camera.eye)),
+        ("target", Json::point(camera.target)),
         ("up", Json::direction(camera.up)),
         ("view_height", view_height),
         ("field_of_view", field_of_view),
     ])
 }
 
-impl ToWire for RenderCall {
+/// A request's camera, written back as a client writes it: its numbers were read from the
+/// request's digits, so rounding them to the document's quantities gives those digits.
+fn requested_to_wire(camera: &Camera) -> Json<'static> {
+    match AnsweredCamera::rounded(camera) {
+        Some(answered) => answered_to_wire(&answered),
+        None => Json::null(),
+    }
+}
+
+impl ToWire for RenderRequest {
     /// The request as a client writes it, every field in the shape's order.
     fn to_wire(&self) -> Json<'_> {
         let r = &self.render;
         Json::object([
             ("session", self.session.to_wire()),
             ("model", self.model.to_wire()),
-            ("view", Json::or_null(r.view.as_deref(), Json::str)),
-            ("camera", Json::or_null(r.camera.as_ref(), camera_to_wire)),
+            ("view", Json::or_null(r.view, |v| Json::str(v.name()))),
+            (
+                "camera",
+                Json::or_null(r.camera.as_ref(), requested_to_wire),
+            ),
             ("width", Json::whole(r.width.into())),
             ("height", Json::whole(r.height.into())),
             (
@@ -214,7 +225,7 @@ impl ToWire for RenderResult {
             ),
             ("width", Json::whole(self.width.into())),
             ("height", Json::whole(self.height.into())),
-            ("camera", camera_to_wire(&self.camera)),
+            ("camera", answered_to_wire(&self.camera)),
         ])
     }
 }
@@ -286,14 +297,14 @@ pub struct RenderRequestSchema {
     /// A camera; null with a named view.
     pub camera: Option<CameraSchema>,
     /// The image's width in pixels.
-    #[schemars(range(min = 1, max = 4096))]
+    #[schemars(range(min = 1, max = silico_protocol::MAX_RENDER_SIDE))]
     pub width: u32,
     /// The image's height in pixels.
-    #[schemars(range(min = 1, max = 4096))]
+    #[schemars(range(min = 1, max = silico_protocol::MAX_RENDER_SIDE))]
     pub height: u32,
     /// The names of faces and edges to highlight in Fusion's selection blue, as `elements`
     /// names them: at most 1,000.
-    #[schemars(length(max = 1000))]
+    #[schemars(length(max = MAX_HIGHLIGHTS))]
     pub highlight: Vec<String>,
     /// Where to write the PNG: a `.png` path in the workspace, never a document or its
     /// cache; or null.
