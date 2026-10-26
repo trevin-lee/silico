@@ -44,6 +44,8 @@ mod test_programs;
 mod adversarial_cache;
 #[path = "adversarial_cache_bound.rs"]
 mod adversarial_cache_bound;
+#[path = "adversarial_cache_control.rs"]
+mod adversarial_cache_control;
 #[path = "adversarial_call.rs"]
 mod adversarial_call;
 #[path = "adversarial_center_to_element.rs"]
@@ -70,6 +72,8 @@ mod adversarial_wire_commands;
 mod adversarial_workspace;
 #[path = "cache_bound.rs"]
 mod cache_bound;
+#[path = "cache_clear.rs"]
+mod cache_clear;
 #[path = "call.rs"]
 mod call;
 #[path = "command.rs"]
@@ -98,6 +102,8 @@ mod session_edits;
 mod session_elements;
 #[path = "session_export.rs"]
 mod session_export;
+#[path = "session_fresh.rs"]
+mod session_fresh;
 #[path = "session_rebuild.rs"]
 mod session_rebuild;
 #[path = "session_reload.rs"]

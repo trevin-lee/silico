@@ -72,6 +72,7 @@
 //! queued and not yet run.
 
 mod cancel;
+mod clearing;
 mod edits;
 mod holding;
 mod rebuilds;
@@ -90,9 +91,7 @@ use super::{Gated, Problems, ReadCommand, SessionCommand};
 use crate::cache::Cache;
 use crate::document::json::Node;
 use crate::document::{self, FeatureId};
-#[cfg(doc)]
-use crate::file;
-use crate::file::{Workspace, shown_path};
+use crate::file::{self, Workspace, shown_path};
 use crate::kernel::{Clients, Kernel};
 use crate::recompute::SketchSolvers;
 use crate::sketch::SketchSolver;
@@ -100,6 +99,7 @@ use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
 use cancel::{Interrupt, Ticket, Why, not_running};
+use clearing::{shown_cache_directory, uncleared_problems};
 use edits::{as_committed, not_given_back};
 use holding::Holding;
 use rebuilds::{Newest, Rebuilds, Unbuilt, published_answer};
@@ -113,8 +113,8 @@ use transaction::{Claim, Held, Reload, Rereads, transaction_open};
 pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
-    Added, Begun, Cancelled, CheckAnswer, Closed, Committed, FieldSet, ModelChoice, ModelRead,
-    Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild, RebuildState,
+    Added, Begun, CacheCleared, Cancelled, CheckAnswer, Closed, Committed, FieldSet, ModelChoice,
+    ModelRead, Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild, RebuildState,
     Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running, SessionId,
     SessionInfo, Status, Stopper, TextAnswer,
 };
@@ -677,34 +677,18 @@ impl<P: Clients + 'static> Sessions<P> {
     /// the revision's outcome, so the next check of the revision reads the same model
     /// (decision 32).
     pub fn check(&self, session: &SessionId, choice: ModelChoice) -> Running<CheckAnswer> {
-        let answer = |problems| CheckAnswer {
-            problems,
-            warnings: Problems::none(),
-        };
         match choice {
-            ModelChoice::Current => self.queued(
-                session,
-                SessionCommand::Check,
-                move |session, stop, model| match session.current(stop) {
-                    Ok(current) => {
-                        *model = Some(current.read);
-                        let _span = tracing::info_span!("check").entered();
-                        Ok(answer(super::check_except(
-                            &current.model,
-                            current.reached.get(),
-                        )))
-                    }
-                    Err(Unbuilt::Gated(problems)) => Ok(answer(problems)),
-                    Err(Unbuilt::Unavailable(problems)) => Err(problems),
-                },
-            ),
+            ModelChoice::Current => self.check_current(session, false),
             ModelChoice::Published => self.read_model(
                 session,
                 ReadCommand::Check,
                 ModelChoice::Published,
                 move |read| {
                     let _span = tracing::info_span!("check").entered();
-                    Ok(answer(super::check_except(read.model(), read.reached())))
+                    Ok(CheckAnswer::of(super::check_except(
+                        read.model(),
+                        read.reached(),
+                    )))
                 },
             ),
         }
@@ -734,6 +718,71 @@ impl<P: Clients + 'static> Sessions<P> {
                 kernel: &kernel,
                 reached: &current.reached,
             })
+        })
+    }
+
+    /// `check` with `fresh` (the design's section 7, M4.3): `session`'s current revision
+    /// rebuilt with every step built anew, as SolidWorks' forced rebuild (Ctrl+Q) does,
+    /// reading nothing kept, neither in the session's engine (its steps' results, the
+    /// refusals among them, its sketches' solves) nor in the cache on disk
+    /// ([`Recompute::start_fresh`](crate::recompute::Recompute::start_fresh)), though what it
+    /// builds is kept in both, so the next rebuild hits it; and the document's problems found
+    /// as [`check`](Self::check) of the current model finds them. A kernel fault the revision
+    /// kept as its outcome (decision 32) is tried again, and the model this rebuild publishes
+    /// is the revision's from then on, the fault's or not. Only of the current model: a
+    /// published read never rebuilds (the wire refuses `fresh` with `published`). For a
+    /// document the gate refused, the gate's problems, nothing rebuilt.
+    pub fn check_fresh(&self, session: &SessionId) -> Running<CheckAnswer> {
+        self.check_current(session, true)
+    }
+
+    /// `check` of `session`'s current model, its rebuild reading nothing kept if `fresh`.
+    fn check_current(&self, session: &SessionId, fresh: bool) -> Running<CheckAnswer> {
+        self.queued(
+            session,
+            SessionCommand::Check,
+            move |session, stop, model| match session.current_with(stop, fresh) {
+                Ok(current) => {
+                    *model = Some(current.read);
+                    let _span = tracing::info_span!("check", fresh).entered();
+                    Ok(CheckAnswer::of(super::check_except(
+                        &current.model,
+                        current.reached.get(),
+                    )))
+                }
+                Err(Unbuilt::Gated(problems)) => Ok(CheckAnswer::of(problems)),
+                Err(Unbuilt::Unavailable(problems)) => Err(problems),
+            },
+        )
+    }
+
+    /// `cache_clear` (the design's section 7, M4.3; decision 25): every entry of the
+    /// rebuild cache beside `session`'s document removed ([`Cache::clear`]), the
+    /// directory's, shared by every document in it, and only the files the cache made as
+    /// entries: never another file in `.silico-cache/`, its `.gitignore`, the partial files
+    /// of writes under way (another process's, whose rename would fail), its subdirectories,
+    /// or the user's secret, which isn't in it; never through a link. An entry removed is
+    /// only a miss, and one another process is reading it reads whole (it holds the file
+    /// open); one written after it's listed is left, whole. Answers with the directory, as
+    /// the session's path names it, and how many entries it removed. Refused, `io_failed`,
+    /// naming each file it couldn't remove and each directory it couldn't read (the first
+    /// hundred, all counted), having removed every other. Settled before it removes any, so
+    /// a cancel that comes after it starts comes too late. Runs inside a transaction too:
+    /// the document isn't touched.
+    pub fn cache_clear(&self, session: &SessionId) -> Running<CacheCleared> {
+        self.queued(session, SessionCommand::CacheClear, |session, stop, _| {
+            let cache = lock(&session.rebuilds).engine.cache().cloned();
+            let (path, resolved) = {
+                let held = session.held.read();
+                (held.path.clone(), held.resolved.clone())
+            };
+            let cache = cache.unwrap_or_else(|| Cache::unsealed(file::cache_directory(&resolved)));
+            let directory = shown_cache_directory(&path, cache.directory());
+            stop.settle()?;
+            match cache.clear() {
+                Ok(removed) => Ok(CacheCleared { directory, removed }),
+                Err(uncleared) => Err(uncleared_problems(&directory, cache.directory(), uncleared)),
+            }
         })
     }
 

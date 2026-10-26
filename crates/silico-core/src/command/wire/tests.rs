@@ -1049,45 +1049,46 @@ fn a_response_past_its_limit_is_answered_with_a_refusal_saying_so() {
 #[test]
 fn a_models_fault_is_written_in_the_error_contracts_shape() {
     // Decision 32: the envelope's `model.fault`, the error contract's every field, its
-    // suggestion the worker's own (as the model read holds it) and then how a session's
-    // client tries again (R-M1: the session's advice is the wire's, not the CLI's).
+    // suggestion how a session's client tries it again (R-M1: the session's advice is the
+    // wire's, not the CLI's). The design's example (section 6), byte for byte: the worker's
+    // own suggestion is the model read's, and the wire's is the design's.
+    let crashed = Error::new(
+        ErrorCode::WorkerCrashed,
+        "the kernel worker crashed while building this feature",
+    )
+    .with_feature("f0000001")
+    .with_cause("the worker ended on signal 11 (SIGSEGV) during a fillet")
+    .with_suggestion("change the operation's values: these crashed OCCT");
     let faulted = Response {
         session: Some(session(7, false)),
         model: Some(ModelRead {
             revision: revision(6),
             of: ModelChoice::Current,
-            fault: Some(
-                Error::new(ErrorCode::WorkerCrashed, "crashed")
-                    .with_feature("f0000001")
-                    .with_cause("the worker ended on signal 11 (SIGSEGV) during a fillet")
-                    .with_suggestion("edit the document to try again"),
-            ),
+            fault: Some(crashed),
         }),
         result: Ok(Clean),
     };
     let text = write(&response(&faulted), Layout::Canonical).unwrap();
     let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(
-        value["model"],
-        serde_json::json!({
-            "revision": 6,
-            "of": "current",
-            "fault": {
-                "code": "worker_crashed",
-                "message": "crashed",
-                "feature": "f0000001",
-                "elements": [],
-                "elements_total": 0,
-                "parameter": null,
-                "cause": "the worker ended on signal 11 (SIGSEGV) during a fillet",
-                "suggestion": format!("edit the document to try again; to try again here: {KEPT}"),
-                "candidates": []
-            }
-        })
+    let fault = write(
+        &ModelRead::to_wire(faulted.model.as_ref().unwrap()),
+        Layout::OneLine,
+    )
+    .unwrap();
+    let designed = design_blocks("### Faults reported once (A1)", "### Limits");
+    assert_eq!(designed.len(), 1);
+    let designed: serde_json::Value = serde_json::from_str(&designed[0]).unwrap();
+    assert_eq!(value["model"]["fault"], designed);
+    // And its text, member for member, in the design's order.
+    assert!(
+        fault.ends_with(&format!(r#""fault": {}}}"#, designed_text())),
+        "{fault}"
     );
-    // With no suggestion of its own, the advice alone. (A worker that couldn't be had names
-    // no feature: the model read holds it so (`met_fault`, tested through `kept_fault` in the
-    // session's tests); the wire writes the fault as it's held.)
+    assert_eq!(value["model"]["revision"], 6);
+    assert_eq!(value["model"]["of"], "current");
+    // A worker that couldn't be had names no feature (the model read holds it so:
+    // `met_fault`, tested through `kept_fault` in the session's tests), and says nothing of
+    // the document: with no suggestion of its own, check with fresh alone.
     let unavailable = Response {
         model: Some(ModelRead {
             revision: revision(6),
@@ -1098,13 +1099,29 @@ fn a_models_fault_is_written_in_the_error_contracts_shape() {
     };
     let text = write(&response(&unavailable), Layout::Canonical).unwrap();
     let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(value["model"]["fault"]["suggestion"], KEPT);
+    assert_eq!(
+        value["model"]["fault"]["suggestion"],
+        "check with fresh to try it again"
+    );
 }
 
-/// What a kept fault's suggestion says on the wire, after the worker's own and "; to try
-/// again here: " (decision 32): reading the revision again won't, and what will, and what
-/// won't.
-const KEPT: &str = "reading this revision again won't, since it keeps the fault; an edit that changes the document, or reopening the session, tries again; a save that writes only fingerprints keeps the fault";
+/// The design's JSON code blocks between the headings `from` and `to`, in order.
+fn design_blocks(from: &str, to: &str) -> Vec<String> {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/design/m4.1-command-api.md");
+    let doc = std::fs::read_to_string(&path).unwrap();
+    let section = &doc[doc.find(from).unwrap()..doc.find(to).unwrap()];
+    section
+        .split("```json\n")
+        .skip(1)
+        .map(|block| block.split("\n```").next().unwrap().to_owned())
+        .collect()
+}
+
+/// The design's fault (section 6), as its text has it.
+fn designed_text() -> String {
+    design_blocks("### Faults reported once (A1)", "### Limits").remove(0)
+}
 
 /// `wire_shape` closes an object, but leaves alone a schema that isn't one (an enum of
 /// names, as `SessionCommand` is): `additionalProperties` means nothing there.

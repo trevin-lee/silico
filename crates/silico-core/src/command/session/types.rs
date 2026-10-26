@@ -491,6 +491,26 @@ pub struct CheckAnswer {
     pub warnings: Problems,
 }
 
+impl CheckAnswer {
+    /// The answer of a check that found `problems`, and no warnings (none are made yet).
+    pub(super) fn of(problems: Problems) -> Self {
+        CheckAnswer {
+            problems,
+            warnings: Problems::none(),
+        }
+    }
+}
+
+/// What `cache_clear` answers (the design's section 7): the rebuild cache's directory, as
+/// the session's path names it (`.silico-cache` beside `bracket.silico`, `parts/.silico-cache`
+/// beside `parts/bracket.silico`; where it is, through links, if the path is a link from
+/// another directory), and how many entries it removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheCleared {
+    pub directory: String,
+    pub removed: u64,
+}
+
 /// What `begin` answers: the revision the transaction began from, which `rollback` returns
 /// to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

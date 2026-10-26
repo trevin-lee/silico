@@ -2775,10 +2775,10 @@ fn each_change_of_what_the_session_holds_is_past_a_cancel() {
 }
 
 #[test]
-fn a_kept_fault_keeps_the_workers_own_suggestion_and_says_how_to_try_again() {
-    // Decision 32: reading the revision again won't run it again, so the suggestion says
-    // so after the worker's own, and what does.
-    const KEPT: &str = "reading this revision again won't, since it keeps the fault; an edit that changes the document, or reopening the session, tries again; a save that writes only fingerprints keeps the fault";
+fn a_kept_fault_says_to_check_with_fresh_as_the_design_does() {
+    // Decision 32 and the design's section 6: reading the revision again won't run it
+    // again, so the suggestion is to check with fresh, and, if the same feature meets the
+    // fault again, to report it. A crash's words are the design's example's, exactly.
     let said = |error: &Error| {
         (
             error.code(),
@@ -2796,12 +2796,38 @@ fn a_kept_fault_keeps_the_workers_own_suggestion_and_says_how_to_try_again() {
             ErrorCode::WorkerCrashed,
             "the worker crashed".to_owned(),
             Some("f0000001".to_owned()),
-            Some(format!(
-                "change the operation's values, or report it with the document; to try again here: {KEPT}"
-            ))
+            Some(
+                "check with fresh to try it again; if the same feature crashes the worker \
+                 again, report it with the document"
+                    .to_owned()
+            )
         )
     );
-    // A worker that couldn't be had says nothing of the feature that asked for one.
+    // A timeout's, and any other fault's, said as it was met.
+    let timed_out = Error::new(ErrorCode::WorkerTimeout, "timed out").with_feature("f0000001");
+    assert_eq!(
+        kept_fault(&timed_out).suggestion(),
+        Some(
+            "check with fresh to try it again; if the same feature runs past the worker's \
+             timeout again, report it with the document"
+        )
+    );
+    let short = Error::new(ErrorCode::ResourceExhausted, "out of memory").with_feature("f0000001");
+    assert_eq!(
+        said(&kept_fault(&short)),
+        (
+            ErrorCode::ResourceExhausted,
+            "out of memory".to_owned(),
+            Some("f0000001".to_owned()),
+            Some(
+                "check with fresh to try it again; if the same feature meets this fault \
+                 again, report it with the document"
+                    .to_owned()
+            )
+        )
+    );
+    // A worker that couldn't be had says nothing of the feature that asked for one: its
+    // own suggestion, then check with fresh; with none of its own, check with fresh alone.
     let unavailable = Error::new(ErrorCode::WorkerUnavailable, "no worker")
         .with_feature("f0000001")
         .with_suggestion("restart Silico");
@@ -2811,19 +2837,13 @@ fn a_kept_fault_keeps_the_workers_own_suggestion_and_says_how_to_try_again() {
             ErrorCode::WorkerUnavailable,
             "no worker".to_owned(),
             None,
-            Some(format!("restart Silico; to try again here: {KEPT}"))
+            Some("restart Silico; then check with fresh to try it again".to_owned())
         )
     );
-    // With no suggestion of its own, the note alone.
-    let short = Error::new(ErrorCode::ResourceExhausted, "out of memory").with_feature("f0000001");
+    let bare = Error::new(ErrorCode::WorkerUnavailable, "no worker");
     assert_eq!(
-        said(&kept_fault(&short)),
-        (
-            ErrorCode::ResourceExhausted,
-            "out of memory".to_owned(),
-            Some("f0000001".to_owned()),
-            Some(KEPT.to_owned())
-        )
+        kept_fault(&bare).suggestion(),
+        Some("check with fresh to try it again")
     );
 }
 
@@ -3373,6 +3393,19 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
             ))
         }),
     ));
+    // `cache_clear`, which reads no model, after `check`, as the design lists it.
+    let after_check = queued
+        .iter()
+        .position(|(command, _)| *command == SessionCommand::Check)
+        .unwrap()
+        + 1;
+    queued.insert(
+        after_check,
+        (
+            SessionCommand::CacheClear,
+            Box::new(|| erased(s.cache_clear(at))),
+        ),
+    );
     // Every one, in the design's order.
     assert_eq!(
         queued

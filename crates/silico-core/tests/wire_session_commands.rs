@@ -221,7 +221,7 @@ impl Fixture {
 fn the_examples_are_the_designs_own_text() {
     // Each section's blocks, in order, each file the block and a newline; a block not yet in
     // the contract (`None`) is the one the module's doc says, and has no file.
-    let sections: [(&str, &str, &str, &[Option<&str>]); 16] = [
+    let sections: [(&str, &str, &str, &[Option<&str>]); 17] = [
         (
             "### `version` (M4.2)",
             "### `open` (M4.2)",
@@ -368,6 +368,12 @@ fn the_examples_are_the_designs_own_text() {
             "check",
             &[Some("request"), Some("result"), Some("reference-broken")],
         ),
+        (
+            "### `cache_clear` (M4.3)",
+            "### `elements` (M4.4)",
+            "cache_clear",
+            &[Some("request"), Some("result")],
+        ),
     ];
     let mut left_out = Vec::new();
     for (from, to, dir, names) in sections {
@@ -461,8 +467,8 @@ const LEFT_OUT: [(&str, &str, &str, &str); 3] = [
 
 #[test]
 fn the_designs_requests_are_read_written_back_byte_for_byte_and_hold_to_their_schemas() {
-    // `begin`, `commit`, and `rollback` take one shape: the session alone.
-    for of in ["begin", "commit", "rollback"] {
+    // `begin`, `commit`, `rollback`, and `cache_clear` take one shape: the session alone.
+    for of in ["begin", "commit", "rollback", "cache_clear"] {
         let text = example(&format!("{of}/request"));
         let request = SessionRequest::read(&parsed(&text)).unwrap();
         assert_eq!(request, SessionRequest { session: s1() });
@@ -578,7 +584,7 @@ fn reader(of: &str) -> fn(&Node) -> Result<(), Problems> {
         "set_field" => |n| SetFieldRequest::read(n).map(drop),
         "remove_feature" => |n| RemoveFeatureRequest::read(n).map(drop),
         "replace_text" => |n| ReplaceTextRequest::read(n).map(drop),
-        "close" | "status" | "outline" => |n| SessionRequest::read(n).map(drop),
+        "close" | "status" | "outline" | "cache_clear" => |n| SessionRequest::read(n).map(drop),
         "cancel" => |n| CancelRequest::read(n).map(drop),
         "text" => |n| TextRequest::read(n).map(drop),
         "check" => |n| CheckRequest::read(n).map(drop),
@@ -587,7 +593,7 @@ fn reader(of: &str) -> fn(&Node) -> Result<(), Problems> {
 }
 
 /// Each command, and the keys its request has, in the shape's order.
-const REQUESTS: [(&str, &[&str]); 14] = [
+const REQUESTS: [(&str, &[&str]); 15] = [
     ("close", &["session"]),
     ("status", &["session"]),
     ("cancel", &["session", "command"]),
@@ -605,6 +611,7 @@ const REQUESTS: [(&str, &[&str]); 14] = [
     ("text", &["session", "feature"]),
     ("outline", &["session"]),
     ("check", &["session", "model", "fresh"]),
+    ("cache_clear", &["session"]),
 ];
 
 /// `text`, an object's JSON, without its member `key`.

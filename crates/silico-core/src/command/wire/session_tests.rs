@@ -12,8 +12,8 @@ use std::path::PathBuf;
 
 use super::{Json, Layout, RequestFields, ToWire, write};
 use crate::command::{
-    Added, Begun, CheckAnswer, Committed, FieldSet, Opened, Problems, Reformatted, Removed,
-    Replaced, Revision, RolledBack, SessionId,
+    Added, Begun, CacheCleared, CheckAnswer, Committed, FieldSet, Opened, Problems, Reformatted,
+    Removed, Replaced, Revision, RolledBack, SessionId,
 };
 use crate::document::json::{Plain, read};
 use crate::document::{Feature, FeatureId};
@@ -95,6 +95,20 @@ fn committed(refingerprinted: &[&str], resolved: &[&str]) -> Committed {
         resolved: ids(resolved),
         problems: Problems::of(Vec::new()),
     }
+}
+
+#[test]
+fn cache_clears_result_is_written_as_the_design_gives_it() {
+    // The cache beside `bracket.silico`, as the session's path names it, and 214 entries
+    // removed: the design's numbers, by hand.
+    as_designed(
+        "cache_clear",
+        "result",
+        &CacheCleared {
+            directory: ".silico-cache".to_owned(),
+            removed: 214,
+        },
+    );
 }
 
 #[test]

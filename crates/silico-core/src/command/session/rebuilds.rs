@@ -190,6 +190,9 @@ pub(super) struct Label {
     /// ([`Rebuilds::stop_waited`], which says how it ended then): if it ends superseded,
     /// that's why.
     cancelled: Arc<AtomicBool>,
+    /// Whether it reads nothing kept (`check`'s `fresh`): every step built anew
+    /// ([`Recompute::start_fresh`]).
+    fresh: bool,
 }
 
 impl Label {
@@ -200,6 +203,16 @@ impl Label {
             reached,
             candidate: false,
             cancelled: Arc::new(AtomicBool::new(false)),
+            fresh: false,
+        }
+    }
+
+    /// The label of `revision`'s rebuild with every step built anew, reading nothing kept
+    /// (`check`'s `fresh`), what the session's edits reached at it `reached`.
+    fn fresh(revision: Revision, reached: Reached) -> Self {
+        Label {
+            fresh: true,
+            ..Label::new(revision, reached)
         }
     }
 
@@ -300,21 +313,55 @@ impl<C: Kernel + 'static> Session<C> {
         checked: &Arc<Checked>,
         reached: &Reached,
     ) -> Result<Arc<Model>, Problems> {
-        let _span = tracing::info_span!("rebuild", revision = revision.number()).entered();
+        self.model_with(stop, revision, checked, reached, false)
+    }
+
+    /// [`model`](Self::model), or, `fresh`, the model of a rebuild of `revision` that reads
+    /// nothing kept (`check`'s `fresh`, the design's section 7: every step built anew,
+    /// [`Recompute::start_fresh`]), started now whatever the revision has: never the model
+    /// published of it before (a kernel fault kept as its outcome is tried again, decision
+    /// 32), nor one of a rebuild running that reads what's kept, which it supersedes. Its
+    /// model, once published, is the revision's, in the place of the one before.
+    pub(super) fn model_with(
+        self: &Arc<Self>,
+        stop: &Ticket,
+        revision: Revision,
+        checked: &Arc<Checked>,
+        reached: &Reached,
+        fresh: bool,
+    ) -> Result<Arc<Model>, Problems> {
+        let _span = tracing::info_span!("rebuild", revision = revision.number(), fresh).entered();
         let mut rebuilds = lock(&self.rebuilds);
         // The rebuild this read last waited on or started, which a cancel stops.
         let mut waited: Option<Label> = None;
+        // A fresh read's own rebuild, once started: only what it comes to answers the read.
+        let mut own: Option<Label> = None;
+        // The model of the revision published before a fresh read started: never its answer
+        // (held, so no model made since can be taken for it).
+        let before: Option<Arc<Model>> = rebuilds
+            .published
+            .as_ref()
+            .filter(|published| fresh && published.revision == revision)
+            .map(|published| Arc::clone(&published.model));
         loop {
+            // Whether what the revision's rebuilds come to is this read's: any, for a read
+            // of what's kept; for a fresh one, only once its own has started.
+            let answers = !fresh || own.is_some();
             // Had, it's given even to a command cancelled meanwhile, whose work then stops
             // where it would leave a trace (its stop settled).
             if let Some(published) = &rebuilds.published
                 && published.revision == revision
+                && answers
+                && !before
+                    .as_ref()
+                    .is_some_and(|before| Arc::ptr_eq(before, &published.model))
             {
                 return Ok(Arc::clone(&published.model));
             }
             rebuilds.stopped(stop, waited.as_ref())?;
             if let Some(running) = &rebuilds.running
                 && running.revision() == revision
+                && (!fresh || own.as_ref().is_some_and(|own| running.is(own)))
             {
                 waited = Some(running.clone());
                 rebuilds = self
@@ -330,6 +377,7 @@ impl<C: Kernel + 'static> Session<C> {
             }) = &mut rebuilds.ended
                 && *of == revision
                 && !*said
+                && answers
             {
                 *said = true;
                 return Err(Problems::from(why.clone()));
@@ -338,9 +386,18 @@ impl<C: Kernel + 'static> Session<C> {
             // stopped by a cancel that comes before the wait does. One that comes after the
             // stop check above and before this start costs a rebuild started and stopped at
             // once (the next turn of the loop stops what it started): accepted, since
-            // checking again here would only narrow that window, never close it.
-            if self.start_unless_newer(&mut rebuilds, revision, checked, reached)? {
+            // checking again here would only narrow that window, never close it. A fresh
+            // read starts its own, superseding any running.
+            let label = if fresh {
+                Label::fresh(revision, reached.clone())
+            } else {
+                Label::new(revision, reached.clone())
+            };
+            if self.start_labelled(&mut rebuilds, checked, label.clone())? {
                 waited.clone_from(&rebuilds.running);
+                if fresh {
+                    own = Some(label);
+                }
             } else {
                 return Err(Problems::from(
                     Error::new(
@@ -372,6 +429,18 @@ impl<C: Kernel + 'static> Session<C> {
         checked: &Arc<Checked>,
         reached: &Reached,
     ) -> Result<bool, Problems> {
+        self.start_labelled(rebuilds, checked, Label::new(revision, reached.clone()))
+    }
+
+    /// [`start_unless_newer`](Self::start_unless_newer), the rebuild labelled `label` (its
+    /// revision, what the session's edits reached at it, and whether it reads what's kept).
+    fn start_labelled(
+        self: &Arc<Self>,
+        rebuilds: &mut Rebuilds<C>,
+        checked: &Arc<Checked>,
+        label: Label,
+    ) -> Result<bool, Problems> {
+        let revision = label.revision();
         if self.closed() {
             return Err(Problems::from(not_open(self.id)));
         }
@@ -387,7 +456,7 @@ impl<C: Kernel + 'static> Session<C> {
         if let Some(kept) = &mut rebuilds.kept {
             kept.started = true;
         }
-        self.spawn_rebuild(rebuilds, checked, Label::new(revision, reached.clone()))?;
+        self.spawn_rebuild(rebuilds, checked, label)?;
         Ok(true)
     }
 
@@ -403,7 +472,11 @@ impl<C: Kernel + 'static> Session<C> {
         label: Label,
     ) -> Result<(), Problems> {
         rebuilds.watchers.reap();
-        let run = rebuilds.engine.start(Arc::clone(checked));
+        let run = if label.fresh {
+            rebuilds.engine.start_fresh(Arc::clone(checked))
+        } else {
+            rebuilds.engine.start(Arc::clone(checked))
+        };
         self.newest.started(label.clone(), run.progress());
         rebuilds.running = Some(label.clone());
         let session = Arc::downgrade(self);
@@ -433,6 +506,16 @@ impl<C: Kernel + 'static> Session<C> {
     /// (its problems, the document's, which a check gives as its result), or the model
     /// couldn't be had.
     pub(super) fn current(self: &Arc<Self>, stop: &Ticket) -> Result<Current, Unbuilt> {
+        self.current_with(stop, false)
+    }
+
+    /// [`current`](Self::current), or, `fresh`, the current revision rebuilt with every step
+    /// built anew ([`model_with`](Self::model_with)), its model the revision's from then on.
+    pub(super) fn current_with(
+        self: &Arc<Self>,
+        stop: &Ticket,
+        fresh: bool,
+    ) -> Result<Current, Unbuilt> {
         let (revision, gated, reaching) = {
             let held = self.held.read();
             (held.revision, Arc::clone(&held.gated), held.reaching())
@@ -440,7 +523,7 @@ impl<C: Kernel + 'static> Session<C> {
         let reached = Reached::of(reaching);
         match &*gated {
             Gated::Checked(checked) => self
-                .model(stop, revision, checked, &reached)
+                .model_with(stop, revision, checked, &reached, fresh)
                 .map(|model| Current {
                     read: ModelRead::of(revision, ModelChoice::Current, &model),
                     model,
@@ -642,12 +725,11 @@ pub(super) fn published_answer<T>(
 /// What does `done` for a revision whose model holds a kernel fault, kept as its outcome
 /// (decision 32), and what doesn't: so every suggestion that says how to try again says it
 /// alike. A save that writes only fingerprints keeps the fault for the revision it saves
-/// (its model, rebound, is that revision's). `check`'s `fresh` (M4.3) joins them once it's
-/// built.
+/// (its model, rebound, is that revision's).
 pub(in crate::command) fn retried(done: &str) -> String {
     format!(
-        "an edit that changes the document, or reopening the session, {done}; a save that \
-         writes only fingerprints keeps the fault"
+        "check with fresh, an edit that changes the document, or reopening the session, \
+         {done}; a save that writes only fingerprints keeps the fault"
     )
 }
 
@@ -665,23 +747,31 @@ pub(in crate::command) fn met_fault(fault: &Error) -> Error {
 
 /// A kernel fault as a session's client reads it (the envelope's `model.fault`, decision
 /// 32), and as a command that needs a faulted feature's solid is refused with it: kept as
-/// the revision's outcome, so its suggestion ([`kept_suggestion`]), the worker's own kept,
-/// goes on to say that reading it again won't try again, and what does ([`retried`]).
+/// the revision's outcome, so its suggestion is how to try again ([`kept_suggestion`]).
 pub(in crate::command) fn kept_fault(fault: &Error) -> Error {
     let fault = met_fault(fault);
     let suggestion = kept_suggestion(&fault);
     fault.with_suggestion(suggestion)
 }
 
-/// [`kept_fault`]'s suggestion: `fault`'s own, then how to try again in a session.
+/// [`kept_fault`]'s suggestion (the design's section 6): reading the revision again won't
+/// try it again, so `check` with `fresh`, and, if the same feature meets it again, the
+/// document reported, as the design's example says it of a crash. A fault that names no
+/// feature (a worker that couldn't be had) says nothing of the document: the worker's own
+/// suggestion, if it has one, then `check` with `fresh`.
 pub(in crate::command) fn kept_suggestion(fault: &Error) -> String {
-    let kept = format!(
-        "reading this revision again won't, since it keeps the fault; {}",
-        retried("tries again")
-    );
-    match fault.suggestion() {
-        Some(own) => format!("{own}; to try again here: {kept}"),
-        None => kept,
+    const FRESH: &str = "check with fresh to try it again";
+    let met = match fault.code() {
+        ErrorCode::WorkerCrashed => "crashes the worker",
+        ErrorCode::WorkerTimeout => "runs past the worker's timeout",
+        _ => "meets this fault",
+    };
+    match (fault.feature(), fault.suggestion()) {
+        (Some(_), _) => {
+            format!("{FRESH}; if the same feature {met} again, report it with the document")
+        }
+        (None, Some(own)) => format!("{own}; then {FRESH}"),
+        (None, None) => FRESH.to_owned(),
     }
 }
 

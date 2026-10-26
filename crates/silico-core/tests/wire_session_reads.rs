@@ -291,6 +291,7 @@ fn the_designs_requests_are_read_written_back_byte_for_byte_and_hold_to_their_sc
         CheckRequest {
             session: s1(),
             model: ModelChoice::Current,
+            fresh: false,
         }
     );
     assert_eq!(written(&request), text);
@@ -340,6 +341,19 @@ fn requests_with_their_other_values_are_read_and_written_back() {
     assert_eq!(request.model, ModelChoice::Published);
     assert_eq!(written(&request), text);
     holds(&schema_of("check", "request"), text, "published");
+    // A fresh check, of the current model (M4.3).
+    let text = "{\"session\": \"s3\", \"model\": \"current\", \"fresh\": true}\n";
+    let request = CheckRequest::read(&parsed(text)).unwrap();
+    assert_eq!(
+        request,
+        CheckRequest {
+            session: SessionId::parse("s3").unwrap(),
+            model: ModelChoice::Current,
+            fresh: true,
+        }
+    );
+    assert_eq!(written(&request), text);
+    holds(&schema_of("check", "request"), text, "fresh");
     // Every command that runs in a session can be named, and is written back as named.
     for name in SESSION_COMMANDS {
         let text = format!("{{\"session\": \"s1\", \"command\": \"{name}\"}}\n");
@@ -471,9 +485,18 @@ fn cancel_names_only_a_command_and_any_other_name_is_refused_with_every_command_
 }
 
 #[test]
-fn checks_fresh_is_only_false_until_a_fresh_check_is_built() {
-    let text = example("check/request");
-    let problems = CheckRequest::read(&parsed(&text.replace("false", "true"))).unwrap_err();
+fn checks_fresh_is_refused_with_the_published_model_and_taken_with_the_current() {
+    // The design's section 7: "fresh" true only with current. With published, refused as
+    // fields that must agree are (a camera's projection's), naming `fresh`; the snapshot
+    // takes either value, since which goes with which is the reader's rule.
+    let text = example("check/request")
+        .replace("current", "published")
+        .replace("false", "true");
+    assert_eq!(
+        text,
+        "{\"session\": \"s1\", \"model\": \"published\", \"fresh\": true}\n"
+    );
+    let problems = CheckRequest::read(&parsed(&text)).unwrap_err();
     assert_eq!(problems.total(), 1);
     let error = &problems.errors()[0];
     assert_eq!(
@@ -486,19 +509,35 @@ fn checks_fresh_is_only_false_until_a_fresh_check_is_built() {
         ),
         (
             ErrorCode::InvalidInput,
-            "fresh must be false, got true",
+            "fresh must be false for a read of the published model",
             Some("fresh"),
-            Some("a check that rebuilds without reading the rebuild cache isn't built yet"),
             Some(
-                "give false; to try a kernel fault the revision keeps again, close the session \
-                 and open the document again"
+                "a read of the published model answers from the newest model as it is, \
+                 rebuilding nothing"
+            ),
+            Some(
+                "give model current with fresh true to rebuild the current revision anew, or \
+                 fresh false to read the published model"
             )
         )
     );
-    fails(
-        &schema_of("check", "request"),
-        &text.replace("false", "true"),
-        "fresh true",
+    // The same with current is read, and true.
+    let current = example("check/request").replace("false", "true");
+    assert!(CheckRequest::read(&parsed(&current)).unwrap().fresh);
+    // A session that isn't one is refused beside it, every reason at once.
+    let both = text.replace("s1", "s0");
+    assert_eq!(
+        said(&CheckRequest::read(&parsed(&both)).unwrap_err()),
+        [
+            (
+                "session".to_owned(),
+                r#"session must be a session's ID, s1, s2, ..., got "s0""#.to_owned()
+            ),
+            (
+                "fresh".to_owned(),
+                "fresh must be false for a read of the published model".to_owned()
+            ),
+        ]
     );
     // Its type, and the others', refused with every reason.
     assert_eq!(
@@ -983,11 +1022,27 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
         holds(&schema, "{}", of);
         fails(&schema, r#"{"x": 1}"#, of);
     }
-    // `check`'s fresh only false; `status`'s running a command that runs in a session, by
-    // name, or null, and its reads each one; `cancel`'s command, asked and answered, one.
+    // `check`'s fresh either boolean (M4.3: true with current; the reader refuses it with
+    // published); `status`'s running a command that runs in a session, by name, or null,
+    // and its reads each one; `cancel`'s command, asked and answered, one.
     let check = schema_of("check", "request");
-    assert_eq!(check["properties"]["fresh"]["const"], false);
+    assert_eq!(
+        check["properties"]["fresh"]["const"],
+        serde_json::Value::Null
+    );
     assert_eq!(check["properties"]["fresh"]["type"], "boolean");
+    for fresh in ["true", "false"] {
+        holds(
+            &check,
+            &format!(r#"{{"session": "s1", "model": "current", "fresh": {fresh}}}"#),
+            fresh,
+        );
+    }
+    fails(
+        &check,
+        r#"{"session": "s1", "model": "current", "fresh": "true"}"#,
+        "fresh as a string",
+    );
     let command = serde_json::json!({"$ref": "#/$defs/SessionCommand"});
     let status = schema_of("status", "result");
     assert_eq!(

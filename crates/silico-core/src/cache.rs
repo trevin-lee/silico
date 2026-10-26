@@ -525,6 +525,87 @@ impl Cache {
         self.usage.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// The directory it keeps its entries in (`.silico-cache/` beside a document), as it
+    /// was given, with no trailing slash and no `.` components.
+    pub fn directory(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Removes every entry in its directory (`cache_clear`, docs/design/m4.1-command-api.md,
+    /// section 7 and decision 25): this cache's, those of other secrets, platforms, and
+    /// kernels beside them, and none of anything else. An entry is what the cache writes and
+    /// [`scan`] counts: a regular file named by 62 lowercase hex digits in a subdirectory
+    /// named by two. Left are its `.gitignore`, its subdirectories (a write under way may be
+    /// about to put its entry in one), partial files (another process's write under way,
+    /// whose rename would then fail; a stale one is removed by the next put's scan), and
+    /// anything else, under any name; nothing is followed through a link, the directory's
+    /// own included (a cache through a link keeps nothing there, so none is removed). An
+    /// entry removed is only a miss: one another process reads as it's removed is read
+    /// whole, from the file it holds open, and one renamed into place after it's listed is
+    /// left, whole (M2.5's sealed entries: an entry is whole or absent, never trusted
+    /// half-written). Read and removed in order of name, so what it says of a failure is the
+    /// same each time.
+    ///
+    /// How many entries it removed (not those another process removed first); or, if any
+    /// couldn't be removed, or a directory of the cache couldn't be read, each, with how many
+    /// it removed of the rest. Its next put scans the directory again, since what this cache
+    /// knew of its size is gone.
+    pub fn clear(&self) -> Result<u64, Uncleared> {
+        let span = tracing::info_span!(
+            "cache.clear",
+            dir = %self.dir.display(),
+            removed = tracing::field::Empty,
+            failed = tracing::field::Empty,
+        );
+        let _entered = span.enter();
+        let mut clearing = Uncleared::default();
+        // A directory that's a link (followed nowhere), a file, or nothing holds no entry of
+        // the cache's.
+        let is_dir = std::fs::symlink_metadata(&self.dir).map(|meta| meta.is_dir());
+        match is_dir {
+            Ok(true) => {
+                for (name, sub) in names_in(&self.dir, &mut clearing) {
+                    if !is_hex(&name, 2) {
+                        continue;
+                    }
+                    match std::fs::symlink_metadata(&sub) {
+                        Ok(meta) if meta.is_dir() => {}
+                        // A file or a link at a subdirectory's name: not the cache's.
+                        Ok(_) => continue,
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(e) => {
+                            clearing.failed(sub, Unclear::Read, e);
+                            continue;
+                        }
+                    }
+                    for (name, entry) in names_in(&sub, &mut clearing) {
+                        if is_hex(&name, 62) {
+                            clearing.remove(entry);
+                        }
+                    }
+                }
+            }
+            Ok(false) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => clearing.failed(self.dir.clone(), Unclear::Read, e),
+        }
+        // What it knew of the directory's size is gone: its next put scans it.
+        self.usage().known = None;
+        span.record("removed", clearing.removed);
+        span.record("failed", clearing.total);
+        if clearing.total == 0 {
+            tracing::info!(removed = clearing.removed, "cleared the cache");
+            Ok(clearing.removed)
+        } else {
+            tracing::warn!(
+                removed = clearing.removed,
+                failed = clearing.total,
+                "cleared the cache, but for what couldn't be removed or read"
+            );
+            Err(clearing)
+        }
+    }
+
     /// Whether it has the user's secret to seal entries with: without it, it keeps nothing.
     pub(crate) fn sealed(&self) -> bool {
         self.secret.is_some()
@@ -570,6 +651,90 @@ impl Cache {
         let hex = crate::hex(&key.0);
         self.dir.join(&hex[..2]).join(&hex[2..])
     }
+}
+
+/// What [`Cache::clear`] couldn't do: each file it couldn't remove and each directory of the
+/// cache it couldn't read, the first [`UNCLEARED_LISTED`] in order of path, how many there
+/// were in all, and how many entries it removed besides.
+#[derive(Debug, Default)]
+pub struct Uncleared {
+    /// The entries it removed.
+    pub removed: u64,
+    /// The first of what it couldn't do: where, what, and why.
+    pub failures: Vec<(PathBuf, Unclear, std::io::Error)>,
+    /// How many there were, listed or not.
+    pub total: u64,
+}
+
+/// How many of what [`Cache::clear`] couldn't do are listed: as many as a response lists
+/// (`document::PROBLEMS_LISTED`).
+pub const UNCLEARED_LISTED: usize = crate::document::PROBLEMS_LISTED;
+
+/// What [`Cache::clear`] couldn't do to a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unclear {
+    /// An entry it couldn't remove.
+    Remove,
+    /// A directory of the cache it couldn't read: what's in it, if anything, is left.
+    Read,
+}
+
+impl Uncleared {
+    /// `path` counted as what it couldn't do, `what`, for `why`; listed if there's room.
+    fn failed(&mut self, path: PathBuf, what: Unclear, why: std::io::Error) {
+        self.total += 1;
+        if self.failures.len() < UNCLEARED_LISTED {
+            self.failures.push((path, what, why));
+        }
+    }
+
+    /// The entry at `path` removed, unless it's no regular file (a link, a directory, a
+    /// pipe: not one the cache made), or another process removed it first.
+    fn remove(&mut self, path: PathBuf) {
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_file() => {}
+            Ok(_) => return,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                self.failed(path, Unclear::Remove, e);
+                return;
+            }
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => self.removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => self.failed(path, Unclear::Remove, e),
+        }
+    }
+}
+
+/// The names in the directory `dir`, and their paths, in order of name; one that can't be
+/// read (or listed whole) counted in `clearing`, as what's in it that can be is listed.
+/// Nothing, without failing, for a directory gone (another process's clear, say).
+fn names_in(dir: &Path, clearing: &mut Uncleared) -> Vec<(std::ffi::OsString, PathBuf)> {
+    let items = match std::fs::read_dir(dir) {
+        Ok(items) => items,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) => {
+            clearing.failed(dir.to_owned(), Unclear::Read, e);
+            return Vec::new();
+        }
+    };
+    let mut names = Vec::new();
+    let mut unread = None;
+    for item in items {
+        match item {
+            Ok(item) => names.push((item.file_name(), item.path())),
+            Err(e) => {
+                unread.get_or_insert(e);
+            }
+        }
+    }
+    if let Some(e) = unread {
+        clearing.failed(dir.to_owned(), Unclear::Read, e);
+    }
+    names.sort();
+    names
 }
 
 /// Whether `path` is a symbolic link (not followed).
