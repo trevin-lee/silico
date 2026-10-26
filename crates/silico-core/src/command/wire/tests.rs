@@ -1074,3 +1074,20 @@ fn a_models_fault_is_written_in_the_error_contracts_shape() {
         })
     );
 }
+
+/// `wire_shape` closes an object, but leaves alone a schema that isn't one (an enum of
+/// names, as `SessionCommand` is): `additionalProperties` means nothing there.
+#[test]
+fn wire_shape_closes_an_object_and_leaves_any_other_schema_as_it_is() {
+    let shaped = |value: serde_json::Value| {
+        let mut schema = schemars::Schema::try_from(value).unwrap();
+        super::wire_shape(&mut schema);
+        schema.as_value().clone()
+    };
+    let names = serde_json::json!({"type": "string", "enum": ["a", "b"]});
+    assert_eq!(shaped(names.clone()), names);
+    assert_eq!(
+        shaped(serde_json::json!({"type": "object"})),
+        serde_json::json!({"type": "object", "additionalProperties": false})
+    );
+}

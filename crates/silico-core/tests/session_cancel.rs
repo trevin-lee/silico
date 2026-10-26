@@ -122,7 +122,7 @@ impl Fixture {
 #[test]
 fn cancel_naming_the_running_check_stops_its_rebuild_and_the_check_answers_cancelled() {
     let f = opened();
-    let (hold, check) = f.running_held(|| f.sessions.check(&f.id));
+    let (hold, check) = f.running_held(|| f.sessions.check(&f.id, ModelChoice::Current));
     let status = f.sessions.status(&f.id).result.unwrap();
     assert_eq!(status.running, Some("check"));
     assert_eq!(
@@ -167,8 +167,8 @@ fn cancel_naming_the_running_check_stops_its_rebuild_and_the_check_answers_cance
     assert_eq!(f.rebuild(), RebuildState::Stopped);
     // The next check does, the box made again (a stopped step isn't kept).
     hold.release();
-    let checked = answer(f.sessions.check(&f.id));
-    assert!(checked.result.unwrap().is_empty());
+    let checked = answer(f.sessions.check(&f.id, ModelChoice::Current));
+    assert!(checked.result.unwrap().problems.is_empty());
     assert_eq!(f.boxes(), 2);
     assert_eq!(f.rebuild(), RebuildState::Done);
 }
@@ -177,7 +177,7 @@ fn cancel_naming_the_running_check_stops_its_rebuild_and_the_check_answers_cance
 fn a_checks_own_handle_stops_it_as_cancel_does() {
     // MCP's cancellation (decision 10), the Rust handle's.
     let f = opened();
-    let (_hold, check) = f.running_held(|| f.sessions.check(&f.id));
+    let (_hold, check) = f.running_held(|| f.sessions.check(&f.id, ModelChoice::Current));
     assert!(check.cancel());
     // Asked again, it's still stopped.
     assert!(check.cancel());
@@ -227,7 +227,10 @@ fn cancel_naming_another_command_is_refused_with_whats_running_as_the_candidate(
     assert_eq!(refusal(&stopped), cancelled("set_field"));
     assert_eq!(f.file(), BOX);
     assert_eq!(f.revision(), Revision::OPENED);
-    assert_eq!(answer(f.sessions.text(&f.id, None)).result.unwrap(), BOX);
+    assert_eq!(
+        answer(f.sessions.text(&f.id, None)).result.unwrap().text,
+        BOX
+    );
 }
 
 #[test]
@@ -250,9 +253,9 @@ fn a_cancel_of_nothing_running_or_that_comes_late_is_refused_and_stops_nothing_a
     let hold = f
         .kernel
         .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx > 40.5));
-    let check = f.sessions.check(&f.id);
+    let check = f.sessions.check(&f.id, ModelChoice::Current);
     let edit = f.longer();
-    assert!(answer(check).result.unwrap().is_empty());
+    assert!(answer(check).result.unwrap().problems.is_empty());
     assert!(f.kernel.wait_running(1, HANG));
     let late = f.sessions.cancel(&f.id, "check");
     assert_eq!(
@@ -273,7 +276,7 @@ fn a_cancel_of_nothing_running_or_that_comes_late_is_refused_and_stops_nothing_a
 #[test]
 fn a_cancel_stops_the_running_check_and_never_the_edit_queued_after_it() {
     let f = opened();
-    let (hold, check) = f.running_held(|| f.sessions.check(&f.id));
+    let (hold, check) = f.running_held(|| f.sessions.check(&f.id, ModelChoice::Current));
     let edit = f.longer();
     assert!(f.sessions.cancel(&f.id, "check").result.unwrap().stopped);
     assert_eq!(refusal(&answer(check)), cancelled("check"));
@@ -287,14 +290,14 @@ fn a_cancel_stops_the_running_check_and_never_the_edit_queued_after_it() {
 #[test]
 fn an_edit_cancelled_by_its_handle_while_queued_never_runs() {
     let f = opened();
-    let (hold, check) = f.running_held(|| f.sessions.check(&f.id));
+    let (hold, check) = f.running_held(|| f.sessions.check(&f.id, ModelChoice::Current));
     let edit = f.longer();
     assert!(edit.cancel());
     // Changed outside the session meanwhile: a command that ran would reload it first.
     let outside = BOX.replace("\"Block\"", "\"Plate\"");
     std::fs::write(&f.path, &outside).unwrap();
     hold.release();
-    assert!(answer(check).result.unwrap().is_empty());
+    assert!(answer(check).result.unwrap().problems.is_empty());
     let stopped = answer(edit);
     assert_eq!(refusal(&stopped), cancelled("set_field"));
     let session = stopped.session.unwrap();
@@ -335,7 +338,13 @@ fn a_commit_cancelled_while_it_waits_for_its_rebuild_leaves_the_transaction_open
 #[test]
 fn a_published_read_is_stopped_by_name_and_answers_cancelled() {
     let f = opened();
-    assert!(answer(f.sessions.check(&f.id)).result.unwrap().is_empty());
+    assert!(
+        answer(f.sessions.check(&f.id, ModelChoice::Current))
+            .result
+            .unwrap()
+            .problems
+            .is_empty()
+    );
     let (go, wait) = mpsc::channel::<()>();
     let (started, was_started) = mpsc::channel::<bool>();
     let (seen, saw) = mpsc::channel::<bool>();
@@ -373,7 +382,7 @@ fn a_stopper_cancels_the_command_from_another_thread_while_its_handle_waits() {
     // MCP's server waits on a request's handle, and is told it was cancelled elsewhere.
     fn shared<T: Clone + Send + Sync + 'static>(_: &T) {}
     let f = opened();
-    let (_hold, check) = f.running_held(|| f.sessions.check(&f.id));
+    let (_hold, check) = f.running_held(|| f.sessions.check(&f.id, ModelChoice::Current));
     let stopper = check.stopper();
     shared(&stopper);
     let cancelling = std::thread::spawn(move || {
@@ -395,14 +404,14 @@ fn a_stopper_cancels_the_command_from_another_thread_while_its_handle_waits() {
 fn close_waits_for_the_command_ahead_of_it_and_cancels_nothing() {
     // Commands run in turn, each to its end (section 3): stopping one is said by name.
     let f = opened();
-    let (hold, check) = f.running_held(|| f.sessions.check(&f.id));
+    let (hold, check) = f.running_held(|| f.sessions.check(&f.id, ModelChoice::Current));
     let close = f.sessions.close(&f.id);
     let close = match close.wait_timeout(std::time::Duration::from_millis(50)) {
         Ok(response) => panic!("close answered before the check: {response:?}"),
         Err(close) => close,
     };
     hold.release();
-    assert!(answer(check).result.unwrap().is_empty());
+    assert!(answer(check).result.unwrap().problems.is_empty());
     answer(close).result.unwrap();
 }
 
@@ -433,7 +442,13 @@ fn an_edit_cancelled_while_its_commit_rebuilds_stops_that_rebuild() {
 #[test]
 fn cancel_stops_every_read_of_its_name_and_its_refusal_names_each_command_running() {
     let f = opened();
-    assert!(answer(f.sessions.check(&f.id)).result.unwrap().is_empty());
+    assert!(
+        answer(f.sessions.check(&f.id, ModelChoice::Current))
+            .result
+            .unwrap()
+            .problems
+            .is_empty()
+    );
     // Two published reads of one name, each waiting for a go.
     let (go, wait) = mpsc::channel::<()>();
     let wait = Arc::new(Mutex::new(wait));
@@ -488,7 +503,13 @@ fn status_says_none_of_a_revision_nothing_rebuilt_or_whose_document_the_gate_ref
     std::fs::write(&flat, BOX.replace("\"length\": 40", "\"length\": 0")).unwrap();
     let s = answer(f.sessions.open(&flat, false)).session.unwrap().id;
     // Its check gives the gate's problems, and rebuilds nothing.
-    assert!(!answer(f.sessions.check(&s)).result.unwrap().is_empty());
+    assert!(
+        !answer(f.sessions.check(&s, ModelChoice::Current))
+            .result
+            .unwrap()
+            .problems
+            .is_empty()
+    );
     let status = f.sessions.status(&s).result.unwrap();
     assert!(!status.gated);
     assert_eq!(status.rebuild.state, RebuildState::None);
@@ -511,9 +532,9 @@ fn a_command_that_has_answered_is_past_a_cancel_whether_it_ran_or_was_refused() 
     // Its answer settles its stop: a check, which leaves no trace of its own, and an open
     // refused before it opened, are each past a cancel once they've answered.
     let f = opened();
-    let check = f.sessions.check(&f.id);
+    let check = f.sessions.check(&f.id, ModelChoice::Current);
     let stopper = check.stopper();
-    assert!(answer(check).result.unwrap().is_empty());
+    assert!(answer(check).result.unwrap().problems.is_empty());
     assert!(!stopper.cancel());
     let opening = f
         .sessions

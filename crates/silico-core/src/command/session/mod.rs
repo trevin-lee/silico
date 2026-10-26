@@ -106,9 +106,10 @@ use threads::{Counted, Reads, Threads};
 use transaction::{Claim, Held, Reload, Rereads, transaction_open};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
-    Added, Begun, Cancelled, Committed, FieldSet, ModelChoice, ModelRead, Opened, Published, Read,
-    ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision,
-    RolledBack, Running, SessionId, SessionInfo, Status, Stopper,
+    Added, Begun, Cancelled, CheckAnswer, Closed, Committed, FieldSet, ModelChoice, ModelRead,
+    Opened, OutlineAnswer, Published, Read, ReadClient, Rebuild, RebuildState, Reformatted,
+    Removed, Replaced, Response, Revision, RolledBack, Running, SessionId, SessionInfo, Status,
+    Stopper, TextAnswer,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 
@@ -431,7 +432,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// changed never keeps it open. It doesn't cancel the command ahead of it: commands run
     /// in the order they arrive, each to its end (the design's section 3), and stopping one
     /// is said by naming it ([`cancel`](Self::cancel)).
-    pub fn close(&self, session: &SessionId) -> Running<()> {
+    pub fn close(&self, session: &SessionId) -> Running<Closed> {
         let registry = Arc::downgrade(&self.registry);
         self.queued_with(
             session,
@@ -442,7 +443,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 if let Some(registry) = registry.upgrade() {
                     lock(&registry.book).release(session.id);
                 }
-                Ok(())
+                Ok(Closed)
             },
         )
     }
@@ -538,10 +539,10 @@ impl<P: Clients + 'static> Sessions<P> {
     /// a `feature`, that feature's canonical text ([`document::write_feature`]). Refused if
     /// the text isn't UTF-8 (the reader refused it), or, for a feature, if the text doesn't
     /// read as a document or hasn't one feature of that ID.
-    pub fn text(&self, session: &SessionId, feature: Option<FeatureId>) -> Running<String> {
+    pub fn text(&self, session: &SessionId, feature: Option<FeatureId>) -> Running<TextAnswer> {
         self.queued(session, "text", move |session, _, _| {
             let (text, gated) = session.document();
-            match feature {
+            let text = match feature {
                 None => String::from_utf8(text.to_vec()).map_err(|e| {
                     Problems::from(
                         Error::new(
@@ -558,31 +559,63 @@ impl<P: Clients + 'static> Sessions<P> {
                     let document = gated.document().map_err(Clone::clone)?;
                     Ok(document::write_feature(document.feature(&id)?)?)
                 }
-            }
+            }?;
+            Ok(TextAnswer { text })
         })
     }
 
-    /// `session`'s document's problems ([`super::check`]): the gate's, if it refused the
-    /// document, or, from the session's current revision rebuilt (waited for, and started if
-    /// it hasn't been: decision 13), each failed feature's and each drift of a feature no
-    /// edit reached since the last save (decision 28: a reached feature's stored fingerprint
-    /// was measured from other inputs, and a commit writes its new one). A kernel fault (a
-    /// worker that crashed or hung) isn't the document's: it's given once, beside them, in
-    /// the response's `model` ([`ModelRead::fault`]), and kept as the revision's outcome, so
-    /// the next check of the revision reads the same model (decision 32).
-    pub fn check(&self, session: &SessionId) -> Running<Problems> {
-        self.queued(session, "check", |session, stop, model| {
-            match session.current(stop) {
-                Ok(current) => {
-                    *model = Some(current.read);
-                    let _span = tracing::info_span!("check").entered();
-                    super::check_except(&current.model, &current.reached, Faults::Aside)
-                        .map_err(Problems::from)
-                }
-                Err(Unbuilt::Gated(problems)) => Ok(problems),
-                Err(Unbuilt::Unavailable(problems)) => Err(problems),
+    /// `session`'s document's problems ([`super::check`]) from the model `choice` names
+    /// (decision 33), and its warnings (none yet).
+    ///
+    /// The current revision's: the gate's problems, if it refused the document, or, from the
+    /// session's current revision rebuilt (waited for, and started if it hasn't been:
+    /// decision 13), each failed feature's and each drift of a feature no edit reached since
+    /// the last save (decision 28: a reached feature's stored fingerprint was measured from
+    /// other inputs, and a commit writes its new one).
+    ///
+    /// Or the newest published model's, answered at once from what the session's rebuilds
+    /// have published, never waiting for a rebuild or queueing behind its commands, as every
+    /// published read is ([`read_model`](Self::read_model)): its revision in the response's
+    /// `model`, which may be an older one's. Its drift leaves out what the session's edits
+    /// reached at that model's revision, kept with it ([`Read::reached`]): exactly that
+    /// revision's, whatever edits came since. With nothing published, it's refused as every
+    /// published read is: naming `model`, or, for a document the gate refused, with the
+    /// gate's problems.
+    ///
+    /// Either way, a kernel fault (a worker that crashed or hung) isn't the document's: it's
+    /// given once, beside them, in the response's `model` ([`ModelRead::fault`]), and kept as
+    /// the revision's outcome, so the next check of the revision reads the same model
+    /// (decision 32).
+    pub fn check(&self, session: &SessionId, choice: ModelChoice) -> Running<CheckAnswer> {
+        let answer = |problems| CheckAnswer {
+            problems,
+            warnings: Problems::none(),
+        };
+        match choice {
+            ModelChoice::Current => {
+                self.queued(session, "check", move |session, stop, model| match session
+                    .current(stop)
+                {
+                    Ok(current) => {
+                        *model = Some(current.read);
+                        let _span = tracing::info_span!("check").entered();
+                        super::check_except(&current.model, current.reached.get(), Faults::Aside)
+                            .map(answer)
+                            .map_err(Problems::from)
+                    }
+                    Err(Unbuilt::Gated(problems)) => Ok(answer(problems)),
+                    Err(Unbuilt::Unavailable(problems)) => Err(problems),
+                })
             }
-        })
+            ModelChoice::Published => {
+                self.read_model(session, "check", ModelChoice::Published, move |read| {
+                    let _span = tracing::info_span!("check").entered();
+                    super::check_except(read.model(), read.reached(), Faults::Aside)
+                        .map(answer)
+                        .map_err(Problems::from)
+                })
+            }
+        }
     }
 
     /// Runs `read` on the model `choice` names, off the caller's thread (decision 33), as
@@ -618,6 +651,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     read: current.read,
                     stop,
                     kernel: &kernel,
+                    reached: &current.reached,
                 })
             }),
             ModelChoice::Published => {
@@ -682,6 +716,7 @@ impl<P: Clients + 'static> Sessions<P> {
                                         read: model,
                                         stop: &stop,
                                         kernel: &kernel,
+                                        reached: &published.reached,
                                     })
                                 })
                             },
@@ -719,11 +754,13 @@ impl<P: Clients + 'static> Sessions<P> {
 
     /// `session`'s document's outline ([`super::outline`]), as `silico show` prints it.
     /// Refused, with the reader's error, if the text doesn't read as a document.
-    pub fn outline(&self, session: &SessionId) -> Running<String> {
+    pub fn outline(&self, session: &SessionId) -> Running<OutlineAnswer> {
         self.queued(session, "outline", |session, _, _| {
             let (_, gated) = session.document();
             let document = gated.document().map_err(Clone::clone)?;
-            Ok(super::outline(document))
+            Ok(OutlineAnswer {
+                outline: super::outline(document),
+            })
         })
     }
 

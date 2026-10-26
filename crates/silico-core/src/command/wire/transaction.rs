@@ -14,7 +14,8 @@ use crate::command::{Begun, Committed, Problems, Reformatted, RolledBack, Sessio
 use crate::document::json::Node;
 use crate::document::{FeatureId, PROBLEMS_LISTED};
 
-/// A request that names only its session: `begin`'s, `commit`'s, and `rollback`'s.
+/// A request that names only its session: `begin`'s, `commit`'s, and `rollback`'s, and
+/// `close`'s, `status`'s, and `outline`'s.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionRequest {
     pub session: SessionId,

@@ -90,7 +90,10 @@ impl Fixture {
     }
 
     fn text(&self) -> String {
-        answer(self.sessions.text(&self.id, None)).result.unwrap()
+        answer(self.sessions.text(&self.id, None))
+            .result
+            .unwrap()
+            .text
     }
 
     fn set(
@@ -189,8 +192,8 @@ fn a_field_set_outside_a_transaction_is_saved_with_the_fingerprints_it_reached()
     assert_eq!(f.text(), BLOCK_41);
     // The saved revision's check finds no drift: its model is the edit's, rebound to the
     // saved document, never the edit's own, which holds the fingerprint as it was.
-    let check = answer(f.sessions.check(&f.id));
-    assert!(check.result.unwrap().is_empty());
+    let check = answer(f.sessions.check(&f.id, ModelChoice::Current));
+    assert!(check.result.unwrap().problems.is_empty());
     assert_eq!(check.model.unwrap().revision.number(), 2);
 }
 
@@ -198,8 +201,8 @@ fn a_field_set_outside_a_transaction_is_saved_with_the_fingerprints_it_reached()
 fn a_field_set_outside_a_transaction_publishes_its_model_over_an_older_one() {
     let f = opened(BLOCK);
     // Revision 1's model published first: the edit's must take its place.
-    let check = answer(f.sessions.check(&f.id));
-    assert!(check.result.unwrap().is_empty());
+    let check = answer(f.sessions.check(&f.id, ModelChoice::Current));
+    assert!(check.result.unwrap().problems.is_empty());
     assert_eq!(
         f.sessions.published(&f.id).model.unwrap().revision,
         Revision::OPENED
@@ -218,8 +221,8 @@ fn a_field_set_outside_a_transaction_publishes_its_model_over_an_older_one() {
     }
     // The saved revision's check takes it: nothing is rebuilt.
     let calls = f.kernel.calls().len();
-    let check = answer(f.sessions.check(&f.id));
-    assert!(check.result.unwrap().is_empty());
+    let check = answer(f.sessions.check(&f.id, ModelChoice::Current));
+    assert!(check.result.unwrap().problems.is_empty());
     assert_eq!(check.model.unwrap().revision.number(), 2);
     assert_eq!(f.kernel.calls().len(), calls);
 }
@@ -324,7 +327,7 @@ fn ten_edits_in_a_transaction_rebuild_nothing_and_the_first_check_rebuilds_once(
         );
     }
     assert!(f.kernel.calls().is_empty(), "{:?}", f.kernel.calls());
-    let check = answer(f.sessions.check(&f.id));
+    let check = answer(f.sessions.check(&f.id, ModelChoice::Current));
     // Revision 1 at open, and one for each edit: the tenth is 11.
     assert_eq!(check.model.unwrap().revision.number(), 11);
     let boxes: Vec<f64> = f
@@ -380,7 +383,7 @@ fn a_refused_commit_of_an_edit_outside_a_transaction_leaves_the_session_as_it_wa
     assert!(f.sessions.published(&f.id).result.is_err());
     let text = answer(f.sessions.text(&f.id, None));
     assert!(text.session.unwrap().reloaded);
-    assert_eq!(text.result.unwrap(), "edited elsewhere");
+    assert_eq!(text.result.unwrap().text, "edited elsewhere");
 }
 
 #[test]
@@ -977,7 +980,9 @@ fn a_commit_of_an_edit_outside_a_transaction_rebuilds_it_on_the_kernel_once() {
     f.set("k7f2qx3m", "length", "41").result.unwrap();
     assert_eq!(f.boxes(), 1);
     // Its check rebuilds the saved document from the steps already built.
-    answer(f.sessions.check(&f.id)).result.unwrap();
+    answer(f.sessions.check(&f.id, ModelChoice::Current))
+        .result
+        .unwrap();
     assert_eq!(f.boxes(), 1);
 }
 
@@ -1132,8 +1137,8 @@ fn an_edit_outside_a_transaction_publishes_its_model_as_the_saved_revisions() {
         &document::read(BLOCK_41.as_bytes()).unwrap()
     );
     // Its check finds no drift and starts no rebuild: the model is the one published.
-    let check = answer(f.sessions.check(&f.id));
-    assert!(check.result.unwrap().is_empty());
+    let check = answer(f.sessions.check(&f.id, ModelChoice::Current));
+    assert!(check.result.unwrap().problems.is_empty());
     assert_eq!(check.model.unwrap().revision.number(), 2);
     assert_eq!(f.kernel.calls().len(), calls);
     let after = f.sessions.published(&f.id).result.unwrap();
@@ -1426,7 +1431,9 @@ fn an_edit_whose_save_writes_a_solve_leaves_its_check_to_rebuild_the_saved_docum
     let sent = f.sketches.requests().len();
     // The edit's model was solved from 11, not from what the file now holds: its check
     // solves the saved document again, sending pb's x as saved.
-    answer(f.sessions.check(&f.id)).result.unwrap();
+    answer(f.sessions.check(&f.id, ModelChoice::Current))
+        .result
+        .unwrap();
     let requests = f.sketches.requests();
     assert_eq!(requests.len(), sent + 1);
     assert_eq!(requests[sent].values[8], 12.25);
@@ -1469,7 +1476,9 @@ fn an_edit_refused_counts_places_in_its_own_order_not_the_canonical_text_s() {
 fn dropping_the_sessions_while_an_edit_rebuilds_refuses_it_and_writes_nothing() {
     let f = opened(SKETCHED);
     // Settled first, so the solve held is the edit's.
-    answer(f.sessions.check(&f.id)).result.unwrap();
+    answer(f.sessions.check(&f.id, ModelChoice::Current))
+        .result
+        .unwrap();
     f.sketches.hold();
     let running = f.sessions.set_field(
         &f.id,

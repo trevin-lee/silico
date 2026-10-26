@@ -1,0 +1,1 @@
+{"code": "invalid_input", "message": "\"bracket.silico\" already exists", "feature": null, "elements": [], "elements_total": 0, "parameter": "create", "cause": null, "suggestion": "open it without create, or give another path", "candidates": []}

@@ -68,9 +68,9 @@ pub(super) struct Snapshot {
     pub(super) revision: Revision,
     carried: Arc<BTreeSet<FeatureId>>,
     /// If its text didn't read as a document, the IDs it holds, found once, the first time
-    /// what the transaction's edits reach is worked out ([`Reaching::reach`]): outside the
-    /// held state's lock, so a long text's scan never keeps `status` or a published read
-    /// waiting.
+    /// what the transaction's edits reach is worked out ([`Reached::get`]): off the caller's
+    /// thread and outside every lock, so a long text's scan never keeps `status` or a
+    /// published read waiting.
     quoted: Arc<OnceLock<document::QuotedIds>>,
 }
 
@@ -160,11 +160,20 @@ impl Held {
 }
 
 /// What a session's edits reach at a revision, as its held state was then: its document,
-/// what was carried, and the transaction's snapshot, if one was open.
+/// what was carried, and the transaction's snapshot, if one was open. Cheap to take (shared
+/// values), and worked out apart from taking it ([`reach`](Self::reach)), which may scan a
+/// long text.
 pub(super) struct Reaching {
     gated: Arc<Gated>,
     carried: Arc<BTreeSet<FeatureId>>,
     begun: Option<Snapshot>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread has worked out what a session's edits reach
+    /// ([`Reaching::reach`]): so a test can say a caller's thread never does.
+    pub(super) static REACHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl Reaching {
@@ -175,6 +184,8 @@ impl Reaching {
     /// edit undone reaches nothing. Those a commit writes new records for, and whose drift
     /// a check doesn't say. Outside a transaction, what's carried.
     pub(super) fn reach(&self) -> BTreeSet<FeatureId> {
+        #[cfg(test)]
+        REACHES.with(|reaches| reaches.set(reaches.get() + 1));
         let Ok(now) = self.gated.document() else {
             return (*self.carried).clone();
         };
@@ -190,6 +201,53 @@ impl Reaching {
             ),
         };
         document::net_reach(before, &self.carried, now)
+    }
+}
+
+/// What a session's edits reach at a revision ([`Reaching::reach`]), kept with its rebuild
+/// and the model that publishes, and worked out once, the first time it's asked for
+/// ([`get`](Self::get)), by whoever asks: a check, on its session's thread or a published
+/// read's own. Never by a caller that only takes it, nor under a lock, so a published read
+/// (a UI's, each frame) never waits on a long text's scan. Until then it holds what it's
+/// worked out from, the values the session held at that revision.
+#[derive(Clone, Default)]
+pub(crate) struct Reached(Arc<OnceReached>);
+
+#[derive(Default)]
+struct OnceReached {
+    /// What it's worked out from: none for an edit's candidate, never published as it is,
+    /// which reaches nothing.
+    reaching: Option<Reaching>,
+    reach: OnceLock<BTreeSet<FeatureId>>,
+}
+
+impl Reached {
+    /// What the session's edits reach, as `reaching` was taken, not worked out yet.
+    pub(super) fn of(reaching: Reaching) -> Self {
+        Reached(Arc::new(OnceReached {
+            reaching: Some(reaching),
+            reach: OnceLock::new(),
+        }))
+    }
+
+    /// The features reached, worked out now if they haven't been.
+    pub(crate) fn get(&self) -> &BTreeSet<FeatureId> {
+        let once = &*self.0;
+        once.reach.get_or_init(|| {
+            once.reaching
+                .as_ref()
+                .map_or_else(BTreeSet::new, Reaching::reach)
+        })
+    }
+}
+
+impl std::fmt::Debug for Reached {
+    /// The features, if they've been worked out; never working them out to say so.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.reach.get() {
+            Some(reach) => f.debug_tuple("Reached").field(reach).finish(),
+            None => f.write_str("Reached(not worked out)"),
+        }
     }
 }
 
@@ -291,10 +349,20 @@ impl<C: Kernel + 'static> Session<C> {
                 rebuilds.engine.cancel();
             }
             rebuilds.ended = None;
+            // What the edits reach at the restored state, the transaction ended: what they
+            // reached at `begin`. Taken, not worked out, under the locks.
+            let reached = Reached::of(held.reaching());
             match (kept.model, &*begun.gated) {
-                (Some(model), _) => rebuilds.published = Some(Published { revision, model }),
+                (Some(model), _) => {
+                    rebuilds.published = Some(Published {
+                        revision,
+                        model,
+                        reached,
+                    });
+                }
                 (None, Gated::Checked(checked)) if kept.started => {
-                    if let Err(problems) = self.start_unless_newer(&mut rebuilds, revision, checked)
+                    if let Err(problems) =
+                        self.start_unless_newer(&mut rebuilds, revision, checked, &reached)
                         && !self.closed()
                     {
                         // Started again by the next command that needs the model.
@@ -425,12 +493,12 @@ impl<C: Kernel + 'static> Session<C> {
             },
             Through::Candidate => Saver::Edit,
         };
-        let reach = Reaching {
+        let reached = Reached::of(Reaching {
             gated: Arc::clone(&gated),
             carried,
             begun: Some(begun.clone()),
-        }
-        .reach();
+        });
+        let reach = reached.get();
         // As canonical form writes them: a document read from a file whose sketch lists
         // aren't in ID order is the one its canonical text reads as.
         let unchanged = match (begun.gated.document(), gated.document()) {
@@ -481,11 +549,11 @@ impl<C: Kernel + 'static> Session<C> {
             refused => return Err(refused.problems()),
         };
         let model = match through {
-            Through::Transaction => self.model(stop, revision, checked)?,
+            Through::Transaction => self.model(stop, revision, checked, &reached)?,
             Through::Candidate => self.candidate_model(stop, revision, checked)?,
         };
         *read = Some(ModelRead::of(revision, ModelChoice::Current, &model));
-        let formatted = crate::command::formatted(&model, &reach, &model.drifted(), Faults::Aside)
+        let formatted = crate::command::formatted(&model, reach, &model.drifted(), Faults::Aside)
             .map_err(Problems::from)??;
         if unchanged {
             if through == Through::Transaction {
@@ -509,7 +577,7 @@ impl<C: Kernel + 'static> Session<C> {
             Save {
                 text: saved,
                 model: &model,
-                reach: &reach,
+                reach,
                 publish,
             },
             saver,
@@ -560,7 +628,10 @@ impl<C: Kernel + 'static> Session<C> {
                 Arc::clone(&begun.gated),
                 carried,
             );
-            // The same document: its model is the new revision's too.
+            // The same document: its model is the new revision's too, and what it reached
+            // is what's reached at the new revision: the transaction's edits came back to the
+            // document `begin` saw, so they reach nothing (`document::net_reach`), and what's
+            // reached at both is what was carried, with every feature that uses it.
             if let Some(published) = &mut rebuilds.published
                 && published.revision == revision
             {
@@ -602,7 +673,8 @@ impl<C: Kernel + 'static> Session<C> {
                 held.reaching(),
             )
         };
-        let reach = reaching.reach();
+        let reached = Reached::of(reaching);
+        let reach = reached.get();
         let checked = match &*gated {
             Gated::Checked(checked) => checked,
             refused => return Err(refused.problems()),
@@ -612,12 +684,12 @@ impl<C: Kernel + 'static> Session<C> {
             None => None,
             Some(accept) => Some(named(document, accept)?),
         };
-        let model = self.model(stop, revision, checked)?;
+        let model = self.model(stop, revision, checked, &reached)?;
         *read = Some(ModelRead::of(revision, ModelChoice::Current, &model));
         // Each feature's drift, once: a feature edits reached isn't drift.
         let drift = model.drifted();
         let drifted: BTreeSet<&FeatureId> = model
-            .drift_left(&drift, &reach)
+            .drift_left(&drift, reach)
             .filter(|(_, error)| error.code() == ErrorCode::Drift)
             .map(|(id, _)| id)
             .collect();
@@ -644,7 +716,7 @@ impl<C: Kernel + 'static> Session<C> {
                 Save {
                     text: Arc::new(saved),
                     model: &model,
-                    reach: &reach,
+                    reach,
                     publish: formatted.resolved.is_empty(),
                 },
                 Saver::Format,
@@ -735,6 +807,9 @@ impl<C: Kernel + 'static> Session<C> {
             rebuilds.published = Some(Published {
                 revision: next,
                 model: Arc::new(model.rebound(Arc::clone(checked))),
+                // The saved revision's, its transaction ended: what's carried, and what uses
+                // it. Taken, not worked out, under the locks.
+                reached: Reached::of(held.reaching()),
             });
         }
         Ok(gated)

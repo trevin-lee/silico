@@ -94,12 +94,12 @@ impl Fixture {
 }
 
 /// A check that found no problems, of the model rebuilt from revision 1.
-fn clean(response: &Response<command::Problems>) {
+fn clean(response: &Response<command::CheckAnswer>) {
     assert!(
         response
             .result
             .as_ref()
-            .is_ok_and(command::Problems::is_empty),
+            .is_ok_and(|checked| checked.problems.is_empty()),
         "{response:?}"
     );
     assert_eq!(
@@ -128,9 +128,9 @@ fn one_sessions_rebuild_never_supersedes_anothers() {
     let hold = f
         .kernel
         .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
-    let mut held = f.sessions.check(&a);
+    let mut held = f.sessions.check(&a, ModelChoice::Current);
     assert!(f.kernel.wait_running(1, HANG));
-    clean(&answer(f.sessions.check(&b)));
+    clean(&answer(f.sessions.check(&b, ModelChoice::Current)));
     held = match held.try_take() {
         Ok(response) => panic!("A answered while its box was held: {response:?}"),
         Err(running) => running,
@@ -154,15 +154,15 @@ fn one_sessions_rebuild_never_supersedes_anothers() {
 fn sessions_in_one_directory_build_its_common_steps_once() {
     let f = fixture();
     let a = f.open(&f.file("one/a.silico", BOX));
-    clean(&answer(f.sessions.check(&a)));
+    clean(&answer(f.sessions.check(&a, ModelChoice::Current)));
     assert_eq!(f.boxes(), 1);
     // The same box under another ID, beside it: taken from the directory's cache.
     let b = f.open(&f.file("one/b.silico", SAME_BOX));
-    clean(&answer(f.sessions.check(&b)));
+    clean(&answer(f.sessions.check(&b, ModelChoice::Current)));
     assert_eq!(f.boxes(), 1);
     // In another directory, another cache: made again.
     let c = f.open(&f.file("two/c.silico", SAME_BOX));
-    clean(&answer(f.sessions.check(&c)));
+    clean(&answer(f.sessions.check(&c, ModelChoice::Current)));
     assert_eq!(f.boxes(), 2);
 }
 
@@ -170,10 +170,10 @@ fn sessions_in_one_directory_build_its_common_steps_once() {
 fn a_second_check_of_a_revision_reads_the_model_its_first_made() {
     let f = fixture();
     let a = f.open(&f.file("a.silico", BOX));
-    clean(&answer(f.sessions.check(&a)));
+    clean(&answer(f.sessions.check(&a, ModelChoice::Current)));
     let first = f.sessions.published(&a).result.unwrap();
     let calls = f.kernel.calls().len();
-    clean(&answer(f.sessions.check(&a)));
+    clean(&answer(f.sessions.check(&a, ModelChoice::Current)));
     // No rebuild: the kernel asked nothing, and the model is the same one, not one rebuilt.
     assert_eq!(f.kernel.calls().len(), calls);
     let second = f.sessions.published(&a).result.unwrap();
@@ -185,8 +185,8 @@ fn a_check_of_a_document_the_gate_refused_gives_its_problems_and_rebuilds_nothin
     let flat = BOX.replace("\"length\": 40", "\"length\": 0");
     let f = fixture();
     let s = f.open(&f.file("flat.silico", &flat));
-    let response = answer(f.sessions.check(&s));
-    let problems = response.result.unwrap();
+    let response = answer(f.sessions.check(&s, ModelChoice::Current));
+    let problems = response.result.unwrap().problems;
     assert_eq!(problems.total(), 1);
     assert_eq!(
         problems.errors()[0].message(),
@@ -213,7 +213,7 @@ fn a_sessions_sketches_are_solved_by_the_registrys_starter() {
     let sketch = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}]}"#;
     let f = fixture();
     let s = f.open(&f.file("sketch.silico", sketch));
-    clean(&answer(f.sessions.check(&s)));
+    clean(&answer(f.sessions.check(&s, ModelChoice::Current)));
     // One solver started, which solved the one sketch.
     assert_eq!(f.solvers.load(Ordering::SeqCst), 1);
     assert_eq!(f.sketches.requests().len(), 1);
@@ -227,7 +227,7 @@ fn dropping_the_sessions_mid_rebuild_stops_it_and_returns_at_once() {
     let path = f.file("a.silico", BOX);
     let a = f.open(&path);
     let _hold = f.kernel.hold(|_| true);
-    let check = f.sessions.check(&a);
+    let check = f.sessions.check(&a, ModelChoice::Current);
     assert!(f.kernel.wait_running(1, HANG));
     let Fixture { dir, sessions, .. } = f;
     let lateness = Lateness::start();
@@ -268,7 +268,7 @@ fn a_sessions_check_gives_its_models_failures() {
             .then(|| silico_core::Error::new(ErrorCode::KernelFailed, "MakeBox failed"))
     });
     let a = f.open(&f.file("a.silico", BOX));
-    let response = answer(f.sessions.check(&a));
+    let response = answer(f.sessions.check(&a, ModelChoice::Current));
     assert_eq!(
         response.model,
         Some(ModelRead {
@@ -277,7 +277,7 @@ fn a_sessions_check_gives_its_models_failures() {
             fault: None,
         })
     );
-    let problems = response.result.unwrap();
+    let problems = response.result.unwrap().problems;
     assert_eq!(problems.total(), 1);
     assert_eq!(problems.errors()[0].code(), ErrorCode::KernelFailed);
     assert_eq!(problems.errors()[0].feature(), Some("k7f2qx3m"));
@@ -292,7 +292,10 @@ fn a_sessions_check_gives_drift_of_a_stored_fingerprint() {
     );
     let f = fixture();
     let a = f.open(&f.file("a.silico", &stored));
-    let problems = answer(f.sessions.check(&a)).result.unwrap();
+    let problems = answer(f.sessions.check(&a, ModelChoice::Current))
+        .result
+        .unwrap()
+        .problems;
     let codes: Vec<ErrorCode> = problems.errors().iter().map(|e| e.code()).collect();
     assert_eq!(codes, [ErrorCode::Drift]);
     assert_eq!(problems.errors()[0].feature(), Some("k7f2qx3m"));
@@ -330,8 +333,11 @@ fn a_kernel_fault_is_given_once_beside_the_checks_result_and_kept_for_the_revisi
         )
     });
     let s = f.open(&f.file("s.silico", BOX_AND_BALL));
-    let first = answer(f.sessions.check(&s));
-    assert!(first.result.as_ref().unwrap().is_empty(), "{first:?}");
+    let first = answer(f.sessions.check(&s, ModelChoice::Current));
+    assert!(
+        first.result.as_ref().unwrap().problems.is_empty(),
+        "{first:?}"
+    );
     assert_eq!(first.model.as_ref().unwrap().revision, Revision::OPENED);
     assert_eq!(
         fault(&first),
@@ -346,7 +352,7 @@ fn a_kernel_fault_is_given_once_beside_the_checks_result_and_kept_for_the_revisi
     assert_eq!(f.kernel.calls().len(), 2);
     // Kept as the revision's outcome: the next check reads the same model, asking the
     // kernel nothing, and gives the same fault.
-    let second = answer(f.sessions.check(&s));
+    let second = answer(f.sessions.check(&s, ModelChoice::Current));
     assert_eq!(f.kernel.calls().len(), 2);
     assert_eq!(second.model, first.model);
     assert_eq!(second.result, first.result);
@@ -374,8 +380,11 @@ fn the_fault_given_is_the_first_the_timeline_met_in_a_measure_or_a_failure() {
         _ => None,
     });
     let s = f.open(&f.file("a.silico", &stored));
-    let checked = answer(f.sessions.check(&s));
-    assert!(checked.result.as_ref().unwrap().is_empty(), "{checked:?}");
+    let checked = answer(f.sessions.check(&s, ModelChoice::Current));
+    assert!(
+        checked.result.as_ref().unwrap().problems.is_empty(),
+        "{checked:?}"
+    );
     let (code, feature, message, _) = fault(&checked);
     assert_eq!(
         (code, feature.as_deref(), message.as_str()),
@@ -407,8 +416,11 @@ fn a_sketch_solver_that_cant_be_had_is_one_fault_naming_no_feature() {
     let path = dir.path().join("two.silico");
     std::fs::write(&path, two).unwrap();
     let s = answer(sessions.open(&path, false)).session.unwrap().id;
-    let checked = answer(sessions.check(&s));
-    assert!(checked.result.as_ref().unwrap().is_empty(), "{checked:?}");
+    let checked = answer(sessions.check(&s, ModelChoice::Current));
+    assert!(
+        checked.result.as_ref().unwrap().problems.is_empty(),
+        "{checked:?}"
+    );
     assert_eq!(
         fault(&checked),
         (
@@ -425,7 +437,7 @@ fn a_sketch_solver_that_cant_be_had_is_one_fault_naming_no_feature() {
         command::RebuildState::Faulted
     );
     // Kept: the next check starts no solver.
-    let again = answer(sessions.check(&s));
+    let again = answer(sessions.check(&s, ModelChoice::Current));
     assert_eq!(again.model, checked.model);
     assert_eq!(starts.load(Ordering::SeqCst), 1);
 }
@@ -441,11 +453,11 @@ fn a_fault_that_passed_is_tried_again_only_at_a_new_revision() {
             && first.swap(false, Ordering::SeqCst))
         .then(|| silico_core::Error::new(ErrorCode::WorkerTimeout, "timed out"))
     });
-    let faulted = answer(f.sessions.check(&a));
-    assert!(faulted.result.as_ref().unwrap().is_empty());
+    let faulted = answer(f.sessions.check(&a, ModelChoice::Current));
+    assert!(faulted.result.as_ref().unwrap().problems.is_empty());
     assert_eq!(fault(&faulted).0, ErrorCode::WorkerTimeout);
     // Passed, but the revision keeps it: no box made again.
-    let again = answer(f.sessions.check(&a));
+    let again = answer(f.sessions.check(&a, ModelChoice::Current));
     assert_eq!(fault(&again).0, ErrorCode::WorkerTimeout);
     assert_eq!(f.boxes(), 1);
     // An edit, its block renamed: a new revision, whose rebuild makes the box again, and
@@ -459,8 +471,8 @@ fn a_fault_that_passed_is_tried_again_only_at_a_new_revision() {
     assert_eq!(saved, Revision::OPENED.next().unwrap());
     assert_eq!(edited.model.as_ref().unwrap().fault, None, "{edited:?}");
     assert_eq!(f.boxes(), 2);
-    let checked = answer(f.sessions.check(&a));
-    assert!(checked.result.unwrap().is_empty());
+    let checked = answer(f.sessions.check(&a, ModelChoice::Current));
+    assert!(checked.result.unwrap().problems.is_empty());
     assert_eq!(
         checked.model,
         Some(ModelRead {
@@ -478,7 +490,7 @@ fn a_published_read_never_waits_for_a_rebuild() {
     let hold = f
         .kernel
         .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
-    let check = f.sessions.check(&a);
+    let check = f.sessions.check(&a, ModelChoice::Current);
     assert!(f.kernel.wait_running(1, HANG));
     let lateness = Lateness::start();
     let at = Instant::now();
@@ -547,7 +559,7 @@ fn a_published_read_starts_the_rebuild_it_needs_without_waiting() {
     };
     assert_eq!(published.revision, Revision::OPENED);
     assert_eq!(f.boxes(), 1);
-    clean(&answer(f.sessions.check(&a)));
+    clean(&answer(f.sessions.check(&a, ModelChoice::Current)));
     assert_eq!(f.boxes(), 1);
 }
 
@@ -572,9 +584,9 @@ fn a_published_read_of_a_session_that_isnt_open_is_refused() {
 fn a_check_of_text_that_isnt_a_document_gives_the_readers_error_and_rebuilds_nothing() {
     let f = fixture();
     let s = f.open(&f.file("junk.silico", "{"));
-    let response = answer(f.sessions.check(&s));
+    let response = answer(f.sessions.check(&s, ModelChoice::Current));
     assert_eq!(response.model, None);
-    let problems = response.result.unwrap();
+    let problems = response.result.unwrap().problems;
     assert_eq!(problems.total(), 1);
     assert_eq!(problems.errors()[0].code(), ErrorCode::InvalidInput);
     assert!(
@@ -620,7 +632,7 @@ fn a_check_whose_recompute_failed_is_refused_with_why_once_and_the_next_rebuilds
         "a sketch's solve panicked".to_owned(),
         None,
     );
-    let first = answer(sessions.check(&s));
+    let first = answer(sessions.check(&s, ModelChoice::Current));
     assert_eq!(first.model, None);
     assert_eq!(refusal(&first), panicked);
     assert_eq!(solves.load(Ordering::SeqCst), 1);
@@ -636,7 +648,7 @@ fn a_check_whose_recompute_failed_is_refused_with_why_once_and_the_next_rebuilds
     }
     assert_eq!(solves.load(Ordering::SeqCst), 1);
     // The next check, the failure said, rebuilds: and it fails again, said again.
-    let second = answer(sessions.check(&s));
+    let second = answer(sessions.check(&s, ModelChoice::Current));
     assert_eq!(refusal(&second), panicked);
     assert_eq!(solves.load(Ordering::SeqCst), 2);
 }
@@ -665,8 +677,8 @@ fn a_measure_that_faulted_is_the_revisions_fault_and_not_measured_again() {
             .filter(|c| matches!(c.op, Op::Summarize { .. }))
             .count()
     };
-    let faulted = answer(f.sessions.check(&a));
-    assert!(faulted.result.as_ref().unwrap().is_empty());
+    let faulted = answer(f.sessions.check(&a, ModelChoice::Current));
+    assert!(faulted.result.as_ref().unwrap().problems.is_empty());
     assert_eq!(
         fault(&faulted),
         (
@@ -677,7 +689,7 @@ fn a_measure_that_faulted_is_the_revisions_fault_and_not_measured_again() {
         )
     );
     assert_eq!(measures(), 1);
-    let again = answer(f.sessions.check(&a));
+    let again = answer(f.sessions.check(&a, ModelChoice::Current));
     assert_eq!(again.model, faulted.model);
     assert_eq!(measures(), 1);
 }
@@ -814,7 +826,7 @@ fn a_published_read_alone_starts_the_rebuild() {
 fn a_published_read_runs_off_the_callers_thread() {
     let f = fixture();
     let a = f.open(&f.file("a.silico", BOX));
-    clean(&answer(f.sessions.check(&a)));
+    clean(&answer(f.sessions.check(&a, ModelChoice::Current)));
     let (release, released) = std::sync::mpsc::channel::<()>();
     let mut read = f
         .sessions
@@ -925,7 +937,7 @@ fn a_read_of_a_session_that_isnt_open_is_refused() {
 fn a_published_read_that_panics_is_said_to_have_stopped() {
     let f = fixture();
     let a = f.open(&f.file("a.silico", BOX));
-    clean(&answer(f.sessions.check(&a)));
+    clean(&answer(f.sessions.check(&a, ModelChoice::Current)));
     let response = answer(f.sessions.read_model(
         &a,
         "probe",
@@ -973,7 +985,7 @@ fn blocked_reads(
 fn a_ninth_published_read_running_at_once_is_refused() {
     let f = fixture();
     let a = f.open(&f.file("a.silico", BOX));
-    clean(&answer(f.sessions.check(&a)));
+    clean(&answer(f.sessions.check(&a, ModelChoice::Current)));
     let (reads, release) = blocked_reads(&f.sessions, &a, 8);
     let ninth = answer(
         f.sessions
@@ -1006,7 +1018,7 @@ fn a_ninth_published_read_running_at_once_is_refused() {
 fn dropping_the_sessions_waits_for_a_published_read_to_end() {
     let f = fixture();
     let a = f.open(&f.file("a.silico", BOX));
-    clean(&answer(f.sessions.check(&a)));
+    clean(&answer(f.sessions.check(&a, ModelChoice::Current)));
     let (mut reads, release) = blocked_reads(&f.sessions, &a, 1);
     let Fixture { dir, sessions, .. } = f;
     let (dropped, returned) = std::sync::mpsc::channel();
@@ -1042,8 +1054,8 @@ fn the_published_reads_bound_is_each_sessions_own() {
     let f = fixture();
     let a = f.open(&f.file("a.silico", BOX));
     let b = f.open(&f.file("b.silico", BOX));
-    clean(&answer(f.sessions.check(&a)));
-    clean(&answer(f.sessions.check(&b)));
+    clean(&answer(f.sessions.check(&a, ModelChoice::Current)));
+    clean(&answer(f.sessions.check(&b, ModelChoice::Current)));
     let (reads, release) = blocked_reads(&f.sessions, &a, 8);
     let other = answer(
         f.sessions
@@ -1063,7 +1075,7 @@ fn dropping_the_sessions_waits_for_a_published_read_of_a_session_closed_before()
     // session's thread outlives the sessions.
     let f = fixture();
     let a = f.open(&f.file("a.silico", BOX));
-    clean(&answer(f.sessions.check(&a)));
+    clean(&answer(f.sessions.check(&a, ModelChoice::Current)));
     let (mut reads, release) = blocked_reads(&f.sessions, &a, 1);
     answer(f.sessions.close(&a)).result.unwrap();
     let Fixture { dir, sessions, .. } = f;
