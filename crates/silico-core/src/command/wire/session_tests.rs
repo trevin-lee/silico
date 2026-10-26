@@ -10,11 +10,10 @@
 
 use std::path::PathBuf;
 
-use super::reads::CheckAnswer;
 use super::{Json, Layout, RequestFields, ToWire, write};
 use crate::command::{
-    Added, Begun, Committed, FieldSet, Opened, Problems, Reformatted, Removed, Replaced, Revision,
-    RolledBack,
+    Added, Begun, CheckAnswer, Committed, FieldSet, Opened, Problems, Reformatted, Removed,
+    Replaced, Revision, RolledBack,
 };
 use crate::document::json::{Plain, read};
 use crate::document::{Feature, FeatureId};
@@ -176,7 +175,10 @@ fn opens_and_checks_problems_are_their_first_hundred_and_all_counted() {
         bodies: Vec::new(),
         problems: many(),
     };
-    let check = CheckAnswer { problems: many() };
+    let check = CheckAnswer {
+        problems: many(),
+        warnings: Problems::none(),
+    };
     for (of, text) in [("open", written(&opened)), ("check", written(&check))] {
         holds(of, &text);
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -185,10 +187,26 @@ fn opens_and_checks_problems_are_their_first_hundred_and_all_counted() {
         assert_eq!(value["problems"][99]["message"], "drift 99", "{of}");
         assert_eq!(value["problems_total"], 150, "{of}");
     }
-    // A check's warnings: none yet, whatever its problems.
+    // A check's warnings: none, whatever its problems; and, given some, its own, listed and
+    // counted as problems are, its problems none.
     let value: serde_json::Value = serde_json::from_str(&written(&check)).unwrap();
     assert_eq!(
         (&value["warnings"], &value["warnings_total"]),
+        (&serde_json::json!([]), &serde_json::json!(0))
+    );
+    let warned = CheckAnswer {
+        problems: Problems::none(),
+        warnings: many(),
+    };
+    let text = written(&warned);
+    holds("check", &text);
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(value["warnings"].as_array().unwrap().len(), 100);
+    assert_eq!(value["warnings"][0]["message"], "drift 0");
+    assert_eq!(value["warnings"][99]["message"], "drift 99");
+    assert_eq!(value["warnings_total"], 150);
+    assert_eq!(
+        (&value["problems"], &value["problems_total"]),
         (&serde_json::json!([]), &serde_json::json!(0))
     );
 }

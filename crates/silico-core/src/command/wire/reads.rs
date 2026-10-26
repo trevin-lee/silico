@@ -2,7 +2,7 @@
 //! their requests, read strictly ([`TextRequest`], [`CheckRequest`], and the
 //! [`SessionRequest`](super::transaction::SessionRequest) `outline` takes); their results,
 //! written field for field ([`ToWire`]: [`TextAnswer`], [`OutlineAnswer`], and
-//! [`CheckAnswer`], each what its session command gives, under its result's name); and the
+//! [`CheckAnswer`], what the session's commands give); and the
 //! mirrors their snapshots, `commands/text.json`, `outline.json`, and `check.json`, are
 //! generated from.
 //!
@@ -14,7 +14,7 @@ use schemars::JsonSchema;
 use super::elements::ModelChoiceSchema;
 use super::{ErrorSchema, Json, RequestFields, ToWire, problems, wire_shape};
 use crate::command::session::SESSION_ID_PATTERN;
-use crate::command::{ModelChoice, Problems, SessionId};
+use crate::command::{CheckAnswer, ModelChoice, OutlineAnswer, Problems, SessionId, TextAnswer};
 use crate::document::json::Node;
 use crate::document::{FeatureId, PROBLEMS_LISTED};
 
@@ -54,7 +54,7 @@ impl ToWire for TextRequest {
 }
 
 /// A `check` request: the session, and the model it reads, as
-/// [`Sessions::check_model`](crate::command::Sessions::check_model) takes them. Its `fresh`
+/// [`Sessions::check`](crate::command::Sessions::check) takes them. Its `fresh`
 /// is read too, and only `false` taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CheckRequest {
@@ -95,22 +95,10 @@ impl ToWire for CheckRequest {
     }
 }
 
-/// What `text` answers: the text the session's document is, or one feature's.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextAnswer {
-    pub text: String,
-}
-
 impl ToWire for TextAnswer {
     fn to_wire(&self) -> Json<'_> {
         Json::object([("text", Json::str(&self.text))])
     }
-}
-
-/// What `outline` answers: the document's outline, as `silico show` prints it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OutlineAnswer {
-    pub outline: String,
 }
 
 impl ToWire for OutlineAnswer {
@@ -119,23 +107,16 @@ impl ToWire for OutlineAnswer {
     }
 }
 
-/// What `check` answers: the document's problems, as the session's `check` gives them, and
-/// its warnings, of which there are none yet (the first, M3's two curve ends at one place
-/// that aren't one point, comes with its code).
-#[derive(Debug, Clone, PartialEq)]
-pub struct CheckAnswer {
-    pub problems: Problems,
-}
-
 impl ToWire for CheckAnswer {
     /// The problems, the first 100 and how many, and the warnings, likewise.
     fn to_wire(&self) -> Json<'_> {
         let (problems, problems_total) = problems(&self.problems);
+        let (warnings, warnings_total) = super::problems(&self.warnings);
         Json::object([
             ("problems", problems),
             ("problems_total", problems_total),
-            ("warnings", Json::array([])),
-            ("warnings_total", Json::whole(0)),
+            ("warnings", warnings),
+            ("warnings_total", warnings_total),
         ])
     }
 }

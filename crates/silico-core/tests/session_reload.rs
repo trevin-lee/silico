@@ -13,7 +13,9 @@ use std::sync::Arc;
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
-use silico_core::command::{Begun, ModelChoice, Response, Revision, SessionId, Sessions};
+use silico_core::command::{
+    Begun, Closed, ModelChoice, Response, Revision, SessionId, Sessions, TextAnswer,
+};
 use silico_core::document::json::Node;
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{Op, Primitive};
@@ -83,7 +85,7 @@ impl Fixture {
         std::fs::write(&self.path, text).unwrap();
     }
 
-    fn text(&self) -> Response<String> {
+    fn text(&self) -> Response<TextAnswer> {
         answer(self.sessions.text(&self.id, None))
     }
 
@@ -257,12 +259,12 @@ fn a_change_keeping_the_files_size_and_time_is_reloaded_before_the_next_command(
     );
     assert_eq!(Fixture::after(&read), (1, false));
     // The next queued command reloads it: a new revision, whose model is the file's.
-    let check = answer(f.sessions.check(&f.id));
+    let check = answer(f.sessions.check(&f.id, ModelChoice::Current));
     assert_eq!(Fixture::after(&check), (2, true));
     assert_eq!(check.model.unwrap().revision.number(), 2);
     // A hand edit reaches nothing (section 5): its stale fingerprint is drift, 41 × 20 × 10
     // = 8000 → 8200, area 2800 → 2(820 + 410 + 200) = 2860.
-    let problems = check.result.unwrap();
+    let problems = check.result.unwrap().problems;
     assert_eq!(problems.total(), 1, "{problems:?}");
     let drift = &problems.errors()[0];
     assert_eq!(
@@ -282,7 +284,7 @@ fn a_change_keeping_the_files_size_and_time_is_reloaded_before_the_next_command(
     // Once: the file is what the session now holds.
     let text = f.text();
     assert_eq!(Fixture::after(&text), (2, false));
-    assert_eq!(text.result.unwrap(), longer());
+    assert_eq!(text.result.unwrap().text, longer());
 }
 
 #[test]
@@ -290,10 +292,10 @@ fn a_reloaded_document_the_gate_refuses_is_held_with_its_problems() {
     let f = opened(BLOCK);
     let flat = BLOCK.replace(r#""height": 10"#, r#""height": 0"#);
     f.write(&flat);
-    let check = answer(f.sessions.check(&f.id));
+    let check = answer(f.sessions.check(&f.id, ModelChoice::Current));
     assert_eq!(Fixture::after(&check), (2, true));
     assert_eq!(check.model, None);
-    let problems = check.result.unwrap();
+    let problems = check.result.unwrap().problems;
     assert_eq!(problems.total(), 1, "{problems:?}");
     assert_eq!(
         (
@@ -303,7 +305,7 @@ fn a_reloaded_document_the_gate_refuses_is_held_with_its_problems() {
         (Some("k7f2qx3m"), Some("height"))
     );
     assert!(!f.sessions.status(&f.id).result.unwrap().gated);
-    assert_eq!(f.text().result.unwrap(), flat);
+    assert_eq!(f.text().result.unwrap().text, flat);
 }
 
 #[test]
@@ -315,7 +317,7 @@ fn inside_a_transaction_a_change_isnt_reloaded_and_the_commit_is_a_conflict() {
     // The transaction keeps its state: its edit, at revision 2, unreloaded.
     let text = f.text();
     assert_eq!(Fixture::after(&text), (2, false));
-    assert!(text.result.unwrap().contains("\"length\": 41,"));
+    assert!(text.result.unwrap().text.contains("\"length\": 41,"));
     let commit = answer(f.sessions.commit(&f.id));
     assert_eq!(Fixture::after(&commit), (2, false));
     assert!(commit.session.as_ref().unwrap().transaction);
@@ -356,7 +358,7 @@ fn inside_a_transaction_a_change_isnt_reloaded_and_the_commit_is_a_conflict() {
     let begun = answer(f.sessions.begin(&f.id));
     assert_eq!(Fixture::after(&begun), (4, true));
     assert_eq!(begun.result.unwrap().base.number(), 4);
-    assert_eq!(f.text().result.unwrap(), higher());
+    assert_eq!(f.text().result.unwrap().text, higher());
 }
 
 #[test]
@@ -457,7 +459,7 @@ fn a_file_changed_while_a_one_edit_commit_rebuilds_is_a_conflict_and_then_reload
     // Read again, it's the new revision, the file's.
     let text = f.text();
     assert_eq!(Fixture::after(&text), (2, true));
-    assert_eq!(text.result.unwrap(), higher());
+    assert_eq!(text.result.unwrap().text, higher());
 }
 
 #[test]
@@ -501,7 +503,7 @@ fn a_file_thats_gone_refuses_each_command_but_status_and_close_leaving_the_sessi
         Some(REREAD)
     );
     assert_eq!(Fixture::after(&text), (1, false));
-    assert_eq!(refusal(&answer(f.sessions.check(&f.id))), gone);
+    assert_eq!(refusal(&answer(f.sessions.check(&f.id, ModelChoice::Current))), gone);
     assert_eq!(refusal(&answer(f.sessions.begin(&f.id))), gone);
     assert_eq!(
         f.set_length(Revision::OPENED, "41")
@@ -519,10 +521,10 @@ fn a_file_thats_gone_refuses_each_command_but_status_and_close_leaving_the_sessi
     f.write(BLOCK);
     let text = f.text();
     assert_eq!(Fixture::after(&text), (1, false));
-    assert_eq!(text.result.unwrap(), BLOCK);
+    assert_eq!(text.result.unwrap().text, BLOCK);
     // Gone again, the session still closes.
     std::fs::remove_file(&f.path).unwrap();
-    assert_eq!(answer(f.sessions.close(&f.id)).result, Ok(()));
+    assert_eq!(answer(f.sessions.close(&f.id)).result, Ok(Closed));
 }
 
 #[test]
@@ -530,7 +532,7 @@ fn a_file_grown_past_what_silico_reads_refuses_the_command_and_isnt_held() {
     let f = opened(BLOCK);
     // MAX_INPUT_LEN, 4 × 16 MiB, and one more byte.
     f.write(&" ".repeat(4 * 16 * 1024 * 1024 + 1));
-    let check = answer(f.sessions.check(&f.id));
+    let check = answer(f.sessions.check(&f.id, ModelChoice::Current));
     assert_eq!(Fixture::after(&check), (1, false));
     assert_eq!(
         refusal(&check),
@@ -549,7 +551,7 @@ fn a_file_grown_past_what_silico_reads_refuses_the_command_and_isnt_held() {
         Some(REREAD)
     );
     f.write(BLOCK);
-    assert_eq!(f.text().result.unwrap(), BLOCK);
+    assert_eq!(f.text().result.unwrap().text, BLOCK);
 }
 
 #[test]
@@ -623,7 +625,7 @@ fn a_commit_that_writes_nothing_over_a_file_changed_outside_ends_and_the_next_co
     assert_eq!(f.file(), higher());
     let text = f.text();
     assert_eq!(Fixture::after(&text), (2, true));
-    assert_eq!(text.result.unwrap(), higher());
+    assert_eq!(text.result.unwrap().text, higher());
 }
 
 #[test]
@@ -635,9 +637,9 @@ fn inside_a_transaction_a_gone_file_is_only_the_commits_conflict() {
     // Every command but commit runs on what the session holds: the file isn't read.
     let text = f.text();
     assert_eq!(Fixture::after(&text), (2, false));
-    assert!(text.result.unwrap().contains("\"length\": 41,"));
+    assert!(text.result.unwrap().text.contains("\"length\": 41,"));
     assert!(answer(f.sessions.outline(&f.id)).result.is_ok());
-    let check = answer(f.sessions.check(&f.id));
+    let check = answer(f.sessions.check(&f.id, ModelChoice::Current));
     assert_eq!(Fixture::after(&check), (2, false));
     assert!(check.result.is_ok(), "{:?}", check.result);
     let set = f.set_length(Revision::OPENED.next().unwrap(), "42");
@@ -651,7 +653,7 @@ fn inside_a_transaction_a_gone_file_is_only_the_commits_conflict() {
     let rolled = answer(f.sessions.rollback(&f.id));
     assert_eq!(Fixture::after(&rolled), (4, false));
     assert_eq!(refusal(&answer(f.sessions.begin(&f.id))), gone(&f.path));
-    assert_eq!(answer(f.sessions.close(&f.id)).result, Ok(()));
+    assert_eq!(answer(f.sessions.close(&f.id)).result, Ok(Closed));
 }
 
 #[test]
@@ -699,7 +701,7 @@ fn close_never_reads_the_file() {
     let f = opened(BLOCK);
     f.write(&higher());
     let close = answer(f.sessions.close(&f.id));
-    assert_eq!(close.result, Ok(()));
+    assert_eq!(close.result, Ok(Closed));
     // Not reloaded first: the session closed at the revision it was at.
     assert_eq!(Fixture::after(&close), (1, false));
     assert_eq!(f.file(), higher());
@@ -730,13 +732,13 @@ fn a_link_to_another_sessions_file_is_refused_naming_it(link: fn(&Path, &Path)) 
     );
     let s2_text = answer(f.sessions.text(&s2, None));
     assert_eq!(Fixture::after(&s2_text), (1, false));
-    assert_eq!(s2_text.result.unwrap(), higher());
+    assert_eq!(s2_text.result.unwrap().text, higher());
     // s1 as it was: its file put back, nothing changed, so nothing reloads.
     std::fs::remove_file(&f.path).unwrap();
     f.write(BLOCK);
     let text = f.text();
     assert_eq!(Fixture::after(&text), (1, false));
-    assert_eq!(text.result.unwrap(), BLOCK);
+    assert_eq!(text.result.unwrap().text, BLOCK);
 }
 
 #[test]
@@ -804,7 +806,7 @@ fn inside_a_transaction_a_file_grown_too_long_is_a_change_like_any_other() {
     f.write(&" ".repeat(4 * 16 * 1024 * 1024 + 1));
     let text = f.text();
     assert_eq!(Fixture::after(&text), (2, false));
-    assert!(text.result.unwrap().contains("\"length\": 41,"));
+    assert!(text.result.unwrap().text.contains("\"length\": 41,"));
     let commit = answer(f.sessions.commit(&f.id));
     assert_eq!(the_error(&commit), commit_conflict(&f.path, 1));
     assert_eq!(f.boxes(), 0);
@@ -815,7 +817,7 @@ fn a_file_of_exactly_the_bytes_silico_reads_is_reloaded() {
     let f = opened(BLOCK);
     // MAX_INPUT_LEN, 4 × 16 MiB, exactly: not a document, but not too long to hold.
     f.write(&" ".repeat(4 * 16 * 1024 * 1024));
-    let check = answer(f.sessions.check(&f.id));
+    let check = answer(f.sessions.check(&f.id, ModelChoice::Current));
     assert_eq!(Fixture::after(&check), (2, true));
     assert!(!f.sessions.status(&f.id).result.unwrap().gated);
 }
@@ -866,7 +868,7 @@ fn a_link_to_another_sessions_file_saved_by_rename_is_refused_naming_it() {
     // s2 isn't locked out of its own file: it reloads it.
     let s2_text = answer(f.sessions.text(&s2, None));
     assert_eq!(Fixture::after(&s2_text), (2, true));
-    assert_eq!(s2_text.result.unwrap(), higher());
+    assert_eq!(s2_text.result.unwrap().text, higher());
 }
 
 /// A file with `BLOCK`'s bytes put at `path` by rename: another file, the same bytes.

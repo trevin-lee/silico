@@ -14,7 +14,9 @@ use schemars::{JsonSchema, Schema, SchemaGenerator};
 use super::elements::words;
 use super::{COMMANDS, ErrorSchema, Json, RequestFields, ToWire, problems, wire_shape};
 use crate::command::session::SESSION_ID_PATTERN;
-use crate::command::{Cancelled, Limits, Opened, Problems, Rebuild, SessionId, Status, Version};
+use crate::command::{
+    Cancelled, Closed, Limits, Opened, Problems, Rebuild, SessionId, Status, Version,
+};
 use crate::document::json::Node;
 use crate::document::{FeatureId, PROBLEMS_LISTED};
 
@@ -159,7 +161,7 @@ impl ToWire for Opened {
     }
 }
 
-impl ToWire for () {
+impl ToWire for Closed {
     /// `close`'s result: `{}`.
     fn to_wire(&self) -> Json<'_> {
         Json::object([])

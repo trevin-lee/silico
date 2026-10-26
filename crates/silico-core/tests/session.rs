@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
-use silico_core::command::{Response, Revision, SessionId, Sessions};
+use silico_core::command::{Closed, Response, Revision, SessionId, Sessions};
 use silico_core::document::FeatureId;
 use silico_core::fake::{FakeClient, FakeKernel};
 use silico_core::kernel::{Clients, Generation, Kernel, KernelRequest};
@@ -186,7 +186,7 @@ fn session_ids_count_opens_and_a_closed_ones_is_never_given_again() {
     assert_eq!(names, ["s1", "s2", "s3"]);
     let numbers: Vec<u64> = ids.iter().map(|id| id.number()).collect();
     assert_eq!(numbers, [1, 2, 3]);
-    assert_eq!(answer(f.sessions.close(&ids[1])).result, Ok(()));
+    assert_eq!(answer(f.sessions.close(&ids[1])).result, Ok(Closed));
     // Two open, s2 closed: the next is s4, never s2 again, nor s3 (one more than those open).
     assert_eq!(f.open(&f.file("d.silico", BOX)).to_string(), "s4");
 }
@@ -221,12 +221,12 @@ fn text_is_the_files_bytes_exactly_and_a_feature_its_canonical_text() {
     let f = fixture();
     let s1 = f.open(&f.file("block.silico", BOX));
     let text = answer(f.sessions.text(&s1, None));
-    assert_eq!(text.result.unwrap(), BOX);
+    assert_eq!(text.result.unwrap().text, BOX);
     assert_eq!(text.session.unwrap().id, s1);
     // One feature as canonical form writes it, not as the file does: `40`, not `40.0`.
     let feature = answer(f.sessions.text(&s1, FeatureId::new("k7f2qx3m")));
     assert_eq!(
-        feature.result.unwrap(),
+        feature.result.unwrap().text,
         r#"{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}"#
     );
     let missing = answer(f.sessions.text(&s1, FeatureId::new("a91cw0de")));
@@ -245,7 +245,7 @@ fn the_outline_is_silico_shows() {
     let outline = answer(f.sessions.outline(&s1));
     // As docs/design/m4.1-command-api.md's `outline` example gives the block's line.
     assert_eq!(
-        outline.result.unwrap(),
+        outline.result.unwrap().outline,
         "k7f2qx3m \"Block\" box length 40, width 20, height 10, at (0, 0, 0)\nbodies k7f2qx3m\n"
     );
 }
@@ -271,11 +271,11 @@ fn a_document_the_gate_refuses_opens_with_its_problems() {
     assert_eq!(status.features, Some(1));
     assert!(!status.gated);
     // It reads as a document, so its text and outline are there to mend it from.
-    assert_eq!(answer(f.sessions.text(&s1, None)).result.unwrap(), FLAT_BOX);
+    assert_eq!(answer(f.sessions.text(&s1, None)).result.unwrap().text, FLAT_BOX);
     assert!(
         answer(f.sessions.outline(&s1))
             .result
-            .unwrap()
+            .unwrap().outline
             .starts_with("k7f2qx3m \"Block\" box length 0,")
     );
 }
@@ -297,7 +297,7 @@ fn text_that_isnt_a_document_opens_with_the_readers_error_which_outline_gives_to
     let status = f.sessions.status(&s1).result.unwrap();
     assert_eq!(status.features, None);
     assert!(!status.gated);
-    assert_eq!(answer(f.sessions.text(&s1, None)).result.unwrap(), junk);
+    assert_eq!(answer(f.sessions.text(&s1, None)).result.unwrap().text, junk);
     let outline = answer(f.sessions.outline(&s1));
     let (code, message, _, _) = refusal(&outline);
     assert_eq!((code, message.as_str()), (ErrorCode::InvalidInput, reader));
@@ -361,7 +361,7 @@ fn a_file_is_open_in_one_session_by_any_of_its_paths_until_it_closes() {
             )
         );
     }
-    assert_eq!(answer(f.sessions.close(&s1)).result, Ok(()));
+    assert_eq!(answer(f.sessions.close(&s1)).result, Ok(Closed));
     // Closed, it opens again, through the link too, holding the path it was given (not
     // where the link leads); each refused open took a number.
     let again = answer(f.sessions.open(&link, false));
@@ -389,7 +389,7 @@ fn a_seventeenth_session_is_refused_until_one_closes() {
             Some("close a session you're done with, then open this one".to_owned()),
         )
     );
-    assert_eq!(answer(f.sessions.close(&ids[3])).result, Ok(()));
+    assert_eq!(answer(f.sessions.close(&ids[3])).result, Ok(Closed));
     // The refused open took no number: the 16 had s1 to s16.
     assert_eq!(f.open(&path).to_string(), "s17");
 }
@@ -443,7 +443,7 @@ fn create_writes_an_empty_document_in_canonical_form_and_never_over_a_file() {
     assert!(opened.problems.is_empty());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), EMPTY);
     let s1 = response.session.unwrap().id;
-    assert_eq!(answer(f.sessions.text(&s1, None)).result.unwrap(), EMPTY);
+    assert_eq!(answer(f.sessions.text(&s1, None)).result.unwrap().text, EMPTY);
     assert!(f.sessions.status(&s1).result.unwrap().gated);
 
     let existing = f.file("old.silico", BOX);
@@ -527,7 +527,7 @@ fn a_command_queued_behind_close_is_told_its_session_closed_and_none_hangs() {
         let close = f.sessions.close(&s);
         let text = f.sessions.text(&s, None);
         assert!(answer(outline).result.is_ok(), "round {n}");
-        assert_eq!(answer(close).result, Ok(()), "round {n}");
+        assert_eq!(answer(close).result, Ok(Closed), "round {n}");
         let text = answer(text);
         assert_eq!(text.session, None, "round {n}");
         assert_eq!(refusal(&text), not_open(&s.to_string()), "round {n}");
@@ -553,7 +553,7 @@ fn a_commands_work_is_off_the_callers_thread_and_other_sessions_answer_meanwhile
     }
     // Another session answers meanwhile.
     assert!(f.sessions.status(&s1).result.unwrap().gated);
-    assert_eq!(answer(f.sessions.text(&s1, None)).result.unwrap(), BOX);
+    assert_eq!(answer(f.sessions.text(&s1, None)).result.unwrap().text, BOX);
     release.send(()).unwrap();
     let response = answer(slow);
     assert_eq!(response.session.unwrap().id.to_string(), "s2");
@@ -645,7 +645,7 @@ fn a_file_longer_than_silico_reads_isnt_opened_and_one_at_the_limit_is_held_whol
     let at = f.dir.path().join("at.silico");
     std::fs::File::create(&at).unwrap().set_len(READ).unwrap();
     let s = f.open(&at);
-    let text = answer(f.sessions.text(&s, None)).result.unwrap();
+    let text = answer(f.sessions.text(&s, None)).result.unwrap().text;
     assert_eq!(text.len() as u64, READ);
     assert!(text.bytes().all(|b| b == 0));
 }
@@ -716,11 +716,11 @@ fn a_feature_over_several_lines_is_written_as_the_document_writes_it_not_indente
     let s = f.open(&f.file("block.silico", document));
     let text = answer(f.sessions.text(&s, FeatureId::new("k7f2qx3m")))
         .result
-        .unwrap();
+        .unwrap().text;
     assert_eq!(text, feature);
     assert!(document.contains(&format!("    {}\n", text.replace('\n', "\n    "))));
     // The document is in canonical form, so `text` of the whole is the same bytes.
-    assert_eq!(answer(f.sessions.text(&s, None)).result.unwrap(), document);
+    assert_eq!(answer(f.sessions.text(&s, None)).result.unwrap().text, document);
 }
 
 #[test]
@@ -770,7 +770,7 @@ fn a_file_replaced_at_its_path_as_a_save_by_rename_does_is_still_open_in_its_ses
     let copy = f.file(".block.silico.new", BOX);
     std::fs::rename(&copy, &path).unwrap();
     refused_naming_s1(&answer(f.sessions.open(&path, false)));
-    assert_eq!(answer(f.sessions.close(&s1)).result, Ok(()));
+    assert_eq!(answer(f.sessions.close(&s1)).result, Ok(Closed));
     // Closed, the new file opens, as s4: the two refused opens took s2 and s3.
     assert_eq!(f.open(&path).to_string(), "s4");
 }
@@ -848,7 +848,7 @@ fn a_sketchs_text_is_its_canonical_text_over_lines() {
     let text = answer(f.sessions.text(&s, FeatureId::new("k7f2qx3m")));
     // As M3.2's D7 writes a sketch: a list of objects one to a line, each on one line.
     assert_eq!(
-        text.result.unwrap(),
+        text.result.unwrap().text,
         "{\n  \"id\": \"k7f2qx3m\",\n  \"type\": \"sketch\",\n  \"v\": 1,\n  \"name\": \"S\",\n  \"plane\": \"xy\",\n  \"points\": [\n    {\"id\": \"pa000000\", \"x\": 0, \"y\": 0, \"construction\": false}\n  ],\n  \"lines\": [],\n  \"circles\": [],\n  \"arcs\": [],\n  \"constraints\": []\n}"
     );
 }

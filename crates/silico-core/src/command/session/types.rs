@@ -386,6 +386,31 @@ pub struct Opened {
     pub problems: Problems,
 }
 
+/// What `close` answers: nothing but that it closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Closed;
+
+/// What `text` answers: the text the session's document is, or one feature's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextAnswer {
+    pub text: String,
+}
+
+/// What `outline` answers: the document's outline, as `silico show` prints it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlineAnswer {
+    pub outline: String,
+}
+
+/// What `check` answers: the document's problems, and its warnings, which never fail
+/// anything, and of which there are none yet (the first, M3's two curve ends at one place
+/// that aren't one point, comes with its code).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckAnswer {
+    pub problems: Problems,
+    pub warnings: Problems,
+}
+
 /// What `begin` answers: the revision the transaction began from, which `rollback` returns
 /// to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

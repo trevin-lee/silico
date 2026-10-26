@@ -431,13 +431,13 @@ fn a_published_read_never_waits_on_the_scan_of_a_large_begun_text_that_didnt_rea
         std::thread::sleep(Duration::from_millis(1));
     }
     // Its check, the scan its own: the block reached, so its drift isn't said.
-    let mut check = f.sessions.check_model(&s1, ModelChoice::Published);
+    let mut check = f.sessions.check(&s1, ModelChoice::Published);
     loop {
         assert!(published_timed(&f, &s1, &mut slowest).result.is_ok());
         match check.wait_timeout(Duration::from_millis(1)) {
             Ok(checked) => {
                 assert_eq!(checked.model.unwrap().revision, second);
-                let problems = checked.result.unwrap();
+                let problems = checked.result.unwrap().problems;
                 assert!(problems.is_empty(), "{:?}", problems.errors());
                 break;
             }
