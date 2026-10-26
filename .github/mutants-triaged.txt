@@ -102,6 +102,11 @@ crates/silico-core/src/elements.rs | AxisToken::default_x | replace > with >= | 
 crates/silico-core/src/elements.rs | AxisToken::default_x | replace > with >= | #140
 crates/silico-core/src/command/edit.rs | id_of | replace | with ^ | #148
 crates/silico-core/src/command/session/transaction.rs | Session<C>::rollback | delete ! | #154
+# Equivalent: a UTF-8 name no longer than the room taken through the cut finds its own
+# length a character's end at once (is_char_boundary is false past the end, true at it),
+# so it's kept whole either way.
+crates/silico-core/src/file.rs | partial_name | replace match guard bytes.len() > room with true | #159
+crates/silico-core/src/file.rs | partial_name | replace > with >= | #159
 crates/silico-core/src/sketch.rs | moved | replace match guard s.form.value_text().is_some() with true | #157
 # Equivalent until edits: no edit can yet make a document the gate took at begin and
 # refuses now. With the guard always true, such a commit would end the transaction as
