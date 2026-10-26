@@ -105,10 +105,15 @@ impl Workspace {
     /// would lead out of the workspace: the link it is followed, or, if it's none, the
     /// nearest of its directories that resolves. So a path out of the workspace is refused
     /// as one, whether or not anything is there, and nothing outside it is told apart by
-    /// whether it exists.
+    /// whether it exists. A path to the root, or to one of its directories, that doesn't
+    /// resolve is the workspace gone (removed since it was made), not out of it: so a path
+    /// inside it is then said to be unreachable, as the system says, never outside.
     fn leads_out(&self, path: &Path, links: u32) -> bool {
         if let Ok(resolved) = std::fs::canonicalize(path) {
             return !self.holds(&resolved);
+        }
+        if self.root.starts_with(path) {
+            return false;
         }
         let Some(links) = links.checked_sub(1) else {
             return false;
@@ -514,10 +519,20 @@ fn beside(target: &Path, metadata: &std::fs::Metadata) -> Result<(PathBuf, std::
 
 /// A path as a message says it: quoted, with control and invisible characters escaped, as an
 /// outline quotes a document's text, so a file's name can't act on the terminal it's shown
-/// in. Every error and message that names a file says it so.
+/// in. Every error and message that names a file says it so. A path longer than any the
+/// system takes ([`SHOWN_PATH_CHARS`]), which only a request can give, is cut there, marked
+/// `…`, so its refusal isn't as long as it is.
 pub(crate) fn shown_path(path: &Path) -> String {
-    crate::command::quoted(&path.display().to_string())
+    let shown = path.display().to_string();
+    match shown.char_indices().nth(SHOWN_PATH_CHARS) {
+        Some((cut, _)) => format!("{}…", crate::command::quoted(&shown[..cut])),
+        None => crate::command::quoted(&shown),
+    }
 }
+
+/// The most of a path a message shows: Linux's `PATH_MAX` (macOS's is 1024), so every path
+/// the system can name is shown whole.
+const SHOWN_PATH_CHARS: usize = 4096;
 
 #[cfg(test)]
 mod tests {

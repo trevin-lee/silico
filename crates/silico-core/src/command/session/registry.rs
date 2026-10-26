@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
+use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
@@ -330,7 +331,11 @@ fn made<P: Clients + 'static>(
     path: &Path,
 ) -> Result<(PathBuf, Vec<u8>, MadeFile), Problems> {
     let _span = tracing::info_span!("create").entered();
-    let name = path.file_name().ok_or_else(|| {
+    // A path ending in `/` or `/.` names a directory, as `open(2)` reads it, though
+    // `Path::file_name` skips the slash and the `.` (`brand/.` would make `brand`).
+    let bytes = path.as_os_str().as_bytes();
+    let directory = bytes.ends_with(b"/") || bytes.ends_with(b"/.");
+    let name = path.file_name().filter(|_| !directory).ok_or_else(|| {
         Error::new(
             ErrorCode::InvalidInput,
             format!("{} names no file to make", shown_path(path)),
