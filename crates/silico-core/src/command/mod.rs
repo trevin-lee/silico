@@ -29,7 +29,7 @@ pub use session::{
     Added, Begun, Cancelled, CheckAnswer, Closed, Committed, FieldSet, MAX_PUBLISHED_READS,
     MAX_SESSIONS, ModelChoice, ModelRead, NOT_RELOADED, Opened, OutlineAnswer, Published, Read,
     ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision,
-    RolledBack, Running, SessionId, SessionInfo, Sessions, Status, Stopper, TextAnswer,
+    RolledBack, Running, SessionId, SessionInfo, Sessions, Status, Stopper, TOO_LONG, TextAnswer,
 };
 
 /// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for

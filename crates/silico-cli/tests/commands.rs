@@ -1037,6 +1037,52 @@ fn a_kernel_fault_is_said_beside_the_documents_own_problems_and_is_exit_2() {
 }
 
 #[test]
+fn fmt_refused_a_save_past_the_limit_still_says_the_kernel_fault_its_rebuild_met() {
+    // R2-L1: the rectangle's 40 made 40.123456, so its solve writes two corners' x as
+    // that, not 40: seven bytes more each. A box after it, which needs the kernel, has a note
+    // taking the document's canonical text to 5 bytes under the 16 MiB limit: it reads,
+    // but the solve it writes passes the limit, so the save is refused (exit 1 on its own).
+    // No kernel can be had, so the rebuild met a fault too, which the refusal's response
+    // carries: the command couldn't run (exit 2), and says so after the refusal.
+    let scratch = Scratch::new("past-limit-fault");
+    let limit = silico_core::document::json::MAX_DOCUMENT_LEN;
+    let edited = RECTANGLE.replacen(r#""value": 40,"#, r#""value": 40.123456,"#, 1);
+    assert_ne!(edited, RECTANGLE);
+    let with_note = |note: &str| {
+        edited.replacen(
+            "\n     ]}\n  ]",
+            &format!(
+                "\n     ]}},\n    {{\"id\": \"k7f2qx3m\", \"type\": \"box\", \"v\": 1, \"name\": \"Block\", \"position\": [0, 0, 0], \"length\": 40, \"width\": 20, \"height\": 10, \"note\": \"{note}\"}}\n  ]"
+            ),
+            1,
+        )
+    };
+    let short = canonical::canonical(&with_note("")).len();
+    let text = with_note(&"x".repeat(limit - 5 - short));
+    assert_eq!(canonical::canonical(&text).len(), limit - 5);
+    let file = scratch.file(&text);
+    let nowhere = scratch.0.join("no-kernel-worker");
+    let out = silico_on_kernel(&scratch, &["fmt"], &file, &nowhere);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let said = stderr(&out);
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(lines.len(), 2, "{said}");
+    assert!(lines[0].contains(&limit.to_string()), "{said}");
+    assert!(
+        lines[1].starts_with(&format!(
+            "{}: worker_unavailable: SILICO_KERNEL_WORKER names",
+            file.display()
+        )),
+        "{said}"
+    );
+    assert!(
+        lines[1].ends_with("run `silico fmt` again to retry it."),
+        "{said}"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+}
+
+#[test]
 fn show_needs_no_cache_and_writes_nothing() {
     // `show` reads the document as written: it opens a session, but rebuilds nothing, so
     // it neither reads nor makes the cache's secret, and leaves no cache beside the file.

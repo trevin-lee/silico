@@ -35,7 +35,7 @@
 //! Every sketch is solved too, from the coordinates its document stores
 //! (docs/design/m3.4-stored-coordinates.md), on the engine's [`SketchSolver`] (the sketch
 //! worker, started at the first sketch, unless [`Recompute::with_sketches`] or
-//! [`Recompute::with_sketch_starter`] gave another),
+//! [`Recompute::with_solvers`] gave another),
 //! one at a time: those a feature sweeps before the plan, the rest beside the kernel's
 //! steps. A solve is keyed by its feature's ID and the
 //! sketch's canonical text, and kept as steps' results are, so an unchanged sketch isn't
@@ -805,8 +805,8 @@ struct Engine<K> {
     /// or to find it's superseded and wait no longer.
     sketch_turn: Condvar,
     /// Where its sketch solver comes from: its own (the sketch worker, unless
-    /// [`Recompute::with_sketches`] or [`Recompute::with_sketch_starter`] gave another), or
-    /// those it shares with other engines ([`Recompute::with_solvers`]). Taken only by the
+    /// [`Recompute::with_sketches`] gave another), or those [`Recompute::with_solvers`] gave,
+    /// which other engines may share. Taken only by the
     /// recompute whose turn it is.
     solvers: Mutex<SketchSolvers>,
 }
@@ -827,9 +827,10 @@ pub struct SketchSolvers(Arc<SharedSolvers>);
 
 struct SharedSolvers {
     /// The solvers given back, the last given back taken first. Taken alone, or after an
-    /// engine's state, never before it.
+    /// engine's state or `start`, never before either.
     idle: Mutex<Vec<Box<dyn SketchSolver>>>,
-    /// Starts another when none is idle. Taken alone.
+    /// Starts another when none is idle. Taken alone, or before `idle`; held across the
+    /// start, so engines that find none idle start one at a time.
     start: Mutex<SolverStarter>,
 }
 
@@ -865,12 +866,18 @@ impl SketchSolvers {
         }))
     }
 
-    /// An idle solver, or, with none idle, one started now.
+    /// An idle solver, or, with none idle, one started now. The idle list is looked at
+    /// again once the start is this one's: a solver given back while another engine's start
+    /// ran is taken, not one more started.
     fn take(&self) -> Result<Box<dyn SketchSolver>, Error> {
         if let Some(solver) = lock(&self.0.idle).pop() {
             return Ok(solver);
         }
-        let started = (lock(&self.0.start))();
+        let mut start = lock(&self.0.start);
+        if let Some(solver) = lock(&self.0.idle).pop() {
+            return Ok(solver);
+        }
+        let started = (*start)();
         if started.is_ok() {
             tracing::debug!("started a sketch solver");
         }
@@ -1087,29 +1094,19 @@ impl<K: Kernel + 'static> Recompute<K> {
     }
 
     /// Solves sketches with `sketches` rather than the sketch worker (a stand-in, in tests).
+    /// It replaces what [`with_solvers`](Self::with_solvers) gave: whichever is called last
+    /// holds.
     pub fn with_sketches(self, sketches: impl SketchSolver + 'static) -> Self {
         *lock(&self.engine.solvers) = SketchSolvers::holding(Box::new(sketches));
         self
     }
 
-    /// Starts the sketch solver with `start` at the first sketch, rather than the sketch
-    /// worker (a stand-in that fails to start, in tests). It replaces a solver given with
-    /// [`with_sketches`](Self::with_sketches) or [`with_solvers`](Self::with_solvers):
-    /// whichever is called last holds.
-    pub fn with_sketch_starter(
-        self,
-        start: impl FnMut() -> Result<Box<dyn SketchSolver>, Error> + Send + 'static,
-    ) -> Self {
-        *lock(&self.engine.solvers) = SketchSolvers::starting(start);
-        self
-    }
-
     /// Solves sketches with `solvers`, which other engines may share (a
     /// [`Sessions`](crate::command::Sessions)' sessions do): a solver lent from them for
-    /// each recompute's sketches, and given back after. It replaces what
-    /// [`with_sketches`](Self::with_sketches) or
-    /// [`with_sketch_starter`](Self::with_sketch_starter) gave: whichever is called last
-    /// holds.
+    /// each recompute's sketches, and given back after; or, with
+    /// [`SketchSolvers::starting`], its own, started another way (a stand-in that fails to
+    /// start, in tests). It replaces what [`with_sketches`](Self::with_sketches) gave:
+    /// whichever is called last holds.
     pub fn with_solvers(self, solvers: SketchSolvers) -> Self {
         *lock(&self.engine.solvers) = solvers;
         self

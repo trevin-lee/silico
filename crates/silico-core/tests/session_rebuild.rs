@@ -243,6 +243,114 @@ fn every_session_shares_the_registrys_sketch_solver_one_after_another() {
 }
 
 #[test]
+fn a_sessions_solve_never_waits_for_another_sessions_solve() {
+    // Sessions solving at once each have a solver: one session's solve, held, leaves the
+    // other's to finish on a second solver started for it. The first solver started holds
+    // its solves, the second doesn't.
+    let sketch = |x: u32| {
+        format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{{"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{{"id": "pa000000", "x": {x}, "y": 0, "construction": false}}], "lines": [], "circles": [], "arcs": [], "constraints": []}}]}}"#
+        )
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let (held, free) = (FakeSketches::new(), FakeSketches::new());
+    held.hold();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (first, second, counted) = (held.clone(), free.clone(), Arc::clone(&starts));
+    let sessions = Sessions::with_stand_ins(
+        Arc::new(FakeKernel::new(2).unwrap()),
+        move |cache| Cache::with_secret(cache, &secret),
+        move || {
+            let solver = match counted.fetch_add(1, Ordering::SeqCst) {
+                0 => first.clone(),
+                _ => second.clone(),
+            };
+            Ok(Box::new(solver) as Box<dyn SketchSolver>)
+        },
+    );
+    let open = |name: &str, x: u32| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, sketch(x)).unwrap();
+        answer(sessions.open(&path, false)).session.unwrap().id
+    };
+    let (a, b) = (open("a.silico", 1), open("b.silico", 2));
+    let checking_a = sessions.check(&a, ModelChoice::Current);
+    assert!(held.wait_held(HANG), "a's solve was never held");
+    // b's check answers while a's solve is still held.
+    clean(&answer(sessions.check(&b, ModelChoice::Current)));
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    assert_eq!(free.requests().len(), 1);
+    held.release();
+    clean(&answer(checking_a));
+    assert_eq!(held.requests().len(), 1);
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_solver_given_back_while_another_session_starts_one_is_taken_not_started_again() {
+    // Session o's solve is held on the first solver; p, finding none idle, starts a second,
+    // which is held in its start; q, finding none idle either, waits for p's start to end.
+    // Meanwhile o's solver is given back: q takes it, so two are started, not three.
+    let sketch = |x: u32| {
+        format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{{"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{{"id": "pa000000", "x": {x}, "y": 0, "construction": false}}], "lines": [], "circles": [], "arcs": [], "constraints": []}}]}}"#
+        )
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let (held, free) = (FakeSketches::new(), FakeSketches::new());
+    held.hold();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (entered, in_start) = std::sync::mpsc::channel::<()>();
+    let (go, gate) = std::sync::mpsc::channel::<()>();
+    let gate = std::sync::Mutex::new(gate);
+    let (first, second, counted) = (held.clone(), free.clone(), Arc::clone(&starts));
+    let sessions = Sessions::with_stand_ins(
+        Arc::new(FakeKernel::new(2).unwrap()),
+        move |cache| Cache::with_secret(cache, &secret),
+        move || {
+            let solver = match counted.fetch_add(1, Ordering::SeqCst) {
+                0 => first.clone(),
+                1 => {
+                    entered.send(()).unwrap();
+                    gate.lock().unwrap().recv_timeout(HANG).unwrap();
+                    second.clone()
+                }
+                _ => second.clone(),
+            };
+            Ok(Box::new(solver) as Box<dyn SketchSolver>)
+        },
+    );
+    let open = |name: &str, x: u32| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, sketch(x)).unwrap();
+        answer(sessions.open(&path, false)).session.unwrap().id
+    };
+    let (o, p, q) = (
+        open("o.silico", 1),
+        open("p.silico", 2),
+        open("q.silico", 3),
+    );
+    let checking_o = sessions.check(&o, ModelChoice::Current);
+    assert!(held.wait_held(HANG), "o's solve was never held");
+    let checking_p = sessions.check(&p, ModelChoice::Current);
+    in_start.recv_timeout(HANG).unwrap();
+    let checking_q = sessions.check(&q, ModelChoice::Current);
+    // Time for q to find none idle and wait for p's start; were it slower, q would find o's
+    // solver idle at once, and the test pass for any version.
+    std::thread::sleep(Duration::from_millis(300));
+    held.release();
+    clean(&answer(checking_o));
+    go.send(()).unwrap();
+    clean(&answer(checking_p));
+    clean(&answer(checking_q));
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    // o's and q's on the first, p's on the second.
+    assert_eq!((held.requests().len(), free.requests().len()), (2, 1));
+}
+
+#[test]
 fn dropping_the_sessions_mid_rebuild_stops_it_and_returns_at_once() {
     // A step is held, and let go only after the drop returns: a drop that waited for the
     // rebuild before stopping it would never return.

@@ -235,11 +235,13 @@ fn couldnt_run(error: &Error) -> bool {
 }
 
 /// A command's refusal of a file, as the CLI says it: each reason, the first listed and
-/// all counted, and whether it says the command couldn't run (exit 2), not that the
-/// document, or the file, has problems (exit 1).
+/// all counted; a kernel fault the rebuild met, if the refusal carries one, said after
+/// them; and whether it says the command couldn't run (exit 2), not that the document, or
+/// the file, has problems (exit 1).
 struct Refusal {
     errors: Vec<Error>,
     total: u64,
+    fault: Option<Error>,
     failed: bool,
 }
 
@@ -266,7 +268,10 @@ impl Refusal {
     /// The refusal of a command, `silico command`'s, on a file its session opened: as the
     /// session gives it, but how to go on about the file (a save that found it changed, a
     /// session that couldn't take it as it is now) said as the CLI does, which opens a
-    /// session for each run, not as a session's client goes on.
+    /// session for each run, not as a session's client goes on. A file it couldn't read
+    /// again is to be checked and the command run again; one grown longer than a document
+    /// may be is to be checked as open's refusal of it says. (A file another session holds
+    /// can't be one: the CLI holds one session at a time.)
     fn of_command(command: &str, problems: &Problems) -> Self {
         let errors = problems
             .errors()
@@ -279,9 +284,11 @@ impl Refusal {
                          is now"
                     ))
                 } else if about_the_file && error.cause() == Some(command::NOT_RELOADED) {
-                    error
-                        .clone()
-                        .with_suggestion("check the file is there and run it again")
+                    let suggestion = match error.code() {
+                        ErrorCode::IoFailed => "check the file is there and run it again",
+                        _ => command::TOO_LONG,
+                    };
+                    error.clone().with_suggestion(suggestion)
                 } else {
                     error.clone()
                 }
@@ -295,7 +302,22 @@ impl Refusal {
         Refusal {
             errors,
             total,
+            fault: None,
             failed,
+        }
+    }
+
+    /// This refusal of `silico command`, with `fault`, a kernel fault its response's model
+    /// read carries: the command's failure (exit 2), as a fault beside a result is, with
+    /// the CLI's advice to run it again.
+    fn with_fault(self, fault: Option<Error>, command: &str) -> Self {
+        match fault {
+            Some(fault) => Refusal {
+                fault: Some(with_retry(&fault, command)),
+                failed: true,
+                ..self
+            },
+            None => self,
         }
     }
 
@@ -307,20 +329,28 @@ impl Refusal {
         }
     }
 
-    /// Each reason on stderr, after `file`.
+    /// Each reason on stderr, after `file`, then the kernel fault, if any.
     fn said(&self, file: &Path) -> Ended {
         print_problems(file, &self.errors, self.total);
+        if let Some(fault) = &self.fault {
+            say!("{}: {fault}", shown(file));
+        }
         self.ended()
+    }
+
+    /// The error that stopped the command, if it couldn't run: a reason that says so, or
+    /// else the kernel fault, or else the first reason.
+    fn stopped(&self) -> Option<&Error> {
+        self.errors
+            .iter()
+            .find(|error| couldnt_run(error))
+            .or(self.fault.as_ref())
+            .or_else(|| self.errors.first().filter(|_| self.failed))
     }
 
     /// `check --json`'s line for `file`: the reason it couldn't run, or the problems.
     fn line(&self, file: &Path) -> Ended {
-        let stopped = self
-            .errors
-            .iter()
-            .find(|error| couldnt_run(error))
-            .or_else(|| self.errors.first().filter(|_| self.failed));
-        match stopped {
+        match self.stopped() {
             Some(error) => failed_line(file, error),
             None => {
                 problems_line(file, &self.errors, self.total);
@@ -332,7 +362,7 @@ impl Refusal {
 
 /// `fault`, a kernel fault the rebuild of a file met (its suggestion the worker's own), as
 /// `silico command` says it: then, to run the command again, which rebuilds the file anew.
-fn retried(fault: &Error, command: &str) -> Error {
+fn with_retry(fault: &Error, command: &str) -> Error {
     let again = format!("run `silico {command}` again to retry it");
     let suggestion = match fault.suggestion() {
         Some(own) => format!("{own}; {again}"),
@@ -361,12 +391,15 @@ fn check(sessions: &Sessions<KernelPool>, file: &Path, json: bool) -> Ended {
         let Response { model, result, .. } = sessions.check(id, ModelChoice::Current).wait();
         let problems = match result {
             Ok(answer) => answer.problems,
-            Err(problems) => return refused(Refusal::of_command("check", &problems)),
+            Err(problems) => {
+                let fault = model.and_then(|read| read.fault);
+                return refused(Refusal::of_command("check", &problems).with_fault(fault, "check"));
+            }
         };
         // A kernel fault isn't the document's: given after its problems, and the check's
         // failure (exit 2), as a file that couldn't be checked.
         if let Some(fault) = model.and_then(|read| read.fault) {
-            let fault = retried(&fault, "check");
+            let fault = with_retry(&fault, "check");
             if json {
                 return failed_line(file, &fault);
             }
@@ -419,7 +452,12 @@ fn fmt(sessions: &Sessions<KernelPool>, file: &Path, check_only: bool) -> Ended 
             let Response { model, result, .. } = sessions.format(id, None, !check_only).wait();
             let formatted = match result {
                 Ok(formatted) => formatted,
-                Err(problems) => return Refusal::of_command("fmt", &problems).said(file),
+                Err(problems) => {
+                    let fault = model.and_then(|read| read.fault);
+                    return Refusal::of_command("fmt", &problems)
+                        .with_fault(fault, "fmt")
+                        .said(file);
+                }
             };
             let problems = &formatted.problems;
             print_problems(file, problems.errors(), problems.total());
@@ -448,7 +486,7 @@ fn fmt(sessions: &Sessions<KernelPool>, file: &Path, check_only: bool) -> Ended 
                 }
             }
             if let Some(fault) = model.and_then(|read| read.fault) {
-                say!("{}: {}", shown(file), retried(&fault, "fmt"));
+                say!("{}: {}", shown(file), with_retry(&fault, "fmt"));
                 ended = Ended::Failed;
             }
             ended
@@ -572,7 +610,7 @@ mod tests {
     use silico_core::command::{NOT_RELOADED, Problems};
     use silico_core::{Error, ErrorCode};
 
-    use super::{Ended, Refusal};
+    use super::{Ended, Refusal, with_retry};
 
     fn failed(ended: &Ended) -> bool {
         matches!(ended, Ended::Failed)
@@ -644,12 +682,62 @@ mod tests {
             said(gone).as_deref(),
             Some("check the file is there and run it again")
         );
+        // R2-L2: a file grown past the limit is no matter of whether it's there: as open's
+        // refusal of it says, with no session's advice.
+        let grown = Error::new(ErrorCode::InvalidInput, "too long")
+            .with_parameter("path")
+            .with_cause(NOT_RELOADED)
+            .with_suggestion("put the file back at a.silico, or close the session and open the file where it is now");
+        assert_eq!(
+            said(grown).as_deref(),
+            Some("check it's the document you mean: no document is this long")
+        );
         let unwritable = Error::new(ErrorCode::IoFailed, "couldn't be written")
             .with_parameter("path")
             .with_suggestion("check that this user may write the file");
         assert_eq!(
             said(unwritable).as_deref(),
             Some("check that this user may write the file")
+        );
+    }
+
+    #[test]
+    fn a_refusal_carrying_a_kernel_fault_is_exit_2_and_says_it_after_its_reasons() {
+        // R2-L1: a document's refusal (exit 1 on its own) whose response's model met a
+        // kernel fault is the command's failure, the fault said with the CLI's advice; the
+        // fault is what stopped it, unless a reason says it couldn't run.
+        let too_long = Problems::from(Error::new(ErrorCode::InvalidInput, "too long"));
+        let fault = Error::new(ErrorCode::WorkerCrashed, "crashed").with_suggestion("report it");
+        let plain = Refusal::of_command("fmt", &too_long).with_fault(None, "fmt");
+        assert!(!failed(&plain.ended()));
+        assert!(plain.stopped().is_none());
+        let faulted = Refusal::of_command("fmt", &too_long).with_fault(Some(fault.clone()), "fmt");
+        assert!(failed(&faulted.ended()));
+        let stopped = faulted.stopped().unwrap();
+        assert_eq!(
+            (stopped.code(), stopped.suggestion()),
+            (
+                ErrorCode::WorkerCrashed,
+                Some("report it; run `silico fmt` again to retry it")
+            )
+        );
+        let cancelled = Problems::from(Error::new(ErrorCode::Cancelled, "cancelled"));
+        let both = Refusal::of_command("check", &cancelled).with_fault(Some(fault), "check");
+        assert_eq!(both.stopped().unwrap().code(), ErrorCode::Cancelled);
+    }
+
+    #[test]
+    fn a_fault_with_no_suggestion_of_its_own_gets_the_clis_retry_line_alone() {
+        // R2-L5: a timeout says nothing of what to do; the CLI's line is all of it.
+        let timeout = Error::new(ErrorCode::WorkerTimeout, "timed out");
+        assert_eq!(
+            with_retry(&timeout, "check").suggestion(),
+            Some("run `silico check` again to retry it")
+        );
+        let own = timeout.with_suggestion("simplify the part");
+        assert_eq!(
+            with_retry(&own, "check").suggestion(),
+            Some("simplify the part; run `silico check` again to retry it")
         );
     }
 }

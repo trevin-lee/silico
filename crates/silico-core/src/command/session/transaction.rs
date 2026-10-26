@@ -1023,8 +1023,13 @@ pub(super) fn too_long(path: &Path) -> Error {
         ),
     )
     .with_parameter("path")
-    .with_suggestion("check it's the document you mean: no document is this long")
+    .with_suggestion(TOO_LONG)
 }
+
+/// What to do about a file longer than Silico reads of a document ([`too_long`]'s
+/// suggestion): so a client that opens a session for each run (the CLI) can say it of a
+/// file grown that long since, rather than a session's advice.
+pub const TOO_LONG: &str = "check it's the document you mean: no document is this long";
 
 /// `error`, a file's (as `file::opened_and_read` gives it, saying nothing of which file),
 /// naming the file at `path` (as `open` was given it): its code, and its message after the

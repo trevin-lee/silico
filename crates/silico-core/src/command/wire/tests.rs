@@ -1075,8 +1075,9 @@ fn a_models_fault_is_written_in_the_error_contracts_shape() {
             }
         })
     );
-    // With no suggestion of its own, the advice alone; a worker that couldn't be had names
-    // no feature, as the model read already holds it.
+    // With no suggestion of its own, the advice alone. (A worker that couldn't be had names
+    // no feature: the model read holds it so (`met_fault`, tested through `kept_fault` in the
+    // session's tests); the wire writes the fault as it's held.)
     let unavailable = Response {
         model: Some(ModelRead {
             revision: revision(6),
@@ -1088,7 +1089,6 @@ fn a_models_fault_is_written_in_the_error_contracts_shape() {
     let text = write(&response(&unavailable), Layout::Canonical).unwrap();
     let value: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(value["model"]["fault"]["suggestion"], KEPT);
-    assert_eq!(value["model"]["fault"]["feature"], serde_json::Value::Null);
 }
 
 /// What a kept fault's suggestion says on the wire, after the worker's own and "; to try

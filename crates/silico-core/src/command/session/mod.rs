@@ -102,8 +102,8 @@ pub(super) use rebuilds::{kept_fault, kept_suggestion, retried};
 use registry::{Book, CacheOpener, Registry, Release, Started, claim, reclaim, serve, start};
 pub use threads::MAX_PUBLISHED_READS;
 use threads::{Counted, Reads, Threads};
-pub use transaction::NOT_RELOADED;
 use transaction::{Claim, Held, Reload, Rereads, transaction_open};
+pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
     Added, Begun, Cancelled, CheckAnswer, Closed, Committed, FieldSet, ModelChoice, ModelRead,

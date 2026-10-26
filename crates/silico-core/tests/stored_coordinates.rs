@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use silico_core::document::{Checked, FeatureId, read};
 use silico_core::fake::{FakeKernel, FakeSketches};
-use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
+use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome, SketchSolvers};
 use silico_core::{ErrorCode, command};
 use silico_protocol::{SketchSystem, SolveStatus, Solved};
 
@@ -483,18 +483,20 @@ fn a_sketch_worker_that_cant_be_started_is_the_solvers_fault_and_started_again_n
     let sketches = FakeSketches::new();
     let mut tries = 0;
     let given = sketches.clone();
-    let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketch_starter(move || {
-        tries += 1;
-        if tries == 1 {
-            Err(silico_core::Error::new(
-                ErrorCode::WorkerUnavailable,
-                "SILICO_SKETCH_WORKER names /nowhere, which isn't a file",
-            )
-            .with_suggestion("name the sketch worker's executable"))
-        } else {
-            Ok(Box::new(given.clone()) as Box<dyn silico_core::sketch::SketchSolver>)
-        }
-    });
+    let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_solvers(SketchSolvers::starting(
+        move || {
+            tries += 1;
+            if tries == 1 {
+                Err(silico_core::Error::new(
+                    ErrorCode::WorkerUnavailable,
+                    "SILICO_SKETCH_WORKER names /nowhere, which isn't a file",
+                )
+                .with_suggestion("name the sketch worker's executable"))
+            } else {
+                Ok(Box::new(given.clone()) as Box<dyn silico_core::sketch::SketchSolver>)
+            }
+        },
+    ));
     let text = sketch("10", HORIZONTAL);
     let first = model(&engine, &text);
     match first.outcome(&feature()) {
