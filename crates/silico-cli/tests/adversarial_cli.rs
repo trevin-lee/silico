@@ -7,7 +7,10 @@
 //! and prettier --write refuse a read-only file and write through a symlink).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use canonical::canonical;
 use std::ffi::{OsStr, OsString};
+#[path = "common/canonical.rs"]
+mod canonical;
 #[path = "common/run.rs"]
 mod run;
 
@@ -38,11 +41,6 @@ const EXAMPLE_CANONICAL: &str = r#"{
   ]
 }
 "#;
-
-/// `text` in canonical form, as the core's writer writes it, with nothing rebuilt.
-fn canonical(text: &str) -> String {
-    silico_core::document::write(&silico_core::document::read(text.as_bytes()).unwrap()).unwrap()
-}
 
 /// A directory of its own for one test, removed after.
 struct Scratch(PathBuf);
@@ -170,43 +168,35 @@ fn a_file_name_that_isnt_utf8_is_refused_not_a_panic() {
     // BREAKS: `std::env::args()` panics on an argument that isn't UTF-8 ("called
     // `Result::unwrap()` on an `Err` value: \"\\xFF.silico\""), exit 101. Expected:
     // `args_os`, and the name refused as the session commands every client runs refuse it
-    // (`open`: a response couldn't name it exactly), exit 1, saying so, whether or not the
-    // file system holds such a name (APFS refuses it: EILSEQ), and nothing written;
-    // `textconv`, which needs no session, reads it where it can be (docs/cli.md).
+    // (`open`: a response couldn't name it exactly), a file that couldn't be had, as one
+    // unreadable is (R-M2: not the document's problem), exit 2, saying so, its `path` the
+    // parameter at fault, whether or not the file system holds such a name (APFS refuses
+    // it: EILSEQ), and nothing written; `textconv`, which needs no session, reads it where
+    // it can be (docs/cli.md).
     let scratch = Scratch::new("non-utf8");
     let name = OsString::from_vec(b"caf\xe9 \xff.silico".to_vec());
     let made = std::fs::write(scratch.0.join(&name), EXAMPLE).is_ok();
     for c in ["check", "fmt", "show"] {
         let out = run(&scratch, &[os(c), &name]);
-        assert_eq!(out.code(), Some(1), "{c}: {}", out.stderr);
-        assert!(
-            out.stderr
-                .contains("isn't UTF-8, so the API can't name it exactly"),
-            "{c}: {}",
-            out.stderr
-        );
+        assert_eq!(out.code(), Some(2), "{c}: {}", out.stderr);
         // The name as the system's bytes read as UTF-8, once on the line and once quoted in
         // the refusal.
-        assert!(
-            out.stderr.starts_with(
-                "caf\u{fffd} \u{fffd}.silico: invalid_input: \"caf\u{fffd} \u{fffd}.silico\" isn't"
-            ),
-            "{c}: {}",
-            out.stderr
+        assert_eq!(
+            out.stderr,
+            "caf\u{fffd} \u{fffd}.silico: invalid_input: \"caf\u{fffd} \u{fffd}.silico\" isn't \
+             UTF-8, so the API can't name it exactly (parameter path). Suggestion: rename the \
+             file, or open it through a path that is UTF-8.\n",
+            "{c}"
         );
     }
     let out = run(&scratch, &[os("check"), os("--json"), &name]);
-    assert_eq!(out.code(), Some(1), "{}", out.stderr);
+    assert_eq!(out.code(), Some(2), "{}", out.stderr);
     let line: serde_json::Value = serde_json::from_str(out.stdout.trim()).unwrap();
     assert_eq!(line["ok"], false, "{line}");
-    assert_eq!(line["total"], 1, "{line}");
-    assert_eq!(line["problems"][0]["code"], "invalid_input", "{line}");
-    // The file is the line's own: no request's `path` is named.
-    assert_eq!(
-        line["problems"][0]["parameter"],
-        serde_json::Value::Null,
-        "{line}"
-    );
+    assert_eq!(line["file"], "caf\u{fffd} \u{fffd}.silico", "{line}");
+    assert_eq!(line["error"]["code"], "invalid_input", "{line}");
+    assert_eq!(line["error"]["parameter"], "path", "{line}");
+    assert!(line.get("problems").is_none(), "{line}");
     if made {
         assert_eq!(
             std::fs::read_to_string(scratch.0.join(&name)).unwrap(),
@@ -674,9 +664,7 @@ fn fmt_of_a_document_its_fingerprints_would_take_past_the_limit_leaves_it_and_sa
     // fingerprint won't fit. fmt says so (exit 1) and the file is as it was.
     let scratch = Scratch::new("at-limit");
     let limit = silico_core::document::json::MAX_DOCUMENT_LEN;
-    let canonical =
-        silico_core::document::write(&silico_core::document::read(EXAMPLE.as_bytes()).unwrap())
-            .unwrap();
+    let canonical = canonical(EXAMPLE);
     let pad = limit - canonical.len() - 64 - r#", "note": """#.len();
     let text = canonical.replacen(
         r#""height": 10}"#,

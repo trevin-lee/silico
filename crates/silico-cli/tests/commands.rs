@@ -6,6 +6,8 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+#[path = "common/canonical.rs"]
+mod canonical;
 #[path = "../../silico-core/tests/common/sketch.rs"]
 mod fixture;
 #[path = "common/run.rs"]
@@ -668,10 +670,10 @@ fn a_sketch_worker_that_cant_be_found_is_exit_2_and_its_sketch_kept_as_stored() 
         stderr(&out)
     );
     assert!(!stderr(&out).contains("wrote"), "{}", stderr(&out));
-    let canonical =
-        silico_core::document::write(&silico_core::document::read(RECTANGLE.as_bytes()).unwrap())
-            .unwrap();
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), canonical);
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        canonical::canonical(RECTANGLE)
+    );
 }
 
 /// How many kernel workers `silico check FILES` started (from the workers' start log),
@@ -1055,4 +1057,193 @@ fn show_needs_no_cache_and_writes_nothing() {
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     assert_eq!(left, ["part.silico"]);
+}
+
+#[test]
+fn fmt_of_a_document_the_gate_refuses_names_the_parameter_at_fault() {
+    // The tests review (round 1): the document's own problems keep their parameter; only
+    // open's refusal of the file drops the `path` its line already names.
+    let scratch = Scratch::new("gate-parameter");
+    let text = EXAMPLE.replace(r#""length": 40"#, r#""length": 0"#);
+    let file = scratch.file(&text);
+    for args in [&["fmt"][..], &["fmt", "--check"], &["check"]] {
+        let out = silico(&scratch, args, &file);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("got 0 (feature k7f2qx3m, parameter length). Suggestion:"),
+            "{args:?}: {}",
+            stderr(&out)
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "{args:?}");
+    }
+}
+
+#[test]
+fn a_refusal_on_stderr_doesnt_name_the_path_its_line_names() {
+    // Open's refusal of a missing file: its `path` is the file the line starts with, so
+    // it isn't named again as a parameter.
+    let scratch = Scratch::new("missing-line");
+    let file = scratch.0.join("missing.silico");
+    for args in [&["check"][..], &["fmt"], &["fmt", "--check"], &["show"]] {
+        let out = silico(&scratch, args, &file);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert_eq!(
+            stderr(&out),
+            format!(
+                "{}: io_failed: couldn't be read: No such file or directory (os error 2). \
+                 Suggestion: check the file's name, and that it's a regular file this user \
+                 may read.\n",
+                file.display()
+            ),
+            "{args:?}"
+        );
+    }
+}
+
+/// A sketch whose one line is drawn level but constrained vertical, so a solve would move
+/// its end (`pb000000`, at x 10), and the example's block after it.
+const SKETCH_AND_BOX: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Tilted", "plane": "xy",
+     "points": [
+       {"id": "pa000000", "x": 0, "y": 0, "construction": false},
+       {"id": "pb000000", "x": 10, "y": 0, "construction": false}
+     ],
+     "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}],
+     "circles": [], "arcs": [],
+     "constraints": [{"id": "k0000001", "type": "vertical", "line": "na000000"}]},
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
+  ]
+}
+"#;
+
+/// What the core says of a sketch worker that `SILICO_SKETCH_WORKER` names at `/nowhere`
+/// (naming no feature: a worker that can't be had says nothing of the one that asked),
+/// worded as the CLI words a kernel fault: its own suggestion, then to run `command` again.
+fn no_sketch_worker(command: &str) -> String {
+    format!(
+        "worker_unavailable: SILICO_SKETCH_WORKER names \"/nowhere\", which isn't a file. \
+         Suggestion: {}; run `silico {command}` again to retry it.",
+        NO_SKETCH_WORKER_ADVICE
+    )
+}
+
+/// The core's own suggestion for a sketch worker `SILICO_SKETCH_WORKER` names at nothing.
+const NO_SKETCH_WORKER_ADVICE: &str = "point SILICO_SKETCH_WORKER at the silico-sketch-worker binary, or unset it to use the one beside Silico";
+
+#[test]
+fn fmt_around_a_fault_says_what_it_wrote_then_the_fault_last() {
+    // The sketch worker can't be had: the sketch keeps what its file holds, the block's
+    // fingerprint is written, and the fault is said last, in the CLI's words (R-M1: run
+    // it again, not a session's advice), exit 2.
+    let scratch = Scratch::new("fmt-around-fault");
+    let file = scratch.file(SKETCH_AND_BOX);
+    let out = silico_with(&scratch, &["fmt"], &file, Path::new("/nowhere"));
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let path = file.display();
+    assert_eq!(
+        stderr(&out),
+        format!(
+            "{path}: wrote the fingerprint of k7f2qx3m\n{path}: {}\n",
+            no_sketch_worker("fmt")
+        )
+    );
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        text.contains(r#""fingerprint": {"volume": 8000,"#),
+        "{text}"
+    );
+    assert!(
+        text.contains(r#"{"id": "pb000000", "x": 10, "y": 0, "construction": false}"#),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_kernel_fault_is_said_in_the_clis_words_by_check_and_check_json() {
+    // R-M1: a session's advice (reopening the session, check with fresh) means nothing on
+    // the command line; the worker's own suggestion, then to run it again.
+    let scratch = Scratch::new("check-fault-words");
+    let file = scratch.file(SKETCH_AND_BOX);
+    let out = silico_with(&scratch, &["check"], &file, Path::new("/nowhere"));
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        format!("{}: {}\n", file.display(), no_sketch_worker("check"))
+    );
+    let out = silico_with(&scratch, &["check", "--json"], &file, Path::new("/nowhere"));
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(line["ok"], false, "{line}");
+    assert_eq!(line["error"]["code"], "worker_unavailable", "{line}");
+    assert_eq!(
+        line["error"]["suggestion"],
+        format!("{NO_SKETCH_WORKER_ADVICE}; run `silico check` again to retry it"),
+        "{line}"
+    );
+}
+
+#[test]
+fn fmt_check_says_only_that_it_would_rewrite() {
+    let scratch = Scratch::new("fmt-check-only");
+    let file = scratch.file(EXAMPLE);
+    let out = silico(&scratch, &["fmt", "--check"], &file);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        format!(
+            "{}: not in canonical form; `silico fmt` would rewrite it\n",
+            file.display()
+        )
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), EXAMPLE);
+}
+
+#[test]
+fn fmt_says_wrote_for_a_fingerprint_it_had_none_of() {
+    let scratch = Scratch::new("fmt-wrote");
+    let file = scratch.file(EXAMPLE);
+    let out = silico(&scratch, &["fmt"], &file);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        format!("{}: wrote the fingerprint of k7f2qx3m\n", file.display())
+    );
+}
+
+#[test]
+fn checking_files_with_sketches_starts_one_sketch_worker() {
+    // A-M2: a sketch worker a session, three for three files, was one each; the sessions
+    // share one solver, as they share the kernel pool. Each file in a directory of its own,
+    // so none is solved from another's cache.
+    let scratch = Scratch::new("one-sketch-worker");
+    let files: Vec<PathBuf> = ["x", "y", "z"]
+        .iter()
+        .map(|dir| {
+            std::fs::create_dir(scratch.0.join(dir)).unwrap();
+            let file = scratch.0.join(dir).join("part.silico");
+            std::fs::write(&file, RECTANGLE).unwrap();
+            file
+        })
+        .collect();
+    let exe = Path::new(env!("CARGO_BIN_EXE_silico"));
+    let mut cmd = Command::new(exe);
+    cmd.arg("check")
+        .args(&files)
+        .env(
+            "SILICO_KERNEL_WORKER",
+            exe.with_file_name("silico-kernel-worker"),
+        )
+        .env(
+            "SILICO_SKETCH_WORKER",
+            exe.with_file_name("silico-sketch-worker"),
+        )
+        .env("XDG_CACHE_HOME", scratch.0.join("cache-home"))
+        .env("SILICO_LOG", "silico_core::worker=debug")
+        .stdin(Stdio::null());
+    let out = run::output(cmd);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(stderr(&out).matches("started sketch worker").count(), 1);
 }
