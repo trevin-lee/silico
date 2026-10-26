@@ -3095,6 +3095,22 @@ fn a_kept_fault_rewords_the_workers_advice_for_a_session_then_says_to_check_with
              too much memory: simplify it"
         )
     );
+    // Killed before it started (worker.rs gives a worker that never started this code):
+    // a retry, said once, as check with fresh's, then what to do if it happens again.
+    let killed_unstarted = Error::new(ErrorCode::WorkerUnavailable, "the worker was killed")
+        .with_advice(crash_advice(
+            WorkerKind::Kernel,
+            signalled(libc::SIGKILL),
+            Reached::NotStarted,
+        ));
+    assert_eq!(
+        kept_fault(&killed_unstarted).suggestion(),
+        Some(
+            "check with fresh to try it again: the kernel worker was killed before it started; \
+             if it's killed before starting again, check Silico's install (macOS kills a \
+             worker binary whose code signature is broken)"
+        )
+    );
     // The worker's install: its advice, then check with fresh.
     let exited = Error::new(ErrorCode::WorkerCrashed, "the worker crashed")
         .with_feature("f0000001")

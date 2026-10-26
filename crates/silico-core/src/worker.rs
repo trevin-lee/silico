@@ -2119,13 +2119,50 @@ mod tests {
 
     #[test]
     fn crash_advice_follows_how_the_worker_ended() {
+        use super::Advice;
         use super::Reached::{NotStarted, Request, Started};
         // From the signals' meanings, not from `FAULTS`: a fault of the worker's own once
-        // the request reached it is the values'; before it started, the install's.
-        let values = "change the operation's values";
-        let again = "try the request again";
-        let install = "check Silico's install";
+        // the request reached it is the values'; before it started, the install's. Each
+        // case's advice as data (what a session's kept fault reads), and its opening words.
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        enum Says {
+            Values,
+            Again,
+            OnceMore,
+            Install,
+        }
+        let says = |advice: &Advice| match advice {
+            Advice::ChangeTheValues { .. } => Some(Says::Values),
+            Advice::TryAgain {
+                once_more: false, ..
+            } => Some(Says::Again),
+            Advice::TryAgain {
+                once_more: true, ..
+            } => Some(Says::OnceMore),
+            Advice::Other(_) => Some(Says::Install),
+            Advice::SimplifyOrWait => None,
+        };
+        let opening = |kind: Says| match kind {
+            Says::Values => "change the operation's values",
+            Says::Again => "try the request again",
+            Says::OnceMore => "try the request once more",
+            Says::Install => "check Silico's install",
+        };
         let signalled = |signal| Some(ExitStatus::from_raw(signal));
+        let check = |status: Option<ExitStatus>, reached: super::Reached, want: Says| {
+            let advice = crash_advice(super::WorkerKind::Kernel, status, reached);
+            assert_eq!(
+                says(&advice),
+                Some(want),
+                "{status:?} {reached:?}: {advice:?}"
+            );
+            let words = advice.words();
+            assert!(
+                words.starts_with(opening(want)),
+                "{status:?} {reached:?}: {words}"
+            );
+            words
+        };
         for signal in [
             libc::SIGSEGV,
             libc::SIGBUS,
@@ -2135,35 +2172,22 @@ mod tests {
             libc::SIGTRAP,
             libc::SIGSYS,
         ] {
-            for (reached, says) in [(Request, values), (Started, again), (NotStarted, install)] {
-                let advice =
-                    crash_advice(super::WorkerKind::Kernel, signalled(signal), reached).words();
-                assert!(advice.starts_with(says), "{signal} {reached:?}: {advice}");
+            for (reached, want) in [
+                (Request, Says::Values),
+                (Started, Says::Again),
+                (NotStarted, Says::Install),
+            ] {
+                check(signalled(signal), reached, want);
             }
         }
-        for (reached, says) in [
-            (Request, "try the request once more"),
-            (Started, again),
-            (NotStarted, again),
-        ] {
-            let advice =
-                crash_advice(super::WorkerKind::Kernel, signalled(libc::SIGKILL), reached).words();
-            assert!(advice.starts_with(says), "{reached:?}: {advice}");
-        }
-        // Killed before it started: from outside, or, again and again, the system refusing
-        // the binary.
-        let unstarted = crash_advice(
-            super::WorkerKind::Kernel,
-            signalled(libc::SIGKILL),
-            NotStarted,
-        )
-        .words();
-        assert!(unstarted.contains(install), "{unstarted}");
-        assert!(
-            !crash_advice(super::WorkerKind::Kernel, signalled(libc::SIGKILL), Started)
-                .words()
-                .contains(install)
-        );
+        // Killed: most likely for memory once the request reached it, worth once more; else
+        // from outside, worth trying again. Before it started, again and again, it may be
+        // the system refusing the binary, which the words say, the retry still a retry.
+        check(signalled(libc::SIGKILL), Request, Says::OnceMore);
+        let started = check(signalled(libc::SIGKILL), Started, Says::Again);
+        assert!(!started.contains(opening(Says::Install)), "{started}");
+        let unstarted = check(signalled(libc::SIGKILL), NotStarted, Says::Again);
+        assert!(unstarted.contains(opening(Says::Install)), "{unstarted}");
         for reached in [Request, Started, NotStarted] {
             for signal in [
                 libc::SIGTERM,
@@ -2172,25 +2196,12 @@ mod tests {
                 libc::SIGUSR1,
                 libc::SIGPIPE,
             ] {
-                let advice =
-                    crash_advice(super::WorkerKind::Kernel, signalled(signal), reached).words();
-                assert!(advice.starts_with(again), "{signal} {reached:?}: {advice}");
+                check(signalled(signal), reached, Says::Again);
             }
             // Killed after it stopped responding: no status.
-            assert!(
-                crash_advice(super::WorkerKind::Kernel, None, reached)
-                    .words()
-                    .starts_with(again),
-                "{reached:?}"
-            );
+            check(None, reached, Says::Again);
             // An exit code (3, in the status's high byte) is the install's, either way.
-            let exited = crash_advice(
-                super::WorkerKind::Kernel,
-                Some(ExitStatus::from_raw(3 << 8)),
-                reached,
-            )
-            .words();
-            assert!(exited.starts_with(install), "{reached:?}: {exited}");
+            check(Some(ExitStatus::from_raw(3 << 8)), reached, Says::Install);
         }
     }
 
