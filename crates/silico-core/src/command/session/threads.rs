@@ -85,7 +85,7 @@ impl Reads {
 pub(super) struct Unanswered {
     /// The number the next read takes.
     next: u64,
-    /// Each one's stop, by its number. M4.5's reads keep their kernel clients with these
+    /// Each one's stop, by its number. Each read keeps its kernel client with its stop
     /// (through [`Ticket::interrupt_with`]), so a cancel or the session's close retires the
     /// read's own client.
     reads: BTreeMap<u64, Arc<Ticket>>,

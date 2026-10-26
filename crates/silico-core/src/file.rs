@@ -340,10 +340,10 @@ fn beside(target: &Path, metadata: &std::fs::Metadata) -> Result<(PathBuf, std::
     )))
 }
 
-/// A path as an error says it: quoted, with control and invisible characters escaped, as an
+/// A path as a message says it: quoted, with control and invisible characters escaped, as an
 /// outline quotes a document's text, so a file's name can't act on the terminal it's shown
-/// in (found by the milestone's robustness review).
-fn shown_path(path: &Path) -> String {
+/// in. Every error and message that names a file says it so.
+pub(crate) fn shown_path(path: &Path) -> String {
     crate::command::quoted(&path.display().to_string())
 }
 

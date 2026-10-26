@@ -70,9 +70,10 @@ use crate::kernel::{
     KernelRequest, Op, Primitive, Region, Reported, ShapeData, SketchPlane, SweepKind, Topology,
     cone_caps, primitive_counts,
 };
-use crate::pool::{ClientQueues, ClientTask, MAX_WORKERS, Outcome, Pending, deliver, thread_error};
+use crate::pool::{ClientQueues, ClientTask, MAX_WORKERS, Outcome, Pending, deliver};
 use crate::sketch::{SketchSolver, SolveStopper};
 use crate::worker::lock;
+use crate::worker::thread_error;
 use crate::{Error, ErrorCode};
 
 /// What the fake calls itself in its errors: a [`Pending`] stopped early, a thread that

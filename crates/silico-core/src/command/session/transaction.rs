@@ -16,7 +16,7 @@ use super::registry::Unclaimed;
 use super::registry::claim;
 use super::{
     Begun, Committed, Gated, ModelChoice, ModelRead, Problems, Published, Reformatted, Revision,
-    RolledBack, Session, SessionId, shown,
+    RolledBack, Session, SessionId, shown_path,
 };
 use crate::command::edit::Candidate;
 use crate::document::json::MAX_INPUT_LEN;
@@ -539,16 +539,7 @@ impl<C: Kernel + 'static> Session<C> {
             }
             // Only a transaction's commit is given what was found outside.
             self.unwritten(stop, &begun, revision)?;
-            return Ok((
-                Committed {
-                    written: false,
-                    path,
-                    refingerprinted: Vec::new(),
-                    resolved: Vec::new(),
-                    problems: gated.problems(),
-                },
-                None,
-            ));
+            return Ok((Committed::unwritten(path, gated.problems()), None));
         }
         let checked = match &*gated {
             Gated::Checked(checked) => checked,
@@ -557,16 +548,7 @@ impl<C: Kernel + 'static> Session<C> {
                 if through == Through::Transaction {
                     self.unwritten(stop, &begun, revision)?;
                 }
-                return Ok((
-                    Committed {
-                        written: false,
-                        path,
-                        refingerprinted: Vec::new(),
-                        resolved: Vec::new(),
-                        problems,
-                    },
-                    None,
-                ));
+                return Ok((Committed::unwritten(path, problems), None));
             }
             refused => return Err(refused.problems()),
         };
@@ -580,16 +562,7 @@ impl<C: Kernel + 'static> Session<C> {
             if through == Through::Transaction {
                 self.unwritten(stop, &begun, revision)?;
             }
-            return Ok((
-                Committed {
-                    written: false,
-                    path,
-                    refingerprinted: Vec::new(),
-                    resolved: Vec::new(),
-                    problems: formatted.problems,
-                },
-                None,
-            ));
+            return Ok((Committed::unwritten(path, formatted.problems), None));
         }
         let saved = Arc::new(formatted.text.into_bytes());
         let publish = formatted.resolved.is_empty();
@@ -913,7 +886,7 @@ impl<C: Kernel + 'static> Session<C> {
             } else {
                 format!(
                     "make the file at {} a regular file this user may read, or close the session and open the file where it is now",
-                    shown(Path::new(&path))
+                    shown_path(Path::new(&path))
                 )
             };
             Problems::from(not_reloaded(of_file(&path, &error), suggestion))
@@ -1011,7 +984,7 @@ impl Saver {
             ErrorCode::Conflict,
             format!(
                 "{} changed outside this session since it was read",
-                shown(Path::new(path))
+                shown_path(Path::new(path))
             ),
         )
         .with_parameter("path");
@@ -1041,7 +1014,7 @@ pub(super) fn too_long(path: &Path) -> Error {
         ErrorCode::InvalidInput,
         format!(
             "{} is more than the {MAX_INPUT_LEN} bytes Silico reads of a document",
-            shown(path)
+            shown_path(path)
         ),
     )
     .with_parameter("path")
@@ -1059,7 +1032,7 @@ pub const TOO_LONG: &str = "check it's the document you mean: no document is thi
 pub(super) fn of_file(path: &str, error: &Error) -> Error {
     Error::new(
         error.code(),
-        format!("{} {}", shown(Path::new(path)), error.message()),
+        format!("{} {}", shown_path(Path::new(path)), error.message()),
     )
 }
 
@@ -1084,7 +1057,7 @@ pub const NOT_RELOADED: &str =
 pub(super) fn put_back(path: &str) -> String {
     format!(
         "put the file back at {}, or close the session and open the file where it is now",
-        shown(Path::new(path))
+        shown_path(Path::new(path))
     )
 }
 
@@ -1104,8 +1077,8 @@ pub(super) fn part_written(path: &str, old: &Path) -> Error {
         ErrorCode::IoFailed,
         format!(
             "{} was left part written by this session's own save, which couldn't put its text back: its text before is in {}",
-            shown(Path::new(path)),
-            shown(old)
+            shown_path(Path::new(path)),
+            shown_path(old)
         ),
     )
     .with_parameter("path")

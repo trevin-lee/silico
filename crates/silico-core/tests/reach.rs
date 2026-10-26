@@ -6,9 +6,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use silico_core::document::{
-    Before, Document, FeatureId, QuotedIds, net_reach, reached, read, with_users,
-};
+use silico_core::document::{Before, Document, FeatureId, QuotedIds, net_reach, read, with_users};
 
 use crate::within::within;
 
@@ -25,6 +23,12 @@ const PART: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm
   {"id": "b0000001", "type": "box", "v": 1, "name": "Lug", "position": [100, 0, 0], "length": 10, "width": 10, "height": 10},
   {"id": "c0000001", "type": "cut", "v": 1, "name": "Notch", "base": "q0000001", "tool": "b0000001"}
 ]}"#;
+
+/// What the edits from `before` to `after` reach, with nothing carried: each feature whose
+/// own values changed, each added, and what uses one.
+fn reached(before: &Document, after: &Document) -> BTreeSet<FeatureId> {
+    net_reach(Before::Read(before), &BTreeSet::new(), after)
+}
 
 fn part() -> Document {
     read(PART.as_bytes()).unwrap()

@@ -13,8 +13,8 @@ use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
 /// What a stopped command's work is told to stop: a wait it may be in (a session's, for its
-/// rebuild), or, for a published read, the kernel work it asks for (its own client, which
-/// M4.5's reads give each read and this retires), told why. It may be told more than once (a
+/// rebuild), or, for a read of a model, the kernel work it asks for (its own client, which
+/// each read is given and this retires), told why. It may be told more than once (a
 /// cancel and a close, or a cancel racing the interrupt's adding), so telling it again must
 /// do nothing more.
 pub(super) trait Interrupt: Send + Sync {
@@ -120,7 +120,7 @@ impl Ticket {
 
     /// `interrupt` told when the command is cancelled or its session closes: at once, if
     /// either has come. Added once, however often it's given, and those whose owners have
-    /// gone let go. M4.5's published reads add their kernel client here, so a cancel or a
+    /// gone let go. Each read of a model adds its kernel client here, so a cancel or a
     /// close retires it.
     pub(super) fn interrupt_with(&self, interrupt: Weak<dyn Interrupt>) {
         {
@@ -240,7 +240,7 @@ pub(super) fn not_running(
 mod tests {
     use super::*;
 
-    /// What a cancel interrupts, as M4.5's read client would be: each why it's told.
+    /// What a cancel interrupts, as a read's kernel client is: each why it's told.
     struct Told(Mutex<Vec<Why>>);
 
     impl Interrupt for Told {

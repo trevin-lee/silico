@@ -513,6 +513,19 @@ pub struct RolledBack {
     pub restored: Revision,
 }
 
+impl Committed {
+    /// A commit that wrote nothing, of the document at `path`: what it found, `problems`.
+    pub(super) fn unwritten(path: String, problems: Problems) -> Self {
+        Committed {
+            written: false,
+            path,
+            refingerprinted: Vec::new(),
+            resolved: Vec::new(),
+            problems,
+        }
+    }
+}
+
 /// What `format` did (decision 31): whether its canonical text differs from the file (as
 /// the session read it before the command, reloading a change, decision 2), whether it
 /// wrote it, the path as `open` was given it, the features whose fingerprints it wrote (or,
@@ -624,8 +637,8 @@ pub struct Progress {
 pub enum RebuildState {
     /// Not started: no command has needed its model, or its rebuild was superseded, or an
     /// edit's commit was cancelled while its rebuild ran; or the gate refused the document,
-    /// so there's nothing to rebuild.
-    None,
+    /// so there's nothing to rebuild. Written `none`.
+    NotStarted,
     /// Running: the revision's, or, for an edit made outside a transaction, its commit's.
     Running,
     /// Done, its model published.
@@ -641,7 +654,7 @@ impl RebuildState {
     /// As `status` writes it: `none`, `running`, `done`, `faulted`, or `stopped`.
     pub const fn as_str(self) -> &'static str {
         match self {
-            RebuildState::None => "none",
+            RebuildState::NotStarted => "none",
             RebuildState::Running => "running",
             RebuildState::Done => "done",
             RebuildState::Faulted => "faulted",

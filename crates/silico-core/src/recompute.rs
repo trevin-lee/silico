@@ -1122,7 +1122,7 @@ fn start_threads(
     for n in 0..threads {
         match spawn(n) {
             Ok(()) => started += 1,
-            Err(e) if started == 0 => return Err(crate::pool::thread_error("recompute", &e)),
+            Err(e) if started == 0 => return Err(crate::worker::thread_error("recompute", &e)),
             Err(_) => break,
         }
     }
@@ -1329,7 +1329,7 @@ impl<K: Kernel + 'static> Recompute<K> {
             });
         if let Err(e) = started {
             let (reply, outcome) = mpsc::sync_channel(1);
-            let _ = reply.send(Err(crate::pool::thread_error("recompute", &e)));
+            let _ = reply.send(Err(crate::worker::thread_error("recompute", &e)));
             progress.ended(false);
             return Run { outcome, progress };
         }
@@ -2764,7 +2764,7 @@ impl<K: Kernel + 'static> Engine<K> {
                             self.solve_sketches(document, &to_solve, generation)
                         }))
                     })
-                    .map_err(|e| crate::pool::thread_error("recompute", &e))?;
+                    .map_err(|e| crate::worker::thread_error("recompute", &e))?;
                 Some(spawned)
             };
             start_threads(threads, |n| {

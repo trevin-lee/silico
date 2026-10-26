@@ -843,7 +843,7 @@ fn a_commit_over_a_file_changed_outside_is_a_conflict_writing_nothing_and_leavin
         conflict.message(),
         format!(
             "{} changed outside this session since it was read",
-            shown(&f.path)
+            shown_path(&f.path)
         )
     );
     assert_eq!(
@@ -2000,7 +2000,7 @@ fn a_save_this_session_left_part_written_refuses_the_next_saying_where_the_text_
     assert!(
         problems.errors()[0]
             .message()
-            .ends_with(&format!("its text before is in {}", shown(&old))),
+            .ends_with(&format!("its text before is in {}", shown_path(&old))),
         "{:?}",
         problems.errors()[0]
     );
@@ -3117,4 +3117,25 @@ fn an_open_with_no_session_ids_left_is_refused_taking_none() {
     // Its file isn't held: once an ID is free to give, it opens.
     lock(&f.sessions.registry.book).next = 2;
     assert!(f.sessions.open(&other, false).wait().result.is_ok());
+}
+
+#[test]
+fn a_closed_sessions_rebuild_watchers_are_the_books_to_join() {
+    // A session that rebuilt once, closed: the thread that watched its rebuild is moved
+    // into the book with its reads, which the drop joins, and the session keeps none.
+    let f = opened(BOX);
+    let other = f.path.with_file_name("b.silico");
+    std::fs::write(&other, BOX).unwrap();
+    let id = f.sessions.open(&other, false).wait().session.unwrap().id;
+    f.sessions
+        .check(&id, ModelChoice::Current)
+        .wait()
+        .result
+        .unwrap();
+    let session = f.sessions.find(&id).unwrap();
+    assert_eq!(lock(&session.rebuilds).watchers.running.len(), 1);
+    assert!(lock(&f.sessions.registry.book).released.running.is_empty());
+    f.sessions.close(&id).wait().result.unwrap();
+    assert!(lock(&session.rebuilds).watchers.running.is_empty());
+    assert_eq!(lock(&f.sessions.registry.book).released.running.len(), 1);
 }

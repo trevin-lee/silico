@@ -135,19 +135,12 @@ fn not_held<'a>(
         .cloned()
 }
 
-/// The features of `after` that an edit from `before` reaches: each whose own values the
-/// edit changed (its type and values, or its version: anything but its name, its note, and
-/// its fingerprint), compared with the feature of the same ID in `before`; each it added
-/// (one whose ID `before` hasn't); and every feature of `after` that uses one of those,
-/// directly or through others ([`with_users`]). A removed feature reaches nothing itself:
-/// a feature that used it either changed what it uses, and is reached, or is refused by the
-/// gate. In timeline order is no matter: the set is by ID.
-pub fn reached(before: &Document, after: &Document) -> BTreeSet<FeatureId> {
-    with_users(after, &changed(before, after))
-}
-
 /// The features of `after` whose own values differ from those of the feature of the same ID
-/// in `before`, and those `before` hasn't: [`reached`] without what uses them.
+/// in `before` (its type and values, or its version: anything but its name, its note, and
+/// its fingerprint), and each it added (one whose ID `before` hasn't). A removed feature is
+/// none of them: a feature that used it either changed what it uses, and is one, or is
+/// refused by the gate. What uses them is reached too ([`with_users`]), as [`net_reach`]
+/// adds.
 fn changed(before: &Document, after: &Document) -> BTreeSet<FeatureId> {
     let mut was: BTreeMap<&FeatureId, &Feature> = BTreeMap::new();
     for feature in &before.features {

@@ -15,8 +15,8 @@
 //! links and by the file it is (its device and inode, held open while claimed), so neither
 //! another name for it (a link, a hard link, another name the system gives it) nor another
 //! file put at its path (a save by rename) opens it twice, and two sessions never save one
-//! file over each other. At most [`MAX_SESSIONS`] are open
-//! at once. A document the gate refuses still opens, holding its text and the gate's
+//! file over each other. At most [`MAX_SESSIONS`] are open at once. A document the gate
+//! refuses still opens, holding its text and the gate's
 //! problems (decision 21), so it can be mended; a file longer than Silico reads doesn't,
 //! since a session couldn't hold its text whole. Session IDs are `s1`, `s2`, ..., in the
 //! order opens were asked for, never reused within the process. Each session has its own
@@ -42,8 +42,7 @@
 //! so; a file gone, unreadable, or another session's refuses the command. The reload is the
 //! session's own work, not the command's: it stands whatever the command comes to, so a
 //! command cancelled after it answers `cancelled` with `reloaded` true and the new revision.
-//! Inside a
-//! transaction, only `commit` reads the file, and a change (or a file gone) is its conflict:
+//! Inside a transaction, only `commit` reads the file, and a change (or a file gone) is its conflict:
 //! every other command runs on what the session holds. `close`, `status`, and published
 //! reads never read the file.
 //!
@@ -55,11 +54,11 @@
 //! running. Either way it stops before its work leaves a trace and answers `cancelled`, or,
 //! if it had done its work (an edit saved), answers with its real result: what the session
 //! holds is changed only once the command's stop is settled (`holding`), and its file
-//! written only so too. A kernel fault
-//! (a worker that crashed, hung, or couldn't be had) is given once, beside a command's
+//! written only so too. A kernel fault (a worker that crashed, hung, or couldn't be had) is
+//! given once, beside a command's
 //! result, in the model it read ([`ModelRead::fault`]), never among the document's problems,
 //! and kept as its revision's outcome: no read of that revision rebuilds it, and a save
-//! writes around it, its features keeping what's stored with them (decision 32).
+//! writes around it, saving its features as failed ones are (decision 32).
 //!
 //! What it doesn't bound: the caches, one kept for each directory a session has opened a
 //! document in, for the process's life; and each session's queue, which holds every command
@@ -88,6 +87,7 @@ use crate::document::json::Node;
 use crate::document::{self, FeatureId};
 #[cfg(doc)]
 use crate::file;
+use crate::file::shown_path;
 use crate::kernel::{Clients, Kernel};
 use crate::recompute::SketchSolvers;
 use crate::sketch::SketchSolver;
@@ -123,7 +123,9 @@ pub const MAX_SESSIONS: usize = 16;
 /// only a commit or `format` writes), and waits for each session's thread to end, then for
 /// the threads watching its rebuilds and running its published reads, a session's closed
 /// before the drop too (a read blocked in its own code keeps the drop waiting until it
-/// returns).
+/// returns). A rebuild's own recompute thread isn't waited for: its engine, dropped with
+/// its session, stops it, and it may end a little after (naming a model's elements once its
+/// rebuild has answered).
 pub struct Sessions<P: Clients + 'static> {
     registry: Arc<Registry<P>>,
 }
@@ -219,7 +221,7 @@ impl<C: Kernel + 'static> Session<C> {
     /// Ends its queue: commands queued after it are told the session closed. And its
     /// published reads interrupted as closed ([`Why::Closed`]), each running now and, since
     /// the session's record of them stays closed, each counted after, at once: so a read's
-    /// own kernel client (M4.5's) is retired however late it's added, and the read answers
+    /// own kernel client is retired however late it's added, and the read answers
     /// as of a session that closed, not `cancelled`. The command running on its thread is
     /// interrupted as closed too, so a current read's kernel work stops with the session
     /// (`Sessions`' drop closes every session); a queued `close` running this is that
@@ -328,7 +330,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     paths: BTreeMap::new(),
                     caches: BTreeMap::new(),
                     threads: Threads::new(),
-                    reads: Threads::new(),
+                    released: Threads::new(),
                     stopping: false,
                 }),
                 renderer: Mutex::new(None),
@@ -389,7 +391,7 @@ impl<P: Clients + 'static> Sessions<P> {
                         ErrorCode::InvalidInput,
                         format!(
                             "{} isn't UTF-8, so the API can't name it exactly",
-                            shown(Path::new(&path))
+                            shown_path(Path::new(&path))
                         ),
                     )
                     .with_parameter("path")
@@ -454,7 +456,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 book.threads.push(thread);
                 Running::new(answer, SESSION_STOPPED, Some(ticket), None)
             }
-            Err(e) => Running::answered(refused(crate::pool::thread_error("session", &e))),
+            Err(e) => Running::answered(refused(crate::worker::thread_error("session", &e))),
         }
     }
 
@@ -503,7 +505,7 @@ impl<P: Clients + 'static> Sessions<P> {
         } else {
             Rebuild {
                 revision: held.revision,
-                state: RebuildState::None,
+                state: RebuildState::NotStarted,
                 progress: None,
             }
         };
@@ -772,7 +774,7 @@ impl<P: Clients + 'static> Sessions<P> {
                         )
                     }
                     // The read, and its count, dropped with the thread that never started.
-                    Err(e) => refused_here(crate::pool::thread_error("published read", &e)),
+                    Err(e) => refused_here(crate::worker::thread_error("published read", &e)),
                 }
             }
         }
@@ -1206,8 +1208,8 @@ impl<P: Clients + 'static> Drop for Sessions<P> {
         threads.join();
         // And the threads watching its rebuilds, each of which ends once its stopped run
         // does, then its published reads, each of which ends with its read; then the reads
-        // of sessions released before (closed, or their threads ended), which the book
-        // took: so no session's thread outlives it.
+        // and watchers of sessions released before (closed, or their threads ended), which
+        // the book took: so no session's thread outlives it.
         // Each taken from under its lock before it's joined: a watcher ends by taking the
         // rebuilds' lock, and a read may ask the sessions anything.
         for session in sessions.values() {
@@ -1218,7 +1220,7 @@ impl<P: Clients + 'static> Drop for Sessions<P> {
                 reads.join();
             }
         }
-        let released = std::mem::replace(&mut lock(&self.registry.book).reads, Threads::new());
+        let released = std::mem::replace(&mut lock(&self.registry.book).released, Threads::new());
         released.join();
     }
 }
@@ -1246,12 +1248,6 @@ fn closing() -> Error {
         "this process's sessions are closing, so none opens",
     )
     .with_suggestion("open it again once the sessions are made again")
-}
-
-/// A path as a message says it: quoted, its control and invisible characters escaped, as
-/// `file`'s errors and the outline say text, so a file's name can't act on a terminal.
-fn shown(path: &Path) -> String {
-    super::quoted(&path.display().to_string())
 }
 
 #[cfg(test)]
