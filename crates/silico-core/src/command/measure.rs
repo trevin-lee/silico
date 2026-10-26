@@ -274,8 +274,13 @@ pub fn distance<K: Kernel>(
     let other = (a.feature != b.feature).then_some(b.shape);
     let request = KernelRequest::distance(a.shape, a.element, other, b.element)
         .map_err(|e| Problems::from(named(e, &a, &b)))?;
-    let centred = centre_to(&a.geometry, &b.geometry);
-    let from_centre = match &centred {
+    // Both asked before either is waited for, at the generation the read began at.
+    let generation = kernel.generation();
+    let least = kernel.submit(generation, request);
+    let from_centre = match centre_to(&a.geometry, &b.geometry) {
+        None | Some(CentreTo::Axis(None)) => FromCentre::Nothing,
+        Some(CentreTo::Vertex) => FromCentre::Least,
+        Some(CentreTo::Axis(Some(gap))) => FromCentre::Gap(gap),
         Some(CentreTo::Point { point, of }) => {
             let other = match of {
                 Of::First => &b,
@@ -284,7 +289,7 @@ pub fn distance<K: Kernel>(
             // Refused only for a centre past the point's bound, which no solid the gate
             // admits has (the element is the pair's, found, never a solid or numbered 0):
             // the core's bug, never the request's (break-it).
-            let request = KernelRequest::point_distance(other.shape, other.element, *point)
+            let request = KernelRequest::point_distance(other.shape, other.element, point)
                 .map_err(|e| {
                     Problems::from(named(
                         Error::new(
@@ -298,14 +303,9 @@ pub fn distance<K: Kernel>(
                         &b,
                     ))
                 })?;
-            Some(request)
+            FromCentre::Asked(kernel.submit(generation, request))
         }
-        _ => None,
     };
-    // Both asked before either is waited for, at the generation the read began at.
-    let generation = kernel.generation();
-    let least = kernel.submit(generation, request);
-    let from_centre = from_centre.map(|request| kernel.submit(generation, request));
     let measured = waited(least.wait(), LEAST_NOT_DONE, &a, &b)?;
     let length = |value: f64| Length::rounded(value).ok_or_else(|| too_far(&a, &b));
     let point = |p: [f64; 3]| -> Result<[Length; 3], Problems> {
@@ -338,13 +338,13 @@ pub fn distance<K: Kernel>(
         }
         _ => None,
     };
-    let center_to_element = match (centred, from_centre) {
-        (Some(CentreTo::Vertex), _) => Some(length(measured.distance)?),
-        (Some(CentreTo::Axis(Some(gap))), _) => Some(length(gap)?),
-        (Some(CentreTo::Point { .. }), Some(pending)) => Some(length(
+    let center_to_element = match from_centre {
+        FromCentre::Nothing => None,
+        FromCentre::Least => Some(length(measured.distance)?),
+        FromCentre::Gap(gap) => Some(length(gap)?),
+        FromCentre::Asked(pending) => Some(length(
             waited(pending.wait(), CENTRE_NOT_DONE, &a, &b)?.distance,
         )?),
-        _ => None,
     };
     Ok(DistanceAnswer {
         distance: length(measured.distance)?,
@@ -509,6 +509,16 @@ enum CentreTo {
     /// A cylinder face's axis: its gap from the plane or line, if they're parallel (Silico's
     /// own rule, not FreeCAD's, measured from the infinite carrier: [`axis_gap`]).
     Axis(Option<f64>),
+}
+
+/// Where `center_to_element` comes from, once its centre's distance, if it needs one, is
+/// asked: none; the pair's least distance (a vertex); an axis's gap; or the kernel's answer
+/// for a circle's or arc's centre, `P`, pending.
+enum FromCentre<P> {
+    Nothing,
+    Least,
+    Gap(f64),
+    Asked(P),
 }
 
 /// Which of the request's two elements: `elements.0` or `elements.1`.
