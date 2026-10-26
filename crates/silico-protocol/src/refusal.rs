@@ -118,9 +118,10 @@ pub enum Refusal {
     FpTrapsOn { mask: u32, op: String },
     /// Something went wrong in the worker itself, in a test worker's words.
     Internal { what: String },
-    /// A worker ran out of memory (OCCT's `Standard_OutOfMemory`, or `std::bad_alloc` in
-    /// either worker's C++): a shortage, not the values' fault, so the same request may
-    /// succeed once memory is free. Its words are the cause.
+    /// A worker ran out of memory (OCCT's `Standard_OutOfMemory`, `std::bad_alloc` in the
+    /// kernel's or the sketch worker's C++, or the render worker's GPU, lavapipe's being the
+    /// machine's memory): a shortage, not the values' fault, so the same request may succeed
+    /// once memory is free. Its words are the cause.
     OutOfMemory,
     /// A drag's move or end (`op`) with no drag under way in the sketch worker: none was
     /// begun, or one ended (by its end, a solve, a begin that found conflicts, or the
@@ -154,6 +155,10 @@ pub enum Refusal {
         element: ElementRef,
         count: u32,
     },
+    /// The render worker found no adapter its policy lets it draw on: under the default,
+    /// no CPU adapter (Mesa's lavapipe, its compiled-in paths gone, or none built in).
+    /// `cause` names what it looked for and what it found.
+    NoAdapter { cause: String },
 }
 
 /// What OCCT gave back nothing of.
@@ -322,6 +327,7 @@ impl Refusal {
             | Refusal::NotFinite { .. }
             | Refusal::SolutionOutOfReach { .. }
             | Refusal::DistanceNotDone => FailureKind::KernelFailed,
+            Refusal::NoAdapter { .. } => FailureKind::Unavailable,
             Refusal::TestOperation { .. } | Refusal::OtherWorkersOp { .. } => {
                 FailureKind::UnknownOp
             }
@@ -672,6 +678,12 @@ impl Refusal {
                     }
                 ),
                 None,
+            ),
+            Refusal::NoAdapter { cause } => (
+                format!("the render worker found nothing it may draw on: {cause}"),
+                Some(
+                    "build Silico in its pixi environment, which brings Mesa's lavapipe".to_owned(),
+                ),
             ),
             Refusal::DistanceNotDone => (
                 "the kernel couldn't find the least distance between these elements".to_owned(),
@@ -1075,6 +1087,9 @@ mod tests {
                 element: ElementRef::face(7),
                 count: 6,
             },
+            Refusal::NoAdapter {
+                cause: "no CPU adapter; found [\"Apple M4 Pro\"]".to_owned(),
+            },
         ]
     }
 
@@ -1155,7 +1170,8 @@ mod tests {
         // (invalid_input, new: failed, of_kind: invalid result or internal), not from
         // `kind()`.
         use FailureKind::{
-            Internal, InvalidInput, InvalidResult, KernelFailed, ResourceExhausted, UnknownOp,
+            Internal, InvalidInput, InvalidResult, KernelFailed, ResourceExhausted, Unavailable,
+            UnknownOp,
         };
         let kinds = [
             KernelFailed,      // NoShape
@@ -1197,6 +1213,7 @@ mod tests {
             InvalidInput,      // TooManyTriangles
             KernelFailed,      // DistanceNotDone (new with M4.5)
             InvalidInput,      // ElementMissing (new with M4.5)
+            Unavailable,       // NoAdapter
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), kinds.len());
@@ -1249,6 +1266,7 @@ mod tests {
             Some("tolerance"),  // TooManyTriangles
             None,               // DistanceNotDone
             Some("second"),     // ElementMissing
+            None,               // NoAdapter
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), parameters.len());

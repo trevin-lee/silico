@@ -54,6 +54,7 @@ struct DistanceOut;
 struct HistoryEntry;
 struct Counts;
 enum class Kind : uint8_t;
+enum class PointState : uint8_t;
 enum class Relation : uint8_t;
 enum class BooleanOp : uint8_t;
 enum class BrepDefect : uint8_t;
@@ -88,6 +89,11 @@ Flat flat_normal(const Shape &shape);
 // The tight box of the shape's geometry, as measure's (Shape.optimalBoundingBox(False,
 // False)), if it has any.
 Bounds tight_bounds(const Shape &shape);
+
+// Where `point` is against the shape (inside, on its boundary, or outside), by OCCT's solid
+// classifier at the shape's largest tolerance (FreeCAD's `Shape.isInside(point, tolerance,
+// True)`). Throws if the classifier can't tell.
+PointState classify_point(const Shape &shape, const Point3 &point);
 
 // The volume and area by OCCT's quick fixed-order integration: up to 1% off on faces
 // trimmed by curves, and further on broken shapes (a "solid" of volume -2e-4 reads 1.9).

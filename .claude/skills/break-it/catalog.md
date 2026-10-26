@@ -15,6 +15,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Derived measures in fixed point sized for their inputs' units (millionths of a mm³ in an i64 hold 9.2e12 mm³, a cube 21 m on a side, while the gate admits 1 km sides): take the largest values the gate admits through every derived quantity (volume, area, products of lengths)
 - Absolute tolerances on quantities that scale with the part (OCCT's `GeomLib::NormEstim` orients a pole's or apex's normal only when \|dP/du × dP/dv\| a 1e-5 step away is over 1e-8): a ball under 0.0316 mm radius or a cone slenderer than 1:1000 gets a normal pointing into the solid
 - Two rules composed into a third (a direction within 4ε of unit length times a length up to the limit, then checked as a vector at most the limit): the product lands a few ulps past it and is refused naming a parameter the caller never sent; search the boundary with `next_up`/`next_down`
+- Parallel tests by an exact zero (a cross product `== 0.0`) beside others at a rounded tolerance (an angle of 0 at the nanodegree): two axes an ulp from parallel are taken as skew and their distance across the cross product is 0 (coplanar lines that cross 5e16 mm away); end one sketch line of a revolve's axis an ulp off
 - Refusals written as `change <= k * before`: NaN makes every comparison false, so the refusal is skipped; an infinite result or a negative (inverted) base passes too
 - Angles from `atan2` at a signed zero (a point at its centre's left with y = −0 gives −π, +0 gives π): a request whose points are placed with zeros as 0 still differs by a turn, and the kernel's bytes with it
 - One rule computed twice, by the core and again by a worker (a sliver's |area| ≤ tol × perimeter about different first points, sqrt against hypot): bisect a turned thin strip's width to the core's boundary and send it; a shoelace sum of coordinates ~10 cancels to ~1e-8 relative
@@ -71,6 +72,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 ## Features
 
 - Pad or extrude with length 0, a negative length, or a direction parallel to the sketch plane
+- Points classified far out along an axis (a box and (1e18, 0, 0)): OCCT's solid classifier says inside (FreeCAD's `isInside` too), and past 1e154 throws `gp_Dir() - input vector has zero norm`
 - Pocket that removes nothing, removes everything, or splits the body into two solids
 - Fillet radius larger than the adjacent face allows, exactly equal to the wall thickness, or applied to every edge of a cube
 - Chamfer across a chain of tangent-continuous edges
@@ -182,6 +184,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Strict request readers that keep every refusal and list only the first hundred: an 8 MB list of 4 million bad members holds 4 million errors (a 1.4 GB peak); count past the listed ones
 - Schemas generated from `Option` fields (schemars) leave them out of `required` though the response always has them; `#[schemars(required)]` drops their `null` instead
 - Refused words shown bare when they're plain (`got solid`): a string that spells a JSON literal or number (`"null"`, `"3"`) is refused in the same words as the value itself, and a nullable word's refusal that lists only its words tells an agent `null` is wrong; send each beside the value it spells
+- Refusals read through another command's helper that names its own request's field (`elements::entries` names `feature`): from a request whose `feature` was null, the error names a field the caller never set, and is said once per element of the same solid
+- A refusal branch for a kind no element map holds (a solid's name, `box.Solid1`): the dedicated refusal is dead, and the name is "not found" with no candidates, its suggestion still pointing at candidates
 - Snapshots' integers (`"type": "integer"`) against a reader that takes digits only: JSON Schema calls `2.0` and `1e3` integers, and a `uint64` with no `maximum` takes 2^64, so a request the schema validates is refused; validate each refused spelling against the snapshot
 
 ## Kernel worker and IPC
@@ -214,6 +218,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Error codes decided by a fact (said it started or not) that an earlier check pre-empts (a solve that finds its worker already exited and calls it a crash): the same binary that exits at launch gets two codes by timing; call it at once and 300 ms late, and compare
 - A code split on one fact while its advice is still keyed on another (started or not, against how it ended): a kill from outside before the first frame is "no retry helps" by its code and "try the request again" by its advice
 - A launcher that backgrounds a child (holding the socket) and exits before its first frame: the call waits out its whole timeout, reported as a hang, not as the exit it was
+- A client dropped (or a cancel given) with requests queued behind a hung one: a queue its thread drains on close sends each in turn, a whole timeout each, and a queued cancel answers only when its turn comes; time the drop and each cancel's answer
+- Resource stops decided by a proxy (pixels, faces) on a worker kept warm: one face of 2 million triangles is "small" and the kept worker holds 1 GB; read the worker's RSS after the request the proxy calls small
+- Idle timers restarted by every request taken from the queue, cancelled ones included: ask-and-cancel in a loop and see whether the worker is ever stopped
 
 ## Recompute and scheduling
 
@@ -234,6 +241,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A reference process that hangs (no deadline), and a crash partway through a batch on either side: later cases must still run in a fresh process
 - No cases at all (an empty directory, `--count 0`): a harness that compared nothing must not exit 0
 - Answers claimed symmetric in their arguments from a solver that isn't (OCCT's `BRepExtrema_DistShapeShape` on two spheres, two conics, two faces of a real part): call with the arguments swapped and compare bits; a witness picked as the first of whatever pairs the solver found moves 47 mm on NIST CTC 01, and the distance by an ulp
+- Measures of a pair defined by an order ("the second's point to the first's carrier"): a line and a plane parallel to it measure the plane's centre from the line one way round and the line from the plane the other; call every mixed pair (line and plane, point and line) both ways
 
 ## Import
 
@@ -263,3 +271,12 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A kernel identity that hashes only the executable: libraries it loads at run time (OCCT's dylibs through an rpath symlink) change results without changing the identity; a worker binary replaced under a running pool is relaunched under the old identity
 - Directory sizes summed from file lengths: sparse files cost no disk, so a few hundred planted at the file system's longest (APFS: 2^55 bytes) sum past `u64::MAX`; a plain `+=` panics in debug and wraps in release
 - Bounds kept by "scan, evict, then write" across threads: entries other threads are writing aren't on disk to evict, so N puts at once leave N entries; bound every entry above half the bound and run parallel leaves
+
+## Rendering
+
+- Camera numbers a check takes in f64 that the renderer's f32 can't hold: an up or eye-to-target distance whose f32 square overflows or underflows (above about 1.8e19, below about 1e-19), a view height or field of view under f32's smallest normal, a position or target past 3.4e38: look_at returns None and a fallback identity view is drawn as Ok, the projection is NaN and the image blank, or the renderer refuses a mesh as an internal error
+- Angles whose f32 rounding crosses a singularity: a field of view within 1e-5° of 180° rounds past π in f32, the half-angle's tangent changes sign, and the image is drawn turned half a turn
+- Thresholds set in f64 for a value the renderer uses in f32 (an up's part across the view at 1e-9, against f32's 6e-8 rounding of an oblique direction): the image's roll comes from rounding noise
+- Clip planes taken from the camera's own numbers, not the scene (a perspective near plane at 1e-4 of the eye-to-target distance): a target far along the ray clips a part close to the eye; an orthographic eye far along its ray (1e9) moves the image by its f32 rounding and leaves the depth buffer no precision
+- Lighting done in linear light through a colour type whose `* f32` scales alpha too (ecolor's `Rgba`), then converted to a premultiplied 8-bit colour: every vertex not lit at full strength is darker than the formula; check a face at the ambient light by hand, not only one square to the eye
+- A missing GPU or rasterizer refused as an internal error ("a bug in Silico") instead of as data the core maps to `worker_unavailable`: run the test binary as its own child with its environment cleared and `VK_ICD_FILENAMES` pointed at nothing (a conda Vulkan loader finds its own prefix's drivers even with a cleared environment)

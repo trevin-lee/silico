@@ -53,6 +53,17 @@ sketch_wall_clock=(
 kernel_wall_clock=(
   adversarial_revolution_measures::a_bspline_meridian_of_many_spans_turned_measures_as_pappus
 )
+# The render worker's scale tests, left out: each holds GiBs (.config/nextest.toml's render
+# group), which every shard at once would. Their mutants are in silico-render, where its
+# small adversarial tests cover them.
+render_scale=(
+  adversarial_render::the_most_edges_a_scene_may_have_draw_within_the_limit_and_one_more_is_refused
+  adversarial_render::the_most_faces_a_scene_may_have_draw_within_the_limit_and_one_more_is_refused
+  adversarial_render::a_part_of_ctc_size_at_4096_square_with_highlights_draws_within_the_limit
+  adversarial_render::three_thousand_bodies_draw_within_half_the_limit_each_with_its_number
+  adversarial_render::ten_thousand_highlighted_faces_draw_within_half_the_limit
+  worker::the_largest_render_is_the_box_from_the_front_too
+)
 # package(p) & (test(=a) | test(=b) | ...), for a package and its tests.
 tests_of() {
   local package=$1 tests="" t
@@ -60,7 +71,7 @@ tests_of() {
   for t in "$@"; do tests="${tests:+$tests | }test(=$t)"; done
   echo "package($package) & ($tests)"
 }
-filter="not ($(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}") | $(tests_of silico-kernel "${kernel_wall_clock[@]}"))"
+filter="not ($(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}") | $(tests_of silico-kernel "${kernel_wall_clock[@]}") | $(tests_of silico-render "${render_scale[@]}"))"
 # Each test given 5 minutes a try, not the 2 its slow-timeout gives (.config/nextest.toml):
 # the shards run niced, and while gates build and test at full priority a niced test that
 # takes 20 s alone can take minutes. Ended at 2, under retries no longer than a burst of

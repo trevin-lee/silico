@@ -19,7 +19,7 @@ use scripts::script;
 use silico_core::worker::Worker;
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{
-    Blob, DebugOp, Generation, Misbehavior, Op, OutOfTurn, Primitive, Reply, ShapeData,
+    Blob, DebugOp, Generation, Misbehavior, Op, OutOfTurn, PointPlace, Primitive, Reply, ShapeData,
     ShapeSummary,
 };
 
@@ -146,7 +146,7 @@ fn kernel_and_input_errors_are_structured_and_the_worker_lives_on() {
 }
 
 #[test]
-fn a_sketch_solve_or_drag_is_refused_as_another_workers() {
+fn a_sketch_solve_or_drag_or_a_render_is_refused_as_another_workers() {
     let mut w = worker();
     let system = silico_protocol::SketchSystem {
         values: vec![],
@@ -166,6 +166,21 @@ fn a_sketch_solve_or_drag_is_refused_as_another_workers() {
         ),
         (Op::DragMove { to: [1.0, 2.0] }, "DragMove"),
         (Op::DragEnd, "DragEnd"),
+        (
+            Op::Render(Box::new(silico_protocol::RenderScene {
+                bodies: vec![],
+                camera: silico_protocol::Camera {
+                    projection: silico_protocol::Projection::Orthographic { view_height: 1.0 },
+                    eye: [0.0, 0.0, 1.0],
+                    target: [0.0; 3],
+                    up: [0.0, 1.0, 0.0],
+                },
+                width: 1,
+                height: 1,
+                ids: false,
+            })),
+            "Render",
+        ),
     ] {
         let err = w.call(Generation(1), op, TIMEOUT).unwrap_err();
         assert_eq!(err.code(), ErrorCode::Internal, "{err}");
@@ -1266,4 +1281,42 @@ fn every_failure_says_what_to_try() {
         sent,
         "a refused radius reached the worker"
     );
+}
+
+#[test]
+fn a_point_is_classified_inside_or_out_through_the_worker() {
+    let mut w = worker();
+    let shape = make_box(&mut w, 40.0, 20.0, 10.0).unwrap();
+    for (point, want) in [
+        ([20.0, 10.0, 5.0], PointPlace::Inside),
+        ([20.0, 0.0, 5.0], PointPlace::OnBoundary),
+        ([20.0, -1.0, 5.0], PointPlace::Outside),
+    ] {
+        match w
+            .call(
+                Generation(1),
+                Op::Classify {
+                    shape: shape.clone(),
+                    point,
+                },
+                TIMEOUT,
+            )
+            .unwrap()
+        {
+            Reply::Classified { place } => assert_eq!(place, want, "{point:?}"),
+            other => panic!("Classify replied {other:?}"),
+        }
+    }
+    let err = w
+        .call(
+            Generation(1),
+            Op::Classify {
+                shape,
+                point: [f64::NAN, 0.0, 0.0],
+            },
+            TIMEOUT,
+        )
+        .unwrap_err();
+    assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
+    assert_eq!(err.parameter(), Some("point"), "{err}");
 }

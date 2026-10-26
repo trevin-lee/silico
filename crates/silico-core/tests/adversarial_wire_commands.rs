@@ -984,6 +984,11 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
             error.candidates(),
             [
                 "document",
+                "version",
+                "open",
+                "close",
+                "status",
+                "cancel",
                 "begin",
                 "commit",
                 "rollback",
@@ -992,10 +997,15 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "set_field",
                 "remove_feature",
                 "replace_text",
+                "text",
+                "outline",
+                "check",
                 "elements",
                 "query",
                 "schema",
-                "mass_properties"
+                "mass_properties",
+                "distance",
+                "angle"
             ]
         );
         assert!(printable(error.message()), "{of:?}: {:?}", error.message());

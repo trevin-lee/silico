@@ -103,3 +103,27 @@ crates/silico-core/src/elements.rs | AxisToken::default_x | replace > with >= | 
 crates/silico-core/src/command/edit.rs | id_of | replace | with ^ | #148
 crates/silico-core/src/command/session/transaction.rs | Session<C>::rollback | delete ! | #154
 crates/silico-core/src/sketch.rs | moved | replace match guard s.form.value_text().is_some() with true | #157
+# Equivalent until edits: no edit can yet make a document the gate took at begin and
+# refuses now. With the guard always true, such a commit would end the transaction as
+# unchanged and `unwritten` would put begin's text back, throwing the edits away; M4.2
+# PR 6, which adds edits, must test that the commit is refused, the edits stay held, and
+# the transaction stays open, and remove this line.
+crates/silico-core/src/command/session.rs | Session<C>::commit | replace match guard unchanged with true | #144
+crates/silico-render/src/lib.rs | adapters | delete match arm wgpu::DeviceType::Cpu | #147
+crates/silico-render/src/lib.rs | adapters | delete match arm wgpu::DeviceType::DiscreteGpu | #147
+crates/silico-render/src/lib.rs | adapters | replace == with != | #147
+crates/silico-render/src/render.rs | Renderer::render | replace + with * | #147
+crates/silico-render/src/render.rs | Renderer::render | replace + with - | #147
+crates/silico-render/src/render.rs | Renderer::draw | delete ! | #147
+crates/silico-render/src/render.rs | Renderer::draw | delete field name from struct TargetConfiguration expression | #147
+crates/silico-render/src/render.rs | View::of | replace * with + | #147
+crates/silico-render/src/render.rs | View::of | replace * with / | #147
+crates/silico-render/src/render.rs | View::of | replace + with * | #147
+crates/silico-render/src/render.rs | View::light | replace > with >= | #147
+crates/silico-render/src/render.rs | edges | replace | with ^ | #147
+crates/silico-render/src/render.rs | read_back | replace && with || | #147
+crates/silico-render/src/render.rs | read_back | replace || with && | #147
+crates/silico-render/src/render.rs | read_back | delete ! | #147
+crates/silico-render/src/render.rs | read_back | replace || with && | #147
+crates/silico-core/src/render.rs | <impl Drop for Job>::drop | replace <impl Drop for Job>::drop with () | #149
+crates/silico-core/src/render.rs | serve | delete ! | #149

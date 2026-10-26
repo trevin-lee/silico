@@ -86,13 +86,13 @@ pub(crate) fn resolve(
     makers: &dyn Fn(&FeatureId) -> Option<Maker>,
 ) -> Result<(Vec<u32>, EdgeNames), Broken> {
     let mut found = Vec::with_capacity(edges.len());
+    // The base's edges by the elements their names are made from, built once, the first
+    // time a broken name needs candidates.
+    let mut index: Option<Candidates> = None;
     let mut seen = BTreeSet::new();
     let mut names = EdgeNames::default();
     let mut broken = Vec::new();
     let mut more = 0u64;
-    // The map's edges by the elements their names are made from, built once, the first
-    // time a broken name needs candidates.
-    let mut index: Option<Index> = None;
     for (i, edge) in edges.iter().enumerate() {
         let name = Name::parse(edge.as_str(), makers);
         let why = match &name {
@@ -129,7 +129,9 @@ pub(crate) fn resolve(
             continue;
         }
         let candidates = match &name {
-            Ok(name) => index.get_or_insert_with(|| Index::of(map)).candidates(name),
+            Ok(name) => index
+                .get_or_insert_with(|| Candidates::of(&[map], ElementKind::Edge))
+                .of_name(name),
             Err(_) => Vec::new(),
         };
         broken.push(
@@ -163,26 +165,77 @@ pub(crate) fn resolve(
     }
 }
 
-/// A map's stable edges, each with the elements its name is made from, and each such
-/// element's edges: so a broken name's candidates cost what its own elements' edges do.
+/// Candidates for broken names, of the elements of one kind in some maps (a fillet's base,
+/// or a measure's live solids): each map's index built once, as it's made, so each broken
+/// name's candidates cost what its own elements' do, however many names are broken.
+pub(crate) struct Candidates {
+    indexes: Vec<Index>,
+}
+
+impl Candidates {
+    pub(crate) fn of(maps: &[&ElementMap], kind: ElementKind) -> Candidates {
+        Candidates {
+            indexes: maps.iter().map(|map| Index::of(map, kind)).collect(),
+        }
+    }
+
+    /// The elements a broken `name` most likely meant, as one list: those whose names share
+    /// the most of what it's made from, then those of `name`'s own feature, then by name;
+    /// or, if none shares any, each map's nearest by number ([`Index::nearest`]), by name;
+    /// at most [`CANDIDATES`].
+    pub(crate) fn of_name(&self, name: &Name) -> Vec<String> {
+        let mut scored: Vec<(usize, bool, &Arc<Name>)> = self
+            .indexes
+            .iter()
+            .flat_map(|index| index.scored(name))
+            .map(|(count, named)| (count, named.feature() != name.feature(), named))
+            .collect();
+        if scored.is_empty() {
+            let mut nearest: Vec<&Arc<Name>> =
+                self.indexes.iter().flat_map(|i| i.nearest(name)).collect();
+            nearest.sort();
+            nearest.dedup();
+            return nearest
+                .into_iter()
+                .take(CANDIDATES)
+                .map(ToString::to_string)
+                .collect();
+        }
+        scored.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(b.2))
+        });
+        scored.dedup_by(|a, b| a.2 == b.2);
+        scored
+            .into_iter()
+            .take(CANDIDATES)
+            .map(|(_, _, named)| named.to_string())
+            .collect()
+    }
+}
+
+/// A map's stable elements of one kind, each with the elements its name is made from, and
+/// each such element's elements: so a broken name's candidates cost what its own elements'
+/// do.
 struct Index {
-    edges: Vec<Arc<Name>>,
+    names: Vec<Arc<Name>>,
     by_leaf: std::collections::BTreeMap<Name, Vec<usize>>,
 }
 
 impl Index {
-    fn of(map: &ElementMap) -> Index {
+    fn of(map: &ElementMap, kind: ElementKind) -> Index {
         let mut index = Index {
-            edges: Vec::new(),
+            names: Vec::new(),
             by_leaf: std::collections::BTreeMap::new(),
         };
         for (element, names) in map.iter() {
             let Some(name) = names.first() else { continue };
-            if element.kind != ElementKind::Edge || map.is_unstable(name) {
+            if element.kind != kind || map.is_unstable(name) {
                 continue;
             }
-            let at = index.edges.len();
-            index.edges.push(Arc::clone(name));
+            let at = index.names.len();
+            index.names.push(Arc::clone(name));
             for leaf in leaves(name) {
                 index.by_leaf.entry(leaf).or_default().push(at);
             }
@@ -190,10 +243,9 @@ impl Index {
         index
     }
 
-    /// The edges `name` most likely meant: those whose names share the most of the
-    /// elements `name` is made from (a hole moved: the rims generated from the same faces),
-    /// most first, then by name; at most [`CANDIDATES`].
-    fn candidates(&self, name: &Name) -> Vec<String> {
+    /// This map's names that share any of the elements `name` is made from, each with how
+    /// many it shares, unsorted.
+    fn scored(&self, name: &Name) -> Vec<(usize, &Arc<Name>)> {
         let mut shared: std::collections::BTreeMap<usize, usize> =
             std::collections::BTreeMap::new();
         for leaf in leaves(name) {
@@ -201,16 +253,47 @@ impl Index {
                 *shared.entry(at).or_default() += 1;
             }
         }
-        let mut scored: Vec<(usize, &Arc<Name>)> = shared
+        shared
             .into_iter()
-            .filter_map(|(at, count)| self.edges.get(at).map(|edge| (count, edge)))
-            .collect();
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
-        scored
-            .into_iter()
-            .take(CANDIDATES)
-            .map(|(_, edge)| edge.to_string())
+            .filter_map(|(at, count)| self.names.get(at).map(|named| (count, named)))
             .collect()
+    }
+
+    /// For `name`, an element by its number that names nothing (`box.Face7`), the elements
+    /// made from one of the same feature's own elements of its kind numbered nearest it
+    /// (`box.Face6`): each as its own name, by name, every one (its caller cuts the list). None
+    /// for any other name.
+    fn nearest(&self, name: &Name) -> Vec<&Arc<Name>> {
+        let Name::Element {
+            feature,
+            made,
+            element,
+        } = name
+        else {
+            return Vec::new();
+        };
+        let gap = |leaf: &Name| match leaf {
+            Name::Element {
+                feature: f,
+                made: m,
+                element: e,
+            } if f == feature && m == made && e.kind == element.kind => {
+                Some(e.index.abs_diff(element.index))
+            }
+            _ => None,
+        };
+        let Some(least) = self.by_leaf.keys().filter_map(gap).min() else {
+            return Vec::new();
+        };
+        let mut found: Vec<&Arc<Name>> = self
+            .by_leaf
+            .iter()
+            .filter(|(leaf, _)| gap(leaf) == Some(least))
+            .flat_map(|(_, at)| at.iter().filter_map(|&at| self.names.get(at)))
+            .collect();
+        found.sort();
+        found.dedup();
+        found
     }
 }
 
@@ -363,6 +446,42 @@ mod tests {
     }
 
     #[test]
+    fn candidates_of_several_maps_rank_the_most_alike_first_whichever_map_holds_them() {
+        // The broken name is made from Face1, Face2, and Face3. The first map's edges share
+        // one of them each (Face1); the second's shares two (Face2 and Face3): it comes
+        // first, though its map is the second.
+        let broken = Name::parse(&edge(&[1, 2, 3]), &makers).unwrap();
+        // Each map lists its edges against name order, so only the ranking's last rule, by
+        // name, puts them in it.
+        let first = generated(&[&[1, 5], &[1, 4]]);
+        let second = generated(&[&[2, 3]]);
+        assert_eq!(
+            Candidates::of(&[&first, &second], ElementKind::Edge).of_name(&broken),
+            [edge(&[2, 3]), edge(&[1, 4]), edge(&[1, 5])]
+        );
+        // Seven alike: the first five by name, no more.
+        let many = generated(&[
+            &[3, 4],
+            &[2, 6],
+            &[2, 5],
+            &[2, 4],
+            &[1, 6],
+            &[1, 5],
+            &[1, 4],
+        ]);
+        assert_eq!(
+            Candidates::of(&[&many], ElementKind::Edge).of_name(&broken),
+            [
+                edge(&[1, 4]),
+                edge(&[1, 5]),
+                edge(&[1, 6]),
+                edge(&[2, 4]),
+                edge(&[2, 5]),
+            ]
+        );
+    }
+
+    #[test]
     fn a_name_two_elements_came_about_by_is_never_taken() {
         // Found by the tests review: the two edges generated alike from Face1 and Face6, at
         // one place in each list, share a rank and so a name, the second `~1` (N3). Neither
@@ -382,6 +501,35 @@ mod tests {
             assert_eq!(errors[0].candidates(), [edge(&[1, 3])], "{name}");
         }
         assert_eq!(resolved(&map, &[&edge(&[1, 3])]), Ok(vec![1]));
+    }
+
+    #[test]
+    fn an_edge_by_a_number_its_box_hasnt_has_the_nearest_edge_by_number_as_its_candidate() {
+        // A cube has Edge1 to Edge12: Edge13 shares nothing with any of them, so its
+        // candidate is the one numbered nearest it, Edge12; Edge40 too. A face's name, its
+        // kind another's, finds no edge near it.
+        let map = cube("aaaaaaaa");
+        for broken in ["aaaaaaaa.box.Edge13", "aaaaaaaa.box.Edge40"] {
+            let errors = resolved(&map, &[broken]).unwrap_err();
+            assert_eq!(errors[0].candidates(), ["aaaaaaaa.box.Edge12"], "{broken}");
+        }
+        let face = Name::parse("aaaaaaaa.box.Face7", &makers).unwrap();
+        assert_eq!(
+            Candidates::of(&[&map], ElementKind::Face).of_name(&face),
+            ["aaaaaaaa.box.Face6"]
+        );
+        assert!(
+            Candidates::of(&[&map], ElementKind::Edge)
+                .of_name(&face)
+                .is_empty()
+        );
+        // Another feature's element by its number: none of this one's.
+        let other = Name::parse("bbbbbbbb.box.Edge13", &makers).unwrap();
+        assert!(
+            Candidates::of(&[&map], ElementKind::Edge)
+                .of_name(&other)
+                .is_empty()
+        );
     }
 
     #[test]

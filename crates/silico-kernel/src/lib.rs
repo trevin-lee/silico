@@ -78,6 +78,14 @@ mod ffi {
         Other = 4,
     }
 
+    /// Where a point is against a solid, as OCCT's classifier says.
+    #[repr(u8)]
+    enum PointState {
+        Inside,
+        On,
+        Outside,
+    }
+
     /// How an input element relates to a result element.
     #[repr(u8)]
     enum Relation {
@@ -298,6 +306,7 @@ mod ffi {
         fn make_torus(major_radius: f64, minor_radius: f64) -> Result<UniquePtr<Shape>>;
         fn measure(shape: &Shape, precision: f64) -> Result<Measures>;
         fn tight_bounds(shape: &Shape) -> Result<Bounds>;
+        fn classify_point(shape: &Shape, point: &Point3) -> Result<PointState>;
         fn flat_normal(shape: &Shape) -> Result<Flat>;
         fn edge_facts(shape: &Shape) -> Result<EdgeFacts>;
 
@@ -479,8 +488,9 @@ mod ffi {
 
 pub use silico_protocol::{
     Axis, BooleanOp, ChamferSize, Curve, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
-    ExportMesh, FaceRegions, History, InputHistory, LENGTH_TOLERANCE, MAX_LENGTH, Mesh, Primitive,
-    Profile, Refusal, Region, Reported, ShapeSummary, SketchPlane, Topology,
+    ExportMesh, FaceRegions, History, InputHistory, LENGTH_TOLERANCE, MAX_LENGTH,
+    MIN_RELATIVE_DEFLECTION, Mesh, MeshAt, PointPlace, Primitive, Profile, Refusal, Region,
+    Reported, ShapeSummary, SketchPlane, Topology, mesh_floor,
 };
 use silico_protocol::{
     BrepDefect, FailureKind, HistoryDefect, MAX_EXPORT_TRIANGLES, Operation, Returned, Role,
@@ -589,7 +599,9 @@ impl KernelError {
             FailureKind::InvalidInput => KernelErrorKind::InvalidInput,
             FailureKind::KernelFailed => KernelErrorKind::Failed,
             FailureKind::InvalidResult => KernelErrorKind::InvalidResult,
-            FailureKind::UnknownOp | FailureKind::Internal => KernelErrorKind::Internal,
+            FailureKind::UnknownOp | FailureKind::Internal | FailureKind::Unavailable => {
+                KernelErrorKind::Internal
+            }
             FailureKind::ResourceExhausted => KernelErrorKind::ResourceExhausted,
         }
     }
@@ -1005,6 +1017,32 @@ pub fn describe(
             vertices: d.vertices.iter().map(point).collect(),
         },
     ))
+}
+
+/// Where `point` is against `shape`, by OCCT's solid classifier at the shape's largest
+/// tolerance, as FreeCAD's `Shape.isInside(point, tolerance, True)` asks (M4.6: the core asks
+/// it of each body whose tight box holds a camera's eye, and counts on the boundary as
+/// inside). "On" is to about the tolerance, the classifier's band varying by face (on a box
+/// with tolerance 1e-7, from 5e-8 to 9e-8). A point is checked by
+/// [`check_classify_point`](silico_protocol::check_classify_point), as the core checks it; a
+/// classifier that can't tell is OCCT's failure. A shape with no solid has no inside to
+/// tell, and OCCT says every point is inside an empty compound, as FreeCAD's `isInside`
+/// does: the core never asks of one, as it has no box to hold the eye.
+pub fn classify(shape: &Shape, point: [f64; 3]) -> Result<PointPlace, KernelError> {
+    silico_protocol::check_classify_point(point).map_err(|e| refused(None, e))?;
+    match ffi::classify_point(shape.get()?, &point3(point))? {
+        ffi::PointState::Inside => Ok(PointPlace::Inside),
+        ffi::PointState::On => Ok(PointPlace::OnBoundary),
+        ffi::PointState::Outside => Ok(PointPlace::Outside),
+        // The bridge returns only the three; any other value is the bridge's bug.
+        other => Err(KernelError::new(Refusal::InvalidParameter {
+            parameter: "point".to_owned(),
+            message: format!(
+                "OCCT's classifier gave no state Silico knows ({})",
+                other.repr
+            ),
+        })),
+    }
 }
 
 /// The least distance between `first`, an element of `shape`, and `second`, one of
@@ -1934,11 +1972,6 @@ fn every_input_valid(inputs: &[&Shape]) -> Result<bool, KernelError> {
     Ok(true)
 }
 
-/// The smallest mesh deflection allowed, as a fraction of the shape's size. Finer meshes
-/// cost far more than they're worth for display: every tenth of the deflection is about
-/// ten times the triangles and seventy times the time.
-pub const MIN_RELATIVE_DEFLECTION: f64 = 1e-4;
-
 /// Meshes `shape` for display, with no point of the mesh further than `deflection` from
 /// the surface. Single-threaded, so the same shape always gives the same mesh, and it
 /// leaves the shape as it was (OCCT would otherwise keep the mesh on it). Faces and edges
@@ -1946,6 +1979,28 @@ pub const MIN_RELATIVE_DEFLECTION: f64 = 1e-4;
 /// carries its face's surface normal there, pointing out of the solid
 /// (docs/ports/tessellation.md).
 pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
+    Ok(tessellated(shape, deflection, false)?.0)
+}
+
+/// [`tessellate`], at the larger of `deflection` and the shape's floor (the finest it
+/// meshes: [`mesh_floor`] of its bounding box's diagonal), never refused for being too fine;
+/// and the deflection it used. M4.6's renders ask for half a pixel, which a close view takes
+/// under the floor.
+pub fn tessellate_at_least_the_floor(
+    shape: &Shape,
+    deflection: f64,
+) -> Result<MeshAt, KernelError> {
+    let (mesh, deflection) = tessellated(shape, deflection, true)?;
+    Ok(MeshAt { mesh, deflection })
+}
+
+/// The mesh, and the deflection it was meshed at: `deflection`, or the floor if it's finer
+/// and `at_least_the_floor`; refused if it's finer and not.
+fn tessellated(
+    shape: &Shape,
+    deflection: f64,
+    at_least_the_floor: bool,
+) -> Result<(Mesh, f64), KernelError> {
     if !(deflection.is_finite() && deflection > 0.0) {
         return Err(KernelError::new(Refusal::DeflectionInvalid { deflection }));
     }
@@ -1954,13 +2009,17 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
     if !diagonal.is_finite() {
         return Err(KernelError::new(Refusal::ExtentNotFinite));
     }
-    let floor = (diagonal * MIN_RELATIVE_DEFLECTION).max(LENGTH_TOLERANCE);
-    if deflection < floor {
-        return Err(KernelError::new(Refusal::DeflectionTooFine {
-            deflection,
-            floor,
-        }));
-    }
+    let floor = mesh_floor(diagonal);
+    let deflection = match deflection < floor {
+        false => deflection,
+        true if at_least_the_floor => floor,
+        true => {
+            return Err(KernelError::new(Refusal::DeflectionTooFine {
+                deflection,
+                floor,
+            }));
+        }
+    };
     // A mesher that fails outright is almost always broken geometry, not the deflection:
     // the refusal says so.
     let raw = ffi::tessellate(inner, deflection)
@@ -2013,7 +2072,7 @@ pub fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh, KernelError> {
     // overflow its coordinates overflows its extent first: a mesh's coordinates are finite.
     // Anything else wrong with the mesh would be the bridge's bug, which the core's own
     // check catches (and stops the worker for).
-    Ok(mesh)
+    Ok((mesh, deflection))
 }
 
 /// Meshes `shape`'s solids for export within `tolerance` mm, as FreeCAD meshes for export

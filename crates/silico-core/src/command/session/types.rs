@@ -1,6 +1,7 @@
 //! A session's IDs and revisions, what its responses say of it and of the model read, the
 //! handle a command answers through ([`Running`]), and each command's result.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
@@ -11,6 +12,7 @@ use super::Problems;
 use super::Sessions;
 use super::cancel::Ticket;
 use super::rebuilds::kept_fault;
+use super::transaction::Reached;
 #[cfg(doc)]
 use crate::document;
 use crate::document::json::Plain;
@@ -136,15 +138,18 @@ impl ModelRead {
     }
 }
 
-/// What a read given to [`Sessions::read_model`] is handed: the model, what was read, and
-/// whether it was stopped (decision 34).
-pub struct Read<'a> {
+/// What a read given to [`Sessions::read_model`] is handed: the model, what was read,
+/// whether it was stopped (decision 34), and a kernel client of the read's own, for a read
+/// that asks the kernel (`distance`).
+pub struct Read<'a, C> {
     pub(super) model: &'a Model,
     pub(super) read: ModelRead,
     pub(super) stop: &'a Ticket,
+    pub(super) kernel: &'a ReadClient<C>,
+    pub(super) reached: &'a Reached,
 }
 
-impl Read<'_> {
+impl<C> Read<'_, C> {
     /// The model read.
     pub fn model(&self) -> &Model {
         self.model
@@ -155,11 +160,75 @@ impl Read<'_> {
         &self.read
     }
 
+    /// What the session's edits reached at the model's revision (decision 28): the features
+    /// whose drift a check of the model doesn't say. Worked out here, the first time a read
+    /// of the model asks: on the session's thread for the current model, on the read's own
+    /// for the published one.
+    pub fn reached(&self) -> &BTreeSet<FeatureId> {
+        self.reached.get()
+    }
+
     /// Whether the read was cancelled (`cancel`, or its handle's [`Running::cancel`]): it
     /// answers `cancelled` whatever it gives, so a read that's long may stop when it sees
     /// this.
     pub fn stopped(&self) -> bool {
         self.stop.cancelled()
+    }
+
+    /// The read's own client of the kernel (M4.1 §2's *What a published read costs*, as
+    /// #125's review settled it): made for this read, never the session's rebuild client, so
+    /// no rebuild's advance supersedes it, and dropped when the read ends, which is all it
+    /// takes to stop its kernel work. Each read in flight is a client of its own, served in
+    /// turn with the others, waiting at most for the first free worker.
+    pub fn kernel(&self) -> &ReadClient<C> {
+        self.kernel
+    }
+}
+
+/// A read's own kernel client, as [`Read::kernel`] gives it: every request it makes is at
+/// the generation the client began at, so once its read's stop interrupts it (a cancel, or
+/// its session's close: advancing it past every generation), each of them is superseded,
+/// whether in flight then or asked for after.
+pub struct ReadClient<C> {
+    pub(super) client: C,
+    generation: crate::kernel::Generation,
+}
+
+impl<C: crate::kernel::Kernel> ReadClient<C> {
+    pub(super) fn new(client: C) -> Self {
+        let generation = client.generation();
+        ReadClient { client, generation }
+    }
+}
+
+/// A cancel or the session's close, either way, stops the read's kernel work: the read
+/// answers `cancelled` or as of a session that closed, as its stop says.
+impl<C: crate::kernel::Kernel> super::cancel::Interrupt for ReadClient<C> {
+    fn interrupt(&self, _why: super::cancel::Why) {
+        self.client.advance(crate::kernel::Generation(u64::MAX));
+    }
+}
+
+impl<C: crate::kernel::Kernel> crate::kernel::Kernel for ReadClient<C> {
+    fn identity(&self) -> &str {
+        self.client.identity()
+    }
+
+    /// The generation the client began at, never advanced for the read.
+    fn generation(&self) -> crate::kernel::Generation {
+        self.generation
+    }
+
+    fn advance(&self, generation: crate::kernel::Generation) {
+        self.client.advance(generation);
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: crate::kernel::Generation,
+        request: crate::kernel::KernelRequest<T>,
+    ) -> crate::pool::Pending<T> {
+        self.client.submit(generation, request)
     }
 }
 
@@ -188,11 +257,14 @@ impl ModelChoice {
 /// same as its response's `model.revision`): the revision it was rebuilt from, or, after a
 /// rollback, the new revision whose state is the one it was rebuilt from (the design's
 /// section 4). What [`Sessions::published`] gives the app to draw, never waiting for a
-/// rebuild.
-#[derive(Debug, Clone, PartialEq)]
+/// rebuild. With it, what the session's edits reached at that revision (decision 28): the
+/// features whose drift a check of it doesn't say, since a commit writes their records anew,
+/// which a read of it works out if it asks ([`Read::reached`]).
+#[derive(Debug, Clone)]
 pub struct Published {
     pub revision: Revision,
     pub model: Arc<Model>,
+    pub(crate) reached: Reached,
 }
 
 /// A command running on its session's thread: wait for its answer, poll it, cancel it, or
@@ -313,6 +385,34 @@ pub struct Opened {
     pub features: Option<usize>,
     pub bodies: Vec<FeatureId>,
     pub problems: Problems,
+}
+
+/// What `close` answers: nothing but that it closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Closed;
+
+/// What `text` answers: the text the session's document is, or one feature's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextAnswer {
+    pub text: String,
+}
+
+/// What `outline` answers: the document's outline, as `silico show` prints it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlineAnswer {
+    pub outline: String,
+}
+
+/// What `check` answers: the document's problems, and its warnings, which never fail
+/// anything, and of which there are none yet (the first, M3's two curve ends at one place
+/// that aren't one point, comes with its code).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckAnswer {
+    pub problems: Problems,
+    /// In the error contract's shape, as the wire writes them. Decision 17 gives warnings
+    /// codes of their own: this type changes with the first warning code, when warnings
+    /// are made.
+    pub warnings: Problems,
 }
 
 /// What `begin` answers: the revision the transaction began from, which `rollback` returns

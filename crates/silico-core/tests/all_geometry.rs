@@ -28,6 +28,8 @@ mod adversarial_export;
 mod adversarial_export_unraised;
 #[path = "adversarial_fake_kernel.rs"]
 mod adversarial_fake_kernel;
+#[path = "adversarial_meshes.rs"]
+mod adversarial_meshes;
 #[path = "adversarial_profile.rs"]
 mod adversarial_profile;
 #[path = "adversarial_profile_faces.rs"]

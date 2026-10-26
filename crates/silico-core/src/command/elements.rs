@@ -72,7 +72,11 @@ pub fn entries<'m>(model: &'m Model, id: &FeatureId) -> Result<&'m [Entry], Prob
 /// The feature `id`'s solid's entries, or why they can't be had: naming the request's
 /// `feature` if `asked` (the request named it), and otherwise only the feature (a body of
 /// a listing of every body, its `feature` null).
-fn solid<'m>(model: &'m Model, id: &FeatureId, asked: bool) -> Result<&'m [Entry], Problems> {
+pub(crate) fn solid<'m>(
+    model: &'m Model,
+    id: &FeatureId,
+    asked: bool,
+) -> Result<&'m [Entry], Problems> {
     let built = built(model, id, asked)?;
     match model.entries(id) {
         Some(Ok(entries)) => Ok(entries),

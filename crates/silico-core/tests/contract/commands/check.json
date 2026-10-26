@@ -1,0 +1,165 @@
+{
+  "request": {
+    "$defs": {
+      "ModelChoice": {
+        "description": "Which model to read: the current one, or the newest published.",
+        "oneOf": [
+          {
+            "const": "current",
+            "description": "The session's current revision's model, rebuilt if it isn't yet: what an agent that\njust edited reads.",
+            "type": "string"
+          },
+          {
+            "const": "published",
+            "description": "The newest model published, which may be an older revision's, read at once: what a\nUI reads while a rebuild runs.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`check`'s request: the document's problems and warnings, from the model named.",
+    "properties": {
+      "fresh": {
+        "const": false,
+        "description": "Only false, for now: a check that rebuilds every step without reading the rebuild\ncache isn't built yet, and true is refused.",
+        "type": "boolean"
+      },
+      "model": {
+        "$ref": "#/$defs/ModelChoice"
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "fresh",
+      "model",
+      "session"
+    ],
+    "title": "CheckRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "Error": {
+        "additionalProperties": false,
+        "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+        "properties": {
+          "candidates": {
+            "description": "What might have been meant, such as the names nearest one that found nothing.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cause": {
+            "description": "What lay under it, such as the kernel's own failure, if known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+            "type": "string"
+          },
+          "elements": {
+            "description": "The elements at fault, by name: the first of them, if there are many.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "elements_total": {
+            "description": "How many elements are at fault, listed or not.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "feature": {
+            "description": "The ID of the feature at fault, if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "description": "What went wrong, in a sentence.",
+            "type": "string"
+          },
+          "parameter": {
+            "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suggestion": {
+            "description": "What to do about it, if Silico can say.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "candidates",
+          "cause",
+          "code",
+          "elements",
+          "elements_total",
+          "feature",
+          "message",
+          "parameter",
+          "suggestion"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`check`'s result. A kernel fault isn't the document's: it's in the response's\n`model.fault`, never here.",
+    "properties": {
+      "problems": {
+        "description": "The document's problems, the first 100: the gate's, if it refused the document;\notherwise each failed feature's, and each drift of a feature no edit has reached\nsince the last save.",
+        "items": {
+          "$ref": "#/$defs/Error"
+        },
+        "maxItems": 100,
+        "type": "array"
+      },
+      "problems_total": {
+        "description": "How many problems there are, listed or not.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "warnings": {
+        "description": "The document's warnings, the first 100, in the error contract's shape: they never\nfail anything.",
+        "items": {
+          "$ref": "#/$defs/Error"
+        },
+        "maxItems": 100,
+        "type": "array"
+      },
+      "warnings_total": {
+        "description": "How many warnings there are, listed or not.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "problems",
+      "problems_total",
+      "warnings",
+      "warnings_total"
+    ],
+    "title": "CheckResult",
+    "type": "object"
+  }
+}

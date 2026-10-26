@@ -47,6 +47,8 @@ mod adversarial_boolean;
 mod adversarial_chamfer;
 #[path = "adversarial_chamfer_report.rs"]
 mod adversarial_chamfer_report;
+#[path = "adversarial_classify.rs"]
+mod adversarial_classify;
 #[path = "adversarial_describe.rs"]
 mod adversarial_describe;
 #[path = "adversarial_distance.rs"]
@@ -77,6 +79,8 @@ mod boolean_solids;
 mod bridge;
 #[path = "chamfer.rs"]
 mod chamfer;
+#[path = "classify.rs"]
+mod classify;
 #[path = "describe.rs"]
 mod describe;
 #[path = "distance.rs"]
@@ -93,6 +97,8 @@ mod fillet;
 mod finite;
 #[path = "mesh.rs"]
 mod mesh;
+#[path = "mesh_floor.rs"]
+mod mesh_floor;
 #[path = "primitive_numbers.rs"]
 mod primitive_numbers;
 #[path = "primitives.rs"]

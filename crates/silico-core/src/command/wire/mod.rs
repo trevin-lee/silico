@@ -30,10 +30,11 @@
 //! result's, which is the envelope's `result` when the command runs, not the whole envelope,
 //! so not by itself what MCP's `outputSchema` checks `structuredContent`, the envelope,
 //! against (that is M4.9's to build from these and the envelope's). Each is added with the
-//! command's wire types ([`COMMANDS`]: [`transaction`], for `begin`, `commit`, `rollback`,
-//! and `format`; [`edits`], for `add_feature`, `set_field`, `remove_feature`, and
-//! `replace_text`; [`elements`], for `elements` and `query`; [`schema`]; and [`measure`],
-//! for `mass_properties`).
+//! command's wire types ([`COMMANDS`]: [`session`], for `version`, `open`, `close`,
+//! `status`, and `cancel`; [`transaction`], for `begin`, `commit`, `rollback`, and `format`;
+//! [`edits`], for `add_feature`, `set_field`, `remove_feature`, and `replace_text`;
+//! [`reads`], for `text`, `outline`, and `check`; [`elements`], for `elements` and `query`;
+//! [`schema`]; and [`measure`], for `mass_properties`, `distance`, and `angle`).
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -70,6 +71,11 @@ impl<'a> Json<'a> {
 
     /// A whole number.
     pub fn whole(n: u64) -> Self {
+        Json(Out::Raw(n.to_string()))
+    }
+
+    /// A count, or a place counted from 0: a whole number.
+    pub fn count(n: usize) -> Self {
         Json(Out::Raw(n.to_string()))
     }
 
@@ -625,6 +631,21 @@ impl<'a> RequestFields<'a> {
         }
     }
 
+    /// `false`, for a flag whose `true` isn't built yet (`check`'s `fresh`): `true` refused,
+    /// `why` its cause and `instead` what to do.
+    pub fn only_false(&mut self, key: &str, why: &str, instead: &str) -> Option<()> {
+        if !self.bool(key)? {
+            return Some(());
+        }
+        self.refused.refuse_with(|| {
+            let at = join(&self.path, key);
+            invalid(&at, format!("{at} must be false, got true"))
+                .with_cause(why)
+                .with_suggestion(instead)
+        });
+        None
+    }
+
     /// `true`, `false`, or `null`.
     pub fn nullable_bool(&mut self, key: &str) -> Option<Option<bool>> {
         match self.take_nullable(key)? {
@@ -957,6 +978,40 @@ impl<'a> RequestFields<'a> {
         id
     }
 
+    /// A list of exactly `N` strings (`what` each is: `a name`), a member at fault named by
+    /// its place (`elements.1`).
+    pub fn strings<const N: usize>(&mut self, key: &str, what: &str) -> Option<[String; N]> {
+        let node = self.take(key)?;
+        let Value::Array(items) = &node.value else {
+            self.wrong(key, format_args!("a list of {N} {what}s"), node);
+            return None;
+        };
+        if items.len() != N {
+            self.refused.refuse_with(|| {
+                let at = join(&self.path, key);
+                invalid(
+                    &at,
+                    format!(
+                        "{at} must be a list of {N} {what}s, got {} of them",
+                        items.len()
+                    ),
+                )
+            });
+            return None;
+        }
+        let mut found = Vec::with_capacity(N);
+        for (i, item) in items.iter().enumerate() {
+            match &item.value {
+                Value::String(text) => found.push(text.clone()),
+                _ => self.refused.refuse_with(|| {
+                    let at = format!("{}.{i}", join(&self.path, key));
+                    invalid(&at, format!("{at} must be a {what}, got {}", written(item)))
+                }),
+            }
+        }
+        found.try_into().ok()
+    }
+
     /// A list of features' IDs, or `null`; a member at fault named by its place
     /// (`features.0`).
     pub fn nullable_feature_ids(&mut self, key: &str) -> Option<Option<Vec<FeatureId>>> {
@@ -1196,8 +1251,25 @@ pub(crate) fn wire_shape(schema: &mut schemars::Schema) {
     }
 }
 
-/// `schema`, an object's schema, closed to its properties, and each variant it has inline.
+/// A string schema of one of `words`, described as `description`.
+fn words(description: &str, words: impl IntoIterator<Item = &'static str>) -> schemars::Schema {
+    let words: Vec<&str> = words.into_iter().collect();
+    schemars::json_schema!({
+        "description": description,
+        "type": "string",
+        "enum": words,
+    })
+}
+
+/// `schema`, an object's schema, closed to its properties (an object of none, a request or
+/// result with no fields, to none), and each variant it has inline.
 fn close(schema: &mut serde_json::Map<String, serde_json::Value>) {
+    if !schema.contains_key("properties") && schema.get("type") == Some(&"object".into()) {
+        schema.insert(
+            "additionalProperties".to_owned(),
+            serde_json::Value::Bool(false),
+        );
+    }
     let keys: Option<Vec<serde_json::Value>> = schema
         .get("properties")
         .and_then(serde_json::Value::as_object)
@@ -1340,7 +1412,27 @@ pub type MakeSnapshot = fn() -> serde_json::Value;
 
 /// The commands whose wire types are built, each by name with what makes its snapshot, in
 /// the design's order (section 7): what `schema` describes besides the document.
-pub const COMMANDS: [(&str, MakeSnapshot); 12] = [
+pub const COMMANDS: [(&str, MakeSnapshot); 22] = [
+    (
+        "version",
+        command_schema::<session::VersionRequestSchema, session::VersionResultSchema>,
+    ),
+    (
+        "open",
+        command_schema::<session::OpenRequestSchema, session::OpenResultSchema>,
+    ),
+    (
+        "close",
+        command_schema::<session::CloseRequestSchema, session::CloseResultSchema>,
+    ),
+    (
+        "status",
+        command_schema::<session::StatusRequestSchema, session::StatusResultSchema>,
+    ),
+    (
+        "cancel",
+        command_schema::<session::CancelRequestSchema, session::CancelResultSchema>,
+    ),
     (
         "begin",
         command_schema::<transaction::BeginRequestSchema, transaction::BeginResultSchema>,
@@ -1374,6 +1466,18 @@ pub const COMMANDS: [(&str, MakeSnapshot); 12] = [
         command_schema::<edits::ReplaceTextRequestSchema, edits::ReplaceTextResultSchema>,
     ),
     (
+        "text",
+        command_schema::<reads::TextRequestSchema, reads::TextResultSchema>,
+    ),
+    (
+        "outline",
+        command_schema::<reads::OutlineRequestSchema, reads::OutlineResultSchema>,
+    ),
+    (
+        "check",
+        command_schema::<reads::CheckRequestSchema, reads::CheckResultSchema>,
+    ),
+    (
         "elements",
         command_schema::<elements::ElementsRequestSchema, elements::ElementsResultSchema>,
     ),
@@ -1388,6 +1492,14 @@ pub const COMMANDS: [(&str, MakeSnapshot); 12] = [
     (
         "mass_properties",
         command_schema::<measure::MassPropertiesRequestSchema, measure::MassPropertiesResultSchema>,
+    ),
+    (
+        "distance",
+        command_schema::<measure::DistanceRequestSchema, measure::DistanceResultSchema>,
+    ),
+    (
+        "angle",
+        command_schema::<measure::AngleRequestSchema, measure::AngleResultSchema>,
     ),
 ];
 
@@ -1479,7 +1591,9 @@ pub fn snapshot(of: &str) -> Option<Result<String, Error>> {
 pub mod edits;
 pub mod elements;
 pub mod measure;
+pub mod reads;
 pub mod schema;
+pub mod session;
 pub mod transaction;
 
 #[cfg(test)]
