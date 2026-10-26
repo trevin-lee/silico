@@ -216,12 +216,19 @@ impl<C: Kernel + 'static> Session<C> {
     /// published reads interrupted as closed ([`Why::Closed`]), each running now and, since
     /// the session's record of them stays closed, each counted after, at once: so a read's
     /// own kernel client (M4.5's) is retired however late it's added, and the read answers
-    /// as of a session that closed, not `cancelled`.
+    /// as of a session that closed, not `cancelled`. The command running on its thread is
+    /// interrupted as closed too, so a current read's kernel work stops with the session
+    /// (`Sessions`' drop closes every session); a queued `close` running this is that
+    /// command itself, which closing does nothing to.
     fn close(&self) {
         lock(&self.queue).take();
         let unanswered = Arc::clone(&lock(&self.reads).unanswered);
         let running = lock(&unanswered).close();
         for ticket in running {
+            ticket.close();
+        }
+        // Taken last and alone, as `Session` orders its locks.
+        if let Some(ticket) = lock(&self.command).clone() {
             ticket.close();
         }
     }
