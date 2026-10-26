@@ -2469,6 +2469,7 @@ mod tests {
 pub struct FakeRenderer {
     sent: Mutex<Vec<silico_protocol::RenderScene>>,
     failing: Mutex<Option<Error>>,
+    cancelling: Mutex<bool>,
 }
 
 impl FakeRenderer {
@@ -2485,12 +2486,20 @@ impl FakeRenderer {
     pub fn fail_with(&self, error: Error) {
         *lock(&self.failing) = Some(error);
     }
+
+    /// Answers every render from now on cancelled, as one cancelled while it ran would.
+    pub fn cancel_all(&self) {
+        *lock(&self.cancelling) = true;
+    }
 }
 
 impl crate::command::render::Renderer for FakeRenderer {
     fn render(&self, scene: silico_protocol::RenderScene) -> crate::render::RenderTicket {
         let png = format!("PNG {}x{}", scene.width, scene.height).into_bytes();
         lock(&self.sent).push(scene);
+        if *lock(&self.cancelling) {
+            return crate::render::RenderTicket::answered(crate::render::RenderOutcome::Cancelled);
+        }
         let outcome = match lock(&self.failing).clone() {
             Some(error) => Err(error),
             None => Ok(crate::render::Rendered { png, ids: None }),

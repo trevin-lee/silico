@@ -180,7 +180,7 @@ impl Ticket {
 
 /// The answer of `command`, stopped before it had done its work: the design's words
 /// (section 7's `cancel`).
-pub(super) fn cancelled(command: &str) -> Error {
+pub(crate) fn cancelled(command: &str) -> Error {
     Error::new(
         ErrorCode::Cancelled,
         format!("{command} was cancelled before it finished"),

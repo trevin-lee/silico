@@ -489,6 +489,15 @@ fn a_render_with_to_writes_the_png_there_and_says_where() {
 }
 
 #[test]
+fn a_render_cancelled_while_it_runs_answers_cancelled() {
+    let bench = Bench::of(EXAMPLE);
+    bench.renderer.cancel_all();
+    let e = refused(bench.render(&view("front", 100, 100)));
+    assert_eq!(e.code(), ErrorCode::Cancelled, "{e:?}");
+    assert_eq!(e.message(), "render was cancelled before it finished");
+}
+
+#[test]
 fn a_render_the_renderer_fails_is_its_error() {
     let bench = Bench::of(EXAMPLE);
     bench.renderer.fail_with(

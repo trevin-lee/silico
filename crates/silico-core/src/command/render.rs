@@ -268,14 +268,9 @@ pub fn render<K: Kernel>(
     )?;
     let png = match on.renderer.render(scene).wait() {
         RenderOutcome::Done(result) => result.map_err(Problems::from)?.png,
+        // Cancelled (decision 34): its queued scene never sent, or its worker killed.
         RenderOutcome::Cancelled => {
-            return Err(Problems::from(
-                Error::new(
-                    ErrorCode::Internal,
-                    "the render was cancelled before it answered",
-                )
-                .with_suggestion("render again"),
-            ));
+            return Err(Problems::from(super::session::cancelled("render")));
         }
     };
     let path = match &request.to {
