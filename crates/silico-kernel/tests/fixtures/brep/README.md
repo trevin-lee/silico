@@ -81,3 +81,11 @@ BinTools::Write(box, out, false, false, BinTools_FormatVersion_CURRENT);
   TopoDS_Shape prism =
       BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(w, true), gp_Vec(0, 0, 2)).Shape();
   ```
+
+- `pointed_cone.bin`, `rod_on_a_cones_side.bin`: a pointed cone (`Primitive::Cone`, radius 5 to
+  0, height 5) and a level rod of radius 1, 20 long (a rectangle revolved about its long side,
+  then moved), touching the cone's side at one point, at half height, 300° round. Written by
+  Silico's own `make`, `revolve`, and `translate` (found by `/break-it` on #171), with
+  `BinTools::Write` and no checksum. On Silico's OCCT build, a boolean of the two dereferenced
+  a section edge with no 3D curve (patch 0005); the text B-reps of the same shapes, their
+  coordinates rounded, don't reach it, so these are kept as binary.

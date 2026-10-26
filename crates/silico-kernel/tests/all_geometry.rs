@@ -73,6 +73,7 @@ mod adversarial_sketch_feature_build;
 mod adversarial_sweep;
 #[path = "boolean.rs"]
 mod boolean;
+mod boolean_degenerate_section;
 #[path = "boolean_solids.rs"]
 mod boolean_solids;
 #[path = "bridge.rs"]
