@@ -212,7 +212,7 @@ impl ToWire for Removed {
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("feature", Json::feature(&self.feature)),
-            ("index", Json::whole(self.index as u64)),
+            ("index", Json::count(self.index)),
             ("changed", Json::bool(self.changed)),
             (
                 "commit",
@@ -228,7 +228,7 @@ impl ToWire for Replaced {
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("changed", Json::bool(self.changed)),
-            ("features", Json::whole(self.features as u64)),
+            ("features", Json::count(self.features)),
             ("before", Json::or_null(self.before.as_deref(), Json::str)),
             (
                 "commit",

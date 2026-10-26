@@ -1,0 +1,54 @@
+{
+  "request": {
+    "$defs": {
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`text`'s request: the document's text as the session holds it, or one feature's.",
+    "properties": {
+      "feature": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/FeatureId"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The feature whose text to give alone, by ID, or null for the whole document. For a\ndocument too large to give in one response, read it a feature at a time."
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "feature",
+      "session"
+    ],
+    "title": "TextRequest",
+    "type": "object"
+  },
+  "result": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`text`'s result.",
+    "properties": {
+      "text": {
+        "description": "The whole document's text: the file's bytes until an edit, then the edited document\nin canonical form (inside a transaction, as yet uncommitted). Or one feature's, as\nthe canonical form writes it.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "title": "TextResult",
+    "type": "object"
+  }
+}

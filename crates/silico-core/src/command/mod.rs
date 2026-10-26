@@ -28,10 +28,10 @@ mod session;
 pub mod wire;
 
 pub use session::{
-    Added, Begun, Cancelled, Committed, FieldSet, MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice,
-    ModelRead, Opened, Published, Read, ReadClient, Rebuild, RebuildState, Reformatted, Removed,
-    Replaced, Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, Status,
-    Stopper,
+    Added, Begun, Cancelled, CheckAnswer, Closed, Committed, FieldSet, MAX_PUBLISHED_READS,
+    MAX_SESSIONS, ModelChoice, ModelRead, Opened, OutlineAnswer, Published, Read, ReadClient,
+    Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
+    SessionId, SessionInfo, Sessions, Status, Stopper, TextAnswer,
 };
 
 /// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for
