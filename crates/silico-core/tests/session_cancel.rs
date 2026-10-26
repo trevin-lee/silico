@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::{
-    Cancelled, ModelChoice, Rebuild, RebuildState, Response, Revision, SessionCommand, SessionId,
-    Sessions,
+    Cancelled, ModelChoice, Progress, Rebuild, RebuildState, Response, Revision, SessionCommand,
+    SessionId, Sessions,
 };
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::{Op, Primitive};
@@ -126,11 +126,13 @@ fn cancel_naming_the_running_check_stops_its_rebuild_and_the_check_answers_cance
     let (hold, check) = f.running_held(|| f.sessions.check(&f.id, ModelChoice::Current));
     let status = f.sessions.status(&f.id).result.unwrap();
     assert_eq!(status.running, Some(SessionCommand::Check));
+    // One box, one step, held: none done.
     assert_eq!(
         status.rebuild,
         Rebuild {
             revision: Revision::OPENED,
-            state: RebuildState::Running
+            state: RebuildState::Running,
+            progress: Some(Progress { done: 0, steps: 1 }),
         }
     );
     let stop = f.sessions.cancel(&f.id, SessionCommand::Check);

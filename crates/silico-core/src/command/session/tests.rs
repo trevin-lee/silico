@@ -61,6 +61,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
         rebuilt: Condvar::new(),
         reads: Mutex::new(Reads::new()),
         command: Mutex::new(None),
+        newest: Arc::default(),
     });
     (session, jobs)
 }
@@ -1426,11 +1427,15 @@ fn a_one_edit_commits_fault_is_the_saved_revisions_and_never_met_again() {
         (ErrorCode::WorkerCrashed, Some("b0000001".to_owned()))
     );
     the_blocks_drift(&checked.result.unwrap().problems);
+    // The candidate's rebuild, the saved revision's: its four steps (the block; the lug's
+    // box and its move to x = 100; the fuse) all settled, the lug's crash and the steps it
+    // blocked among them.
     assert_eq!(
         f.sessions.status(&f.id).result.unwrap().rebuild,
         Rebuild {
             revision: saved,
-            state: RebuildState::Faulted
+            state: RebuildState::Faulted,
+            progress: Some(Progress { done: 4, steps: 4 }),
         }
     );
 }
@@ -2843,4 +2848,107 @@ fn a_reads_client_is_its_kernels_and_advances_it() {
         )
         .wait();
     assert!(matches!(asked, Outcome::Superseded), "{asked:?}");
+}
+
+/// Polls `progress` until it's `want`, for at most [`WAIT`].
+#[track_caller]
+fn until_progress(progress: impl Fn() -> Option<Progress>, want: Option<Progress>) {
+    let started = std::time::Instant::now();
+    while progress() != want {
+        assert!(started.elapsed() < WAIT, "{:?}, not {want:?}", progress());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// [`STORED`]'s lug's box (10 long), and [`longer`]'s (20 long): never the block (40).
+fn is_lug(op: &Op) -> bool {
+    matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx < 25.0)
+}
+
+#[test]
+fn a_held_rebuild_shows_its_steps_done_below_its_steps_then_all_of_them() {
+    // STORED's steps, by hand: the block at the origin (one), the lug at x = 100 (its box
+    // and its move: two), and the fuse (one): four. The lug's box held: the block's step
+    // settles, and the move and the fuse wait on the lug.
+    let f = opened(STORED);
+    let hold = f.kernel.hold(is_lug);
+    let check = f.sessions.check(&f.id, ModelChoice::Current);
+    let one_of_four = Some(Progress { done: 1, steps: 4 });
+    until_progress(|| check.progress(), one_of_four);
+    assert_eq!(
+        f.sessions.status(&f.id).result.unwrap().rebuild,
+        Rebuild {
+            revision: Revision::OPENED,
+            state: RebuildState::Running,
+            progress: one_of_four,
+        }
+    );
+    hold.release();
+    check.wait().result.unwrap();
+    assert_eq!(
+        f.sessions.status(&f.id).result.unwrap().rebuild,
+        Rebuild {
+            revision: Revision::OPENED,
+            state: RebuildState::Done,
+            progress: Some(Progress { done: 4, steps: 4 }),
+        }
+    );
+    // Nothing running now: a command's handle has no progress to give.
+    let text = f.sessions.text(&f.id, None);
+    assert_eq!(text.progress(), None);
+    text.wait().result.unwrap();
+}
+
+#[test]
+fn counting_a_rebuilds_steps_never_keeps_status_or_a_published_read_waiting() {
+    // Revision 1 built and published; then, in a transaction, the lug 20 long, its
+    // rebuild's lug held, its steps being counted. Status, the check's handle, and a read of
+    // the published model each answer while the step is held, none waiting for it.
+    let f = opened(STORED);
+    f.sessions
+        .check(&f.id, ModelChoice::Current)
+        .wait()
+        .result
+        .unwrap();
+    f.begin();
+    f.edit(&longer());
+    let hold = f.kernel.hold(is_lug);
+    let check = f.sessions.check(&f.id, ModelChoice::Current);
+    // Revision 2's: the block and the fuse unchanged, but the fuse uses the lug, so only
+    // the block's step is kept; the lug's box is held.
+    until_progress(|| check.progress(), Some(Progress { done: 1, steps: 4 }));
+    let quick = Duration::from_secs(5);
+    let (said, heard) = mpsc::channel();
+    let answered = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let status = f.sessions.status(&f.id).result.map(|status| status.rebuild);
+            let read = f
+                .sessions
+                .read_model(
+                    &f.id,
+                    SessionCommand::Check,
+                    ModelChoice::Published,
+                    |read| Ok(read.model_read().revision),
+                )
+                .wait()
+                .result;
+            let _ = said.send((status, read, f.kernel.wait_running(1, Duration::ZERO)));
+        });
+        let answered = heard.recv_timeout(quick);
+        // Let go either way, so a call that waited on the step ends, and the test with it.
+        hold.release();
+        answered
+    });
+    let (status, read, still_held) = answered.unwrap();
+    assert!(still_held, "answered while the lug was held");
+    assert_eq!(
+        status.unwrap(),
+        Rebuild {
+            revision: Revision(2),
+            state: RebuildState::Running,
+            progress: Some(Progress { done: 1, steps: 4 }),
+        }
+    );
+    assert_eq!(read.unwrap(), Revision::OPENED);
+    check.wait().result.unwrap();
 }

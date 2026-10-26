@@ -10,6 +10,7 @@ use std::time::Duration;
 #[cfg(doc)]
 use super::Sessions;
 use super::cancel::Ticket;
+use super::rebuilds::Newest;
 use super::rebuilds::met_fault;
 use super::transaction::Reached;
 use super::{Problems, SessionCommand};
@@ -328,6 +329,8 @@ pub struct Running<T> {
     lost: &'static str,
     /// How it's stopped: none for a command answered before it ran (refused).
     ticket: Option<Arc<Ticket>>,
+    /// Its session's newest rebuild: none for a command answered before it ran.
+    rebuild: Option<Arc<Newest>>,
 }
 
 /// What cancels a command apart from its handle ([`Running::stopper`]), from any thread.
@@ -356,11 +359,13 @@ impl<T> Running<T> {
         answer: Receiver<Response<T>>,
         lost: &'static str,
         ticket: Option<Arc<Ticket>>,
+        rebuild: Option<Arc<Newest>>,
     ) -> Self {
         Running {
             answer,
             lost,
             ticket,
+            rebuild,
         }
     }
 
@@ -368,7 +373,14 @@ impl<T> Running<T> {
     pub(super) fn answered(response: Response<T>) -> Self {
         let (reply, answer) = mpsc::sync_channel(1);
         let _ = reply.send(response);
-        Running::new(answer, SESSION_STOPPED, None)
+        Running::new(answer, SESSION_STOPPED, None, None)
+    }
+
+    /// How far its session's rebuild has got, while one runs (one the command waits for,
+    /// or any other): none while none runs. Read at once, never waiting on the rebuild or
+    /// the command, so the app may poll it each frame.
+    pub fn progress(&self) -> Option<Progress> {
+        self.rebuild.as_ref().and_then(|rebuild| rebuild.running())
     }
 
     /// Cancels the command, as MCP's cancellation does (decision 10): if it hasn't done its
@@ -584,12 +596,23 @@ pub struct Status {
     pub rebuild: Rebuild,
 }
 
-/// A session's current revision's rebuild, as `status` gives it: the revision, and what's
-/// become of its rebuild.
+/// A session's current revision's rebuild, as `status` gives it: the revision, what's
+/// become of its rebuild, and how far that has got, if a rebuild of it has started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rebuild {
     pub revision: Revision,
     pub state: RebuildState,
+    pub progress: Option<Progress>,
+}
+
+/// How far a rebuild has got (the design's section 6): its steps settled (built, failed,
+/// kept from before, or never to run; all of them once it finishes), and the steps of its
+/// plan (none until its plan is made, after the sketches it sweeps are solved). A
+/// diagnostic, not a result (section 10): which step finishes first depends on scheduling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Progress {
+    pub done: usize,
+    pub steps: usize,
 }
 
 /// What's become of a revision's rebuild (the design's `status`).

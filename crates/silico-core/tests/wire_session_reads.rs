@@ -23,9 +23,9 @@ use silico_core::command::wire::session::{
 use silico_core::command::wire::transaction::SessionRequest;
 use silico_core::command::wire::{Layout, ToWire, response, response_text, snapshot_value, write};
 use silico_core::command::{
-    Begun, Cancelled, Limits, MAX_SESSIONS, ModelChoice, Opened, OutlineAnswer, Problems, Rebuild,
-    RebuildState, Response, Revision, SessionCommand, SessionId, Sessions, Status, TextAnswer,
-    VERSION, Version,
+    Begun, Cancelled, Limits, MAX_SESSIONS, ModelChoice, Opened, OutlineAnswer, Problems, Progress,
+    Rebuild, RebuildState, Response, Revision, SessionCommand, SessionId, Sessions, Status,
+    TextAnswer, VERSION, Version,
 };
 use silico_core::document::json::{Node, read};
 use silico_core::fake::{FakeKernel, FakeSketches, Hold};
@@ -720,35 +720,34 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
         rebuild: Rebuild {
             revision: revision(6),
             state: RebuildState::Running,
+            progress: Some(Progress { done: 3, steps: 9 }),
         },
     };
-    // By hand: the design's result less the rebuild's progress (`done` and `steps`), not
-    // built yet, which is why its example isn't in the contract.
+    // By hand: the design's result, its rebuild 3 steps of 9 in.
     let text = written(&status);
     assert_eq!(
         text,
-        "{\n  \"features\": 7,\n  \"gated\": true,\n  \"transaction\": {\"base\": 4},\n  \"running\": \"check\",\n  \"reads\": [\"distance\"],\n  \"rebuild\": {\"revision\": 6, \"state\": \"running\"}\n}\n"
+        "{\n  \"features\": 7,\n  \"gated\": true,\n  \"transaction\": {\"base\": 4},\n  \"running\": \"check\",\n  \"reads\": [\"distance\"],\n  \"rebuild\": {\"revision\": 6, \"state\": \"running\", \"done\": 3, \"steps\": 9}\n}\n"
     );
     // Its read, `distance`, a read of the published model (M4.5's): it holds.
-    holds(
-        &schema_of("status", "result"),
-        &text,
-        "the design's, less progress",
-    );
+    holds(&schema_of("status", "result"), &text, "the design's");
     let designed = &design("### `status` (M4.2)", "### `cancel` (M4.2)")[1];
-    assert_eq!(
-        designed.replace(", \"done\": 3, \"steps\": 9", "") + "\n",
-        text,
-        "the design's, but for progress"
-    );
-    fails(&schema_of("status", "result"), designed, "the design's");
+    assert_eq!(designed.clone() + "\n", text, "the design's");
+    assert_eq!(text, example("status/result"));
+    // Progress is a count: a fraction, or a negative, isn't one.
+    for (from, to) in [
+        ("\"done\": 3", "\"done\": 2.5"),
+        ("\"steps\": 9", "\"steps\": -1"),
+    ] {
+        fails(&schema_of("status", "result"), &text.replace(from, to), to);
+    }
     // A session's own, on the fake kernel: a box, nothing running, nothing rebuilt.
     let f = opened(BOX);
     let request = SessionRequest::read(&parsed(&example("status/request"))).unwrap();
     let text = written(f.sessions.status(&request.session).result.as_ref().unwrap());
     assert_eq!(
         text,
-        "{\n  \"features\": 1,\n  \"gated\": true,\n  \"transaction\": null,\n  \"running\": null,\n  \"reads\": [],\n  \"rebuild\": {\"revision\": 1, \"state\": \"none\"}\n}\n"
+        "{\n  \"features\": 1,\n  \"gated\": true,\n  \"transaction\": null,\n  \"running\": null,\n  \"reads\": [],\n  \"rebuild\": {\"revision\": 1, \"state\": \"none\", \"done\": null, \"steps\": null}\n}\n"
     );
     holds(&schema_of("status", "result"), &text, "a box's");
     // A document the reader refuses: no features, not gated.
@@ -761,11 +760,12 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
         rebuild: Rebuild {
             revision: revision(9),
             state: RebuildState::None,
+            progress: None,
         },
     };
     assert_eq!(
         one_line(&other),
-        r#"{"features": null, "gated": false, "transaction": null, "running": null, "reads": ["elements", "query"], "rebuild": {"revision": 9, "state": "none"}}"#
+        r#"{"features": null, "gated": false, "transaction": null, "running": null, "reads": ["elements", "query"], "rebuild": {"revision": 9, "state": "none", "done": null, "steps": null}}"#
     );
     holds(&schema_of("status", "result"), &written(&other), "unread");
     // Every state, as the schema lists them, each the session's own word.
@@ -789,6 +789,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
             rebuild: Rebuild {
                 revision: revision(2),
                 state,
+                progress: None,
             },
             ..other.clone()
         };
@@ -1006,7 +1007,7 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
     }
     let base = |running: &str, reads: &str| {
         format!(
-            r#"{{"features": 1, "gated": true, "transaction": null, "running": {running}, "reads": [{reads}], "rebuild": {{"revision": 1, "state": "none"}}}}"#
+            r#"{{"features": 1, "gated": true, "transaction": null, "running": {running}, "reads": [{reads}], "rebuild": {{"revision": 1, "state": "none", "done": null, "steps": null}}}}"#
         )
     };
     holds(&status, &base(r#""check""#, ""), "check running");

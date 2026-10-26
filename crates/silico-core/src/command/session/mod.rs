@@ -97,7 +97,7 @@ use crate::{Error, ErrorCode};
 use cancel::{Interrupt, Ticket, Why, not_running};
 use edits::{as_committed, not_given_back};
 use holding::Holding;
-use rebuilds::{Rebuilds, Unbuilt, published_answer};
+use rebuilds::{Newest, Rebuilds, Unbuilt, published_answer};
 pub(super) use rebuilds::{kept_fault, kept_suggestion, retried};
 use registry::{Book, CacheOpener, Registry, Release, Started, claim, reclaim, serve, start};
 pub use threads::MAX_PUBLISHED_READS;
@@ -107,9 +107,9 @@ pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
     Added, Begun, Cancelled, CheckAnswer, Closed, Committed, FieldSet, ModelChoice, ModelRead,
-    Opened, OutlineAnswer, Published, Read, ReadClient, Rebuild, RebuildState, Reformatted,
-    Removed, Replaced, Response, Revision, RolledBack, Running, SessionId, SessionInfo, Status,
-    Stopper, TextAnswer,
+    Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild, RebuildState,
+    Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running, SessionId,
+    SessionInfo, Status, Stopper, TextAnswer,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 
@@ -150,6 +150,9 @@ struct Session<C: Kernel + 'static> {
     reads: Mutex<Reads>,
     /// The queued command running, if one is: its stop, which `cancel` finds here.
     command: Mutex<Option<Arc<Ticket>>>,
+    /// How far its newest rebuild has got, under a lock of its own: what `status` and each
+    /// command's handle read.
+    newest: Arc<Newest>,
 }
 
 /// A command waiting on a session's rebuild is woken by its cancel, to stop it.
@@ -449,7 +452,7 @@ impl<P: Clients + 'static> Sessions<P> {
             Ok(thread) => {
                 book.opening.insert(id);
                 book.threads.push(thread);
-                Running::new(answer, SESSION_STOPPED, Some(ticket))
+                Running::new(answer, SESSION_STOPPED, Some(ticket), None)
             }
             Err(e) => Running::answered(refused(crate::pool::thread_error("session", &e))),
         }
@@ -492,11 +495,16 @@ impl<P: Clients + 'static> Sessions<P> {
         let held = found.held.read();
         let gated = matches!(*held.gated, Gated::Checked(_));
         let rebuild = if gated {
-            lock(&found.rebuilds).state(held.revision)
+            let state = lock(&found.rebuilds).state(held.revision);
+            Rebuild {
+                progress: found.newest.of(held.revision),
+                ..state
+            }
         } else {
             Rebuild {
                 revision: held.revision,
                 state: RebuildState::None,
+                progress: None,
             }
         };
         Response {
@@ -756,7 +764,12 @@ impl<P: Clients + 'static> Sessions<P> {
                 match started {
                     Ok(thread) => {
                         threads.push(thread);
-                        Running::new(answer, READ_STOPPED, Some(ticket))
+                        Running::new(
+                            answer,
+                            READ_STOPPED,
+                            Some(ticket),
+                            Some(Arc::clone(&found.newest)),
+                        )
                     }
                     // The read, and its count, dropped with the thread that never started.
                     Err(e) => refused_here(crate::pool::thread_error("published read", &e)),
@@ -1164,7 +1177,12 @@ impl<P: Clients + 'static> Sessions<P> {
             };
             let _ = reply.send(response);
         }));
-        Running::new(answer, SESSION_STOPPED, Some(ticket))
+        Running::new(
+            answer,
+            SESSION_STOPPED,
+            Some(ticket),
+            Some(Arc::clone(&found.newest)),
+        )
     }
 }
 

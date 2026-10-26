@@ -212,11 +212,20 @@ impl ToWire for Closed {
 }
 
 impl ToWire for Rebuild {
-    /// The revision, and what's become of its rebuild.
+    /// The revision, what's become of its rebuild, and its steps done and steps (each
+    /// `null` if no rebuild of the revision has started).
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("revision", self.revision.to_wire()),
             ("state", Json::str(self.state.as_str())),
+            (
+                "done",
+                Json::or_null(self.progress, |progress| Json::count(progress.done)),
+            ),
+            (
+                "steps",
+                Json::or_null(self.progress, |progress| Json::count(progress.steps)),
+            ),
         ])
     }
 }
@@ -442,6 +451,13 @@ pub struct RebuildSchema {
     #[schemars(range(min = 1))]
     pub revision: u64,
     pub state: RebuildStateSchema,
+    /// The rebuild's steps settled so far (built, failed, kept from before, or never to
+    /// run), all of them once it has finished: progress, a diagnostic, not a result. Null if
+    /// no rebuild of the revision has started.
+    pub done: Option<u64>,
+    /// The steps in the rebuild's plan, none until it's made: progress, a diagnostic. Null
+    /// if no rebuild of the revision has started.
+    pub steps: Option<u64>,
 }
 
 /// `status`'s result. What's running is a diagnostic, not a result: it depends on when it's

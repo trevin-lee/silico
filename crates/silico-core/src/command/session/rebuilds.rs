@@ -3,18 +3,18 @@
 //! candidate rebuilt for its commit.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, PoisonError, Weak};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use super::cancel::{Ticket, cancelled};
 use super::threads::Threads;
 use super::transaction::{Reached, Reaching};
 use super::{
-    Gated, ModelChoice, ModelRead, Problems, Published, Rebuild, RebuildState, Response, Revision,
-    Session, SessionId, SessionInfo, not_open,
+    Gated, ModelChoice, ModelRead, Problems, Progress, Published, Rebuild, RebuildState, Response,
+    Revision, Session, SessionId, SessionInfo, not_open,
 };
 use crate::document::Checked;
 use crate::kernel::Kernel;
-use crate::recompute::{Model, Recompute, Run, RunOutcome};
+use crate::recompute::{self, Model, Recompute, Run, RunOutcome};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
@@ -105,7 +105,8 @@ impl<C: Kernel + 'static> Rebuilds<C> {
     }
 
     /// What's become of `revision`'s rebuild (`status`): an edit's candidate running counts
-    /// as `revision`'s, the session's revision until its save.
+    /// as `revision`'s, the session's revision until its save. Its progress is left for the
+    /// caller to read ([`Newest::of`]), once this lock is let go.
     pub(super) fn state(&self, revision: Revision) -> Rebuild {
         let running = self
             .running
@@ -130,7 +131,46 @@ impl<C: Kernel + 'static> Rebuilds<C> {
                 Some(_) | None => RebuildState::None,
             }
         };
-        Rebuild { revision, state }
+        Rebuild {
+            revision,
+            state,
+            progress: None,
+        }
+    }
+}
+
+/// How far a session's newest rebuild has got: its label and its recompute's count, under a
+/// lock of its own, taken after every other and held only to read or replace them, so
+/// `status` and a command's handle read it without waiting on any of the session's work.
+#[derive(Default)]
+pub(super) struct Newest(Mutex<Option<(Label, recompute::Progress)>>);
+
+impl Newest {
+    /// The rebuild labelled `label` started, counted by `progress`.
+    fn started(&self, label: Label, progress: recompute::Progress) {
+        *lock(&self.0) = Some((label, progress));
+    }
+
+    /// The progress of `revision`'s rebuild, if the newest is that one: the revision it's of
+    /// (as a rollback gave it on), or an edit's candidate still running, which counts as the
+    /// session's revision until its save. Its count when it ended, once it has.
+    pub(super) fn of(&self, revision: Revision) -> Option<Progress> {
+        let newest = lock(&self.0);
+        let (label, progress) = newest.as_ref()?;
+        let count = progress.now();
+        (label.revision() == revision || (label.candidate && !count.ended)).then_some(Progress {
+            done: count.done,
+            steps: count.steps,
+        })
+    }
+
+    /// The progress of the newest rebuild, while it runs.
+    pub(super) fn running(&self) -> Option<Progress> {
+        let count = lock(&self.0).as_ref()?.1.now();
+        (!count.ended).then_some(Progress {
+            done: count.done,
+            steps: count.steps,
+        })
     }
 }
 
@@ -369,6 +409,7 @@ impl<C: Kernel + 'static> Session<C> {
     ) -> Result<(), Problems> {
         rebuilds.watchers.reap();
         let run = rebuilds.engine.start(Arc::clone(checked));
+        self.newest.started(label.clone(), run.progress());
         rebuilds.running = Some(label.clone());
         let session = Arc::downgrade(self);
         match std::thread::Builder::new()

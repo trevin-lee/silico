@@ -20,7 +20,7 @@ use silico_core::document::{Checked, FeatureId, Measure};
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{Clients, Generation, Kernel, KernelRequest, Op, Primitive};
 use silico_core::pool::Pending;
-use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
+use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome, StepCount};
 use silico_core::{Error, ErrorCode};
 
 fn ids(texts: &[&str]) -> Vec<FeatureId> {
@@ -252,6 +252,49 @@ fn independent_branches_run_at_once() {
     assert_eq!(started, ["MakeBox", "MakeCylinder"]);
     hold.release();
     assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
+}
+
+#[test]
+fn a_recompute_counts_its_steps_names_the_one_running_and_ends_with_all_done() {
+    // The example's steps, by hand: the block at the origin (one), the pin at (20, 10, -1)
+    // (its cylinder and its move: two), and the hole cut (one): four. The pin's cylinder
+    // held: the block's step settles; the move and the cut wait on the cylinder.
+    let engine = engine(2);
+    let hold = engine
+        .kernel()
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. })));
+    let run = engine.start(checked(EXAMPLE));
+    let progress = run.progress();
+    let deadline = std::time::Instant::now() + WAIT;
+    while progress.now().done < 1 {
+        assert!(std::time::Instant::now() < deadline, "{:?}", progress.now());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        progress.now(),
+        StepCount {
+            done: 1,
+            steps: 4,
+            running: Some("a91cw0de cylinder".to_owned()),
+            ended: false,
+        }
+    );
+    hold.release();
+    assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
+    assert_eq!(
+        progress.now(),
+        StepCount {
+            done: 4,
+            steps: 4,
+            running: None,
+            ended: true,
+        }
+    );
+    // Again, every step kept: all four settled before any runs.
+    let again = engine.start(checked(EXAMPLE));
+    let progress = again.progress();
+    assert!(matches!(again.wait().unwrap(), RunOutcome::Published(_)));
+    assert_eq!((progress.now().done, progress.now().steps), (4, 4));
 }
 
 #[test]
