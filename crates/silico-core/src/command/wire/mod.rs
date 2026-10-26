@@ -42,7 +42,9 @@ use std::fmt;
 
 use schemars::JsonSchema;
 
-use super::{ModelChoice, ModelRead, Problems, Response, Revision, SessionId, SessionInfo};
+use super::{
+    Command, ModelChoice, ModelRead, Problems, Response, Revision, SessionId, SessionInfo,
+};
 use crate::document::json::{Member, Node, Plain, Value};
 use crate::document::write::{self, Out, text};
 use crate::document::{
@@ -451,9 +453,24 @@ pub fn response_text<T: ToWire>(response: &Response<T>, layout: Layout) -> Strin
 
 /// [`response_text`], against `limit`.
 fn response_text_within<T: ToWire>(response: &Response<T>, layout: Layout, limit: usize) -> String {
+    answer_within(response, layout, limit).1
+}
+
+/// [`response_text`], and whether what it wrote is the answer of a command that ran (its
+/// `ok`): false for a refusal, and for a response refused as too long to write.
+pub(crate) fn answer_text<T: ToWire>(response: &Response<T>, layout: Layout) -> (bool, String) {
+    answer_within(response, layout, MAX_RESPONSE_LEN)
+}
+
+/// [`answer_text`], against `limit`.
+fn answer_within<T: ToWire>(
+    response: &Response<T>,
+    layout: Layout,
+    limit: usize,
+) -> (bool, String) {
     let _span = tracing::debug_span!("response_text", ?layout).entered();
     if let Ok(written) = text(&self::response(response).0, layout, limit) {
-        return written;
+        return (response.result.is_ok(), written);
     }
     let too_long = Problems::from(
         Error::new(
@@ -468,12 +485,13 @@ fn response_text_within<T: ToWire>(response: &Response<T>, layout: Layout, limit
     );
     let session = response.session.as_ref();
     let model = response.model.as_ref();
-    text(&refused(session, model, &too_long).0, layout, limit)
+    let refusal = text(&refused(session, model, &too_long).0, layout, limit)
         // A refusal too long itself (a session's path near the limit, which no path is) is
         // written without its session and model: some hundred bytes, written in full.
         .or_else(|TooLong| text(&refused(None, None, &too_long).0, layout, usize::MAX))
         // Never empty: with no limit, writing can't fail.
-        .unwrap_or_default()
+        .unwrap_or_default();
+    (false, refusal)
 }
 
 /// The refusals a request's reader keeps: the first [`PROBLEMS_LISTED`], in the order found,
@@ -1513,101 +1531,88 @@ pub enum ResponseSchema {
 pub type MakeSnapshot = fn() -> serde_json::Value;
 
 /// The commands whose wire types are built, each by name with what makes its snapshot, in
-/// the design's order (section 7): what `schema` describes besides the document.
-pub const COMMANDS: [(&str, MakeSnapshot); 23] = [
-    (
-        "version",
-        command_schema::<session::VersionRequestSchema, session::VersionResultSchema>,
-    ),
-    (
-        "open",
-        command_schema::<session::OpenRequestSchema, session::OpenResultSchema>,
-    ),
-    (
-        "close",
-        command_schema::<session::CloseRequestSchema, session::CloseResultSchema>,
-    ),
-    (
-        "status",
-        command_schema::<session::StatusRequestSchema, session::StatusResultSchema>,
-    ),
-    (
-        "cancel",
-        command_schema::<session::CancelRequestSchema, session::CancelResultSchema>,
-    ),
-    (
-        "begin",
-        command_schema::<transaction::BeginRequestSchema, transaction::BeginResultSchema>,
-    ),
-    (
-        "commit",
-        command_schema::<transaction::CommitRequestSchema, transaction::CommitResultSchema>,
-    ),
-    (
-        "rollback",
-        command_schema::<transaction::RollbackRequestSchema, transaction::RollbackResultSchema>,
-    ),
-    (
-        "format",
-        command_schema::<transaction::FormatRequestSchema, transaction::FormatResultSchema>,
-    ),
-    (
-        "add_feature",
-        command_schema::<edits::AddFeatureRequestSchema, edits::AddFeatureResultSchema>,
-    ),
-    (
-        "set_field",
-        command_schema::<edits::SetFieldRequestSchema, edits::SetFieldResultSchema>,
-    ),
-    (
-        "remove_feature",
-        command_schema::<edits::RemoveFeatureRequestSchema, edits::RemoveFeatureResultSchema>,
-    ),
-    (
-        "replace_text",
-        command_schema::<edits::ReplaceTextRequestSchema, edits::ReplaceTextResultSchema>,
-    ),
-    (
-        "text",
-        command_schema::<reads::TextRequestSchema, reads::TextResultSchema>,
-    ),
-    (
-        "outline",
-        command_schema::<reads::OutlineRequestSchema, reads::OutlineResultSchema>,
-    ),
-    (
-        "check",
-        command_schema::<reads::CheckRequestSchema, reads::CheckResultSchema>,
-    ),
-    (
-        "elements",
-        command_schema::<elements::ElementsRequestSchema, elements::ElementsResultSchema>,
-    ),
-    (
-        "query",
-        command_schema::<elements::QueryRequestSchema, elements::QueryResultSchema>,
-    ),
-    (
-        "schema",
-        command_schema::<schema::SchemaRequestSchema, schema::SchemaResultSchema>,
-    ),
-    (
-        "mass_properties",
-        command_schema::<measure::MassPropertiesRequestSchema, measure::MassPropertiesResultSchema>,
-    ),
-    (
-        "distance",
-        command_schema::<measure::DistanceRequestSchema, measure::DistanceResultSchema>,
-    ),
-    (
-        "angle",
-        command_schema::<measure::AngleRequestSchema, measure::AngleResultSchema>,
-    ),
-    (
-        "render",
-        command_schema::<render::RenderRequestSchema, render::RenderResultSchema>,
-    ),
-];
+/// the design's order (section 7): what `schema` describes besides the document, and what
+/// MCP's tools are. Made from [`Command::ALL`], each command by its name, so a command can't
+/// be here and not be one `Sessions::call` runs, nor the other way round.
+pub const COMMANDS: [(&str, MakeSnapshot); Command::ALL.len()] = {
+    let mut commands = [("", snapshot_of(Command::Version)); Command::ALL.len()];
+    let mut at = 0;
+    while at < commands.len() {
+        let command = Command::ALL[at];
+        commands[at] = (command.as_str(), snapshot_of(command));
+        at += 1;
+    }
+    commands
+};
+
+/// What makes `command`'s snapshot: its request's and its result's mirror structs, every
+/// command matched.
+const fn snapshot_of(command: Command) -> MakeSnapshot {
+    match command {
+        Command::Version => {
+            command_schema::<session::VersionRequestSchema, session::VersionResultSchema>
+        }
+        Command::Open => command_schema::<session::OpenRequestSchema, session::OpenResultSchema>,
+        Command::Close => command_schema::<session::CloseRequestSchema, session::CloseResultSchema>,
+        Command::Status => {
+            command_schema::<session::StatusRequestSchema, session::StatusResultSchema>
+        }
+        Command::Cancel => {
+            command_schema::<session::CancelRequestSchema, session::CancelResultSchema>
+        }
+        Command::Begin => {
+            command_schema::<transaction::BeginRequestSchema, transaction::BeginResultSchema>
+        }
+        Command::Commit => {
+            command_schema::<transaction::CommitRequestSchema, transaction::CommitResultSchema>
+        }
+        Command::Rollback => {
+            command_schema::<transaction::RollbackRequestSchema, transaction::RollbackResultSchema>
+        }
+        Command::Format => {
+            command_schema::<transaction::FormatRequestSchema, transaction::FormatResultSchema>
+        }
+        Command::AddFeature => {
+            command_schema::<edits::AddFeatureRequestSchema, edits::AddFeatureResultSchema>
+        }
+        Command::SetField => {
+            command_schema::<edits::SetFieldRequestSchema, edits::SetFieldResultSchema>
+        }
+        Command::RemoveFeature => {
+            command_schema::<edits::RemoveFeatureRequestSchema, edits::RemoveFeatureResultSchema>
+        }
+        Command::ReplaceText => {
+            command_schema::<edits::ReplaceTextRequestSchema, edits::ReplaceTextResultSchema>
+        }
+        Command::Text => command_schema::<reads::TextRequestSchema, reads::TextResultSchema>,
+        Command::Outline => {
+            command_schema::<reads::OutlineRequestSchema, reads::OutlineResultSchema>
+        }
+        Command::Check => command_schema::<reads::CheckRequestSchema, reads::CheckResultSchema>,
+        Command::Elements => {
+            command_schema::<elements::ElementsRequestSchema, elements::ElementsResultSchema>
+        }
+        Command::Query => {
+            command_schema::<elements::QueryRequestSchema, elements::QueryResultSchema>
+        }
+        Command::Schema => {
+            command_schema::<schema::SchemaRequestSchema, schema::SchemaResultSchema>
+        }
+        Command::MassProperties => {
+            command_schema::<
+                measure::MassPropertiesRequestSchema,
+                measure::MassPropertiesResultSchema,
+            >
+        }
+        Command::Distance => {
+            command_schema::<measure::DistanceRequestSchema, measure::DistanceResultSchema>
+        }
+        Command::Angle => command_schema::<measure::AngleRequestSchema, measure::AngleResultSchema>,
+        Command::Render => {
+            command_schema::<render::RenderRequestSchema, render::RenderResultSchema>
+        }
+    }
+}
 
 /// The JSON Schema (draft 2020-12, every object's keys sorted) a snapshot (section 8)
 /// records: `envelope`, the response's; or a command's ([`command_snapshot`]). None for a

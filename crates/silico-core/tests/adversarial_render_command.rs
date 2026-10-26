@@ -70,7 +70,9 @@ impl Bench {
                 kernel: &self.kernel,
                 meshes: &self.meshes,
                 renderer,
-                workspace,
+                workspace: workspace
+                    .map(|root| silico_core::file::Workspace::new(root).unwrap())
+                    .as_ref(),
                 held,
                 settle: &|| Ok(()),
             },
@@ -1026,7 +1028,7 @@ fn a_render_whose_read_wont_settle_writes_no_file() {
             kernel: &bench.kernel,
             meshes: &bench.meshes,
             renderer: &bench.renderer,
-            workspace: Some(&dir.0),
+            workspace: Some(&silico_core::file::Workspace::new(&dir.0).unwrap()),
             held: &[],
             settle: &cancelled,
         },

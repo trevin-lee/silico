@@ -12,6 +12,8 @@ mod bound;
 mod cache;
 #[path = "common/cache_format.rs"]
 mod cache_format;
+#[path = "common/call.rs"]
+mod calls;
 #[path = "common/command.rs"]
 mod commands;
 #[path = "common/example.rs"]
@@ -40,6 +42,8 @@ mod test_programs;
 mod adversarial_cache;
 #[path = "adversarial_cache_bound.rs"]
 mod adversarial_cache_bound;
+#[path = "adversarial_call.rs"]
+mod adversarial_call;
 #[path = "adversarial_center_to_element.rs"]
 mod adversarial_center_to_element;
 #[path = "adversarial_command.rs"]
@@ -60,8 +64,12 @@ mod adversarial_render_command;
 mod adversarial_type_words;
 #[path = "adversarial_wire_commands.rs"]
 mod adversarial_wire_commands;
+#[path = "adversarial_workspace.rs"]
+mod adversarial_workspace;
 #[path = "cache_bound.rs"]
 mod cache_bound;
+#[path = "call.rs"]
+mod call;
 #[path = "command.rs"]
 mod command;
 #[path = "document.rs"]
@@ -96,6 +104,8 @@ mod session_render;
 mod session_tracing;
 #[path = "session_transactions.rs"]
 mod session_transactions;
+#[path = "session_workspace.rs"]
+mod session_workspace;
 #[path = "shared_result_checks.rs"]
 mod shared_result_checks;
 #[path = "wire_commands.rs"]

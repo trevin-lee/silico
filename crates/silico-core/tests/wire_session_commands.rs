@@ -19,7 +19,8 @@
 //!
 //! The design's examples not in the contract are three, each for its reason ([`LEFT_OUT`]):
 //! `version`'s result, which holds limits not built yet (its real result is pinned in
-//! wire_session_reads.rs); `open` outside a workspace, which nothing has yet; and `commit`'s
+//! wire_session_reads.rs); `open` outside a workspace, whose example file is the
+//! maintainer's to add (its message quotes the path, which the design's doesn't); and `commit`'s
 //! `io_failed`, a disk out of room, which no test can make happen.
 
 use std::path::PathBuf;
@@ -443,8 +444,10 @@ const LEFT_OUT: [(&str, &str, &str, &str); 3] = [
         "open",
         "invalid_input",
         "path",
-        "open of a path outside the workspace a server was started in: no process has a \
-         workspace until `silico serve` (M4.9), so nothing refuses one yet",
+        "open of a path outside the workspace a server was started in: its example file is a \
+         change to the protected contract, the maintainer's; and the design's message names \
+         the path bare, where every message quotes one (session_workspace.rs pins the refusal \
+         as the session gives it)",
     ),
     (
         "commit",

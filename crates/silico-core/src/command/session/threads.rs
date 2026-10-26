@@ -127,29 +127,29 @@ pub(super) struct Counted {
 }
 
 impl Counted {
-    /// The read `read` counted in `unanswered`, and its stop, named by `read` (so the
-    /// command `status` lists and the one `cancel` stops are one name): closed at once
-    /// ([`Ticket::close`]) if the session has closed.
+    /// The read `read` counted in `unanswered`, with its stop, `ticket`, which is made named
+    /// by `read` (`Ticket::new(read.into())`, so the command `status` lists and the one
+    /// `cancel` stops are one name): closed at once ([`Ticket::close`]) if the session has
+    /// closed.
     pub(super) fn count(
         unanswered: &Arc<Mutex<Unanswered>>,
         read: ReadCommand,
-    ) -> (Self, Arc<Ticket>) {
-        let ticket = Ticket::new(read.into());
+        ticket: &Arc<Ticket>,
+    ) -> Self {
         let (number, closed) = {
             let mut reads = lock(unanswered);
             let number = reads.next;
             reads.next = number.wrapping_add(1);
-            reads.reads.insert(number, (read, Arc::clone(&ticket)));
+            reads.reads.insert(number, (read, Arc::clone(ticket)));
             (number, reads.closed)
         };
         if closed {
             ticket.close();
         }
-        let counted = Counted {
+        Counted {
             unanswered: Arc::clone(unanswered),
             number,
-        };
-        (counted, ticket)
+        }
     }
 }
 

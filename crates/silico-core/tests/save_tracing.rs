@@ -183,7 +183,7 @@ fn a_file_a_command_writes_syncs_its_new_file_and_then_the_directory_it_was_rena
         field: "to",
         extension: "png",
         replace: false,
-        workspace: Some(&directory),
+        workspace: Some(&silico_core::file::Workspace::new(&directory).unwrap()),
         held: &[],
     };
     let seen = Arc::new(Mutex::new(Seen::default()));

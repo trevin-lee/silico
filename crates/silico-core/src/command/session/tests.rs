@@ -11,6 +11,7 @@ use crate::file;
 use crate::kernel::{Kernel, KernelRequest, Op, Primitive};
 use crate::pool::Outcome;
 use crate::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
+use std::collections::BTreeSet;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -35,6 +36,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
     let (sender, jobs) = mpsc::channel();
     let session = Arc::new(Session {
         id: SessionId(1),
+        workspace: None,
         held: Holding::new(Held {
             path: "a.silico".to_owned(),
             resolved: PathBuf::from("a.silico"),
@@ -527,6 +529,7 @@ fn a_document_made_for_a_session_the_sessions_closing_refuse_is_removed() {
         true,
         &crate::command::session::cancel::Ticket::opening(),
         &reply,
+        unqueued(),
     );
     assert!(started.is_none());
     let response = answer.recv().unwrap();
@@ -541,7 +544,8 @@ fn a_document_made_for_a_session_the_sessions_closing_refuse_is_removed() {
             kept.to_str().unwrap(),
             false,
             &crate::command::session::cancel::Ticket::opening(),
-            &reply
+            &reply,
+            unqueued(),
         )
         .is_none()
     );
@@ -549,6 +553,52 @@ fn a_document_made_for_a_session_the_sessions_closing_refuse_is_removed() {
     let book = lock(&sessions.registry.book);
     assert!(book.files.is_empty());
     assert!(book.paths.is_empty());
+}
+
+#[test]
+fn a_workspace_is_refused_once_an_open_was_asked_for_its_thread_ended() {
+    // Found by the review: the integration test's refused open may still have its thread,
+    // and so the registry shared, when the workspace is given, so it's refused for that and
+    // never reaches the check that no open was asked for. Here the thread has certainly
+    // ended (joined), the registry is the sessions' alone, and still it's refused, for the
+    // open asked for (`next` past 1).
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let made = || {
+        let secret = secret.clone();
+        Sessions::with_cache_opener(FakeKernel::new(1).unwrap(), move |cache| {
+            Cache::with_secret(cache, &secret)
+        })
+    };
+    let sessions = made();
+    let refused = sessions
+        .open(dir.path().join("none.silico"), false)
+        .wait_timeout(WAIT)
+        .ok()
+        .unwrap();
+    assert!(refused.result.is_err());
+    let threads = std::mem::replace(&mut lock(&sessions.registry.book).threads, Threads::new());
+    threads.join();
+    assert_eq!(Arc::strong_count(&sessions.registry), 1);
+    assert_eq!(lock(&sessions.registry.book).next, 2);
+    let e = match sessions.in_workspace(dir.path()) {
+        Ok(_) => panic!("given a workspace after an open was asked for"),
+        Err(e) => e,
+    };
+    assert_eq!(e.message(), "these sessions can't be given a workspace now");
+    assert_eq!(
+        e.cause(),
+        Some("a workspace is given once, as the sessions are made, before any document opens")
+    );
+    // The same sessions, no open asked for: given it.
+    assert!(made().in_workspace(dir.path()).is_ok());
+}
+
+/// A session's queue with no command in it, and none to come: its sender gone before
+/// it's given (a temporary's lives to the end of its statement, so `start` would wait on
+/// it).
+fn unqueued() -> Receiver<Job<FakeClient>> {
+    mpsc::channel().1
 }
 
 impl Held {
@@ -2872,7 +2922,8 @@ fn a_sessions_close_interrupts_its_reads_as_closed_and_each_counted_after_at_onc
     let f = opened(BOX);
     let session = f.session();
     let unanswered = Arc::clone(&lock(&session.reads).unanswered);
-    let (_counted, running) = Counted::count(&unanswered, ReadCommand::Check);
+    let running = Ticket::new(ReadCommand::Check.into());
+    let _counted = Counted::count(&unanswered, ReadCommand::Check, &running);
     let before = Told::new();
     // Given twice, told once.
     running.interrupt_with(before.weak());
@@ -2884,7 +2935,8 @@ fn a_sessions_close_interrupts_its_reads_as_closed_and_each_counted_after_at_onc
     assert!(!running.cancelled());
     // Sticky: a read counted after the close is closed at once, so what it adds is told at
     // once.
-    let (_late, late) = Counted::count(&unanswered, ReadCommand::Check);
+    let late = Ticket::new(ReadCommand::Check.into());
+    let _late = Counted::count(&unanswered, ReadCommand::Check, &late);
     let after = Told::new();
     late.interrupt_with(after.weak());
     assert_eq!(after.whys(), [Why::Closed]);

@@ -281,7 +281,7 @@ fn a_save_cut_short_leaves_nothing_more_open_than_the_document() {
 
 /// The rules for a render's PNG in `workspace`, holding `held`.
 fn png_rules<'a>(
-    workspace: Option<&'a std::path::Path>,
+    workspace: Option<&'a silico_core::file::Workspace>,
     held: &'a [std::path::PathBuf],
     replace: bool,
 ) -> silico_core::file::Output<'a> {
@@ -427,7 +427,8 @@ fn a_path_without_the_extension_or_out_of_the_workspace_is_refused() {
     let outside = dir.0.join("outside");
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::create_dir_all(&outside).unwrap();
-    let rules = png_rules(Some(&workspace), &[], true);
+    let root = silico_core::file::Workspace::new(&workspace).unwrap();
+    let rules = png_rules(Some(&root), &[], true);
     refused_output(&workspace.join("view.jpg"), &rules, "doesn't end in .png");
     refused_output(&workspace.join("view"), &rules, "doesn't end in .png");
     refused_output(
@@ -481,7 +482,11 @@ fn a_png_link_to_a_file_of_another_kind_is_refused_and_the_file_kept() {
     std::os::unix::fs::symlink(&readme, &view).unwrap();
     refused_output(
         &view,
-        &png_rules(Some(&dir.0), &[], true),
+        &png_rules(
+            Some(&silico_core::file::Workspace::new(&dir.0).unwrap()),
+            &[],
+            true,
+        ),
         "is a link to a file that isn't a .png",
     );
     assert_eq!(std::fs::read(&readme).unwrap(), b"keep me");
@@ -490,7 +495,16 @@ fn a_png_link_to_a_file_of_another_kind_is_refused_and_the_file_kept() {
     std::fs::write(&real, b"old").unwrap();
     let alias = dir.0.join("alias.png");
     std::os::unix::fs::symlink(&real, &alias).unwrap();
-    silico_core::file::write_output(&alias, b"new", &png_rules(Some(&dir.0), &[], true)).unwrap();
+    silico_core::file::write_output(
+        &alias,
+        b"new",
+        &png_rules(
+            Some(&silico_core::file::Workspace::new(&dir.0).unwrap()),
+            &[],
+            true,
+        ),
+    )
+    .unwrap();
     assert_eq!(std::fs::read(&real).unwrap(), b"new");
 }
 

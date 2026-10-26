@@ -5,16 +5,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
+use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 
 #[cfg(doc)]
 use super::MAX_SESSIONS;
 use super::cancel::Ticket;
 use super::holding::Holding;
-use super::rebuilds::Rebuilds;
+use super::rebuilds::{Newest, Rebuilds};
 use super::threads::{Reads, Threads};
 use super::transaction::{Held, not_reloaded, of_file, put_back, too_long};
 use super::{
@@ -24,7 +25,7 @@ use crate::cache::Cache;
 use crate::command::edit::FeatureIds;
 use crate::document::json::MAX_INPUT_LEN;
 use crate::document::{self, Document, FormatVersion, NamingScheme, Units};
-use crate::file;
+use crate::file::{self, Unresolved, Workspace};
 use crate::kernel::{Clients, Kernel};
 use crate::recompute::{Recompute, SketchSolvers};
 use crate::worker::lock;
@@ -47,6 +48,11 @@ pub(super) struct Registry<P: Clients + 'static> {
     pub(super) renderer: Mutex<Option<Arc<dyn crate::command::render::Renderer>>>,
     /// The display meshes `render` makes, shared by the sessions of this kernel.
     pub(super) meshes: Arc<crate::meshes::MeshCache<crate::recompute::Key>>,
+    /// The workspace every path a session is given, and every file it reads, writes, or
+    /// keeps its cache in, must lie in (decision 26): given as the sessions are made
+    /// ([`Sessions::in_workspace`](super::Sessions::in_workspace)), fixed for their life.
+    /// None for the CLI's, whose paths resolve as the system resolves them.
+    pub(super) workspace: Option<Workspace>,
 }
 
 /// A file as the system knows it, whatever path reaches it: its device and inode.
@@ -73,8 +79,10 @@ pub(super) struct Book<C: Kernel + 'static> {
     pub(super) next: u64,
     /// The sessions open.
     pub(super) sessions: BTreeMap<SessionId, Arc<Session<C>>>,
-    /// The sessions opening: not open yet, but counted against [`MAX_SESSIONS`].
-    pub(super) opening: BTreeSet<SessionId>,
+    /// The sessions opening: not open yet, but counted against [`MAX_SESSIONS`], and each
+    /// holding the commands sent to it before it opened, to run once it has, in the order
+    /// they were sent.
+    pub(super) opening: BTreeMap<SessionId, Opening<C>>,
     /// Each file a session holds, or is opening, as the system knows it, and the file kept
     /// open while it's claimed: an open file's inode isn't given to another (as ext4 gives a
     /// freed one at once), so a claim never comes to name some other file. A test can't make
@@ -124,6 +132,25 @@ impl<C: Kernel + 'static> Book<C> {
     }
 }
 
+/// A session opening ([`Book::opening`]): from when its `open` is called, a command naming it
+/// is held here, behind the open, rather than refused as naming no session open (the design's
+/// section 10: commands reach a session in the order sent, and nothing in a result depends on
+/// how the threads ran). If it opens, they run as if sent after the open had answered; if
+/// not, each is refused, `invalid_input` "no session sN is open", naming `session`, exactly
+/// as a command sent after the refusal is, whatever the open came to: so whether a command
+/// reached the session before its open was refused or after changes nothing in its answer.
+pub(super) struct Opening<C: Kernel + 'static> {
+    /// Its queue, made with the open: queued commands sent now wait here, and the session,
+    /// once open, serves it, so they run first, in the order sent.
+    pub(super) queue: Sender<Job<C>>,
+    /// How far its newest rebuild has got, which its queued commands' handles read: the
+    /// session's own once it opens.
+    pub(super) newest: Arc<Newest>,
+    /// Its published reads sent now, in the order sent: each started as the session opens,
+    /// beside its queue, as one sent then would be.
+    pub(super) reads: Vec<Job<C>>,
+}
+
 /// Removes its session from the registry's records when dropped: when the session's thread
 /// ends, however it ends.
 pub(super) struct Release<P: Clients + 'static> {
@@ -146,8 +173,11 @@ pub(super) struct Started<C: Kernel + 'static> {
 }
 
 /// The open, on its session's thread, answered through `reply`: if it opened, what the
-/// thread serves. Cancelled (`ticket`) before the session is recorded open, it answers
-/// `cancelled`, leaving no session and no file it made.
+/// thread serves, `jobs`, its queue, the commands sent while it opened first. Cancelled
+/// (`ticket`) before the session is recorded open, it answers `cancelled`, leaving no
+/// session and no file it made. If it doesn't open, every command sent to it while it
+/// opened is refused as naming no session open ([`Turn::Closed`]), once the open has
+/// answered.
 pub(super) fn start<P: Clients + 'static>(
     registry: Arc<Registry<P>>,
     id: SessionId,
@@ -155,6 +185,7 @@ pub(super) fn start<P: Clients + 'static>(
     create: bool,
     ticket: &Ticket,
     reply: &mpsc::SyncSender<Response<Opened>>,
+    jobs: Receiver<Job<P::Client>>,
 ) -> Option<Started<P::Client>> {
     let opened = open(&registry, id, path, create).and_then(|(held, opened, cache, made)| {
         let mut book = lock(&registry.book);
@@ -162,13 +193,18 @@ pub(super) fn start<P: Clients + 'static>(
             // The file it made, if it made one, goes with it (`made`'s drop).
             return Err(Problems::from(closing()));
         }
+        // Recorded opening as it was asked for, and only released by this thread.
+        let Some(opening) = book.opening.get(&id) else {
+            return Err(Problems::from(closing()));
+        };
+        let (queue, newest) = (opening.queue.clone(), Arc::clone(&opening.newest));
         // From here it opens, unless it was cancelled first (the file it made goes as above).
         ticket.settle()?;
-        let (sender, jobs) = mpsc::channel();
         let session = Arc::new(Session {
             id,
+            workspace: registry.workspace.clone(),
             held: Holding::new(held),
-            queue: Mutex::new(Some(sender)),
+            queue: Mutex::new(Some(queue)),
             rebuilds: Mutex::new(Rebuilds {
                 engine: registry.engine(cache),
                 running: None,
@@ -182,19 +218,29 @@ pub(super) fn start<P: Clients + 'static>(
             rebuilt: Condvar::new(),
             reads: Mutex::new(Reads::new()),
             command: Mutex::new(None),
-            newest: Arc::default(),
+            newest,
             #[cfg(test)]
             gate: super::Gate::default(),
         });
-        book.opening.remove(&id);
+        // Open from here: the commands sent while it opened are in its queue, ahead of any
+        // sent after, and its published reads sent then start now, in the order sent,
+        // before any sent after can.
+        let reads = book
+            .opening
+            .remove(&id)
+            .map(|opening| opening.reads)
+            .unwrap_or_default();
         book.sessions.insert(id, Arc::clone(&session));
+        for read in reads {
+            read(Turn::Run(&session));
+        }
         if let Some(made) = made {
             made.keep();
         }
-        Ok((session, opened, jobs))
+        Ok((session, opened))
     });
     match opened {
-        Ok((session, opened, jobs)) => {
+        Ok((session, opened)) => {
             let _ = reply.send(Response {
                 session: Some(session.info(false)),
                 model: None,
@@ -203,7 +249,12 @@ pub(super) fn start<P: Clients + 'static>(
             Some(Started { session, jobs })
         }
         Err(problems) => {
-            lock(&registry.book).release(id);
+            let opening = {
+                let mut book = lock(&registry.book);
+                let opening = book.opening.remove(&id);
+                book.release(id);
+                opening
+            };
             // Settled, so a cancel after the refusal says it came too late; `cancelled`, if
             // one came first.
             let _ = reply.send(ticket.answer(
@@ -214,6 +265,18 @@ pub(super) fn start<P: Clients + 'static>(
                     result: Err(problems),
                 },
             ));
+            // Then each command sent while it opened, refused as naming no session open, as
+            // one sent from here is: the queue's last sender let go with its record, so none
+            // comes after these.
+            if let Some(Opening { queue, reads, .. }) = opening {
+                drop(queue);
+                for read in reads {
+                    read(Turn::Closed(id));
+                }
+            }
+            while let Ok(job) = jobs.recv() {
+                job(Turn::Closed(id));
+            }
             None
         }
     }
@@ -265,12 +328,15 @@ fn open<P: Clients + 'static>(
     create: bool,
 ) -> Result<(Held, Opened, Cache, Option<MadeFile>), Problems> {
     let path = Path::new(given);
+    let workspace = registry.workspace.as_ref();
     let (resolved, text, made) = if create {
         let (resolved, text, made) = made(registry, id, path)?;
         (resolved, text, Some(made))
     } else {
-        let resolved =
-            std::fs::canonicalize(path).map_err(|e| file::unreadable(e).with_parameter("path"))?;
+        let resolved = file::resolve(workspace, path).map_err(|unresolved| match unresolved {
+            Unresolved::Outside => Workspace::outside(path, "path"),
+            Unresolved::Unreachable(e) => file::unreadable(e).with_parameter("path"),
+        })?;
         let (opened, text) = {
             let _span = tracing::info_span!("read").entered();
             file::opened_and_read(&resolved).map_err(|e| e.with_parameter("path"))?
@@ -312,7 +378,8 @@ fn open<P: Clients + 'static>(
     Ok((held, opened, cache, made))
 }
 
-/// A new, empty document made at `path`, claimed for session `id`: where it is through
+/// A new, empty document made at `path` (relative to the workspace, if there's one: its
+/// directory refused if it's outside it), claimed for session `id`: where it is through
 /// links, its text, and the file made, removed again unless kept.
 fn made<P: Clients + 'static>(
     registry: &Registry<P>,
@@ -320,7 +387,11 @@ fn made<P: Clients + 'static>(
     path: &Path,
 ) -> Result<(PathBuf, Vec<u8>, MadeFile), Problems> {
     let _span = tracing::info_span!("create").entered();
-    let name = path.file_name().ok_or_else(|| {
+    // A path ending in `/` or `/.` names a directory, as `open(2)` reads it, though
+    // `Path::file_name` skips the slash and the `.` (`brand/.` would make `brand`).
+    let bytes = path.as_os_str().as_bytes();
+    let directory = bytes.ends_with(b"/") || bytes.ends_with(b"/.");
+    let name = path.file_name().filter(|_| !directory).ok_or_else(|| {
         Error::new(
             ErrorCode::InvalidInput,
             format!("{} names no file to make", shown_path(path)),
@@ -333,8 +404,13 @@ fn made<P: Clients + 'static>(
             .with_parameter("path")
             .with_suggestion("check that its directory exists, and that this user may write in it")
     };
-    let resolved = std::fs::canonicalize(file::directory(path))
-        .map_err(uncreatable)?
+    let workspace = registry.workspace.as_ref();
+    let joined = file::joined(workspace, path);
+    let resolved = file::resolve(workspace, file::directory(&joined))
+        .map_err(|unresolved| match unresolved {
+            Unresolved::Outside => Workspace::outside(path, "path"),
+            Unresolved::Unreachable(e) => uncreatable(e),
+        })?
         .join(name);
     let text = document::write(&Document {
         silico: FormatVersion,
@@ -511,6 +587,19 @@ impl<P: Clients + 'static> Registry<P> {
     /// without the user's secret, which keeps nothing, isn't kept, so the next open tries
     /// again.
     fn cache(&self, dir: &Path) -> Cache {
+        // A cache directory that leads out of the workspace (a link put there) is never
+        // opened: a cache that keeps nothing and reads nothing stands in for it, so no entry
+        // is read or written through it, nor any scanned or removed, as the cache keeps none
+        // through a link (M2.5). It changes no result, so the document still opens.
+        if let Some(workspace) = &self.workspace
+            && let Err(Unresolved::Outside) = file::resolve(Some(workspace), dir)
+        {
+            tracing::warn!(
+                dir = %dir.display(),
+                "the cache directory leads out of the workspace: keeping no results"
+            );
+            return Cache::unsealed(dir);
+        }
         if let Some(cache) = lock(&self.book).caches.get(dir) {
             return cache.clone();
         }

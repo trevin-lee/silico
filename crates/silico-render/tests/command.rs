@@ -56,7 +56,7 @@ fn a_render_to_a_file_is_a_png_of_the_size_asked_and_the_result_says_its_bytes()
             kernel: &kernel,
             meshes: &meshes,
             renderer: &renderer,
-            workspace: Some(&dir),
+            workspace: Some(&silico_core::file::Workspace::new(&dir).unwrap()),
             held: &[],
             settle: &|| Ok(()),
         },

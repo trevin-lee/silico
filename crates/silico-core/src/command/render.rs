@@ -10,7 +10,7 @@
 //! The result is a camera and sizes, never the PNG's bytes, which come beside it for the
 //! client to show or write (R5: nothing the render worker returns reaches a result).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use silico_protocol::{
     Camera, MAX_FRAME_LEN, MAX_RENDER_EDGES, MAX_RENDER_FACES, MAX_RENDER_SIDE,
@@ -194,6 +194,7 @@ impl<P: Clients + 'static> Sessions<P> {
     ) -> Running<Rendering> {
         let (renderer, meshes) = self.render_on();
         let held = self.held_paths();
+        let workspace = self.workspace().cloned();
         self.read_model(session, ReadCommand::Render, model, move |read| {
             let Some(renderer) = renderer else {
                 return Err(Problems::from(
@@ -212,7 +213,7 @@ impl<P: Clients + 'static> Sessions<P> {
                         kernel: read.kernel(),
                         meshes: &meshes,
                         renderer,
-                        workspace: None,
+                        workspace: workspace.as_ref(),
                         held: &held,
                         settle: &|| read.settle(),
                     },
@@ -230,8 +231,9 @@ pub struct RenderOn<'a, K: Kernel> {
     pub kernel: &'a K,
     pub meshes: &'a MeshCache<Key>,
     pub renderer: &'a dyn Renderer,
-    /// The workspace a file written must be inside, if the sessions have one.
-    pub workspace: Option<&'a Path>,
+    /// The workspace a file written must be inside, if the sessions have one: a relative
+    /// `to` is relative to its root.
+    pub workspace: Option<&'a file::Workspace>,
     /// The documents the sessions hold, which a file written is never.
     pub held: &'a [PathBuf],
     /// Called just before the PNG is written, the render's one trace: refused (the read

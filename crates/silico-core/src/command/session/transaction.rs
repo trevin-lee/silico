@@ -21,7 +21,7 @@ use super::{
 use crate::command::edit::Candidate;
 use crate::document::json::MAX_INPUT_LEN;
 use crate::document::{self, Document, FeatureId};
-use crate::file;
+use crate::file::{self, Workspace};
 use crate::kernel::Kernel;
 use crate::recompute::{self, Model};
 use crate::worker::lock;
@@ -866,8 +866,15 @@ impl<C: Kernel + 'static> Session<C> {
         }
         let _span = tracing::info_span!("reload").entered();
         // Where the path leads now, as `open` found where it led: through a link put there
-        // since, to another session's path, say.
-        let found_at = std::fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
+        // since, to another session's path, say; refused if that's out of the workspace,
+        // before the file's read (decision 26).
+        let found_at = match file::resolve(self.workspace.as_ref(), &resolved) {
+            Ok(found_at) => found_at,
+            Err(file::Unresolved::Outside) => {
+                return Err(Problems::from(Workspace::outside_now(Path::new(&path))));
+            }
+            Err(file::Unresolved::Unreachable(_)) => resolved.clone(),
+        };
         let found = file::opened_and_read(&resolved);
         let claimed = |opened| {
             claim(Claim {
@@ -962,7 +969,12 @@ impl<C: Kernel + 'static> Session<C> {
             return Err(Problems::from(part_written(path, old)));
         }
         stop.settle()?;
-        file::save_over(resolved, bytes, text).map_err(|unsaved| self.unsaved(path, unsaved, saver))
+        let within = self.workspace.as_ref().map(|workspace| file::Within {
+            workspace,
+            given: Path::new(path),
+        });
+        file::save_within(resolved, bytes, text, within)
+            .map_err(|unsaved| self.unsaved(path, unsaved, saver))
     }
 
     /// The refusal of a save of the document at `path` (as `open` was given it) that failed,
