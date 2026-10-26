@@ -130,10 +130,18 @@ fn a_request_waiting_behind_a_held_one_is_asked_but_not_started() {
     assert_eq!(kernel.asked().len(), 2);
     hold.release();
     done(within(first, "the held request"));
+    // In the order submitted: the first, then the second.
     let asked: Vec<Op> = kernel.asked().into_iter().map(|c| c.op).collect();
-    assert!(
-        matches!(&asked[..], [Op::Echo { .. }, Op::Echo { .. }]),
-        "{asked:?}"
+    assert_eq!(
+        asked,
+        [
+            Op::Echo {
+                data: Blob::inline(vec![1])
+            },
+            Op::Echo {
+                data: Blob::inline(vec![2])
+            }
+        ]
     );
 }
 
