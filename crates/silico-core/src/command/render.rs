@@ -271,8 +271,9 @@ struct Lit {
 /// no bodies, a camera that fails its check or whose perspective eye is inside a body
 /// (`camera.eye`, a point on a face counting as inside), more highlights than
 /// [`MAX_HIGHLIGHTS`], a highlight that names nothing (`reference_broken`, with candidates)
-/// or a vertex or solid, or an element of a feature that didn't build (its failure), a `to` that decision 35 refuses, and a scene past what a render
-/// draws (`camera`) or one frame holds (the side whose pixels would make it coarser).
+/// or a vertex or solid, or an element of a feature that didn't build (its failure), a `to`
+/// that decision 35 refuses, and a scene past what a render draws (`camera`) or one frame
+/// holds (the side whose pixels would make it coarser).
 pub fn render<K: Kernel>(
     model: &Model,
     request: &Render,
