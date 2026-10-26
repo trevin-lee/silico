@@ -121,7 +121,7 @@ fn a_document_with_a_sketch_formats_with_the_solids_fingerprints_alone_and_check
     let written: Vec<String> = done
         .refingerprinted
         .iter()
-        .map(|(id, _)| id.to_string())
+        .map(ToString::to_string)
         .collect();
     assert_eq!(written, ["k7f2qx3m", "a91cw0de", "m3tq8v0z"]);
     let written_back = read(done.text.as_bytes()).unwrap();
@@ -319,7 +319,7 @@ fn formatting_writes_canonical_text_with_fingerprints_and_says_which_it_wrote() 
     assert_eq!(out.text, silico_core::document::write(&document).unwrap());
     assert_eq!(
         out.refingerprinted,
-        [(id("k7f2qx3m"), None)],
+        [id("k7f2qx3m")],
         "the box's fingerprint, new"
     );
     assert!(out.text.contains(r#""length": 40,"#), "{}", out.text);
@@ -331,15 +331,12 @@ fn formatting_writes_canonical_text_with_fingerprints_and_says_which_it_wrote() 
 }
 
 #[test]
-fn formatting_rewrites_a_stale_fingerprint_and_says_what_it_was() {
+fn formatting_rewrites_a_stale_fingerprint_and_says_which() {
     let saved = formatted(EXAMPLE).text;
     let stale = saved.replacen(r#""volume": 8000,"#, r#""volume": 8001,"#, 1);
     let out = formatted(&stale);
     assert_eq!(out.text, saved);
-    assert_eq!(out.refingerprinted.len(), 1);
-    let (feature, before) = &out.refingerprinted[0];
-    assert_eq!(feature, &id("k7f2qx3m"));
-    assert_eq!(before.unwrap().volume.to_string(), "8001");
+    assert_eq!(out.refingerprinted, [id("k7f2qx3m")]);
     // The drift it fixed isn't a problem it reports.
     assert!(out.problems.is_empty(), "{:?}", out.problems);
 }
@@ -426,10 +423,11 @@ fn formatting_says_which_solids_it_couldnt_measure_and_keeps_their_fingerprints(
 }
 
 #[test]
-fn every_kernel_fault_is_the_commands_failure_not_the_documents() {
+fn every_kernel_fault_is_set_aside_by_check_and_format_and_held_by_the_model() {
     // A worker that crashed, hung, or couldn't be had, a reply that couldn't be read, a
-    // shortage, or a bug: none says anything about the document, so check and format fail
-    // with it, building or measuring alike.
+    // shortage, or a bug: none says anything about the document, so check and format set
+    // it aside, building or measuring alike: no problem of the document's, the model holding
+    // it, and the save made around it, each feature it stopped keeping what's stored with it.
     let saved = formatted(EXAMPLE).text;
     for code in [
         ErrorCode::WorkerCrashed,
@@ -445,28 +443,34 @@ fn every_kernel_fault_is_the_commands_failure_not_the_documents() {
         };
         let measuring =
             move |op: &Op| matches!(op, Op::Summarize { .. }).then(|| Error::new(code, "fault"));
-        for (what, saved) in [("building", EXAMPLE), ("measuring", saved.as_str())] {
-            let checking = engine();
-            let formatting = engine();
+        // Building, the pin isn't made, nor the hole cut with it: the block's fingerprint
+        // alone is written, the others kept as stored (none). Measuring, nothing is: every
+        // fingerprint kept as stored, the text as it was saved.
+        for (what, text, refingerprinted) in [
+            ("building", EXAMPLE, vec![id("k7f2qx3m")]),
+            ("measuring", saved.as_str(), vec![]),
+        ] {
+            let engine = engine();
             if what == "building" {
-                checking.kernel().refuse(building);
-                formatting.kernel().refuse(building);
+                engine.kernel().refuse(building);
             } else {
-                checking.kernel().refuse(measuring);
-                formatting.kernel().refuse(measuring);
+                engine.kernel().refuse(measuring);
             }
+            let model = command::rebuild(&engine, command::gate(text.as_bytes()).unwrap())
+                .unwrap()
+                .unwrap();
             assert_eq!(
-                check_bytes(&checking, saved.as_bytes()).map_err(|e| e.code()),
-                Err(code),
-                "check, {what}, {code:?}"
+                model.fault().map(|e| (e.code(), e.message())),
+                Some((code, "fault")),
+                "{what}, {code:?}"
             );
-            assert_eq!(
-                format_bytes(&formatting, saved.as_bytes())
-                    .map(|_| ())
-                    .map_err(|e| e.code()),
-                Err(code),
-                "format, {what}, {code:?}"
-            );
+            assert!(command::check(&model).is_empty(), "check, {what}, {code:?}");
+            let out = command::format(&model).unwrap();
+            assert!(out.problems.is_empty(), "format, {what}, {code:?}: {out:?}");
+            assert_eq!(out.refingerprinted, refingerprinted, "{what}, {code:?}");
+            if what == "measuring" {
+                assert_eq!(out.text, saved, "{code:?}");
+            }
         }
     }
 }
@@ -482,8 +486,8 @@ fn check_and_format_read_the_model_given_and_ask_the_kernel_nothing() {
         .unwrap()
         .unwrap();
     let calls = engine.kernel().calls().len();
-    assert!(command::check(&model).unwrap().is_empty());
-    let out = command::format(&model).unwrap().unwrap();
+    assert!(command::check(&model).is_empty());
+    let out = command::format(&model).unwrap();
     assert_eq!(out.text, saved);
     assert_eq!(engine.kernel().calls().len(), calls);
     assert_eq!(engine.published().as_ref(), Some(&model));
@@ -533,7 +537,7 @@ fn engines_sharing_a_kernel_in_turn_dont_supersede_each_other() {
         let model = command::rebuild(engine, command::gate(EXAMPLE.as_bytes()).unwrap())
             .unwrap()
             .expect("superseded");
-        assert!(command::check(&model).unwrap().is_empty());
+        assert!(command::check(&model).is_empty());
     };
     for _ in 0..3 {
         rebuilt(&first);
@@ -597,7 +601,7 @@ fn a_formats_total_counts_every_broken_reference_and_a_failure_counts_once() {
         .unwrap();
     assert_eq!(model.error_count(), 1);
     assert_eq!(model.unlisted_errors(), 0);
-    assert_eq!(command::check(&model).unwrap().total(), 1);
+    assert_eq!(command::check(&model).total(), 1);
 }
 
 #[test]

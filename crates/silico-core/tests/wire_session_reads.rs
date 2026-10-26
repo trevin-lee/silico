@@ -652,6 +652,7 @@ fn open_answers_and_refuses_as_the_design_gives_it() {
 #[test]
 fn opens_result_is_written_from_each_of_its_own_values() {
     let opened = Opened {
+        session: SessionId::parse("s1").unwrap(),
         path: "new.silico".to_owned(),
         created: true,
         features: None,
