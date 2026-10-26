@@ -96,6 +96,18 @@ pub const SESSION_COMMANDS: [&str; 17] = [
     "angle",
 ];
 
+/// The commands that run as reads that may read the published model (`Sessions::read_model`'s),
+/// each by name, in the design's order (a subset of [`SESSION_COMMANDS`]): what `status`
+/// lists among the published reads running.
+pub const PUBLISHED_READS: [&str; 6] = [
+    "check",
+    "elements",
+    "query",
+    "mass_properties",
+    "distance",
+    "angle",
+];
+
 /// A `cancel` request: the session, and the command to stop, by its name: one of the
 /// commands that run in a session ([`SESSION_COMMANDS`]), never any other string.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,6 +259,24 @@ impl JsonSchema for SessionCommandSchema {
             "A command that runs in a session, by name, as a tool is named: what `status` says \
              is running, and `cancel` stops.",
             SESSION_COMMANDS,
+        )
+    }
+}
+
+/// A command that runs as a read of the published model, by name ([`PUBLISHED_READS`]), in
+/// the design's order.
+pub struct PublishedReadSchema;
+
+impl JsonSchema for PublishedReadSchema {
+    fn schema_name() -> Cow<'static, str> {
+        "PublishedRead".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        words(
+            "A command that reads the published model, by name, as a tool is named: what \
+             `status` lists among its reads, and `cancel` stops.",
+            PUBLISHED_READS,
         )
     }
 }
@@ -410,7 +440,7 @@ pub struct StatusResultSchema {
     pub running: Option<SessionCommandSchema>,
     /// Each read of the published model running, in the order they started: `cancel` stops
     /// every one of a name.
-    pub reads: Vec<SessionCommandSchema>,
+    pub reads: Vec<PublishedReadSchema>,
     pub rebuild: RebuildSchema,
 }
 

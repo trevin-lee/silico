@@ -546,9 +546,10 @@ fn a_requests_value_is_taken_whole_whatever_it_is_and_required() {
 
 /// The names the crate's code (its tests apart) gives the commands it runs: each queued on
 /// a session or run as a read (`queued`, `queued_with`, `read_model`, by their second
-/// argument), and each ticket made apart from those (`Ticket::new`): each as a list of the
+/// argument), those run as reads, which may read the published model (`read_model`'s) again
+/// apart, and each ticket made apart from those (`Ticket::new`): each as a list of the
 /// literal names, and the arguments that aren't a literal, as written.
-fn names_given() -> (Vec<String>, Vec<String>, Vec<String>) {
+fn names_given() -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
     fn walk(dir: &std::path::Path, files: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
@@ -571,7 +572,8 @@ fn names_given() -> (Vec<String>, Vec<String>, Vec<String>) {
         &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src"),
         &mut files,
     );
-    let (mut run, mut tickets, mut other) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut run, mut reads, mut tickets, mut other) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for file in files {
         let name = file.file_name().unwrap().to_str().unwrap();
         if name == "tests.rs" || name.ends_with("_tests.rs") || name == "adversarial.rs" {
@@ -597,7 +599,12 @@ fn names_given() -> (Vec<String>, Vec<String>, Vec<String>) {
                 }
                 let rest = &rest[first + 1..];
                 match argument(rest) {
-                    Ok(literal) => run.push(literal),
+                    Ok(literal) => {
+                        if call == ".read_model(" {
+                            reads.push(literal.clone());
+                        }
+                        run.push(literal);
+                    }
                     Err(code) => other.push(code),
                 }
             }
@@ -609,7 +616,7 @@ fn names_given() -> (Vec<String>, Vec<String>, Vec<String>) {
             }
         }
     }
-    (run, tickets, other)
+    (run, reads, tickets, other)
 }
 
 #[test]
@@ -618,7 +625,7 @@ fn the_commands_a_session_runs_are_the_ones_status_and_cancel_name() {
     // and each of those is a command's that runs: so cancel's enum never names a command
     // that can't be running, nor leaves one out that can.
     use super::session::SESSION_COMMANDS;
-    let (run, tickets, other) = names_given();
+    let (run, _, tickets, other) = names_given();
     let named: std::collections::BTreeSet<&str> = run.iter().map(String::as_str).collect();
     let listed: std::collections::BTreeSet<&str> = SESSION_COMMANDS.into_iter().collect();
     assert_eq!(named, listed);
@@ -635,4 +642,23 @@ fn the_commands_a_session_runs_are_the_ones_status_and_cancel_name() {
         .filter(|name| listed.contains(name))
         .collect();
     assert_eq!(ordered, SESSION_COMMANDS);
+}
+
+#[test]
+fn the_reads_status_lists_are_the_commands_that_read_the_published_model() {
+    // Each name a command runs under as a read (`read_model`, which reads the published
+    // model when asked) is one `status` lists among its reads, and each of those is such a
+    // read's: so status's reads never name a command that can't run as one.
+    use super::session::{PUBLISHED_READS, SESSION_COMMANDS};
+    let (_, reads, _, _) = names_given();
+    let named: std::collections::BTreeSet<&str> = reads.iter().map(String::as_str).collect();
+    let listed: std::collections::BTreeSet<&str> = PUBLISHED_READS.into_iter().collect();
+    assert_eq!(named, listed);
+    assert_eq!(listed.len(), PUBLISHED_READS.len(), "a name listed twice");
+    // In the design's order, among the commands that run in a session.
+    let ordered: Vec<&str> = SESSION_COMMANDS
+        .into_iter()
+        .filter(|name| listed.contains(name))
+        .collect();
+    assert_eq!(ordered, PUBLISHED_READS);
 }

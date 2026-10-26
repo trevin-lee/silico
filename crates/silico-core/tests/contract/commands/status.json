@@ -34,6 +34,18 @@
         ],
         "type": "object"
       },
+      "PublishedRead": {
+        "description": "A command that reads the published model, by name, as a tool is named: what `status` lists among its reads, and `cancel` stops.",
+        "enum": [
+          "check",
+          "elements",
+          "query",
+          "mass_properties",
+          "distance",
+          "angle"
+        ],
+        "type": "string"
+      },
       "Rebuild": {
         "additionalProperties": false,
         "description": "The session's current revision's rebuild.",
@@ -128,7 +140,7 @@
       "reads": {
         "description": "Each read of the published model running, in the order they started: `cancel` stops\nevery one of a name.",
         "items": {
-          "$ref": "#/$defs/SessionCommand"
+          "$ref": "#/$defs/PublishedRead"
         },
         "type": "array"
       },

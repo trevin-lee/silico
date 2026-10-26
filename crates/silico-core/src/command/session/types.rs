@@ -162,7 +162,8 @@ impl<C> Read<'_, C> {
 
     /// What the session's edits reached at the model's revision (decision 28): the features
     /// whose drift a check of the model doesn't say. Worked out here, the first time a read
-    /// of the model asks, on the read's own thread.
+    /// of the model asks: on the session's thread for the current model, on the read's own
+    /// for the published one.
     pub fn reached(&self) -> &BTreeSet<FeatureId> {
         self.reached.get()
     }
@@ -408,6 +409,9 @@ pub struct OutlineAnswer {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckAnswer {
     pub problems: Problems,
+    /// In the error contract's shape, as the wire writes them. Decision 17 gives warnings
+    /// codes of their own: this type changes with the first warning code, when warnings
+    /// are made.
     pub warnings: Problems,
 }
 

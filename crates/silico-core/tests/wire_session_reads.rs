@@ -18,7 +18,7 @@ use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::wire::reads::{CheckRequest, TextRequest};
 use silico_core::command::wire::session::{
-    CancelRequest, OpenRequest, SESSION_COMMANDS, VersionRequest,
+    CancelRequest, OpenRequest, PUBLISHED_READS, SESSION_COMMANDS, VersionRequest,
 };
 use silico_core::command::wire::transaction::SessionRequest;
 use silico_core::command::wire::{Layout, ToWire, response, response_text, snapshot_value, write};
@@ -724,7 +724,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
         text,
         "{\n  \"features\": 7,\n  \"gated\": true,\n  \"transaction\": {\"base\": 4},\n  \"running\": \"check\",\n  \"reads\": [\"distance\"],\n  \"rebuild\": {\"revision\": 6, \"state\": \"running\"}\n}\n"
     );
-    // Its read, `distance`, a command that runs in a session (M4.5's): it holds.
+    // Its read, `distance`, a read of the published model (M4.5's): it holds.
     holds(
         &schema_of("status", "result"),
         &text,
@@ -925,7 +925,13 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
             "StatusRequest",
             &[],
             "StatusResult",
-            &["BeginResult", "Rebuild", "RebuildState", "SessionCommand"],
+            &[
+                "BeginResult",
+                "PublishedRead",
+                "Rebuild",
+                "RebuildState",
+                "SessionCommand",
+            ],
         ),
         (
             "cancel",
@@ -970,7 +976,14 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
         status["properties"]["running"]["anyOf"],
         serde_json::json!([command, {"type": "null"}])
     );
-    assert_eq!(status["properties"]["reads"]["items"], command);
+    assert_eq!(
+        status["properties"]["reads"]["items"],
+        serde_json::json!({"$ref": "#/$defs/PublishedRead"})
+    );
+    assert_eq!(
+        status["$defs"]["PublishedRead"]["enum"],
+        serde_json::json!(PUBLISHED_READS)
+    );
     assert_eq!(
         status["$defs"]["SessionCommand"]["enum"],
         serde_json::json!(SESSION_COMMANDS)
@@ -979,15 +992,22 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
         let cancel = schema_of("cancel", part);
         assert_eq!(cancel["properties"]["command"]["$ref"], command["$ref"]);
     }
-    let base = |running: &str| {
+    let base = |running: &str, reads: &str| {
         format!(
-            r#"{{"features": 1, "gated": true, "transaction": null, "running": {running}, "reads": [], "rebuild": {{"revision": 1, "state": "none"}}}}"#
+            r#"{{"features": 1, "gated": true, "transaction": null, "running": {running}, "reads": [{reads}], "rebuild": {{"revision": 1, "state": "none"}}}}"#
         )
     };
-    holds(&status, &base(r#""check""#), "check running");
-    holds(&status, &base("null"), "nothing running");
+    holds(&status, &base(r#""check""#, ""), "check running");
+    holds(&status, &base("null", ""), "nothing running");
     for never in [r#""status""#, r#""version""#, r#""probe""#, "1"] {
-        fails(&status, &base(never), never);
+        fails(&status, &base(never, ""), never);
+    }
+    // Each published read a read; a command that never reads the published model, none.
+    for read in PUBLISHED_READS {
+        holds(&status, &base("null", &format!("\"{read}\"")), read);
+    }
+    for never in [r#""commit""#, r#""text""#, r#""outline""#, r#""close""#] {
+        fails(&status, &base("null", never), never);
     }
 }
 
