@@ -1456,16 +1456,6 @@ fn a_commits_new_file_is_claimed() {
     );
 }
 
-/// Each feature's stored volume in the document `text`, in timeline order.
-fn stored_volumes(text: &str) -> Vec<Measure> {
-    document::read(text.as_bytes())
-        .unwrap()
-        .features
-        .iter()
-        .map(|feature| feature.fingerprint.unwrap().volume)
-        .collect()
-}
-
 /// The code and feature of the fault `response`'s model read gives.
 fn the_fault<T>(response: &Response<T>) -> (ErrorCode, Option<String>) {
     let fault = response.model.as_ref().unwrap().fault.as_ref().unwrap();
@@ -1531,12 +1521,14 @@ fn a_format_saves_around_a_kernel_fault_accepting_the_drift_it_can() {
     assert_eq!(formatted.refingerprinted, [id("k7f2qx3m")]);
     assert_eq!(formatted.accepted, [id("k7f2qx3m")]);
     assert!(formatted.problems.is_empty(), "{:?}", formatted.problems);
+    // The block's as rebuilt (a box's area by hand, 2 * (800 + 400 + 200)); the lug's
+    // and the fuse's as stored.
     assert_eq!(
-        stored_volumes(&f.file()),
+        stored_fingerprints(&f.file()),
         [
-            Measure::from_millionths(8_000_000_000),
-            Measure::from_millionths(1_000_000_000),
-            Measure::from_millionths(9_000_000_000)
+            Some(millionths(8_000_000_000, 2800)),
+            Some(millionths(1_000_000_000, 600)),
+            Some(millionths(9_000_000_000, 3400))
         ]
     );
     // As a commit's: the model, the block's drift accepted, is the saved revision's, so a

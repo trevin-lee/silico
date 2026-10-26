@@ -74,7 +74,8 @@ impl ToWire for OpenRequest {
 }
 
 /// The commands that run in a session, each by its name, in the design's order (a subset of
-/// [`COMMANDS`]): what `status` says is running, and `cancel` stops ([`SessionCommand::ALL`]).
+/// [`COMMANDS`]): what `status` says is running, and `cancel` stops
+/// ([`SessionCommand::ALL`]).
 pub const SESSION_COMMANDS: [&str; SessionCommand::ALL.len()] = {
     let mut names = [""; SessionCommand::ALL.len()];
     let mut at = 0;

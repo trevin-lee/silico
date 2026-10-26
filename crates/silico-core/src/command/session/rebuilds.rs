@@ -128,7 +128,7 @@ impl<C: Kernel + 'static> Rebuilds<C> {
             match &self.ended {
                 Some(ended) if ended.cancelled(revision) => RebuildState::Stopped,
                 Some(ended) if ended.failed(revision).is_some() => RebuildState::Faulted,
-                Some(_) | None => RebuildState::NotStarted,
+                Some(_) | None => RebuildState::Idle,
             }
         };
         Rebuild {
@@ -761,8 +761,8 @@ pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Lab
             }
         }
         // Whoever needs its model starts it again. One a cancel stopped said so as it
-        // stopped it ([`Rebuilds::stop_waited`]): said again now, it could hide what a rebuild started since
-        // comes to.
+        // stopped it ([`Rebuilds::stop_waited`]): said again now, it could hide what a
+        // rebuild started since comes to.
         Ok(RunOutcome::Superseded) => {
             if !label.cancelled.load(Ordering::SeqCst) {
                 rebuilds.end(revision, Ending::Superseded);
@@ -814,30 +814,30 @@ mod tests {
         // `end`: "kept unless a newer revision's end is". Status says `faulted` of a failed
         // end, `stopped` of a cancelled one, and nothing of a superseded one or another
         // revision's.
-        use RebuildState::{Faulted, NotStarted, Stopped};
+        use RebuildState::{Faulted, Idle, Stopped};
         let kernel = FakeKernel::new(1).unwrap();
         let mut rebuilds = rebuilds(&kernel, None);
         rebuilds.end(ONE, failed());
-        assert_eq!(states(&rebuilds), [Faulted, NotStarted]);
+        assert_eq!(states(&rebuilds), [Faulted, Idle]);
         // The same revision's later end replaces it.
         rebuilds.end(ONE, Ending::Cancelled);
-        assert_eq!(states(&rebuilds), [Stopped, NotStarted]);
+        assert_eq!(states(&rebuilds), [Stopped, Idle]);
         // A newer revision's replaces it.
         rebuilds.end(TWO, failed());
-        assert_eq!(states(&rebuilds), [NotStarted, Faulted]);
+        assert_eq!(states(&rebuilds), [Idle, Faulted]);
         // An older revision's, ending late, never hides it.
         rebuilds.end(ONE, Ending::Cancelled);
-        assert_eq!(states(&rebuilds), [NotStarted, Faulted]);
+        assert_eq!(states(&rebuilds), [Idle, Faulted]);
     }
 
     #[test]
     fn status_says_faulted_only_of_the_revision_whose_recompute_failed() {
-        use RebuildState::{Faulted, NotStarted, Stopped};
+        use RebuildState::{Faulted, Idle, Stopped};
         let kernel = FakeKernel::new(1).unwrap();
         let ended = |revision, how| Some(Ended { revision, how });
         // Revision 1's failure is its own, never revision 2's.
         let one_failed = rebuilds(&kernel, ended(ONE, failed()));
-        assert_eq!(states(&one_failed), [Faulted, NotStarted]);
+        assert_eq!(states(&one_failed), [Faulted, Idle]);
         let Some(end) = &one_failed.ended else {
             panic!("no end")
         };
@@ -848,9 +848,9 @@ mod tests {
         assert!(end.failed(TWO).is_none());
         // A superseded end is no failure, of its own revision or another.
         let superseded = rebuilds(&kernel, ended(ONE, Ending::Superseded));
-        assert_eq!(states(&superseded), [NotStarted, NotStarted]);
+        assert_eq!(states(&superseded), [Idle, Idle]);
         // Revision 2's cancel stops 2 alone, and says nothing of 1.
         let two_cancelled = rebuilds(&kernel, ended(TWO, Ending::Cancelled));
-        assert_eq!(states(&two_cancelled), [NotStarted, Stopped]);
+        assert_eq!(states(&two_cancelled), [Idle, Stopped]);
     }
 }

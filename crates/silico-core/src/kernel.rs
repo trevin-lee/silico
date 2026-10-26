@@ -59,10 +59,11 @@ pub trait Kernel: Send + Sync {
 }
 
 /// A kernel shared as one client, by the recomputes of several documents run one after
-/// another on it (a tool's, through [`crate::command::rebuild`]): each starts a generation newer than the client's, so none
-/// supersedes another's finished work. Run at once on one client, the newest supersedes the
-/// others, as on one engine; engines that run at once each take a client of their own
-/// ([`Clients::client`]), and then none supersedes another's.
+/// another on it (a tool's, through [`crate::command::rebuild`]): each starts a generation
+/// newer than the client's, so none supersedes another's finished work. Run at once on one
+/// client, the newest supersedes the others, as on one engine; engines that run at once
+/// each take a client of their own ([`Clients::client`]), and then none supersedes
+/// another's.
 impl<K: Kernel> Kernel for Arc<K> {
     fn identity(&self) -> &str {
         (**self).identity()

@@ -467,7 +467,7 @@ fn an_edit_cancelled_while_its_commit_rebuilds_stops_that_rebuild() {
         f.kernel.wait_idle(HANG),
         "the cancelled edit's box still runs"
     );
-    assert_eq!(f.rebuild(), RebuildState::NotStarted);
+    assert_eq!(f.rebuild(), RebuildState::Idle);
     assert_eq!((f.revision(), f.file()), (Revision::OPENED, BOX.to_owned()));
 }
 
@@ -537,7 +537,7 @@ fn cancel_stops_every_read_of_its_name_and_its_refusal_names_each_command_runnin
 #[test]
 fn status_says_none_of_a_revision_nothing_rebuilt_or_whose_document_the_gate_refused() {
     let f = opened();
-    assert_eq!(f.rebuild(), RebuildState::NotStarted);
+    assert_eq!(f.rebuild(), RebuildState::Idle);
     let flat = f.path.with_file_name("flat.silico");
     std::fs::write(&flat, BOX.replace("\"length\": 40", "\"length\": 0")).unwrap();
     let s = answer(f.sessions.open(&flat, false)).session.unwrap().id;
@@ -551,11 +551,11 @@ fn status_says_none_of_a_revision_nothing_rebuilt_or_whose_document_the_gate_ref
     );
     let status = f.sessions.status(&s).result.unwrap();
     assert!(!status.gated);
-    assert_eq!(status.rebuild.state, RebuildState::NotStarted);
+    assert_eq!(status.rebuild.state, RebuildState::Idle);
     // The design's words for each.
     assert_eq!(
         [
-            RebuildState::NotStarted,
+            RebuildState::Idle,
             RebuildState::Running,
             RebuildState::Done,
             RebuildState::Faulted,

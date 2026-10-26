@@ -640,8 +640,8 @@ mod tests {
 
     #[test]
     fn opens_refusal_drops_the_path_its_line_names_and_a_commands_keeps_it() {
-        // Open's `path` is the file each line names, so it's dropped; a later command's parameter is
-        // its own (a document's key), so kept.
+        // Open's `path` is the file each line names, so it's dropped; a later command's
+        // parameter is its own (a document's key), so kept.
         let problems =
             Problems::from(Error::new(ErrorCode::InvalidInput, "too long").with_parameter("path"));
         let opened = Refusal::of_open(Path::new("a.silico"), &problems);

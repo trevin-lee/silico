@@ -651,10 +651,10 @@ impl From<&StepCount> for Progress {
 /// What's become of a revision's rebuild (the design's `status`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RebuildState {
-    /// Not started: no command has needed its model, or its rebuild was superseded, or an
-    /// edit's commit was cancelled while its rebuild ran; or the gate refused the document,
-    /// so there's nothing to rebuild. Written `none`.
-    NotStarted,
+    /// None running and none ended for it: no command has needed its model, or its
+    /// rebuild was superseded, or an edit's commit was cancelled while its rebuild ran; or
+    /// the gate refused the document, so there's nothing to rebuild. Written `none`.
+    Idle,
     /// Running: the revision's, or, for an edit made outside a transaction, its commit's.
     Running,
     /// Done, its model published.
@@ -670,7 +670,7 @@ impl RebuildState {
     /// As `status` writes it: `none`, `running`, `done`, `faulted`, or `stopped`.
     pub const fn as_str(self) -> &'static str {
         match self {
-            RebuildState::NotStarted => "none",
+            RebuildState::Idle => "none",
             RebuildState::Running => "running",
             RebuildState::Done => "done",
             RebuildState::Faulted => "faulted",

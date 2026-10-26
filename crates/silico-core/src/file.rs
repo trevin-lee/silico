@@ -148,7 +148,7 @@ pub fn save_over(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Unsaved
         .set_len(bytes.len() as u64)
         .and_then(|()| f.write_all(bytes))
         .and_then(|()| f.set_permissions(metadata.permissions()))
-        .and_then(|()| synced(&f, "the new text beside it"))
+        .and_then(|()| synced(&f, "the new text beside it", &partial))
         .map_err(|e| {
             let why = format!("couldn't write {}: {e}", shown_path(&partial));
             limited(unwritable(why), &e)
@@ -186,7 +186,7 @@ fn in_place(
     if let Err(e) = copy
         .set_len(before.len() as u64)
         .and_then(|()| copy.write_all(before))
-        .and_then(|()| synced(&copy, "its old text kept beside it"))
+        .and_then(|()| synced(&copy, "its old text kept beside it", &kept))
     {
         let _ = std::fs::remove_file(&kept);
         return Err(Unsaved::from(limited(
@@ -206,7 +206,7 @@ fn in_place(
         file.seek(SeekFrom::Start(0))?;
         file.write_all(text)?;
         file.set_len(text.len() as u64)?;
-        synced(file, what)
+        synced(file, what, target)
     };
     match over(file, bytes, "its new text, in place") {
         Ok(()) => {
@@ -233,8 +233,6 @@ fn in_place(
     }
 }
 
-/// `file` on disk, as `sync_all` puts it, said in the log before and after with how long it
-/// took (debug): a disk that stalls a save shows as the line it stopped at.
 /// The directory `target` was renamed in synced, so the rename is on disk: a power cut
 /// after the save can't bring back the old file. The file is saved either way, so a
 /// directory that can't be opened or synced (a system that doesn't sync directories) is
@@ -244,7 +242,7 @@ fn directory_synced(target: &Path) {
         return;
     };
     if let Err(e) = std::fs::File::open(directory)
-        .and_then(|opened| synced(&opened, "the directory it was renamed in"))
+        .and_then(|opened| synced(&opened, "the directory it was renamed in", directory))
     {
         tracing::warn!(
             error = %e,
@@ -253,14 +251,18 @@ fn directory_synced(target: &Path) {
     }
 }
 
-fn synced(file: &std::fs::File, what: &str) -> std::io::Result<()> {
-    tracing::debug!("syncing {what}");
+/// `file`, at `path`, on disk, as `sync_all` puts it, said in the log before and after
+/// with its path and how long it took (debug): a disk that stalls a save shows as the line
+/// it stopped at.
+fn synced(file: &std::fs::File, what: &str, path: &Path) -> std::io::Result<()> {
+    let path = path.display();
+    tracing::debug!(%path, "syncing {what}");
     let start = std::time::Instant::now();
     let synced = file.sync_all();
     let sync_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     match &synced {
-        Ok(()) => tracing::debug!(sync_ms, "synced {what}"),
-        Err(e) => tracing::debug!(sync_ms, error = %e, "couldn't sync {what}"),
+        Ok(()) => tracing::debug!(%path, sync_ms, "synced {what}"),
+        Err(e) => tracing::debug!(%path, sync_ms, error = %e, "couldn't sync {what}"),
     }
     synced
 }
@@ -657,7 +659,7 @@ fn write_beside(
             Some(m) => f.set_permissions(m.permissions()),
             None => Ok(()),
         })
-        .and_then(|()| synced(&f, "the new file"))
+        .and_then(|()| synced(&f, "the new file", &partial))
         .map_err(|e| {
             limited(
                 unwritable(format!("couldn't write {}: {e}", shown_path(&partial))),

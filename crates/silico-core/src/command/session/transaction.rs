@@ -1,7 +1,7 @@
 //! What a session holds ([`Held`]) and how it changes in transactions: `begin`, `rollback`,
-//! `commit`, and `format`, each save written through [`file::save_over`], what a save that finds
-//! the file changed says ([`Saver`]), and the reload of a file changed outside the session
-//! before a command (decision 2).
+//! `commit`, and `format`, each save written through [`file::save_over`], what a save that
+//! finds the file changed says ([`Saver`]), and the reload of a file changed outside the
+//! session before a command (decision 2).
 //!
 //! The order its locks are taken in is on [`Session`].
 
@@ -23,7 +23,7 @@ use crate::document::json::MAX_INPUT_LEN;
 use crate::document::{self, Document, FeatureId};
 use crate::file;
 use crate::kernel::Kernel;
-use crate::recompute::Model;
+use crate::recompute::{self, Model};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
@@ -405,22 +405,22 @@ impl<C: Kernel + 'static> Session<C> {
     }
 
     /// `commit`: the current revision's rebuild waited for, then the document saved in
-    /// canonical form through `file::save_over`, with new fingerprints and solves for what the
-    /// transaction's edits reach ([`Reaching::reach`]) and every other feature's as stored
-    /// (decision 28), its new file claimed with `claim`; the transaction ended, and the
-    /// session at a new revision, its saved text, with only the reached features whose
-    /// records couldn't be written still carried. A document equal to the one `begin` saw is
-    /// written nowhere, and the session's text is `begin`'s again (the file's as the session
-    /// last read or wrote it), even if the file was found changed outside the session
-    /// (`changed_outside`, before the command), which then waits for no rebuild. Refused,
-    /// the transaction left open and nothing written, if none is open, the file was found
-    /// changed or gone before the command (a conflict, before any rebuild) or unreadable
-    /// (its `io_failed`), the model can't be had (the session closed, a recompute that failed,
-    /// the commit cancelled), the canonical text is too long, or the save is (a file changed
-    /// since: a conflict too). A kernel fault the model holds is saved around (decision 32):
-    /// the features it stopped are saved as failed ones are (a reached one with no
-    /// fingerprint, decision 28 amended; any other as stored), and it's given once, in the
-    /// model read, not among the problems. As the command `stop` stops.
+    /// canonical form through `file::save_over`, with new fingerprints and solves for what
+    /// the transaction's edits reach ([`Reaching::reach`]) and every other feature's as
+    /// stored (decision 28), its new file claimed with `claim`; the transaction ended, and
+    /// the session at a new revision, its saved text, with only the reached features whose
+    /// records couldn't be written still carried. A document equal to the one `begin` saw
+    /// is written nowhere, and the session's text is `begin`'s again (the file's as the
+    /// session last read or wrote it), even if the file was found changed outside the
+    /// session (`changed_outside`, before the command), which then waits for no rebuild.
+    /// Refused, the transaction left open and nothing written, if none is open, the file
+    /// was found changed or gone before the command (a conflict, before any rebuild) or
+    /// unreadable (its `io_failed`), the model can't be had (the session closed, a
+    /// recompute that failed, the commit cancelled), the canonical text is too long, or the
+    /// save is (a file changed since: a conflict too). A kernel fault the model holds is
+    /// saved around (decision 32): the features it stopped are saved as failed ones are (a
+    /// reached one with no fingerprint, decision 28 amended; any other as stored), and it's
+    /// given once, in the model read, not among the problems. As the command `stop` stops.
     pub(super) fn commit(
         self: &Arc<Self>,
         stop: &Ticket,
@@ -481,17 +481,17 @@ impl<C: Kernel + 'static> Session<C> {
         committed
     }
 
-    /// `state` saved (a commit's body): its model, of `state.revision`, waited for, then its
-    /// document in canonical form through `file::save_over`, with new fingerprints and solves for
-    /// what the edits since `state.begun` reach and every other feature's as stored, the new
-    /// file claimed with `claim`, and the session at a new revision, its saved text (and the
-    /// transaction, if one is open, ended). A document equal to `begun`'s is written nowhere.
-    /// `through` says whose state it is: a transaction's (held, its model the session's
-    /// revision's, and a commit that writes nothing ends it), or an edit's candidate (held
-    /// only once saved, its model rebuilt for this commit alone). With the commit's result,
-    /// the document saved, as the session then holds it ([`write`](Self::write)), if one was
-    /// written. Refused, nothing written and nothing held changed, as
-    /// [`commit`](Self::commit) is. As the command `stop` stops.
+    /// `state` saved (a commit's body): its model, of `state.revision`, waited for, then
+    /// its document in canonical form through `file::save_over`, with new fingerprints and
+    /// solves for what the edits since `state.begun` reach and every other feature's as
+    /// stored, the new file claimed with `claim`, and the session at a new revision, its
+    /// saved text (and the transaction, if one is open, ended). A document equal to
+    /// `begun`'s is written nowhere. `through` says whose state it is: a transaction's
+    /// (held, its model the session's revision's, and a commit that writes nothing ends
+    /// it), or an edit's candidate (held only once saved, its model rebuilt for this commit
+    /// alone). With the commit's result, the document saved, as the session then holds it
+    /// ([`write`](Self::write)), if one was written. Refused, nothing written and nothing
+    /// held changed, as [`commit`](Self::commit) is. As the command `stop` stops.
     fn save_state(
         self: &Arc<Self>,
         stop: &Ticket,
@@ -557,7 +557,17 @@ impl<C: Kernel + 'static> Session<C> {
             Through::Candidate => self.candidate_model(stop, revision, checked)?,
         };
         *read = Some(ModelRead::of(revision, ModelChoice::Current, &model));
-        let formatted = crate::command::formatted(&model, reach, reach, &model.drifted())?;
+        let formatted = crate::command::formatted(
+            &model,
+            |id| {
+                if reach.contains(id) {
+                    recompute::Save::AsRebuilt
+                } else {
+                    recompute::Save::Stored
+                }
+            },
+            &model.drifted(),
+        )?;
         if unchanged {
             if through == Through::Transaction {
                 self.unwritten(stop, &begun, revision)?;
@@ -695,7 +705,19 @@ impl<C: Kernel + 'static> Session<C> {
             .filter(|id| drifted.contains(id) && writes.contains(*id) && model.records(id))
             .cloned()
             .collect();
-        let formatted = crate::command::formatted(&model, &writes, reach, &drift)?;
+        let formatted = crate::command::formatted(
+            &model,
+            |id| {
+                if reach.contains(id) {
+                    recompute::Save::AsRebuilt
+                } else if writes.contains(id) {
+                    recompute::Save::Recorded
+                } else {
+                    recompute::Save::Stored
+                }
+            },
+            &drift,
+        )?;
         let saved = formatted.text.into_bytes();
         let changed = saved != *bytes;
         let written = write && changed;

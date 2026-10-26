@@ -764,7 +764,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
         reads: vec![PublishedRead::Elements, PublishedRead::Query],
         rebuild: Rebuild {
             revision: revision(9),
-            state: RebuildState::NotStarted,
+            state: RebuildState::Idle,
             progress: None,
         },
     };
@@ -775,7 +775,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
     holds(&schema_of("status", "result"), &written(&other), "unread");
     // Every state, as the schema lists them, each the session's own word.
     let states = [
-        RebuildState::NotStarted,
+        RebuildState::Idle,
         RebuildState::Running,
         RebuildState::Done,
         RebuildState::Faulted,

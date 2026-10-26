@@ -16,49 +16,49 @@
 //! another name for it (a link, a hard link, another name the system gives it) nor another
 //! file put at its path (a save by rename) opens it twice, and two sessions never save one
 //! file over each other. At most [`MAX_SESSIONS`] are open at once. A document the gate
-//! refuses still opens, holding its text and the gate's
-//! problems (decision 21), so it can be mended; a file longer than Silico reads doesn't,
-//! since a session couldn't hold its text whole. Session IDs are `s1`, `s2`, ..., in the
-//! order opens were asked for, never reused within the process. Each session has its own
-//! client of the shared kernel ([`Clients::client`]: its rebuilds never supersede another
-//! session's), and sessions on documents in one directory share one rebuild cache, one
-//! value cloned, so its bound counts every session's writes.
+//! refuses still opens, holding its text and the gate's problems (decision 21), so it can
+//! be mended; a file longer than Silico reads doesn't, since a session couldn't hold its
+//! text whole. Session IDs are `s1`, `s2`, ..., in the order opens were asked for, never
+//! reused within the process. Each session has its own client of the shared kernel
+//! ([`Clients::client`]: its rebuilds never supersede another session's), and sessions on
+//! documents in one directory share one rebuild cache, one value cloned, so its bound
+//! counts every session's writes.
 //!
-//! A session's document changes in transactions (the design's section 4): [`Sessions::begin`]
-//! keeps the session's state, [`Sessions::commit`] saves what the transaction's edits
-//! changed through [`file::save_over`], writing new fingerprints and solves only for the features
-//! they reached (decision 28), and [`Sessions::rollback`] restores what `begin` kept, the
-//! text byte for byte and the model `begin` saw, at a new revision whose state equals the
-//! old. One at a time, never nested; a session isn't closed while one is open, and a client
-//! that goes away (the sessions dropped) leaves its file as it was. An edit made outside a
-//! transaction ([`Sessions::add_feature`], [`Sessions::set_field`],
-//! [`Sessions::remove_feature`], [`Sessions::replace_text`]) is saved as it's made, as its
-//! own transaction (decision 1): so only a commit, such an edit, or [`Sessions::format`],
-//! which accepts drift by name (decision 31), writes the document.
+//! A session's document changes in transactions (the design's section 4):
+//! [`Sessions::begin`] keeps the session's state, [`Sessions::commit`] saves what the
+//! transaction's edits changed through [`file::save_over`], writing new fingerprints and
+//! solves only for the features they reached (decision 28), and [`Sessions::rollback`]
+//! restores what `begin` kept, the text byte for byte and the model `begin` saw, at a new
+//! revision whose state equals the old. One at a time, never nested; a session isn't closed
+//! while one is open, and a client that goes away (the sessions dropped) leaves its file as
+//! it was. An edit made outside a transaction ([`Sessions::add_feature`],
+//! [`Sessions::set_field`], [`Sessions::remove_feature`], [`Sessions::replace_text`]) is
+//! saved as it's made, as its own transaction (decision 1): so only a commit, such an edit,
+//! or [`Sessions::format`], which accepts drift by name (decision 31), writes the document.
 //!
 //! A file can change under a session (decision 2): before each queued command outside a
 //! transaction, the session reads its file again and compares its bytes with those it last
 //! read or wrote, and reloads a change at a new revision, the response's `reloaded` saying
 //! so; a file gone, unreadable, or another session's refuses the command. The reload is the
 //! session's own work, not the command's: it stands whatever the command comes to, so a
-//! command cancelled after it answers `cancelled` with `reloaded` true and the new revision.
-//! Inside a transaction, only `commit` reads the file, and a change (or a file gone) is its conflict:
-//! every other command runs on what the session holds. `close`, `status`, and published
-//! reads never read the file.
+//! command cancelled after it answers `cancelled` with `reloaded` true and the new
+//! revision. Inside a transaction, only `commit` reads the file, and a change (or a file
+//! gone) is its conflict: every other command runs on what the session holds. `close`,
+//! `status`, and published reads never read the file.
 //!
 //! A session's path is UTF-8, so every response names it exactly: `open` refuses one that
 //! isn't.
 //!
-//! A command can be stopped (decisions 10 and 34): through its handle
-//! ([`Running::cancel`], MCP's cancellation), or by [`Sessions::cancel`], naming the command
-//! running. Either way it stops before its work leaves a trace and answers `cancelled`, or,
-//! if it had done its work (an edit saved), answers with its real result: what the session
-//! holds is changed only once the command's stop is settled (`holding`), and its file
-//! written only so too. A kernel fault (a worker that crashed, hung, or couldn't be had) is
-//! given once, beside a command's
-//! result, in the model it read ([`ModelRead::fault`]), never among the document's problems,
-//! and kept as its revision's outcome: no read of that revision rebuilds it, and a save
-//! writes around it, saving its features as failed ones are (decision 32).
+//! A command can be stopped (decisions 10 and 34): through its handle ([`Running::cancel`],
+//! MCP's cancellation), or by [`Sessions::cancel`], naming the command running. Either way
+//! it stops before its work leaves a trace and answers `cancelled`, or, if it had done its
+//! work (an edit saved), answers with its real result: what the session holds is changed
+//! only once the command's stop is settled (`holding`), and its file written only so too. A
+//! kernel fault (a worker that crashed, hung, or couldn't be had) is given once, beside a
+//! command's result, in the model it read ([`ModelRead::fault`]), never among the
+//! document's problems, and kept as its revision's outcome: no read of that revision
+//! rebuilds it, and a save writes around it, saving its features as failed ones are
+//! (decision 32).
 //!
 //! What it doesn't bound: the caches, one kept for each directory a session has opened a
 //! document in, for the process's life; and each session's queue, which holds every command
@@ -524,7 +524,7 @@ impl<P: Clients + 'static> Sessions<P> {
         } else {
             Rebuild {
                 revision: held.revision,
-                state: RebuildState::NotStarted,
+                state: RebuildState::Idle,
                 progress: None,
             }
         };
@@ -837,19 +837,19 @@ impl<P: Clients + 'static> Sessions<P> {
         })
     }
 
-    /// Ends `session`'s transaction, saving its document (the design's section 4): waits for
-    /// the current revision's rebuild, then writes the canonical text through `file::save_over`,
-    /// with new fingerprints and solves only for the features its edits reached (decision
-    /// 28; every other keeps what's stored, and its drift is a problem, never written over),
-    /// and moves the session to a new revision, the text written. A document equal to the
-    /// one `begin` saw writes nothing, even over a file changed outside the session. Refused,
-    /// the transaction left open, if none is open, if the file changed since the session
-    /// read or wrote it or is gone (`conflict`), or can't be read (`io_failed`), if its text
-    /// would pass the limit, if it can't be written (`io_failed`), or if it's cancelled
-    /// before it writes. A kernel fault is saved around (decision 32): the features it
-    /// stopped are saved as failed ones are (one its edits reached with no fingerprint,
-    /// decision 28 amended; any other as stored), and it's given once, in the response's
-    /// `model`.
+    /// Ends `session`'s transaction, saving its document (the design's section 4): waits
+    /// for the current revision's rebuild, then writes the canonical text through
+    /// `file::save_over`, with new fingerprints and solves only for the features its edits
+    /// reached (decision 28; every other keeps what's stored, and its drift is a problem,
+    /// never written over), and moves the session to a new revision, the text written. A
+    /// document equal to the one `begin` saw writes nothing, even over a file changed
+    /// outside the session. Refused, the transaction left open, if none is open, if the
+    /// file changed since the session read or wrote it or is gone (`conflict`), or can't be
+    /// read (`io_failed`), if its text would pass the limit, if it can't be written
+    /// (`io_failed`), or if it's cancelled before it writes. A kernel fault is saved around
+    /// (decision 32): the features it stopped are saved as failed ones are (one its edits
+    /// reached with no fingerprint, decision 28 amended; any other as stored), and it's
+    /// given once, in the response's `model`.
     pub fn commit(&self, session: &SessionId) -> Running<Committed> {
         let registry = Arc::downgrade(&self.registry);
         self.queued_with(
@@ -880,8 +880,8 @@ impl<P: Clients + 'static> Sessions<P> {
     /// every sketch's solve as rebuilt, edited or not (decision 31: what `silico fmt` runs,
     /// and how drift is accepted, by name): with `features`, only those features' drift is
     /// accepted, and every other drifted feature keeps what's stored with it and is a
-    /// problem. Written through `file::save_over` only if `write` and the text differs from the
-    /// file; with `write` false, says whether it would be. Refused inside a transaction
+    /// problem. Written through `file::save_over` only if `write` and the text differs from
+    /// the file; with `write` false, says whether it would be. Refused inside a transaction
     /// (commit or roll back first), for a document the gate refuses, and for a feature in
     /// `features` the document hasn't; and, writing, as a commit is.
     pub fn format(
