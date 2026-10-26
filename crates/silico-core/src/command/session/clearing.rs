@@ -36,8 +36,10 @@ pub(super) fn shown_cache_directory(
 
 /// Whether the cache directory `cache_dir` leads out of `workspace` now, through its links
 /// (decision 26): a link put on its way since its session opened (`.silico-cache` itself, or
-/// a directory above it). A cache that leads out keeps nothing (docs/design/m4.9-mcp.md, *What's
-/// added*), so `cache_clear` removes nothing through it. Never, without a workspace.
+/// a directory above it). `cache_clear` checks it as it clears and removes nothing through
+/// a cache that leads out then; it's the only check made after the session opens (a
+/// rebuild's writes are checked as its cache is first opened, `Registry::cache`). Never,
+/// without a workspace.
 pub(super) fn leads_out(workspace: Option<&Workspace>, cache_dir: &Path) -> bool {
     workspace.is_some_and(|workspace| {
         matches!(
