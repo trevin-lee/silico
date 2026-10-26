@@ -2,9 +2,10 @@
   "request": {
     "$defs": {
       "ExportFormat": {
-        "description": "What `export` writes: 3MF, each body a mesh, as a slicer prints it.",
+        "description": "What `export` writes: 3MF, each body a mesh, as a slicer prints it; or STEP, each body's\nexact B-rep, as other CAD systems read it.",
         "enum": [
-          "3mf"
+          "3mf",
+          "step"
         ],
         "type": "string"
       },
@@ -49,8 +50,15 @@
         "type": "string"
       },
       "tolerance": {
-        "$ref": "#/$defs/Length",
-        "description": "The mesh's tolerance, in mm, from 0.00001 to 100000000: the mesher's linear\ndeflection, as FreeCAD's export takes it (its default is 0.1)."
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Length"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "A mesh format's tolerance (3mf), in mm, from 0.00001 to 100000000: the mesher's\nlinear deflection, as FreeCAD's export takes it (its default is 0.1); null for an\nexact format (step), which takes none."
       }
     },
     "required": [
@@ -68,14 +76,14 @@
     "$defs": {
       "ExportedObject": {
         "additionalProperties": false,
-        "description": "An object of an export: one solid's mesh.",
+        "description": "An object of an export: one solid as the file holds it, its mesh's counts and volume\nfor a mesh format, null for an exact one.",
         "properties": {
           "feature": {
             "$ref": "#/$defs/FeatureId",
             "description": "The feature whose solid it is."
           },
           "left_out": {
-            "description": "The faces left out of the mesh as bounding no material (OCCT's INTERNAL and\nEXTERNAL), by their names: none for most parts.",
+            "description": "The faces left out of the file as bounding no material (OCCT's INTERNAL and\nEXTERNAL), by their names: none for most parts.",
             "items": {
               "type": "string"
             },
@@ -86,20 +94,33 @@
             "type": "string"
           },
           "triangles": {
-            "description": "The mesh's triangles.",
+            "description": "The mesh's triangles; null for a format that writes no mesh (step).",
             "format": "uint64",
             "minimum": 0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "vertices": {
-            "description": "The mesh's vertices.",
+            "description": "The mesh's vertices; null for a format that writes no mesh (step).",
             "format": "uint64",
             "minimum": 0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "volume": {
-            "$ref": "#/$defs/Measure",
-            "description": "The mesh's volume, in mm³, computed in doubles from the coordinates as written."
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Measure"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The mesh's volume, in mm³, computed in doubles from the coordinates as written; null\nfor a format that writes no mesh (step)."
           }
         },
         "required": [
