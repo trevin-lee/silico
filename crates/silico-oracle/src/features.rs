@@ -211,6 +211,23 @@ fn cases(features: &[Feature]) -> Result<Vec<FeatureCase>, String> {
     Ok(found)
 }
 
+/// The PartDesign body FreeCAD builds the pad, pocket, revolve, or groove `id` of
+/// `features` (a gated document's) as, as a case's model is: its chain, in FreeCAD's terms.
+pub(crate) fn part_design_model(
+    features: &[Feature],
+    id: &FeatureId,
+) -> Result<Vec<PartDesignFeature>, String> {
+    let index: BTreeMap<&FeatureId, usize> = features
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (&f.id, i))
+        .collect();
+    chain(features, &index, id)?
+        .iter()
+        .map(|f| part_design(f, features, &index))
+        .collect()
+}
+
 /// The features `id` is built from, and it, in timeline order: its bases, back to a
 /// primitive or a sweep with none, and the sketches each sweep uses. A case's bases are one
 /// line, as a PartDesign body's features are.

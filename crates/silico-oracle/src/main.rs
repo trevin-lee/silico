@@ -4,7 +4,10 @@
 //!   cases (`sketches.silico`), each solved by Silico's sketch worker and by FreeCAD, and
 //!   its sketch-feature cases (`sketch-features.silico`: pads, pockets, revolves, and
 //!   grooves), the document rebuilt by Silico's recompute and each case built by FreeCAD's
-//!   PartDesign, compared with each other and with the case's expected values.
+//!   PartDesign, compared with each other and with the case's expected values; and its
+//!   measure cases (`measures/`), pairs of elements of a document's solids measured by the
+//!   core's `distance` and `angle` and by FreeCAD's Measure, compared by the decision's
+//!   rules and with the case's values.
 //! - `silico-oracle sweep [--count N] [--seed S]`: N generated cases (default 500) from seed
 //!   S (default 1).
 //! - `silico-oracle corpus DIR`: the STEP files in DIR, as FreeCAD reads them, each as it is
@@ -28,9 +31,10 @@ const MAX_SWEEP: usize = 1_000_000;
 
 fn main() -> ExitCode {
     let mut out = std::io::stdout().lock();
-    let ran = cases().and_then(|(cases, corpus, sketches, features)| {
-        // A directory may hold sketch or sketch-feature cases alone.
-        let mut report = if cases.is_empty() && (!sketches.is_empty() || features.is_some()) {
+    let ran = cases().and_then(|(cases, corpus, sketches, features, measures)| {
+        // A directory may hold sketch, sketch-feature, or measure cases alone.
+        let others = !sketches.is_empty() || features.is_some() || measures.is_some();
+        let mut report = if cases.is_empty() && others {
             silico_oracle::Report::default()
         } else {
             run(&cases)?
@@ -49,6 +53,15 @@ fn main() -> ExitCode {
                 silico_oracle::features::run(features)?
                     .into_iter()
                     .map(|d| d.to_string()),
+            );
+        }
+        let measure_count = measures.as_ref().map_or(0, |m| m.cases.len());
+        if let Some(measures) = &measures {
+            sketch_differences.extend(
+                silico_oracle::measures::run(measures)?
+                    .into_iter()
+                    .filter(|c| !c.how.is_empty())
+                    .map(|c| c.to_string()),
             );
         }
         let (mut problems, mut notes) = (Vec::new(), Vec::new());
@@ -83,7 +96,7 @@ fn main() -> ExitCode {
             problems.extend(missing);
         }
         Ok((
-            cases.len() + sketches.len() + feature_count,
+            cases.len() + sketches.len() + feature_count + measure_count,
             report,
             problems,
             known,
@@ -140,12 +153,13 @@ struct CorpusNotes {
 }
 
 /// The cases the command line asks for, for the corpus its files FreeCAD couldn't read and
-/// the B-reps it wrote, the sketch cases, and the sketch-feature cases.
+/// the B-reps it wrote, the sketch cases, the sketch-feature cases, and the measure cases.
 type Asked = (
     Vec<Case>,
     Option<CorpusNotes>,
     Vec<sketch::SketchCase>,
     Option<silico_oracle::features::Cases>,
+    Option<silico_oracle::measures::Cases>,
 );
 
 fn cases() -> Result<Asked, String> {
@@ -163,6 +177,7 @@ fn cases() -> Result<Asked, String> {
                 None,
                 sketch::load(&dir)?,
                 silico_oracle::features::load(&dir)?,
+                silico_oracle::measures::load(&dir)?,
             ))
         }
         Some("corpus") => match &args[1..] {
@@ -172,7 +187,7 @@ fn cases() -> Result<Asked, String> {
                     unread: corpus.unread,
                     breps: corpus.breps,
                 };
-                Ok((corpus.cases, Some(notes), Vec::new(), None))
+                Ok((corpus.cases, Some(notes), Vec::new(), None, None))
             }
             _ => Err(format!("corpus takes one directory\n{USAGE}")),
         },
@@ -200,7 +215,7 @@ fn cases() -> Result<Asked, String> {
             if count > MAX_SWEEP {
                 return Err(format!("--count {count}: at most {MAX_SWEEP}\n{USAGE}"));
             }
-            Ok((generate::cases(seed, count), None, Vec::new(), None))
+            Ok((generate::cases(seed, count), None, Vec::new(), None, None))
         }
         _ => Err(USAGE.to_owned()),
     }

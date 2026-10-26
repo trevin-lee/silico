@@ -2,7 +2,9 @@
 //! generated ones, built twice on fresh kernel workers (the second in reverse order, after
 //! the others) gives byte-identical B-reps, histories (each result's fates, counts, and
 //! ends, and, beside them, its topology), summaries, FreeCAD-style measures, and meshes;
-//! and so does every sketch-feature case (M3.6), its document rebuilt twice by recompute.
+//! and so does every sketch-feature case (M3.6), its document rebuilt twice by recompute,
+//! and every measure case's answer (M4.5), as the command API writes it, its witness's
+//! points included, its document rebuilt twice.
 //! Their digests match a committed reference, recorded on the Mac, so CI on Linux checks
 //! that both platforms build every case the same, bit for bit. Rerecord (only with the
 //! maintainer's agreement, as for tests/determinism/stress-reference.json) with
@@ -14,9 +16,11 @@ use std::path::Path;
 
 use serde::Serialize;
 use silico_core::command::rebuild;
+use silico_core::command::wire::{Layout, ToWire, write};
 use silico_core::kernel::{ElementCounts, Ends, History, InputHistory, KernelWorker, ShapeData};
 use silico_core::pool::KernelPool;
 use silico_core::recompute::{FeatureOutcome, Recompute};
+use silico_oracle::measures::{self, Answer};
 use silico_oracle::{Case, features, generate, load, silico::build_with_history};
 
 const CASES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle");
@@ -194,6 +198,33 @@ fn run_features() -> Digests {
         .collect()
 }
 
+/// Every measure case's answer (M4.5), digested as the command API writes it: the document
+/// rebuilt by recompute on a fresh pool and sketch worker, each case measured on it, under
+/// the case's name; a refusal, its errors' codes.
+fn run_measures() -> Digests {
+    let cases = measures::load(Path::new(CASES)).unwrap().unwrap();
+    let written = |value: &dyn ToWire| write(&value.to_wire(), Layout::Canonical).unwrap();
+    measures::silico(&cases)
+        .unwrap()
+        .into_iter()
+        .zip(&cases.cases)
+        .map(|(ours, case)| {
+            let answer = match &ours.answer {
+                Ok(Answer::Distance(d)) => Digest::default().bytes(written(d).as_bytes()).hex(),
+                Ok(Answer::Angle(a)) => Digest::default().bytes(written(a).as_bytes()).hex(),
+                Err(errors) => {
+                    let codes: Vec<&str> = errors.iter().map(|e| e.code().as_str()).collect();
+                    format!("refused: {}", codes.join(", "))
+                }
+            };
+            (
+                case.name.clone(),
+                BTreeMap::from([("answer".to_owned(), answer)]),
+            )
+        })
+        .collect()
+}
+
 #[test]
 fn every_oracle_case_builds_the_same_every_time_and_everywhere() {
     let mut cases = load(Path::new(CASES)).unwrap();
@@ -217,6 +248,19 @@ fn every_oracle_case_builds_the_same_every_time_and_everywhere() {
         "a sketch-feature case built differently"
     );
     for (name, digests) in features {
+        assert!(
+            first.insert(name.clone(), digests).is_none(),
+            "{name} is a case twice"
+        );
+    }
+    // The measure cases, the document rebuilt and measured twice, each by a fresh engine.
+    let measured = run_measures();
+    assert_eq!(
+        measured,
+        run_measures(),
+        "a measure case answered differently"
+    );
+    for (name, digests) in measured {
         assert!(
             first.insert(name.clone(), digests).is_none(),
             "{name} is a case twice"
