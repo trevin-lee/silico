@@ -17,15 +17,14 @@ use silico_protocol::{
     MAX_RENDER_TRIANGLES, Mesh, MeshAt, PointPlace, Projection, RenderBody, RenderScene,
 };
 
+use super::lookup::{Kinds, Lookup};
 use super::{ModelChoice, Problems, Running, SessionId, Sessions};
-use crate::document::{Angle, FeatureId, Length, PROBLEMS_LISTED, Position};
+use crate::document::{Angle, FeatureId, Length, Position};
 use crate::file::{self, Output};
 use crate::kernel::{Clients, ElementKind, Kernel, KernelRequest};
 use crate::meshes::{MeshCache, mesh_level};
-use crate::naming::{ElementMap, Maker, Name};
 use crate::pool::{Outcome, Pending};
 use crate::recompute::{Built, FeatureOutcome, Key, Model};
-use crate::references::Candidates;
 use crate::render::{RenderClient, RenderOutcome, RenderTicket};
 use crate::views::{NamedView, depth_of_box, half_pixel_at, sees};
 use crate::worker::SILICO_BUG;
@@ -272,8 +271,9 @@ struct Lit {
 /// no bodies, a camera that fails its check or whose perspective eye is inside a body
 /// (`camera.eye`, a point on a face counting as inside), more highlights than
 /// [`MAX_HIGHLIGHTS`], a highlight that names nothing (`reference_broken`, with candidates)
-/// or a vertex or solid, a `to` that decision 35 refuses, and a scene past what a render
-/// draws (`camera`) or one frame holds (the side whose pixels would make it coarser).
+/// or a vertex or solid, or an element of a feature that didn't build (its failure), a `to`
+/// that decision 35 refuses, and a scene past what a render draws (`camera`) or one frame
+/// holds (the side whose pixels would make it coarser).
 pub fn render<K: Kernel>(
     model: &Model,
     request: &Render,
@@ -537,100 +537,53 @@ fn joined(boxes: impl Iterator<Item = [[f64; 3]; 2]>) -> Option<[[f64; 3]; 2]> {
     })
 }
 
-/// Each name in `highlight` found in the first body whose element map has it, as a face or
-/// an edge: one that isn't a name, or names nothing, `reference_broken` with the likeliest
-/// candidates; a vertex or a solid `invalid_input`; each naming `highlight.N`. An unstable
-/// name is taken, as a read takes one (M4.1 section 2). Every one's error is found, the
-/// first [`PROBLEMS_LISTED`] listed.
+/// What a render highlights by name: a face or an edge, which have pixels of their own.
+const HIGHLIGHTED: Kinds = Kinds {
+    taken: &[ElementKind::Face, ElementKind::Edge],
+    why: "only a face or an edge has pixels of its own to highlight",
+    suggestion: "highlight the faces or edges around it",
+};
+
+/// Each name in `highlight` found in the model's bodies by the lookup every command that
+/// reads elements by name shares ([`Lookup`]), each naming `highlight.N`: one that isn't a
+/// name, or names nothing, `reference_broken` with the likeliest candidates; a vertex or a
+/// solid `invalid_input`; an element of a feature that didn't build, that feature's
+/// failure. An unstable name is taken, as a read takes one (M4.1 section 2). Every one's
+/// error is found, the first [`PROBLEMS_LISTED`](crate::document::PROBLEMS_LISTED) listed.
 fn highlighted(model: &Model, bodies: &[Body], highlight: &[String]) -> Result<Vec<Lit>, Problems> {
     if highlight.is_empty() {
         return Ok(Vec::new());
     }
-    let maps: Vec<Option<&ElementMap>> = bodies.iter().map(|b| model.element_map(b.id)).collect();
-    let known: Vec<&ElementMap> = maps.iter().flatten().copied().collect();
-    // Each kind's candidates, built once, the first time a listed broken name needs them:
-    // a name past the listed hundred gets none, as it isn't shown.
-    let mut candidates: std::collections::BTreeMap<ElementKind, Candidates> =
-        std::collections::BTreeMap::new();
-    let document = model.document();
-    let makers = |id: &FeatureId| {
-        document
-            .features
-            .iter()
-            .find(|f| &f.id == id)
-            .map(|f| Maker::of(&f.operation))
-    };
+    let mut lookup = Lookup::new(model, None, HIGHLIGHTED);
     let mut lit = Vec::new();
-    let mut errors = Vec::new();
-    let mut total = 0u64;
     for (i, text) in highlight.iter().enumerate() {
-        let parameter = format!("highlight.{i}");
-        let shown = crate::document::json::shown(text);
-        let error = match Name::parse(text, &makers) {
-            Err(why) => Error::new(
-                ErrorCode::ReferenceBroken,
-                format!("{parameter}, {shown}, isn't a name: {why}"),
-            )
-            .with_suggestion("name the element as Silico names it (feature.type.Face1, ...)"),
-            Ok(name) => {
-                let found = maps.iter().enumerate().find_map(|(body, map)| {
-                    map.and_then(|map| map.element(&name)).map(|e| (body, e))
-                });
-                match found {
-                    Some((body, element))
-                        if matches!(element.kind, ElementKind::Face | ElementKind::Edge) =>
-                    {
-                        lit.push(Lit {
-                            body,
-                            kind: element.kind,
-                            index: element.index.saturating_sub(1),
-                        });
-                        continue;
-                    }
-                    Some((_, element)) => Error::new(
-                        ErrorCode::InvalidInput,
-                        format!(
-                            "{parameter}, {shown}, names {}: only a face or an edge has pixels \
-                             of its own to highlight",
-                            a_kind(element.kind)
-                        ),
-                    )
-                    .with_suggestion("highlight the faces or edges around it"),
-                    None => {
-                        let likeliest = if errors.len() < PROBLEMS_LISTED {
-                            candidates
-                                .entry(name.kind())
-                                .or_insert_with(|| Candidates::of(&known, name.kind()))
-                                .of_name(&name)
-                        } else {
-                            Vec::new()
-                        };
-                        Error::new(
-                            ErrorCode::ReferenceBroken,
-                            format!("{parameter}, {shown}, names no element of the model's bodies"),
-                        )
-                        .with_candidates(likeliest)
-                        .with_suggestion(
-                            "name the element as its body names it now: the candidates are the \
-                             likeliest, none taken for it",
-                        )
-                    }
-                }
-            }
+        // Which element only: a body is drawn, and its faces lit, though its measure failed.
+        let Some((feature, element)) = lookup.find_element(&format!("highlight.{i}"), text) else {
+            continue;
         };
-        total += 1;
-        if errors.len() < PROBLEMS_LISTED {
-            errors.push(error.with_parameter(parameter));
+        // A solid the lookup finds is one of the bodies that built, which are drawn.
+        match bodies.iter().position(|b| b.id == feature) {
+            Some(body) => lit.push(Lit {
+                body,
+                kind: element.kind,
+                index: element.index.saturating_sub(1),
+            }),
+            None => lookup.refuse(
+                Error::new(
+                    ErrorCode::Internal,
+                    format!(
+                        "highlight.{i} was found in {feature}'s solid, which isn't among the bodies drawn"
+                    ),
+                )
+                .with_parameter(format!("highlight.{i}"))
+                .with_suggestion(SILICO_BUG),
+            ),
         }
     }
-    if errors.is_empty() {
-        lit.sort();
-        lit.dedup();
-        Ok(lit)
-    } else {
-        let unlisted = total - errors.len() as u64;
-        Err(Problems::with_unlisted(errors, unlisted))
-    }
+    lookup.finish()?;
+    lit.sort();
+    lit.dedup();
+    Ok(lit)
 }
 
 /// Refuses bodies in view with more faces or edges than a render draws, by each body's
