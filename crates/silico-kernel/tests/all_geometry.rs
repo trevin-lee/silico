@@ -59,6 +59,8 @@ mod adversarial_fillet;
 mod adversarial_mesh;
 #[path = "adversarial_profile_faces.rs"]
 mod adversarial_profile_faces;
+#[path = "adversarial_revolution_measures.rs"]
+mod adversarial_revolution_measures;
 #[path = "adversarial_sketch_feature_build.rs"]
 mod adversarial_sketch_feature_build;
 #[path = "adversarial_sweep.rs"]

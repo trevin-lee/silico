@@ -7,9 +7,10 @@ Why: BRepGProp_Gauss::Compute with an Eps (BRepGProp::VolumeProperties(shape, pr
      are thirds for a cylinder, cone, sphere, or torus, and one span for anything else, a
      GeomAbs_SurfaceOfRevolution included, whose U is the same angle over [0, 2*pi]. So a
      full turn of an arc whose circle crosses the axis (a barrel, a dome) measured 2.2e-7
-     low, and of a multi-span B-spline 3.9e-6 low; with three spans, both to round-off. The
-     default integration (Compute without an Eps, FreeCAD's) reads neither UKnots nor
-     SUIntSubs, and is unchanged to the bit.
+     low, and of the fixture's two-span B-spline 3.9e-6 low; with three spans, both to
+     round-off (a face whose U doesn't start at 0, and a meridian of many spans, stay as
+     they were: docs/ports/measure.md). The default integration (Compute without an Eps,
+     FreeCAD's) reads neither UKnots nor SUIntSubs, and is unchanged to the bit.
 Drop when: Silico upgrades to an OCCT release that splits or refines a surface of revolution's
      U (check BRepGProp_Face::UKnots and BRepGProp_Gauss::Compute).
 
