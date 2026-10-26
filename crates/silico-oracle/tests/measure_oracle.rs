@@ -17,8 +17,9 @@ use silico_core::pool::KernelPool;
 use silico_core::recompute::Recompute;
 use silico_core::{Error, ErrorCode};
 use silico_oracle::measures::{
-    self, Answer, Cases, Element, Expected, ExpectedAngle, ExpectedDistance, Found, MeasureCase,
-    Measured, Ours, Rule, Theirs, against_expected, compare,
+    self, ANGLE_TOLERANCE, Answer, Cases, Compared, Element, Expected, ExpectedAngle,
+    ExpectedDistance, Found, LENGTH_TOLERANCE, MeasureCase, Measured, Ours, Rule, Theirs,
+    against_expected, compare,
 };
 
 const ORACLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle");
@@ -590,4 +591,235 @@ fn freecad_finds_each_element_by_its_geometry_or_says_it_cant() {
     }
     let rule = Rule::of(&first[0].expected, &wrong.found[0], &wrong.found[1]).unwrap();
     assert_eq!(compare(&first[0], rule, &wrong, &theirs[0]).len(), 1);
+}
+
+#[test]
+fn a_witness_or_an_angle_exactly_at_its_tolerance_agrees_and_just_past_it_differs() {
+    // Silico's witness 1e-6 (LENGTH_TOLERANCE) from an element as FreeCAD has it is on it;
+    // 2e-6 is off. Silico's angle 1e-8 (10 nanodegrees, ANGLE_TOLERANCE) from FreeCAD's 0,
+    // folded, agrees; 2e-8 differs. Each difference here is exact in floating point: the
+    // witness's gaps are FreeCAD's numbers as given, and 10 nanodegrees is 10 / 1e9.
+    let d = distance_case(10.0, None, None);
+    let faces = distance_answer(
+        face("plane"),
+        face("plane"),
+        [0.0; 3],
+        [0.0, 0.0, 10.0],
+        None,
+        Some(10.0),
+    );
+    let witnessed = |gaps| compare(&d, Rule::Least, &faces, &freecad_distance(10.0, 10.0, gaps));
+    assert!(witnessed([LENGTH_TOLERANCE, 0.0]).is_empty());
+    assert!(witnessed([0.0, LENGTH_TOLERANCE]).is_empty());
+    assert_eq!(
+        witnessed([2e-6, 0.0]),
+        ["Silico's from is 0.000002 from elements.0 as FreeCAD has it"]
+    );
+    let a = angle_case(0.0, None);
+    let lines = |deg| angle_answer(edge("line"), edge("line"), deg);
+    let against = |ours: &Ours| compare(&a, Rule::Folded, ours, &freecad_angle(0.0));
+    assert_eq!(lines(1e-8).answer, lines(ANGLE_TOLERANCE).answer);
+    assert!(against(&lines(1e-8)).is_empty());
+    assert_eq!(
+        against(&lines(2e-8)),
+        ["Silico's angle 0.00000002, folded FreeCAD's Some(0.0): 0.00000002 against 0"]
+    );
+}
+
+#[test]
+fn a_witness_exactly_two_nanometres_off_its_distance_is_within_its_rounding() {
+    // Silico's distance 0 and its witness from the origin to (0, 0, 0.000002): 2 nm apart,
+    // the most two points each rounded to the nanometre may be off (2e-6, as the check
+    // allows; 2 / 1e6 and its square root of its square are exact); 3 nm is past it.
+    let witness = |z: f64| Ours {
+        found: [found(face("plane")), found(face("plane"))],
+        answer: Ok(Answer::Distance(DistanceAnswer {
+            distance: mm(0.0),
+            from: [0.0; 3].map(mm),
+            to: [0.0, 0.0, z].map(mm),
+            center_distance: None,
+            normal_distance: None,
+        })),
+        vertex_at: None,
+    };
+    let case = distance_case(0.0, None, None);
+    assert!(against_expected(&case, &witness(2e-6)).is_empty());
+    assert_eq!(
+        against_expected(&case, &witness(3e-6)),
+        ["its witness is 0.000003 apart, its distance 0"]
+    );
+}
+
+#[test]
+fn each_rule_says_itself_and_a_case_says_its_name_and_every_difference() {
+    // The words the report gives each rule, from Fable's decision as Rule's docs say it.
+    for (rule, says) in [
+        (Rule::Least, "distance = FreeCAD's"),
+        (
+            Rule::Centres,
+            "center_distance = FreeCAD's, distance = its distToShape",
+        ),
+        (
+            Rule::Supplement,
+            "angle = 180 - FreeCAD's (folded where FreeCAD reads 0)",
+        ),
+        (
+            Rule::Folded,
+            "min(angle, 180 - angle) = min(FreeCAD's, 180 - FreeCAD's)",
+        ),
+        (Rule::FromNormal, "angle = |90 - FreeCAD's|"),
+    ] {
+        assert_eq!(rule.says(), says, "{rule:?}");
+    }
+    let compared = Compared {
+        case: distance_case(10.0, None, None),
+        rule: Rule::Least,
+        ours: distance_answer(
+            face("plane"),
+            face("plane"),
+            [0.0; 3],
+            [0.0, 0.0, 10.0],
+            None,
+            None,
+        ),
+        theirs: freecad_distance(10.0, 10.0, [0.0; 2]),
+        how: vec!["one way".to_owned(), "another".to_owned()],
+    };
+    assert_eq!(compared.to_string(), "made_up: one way; another");
+}
+
+#[test]
+fn a_model_that_cant_be_read_is_an_error_and_only_a_missing_one_is_no_cases() {
+    // `measures/model.silico` a directory: reading it fails, but not because it's missing,
+    // so the run stops, naming it, rather than running as if there were no measure cases.
+    let dir = tempfile::tempdir().unwrap();
+    let model = dir.path().join(measures::DIR).join(measures::MODEL);
+    std::fs::create_dir_all(&model).unwrap();
+    let refused = measures::load(dir.path()).unwrap_err();
+    assert!(
+        refused.starts_with(&format!("can't read {}: ", model.display())),
+        "{refused}"
+    );
+    // With `measures/` there but no model in it, there are none.
+    std::fs::remove_dir(&model).unwrap();
+    assert!(measures::load(dir.path()).unwrap().is_none());
+}
+
+/// A rod cut on a slant, a cone, and a torus, the slant's sketch the document's first feature.
+const KINDS: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [
+  {"id": "skt00001", "type": "sketch", "v": 1, "name": "slant_profile", "plane": "xz", "points": [{"id": "p0000001", "x": -10, "y": 0, "construction": false}, {"id": "p0000002", "x": 20, "y": 30, "construction": false}, {"id": "p0000003", "x": -10, "y": 30, "construction": false}], "lines": [{"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false}, {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false}, {"id": "n0000003", "from": "p0000003", "to": "p0000001", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+  {"id": "cyr00001", "type": "cylinder", "v": 1, "name": "rod", "position": [0, 0, 0], "radius": 5, "height": 20},
+  {"id": "pdd00001", "type": "pad", "v": 1, "name": "slant", "sketch": "skt00001", "extent": {"type": "symmetric", "length": 20}},
+  {"id": "ctt00001", "type": "cut", "v": 1, "name": "rod_cut_on_a_slant", "base": "cyr00001", "tool": "pdd00001"},
+  {"id": "cne00001", "type": "cone", "v": 1, "name": "cone", "position": [30, 0, 0], "radius1": 5, "radius2": 2, "height": 6},
+  {"id": "trs00001", "type": "torus", "v": 1, "name": "ring", "position": [60, 0, 0], "radius1": 10, "radius2": 2}
+]}"#;
+
+#[test]
+fn an_element_of_each_curve_and_surface_resolves_as_its_kind() {
+    // A cone's side, a torus, and the ellipse a rod of radius 5 is cut in by the plane
+    // z = x + 10 (everything above it, a triangle on xz padded 20 symmetrically about y = 0):
+    // each resolves as its kind, with its measure by hand. The sketch is the document's
+    // first feature, so a name read as another feature's than its own reads as a sketch's,
+    // which names nothing.
+    let checked =
+        silico_core::document::Checked::new(silico_core::document::read(KINDS.as_bytes()).unwrap())
+            .unwrap();
+    let engine = Recompute::new(KernelPool::start());
+    let model = rebuild(&engine, checked).unwrap().unwrap();
+    assert_eq!(model.errors().count(), 0);
+    let id = |text| FeatureId::new(text).unwrap();
+    let close = |what: &str, got: f64, want: f64| {
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "{what}: {got} against {want}"
+        );
+    };
+    // The cone's side: π (r1 + r2) · its slant √(h² + (r1 − r2)²) = 7π √45.
+    match measures::resolve(&model, &[id("cne00001")], "cne00001.cone.Face1") {
+        Ok(Found {
+            element: Element::Face { surface, area, .. },
+            ..
+        }) => {
+            assert_eq!(surface, "cone");
+            close(
+                "the cone's side",
+                area,
+                7.0 * std::f64::consts::PI * 45f64.sqrt(),
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // The torus: 4π² R r = 80π².
+    match measures::resolve(&model, &[id("trs00001")], "trs00001.torus.Face1") {
+        Ok(Found {
+            element: Element::Face { surface, area, .. },
+            ..
+        }) => {
+            assert_eq!(surface, "torus");
+            close(
+                "the torus",
+                area,
+                80.0 * std::f64::consts::PI * std::f64::consts::PI,
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // The slanted rim: an ellipse of semi-axes 5 √2 and 5 about (0, 0, 10), from and back
+    // to one point; its perimeter by the trapezoid rule over its period.
+    let cut = id("ctt00001");
+    let described = model.description(&cut).unwrap();
+    let ellipses: Vec<usize> = (0..described.edges.len())
+        .filter(|&i| {
+            matches!(
+                described.edges[i].curve,
+                silico_core::kernel::EdgeCurve::Ellipse { .. }
+            )
+        })
+        .collect();
+    assert_eq!(ellipses.len(), 1, "{:?}", described.edges);
+    let name = model
+        .element_map(&cut)
+        .unwrap()
+        .iter()
+        .find(|(e, _)| {
+            e.kind == silico_core::kernel::ElementKind::Edge && e.index as usize == ellipses[0] + 1
+        })
+        .map(|(_, names)| names[0].to_string())
+        .unwrap();
+    let (a, b) = (5.0 * 2f64.sqrt(), 5.0);
+    let n = 4096;
+    let h = 2.0 * std::f64::consts::PI / f64::from(n);
+    let perimeter = (0..n)
+        .map(|i| {
+            let t = f64::from(i) * h;
+            let (s, c) = (libm::sin(t), libm::cos(t));
+            (a * a * s * s + b * b * c * c).sqrt()
+        })
+        .sum::<f64>()
+        * h;
+    match measures::resolve(&model, std::slice::from_ref(&cut), &name) {
+        Ok(Found {
+            element:
+                Element::Edge {
+                    curve,
+                    length,
+                    start,
+                    end,
+                    ..
+                },
+            body,
+        }) => {
+            assert_eq!((curve, &body), ("ellipse", &cut));
+            close("the ellipse", length, perimeter);
+            assert_eq!(start, end);
+        }
+        other => panic!("{name}: {other:?}"),
+    }
+    // A feature the document hasn't is no name at all, not one of no element.
+    let refused = measures::resolve(&model, &[id("cyr00001")], "zzz00001.box.Face1").unwrap_err();
+    assert!(
+        refused.starts_with("zzz00001.box.Face1 isn't a name: "),
+        "{refused}"
+    );
 }
