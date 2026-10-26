@@ -8,9 +8,11 @@
 //! Expected values are by hand: a cone's volume πr²h/3, a cylinder's πr²l, solids that
 //! touch at a point sharing nothing, the bad barrel's face bounds (the box from (−5, −5,
 //! −4) to (5, 5, 4)), and `BRepPrimAPI_MakeBox`'s face order (x low, x high, y low, y high,
-//! z low, z high). FreeCAD 1.1.3, on the same OCCT, given these very solids (Silico's
-//! B-reps, written as text), gives the cone's right answers at each rod angle here: its cut
-//! 130.8996939 (to 1e-15), its fuse 382.227106187 in two solids, its common no solid.
+//! z low, z high). FreeCAD 1.1.3, on the same OCCT, given these solids as text B-reps
+//! (Silico's, their coordinates rounded), gives the cone's right answers at each rod angle
+//! here: its cut 130.8996939 (to 1e-15), its fuse 382.227106187 in two solids, its common
+//! no solid. They're the hand values, so they don't hang on the rounding, as the
+//! cone-side crash of patch 0005 does.
 
 use super::brep_fixture::fixture;
 use super::kernel::kernel;

@@ -2368,6 +2368,21 @@ mod tests {
             skipped_words(&[pair(1), pair(3), pair(4), pair(5), pair(6)].concat()),
             format!("{}, {}, {}, and 2 more pairs", named(1), named(3), named(4))
         );
+        // Pairs that differ only in an element's input, or only in its kind, are two.
+        assert_eq!(
+            skipped_words(&[[face(0, 2), face(1, 3)], [face(0, 2), face(0, 3)]].concat()),
+            format!("{} and the base's Face2 with the base's Face3", named(3))
+        );
+        assert_eq!(
+            skipped_words(
+                &[
+                    [face(0, 2), face(1, 3)],
+                    [face(0, 2), element(ffi::Kind::Edge, 1, 3)]
+                ]
+                .concat()
+            ),
+            format!("{} and the base's Face2 with the tool's Edge3", named(3))
+        );
         // A pair isn't its own reverse: the same two faces, the other way round, is another.
         assert_eq!(
             skipped_words(&[[face(0, 2), face(1, 3)], [face(1, 3), face(0, 2)]].concat()),
