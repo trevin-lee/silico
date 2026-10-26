@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use silico_core::ErrorCode;
 use silico_core::command::render::Render;
-use silico_core::command::{ModelChoice, Revision, SessionId, Sessions};
+use silico_core::command::{CheckModel, ModelChoice, Revision, SessionId, Sessions};
 use silico_core::document::json::Node;
 use silico_core::fake::{FakeKernel, FakeRenderer};
 use silico_core::file::{Unresolved, Workspace};
@@ -216,7 +216,9 @@ fn a_file_swapped_for_a_link_out_after_open_is_refused_as_it_is_read_again() {
     // Each queued command reads the file again first (decision 2): refused, not reloaded.
     for response in [
         refused_with_cause(&answer(f.sessions.text(&s, None))),
-        refused_with_cause(&answer(f.sessions.check(&s, ModelChoice::Current))),
+        refused_with_cause(&answer(
+            f.sessions.check(&s, CheckModel::Current { fresh: false }),
+        )),
     ] {
         assert_eq!(response, outside_now("part.silico"));
     }
@@ -351,7 +353,7 @@ fn a_cache_directory_that_leads_out_of_the_workspace_is_never_opened() {
     let plain = f.session_of("sub/part.silico");
     // Both build; only the one inside opens its cache.
     for s in [linked, plain] {
-        let check = answer(f.sessions.check(&s, ModelChoice::Current));
+        let check = answer(f.sessions.check(&s, CheckModel::Current { fresh: false }));
         assert!(check.result.unwrap().problems.is_empty());
     }
     assert_eq!(
@@ -508,7 +510,7 @@ fn without_a_workspace_paths_resolve_as_the_system_resolves_them() {
     let response = answer(sessions.open(work.join("link.silico"), false));
     let s = response.session.unwrap().id;
     assert!(
-        answer(sessions.check(&s, ModelChoice::Current))
+        answer(sessions.check(&s, CheckModel::Current { fresh: false }))
             .result
             .is_ok()
     );
@@ -575,3 +577,4 @@ fn a_workspace_is_a_directory_given_once_before_any_document_opens() {
     std::os::unix::fs::symlink(&root, root.join("link")).unwrap();
     assert_eq!(Workspace::new(&root.join("link")).unwrap().root(), root);
 }
+

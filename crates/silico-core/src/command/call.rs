@@ -451,9 +451,9 @@ impl<P: Clients + 'static> Sessions<P> {
             Command::Check => typed(CheckRequest::read(request), |r| {
                 self.check(&r.session, r.model)
             }),
-            Command::CacheClear => {
-                typed(SessionRequest::read(request), |r| self.cache_clear(&r.session))
-            }
+            Command::CacheClear => typed(SessionRequest::read(request), |r| {
+                self.cache_clear(&r.session)
+            }),
             Command::Elements => typed(ElementsRequest::read(request), |r| {
                 self.elements(&r.session, r.model, r.feature, r.after, r.limit)
             }),

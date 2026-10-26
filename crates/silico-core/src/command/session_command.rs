@@ -33,7 +33,7 @@ pub enum SessionCommand {
 
 impl SessionCommand {
     /// Every command that runs in a session, in the design's order.
-    pub const ALL: [SessionCommand; 19] = [
+    pub const ALL: [SessionCommand; 20] = [
         SessionCommand::Close,
         SessionCommand::Begin,
         SessionCommand::Commit,

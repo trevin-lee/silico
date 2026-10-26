@@ -62,6 +62,7 @@ fn requests(session: &str) -> Vec<(&'static str, String)> {
             "check",
             format!(r#"{{"session": "{s}", "model": "current", "fresh": false}}"#),
         ),
+        ("cache_clear", format!(r#"{{"session": "{s}"}}"#)),
         (
             "elements",
             format!(
@@ -473,14 +474,14 @@ fn a_published_read_sent_while_its_session_opens_reads_the_session_it_opens() {
 
 #[test]
 fn typed_commands_sent_while_their_session_opens_run_once_it_has() {
-    use silico_core::command::{ModelChoice, SessionId};
+    use silico_core::command::{CheckModel, SessionId};
     let id = SessionId::parse("s1").unwrap();
     for run in 0..40 {
         let f = fixture();
         f.file("part.silico", BOX);
         let open = f.sessions.open("part.silico", false);
         let text = f.sessions.text(&id, None);
-        let check = f.sessions.check(&id, ModelChoice::Current);
+        let check = f.sessions.check(&id, CheckModel::Current { fresh: false });
         let close = f.sessions.close(&id);
         assert!(open.wait().result.is_ok(), "run {run}");
         assert_eq!(text.wait().result.unwrap().text, BOX, "run {run}");
