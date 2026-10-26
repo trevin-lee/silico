@@ -10,11 +10,17 @@ use super::json::{self, Value};
 use super::{Document, Feature, FeatureId};
 
 /// The document an edit was made from: read, or text that didn't read as one (a merge's
-/// conflict markers, say), which only `replace_text` mends, as the IDs it holds.
+/// conflict markers, say), which only `replace_text` mends, as the IDs it holds; or such
+/// text and the first document that read after it, its mend, which later edits are made
+/// from.
 #[derive(Clone, Copy, Debug)]
 pub enum Before<'a> {
     Read(&'a Document),
     Unread(&'a QuotedIds),
+    Mended {
+        unread: &'a QuotedIds,
+        mend: &'a Document,
+    },
 }
 
 /// The feature IDs a text that didn't read as a document holds quoted, as any reference to
@@ -96,7 +102,9 @@ fn id_of(between: &[u8]) -> Option<FeatureId> {
 /// didn't read, what changed is only each feature whose ID the text doesn't hold
 /// ([`QuotedIds`]): one it can't have had. Every other feature keeps its stored
 /// record, and its drift is said for `format` to accept by name, rather than every
-/// fingerprint written over because a merge left markers in the file.
+/// fingerprint written over because a merge left markers in the file. From such text
+/// mended, what changed is that of the mend's features, and what changed from the mend
+/// to `after`: so an edit after the mend reaches what it changed, and, undone, nothing.
 pub fn net_reach(
     before: Before<'_>,
     carried: &BTreeSet<FeatureId>,
@@ -105,16 +113,26 @@ pub fn net_reach(
     let mut seeds = carried.clone();
     match before {
         Before::Read(before) => seeds.extend(changed(before, after)),
-        Before::Unread(ids) => seeds.extend(
-            after
-                .features
-                .iter()
-                .map(|feature| &feature.id)
-                .filter(|id| !ids.holds(id))
-                .cloned(),
-        ),
+        Before::Unread(ids) => seeds.extend(not_held(ids, after)),
+        Before::Mended { unread, mend } => {
+            seeds.extend(not_held(unread, mend));
+            seeds.extend(changed(mend, after));
+        }
     }
     with_users(after, &seeds)
+}
+
+/// The features of `document` whose IDs the text that didn't read doesn't hold (`ids`).
+fn not_held<'a>(
+    ids: &'a QuotedIds,
+    document: &'a Document,
+) -> impl Iterator<Item = FeatureId> + 'a {
+    document
+        .features
+        .iter()
+        .map(|feature| &feature.id)
+        .filter(|id| !ids.holds(id))
+        .cloned()
 }
 
 /// The features of `after` that an edit from `before` reaches: each whose own values the

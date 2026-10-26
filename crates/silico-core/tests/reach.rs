@@ -250,6 +250,40 @@ fn reached_from(before: &str) -> BTreeSet<FeatureId> {
 }
 
 #[test]
+fn from_text_that_didnt_read_mended_the_mends_new_features_and_what_changed_since_are_reached() {
+    // The merge mended as the part: the cut, whose ID the text hadn't, is the mend's new
+    // feature, reached. An edit after the mend, the block 50 long, reaches the block too,
+    // against the mend; undone, only the cut again.
+    let merged = merged();
+    let unread = QuotedIds::of(merged.as_bytes());
+    let mend = part();
+    let block_50 = edited(r#""length": 40"#, r#""length": 50"#);
+    let mended = |after: &Document| {
+        net_reach(
+            Before::Mended {
+                unread: &unread,
+                mend: &mend,
+            },
+            &ids(&[]),
+            after,
+        )
+    };
+    assert_eq!(mended(&part()), ids(&["c0000001"]));
+    assert_eq!(mended(&block_50), ids(&["c0000001", "k7f2qx3m"]));
+    // From the merge alone, the block's edit isn't seen: its ID was in the text.
+    assert_eq!(
+        net_reach(Before::Unread(&unread), &ids(&[]), &block_50),
+        ids(&["c0000001"])
+    );
+    // The lug, which the cut uses, edited after the mend: the cut is reached through it.
+    let lug = edited(
+        r#""length": 10, "width": 10"#,
+        r#""length": 20, "width": 10"#,
+    );
+    assert_eq!(mended(&lug), ids(&["b0000001", "c0000001"]));
+}
+
+#[test]
 fn from_text_that_didnt_read_an_id_written_with_escapes_is_held() {
     // The block's ID with its last letter escaped, as JSON may write any character: the
     // text holds k7f2qx3m all the same, so only the cut is reached.

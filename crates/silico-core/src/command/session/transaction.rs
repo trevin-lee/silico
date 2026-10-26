@@ -72,6 +72,10 @@ pub(super) struct Snapshot {
     /// thread and outside every lock, so a long text's scan never keeps `status` or a
     /// published read waiting.
     quoted: Arc<OnceLock<document::QuotedIds>>,
+    /// If its text didn't read as a document, the first state the transaction's edits held
+    /// that read as one: its mend, which the edits after it are compared with
+    /// ([`Reaching::reach`]). Not part of what `rollback` restores.
+    mend: Option<Arc<Gated>>,
 }
 
 /// A state of the session's document a commit saves ([`Session::save_state`]): the path as
@@ -123,7 +127,9 @@ impl Held {
 
     /// The session's document changed to `text`, as the reader and the gate found it
     /// (`gated`), at `revision` (from [`next`](Self::next)), carrying `carried`: the one
-    /// place a session's document changes (an edit, a save, a rollback, a reload).
+    /// place a session's document changes (an edit, a save, a rollback, a reload). Inside a
+    /// transaction begun from text that didn't read, the first document that reads is kept
+    /// as its mend.
     pub(super) fn change(
         &mut self,
         revision: Revision,
@@ -131,6 +137,13 @@ impl Held {
         gated: Arc<Gated>,
         carried: Arc<BTreeSet<FeatureId>>,
     ) {
+        if let Some(begun) = &mut self.transaction
+            && begun.mend.is_none()
+            && begun.gated.document().is_err()
+            && gated.document().is_ok()
+        {
+            begun.mend = Some(Arc::clone(&gated));
+        }
         self.revision = revision;
         self.text = text;
         self.gated = gated;
@@ -145,6 +158,7 @@ impl Held {
             revision: self.revision,
             carried: Arc::clone(&self.carried),
             quoted: Arc::new(OnceLock::new()),
+            mend: None,
         }
     }
 
@@ -179,10 +193,11 @@ thread_local! {
 impl Reaching {
     /// What the session's edits reach (the design's section 5, decision 28), net: the
     /// features they changed since the transaction began, compared by ID with the document
-    /// `begin` saw (or, if that didn't read, those with IDs its text hasn't), with those
-    /// carried from before, and every feature that uses one (`document::net_reach`). An
-    /// edit undone reaches nothing. Those a commit writes new records for, and whose drift
-    /// a check doesn't say. Outside a transaction, what's carried.
+    /// `begin` saw (or, if that didn't read, those of its mend with IDs its text hasn't,
+    /// and those changed since the mend), with those carried from before, and every feature
+    /// that uses one (`document::net_reach`). An edit undone reaches nothing. Those a commit
+    /// writes new records for, and whose drift a check doesn't say. Outside a transaction,
+    /// what's carried.
     pub(super) fn reach(&self) -> BTreeSet<FeatureId> {
         #[cfg(test)]
         REACHES.with(|reaches| reaches.set(reaches.get() + 1));
@@ -192,13 +207,19 @@ impl Reaching {
         let Some(begun) = &self.begun else {
             return document::with_users(now, &self.carried);
         };
-        let before = match begun.gated.document() {
-            Ok(before) => document::Before::Read(before),
-            Err(_) => document::Before::Unread(
-                begun
-                    .quoted
-                    .get_or_init(|| document::QuotedIds::of(&begun.text)),
-            ),
+        let unread = || {
+            begun
+                .quoted
+                .get_or_init(|| document::QuotedIds::of(&begun.text))
+        };
+        let mend = begun.mend.as_deref().map(Gated::document);
+        let before = match (begun.gated.document(), mend) {
+            (Ok(before), _) => document::Before::Read(before),
+            (Err(_), Some(Ok(mend))) => document::Before::Mended {
+                unread: unread(),
+                mend,
+            },
+            (Err(_), _) => document::Before::Unread(unread()),
         };
         document::net_reach(before, &self.carried, now)
     }

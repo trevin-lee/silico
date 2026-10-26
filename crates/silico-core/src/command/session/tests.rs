@@ -1594,6 +1594,55 @@ fn from_text_that_didnt_read_a_commit_reaches_only_features_with_new_ids() {
 }
 
 #[test]
+fn an_edit_after_text_that_didnt_read_was_mended_reaches_what_it_changed() {
+    // The merge's markers around the lug's length, mended with the lug 20 long: every ID
+    // was in the text, so the mend reaches nothing. Then an edit of the mended document,
+    // the block 60 long: it reaches the block and the fuse, against the mend.
+    let markers = STORED.replace(
+        r#""length": 10, "width": 10"#,
+        "\n<<<<<<< ours\n\"length\": 10, \"width\": 10\n=======\n\"length\": 20, \"width\": 10\n>>>>>>> theirs\n",
+    );
+    let f = opened(&markers);
+    f.begin();
+    f.edit(&longer());
+    assert_eq!(f.session().held.read().reach(), BTreeSet::new());
+    let block_60 = longer().replace(r#""length": 40"#, r#""length": 60"#);
+    assert_ne!(block_60, longer());
+    f.edit(&block_60);
+    assert_eq!(
+        f.session().held.read().reach(),
+        BTreeSet::from([id("k7f2qx3m"), id("f0000001")])
+    );
+    // Undone, the edit after the mend reaches nothing; made again, what it changed.
+    f.edit(&longer());
+    assert_eq!(f.session().held.read().reach(), BTreeSet::new());
+    f.edit(&block_60);
+    let committed = f.sessions.commit(&f.id).wait().result.unwrap();
+    assert!(committed.written);
+    assert_eq!(committed.refingerprinted, [id("k7f2qx3m"), id("f0000001")]);
+    // Only the lug's drift, which the merge made and format accepts by name: the block and
+    // the fuse were measured again.
+    let drifted: Vec<(ErrorCode, Option<&str>)> = committed
+        .problems
+        .errors()
+        .iter()
+        .map(|e| (e.code(), e.feature()))
+        .collect();
+    assert_eq!(drifted, [(ErrorCode::Drift, Some("b0000001"))]);
+    // By hand: the block 60 × 20 × 10 = 12000, area 2(60·20 + 60·10 + 20·10) = 4000; the
+    // fuse, the fake's two solids apart, 12000 + 2000 = 14000, area 4000 + 1000 = 5000,
+    // to x = 120; the lug as stored.
+    let saved = f.file();
+    for fingerprint in [
+        r#""fingerprint": {"volume": 12000, "area": 4000, "bbox": [0, 0, 0, 60, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#,
+        r#""fingerprint": {"volume": 1000, "area": 600, "bbox": [100, 0, 0, 110, 10, 10], "faces": 6, "edges": 12, "vertices": 8}"#,
+        r#""fingerprint": {"volume": 14000, "area": 5000, "bbox": [0, 0, 0, 120, 20, 10], "faces": 12, "edges": 24, "vertices": 16}"#,
+    ] {
+        assert!(saved.contains(fingerprint), "{fingerprint} in {saved}");
+    }
+}
+
+#[test]
 fn a_rollback_gives_begins_still_running_rebuild_to_the_new_revision() {
     // Revision 2's rebuild running at begin, its pin held; an edit, then a rollback: the
     // rebuild goes on, as revision 4's, and the pin is asked for once.
