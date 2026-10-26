@@ -607,18 +607,63 @@ impl KernelRequest<Distance> {
             other: other.cloned(),
             second,
         };
-        Ok(Self::new(op, |name, reply| match reply {
-            Reply::Distance(distance) => match distance_fault(&distance) {
+        Ok(Self::new(op, distance_reply))
+    }
+
+    /// The least distance from `point` to `element` of `shape`, as bounded, with a pair of
+    /// points where it's met, `from` the point ([`Op::PointDistance`]: `distance`'s
+    /// `center_to_element`, as FreeCAD's QuickMeasure measures a circle's centre against a
+    /// face or an edge). The reply is checked as [`KernelRequest::distance`]'s is, and is the
+    /// worker's fault ([`point_distance_fault`]) if it isn't from `point` or reaches past
+    /// what any point within the bound could.
+    ///
+    /// Refused, naming `element` or `point`, for a solid or an element numbered 0, or a point
+    /// that isn't finite or is past [`silico_protocol::MAX_POINT_COORDINATE`] of the origin
+    /// ([`silico_protocol::check_point_distance`]).
+    pub fn point_distance(
+        shape: &ShapeData,
+        element: ElementRef,
+        point: [f64; 3],
+    ) -> Result<Self, Error> {
+        if let Err(refusal) = silico_protocol::check_point_distance(element, point) {
+            return Err(crate::worker::failure_error(
+                "PointDistance",
+                Failure::new(refusal),
+            ));
+        }
+        let op = Op::PointDistance {
+            shape: shape.clone(),
+            element,
+            point,
+        };
+        Ok(Self::new(op, move |name, reply| {
+            let distance = distance_reply(name, reply)?;
+            match point_distance_fault(point, &distance) {
                 None => Ok(distance),
                 Some(fault) => Err(Error::new(
                     ErrorCode::ProtocolError,
-                    format!("the kernel worker answered {name} with a distance no pair has"),
+                    format!("the kernel worker answered {name} with a distance the point hasn't"),
                 )
                 .with_cause(fault)
                 .with_suggestion("start a new kernel worker")),
-            },
-            other => Err(unexpected(name, &other)),
+            }
         }))
+    }
+}
+
+/// [`Reply::Distance`], checked ([`distance_fault`]), as the answer to the request `name`.
+fn distance_reply(name: &str, reply: Reply) -> Result<Distance, Error> {
+    match reply {
+        Reply::Distance(distance) => match distance_fault(&distance) {
+            None => Ok(distance),
+            Some(fault) => Err(Error::new(
+                ErrorCode::ProtocolError,
+                format!("the kernel worker answered {name} with a distance no pair has"),
+            )
+            .with_cause(fault)
+            .with_suggestion("start a new kernel worker")),
+        },
+        other => Err(unexpected(name, &other)),
     }
 }
 
@@ -638,6 +683,37 @@ pub(crate) fn distance_fault(distance: &Distance) -> Option<String> {
         return Some(format!("its distance is {}, below 0", distance.distance));
     }
     (distance.solutions == 0).then(|| "it found no pair of points".to_owned())
+}
+
+/// What's wrong with `distance`, a reply to a distance from `point` that passes
+/// [`distance_fault`], if it's not one the point could have: a pair not from `point` (the
+/// worker measures from a vertex made at it), a point on the element past
+/// [`silico_protocol::MAX_POINT_COORDINATE`] of the origin along an axis (past any the core
+/// sends, and any solid the gate admits), or a distance farther than any two points within
+/// that bound are apart.
+pub(crate) fn point_distance_fault(point: [f64; 3], distance: &Distance) -> Option<String> {
+    let most = silico_protocol::MAX_POINT_COORDINATE;
+    if distance.from != point {
+        return Some(format!(
+            "its pair is from {:?}, not the point asked, {point:?}",
+            distance.from
+        ));
+    }
+    if distance.to.iter().any(|c| c.abs() > most) {
+        return Some(format!(
+            "its point on the element, {:?}, is past {most} mm of the origin",
+            distance.to
+        ));
+    }
+    // The diagonal of the cube the bound draws: no two points within it are farther apart.
+    let farthest = 2.0 * 3f64.sqrt() * most;
+    (distance.distance > farthest).then(|| {
+        format!(
+            "its distance is {}, farther than any two points within {most} mm of the origin \
+             are apart",
+            distance.distance
+        )
+    })
 }
 
 /// The error for a description no shape has, `cause` saying why: the worker's fault.

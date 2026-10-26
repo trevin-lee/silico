@@ -16,6 +16,8 @@ mod cache_format;
 mod commands;
 #[path = "common/example.rs"]
 mod example;
+#[path = "common/forged.rs"]
+mod forged;
 #[path = "common/lateness.rs"]
 mod lateness;
 #[path = "common/entries.rs"]
@@ -38,6 +40,8 @@ mod test_programs;
 mod adversarial_cache;
 #[path = "adversarial_cache_bound.rs"]
 mod adversarial_cache_bound;
+#[path = "adversarial_center_to_element.rs"]
+mod adversarial_center_to_element;
 #[path = "adversarial_command.rs"]
 mod adversarial_command;
 #[path = "adversarial_document.rs"]

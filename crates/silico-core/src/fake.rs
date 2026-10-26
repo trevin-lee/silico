@@ -832,6 +832,11 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             };
             distance(&first_counts, *first, &second_counts, *second)
         }
+        Op::PointDistance {
+            shape,
+            element,
+            point,
+        } => point_distance(&Symbolic::read(shape)?.counts(), *element, *point),
         Op::Echo { data } => Ok(Reply::Echo { data: data.clone() }),
         other => Err(Error::new(
             ErrorCode::Internal,
@@ -935,6 +940,41 @@ fn distance(
         distance: (f64::from(first.index) - f64::from(second.index)).abs(),
         from: at(first),
         to: at(second),
+        solutions: 1,
+    }))
+}
+
+/// The fake's distance from `point` to `element`, of a shape whose counts are `counts`: the
+/// element at (n, 0, 0), its number `n`, as [`distance`] places it, so the distance is the
+/// point's from there, met there, once. Refused as a worker refuses it, in the same words.
+fn point_distance(
+    counts: &ElementCounts,
+    element: ElementRef,
+    point: [f64; 3],
+) -> Result<Reply, Error> {
+    let refused = |refusal| {
+        Err(crate::worker::failure_error(
+            "PointDistance",
+            silico_protocol::Failure::new(refusal),
+        ))
+    };
+    if let Err(refusal) = silico_protocol::check_point_distance(element, point) {
+        return refused(refusal);
+    }
+    let count = counts.of(element.kind);
+    if element.index > count {
+        return refused(silico_protocol::Refusal::ElementMissing {
+            parameter: "element".to_owned(),
+            element,
+            count,
+        });
+    }
+    let at = [f64::from(element.index), 0.0, 0.0];
+    let d = [point[0] - at[0], point[1] - at[1], point[2] - at[2]];
+    Ok(Reply::Distance(silico_protocol::Distance {
+        distance: (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt(),
+        from: point,
+        to: at,
         solutions: 1,
     }))
 }

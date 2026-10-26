@@ -8,6 +8,7 @@ use std::ffi::OsString;
 
 use serde::{Deserialize, Serialize};
 
+use crate::classify::point_beyond;
 use crate::{InvalidParameter, Mesh};
 
 /// Which adapter the render worker may draw on: the core's one say about the renderer, given
@@ -221,13 +222,8 @@ impl Camera {
     /// and the renderer, so they can't disagree.
     pub fn frame(&self) -> Result<Frame, InvalidParameter> {
         for (parameter, v) in [("camera.eye", self.eye), ("camera.target", self.target)] {
-            if !v.iter().all(|c| c.abs() <= MAX_RENDER_COORDINATE) {
-                return Err(invalid(
-                    parameter,
-                    format!(
-                        "{parameter} {v:?} must be finite and within {MAX_RENDER_COORDINATE} mm of the origin"
-                    ),
-                ));
+            if let Some(message) = point_beyond(parameter, v, MAX_RENDER_COORDINATE) {
+                return Err(invalid(parameter, message));
             }
         }
         if !finite3(self.up) {

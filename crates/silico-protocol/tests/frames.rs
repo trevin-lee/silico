@@ -295,6 +295,14 @@ fn every_op() -> Vec<Op> {
             shape: ShapeData::checked(Blob::inline(vec![9]), false),
             point: [-0.0, f64::MIN_POSITIVE, -1e300],
         },
+        Op::PointDistance {
+            shape: ShapeData::checked(Blob::inline(vec![9, 2]), true),
+            element: ElementRef {
+                kind: ElementKind::Vertex,
+                index: u32::MAX,
+            },
+            point: [1e12, -0.0, f64::MIN_POSITIVE],
+        },
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
@@ -362,9 +370,10 @@ fn every_op() -> Vec<Op> {
             Op::Distance { .. } => 43,
             Op::Render(_) => 44,
             Op::Classify { .. } => 45,
+            Op::PointDistance { .. } => 46,
         })
         .collect();
-    assert_eq!(indices, (0..46).collect(), "an operation has no case");
+    assert_eq!(indices, (0..47).collect(), "an operation has no case");
     ops
 }
 
@@ -1104,6 +1113,7 @@ fn every_op_has_its_own_name() {
             "Distance",
             "Render",
             "Classify",
+            "PointDistance",
         ]
     );
 }

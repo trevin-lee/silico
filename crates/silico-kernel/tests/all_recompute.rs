@@ -11,11 +11,15 @@
 mod cached;
 #[path = "../../silico-core/tests/common/example.rs"]
 mod example;
+#[path = "common/measuring.rs"]
+mod measuring;
 #[path = "../../silico-core/tests/common/model.rs"]
 mod model;
 
 #[path = "adversarial_cache.rs"]
 mod adversarial_cache;
+#[path = "adversarial_center_to_element.rs"]
+mod adversarial_center_to_element;
 #[path = "adversarial_entries.rs"]
 mod adversarial_entries;
 #[path = "adversarial_fake_kernel.rs"]

@@ -68,6 +68,16 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             distance_finite(&distance)?;
             Ok(Reply::Distance(distance))
         }
+        Op::PointDistance {
+            shape,
+            element,
+            point,
+        } => {
+            let shape = shape_of(&shape)?;
+            let distance = crate::point_distance(&shape, element, point).map_err(failure)?;
+            distance_finite(&distance)?;
+            Ok(Reply::Distance(distance))
+        }
         Op::Fillet {
             shape,
             edges,
