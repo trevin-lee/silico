@@ -475,3 +475,98 @@ fn a_fresh_check_clears_nothing_kept_on_disk_or_in_its_engine() {
     assert_eq!(f.solved_since(kept), 0);
     assert!(answer(f.sessions.rollback(&a)).result.is_ok());
 }
+
+#[test]
+fn a_fresh_check_after_a_rollback_or_a_commit_answers_with_its_own_rebuilds_model() {
+    // A rollback and a commit publish a model no rebuild of the session's made (the one
+    // `begin` kept, and the commit's, rebound to the saved document), labelled by none. A
+    // fresh check of the revision they leave rebuilds it, and its model takes theirs: the
+    // kernel asked once, and the published read gives the fresh model. Each published model
+    // holds a crash, the fresh one none, so which one a read gives is seen.
+    let f = fixture();
+    let crashing = Arc::new(AtomicBool::new(true));
+    let crashes = Arc::clone(&crashing);
+    f.kernel.refuse(move |op| {
+        (matches!(op.name(), "MakeBox" | "MakeSphere") && crashes.load(Ordering::SeqCst)).then(
+            || {
+                silico_core::Error::new(ErrorCode::WorkerCrashed, "crashed")
+                    .with_suggestion("change the operation's values")
+            },
+        )
+    });
+    let a = f.open("a.silico", &document(&[BLOCK]));
+    let faulted = f.check(&a);
+    assert_eq!(
+        read_fault(&faulted),
+        Some((ErrorCode::WorkerCrashed, Some("k7f2qx3m".to_owned())))
+    );
+    let published = |revision: u64, fault: Option<(ErrorCode, &str)>| {
+        let read = answer(f.sessions.check(&a, CheckModel::Published))
+            .model
+            .unwrap();
+        assert_eq!(
+            (read.revision, read.of),
+            (
+                Revision::from_number(revision).unwrap(),
+                ModelChoice::Published
+            )
+        );
+        assert_eq!(
+            read.fault
+                .map(|fault| (fault.code(), fault.feature().unwrap().to_owned())),
+            fault.map(|(code, feature)| (code, feature.to_owned()))
+        );
+    };
+    let current = |response: &Response<CheckAnswer>, revision: u64| {
+        assert_eq!(
+            response.model,
+            Some(ModelRead {
+                revision: Revision::from_number(revision).unwrap(),
+                of: ModelChoice::Current,
+                fault: None,
+            })
+        );
+    };
+
+    // Begun and rolled back: revision 2, the model `begin` kept (the crashed box) published.
+    assert!(answer(f.sessions.begin(&a)).result.is_ok());
+    let rolled = answer(f.sessions.rollback(&a)).result.unwrap();
+    assert_eq!(rolled.restored, Revision::OPENED);
+    published(2, Some((ErrorCode::WorkerCrashed, "k7f2qx3m")));
+    crashing.store(false, Ordering::SeqCst);
+    let start = f.mark();
+    let fresh = f.fresh(&a);
+    assert_eq!(problems(&fresh), []);
+    current(&fresh, 2);
+    assert_eq!(f.made_since(start), (vec!["MakeBox"], 1));
+    published(2, None);
+    assert_eq!(
+        f.sessions.status(&a).result.unwrap().rebuild.state,
+        RebuildState::Done
+    );
+
+    // Begun, the ball put in its place, and committed: revision 4, the commit's model (the
+    // crashed ball) published.
+    crashing.store(true, Ordering::SeqCst);
+    assert!(answer(f.sessions.begin(&a)).result.is_ok());
+    let replaced = answer(f.sessions.replace_text(
+        &a,
+        Revision::from_number(2).unwrap(),
+        document(&[BALL]),
+    ));
+    assert!(replaced.result.is_ok(), "{replaced:?}");
+    let committed = answer(f.sessions.commit(&a)).result.unwrap();
+    assert!(committed.written);
+    published(4, Some((ErrorCode::WorkerCrashed, "b0000001")));
+    crashing.store(false, Ordering::SeqCst);
+    let start = f.mark();
+    let fresh = f.fresh(&a);
+    assert_eq!(problems(&fresh), []);
+    current(&fresh, 4);
+    assert_eq!(f.made_since(start), (vec!["MakeSphere"], 1));
+    published(4, None);
+    assert_eq!(
+        f.sessions.status(&a).result.unwrap().rebuild.state,
+        RebuildState::Done
+    );
+}
