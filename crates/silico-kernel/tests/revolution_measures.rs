@@ -790,9 +790,12 @@ fn a_kilometres_half_barrel_is_cut_as_by_hand_or_is_occts_known_wrong_answer() {
     // BOPAlgo_AlertFaceBuilderUnusedEdges, and FreeCAD 1.1.3's `Shape.cut` gives the same
     // (301.593, the half whole) with its arc built as its sketcher builds it, a turn on, or
     // through three points (2026-10-25): a known wrong result (docs/ports/booleans.md),
-    // taken as FreeCAD takes it; a pocket of it is refused as removing nothing. The whole
-    // barrel, z from −4 to 4, is cut right by both. Right or that wrong answer, so OCCT
-    // giving any other fails here, and a fixed OCCT passes.
+    // taken as FreeCAD takes it. What sets it off is how little the arc turns, not where
+    // it starts: a kilometre's arc turning up to about 6e-6 rad is left uncut by both from
+    // any start (from 0, ending at 0, or across it, z −3 to 3), and from about 7e-6 rad
+    // (z −4 to 4, 0 to 7) it's cut right, as the micro-radian band's tube is (its row, the
+    // same threshold, likely). Right or that wrong answer, so OCCT giving any other fails
+    // here, and a fixed OCCT passes.
     let mut k = kernel();
     let block = y_over_2(&mut k);
     let r = 1e6;
