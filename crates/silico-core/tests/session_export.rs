@@ -23,11 +23,12 @@ use silico_protocol::Reply;
 
 fn request(path: std::path::PathBuf) -> Export {
     Export {
-        format: ExportFormat::ThreeMf,
+        format: ExportFormat::ThreeMf {
+            tolerance: Length::rounded(0.1).unwrap(),
+        },
         path,
         replace: false,
         features: None,
-        tolerance: Length::rounded(0.1).unwrap(),
     }
 }
 

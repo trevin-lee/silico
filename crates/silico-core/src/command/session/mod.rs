@@ -735,7 +735,9 @@ impl<P: Clients + 'static> Sessions<P> {
             stop.interrupt_with(Arc::downgrade(&kernel) as Weak<dyn Interrupt>);
             let current = session.current(stop).map_err(Unbuilt::problems)?;
             *model = Some(current.read.clone());
+            let path = session.held.read().path.clone();
             read(Read {
+                path,
                 model: &current.model,
                 read: current.read,
                 stop,
@@ -1383,8 +1385,10 @@ fn start_published<C: Kernel + 'static, T: Send + 'static>(
                 || Some(session.info(false)),
                 || {
                     let (info, published) = session.published_now();
+                    let path = session.held.read().path.clone();
                     published_answer(info, published, |published, model| {
                         read(Read {
+                            path,
                             model: &published.model,
                             read: model,
                             stop: &stop,

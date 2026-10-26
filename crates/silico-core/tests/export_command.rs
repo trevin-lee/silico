@@ -63,6 +63,7 @@ impl Bench {
             request,
             &ExportOn {
                 kernel: &self.kernel,
+                document: "part.silico",
                 workspace: None,
                 held: &[],
                 settle,
@@ -112,11 +113,12 @@ impl Drop for Scratch {
 
 fn request(path: &Path) -> Export {
     Export {
-        format: ExportFormat::ThreeMf,
+        format: ExportFormat::ThreeMf {
+            tolerance: Length::rounded(0.1).unwrap(),
+        },
         path: path.to_owned(),
         replace: false,
         features: None,
-        tolerance: Length::rounded(0.1).unwrap(),
     }
 }
 
@@ -165,9 +167,11 @@ fn every_body_is_written_one_object_each_and_answered() {
             objects: vec![silico_core::command::export::ExportedObject {
                 feature: id("m3tq8v0z"),
                 name: "Hole".to_owned(),
-                triangles: 4,
-                vertices: 4,
-                volume: Measure::parse("0.166667").unwrap(),
+                mesh: Some(silico_core::command::export::MeshWritten {
+                    triangles: 4,
+                    vertices: 4,
+                    volume: Measure::parse("0.166667").unwrap(),
+                }),
                 left_out: vec![],
             }],
         }
@@ -205,7 +209,9 @@ fn a_tolerance_out_of_range_is_refused_in_the_designs_words_asking_the_kernel_no
     let bench = Bench::of(EXAMPLE);
     let dir = Scratch::new("tolerance");
     let mut asked = request(&dir.0.join("out.3mf"));
-    asked.tolerance = Length::rounded(0.0).unwrap();
+    asked.format = ExportFormat::ThreeMf {
+        tolerance: Length::rounded(0.0).unwrap(),
+    };
     let problems = refused(bench.export(&asked));
     let e = &problems.errors()[0];
     assert_eq!(
@@ -229,7 +235,9 @@ fn every_reason_a_request_is_refused_is_said_at_once_in_the_designs_order() {
     let bench = Bench::of(text);
     let dir = Scratch::new("every");
     let mut asked = request(&dir.0.join("out.stl"));
-    asked.tolerance = Length::rounded(1e9).unwrap();
+    asked.format = ExportFormat::ThreeMf {
+        tolerance: Length::rounded(1e9).unwrap(),
+    };
     asked.features = Some(vec![id("k7f2qx3m"), id("zzzzzzzz"), id("k7f2qx3m")]);
     let problems = refused(bench.export(&asked));
     let said: Vec<(Option<&str>, Option<&str>)> = problems
@@ -663,7 +671,7 @@ fn faces_bounding_no_material_are_left_out_and_named_by_the_features_element_map
             face_name(&bench, "k7f2qx3m", 6)
         ]
     );
-    assert_eq!(done.objects[0].triangles, 4);
+    assert_eq!(done.objects[0].mesh.map(|m| m.triangles), Some(4));
     assert_eq!(
         std::fs::read(&path).unwrap(),
         archive_of(&[("Block", "k7f2qx3m")])
@@ -924,4 +932,154 @@ fn two_kernel_faults_stopping_features_listed_are_each_said_once() {
         "{problems:?}"
     );
     assert_eq!(problems.total(), 2);
+}
+
+/// A STEP export of `features` (every body if none) to `path`.
+fn step_request(path: &Path, features: Option<&[&str]>) -> Export {
+    Export {
+        format: ExportFormat::Step,
+        path: path.to_owned(),
+        replace: false,
+        features: features.map(|f| f.iter().map(|&i| id(i)).collect()),
+    }
+}
+
+#[test]
+fn a_step_export_writes_the_kernels_file_of_the_bodies_named_by_their_features() {
+    // The fake kernel's file says what was asked: the header's file name, the document's;
+    // one product, the cut's, its id the feature's ID and its name the feature's. No mesh,
+    // so the object's mesh is none; nothing left out; nothing meshed.
+    let bench = Bench::of(EXAMPLE);
+    let dir = Scratch::new("step");
+    let path = dir.0.join("out.step");
+    let done = bench.export(&step_request(&path, None)).unwrap();
+    let file = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        file,
+        "FAKE STEP\nFILE_NAME('part.silico')\nPRODUCT('m3tq8v0z','Hole') cut(box(40, 20, 10), \
+         translate(cylinder(2.5, 12), 20, 10, -1))\n"
+    );
+    assert_eq!(done.bytes, file.len() as u64);
+    assert_eq!(
+        done.objects,
+        [silico_core::command::export::ExportedObject {
+            feature: id("m3tq8v0z"),
+            name: "Hole".to_owned(),
+            mesh: None,
+            left_out: vec![],
+        }]
+    );
+    assert_eq!(bench.meshed(), 0);
+    assert_eq!(dir.names(), ["out.step"]);
+}
+
+#[test]
+fn a_step_export_of_two_bodies_is_an_assembly_named_by_the_documents_stem() {
+    // Listed second then first: the products in that order, under `part`, the stem.
+    let bench = Bench::of(EXAMPLE);
+    let dir = Scratch::new("step-two");
+    let path = dir.0.join("out.step");
+    bench
+        .export(&step_request(&path, Some(&["m3tq8v0z", "k7f2qx3m"])))
+        .unwrap();
+    let file = std::fs::read_to_string(&path).unwrap();
+    let lines: Vec<&str> = file.lines().collect();
+    assert_eq!(lines[2], "ASSEMBLY('part')");
+    assert!(
+        lines[3].starts_with("PRODUCT('m3tq8v0z','Hole') "),
+        "{file}"
+    );
+    assert!(
+        lines[4].starts_with("PRODUCT('k7f2qx3m','Block') box("),
+        "{file}"
+    );
+    assert_eq!(lines.len(), 5);
+}
+
+#[test]
+fn a_step_export_encodes_every_name_and_refuses_none_for_its_characters() {
+    // The cut renamed with an umlaut, a backslash, and U+0001, which a 3MF can't hold: STEP
+    // encodes each (docs/ports/step-export.md, *Strings*), the umlaut and the backslash in
+    // one run, so the export is written.
+    let renamed = EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Lö\\ch\u0001""#);
+    assert_ne!(renamed, EXAMPLE);
+    let bench = Bench::of(&renamed);
+    let dir = Scratch::new("step-names");
+    let path = dir.0.join("out.step");
+    let done = bench.export(&step_request(&path, None)).unwrap();
+    assert_eq!(done.objects[0].name, "Lö\\ch\u{1}");
+    let file = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        file.contains("PRODUCT('m3tq8v0z','L\\X2\\00F6005C\\X0\\ch\\X2\\0001\\X0\\')"),
+        "{file}"
+    );
+    // The same name, as a 3MF: refused for its control character.
+    let problems = refused(bench.export(&request(&dir.0.join("out.3mf"))));
+    assert_eq!(problems.errors()[0].parameter(), Some("name"));
+}
+
+#[test]
+fn a_step_exports_faces_left_out_are_named_by_the_features_element_map() {
+    // The writer drops the block's Face5 and Face6 as bounding no material: named in
+    // `left_out` as the block's element map names them.
+    let bench = Bench::with(EXAMPLE, |kernel| {
+        kernel.answer_instead(|op| match op {
+            Op::ExportStep(_) => Some(Reply::StepFile(Box::new(silico_protocol::StepFile {
+                step: silico_protocol::Blob::inline(b"STEP".to_vec()),
+                left_out: vec![vec![5, 6]],
+            }))),
+            _ => None,
+        });
+    });
+    let dir = Scratch::new("step-left-out");
+    let done = bench
+        .export(&step_request(&dir.0.join("out.step"), Some(&["k7f2qx3m"])))
+        .unwrap();
+    assert_eq!(
+        done.objects[0].left_out,
+        [
+            face_name(&bench, "k7f2qx3m", 5),
+            face_name(&bench, "k7f2qx3m", 6)
+        ]
+    );
+}
+
+#[test]
+fn a_step_file_the_kernel_refuses_names_the_feature_of_its_one_part() {
+    let bench = Bench::with(EXAMPLE, |kernel| {
+        kernel.refuse(|op| {
+            matches!(op, Op::ExportStep(_))
+                .then(|| Error::new(ErrorCode::InvalidResult, "OCCT couldn't transfer a face"))
+        });
+    });
+    let dir = Scratch::new("step-refused");
+    let problems = refused(bench.export(&step_request(&dir.0.join("out.step"), None)));
+    let e = &problems.errors()[0];
+    assert_eq!(
+        (e.code(), e.feature()),
+        (ErrorCode::InvalidResult, Some("m3tq8v0z")),
+        "{e:?}"
+    );
+    assert!(dir.names().is_empty());
+}
+
+#[test]
+fn a_step_reply_for_another_number_of_parts_is_the_workers_fault() {
+    // Two parts asked, the faces left out of one sent: a protocol error, nothing written.
+    let bench = Bench::with(EXAMPLE, |kernel| {
+        kernel.answer_instead(|op| match op {
+            Op::ExportStep(_) => Some(Reply::StepFile(Box::new(silico_protocol::StepFile {
+                step: silico_protocol::Blob::inline(b"STEP".to_vec()),
+                left_out: vec![vec![]],
+            }))),
+            _ => None,
+        });
+    });
+    let dir = Scratch::new("step-parts");
+    let problems = refused(bench.export(&step_request(
+        &dir.0.join("out.step"),
+        Some(&["m3tq8v0z", "k7f2qx3m"]),
+    )));
+    assert_eq!(problems.errors()[0].code(), ErrorCode::ProtocolError);
+    assert!(dir.names().is_empty());
 }

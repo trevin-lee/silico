@@ -838,12 +838,37 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             point,
         } => point_distance(&Symbolic::read(shape)?.counts(), *element, *point),
         Op::Echo { data } => Ok(Reply::Echo { data: data.clone() }),
+        Op::ExportStep(export) => step_file(export),
         other => Err(Error::new(
             ErrorCode::Internal,
             format!("the fake kernel doesn't do {}", other.name()),
         )
         .with_suggestion("run this test on a real kernel worker")),
     }
+}
+
+/// The fake's STEP file of `export`: a text saying what was asked, line by line (the
+/// header's file name; the assembly, if there are two or more parts; each part's product id,
+/// name, and how the fake made its shape), so a test reads what the core sent; no face
+/// left out.
+fn step_file(export: &silico_protocol::ExportStep) -> Result<Reply, Error> {
+    let mut text = format!("FAKE STEP\nFILE_NAME('{}')\n", export.file_name);
+    if export.parts.len() > 1 {
+        text.push_str(&format!("ASSEMBLY('{}')\n", export.assembly));
+    }
+    for part in &export.parts {
+        let made = Symbolic::read(&part.shape)?;
+        text.push_str(&format!(
+            "PRODUCT('{}','{}') {}\n",
+            part.id,
+            part.name,
+            made.describe()
+        ));
+    }
+    Ok(Reply::StepFile(Box::new(silico_protocol::StepFile {
+        step: Blob::inline(text.into_bytes()),
+        left_out: vec![Vec::new(); export.parts.len()],
+    })))
 }
 
 /// The fake's display mesh of `made`, as the kernel's is checked: a triangle for each face

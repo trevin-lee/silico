@@ -423,9 +423,13 @@ fn the_examples_are_the_designs_own_text() {
             "export",
             &[
                 "request",
+                "request-step",
                 "result",
+                "result-step",
                 "refused-unclosed",
                 "refused-tolerance",
+                "refused-tolerance-null",
+                "refused-tolerance-step",
                 "refused-raised-face",
                 "refused-exists",
                 "refused-document",
@@ -1446,6 +1450,7 @@ fn exported(
         request,
         &ExportOn {
             kernel: &kernel,
+            document: "bracket.silico",
             workspace: Some(&silico_core::file::Workspace::new(workspace).unwrap()),
             held: &[],
             settle: &|| Ok(()),
@@ -1462,11 +1467,12 @@ fn the_designs_export_request_is_read_and_written_back_and_holds_to_its_schema()
     assert_eq!(
         call.export,
         Export {
-            format: ExportFormat::ThreeMf,
+            format: ExportFormat::ThreeMf {
+                tolerance: Length::from_nm(100_000),
+            },
             path: std::path::PathBuf::from("out/bracket.3mf"),
             replace: false,
             features: None,
-            tolerance: Length::from_nm(100_000),
         }
     );
     assert_eq!(written(&call), text);
@@ -1485,14 +1491,15 @@ fn an_export_request_naming_features_and_replacing_is_read_as_it_says_and_writte
     assert_eq!(
         call.export,
         Export {
-            format: ExportFormat::ThreeMf,
+            format: ExportFormat::ThreeMf {
+                tolerance: Length::from_nm(25_000),
+            },
             path: std::path::PathBuf::from("out/two.3mf"),
             replace: true,
             features: Some(vec![
                 silico_core::document::FeatureId::new("b2b2b2b2").unwrap(),
                 silico_core::document::FeatureId::new("a1a1a1a1").unwrap(),
             ]),
-            tolerance: Length::from_nm(25_000),
         }
     );
     assert_eq!(written(&call), format!("{text}\n"));
@@ -1509,9 +1516,11 @@ fn the_designs_export_result_is_the_writers_and_holds_to_its_schema() {
         objects: vec![ExportedObject {
             feature: silico_core::document::FeatureId::new("f0000003").unwrap(),
             name: "Bracket".to_owned(),
-            triangles: 1204,
-            vertices: 596,
-            volume: silico_core::document::Measure::parse("15187.442817").unwrap(),
+            mesh: Some(silico_core::command::export::MeshWritten {
+                triangles: 1204,
+                vertices: 596,
+                volume: silico_core::document::Measure::parse("15187.442817").unwrap(),
+            }),
             left_out: vec![],
         }],
     };
@@ -1553,7 +1562,9 @@ fn the_designs_export_refusals_are_the_commands_own_and_hold_to_the_error_contra
     let request = || ExportRequest::read(&parsed(&example("export/request"))).unwrap();
     // A tolerance of 0.
     let mut call = request();
-    call.export.tolerance = Length::from_nm(0);
+    call.export.format = silico_core::command::export::ExportFormat::ThreeMf {
+        tolerance: Length::from_nm(0),
+    };
     check(
         "export/refused-tolerance",
         the_refusal(&exported(BLOCK, &call.export, &workspace, None).unwrap_err()),
@@ -1578,6 +1589,78 @@ fn the_designs_export_refusals_are_the_commands_own_and_hold_to_the_error_contra
         the_refusal(&ExportRequest::read(&parsed(&text)).unwrap_err()),
     );
     let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[test]
+fn the_designs_step_request_and_result_are_read_and_written_back_and_hold_to_their_schemas() {
+    // Fable's decision (2026-10-26): STEP takes a null tolerance, and its objects' three
+    // mesh fields are null.
+    use silico_core::command::export::{Export, ExportFormat, Exported, ExportedObject};
+    use silico_core::command::wire::export::ExportRequest;
+    let text = example("export/request-step");
+    let call = ExportRequest::read(&parsed(&text)).unwrap();
+    assert_eq!(
+        call.export,
+        Export {
+            format: ExportFormat::Step,
+            path: std::path::PathBuf::from("out/bracket.step"),
+            replace: false,
+            features: None,
+        }
+    );
+    assert_eq!(written(&call), text);
+    holds(&schema_of("export", "request", None), &text, "export");
+    let want = example("export/result-step");
+    let result = Exported {
+        path: std::path::PathBuf::from("out/bracket.step"),
+        bytes: 27_418,
+        objects: vec![ExportedObject {
+            feature: silico_core::document::FeatureId::new("f0000003").unwrap(),
+            name: "Bracket".to_owned(),
+            mesh: None,
+            left_out: vec![],
+        }],
+    };
+    assert_eq!(written(&result), want);
+    holds(&schema_of("export", "result", None), &want, "export");
+}
+
+#[test]
+fn a_tolerance_that_doesnt_fit_the_format_is_refused_as_the_request_is_read() {
+    use silico_core::command::wire::export::ExportRequest;
+    let error = error_schema();
+    let read = |text: &str| ExportRequest::read(&parsed(text)).unwrap_err();
+    // 3MF with null, and STEP with a length: the design's refusals, byte for byte.
+    let null = example("export/request").replace("\"tolerance\": 0.1", "\"tolerance\": null");
+    let want = example("export/refused-tolerance-null");
+    assert_eq!(the_refusal(&read(&null)), want);
+    holds(&error, &want, "refused-tolerance-null");
+    let given = example("export/request-step").replace("\"tolerance\": null", "\"tolerance\": 0.1");
+    let want = example("export/refused-tolerance-step");
+    assert_eq!(the_refusal(&read(&given)), want);
+    holds(&error, &want, "refused-tolerance-step");
+    // A tolerance of the wrong type is the shape's own refusal, whatever the format.
+    for text in [
+        example("export/request-step").replace("\"tolerance\": null", "\"tolerance\": \"0.1\""),
+        example("export/request").replace("\"tolerance\": 0.1", "\"tolerance\": true"),
+    ] {
+        let problems = read(&text);
+        assert_eq!(problems.total(), 1, "{:?}", problems.errors());
+        let e = &problems.errors()[0];
+        assert_eq!(e.parameter(), Some("tolerance"), "{e:?}");
+        assert!(
+            e.message()
+                .starts_with("tolerance must be a length in millimetres or null, got"),
+            "{e:?}"
+        );
+    }
+    // An unknown key and a mismatch: both said.
+    let both = given.replace("\"replace\": false", "\"replace\": false, \"angle\": 1");
+    let problems = read(&both);
+    let parameters: Vec<Option<&str>> = problems.errors().iter().map(|e| e.parameter()).collect();
+    assert_eq!(problems.total(), 2, "{:?}", problems.errors());
+    assert!(parameters.contains(&Some("tolerance")), "{parameters:?}");
+    assert!(parameters.contains(&Some("angle")), "{parameters:?}");
 }
 
 #[test]

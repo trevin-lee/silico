@@ -37,6 +37,7 @@ const USAGE: &str = "usage: silico check [--json] [--fresh] [--] FILE...
        silico show [--] FILE
        silico cache clear [--] FILE...
        silico export [--tolerance=MM] [--features=ID,...] [--replace] [--] FILE OUT.3mf
+       silico export [--features=ID,...] [--replace] [--] FILE OUT.step
        silico textconv [--] FILE
        silico schema [NAME]";
 
@@ -629,13 +630,15 @@ fn fmt(sessions: &Sessions<KernelPool>, file: &Path, check_only: bool) -> Ended 
     )
 }
 
-/// `silico export FILE OUT.3mf`: open, the session's `export` of its current revision
-/// (every body, or the features `--features` names, at `--tolerance` mm, FreeCAD's 0.1 if
-/// none is given), close. On stdout, where the file went and each object in it: its
-/// feature, name, triangles, vertices, and volume, and the faces left out of it as bounding
-/// no material. Refused as the command refuses (a path that's there without `--replace`, a
-/// document, a tolerance out of range, a solid that isn't printable), each reason on
-/// stderr: nothing written. A tolerance or a feature's ID that isn't one is a usage error.
+/// `silico export FILE OUT.3mf` or `OUT.step`: open, the session's `export` of its current
+/// revision (every body, or the features `--features` names; a 3MF meshed at `--tolerance`
+/// mm, FreeCAD's 0.1 if none is given), close, the format the output's extension's. On
+/// stdout, where the file went and each object in it: its feature and name, and for 3MF its
+/// triangles, vertices, and volume; and the faces left out of it as bounding no material.
+/// Refused as the command refuses (a path that's there without `--replace`, a document, a
+/// tolerance out of range, a solid that isn't printable), each reason on stderr: nothing
+/// written. An output that's neither, a tolerance with a STEP output, or a tolerance or a
+/// feature's ID that isn't one is a usage error.
 fn export(
     sessions: &Sessions<KernelPool>,
     file: &Path,
@@ -646,13 +649,35 @@ fn export(
 ) -> Ended {
     use silico_core::command::export::{DEFAULT_TOLERANCE, Export, ExportFormat};
     use silico_core::document::{FeatureId, Length};
+    let is = |extension: &str| {
+        out.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case(extension))
+    };
     let tolerance = match tolerance.map(Length::parse) {
-        None => DEFAULT_TOLERANCE,
-        Some(Ok(tolerance)) => tolerance,
+        None => None,
+        Some(Ok(tolerance)) => Some(tolerance),
         Some(Err(_)) => {
             say!("silico export: --tolerance takes a length in mm, such as 0.1\n{USAGE}");
             return Ended::Failed;
         }
+    };
+    let format = if is("3mf") {
+        ExportFormat::ThreeMf {
+            tolerance: tolerance.unwrap_or(DEFAULT_TOLERANCE),
+        }
+    } else if is("step") {
+        if tolerance.is_some() {
+            say!(
+                "silico export: --tolerance is a 3MF mesh's; a STEP file holds each body's \
+                 exact shape, and takes none\n{USAGE}"
+            );
+            return Ended::Failed;
+        }
+        ExportFormat::Step
+    } else {
+        say!("silico export: the output must end in .3mf or .step, by its format\n{USAGE}");
+        return Ended::Failed;
     };
     let features = match features {
         None => None,
@@ -670,11 +695,10 @@ fn export(
         }
     };
     let request = Export {
-        format: ExportFormat::ThreeMf,
+        format,
         path: out.to_owned(),
         replace,
         features,
-        tolerance,
     };
     in_session(
         sessions,
@@ -688,15 +712,15 @@ fn export(
                     let mut stdout = std::io::stdout().lock();
                     let _ = writeln!(stdout, "wrote {} ({} bytes)", shown(&done.path), done.bytes);
                     for object in &done.objects {
-                        let _ = writeln!(
-                            stdout,
-                            "{} {}: {} triangles, {} vertices, volume {} mm³",
-                            object.feature,
-                            command::quoted(&object.name),
-                            object.triangles,
-                            object.vertices,
-                            object.volume
-                        );
+                        let name = command::quoted(&object.name);
+                        let _ = match &object.mesh {
+                            Some(mesh) => writeln!(
+                                stdout,
+                                "{} {name}: {} triangles, {} vertices, volume {} mm³",
+                                object.feature, mesh.triangles, mesh.vertices, mesh.volume
+                            ),
+                            None => writeln!(stdout, "{} {name}", object.feature),
+                        };
                         if !object.left_out.is_empty() {
                             let _ = writeln!(
                                 stdout,

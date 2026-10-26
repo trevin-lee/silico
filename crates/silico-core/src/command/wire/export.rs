@@ -12,6 +12,7 @@ use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{Problems, SessionId};
 use crate::document::json::Node;
 use crate::document::{FeatureId, Length, Measure};
+use crate::{Error, ErrorCode};
 
 /// An `export` request: the session, and what to export (an export reads the current
 /// model only).
@@ -21,13 +22,22 @@ pub struct ExportRequest {
     pub export: Export,
 }
 
+/// A format by its word, before its tolerance is read with it.
+#[derive(Debug, Clone, Copy)]
+enum Formats {
+    ThreeMf,
+    Step,
+}
+
 /// The formats, by the words a request writes them in.
-const FORMATS: [(&str, ExportFormat); 1] = [(ExportFormat::ThreeMf.name(), ExportFormat::ThreeMf)];
+const FORMATS: [(&str, Formats); 2] = [("3mf", Formats::ThreeMf), ("step", Formats::Step)];
 
 impl ExportRequest {
-    /// The request `node` holds, or every reason its shape is refused. Its values are the
-    /// command's to check (the tolerance's range, the path, the features), in the design's
-    /// order, as one refusal.
+    /// The request `node` holds, or every reason its shape is refused: as well as each
+    /// field's own, a tolerance that doesn't fit the format (a length for a mesh format, null
+    /// for an exact one), as a camera's fields are refused by its projection. Its values are
+    /// the command's to check (the tolerance's range, the path, the features), in the
+    /// design's order, as one refusal.
     pub fn read(node: &Node) -> Result<Self, Problems> {
         RequestFields::read(node, |f| {
             let session = f.session();
@@ -35,15 +45,45 @@ impl ExportRequest {
             let path = f.string("path");
             let replace = f.bool("replace");
             let features = f.nullable_feature_ids("features");
-            let tolerance = f.length("tolerance");
+            let tolerance = f.nullable_length("tolerance");
+            let format = match (format?, tolerance?) {
+                (Formats::ThreeMf, Some(tolerance)) => ExportFormat::ThreeMf { tolerance },
+                (Formats::Step, None) => ExportFormat::Step,
+                (Formats::ThreeMf, None) => {
+                    f.refuse(
+                        Error::new(
+                            ErrorCode::InvalidInput,
+                            "tolerance must be given for a 3mf export, got null",
+                        )
+                        .with_parameter("tolerance")
+                        .with_suggestion(
+                            "give the mesh's tolerance in mm; 0.1 mm is FreeCAD's default",
+                        ),
+                    );
+                    return None;
+                }
+                (Formats::Step, Some(tolerance)) => {
+                    f.refuse(
+                        Error::new(
+                            ErrorCode::InvalidInput,
+                            format!("tolerance must be null for a step export, got {tolerance}"),
+                        )
+                        .with_parameter("tolerance")
+                        .with_suggestion(
+                            "give null: STEP writes each body's exact B-rep, not a mesh, so it \
+                             takes no tolerance",
+                        ),
+                    );
+                    return None;
+                }
+            };
             Some(ExportRequest {
                 session: session?,
                 export: Export {
-                    format: format?,
+                    format,
                     path: PathBuf::from(path?),
                     replace: replace?,
                     features: features?,
-                    tolerance: tolerance?,
                 },
             })
         })
@@ -65,7 +105,10 @@ impl ToWire for ExportRequest {
                     Json::array(ids.iter().map(|id| Json::str(id.as_str())))
                 }),
             ),
-            ("tolerance", Json::length(e.tolerance)),
+            (
+                "tolerance",
+                Json::or_null(e.format.tolerance().as_ref(), |t| Json::length(*t)),
+            ),
         ])
     }
 }
@@ -91,9 +134,18 @@ fn object_to_wire(object: &ExportedObject) -> Json<'_> {
     Json::object([
         ("feature", Json::str(object.feature.as_str())),
         ("name", Json::str(&object.name)),
-        ("triangles", Json::whole(object.triangles)),
-        ("vertices", Json::whole(object.vertices)),
-        ("volume", Json::measure(object.volume)),
+        (
+            "triangles",
+            Json::or_null(object.mesh.as_ref(), |m| Json::whole(m.triangles)),
+        ),
+        (
+            "vertices",
+            Json::or_null(object.mesh.as_ref(), |m| Json::whole(m.vertices)),
+        ),
+        (
+            "volume",
+            Json::or_null(object.mesh.as_ref(), |m| Json::measure(m.volume)),
+        ),
         (
             "left_out",
             Json::array(object.left_out.iter().map(|n| Json::str(n))),
@@ -101,12 +153,15 @@ fn object_to_wire(object: &ExportedObject) -> Json<'_> {
     ])
 }
 
-/// What `export` writes: 3MF, each body a mesh, as a slicer prints it.
+/// What `export` writes: 3MF, each body a mesh, as a slicer prints it; or STEP, each body's
+/// exact B-rep, as other CAD systems read it.
 #[derive(JsonSchema)]
 #[schemars(rename = "ExportFormat", rename_all = "lowercase")]
 pub enum ExportFormatSchema {
     #[schemars(rename = "3mf")]
     ThreeMf,
+    #[schemars(rename = "step")]
+    Step,
 }
 
 /// `export`'s request: the current model's bodies, or the features named, written as a
@@ -126,12 +181,14 @@ pub struct ExportRequestSchema {
     /// The features whose solids to write, each by its ID, in the file's order; or null,
     /// for every body.
     pub features: Option<Vec<FeatureId>>,
-    /// The mesh's tolerance, in mm, from 0.00001 to 100000000: the mesher's linear
-    /// deflection, as FreeCAD's export takes it (its default is 0.1).
-    pub tolerance: Length,
+    /// A mesh format's tolerance (3mf), in mm, from 0.00001 to 100000000: the mesher's
+    /// linear deflection, as FreeCAD's export takes it (its default is 0.1); null for an
+    /// exact format (step), which takes none.
+    pub tolerance: Option<Length>,
 }
 
-/// An object of an export: one solid's mesh.
+/// An object of an export: one solid as the file holds it, its mesh's counts and volume
+/// for a mesh format, null for an exact one.
 #[derive(JsonSchema)]
 #[schemars(rename = "ExportedObject", transform = wire_shape)]
 pub struct ExportedObjectSchema {
@@ -139,13 +196,14 @@ pub struct ExportedObjectSchema {
     pub feature: FeatureId,
     /// The feature's name, the object's name in the file.
     pub name: String,
-    /// The mesh's triangles.
-    pub triangles: u64,
-    /// The mesh's vertices.
-    pub vertices: u64,
-    /// The mesh's volume, in mm³, computed in doubles from the coordinates as written.
-    pub volume: Measure,
-    /// The faces left out of the mesh as bounding no material (OCCT's INTERNAL and
+    /// The mesh's triangles; null for a format that writes no mesh (step).
+    pub triangles: Option<u64>,
+    /// The mesh's vertices; null for a format that writes no mesh (step).
+    pub vertices: Option<u64>,
+    /// The mesh's volume, in mm³, computed in doubles from the coordinates as written; null
+    /// for a format that writes no mesh (step).
+    pub volume: Option<Measure>,
+    /// The faces left out of the file as bounding no material (OCCT's INTERNAL and
     /// EXTERNAL), by their names: none for most parts.
     pub left_out: Vec<String>,
 }

@@ -146,6 +146,8 @@ impl ModelRead {
 /// whether it was stopped (decision 34), and a kernel client of the read's own, for a read
 /// that asks the kernel (`distance`).
 pub struct Read<'a, C> {
+    /// The session's document's path, as `open` was given it.
+    pub(super) path: String,
     pub(super) model: &'a Model,
     pub(super) read: ModelRead,
     pub(super) stop: &'a Ticket,
@@ -154,6 +156,12 @@ pub struct Read<'a, C> {
 }
 
 impl<C> Read<'_, C> {
+    /// The session's document's path, as `open` was given it (STEP's header names its
+    /// file).
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
     /// The model read.
     pub fn model(&self) -> &Model {
         self.model

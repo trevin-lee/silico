@@ -263,6 +263,10 @@ pub enum Op {
         tolerance: f64,
         force_face_deflection: bool,
     },
+    /// Bodies written as a STEP file (docs/ports/step-export.md), boxed, as it's every
+    /// part's shape, its strings checked by [`ExportStep::check`]. Replies with
+    /// [`Reply::StepFile`].
+    ExportStep(Box<ExportStep>),
     /// A scene drawn by the render worker, boxed, as it's every body's mesh. Replies with
     /// [`Reply::Rendered`].
     Render(Box<RenderScene>),
@@ -300,6 +304,7 @@ impl Op {
             Op::Describe { .. } => "Describe",
             Op::Distance { .. } => "Distance",
             Op::ExportMesh { .. } => "ExportMesh",
+            Op::ExportStep(_) => "ExportStep",
             Op::Render(_) => "Render",
             Op::Classify { .. } => "Classify",
             Op::PointDistance { .. } => "PointDistance",
@@ -476,6 +481,8 @@ pub enum Reply {
     Distance(Distance),
     /// A shape's solids meshed for export ([`Op::ExportMesh`]), boxed, as it's many lists.
     ExportMesh(Box<ExportMesh>),
+    /// Bodies written as a STEP file ([`Op::ExportStep`]), boxed, as it's the file.
+    StepFile(Box<StepFile>),
     /// A scene drawn ([`Op::Render`]): the image, an 8-bit sRGB PNG, and the ID buffer, one
     /// pair a pixel row by row from the top left, if the scene asked for it.
     Rendered {
@@ -504,6 +511,7 @@ impl Reply {
             Reply::Described { .. } => "Described",
             Reply::Distance(_) => "Distance",
             Reply::ExportMesh(_) => "ExportMesh",
+            Reply::StepFile(_) => "StepFile",
             Reply::Rendered { .. } => "Rendered",
             Reply::Classified { .. } => "Classified",
             Reply::MeshAt { .. } => "MeshAt",
@@ -819,6 +827,13 @@ impl Blob {
     }
 
     pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Blob::Inline(bytes) => bytes,
+        }
+    }
+
+    /// The bytes, taken.
+    pub fn into_bytes(self) -> Vec<u8> {
         match self {
             Blob::Inline(bytes) => bytes,
         }
