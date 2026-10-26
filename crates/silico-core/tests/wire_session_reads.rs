@@ -1099,3 +1099,151 @@ fn a_published_check_leaves_out_the_drift_its_own_revisions_edits_reached() {
     assert_eq!(published.model.unwrap().revision, revision(3));
     assert!(published.result.unwrap().problems.is_empty());
 }
+
+/// [`BOX`] with the fingerprint of a box 41 long stored (by formula: 41 × 20 × 10 = 8200,
+/// area 2 × (820 + 410 + 200) = 2860): drift of the box 40 long, no edit reaching it.
+fn stale() -> String {
+    let stale = BOX.replace(
+        r#""height": 10}"#,
+        r#""height": 10, "fingerprint": {"volume": 8200, "area": 2860, "bbox": [0, 0, 0, 41, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#,
+    );
+    assert_ne!(stale, BOX);
+    stale
+}
+
+/// Each problem's code and feature, in order.
+fn codes(problems: &Problems) -> Vec<(ErrorCode, Option<&str>)> {
+    problems
+        .errors()
+        .iter()
+        .map(|e| (e.code(), e.feature()))
+        .collect()
+}
+
+/// The box's `field` set to `value` at `at`, which moves s1 to `at + 1`.
+fn set(f: &Fixture, at: u64, field: &str, value: &str) {
+    let set = answer(f.sessions.set_field(
+        &s1(),
+        revision(at),
+        id("k7f2qx3m"),
+        field.to_owned(),
+        parsed(value),
+    ));
+    assert_eq!(set.session.unwrap().revision, revision(at + 1));
+}
+
+#[test]
+fn a_published_check_says_the_drift_no_edit_reached() {
+    // The box as stored drifts, and no edit reaches it: a current check says so, and
+    // publishes its model; a published check of that model says the same drift.
+    let f = opened(&stale());
+    let current = answer(f.sessions.check(&s1(), ModelChoice::Current));
+    let current = current.result.unwrap();
+    assert_eq!(
+        codes(&current.problems),
+        [(ErrorCode::Drift, Some("k7f2qx3m"))]
+    );
+    let published = answer(f.sessions.check(&s1(), ModelChoice::Published));
+    let model = published.model.as_ref().unwrap();
+    assert_eq!(
+        (model.revision, model.of),
+        (Revision::OPENED, ModelChoice::Published)
+    );
+    assert_eq!(published.result.unwrap(), current);
+}
+
+#[test]
+fn after_a_rollback_a_published_check_says_the_drift_the_transaction_reached() {
+    // The box's drift said at revision 1, whose model is published; in a transaction, its
+    // width 21, reached, its drift not said at revision 2. Rolled back, revision 3 is
+    // revision 1's state, revision 1's model published as its own: nothing reached, so a
+    // published check of it says the drift again.
+    let f = opened(&stale());
+    let first = answer(f.sessions.check(&s1(), ModelChoice::Current));
+    assert_eq!(
+        codes(&first.result.unwrap().problems),
+        [(ErrorCode::Drift, Some("k7f2qx3m"))]
+    );
+    answer(f.sessions.begin(&s1())).result.unwrap();
+    set(&f, 1, "width", "21");
+    let reached = answer(f.sessions.check(&s1(), ModelChoice::Current));
+    assert_eq!(reached.model.unwrap().revision, revision(2));
+    let problems = reached.result.unwrap().problems;
+    assert!(problems.is_empty(), "{:?}", problems.errors());
+    let rolled = answer(f.sessions.rollback(&s1()));
+    assert_eq!(rolled.session.unwrap().revision, revision(3));
+    let published = answer(f.sessions.check(&s1(), ModelChoice::Published));
+    let model = published.model.as_ref().unwrap();
+    assert_eq!(
+        (model.revision, model.of),
+        (revision(3), ModelChoice::Published)
+    );
+    assert_eq!(
+        codes(&published.result.unwrap().problems),
+        [(ErrorCode::Drift, Some("k7f2qx3m"))]
+    );
+}
+
+#[test]
+fn a_rebuild_a_published_check_starts_keeps_its_revisions_reach() {
+    // A box whose stored fingerprint is the fake kernel's, made longer in a transaction:
+    // revision 2, the box reached, its rebuild never started. A published check finds
+    // nothing published and starts revision 2's rebuild; its model, published, is checked
+    // as revision 2's edits reached it: the stored fingerprint, the shorter box's, not drift.
+    let stored = BOX.replace(
+        r#""height": 10}"#,
+        r#""height": 10, "fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#,
+    );
+    let f = opened(&stored);
+    answer(f.sessions.begin(&s1())).result.unwrap();
+    set(&f, 1, "length", "41");
+    let deadline = std::time::Instant::now() + HANG;
+    let published = loop {
+        let published = answer(f.sessions.check(&s1(), ModelChoice::Published));
+        if published.result.is_ok() {
+            break published;
+        }
+        assert_eq!(
+            said(&published.result.unwrap_err()),
+            [(
+                "model".to_owned(),
+                "session s1 has published no model yet".to_owned()
+            )]
+        );
+        assert!(std::time::Instant::now() < deadline, "nothing published");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    let model = published.model.as_ref().unwrap();
+    assert_eq!(
+        (model.revision, model.of),
+        (revision(2), ModelChoice::Published)
+    );
+    let problems = published.result.unwrap().problems;
+    assert!(problems.is_empty(), "{:?}", problems.errors());
+}
+
+#[test]
+fn a_published_check_lists_problems_beside_a_kernel_fault() {
+    // A worker that crashes on every request: the current check's problems none, the fault
+    // in its model read; a published check of that model the same, never refused for it.
+    let f = opened(BOX);
+    f.kernel
+        .refuse(|_| Some(Error::new(ErrorCode::WorkerCrashed, "crashed")));
+    let current = answer(f.sessions.check(&s1(), ModelChoice::Current));
+    let fault = current.model.as_ref().unwrap().fault.as_ref().unwrap();
+    assert_eq!(fault.code(), ErrorCode::WorkerCrashed);
+    assert!(current.result.unwrap().problems.is_empty());
+    let published = answer(f.sessions.check(&s1(), ModelChoice::Published));
+    let model = published.model.as_ref().unwrap();
+    assert_eq!(
+        (model.revision, model.of),
+        (Revision::OPENED, ModelChoice::Published)
+    );
+    assert_eq!(
+        model.fault.as_ref().map(Error::code),
+        Some(ErrorCode::WorkerCrashed)
+    );
+    let checked = published.result.unwrap();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems.errors());
+    assert!(checked.warnings.is_empty());
+}
