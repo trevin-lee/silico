@@ -17,8 +17,8 @@ use super::transaction::BeginResultSchema;
 use super::{ErrorSchema, Json, RequestFields, ToWire, problems, wire_shape, words};
 use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{
-    Cancelled, Closed, Limits, Opened, Problems, Rebuild, SessionCommand, SessionId, Status,
-    Version,
+    Cancelled, Closed, Limits, Opened, Problems, PublishedRead, Rebuild, SessionCommand, SessionId,
+    Status, Version,
 };
 use crate::document::json::Node;
 use crate::document::{FeatureId, PROBLEMS_LISTED};
@@ -85,30 +85,14 @@ pub const SESSION_COMMANDS: [&str; SessionCommand::ALL.len()] = {
     names
 };
 
-/// How many commands run as reads that may read the published model.
-const PUBLISHED_READ_COUNT: usize = {
-    let mut count = 0;
-    let mut at = 0;
-    while at < SessionCommand::ALL.len() {
-        if SessionCommand::ALL[at].reads_published() {
-            count += 1;
-        }
-        at += 1;
-    }
-    count
-};
-
 /// The commands that run as reads that may read the published model
-/// ([`SessionCommand::reads_published`]), each by name, in the design's order (a subset of
+/// ([`PublishedRead::ALL`]), each by name, in the design's order (a subset of
 /// [`SESSION_COMMANDS`]): what `status` lists among the published reads running.
-pub const PUBLISHED_READS: [&str; PUBLISHED_READ_COUNT] = {
-    let mut names = [""; PUBLISHED_READ_COUNT];
-    let (mut at, mut read) = (0, 0);
-    while at < SessionCommand::ALL.len() {
-        if SessionCommand::ALL[at].reads_published() {
-            names[read] = SessionCommand::ALL[at].as_str();
-            read += 1;
-        }
+pub const PUBLISHED_READS: [&str; PublishedRead::ALL.len()] = {
+    let mut names = [""; PublishedRead::ALL.len()];
+    let mut at = 0;
+    while at < names.len() {
+        names[at] = PublishedRead::ALL[at].as_str();
         at += 1;
     }
     names

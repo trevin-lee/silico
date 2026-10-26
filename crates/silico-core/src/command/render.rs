@@ -18,7 +18,7 @@ use silico_protocol::{
 };
 
 use super::lookup::{Kinds, Lookup};
-use super::{ModelChoice, Problems, Running, SessionCommand, SessionId, Sessions};
+use super::{ModelChoice, Problems, PublishedRead, Running, SessionId, Sessions};
 use crate::document::{Angle, FeatureId, Length, Position};
 use crate::file::{self, Output};
 use crate::kernel::{Clients, ElementKind, Kernel, KernelRequest};
@@ -194,7 +194,7 @@ impl<P: Clients + 'static> Sessions<P> {
     ) -> Running<Rendering> {
         let (renderer, meshes) = self.render_on();
         let held = self.held_paths();
-        self.read_model(session, SessionCommand::Render, model, move |read| {
+        self.read_model(session, PublishedRead::Render, model, move |read| {
             let Some(renderer) = renderer else {
                 return Err(Problems::from(
                     Error::new(

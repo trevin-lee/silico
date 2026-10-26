@@ -34,7 +34,7 @@ pub use session::{
     Read, ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision,
     RolledBack, Running, SessionId, SessionInfo, Sessions, Status, Stopper, TOO_LONG, TextAnswer,
 };
-pub use session_command::SessionCommand;
+pub use session_command::{PublishedRead, SessionCommand};
 
 /// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for
 /// each change to a request's or result's shape that an older client couldn't read.

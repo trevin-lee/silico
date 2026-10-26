@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use super::cancel::Ticket;
+use crate::command::PublishedRead;
 use crate::worker::lock;
 
 /// The most published reads one session runs at once: each holds a thread, and the session,
@@ -85,10 +86,10 @@ impl Reads {
 pub(super) struct Unanswered {
     /// The number the next read takes.
     next: u64,
-    /// Each one's stop, by its number. Each read keeps its kernel client with its stop
-    /// (through [`Ticket::interrupt_with`]), so a cancel or the session's close retires the
-    /// read's own client.
-    reads: BTreeMap<u64, Arc<Ticket>>,
+    /// Each one's command and stop, by its number. Each read keeps its kernel client with
+    /// its stop (through [`Ticket::interrupt_with`]), so a cancel or the session's close
+    /// retires the read's own client.
+    reads: BTreeMap<u64, (PublishedRead, Arc<Ticket>)>,
     /// Whether the session closed ([`close`](Self::close)): kept, so a read counted after
     /// is closed at once.
     closed: bool,
@@ -102,14 +103,19 @@ impl Unanswered {
 
     /// Each one's stop, in the order they started.
     pub(super) fn tickets(&self) -> impl Iterator<Item = &Arc<Ticket>> {
-        self.reads.values()
+        self.reads.values().map(|(_, ticket)| ticket)
+    }
+
+    /// Each one's command, in the order they started.
+    pub(super) fn commands(&self) -> impl Iterator<Item = PublishedRead> + '_ {
+        self.reads.values().map(|(read, _)| *read)
     }
 
     /// The session closed: so it stays, and each read's stop running now given back, for
     /// the caller to close ([`Ticket::close`]) once this lock is let go.
     pub(super) fn close(&mut self) -> Vec<Arc<Ticket>> {
         self.closed = true;
-        self.reads.values().cloned().collect()
+        self.tickets().cloned().collect()
     }
 }
 
@@ -121,14 +127,18 @@ pub(super) struct Counted {
 }
 
 impl Counted {
-    /// `ticket`'s read counted in `unanswered`: closed at once ([`Ticket::close`]) if the
-    /// session has closed.
-    pub(super) fn count(unanswered: &Arc<Mutex<Unanswered>>, ticket: &Arc<Ticket>) -> Self {
+    /// `ticket`'s read, `read`, counted in `unanswered`: closed at once ([`Ticket::close`])
+    /// if the session has closed.
+    pub(super) fn count(
+        unanswered: &Arc<Mutex<Unanswered>>,
+        read: PublishedRead,
+        ticket: &Arc<Ticket>,
+    ) -> Self {
         let (number, closed) = {
             let mut reads = lock(unanswered);
             let number = reads.next;
             reads.next = number.wrapping_add(1);
-            reads.reads.insert(number, Arc::clone(ticket));
+            reads.reads.insert(number, (read, Arc::clone(ticket)));
             (number, reads.closed)
         };
         if closed {

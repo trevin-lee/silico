@@ -15,7 +15,7 @@ use super::model::{checked, id, published};
 use silico_core::ErrorCode;
 use silico_core::command::measure::{angle, distance};
 use silico_core::command::wire::measure::PairRequest;
-use silico_core::command::{ModelChoice, SessionCommand};
+use silico_core::command::{ModelChoice, PublishedRead};
 use silico_core::document::Length;
 use silico_core::document::json::read;
 use silico_core::fake::{FakeKernel, FakeSketches};
@@ -676,7 +676,7 @@ fn a_published_read_that_asks_the_kernel_after_its_session_closes_says_it_closed
     let (go, wait) = std::sync::mpsc::channel::<()>();
     let read = f.sessions.read_model(
         &s,
-        SessionCommand::Distance,
+        PublishedRead::Distance,
         ModelChoice::Published,
         move |read| {
             let _ = wait.recv();

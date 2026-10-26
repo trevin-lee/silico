@@ -13,7 +13,7 @@ use super::cancel::Ticket;
 use super::rebuilds::Newest;
 use super::rebuilds::met_fault;
 use super::transaction::Reached;
-use super::{Problems, SessionCommand};
+use super::{Problems, PublishedRead, SessionCommand};
 #[cfg(doc)]
 use crate::document;
 use crate::document::json::Plain;
@@ -609,7 +609,7 @@ pub struct Status {
     pub gated: bool,
     pub transaction: Option<Begun>,
     pub running: Option<SessionCommand>,
-    pub reads: Vec<SessionCommand>,
+    pub reads: Vec<PublishedRead>,
     pub rebuild: Rebuild,
 }
 

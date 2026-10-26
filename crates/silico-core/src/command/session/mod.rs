@@ -81,7 +81,7 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use super::edit::{self, FeatureIds};
-use super::{Gated, Problems, SessionCommand};
+use super::{Gated, Problems, PublishedRead, SessionCommand};
 use crate::cache::Cache;
 use crate::document::json::Node;
 use crate::document::{self, FeatureId};
@@ -265,12 +265,9 @@ impl<C: Kernel + 'static> Session<C> {
     }
 
     /// Its published reads running, in the order they started.
-    fn reads_running(&self) -> Vec<SessionCommand> {
+    fn reads_running(&self) -> Vec<PublishedRead> {
         let reads = lock(&self.reads);
-        lock(&reads.unanswered)
-            .tickets()
-            .filter_map(|ticket| ticket.command())
-            .collect()
+        lock(&reads.unanswered).commands().collect()
     }
 
     /// The stop of the queued command running, if one is: for `status` and `cancel`, never
@@ -647,7 +644,7 @@ impl<P: Clients + 'static> Sessions<P> {
             ),
             ModelChoice::Published => self.read_model(
                 session,
-                SessionCommand::Check,
+                PublishedRead::Check,
                 ModelChoice::Published,
                 move |read| {
                     let _span = tracing::info_span!("check").entered();
@@ -672,7 +669,7 @@ impl<P: Clients + 'static> Sessions<P> {
     pub fn read_model<T: Send + 'static>(
         &self,
         session: &SessionId,
-        command: SessionCommand,
+        command: PublishedRead,
         choice: ModelChoice,
         read: impl FnOnce(Read<'_, P::Client>) -> Result<T, Problems> + Send + 'static,
     ) -> Running<T> {
@@ -681,18 +678,20 @@ impl<P: Clients + 'static> Sessions<P> {
         let kernel: Arc<ReadClient<P::Client>> =
             Arc::new(ReadClient::new(self.registry.kernel.client()));
         match choice {
-            ModelChoice::Current => self.queued(session, command, move |session, stop, model| {
-                stop.interrupt_with(Arc::downgrade(&kernel) as Weak<dyn Interrupt>);
-                let current = session.current(stop).map_err(Unbuilt::problems)?;
-                *model = Some(current.read.clone());
-                read(Read {
-                    model: &current.model,
-                    read: current.read,
-                    stop,
-                    kernel: &kernel,
-                    reached: &current.reached,
+            ModelChoice::Current => {
+                self.queued(session, command.into(), move |session, stop, model| {
+                    stop.interrupt_with(Arc::downgrade(&kernel) as Weak<dyn Interrupt>);
+                    let current = session.current(stop).map_err(Unbuilt::problems)?;
+                    *model = Some(current.read.clone());
+                    read(Read {
+                        model: &current.model,
+                        read: current.read,
+                        stop,
+                        kernel: &kernel,
+                        reached: &current.reached,
+                    })
                 })
-            }),
+            }
             ModelChoice::Published => {
                 let Some(found) = self.find(session) else {
                     return Running::answered(refused(not_open(*session)));
@@ -730,8 +729,8 @@ impl<P: Clients + 'static> Sessions<P> {
                 let (reply, answer) = mpsc::sync_channel(1);
                 let caller = tracing::Span::current();
                 let session = Arc::clone(&found);
-                let ticket = Ticket::new(command);
-                let counted = Counted::count(unanswered, &ticket);
+                let ticket = Ticket::new(command.into());
+                let counted = Counted::count(unanswered, command, &ticket);
                 ticket.interrupt_with(Arc::downgrade(&kernel) as Weak<dyn Interrupt>);
                 let stop = Arc::clone(&ticket);
                 let started = std::thread::Builder::new()

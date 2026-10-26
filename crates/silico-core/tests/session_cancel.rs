@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::{
-    Cancelled, ModelChoice, Progress, Rebuild, RebuildState, Response, Revision, SessionCommand,
-    SessionId, Sessions,
+    Cancelled, ModelChoice, Progress, PublishedRead, Rebuild, RebuildState, Response, Revision,
+    SessionCommand, SessionId, Sessions,
 };
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::{Op, Primitive};
@@ -362,7 +362,7 @@ fn a_published_read_is_stopped_by_name_and_answers_cancelled() {
     let (seen, saw) = mpsc::channel::<bool>();
     let read = f.sessions.read_model(
         &f.id,
-        SessionCommand::Distance,
+        PublishedRead::Distance,
         ModelChoice::Published,
         move |read| {
             started.send(read.stopped()).unwrap();
@@ -374,7 +374,7 @@ fn a_published_read_is_stopped_by_name_and_answers_cancelled() {
     // Running beside the queue: listed by status until it answers.
     assert!(!was_started.recv_timeout(HANG).unwrap());
     let reads = || f.sessions.status(&f.id).result.unwrap().reads;
-    assert_eq!(reads(), [SessionCommand::Distance]);
+    assert_eq!(reads(), [PublishedRead::Distance]);
     let stop = f
         .sessions
         .cancel(&f.id, SessionCommand::Distance)
@@ -476,7 +476,7 @@ fn cancel_stops_every_read_of_its_name_and_its_refusal_names_each_command_runnin
         let (wait, started) = (Arc::clone(&wait), started.clone());
         f.sessions.read_model(
             &f.id,
-            SessionCommand::Distance,
+            PublishedRead::Distance,
             ModelChoice::Published,
             move |read| {
                 started.send(()).unwrap();

@@ -182,7 +182,7 @@ fn a_published_read_says_the_older_revision_it_read() {
     // Revision 2's sphere held, so its rebuild is seen running.
     let _hold = kernel.hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
     let response = sessions
-        .read_model(&id, SessionCommand::Check, ModelChoice::Published, volume)
+        .read_model(&id, PublishedRead::Check, ModelChoice::Published, volume)
         .wait();
     let read = ModelRead {
         revision: Revision::OPENED,
@@ -209,7 +209,7 @@ fn a_published_read_says_the_older_revision_it_read() {
 fn a_current_read_says_the_newer_revision_it_waited_for() {
     let (_dir, _kernel, sessions, id) = at_two(SPHERE);
     let response = sessions
-        .read_model(&id, SessionCommand::Check, ModelChoice::Current, volume)
+        .read_model(&id, PublishedRead::Check, ModelChoice::Current, volume)
         .wait();
     let read = ModelRead {
         revision: Revision::OPENED.next().unwrap(),
@@ -243,7 +243,7 @@ fn a_published_read_of_a_refused_revision_gives_the_older_model_and_check_its_pr
     assert_eq!(published.model, Some(read.clone()));
     assert_eq!(published.result.unwrap().revision, Revision::OPENED);
     let response = sessions
-        .read_model(&id, SessionCommand::Check, ModelChoice::Published, volume)
+        .read_model(&id, PublishedRead::Check, ModelChoice::Published, volume)
         .wait();
     assert_eq!(
         response.result.unwrap(),
@@ -1355,7 +1355,7 @@ fn a_published_read_answered_but_its_thread_still_ending_leaves_room_for_another
         }
     }
     let ninth = sessions
-        .read_model(&id, SessionCommand::Check, ModelChoice::Published, |read| {
+        .read_model(&id, PublishedRead::Check, ModelChoice::Published, |read| {
             Ok(read.model_read().revision)
         })
         .wait();
@@ -2455,7 +2455,7 @@ fn published_reads_that_ended_are_joined_as_the_next_starts() {
         f.sessions
             .read_model(
                 &f.id,
-                SessionCommand::Check,
+                PublishedRead::Check,
                 ModelChoice::Published,
                 |read| Ok(read.model_read().revision),
             )
@@ -2879,7 +2879,7 @@ fn a_sessions_close_interrupts_its_reads_as_closed_and_each_counted_after_at_onc
     let session = f.session();
     let unanswered = Arc::clone(&lock(&session.reads).unanswered);
     let running = probe();
-    let _counted = Counted::count(&unanswered, &running);
+    let _counted = Counted::count(&unanswered, PublishedRead::Check, &running);
     let before = Told::new();
     // Given twice, told once.
     running.interrupt_with(before.weak());
@@ -2892,7 +2892,7 @@ fn a_sessions_close_interrupts_its_reads_as_closed_and_each_counted_after_at_onc
     // Sticky: a read counted after the close is closed at once, so what it adds is told at
     // once.
     let late = probe();
-    let _late = Counted::count(&unanswered, &late);
+    let _late = Counted::count(&unanswered, PublishedRead::Check, &late);
     let after = Told::new();
     late.interrupt_with(after.weak());
     assert_eq!(after.whys(), [Why::Closed]);
@@ -3061,7 +3061,7 @@ fn counting_a_rebuilds_steps_never_keeps_status_or_a_published_read_waiting() {
                 .sessions
                 .read_model(
                     &f.id,
-                    SessionCommand::Check,
+                    PublishedRead::Check,
                     ModelChoice::Published,
                     |read| Ok(read.model_read().revision),
                 )

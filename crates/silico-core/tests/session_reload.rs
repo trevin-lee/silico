@@ -14,7 +14,7 @@ use std::sync::Arc;
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::{
-    Begun, Closed, ModelChoice, Response, Revision, SessionCommand, SessionId, Sessions, TextAnswer,
+    Begun, Closed, ModelChoice, PublishedRead, Response, Revision, SessionId, Sessions, TextAnswer,
 };
 use silico_core::document::json::Node;
 use silico_core::fake::FakeKernel;
@@ -255,7 +255,7 @@ fn a_change_keeping_the_files_size_and_time_is_reloaded_before_the_next_command(
     assert_eq!(Fixture::after(&f.sessions.published(&f.id)), (1, false));
     let read = answer(f.sessions.read_model(
         &f.id,
-        SessionCommand::Check,
+        PublishedRead::Check,
         ModelChoice::Published,
         |_| Ok(()),
     ));

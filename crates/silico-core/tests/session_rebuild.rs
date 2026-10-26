@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::{
-    self, ModelChoice, ModelRead, Response, Revision, Running, SessionCommand, SessionId, Sessions,
+    self, ModelChoice, ModelRead, PublishedRead, Response, Revision, Running, SessionId, Sessions,
 };
 use silico_core::document::Measure;
 use silico_core::fake::{FakeKernel, FakeSketches};
@@ -855,7 +855,7 @@ fn a_current_read_waits_for_the_revisions_rebuild_and_is_handed_what_it_read() {
         .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
     let mut read = f
         .sessions
-        .read_model(&a, SessionCommand::Check, ModelChoice::Current, volume);
+        .read_model(&a, PublishedRead::Check, ModelChoice::Current, volume);
     assert!(f.kernel.wait_running(1, HANG));
     read = match read.try_take() {
         Ok(response) => panic!("the current read didn't wait for its rebuild: {response:?}"),
@@ -877,7 +877,7 @@ fn a_published_read_runs_beside_a_waiting_current_one_and_gives_the_newest_model
         .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
     let current = f
         .sessions
-        .read_model(&a, SessionCommand::Check, ModelChoice::Current, |read| {
+        .read_model(&a, PublishedRead::Check, ModelChoice::Current, |read| {
             Ok(read.model_read().clone())
         });
     assert!(f.kernel.wait_running(1, HANG));
@@ -886,7 +886,7 @@ fn a_published_read_runs_beside_a_waiting_current_one_and_gives_the_newest_model
     let at = Instant::now();
     let published =
         f.sessions
-            .read_model(&a, SessionCommand::Check, ModelChoice::Published, |read| {
+            .read_model(&a, PublishedRead::Check, ModelChoice::Published, |read| {
                 Ok(read.model_read().clone())
             });
     let Ok(early) = published.wait_timeout(HANG) else {
@@ -915,7 +915,7 @@ fn a_published_read_runs_beside_a_waiting_current_one_and_gives_the_newest_model
     let late =
         answer(
             f.sessions
-                .read_model(&a, SessionCommand::Check, ModelChoice::Published, volume),
+                .read_model(&a, PublishedRead::Check, ModelChoice::Published, volume),
         );
     assert_eq!(late.model, Some(PUBLISHED));
     assert_eq!(late.result.unwrap(), (Some(EIGHT_THOUSAND), PUBLISHED));
@@ -928,18 +928,17 @@ fn a_published_read_alone_starts_the_rebuild() {
     let first =
         answer(
             f.sessions
-                .read_model(&a, SessionCommand::Check, ModelChoice::Published, volume),
+                .read_model(&a, PublishedRead::Check, ModelChoice::Published, volume),
         );
     assert_eq!(refusal(&first).2.as_deref(), Some("model"));
     // No check, no current read: the published read's own rebuild publishes, once.
     let deadline = Instant::now() + HANG;
     let read = loop {
-        let read = answer(f.sessions.read_model(
-            &a,
-            SessionCommand::Check,
-            ModelChoice::Published,
-            volume,
-        ));
+        let read =
+            answer(
+                f.sessions
+                    .read_model(&a, PublishedRead::Check, ModelChoice::Published, volume),
+            );
         if read.result.is_ok() {
             break read;
         }
@@ -961,7 +960,7 @@ fn a_published_read_runs_off_the_callers_thread() {
     let (release, released) = std::sync::mpsc::channel::<()>();
     let mut read = f.sessions.read_model(
         &a,
-        SessionCommand::Check,
+        PublishedRead::Check,
         ModelChoice::Published,
         move |read| {
             let _ = released.recv();
@@ -998,12 +997,12 @@ fn a_reads_own_refusal_is_the_responses_beside_the_model_it_read() {
         (ModelChoice::Current, CURRENT),
         (ModelChoice::Published, PUBLISHED),
     ] {
-        let response = answer(f.sessions.read_model(
-            &a,
-            SessionCommand::Check,
-            choice,
-            move |_| Err::<(), _>(stale()),
-        ));
+        let response = answer(
+            f.sessions
+                .read_model(&a, PublishedRead::Check, choice, move |_| {
+                    Err::<(), _>(stale())
+                }),
+        );
         assert_eq!(response.result.unwrap_err(), stale(), "{choice:?}");
         assert_eq!(response.model, Some(read), "{choice:?}");
     }
@@ -1038,7 +1037,7 @@ fn a_read_of_a_document_the_gate_refused_is_refused_with_its_problems_unread() {
         for choice in [ModelChoice::Current, ModelChoice::Published] {
             let response = answer(f.sessions.read_model(
                 &s,
-                SessionCommand::Check,
+                PublishedRead::Check,
                 choice,
                 |_| -> Result<(), _> { panic!("a model was read of a document the gate refused") },
             ));
@@ -1057,7 +1056,7 @@ fn a_read_of_a_session_that_isnt_open_is_refused() {
     for choice in [ModelChoice::Current, ModelChoice::Published] {
         let response = answer(
             f.sessions
-                .read_model(&a, SessionCommand::Check, choice, volume),
+                .read_model(&a, PublishedRead::Check, choice, volume),
         );
         assert_eq!(response.session, None);
         assert_eq!(
@@ -1079,7 +1078,7 @@ fn a_published_read_that_panics_is_said_to_have_stopped() {
     clean(&answer(f.sessions.check(&a, ModelChoice::Current)));
     let response = answer(f.sessions.read_model(
         &a,
-        SessionCommand::Check,
+        PublishedRead::Check,
         ModelChoice::Published,
         |_| -> Result<(), _> { panic!("a bug in a read") },
     ));
@@ -1108,7 +1107,7 @@ fn blocked_reads(
             let (started, released) = (started.clone(), Arc::clone(&released));
             sessions.read_model(
                 a,
-                SessionCommand::Check,
+                PublishedRead::Check,
                 ModelChoice::Published,
                 move |read| {
                     let _ = started.send(());
@@ -1134,7 +1133,7 @@ fn a_ninth_published_read_running_at_once_is_refused() {
     let ninth =
         answer(
             f.sessions
-                .read_model(&a, SessionCommand::Check, ModelChoice::Published, volume),
+                .read_model(&a, PublishedRead::Check, ModelChoice::Published, volume),
         );
     assert_eq!(
         refusal(&ninth),
@@ -1155,7 +1154,7 @@ fn a_ninth_published_read_running_at_once_is_refused() {
     let ninth =
         answer(
             f.sessions
-                .read_model(&a, SessionCommand::Check, ModelChoice::Published, volume),
+                .read_model(&a, PublishedRead::Check, ModelChoice::Published, volume),
         );
     assert_eq!(ninth.result.unwrap(), (Some(EIGHT_THOUSAND), PUBLISHED));
 }
@@ -1206,7 +1205,7 @@ fn the_published_reads_bound_is_each_sessions_own() {
     let other =
         answer(
             f.sessions
-                .read_model(&b, SessionCommand::Check, ModelChoice::Published, volume),
+                .read_model(&b, PublishedRead::Check, ModelChoice::Published, volume),
         );
     assert_eq!(other.result.unwrap(), (Some(EIGHT_THOUSAND), PUBLISHED));
     assert_eq!(other.session.unwrap().id, b);
