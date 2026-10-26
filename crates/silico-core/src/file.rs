@@ -407,6 +407,25 @@ mod tests {
     }
 
     #[test]
+    fn a_file_written_beside_one_it_replaces_is_made_no_more_open_than_it() {
+        // Its permission bits alone, as they are: a mode's type bits (a regular file's
+        // 0o100000) aren't permissions, and none is added. With none to replace, rw-r--r--.
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("silico-partial-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("view.png");
+        std::fs::write(&file, b"old").unwrap();
+        for mode in [0o600, 0o640, 0o444, 0o751] {
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+            let meta = std::fs::metadata(&file).unwrap();
+            assert_eq!(partial_mode(Some(&meta)), mode, "{mode:o}");
+        }
+        assert_eq!(partial_mode(None), 0o644);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn only_a_size_limit_gets_the_limits_advice() {
         // Found by the review: an error on a full disk told to raise a limit that isn't the
         // cause.
@@ -599,6 +618,14 @@ fn output_target(
     Ok((target, replaced))
 }
 
+/// The permissions a file [`write_beside`] makes is made with: those of the file it
+/// replaces, if one, without its type's bits (so never more open than it while it's
+/// written), or `rw-r--r--`.
+fn partial_mode(replaced: Option<&std::fs::Metadata>) -> u32 {
+    use std::os::unix::fs::PermissionsExt as _;
+    replaced.map_or(0o644, |m| m.permissions().mode() & 0o777)
+}
+
 /// `bytes` written to `target` through a new file beside it renamed into place, with the
 /// permissions of the file it replaces, if one (or the new file's own); the directory it's
 /// renamed in synced after, as a save's is, so a power cut can't bring back the old file.
@@ -607,8 +634,7 @@ fn write_beside(
     replaced: Option<&std::fs::Metadata>,
     bytes: &[u8],
 ) -> Result<(), Error> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let mode = replaced.map_or(0o644, |m| m.permissions().mode() & 0o777);
+    let mode = partial_mode(replaced);
     let dir = directory(target);
     let name = target
         .file_name()
