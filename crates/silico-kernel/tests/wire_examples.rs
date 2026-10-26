@@ -3,20 +3,26 @@
 //! example, a 40 × 20 × 10 block less a pin of radius 2.5 through it at (20, 10), rebuilt on
 //! kernel workers, its entries listed, queried, and written byte for byte as the design's
 //! examples are, each committed in silico-core's `tests/contract/commands/examples/` (the
-//! core's tests check each is the design's own text, and holds to its schema).
+//! core's tests check each is the design's own text, and holds to its schema). It also
+//! writes section 7's `check` example of a `reference_broken` fillet, on the part with its
+//! pin shortened, its candidate the real cut's element map's.
 
 use super::example;
 use super::model::{checked, published};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
-use silico_core::command::Revision;
+use silico_core::cache::Cache;
 use silico_core::command::elements::{
     ElementType, Facing, MeasureName, Order, Query, entries, list, query,
 };
 use silico_core::command::measure::mass_properties;
+use silico_core::command::wire::reads::CheckRequest;
 use silico_core::command::wire::{Layout, ToWire, write};
+use silico_core::command::{ModelChoice, Response, Revision, Running, Sessions};
+use silico_core::document::json::read;
 use silico_core::document::{Angle, FeatureId};
 use silico_core::kernel::ElementKind;
 use silico_core::pool::KernelPool;
@@ -136,4 +142,58 @@ fn the_designs_part_gives_an_edges_and_a_vertexs_entries_field_for_field() {
             corner.name
         )
     );
+}
+
+/// `running`'s response, failing if it doesn't answer in a minute.
+fn answer<T>(running: Running<T>) -> Response<T> {
+    match running.wait_timeout(Duration::from_secs(60)) {
+        Ok(response) => response,
+        Err(_) => panic!("the command didn't answer in a minute"),
+    }
+}
+
+#[test]
+fn the_designs_check_of_a_fillet_whose_edge_an_edit_removed_is_its_example_byte_for_byte() {
+    // The example part, its pin made 6 long from z = -1 so the hole stops at z = 5, short of
+    // the top (Face6, z = 10), and a fillet of the rim the top had. The rim at the bottom
+    // (Face5, z = 0) is still there, and shares the pin's side: the one candidate. The
+    // message shows the name cut short, as every error shows a document's string.
+    let pin = r#""position": [20, 10, -1], "radius": 2.5, "height": 12"#;
+    let hole = r#""note": "Clearance for an M5 bolt"}"#;
+    assert!(example::EXAMPLE.contains(pin) && example::EXAMPLE.contains(hole));
+    let text = example::EXAMPLE
+        .replace(pin, r#""position": [20, 10, -1], "radius": 2.5, "height": 6"#)
+        .replace(
+            hole,
+            &format!(
+                r#"{hole},
+    {{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "m3tq8v0z", "edges": ["m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)"], "radius": 1}}"#
+            ),
+        );
+    // The same fillet with the pin at its design height (12, through the block): the name is
+    // a real edge of the unedited part, and nothing is wrong.
+    let unedited = text.replace(r#""height": 6"#, r#""height": 12"#);
+    assert_ne!(unedited, text);
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let pool = KernelPool::start_on_demand(Path::new(WORKER), 2).unwrap();
+    let sessions =
+        Sessions::with_cache_opener(pool, move |cache| Cache::with_secret(cache, &secret));
+    let request = CheckRequest::read(&read(example("check/request").as_bytes()).unwrap()).unwrap();
+    assert_eq!(request.model, ModelChoice::Current);
+    // `document` saved as `file` and checked, in the next session (s1, then s2).
+    let check = |file: &str, document: &str| {
+        let path = dir.path().join(file);
+        std::fs::write(&path, document).unwrap();
+        let session = answer(sessions.open(&path, false)).session.unwrap().id;
+        let checked = answer(sessions.check(&session, request.model));
+        // No kernel fault: any problem is the document's.
+        assert_eq!(checked.model.as_ref().unwrap().fault, None);
+        (session, written(&checked.result.unwrap()))
+    };
+    let (session, broken) = check("bracket.silico", &text);
+    assert_eq!(session, request.session);
+    assert_eq!(broken, example("check/reference-broken"));
+    let (_, whole) = check("whole.silico", &unedited);
+    assert_eq!(whole, example("check/result"));
 }

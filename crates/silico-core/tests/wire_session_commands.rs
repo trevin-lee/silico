@@ -14,11 +14,14 @@
 //! and `open`'s, which name no session, is read strictly here; the rest of their tests are in
 //! wire_session_reads.rs.
 //!
-//! The design's examples not in the contract are five, each for its reason ([`LEFT_OUT`]):
+//! `check`'s broken reference is a real kernel's: silico-kernel's wire_examples.rs writes it
+//! on kernel workers, and it's the design's own text here too.
+//!
+//! The design's examples not in the contract are four, each for its reason ([`LEFT_OUT`]):
 //! `version`'s and `status`'s results, which hold limits and progress not built yet (their
 //! real results are pinned in wire_session_reads.rs); `open` outside a workspace, which
-//! nothing has yet; `commit`'s `io_failed`, a disk out of room, which no test can make
-//! happen; and `check`'s broken reference, a real kernel's.
+//! nothing has yet; and `commit`'s `io_failed`, a disk out of room, which no test can make
+//! happen.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -363,7 +366,7 @@ fn the_examples_are_the_designs_own_text() {
             "### `check` (M4.2",
             "### `cache_clear` (M4.3)",
             "check",
-            &[Some("request"), Some("result"), None],
+            &[Some("request"), Some("result"), Some("reference-broken")],
         ),
     ];
     let mut left_out = Vec::new();
@@ -430,7 +433,7 @@ fn the_examples_are_the_designs_own_text() {
 
 /// The design's examples not in the contract, by command and what each is (a refusal's code
 /// and parameter, or `result` for a result), each with why.
-const LEFT_OUT: [(&str, &str, &str, &str); 5] = [
+const LEFT_OUT: [(&str, &str, &str, &str); 4] = [
     (
         "version",
         "result",
@@ -457,15 +460,6 @@ const LEFT_OUT: [(&str, &str, &str, &str); 5] = [
         "commit's save failing for a disk out of room, which no test can make happen; and the \
          code says it with the step that failed and the file's path, which the design's leaves \
          out",
-    ),
-    (
-        "check",
-        "reference_broken",
-        "edges.0",
-        "check of a fillet whose edge an upstream edit removed needs a kernel worker: its \
-         message and candidate are a real cut's element map's, which the fake kernel doesn't \
-         make (its boolean keeps both inputs whole); recorded by silico-kernel's wire_examples \
-         in a follow-up: the design's exact candidate needs checking against OCCT",
     ),
 ];
 
