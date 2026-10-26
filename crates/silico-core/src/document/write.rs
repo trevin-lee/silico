@@ -68,8 +68,8 @@ pub(crate) enum Out<'a> {
     /// An array written an item to a line, whatever it holds.
     Lines(Vec<Out<'a>>),
     Object(Vec<(&'static str, Out<'a>)>),
-    /// An object whose keys are known only when Silico runs (a JSON Schema's), in the
-    /// order given.
+    /// An object whose keys are known only when Silico runs (a JSON Schema's, or a value of
+    /// a document's or a request's), in the order given.
     Keyed(Vec<(String, Out<'a>)>),
 }
 
@@ -122,7 +122,9 @@ fn tree(document: &Document) -> Out<'_> {
     ])
 }
 
-fn feature(feature: &Feature) -> Out<'_> {
+/// `feature` as the canonical form writes it, inside a document or alone (the command
+/// API's results write a feature through this too, `command::wire`).
+pub(crate) fn feature(feature: &Feature) -> Out<'_> {
     let Feature {
         id,
         operation,
@@ -231,12 +233,12 @@ fn fields(operation: &Operation) -> Vec<(&'static str, Out<'_>)> {
             radius,
         } => vec![
             ("base", reference(base)),
-            ("edges", names(edges)),
+            names("edges", edges),
             ("radius", number(*radius)),
         ],
         Operation::Chamfer { base, edges, size } => vec![
             ("base", reference(base)),
-            ("edges", names(edges)),
+            names("edges", edges),
             (
                 "size",
                 Out::Object(vec![("distance", number(size.distance))]),
@@ -554,9 +556,27 @@ pub(crate) fn point(position: &Position) -> Out<'static> {
     Out::Array(position.iter().map(|&l| number(l)).collect())
 }
 
-/// Element names, one to a line, so an edit to one is a line of the diff.
-fn names(names: &[ElementName]) -> Out<'_> {
-    Out::Lines(names.iter().map(|n| Out::Str(n.as_str())).collect())
+/// The fields of a feature that list element names (a fillet's and a chamfer's `edges`),
+/// which the canonical form writes a name to a line, so an edit to one name is a line of
+/// the diff ([`field_list`]).
+pub(crate) const NAME_LISTS: &[&str] = &["edges"];
+
+/// The list `items`, the value of a feature's field `field`, laid out as the canonical form
+/// lays that field out: an item to a line for one of [`NAME_LISTS`], otherwise on one line
+/// where it holds no object. The one place that decides it, for the document's writer
+/// ([`names`]) and for what `set_field` gives back of a field (`command::wire::Json::field`).
+pub(crate) fn field_list<'a>(field: &str, items: Vec<Out<'a>>) -> Out<'a> {
+    if NAME_LISTS.contains(&field) {
+        Out::Lines(items)
+    } else {
+        Out::Array(items)
+    }
+}
+
+/// The member `field` of a feature, the element names `names`, laid out by [`field_list`].
+fn names<'a>(field: &'static str, names: &'a [ElementName]) -> (&'static str, Out<'a>) {
+    let items = names.iter().map(|n| Out::Str(n.as_str())).collect();
+    (field, field_list(field, items))
 }
 
 fn reference(id: &FeatureId) -> Out<'_> {

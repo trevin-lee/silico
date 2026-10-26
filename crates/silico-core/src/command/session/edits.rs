@@ -70,18 +70,21 @@ impl<C: Kernel + 'static> Session<C> {
                 made,
                 changed: false,
                 commit: None,
+                saved: None,
             });
         };
-        let commit = if transaction {
+        let (commit, saved) = if transaction {
             self.hold(candidate)?;
-            None
+            (None, None)
         } else {
-            Some(self.commit_candidate(candidate, read, claim)?)
+            let (committed, saved) = self.commit_candidate(candidate, read, claim)?;
+            (Some(committed), saved)
         };
         Ok(Edited {
             made,
             changed: true,
             commit,
+            saved,
         })
     }
 }
@@ -120,12 +123,42 @@ impl<'a> Base<'a> {
 }
 
 /// What an edit gives its command ([`Session::edit`]): what it found, whether the document
-/// changed, and, outside a transaction, the commit's result (none inside one, or if nothing
-/// changed).
+/// changed, and, outside a transaction, the commit's result and the document it saved (none
+/// inside one, or if nothing changed or was written).
 pub(super) struct Edited<T> {
     pub(super) made: T,
     pub(super) changed: bool,
     pub(super) commit: Option<Committed>,
+    pub(super) saved: Option<Arc<Gated>>,
+}
+
+/// What an edit gives back as the document holds it once committed (the design's section
+/// 7): `made`, the edit's own, if its commit saved no document (`saved` none: inside a
+/// transaction, or nothing written); otherwise found by `find` in the document saved, with
+/// the fingerprints and solves the commit wrote. A saved document `find` finds nothing in is
+/// Silico's bug, said as one, the edit saved.
+pub(super) fn as_committed<U>(
+    saved: Option<&Gated>,
+    made: U,
+    find: impl FnOnce(&Document) -> Option<U>,
+) -> Result<U, Problems> {
+    let Some(saved) = saved else {
+        return Ok(made);
+    };
+    let found = match saved {
+        Gated::Checked(checked) => find(checked.document()),
+        Gated::Unread(_) | Gated::Refused(..) => None,
+    };
+    found.ok_or_else(|| {
+        Problems::from(
+            Error::new(
+                ErrorCode::Internal,
+                "the edit was saved, but the document saved doesn't hold what it made",
+            )
+            .with_cause("the file was written: the session's text is what it holds")
+            .with_suggestion(crate::worker::SILICO_BUG),
+        )
+    })
 }
 
 /// The refusal of an edit made against revision `made`, the session being at `at`

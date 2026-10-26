@@ -167,7 +167,7 @@ const SKETCH_AND_BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolut
 
 #[test]
 fn each_commands_schemas_are_the_committed_snapshot() {
-    for of in COMMANDS {
+    for (of, _) in COMMANDS {
         let text = snapshot(of).unwrap().unwrap();
         assert_eq!(
             text,
@@ -219,9 +219,23 @@ fn open_shapes(schema: &serde_json::Value, at: &str, found: &mut Vec<String>) {
 
 #[test]
 fn every_object_of_the_commands_snapshots_is_closed_and_requires_its_fields() {
-    for of in COMMANDS {
+    let document: serde_json::Value =
+        serde_json::from_str(&committed("document-schema.json")).unwrap();
+    for (of, _) in COMMANDS {
+        let mut value = snapshot_value(of).unwrap();
+        // A document type a request or result holds keeps the document's own schema
+        // (`wire_shape`): the document's definitions, as the document's schema has them, and
+        // a new feature, the document's feature less its fingerprint
+        // (wire_session_commands.rs checks it), aren't the wire's to close.
+        for part in ["request", "result"] {
+            if let Some(defs) = value[part]["$defs"].as_object_mut() {
+                defs.retain(|name, def| {
+                    name != "NewFeature" && document["$defs"].get(name) != Some(def)
+                });
+            }
+        }
         let mut found = Vec::new();
-        open_shapes(&snapshot_value(of).unwrap(), "", &mut found);
+        open_shapes(&value, "", &mut found);
         assert!(found.is_empty(), "{of}: {found:?}");
     }
     // Their parts by the names an agent reads.
@@ -664,7 +678,7 @@ fn schema_answers_the_document_and_each_command_as_committed() {
     let document: serde_json::Value =
         serde_json::from_str(&committed("document-schema.json")).unwrap();
     assert_eq!(schema("document").unwrap().schema, document);
-    for of in COMMANDS {
+    for (of, _) in COMMANDS {
         let committed: serde_json::Value =
             serde_json::from_str(&committed(&format!("commands/{of}.json"))).unwrap();
         let described = schema(of).unwrap();
@@ -685,7 +699,21 @@ fn schema_answers_the_document_and_each_command_as_committed() {
         assert_eq!(error.parameter(), Some("of"));
         assert_eq!(
             error.candidates(),
-            ["document", "elements", "query", "mass_properties", "schema"]
+            [
+                "document",
+                "begin",
+                "commit",
+                "rollback",
+                "format",
+                "add_feature",
+                "set_field",
+                "remove_feature",
+                "replace_text",
+                "elements",
+                "query",
+                "schema",
+                "mass_properties"
+            ]
         );
     }
     assert_eq!(

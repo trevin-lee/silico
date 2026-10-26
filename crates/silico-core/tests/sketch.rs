@@ -657,31 +657,31 @@ fn a_dimension_out_of_range_is_refused() {
     let cases = [
         (
             r#"{"id": "k0000000", "type": "length", "line": "na000000", "value": 0, "driving": true}"#,
-            "a length's value is 0 mm, but it's above 0 and at most 1000000 mm",
+            "a length's value is 0 mm, but it must be above 0 and at most 1000000 mm",
         ),
         (
             r#"{"id": "k0000000", "type": "distance", "a": "pa000000", "b": "pb000000", "value": -1, "driving": false}"#,
-            "a reference distance's value is -1 mm, but it's from 0 to 3000000 mm",
+            "a reference distance's value is -1 mm, but it must be from 0 to 3000000 mm",
         ),
         (
             r#"{"id": "k0000000", "type": "radius", "curve": "ca000000", "value": 0, "driving": true}"#,
-            "a radius's value is 0 mm, but it's above 0 and at most 1000000 mm",
+            "a radius's value is 0 mm, but it must be above 0 and at most 1000000 mm",
         ),
         (
             r#"{"id": "k0000000", "type": "diameter", "curve": "ca000000", "value": 2000000.000001, "driving": true}"#,
-            "a diameter's value is 2000000.000001 mm, but it's above 0 and at most 2000000 mm",
+            "a diameter's value is 2000000.000001 mm, but it must be above 0 and at most 2000000 mm",
         ),
         (
             r#"{"id": "k0000000", "type": "point_line_distance", "point": "pc000000", "line": "na000000", "value": 0, "side": "left", "driving": true}"#,
-            "a point_line_distance's value is 0 mm, but it's above 0 and at most 1000000 mm",
+            "a point_line_distance's value is 0 mm, but it must be above 0 and at most 1000000 mm",
         ),
         (
             r#"{"id": "k0000000", "type": "distance_x", "a": "pa000000", "b": "pb000000", "value": -1000000.000001, "driving": true}"#,
-            "a distance_x's value is -1000000.000001 mm, but it's at most 1000000 mm either way",
+            "a distance_x's value is -1000000.000001 mm, but it must be at most 1000000 mm either way",
         ),
         (
             r#"{"id": "k0000000", "type": "angle", "a": "na000000", "b": "x_axis", "value": -360.000000001, "driving": true}"#,
-            "an angle's value is -360.000000001 degrees, but it's at most 360 either way",
+            "an angle's value is -360.000000001 degrees, but it must be at most 360 either way",
         ),
     ];
     for (constraint, message) in cases {

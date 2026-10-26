@@ -1,0 +1,1 @@
+{"code": "invalid_input", "message": "a diameter's value is 0 mm, but it must be above 0 and at most 2000000 mm", "feature": "s0000002", "elements": ["g4h5j6k7"], "elements_total": 1, "parameter": "constraints.g4h5j6k7.value", "cause": null, "suggestion": "give the diameter a value above 0 and at most 2000000 mm", "candidates": []}

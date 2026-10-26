@@ -78,7 +78,7 @@ use crate::sketch::SketchSolver;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
-use edits::not_given_back;
+use edits::{as_committed, not_given_back};
 pub(super) use rebuilds::faulted;
 use rebuilds::{Rebuilds, Unbuilt, published_answer};
 use registry::{
@@ -87,6 +87,7 @@ use registry::{
 pub use threads::MAX_PUBLISHED_READS;
 use threads::{Reads, Threads, Unanswered};
 use transaction::{Claim, Held, Reload, Rereads, transaction_open};
+pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
     Added, Begun, Committed, FieldSet, ModelChoice, ModelRead, Opened, Published, Read,
     Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running, SessionId,
@@ -649,8 +650,12 @@ impl<P: Clients + 'static> Sessions<P> {
                 model,
                 &|resolved| reclaim(&registry, id, resolved),
             )?;
+            let id = edited.made.id.clone();
+            let feature = as_committed(edited.saved.as_deref(), edited.made, |saved| {
+                saved.feature(&id).ok().cloned()
+            })?;
             Ok(Added {
-                feature: edited.made,
+                feature,
                 changed: edited.changed,
                 commit: edited.commit,
             })
@@ -682,11 +687,19 @@ impl<P: Clients + 'static> Sessions<P> {
                 model,
                 &|resolved| reclaim(&registry, id, resolved),
             )?;
+            let edit::FieldValues {
+                before,
+                after,
+                path,
+            } = edited.made;
+            let after = as_committed(edited.saved.as_deref(), after, |saved| {
+                edit::value_of(saved, &feature, &path)
+            })?;
             Ok(FieldSet {
                 feature,
                 field,
-                before: edited.made.before,
-                after: edited.made.after,
+                before,
+                after,
                 changed: edited.changed,
                 commit: edited.commit,
             })
