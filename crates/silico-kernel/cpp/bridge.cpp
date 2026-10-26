@@ -213,14 +213,28 @@ Measures measure(const Shape &shape, double precision) {
   // MEASURE_PRECISION, 1e-9). OCCT's default, a fixed order of Gauss points per face
   // (FreeCAD's Shape.Volume), misjudges faces trimmed by curves: the common of two tori
   // (R 2, r 1) 2.2 apart measures 12.238 for 12.3586, 1% low.
-  GProp_GProps volume;
-  BRepGProp::VolumeProperties(shape.shape, volume, precision);
-  GProp_GProps surface;
-  BRepGProp::SurfaceProperties(shape.shape, surface, precision);
-  const gp_Pnt c = volume.CentreOfMass();
+  //
+  // Measured moved by minus the tight box's centre, and the centre of mass moved back.
+  // BRepGProp evaluates every surface where the shape is, so a shape far from the origin
+  // loses the low digits of its own size there: a 1 nm foil at x = 1e5, a box at the
+  // origin moved there by its location, measured 2e-6 low. Moving it back composes the
+  // two moves first, so a moved shape is integrated where it was made. (A GProp_GProps
+  // built about the centre wouldn't do: VolumeProperties replaces the one it's given
+  // with one about the shape's location, and integrates about the mean of its vertices.)
   Point3 low{0.0, 0.0, 0.0};
   Point3 high{0.0, 0.0, 0.0};
   const bool bounded = tight_box(shape.shape, low, high);
+  const gp_Vec middle = bounded ? gp_Vec((low.x + high.x) / 2, (low.y + high.y) / 2,
+                                         (low.z + high.z) / 2)
+                                : gp_Vec(0.0, 0.0, 0.0);
+  gp_Trsf back;
+  back.SetTranslation(-middle);
+  const TopoDS_Shape centred = shape.shape.Moved(TopLoc_Location(back));
+  GProp_GProps volume;
+  BRepGProp::VolumeProperties(centred, volume, precision);
+  GProp_GProps surface;
+  BRepGProp::SurfaceProperties(centred, surface, precision);
+  const gp_Pnt c = volume.CentreOfMass().Translated(middle);
   return Measures{volume.Mass(),
                   surface.Mass(),
                   Point3{c.X(), c.Y(), c.Z()},

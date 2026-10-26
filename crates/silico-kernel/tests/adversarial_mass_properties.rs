@@ -245,6 +245,35 @@ proptest! {
         }
     }
 
+    #[test]
+    fn a_boxs_volume_and_area_are_its_sides_products_to_a_relative_1e9(
+        place in prop::array::uniform3(place_nm()),
+        size in prop::array::uniform3(size_nm()),
+    ) {
+        // Found by /break-it on M4.5 (a box 1 nm × 99.999999 × 2110.285024 at x = −1e5
+        // measured 0.211028 for 0.2110285003): the volume and area are the sides' products,
+        // by hand, to the fingerprint's 6 decimals or a relative 1e-9, wherever the box is.
+        let body = only(&model_of(&[a_box(place, size)]));
+        let [l, w, h] = size.map(|n| n as f64 * 1e-6);
+        let volume = mm(body.volume.to_string());
+        let area = mm(body.area.to_string());
+        let allowed = |v: f64| 5e-7 + 1e-9 * v;
+        prop_assert!((volume - l * w * h).abs() <= allowed(l * w * h), "volume {volume}, {}", l * w * h);
+        let a = 2.0 * (l * w + w * h + h * l);
+        prop_assert!((area - a).abs() <= allowed(a), "area {area}, {a}");
+    }
+}
+
+#[test]
+fn a_nanometre_foil_far_out_measures_its_one_cubic_millimetre() {
+    // Found by /break-it on M4.5: 1 nm × 1000 × 1000 at x = 1e5 is 1 mm³ by hand (and
+    // measures 1 at the origin), but measured 0.999998 (and 1.000003 at x = 999000).
+    let model = model_of(&[a_box(
+        [100_000_000_000, 0, 0],
+        [1, 1_000_000_000, 1_000_000_000],
+    )]);
+    let body = only(&model);
+    near("volume", mm(body.volume.to_string()), 1.0);
 }
 
 fn a_box(place: [i64; 3], size: [i64; 3]) -> String {

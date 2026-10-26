@@ -1,0 +1,70 @@
+Subject: Modeling Algorithms - BRepGProp_Gauss refines U to the requested precision, as it refines L
+Upstream: https://github.com/Open-Cascade-SAS/OCCT/issues/1675 (BRepGProp_Gauss never refines U; a PR needs OCCT's CLA)
+Applies to: OCCT V7_9_3, after 0003 (which changes BRepGProp_Face.cxx only; this patch is
+     against the pinned BRepGProp_Gauss.cxx).
+Why: BRepGProp_Gauss::Compute with an Eps (BRepGProp::VolumeProperties and SurfaceProperties
+     with an eps, Silico's precise measure) never refines U: EpsU starts at 0 and is set only
+     in a branch the U loop can't reach, so the loop ends after its first pass, and U is
+     integrated once, at SIntOrder(eps) points on each span UKnots gives. U's error is also
+     left out of the estimate (ErrUL is set only on the first L order's pass). So an
+     extruded two-span B-spline measured 9.4e-4 low and its swept face's area 0.27% high,
+     a slanted prism of a one-span B-spline (the stress test's) 5.2% low in area, B-spline
+     surfaces' areas up to about 1e-5 off, and one NIST part's volume 3.6e-5 off, each
+     with an estimate of about 1e-16. This patch computes U's error on both L orders'
+     passes, refreshes it on every U pass, and sets EpsU from the requested precision and
+     the strip's value by L's rule (EpsL = 0.9 * |DDim * eps|), so U subdivides until it
+     meets eps or the subdivision cap, whose branch (EpsU = ErrorU, break) ends it. Setting
+     EpsU alone isn't enough: U would refine on the first L order's pass only, and the two
+     L orders would disagree by U's error. The default integration (Compute without an
+     Eps, FreeCAD's) is a different function and is unchanged to the bit.
+Moves: tests/determinism/oracle-reference.json's summary hashes of 117 of its 208 cases (the
+     list is in the PR), to be re-recorded with the maintainer: volumes by at most 1.8e-13
+     relative, areas not at all, centres of mass by at most 8.6e-9 (3.9e-10 of the shape's
+     size); not their measures, B-reps, meshes, or histories. No committed fingerprint
+     (every golden checks unchanged), and not the stress reference (default integration).
+Drop when: an OCCT release refines U in BRepGProp_Gauss::Compute's Eps path (check that
+     EpsU can become nonzero before the U loop's first pass ends), or when
+     extruded_bsplines.rs passes with the patch removed.
+
+--- a/src/BRepGProp/BRepGProp_Gauss.cxx
++++ b/src/BRepGProp/BRepGProp_Gauss.cxx
+@@ -769,7 +769,7 @@
+                       BRepGProp_Gauss::Inertia aLocal[2];
+ 
+                       Standard_Integer       iUS     = URange[kU];
+-                      const Standard_Integer aLength = iGLEnd - iGL;
++                      const Standard_Integer aLength = iGLEnd;
+ 
+                       const Standard_Real um = 0.5 * (U2->Value(iUS) + U1->Value(iUS));
+                       const Standard_Real ur = 0.5 * (U2->Value(iUS) - U1->Value(iUS));
+@@ -819,6 +819,10 @@
+                         anUI.Iyy = mult(aLocal[0].Iyy, ur);
+                         anUI.Izz = mult(aLocal[0].Izz, ur);
+                       }
++
++                      // U's error, on every L order's pass.
++                      if (iGLEnd == 2)
++                        ErrU->Value(iUS) = mult(Abs(aLocal[1].Mass - aLocal[0].Mass), ur);
+ 
+                       if (iGL > 0)
+                         continue;
+@@ -862,10 +866,18 @@
+                     }
+                   }
+ 
+-                  if (JU == iUSubEnd)
++                  if (JU >= iUSubEnd)
+                   {
+                     kUEnd  = 2;
+                     ErrorU = ErrU->Value(ErrU->Max());
++                    if (iGLEnd == 2)
++                    {
++                      // U's tolerance from the requested one and the strip's value, as L's.
++                      Standard_Real aStrip = 0.0;
++                      for (i = 1; i <= JU; ++i)
++                        aStrip += anInertiaU->Value(i).Mass;
++                      EpsU = 0.9 * Abs(aStrip * anEpsilon);
++                    }
+                   }
+                 } while ((ErrorU - EpsU > 0.0 && EpsU != 0.0) || kUEnd == 1);
+ 

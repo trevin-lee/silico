@@ -81,6 +81,8 @@ mod describe;
 mod distance;
 #[path = "export.rs"]
 mod export;
+#[path = "extruded_bsplines.rs"]
+mod extruded_bsplines;
 #[path = "faces.rs"]
 mod faces;
 #[path = "fillet.rs"]

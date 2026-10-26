@@ -99,7 +99,7 @@ fn kinds(k: &mut KernelWorker, shape: &ShapeData) -> Vec<&'static str> {
 
 /// A shape made by FreeCAD from `script`'s printed text B-rep, as a kernel worker's shape,
 /// its validity OCCT's.
-fn from_freecad(text: &str) -> ShapeData {
+pub fn from_freecad(text: &str) -> ShapeData {
     let shape = silico_kernel::from_text_brep(text.as_bytes()).unwrap();
     let valid = shape.is_valid().unwrap();
     ShapeData::checked(Blob::inline(silico_kernel::to_brep(&shape).unwrap()), valid)
@@ -672,7 +672,8 @@ assert face.isValid()
 print("SILICO_ORACLE " + json.dumps(face.exportBrepToString()))
 "#;
 
-fn freecad_face(body: &str) -> ShapeData {
+/// The face FreeCAD makes from `body` (Python that sets `face`), checked valid there.
+pub fn freecad_face(body: &str) -> ShapeData {
     let script =
         format!("import json, math, Part, FreeCAD as App\nV = App.Vector\n{body}\n{PRINT_FACE}");
     let text = oracle::freecad(&script);
