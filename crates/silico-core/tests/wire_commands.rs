@@ -1307,9 +1307,12 @@ fn the_designs_render_result_is_the_commands_own_but_for_its_machines_png_bytes(
     let want = example("render/result");
     assert_eq!(written(&result), want);
     holds(&schema_of("render", "result", None), &want, "render");
-    // Exactly M4.1's five members, so the ID buffer can't drift into it.
+    // Exactly M4.1's five members, so the ID buffer can't drift into it; their order is the
+    // example's, compared byte for byte above (serde_json's map order depends on the
+    // features a build unifies, so it's sorted here).
     let value: serde_json::Value = serde_json::from_str(&want).unwrap();
-    let keys: Vec<&String> = value.as_object().unwrap().keys().collect();
+    let mut keys: Vec<&String> = value.as_object().unwrap().keys().collect();
+    keys.sort();
     assert_eq!(keys, ["camera", "height", "path", "png_bytes", "width"]);
 }
 
