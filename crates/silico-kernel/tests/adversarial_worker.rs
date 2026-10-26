@@ -929,7 +929,9 @@ fn start_child_entry() {
     if std::env::var_os(START_CHILD).is_none() {
         return;
     }
-    let pool = KernelPool::start().err().expect("a pool started");
+    // A pool that couldn't be opened is still one: each request fails with why.
+    let pool =
+        done(KernelPool::start().submit(Generation(1), sleep(0))).expect_err("a pool started");
     let worker = KernelWorker::start().err().expect("a worker started");
     for (what, err) in [("the pool", pool), ("a worker", worker)] {
         assert_eq!(
@@ -1001,7 +1003,7 @@ fn relative_child_entry() {
         .run(KernelRequest::debug(DebugOp::Sleep { millis: 0 }))
         .unwrap();
     drop(worker);
-    let pool = KernelPool::start().unwrap();
+    let pool = KernelPool::start();
     done(pool.submit(Generation(1), sleep(0))).unwrap();
     drop(pool);
 }

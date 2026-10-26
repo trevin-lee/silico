@@ -18,7 +18,7 @@ use silico_core::cache::Cache;
 use silico_core::command::{self, ModelChoice, Problems, Response, SessionId, Sessions};
 use silico_core::file::opened_and_read;
 use silico_core::kernel::Clients;
-use silico_core::pool::{KernelPool, Unstarted};
+use silico_core::pool::KernelPool;
 use silico_core::{Error, ErrorCode};
 
 /// A line on stderr (the workspace forbids `eprintln!`, which panics if stderr is closed).
@@ -184,14 +184,11 @@ enum Rebuilding {
 }
 
 /// `files`, each run through `command` in turn, on one kernel pool, started once, whatever
-/// directories they're in (each directory's cache beside its files); or, if the pool can't
-/// be started, on a stand-in that fails each rebuild that needs it, so a document's own
-/// problems the gate finds are still said, needing no kernel.
+/// directories they're in (each directory's cache beside its files); a pool that couldn't
+/// be opened fails each rebuild that needs it, so a document's own problems the gate finds
+/// are still said, needing no kernel.
 fn rebuilding(command: &Rebuilding, files: &[PathBuf]) -> Ended {
-    match KernelPool::start() {
-        Ok(pool) => each(&Sessions::new(pool), command, files),
-        Err(why) => each(&Sessions::new(Unstarted::new(why)), command, files),
-    }
+    each(&Sessions::new(KernelPool::start()), command, files)
 }
 
 /// `command` of each of `files`, on `sessions`: the worst way any ended.
@@ -409,7 +406,7 @@ fn show(file: &Path) -> Ended {
     // A kernel and a cache it never uses: nothing is rebuilt, and the user's cache secret is
     // neither read nor made.
     let sessions = Sessions::with_cache_opener(
-        Unstarted::new(
+        KernelPool::refusing(
             Error::new(ErrorCode::Internal, "`silico show` starts no kernel")
                 .with_suggestion(silico_core::worker::SILICO_BUG),
         ),

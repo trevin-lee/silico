@@ -110,11 +110,11 @@ fn a_sketch_that_doesnt_solve_fails_its_feature_and_isnt_drift() {
         other => panic!("{other:?}"),
     }
     assert!(model.drift().is_empty());
-    let problems = command::check(&model).unwrap();
+    let problems = command::check(&model);
     assert_eq!(problems.errors().len(), 1);
     assert_eq!(problems.errors()[0].code(), ErrorCode::SolveFailed);
     // A save keeps what the file holds.
-    let saved = command::format(&model).unwrap().unwrap();
+    let saved = command::format(&model).unwrap();
     assert!(saved.resolved.is_empty());
     assert_eq!(
         read(saved.text.as_bytes()).unwrap(),
@@ -272,7 +272,7 @@ fn a_reference_dimension_stored_otherwise_than_measured_is_drift_and_a_save_writ
             && e.message().contains("r0000002 value 0 → 90"),
         "{e}"
     );
-    let formatted = command::format(&model).unwrap().unwrap();
+    let formatted = command::format(&model).unwrap();
     assert_eq!(formatted.resolved, [feature()]);
     assert!(
         formatted.text.contains(r#""value": 10, "driving": false"#)
@@ -283,10 +283,7 @@ fn a_reference_dimension_stored_otherwise_than_measured_is_drift_and_a_save_writ
     // Saved, it's what its solve gives: no drift, and the same bytes again.
     let again = self::model(&engine, &formatted.text);
     assert!(again.drift().is_empty(), "{:?}", again.drift());
-    assert_eq!(
-        command::format(&again).unwrap().unwrap().text,
-        formatted.text
-    );
+    assert_eq!(command::format(&again).unwrap().text, formatted.text);
 }
 
 #[test]
@@ -374,7 +371,7 @@ fn every_reference_kind_stored_otherwise_is_drift_and_saved_as_measured() {
         ["r0000001", "r0000002", "r0000003", "r0000004", "r0000005"],
         "{e}"
     );
-    let formatted = command::format(&model).unwrap().unwrap();
+    let formatted = command::format(&model).unwrap();
     for want in [
         r#""id": "r0000001", "type": "radius", "curve": "ca000000", "value": 5,"#,
         r#""id": "r0000002", "type": "diameter", "curve": "ca000000", "value": 10,"#,
@@ -481,7 +478,7 @@ fn a_sketch_worker_that_cant_be_started_is_the_solvers_fault_and_started_again_n
     // invalid_input from finding it, which blamed the sketch (check exited 1, fmt wrote the
     // file). Finding it now says worker_unavailable (the M3 review's start-code decision),
     // a fault of the solver's, as a kernel's failure to start is: passed on as it is, with
-    // the feature named, and check fails as the client's own failure. And it isn't kept (round 2's tests lens: the start path itself
+    // the feature named, and set aside by check and format, never the document's. And it isn't kept (round 2's tests lens: the start path itself
     // was untested): the next recompute starts the solver again.
     let sketches = FakeSketches::new();
     let mut tries = 0;
@@ -514,9 +511,25 @@ fn a_sketch_worker_that_cant_be_started_is_the_solvers_fault_and_started_again_n
         }
         other => panic!("{other:?}"),
     }
-    let fault = command::check(&first).unwrap_err();
-    assert_eq!(fault.code(), ErrorCode::WorkerUnavailable);
-    assert!(command::format(&first).is_err(), "nothing is written");
+    // Set aside, as a session's check sets it aside: no problem of the document's, and the
+    // model holds it, which a session gives once, beside the problems.
+    assert!(command::check(&first).is_empty());
+    assert_eq!(
+        first.fault().map(silico_core::Error::code),
+        Some(ErrorCode::WorkerUnavailable)
+    );
+    // Saved around: the sketch keeps what its file holds, so the text is the file's own,
+    // in canonical form.
+    let saved = command::format(&first).unwrap();
+    assert!(
+        saved.problems.is_empty() && saved.resolved.is_empty(),
+        "{saved:?}"
+    );
+    assert_eq!(
+        saved.text,
+        silico_core::document::write(&silico_core::document::read(text.as_bytes()).unwrap())
+            .unwrap()
+    );
     assert!(matches!(
         model(&engine, &text).outcome(&feature()),
         Some(FeatureOutcome::Sketch(_))

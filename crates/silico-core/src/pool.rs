@@ -72,6 +72,10 @@ pub const STOP_AFTER: Duration = Duration::from_millis(50);
 /// couldn't start.
 const KERNEL: &str = "kernel pool";
 
+/// The identity of a pool that couldn't be opened ([`KernelPool::start`]): no build's, so no
+/// result kept on disk is taken as its.
+const UNOPENED: &str = "unopened kernel pool";
+
 /// The most workers a pool may have: far more than any machine's cores, and few enough
 /// that a size from a setting can't make the pool try to start without end.
 pub const MAX_WORKERS: usize = 1024;
@@ -348,9 +352,48 @@ impl KernelPool {
     /// [`KernelWorker::start`](crate::kernel::KernelWorker::start) finds it, started on
     /// demand ([`start_on_demand`](Self::start_on_demand)): a rebuild pays to start only
     /// the workers it uses at once, and one from the cache none.
-    pub fn start() -> Result<Self, Error> {
+    ///
+    /// A pool that couldn't be opened (its worker isn't where Silico looks, say) is still a
+    /// pool: it keeps why, and fails each request with it at once, as an on-demand pool
+    /// fails a request whose worker couldn't be started. So a client holds one pool
+    /// whatever happened, runs what needs no kernel (the gate, an outline), and each
+    /// rebuild that needs one meets that error as the kernel fault it is
+    /// (docs/design/m4.1-command-api.md, section 6).
+    pub fn start() -> Self {
         let cores = std::thread::available_parallelism().map_or(1, usize::from);
-        Self::start_on_demand(&crate::kernel::worker_path()?, cores.min(MAX_WORKERS))
+        crate::kernel::worker_path()
+            .and_then(|exe| Self::start_on_demand(&exe, cores.min(MAX_WORKERS)))
+            .unwrap_or_else(Self::refusing)
+    }
+
+    /// A pool with no workers, slots, or threads, every request of which, the pool's own or
+    /// a client's, fails with `why` at once, unless it's superseded (each client's
+    /// generations are its own, as an opened pool's are): what [`start`](Self::start) gives
+    /// when it can't open one, and a pool for a client that rebuilds nothing (`silico
+    /// show`), which shouldn't look for a worker it never uses.
+    pub fn refusing(why: Error) -> Self {
+        tracing::debug!("the kernel pool couldn't be opened: {why}");
+        Self {
+            shared: Arc::new(Shared {
+                executable: Err(why),
+                state: Mutex::new(State {
+                    clients: ClientQueues::new(),
+                    stopping: false,
+                    stop_after: STOP_AFTER,
+                    started: 0,
+                    busy: 0,
+                    unstarted: Vec::new(),
+                }),
+                work: Condvar::new(),
+                due: Condvar::new(),
+                spawns: AtomicU64::new(1),
+                newest_started: AtomicU64::new(0),
+                slots: Mutex::new(Vec::new()),
+                threads: Mutex::new(Vec::new()),
+            }),
+            size: 0,
+            stopper: None,
+        }
     }
 
     /// Starts `size` workers (1 to [`MAX_WORKERS`]) of the executable at `exe`, which is
@@ -387,7 +430,7 @@ impl KernelPool {
             .with_cause(e.to_string())
         })?;
         let shared = Arc::new(Shared {
-            executable: Executable::of(&exe, WorkerKind::Kernel)?,
+            executable: Ok(Executable::of(&exe, WorkerKind::Kernel)?),
             state: Mutex::new(State {
                 clients: ClientQueues::new(),
                 stopping: false,
@@ -512,7 +555,7 @@ impl KernelPool {
 
 impl crate::kernel::Kernel for KernelPool {
     fn identity(&self) -> &str {
-        self.shared.executable.identity()
+        self.shared.identity()
     }
 
     fn generation(&self) -> Generation {
@@ -549,7 +592,7 @@ impl PoolClient {
 
 impl crate::kernel::Kernel for PoolClient {
     fn identity(&self) -> &str {
-        self.shared.executable.identity()
+        self.shared.identity()
     }
 
     fn generation(&self) -> Generation {
@@ -566,73 +609,6 @@ impl crate::kernel::Kernel for PoolClient {
         request: KernelRequest<T>,
     ) -> Pending<T> {
         self.shared.submit(self.id, generation, request)
-    }
-}
-
-/// A kernel pool that couldn't be started ([`KernelPool::start`]'s error: its worker isn't
-/// where Silico looks, say), standing in for one: every request fails at once with why, as
-/// a request whose worker couldn't be started fails. So a client that couldn't start its
-/// pool still runs, on [`Sessions`](crate::command::Sessions), what needs no kernel (the
-/// gate, an outline), and each rebuild that needs one meets that error as the kernel fault
-/// it is, said once beside the document's problems (docs/design/m4.1-command-api.md,
-/// section 6). Each client of it ([`Clients::client`]) has generations of its own, as a
-/// pool's clients do.
-#[derive(Clone)]
-pub struct Unstarted {
-    /// Why the pool couldn't be started: a kernel fault (`worker_unavailable`, say).
-    why: Error,
-    generation: Arc<AtomicU64>,
-}
-
-impl Unstarted {
-    /// A stand-in for a pool that couldn't be started, `why` saying why.
-    pub fn new(why: Error) -> Self {
-        Unstarted {
-            why,
-            generation: Arc::new(AtomicU64::new(0)),
-        }
-    }
-}
-
-impl Clients for Unstarted {
-    type Client = Unstarted;
-
-    fn client(&self) -> Unstarted {
-        Unstarted::new(self.why.clone())
-    }
-}
-
-impl crate::kernel::Kernel for Unstarted {
-    /// None that a kept result could carry: nothing is ever built on it.
-    fn identity(&self) -> &str {
-        "unstarted"
-    }
-
-    fn generation(&self) -> Generation {
-        Generation(self.generation.load(Ordering::SeqCst))
-    }
-
-    fn advance(&self, generation: Generation) {
-        self.generation.fetch_max(generation.0, Ordering::SeqCst);
-    }
-
-    fn submit<T: Send + 'static>(
-        &self,
-        generation: Generation,
-        request: KernelRequest<T>,
-    ) -> Pending<T> {
-        let (outcome, pending) = mpsc::sync_channel(1);
-        let _ = outcome.send(if generation < self.generation() {
-            Outcome::Superseded
-        } else {
-            Outcome::Done(Err(self.why.clone()))
-        });
-        Pending::new(
-            request.name(),
-            "unstarted kernel pool",
-            ClientId::KERNEL,
-            pending,
-        )
     }
 }
 
@@ -761,8 +737,9 @@ pub(crate) fn thread_error(kernel: &str, e: &std::io::Error) -> Error {
 /// executable's stamp lock (`Executable`) is taken alone, never while another is.
 struct Shared {
     /// The workers' executable: the pool's identity is its identity, as the pool started,
-    /// and a worker is started from it, and taken, only while it's still that build.
-    executable: Arc<Executable>,
+    /// and a worker is started from it, and taken, only while it's still that build. Or why
+    /// the pool couldn't be opened ([`KernelPool::start`]), which every request fails with.
+    executable: Result<Arc<Executable>, Error>,
     state: Mutex<State>,
     /// Signalled when a request is queued or the pool stops.
     work: Condvar,
@@ -829,6 +806,15 @@ impl Activity {
 }
 
 impl Shared {
+    /// The executable's identity; for a pool that couldn't be opened, one no kept result
+    /// carries, since nothing is built on it.
+    fn identity(&self) -> &str {
+        match &self.executable {
+            Ok(executable) => executable.identity(),
+            Err(_) => UNOPENED,
+        }
+    }
+
     fn stopping(&self) -> bool {
         lock(&self.state).stopping
     }
@@ -896,6 +882,12 @@ impl Shared {
         if state.clients.superseded(client, generation) {
             drop(state);
             task.supersede();
+            return pending;
+        }
+        if let Err(why) = &self.executable {
+            // A pool that couldn't be opened: there's no worker to wait for.
+            drop(state);
+            task.fail(why.clone());
             return pending;
         }
         state.clients.push(task);
@@ -1394,7 +1386,11 @@ impl Keeper<'_> {
             None => {
                 // Started only from the pool's own build, and taken only if it is once it's
                 // started (`Executable::spawn`).
-                let worker = match self.shared.executable.spawn() {
+                let spawned = match &self.shared.executable {
+                    Ok(executable) => executable.spawn(),
+                    Err(why) => Err(why.clone()),
+                };
+                let worker = match spawned {
                     Ok(worker) => worker,
                     Err(e) => {
                         self.wait_to_retry();
@@ -1831,12 +1827,12 @@ mod tests {
     }
 
     #[test]
-    fn an_unstarted_pool_fails_each_request_with_why_and_supersedes_by_client() {
-        use crate::kernel::{Clients as _, Kernel as _, KernelRequest, Primitive};
+    fn a_pool_that_couldnt_be_opened_fails_each_request_with_why_and_supersedes_by_client() {
+        use crate::kernel::{Kernel as _, KernelRequest, Primitive};
         use crate::{Error, ErrorCode};
 
         let why = Error::new(ErrorCode::WorkerUnavailable, "no kernel worker here");
-        let pool = super::Unstarted::new(why.clone());
+        let pool = super::KernelPool::refusing(why.clone());
         let request = || {
             KernelRequest::make(Primitive::Box {
                 dx: 1.0,
@@ -1845,11 +1841,13 @@ mod tests {
             })
             .unwrap()
         };
-        // Each request fails with why, at once, whatever it asks.
+        // Each request fails with why, at once, whatever it asks; no slot, no worker.
         match pool.submit(Generation(0), request()).wait() {
             Outcome::Done(Err(error)) => assert_eq!(error, why),
             other => panic!("{other:?}"),
         }
+        assert_eq!((pool.size(), pool.pids()), (0, Vec::new()));
+        assert_eq!(pool.identity(), super::UNOPENED);
         // A client's generations are its own: one advanced past a request's supersedes it,
         // and leaves the pool's and another client's as they were.
         let one = pool.client();
@@ -1863,16 +1861,22 @@ mod tests {
             one.submit(Generation(2), request()).wait(),
             Outcome::Superseded
         ));
-        assert!(matches!(
-            one.submit(Generation(3), request()).wait(),
-            Outcome::Done(Err(_))
-        ));
-        assert!(matches!(
-            two.submit(Generation(0), request()).wait(),
-            Outcome::Done(Err(_))
-        ));
+        match one.submit(Generation(3), request()).wait() {
+            Outcome::Done(Err(error)) => assert_eq!(error, why),
+            other => panic!("{other:?}"),
+        }
+        match two.submit(Generation(0), request()).wait() {
+            Outcome::Done(Err(error)) => assert_eq!(error, why),
+            other => panic!("{other:?}"),
+        }
         // An older generation is no advance.
         one.advance(Generation(1));
         assert_eq!(one.generation(), Generation(3));
+        // The pool's own requests supersede as a client's do.
+        pool.advance(Generation(2));
+        assert!(matches!(
+            pool.submit(Generation(1), request()).wait(),
+            Outcome::Superseded
+        ));
     }
 }
