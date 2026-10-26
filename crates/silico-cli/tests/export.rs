@@ -187,8 +187,9 @@ fn a_file_already_there_is_kept_without_replace_and_the_refusal_says_why() {
 
 #[test]
 fn every_reason_an_export_is_refused_is_said_and_nothing_written() {
-    // A tolerance out of range, a path that isn't .3mf, and a feature the document hasn't:
-    // each said, in the design's order, nothing written (exit 1).
+    // A tolerance out of range, a path in no directory there is, and a feature the
+    // document hasn't: each said, in the design's order, nothing written (exit 1). (A path
+    // of neither format is the CLI's usage error, before any of these.)
     let dir = Scratch::new("refused");
     std::fs::write(dir.0.join("part.silico"), BOX).unwrap();
     let out = silico_export(
@@ -197,7 +198,7 @@ fn every_reason_an_export_is_refused_is_said_and_nothing_written() {
             "--tolerance=0",
             "--features=zzzzzzzz",
             "part.silico",
-            "part.stl",
+            "nowhere/part.3mf",
         ],
     );
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -404,4 +405,56 @@ fn a_name_with_characters_a_terminal_acts_on_is_written_as_it_is_and_said_escape
     );
     assert!(!stderr.contains('\u{1}'), "{stderr}");
     assert!(!dir.0.join("control.3mf").exists());
+}
+
+#[test]
+fn a_step_output_is_written_as_step_each_objects_line_its_id_and_name() {
+    // The format is the output's: a .step file holds the box as one product, named by its
+    // feature; its line says no mesh numbers, there being no mesh.
+    let dir = Scratch::new("step");
+    std::fs::write(dir.0.join("part.silico"), BOX).unwrap();
+    let out = silico_export(&dir.0, &["part.silico", "part.step"]);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let bytes = std::fs::read(dir.0.join("part.step")).unwrap();
+    assert_eq!(
+        stdout,
+        format!(
+            "wrote part.step ({} bytes)\nk7f2qx3m \"Block\"\n",
+            bytes.len()
+        )
+    );
+    let text = String::from_utf8(bytes).unwrap();
+    assert!(text.starts_with("ISO-10303-21;"), "{text}");
+    assert!(text.contains("FILE_NAME('part.silico',"), "{text}");
+    assert!(text.contains("PRODUCT('k7f2qx3m','Block'"), "{text}");
+}
+
+#[test]
+fn a_tolerance_with_a_step_output_or_an_output_of_neither_format_is_a_usage_error() {
+    let dir = Scratch::new("step-usage");
+    std::fs::write(dir.0.join("part.silico"), BOX).unwrap();
+    for (args, says) in [
+        (
+            &["--tolerance=0.1", "part.silico", "part.step"][..],
+            "--tolerance is a 3MF mesh's",
+        ),
+        (
+            &["part.silico", "part.stl"][..],
+            "must end in .3mf or .step",
+        ),
+        (&["part.silico", "part"][..], "must end in .3mf or .step"),
+    ] {
+        let out = silico_export(&dir.0, args);
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains(says), "{args:?}: {stderr}");
+        assert!(stderr.contains("usage: silico"), "{args:?}: {stderr}");
+    }
+    assert_eq!(dir.names(), ["part.silico"]);
 }

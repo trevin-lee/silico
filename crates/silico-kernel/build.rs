@@ -19,6 +19,11 @@ use recipe::{BuildResult, check_cxx_env, read_recipe};
 /// The OCCT libraries the bridge calls into directly. Their own dependencies are found
 /// through the libraries themselves.
 const OCCT_LIBS: &[&str] = &[
+    "TKDESTEP",
+    "TKXCAF",
+    "TKXSBase",
+    "TKLCAF",
+    "TKCDF",
     "TKFillet",
     "TKBO",
     "TKBool",

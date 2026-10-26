@@ -1433,6 +1433,14 @@ impl KernelWorker {
     ) -> Result<ExportMesh, Error> {
         self.run(KernelRequest::unraised_export_mesh(shape, tolerance)?)
     }
+
+    /// [`KernelRequest::export_step`], run on this worker.
+    pub fn export_step(
+        &mut self,
+        export: silico_protocol::ExportStep,
+    ) -> Result<silico_protocol::StepFile, Error> {
+        self.run(KernelRequest::export_step(export)?)
+    }
 }
 
 /// An operation's values refused before sending, naming the parameter at fault as a dotted

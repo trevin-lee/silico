@@ -121,6 +121,8 @@ mod primitives;
 mod profile_faces;
 #[path = "revolution_measures.rs"]
 mod revolution_measures;
+#[path = "step_export.rs"]
+mod step_export;
 #[path = "sweep.rs"]
 mod sweep;
 #[path = "thin_wall.rs"]
