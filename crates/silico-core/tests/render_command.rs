@@ -58,7 +58,9 @@ impl Bench {
                 kernel: &self.kernel,
                 meshes: &self.meshes,
                 renderer: &self.renderer,
-                workspace,
+                workspace: workspace
+                    .map(|root| silico_core::file::Workspace::new(root).unwrap())
+                    .as_ref(),
                 held: &[],
                 settle: &|| Ok(()),
             },

@@ -24,7 +24,7 @@ use crate::cache::Cache;
 use crate::command::edit::FeatureIds;
 use crate::document::json::MAX_INPUT_LEN;
 use crate::document::{self, Document, FormatVersion, NamingScheme, Units};
-use crate::file;
+use crate::file::{self, Unresolved, Workspace};
 use crate::kernel::{Clients, Kernel};
 use crate::recompute::{Recompute, SketchSolvers};
 use crate::worker::lock;
@@ -47,6 +47,11 @@ pub(super) struct Registry<P: Clients + 'static> {
     pub(super) renderer: Mutex<Option<Arc<dyn crate::command::render::Renderer>>>,
     /// The display meshes `render` makes, shared by the sessions of this kernel.
     pub(super) meshes: Arc<crate::meshes::MeshCache<crate::recompute::Key>>,
+    /// The workspace every path a session is given, and every file it reads, writes, or
+    /// keeps its cache in, must lie in (decision 26): given as the sessions are made
+    /// ([`Sessions::in_workspace`](super::Sessions::in_workspace)), fixed for their life.
+    /// None for the CLI's, whose paths resolve as the system resolves them.
+    pub(super) workspace: Option<Workspace>,
 }
 
 /// A file as the system knows it, whatever path reaches it: its device and inode.
@@ -167,6 +172,7 @@ pub(super) fn start<P: Clients + 'static>(
         let (sender, jobs) = mpsc::channel();
         let session = Arc::new(Session {
             id,
+            workspace: registry.workspace.clone(),
             held: Holding::new(held),
             queue: Mutex::new(Some(sender)),
             rebuilds: Mutex::new(Rebuilds {
@@ -265,12 +271,15 @@ fn open<P: Clients + 'static>(
     create: bool,
 ) -> Result<(Held, Opened, Cache, Option<MadeFile>), Problems> {
     let path = Path::new(given);
+    let workspace = registry.workspace.as_ref();
     let (resolved, text, made) = if create {
         let (resolved, text, made) = made(registry, id, path)?;
         (resolved, text, Some(made))
     } else {
-        let resolved =
-            std::fs::canonicalize(path).map_err(|e| file::unreadable(e).with_parameter("path"))?;
+        let resolved = file::resolve(workspace, path).map_err(|unresolved| match unresolved {
+            Unresolved::Outside => Workspace::outside(path, "path"),
+            Unresolved::Unreachable(e) => file::unreadable(e).with_parameter("path"),
+        })?;
         let (opened, text) = {
             let _span = tracing::info_span!("read").entered();
             file::opened_and_read(&resolved).map_err(|e| e.with_parameter("path"))?
@@ -312,7 +321,8 @@ fn open<P: Clients + 'static>(
     Ok((held, opened, cache, made))
 }
 
-/// A new, empty document made at `path`, claimed for session `id`: where it is through
+/// A new, empty document made at `path` (relative to the workspace, if there's one: its
+/// directory refused if it's outside it), claimed for session `id`: where it is through
 /// links, its text, and the file made, removed again unless kept.
 fn made<P: Clients + 'static>(
     registry: &Registry<P>,
@@ -333,8 +343,13 @@ fn made<P: Clients + 'static>(
             .with_parameter("path")
             .with_suggestion("check that its directory exists, and that this user may write in it")
     };
-    let resolved = std::fs::canonicalize(file::directory(path))
-        .map_err(uncreatable)?
+    let workspace = registry.workspace.as_ref();
+    let joined = file::joined(workspace, path);
+    let resolved = file::resolve(workspace, file::directory(&joined))
+        .map_err(|unresolved| match unresolved {
+            Unresolved::Outside => Workspace::outside(path, "path"),
+            Unresolved::Unreachable(e) => uncreatable(e),
+        })?
         .join(name);
     let text = document::write(&Document {
         silico: FormatVersion,
@@ -511,6 +526,19 @@ impl<P: Clients + 'static> Registry<P> {
     /// without the user's secret, which keeps nothing, isn't kept, so the next open tries
     /// again.
     fn cache(&self, dir: &Path) -> Cache {
+        // A cache directory that leads out of the workspace (a link put there) is never
+        // opened: a cache that keeps nothing and reads nothing stands in for it, so no entry
+        // is read or written through it, nor any scanned or removed, as the cache keeps none
+        // through a link (M2.5). It changes no result, so the document still opens.
+        if let Some(workspace) = &self.workspace
+            && let Err(Unresolved::Outside) = file::resolve(Some(workspace), dir)
+        {
+            tracing::warn!(
+                dir = %dir.display(),
+                "the cache directory leads out of the workspace: keeping no results"
+            );
+            return Cache::unsealed(dir);
+        }
         if let Some(cache) = lock(&self.book).caches.get(dir) {
             return cache.clone();
         }

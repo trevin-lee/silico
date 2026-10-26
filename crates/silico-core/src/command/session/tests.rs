@@ -35,6 +35,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
     let (sender, jobs) = mpsc::channel();
     let session = Arc::new(Session {
         id: SessionId(1),
+        workspace: None,
         held: Holding::new(Held {
             path: "a.silico".to_owned(),
             resolved: PathBuf::from("a.silico"),

@@ -60,11 +60,16 @@
 //! rebuilds it, and a save writes around it, saving its features as failed ones are
 //! (decision 32).
 //!
+//! Sessions given a workspace ([`Sessions::in_workspace`], decision 26: `silico serve`'s)
+//! read and write only inside it: `open`'s path and `render`'s `to` are relative to its
+//! root, a path out of it (or through a link out of it) is refused, naming the field, and so
+//! is a command whose session's file leads out of it now, found as the file is read again
+//! or saved; a `.silico-cache/` that leads out of it is never opened. Without one (the
+//! CLI's), `open` reads any file this user may read.
+//!
 //! What it doesn't bound: the caches, one kept for each directory a session has opened a
 //! document in, for the process's life; and each session's queue, which holds every command
-//! queued and not yet run. Nor does it choose which files may be opened: `open` and `text`
-//! read any file this user may read, so a server for clients it doesn't trust gives them a
-//! workspace (decision 26) once there is one.
+//! queued and not yet run.
 
 mod cancel;
 mod edits;
@@ -87,7 +92,7 @@ use crate::document::json::Node;
 use crate::document::{self, FeatureId};
 #[cfg(doc)]
 use crate::file;
-use crate::file::shown_path;
+use crate::file::{Workspace, shown_path};
 use crate::kernel::{Clients, Kernel};
 use crate::recompute::SketchSolvers;
 use crate::sketch::SketchSolver;
@@ -139,6 +144,9 @@ pub struct Sessions<P: Clients + 'static> {
 /// running, under which none is taken. The registry's `feature_ids` is taken alone.
 struct Session<C: Kernel + 'static> {
     id: SessionId,
+    /// The sessions' workspace, if they have one: each re-read and save of the session's file
+    /// is refused if the file now leads out of it.
+    workspace: Option<Workspace>,
     held: Holding,
     /// Where its commands are queued, in order: none once it's closed.
     queue: Mutex<Option<Sender<Job<C>>>>,
@@ -375,8 +383,48 @@ impl<P: Clients + 'static> Sessions<P> {
                 meshes: Arc::new(crate::meshes::MeshCache::new(
                     crate::meshes::MESH_CACHE_BYTES,
                 )),
+                workspace: None,
             }),
         }
+    }
+
+    /// The same sessions, in the workspace at `root` (decision 26), as they're made, before
+    /// any document opens, as [`rendering`](Self::rendering) gives them a renderer: its root
+    /// canonicalized once, and fixed for the sessions' life. A relative path `open` is
+    /// given, or `render`'s `to`, is relative to the root; a path outside the workspace, or
+    /// one that reaches out of it through a link, is refused, `invalid_input` naming the
+    /// field, and so is a command whose session's file now leads out of it, as the session
+    /// reads it again or saves it (a link put on its path since `open`). A `.silico-cache/`
+    /// that leads out of it is never opened: its sessions keep no results. Without one (the
+    /// CLI), paths resolve as the system resolves them. Refused if the root isn't a
+    /// directory that can be reached, and if these sessions have a workspace already, or
+    /// have been asked to open a document.
+    pub fn in_workspace(mut self, root: &Path) -> Result<Self, Error> {
+        let workspace = Workspace::new(root)?;
+        let too_late = || {
+            Error::new(
+                ErrorCode::InvalidInput,
+                "these sessions can't be given a workspace now",
+            )
+            .with_cause(
+                "a workspace is given once, as the sessions are made, before any document opens",
+            )
+            .with_suggestion(crate::worker::SILICO_BUG)
+        };
+        let Some(registry) = Arc::get_mut(&mut self.registry) else {
+            return Err(too_late());
+        };
+        let unopened = registry.book.get_mut().is_ok_and(|book| book.next == 1);
+        if registry.workspace.is_some() || !unopened {
+            return Err(too_late());
+        }
+        registry.workspace = Some(workspace);
+        Ok(self)
+    }
+
+    /// The sessions' workspace, if they have one.
+    pub fn workspace(&self) -> Option<&Workspace> {
+        self.registry.workspace.as_ref()
     }
 
     /// The same sessions, drawing `render`'s scenes with `renderer` (the render worker's

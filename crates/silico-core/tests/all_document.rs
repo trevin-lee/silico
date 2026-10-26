@@ -96,6 +96,8 @@ mod session_render;
 mod session_tracing;
 #[path = "session_transactions.rs"]
 mod session_transactions;
+#[path = "session_workspace.rs"]
+mod session_workspace;
 #[path = "shared_result_checks.rs"]
 mod shared_result_checks;
 #[path = "wire_commands.rs"]

@@ -51,6 +51,148 @@ pub fn cache_directory(file: &Path) -> PathBuf {
     directory(&named).join(".silico-cache")
 }
 
+/// The directory every path a client gives must lie in, through its links (decision 26 of
+/// docs/design/m4.1-command-api.md): what `silico serve` is started in. Its root is
+/// canonicalized once, when it's made, and every check is of a path through its links
+/// against that root, component by component, so a sibling whose name starts with the
+/// root's (`work2` beside `work`) is outside it. One implementation of the rule, which every
+/// place a path resolves holds to: `open` (a session's file, and the directory a new one is
+/// made in), each re-read and save of a session's file, its directory's `.silico-cache/`,
+/// and a file a command writes ([`Output`]). Without one (the CLI), paths resolve as the
+/// system resolves them, against the process's working directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Workspace {
+    root: PathBuf,
+}
+
+/// How many links [`Workspace::leads_out`] follows through a path that doesn't resolve
+/// before it gives up: Linux's and macOS's own limit on links followed in one lookup.
+const LINKS_FOLLOWED: u32 = 40;
+
+impl Workspace {
+    /// The workspace at `root`, through its links: refused if it isn't a directory that can
+    /// be reached.
+    pub fn new(root: &Path) -> Result<Self, Error> {
+        let canonical = std::fs::canonicalize(root).map_err(|e| {
+            Error::new(
+                ErrorCode::IoFailed,
+                format!("the workspace {} can't be reached: {e}", shown_path(root)),
+            )
+            .with_suggestion("start Silico in a workspace that exists")
+        })?;
+        if !canonical.is_dir() {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                format!("the workspace {} isn't a directory", shown_path(root)),
+            )
+            .with_suggestion("start Silico in a directory"));
+        }
+        Ok(Workspace { root: canonical })
+    }
+
+    /// Its root, through its links.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Whether `resolved`, a path through its links, lies in the workspace: its root or
+    /// below it.
+    pub fn holds(&self, resolved: &Path) -> bool {
+        resolved.starts_with(&self.root)
+    }
+
+    /// Whether `path`, which doesn't resolve (a link to nothing, or a file not made yet),
+    /// would lead out of the workspace: the link it is followed, or, if it's none, the
+    /// nearest of its directories that resolves. So a path out of the workspace is refused
+    /// as one, whether or not anything is there, and nothing outside it is told apart by
+    /// whether it exists.
+    fn leads_out(&self, path: &Path, links: u32) -> bool {
+        if let Ok(resolved) = std::fs::canonicalize(path) {
+            return !self.holds(&resolved);
+        }
+        let Some(links) = links.checked_sub(1) else {
+            return false;
+        };
+        match std::fs::read_link(path) {
+            Ok(target) => self.leads_out(&directory(path).join(target), links),
+            Err(_) => path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .is_some_and(|parent| self.leads_out(parent, links)),
+        }
+    }
+
+    /// The refusal of `given`, the request's `field`, a path outside the workspace or one
+    /// that reaches out of it through a link (M4.1's `open` example).
+    pub fn outside(given: &Path, field: &str) -> Error {
+        Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "{} is outside the workspace this server was started in",
+                shown_path(given)
+            ),
+        )
+        .with_parameter(field)
+        .with_suggestion("give a path inside the workspace; a link out of it is refused too")
+    }
+
+    /// The refusal of a command whose session's file, `given` as `open` was given it, now
+    /// leads out of the workspace (a link put on its path since): `invalid_input`, naming
+    /// `path`, as `open` refuses one, never `io_failed`.
+    pub fn led_out(given: &Path) -> Error {
+        Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "{} is outside the workspace this server was started in",
+                shown_path(given)
+            ),
+        )
+        .with_parameter("path")
+        .with_cause(
+            "it was inside the workspace when it was opened, and leads out of it now, through a link put on its path",
+        )
+        .with_suggestion(
+            "put the document back inside the workspace, or close the session and open one inside it",
+        )
+    }
+}
+
+/// Why a path doesn't resolve inside a workspace ([`resolve`]).
+#[derive(Debug)]
+pub enum Unresolved {
+    /// It leads out of the workspace, through its links or its `..`s, whether or not
+    /// anything is there.
+    Outside,
+    /// It leads nowhere the system can follow: the system's error.
+    Unreachable(std::io::Error),
+}
+
+/// Where `path` leads through its links, relative to `workspace`'s root if it's relative and
+/// there is one, as the system resolves it: refused if it leads out of the workspace
+/// ([`Unresolved::Outside`]), or, inside it, if it leads nowhere ([`Unresolved::Unreachable`]).
+/// Without a workspace, exactly `std::fs::canonicalize(path)`.
+pub fn resolve(workspace: Option<&Workspace>, path: &Path) -> Result<PathBuf, Unresolved> {
+    let Some(workspace) = workspace else {
+        return std::fs::canonicalize(path).map_err(Unresolved::Unreachable);
+    };
+    let joined = workspace.root.join(path);
+    match std::fs::canonicalize(&joined) {
+        Ok(resolved) if workspace.holds(&resolved) => Ok(resolved),
+        Ok(_) => Err(Unresolved::Outside),
+        Err(_) if workspace.leads_out(&joined, LINKS_FOLLOWED) => Err(Unresolved::Outside),
+        Err(e) => Err(Unresolved::Unreachable(e)),
+    }
+}
+
+/// `path` as the system resolves it, relative to `workspace`'s root if it's relative and
+/// there is one, links not followed: what a command reads or makes at a path it's given.
+pub(crate) fn joined(workspace: Option<&Workspace>, path: &Path) -> PathBuf {
+    match workspace {
+        Some(workspace) => workspace.root.join(path),
+        None => path.to_owned(),
+    }
+}
+
 /// The directory `file` is in (`.` for a bare name).
 pub fn directory(file: &Path) -> &Path {
     file.parent()
@@ -110,10 +252,38 @@ impl From<Error> for Unsaved {
 /// (killed mid-write, the old text is in the file beside it, `.NAME.fmt-PID`). Refused if
 /// this process may not write it, or, as a conflict, if it changed since it was read; and,
 /// when it fails, saying whether its own write left the file part written ([`Unsaved`]).
-/// What every save of a document goes through: a session's commit, edit, and `format`.
+/// What every save of a document goes through: a session's commit, edit, and `format`
+/// ([`save_within`], in a workspace).
 pub fn save_over(file: &Path, before: &[u8], bytes: &[u8]) -> Result<(), Unsaved> {
+    save_within(file, before, bytes, None)
+}
+
+/// A session's file in its workspace, for [`save_within`]: the workspace, and the file's
+/// path as `open` was given it, which a refusal names.
+#[derive(Debug, Clone, Copy)]
+pub struct Within<'a> {
+    pub workspace: &'a Workspace,
+    pub given: &'a Path,
+}
+
+/// [`save_over`], and, `within` a workspace, refused if `file` now leads out of it (a link
+/// put on its path since it was read: [`Workspace::led_out`]), checked where the file it
+/// writes is found, nothing written.
+pub fn save_within(
+    file: &Path,
+    before: &[u8],
+    bytes: &[u8],
+    within: Option<Within<'_>>,
+) -> Result<(), Unsaved> {
     let _span = tracing::info_span!("save", bytes = bytes.len()).entered();
-    let target = std::fs::canonicalize(file).map_err(unwritable)?;
+    let target = match resolve(within.map(|w| w.workspace), file) {
+        Ok(target) => target,
+        Err(Unresolved::Unreachable(e)) => return Err(Unsaved::from(unwritable(e))),
+        Err(Unresolved::Outside) => {
+            let given = within.map_or(file, |w| w.given);
+            return Err(Unsaved::from(Workspace::led_out(given)));
+        }
+    };
     let metadata = std::fs::metadata(&target).map_err(unwritable)?;
     // Whether this process may write it, as the system says, whatever its mode bits say
     // (a file its owner can't write but its group can, another user's): opened to write,
@@ -456,8 +626,8 @@ pub struct Output<'a> {
     /// Whether a file already at the path may be replaced.
     pub replace: bool,
     /// The workspace the path must be inside, never through a link out of it, if the
-    /// sessions have one (decision 26).
-    pub workspace: Option<&'a Path>,
+    /// sessions have one (decision 26): a relative path is relative to its root.
+    pub workspace: Option<&'a Workspace>,
     /// The documents the sessions hold, which it may never be.
     pub held: &'a [PathBuf],
 }
@@ -489,15 +659,8 @@ fn output_target(
     rules: &Output,
 ) -> Result<(PathBuf, Option<std::fs::Metadata>), Error> {
     // Relative to the workspace when there's one (M4.1 section 2), as given in messages.
-    let path = given;
-    let joined;
-    let path = match rules.workspace {
-        Some(root) if given.is_relative() => {
-            joined = root.join(given);
-            joined.as_path()
-        }
-        _ => path,
-    };
+    let joined = joined(rules.workspace, given);
+    let path = joined.as_path();
     let refuse = |why: String, suggestion: &str| {
         Error::new(
             ErrorCode::InvalidInput,
@@ -533,11 +696,14 @@ fn output_target(
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
     };
-    let dir = std::fs::canonicalize(parent).map_err(|e| {
-        refuse(
+    // Out of the workspace whether or not its directory is there, so nothing outside it is
+    // told apart by whether it exists.
+    let dir = resolve(rules.workspace, parent).map_err(|unresolved| match unresolved {
+        Unresolved::Outside => Workspace::outside(given, rules.field),
+        Unresolved::Unreachable(e) => refuse(
             format!("its directory can't be reached: {e}"),
             "give a path in a directory that exists",
-        )
+        ),
     })?;
     // Where it would be written: through a link already at the path, to what it names; and
     // a file already there by the name it has on disk, as the documents held are named (on
@@ -546,6 +712,14 @@ fn output_target(
     let target = match &existing {
         Some(meta) => match std::fs::canonicalize(dir.join(name)) {
             Ok(target) => target,
+            Err(_)
+                if meta.file_type().is_symlink()
+                    && rules
+                        .workspace
+                        .is_some_and(|w| w.leads_out(&dir.join(name), LINKS_FOLLOWED)) =>
+            {
+                return Err(Workspace::outside(given, rules.field));
+            }
             Err(e) if meta.file_type().is_symlink() => {
                 return Err(refuse(
                     format!("is a link to nothing that can be reached: {e}"),
@@ -558,6 +732,13 @@ fn output_target(
         },
         None => dir.join(name),
     };
+    // A link at the path out of the workspace, its directory inside it: said before anything
+    // of what it leads to.
+    if let Some(workspace) = rules.workspace
+        && !workspace.holds(&target)
+    {
+        return Err(Workspace::outside(given, rules.field));
+    }
     if target
         .components()
         .any(|c| c.as_os_str() == ".silico-cache")
@@ -591,20 +772,6 @@ fn output_target(
             "is a document a session holds".to_owned(),
             "write it to a path that isn't a document's",
         ));
-    }
-    if let Some(root) = rules.workspace {
-        let root = std::fs::canonicalize(root).map_err(|e| {
-            refuse(
-                format!("the workspace can't be reached: {e}"),
-                "start Silico in a workspace that exists",
-            )
-        })?;
-        if !target.starts_with(&root) {
-            return Err(refuse(
-                format!("is outside the workspace {}", shown_path(&root)),
-                "write it inside the workspace, not through a link out of it",
-            ));
-        }
     }
     let replaced = match std::fs::metadata(&target) {
         Ok(meta) if !meta.is_file() => {
