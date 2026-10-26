@@ -189,9 +189,10 @@ impl FakeKernel {
         lock(&self.shared.state).calls.clone()
     }
 
-    /// Every request submitted so far, in the order they were, whether or not it started: a
-    /// request its caller dropped before a thread took it (a render that stops at the first
-    /// body holding its eye) is asked, but never started, so never in [`calls`](Self::calls).
+    /// Every request submitted so far, in the order they were, whether or not it started. A
+    /// request its caller dropped (a render that stops at the first body holding its eye) is
+    /// asked at once, but only starts, and is only in [`calls`](Self::calls), once a thread
+    /// takes it, which may be later: dropping it takes nothing from the queue.
     pub fn asked(&self) -> Vec<Call> {
         lock(&self.shared.state).asked.clone()
     }
