@@ -50,6 +50,8 @@ mod adversarial_mass_properties;
 mod adversarial_measures;
 #[path = "adversarial_references.rs"]
 mod adversarial_references;
+#[path = "adversarial_render_command.rs"]
+mod adversarial_render_command;
 #[path = "adversarial_type_words.rs"]
 mod adversarial_type_words;
 #[path = "adversarial_wire_commands.rs"]
@@ -70,6 +72,8 @@ mod measures;
 mod reach;
 #[path = "refused_from_a_partial_cache.rs"]
 mod refused_from_a_partial_cache;
+#[path = "render_command.rs"]
+mod render_command;
 #[path = "session.rs"]
 mod session;
 #[path = "session_cancel.rs"]
@@ -82,6 +86,8 @@ mod session_elements;
 mod session_rebuild;
 #[path = "session_reload.rs"]
 mod session_reload;
+#[path = "session_render.rs"]
+mod session_render;
 #[path = "session_tracing.rs"]
 mod session_tracing;
 #[path = "session_transactions.rs"]

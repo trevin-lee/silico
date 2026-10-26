@@ -29,7 +29,7 @@ tracing.workspace = true
 [dev-dependencies]
 # The core's worker client, to drive the worker as the core does (no OCCT: the core links
 # none).
-silico-core.workspace = true
+silico-core = { workspace = true, features = ["fake"] }
 libm.workspace = true
 proptest.workspace = true
 silico-render = { path = ".", features = ["test_ops"] }

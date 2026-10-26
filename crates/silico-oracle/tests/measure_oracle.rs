@@ -564,7 +564,7 @@ fn freecad_finds_each_element_by_its_geometry_or_says_it_cant() {
     // With the bottom's centre moved a micrometre, no face of FreeCAD's box fits it, and it
     // says so.
     let cases = cases();
-    let engine = Recompute::new(KernelPool::start().unwrap());
+    let engine = Recompute::new(KernelPool::start());
     let model = rebuild(&engine, cases.document.clone()).unwrap().unwrap();
     let first = &cases.cases[..1];
     let ours = measures::answers(&model, engine.kernel(), first).unwrap();

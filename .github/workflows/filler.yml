@@ -9,8 +9,9 @@
 # shards. So it fills only when more than a fifth of the VM's CPUs are idle (over 15
 # seconds; this job runs on the VM), with as many shards as the idle CPUs feed at a
 # filler shard's share (a quarter of the VM) and the free runners labelled filler
-# (silico-9 to -12) hold. Filler shards run only there, at the idle scheduling class
-# (mutants.yml), so they hold no runner a gate could use and take no CPU real work wants.
+# (silico-9 to -12) hold. Filler shards run only there, at the idle scheduling class on
+# runners whose cgroups are at the idle CPU weight (mutants.yml), so they hold no runner a
+# gate could use and take no CPU a gate wants.
 # In order:
 #   a. Main's new commits: mutants in what main changed in its source since the commit the
 #      last filler `a` run tested (or since main's parent, at first).

@@ -900,6 +900,9 @@ fn version_gives_the_designs_numbers_and_limits() {
     assert_eq!(limits.query_measures, 7);
     assert_eq!(limits.kernel_seconds, 60);
     assert_eq!(limits.sketch_seconds, 300);
+    assert_eq!(limits.highlight, 1000);
+    assert_eq!(limits.render_side, 4096);
+    assert_eq!(limits.render_seconds, 30);
 }
 
 #[test]

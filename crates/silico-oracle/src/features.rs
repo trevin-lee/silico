@@ -647,7 +647,7 @@ impl Ours {
 /// measured on a kernel worker as FreeCAD measures.
 pub fn silico(cases: &Cases) -> Result<Vec<Ours>, String> {
     let _span = tracing::info_span!("silico_sketch_features", cases = cases.cases.len()).entered();
-    let engine = Recompute::new(KernelPool::start().map_err(|e| e.to_string())?);
+    let engine = Recompute::new(KernelPool::start());
     let model = rebuild(&engine, cases.document.clone())
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "the rebuild was superseded, though nothing else ran".to_owned())?;

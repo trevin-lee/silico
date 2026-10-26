@@ -454,12 +454,19 @@ fn a_solve_that_fails_with_the_worker_is_not_kept_and_the_next_rebuild_solves() 
             }
             other => panic!("{code:?}: {other:?}"),
         }
-        // A failure that isn't the document's is a format that couldn't be done: nothing
-        // to write, the worker's error to report.
-        match command::format(&model) {
-            Err(e) => assert_eq!(e.code(), code, "{e}"),
-            Ok(other) => panic!("{code:?}: formatted past a worker's failure: {other:?}"),
-        }
+        // A failure that isn't the document's is set aside: the model holds it, and the
+        // format saves around it, the sketch keeping what its file holds.
+        assert_eq!(model.fault().map(Error::code), Some(code));
+        let formatted = command::format(&model).unwrap();
+        assert!(
+            formatted.problems.is_empty() && formatted.resolved.is_empty(),
+            "{code:?}: {formatted:?}"
+        );
+        assert_eq!(
+            formatted.text,
+            silico_core::document::write(&read(text.as_bytes()).unwrap()).unwrap(),
+            "{code:?}"
+        );
         // Asked again once the worker's back: solved, not the failure kept.
         sketches.answer(|system| Ok(FakeSketches::as_sent(system)));
         let model = published(&engine, &text);
@@ -784,7 +791,7 @@ fn a_sketch_at_the_limit_with_everything_moved_reports_drift_and_saves_promptly(
     );
     // The message names a few, not all ten thousand.
     assert!(e.message().len() < 1000, "{} bytes", e.message().len());
-    let saved = command::format(&model).unwrap().unwrap();
+    let saved = command::format(&model).unwrap();
     assert_eq!(saved.resolved, [feature()]);
     assert!(
         start.elapsed() < Duration::from_secs(10),

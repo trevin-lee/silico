@@ -519,7 +519,7 @@ fn a_highlighted_face_changes_only_itself_and_its_outline() {
 #[test]
 fn a_highlighted_edge_changes_only_itself_and_is_drawn_wider() {
     // Front view, Edge1 (the front face's bottom) highlighted: Edge3 (its top) is unchanged,
-    // and Edge1 covers more of the ID buffer (3 pixels wide, not 1.5).
+    // and Edge1 covers more of the ID buffer (4 pixels wide, not 2).
     let mut w = worker();
     let (width, height) = (400, 300);
     let plain = front_of_a_box(width, height);
@@ -570,15 +570,18 @@ fn edges_are_drawn_darker_than_the_faces_they_bound() {
 
 #[test]
 fn a_face_seen_at_an_angle_is_lit_by_lamberts_law_by_hand() {
-    // Orthographic, from the corner: the top face's normal (0, 0, 1) is at 1/√3 to the view,
-    // so its light is 0.35 + 0.65/√3 of the albedo, in linear light.
+    // Orthographic, from the corner (back (1, −1, 1)/√3, up (−1, 1, 2)/√6, right (1, 1,
+    // 0)/√2): the key light, back + up/2 − right/2 made unit, is (0.0197, −0.7268,
+    // 0.9856)/1.2247, and the fill, back − 3up/10 + 3right/5, (1.1241, −0.2756,
+    // 0.3324)/1.2042. The top face's normal (0, 0, 1) takes 0.30 + 0.65 × 0.8047 + 0.20 ×
+    // 0.2760 = 0.8783 of the albedo, in linear light.
     let mut w = worker();
     let size = 300;
     let (image, ids) = render(&mut w, corner(size));
     let ids = ids.unwrap();
     let top = pixels_of(&ids, size, [1, 6]);
     let (col, row) = top[top.len() / 2];
-    let light = 0.35 + 0.65 / 3.0f64.sqrt();
+    let light = 0.30 + 0.65 * (0.9856 / 1.2247) + 0.20 * (0.3324 / 1.2042);
     let got = image.at(col, row);
     for k in 0..3 {
         let want = srgb(linear(BODY[k]) * light);
@@ -587,9 +590,10 @@ fn a_face_seen_at_an_angle_is_lit_by_lamberts_law_by_hand() {
             "the top face {got:?}, want {want} in {k}"
         );
     }
-    // Perspective, the eye 20 from the front face's centre: each corner of it is lit from
-    // the eye's direction there, (±20, −20, ±5)/√825 against the normal (0, −1, 0), so
-    // 0.35 + 0.65 × 20/√825 everywhere on it.
+    // Perspective, the eye 20 from the front face's centre: the lights are fixed to the
+    // camera, the same everywhere. From the front (back (0, −1, 0), up (0, 0, 1), right (1,
+    // 0, 0)) the key is (−0.5, −1, 0.5)/√1.5 and the fill (0.6, −1, −0.3)/√1.45, so the
+    // front face, its normal (0, −1, 0), takes 0.30 + 0.65/√1.5 + 0.20/√1.45 everywhere.
     let mut scene = front_of_a_box(200, 200);
     scene.camera = Camera {
         projection: Projection::Perspective {
@@ -601,7 +605,7 @@ fn a_face_seen_at_an_angle_is_lit_by_lamberts_law_by_hand() {
     };
     let (image, ids) = render(&mut w, scene);
     assert_eq!(ids.unwrap()[100 * 200 + 100], [1, 3]);
-    let light = 0.35 + 0.65 * 20.0 / 825.0f64.sqrt();
+    let light = 0.30 + 0.65 / 1.5f64.sqrt() + 0.20 / 1.45f64.sqrt();
     let got = image.at(100, 100);
     for k in 0..3 {
         let want = srgb(linear(BODY[k]) * light);

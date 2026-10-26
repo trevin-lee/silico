@@ -1,0 +1,8 @@
+{
+  "problems": [
+    {"code": "reference_broken", "message": "edges.0, \"m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face6, \"…, names no element of m3tq8v0z's solid: it isn't one of the elements that solid is made from, or an edit before this feature removed or remade it", "feature": "f0000001", "elements": ["m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)"], "elements_total": 1, "parameter": "edges.0", "cause": null, "suggestion": "name the edge as its feature now names it: the candidates are the likeliest, none taken for it", "candidates": ["m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face5, G a91cw0de.cylinder.Face1)"]}
+  ],
+  "problems_total": 1,
+  "warnings": [],
+  "warnings_total": 0
+}

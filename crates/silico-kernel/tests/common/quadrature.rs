@@ -1,6 +1,7 @@
-//! Values by hand for measures of revolutions, independent of OCCT: Gauss–Legendre on
-//! [a, b], cubic Bézier spans, a cap between a curve and its chord integrated along the
-//! curve, a face's kind of surface as a word, and the cases that miss their values.
+//! Values by hand for measures, independent of OCCT: Gauss–Legendre on [a, b], B-spline
+//! basis functions by Cox–de Boor, cubic Bézier spans, a cap between a curve and its chord
+//! integrated along the curve, a face's kind of surface as a word, and the cases that miss
+//! their values.
 
 use super::numbers::relative_error;
 
@@ -40,6 +41,43 @@ pub fn integral(a: f64, b: f64, pieces: u32, f: impl Fn(f64) -> f64) -> f64 {
         }
     }
     sum
+}
+
+/// Cox–de Boor's B-spline basis function `i` of degree `p` on `knots` at `t`, half-open
+/// spans (no node of the integration falls on a knot).
+pub fn basis(knots: &[f64], i: usize, p: usize, t: f64) -> f64 {
+    if p == 0 {
+        return if knots[i] <= t && t < knots[i + 1] {
+            1.0
+        } else {
+            0.0
+        };
+    }
+    let mut value = 0.0;
+    let left = knots[i + p] - knots[i];
+    if left > 0.0 {
+        value += (t - knots[i]) / left * basis(knots, i, p - 1, t);
+    }
+    let right = knots[i + p + 1] - knots[i + 1];
+    if right > 0.0 {
+        value += (knots[i + p + 1] - t) / right * basis(knots, i + 1, p - 1, t);
+    }
+    value
+}
+
+/// The derivative of [`basis`] in `t`.
+pub fn basis_derivative(knots: &[f64], i: usize, p: usize, t: f64) -> f64 {
+    let p_f = f64::from(u32::try_from(p).unwrap());
+    let mut value = 0.0;
+    let left = knots[i + p] - knots[i];
+    if left > 0.0 {
+        value += p_f / left * basis(knots, i, p - 1, t);
+    }
+    let right = knots[i + p + 1] - knots[i + 1];
+    if right > 0.0 {
+        value -= p_f / right * basis(knots, i + 1, p - 1, t);
+    }
+    value
 }
 
 /// A cubic Bézier span's point and derivative at `t`.
@@ -139,4 +177,46 @@ pub fn misses_by(cases: &[(String, f64, f64)], tolerance: f64) -> Vec<String> {
             )
         })
         .collect()
+}
+
+/// The cases that aren't OCCT's known wrong answer for them, `known`: `got` within
+/// `pinned(got, wrong)` of the `wrong` pinned under the case's name.
+fn not_known_wrong(
+    cases: &[(String, f64, f64)],
+    known: &[(&str, f64)],
+    pinned: fn(f64, f64) -> bool,
+) -> Vec<(String, f64, f64)> {
+    cases
+        .iter()
+        .filter(|(what, got, _)| {
+            !known
+                .iter()
+                .any(|(name, wrong)| *name == what && pinned(*got, *wrong))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Each case right to `tolerance` (relative), or OCCT's known wrong answer for it, `known`,
+/// to a relative 1e-12 (docs/ports/measure.md's *Known wrong results*: either is taken, so
+/// a fixed OCCT passes, and any other value fails); said, each case that's neither.
+pub fn right_or_known_wrong(
+    cases: &[(String, f64, f64)],
+    tolerance: f64,
+    known: &[(&str, f64)],
+) -> Vec<String> {
+    let pinned = |got: f64, wrong: f64| relative_error(got, wrong) <= 1e-12;
+    misses(&not_known_wrong(cases, known, pinned), tolerance)
+}
+
+/// [`right_or_known_wrong`] for values right to an absolute `tolerance` (as [`misses_by`]),
+/// such as a centre's coordinates: OCCT's known wrong answer is taken to a relative 1e-12,
+/// or an absolute 1e-12 where it's near 0.
+pub fn right_or_known_wrong_by(
+    cases: &[(String, f64, f64)],
+    tolerance: f64,
+    known: &[(&str, f64)],
+) -> Vec<String> {
+    let pinned = |got: f64, wrong: f64| (got - wrong).abs() <= 1e-12 * wrong.abs().max(1.0);
+    misses_by(&not_known_wrong(cases, known, pinned), tolerance)
 }

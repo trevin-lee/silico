@@ -6,17 +6,17 @@
 //! adds, a C⁰ B-spline meridian, a surface of revolution under a
 //! `Geom_RectangularTrimmedSurface`, and the barrel fused to a box and filleted along the
 //! seam; with lines skew to the axis (hyperboloids), ellipses, rational B-splines, faces
-//! whose U starts off 0, and a property over barrels of every proportion. Arcs here keep
-//! clear of their circle's angle 0, where OCCT 7.9.3's booleans ignore the turned face
-//! (docs/ports/measure.md, Known wrong results: a sketch arc across its circle's angle 0),
-//! except where said. The tests that need FreeCAD to make a face (`pixi install -e
-//! oracle`) say so.
+//! whose U starts off 0, and a property over barrels of every proportion. Arcs here were
+//! kept clear of their circle's angle 0, where OCCT 7.9.3's booleans ignored the turned
+//! face until each arc edge took OCCT's own range (docs/ports/measure.md, Known wrong
+//! results: a sketch arc across its circle's angle 0); revolution_measures.rs's tests cross
+//! it. The tests that need FreeCAD to make a face (`pixi install -e oracle`) say so.
 
 use super::close::assert_close;
 use super::kernel::kernel;
 use super::numbers::relative_error;
-use super::oracle;
-use super::quadrature::{bezier, cap_integral, integral, kind, misses};
+use super::oracle::{self, freecad_face, from_freecad};
+use super::quadrature::{bezier, cap_integral, integral, kind, misses, right_or_known_wrong};
 use super::revolution_measures::barrel_by_hand;
 
 use std::cell::RefCell;
@@ -26,7 +26,7 @@ use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::kernel::KernelWorker;
 use silico_kernel::{Axis, BooleanOp, Curve, FaceRegions, Region, SketchPlane};
-use silico_protocol::{Blob, Primitive, ShapeData};
+use silico_protocol::{Primitive, ShapeData};
 
 /// OCCT's precise measure's promise: a relative 1e-9 (`MEASURE_PRECISION`).
 const ASKED: f64 = 1e-9;
@@ -97,39 +97,10 @@ fn kinds(k: &mut KernelWorker, shape: &ShapeData) -> Vec<&'static str> {
         .collect()
 }
 
-/// A shape made by FreeCAD from `script`'s printed text B-rep, as a kernel worker's shape,
-/// its validity OCCT's.
-fn from_freecad(text: &str) -> ShapeData {
-    let shape = silico_kernel::from_text_brep(text.as_bytes()).unwrap();
-    let valid = shape.is_valid().unwrap();
-    ShapeData::checked(Blob::inline(silico_kernel::to_brep(&shape).unwrap()), valid)
-}
-
 /// A revolution OCCT couldn't build, refused as such, with advice that names the axis.
 fn assert_refused(e: &silico_core::Error) {
     assert_eq!(e.code(), ErrorCode::KernelFailed, "{e}");
     assert!(e.suggestion().is_some_and(|s| s.contains("axis")), "{e}");
-}
-
-/// Each case right to `tolerance`, or OCCT's known wrong answer for it, `known`, to 1e-12
-/// (docs/ports/measure.md's *Known wrong results*: either is taken, so a fixed OCCT passes,
-/// and any other value fails); said, each case that's neither.
-fn right_or_known_wrong(
-    cases: &[(String, f64, f64)],
-    tolerance: f64,
-    known: &[(&str, f64)],
-) -> Vec<String> {
-    let wrong_as_known = |what: &str, got: f64| {
-        known
-            .iter()
-            .any(|(name, wrong)| *name == what && relative_error(got, *wrong) <= 1e-12)
-    };
-    let neither: Vec<(String, f64, f64)> = cases
-        .iter()
-        .filter(|(what, got, _)| !wrong_as_known(what, *got))
-        .cloned()
-        .collect();
-    misses(&neither, tolerance)
 }
 
 // ---- The barrel about x (its arc from 62° to 118°, clear of angle 0) ----
@@ -666,19 +637,6 @@ fn a_triangle_off_the_axis_plane_turned_about_a_skew_axis_measures_by_hand() {
 
 // ---- Meridians FreeCAD makes: B-splines, ellipses ----
 
-/// Python: `face` (a FreeCAD face) printed as its text B-rep.
-const PRINT_FACE: &str = r#"
-assert face.isValid()
-print("SILICO_ORACLE " + json.dumps(face.exportBrepToString()))
-"#;
-
-fn freecad_face(body: &str) -> ShapeData {
-    let script =
-        format!("import json, math, Part, FreeCAD as App\nV = App.Vector\n{body}\n{PRINT_FACE}");
-    let text = oracle::freecad(&script);
-    from_freecad(text.as_str().unwrap())
-}
-
 /// A C⁰ cubic: poles (0, 4), (0.5, 5), (1.5, 5.5), (2, 4.8), (2.5, 5.6), (3.5, 5.2),
 /// (4, 4) on XY, knots 0, 0.5, 1 of multiplicities 4, 3, 4: two Bézier spans meeting at a
 /// kink at (2, 4.8), each its four poles as they stand.
@@ -923,21 +881,12 @@ fn a_surface_of_revolution_whose_u_starts_off_zero_measures_as_by_hand() {
             cases.push((format!("{what} from u = {u0}"), s.volume, b.volume(TAU)));
         }
     }
-    // Found by /break-it, a known wrong result (docs/ports/measure.md): the knots don't
-    // follow the face's U, so a face whose U starts past 4π/3 is integrated over nearly one
-    // span, as before the patch, and as stock OCCT does a torus's. Silico's own revolves
-    // start U at 0; only a file reaches this. Right from 1 and 3 (to 1e-11; 1.4e-12
-    // measured), OCCT's known wrong answer from 5, 6, and 6.2 (or right, once OCCT places
-    // them).
-    let known = [
-        ("barrel from u = 5", 526.334_308_090_930_6),
-        ("barrel from u = 6", 526.334_239_754_574_1),
-        ("barrel from u = 6.2", 526.334_200_496_085_5),
-        ("torus from u = 5", 1_104.276_254_148_789_6),
-        ("torus from u = 6", 1_104.276_109_099_114_4),
-        ("torus from u = 6.2", 1_104.276_025_769_664),
-    ];
-    let missed = right_or_known_wrong(&cases, 1e-11, &known);
+    // Found by /break-it: the knots don't follow the face's U, so under patch 0003 alone a
+    // face whose U starts past 4π/3 was integrated over nearly one span, as before it, and
+    // as stock OCCT does a torus's (from 5, 6, and 6.2: up to 2.2e-7 low). Patch 0004
+    // refines U wherever it starts, so each is right to round-off (2.1e-15 at worst
+    // measured).
+    let missed = misses(&cases, 1e-12);
     assert!(missed.is_empty(), "{}", missed.join("\n"));
 }
 

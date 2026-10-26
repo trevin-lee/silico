@@ -220,6 +220,138 @@ fn a_sessions_sketches_are_solved_by_the_registrys_starter() {
 }
 
 #[test]
+fn every_session_shares_the_registrys_sketch_solver_one_after_another() {
+    // A-M2: one solver for every session that solves after another has (`silico check` of
+    // many files), not one a session. Three sessions, two open at once, each a sketch of
+    // its own (a point at another x, so none is solved from another's result).
+    let sketch = |x: u32| {
+        format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{{"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{{"id": "pa000000", "x": {x}, "y": 0, "construction": false}}], "lines": [], "circles": [], "arcs": [], "constraints": []}}]}}"#
+        )
+    };
+    let f = fixture();
+    let a = f.open(&f.file("a.silico", &sketch(1)));
+    let b = f.open(&f.file("b.silico", &sketch(2)));
+    clean(&answer(f.sessions.check(&a, ModelChoice::Current)));
+    clean(&answer(f.sessions.check(&b, ModelChoice::Current)));
+    answer(f.sessions.close(&a)).result.unwrap();
+    let c = f.open(&f.file("c.silico", &sketch(3)));
+    clean(&answer(f.sessions.check(&c, ModelChoice::Current)));
+    // Three sketches solved, on one solver.
+    assert_eq!(f.sketches.requests().len(), 3);
+    assert_eq!(f.solvers.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_sessions_solve_never_waits_for_another_sessions_solve() {
+    // Sessions solving at once each have a solver: one session's solve, held, leaves the
+    // other's to finish on a second solver started for it. The first solver started holds
+    // its solves, the second doesn't.
+    let sketch = |x: u32| {
+        format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{{"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{{"id": "pa000000", "x": {x}, "y": 0, "construction": false}}], "lines": [], "circles": [], "arcs": [], "constraints": []}}]}}"#
+        )
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let (held, free) = (FakeSketches::new(), FakeSketches::new());
+    held.hold();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (first, second, counted) = (held.clone(), free.clone(), Arc::clone(&starts));
+    let sessions = Sessions::with_stand_ins(
+        Arc::new(FakeKernel::new(2).unwrap()),
+        move |cache| Cache::with_secret(cache, &secret),
+        move || {
+            let solver = match counted.fetch_add(1, Ordering::SeqCst) {
+                0 => first.clone(),
+                _ => second.clone(),
+            };
+            Ok(Box::new(solver) as Box<dyn SketchSolver>)
+        },
+    );
+    let open = |name: &str, x: u32| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, sketch(x)).unwrap();
+        answer(sessions.open(&path, false)).session.unwrap().id
+    };
+    let (a, b) = (open("a.silico", 1), open("b.silico", 2));
+    let checking_a = sessions.check(&a, ModelChoice::Current);
+    assert!(held.wait_held(HANG), "a's solve was never held");
+    // b's check answers while a's solve is still held.
+    clean(&answer(sessions.check(&b, ModelChoice::Current)));
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    assert_eq!(free.requests().len(), 1);
+    held.release();
+    clean(&answer(checking_a));
+    assert_eq!(held.requests().len(), 1);
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_solver_given_back_while_another_session_starts_one_is_taken_not_started_again() {
+    // Session o's solve is held on the first solver; p, finding none idle, starts a second,
+    // which is held in its start; q, finding none idle either, waits for p's start to end.
+    // Meanwhile o's solver is given back: q takes it, so two are started, not three.
+    let sketch = |x: u32| {
+        format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{{"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{{"id": "pa000000", "x": {x}, "y": 0, "construction": false}}], "lines": [], "circles": [], "arcs": [], "constraints": []}}]}}"#
+        )
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let (held, free) = (FakeSketches::new(), FakeSketches::new());
+    held.hold();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (entered, in_start) = std::sync::mpsc::channel::<()>();
+    let (go, gate) = std::sync::mpsc::channel::<()>();
+    let gate = std::sync::Mutex::new(gate);
+    let (first, second, counted) = (held.clone(), free.clone(), Arc::clone(&starts));
+    let sessions = Sessions::with_stand_ins(
+        Arc::new(FakeKernel::new(2).unwrap()),
+        move |cache| Cache::with_secret(cache, &secret),
+        move || {
+            let solver = match counted.fetch_add(1, Ordering::SeqCst) {
+                0 => first.clone(),
+                1 => {
+                    entered.send(()).unwrap();
+                    gate.lock().unwrap().recv_timeout(HANG).unwrap();
+                    second.clone()
+                }
+                _ => second.clone(),
+            };
+            Ok(Box::new(solver) as Box<dyn SketchSolver>)
+        },
+    );
+    let open = |name: &str, x: u32| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, sketch(x)).unwrap();
+        answer(sessions.open(&path, false)).session.unwrap().id
+    };
+    let (o, p, q) = (
+        open("o.silico", 1),
+        open("p.silico", 2),
+        open("q.silico", 3),
+    );
+    let checking_o = sessions.check(&o, ModelChoice::Current);
+    assert!(held.wait_held(HANG), "o's solve was never held");
+    let checking_p = sessions.check(&p, ModelChoice::Current);
+    in_start.recv_timeout(HANG).unwrap();
+    let checking_q = sessions.check(&q, ModelChoice::Current);
+    // Time for q to find none idle and wait for p's start; were it slower, q would find o's
+    // solver idle at once, and the test pass for any version.
+    std::thread::sleep(Duration::from_millis(300));
+    held.release();
+    clean(&answer(checking_o));
+    go.send(()).unwrap();
+    clean(&answer(checking_p));
+    clean(&answer(checking_q));
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    // Three solves on the two: which one q's took depends on when it came (o's solver, given
+    // back while it waited, or p's, given back first on a slow machine), so only the total.
+    assert_eq!(held.requests().len() + free.requests().len(), 3);
+}
+
+#[test]
 fn dropping_the_sessions_mid_rebuild_stops_it_and_returns_at_once() {
     // A step is held, and let go only after the drop returns: a drop that waited for the
     // rebuild before stopping it would never return.
@@ -305,11 +437,8 @@ fn a_sessions_check_gives_drift_of_a_stored_fingerprint() {
 /// crashes on every request stops alike.
 const BOX_AND_BALL: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "a91cw0de", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5}]}"#;
 
-/// What a kept fault's suggestion says, after the worker's own and "; to try again here: "
-/// (decision 32): reading the revision again won't, and what will, and what won't.
-const KEPT: &str = "reading this revision again won't, since it keeps the fault; an edit that changes the document, reopening the session, or (M4.3) check with fresh tries again; a save that writes only fingerprints keeps the fault";
-
-/// The fault `response`'s model read gives: its code, feature, message, and suggestion.
+/// The fault `response`'s model read gives: its code, feature, message, and suggestion, as
+/// it was met (the worker's own; the wire adds how a session's client tries again).
 fn fault<T>(response: &Response<T>) -> (ErrorCode, Option<String>, String, Option<String>) {
     let fault = response.model.as_ref().unwrap().fault.as_ref().unwrap();
     (
@@ -345,7 +474,7 @@ fn a_kernel_fault_is_given_once_beside_the_checks_result_and_kept_for_the_revisi
             ErrorCode::WorkerCrashed,
             Some("k7f2qx3m".to_owned()),
             "crashed".to_owned(),
-            Some(format!("try again; to try again here: {KEPT}"))
+            Some("try again".to_owned())
         )
     );
     // The box and the ball, each asked once.
@@ -427,9 +556,7 @@ fn a_sketch_solver_that_cant_be_had_is_one_fault_naming_no_feature() {
             ErrorCode::WorkerUnavailable,
             None,
             "SILICO_SKETCH_WORKER names /nowhere, which isn't a file".to_owned(),
-            Some(format!(
-                "name the sketch worker's executable; to try again here: {KEPT}"
-            ))
+            Some("name the sketch worker's executable".to_owned())
         )
     );
     assert_eq!(
@@ -685,7 +812,7 @@ fn a_measure_that_faulted_is_the_revisions_fault_and_not_measured_again() {
             ErrorCode::WorkerTimeout,
             Some("k7f2qx3m".to_owned()),
             "timed out".to_owned(),
-            Some(KEPT.to_owned())
+            None
         )
     );
     assert_eq!(measures(), 1);

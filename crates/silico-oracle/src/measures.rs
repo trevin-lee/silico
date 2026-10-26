@@ -366,7 +366,7 @@ pub fn silico(cases: &Cases) -> Result<Vec<Ours>, String> {
 /// The cases' document rebuilt on a fresh pool of kernel workers, and the engine that did,
 /// whose kernel measures distances.
 fn rebuilt(cases: &Cases) -> Result<(Recompute<KernelPool>, Arc<Model>), String> {
-    let engine = Recompute::new(KernelPool::start().map_err(|e| e.to_string())?);
+    let engine = Recompute::new(KernelPool::start());
     let model = rebuild(&engine, cases.document.clone())
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "the rebuild was superseded, though nothing else ran".to_owned())?;

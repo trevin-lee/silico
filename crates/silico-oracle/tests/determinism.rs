@@ -1,7 +1,8 @@
 //! determinism_sweep (docs/roadmap/m1-kernel.md, M1.9): every oracle case, and the suite's
 //! generated ones, built twice on fresh kernel workers (the second in reverse order, after
 //! the others) gives byte-identical B-reps, histories (each result's fates, counts, and
-//! ends, and, beside them, its topology), summaries, FreeCAD-style measures, and meshes;
+//! ends, and, beside them, its topology), summaries, each named view's camera fitted to its
+//! box (M4.6), FreeCAD-style measures, and meshes;
 //! and so does every sketch-feature case (M3.6), its document rebuilt twice by recompute,
 //! and every measure case's answer (M4.5), as the command API writes it, its witness's
 //! points included, its document rebuilt twice.
@@ -16,12 +17,15 @@ use std::path::Path;
 
 use serde::Serialize;
 use silico_core::command::rebuild;
+use silico_core::command::render::AnsweredCamera;
 use silico_core::command::wire::{Layout, ToWire, write};
 use silico_core::kernel::{ElementCounts, Ends, History, InputHistory, KernelWorker, ShapeData};
 use silico_core::pool::KernelPool;
 use silico_core::recompute::{FeatureOutcome, Recompute};
+use silico_core::views::NAMED_VIEWS;
 use silico_oracle::measures::{self, Answer};
 use silico_oracle::{Case, features, generate, load, silico::build_with_history};
+use silico_protocol::Projection;
 
 const CASES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle");
 const REFERENCE: &str = concat!(
@@ -131,6 +135,26 @@ fn digests_of(
         )
         .bytes(&[u8::from(s.valid)]);
     found.insert("summary".to_owned(), d.hex());
+    // Each named view's camera fitted to its tight box, as a render answers it (M4.6: a
+    // result, rounded as written then its up made perpendicular, in f64 with no
+    // trigonometry, so the same everywhere), at 800 by 600.
+    if let Some(bounds) = s.bounds {
+        let mut d = Digest::default();
+        for view in NAMED_VIEWS {
+            let fitted = view.camera(bounds, 800, 600);
+            let answered = AnsweredCamera::of(&fitted)
+                .unwrap_or_else(|| panic!("{} can't be answered: {fitted:?}", view.name()))
+                .camera();
+            let Projection::Orthographic { view_height } = answered.projection else {
+                panic!("{} isn't orthographic: {answered:?}", view.name());
+            };
+            d.f64s([view_height])
+                .f64s(answered.eye)
+                .f64s(answered.target)
+                .f64s(answered.up);
+        }
+        found.insert("cameras".to_owned(), d.hex());
+    }
     let measures = kernel.measure_as_freecad(shape).map(|m| {
         let mut d = Digest::default();
         d.f64s([m.volume, m.area])
@@ -180,7 +204,7 @@ fn run(cases: &[Case]) -> Digests {
 /// history), digested on a fresh worker, under the case's name.
 fn run_features() -> Digests {
     let cases = features::load(Path::new(CASES)).unwrap().unwrap();
-    let engine = Recompute::new(KernelPool::start().unwrap());
+    let engine = Recompute::new(KernelPool::start());
     let model = rebuild(&engine, cases.document.clone()).unwrap().unwrap();
     let mut kernel = KernelWorker::start().unwrap();
     cases
