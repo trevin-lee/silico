@@ -315,7 +315,8 @@ fn a_png_spelled_otherwise_than_a_held_document_on_disk_is_that_document_and_ref
     // A held document named `Held.png` (the session's path, canonical, as it's on disk)
     // and a render to `HELD.png`, replacing what's there. On a case-insensitive file system
     // (macOS's default) that's the same file: refused, the document kept. On a
-    // case-sensitive one (CI's Linux) it's another file, written beside it.
+    // case-sensitive one (CI's Linux) it's another file, written beside it: there the fix
+    // can't be told apart, so a gate on a Mac is what pins it.
     let dir = Scratch::new("held-case");
     let held = dir.0.join("Held.png");
     std::fs::write(&held, b"a document").unwrap();
@@ -323,7 +324,7 @@ fn a_png_spelled_otherwise_than_a_held_document_on_disk_is_that_document_and_ref
     let other = dir.0.join("HELD.png");
     let rules = png_rules(None, &held, true);
     if other.exists() {
-        refused_output(&other, &rules, "document");
+        refused_output(&other, &rules, "is a document a session holds");
         assert_eq!(std::fs::read(&held[0]).unwrap(), b"a document");
     } else {
         let wrote = silico_core::file::write_output(&other, b"PNG", &rules).unwrap();

@@ -135,7 +135,7 @@ crates/silico-render/src/render.rs | read_back | delete ! | #147
 crates/silico-render/src/render.rs | read_back | replace || with && | #147
 crates/silico-core/src/render.rs | <impl Drop for Job>::drop | replace <impl Drop for Job>::drop with () | #149
 crates/silico-core/src/render.rs | serve | delete ! | #149
-# A side view's direction is a unit axis across z, so the corners' arm gives it +z to the bit.
+# A side view's direction is a unit axis perpendicular to z, so the corners' arm gives it +z to the bit.
 crates/silico-core/src/views.rs | NamedView::up | delete match arm NamedView::Front | NamedView::Back | NamedView::Left | NamedView::Right | #181
 # `i & b != 0` swaps a box's low and high on one axis: the same eight corners in another
 # order, which every min, max, and per-side && over them ignores.

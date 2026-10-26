@@ -544,19 +544,18 @@ fn output_target(
     // a case-insensitive file system, `HELD.png` is a held `Held.png`).
     let existing = std::fs::symlink_metadata(dir.join(name)).ok();
     let target = match &existing {
-        Some(meta) => std::fs::canonicalize(dir.join(name)).map_err(|e| {
-            if meta.file_type().is_symlink() {
-                refuse(
+        Some(meta) => match std::fs::canonicalize(dir.join(name)) {
+            Ok(target) => target,
+            Err(e) if meta.file_type().is_symlink() => {
+                return Err(refuse(
                     format!("is a link to nothing that can be reached: {e}"),
                     "give a path that isn't a broken link",
-                )
-            } else {
-                refuse(
-                    format!("can't be reached: {e}"),
-                    "give a path this user may read",
-                )
+                ));
             }
-        })?,
+            // Gone since it was looked at: as if it hadn't been there (the write checks
+            // what's there again).
+            Err(_) => dir.join(name),
+        },
         None => dir.join(name),
     };
     if target
@@ -626,9 +625,9 @@ fn output_target(
     Ok((target, replaced))
 }
 
-/// The permissions a file [`write_beside`] makes is made with: those of the file it
-/// replaces, if one, without its type's bits (so never more open than it while it's
-/// written), or `rw-r--r--`.
+/// The permissions [`write_beside`] makes its new file with: those of the file it replaces,
+/// if one, without its type's bits (so never more open than it while it's written), or
+/// `rw-r--r--`.
 fn partial_mode(replaced: Option<&std::fs::Metadata>) -> u32 {
     use std::os::unix::fs::PermissionsExt as _;
     replaced.map_or(0o644, |m| m.permissions().mode() & 0o777)
