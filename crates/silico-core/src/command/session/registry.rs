@@ -12,6 +12,8 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 
 #[cfg(doc)]
 use super::MAX_SESSIONS;
+use super::cancel::Ticket;
+use super::holding::Holding;
 use super::rebuilds::Rebuilds;
 use super::threads::{Reads, Threads};
 use super::transaction::{Held, not_reloaded, of_file, put_back, too_long};
@@ -138,12 +140,14 @@ pub(super) struct Started<C: Kernel + 'static> {
 }
 
 /// The open, on its session's thread, answered through `reply`: if it opened, what the
-/// thread serves.
+/// thread serves. Cancelled (`ticket`) before the session is recorded open, it answers
+/// `cancelled`, leaving no session and no file it made.
 pub(super) fn start<P: Clients + 'static>(
     registry: Arc<Registry<P>>,
     id: SessionId,
     path: &str,
     create: bool,
+    ticket: &Ticket,
     reply: &mpsc::SyncSender<Response<Opened>>,
 ) -> Option<Started<P::Client>> {
     let opened = open(&registry, id, path, create).and_then(|(held, opened, cache, made)| {
@@ -152,16 +156,18 @@ pub(super) fn start<P: Clients + 'static>(
             // The file it made, if it made one, goes with it (`made`'s drop).
             return Err(Problems::from(closing()));
         }
+        // From here it opens, unless it was cancelled first (the file it made goes as above).
+        ticket.settle()?;
         let (sender, jobs) = mpsc::channel();
         let session = Arc::new(Session {
             id,
-            held: Mutex::new(held),
+            held: Holding::new(held),
             queue: Mutex::new(Some(sender)),
             rebuilds: Mutex::new(Rebuilds {
                 engine: registry.engine(cache),
                 running: None,
                 published: None,
-                failed: None,
+                ended: None,
                 kept: None,
                 floor: Revision::OPENED,
                 candidate: None,
@@ -169,6 +175,7 @@ pub(super) fn start<P: Clients + 'static>(
             }),
             rebuilt: Condvar::new(),
             reads: Mutex::new(Reads::new()),
+            command: Mutex::new(None),
         });
         book.opening.remove(&id);
         book.sessions.insert(id, Arc::clone(&session));
@@ -188,11 +195,16 @@ pub(super) fn start<P: Clients + 'static>(
         }
         Err(problems) => {
             lock(&registry.book).release(id);
-            let _ = reply.send(Response {
-                session: None,
-                model: None,
-                result: Err(problems),
-            });
+            // Settled, so a cancel after the refusal says it came too late; `cancelled`, if
+            // one came first.
+            let _ = reply.send(ticket.answer(
+                || None,
+                || Response {
+                    session: None,
+                    model: None,
+                    result: Err(problems),
+                },
+            ));
             None
         }
     }

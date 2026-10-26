@@ -251,6 +251,20 @@ pub enum FeatureOutcome {
     Sketch(Arc<SketchSolution>),
 }
 
+impl FeatureOutcome {
+    /// Why it failed, each error naming the feature: its failure, or its broken references
+    /// (the first hundred); none if it built, is blocked on another, or is a sketch.
+    pub fn errors(&self) -> &[Error] {
+        match self {
+            FeatureOutcome::Failed(error) => std::slice::from_ref(error),
+            FeatureOutcome::Broken { errors, .. } => errors,
+            FeatureOutcome::Built { .. }
+            | FeatureOutcome::Blocked { .. }
+            | FeatureOutcome::Sketch(_) => &[],
+        }
+    }
+}
+
 /// A document as rebuilt: what became of each feature, in timeline order, and its bodies.
 #[derive(Debug, Clone)]
 pub struct Model {
@@ -363,13 +377,30 @@ impl Model {
     /// across it) has one error, naming it, whose elements are the sketch's at fault; the
     /// sketch, solved, has none (design S3, S5, S6).
     pub fn errors(&self) -> impl Iterator<Item = &Error> {
-        self.features.iter().flat_map(|(_, outcome)| match outcome {
-            FeatureOutcome::Failed(error) => std::slice::from_ref(error),
-            FeatureOutcome::Broken { errors, .. } => errors.as_slice(),
-            FeatureOutcome::Built { .. }
-            | FeatureOutcome::Blocked { .. }
-            | FeatureOutcome::Sketch(_) => &[],
-        })
+        self.features
+            .iter()
+            .flat_map(|(_, outcome)| outcome.errors())
+    }
+
+    /// The first kernel fault the rebuild met, in timeline order: a failure that says
+    /// nothing about the document (a worker that crashed, hung, or couldn't be had, a reply
+    /// that couldn't be read, a shortage, a bug), in a feature's failure or in a measure of
+    /// its solid. One, however many features it stopped: a sketch solver that couldn't
+    /// start fails every sketch with it, and is still one fault (docs/design/m4.1-command-api.md,
+    /// section 6, after AR1). None if the rebuild met none.
+    pub fn fault(&self) -> Option<&Error> {
+        let mut unmeasured = self.unmeasured.iter().peekable();
+        for (id, outcome) in &self.features {
+            if let Some(fault) = outcome.errors().iter().find(|e| e.code().is_kernel_fault()) {
+                return Some(fault);
+            }
+            if let Some((_, error)) = unmeasured.next_if(|(feature, _)| feature == id)
+                && error.code().is_kernel_fault()
+            {
+                return Some(error);
+            }
+        }
+        None
     }
 
     /// The names of the elements of the feature `id`'s solid, if it built. The recompute
@@ -475,8 +506,8 @@ impl Model {
     /// This model as `source`'s: the same steps and outcomes, its document `source`. For a
     /// document that differs from the one it was built from only in what a save writes from
     /// it (its fingerprints, with no sketch's solve written), whose rebuild would take every
-    /// step from those this one took: a session's commit of an edit made outside a
-    /// transaction, whose model is the saved revision's (the design's section 4).
+    /// step from those this one took: a session's save (a commit, an edit's, `format`'s),
+    /// whose model is the saved revision's (the design's section 4).
     pub(crate) fn rebound(&self, source: Arc<Checked>) -> Model {
         Model {
             source,

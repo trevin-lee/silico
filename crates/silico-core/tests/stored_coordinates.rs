@@ -678,3 +678,25 @@ fn a_point_line_distance_stored_on_the_other_side_is_drift_saying_both_sides() {
         "{e}"
     );
 }
+
+#[test]
+fn a_point_line_distance_stored_at_another_distance_is_drift_at_its_value_whatever_its_side() {
+    // pc (0, 10) is 10 from na, to its left, as above. Stored 3 to its left, the distance
+    // alone moves; stored 3 to its right, both move: either way the drift is at the value,
+    // its side named only when it alone moves (found by the mutation run).
+    for (side, said) in [
+        ("left", "r0000001 value 3 left → 10 left"),
+        ("right", "r0000001 value 3 right → 10 left"),
+    ] {
+        let constraints = format!(
+            r#"{HORIZONTAL}, {{"id": "r0000001", "type": "point_line_distance", "point": "pc000000", "line": "na000000", "value": 3, "side": "{side}", "driving": false}}"#
+        );
+        let errors = drift(&constraints, |_| {});
+        let [e] = &errors[..] else {
+            panic!("{errors:?}")
+        };
+        assert_eq!(e.elements(), ["r0000001"], "{e}");
+        assert_eq!(e.parameter(), Some("constraints.r0000001.value"), "{side}");
+        assert!(e.message().contains(said), "{e}");
+    }
+}

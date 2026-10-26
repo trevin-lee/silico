@@ -102,3 +102,4 @@ crates/silico-core/src/elements.rs | AxisToken::default_x | replace > with >= | 
 crates/silico-core/src/elements.rs | AxisToken::default_x | replace > with >= | #140
 crates/silico-core/src/command/edit.rs | id_of | replace | with ^ | #148
 crates/silico-core/src/command/session/transaction.rs | Session<C>::rollback | delete ! | #154
+crates/silico-core/src/sketch.rs | moved | replace match guard s.form.value_text().is_some() with true | #157

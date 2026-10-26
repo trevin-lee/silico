@@ -1,9 +1,12 @@
 //! The threads a session starts and joins later ([`Threads`]), and its published reads
-//! ([`Reads`]), at most [`MAX_PUBLISHED_READS`] unanswered at once.
+//! ([`Reads`]), at most [`MAX_PUBLISHED_READS`] unanswered at once, each with its own stop.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+
+use super::cancel::Ticket;
+use crate::worker::lock;
 
 /// The most published reads one session runs at once: each holds a thread, and the session,
 /// until it ends.
@@ -53,10 +56,12 @@ impl Threads {
 /// A session's published reads, each on a thread of its own, at most
 /// [`MAX_PUBLISHED_READS`] unanswered at once.
 pub(super) struct Reads {
-    /// How many have started and not answered: each counted until just before it answers
-    /// (however it ends, by a panic too), so one just answered, its thread still ending,
-    /// leaves room for the next.
-    pub(super) unanswered: Arc<AtomicUsize>,
+    /// Those that have started and not answered, each with its stop: each kept until just
+    /// before it answers (however it ends, by a panic too), so one just answered, its thread
+    /// still ending, leaves room for the next, and `cancel` and `status` see only those
+    /// running. Taken under no other of the session's locks but `reads`, and with none under
+    /// it.
+    pub(super) unanswered: Arc<Mutex<Unanswered>>,
     /// Their threads: those ended joined as the next starts, the rest by
     /// `Sessions::drop`; none once the session is released (its reads then the book's, and
     /// a read asked for after it refused as of a session not open).
@@ -66,25 +71,78 @@ pub(super) struct Reads {
 impl Reads {
     pub(super) fn new() -> Self {
         Reads {
-            unanswered: Arc::new(AtomicUsize::new(0)),
+            unanswered: Arc::new(Mutex::new(Unanswered {
+                next: 0,
+                reads: BTreeMap::new(),
+                closed: false,
+            })),
             threads: Some(Threads::new()),
         }
     }
 }
 
-/// A published read counted unanswered, until it's dropped: just before the read answers,
-/// or as its thread unwinds.
-pub(super) struct Unanswered(Arc<AtomicUsize>);
+/// A session's published reads started and not answered, in the order they started.
+pub(super) struct Unanswered {
+    /// The number the next read takes.
+    next: u64,
+    /// Each one's stop, by its number. M4.5's reads keep their kernel clients with these
+    /// (through [`Ticket::interrupt_with`]), so a cancel or the session's close retires the
+    /// read's own client.
+    reads: BTreeMap<u64, Arc<Ticket>>,
+    /// Whether the session closed ([`close`](Self::close)): kept, so a read counted after
+    /// is closed at once.
+    closed: bool,
+}
 
 impl Unanswered {
-    pub(super) fn count(unanswered: &Arc<AtomicUsize>) -> Self {
-        unanswered.fetch_add(1, Ordering::SeqCst);
-        Unanswered(Arc::clone(unanswered))
+    /// How many there are.
+    pub(super) fn len(&self) -> usize {
+        self.reads.len()
+    }
+
+    /// Each one's stop, in the order they started.
+    pub(super) fn tickets(&self) -> impl Iterator<Item = &Arc<Ticket>> {
+        self.reads.values()
+    }
+
+    /// The session closed: so it stays, and each read's stop running now given back, for
+    /// the caller to close ([`Ticket::close`]) once this lock is let go.
+    pub(super) fn close(&mut self) -> Vec<Arc<Ticket>> {
+        self.closed = true;
+        self.reads.values().cloned().collect()
     }
 }
 
-impl Drop for Unanswered {
+/// A published read counted unanswered, its stop kept with the session's reads, until it's
+/// dropped: just before the read answers, or as its thread unwinds.
+pub(super) struct Counted {
+    unanswered: Arc<Mutex<Unanswered>>,
+    number: u64,
+}
+
+impl Counted {
+    /// `ticket`'s read counted in `unanswered`: closed at once ([`Ticket::close`]) if the
+    /// session has closed.
+    pub(super) fn count(unanswered: &Arc<Mutex<Unanswered>>, ticket: &Arc<Ticket>) -> Self {
+        let (number, closed) = {
+            let mut reads = lock(unanswered);
+            let number = reads.next;
+            reads.next = number.wrapping_add(1);
+            reads.reads.insert(number, Arc::clone(ticket));
+            (number, reads.closed)
+        };
+        if closed {
+            ticket.close();
+        }
+        Counted {
+            unanswered: Arc::clone(unanswered),
+            number,
+        }
+    }
+}
+
+impl Drop for Counted {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        lock(&self.unanswered).reads.remove(&self.number);
     }
 }

@@ -96,6 +96,7 @@ fn examples() -> [(&'static str, String); 3] {
         model: Some(ModelRead {
             revision: revision(6),
             of: ModelChoice::Published,
+            fault: None,
         }),
         result: Ok(Clean),
     };
@@ -997,6 +998,7 @@ fn a_response_past_its_limit_is_answered_with_a_refusal_saying_so() {
         model: Some(ModelRead {
             revision: revision(3),
             of: ModelChoice::Current,
+            fault: None,
         }),
         result: Ok(Long("x".repeat(2000))),
     };
@@ -1031,5 +1033,44 @@ fn a_response_past_its_limit_is_answered_with_a_refusal_saying_so() {
     assert_eq!(
         super::response_text(&answer, Layout::OneLine),
         write(&response(&answer), Layout::OneLine).unwrap()
+    );
+}
+
+#[test]
+fn a_models_fault_is_written_in_the_error_contracts_shape() {
+    // Decision 32: the envelope's `model.fault`, the error contract's every field.
+    let faulted = Response {
+        session: Some(session(7, false)),
+        model: Some(ModelRead {
+            revision: revision(6),
+            of: ModelChoice::Current,
+            fault: Some(
+                Error::new(ErrorCode::WorkerCrashed, "crashed")
+                    .with_feature("f0000001")
+                    .with_cause("the worker ended on signal 11 (SIGSEGV) during a fillet")
+                    .with_suggestion("edit the document to try again"),
+            ),
+        }),
+        result: Ok(Clean),
+    };
+    let text = write(&response(&faulted), Layout::Canonical).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        value["model"],
+        serde_json::json!({
+            "revision": 6,
+            "of": "current",
+            "fault": {
+                "code": "worker_crashed",
+                "message": "crashed",
+                "feature": "f0000001",
+                "elements": [],
+                "elements_total": 0,
+                "parameter": null,
+                "cause": "the worker ended on signal 11 (SIGSEGV) during a fillet",
+                "suggestion": "edit the document to try again",
+                "candidates": []
+            }
+        })
     );
 }
