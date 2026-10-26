@@ -248,6 +248,14 @@ impl Workspace {
                 {
                     at = way;
                 }
+                // The way to the root, a file now (the workspace removed and a file put in
+                // its place, or in an ancestor's) with more of the path to go: the system
+                // stops there, as it does at a file in the workspace, never left to
+                // `canonicalize` (macOS's would take a `..` after it by its text). Only on
+                // the way: of an ancestor's other names, a file isn't told from nothing.
+                (Ok(meta), Some(way)) if next == way && !meta.is_dir() && !steps.is_empty() => {
+                    return Walked::ThroughAFile;
+                }
                 // The way to the root, not a directory or not there: the workspace gone, as
                 // the system will say.
                 (_, Some(way)) if next == way => return Walked::In,
@@ -840,6 +848,41 @@ mod tests {
         assert!(w.leads_out(&work.join("out/a/../x")));
         assert!(!w.leads_out(&work.join("in/../x")));
         assert!(w.leads_out(&work.join("in/../../nowhere/x")));
+    }
+
+    #[test]
+    fn a_file_put_where_the_root_or_an_ancestor_was_stops_the_walk_there() {
+        // A workspace at `top/mid/work`, then `mid` (with the root in it) or the root alone
+        // removed and a file put in its place: a path through it with more to go stops at
+        // the file, as the system stops (ENOTDIR), never walked on or left to
+        // `canonicalize`; one that ends at it is in, the system's to say.
+        for gone in ["top/mid", "top/mid/work"] {
+            let dir = tempfile::tempdir().unwrap();
+            let top = std::fs::canonicalize(dir.path()).unwrap();
+            std::fs::create_dir_all(top.join("top/mid/work")).unwrap();
+            std::fs::create_dir_all(top.join("top/outside")).unwrap();
+            let w = Workspace::new(&top.join("top/mid/work")).unwrap();
+            std::fs::remove_dir_all(top.join(gone)).unwrap();
+            std::fs::write(top.join(gone), b"a file").unwrap();
+            let at = top.join(gone);
+            assert_eq!(w.walk(&at.join("x")), Walked::ThroughAFile, "{gone}");
+            assert_eq!(
+                w.walk(&at.join("x/../../outside/y")),
+                Walked::ThroughAFile,
+                "{gone}"
+            );
+            assert_eq!(w.walk(&at.join("..")), Walked::ThroughAFile, "{gone}");
+            assert_eq!(w.walk(&at), Walked::In, "{gone}");
+            assert!(matches!(
+                resolve(Some(&w), &w.root().join("x/..")),
+                Err(Unresolved::Unreachable(e)) if e.raw_os_error() == Some(libc::ENOTDIR)
+            ));
+            // Another name of an ancestor that's a file is out, as one where nothing is:
+            // nothing outside is told apart by what's there.
+            std::fs::write(top.join("top/secret"), b"a file").unwrap();
+            assert_eq!(w.walk(&top.join("top/secret/x")), Walked::Out, "{gone}");
+            assert_eq!(w.walk(&top.join("top/nowhere/x")), Walked::Out, "{gone}");
+        }
     }
 
     #[test]
