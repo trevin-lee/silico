@@ -94,14 +94,17 @@ pub enum WorkerKind {
     Kernel,
     /// PlaneGCS's (silico-sketch).
     Sketch,
+    /// re_renderer's, on lavapipe (silico-render).
+    Render,
 }
 
 impl WorkerKind {
-    /// As errors name it: "kernel worker", "sketch worker".
+    /// As errors name it: "kernel worker", "sketch worker", "render worker".
     pub fn noun(self) -> &'static str {
         match self {
             WorkerKind::Kernel => "kernel worker",
             WorkerKind::Sketch => "sketch worker",
+            WorkerKind::Render => "render worker",
         }
     }
 
@@ -110,6 +113,7 @@ impl WorkerKind {
         match self {
             WorkerKind::Kernel => "the kernel",
             WorkerKind::Sketch => "the sketch solver",
+            WorkerKind::Render => "the renderer",
         }
     }
 }
@@ -156,6 +160,8 @@ impl From<&std::fs::Metadata> for Stamp {
 pub(crate) struct Executable {
     path: PathBuf,
     kind: WorkerKind,
+    /// Its arguments, the same at every start (the render worker's adapter policy).
+    args: Vec<std::ffi::OsString>,
     identity: String,
     /// The file as it was when last found to be this build: renewed when a change that
     /// keeps the bytes (a relink, a `chmod`) is hashed and found the same, so it's hashed
@@ -166,10 +172,20 @@ pub(crate) struct Executable {
 impl Executable {
     /// The executable at `path`, of a `kind` of worker, as it is now.
     pub(crate) fn of(path: &Path, kind: WorkerKind) -> Result<Arc<Self>, Error> {
+        Self::with_args(path, kind, Vec::new())
+    }
+
+    /// [`of`](Self::of), started with `args` each time.
+    pub(crate) fn with_args(
+        path: &Path,
+        kind: WorkerKind,
+        args: Vec<std::ffi::OsString>,
+    ) -> Result<Arc<Self>, Error> {
         let (identity, stamp) = hashed(path, kind)?;
         Ok(Arc::new(Self {
             path: path.to_owned(),
             kind,
+            args,
             identity,
             stamp: Mutex::new(stamp),
         }))
@@ -214,7 +230,12 @@ impl Executable {
     pub(crate) fn spawn(self: &Arc<Self>) -> Result<Worker, Error> {
         self.check()?;
         let again = Arc::clone(self);
-        Worker::spawn_checked(&self.path, self.kind, Some(Box::new(move || again.check())))
+        Worker::spawn_checked(
+            &self.path,
+            self.kind,
+            &self.args,
+            Some(Box::new(move || again.check())),
+        )
     }
 }
 
@@ -297,7 +318,7 @@ impl Worker {
 
     /// Starts the worker executable at `exe`, of the given kind.
     pub fn spawn_as(exe: &Path, kind: WorkerKind) -> Result<Self, Error> {
-        Self::spawn_checked(exe, kind, None)
+        Self::spawn_checked(exe, kind, &[], None)
     }
 
     /// Starts the worker executable at `exe`, of the given kind, and, once it has started
@@ -309,6 +330,7 @@ impl Worker {
     pub(crate) fn spawn_checked(
         exe: &Path,
         kind: WorkerKind,
+        args: &[std::ffi::OsString],
         check: Option<StartCheck>,
     ) -> Result<Self, Error> {
         let spawning = lock(&SPAWNING);
@@ -322,6 +344,7 @@ impl Worker {
             let _ = socket.set_recv_buffer_size(SOCKET_BUFFER);
         }
         let mut command = Command::new(exe);
+        command.args(args);
         command.env_clear();
         for name in WORKER_ENV {
             if let Some(value) = std::env::var_os(name) {
@@ -1616,6 +1639,14 @@ fn failure_error_with_edge_names(
             )
             .with_cause(why),
             silico_protocol::OUT_OF_MEMORY,
+        ),
+        FailureKind::Unavailable => (
+            Error::new(
+                ErrorCode::WorkerUnavailable,
+                format!("the {} can't do {op} on this machine", kind.noun()),
+            )
+            .with_cause(described.message),
+            "set up the machine as the cause says, or ask for something else",
         ),
         FailureKind::UnknownOp | FailureKind::Internal => (
             Error::new(
@@ -3142,6 +3173,31 @@ mod tests {
         assert!(
             ours.send_buffer_size().unwrap()
                 > socket2::SockRef::from(&default).send_buffer_size().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_render_worker_with_nothing_to_draw_on_is_unavailable_with_its_cause_and_advice() {
+        // Refusal::NoAdapter, a fault of the machine, not of the scene and not a bug in
+        // Silico: worker_unavailable, its words the cause, its suggestion the refusal's.
+        let failure = Failure::new(silico_protocol::Refusal::NoAdapter {
+            cause: "no CPU adapter; found [\"Apple M4 Pro\"]".to_owned(),
+        });
+        let e = failure_error_with_edge_names(WorkerKind::Render, "Render", failure, None);
+        assert_eq!(e.code(), ErrorCode::WorkerUnavailable, "{e:?}");
+        assert_eq!(
+            e.message(),
+            "the render worker can't do Render on this machine"
+        );
+        assert_eq!(
+            e.cause(),
+            Some(
+                "the render worker found nothing it may draw on: no CPU adapter; found [\"Apple M4 Pro\"]"
+            )
+        );
+        assert_eq!(
+            e.suggestion(),
+            Some("build Silico in its pixi environment, which brings Mesa's lavapipe")
         );
     }
 }

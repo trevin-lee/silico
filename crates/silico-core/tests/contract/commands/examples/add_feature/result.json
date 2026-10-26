@@ -1,0 +1,13 @@
+{
+  "feature": {
+    "id": "q7m2x9kd",
+    "type": "pocket",
+    "v": 1,
+    "name": "Leg holes",
+    "base": "p0000001",
+    "sketch": "s0000002",
+    "extent": {"type": "through_all", "reversed": false}
+  },
+  "changed": true,
+  "commit": null
+}

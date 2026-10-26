@@ -1,0 +1,97 @@
+{
+  "request": {
+    "$defs": {
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "ModelChoice": {
+        "description": "Which model to read: the current one, or the newest published.",
+        "oneOf": [
+          {
+            "const": "current",
+            "description": "The session's current revision's model, rebuilt if it isn't yet: what an agent that\njust edited reads.",
+            "type": "string"
+          },
+          {
+            "const": "published",
+            "description": "The newest model published, which may be an older revision's, read at once: what a\nUI reads while a rebuild runs.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`angle`'s request: the angle between two elements, each a straight edge or a planar face.",
+    "properties": {
+      "elements": {
+        "description": "The two elements, by name: each a straight edge or a planar face.",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 2,
+        "minItems": 2,
+        "type": "array"
+      },
+      "feature": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/FeatureId"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The feature whose solid to find them in, or null for every body."
+      },
+      "model": {
+        "$ref": "#/$defs/ModelChoice"
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "elements",
+      "feature",
+      "model",
+      "session"
+    ],
+    "title": "AngleRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "Angle": {
+        "description": "An angle in degrees: a number, to at most 9 decimals (nanodegrees). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+        "type": "number"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`angle`'s result.",
+    "properties": {
+      "angle": {
+        "$ref": "#/$defs/Angle",
+        "description": "In degrees. Two planar faces: the angle of the wedge both outward normals point into,\n0 to 180 (a 30° wedge reads 30; parallel faces 0 facing each other, 180 facing the\nsame way). Two straight edges sharing one vertex: the angle at it, 0 to 180. Other\nstraight edges, or a straight edge and a planar face: 0 to 90 between their lines and\nplanes."
+      },
+      "vertex": {
+        "description": "For two straight edges sharing one vertex, the vertex, by name; null otherwise.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "angle",
+      "vertex"
+    ],
+    "title": "AngleResult",
+    "type": "object"
+  }
+}

@@ -1,0 +1,133 @@
+{
+  "request": {
+    "$defs": {
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "ModelChoice": {
+        "description": "Which model to read: the current one, or the newest published.",
+        "oneOf": [
+          {
+            "const": "current",
+            "description": "The session's current revision's model, rebuilt if it isn't yet: what an agent that\njust edited reads.",
+            "type": "string"
+          },
+          {
+            "const": "published",
+            "description": "The newest model published, which may be an older revision's, read at once: what a\nUI reads while a rebuild runs.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`distance`'s request: the least distance between two elements, and their centres' and\nnormal distances where they have them.",
+    "properties": {
+      "elements": {
+        "description": "The two elements, by name (as `elements` and `query` give them; an unstable name is\ntaken). The same name twice is 0 apart.",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 2,
+        "minItems": 2,
+        "type": "array"
+      },
+      "feature": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/FeatureId"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The feature whose solid to find them in, or null for every body."
+      },
+      "model": {
+        "$ref": "#/$defs/ModelChoice"
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "elements",
+      "feature",
+      "model",
+      "session"
+    ],
+    "title": "DistanceRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "Length": {
+        "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+        "type": "number"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`distance`'s result.",
+    "properties": {
+      "center_distance": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Length"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The least distance between the elements' centres (a vertex's point, a circle's or\narc's centre, a cylinder face's axis as an infinite line), if both have one."
+      },
+      "distance": {
+        "$ref": "#/$defs/Length",
+        "description": "The least distance between the elements as bounded (never their infinite carriers),\nin mm: 0 where they touch or cross."
+      },
+      "from": {
+        "description": "A point where it's met, on the first element: with `to`, one pair of points where\nit's met (the pair first by its points' coordinates), a witness, not an identity.",
+        "items": {
+          "$ref": "#/$defs/Length"
+        },
+        "maxItems": 3,
+        "minItems": 3,
+        "type": "array"
+      },
+      "normal_distance": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Length"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Where both are straight edges or planar faces at exactly 0 or 180 degrees: two faces\nor two edges, the perpendicular distance from the second's reference point (a face's\ncentre of area, an edge's midpoint) to the first's plane or line; an edge and a face,\nthe edge's midpoint's from the face's plane, whichever comes first. Null otherwise."
+      },
+      "to": {
+        "description": "The pair's point on the second element.",
+        "items": {
+          "$ref": "#/$defs/Length"
+        },
+        "maxItems": 3,
+        "minItems": 3,
+        "type": "array"
+      }
+    },
+    "required": [
+      "center_distance",
+      "distance",
+      "from",
+      "normal_distance",
+      "to"
+    ],
+    "title": "DistanceResult",
+    "type": "object"
+  }
+}

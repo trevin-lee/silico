@@ -34,6 +34,11 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             check_freecad_finite(&measures)?;
             Ok(Reply::FreecadMeasures(measures))
         }
+        Op::Classify { shape, point } => {
+            let shape = shape_of(&shape)?;
+            let place = crate::classify(&shape, point).map_err(failure)?;
+            Ok(Reply::Classified { place })
+        }
         Op::Describe {
             shape,
             kind,
@@ -127,10 +132,23 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             let tool = shape_of(&tool)?;
             built_reply(crate::boolean(op, &base, &tool).map_err(failure)?)
         }
-        Op::Tessellate { shape, deflection } => {
+        Op::Tessellate {
+            shape,
+            deflection,
+            at_least_the_floor: false,
+        } => {
             let shape = shape_of(&shape)?;
             let mesh = crate::tessellate(&shape, deflection).map_err(failure)?;
             Ok(Reply::Mesh(mesh))
+        }
+        Op::Tessellate {
+            shape,
+            deflection,
+            at_least_the_floor: true,
+        } => {
+            let shape = shape_of(&shape)?;
+            let made = crate::tessellate_at_least_the_floor(&shape, deflection).map_err(failure)?;
+            Ok(Reply::MeshAt(made))
         }
         Op::ExportMesh {
             shape,
@@ -143,7 +161,7 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             Ok(Reply::ExportMesh(Box::new(mesh)))
         }
         Op::Echo { data } => Ok(Reply::Echo { data }),
-        Op::Solve(_) | Op::DragBegin(_) | Op::DragMove { .. } | Op::DragEnd => {
+        Op::Solve(_) | Op::DragBegin(_) | Op::DragMove { .. } | Op::DragEnd | Op::Render(_) => {
             Err(Failure::new(Refusal::OtherWorkersOp {
                 op: op.name().to_owned(),
             }))

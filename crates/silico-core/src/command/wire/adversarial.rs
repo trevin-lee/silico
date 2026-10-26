@@ -678,6 +678,7 @@ fn an_error_with_hostile_text_in_every_field_is_written_on_one_line() {
         model: Some(ModelRead {
             revision: Revision::OPENED,
             of: ModelChoice::Current,
+            fault: None,
         }),
         result: Err(error.into()),
     };
@@ -830,6 +831,7 @@ fn every_shape_of_the_envelope_holds_to_its_snapshot() {
     let read_model = ModelRead {
         revision: Revision::OPENED,
         of: ModelChoice::Current,
+        fault: None,
     };
     let texts = [
         response(&Response {
@@ -852,6 +854,7 @@ fn every_shape_of_the_envelope_holds_to_its_snapshot() {
             model: Some(ModelRead {
                 revision: Revision::OPENED,
                 of: ModelChoice::Published,
+                fault: None,
             }),
             result: Err(Problems::of(vec![full, elided])),
         }),

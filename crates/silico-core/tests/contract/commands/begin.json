@@ -1,0 +1,37 @@
+{
+  "request": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`begin`'s request: open a transaction in the session. Inside it, edits change only what\nthe session holds, until `commit` saves them or `rollback` undoes them all.",
+    "properties": {
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session"
+    ],
+    "title": "BeginRequest",
+    "type": "object"
+  },
+  "result": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`begin`'s result.",
+    "properties": {
+      "base": {
+        "description": "The revision the transaction began from: the one `rollback` returns to.",
+        "format": "uint64",
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "base"
+    ],
+    "title": "BeginResult",
+    "type": "object"
+  }
+}

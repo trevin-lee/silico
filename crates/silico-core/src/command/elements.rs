@@ -6,7 +6,7 @@
 //! what it returns. These are the commands' answers from a model; a session runs them on the
 //! model a read names (decision 33).
 
-use super::session::faulted;
+use super::session::{kept_fault, retried};
 use super::{ModelChoice, Problems, Revision, Running, SessionId, Sessions};
 use crate::document::{Angle, FeatureId, Length, Measure};
 pub use crate::elements::{Alias, AxisToken, ElementType, Entry, EntryAxis};
@@ -72,11 +72,15 @@ pub fn entries<'m>(model: &'m Model, id: &FeatureId) -> Result<&'m [Entry], Prob
 /// The feature `id`'s solid's entries, or why they can't be had: naming the request's
 /// `feature` if `asked` (the request named it), and otherwise only the feature (a body of
 /// a listing of every body, its `feature` null).
-fn solid<'m>(model: &'m Model, id: &FeatureId, asked: bool) -> Result<&'m [Entry], Problems> {
+pub(crate) fn solid<'m>(
+    model: &'m Model,
+    id: &FeatureId,
+    asked: bool,
+) -> Result<&'m [Entry], Problems> {
     let built = built(model, id, asked)?;
     match model.entries(id) {
         Some(Ok(entries)) => Ok(entries),
-        Some(Err(fault)) => Err(fault.clone().into()),
+        Some(Err(fault)) => Err(worded(fault).into()),
         // Not described. Why: its description refused or failed, or, before that, its
         // summary.
         None => Err(named(
@@ -86,7 +90,7 @@ fn solid<'m>(model: &'m Model, id: &FeatureId, asked: bool) -> Result<&'m [Entry
                 .or(built.measure_refused())
                 .or(model.unmeasured(id))
             {
-                Some(refused) => refused.clone(),
+                Some(refused) => worded(refused),
                 None => Error::new(
                     ErrorCode::KernelFailed,
                     format!("{id}'s solid couldn't be described, so its elements aren't known"),
@@ -109,7 +113,8 @@ fn named(asked: bool, error: Error) -> Error {
 }
 
 /// The feature `id`'s built solid, or why it has none: a feature the document doesn't
-/// have, a sketch, or one that failed (its failure, as `check` reports it) or was blocked;
+/// have, a sketch, or one that failed (its failure, as `check` reports it, a kernel fault
+/// as the revision keeps it) or was blocked (on a kernel fault, refused with the fault);
 /// naming the request's `feature` if `asked`, as [`entries`] names it. Every read of a
 /// feature's solid (`elements`, `query`, `mass_properties`) refuses one alike.
 pub(crate) fn built<'m>(
@@ -136,20 +141,33 @@ pub(crate) fn built<'m>(
             .with_suggestion("name a feature that makes a solid"),
         )
         .into()),
-        Some(FeatureOutcome::Failed(error)) => Err(error.clone().into()),
+        Some(FeatureOutcome::Failed(error)) => Err(worded(error).into()),
         Some(FeatureOutcome::Broken { errors, total }) => Err(Problems::with_unlisted(
-            errors.clone(),
+            errors.iter().map(worded).collect(),
             total.saturating_sub(errors.len() as u64),
         )),
-        Some(FeatureOutcome::Blocked { on }) => Err(named(
-            Error::new(
-                ErrorCode::InvalidInput,
-                format!("{id} didn't build, since it uses {on}, which failed"),
+        Some(FeatureOutcome::Blocked { on }) => {
+            // Blocked by a kernel fault, which isn't the document's (so `check` doesn't list
+            // it): refused with the fault itself, naming the feature it met (the design's
+            // section 6).
+            if let Some(fault) = model.outcome(on).and_then(|outcome| {
+                outcome
+                    .errors()
+                    .iter()
+                    .find(|error| error.code().is_kernel_fault())
+            }) {
+                return Err(worded(fault).into());
+            }
+            Err(named(
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    format!("{id} didn't build, since it uses {on}, which failed"),
+                )
+                .with_feature(id.as_str())
+                .with_suggestion(format!("mend {on} first: `check` says why it failed")),
             )
-            .with_feature(id.as_str())
-            .with_suggestion(format!("mend {on} first: `check` says why it failed")),
-        )
-        .into()),
+            .into())
+        }
         Some(FeatureOutcome::Built { built, .. }) => Ok(built),
     }
 }
@@ -169,7 +187,7 @@ pub(crate) fn summarized<'m>(
         return Ok(summary);
     }
     let why = match built.measure_refused().or(model.unmeasured(id)) {
-        Some(why) => why.clone(),
+        Some(why) => worded(why),
         // A recompute measures every solid it builds, or keeps why it couldn't.
         None => Error::new(
             ErrorCode::Internal,
@@ -232,11 +250,11 @@ pub struct Listed {
 /// feature's (or each body's), the cursor's, then the limit's.
 ///
 /// A model that holds a kernel fault (a worker that crashed or hung) may not be the
-/// revision's next read: a session rebuilds it (`Session::model`), and a feature that
-/// failed for the fault consumes nothing, so its inputs are bodies until it builds. So a
-/// listing of its every body gives no cursor, and a cursor on one is a `conflict`: pages of
-/// two models of one revision are never joined (until a revision's fault is its outcome,
-/// decision 32). A feature's own listing pages on: its elements don't change.
+/// revision's next read: a session keeps it as the revision's outcome (decision 32), but
+/// M4.3's `check` with `fresh` rebuilds it, and a feature that failed for the fault consumes
+/// nothing, so its inputs are bodies until it builds. So a listing of its every body gives no
+/// cursor, and a cursor on one is a `conflict`: pages of two models of one revision are never
+/// joined. A feature's own listing pages on: its elements don't change.
 pub fn list(
     model: &Model,
     revision: Revision,
@@ -292,7 +310,7 @@ pub fn list(
     let before: usize = sources.iter().take(body).map(|entries| entries.len()).sum();
     let end = before + from + entries.len();
     // Whether it's faulted is asked only of a whole listing with more to come: it's a check.
-    let next = (end < total && !(whole && faulted(model)))
+    let next = (end < total && !(whole && model.fault().is_some()))
         .then(|| entries.last())
         .flatten()
         .map(|last| Cursor {
@@ -305,6 +323,17 @@ pub fn list(
         total: total as u64,
         next,
     })
+}
+
+/// `error`, met in the model read, as the read gives it: a kernel fault worded as the
+/// revision's outcome ([`kept_fault`]), since reading the revision again won't try again; any
+/// other as it is.
+fn worded(error: &Error) -> Error {
+    if error.code().is_kernel_fault() {
+        kept_fault(error)
+    } else {
+        error.clone()
+    }
 }
 
 /// The name a cursor goes on from, read once, if the cursor is of the model read: otherwise
@@ -332,14 +361,18 @@ fn cursor_name(
         ));
         return None;
     }
-    if whole && faulted(model) {
+    if whole && model.fault().is_some() {
         refused.push(conflict(
             format!(
                 "the model read of revision {} holds a kernel fault, so it may not be the \
                  model the cursor's pages were listed from",
                 revision.number()
             ),
-            "check again, then list from the start",
+            &format!(
+                "list from the start with a larger limit, or each body by its feature, whose \
+                 pages go on; {}",
+                retried("rebuilds it")
+            ),
         ));
         return None;
     }

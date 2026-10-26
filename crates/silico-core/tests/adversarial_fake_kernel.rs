@@ -123,6 +123,24 @@ fn waiting_for_no_running_requests_is_at_once() {
     assert!(!kernel.wait_running(1, Duration::ZERO));
 }
 
+// `wait_idle` says whether no request was running by its timeout: a held request is still
+// running, so a wait for idle times out, at once or after a while, until it's released.
+#[test]
+fn waiting_for_idle_times_out_while_a_request_is_held() {
+    let kernel = FakeKernel::new(1).unwrap();
+    assert!(kernel.wait_idle(Duration::ZERO));
+    let hold = kernel.hold(|_| true);
+    let pending = kernel.submit(Generation(0), KernelRequest::echo(Blob::inline(vec![])));
+    assert!(kernel.wait_running(1, WAIT));
+    assert!(!kernel.wait_idle(Duration::ZERO));
+    let waited = Instant::now();
+    assert!(!kernel.wait_idle(Duration::from_millis(50)));
+    assert!(waited.elapsed() >= Duration::from_millis(50));
+    hold.release();
+    done(within(pending, "the held request"));
+    assert!(kernel.wait_idle(WAIT));
+}
+
 // Once: `FakeKernel::new(usize::MAX)` collected `(0..usize::MAX).map(spawn)` into a Vec,
 // which sizes itself up front: a capacity-overflow panic. The pool refuses a size past
 // MAX_WORKERS (1024) with InvalidInput; the fake that stands in for it panics.
@@ -587,8 +605,11 @@ fn every_operation_the_fake_does_not_do_is_a_structured_internal_error() {
         .unwrap()
         .map(|_| ()),
         within(
-            kernel.submit(Generation(0), KernelRequest::tessellate(&shape, 0.1)),
-            "tessellate",
+            kernel.submit(
+                Generation(0),
+                KernelRequest::export_mesh(&shape, 0.1).unwrap(),
+            ),
+            "export mesh",
         )
         .done()
         .unwrap()

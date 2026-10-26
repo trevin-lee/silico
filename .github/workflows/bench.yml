@@ -4,7 +4,7 @@
 #
 #   gh workflow run bench.yml --ref main -f ref=<branch>
 name: bench
-run-name: "drag bench ${{ inputs.ref || github.ref_name }}"
+run-name: "${{ inputs.bench || 'drag' }} bench ${{ inputs.ref || github.ref_name }}"
 
 on:
   workflow_dispatch:
@@ -12,6 +12,11 @@ on:
       ref:
         description: "Branch, tag, or commit to measure (empty: the branch this runs on)"
         default: ""
+      bench:
+        description: "What to measure: drag (the sketch worker's drag latency) or render (M4.6's bench: a 4096 by 4096 render on lavapipe through the worker's renderer, its time and memory)"
+        type: choice
+        options: [drag, render]
+        default: drag
 
 permissions:
   contents: read
@@ -37,7 +42,7 @@ jobs:
   drag:
     needs: yield
     # Even if the yield failed: the bench is the point.
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && inputs.bench != 'render' }}
     runs-on: [self-hosted, linux, x64, mutants]
     # A full solve a frame at the largest sizes takes seconds: each mode stops after a
     # minute, so the whole run is some minutes, after the build.
@@ -69,3 +74,39 @@ jobs:
         with:
           name: drag-bench
           path: ${{ runner.temp }}/bench
+
+  render:
+    needs: yield
+    # Even if the yield failed: the bench is the point.
+    if: ${{ !cancelled() && inputs.bench == 'render' }}
+    runs-on: [self-hosted, linux, x64, mutants]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Toolchains
+        run: bash .github/tools.sh
+      - name: Render bench
+        run: |
+          echo "Measuring $(git log -1 --format='%h %s')"
+          pixi run cargo build --release -p silico-render --bin silico-render-bench
+          set -o pipefail
+          {
+            for size in 400 4096; do
+              echo "--- $size"
+              # Its own times and memory (VmHWM, VmRSS) are in what it writes; the shell's
+              # time is the whole process's, its start and restart included.
+              { time env -i PATH="$PATH" target/release/silico-render-bench "$size" --hold 5; } 2>&1
+            done
+            echo "--- cpu"
+            grep -m1 'model name' /proc/cpuinfo
+            grep -o -w -e fma -e avx2 -e avx512f /proc/cpuinfo | sort -u | tr '\n' ' '
+          } | tee "$RUNNER_TEMP/render.txt"
+          {
+            echo "## Render bench: $(git log -1 --format='%h %s')"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/render.txt"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"

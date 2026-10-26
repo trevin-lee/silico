@@ -622,6 +622,7 @@ fn a_mesh_through_the_worker_matches_one_made_here() {
             Op::Tessellate {
                 shape: brep.clone(),
                 deflection: 0.05,
+                at_least_the_floor: false,
             },
             TIMEOUT,
         )
@@ -647,7 +648,15 @@ fn a_mesh_through_the_worker_matches_one_made_here() {
         ),
     ] {
         let err = w
-            .call(Generation(1), Op::Tessellate { shape, deflection }, TIMEOUT)
+            .call(
+                Generation(1),
+                Op::Tessellate {
+                    shape,
+                    deflection,
+                    at_least_the_floor: false,
+                },
+                TIMEOUT,
+            )
             .unwrap_err();
         assert_eq!(err.code(), ErrorCode::InvalidInput, "{deflection}: {err}");
     }

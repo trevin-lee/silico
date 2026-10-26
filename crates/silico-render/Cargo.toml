@@ -1,0 +1,55 @@
+[package]
+name = "silico-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+# The tests are one program (tests/all_render.rs), fewer to build and link, each linking
+# wgpu and re_renderer: every file in tests/ is a module of it.
+autotests = false
+
+[features]
+# The test operations (sleeping, aborting, garbage, replies out of turn), answered by the
+# test worker only. This crate's own tests turn it on (the dev-dependency on itself).
+test_ops = ["silico-worker/test_ops"]
+
+[dependencies]
+re_renderer.workspace = true
+wgpu.workspace = true
+glam.workspace = true
+macaw.workspace = true
+pollster.workspace = true
+smallvec.workspace = true
+png.workspace = true
+silico-protocol.workspace = true
+silico-worker.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# The core's worker client, to drive the worker as the core does (no OCCT: the core links
+# none).
+silico-core.workspace = true
+libm.workspace = true
+proptest.workspace = true
+silico-render = { path = ".", features = ["test_ops"] }
+
+[[bin]]
+name = "silico-render-worker"
+path = "src/bin/silico-render-worker.rs"
+
+[[bin]]
+name = "silico-render-bench"
+path = "src/bin/silico-render-bench.rs"
+
+[[bin]]
+name = "silico-render-test-worker"
+path = "src/bin/silico-render-test-worker.rs"
+required-features = ["test_ops"]
+
+[[test]]
+name = "all_render"
+path = "tests/all_render.rs"
+
+[lints]
+workspace = true

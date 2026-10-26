@@ -31,11 +31,7 @@ pub fn schema(of: &str) -> Result<SchemaAnswer, Problems> {
             schema: document::schema_value_of::<Document>(),
         });
     }
-    match wire::COMMANDS
-        .contains(&of)
-        .then(|| wire::snapshot_value(of))
-        .flatten()
-    {
+    match wire::command_snapshot(of) {
         Some(schema) => Ok(SchemaAnswer { schema }),
         None => Err(Error::new(
             ErrorCode::InvalidInput,
@@ -48,7 +44,7 @@ pub fn schema(of: &str) -> Result<SchemaAnswer, Problems> {
         .with_suggestion("give one of the candidates")
         .with_candidates(
             std::iter::once("document")
-                .chain(wire::COMMANDS)
+                .chain(wire::COMMANDS.map(|(name, _)| name))
                 .map(str::to_owned),
         )
         .into()),

@@ -167,7 +167,8 @@ fn a_field_set_outside_a_transaction_is_saved_with_the_fingerprints_it_reached()
         response.model,
         Some(ModelRead {
             revision: session.revision,
-            of: ModelChoice::Current
+            of: ModelChoice::Current,
+            fault: None,
         })
     );
     let set = response.result.unwrap();
@@ -787,7 +788,7 @@ fn a_feature_added_is_refused_with_what_the_request_may_not_give_and_the_gate_s_
             value("[]")
         )))
         .1,
-        "feature is an array, not an object"
+        "feature must be an object, got an array"
     );
     // The gate's error, its feature the new one: a pocket of a sketch the document hasn't.
     let pocket = r#"{"id": "q7m2x9kd", "type": "pocket", "name": "Leg holes", "base": "f0000001", "sketch": "s0000003", "extent": {"type": "through_all", "reversed": false}}"#;
@@ -1571,4 +1572,84 @@ fn a_path_below_a_member_the_feature_hasnt_is_a_field_it_hasnt() {
         );
     }
     assert_eq!(f.file(), PAD);
+}
+
+#[test]
+fn a_feature_added_outside_a_transaction_comes_back_as_saved_fingerprint_and_all() {
+    let f = opened(BLOCK);
+    let lug = r#"{"id": "b0000002", "type": "box", "name": "Lug", "position": [100, 0, 0], "length": 1, "width": 2, "height": 3}"#;
+    let added = answer(f.sessions.add_feature(&f.id, Revision::OPENED, value(lug)))
+        .result
+        .unwrap();
+    assert!(added.commit.unwrap().written);
+    // Its fingerprint, by hand: 1 × 2 × 3 = 6, area 2(2 + 3 + 6) = 22, from (100, 0, 0)
+    // to (101, 2, 3); as the saved file holds it.
+    assert_eq!(
+        document::write_feature(&added.feature).unwrap(),
+        "{\n  \"id\": \"b0000002\",\n  \"type\": \"box\",\n  \"v\": 1,\n  \"name\": \"Lug\",\n  \"position\": [100, 0, 0],\n  \"length\": 1,\n  \"width\": 2,\n  \"height\": 3,\n  \"fingerprint\": {\"volume\": 6, \"area\": 22, \"bbox\": [100, 0, 0, 101, 2, 3], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n}"
+    );
+    let saved = document::read(f.file().as_bytes()).unwrap();
+    assert_eq!(saved.features[1], added.feature);
+}
+
+#[test]
+fn a_sketch_member_set_outside_a_transaction_comes_back_where_its_solve_put_it() {
+    let f = opened(SKETCHED);
+    // pb set to x = 11, and solved to 12.25: the commit writes the solve.
+    moving_pb(&f.sketches);
+    let set = f.set("s0000001", "points.pb000000.x", "11").result.unwrap();
+    let commit = set.commit.unwrap();
+    assert_eq!(commit.resolved, [id("s0000001")]);
+    assert_eq!(
+        (json(&set.before), json(&set.after)),
+        ("10".into(), "12.25".into())
+    );
+    assert!(
+        f.file().contains(r#""id": "pb000000", "x": 12.25, "y": 0"#),
+        "{}",
+        f.file()
+    );
+}
+
+#[test]
+fn a_member_renamed_outside_a_transaction_comes_back_by_its_new_id_as_saved() {
+    // A constraint's ID set: after names it by the new ID, which the saved file holds, the
+    // old one gone.
+    let f = opened(SKETCHED);
+    let set = f
+        .set("s0000001", "constraints.k0000001.id", r#""k0000003""#)
+        .result
+        .unwrap();
+    assert!(set.commit.unwrap().written);
+    assert_eq!(
+        (json(&set.before), json(&set.after)),
+        (r#""k0000001""#.into(), r#""k0000003""#.into())
+    );
+    let file = f.file();
+    assert!(
+        file.contains(r#"{"id": "k0000003", "type": "horizontal", "line": "na000000"}"#),
+        "{file}"
+    );
+    assert!(!file.contains("k0000001"), "{file}");
+
+    // A point nothing uses, set whole under a new ID: after is the new point, as saved.
+    let free = SKETCHED.replace(
+        r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}"#,
+        r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pf000000", "x": 3, "y": 4, "construction": true}"#,
+    );
+    assert_ne!(free, SKETCHED);
+    let f = opened(&free);
+    let point = r#"{"id": "pg000000", "x": 5, "y": 6, "construction": false}"#;
+    let set = f.set("s0000001", "points.pf000000", point).result.unwrap();
+    assert!(set.commit.unwrap().written);
+    assert_eq!(
+        (json(&set.before), json(&set.after)),
+        (
+            r#"{"id": "pf000000", "x": 3, "y": 4, "construction": true}"#.into(),
+            point.into()
+        )
+    );
+    let file = f.file();
+    assert!(file.contains(point), "{file}");
+    assert!(!file.contains("pf000000"), "{file}");
 }

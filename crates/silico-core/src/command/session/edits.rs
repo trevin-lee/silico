@@ -4,20 +4,21 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use super::cancel::Ticket;
 use super::{Committed, Gated, ModelRead, Problems, Revision, Session, SessionId, shown};
 use crate::command::edit::Candidate;
 use crate::document::Document;
 use crate::kernel::Kernel;
-use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
 impl<C: Kernel + 'static> Session<C> {
     /// An accepted edit's `candidate` held as the session's document, at a new revision,
     /// carrying what was carried: how an edit inside a transaction is applied (the design's
-    /// section 4), starting no rebuild (decision 13).
-    pub(super) fn hold(&self, candidate: Candidate) -> Result<Revision, Problems> {
-        let mut held = lock(&self.held);
+    /// section 4), starting no rebuild (decision 13). As the command `stop` stops.
+    pub(super) fn hold(&self, stop: &Ticket, candidate: Candidate) -> Result<Revision, Problems> {
+        let held = self.held.read();
         let next = held.next()?;
+        let mut held = held.changing(stop)?;
         let carried = Arc::clone(&held.carried);
         held.change(next, candidate.text, candidate.gated, carried);
         Ok(next)
@@ -31,16 +32,17 @@ impl<C: Kernel + 'static> Session<C> {
     /// its own transaction ([`commit_candidate`](Self::commit_candidate), decision 1), its
     /// new file claimed with `claim`, and the session holds it only once it's saved. An edit
     /// that changes nothing gives no new revision and writes nothing. Refused whole, the
-    /// session as it was, as `make` or the commit is.
+    /// session as it was, as `make` or the commit is. As the command `stop` stops.
     pub(super) fn edit<T>(
         self: &Arc<Self>,
+        stop: &Ticket,
         revision: Revision,
         make: impl FnOnce(Base<'_>) -> Result<(T, Option<Candidate>), Problems>,
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
     ) -> Result<Edited<T>, Problems> {
         let (text, gated, transaction) = {
-            let held = lock(&self.held);
+            let held = self.held.read();
             if held.revision != revision {
                 // Stale because the file changed outside the session, if a reload since
                 // the edit's revision moved the session on.
@@ -70,18 +72,21 @@ impl<C: Kernel + 'static> Session<C> {
                 made,
                 changed: false,
                 commit: None,
+                saved: None,
             });
         };
-        let commit = if transaction {
-            self.hold(candidate)?;
-            None
+        let (commit, saved) = if transaction {
+            self.hold(stop, candidate)?;
+            (None, None)
         } else {
-            Some(self.commit_candidate(candidate, read, claim)?)
+            let (committed, saved) = self.commit_candidate(stop, candidate, read, claim)?;
+            (Some(committed), saved)
         };
         Ok(Edited {
             made,
             changed: true,
             commit,
+            saved,
         })
     }
 }
@@ -120,12 +125,42 @@ impl<'a> Base<'a> {
 }
 
 /// What an edit gives its command ([`Session::edit`]): what it found, whether the document
-/// changed, and, outside a transaction, the commit's result (none inside one, or if nothing
-/// changed).
+/// changed, and, outside a transaction, the commit's result and the document it saved (none
+/// inside one, or if nothing changed or was written).
 pub(super) struct Edited<T> {
     pub(super) made: T,
     pub(super) changed: bool,
     pub(super) commit: Option<Committed>,
+    pub(super) saved: Option<Arc<Gated>>,
+}
+
+/// What an edit gives back as the document holds it once committed (the design's section
+/// 7): `made`, the edit's own, if its commit saved no document (`saved` none: inside a
+/// transaction, or nothing written); otherwise found by `find` in the document saved, with
+/// the fingerprints and solves the commit wrote. A saved document `find` finds nothing in is
+/// Silico's bug, said as one, the edit saved.
+pub(super) fn as_committed<U>(
+    saved: Option<&Gated>,
+    made: U,
+    find: impl FnOnce(&Document) -> Option<U>,
+) -> Result<U, Problems> {
+    let Some(saved) = saved else {
+        return Ok(made);
+    };
+    let found = match saved {
+        Gated::Checked(checked) => find(checked.document()),
+        Gated::Unread(_) | Gated::Refused(..) => None,
+    };
+    found.ok_or_else(|| {
+        Problems::from(
+            Error::new(
+                ErrorCode::Internal,
+                "the edit was saved, but the document saved doesn't hold what it made",
+            )
+            .with_cause("the file was written: the session's text is what it holds")
+            .with_suggestion(crate::worker::SILICO_BUG),
+        )
+    })
 }
 
 /// The refusal of an edit made against revision `made`, the session being at `at`

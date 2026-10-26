@@ -9,7 +9,11 @@
 //! [`Json::direction`], and [`Json::point`]; [`RequestFields::length`],
 //! [`RequestFields::angle`], [`RequestFields::direction`], and [`RequestFields::revision`]).
 //! Values are written as the document is, by its canonical writer (M2.1's D7), or on one
-//! line for a transport that takes one message a line ([`Layout::OneLine`]).
+//! line for a transport that takes one message a line ([`Layout::OneLine`]): a feature by the
+//! document's own feature writer ([`Json::feature`]), a value of the document's as it holds
+//! it ([`Json::plain`]; a feature's field as the document lays it out, [`Json::field`]), and
+//! a request's value as it was read ([`Json::node`], taken whole by
+//! [`RequestFields::node`] for the document's reader to read).
 //!
 //! The builders and readers are public for the core's command modules, which build their
 //! wire types on them. A client (the CLI, MCP, the app) reaches commands only through the
@@ -26,18 +30,22 @@
 //! result's, which is the envelope's `result` when the command runs, not the whole envelope,
 //! so not by itself what MCP's `outputSchema` checks `structuredContent`, the envelope,
 //! against (that is M4.9's to build from these and the envelope's). Each is added with the
-//! command's wire types ([`COMMANDS`]: [`elements`], for `elements` and `query`;
-//! [`measure`], for `mass_properties`; and [`schema`]).
+//! command's wire types ([`COMMANDS`]: [`transaction`], for `begin`, `commit`, `rollback`,
+//! and `format`; [`edits`], for `add_feature`, `set_field`, `remove_feature`, and
+//! `replace_text`; [`elements`], for `elements` and `query`; [`schema`]; and [`measure`],
+//! for `mass_properties`, `distance`, and `angle`).
 
+use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::fmt;
 
 use schemars::JsonSchema;
 
 use super::{ModelChoice, ModelRead, Problems, Response, Revision, SessionId, SessionInfo};
-use crate::document::json::{Member, Node, Value};
+use crate::document::json::{Member, Node, Plain, Value};
 use crate::document::write::{self, Out, text};
 use crate::document::{
-    Angle, Coordinate, FeatureId, Length, Measure, NumberError, PROBLEMS_LISTED, Position,
+    Angle, Coordinate, Feature, FeatureId, Length, Measure, NumberError, PROBLEMS_LISTED, Position,
 };
 use crate::{Error, ErrorCode};
 
@@ -53,7 +61,7 @@ pub struct Json<'a>(Out<'a>);
 
 impl<'a> Json<'a> {
     pub fn null() -> Self {
-        Json(Out::Raw("null".to_owned()))
+        Json(null_out())
     }
 
     pub fn bool(b: bool) -> Self {
@@ -95,7 +103,7 @@ impl<'a> Json<'a> {
     /// itself. A value that isn't finite has no JSON, and is written `null`: none reaches a
     /// result, since the core refuses non-finite geometry from the kernel.
     pub fn coordinate(value: f64) -> Self {
-        Json(Coordinate::new(value).map_or_else(|| Out::Raw("null".to_owned()), write::coordinate))
+        Json(Coordinate::new(value).map_or_else(null_out, write::coordinate))
     }
 
     /// A direction (a normal, an axis): each component as a [`coordinate`](Json::coordinate)
@@ -134,27 +142,140 @@ impl<'a> Json<'a> {
     /// writer writes it: each object's keys sorted, numbers as serde_json writes them, and
     /// strings escaped as every string is.
     pub fn value(value: &'a serde_json::Value) -> Self {
-        Json(out_of(value))
+        Json(walked(value))
+    }
+
+    /// A value of a document's, as a command gives it back (`set_field`'s field before and
+    /// after, through [`field`](Json::field)): each object's members in their order, each number as its text is written,
+    /// and strings escaped as every string is.
+    pub fn plain(value: &'a Plain) -> Self {
+        Json(walked(value))
+    }
+
+    /// A feature's field `field` (a path, as `set_field` names one), `value` its value
+    /// before or after an edit, laid out as the document's canonical form lays it out: a
+    /// list as [`write::field_list`] lays out that field's (a fillet's or a chamfer's
+    /// `edges` a name to a line, as [`feature`](Json::feature) writes them); any other value
+    /// as [`plain`](Json::plain) writes it.
+    pub fn field(field: &str, value: &'a Plain) -> Self {
+        match value {
+            Plain::Array(items) => {
+                Json(write::field_list(field, items.iter().map(walked).collect()))
+            }
+            _ => Json::plain(value),
+        }
+    }
+
+    /// A request's value as it was read (`add_feature`'s feature, `set_field`'s value),
+    /// written as [`plain`](Json::plain) writes its value.
+    pub fn node(node: &'a Node) -> Self {
+        Json(walked(node))
+    }
+
+    /// Features' IDs, in order.
+    pub fn ids(ids: &'a [FeatureId]) -> Self {
+        Json::array(ids.iter().map(ToWire::to_wire))
+    }
+
+    /// A feature as the document's canonical form writes it, by the document's own writer.
+    pub fn feature(feature: &'a Feature) -> Self {
+        Json(write::feature(feature))
     }
 }
 
-fn out_of(value: &serde_json::Value) -> Out<'_> {
-    match value {
-        serde_json::Value::Null => Out::Raw("null".to_owned()),
-        serde_json::Value::Bool(b) => write::boolean(*b),
-        serde_json::Value::Number(n) => Out::Raw(n.to_string()),
-        serde_json::Value::String(s) => Out::Str(s),
-        serde_json::Value::Array(items) => Out::Array(items.iter().map(out_of).collect()),
-        serde_json::Value::Object(map) => {
-            let mut members: Vec<(&String, &serde_json::Value)> = map.iter().collect();
-            members.sort_by(|a, b| a.0.cmp(b.0));
-            Out::Keyed(
+/// `null`.
+fn null_out<'a>() -> Out<'a> {
+    Out::Raw("null".to_owned())
+}
+
+/// A JSON value as one of its kinds, its members and items as they are: how [`walked`]
+/// writes a document's value ([`Plain`]), a request's ([`Node`]), and a JSON Schema's
+/// (`serde_json::Value`, its object's keys sorted), alike.
+enum Shape<'a, T> {
+    Null,
+    Bool(bool),
+    Number(Cow<'a, str>),
+    String(&'a str),
+    Array(&'a [T]),
+    Object(Vec<(&'a str, &'a T)>),
+}
+
+/// A JSON value [`walked`] writes.
+trait Walk: Sized {
+    fn shape(&self) -> Shape<'_, Self>;
+}
+
+impl Walk for Plain {
+    fn shape(&self) -> Shape<'_, Self> {
+        match self {
+            Plain::Null => Shape::Null,
+            Plain::Bool(b) => Shape::Bool(*b),
+            Plain::Number(text) => Shape::Number(Cow::Borrowed(text)),
+            Plain::String(text) => Shape::String(text),
+            Plain::Array(items) => Shape::Array(items),
+            Plain::Object(members) => Shape::Object(
                 members
-                    .into_iter()
-                    .map(|(key, value)| (key.clone(), out_of(value)))
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value))
                     .collect(),
-            )
+            ),
         }
+    }
+}
+
+impl Walk for Node {
+    fn shape(&self) -> Shape<'_, Self> {
+        match &self.value {
+            Value::Null => Shape::Null,
+            Value::Bool(b) => Shape::Bool(*b),
+            Value::Number(text) => Shape::Number(Cow::Borrowed(text)),
+            Value::String(text) => Shape::String(text),
+            Value::Array(items) => Shape::Array(items),
+            Value::Object(members) => Shape::Object(
+                members
+                    .iter()
+                    .map(|member| (member.key.as_str(), &member.value))
+                    .collect(),
+            ),
+        }
+    }
+}
+
+impl Walk for serde_json::Value {
+    fn shape(&self) -> Shape<'_, Self> {
+        match self {
+            serde_json::Value::Null => Shape::Null,
+            serde_json::Value::Bool(b) => Shape::Bool(*b),
+            serde_json::Value::Number(n) => Shape::Number(Cow::Owned(n.to_string())),
+            serde_json::Value::String(s) => Shape::String(s),
+            serde_json::Value::Array(items) => Shape::Array(items),
+            serde_json::Value::Object(map) => {
+                let mut members: Vec<(&str, &serde_json::Value)> = map
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value))
+                    .collect();
+                members.sort_by(|a, b| a.0.cmp(b.0));
+                Shape::Object(members)
+            }
+        }
+    }
+}
+
+/// `value` as the writer writes it: each object's members in the order its [`Shape`] gives
+/// them, each number as its text, and strings escaped as every string is.
+fn walked<T: Walk>(value: &T) -> Out<'_> {
+    match value.shape() {
+        Shape::Null => null_out(),
+        Shape::Bool(b) => write::boolean(b),
+        Shape::Number(text) => Out::Raw(text.into_owned()),
+        Shape::String(text) => Out::Str(text),
+        Shape::Array(items) => Out::Array(items.iter().map(walked).collect()),
+        Shape::Object(members) => Out::Keyed(
+            members
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), walked(value)))
+                .collect(),
+        ),
     }
 }
 
@@ -184,6 +305,13 @@ impl ToWire for SessionId {
     }
 }
 
+impl ToWire for FeatureId {
+    /// Its 8 characters.
+    fn to_wire(&self) -> Json<'_> {
+        Json::str(self.as_str())
+    }
+}
+
 impl ToWire for ModelChoice {
     fn to_wire(&self) -> Json<'_> {
         Json::str(self.as_str())
@@ -206,12 +334,12 @@ impl ToWire for SessionInfo {
 
 impl ToWire for ModelRead {
     /// Its revision, whether it was the current or the published, and the kernel fault its
-    /// rebuild met, none until faults are kept as a revision's outcome (decision 32).
+    /// rebuild met, if it met one, kept as the revision's outcome (decision 32).
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("revision", self.revision.to_wire()),
             ("of", self.of.to_wire()),
-            ("fault", Json::null()),
+            ("fault", Json::or_null(self.fault.as_ref(), Error::to_wire)),
         ])
     }
 }
@@ -829,6 +957,40 @@ impl<'a> RequestFields<'a> {
         id
     }
 
+    /// A list of exactly `N` strings (`what` each is: `a name`), a member at fault named by
+    /// its place (`elements.1`).
+    pub fn strings<const N: usize>(&mut self, key: &str, what: &str) -> Option<[String; N]> {
+        let node = self.take(key)?;
+        let Value::Array(items) = &node.value else {
+            self.wrong(key, format_args!("a list of {N} {what}s"), node);
+            return None;
+        };
+        if items.len() != N {
+            self.refused.refuse_with(|| {
+                let at = join(&self.path, key);
+                invalid(
+                    &at,
+                    format!(
+                        "{at} must be a list of {N} {what}s, got {} of them",
+                        items.len()
+                    ),
+                )
+            });
+            return None;
+        }
+        let mut found = Vec::with_capacity(N);
+        for (i, item) in items.iter().enumerate() {
+            match &item.value {
+                Value::String(text) => found.push(text.clone()),
+                _ => self.refused.refuse_with(|| {
+                    let at = format!("{}.{i}", join(&self.path, key));
+                    invalid(&at, format!("{at} must be a {what}, got {}", written(item)))
+                }),
+            }
+        }
+        found.try_into().ok()
+    }
+
     /// A list of features' IDs, or `null`; a member at fault named by its place
     /// (`features.0`).
     pub fn nullable_feature_ids(&mut self, key: &str) -> Option<Option<Vec<FeatureId>>> {
@@ -891,11 +1053,26 @@ impl<'a> RequestFields<'a> {
         fine.then_some(values)
     }
 
-    /// `key`, taken unread: for a field whose reading another decides (a range's bounds,
-    /// read as its measure's quantity), when that one was refused. Refused only if it's
-    /// missing.
-    pub fn unread(&mut self, key: &str) {
-        let _ = self.take(key);
+    /// The value of `key`, whatever it is, taken as it is: for a field another reader
+    /// reads (`set_field`'s value, read as the document reads it), or one left unread when
+    /// what decides its reading was refused (a range's bounds, read as its measure's
+    /// quantity). Refused only if it's missing.
+    pub fn node(&mut self, key: &str) -> Option<&'a Node> {
+        self.take(key)
+    }
+
+    /// The object at `key`, taken whole, its members unread: for an object another reader
+    /// reads (`add_feature`'s feature, read as the document reads a feature). Refused if it's
+    /// missing or isn't an object, as [`object`](RequestFields::object) refuses one.
+    pub fn whole_object(&mut self, key: &str) -> Option<&'a Node> {
+        let node = self.take(key)?;
+        match RequestFields::of(node, join(&self.path, key)) {
+            Ok(_) => Some(node),
+            Err(refused) => {
+                self.refused.refuse_with(|| refused);
+                None
+            }
+        }
     }
 
     /// The object at `key`, read by `read` as the request is: its refusals, and any of its
@@ -1192,42 +1369,145 @@ pub enum ResponseSchema {
     Refused(RefusedSchema),
 }
 
-/// The commands whose wire types are built, each with its snapshot: what `schema`
-/// describes besides the document.
-pub const COMMANDS: [&str; 4] = ["elements", "query", "mass_properties", "schema"];
+/// What makes a command's snapshot: its JSON Schemas, from its mirror structs.
+pub type MakeSnapshot = fn() -> serde_json::Value;
+
+/// The commands whose wire types are built, each by name with what makes its snapshot, in
+/// the design's order (section 7): what `schema` describes besides the document.
+pub const COMMANDS: [(&str, MakeSnapshot); 14] = [
+    (
+        "begin",
+        command_schema::<transaction::BeginRequestSchema, transaction::BeginResultSchema>,
+    ),
+    (
+        "commit",
+        command_schema::<transaction::CommitRequestSchema, transaction::CommitResultSchema>,
+    ),
+    (
+        "rollback",
+        command_schema::<transaction::RollbackRequestSchema, transaction::RollbackResultSchema>,
+    ),
+    (
+        "format",
+        command_schema::<transaction::FormatRequestSchema, transaction::FormatResultSchema>,
+    ),
+    (
+        "add_feature",
+        command_schema::<edits::AddFeatureRequestSchema, edits::AddFeatureResultSchema>,
+    ),
+    (
+        "set_field",
+        command_schema::<edits::SetFieldRequestSchema, edits::SetFieldResultSchema>,
+    ),
+    (
+        "remove_feature",
+        command_schema::<edits::RemoveFeatureRequestSchema, edits::RemoveFeatureResultSchema>,
+    ),
+    (
+        "replace_text",
+        command_schema::<edits::ReplaceTextRequestSchema, edits::ReplaceTextResultSchema>,
+    ),
+    (
+        "elements",
+        command_schema::<elements::ElementsRequestSchema, elements::ElementsResultSchema>,
+    ),
+    (
+        "query",
+        command_schema::<elements::QueryRequestSchema, elements::QueryResultSchema>,
+    ),
+    (
+        "schema",
+        command_schema::<schema::SchemaRequestSchema, schema::SchemaResultSchema>,
+    ),
+    (
+        "mass_properties",
+        command_schema::<measure::MassPropertiesRequestSchema, measure::MassPropertiesResultSchema>,
+    ),
+    (
+        "distance",
+        command_schema::<measure::DistanceRequestSchema, measure::DistanceResultSchema>,
+    ),
+    (
+        "angle",
+        command_schema::<measure::AngleRequestSchema, measure::AngleResultSchema>,
+    ),
+];
 
 /// The JSON Schema (draft 2020-12, every object's keys sorted) a snapshot (section 8)
-/// records: `envelope`, the response's; or a command's, `{"request": ..., "result": ...}`,
-/// two standalone root schemas. None for a name with no snapshot.
+/// records: `envelope`, the response's; or a command's ([`command_snapshot`]). None for a
+/// name with no snapshot.
 pub fn snapshot_value(of: &str) -> Option<serde_json::Value> {
-    match of {
-        "envelope" => Some(crate::document::schema_value_of::<ResponseSchema>()),
-        "elements" => Some(command_schema::<
-            elements::ElementsRequestSchema,
-            elements::ElementsResultSchema,
-        >()),
-        "query" => Some(command_schema::<
-            elements::QueryRequestSchema,
-            elements::QueryResultSchema,
-        >()),
-        "mass_properties" => Some(command_schema::<
-            measure::MassPropertiesRequestSchema,
-            measure::MassPropertiesResultSchema,
-        >()),
-        "schema" => Some(command_schema::<
-            schema::SchemaRequestSchema,
-            schema::SchemaResultSchema,
-        >()),
-        _ => None,
+    if of == "envelope" {
+        return Some(crate::document::schema_value_of::<ResponseSchema>());
     }
+    command_snapshot(of)
 }
 
-/// A command's snapshot: its request's schema and its result's.
+/// The snapshot of the command `of`, one of [`COMMANDS`]: `{"request": ..., "result":
+/// ...}`, two standalone root schemas. None for a name that isn't one.
+pub fn command_snapshot(of: &str) -> Option<serde_json::Value> {
+    COMMANDS
+        .iter()
+        .find(|(name, _)| *name == of)
+        .map(|(_, snapshot)| snapshot())
+}
+
+/// A command's snapshot: its request's schema and its result's, each with only the
+/// definitions it uses.
 fn command_schema<Request: JsonSchema, Result: JsonSchema>() -> serde_json::Value {
     serde_json::json!({
-        "request": crate::document::schema_value_of::<Request>(),
-        "result": crate::document::schema_value_of::<Result>(),
+        "request": pruned(crate::document::schema_value_of::<Request>()),
+        "result": pruned(crate::document::schema_value_of::<Result>()),
     })
+}
+
+/// `schema`, a root schema, with only the `$defs` it reaches, from its root and from each
+/// definition reached: one a transform left unreferenced (a new feature's fingerprint's,
+/// once only `null` is taken there) isn't one an agent reads.
+fn pruned(mut schema: serde_json::Value) -> serde_json::Value {
+    let Some(serde_json::Value::Object(mut defs)) =
+        schema.as_object_mut().and_then(|root| root.remove("$defs"))
+    else {
+        return schema;
+    };
+    let mut reached = BTreeSet::new();
+    let mut pending = Vec::new();
+    referenced(&schema, &mut pending);
+    while let Some(name) = pending.pop() {
+        if let Some(def) = defs.get(&name)
+            && reached.insert(name)
+        {
+            referenced(def, &mut pending);
+        }
+    }
+    defs.retain(|name, _| reached.contains(name));
+    if let Some(root) = schema.as_object_mut()
+        && !defs.is_empty()
+    {
+        root.insert("$defs".to_owned(), serde_json::Value::Object(defs));
+    }
+    schema
+}
+
+/// The definitions `schema` refers to (`"$ref": "#/$defs/Name"`) anywhere in it, each
+/// added to `found`.
+fn referenced(schema: &serde_json::Value, found: &mut Vec<String>) {
+    match schema {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                match value.as_str().and_then(|r| r.strip_prefix("#/$defs/")) {
+                    Some(name) if key == "$ref" => found.push(name.to_owned()),
+                    _ => referenced(value, found),
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                referenced(item, found);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The snapshot `of`'s text, as its committed file holds it: written as the document's
@@ -1238,11 +1518,15 @@ pub fn snapshot(of: &str) -> Option<Result<String, Error>> {
     Some(crate::document::schema_text(&value, &format!("the {of}")))
 }
 
+pub mod edits;
 pub mod elements;
 pub mod measure;
 pub mod schema;
+pub mod transaction;
 
 #[cfg(test)]
 mod adversarial;
+#[cfg(test)]
+mod session_tests;
 #[cfg(test)]
 mod tests;

@@ -14,6 +14,8 @@ mod adversarial_export;
 mod adversarial_parts;
 #[path = "adversarial_profile.rs"]
 mod adversarial_profile;
+#[path = "adversarial_render.rs"]
+mod adversarial_render;
 #[path = "adversarial_sweep.rs"]
 mod adversarial_sweep;
 #[path = "frames.rs"]
@@ -22,6 +24,8 @@ mod frames;
 mod history;
 #[path = "primitive.rs"]
 mod primitive;
+#[path = "render.rs"]
+mod render;
 
 /// Every file in tests/ is built: this crate lists its test programs (`autotests = false`),
 /// so a new file must be added as a module of one, or as one, or it would never run.

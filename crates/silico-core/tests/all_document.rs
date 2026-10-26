@@ -46,6 +46,8 @@ mod adversarial_document;
 mod adversarial_fingerprint;
 #[path = "adversarial_mass_properties.rs"]
 mod adversarial_mass_properties;
+#[path = "adversarial_measures.rs"]
+mod adversarial_measures;
 #[path = "adversarial_references.rs"]
 mod adversarial_references;
 #[path = "adversarial_type_words.rs"]
@@ -62,12 +64,16 @@ mod document;
 mod fingerprint;
 #[path = "mass_properties.rs"]
 mod mass_properties;
+#[path = "measures.rs"]
+mod measures;
 #[path = "reach.rs"]
 mod reach;
 #[path = "refused_from_a_partial_cache.rs"]
 mod refused_from_a_partial_cache;
 #[path = "session.rs"]
 mod session;
+#[path = "session_cancel.rs"]
+mod session_cancel;
 #[path = "session_edits.rs"]
 mod session_edits;
 #[path = "session_elements.rs"]
@@ -84,6 +90,8 @@ mod session_transactions;
 mod shared_result_checks;
 #[path = "wire_commands.rs"]
 mod wire_commands;
+#[path = "wire_session_commands.rs"]
+mod wire_session_commands;
 
 /// Every file in tests/ is built: this crate lists its test programs (`autotests = false`),
 /// so a new file must be added as a module of one, or as one, or it would never run.

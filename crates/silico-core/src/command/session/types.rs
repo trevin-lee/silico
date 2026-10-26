@@ -9,12 +9,18 @@ use std::time::Duration;
 use super::Problems;
 #[cfg(doc)]
 use super::Sessions;
+use super::cancel::Ticket;
+use super::rebuilds::kept_fault;
 #[cfg(doc)]
 use crate::document;
 use crate::document::json::Plain;
 use crate::document::{Feature, FeatureId};
 use crate::recompute::Model;
 use crate::{Error, ErrorCode};
+
+/// A session's ID as a request's schema gives it, the IDs [`SessionId::parse`] reads: `s`
+/// and a whole number from 1, with no leading zeros.
+pub(crate) const SESSION_ID_PATTERN: &str = r"^s[1-9][0-9]*$";
 
 /// A session's ID, written `s1`, `s2`, ...: the process's count of opens, never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -107,31 +113,111 @@ pub struct Response<T> {
 }
 
 /// The model a command read (the envelope's `model`, design §2): the revision it was rebuilt
-/// from, and whether it was read as the current revision's or as the newest published (an
-/// older revision's, maybe). The fault its rebuild met comes with decision 32.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// from, whether it was read as the current revision's or as the newest published (an older
+/// revision's, maybe), and the kernel fault its rebuild met, if it met one (section 6,
+/// decision 32): given once, beside the command's result, never among the document's
+/// problems, and kept as that revision's outcome, so it's worded for that.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRead {
     pub revision: Revision,
     pub of: ModelChoice,
+    pub fault: Option<Error>,
 }
 
-/// What a read given to [`Sessions::read_model`] is handed: the model, and what was read.
-/// The published read lane's kernel client and a check of whether the read was stopped
-/// (decisions 33 and 34) come later, here, without changing a read's signature.
-pub struct Read<'a> {
+impl ModelRead {
+    /// `model`, of `revision`, read as `of` says: its fault, if it holds one, as a read
+    /// gives it.
+    pub(super) fn of(revision: Revision, of: ModelChoice, model: &Model) -> Self {
+        ModelRead {
+            revision,
+            of,
+            fault: model.fault().map(kept_fault),
+        }
+    }
+}
+
+/// What a read given to [`Sessions::read_model`] is handed: the model, what was read,
+/// whether it was stopped (decision 34), and a kernel client of the read's own, for a read
+/// that asks the kernel (`distance`).
+pub struct Read<'a, C> {
     pub(super) model: &'a Model,
     pub(super) read: ModelRead,
+    pub(super) stop: &'a Ticket,
+    pub(super) kernel: &'a ReadClient<C>,
 }
 
-impl Read<'_> {
+impl<C> Read<'_, C> {
     /// The model read.
     pub fn model(&self) -> &Model {
         self.model
     }
 
     /// Which model it is: the response's `model`.
-    pub fn model_read(&self) -> ModelRead {
-        self.read
+    pub fn model_read(&self) -> &ModelRead {
+        &self.read
+    }
+
+    /// Whether the read was cancelled (`cancel`, or its handle's [`Running::cancel`]): it
+    /// answers `cancelled` whatever it gives, so a read that's long may stop when it sees
+    /// this.
+    pub fn stopped(&self) -> bool {
+        self.stop.cancelled()
+    }
+
+    /// The read's own client of the kernel (M4.1 §2's *What a published read costs*, as
+    /// #125's review settled it): made for this read, never the session's rebuild client, so
+    /// no rebuild's advance supersedes it, and dropped when the read ends, which is all it
+    /// takes to stop its kernel work. Each read in flight is a client of its own, served in
+    /// turn with the others, waiting at most for the first free worker.
+    pub fn kernel(&self) -> &ReadClient<C> {
+        self.kernel
+    }
+}
+
+/// A read's own kernel client, as [`Read::kernel`] gives it: every request it makes is at
+/// the generation the client began at, so once its read's stop interrupts it (a cancel, or
+/// its session's close: advancing it past every generation), each of them is superseded,
+/// whether in flight then or asked for after.
+pub struct ReadClient<C> {
+    pub(super) client: C,
+    generation: crate::kernel::Generation,
+}
+
+impl<C: crate::kernel::Kernel> ReadClient<C> {
+    pub(super) fn new(client: C) -> Self {
+        let generation = client.generation();
+        ReadClient { client, generation }
+    }
+}
+
+/// A cancel or the session's close, either way, stops the read's kernel work: the read
+/// answers `cancelled` or as of a session that closed, as its stop says.
+impl<C: crate::kernel::Kernel> super::cancel::Interrupt for ReadClient<C> {
+    fn interrupt(&self, _why: super::cancel::Why) {
+        self.client.advance(crate::kernel::Generation(u64::MAX));
+    }
+}
+
+impl<C: crate::kernel::Kernel> crate::kernel::Kernel for ReadClient<C> {
+    fn identity(&self) -> &str {
+        self.client.identity()
+    }
+
+    /// The generation the client began at, never advanced for the read.
+    fn generation(&self) -> crate::kernel::Generation {
+        self.generation
+    }
+
+    fn advance(&self, generation: crate::kernel::Generation) {
+        self.client.advance(generation);
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: crate::kernel::Generation,
+        request: crate::kernel::KernelRequest<T>,
+    ) -> crate::pool::Pending<T> {
+        self.client.submit(generation, request)
     }
 }
 
@@ -167,13 +253,30 @@ pub struct Published {
     pub model: Arc<Model>,
 }
 
-/// A command running on its session's thread: wait for its answer, poll it, or drop it
-/// (the command runs on, its answer unread).
+/// A command running on its session's thread: wait for its answer, poll it, cancel it, or
+/// drop it (the command runs on, its answer unread).
 #[must_use = "a command's answer is only had by waiting for it"]
 pub struct Running<T> {
     answer: Receiver<Response<T>>,
     /// What's said if the thread answering ends without an answer (a bug): which stopped.
     lost: &'static str,
+    /// How it's stopped: none for a command answered before it ran (refused).
+    ticket: Option<Arc<Ticket>>,
+}
+
+/// What cancels a command apart from its handle ([`Running::stopper`]), from any thread.
+#[derive(Clone)]
+pub struct Stopper {
+    /// None for a command answered before it ran (refused).
+    ticket: Option<Arc<Ticket>>,
+}
+
+impl Stopper {
+    /// Cancels the command, as [`Running::cancel`] does: whether it was stopped before it
+    /// had done its work.
+    pub fn cancel(&self) -> bool {
+        self.ticket.as_ref().is_some_and(|ticket| ticket.cancel())
+    }
 }
 
 /// A queued command's thread ended without answering.
@@ -183,15 +286,42 @@ pub(super) const SESSION_STOPPED: &str = "the session stopped before the command
 pub(super) const READ_STOPPED: &str = "the read stopped before it answered";
 
 impl<T> Running<T> {
-    pub(super) fn new(answer: Receiver<Response<T>>, lost: &'static str) -> Self {
-        Running { answer, lost }
+    pub(super) fn new(
+        answer: Receiver<Response<T>>,
+        lost: &'static str,
+        ticket: Option<Arc<Ticket>>,
+    ) -> Self {
+        Running {
+            answer,
+            lost,
+            ticket,
+        }
     }
 
     /// A command answered before it was queued (refused: no such session, too many open).
     pub(super) fn answered(response: Response<T>) -> Self {
         let (reply, answer) = mpsc::sync_channel(1);
         let _ = reply.send(response);
-        Running::new(answer, SESSION_STOPPED)
+        Running::new(answer, SESSION_STOPPED, None)
+    }
+
+    /// Cancels the command, as MCP's cancellation does (decision 10): if it hasn't done its
+    /// work, it stops (a rebuild it waits on stopped through the pool's superseded path, a
+    /// command still queued never run) and answers `cancelled`, having left no trace;
+    /// otherwise it answers with its real result. Whether it was stopped before it had done
+    /// its work; false too for a command already answered without running (refused). As its
+    /// [`stopper`](Self::stopper) cancels it.
+    pub fn cancel(&self) -> bool {
+        self.stopper().cancel()
+    }
+
+    /// What cancels the command apart from this handle: cloned and sent to another thread,
+    /// it cancels the command while this handle waits on its answer (MCP's server, told a
+    /// request it waits on was cancelled).
+    pub fn stopper(&self) -> Stopper {
+        Stopper {
+            ticket: self.ticket.clone(),
+        }
     }
 
     /// Waits for the answer.
@@ -290,9 +420,9 @@ pub struct Reformatted {
 }
 
 /// What `add_feature` did (the design's section 7): the feature as the document now holds it
-/// (its ID, the one given or the one made, and its version), whether the document changed
-/// (always, a feature added), and, outside a transaction, the commit's result, none inside
-/// one.
+/// (its ID, the one given or the one made, and its version; outside a transaction, as its
+/// commit saved it, with the fingerprint written), whether the document changed (always, a
+/// feature added), and, outside a transaction, the commit's result, none inside one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Added {
     pub feature: Feature,
@@ -302,7 +432,8 @@ pub struct Added {
 
 /// What `set_field` did (the design's section 7): the feature and the field, as the request
 /// named them, the field's value before and after, each as the document's canonical form
-/// writes it (`null` for a field the feature hasn't, a note removed), whether the document
+/// writes it (`null` for a field the feature hasn't, a note removed; after, outside a
+/// transaction, as its commit saved it, a sketch's solve and all), whether the document
 /// changed (not if the field was given the value it has: then there's no new revision and
 /// nothing is written), and, outside a transaction, the commit's result, none inside one or
 /// if nothing changed.
@@ -342,11 +473,64 @@ pub struct Replaced {
 }
 
 /// What `status` says of a session, from what it holds: how many features its document has
-/// (none if its text doesn't read as one), whether the gate took it, and the transaction
-/// open, if one is: the revision it began from, which `rollback` returns to.
+/// (none if its text doesn't read as one), whether the gate took it, the transaction open,
+/// if one is (the revision it began from, which `rollback` returns to), the queued command
+/// running, if one is, the published reads running, in the order they started, and its
+/// current revision's rebuild.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     pub features: Option<usize>,
     pub gated: bool,
     pub transaction: Option<Begun>,
+    pub running: Option<&'static str>,
+    pub reads: Vec<&'static str>,
+    pub rebuild: Rebuild,
+}
+
+/// A session's current revision's rebuild, as `status` gives it: the revision, and what's
+/// become of its rebuild.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rebuild {
+    pub revision: Revision,
+    pub state: RebuildState,
+}
+
+/// What's become of a revision's rebuild (the design's `status`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RebuildState {
+    /// Not started: no command has needed its model, or its rebuild was superseded, or an
+    /// edit's commit was cancelled while its rebuild ran; or the gate refused the document,
+    /// so there's nothing to rebuild.
+    None,
+    /// Running: the revision's, or, for an edit made outside a transaction, its commit's.
+    Running,
+    /// Done, its model published.
+    Done,
+    /// Done, its model holding a kernel fault, kept as the revision's outcome (decision
+    /// 32); or its recompute failed (a bug), said once to the command that needs it.
+    Faulted,
+    /// Cancelled: the next queued command that needs its model starts it again.
+    Stopped,
+}
+
+impl RebuildState {
+    /// As `status` writes it: `none`, `running`, `done`, `faulted`, or `stopped`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            RebuildState::None => "none",
+            RebuildState::Running => "running",
+            RebuildState::Done => "done",
+            RebuildState::Faulted => "faulted",
+            RebuildState::Stopped => "stopped",
+        }
+    }
+}
+
+/// What `cancel` answers (decision 34): the command it named, and whether it was stopped
+/// before it had done its work (false: it had, an edit already saved, say, and it answers
+/// with its real result).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cancelled {
+    pub command: String,
+    pub stopped: bool,
 }

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4ac0934a149545da4503be63d3f38799aab07bbe02b02d4698f2182f41356064 # shrinks to bound = 112, steps = [Put { key: 2, asked: -0.0, used: 0.25, triangles: 0 }, Level { key: 2, level: NaN }]

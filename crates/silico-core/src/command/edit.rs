@@ -81,10 +81,13 @@ fn feature_tree(feature: &Feature) -> Result<(String, Node), Error> {
 }
 
 /// What `set_field` found: the field's value before the edit and after it, each as the
-/// document's canonical form writes it (`null` for a field the feature hasn't).
+/// document's canonical form writes it (`null` for a field the feature hasn't), and the path
+/// that names the field after it (a sketch member's, by its new ID if the edit gave one), by
+/// which a commit's saved document gives it back ([`value_of`]).
 pub(super) struct FieldValues {
     pub(super) before: Plain,
     pub(super) after: Plain,
+    pub(super) path: String,
 }
 
 /// `field` of the feature `id` of `document` set to `value` (the design's `set_field`):
@@ -127,7 +130,11 @@ pub(super) fn set_field(
             )
             .with_suggestion(crate::worker::SILICO_BUG)
         })?;
-    let values = FieldValues { before, after };
+    let values = FieldValues {
+        before,
+        after,
+        path: after_field,
+    };
     if set_text == text {
         return Ok((values, None));
     }
@@ -136,6 +143,16 @@ pub(super) fn set_field(
         *slot = set;
     }
     Ok((values, Some(candidate(&edited, "value")?)))
+}
+
+/// The value of `field` of the feature `id` as `document` holds it, as `set_field` finds a
+/// field's: how a commit's saved document gives back the value an edit set, with the solve
+/// it wrote. None if the document hasn't the feature, or the feature the field.
+pub(super) fn value_of(document: &Document, id: &FeatureId, field: &str) -> Option<Plain> {
+    let (_, feature) = place_of(document, id).ok()?;
+    let (_, tree) = feature_tree(feature).ok()?;
+    let target = resolve(feature, &tree, field).ok()?;
+    Some(found(&tree, &target.steps))
 }
 
 /// One step of a path into a feature's tree: an object's member by its place among the
@@ -603,8 +620,9 @@ fn repeated_ids(
 /// the feature type's current version if it gives no `v` (each `null` given as none, as is
 /// a `null` fingerprint, note, or other member the feature may leave out: the design's
 /// section 2); the feature as the document then holds it, and the state it leads
-/// to. Refused for a feature that isn't an object, gives a fingerprint (a commit writes
-/// it), or gives an ID that isn't one, or that the document holds (each naming
+/// to. Refused for a feature that isn't an object (in the words the wire refuses one in,
+/// before it gets here: this is for the Rust API's callers), gives a fingerprint (a commit
+/// writes it), or gives an ID that isn't one, or that the document holds (each naming
 /// `feature.id`); and with every error the reader or the gate finds in the document with
 /// it added.
 pub(super) fn add_feature(
@@ -616,7 +634,7 @@ pub(super) fn add_feature(
         return Err(Problems::from(
             Error::new(
                 ErrorCode::InvalidInput,
-                format!("feature is {}, not an object", feature.value.kind()),
+                format!("feature must be an object, got {}", feature.value.kind()),
             )
             .with_parameter("feature")
             .with_suggestion("give the feature as the document writes it: an object"),
