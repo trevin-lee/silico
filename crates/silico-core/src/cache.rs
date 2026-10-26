@@ -1951,4 +1951,56 @@ mod tests {
             assert_eq!(std::fs::read(named(taken)).unwrap(), b"planted");
         }
     }
+
+    /// What [`walk`] gave its visitor, as data: what it found, and where.
+    fn walked(found: Walked<'_>) -> (&'static str, PathBuf) {
+        match found {
+            Walked::Partial(path, _) => ("partial", path.to_owned()),
+            Walked::Entry(path, _) => ("entry", path.to_owned()),
+            Walked::Unread(path, _) => ("unread", path.to_owned()),
+            Walked::Unknown(path, _) => ("unknown", path.to_owned()),
+        }
+    }
+
+    #[test]
+    fn a_walk_of_a_cache_directory_gone_finds_nothing_and_says_nothing() {
+        // Another process's clear (or the user) removed the directory before it's listed:
+        // nothing in it, and nothing it couldn't read.
+        let scratch = Scratch::new("walk-gone");
+        let gone = scratch.0.join("cache");
+        let mut seen = Vec::new();
+        walk(&gone, |found| seen.push(walked(found)));
+        assert_eq!(seen, []);
+    }
+
+    #[test]
+    fn a_walk_passes_over_an_entry_or_a_subdirectory_removed_after_its_listed() {
+        // Another process's clear or eviction removes what this walk has listed but not
+        // yet looked at: an entry beside the one it's at, and the subdirectory after it.
+        // The visitor removes both as it's given the first entry, after both were listed
+        // (`00` with its two names, before either is looked at; `01` before `00` is walked):
+        // each is passed over without a word, as if it had never been there.
+        let scratch = Scratch::new("walk-raced");
+        let entry = |sub: &str, byte: char| {
+            scratch
+                .0
+                .join(sub)
+                .join(byte.to_string().repeat(ENTRY_DIGITS))
+        };
+        let (first, second, later) = (entry("00", 'a'), entry("00", 'b'), entry("01", 'c'));
+        for path in [&first, &second, &later] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"an entry").unwrap();
+        }
+        let mut seen = Vec::new();
+        walk(&scratch.0, |found| {
+            if matches!(&found, Walked::Entry(path, _) if *path == first.as_path()) {
+                std::fs::remove_file(&second).unwrap();
+                std::fs::remove_dir_all(scratch.0.join("01")).unwrap();
+            }
+            seen.push(walked(found));
+        });
+        assert_eq!(seen, [("entry", first.clone())]);
+        assert!(first.is_file() && !second.exists() && !later.exists());
+    }
 }

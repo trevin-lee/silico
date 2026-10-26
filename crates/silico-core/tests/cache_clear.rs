@@ -221,12 +221,18 @@ fn what_a_clear_cant_remove_or_read_is_said_and_the_rest_removed() {
 #[test]
 fn an_entry_or_a_subdirectory_a_clear_can_list_but_not_look_at_is_said_and_left() {
     // A directory that can be read but not searched (0o444) lists its names, but what each
-    // is can't be read. The cache's one entry, `ab/NAME`, by hand.
+    // is can't be read. The cache's one entry, `ab/NAME`, by hand, and a partial file
+    // beside it and beside its subdirectory (another process's write, under way): a clear
+    // never removes one, so one it can't look at is no failure.
     let dir = Scratch::new("clear-unsearchable");
     let sub = dir.0.join("ab");
     std::fs::create_dir_all(&sub).unwrap();
     let entry = sub.join(NAME);
     std::fs::write(&entry, b"an entry").unwrap();
+    let partials = [dir.0.join(".partial-1-0"), sub.join(".partial-1-0")];
+    for partial in &partials {
+        std::fs::write(partial, b"being written").unwrap();
+    }
     let mode = |path: &Path, mode| {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
     };
@@ -261,9 +267,47 @@ fn an_entry_or_a_subdirectory_a_clear_can_list_but_not_look_at_is_said_and_left(
     assert_eq!(uncleared.total, 1);
     assert_eq!(said(&uncleared), [(sub.clone(), ClearStep::Read)]);
     assert!(entry.is_file());
-    // Once it may, the entry is removed.
+    // Once it may, the entry is removed, and the partial files left.
     assert_eq!(cache(&dir.0).clear().unwrap(), 1);
     assert!(!entry.exists());
+    assert!(partials.iter().all(|partial| partial.is_file()));
+}
+
+#[test]
+fn a_cache_directory_a_clear_cant_look_at_is_said_and_its_entries_left() {
+    // Its parent can be read but not searched (0o444): whether the cache's directory is
+    // there can't be found, which is said, as a directory it couldn't read, not taken for
+    // no directory at all. The example's four entries, left.
+    let parent = Scratch::new("clear-unseen");
+    std::fs::create_dir_all(&parent.0).unwrap();
+    let dir = parent.0.join("cache");
+    let entries = seeded(&dir);
+    let clearing = cache(&dir);
+    let mode = |mode| {
+        std::fs::set_permissions(&parent.0, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    mode(0o444);
+    if std::fs::symlink_metadata(&dir).is_ok() {
+        mode(0o755);
+        return; // root, who may look anyway
+    }
+    let uncleared = clearing.clear().unwrap_err();
+    mode(0o755);
+    assert_eq!(uncleared.removed, 0);
+    assert_eq!(uncleared.total, 1);
+    let said: Vec<(PathBuf, ClearStep)> = uncleared
+        .failures
+        .iter()
+        .map(|ClearFailure { path, step, why }| {
+            assert_eq!(why.raw_os_error(), Some(libc::EACCES), "{path:?}");
+            (path.clone(), *step)
+        })
+        .collect();
+    assert_eq!(said, [(dir.clone(), ClearStep::Read)]);
+    assert!(entries.iter().all(|entry| entry.is_file()));
+    // Once it may, all four are removed.
+    assert_eq!(clearing.clear().unwrap(), 4);
+    assert!(entries.iter().all(|entry| !entry.exists()));
 }
 
 #[test]

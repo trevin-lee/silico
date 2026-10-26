@@ -20,10 +20,34 @@ type Seen = Arc<Mutex<Vec<(&'static str, String)>>>;
 /// Each `session_command` span made: its ancestors' names, nearest first.
 type Commands = Arc<Mutex<Vec<Vec<&'static str>>>>;
 
-struct Entered(Seen, Commands);
+/// Each `check` span made with a `fresh` field: its value.
+type Fresh = Arc<Mutex<Vec<bool>>>;
+
+struct Entered(Seen, Commands, Fresh);
+
+/// A span's `fresh` field, if it has one.
+#[derive(Default)]
+struct FreshField(Option<bool>);
+
+impl tracing::field::Visit for FreshField {
+    fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+        if field.name() == "fresh" {
+            self.0 = Some(value);
+        }
+    }
+
+    fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+}
 
 impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Entered {
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        if attrs.metadata().name() == "check" {
+            let mut fresh = FreshField::default();
+            attrs.record(&mut fresh);
+            if let Some(fresh) = fresh.0 {
+                self.2.lock().unwrap().push(fresh);
+            }
+        }
         if attrs.metadata().name() != "session_command" {
             return;
         }
@@ -47,9 +71,12 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Entered {
 fn an_opens_read_and_gate_run_on_its_sessions_thread_and_each_command_under_its_caller() {
     let seen: Seen = Arc::default();
     let commands: Commands = Arc::default();
-    tracing::subscriber::set_global_default(
-        tracing_subscriber::registry().with(Entered(Arc::clone(&seen), Arc::clone(&commands))),
-    )
+    let fresh: Fresh = Arc::default();
+    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(Entered(
+        Arc::clone(&seen),
+        Arc::clone(&commands),
+        Arc::clone(&fresh),
+    )))
     .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let secret = dir.path().join("secret");
@@ -96,4 +123,10 @@ fn an_opens_read_and_gate_run_on_its_sessions_thread_and_each_command_under_its_
         *commands.lock().unwrap(),
         [vec!["client_open"], vec![], vec![], vec![]]
     );
+    // A check's span says whether it was asked fresh: the first wasn't; one that is, is.
+    let check = sessions
+        .check(&s1, CheckModel::Current { fresh: true })
+        .wait();
+    assert!(check.result.is_ok(), "{check:?}");
+    assert_eq!(*fresh.lock().unwrap(), [false, true]);
 }
