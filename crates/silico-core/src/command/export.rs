@@ -300,6 +300,9 @@ fn stepped<K: Kernel>(
             _ => e,
         })
     })?;
+    if let Some(refused) = unwritten(model, solids, &file.unwritten) {
+        return Err(refused);
+    }
     let objects = solids
         .iter()
         .zip(&file.left_out)
@@ -534,6 +537,65 @@ fn object(solid: &Solid, mesh: &PrintableMesh) -> Result<ExportedObject, Problem
         }),
         left_out: mesh.left_out().to_vec(),
     })
+}
+
+/// The refusal of a STEP file whose writer said it couldn't transfer, or transferred with a
+/// warning, something of a part other than the faces it leaves out (its check list, which
+/// OCCT otherwise only logs: docs/ports/step-export.md, *Edge cases*): never a file with
+/// geometry missing. One error a part, naming its feature and the elements at fault by its
+/// element map, OCCT's words its cause; one for what's of no part. None if it said nothing.
+fn unwritten(
+    model: &Model,
+    solids: &[Solid<'_>],
+    said: &[silico_protocol::StepUnwritten],
+) -> Option<Problems> {
+    if said.is_empty() {
+        return None;
+    }
+    let mut refused = Problems::none();
+    let mut parts: BTreeMap<Option<u32>, Vec<&silico_protocol::StepUnwritten>> = BTreeMap::new();
+    for entry in said {
+        parts.entry(entry.part).or_default().push(entry);
+    }
+    for (part, entries) in parts {
+        let solid = part.and_then(|p| solids.get(p as usize));
+        let elements: BTreeSet<silico_protocol::ElementRef> =
+            entries.iter().filter_map(|e| e.element).collect();
+        let map = solid.and_then(|s| model.element_map(s.id));
+        let named: Vec<String> = elements
+            .iter()
+            .take(silico_protocol::FACES_NAMED)
+            .map(|&element| {
+                map.and_then(|m| m.name(element))
+                    .map_or_else(|| element.to_string(), |n| n.to_string())
+            })
+            .collect();
+        let messages: Vec<&str> = entries
+            .iter()
+            .flat_map(|e| e.messages.iter().map(String::as_str))
+            .collect();
+        let whose = solid.map_or_else(|| "the file".to_owned(), |s| format!("{}'s solid", s.id));
+        let mut error = Error::new(
+            ErrorCode::InvalidResult,
+            format!("the STEP writer couldn't write all of {whose}: OCCT reports what it couldn't transfer"),
+        )
+        .with_elements(named)
+        .with_elements_total(elements.len() as u64)
+        .with_cause(if messages.is_empty() {
+            "OCCT's check list names it, with no message".to_owned()
+        } else {
+            messages.join("; ")
+        })
+        .with_suggestion(
+            "this solid can't be exported as STEP until the kernel writes it whole: there's no \
+             workaround in the request; export it as 3MF, or rebuild it otherwise",
+        );
+        if let Some(solid) = solid {
+            error = error.with_feature(solid.id.as_str());
+        }
+        refused.push(error);
+    }
+    Some(refused)
 }
 
 /// The answer of an export stopped by its session closing, as `render` answers one.

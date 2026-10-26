@@ -14,7 +14,9 @@ use silico_protocol::{
     Mesh, Misbehavior, Op, Operation, OutOfTurn, Primitive, Profile, Refusal, Reply, Reported,
     Request, RequestId, Response, ShapeData, ShapeSummary, Topology, TraceId, write_message,
 };
-use silico_protocol::{Camera, EDGE_BIT, Projection, RenderBody, RenderScene, StepFile, StepPart};
+use silico_protocol::{
+    Camera, EDGE_BIT, Projection, RenderBody, RenderScene, StepFile, StepPart, StepUnwritten,
+};
 use silico_protocol::{Curve, Distance, FaceRegions, Region, SketchPlane};
 use silico_protocol::{Description, EdgeCurve, EdgeDescription, FaceDescription, Surface};
 
@@ -689,6 +691,21 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         Ok(Reply::StepFile(Box::new(StepFile {
             step: Blob::inline(b"ISO-10303-21;\n".to_vec()),
             left_out: vec![vec![], vec![5, u32::MAX]],
+            unwritten: vec![
+                StepUnwritten {
+                    part: Some(1),
+                    element: Some(ElementRef {
+                        kind: ElementKind::Face,
+                        index: 7,
+                    }),
+                    messages: vec!["Face from Non Manifold Topology".to_owned()],
+                },
+                StepUnwritten {
+                    part: None,
+                    element: None,
+                    messages: vec![],
+                },
+            ],
         }))),
     ];
     let indices: std::collections::BTreeSet<usize> = results

@@ -1000,13 +1000,17 @@ impl KernelRequest<silico_protocol::StepFile> {
             move |name, reply| match reply {
                 Reply::StepFile(file)
                     if file.left_out.len() != parts
-                        || file.left_out.iter().flatten().any(|&face| face == 0) =>
+                        || file.left_out.iter().flatten().any(|&face| face == 0)
+                        || file.unwritten.iter().any(|u| {
+                            u.part.is_some_and(|p| p as usize >= parts)
+                                || u.element.is_some_and(|e| e.index == 0)
+                        }) =>
                 {
                     Err(Error::new(
                         ErrorCode::ProtocolError,
                         format!(
-                            "the kernel worker sent the faces left out of {} parts, or a face \
-                             numbered 0, for a STEP export of {parts}",
+                            "the kernel worker sent the faces left out of {} parts, an element \
+                             numbered 0, or a part past the last, for a STEP export of {parts}",
                             file.left_out.len()
                         ),
                     )

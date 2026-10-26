@@ -868,6 +868,7 @@ fn step_file(export: &silico_protocol::ExportStep) -> Result<Reply, Error> {
     Ok(Reply::StepFile(Box::new(silico_protocol::StepFile {
         step: Blob::inline(text.into_bytes()),
         left_out: vec![Vec::new(); export.parts.len()],
+        unwritten: Vec::new(),
     })))
 }
 

@@ -36,11 +36,25 @@ pub struct StepPart {
 
 /// A STEP export written: the file's bytes, and, for each part, in order, the faces left out
 /// of it as bounding no material (OCCT's INTERNAL and EXTERNAL, which its writer drops), as
-/// numbered in `TopExp::MapShapes` order from 1.
+/// numbered in `TopExp::MapShapes` order from 1; and what the writer's check list says it
+/// couldn't transfer, or transferred with a warning, of anything else, which the core
+/// refuses (docs/ports/step-export.md, *Edge cases*): the worker reports, the core decides,
+/// as it does a mesh's unmeshed faces.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StepFile {
     pub step: Blob,
     pub left_out: Vec<Vec<u32>>,
+    pub unwritten: Vec<StepUnwritten>,
+}
+
+/// One entry of a STEP writer's check list: the part its shape is of, if it's of one, and
+/// the element it is of that part (a face, edge, or vertex, numbered as `TopExp::MapShapes`
+/// numbers them), if it's one; and OCCT's messages, its failures then its warnings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StepUnwritten {
+    pub part: Option<u32>,
+    pub element: Option<crate::ElementRef>,
+    pub messages: Vec<String>,
 }
 
 impl ExportStep {

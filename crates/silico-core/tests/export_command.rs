@@ -1027,6 +1027,7 @@ fn a_step_exports_faces_left_out_are_named_by_the_features_element_map() {
             Op::ExportStep(_) => Some(Reply::StepFile(Box::new(silico_protocol::StepFile {
                 step: silico_protocol::Blob::inline(b"STEP".to_vec()),
                 left_out: vec![vec![5, 6]],
+                unwritten: vec![],
             }))),
             _ => None,
         });
@@ -1071,6 +1072,7 @@ fn a_step_reply_for_another_number_of_parts_is_the_workers_fault() {
             Op::ExportStep(_) => Some(Reply::StepFile(Box::new(silico_protocol::StepFile {
                 step: silico_protocol::Blob::inline(b"STEP".to_vec()),
                 left_out: vec![vec![]],
+                unwritten: vec![],
             }))),
             _ => None,
         });
@@ -1080,6 +1082,51 @@ fn a_step_reply_for_another_number_of_parts_is_the_workers_fault() {
         &dir.0.join("out.step"),
         Some(&["m3tq8v0z", "k7f2qx3m"]),
     )));
+    assert_eq!(problems.errors()[0].code(), ErrorCode::ProtocolError);
+    assert!(dir.names().is_empty());
+}
+
+#[test]
+fn a_step_file_whose_writer_couldnt_transfer_a_face_is_refused_naming_it() {
+    // Fable's decision, residual risk: OCCT's writer reports a face it couldn't transfer
+    // and goes on. The core refuses, naming the block and its Face3 by the element map,
+    // OCCT's words its cause, and writes nothing. A part past the last is the worker's
+    // fault.
+    let answering = |part: u32| {
+        Bench::with(EXAMPLE, move |kernel| {
+            kernel.answer_instead(move |op| match op {
+                Op::ExportStep(_) => Some(Reply::StepFile(Box::new(silico_protocol::StepFile {
+                    step: silico_protocol::Blob::inline(b"STEP".to_vec()),
+                    left_out: vec![vec![]],
+                    unwritten: vec![silico_protocol::StepUnwritten {
+                        part: Some(part),
+                        element: Some(silico_protocol::ElementRef::face(3)),
+                        messages: vec!["Face not transferred".to_owned()],
+                    }],
+                }))),
+                _ => None,
+            });
+        })
+    };
+    let bench = answering(0);
+    let dir = Scratch::new("step-unwritten");
+    let path = dir.0.join("out.step");
+    let problems = refused(bench.export(&step_request(&path, Some(&["k7f2qx3m"]))));
+    assert_eq!(problems.total(), 1);
+    let e = &problems.errors()[0];
+    assert_eq!(
+        (e.code(), e.feature(), e.cause()),
+        (
+            ErrorCode::InvalidResult,
+            Some("k7f2qx3m"),
+            Some("Face not transferred")
+        ),
+        "{e:?}"
+    );
+    assert_eq!(e.elements(), [face_name(&bench, "k7f2qx3m", 3)]);
+    assert!(dir.names().is_empty());
+    let bench = answering(1);
+    let problems = refused(bench.export(&step_request(&path, Some(&["k7f2qx3m"]))));
     assert_eq!(problems.errors()[0].code(), ErrorCode::ProtocolError);
     assert!(dir.names().is_empty());
 }

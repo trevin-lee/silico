@@ -73,7 +73,9 @@ pub use sketch::{
     SolverConstraint, Tag, Value, arc_from_points, check_drag_target, no_distance,
     squared_distance, unbuildable, within_reach,
 };
-pub use step::{ExportStep, StepFile, StepPart, is_step_encoded, step_decoded, step_encoded};
+pub use step::{
+    ExportStep, StepFile, StepPart, StepUnwritten, is_step_encoded, step_decoded, step_encoded,
+};
 pub use sweep::{
     ANGULAR_TOLERANCE, EndAtStart, MEASURE_PRECISION, SlitAt, SweepKind, THROUGH_ALL_FACTOR,
     check_axis_in_plane, check_leaves_plane, check_prism, check_revolution, check_through_all,
