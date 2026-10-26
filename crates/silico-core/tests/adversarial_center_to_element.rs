@@ -19,8 +19,8 @@ use super::listing::{answer, fixture};
 use super::model::{checked, published};
 
 use silico_core::ErrorCode;
-use silico_core::command::{ModelChoice, SessionCommand};
 use silico_core::command::measure::distance;
+use silico_core::command::{ModelChoice, SessionCommand};
 use silico_core::document::Length;
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{Description, Op};
@@ -486,7 +486,11 @@ fn a_centres_distance_held_while_its_read_is_cancelled_answers_cancelled() {
     let s = f.open("part.silico", BOX);
     let hold = f.kernel.hold(|op| matches!(op, Op::PointDistance { .. }));
     let reading = held_in_session(&f, &s);
-    let stop = f.sessions.cancel(&s, SessionCommand::Distance).result.unwrap();
+    let stop = f
+        .sessions
+        .cancel(&s, SessionCommand::Distance)
+        .result
+        .unwrap();
     assert!(stop.stopped);
     let response = reading.wait_timeout(Duration::from_secs(10)).ok().unwrap();
     let refused = response.result.unwrap_err();
