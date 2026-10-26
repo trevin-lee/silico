@@ -312,6 +312,7 @@ fn a_recompute_counts_its_steps_names_the_one_running_and_ends_with_all_done() {
     assert_eq!(progress.now(), all_done);
     // A thicker pin, its cylinder held: the block's step is kept, settled before any runs,
     // so one is done while the cylinder is held, though the block never ran.
+    let before = engine.kernel().calls().len();
     let hold = hold_cylinders(&engine);
     let thicker = engine.start(example_with(
         BLOCK,
@@ -330,6 +331,12 @@ fn a_recompute_counts_its_steps_names_the_one_running_and_ends_with_all_done() {
     hold.release();
     assert!(matches!(thicker.wait().unwrap(), RunOutcome::Published(_)));
     assert_eq!(progress.now(), all_done);
+    // Kept, not run: the pin's cylinder, its move, and the cut ran, one after the other,
+    // and no box was made.
+    assert_eq!(
+        calls_since(&engine, before),
+        ["MakeCylinder", "Translate", "Cut"]
+    );
 }
 
 #[test]
@@ -340,6 +347,7 @@ fn steps_that_cant_run_are_counted_done_before_any_runs() {
     let engine = engine(2);
     refuse_cylinders(&engine, ErrorCode::KernelFailed);
     published(&engine, checked(EXAMPLE));
+    let before = engine.kernel().calls().len();
     let hold = engine
         .kernel()
         .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
@@ -368,6 +376,8 @@ fn steps_that_cant_run_are_counted_done_before_any_runs() {
             ended: true,
         }
     );
+    // Kept, not run: the block's box alone was made, and no cylinder was asked for again.
+    assert_eq!(calls_since(&engine, before), ["MakeBox"]);
 }
 
 #[test]

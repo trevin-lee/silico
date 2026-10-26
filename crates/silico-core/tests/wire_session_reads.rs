@@ -24,7 +24,7 @@ use silico_core::command::wire::transaction::SessionRequest;
 use silico_core::command::wire::{Layout, ToWire, response, response_text, snapshot_value, write};
 use silico_core::command::{
     Begun, Cancelled, Limits, MAX_SESSIONS, ModelChoice, Opened, OutlineAnswer, Problems, Progress,
-    PublishedRead, Rebuild, RebuildState, Response, Revision, SessionCommand, SessionId, Sessions,
+    ReadCommand, Rebuild, RebuildState, Response, Revision, SessionCommand, SessionId, Sessions,
     Status, TextAnswer, VERSION, Version,
 };
 use silico_core::document::json::{Node, read};
@@ -716,7 +716,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
         gated: true,
         transaction: Some(Begun { base: revision(4) }),
         running: Some(SessionCommand::Check),
-        reads: vec![PublishedRead::Distance],
+        reads: vec![ReadCommand::Distance],
         rebuild: Rebuild {
             revision: revision(6),
             state: RebuildState::Running,
@@ -761,7 +761,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
         gated: false,
         transaction: None,
         running: None,
-        reads: vec![PublishedRead::Elements, PublishedRead::Query],
+        reads: vec![ReadCommand::Elements, ReadCommand::Query],
         rebuild: Rebuild {
             revision: revision(9),
             state: RebuildState::Idle,

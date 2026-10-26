@@ -13,7 +13,7 @@ use super::cancel::Ticket;
 use super::rebuilds::Newest;
 use super::rebuilds::met_fault;
 use super::transaction::Reached;
-use super::{Problems, PublishedRead, SessionCommand};
+use super::{Problems, ReadCommand, SessionCommand};
 #[cfg(doc)]
 use crate::document;
 use crate::document::json::Plain;
@@ -329,7 +329,8 @@ pub struct Running<T> {
     lost: &'static str,
     /// How it's stopped: none for a command answered before it ran (refused).
     ticket: Option<Arc<Ticket>>,
-    /// Its session's newest rebuild: none for a command answered before it ran.
+    /// Its session's newest rebuild: none for a command answered before it ran, and for a
+    /// published read, which waits on no rebuild.
     rebuild: Option<Arc<Newest>>,
 }
 
@@ -610,7 +611,7 @@ pub struct Status {
     pub gated: bool,
     pub transaction: Option<Begun>,
     pub running: Option<SessionCommand>,
-    pub reads: Vec<PublishedRead>,
+    pub reads: Vec<ReadCommand>,
     pub rebuild: Rebuild,
 }
 
@@ -651,9 +652,10 @@ impl From<&StepCount> for Progress {
 /// What's become of a revision's rebuild (the design's `status`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RebuildState {
-    /// None running and none ended for it: no command has needed its model, or its
-    /// rebuild was superseded, or an edit's commit was cancelled while its rebuild ran; or
-    /// the gate refused the document, so there's nothing to rebuild. Written `none`.
+    /// None running, and no end it reports (failed or cancelled): no command has needed
+    /// its model, or its rebuild was superseded, or an edit's commit was cancelled while its
+    /// rebuild ran; or the gate refused the document, so there's nothing to rebuild. Written
+    /// `none`.
     Idle,
     /// Running: the revision's, or, for an edit made outside a transaction, its commit's.
     Running,

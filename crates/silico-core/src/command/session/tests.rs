@@ -183,7 +183,7 @@ fn a_published_read_says_the_older_revision_it_read() {
     // Revision 2's sphere held, so its rebuild is seen running.
     let _hold = kernel.hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
     let response = sessions
-        .read_model(&id, PublishedRead::Check, ModelChoice::Published, volume)
+        .read_model(&id, ReadCommand::Check, ModelChoice::Published, volume)
         .wait();
     let read = ModelRead {
         revision: Revision::OPENED,
@@ -210,7 +210,7 @@ fn a_published_read_says_the_older_revision_it_read() {
 fn a_current_read_says_the_newer_revision_it_waited_for() {
     let (_dir, _kernel, sessions, id) = at_two(SPHERE);
     let response = sessions
-        .read_model(&id, PublishedRead::Check, ModelChoice::Current, volume)
+        .read_model(&id, ReadCommand::Check, ModelChoice::Current, volume)
         .wait();
     let read = ModelRead {
         revision: Revision::OPENED.next().unwrap(),
@@ -244,7 +244,7 @@ fn a_published_read_of_a_refused_revision_gives_the_older_model_and_check_its_pr
     assert_eq!(published.model, Some(read.clone()));
     assert_eq!(published.result.unwrap().revision, Revision::OPENED);
     let response = sessions
-        .read_model(&id, PublishedRead::Check, ModelChoice::Published, volume)
+        .read_model(&id, ReadCommand::Check, ModelChoice::Published, volume)
         .wait();
     assert_eq!(
         response.result.unwrap(),
@@ -1356,7 +1356,7 @@ fn a_published_read_answered_but_its_thread_still_ending_leaves_room_for_another
         }
     }
     let ninth = sessions
-        .read_model(&id, PublishedRead::Check, ModelChoice::Published, |read| {
+        .read_model(&id, ReadCommand::Check, ModelChoice::Published, |read| {
             Ok(read.model_read().revision)
         })
         .wait();
@@ -2450,12 +2450,9 @@ fn published_reads_that_ended_are_joined_as_the_next_starts() {
     );
     let read = || {
         f.sessions
-            .read_model(
-                &f.id,
-                PublishedRead::Check,
-                ModelChoice::Published,
-                |read| Ok(read.model_read().revision),
-            )
+            .read_model(&f.id, ReadCommand::Check, ModelChoice::Published, |read| {
+                Ok(read.model_read().revision)
+            })
             .wait()
             .result
             .unwrap()
@@ -2875,8 +2872,7 @@ fn a_sessions_close_interrupts_its_reads_as_closed_and_each_counted_after_at_onc
     let f = opened(BOX);
     let session = f.session();
     let unanswered = Arc::clone(&lock(&session.reads).unanswered);
-    let running = probe();
-    let _counted = Counted::count(&unanswered, PublishedRead::Check, &running);
+    let (_counted, running) = Counted::count(&unanswered, ReadCommand::Check);
     let before = Told::new();
     // Given twice, told once.
     running.interrupt_with(before.weak());
@@ -2888,8 +2884,7 @@ fn a_sessions_close_interrupts_its_reads_as_closed_and_each_counted_after_at_onc
     assert!(!running.cancelled());
     // Sticky: a read counted after the close is closed at once, so what it adds is told at
     // once.
-    let late = probe();
-    let _late = Counted::count(&unanswered, PublishedRead::Check, &late);
+    let (_late, late) = Counted::count(&unanswered, ReadCommand::Check);
     let after = Told::new();
     late.interrupt_with(after.weak());
     assert_eq!(after.whys(), [Why::Closed]);
@@ -3071,12 +3066,9 @@ fn counting_a_rebuilds_steps_never_keeps_status_or_a_published_read_waiting() {
             let status = f.sessions.status(&f.id).result.map(|status| status.rebuild);
             let read = f
                 .sessions
-                .read_model(
-                    &f.id,
-                    PublishedRead::Check,
-                    ModelChoice::Published,
-                    |read| Ok(read.model_read().revision),
-                )
+                .read_model(&f.id, ReadCommand::Check, ModelChoice::Published, |read| {
+                    Ok(read.model_read().revision)
+                })
                 .wait()
                 .result;
             let _ = said.send((status, read, f.kernel.wait_running(1, Duration::ZERO)));
@@ -3128,7 +3120,7 @@ fn a_published_reads_handle_reports_no_rebuilds_progress() {
     let (go, held) = mpsc::channel::<()>();
     let read = f.sessions.read_model(
         &f.id,
-        PublishedRead::Check,
+        ReadCommand::Check,
         ModelChoice::Published,
         move |read| {
             let _ = held.recv_timeout(WAIT);
@@ -3195,8 +3187,9 @@ fn a_closed_sessions_rebuild_watchers_are_the_books_to_join() {
     assert_eq!(lock(&f.sessions.registry.book).released.running.len(), 1);
 }
 
-/// A command's handle, its answer's result alone, whatever it answers.
-type Started<'a> = Box<dyn Fn() -> Box<dyn FnOnce() -> Result<(), Problems>> + 'a>;
+/// Starts the command and gives a wait for its result (its answer's result alone, whatever
+/// it answers).
+type Start<'a> = Box<dyn Fn() -> Box<dyn FnOnce() -> Result<(), Problems>> + 'a>;
 
 /// What a command's handle answers, its value dropped.
 fn erased<T: Send + 'static>(running: Running<T>) -> Box<dyn FnOnce() -> Result<(), Problems>> {
@@ -3229,18 +3222,18 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
     // Drawn by a fake renderer, as the sessions' render tests draw.
     let renderer = Arc::new(crate::fake::FakeRenderer::new());
     *lock(&f.sessions.registry.renderer) = Some(Arc::new(Arc::clone(&renderer)));
-    let reads = |model: ModelChoice| -> Vec<(PublishedRead, Started<'_>)> {
+    let reads = |model: ModelChoice| -> Vec<(ReadCommand, Start<'_>)> {
         vec![
             (
-                PublishedRead::Check,
+                ReadCommand::Check,
                 Box::new(move || erased(s.check(at, model))),
             ),
             (
-                PublishedRead::Elements,
+                ReadCommand::Elements,
                 Box::new(move || erased(s.elements(at, model, None, None, 10))),
             ),
             (
-                PublishedRead::Query,
+                ReadCommand::Query,
                 Box::new(move || {
                     erased(s.query(
                         at,
@@ -3250,24 +3243,24 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
                 }),
             ),
             (
-                PublishedRead::MassProperties,
+                ReadCommand::MassProperties,
                 Box::new(move || erased(s.mass_properties(at, model, None))),
             ),
             (
-                PublishedRead::Distance,
+                ReadCommand::Distance,
                 Box::new(move || erased(s.distance(at, model, pair(), None))),
             ),
             (
-                PublishedRead::Angle,
+                ReadCommand::Angle,
                 Box::new(move || erased(s.angle(at, model, pair(), None))),
             ),
             (
-                PublishedRead::Render,
+                ReadCommand::Render,
                 Box::new(move || erased(s.render(at, model, front()))),
             ),
         ]
     };
-    let mut queued: Vec<(SessionCommand, Started<'_>)> = vec![
+    let mut queued: Vec<(SessionCommand, Start<'_>)> = vec![
         (SessionCommand::Close, Box::new(|| erased(s.close(at)))),
         (SessionCommand::Begin, Box::new(|| erased(s.begin(at)))),
         (SessionCommand::Commit, Box::new(|| erased(s.commit(at)))),
@@ -3319,7 +3312,7 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
             .collect::<Vec<_>>(),
         SessionCommand::ALL
     );
-    let stops = |command: SessionCommand, start: &Started<'_>, running, reads: Vec<_>| {
+    let stops = |command: SessionCommand, start: &Start<'_>, running, reads: Vec<_>| {
         let answer = start();
         was_started.recv_timeout(WAIT).unwrap();
         let status = s.status(at).result.unwrap();

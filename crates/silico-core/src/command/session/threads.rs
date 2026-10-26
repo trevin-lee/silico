@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use super::cancel::Ticket;
-use crate::command::PublishedRead;
+use crate::command::ReadCommand;
 use crate::worker::lock;
 
 /// The most published reads one session runs at once: each holds a thread, and the session,
@@ -89,7 +89,7 @@ pub(super) struct Unanswered {
     /// Each one's command and stop, by its number. Each read keeps its kernel client with
     /// its stop (through [`Ticket::interrupt_with`]), so a cancel or the session's close
     /// retires the read's own client.
-    reads: BTreeMap<u64, (PublishedRead, Arc<Ticket>)>,
+    reads: BTreeMap<u64, (ReadCommand, Arc<Ticket>)>,
     /// Whether the session closed ([`close`](Self::close)): kept, so a read counted after
     /// is closed at once.
     closed: bool,
@@ -107,7 +107,7 @@ impl Unanswered {
     }
 
     /// Each one's command, in the order they started.
-    pub(super) fn commands(&self) -> impl Iterator<Item = PublishedRead> + '_ {
+    pub(super) fn commands(&self) -> impl Iterator<Item = ReadCommand> + '_ {
         self.reads.values().map(|(read, _)| *read)
     }
 
@@ -127,27 +127,29 @@ pub(super) struct Counted {
 }
 
 impl Counted {
-    /// `ticket`'s read, `read`, counted in `unanswered`: closed at once ([`Ticket::close`])
-    /// if the session has closed.
+    /// The read `read` counted in `unanswered`, and its stop, named by `read` (so the
+    /// command `status` lists and the one `cancel` stops are one name): closed at once
+    /// ([`Ticket::close`]) if the session has closed.
     pub(super) fn count(
         unanswered: &Arc<Mutex<Unanswered>>,
-        read: PublishedRead,
-        ticket: &Arc<Ticket>,
-    ) -> Self {
+        read: ReadCommand,
+    ) -> (Self, Arc<Ticket>) {
+        let ticket = Ticket::new(read.into());
         let (number, closed) = {
             let mut reads = lock(unanswered);
             let number = reads.next;
             reads.next = number.wrapping_add(1);
-            reads.reads.insert(number, (read, Arc::clone(ticket)));
+            reads.reads.insert(number, (read, Arc::clone(&ticket)));
             (number, reads.closed)
         };
         if closed {
             ticket.close();
         }
-        Counted {
+        let counted = Counted {
             unanswered: Arc::clone(unanswered),
             number,
-        }
+        };
+        (counted, ticket)
     }
 }
 

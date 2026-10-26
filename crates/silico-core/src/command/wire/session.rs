@@ -17,7 +17,7 @@ use super::transaction::BeginResultSchema;
 use super::{ErrorSchema, Json, RequestFields, ToWire, problems, wire_shape, words};
 use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{
-    Cancelled, Closed, Limits, Opened, Problems, PublishedRead, Rebuild, SessionCommand, SessionId,
+    Cancelled, Closed, Limits, Opened, Problems, ReadCommand, Rebuild, SessionCommand, SessionId,
     Status, Version,
 };
 use crate::document::json::Node;
@@ -86,14 +86,14 @@ pub const SESSION_COMMANDS: [&str; SessionCommand::ALL.len()] = {
     names
 };
 
-/// The commands that run as reads that may read the published model
-/// ([`PublishedRead::ALL`]), each by name, in the design's order (a subset of
-/// [`SESSION_COMMANDS`]): what `status` lists among the published reads running.
-pub const PUBLISHED_READS: [&str; PublishedRead::ALL.len()] = {
-    let mut names = [""; PublishedRead::ALL.len()];
+/// The commands that may run as reads of the published model ([`ReadCommand::ALL`]), each
+/// by name, in the design's order (a subset of [`SESSION_COMMANDS`]): what `status` lists
+/// among the published reads running.
+pub const PUBLISHED_READS: [&str; ReadCommand::ALL.len()] = {
+    let mut names = [""; ReadCommand::ALL.len()];
     let mut at = 0;
     while at < names.len() {
-        names[at] = PublishedRead::ALL[at].as_str();
+        names[at] = ReadCommand::ALL[at].as_str();
         at += 1;
     }
     names

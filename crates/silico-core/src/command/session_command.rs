@@ -1,7 +1,7 @@
 //! The commands that run in a session, by name ([`SessionCommand`]): what a command's stop
 //! is named by, what `status` says is running, and what `cancel` stops; and those of them
-//! that may read the published model ([`PublishedRead`]), which `status` lists among its
-//! reads.
+//! that read a model, the current one or the published one ([`ReadCommand`]), which
+//! `status` lists among its reads when they read the published one.
 
 /// A command that runs in a session (docs/design/m4.1-command-api.md, section 7): every
 /// command but those answered at once, never running (`version`, `status`, `cancel`, and
@@ -83,11 +83,12 @@ impl std::fmt::Display for SessionCommand {
     }
 }
 
-/// A command that may run as a read of the published model
-/// ([`Sessions::read_model`](super::Sessions::read_model)'s): what `status` lists among its
-/// reads, and `cancel` stops as the session command it is ([`SessionCommand::from`]).
+/// A command that reads a model, the current one or the published one
+/// ([`Sessions::read_model`](super::Sessions::read_model)'s): as a read of the published
+/// model, what `status` lists among its reads, and `cancel` stops as the session command it
+/// is ([`SessionCommand::from`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum PublishedRead {
+pub enum ReadCommand {
     Check,
     Elements,
     Query,
@@ -97,29 +98,29 @@ pub enum PublishedRead {
     Render,
 }
 
-impl PublishedRead {
-    /// Every command that may read the published model, in the design's order (that of
+impl ReadCommand {
+    /// Every command that reads a model, in the design's order (that of
     /// [`SessionCommand::ALL`]).
-    pub const ALL: [PublishedRead; 7] = [
-        PublishedRead::Check,
-        PublishedRead::Elements,
-        PublishedRead::Query,
-        PublishedRead::MassProperties,
-        PublishedRead::Distance,
-        PublishedRead::Angle,
-        PublishedRead::Render,
+    pub const ALL: [ReadCommand; 7] = [
+        ReadCommand::Check,
+        ReadCommand::Elements,
+        ReadCommand::Query,
+        ReadCommand::MassProperties,
+        ReadCommand::Distance,
+        ReadCommand::Angle,
+        ReadCommand::Render,
     ];
 
     /// The session command it is.
     pub const fn command(self) -> SessionCommand {
         match self {
-            PublishedRead::Check => SessionCommand::Check,
-            PublishedRead::Elements => SessionCommand::Elements,
-            PublishedRead::Query => SessionCommand::Query,
-            PublishedRead::MassProperties => SessionCommand::MassProperties,
-            PublishedRead::Distance => SessionCommand::Distance,
-            PublishedRead::Angle => SessionCommand::Angle,
-            PublishedRead::Render => SessionCommand::Render,
+            ReadCommand::Check => SessionCommand::Check,
+            ReadCommand::Elements => SessionCommand::Elements,
+            ReadCommand::Query => SessionCommand::Query,
+            ReadCommand::MassProperties => SessionCommand::MassProperties,
+            ReadCommand::Distance => SessionCommand::Distance,
+            ReadCommand::Angle => SessionCommand::Angle,
+            ReadCommand::Render => SessionCommand::Render,
         }
     }
 
@@ -129,13 +130,13 @@ impl PublishedRead {
     }
 }
 
-impl From<PublishedRead> for SessionCommand {
-    fn from(read: PublishedRead) -> Self {
+impl From<ReadCommand> for SessionCommand {
+    fn from(read: ReadCommand) -> Self {
         read.command()
     }
 }
 
-impl std::fmt::Display for PublishedRead {
+impl std::fmt::Display for ReadCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }

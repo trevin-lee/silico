@@ -81,7 +81,7 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use super::edit::{self, FeatureIds};
-use super::{Gated, Problems, PublishedRead, SessionCommand};
+use super::{Gated, Problems, ReadCommand, SessionCommand};
 use crate::cache::Cache;
 use crate::document::json::Node;
 use crate::document::{self, FeatureId};
@@ -306,7 +306,7 @@ impl<C: Kernel + 'static> Session<C> {
     }
 
     /// Its published reads running, in the order they started.
-    fn reads_running(&self) -> Vec<PublishedRead> {
+    fn reads_running(&self) -> Vec<ReadCommand> {
         let reads = lock(&self.reads);
         lock(&reads.unanswered).commands().collect()
     }
@@ -685,7 +685,7 @@ impl<P: Clients + 'static> Sessions<P> {
             ),
             ModelChoice::Published => self.read_model(
                 session,
-                PublishedRead::Check,
+                ReadCommand::Check,
                 ModelChoice::Published,
                 move |read| {
                     let _span = tracing::info_span!("check").entered();
@@ -710,7 +710,7 @@ impl<P: Clients + 'static> Sessions<P> {
     pub fn read_model<T: Send + 'static>(
         &self,
         session: &SessionId,
-        command: PublishedRead,
+        command: ReadCommand,
         choice: ModelChoice,
         read: impl FnOnce(Read<'_, P::Client>) -> Result<T, Problems> + Send + 'static,
     ) -> Running<T> {
@@ -770,8 +770,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 let (reply, answer) = mpsc::sync_channel(1);
                 let caller = tracing::Span::current();
                 let session = Arc::clone(&found);
-                let ticket = Ticket::new(command.into());
-                let counted = Counted::count(unanswered, command, &ticket);
+                let (counted, ticket) = Counted::count(unanswered, command);
                 ticket.interrupt_with(Arc::downgrade(&kernel) as Weak<dyn Interrupt>);
                 let stop = Arc::clone(&ticket);
                 let started = std::thread::Builder::new()

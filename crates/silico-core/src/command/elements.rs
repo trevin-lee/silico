@@ -7,7 +7,7 @@
 //! model a read names (decision 33).
 
 use super::session::{kept_fault, retried};
-use super::{ModelChoice, Problems, PublishedRead, Revision, Running, SessionId, Sessions};
+use super::{ModelChoice, Problems, ReadCommand, Revision, Running, SessionId, Sessions};
 use crate::document::{Angle, FeatureId, Length, Measure};
 pub use crate::elements::{Alias, AxisToken, ElementType, Entry, EntryAxis};
 use crate::kernel::{Clients, ElementKind, ShapeSummary};
@@ -28,7 +28,7 @@ impl<P: Clients + 'static> Sessions<P> {
         after: Option<Cursor>,
         limit: u32,
     ) -> Running<Listed> {
-        self.read_model(session, PublishedRead::Elements, model, move |read| {
+        self.read_model(session, ReadCommand::Elements, model, move |read| {
             list(
                 read.model(),
                 read.model_read().revision,
@@ -47,7 +47,7 @@ impl<P: Clients + 'static> Sessions<P> {
         model: ModelChoice,
         filter: Query,
     ) -> Running<Queried> {
-        self.read_model(session, PublishedRead::Query, model, move |read| {
+        self.read_model(session, ReadCommand::Query, model, move |read| {
             query(read.model(), &filter)
         })
     }
