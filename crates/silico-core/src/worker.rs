@@ -1937,6 +1937,7 @@ mod tests {
             .call(generation, echo(), Duration::from_secs(2))
             .unwrap_err();
         assert_eq!(late.code(), ErrorCode::WorkerTimeout, "{late}");
+        assert_eq!(late.cause(), None, "{late}");
         assert_eq!(late.advice(), Some(&Advice::SimplifyOrWait), "{late}");
         assert_eq!(
             late.suggestion(),
@@ -1956,7 +1957,12 @@ mod tests {
             .call(generation, echo(), Duration::from_secs(15))
             .unwrap_err();
         assert_eq!(late.code(), ErrorCode::WorkerTimeout, "{late}");
+        assert_eq!(late.cause(), None, "{late}");
         assert_eq!(late.advice(), Some(&Advice::SimplifyOrWait), "{late}");
+        assert_eq!(
+            late.suggestion(),
+            Some("simplify the operation, or allow it more time")
+        );
         // Never said it started: try again.
         let dir = scratch("advice-unstarted");
         let path = script(&dir, "exec sleep 600");
