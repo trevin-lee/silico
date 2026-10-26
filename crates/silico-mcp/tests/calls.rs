@@ -263,18 +263,19 @@ fn past_64_calls_waiting_a_call_is_refused_at_once_but_status_and_cancel_still_a
     // The cancelled check answers `cancelled`; the rest run once the box is let go.
     hold.release();
     let mut early = before.into_iter();
-    let mut answered = 0;
-    while answered < 64 {
+    // Each of the 64 answered once: no call answered twice for one that wasn't.
+    let mut answered = std::collections::BTreeSet::new();
+    while answered.len() < 64 {
         let reply = early.next().unwrap_or_else(|| c.message());
         let id = reply["id"].as_u64().unwrap();
         assert!((100..164).contains(&id), "{reply}");
+        assert!(answered.insert(id), "answered twice: {reply}");
         let envelope = &reply["result"]["structuredContent"];
         if id == 100 {
             assert_eq!(envelope["errors"][0]["code"], "cancelled", "{reply}");
         } else {
             assert_eq!(envelope["ok"], true, "{reply}");
         }
-        answered += 1;
     }
     // Each slot is free once its call answered: the next call runs.
     c.file("other.silico", BOX);
