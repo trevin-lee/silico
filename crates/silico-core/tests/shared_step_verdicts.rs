@@ -199,11 +199,14 @@ fn cuts(engine: &Recompute<FakeKernel>) -> usize {
         .count()
 }
 
-/// Whether the cache under `dir` holds an entry whose shape's description has `word`
-/// (`"\ncut "`, `"\nbox "`). A feature's solid is written to the cache only once it's
-/// measured, after its measure's verdict is decided: so an entry there means the scheduler
-/// has judged it.
-fn cached(dir: &std::path::Path, word: &[u8]) -> bool {
+/// Whether the cache under `dir` holds an entry whose shape has a step `word` (`"\ncut "`,
+/// `"\ntranslate "`: the fake writes a shape as its steps, a line each, a boolean's with
+/// all of both its inputs') and none `without`. A
+/// feature's solid is written to the cache only once it's measured, after its measure's
+/// verdict is decided: so its entry there means the scheduler has judged it. A step that's
+/// no feature's solid (the box a moved box is made from) is kept as soon as it's made.
+fn cached(dir: &std::path::Path, word: &[u8], without: Option<&[u8]>) -> bool {
+    let has = |bytes: &[u8], word: &[u8]| bytes.windows(word.len()).any(|w| w == word);
     let Ok(dirs) = std::fs::read_dir(dir) else {
         return false;
     };
@@ -211,7 +214,7 @@ fn cached(dir: &std::path::Path, word: &[u8]) -> bool {
         .filter(|e| e.path().is_dir())
         .flat_map(|e| std::fs::read_dir(e.path()).into_iter().flatten().flatten())
         .filter_map(|e| std::fs::read(e.path()).ok())
-        .any(|bytes| bytes.windows(word.len()).any(|w| w == word))
+        .any(|bytes| has(&bytes, word) && without.is_none_or(|w| !has(&bytes, w)))
 }
 
 /// Waits up to 30 s for `ready`.
@@ -260,8 +263,14 @@ fn a_verdict_that_lands_mid_recompute_stops_what_hasnt_started() {
     let run = engine.start(checked_document(&[&cube_above, &s, &q, &r, &t]));
     wait_for("the second cut didn't start", || cuts(&engine) == 2);
     drop(measure);
+    // The cube's own entry, its box moved into place and no cut. "A box" was met before the
+    // cube was measured, twice over: by the box made at the origin, a step of its own kept
+    // as soon as it's made, and by the first cut's entry, which holds its base's steps too.
+    // With the cube's measure late, the first pocket wasn't yet refused when the second cut
+    // was let go: the third started (run 40185654927, its first attempt).
     wait_for("the cube and the first cut weren't measured", || {
-        cached(&dir.join("cache"), b"\ncut ") && cached(&dir.join("cache"), b"\nbox ")
+        cached(&dir.join("cache"), b"\ncut ", None)
+            && cached(&dir.join("cache"), b"\ntranslate ", Some(b"\ncut "))
     });
     drop(second);
     let Ok(Ok(RunOutcome::Published(model))) = run.wait_timeout(Duration::from_secs(60)) else {
