@@ -99,7 +99,7 @@ use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
 use cancel::{Interrupt, Ticket, Why, not_running};
-use clearing::{shown_cache_directory, uncleared_problems};
+use clearing::{partly_cleared_problems, shown_cache_directory};
 use edits::{as_committed, not_given_back};
 use holding::Holding;
 use rebuilds::{Newest, Rebuilds, Unbuilt, published_answer};
@@ -781,7 +781,11 @@ impl<P: Clients + 'static> Sessions<P> {
             stop.settle()?;
             match cache.clear() {
                 Ok(removed) => Ok(CacheCleared { directory, removed }),
-                Err(uncleared) => Err(uncleared_problems(&directory, cache.directory(), uncleared)),
+                Err(partly) => Err(partly_cleared_problems(
+                    &directory,
+                    cache.directory(),
+                    partly,
+                )),
             }
         })
     }

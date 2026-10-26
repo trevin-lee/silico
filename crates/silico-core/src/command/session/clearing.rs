@@ -4,7 +4,8 @@
 use std::path::Path;
 
 use super::Problems;
-use crate::cache::{Unclear, Uncleared};
+use crate::cache::{ClearFailure, ClearStep, PartlyCleared};
+use crate::file::{self, shown_path};
 use crate::{Error, ErrorCode};
 
 /// The rebuild cache's directory, `cache_dir` (where it is, through links), as the session's
@@ -13,16 +14,11 @@ use crate::{Error, ErrorCode};
 /// `parts/bracket.silico`) when the directory it names is the one the cache is in; otherwise
 /// (a path that's a link from another directory to the document) where it is, through links.
 pub(super) fn shown_cache_directory(path: &str, cache_dir: &Path) -> String {
-    let given = Path::new(path).parent().unwrap_or(Path::new(""));
-    let named = if given.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        given
-    };
-    let beside =
-        std::fs::canonicalize(named).is_ok_and(|named| Some(named.as_path()) == cache_dir.parent());
+    let given = Path::new(path);
+    let beside = std::fs::canonicalize(file::directory(given))
+        .is_ok_and(|named| Some(named.as_path()) == cache_dir.parent());
     match cache_dir.file_name() {
-        Some(name) if beside => given.join(name).to_string_lossy().into_owned(),
+        Some(name) if beside => given.with_file_name(name).to_string_lossy().into_owned(),
         _ => cache_dir.to_string_lossy().into_owned(),
     }
 }
@@ -31,16 +27,16 @@ pub(super) fn shown_cache_directory(path: &str, cache_dir: &Path) -> String {
 /// `io_failed` for each file it couldn't remove and each directory it couldn't read, named
 /// as `directory` names the cache, the first hundred listed and all counted, each saying how
 /// many entries it removed besides.
-pub(super) fn uncleared_problems(
+pub(super) fn partly_cleared_problems(
     directory: &str,
     cache_dir: &Path,
-    uncleared: Uncleared,
+    partly: PartlyCleared,
 ) -> Problems {
-    let Uncleared {
+    let PartlyCleared {
         removed,
         failures,
         total,
-    } = uncleared;
+    } = partly;
     let listed = failures.len() as u64;
     let shown = |path: &Path| {
         let named = match path.strip_prefix(cache_dir) {
@@ -48,17 +44,17 @@ pub(super) fn uncleared_problems(
             Ok(inside) => Path::new(directory).join(inside),
             Err(_) => path.to_owned(),
         };
-        crate::command::quoted(&named.to_string_lossy())
+        shown_path(&named)
     };
     let entries = |n: u64| if n == 1 { "entry" } else { "entries" };
     let errors: Vec<Error> = failures
         .into_iter()
-        .map(|(path, what, why)| {
-            let message = match what {
-                Unclear::Remove => {
+        .map(|ClearFailure { path, step, why }| {
+            let message = match step {
+                ClearStep::Remove => {
                     format!("couldn't remove the cache's entry {}: {why}", shown(&path))
                 }
-                Unclear::Read => format!(
+                ClearStep::Read => format!(
                     "couldn't read the cache's directory {}: {why}",
                     shown(&path)
                 ),
@@ -115,12 +111,16 @@ mod tests {
         let cache = Path::new("/work/.silico-cache");
         let denied = || std::io::Error::from_raw_os_error(libc::EACCES);
         let failures: Vec<_> = (0..100)
-            .map(|n| (cache.join(format!("{n:02x}")), Unclear::Read, denied()))
+            .map(|n| ClearFailure {
+                path: cache.join(format!("{n:02x}")),
+                step: ClearStep::Read,
+                why: denied(),
+            })
             .collect();
-        let problems = uncleared_problems(
+        let problems = partly_cleared_problems(
             ".silico-cache",
             cache,
-            Uncleared {
+            PartlyCleared {
                 removed: 1,
                 failures,
                 total: 103,
@@ -142,12 +142,16 @@ mod tests {
             Some("the clear removed 1 entry and left what it couldn't remove or read")
         );
         assert_eq!(first.parameter(), None);
-        let removed = uncleared_problems(
+        let removed = partly_cleared_problems(
             "parts/.silico-cache",
             cache,
-            Uncleared {
+            PartlyCleared {
                 removed: 2,
-                failures: vec![(cache.join("ab").join("cd"), Unclear::Remove, denied())],
+                failures: vec![ClearFailure {
+                    path: cache.join("ab").join("cd"),
+                    step: ClearStep::Remove,
+                    why: denied(),
+                }],
                 total: 1,
             },
         );

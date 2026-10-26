@@ -18,7 +18,7 @@ use super::cache::{
 };
 use super::example::EXAMPLE;
 use super::model::{checked, published};
-use silico_core::cache::{Cache, Unclear};
+use silico_core::cache::{Cache, ClearFailure, ClearStep};
 use silico_core::fake::FakeKernel;
 use silico_core::recompute::Recompute;
 
@@ -196,21 +196,21 @@ fn what_a_clear_cant_remove_or_read_is_said_and_the_rest_removed() {
     // Each entry it couldn't remove, by path, then the directory it couldn't read.
     // Each entry it couldn't remove, in order of path, then the directory it couldn't read
     // (which comes after, by name).
-    let said: Vec<(PathBuf, Unclear)> = uncleared
+    let said: Vec<(PathBuf, ClearStep)> = uncleared
         .failures
         .iter()
-        .map(|(path, what, why)| {
+        .map(|ClearFailure { path, step, why }| {
             assert_eq!(why.raw_os_error(), Some(libc::EACCES), "{path:?}");
-            (path.clone(), *what)
+            (path.clone(), *step)
         })
         .collect();
-    let mut want: Vec<(PathBuf, Unclear)> = entries
+    let mut want: Vec<(PathBuf, ClearStep)> = entries
         .iter()
         .filter(|e| e.parent() == Some(subs[0].as_path()))
-        .map(|e| (e.clone(), Unclear::Remove))
+        .map(|e| (e.clone(), ClearStep::Remove))
         .collect();
     want.sort_by(|a, b| a.0.cmp(&b.0));
-    want.push((subs[1].clone(), Unclear::Read));
+    want.push((subs[1].clone(), ClearStep::Read));
     assert_eq!(said, want);
     assert_eq!(uncleared.total, unremoved + 1);
     for sub in &subs[..2] {
