@@ -25,6 +25,7 @@ pub mod measure;
 pub mod render;
 pub mod schema;
 mod session;
+mod session_command;
 pub mod wire;
 
 pub use session::{
@@ -33,6 +34,7 @@ pub use session::{
     ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision,
     RolledBack, Running, SessionId, SessionInfo, Sessions, Status, Stopper, TOO_LONG, TextAnswer,
 };
+pub use session_command::SessionCommand;
 
 /// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for
 /// each change to a request's or result's shape that an older client couldn't read.

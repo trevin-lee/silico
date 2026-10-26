@@ -82,7 +82,7 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use super::edit::{self, FeatureIds};
-use super::{Gated, Problems};
+use super::{Gated, Problems, SessionCommand};
 use crate::cache::Cache;
 use crate::document::json::Node;
 use crate::document::{self, FeatureId};
@@ -259,12 +259,12 @@ impl<C: Kernel + 'static> Session<C> {
         Ok(())
     }
 
-    /// The names of its published reads running, in the order they started.
-    fn reads_running(&self) -> Vec<&'static str> {
+    /// Its published reads running, in the order they started.
+    fn reads_running(&self) -> Vec<SessionCommand> {
         let reads = lock(&self.reads);
         lock(&reads.unanswered)
             .tickets()
-            .map(|ticket| ticket.command())
+            .filter_map(|ticket| ticket.command())
             .collect()
     }
 
@@ -422,7 +422,7 @@ impl<P: Clients + 'static> Sessions<P> {
         let (reply, answer) = mpsc::sync_channel(1);
         let registry = Arc::clone(&self.registry);
         let caller = tracing::Span::current();
-        let ticket = Ticket::new("open");
+        let ticket = Ticket::opening();
         let stop = Arc::clone(&ticket);
         // Spawned with the book held, so the thread is recorded opening before it can end.
         let started = std::thread::Builder::new()
@@ -466,7 +466,7 @@ impl<P: Clients + 'static> Sessions<P> {
         let registry = Arc::downgrade(&self.registry);
         self.queued_with(
             session,
-            "close",
+            SessionCommand::Close,
             Rereads::Never,
             move |session, stop, _, _| {
                 session.shut(stop)?;
@@ -488,7 +488,7 @@ impl<P: Clients + 'static> Sessions<P> {
             return refused(not_open(*session));
         };
         let reads = found.reads_running();
-        let running = found.running().map(|ticket| ticket.command());
+        let running = found.running().and_then(|ticket| ticket.command());
         let held = found.held.read();
         let gated = matches!(*held.gated, Gated::Checked(_));
         let rebuild = if gated {
@@ -523,7 +523,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// was stopped before it had). Refused, naming `command`, if no command of that name is
     /// running, what is given as candidates: so a cancel that comes late never stops the
     /// command queued after the one it meant.
-    pub fn cancel(&self, session: &SessionId, command: &str) -> Response<Cancelled> {
+    pub fn cancel(&self, session: &SessionId, command: SessionCommand) -> Response<Cancelled> {
         let _span = tracing::info_span!("session_command", session = %session, command = "cancel")
             .entered();
         let Some(found) = self.find(session) else {
@@ -537,14 +537,14 @@ impl<P: Clients + 'static> Sessions<P> {
         let named: Vec<&Arc<Ticket>> = queued
             .iter()
             .chain(&reads)
-            .filter(|ticket| ticket.command() == command)
+            .filter(|ticket| ticket.command() == Some(command))
             .collect();
         let result = if named.is_empty() {
             // Each, as `status` lists them.
-            let running: Vec<&'static str> = queued
+            let running: Vec<SessionCommand> = queued
                 .iter()
                 .chain(&reads)
-                .map(|ticket| ticket.command())
+                .filter_map(|ticket| ticket.command())
                 .collect();
             Err(Problems::from(not_running(found.id, command, &running)))
         } else {
@@ -552,11 +552,8 @@ impl<P: Clients + 'static> Sessions<P> {
             let stopped = named
                 .iter()
                 .fold(false, |stopped, ticket| ticket.cancel() | stopped);
-            tracing::info!(command, stopped, "cancelled");
-            Ok(Cancelled {
-                command: command.to_owned(),
-                stopped,
-            })
+            tracing::info!(command = command.as_str(), stopped, "cancelled");
+            Ok(Cancelled { command, stopped })
         };
         Response {
             session: Some(found.info(false)),
@@ -570,7 +567,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// the text isn't UTF-8 (the reader refused it), or, for a feature, if the text doesn't
     /// read as a document or hasn't one feature of that ID.
     pub fn text(&self, session: &SessionId, feature: Option<FeatureId>) -> Running<TextAnswer> {
-        self.queued(session, "text", move |session, _, _| {
+        self.queued(session, SessionCommand::Text, move |session, _, _| {
             let (text, gated) = session.document();
             let text = match feature {
                 None => String::from_utf8(text.to_vec()).map_err(|e| {
@@ -622,10 +619,10 @@ impl<P: Clients + 'static> Sessions<P> {
             warnings: Problems::none(),
         };
         match choice {
-            ModelChoice::Current => {
-                self.queued(session, "check", move |session, stop, model| match session
-                    .current(stop)
-                {
+            ModelChoice::Current => self.queued(
+                session,
+                SessionCommand::Check,
+                move |session, stop, model| match session.current(stop) {
                     Ok(current) => {
                         *model = Some(current.read);
                         let _span = tracing::info_span!("check").entered();
@@ -636,14 +633,17 @@ impl<P: Clients + 'static> Sessions<P> {
                     }
                     Err(Unbuilt::Gated(problems)) => Ok(answer(problems)),
                     Err(Unbuilt::Unavailable(problems)) => Err(problems),
-                })
-            }
-            ModelChoice::Published => {
-                self.read_model(session, "check", ModelChoice::Published, move |read| {
+                },
+            ),
+            ModelChoice::Published => self.read_model(
+                session,
+                SessionCommand::Check,
+                ModelChoice::Published,
+                move |read| {
                     let _span = tracing::info_span!("check").entered();
                     Ok(answer(super::check_except(read.model(), read.reached())))
-                })
-            }
+                },
+            ),
         }
     }
 
@@ -662,7 +662,7 @@ impl<P: Clients + 'static> Sessions<P> {
     pub fn read_model<T: Send + 'static>(
         &self,
         session: &SessionId,
-        command: &'static str,
+        command: SessionCommand,
         choice: ModelChoice,
         read: impl FnOnce(Read<'_, P::Client>) -> Result<T, Problems> + Send + 'static,
     ) -> Running<T> {
@@ -731,7 +731,7 @@ impl<P: Clients + 'static> Sessions<P> {
                         let _span = tracing::info_span!(
                             "session_command",
                             session = %session.id,
-                            command,
+                            command = command.as_str(),
                             model = "published"
                         )
                         .entered();
@@ -784,7 +784,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// `session`'s document's outline ([`super::outline`]), as `silico show` prints it.
     /// Refused, with the reader's error, if the text doesn't read as a document.
     pub fn outline(&self, session: &SessionId) -> Running<OutlineAnswer> {
-        self.queued(session, "outline", |session, _, _| {
+        self.queued(session, SessionCommand::Outline, |session, _, _| {
             let (_, gated) = session.document();
             let document = gated.document().map_err(Clone::clone)?;
             Ok(OutlineAnswer {
@@ -798,7 +798,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// edits reached) for `rollback` to restore. Inside it, edits are applied without being
     /// saved or starting a rebuild. Refused if one is open: transactions don't nest.
     pub fn begin(&self, session: &SessionId) -> Running<Begun> {
-        self.queued(session, "begin", |session, stop, _| session.begin(stop))
+        self.queued(session, SessionCommand::Begin, |session, stop, _| {
+            session.begin(stop)
+        })
     }
 
     /// Ends `session`'s transaction, saving its document (the design's section 4): waits for
@@ -817,7 +819,7 @@ impl<P: Clients + 'static> Sessions<P> {
         let registry = Arc::downgrade(&self.registry);
         self.queued_with(
             session,
-            "commit",
+            SessionCommand::Commit,
             Rereads::Always,
             move |session, stop, model, reload| {
                 let id = session.id;
@@ -834,7 +836,7 @@ impl<P: Clients + 'static> Sessions<P> {
     /// restored document's rebuild started). Never touches the file. Refused if no
     /// transaction is open.
     pub fn rollback(&self, session: &SessionId) -> Running<RolledBack> {
-        self.queued(session, "rollback", |session, stop, _| {
+        self.queued(session, SessionCommand::Rollback, |session, stop, _| {
             session.rollback(stop)
         })
     }
@@ -854,12 +856,16 @@ impl<P: Clients + 'static> Sessions<P> {
         write: bool,
     ) -> Running<Reformatted> {
         let registry = Arc::downgrade(&self.registry);
-        self.queued(session, "format", move |session, stop, model| {
-            let id = session.id;
-            session.format(stop, features.as_deref(), write, model, &|resolved| {
-                reclaim(&registry, id, resolved);
-            })
-        })
+        self.queued(
+            session,
+            SessionCommand::Format,
+            move |session, stop, model| {
+                let id = session.id;
+                session.format(stop, features.as_deref(), write, model, &|resolved| {
+                    reclaim(&registry, id, resolved);
+                })
+            },
+        )
     }
 
     /// Appends `feature`, a feature as the document writes it, to the end of `session`'s
@@ -878,31 +884,35 @@ impl<P: Clients + 'static> Sessions<P> {
     ) -> Running<Added> {
         let registry = Arc::downgrade(&self.registry);
         let ids = Arc::clone(&self.registry.feature_ids);
-        self.queued(session, "add_feature", move |session, stop, model| {
-            let id = session.id;
-            let edited = session.edit(
-                stop,
-                revision,
-                |base| {
-                    let (added, candidate) =
-                        edit::add_feature(base.checked()?, feature, |document| {
-                            lock(&ids).next_free(document)
-                        })?;
-                    Ok((added, Some(candidate)))
-                },
-                model,
-                &|resolved| reclaim(&registry, id, resolved),
-            )?;
-            let id = edited.made.id.clone();
-            let feature = as_committed(edited.saved.as_deref(), edited.made, |saved| {
-                saved.feature(&id).ok().cloned()
-            })?;
-            Ok(Added {
-                feature,
-                changed: edited.changed,
-                commit: edited.commit,
-            })
-        })
+        self.queued(
+            session,
+            SessionCommand::AddFeature,
+            move |session, stop, model| {
+                let id = session.id;
+                let edited = session.edit(
+                    stop,
+                    revision,
+                    |base| {
+                        let (added, candidate) =
+                            edit::add_feature(base.checked()?, feature, |document| {
+                                lock(&ids).next_free(document)
+                            })?;
+                        Ok((added, Some(candidate)))
+                    },
+                    model,
+                    &|resolved| reclaim(&registry, id, resolved),
+                )?;
+                let id = edited.made.id.clone();
+                let feature = as_committed(edited.saved.as_deref(), edited.made, |saved| {
+                    saved.feature(&id).ok().cloned()
+                })?;
+                Ok(Added {
+                    feature,
+                    changed: edited.changed,
+                    commit: edited.commit,
+                })
+            },
+        )
     }
 
     /// Sets `field` of `session`'s feature `feature` to `value` (the design's `set_field`),
@@ -922,32 +932,36 @@ impl<P: Clients + 'static> Sessions<P> {
         value: Node,
     ) -> Running<FieldSet> {
         let registry = Arc::downgrade(&self.registry);
-        self.queued(session, "set_field", move |session, stop, model| {
-            let id = session.id;
-            let edited = session.edit(
-                stop,
-                revision,
-                |base| edit::set_field(base.checked()?, &feature, &field, value),
-                model,
-                &|resolved| reclaim(&registry, id, resolved),
-            )?;
-            let edit::FieldValues {
-                before,
-                after,
-                path,
-            } = edited.made;
-            let after = as_committed(edited.saved.as_deref(), after, |saved| {
-                edit::value_of(saved, &feature, &path)
-            })?;
-            Ok(FieldSet {
-                feature,
-                field,
-                before,
-                after,
-                changed: edited.changed,
-                commit: edited.commit,
-            })
-        })
+        self.queued(
+            session,
+            SessionCommand::SetField,
+            move |session, stop, model| {
+                let id = session.id;
+                let edited = session.edit(
+                    stop,
+                    revision,
+                    |base| edit::set_field(base.checked()?, &feature, &field, value),
+                    model,
+                    &|resolved| reclaim(&registry, id, resolved),
+                )?;
+                let edit::FieldValues {
+                    before,
+                    after,
+                    path,
+                } = edited.made;
+                let after = as_committed(edited.saved.as_deref(), after, |saved| {
+                    edit::value_of(saved, &feature, &path)
+                })?;
+                Ok(FieldSet {
+                    feature,
+                    field,
+                    before,
+                    after,
+                    changed: edited.changed,
+                    commit: edited.commit,
+                })
+            },
+        )
     }
 
     /// Removes `session`'s feature `feature` (the design's `remove_feature`), as an edit made
@@ -962,27 +976,31 @@ impl<P: Clients + 'static> Sessions<P> {
         feature: FeatureId,
     ) -> Running<Removed> {
         let registry = Arc::downgrade(&self.registry);
-        self.queued(session, "remove_feature", move |session, stop, model| {
-            let id = session.id;
-            let edited = session.edit(
-                stop,
-                revision,
-                |base| {
-                    let (removed, index, candidate) =
-                        edit::remove_feature(base.checked()?, &feature)?;
-                    Ok(((removed, index), Some(candidate)))
-                },
-                model,
-                &|resolved| reclaim(&registry, id, resolved),
-            )?;
-            let (feature, index) = edited.made;
-            Ok(Removed {
-                feature,
-                index,
-                changed: edited.changed,
-                commit: edited.commit,
-            })
-        })
+        self.queued(
+            session,
+            SessionCommand::RemoveFeature,
+            move |session, stop, model| {
+                let id = session.id;
+                let edited = session.edit(
+                    stop,
+                    revision,
+                    |base| {
+                        let (removed, index, candidate) =
+                            edit::remove_feature(base.checked()?, &feature)?;
+                        Ok(((removed, index), Some(candidate)))
+                    },
+                    model,
+                    &|resolved| reclaim(&registry, id, resolved),
+                )?;
+                let (feature, index) = edited.made;
+                Ok(Removed {
+                    feature,
+                    index,
+                    changed: edited.changed,
+                    commit: edited.commit,
+                })
+            },
+        )
     }
 
     /// Replaces `session`'s document's whole text with `text` (the design's `replace_text`),
@@ -999,35 +1017,40 @@ impl<P: Clients + 'static> Sessions<P> {
         text: String,
     ) -> Running<Replaced> {
         let registry = Arc::downgrade(&self.registry);
-        self.queued(session, "replace_text", move |session, stop, model| {
-            let id = session.id;
-            let edited = session.edit(
-                stop,
-                revision,
-                |base| {
-                    let before = if base.transaction {
-                        None
-                    } else {
-                        Some(
-                            std::str::from_utf8(base.text)
-                                .map_err(|e| not_given_back(base.id, e.valid_up_to()))?
-                                .to_owned(),
-                        )
-                    };
-                    let (features, candidate) = edit::replace_text(base.gated, text.as_bytes())?;
-                    Ok(((features, before), candidate))
-                },
-                model,
-                &|resolved| reclaim(&registry, id, resolved),
-            )?;
-            let (features, before) = edited.made;
-            Ok(Replaced {
-                changed: edited.changed,
-                features,
-                before,
-                commit: edited.commit,
-            })
-        })
+        self.queued(
+            session,
+            SessionCommand::ReplaceText,
+            move |session, stop, model| {
+                let id = session.id;
+                let edited = session.edit(
+                    stop,
+                    revision,
+                    |base| {
+                        let before = if base.transaction {
+                            None
+                        } else {
+                            Some(
+                                std::str::from_utf8(base.text)
+                                    .map_err(|e| not_given_back(base.id, e.valid_up_to()))?
+                                    .to_owned(),
+                            )
+                        };
+                        let (features, candidate) =
+                            edit::replace_text(base.gated, text.as_bytes())?;
+                        Ok(((features, before), candidate))
+                    },
+                    model,
+                    &|resolved| reclaim(&registry, id, resolved),
+                )?;
+                let (features, before) = edited.made;
+                Ok(Replaced {
+                    changed: edited.changed,
+                    features,
+                    before,
+                    commit: edited.commit,
+                })
+            },
+        )
     }
 
     fn find(&self, session: &SessionId) -> Option<Arc<Session<P::Client>>> {
@@ -1041,7 +1064,7 @@ impl<P: Clients + 'static> Sessions<P> {
     fn queued<T: Send + 'static>(
         &self,
         session: &SessionId,
-        command: &'static str,
+        command: SessionCommand,
         work: impl FnOnce(
             &Arc<Session<P::Client>>,
             &Ticket,
@@ -1063,7 +1086,7 @@ impl<P: Clients + 'static> Sessions<P> {
     fn queued_with<T: Send + 'static>(
         &self,
         session: &SessionId,
-        command: &'static str,
+        command: SessionCommand,
         rereads: Rereads,
         work: impl FnOnce(
             &Arc<Session<P::Client>>,
@@ -1091,7 +1114,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     let _span = tracing::info_span!(
                         "session_command",
                         session = %session.id,
-                        command
+                        command = command.as_str()
                     )
                     .entered();
                     *lock(&session.command) = Some(Arc::clone(&stop));

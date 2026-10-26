@@ -69,7 +69,7 @@ impl<C: Kernel + 'static> Rebuilds<C> {
         if let Some(label) = waited {
             self.stop_waited(label);
         }
-        Err(Problems::from(cancelled(stop.command())))
+        Err(Problems::from(cancelled(stop.name())))
     }
 
     /// The rebuild labelled `label` stopped, if it's still the one running, for a command

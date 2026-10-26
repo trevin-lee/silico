@@ -24,7 +24,8 @@ use silico_core::command::wire::transaction::SessionRequest;
 use silico_core::command::wire::{Layout, ToWire, response, response_text, snapshot_value, write};
 use silico_core::command::{
     Begun, Cancelled, Limits, MAX_SESSIONS, ModelChoice, Opened, OutlineAnswer, Problems, Rebuild,
-    RebuildState, Response, Revision, SessionId, Sessions, Status, TextAnswer, VERSION, Version,
+    RebuildState, Response, Revision, SessionCommand, SessionId, Sessions, Status, TextAnswer,
+    VERSION, Version,
 };
 use silico_core::document::json::{Node, read};
 use silico_core::fake::{FakeKernel, FakeSketches, Hold};
@@ -265,7 +266,7 @@ fn the_designs_requests_are_read_written_back_byte_for_byte_and_hold_to_their_sc
         request,
         CancelRequest {
             session: s1(),
-            command: "check",
+            command: SessionCommand::Check,
         }
     );
     assert_eq!(written(&request), text);
@@ -343,7 +344,7 @@ fn requests_with_their_other_values_are_read_and_written_back() {
     for name in SESSION_COMMANDS {
         let text = format!("{{\"session\": \"s1\", \"command\": \"{name}\"}}\n");
         let request = CancelRequest::read(&parsed(&text)).unwrap();
-        assert_eq!(request.command, name);
+        assert_eq!(request.command.as_str(), name);
         assert_eq!(written(&request), text);
         holds(&schema_of("cancel", "request"), &text, name);
     }
@@ -714,8 +715,8 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
         features: Some(7),
         gated: true,
         transaction: Some(Begun { base: revision(4) }),
-        running: Some("check"),
-        reads: vec!["distance"],
+        running: Some(SessionCommand::Check),
+        reads: vec![SessionCommand::Distance],
         rebuild: Rebuild {
             revision: revision(6),
             state: RebuildState::Running,
@@ -756,7 +757,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
         gated: false,
         transaction: None,
         running: None,
-        reads: vec!["elements", "query"],
+        reads: vec![SessionCommand::Elements, SessionCommand::Query],
         rebuild: Rebuild {
             revision: revision(9),
             state: RebuildState::None,
@@ -838,7 +839,7 @@ fn cancel_answers_and_refuses_as_the_design_gives_it() {
     assert!(edit.cancel());
     // A result by hand: not stopped, another command.
     let late = Cancelled {
-        command: "set_field".to_owned(),
+        command: SessionCommand::SetField,
         stopped: false,
     };
     assert_eq!(

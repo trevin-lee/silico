@@ -11,7 +11,7 @@
 
 use super::elements::summarized;
 use super::lookup::{Kinds, Lookup};
-use super::{ModelChoice, Problems, Running, SessionId, Sessions};
+use super::{ModelChoice, Problems, Running, SessionCommand, SessionId, Sessions};
 use crate::document::{Angle, FeatureId, Fingerprint, Length, Measure};
 use crate::kernel::{
     Clients, EdgeCurve, EdgeDescription, ElementKind, ElementRef, FaceDescription, Kernel,
@@ -31,9 +31,12 @@ impl<P: Clients + 'static> Sessions<P> {
         model: ModelChoice,
         feature: Option<FeatureId>,
     ) -> Running<Bodies> {
-        self.read_model(session, "mass_properties", model, move |read| {
-            mass_properties(read.model(), feature.as_ref())
-        })
+        self.read_model(
+            session,
+            SessionCommand::MassProperties,
+            model,
+            move |read| mass_properties(read.model(), feature.as_ref()),
+        )
     }
 
     /// `distance` (M4.5): the least distance between the two elements `elements` names, of
@@ -46,7 +49,7 @@ impl<P: Clients + 'static> Sessions<P> {
         elements: [String; 2],
         feature: Option<FeatureId>,
     ) -> Running<DistanceAnswer> {
-        self.read_model(session, "distance", model, move |read| {
+        self.read_model(session, SessionCommand::Distance, model, move |read| {
             distance(read.model(), read.kernel(), &elements, feature.as_ref())
         })
     }
@@ -60,7 +63,7 @@ impl<P: Clients + 'static> Sessions<P> {
         elements: [String; 2],
         feature: Option<FeatureId>,
     ) -> Running<AngleAnswer> {
-        self.read_model(session, "angle", model, move |read| {
+        self.read_model(session, SessionCommand::Angle, model, move |read| {
             angle(read.model(), &elements, feature.as_ref())
         })
     }

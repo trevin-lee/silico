@@ -21,7 +21,7 @@ const WAIT: Duration = Duration::from_secs(60);
 
 /// The stop of a command no one cancels: as a queued command's work is handed its own.
 fn probe() -> Arc<Ticket> {
-    Ticket::new("probe")
+    Ticket::new(SessionCommand::Text)
 }
 
 fn checked(text: &str) -> Arc<Checked> {
@@ -181,7 +181,7 @@ fn a_published_read_says_the_older_revision_it_read() {
     // Revision 2's sphere held, so its rebuild is seen running.
     let _hold = kernel.hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
     let response = sessions
-        .read_model(&id, "probe", ModelChoice::Published, volume)
+        .read_model(&id, SessionCommand::Check, ModelChoice::Published, volume)
         .wait();
     let read = ModelRead {
         revision: Revision::OPENED,
@@ -208,7 +208,7 @@ fn a_published_read_says_the_older_revision_it_read() {
 fn a_current_read_says_the_newer_revision_it_waited_for() {
     let (_dir, _kernel, sessions, id) = at_two(SPHERE);
     let response = sessions
-        .read_model(&id, "probe", ModelChoice::Current, volume)
+        .read_model(&id, SessionCommand::Check, ModelChoice::Current, volume)
         .wait();
     let read = ModelRead {
         revision: Revision::OPENED.next().unwrap(),
@@ -242,7 +242,7 @@ fn a_published_read_of_a_refused_revision_gives_the_older_model_and_check_its_pr
     assert_eq!(published.model, Some(read.clone()));
     assert_eq!(published.result.unwrap().revision, Revision::OPENED);
     let response = sessions
-        .read_model(&id, "probe", ModelChoice::Published, volume)
+        .read_model(&id, SessionCommand::Check, ModelChoice::Published, volume)
         .wait();
     assert_eq!(
         response.result.unwrap(),
@@ -523,7 +523,7 @@ fn a_document_made_for_a_session_the_sessions_closing_refuse_is_removed() {
         SessionId(1),
         made.to_str().unwrap(),
         true,
-        &crate::command::session::cancel::Ticket::new("open"),
+        &crate::command::session::cancel::Ticket::opening(),
         &reply,
     );
     assert!(started.is_none());
@@ -538,7 +538,7 @@ fn a_document_made_for_a_session_the_sessions_closing_refuse_is_removed() {
             SessionId(2),
             kept.to_str().unwrap(),
             false,
-            &crate::command::session::cancel::Ticket::new("open"),
+            &crate::command::session::cancel::Ticket::opening(),
             &reply
         )
         .is_none()
@@ -1193,7 +1193,7 @@ fn a_published_read_answered_but_its_thread_still_ending_leaves_room_for_another
         }
     }
     let ninth = sessions
-        .read_model(&id, "probe", ModelChoice::Published, |read| {
+        .read_model(&id, SessionCommand::Check, ModelChoice::Published, |read| {
             Ok(read.model_read().revision)
         })
         .wait();
@@ -2313,9 +2313,12 @@ fn published_reads_that_ended_are_joined_as_the_next_starts() {
     );
     let read = || {
         f.sessions
-            .read_model(&f.id, "probe", ModelChoice::Published, |read| {
-                Ok(read.model_read().revision)
-            })
+            .read_model(
+                &f.id,
+                SessionCommand::Check,
+                ModelChoice::Published,
+                |read| Ok(read.model_read().revision),
+            )
             .wait()
             .result
             .unwrap()
@@ -2368,17 +2371,22 @@ fn a_cancel_after_the_command_kept_its_work_says_so_and_it_answers_its_result() 
     let f = opened(BOX);
     let (go, wait) = mpsc::channel::<()>();
     let (kept, was_kept) = mpsc::channel::<()>();
-    let running = f.sessions.queued(&f.id, "probe", move |_, stop, _| {
-        stop.settle()?;
-        kept.send(()).unwrap();
-        wait.recv().unwrap();
-        Ok(7)
-    });
+    let running = f
+        .sessions
+        .queued(&f.id, SessionCommand::Text, move |_, stop, _| {
+            stop.settle()?;
+            kept.send(()).unwrap();
+            wait.recv().unwrap();
+            Ok(7)
+        });
     was_kept.recv_timeout(WAIT).unwrap();
     assert_eq!(
-        f.sessions.cancel(&f.id, "probe").result.unwrap(),
+        f.sessions
+            .cancel(&f.id, SessionCommand::Text)
+            .result
+            .unwrap(),
         Cancelled {
-            command: "probe".to_owned(),
+            command: SessionCommand::Text,
             stopped: false
         }
     );
@@ -2392,16 +2400,24 @@ fn a_command_cancelled_before_it_kept_its_work_answers_cancelled_whatever_it_giv
     let f = opened(BOX);
     let (go, wait) = mpsc::channel::<()>();
     let (started, was_started) = mpsc::channel::<()>();
-    let running = f.sessions.queued(&f.id, "probe", move |_, _, _| {
-        started.send(()).unwrap();
-        wait.recv().unwrap();
-        Ok(7)
-    });
+    let running = f
+        .sessions
+        .queued(&f.id, SessionCommand::Text, move |_, _, _| {
+            started.send(()).unwrap();
+            wait.recv().unwrap();
+            Ok(7)
+        });
     was_started.recv_timeout(WAIT).unwrap();
-    assert!(f.sessions.cancel(&f.id, "probe").result.unwrap().stopped);
+    assert!(
+        f.sessions
+            .cancel(&f.id, SessionCommand::Text)
+            .result
+            .unwrap()
+            .stopped
+    );
     go.send(()).unwrap();
     let response = running.wait();
-    assert_eq!(response.result.unwrap_err().errors(), [cancelled("probe")]);
+    assert_eq!(response.result.unwrap_err().errors(), [cancelled("text")]);
     assert_eq!(response.session.unwrap().id, f.id);
 }
 
@@ -2456,7 +2472,7 @@ fn a_transactions_work_a_cancel_came_before_leaves_no_trace() {
     );
     let (session, stop) = cancelled_meanwhile(&f);
     let refused = |result: Result<(), Problems>| {
-        assert_eq!(result.unwrap_err().errors(), [cancelled("probe")]);
+        assert_eq!(result.unwrap_err().errors(), [cancelled("text")]);
     };
     let mut read = None;
     refused(session.commit(&stop, None, &mut read, &|_| {}).map(|_| ()));
@@ -2482,7 +2498,7 @@ fn a_commit_writing_nothing_a_cancel_came_before_leaves_the_transaction_open() {
     let (session, stop) = cancelled_meanwhile(&f);
     let mut read = None;
     let refused = session.commit(&stop, None, &mut read, &|_| {});
-    assert_eq!(refused.unwrap_err().errors(), [cancelled("probe")]);
+    assert_eq!(refused.unwrap_err().errors(), [cancelled("text")]);
     assert!(session.held.read().transaction.is_some());
 }
 
@@ -2499,16 +2515,16 @@ fn work_outside_a_transaction_a_cancel_came_before_leaves_no_trace() {
     let (session, stop) = cancelled_meanwhile(&f);
     let mut read = None;
     let format = session.format(&stop, None, true, &mut read, &|_| {});
-    assert_eq!(format.unwrap_err().errors(), [cancelled("probe")]);
+    assert_eq!(format.unwrap_err().errors(), [cancelled("text")]);
     assert_eq!(f.file(), STORED);
     assert_eq!(
         session.begin(&stop).unwrap_err().errors(),
-        [cancelled("probe")]
+        [cancelled("text")]
     );
     assert!(session.held.read().transaction.is_none());
     assert_eq!(
         session.shut(&stop).unwrap_err().errors(),
-        [cancelled("probe")]
+        [cancelled("text")]
     );
     assert!(!session.closed());
     assert_eq!(session.held.read().revision, Revision::OPENED);
@@ -2551,25 +2567,24 @@ fn each_change_of_what_the_session_holds_is_past_a_cancel() {
     // rollback, a commit that writes nothing, and close.
     let f = opened(STORED);
     let session = f.session();
-    let settled =
-        |stop: &Ticket| assert!(!stop.cancel(), "{}'s stop wasn't settled", stop.command());
-    let stop = Ticket::new("begin");
+    let settled = |stop: &Ticket| assert!(!stop.cancel(), "{}'s stop wasn't settled", stop.name());
+    let stop = Ticket::new(SessionCommand::Begin);
     session.begin(&stop).unwrap();
     settled(&stop);
-    let stop = Ticket::new("replace_text");
+    let stop = Ticket::new(SessionCommand::ReplaceText);
     assert_eq!(session.applied(&stop, &longer()).unwrap(), Revision(2));
     settled(&stop);
-    let stop = Ticket::new("rollback");
+    let stop = Ticket::new(SessionCommand::Rollback);
     session.rollback(&stop).unwrap();
     settled(&stop);
     session.begin(&probe()).unwrap();
-    let stop = Ticket::new("commit");
+    let stop = Ticket::new(SessionCommand::Commit);
     let mut read = None;
     let committed = session.commit(&stop, None, &mut read, &|_| {}).unwrap();
     assert!(!committed.written);
     assert!(session.held.read().transaction.is_none());
     settled(&stop);
-    let stop = Ticket::new("close");
+    let stop = Ticket::new(SessionCommand::Close);
     session.shut(&stop).unwrap();
     assert!(session.closed());
     settled(&stop);
@@ -2636,7 +2651,13 @@ fn a_rebuild_a_cancel_stopped_stays_stopped_once_its_watcher_has_ended() {
     let _hold = f.kernel.hold(is_box);
     let check = f.sessions.check(&f.id, ModelChoice::Current);
     assert!(f.kernel.wait_running(1, WAIT));
-    assert!(f.sessions.cancel(&f.id, "check").result.unwrap().stopped);
+    assert!(
+        f.sessions
+            .cancel(&f.id, SessionCommand::Check)
+            .result
+            .unwrap()
+            .stopped
+    );
     assert_eq!(
         check.wait().result.unwrap_err().errors(),
         [cancelled("check")]
@@ -2665,16 +2686,24 @@ fn a_command_cancelled_after_its_sessions_reload_says_it_reloaded() {
     std::fs::write(&f.path, &outside).unwrap();
     let (go, wait) = mpsc::channel::<()>();
     let (started, was_started) = mpsc::channel::<()>();
-    let running = f.sessions.queued(&f.id, "probe", move |_, _, _| {
-        started.send(()).unwrap();
-        wait.recv().unwrap();
-        Ok(7)
-    });
+    let running = f
+        .sessions
+        .queued(&f.id, SessionCommand::Text, move |_, _, _| {
+            started.send(()).unwrap();
+            wait.recv().unwrap();
+            Ok(7)
+        });
     was_started.recv_timeout(WAIT).unwrap();
-    assert!(f.sessions.cancel(&f.id, "probe").result.unwrap().stopped);
+    assert!(
+        f.sessions
+            .cancel(&f.id, SessionCommand::Text)
+            .result
+            .unwrap()
+            .stopped
+    );
     go.send(()).unwrap();
     let response = running.wait();
-    assert_eq!(response.result.unwrap_err().errors(), [cancelled("probe")]);
+    assert_eq!(response.result.unwrap_err().errors(), [cancelled("text")]);
     let session = response.session.unwrap();
     assert_eq!((session.revision, session.reloaded), (Revision(2), true));
     assert_eq!(&**f.session().held.read().text, outside.as_bytes());
@@ -2775,7 +2804,7 @@ fn a_reads_client_interrupted_by_its_stop_is_superseded_and_one_added_after_at_o
         .unwrap()
     };
     for why in [Why::Closed, Why::Cancelled] {
-        let stop = Ticket::new("distance");
+        let stop = Ticket::new(SessionCommand::Distance);
         let before = Arc::new(ReadClient::new(kernel.client()));
         stop.interrupt_with(Arc::downgrade(&before) as Weak<dyn Interrupt>);
         let asked = before.submit(before.generation(), make()).wait();

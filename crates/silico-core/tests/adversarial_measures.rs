@@ -13,9 +13,9 @@ use super::listing::{BOX, TWO_BODIES, answer, fixture, model_of};
 use super::model::{checked, id, published};
 
 use silico_core::ErrorCode;
-use silico_core::command::ModelChoice;
 use silico_core::command::measure::{angle, distance};
 use silico_core::command::wire::measure::PairRequest;
+use silico_core::command::{ModelChoice, SessionCommand};
 use silico_core::document::Length;
 use silico_core::document::json::read;
 use silico_core::fake::{FakeKernel, FakeSketches};
@@ -674,9 +674,11 @@ fn a_published_read_that_asks_the_kernel_after_its_session_closes_says_it_closed
         .is_ok()
     );
     let (go, wait) = std::sync::mpsc::channel::<()>();
-    let read = f
-        .sessions
-        .read_model(&s, "distance", ModelChoice::Published, move |read| {
+    let read = f.sessions.read_model(
+        &s,
+        SessionCommand::Distance,
+        ModelChoice::Published,
+        move |read| {
             let _ = wait.recv();
             distance(
                 read.model(),
@@ -684,7 +686,8 @@ fn a_published_read_that_asks_the_kernel_after_its_session_closes_says_it_closed
                 &pair("k7f2qx3m.box.Face5", "k7f2qx3m.box.Face6"),
                 None,
             )
-        });
+        },
+    );
     let read = match read.wait_timeout(Duration::from_millis(200)) {
         Ok(response) => panic!("answered early: {:?}", response.result),
         Err(running) => running,

@@ -7,12 +7,12 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::Duration;
 
-use super::Problems;
 #[cfg(doc)]
 use super::Sessions;
 use super::cancel::Ticket;
 use super::rebuilds::met_fault;
 use super::transaction::Reached;
+use super::{Problems, SessionCommand};
 #[cfg(doc)]
 use crate::document;
 use crate::document::json::Plain;
@@ -579,8 +579,8 @@ pub struct Status {
     pub features: Option<usize>,
     pub gated: bool,
     pub transaction: Option<Begun>,
-    pub running: Option<&'static str>,
-    pub reads: Vec<&'static str>,
+    pub running: Option<SessionCommand>,
+    pub reads: Vec<SessionCommand>,
     pub rebuild: Rebuild,
 }
 
@@ -628,6 +628,6 @@ impl RebuildState {
 /// with its real result).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cancelled {
-    pub command: String,
+    pub command: SessionCommand,
     pub stopped: bool,
 }

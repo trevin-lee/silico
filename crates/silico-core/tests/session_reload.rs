@@ -14,7 +14,7 @@ use std::sync::Arc;
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::{
-    Begun, Closed, ModelChoice, Response, Revision, SessionId, Sessions, TextAnswer,
+    Begun, Closed, ModelChoice, Response, Revision, SessionCommand, SessionId, Sessions, TextAnswer,
 };
 use silico_core::document::json::Node;
 use silico_core::fake::FakeKernel;
@@ -253,10 +253,12 @@ fn a_change_keeping_the_files_size_and_time_is_reloaded_before_the_next_command(
     // `status` and published reads never read the file.
     assert_eq!(Fixture::after(&f.sessions.status(&f.id)), (1, false));
     assert_eq!(Fixture::after(&f.sessions.published(&f.id)), (1, false));
-    let read = answer(
-        f.sessions
-            .read_model(&f.id, "volume", ModelChoice::Published, |_| Ok(())),
-    );
+    let read = answer(f.sessions.read_model(
+        &f.id,
+        SessionCommand::Check,
+        ModelChoice::Published,
+        |_| Ok(()),
+    ));
     assert_eq!(Fixture::after(&read), (1, false));
     // The next queued command reloads it: a new revision, whose model is the file's.
     let check = answer(f.sessions.check(&f.id, ModelChoice::Current));

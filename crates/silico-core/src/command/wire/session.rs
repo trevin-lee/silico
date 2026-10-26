@@ -17,7 +17,8 @@ use super::transaction::BeginResultSchema;
 use super::{ErrorSchema, Json, RequestFields, ToWire, problems, wire_shape, words};
 use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{
-    Cancelled, Closed, Limits, Opened, Problems, Rebuild, SessionId, Status, Version,
+    Cancelled, Closed, Limits, Opened, Problems, Rebuild, SessionCommand, SessionId, Status,
+    Version,
 };
 use crate::document::json::Node;
 use crate::document::{FeatureId, PROBLEMS_LISTED};
@@ -73,49 +74,52 @@ impl ToWire for OpenRequest {
 }
 
 /// The commands that run in a session, each by its name, in the design's order (a subset of
-/// [`COMMANDS`]): what `status` says is running, and `cancel` stops. Every command but those
-/// answered at once, never running (`version`, `status`, `cancel`, and `schema`), and
-/// `open`, which runs before its session is there to name it.
-pub const SESSION_COMMANDS: [&str; 18] = [
-    "close",
-    "begin",
-    "commit",
-    "rollback",
-    "format",
-    "add_feature",
-    "set_field",
-    "remove_feature",
-    "replace_text",
-    "text",
-    "outline",
-    "check",
-    "elements",
-    "query",
-    "mass_properties",
-    "distance",
-    "angle",
-    "render",
-];
+/// [`COMMANDS`]): what `status` says is running, and `cancel` stops ([`SessionCommand::ALL`]).
+pub const SESSION_COMMANDS: [&str; SessionCommand::ALL.len()] = {
+    let mut names = [""; SessionCommand::ALL.len()];
+    let mut at = 0;
+    while at < names.len() {
+        names[at] = SessionCommand::ALL[at].as_str();
+        at += 1;
+    }
+    names
+};
 
-/// The commands that run as reads that may read the published model (`Sessions::read_model`'s),
-/// each by name, in the design's order (a subset of [`SESSION_COMMANDS`]): what `status`
-/// lists among the published reads running.
-pub const PUBLISHED_READS: [&str; 7] = [
-    "check",
-    "elements",
-    "query",
-    "mass_properties",
-    "distance",
-    "angle",
-    "render",
-];
+/// How many commands run as reads that may read the published model.
+const PUBLISHED_READ_COUNT: usize = {
+    let mut count = 0;
+    let mut at = 0;
+    while at < SessionCommand::ALL.len() {
+        if SessionCommand::ALL[at].reads_published() {
+            count += 1;
+        }
+        at += 1;
+    }
+    count
+};
+
+/// The commands that run as reads that may read the published model
+/// ([`SessionCommand::reads_published`]), each by name, in the design's order (a subset of
+/// [`SESSION_COMMANDS`]): what `status` lists among the published reads running.
+pub const PUBLISHED_READS: [&str; PUBLISHED_READ_COUNT] = {
+    let mut names = [""; PUBLISHED_READ_COUNT];
+    let (mut at, mut read) = (0, 0);
+    while at < SessionCommand::ALL.len() {
+        if SessionCommand::ALL[at].reads_published() {
+            names[read] = SessionCommand::ALL[at].as_str();
+            read += 1;
+        }
+        at += 1;
+    }
+    names
+};
 
 /// A `cancel` request: the session, and the command to stop, by its name: one of the
 /// commands that run in a session ([`SESSION_COMMANDS`]), never any other string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CancelRequest {
     pub session: SessionId,
-    pub command: &'static str,
+    pub command: SessionCommand,
 }
 
 impl CancelRequest {
@@ -127,7 +131,7 @@ impl CancelRequest {
             let session = f.session();
             let command = f.word(
                 "command",
-                &SESSION_COMMANDS.map(|name| (name, name)),
+                &SessionCommand::ALL.map(|command| (command.as_str(), command)),
                 "commands",
             );
             Some(CancelRequest {
@@ -143,7 +147,7 @@ impl ToWire for CancelRequest {
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("session", self.session.to_wire()),
-            ("command", Json::str(self.command)),
+            ("command", Json::str(self.command.as_str())),
         ])
     }
 }
@@ -230,10 +234,13 @@ impl ToWire for Status {
                 "transaction",
                 Json::or_null(self.transaction.as_ref(), ToWire::to_wire),
             ),
-            ("running", Json::or_null(self.running, Json::str)),
+            (
+                "running",
+                Json::or_null(self.running, |command| Json::str(command.as_str())),
+            ),
             (
                 "reads",
-                Json::array(self.reads.iter().map(|r| Json::str(r))),
+                Json::array(self.reads.iter().map(|read| Json::str(read.as_str()))),
             ),
             ("rebuild", self.rebuild.to_wire()),
         ])
@@ -245,7 +252,7 @@ impl ToWire for Cancelled {
     /// work.
     fn to_wire(&self) -> Json<'_> {
         Json::object([
-            ("command", Json::str(&self.command)),
+            ("command", Json::str(self.command.as_str())),
             ("stopped", Json::bool(self.stopped)),
         ])
     }
