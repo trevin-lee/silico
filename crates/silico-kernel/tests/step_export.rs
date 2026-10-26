@@ -141,7 +141,7 @@ fn every_name_is_written_encoded_as_iso_10303_21_reads_it() {
         ("Klötzchen", "Kl\\X2\\00F6\\X0\\tzchen"),
         ("a\\N\\b", "a\\X2\\005C\\X0\\N\\X2\\005C\\X0\\b"),
         ("smile \u{1F600} end", "smile \\X4\\0001F600\\X0\\ end"),
-        ("it's", "it''s"),
+        ("it's", "it\\X2\\0027\\X0\\s"),
     ] {
         let file = kernel()
             .export_step(export(&[(&block(), "k7f2qx3m", name)]))

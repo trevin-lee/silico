@@ -558,7 +558,12 @@ fn unwritten(
         parts.entry(entry.part).or_default().push(entry);
     }
     for (part, entries) in parts {
-        let solid = part.and_then(|p| solids.get(p as usize));
+        // Of no part: of the one there is, if there's one.
+        let solid = match (part, solids) {
+            (Some(p), _) => solids.get(p as usize),
+            (None, [solid]) => Some(solid),
+            (None, _) => None,
+        };
         let elements: BTreeSet<silico_protocol::ElementRef> =
             entries.iter().filter_map(|e| e.element).collect();
         let map = solid.and_then(|s| model.element_map(s.id));

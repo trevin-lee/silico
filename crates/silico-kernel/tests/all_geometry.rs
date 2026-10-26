@@ -79,6 +79,8 @@ mod adversarial_profile_faces;
 mod adversarial_revolution_measures;
 #[path = "adversarial_sketch_feature_build.rs"]
 mod adversarial_sketch_feature_build;
+#[path = "adversarial_step_export.rs"]
+mod adversarial_step_export;
 #[path = "adversarial_sweep.rs"]
 mod adversarial_sweep;
 #[path = "boolean.rs"]

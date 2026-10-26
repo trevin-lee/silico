@@ -1,10 +1,11 @@
-//! The strings a STEP file carries (ISO 10303-21:2002, 6.4.3), encoded by Silico before
-//! OCCT sees them (docs/ports/step-export.md, *Strings*). OCCT's writer doubles `'` and
-//! copies every other byte, passing through anything that looks like a directive (`\X2\`,
-//! `\N\`, ...), so a name holding one would be read back as something else. Every string the
-//! core sends is in [`step_encoded`]'s form, which OCCT writes unchanged but for `'`, and
-//! which every reader reads back as the text it encodes; the worker refuses any other
-//! ([`is_step_encoded`]).
+//! The strings a STEP file carries (ISO 10303-21:2002, 6.4.3), encoded by Silico
+//! (docs/ports/step-export.md, *Strings*). OCCT's writer passes through anything that looks
+//! like a directive (`\X2\`, `\N\`, ...), so a name holding one would be read back as
+//! something else; it breaks a string past 72 columns where it can, inside a directive too;
+//! and OCCT's reader ends a string at a doubled `'` before `,` or `)`. So OCCT never writes a
+//! name: the worker gives it placeholders and splices in each string in [`step_encoded`]'s
+//! form, printable ASCII with no `'` (encoded too), which every reader reads back as the
+//! text it encodes; the worker refuses any other ([`is_step_encoded`]).
 
 use std::fmt::Write as _;
 
@@ -91,8 +92,8 @@ impl ExportStep {
     }
 }
 
-/// `text` as a STEP string's contents: each character from U+0020 to U+007E but `\` as
-/// itself, and every other (`\`, control characters, everything past ASCII), in maximal
+/// `text` as a STEP string's contents: each character from U+0020 to U+007E but `\` and `'`
+/// as itself, and every other (`\`, `'`, control characters, everything past ASCII), in maximal
 /// runs, as `\X2\` and four uppercase hex digits each, then `\X0\`, or, for a character past
 /// U+FFFF, `\X4\` and eight (`\X2\` is UCS-2, so it holds no surrogate pairs). Each text has
 /// one encoding, and every text has one: nothing is refused for its characters.
@@ -102,7 +103,7 @@ pub fn step_encoded(text: &str) -> String {
     let mut open: Option<u8> = None;
     for c in text.chars() {
         let wide = match c {
-            '\\' => Some(2),
+            '\\' | '\'' => Some(2),
             ' '..='~' => None,
             c if (c as u32) <= 0xFFFF => Some(2),
             _ => Some(4),
@@ -239,9 +240,15 @@ mod tests {
     }
 
     #[test]
-    fn printable_ascii_but_the_backslash_is_itself() {
-        // The note's table: what OCCT passes through but for `'`, which it doubles.
-        assert_eq!(step_encoded("Bracket 'q' (2) ~"), "Bracket 'q' (2) ~");
+    fn printable_ascii_but_the_backslash_and_the_quote_is_itself() {
+        // Every printable ASCII character but `\\` and `'` is itself; `'` is encoded, as
+        // OCCT's reader ends a string at a doubled `'` before `,` or `)`.
+        assert_eq!(step_encoded("Bracket (2), ~"), "Bracket (2), ~");
+        assert_eq!(
+            step_encoded("Bracket 'A', left"),
+            "Bracket \\X2\\0027\\X0\\A\\X2\\0027\\X0\\, left"
+        );
+        assert!(!is_step_encoded("it''s"));
         assert_eq!(step_encoded(""), "");
     }
 
