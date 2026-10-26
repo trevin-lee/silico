@@ -106,9 +106,9 @@ use threads::{Counted, Reads, Threads};
 use transaction::{Claim, Held, Reload, Rereads, transaction_open};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
-    Added, Begun, Cancelled, Committed, FieldSet, ModelChoice, ModelRead, Opened, Published, Read, ReadClient,
-    Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
-    SessionId, SessionInfo, Status, Stopper,
+    Added, Begun, Cancelled, Committed, FieldSet, ModelChoice, ModelRead, Opened, Published, Read,
+    ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision,
+    RolledBack, Running, SessionId, SessionInfo, Status, Stopper,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 

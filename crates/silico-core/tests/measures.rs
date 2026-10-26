@@ -170,7 +170,8 @@ fn on_a_session_each_read_measures_on_a_kernel_client_of_its_own() {
         current.model,
         Some(ModelRead {
             revision: Revision::OPENED,
-            of: ModelChoice::Current
+            of: ModelChoice::Current,
+            fault: None,
         })
     );
     assert_eq!(current.result.unwrap().distance, mm(1));
