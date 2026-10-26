@@ -1,4 +1,6 @@
-//! For tests that recompute: documents from text, and what a recompute published.
+//! For tests that recompute: documents from text, and what a recompute published. Shared
+//! with silico-kernel's tests, which use only some of it.
+#![allow(dead_code)]
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,13 +33,14 @@ pub fn published<K: Kernel + 'static>(engine: &Recompute<K>, document: Checked) 
     }
 }
 
-/// The names of the kernel calls in `calls` that made shapes: every call but the summaries,
-/// which measure features' solids once they're made (checked in tests/fingerprint.rs).
+/// The names of the kernel calls in `calls` that made shapes: every call but the summaries
+/// and descriptions, which measure features' solids once they're made (checked in
+/// tests/fingerprint.rs and tests/described.rs).
 pub fn made(calls: &[Call]) -> Vec<&'static str> {
     calls
         .iter()
         .map(|call| call.op.name())
-        .filter(|name| *name != "Summarize")
+        .filter(|name| !matches!(*name, "Summarize" | "Describe"))
         .collect()
 }
 

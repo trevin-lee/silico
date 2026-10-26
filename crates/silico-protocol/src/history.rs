@@ -39,6 +39,26 @@ impl ElementRef {
 }
 
 impl ElementKind {
+    /// Its word, for messages and as a request names it: `face`, `edge`, `vertex`, `solid`.
+    pub fn word(self) -> &'static str {
+        match self {
+            ElementKind::Face => "face",
+            ElementKind::Edge => "edge",
+            ElementKind::Vertex => "vertex",
+            ElementKind::Solid => "solid",
+        }
+    }
+
+    /// Its word with its article, for messages: `a face`, `an edge`, `a vertex`, `a solid`.
+    pub fn a_word(self) -> &'static str {
+        match self {
+            ElementKind::Face => "a face",
+            ElementKind::Edge => "an edge",
+            ElementKind::Vertex => "a vertex",
+            ElementKind::Solid => "a solid",
+        }
+    }
+
     /// Its word for many, for messages: `faces`, `edges`, `vertices`, `solids`.
     pub fn plural(self) -> &'static str {
         match self {

@@ -14,7 +14,7 @@ use silico_protocol::{
     Misbehavior, Op, Operation, OutOfTurn, Primitive, Profile, Refusal, Reply, Reported, Request,
     RequestId, Response, ShapeData, ShapeSummary, Topology, TraceId, write_message,
 };
-use silico_protocol::{Curve, FaceRegions, Region, SketchPlane};
+use silico_protocol::{Curve, Distance, FaceRegions, Region, SketchPlane};
 use silico_protocol::{Description, EdgeCurve, EdgeDescription, FaceDescription, Surface};
 
 /// One request per operation. The match gives each variant its own index and every
@@ -132,6 +132,7 @@ fn every_op() -> Vec<Op> {
         Op::Debug(DebugOp::Misbehave(Misbehavior::BadHistory)),
         Op::Debug(DebugOp::Misbehave(Misbehavior::HistoryForNoInputs)),
         Op::Debug(DebugOp::Misbehave(Misbehavior::ForgedRefusal)),
+        Op::Debug(DebugOp::Misbehave(Misbehavior::EndlessDescription)),
         Op::Debug(DebugOp::ThrowBadAlloc),
         Op::Solve(SketchSystem {
             values: vec![0.0, 0.5, 10.0, -0.25, 10.0],
@@ -252,6 +253,15 @@ fn every_op() -> Vec<Op> {
             tolerance: 0.1,
             force_face_deflection: true,
         },
+        Op::Distance {
+            shape: ShapeData::checked(Blob::inline(vec![8, 1]), true),
+            first: ElementRef::face(u32::MAX),
+            other: Some(ShapeData::checked(Blob::inline(vec![7]), false)),
+            second: ElementRef {
+                kind: ElementKind::Vertex,
+                index: 1,
+            },
+        },
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
@@ -315,9 +325,11 @@ fn every_op() -> Vec<Op> {
             Op::Debug(DebugOp::ThrowBadAlloc) => 39,
             Op::Describe { .. } => 40,
             Op::ExportMesh { .. } => 41,
+            Op::Debug(DebugOp::Misbehave(Misbehavior::EndlessDescription)) => 42,
+            Op::Distance { .. } => 43,
         })
         .collect();
-    assert_eq!(indices, (0..42).collect(), "an operation has no case");
+    assert_eq!(indices, (0..44).collect(), "an operation has no case");
     ops
 }
 
@@ -470,6 +482,13 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             status: SolveStatus::Failed,
             values: None,
         })),
+        // A distance at extremes a frame must carry exactly: -0, subnormal, and the largest.
+        Ok(Reply::Distance(Distance {
+            distance: 5e-324,
+            from: [-0.0, f64::MAX, -f64::MAX],
+            to: [1e-300, 0.1, 13.0],
+            solutions: u32::MAX,
+        })),
         // Every kind of surface and curve, at extremes a frame must carry exactly.
         Ok(Reply::Described {
             total: u32::MAX,
@@ -594,6 +613,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::Moved(_)) => 15,
             Ok(Reply::Described { .. }) => 16,
             Ok(Reply::ExportMesh(_)) => 17,
+            Ok(Reply::Distance(_)) => 18,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
@@ -606,7 +626,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         .collect();
     assert_eq!(
         indices,
-        (0..18).collect(),
+        (0..19).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -1002,6 +1022,7 @@ fn every_op_has_its_own_name() {
             "DebugMisbehaveBadHistory",
             "DebugMisbehaveHistoryForNoInputs",
             "DebugMisbehaveForgedRefusal",
+            "DebugMisbehaveEndlessDescription",
             "DebugThrowBadAlloc",
             "Solve",
             "DragBegin",
@@ -1012,7 +1033,8 @@ fn every_op_has_its_own_name() {
             "PrismThroughAll",
             "Revolution",
             "Describe",
-            "ExportMesh"
+            "ExportMesh",
+            "Distance"
         ]
     );
 }

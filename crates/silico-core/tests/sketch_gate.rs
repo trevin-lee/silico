@@ -288,11 +288,13 @@ fn reference_dimensions_take_what_a_solve_can_measure() {
         ),
         (
             r#"{"id": "k0000000", "type": "length", "line": "na000000", "value": 3000000.000001, "driving": false}"#,
-            Some("a reference length's value is 3000000.000001 mm, but it's from 0 to 3000000 mm"),
+            Some(
+                "a reference length's value is 3000000.000001 mm, but it must be from 0 to 3000000 mm",
+            ),
         ),
         (
             r#"{"id": "k0000000", "type": "radius", "curve": "ca000000", "value": -0.000001, "driving": false}"#,
-            Some("a reference radius's value is -0.000001 mm, but it's from 0 to 3000000 mm"),
+            Some("a reference radius's value is -0.000001 mm, but it must be from 0 to 3000000 mm"),
         ),
         (
             r#"{"id": "k0000000", "type": "distance_x", "a": "pa000000", "b": "pb000000", "value": -3000000, "driving": false}"#,
@@ -301,12 +303,12 @@ fn reference_dimensions_take_what_a_solve_can_measure() {
         (
             r#"{"id": "k0000000", "type": "distance_x", "a": "pa000000", "b": "pb000000", "value": -3000000.000001, "driving": false}"#,
             Some(
-                "a reference distance_x's value is -3000000.000001 mm, but it's at most 3000000 mm either way",
+                "a reference distance_x's value is -3000000.000001 mm, but it must be at most 3000000 mm either way",
             ),
         ),
         (
             r#"{"id": "k0000000", "type": "distance", "a": "pa000000", "b": "pb000000", "value": 0, "driving": true}"#,
-            Some("a distance's value is 0 mm, but it's above 0 and at most 1000000 mm"),
+            Some("a distance's value is 0 mm, but it must be above 0 and at most 1000000 mm"),
         ),
     ] {
         match problem {
@@ -617,7 +619,7 @@ fn a_reference_diameter_takes_up_to_three_kilometres_too() {
             r#"{"id": "k0000000", "type": "diameter", "curve": "ca000000", "value": 3000000.000001, "driving": false}"#,
         ),
         "constraints.k0000000.value",
-        "a reference diameter's value is 3000000.000001 mm, but it's from 0 to 3000000 mm",
+        "a reference diameter's value is 3000000.000001 mm, but it must be from 0 to 3000000 mm",
     );
 }
 

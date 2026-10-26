@@ -264,6 +264,19 @@ mod ffi {
         vertices: Vec<Point3>,
     }
 
+    /// The least distance between two elements (`distance`): whether both were found (if
+    /// not, how many of each one's kind its shape has), whether OCCT found the distance, its
+    /// value, and each pair of points where OCCT found it met, two points a pair (on the
+    /// first element, then on the second), in OCCT's order.
+    struct DistanceOut {
+        found: bool,
+        first_total: u32,
+        second_total: u32,
+        done: bool,
+        value: f64,
+        pairs: Vec<Point3>,
+    }
+
     /// How many distinct faces, edges, vertices, and solids a shape has.
     struct Counts {
         faces: u32,
@@ -383,6 +396,14 @@ mod ffi {
             count: u32,
             precision: f64,
         ) -> Result<DescribeOut>;
+        fn distance(
+            first_shape: &Shape,
+            first_kind: Kind,
+            first: u32,
+            second_shape: &Shape,
+            second_kind: Kind,
+            second: u32,
+        ) -> Result<DistanceOut>;
         fn is_valid_where_changed(input: &Shape, result: &Shape) -> Result<bool>;
         fn is_valid_where_changed_from_two(
             first: &Shape,
@@ -986,9 +1007,93 @@ pub fn describe(
     ))
 }
 
+/// The least distance between `first`, an element of `shape`, and `second`, one of
+/// `other` (or of `shape` too, if there's no other), as bounded (docs/ports/measure.md):
+/// OCCT's `BRepExtrema_DistShapeShape` on one thread, its distance, one pair of points where
+/// it's met, chosen by their coordinates among those within OCCT's precision of the
+/// distance ([`silico_protocol::witness_within`]), and how many pairs OCCT found. Refused,
+/// naming `first` or `second`, for a solid, an element numbered 0, or one its shape hasn't;
+/// and if OCCT finds no distance.
+///
+/// OCCT's search isn't symmetric: given the two elements the other way round, it can find
+/// other pairs, and so another witness, and a distance an ulp off. So the bridge gives them
+/// to it in one order, by the elements' own B-reps, and puts its pairs back in the
+/// request's: swapping the elements swaps the witness's points and nothing else, and
+/// nothing but the two elements (not the rest of their shapes, nor their numbers) decides
+/// the answer.
+pub fn distance(
+    shape: &Shape,
+    first: silico_protocol::ElementRef,
+    other: Option<&Shape>,
+    second: silico_protocol::ElementRef,
+) -> Result<silico_protocol::Distance, KernelError> {
+    silico_protocol::check_distance(first, second).map_err(KernelError::new)?;
+    let kind = |element: silico_protocol::ElementRef| match element.kind {
+        ElementKind::Face => ffi::Kind::Face,
+        ElementKind::Edge => ffi::Kind::Edge,
+        ElementKind::Vertex => ffi::Kind::Vertex,
+        // Refused above; the bridge refuses one too.
+        ElementKind::Solid => ffi::Kind::Solid,
+    };
+    let (first_kind, second_kind) = (kind(first), kind(second));
+    let out = ffi::distance(
+        shape.get()?,
+        first_kind,
+        first.index,
+        other.unwrap_or(shape).get()?,
+        second_kind,
+        second.index,
+    )?;
+    if !out.found {
+        let missing = |element: silico_protocol::ElementRef, count: u32, parameter: &str| {
+            (element.index > count).then(|| {
+                KernelError::new(Refusal::ElementMissing {
+                    parameter: parameter.to_owned(),
+                    element,
+                    count,
+                })
+            })
+        };
+        return Err(missing(first, out.first_total, "first")
+            .or_else(|| missing(second, out.second_total, "second"))
+            .unwrap_or_else(|| {
+                KernelError::new(Refusal::Internal {
+                    what: "the bridge found no element, though both are in range".to_owned(),
+                })
+            }));
+    }
+    if !out.done {
+        return Err(KernelError::caused(
+            Refusal::DistanceNotDone,
+            Some("BRepExtrema_DistShapeShape: not done".to_owned()),
+        ));
+    }
+    let point = |p: &ffi::Point3| [p.x, p.y, p.z];
+    let pairs: Vec<[[f64; 3]; 2]> = out
+        .pairs
+        .chunks_exact(2)
+        .map(|pair| [point(&pair[0]), point(&pair[1])])
+        .collect();
+    let Some([from, to]) =
+        silico_protocol::witness_within(&pairs, out.value, silico_protocol::LENGTH_TOLERANCE)
+    else {
+        return Err(KernelError::caused(
+            Refusal::DistanceNotDone,
+            Some("BRepExtrema_DistShapeShape: done, with no solution".to_owned()),
+        ));
+    };
+    Ok(silico_protocol::Distance {
+        distance: out.value,
+        from,
+        to,
+        solutions: u32::try_from(pairs.len()).unwrap_or(u32::MAX),
+    })
+}
+
 /// Every one of `shape`'s faces, edges, and vertices described, a batch of at most
 /// [`DESCRIBE_BATCH`](silico_protocol::DESCRIBE_BATCH) after another, joined
-/// ([`silico_protocol::describe_in_batches`], as the core asks a worker).
+/// ([`silico_protocol::describe_in_batches`]: in the kernel's own process, with no summary to
+/// plan from, where the core plans its batches from one, `silico_protocol::batches`).
 pub fn describe_whole(shape: &Shape) -> Result<silico_protocol::Description, KernelError> {
     silico_protocol::describe_in_batches(
         |kind, first, count| describe(shape, kind, first, count),

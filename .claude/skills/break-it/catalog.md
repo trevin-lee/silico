@@ -21,6 +21,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Relative no-op thresholds on large parts (a change of at most 1e-9 × the base's volume is "nothing"): a 4 × 2 mm hole through a 200 m block removes 1.6 litres and is refused, the message claiming the volumes equal
 - Suggested values ("export with a tolerance of at least X") computed from a margin recovered by subtraction (tolerance − deflection) and checked against it, while the consumer subtracts the original rounding: an input landing an ulp past a rounding step (a whole nanometre) gets a suggestion an ulp short; check each suggestion with the consumer's own formula, and at the parameter's largest values (twice the largest tolerance is past the range)
 - Two results compared by their coordinates' bits where the same module elsewhere takes -0 as 0 (joining nodes, writing f32): a node at -0 in one and 0 in the other is called a different result
+- Fixed decimals presented as a relative precision (a volume to 6 decimals, "precise to a relative 1e-9"): the smallest solid the gate admits (a 1 µm cube, 1e-9 mm³) reads as 0 mm³, and everything under 500 mm³ is held to less than promised; push the gate's smallest values through every rounded output
+- Directions a request gives that are valid but tiny or huge (1e-160, 1e-200, 1e200, `f64::MAX`), used without scaling: their squares underflow to subnormals (an angle off by thousandths of a degree) or to 0, or overflow to infinity, so a direction is refused as zero or answered wrong; scale by the largest component first
 
 ## Sketch geometry
 
@@ -90,6 +92,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Features applied to an empty or invalid base shape
 - Transforms chained many times, including a move and its inverse: location chains that grow without bound, and bytes that differ from the original
 - Measured volumes of results with curved faces trimmed by curves: compare with a closed form (sphere lens), as fixed-order integration is off by 1e-4
+- Faces whose periodic U doesn't start at 0 (a whole-turn surface of revolution or torus rebuilt over [6.2, 6.2 + 2π], as a B-rep or STEP file from elsewhere can hold it): OCCT's precise measure splits the angle at the fixed 0, 2π/3, 4π/3, not the face's own thirds, so it gets nearly one span and is 2.2e-7 low
+- Surfaces of revolution of many-span B-spline meridians (17 spans: 6.6e-7 off; 400: 1.3e-3, at every angle): the precise measure follows the meridian along the seam's knotless straight pcurve, in at most 33 pieces; FreeCAD's default is 33% low at 400 spans. Check against Pappus with de Boor by hand
+- Revolve an arc whose circle's centre is within 1e-7 of the axis: OCCT builds a sphere centred on the axis, so the solid is the δ = 0 one (4.4e-8 of its volume off the profile's at δ = 1e-7); hold the value to the kind OCCT chose
 - Measured volumes of slender slanted prisms (travel 1e6 times their width) and tiny features far from the origin: each face's integral dwarfs the volume and cancels; check flat-faced solids against their mesh
 - Meshes of thin valid solids (100 × 100 × 1e-6, or 1.1e-7 thick 10 mm from the origin): meshing fails, or gives faces too few triangles that still pass validation
 - Mesh checks done triangle by triangle or shell by shell (each shell's signed volume): a solid whose shell has no faces, or whose triangles all weld into one point, passes with no triangles; a cavity larger than its outer shell, or a lone shell flagged a cavity, passes with a negative total
@@ -169,6 +174,12 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Many concurrent calls, calls made during recompute, cancellation partway through an operation
 - Element references by stale, misspelled, or made-up names
 - Calls in the wrong order (editing before opening a document, committing a transaction that was never started)
+- One call wrong in many ways at once (a field of every kind wrong, a list of 150 bad members, a kind that makes the others meaningless, a bad limit with a feature that's a sketch): check every reason is given, the first hundred listed and all counted, none hidden behind an early return or behind the one checked first
+- Listings with cursors and limits: a cursor of another feature or naming nothing, the last entry's, pages of 1; a "never broken" tie exactly ending at the most a call returns and one past it, at the limit and one off it, ascending and descending
+- Strict request readers that keep every refusal and list only the first hundred: an 8 MB list of 4 million bad members holds 4 million errors (a 1.4 GB peak); count past the listed ones
+- Schemas generated from `Option` fields (schemars) leave them out of `required` though the response always has them; `#[schemars(required)]` drops their `null` instead
+- Refused words shown bare when they're plain (`got solid`): a string that spells a JSON literal or number (`"null"`, `"3"`) is refused in the same words as the value itself, and a nullable word's refusal that lists only its words tells an agent `null` is wrong; send each beside the value it spells
+- Snapshots' integers (`"type": "integer"`) against a reader that takes digits only: JSON Schema calls `2.0` and `1e3` integers, and a `uint64` with no `maximum` takes 2^64, so a request the schema validates is refused; validate each refused spelling against the snapshot
 
 ## Kernel worker and IPC
 
@@ -190,6 +201,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Executables that can't be started every way: missing, a directory, mode 0644, a script whose `#!` interpreter is missing, an empty path, and the same named through an environment variable; each error must say what to fix
 - A worker held at launch: macOS holds a newly written executable at `_dyld_start` while it assesses it, at times past a minute, so the first request times out blaming itself (in tests, link worker binaries rather than copy them)
 - A fallback step appended to a chain of attempts: time the whole chain on one failing component at a fraction of the size limit (an impossible chain of 1,024 unknowns: DogLeg 11 s, LM 29 s, BFGS 0.2 s, anchored SQP 33 s, past a 60 s request), not each step alone
+- Worker replies checked only for finiteness, then stored in fixed point (a summary's centre of 1e13 mm, past an i64 of nanometres; a volume of -1 or 0): the overflow surfaces later as `internal`, "a bug in Silico", and an inside-out or empty solid is measured Ok; forge each through the fake's `answer_instead`
 - Worker refusals passed up as they came (a value index, `kernel_failed`, no feature): check the core adds the feature and maps indices to the elements it knows
 - Log sinks that misbehave each way, as a global `tracing` layer under a shell-script worker that writes chosen log bytes: stalled on events, stalled in `on_close` (a synchronous span exporter), panicking, merely slower than the reader (a `fmt` layer to a file, in a 20,000-line burst); check every line is given or counted, counts are said promptly, crash reports still wait for a log a worker's child holds open, and no lock is held while sink code runs
 - A pool that grows on demand, fed requests strictly one after another (thousands of submit-then-wait, and every other one crashing its worker): a slot that counts itself busy until after it has delivered, or while it replaces its worker, makes the next submit start another slot and worker
@@ -207,6 +219,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A naive sequential evaluator as the oracle: random timelines with value-based refusals (kept and not kept), several edits in a row, comparing every feature's outcome, the bodies, which keys are equal, and exactly which steps each edit ran
 - Results taken from the cache or memory without their inputs' (an entry lost, a subdirectory that's a link): a step that reads more than its inputs (a fillet naming its base's elements from the whole lineage) runs before they're rebuilt
 - A superseded recompute that ends after the newer one: both keep their results by key, the last wins, and the older one's copy (its measure superseded, so unmeasured) overwrites the newer's measured or refused one; hold the older one's requests, start the newer, and loop a few hundred rounds, since which keeps last is a race
+- A measure made of several requests (a summary, then batches of a description): refuse, crash, supersede, or cancel at a later batch after the earlier ones came back; nothing partial may be published, kept in memory, or written, and the retry starts from the first request
 - Features alike in every value but their IDs (two identical boxes each pocketed alike, or a refused feature deleted and re-added under a new ID): the deduplicated step, or the refusal kept by its key, carries the first feature's words, so the second is told another feature and base failed
 
 ## Oracles and comparisons
@@ -217,6 +230,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Measures that depend on parametrization, not geometry (OCCT's fixed-order integration, BRepBndLib's loose box): two builds of one OCCT differ beyond a tight tolerance on curved booleans; sweep thousands of seeds before calibrating
 - A reference process that hangs (no deadline), and a crash partway through a batch on either side: later cases must still run in a fresh process
 - No cases at all (an empty directory, `--count 0`): a harness that compared nothing must not exit 0
+- Answers claimed symmetric in their arguments from a solver that isn't (OCCT's `BRepExtrema_DistShapeShape` on two spheres, two conics, two faces of a real part): call with the arguments swapped and compare bits; a witness picked as the first of whatever pairs the solver found moves 47 mm on NIST CTC 01, and the distance by an ulp
 
 ## Import
 
@@ -233,6 +247,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - IDs parsed with `from_str_radix`, which takes upper-case digits and a leading '+': bytes the component never made are taken as one of its own
 - A fake's step read by its grammar but not its values (a fillet of edge 13 of a box, a radius of -1, an edge listed twice): bytes no request could make are taken as its own
 - Hand-written topology tables (each face's edges, each edge's vertices) for primitives: compare with the real kernel's move history, cones whose cap OCCT drops included
+- A fake's refusal built by hand where the worker client words the real one (`failure_error` adds a suggestion to every refusal): send the same bad request to both and compare every field of the error, not only code, parameter, and message
 
 ## Caches and files the core writes
 
@@ -240,6 +255,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Partial or temporary files at predictable names (`.partial-<pid>-<n>`) planted beforehand as symlinks: `File::create` follows them and overwrites the link's target outside the cache; check a victim file is untouched
 - A sound entry re-encoded with an inconsistent payload and its checksum fixed (a checksum isn't a signature): whatever the core validates from a worker (a history's inputs and element numbers) must be validated when read back from disk
 - Decisions the core makes before writing, read back unchecked: an entry keeping a refusal of a code the core never keeps (a hang's), a summary no reply could give (a NaN volume), an error naming more elements than its total; each is never asked again
+- Parts of one entry that must agree, each sound alone (a description's element counts and its summary's, another solid's description under this one's key, 100,000 sound vertices for a box): checking each part's values but not one against another publishes a model whose parts disagree
 - Keys hashing parts joined by a separator the parts may contain (a newline in a kernel identity or platform): two different keys hash the same bytes
 - A kernel identity that hashes only the executable: libraries it loads at run time (OCCT's dylibs through an rpath symlink) change results without changing the identity; a worker binary replaced under a running pool is relaunched under the old identity
 - Directory sizes summed from file lengths: sparse files cost no disk, so a few hundred planted at the file system's longest (APFS: 2^55 bytes) sum past `u64::MAX`; a plain `+=` panics in debug and wraps in release

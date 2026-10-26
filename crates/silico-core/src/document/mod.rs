@@ -12,8 +12,13 @@ mod reach;
 mod sketch;
 mod sketch_gate;
 mod validate;
-mod write;
+pub(crate) mod write;
 
+pub(crate) use decode::{
+    angle_suggestion, area_suggestion, field_name, length_suggestion, shown_number,
+};
+
+pub(crate) use decode::optional_members;
 pub use fingerprint::{Difference, Fingerprint, MEASURE_DECIMALS, Measure};
 pub use model::{
     Axis, ChamferSize, Document, ElementName, Extent, ExtentValue, FEATURE_TYPES, Feature,
@@ -22,14 +27,14 @@ pub use model::{
 };
 pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 pub use reach::{Before, QuotedIds, net_reach, reached, with_users};
-pub(crate) use sketch::MemberPaths;
 pub use sketch::{
     CONSTRAINT_TYPES, Coordinate, Direction, ElementId, ElementKind, Form, LineSide, Plane,
     Reference, Sketch, SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint,
     TangentSide,
 };
-pub(crate) use sketch_gate::too_small;
+pub(crate) use sketch::{MemberPaths, member_id};
 pub use sketch_gate::{MAX_ANGLE_DEGREES, MAX_REFERENCE_LENGTH};
+pub(crate) use sketch_gate::{an_id_of_its_own, id_held, repeats, too_small};
 pub use validate::{Checked, Invalid, PROBLEMS_LISTED, validate};
 pub(crate) use write::sketch_elements;
 
@@ -46,7 +51,20 @@ use crate::{Error, ErrorCode};
 /// it's refused, as `write` refuses any document past it.
 pub fn read(bytes: &[u8]) -> Result<Document, Error> {
     let _span = tracing::debug_span!("document_read", bytes = bytes.len()).entered();
-    let document = decode::decode(bytes)?;
+    read_tree(decode::tree(bytes)?)
+}
+
+/// The reader's tree of `bytes` ([`json::read`]), or why they aren't a document's JSON, as
+/// [`read`] says it.
+pub(crate) fn tree(bytes: &[u8]) -> Result<json::Node, Error> {
+    decode::tree(bytes)
+}
+
+/// The document the reader's tree `root` holds, read and refused as [`read`] reads and
+/// refuses the text it's the tree of: so an edit made on a document's tree is read by the
+/// one reader every file is.
+pub(crate) fn read_tree(root: json::Node) -> Result<Document, Error> {
+    let document = decode::decode_node(root)?;
     if fits(&document) {
         Ok(document)
     } else {
@@ -55,6 +73,12 @@ pub fn read(bytes: &[u8]) -> Result<Document, Error> {
             "the document is too large for Silico to read",
         ))
     }
+}
+
+/// The feature the reader's tree `node` holds, at `index` in the timeline, read as [`read`]
+/// reads each of a document's features.
+pub(crate) fn read_feature(index: usize, node: json::Node) -> Result<Feature, Error> {
+    decode::feature(index, node)
 }
 
 /// The document's canonical text: the same document always writes the same bytes. Refused
@@ -155,15 +179,27 @@ fn smaller(feature: &Feature) -> &'static str {
 /// The JSON Schema of a document (draft 2020-12), as agents get it. The reader is the
 /// authority where a schema can't say enough: a seventh decimal, a key written twice.
 pub fn schema() -> Result<String, Error> {
+    schema_text(&schema_value_of::<Document>(), "the document")
+}
+
+/// The JSON Schema of `T` (draft 2020-12), every object's keys sorted: the document's, and
+/// the command API's (`command::wire::snapshot_value`).
+pub(crate) fn schema_value_of<T: schemars::JsonSchema>() -> serde_json::Value {
     let schema = SchemaSettings::draft2020_12()
         .into_generator()
-        .into_root_schema_for::<Document>();
-    serde_json::to_string_pretty(&sorted(schema.as_value()))
+        .into_root_schema_for::<T>();
+    sorted(schema.as_value())
+}
+
+/// `schema` as the protected snapshots hold it: its keys sorted, pretty, with a trailing
+/// newline. `what` names it for the error a schema that couldn't be written gives.
+pub(crate) fn schema_text(schema: &serde_json::Value, what: &str) -> Result<String, Error> {
+    serde_json::to_string_pretty(&sorted(schema))
         .map(|text| text + "\n")
         .map_err(|e| {
             Error::new(
                 ErrorCode::Internal,
-                "the document schema couldn't be written",
+                format!("{what}'s schema couldn't be written"),
             )
             .with_cause(e.to_string())
             .with_suggestion(crate::worker::SILICO_BUG)

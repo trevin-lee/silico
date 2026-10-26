@@ -7,10 +7,16 @@
 // Shared by the files below, each loaded once.
 #[path = "common/cache.rs"]
 mod cache;
+#[path = "common/cache_format.rs"]
+mod cache_format;
+#[path = "common/describing.rs"]
+mod describing;
 #[path = "common/example.rs"]
 mod example;
 #[path = "common/lateness.rs"]
 mod lateness;
+#[path = "common/entries.rs"]
+mod listing;
 #[path = "common/model.rs"]
 mod model;
 #[path = "common/recompute.rs"]
@@ -20,12 +26,20 @@ mod refusals;
 #[path = "common/sweeps.rs"]
 mod sweeps;
 
+#[path = "adversarial_described.rs"]
+mod adversarial_described;
+#[path = "adversarial_entries.rs"]
+mod adversarial_entries;
 #[path = "adversarial_measure_refusal.rs"]
 mod adversarial_measure_refusal;
 #[path = "adversarial_recompute.rs"]
 mod adversarial_recompute;
 #[path = "adversarial_validate.rs"]
 mod adversarial_validate;
+#[path = "described.rs"]
+mod described;
+#[path = "entries.rs"]
+mod entries;
 #[path = "measure_refusal.rs"]
 mod measure_refusal;
 #[path = "name_parse.rs"]

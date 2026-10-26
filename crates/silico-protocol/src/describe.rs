@@ -377,6 +377,37 @@ fn unit(quantity: Quantity, v: [f64; 3]) -> Result<(), String> {
     }
 }
 
+/// The batches that describe a shape of `faces`, `edges`, and `vertices`, in order: each
+/// kind's from 1, at most [`DESCRIBE_BATCH`] at a time, faces, then edges, then vertices, as
+/// `(kind, first, count)`. Made one at a time, so however large a count is, it costs nothing
+/// until its batches are asked for.
+pub fn batches(
+    faces: u32,
+    edges: u32,
+    vertices: u32,
+) -> impl Iterator<Item = (ElementKind, u32, u32)> {
+    let size = u64::from(DESCRIBE_BATCH);
+    [
+        (ElementKind::Face, faces),
+        (ElementKind::Edge, edges),
+        (ElementKind::Vertex, vertices),
+    ]
+    .into_iter()
+    .flat_map(move |(kind, total)| {
+        let total = u64::from(total);
+        (0..total.div_ceil(size)).map(move |i| {
+            let first = i * size + 1;
+            let count = (total + 1 - first).min(size);
+            // Both at most the total, a u32.
+            (
+                kind,
+                u32::try_from(first).unwrap_or(u32::MAX),
+                u32::try_from(count).unwrap_or(u32::MAX),
+            )
+        })
+    })
+}
+
 /// Every one of a shape's faces, edges, and vertices described, a batch of at most
 /// [`DESCRIBE_BATCH`] after another, joined: `batch(kind, first, count)` gets one (its kind's
 /// total, and its elements), and `changed(kind, was, now)` is the error for a kind whose
@@ -932,5 +963,27 @@ mod tests {
             }
             .is_straight()
         );
+    }
+
+    #[test]
+    fn batches_cover_each_kind_from_1_a_thousand_at_most_and_are_made_as_asked() {
+        use super::batches;
+        assert_eq!(batches(0, 0, 0).count(), 0);
+        assert_eq!(
+            batches(1000, 1001, 2).collect::<Vec<_>>(),
+            [
+                (ElementKind::Face, 1, 1000),
+                (ElementKind::Edge, 1, 1000),
+                (ElementKind::Edge, 1001, 1),
+                (ElementKind::Vertex, 1, 2),
+            ]
+        );
+        // The most a kind can have: 4,294,967,295 in 4,294,968 batches, the last of 295.
+        let mut most = batches(u32::MAX, 0, 0);
+        assert_eq!(
+            most.nth(4_294_967),
+            Some((ElementKind::Face, 4_294_967_001, 295))
+        );
+        assert_eq!(most.next(), None);
     }
 }

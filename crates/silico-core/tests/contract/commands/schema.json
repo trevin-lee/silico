@@ -1,0 +1,35 @@
+{
+  "request": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`schema`'s request: the document's JSON Schema, or a command's.",
+    "properties": {
+      "of": {
+        "description": "`document`, or a command's name (`elements`, `query`, ...): a name that's neither is\nrefused, with every name `schema` describes as candidates.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "of"
+    ],
+    "title": "SchemaRequest",
+    "type": "object"
+  },
+  "result": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`schema`'s result.",
+    "properties": {
+      "schema": {
+        "additionalProperties": true,
+        "description": "The document's JSON Schema (draft 2020-12), or a command's,\n`{\"request\": ..., \"result\": ...}`, two JSON Schemas: exactly what the protected\nsnapshots hold.",
+        "type": "object"
+      }
+    },
+    "required": [
+      "schema"
+    ],
+    "title": "SchemaResult",
+    "type": "object"
+  }
+}

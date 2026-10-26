@@ -93,6 +93,10 @@ error_codes! {
     /// the document's: no edit helps, and no retry until it's fixed or Silico restarted,
     /// unless the worker was stopped from outside as it started, as its suggestion then says.
     WorkerUnavailable = "worker_unavailable",
+    /// A command was stopped before it had done its work, by the client that asked for it
+    /// (`cancel`, or MCP's cancellation): it left no trace, and asking again runs it again.
+    /// Neither the document's problem nor the kernel's.
+    Cancelled = "cancelled",
 }
 
 impl ErrorCode {
@@ -117,7 +121,8 @@ impl ErrorCode {
             | ErrorCode::ReferenceBroken
             | ErrorCode::OverConstrained
             | ErrorCode::SolveFailed
-            | ErrorCode::Conflict => false,
+            | ErrorCode::Conflict
+            | ErrorCode::Cancelled => false,
         }
     }
 }
@@ -229,6 +234,14 @@ impl Error {
     #[must_use]
     pub fn with_feature(mut self, feature: impl Into<String>) -> Self {
         self.0.feature = Some(feature.into());
+        self
+    }
+
+    /// The error about no feature: for one that says nothing of the feature it was met in
+    /// (a worker that couldn't be had, whichever feature asked for it).
+    #[must_use]
+    pub(crate) fn without_feature(mut self) -> Self {
+        self.0.feature = None;
         self
     }
 

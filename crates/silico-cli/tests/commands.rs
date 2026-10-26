@@ -825,3 +825,113 @@ fn a_groove_whose_other_region_is_off_the_axis_is_refused_for_its_narrow_slit() 
         "{message}"
     );
 }
+
+#[test]
+fn a_revolved_barrels_fingerprint_is_its_volume_by_hand_and_check_passes() {
+    // A sketch on XZ of x = 1 to the arc through (4, −4), (5, 0), and (4, 4) (centre
+    // (−3.5, 0), radius 8.5, its circle reaching past the axis), revolved a whole turn
+    // about the sketch's y (model z): a surface of revolution OCCT 7.9.3's precise
+    // measure had 2.2e-7 low (526.334197) until patch 0003 (docs/ports/measure.md). By
+    // hand, π ∫ (xo² − 1) dz over z from −4 to 4, xo = −3.5 + √(8.5² − z²):
+    // π (668 − 128/3 − 7 (30 + 8.5² asin(4/8.5))) = 526.33431398915, written to six
+    // decimals as 526.334314; its area, the two annuli 15π each, the bore 16π, and the
+    // side by Pappus, 4π · 8.5 (−3.5 asin(4/8.5) + 4): 388.5995488823284, 388.599549.
+    let scratch = Scratch::new("barrel");
+    let points = [
+        fixture::point("p0000001", 1.0, -4.0),
+        fixture::point("p0000002", 4.0, -4.0),
+        fixture::point("p0000003", 4.0, 4.0),
+        fixture::point("p0000004", 1.0, 4.0),
+        fixture::point("p0000005", -3.5, 0.0),
+    ];
+    let lines = [
+        fixture::line("n0000001", "p0000001", "p0000002"),
+        fixture::line("n0000002", "p0000003", "p0000004"),
+        fixture::line("n0000003", "p0000004", "p0000001"),
+    ];
+    let arcs = [fixture::arc("a0000001", "p0000005", "p0000002", "p0000003")];
+    let sketch = sweeps::sketch_of("s0000001", "xz", &points, &lines, &[], &arcs);
+    let revolve = sweeps::turned(
+        "r0000001",
+        "revolve",
+        None,
+        "s0000001",
+        "y_axis",
+        sweeps::TURN,
+    );
+    let file = scratch.file(&sweeps::document(&[&sketch, &revolve]));
+    let out = silico(&scratch, &["fmt"], &file);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        text.contains(r#""fingerprint": {"volume": 526.334314, "area": 388.599549,"#),
+        "{text}"
+    );
+    let out = silico(&scratch, &["check"], &file);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(out.stderr.is_empty(), "{}", stderr(&out));
+}
+
+/// `silico schema ARGS`, which needs no worker and no file.
+fn schema(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_silico"))
+        .arg("schema")
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+/// The core's committed contract file `name`.
+fn core_contract(name: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../silico-core/tests/contract")
+        .join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+#[test]
+fn schema_prints_the_documents_or_a_commands_as_committed() {
+    // Without a name, the document's: exactly its committed snapshot.
+    let out = schema(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        core_contract("document-schema.json")
+    );
+    assert_eq!(
+        String::from_utf8(schema(&["document"]).stdout).unwrap(),
+        core_contract("document-schema.json")
+    );
+    for (command, _) in silico_core::command::wire::COMMANDS {
+        let out = schema(&[command]);
+        assert_eq!(out.status.code(), Some(0), "{command}: {}", stderr(&out));
+        assert!(out.stderr.is_empty(), "{command}");
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            core_contract(&format!("commands/{command}.json")),
+            "{command}"
+        );
+    }
+    // A name that's neither: exit 2, the core's refusal, its candidates, and nothing on
+    // stdout.
+    let out = schema(&["envelope"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    assert_eq!(
+        stderr(&out),
+        "silico schema: invalid_input: of must be document or the name of a command with a \
+         schema, got envelope (parameter of). Suggestion: give one of the candidates. \
+         Candidates: document, begin, commit, rollback, format, add_feature, set_field, \
+         remove_feature, replace_text, elements, query, schema, mass_properties.\n"
+    );
+    // Two names: a usage error.
+    let out = schema(&["query", "elements"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("silico schema [NAME]"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(out.stdout.is_empty());
+}
