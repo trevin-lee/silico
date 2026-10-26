@@ -600,7 +600,8 @@ fn output_target(
 }
 
 /// `bytes` written to `target` through a new file beside it renamed into place, with the
-/// permissions of the file it replaces, if one (or the new file's own).
+/// permissions of the file it replaces, if one (or the new file's own); the directory it's
+/// renamed in synced after, as a save's is, so a power cut can't bring back the old file.
 fn write_beside(
     target: &Path,
     replaced: Option<&std::fs::Metadata>,
@@ -673,7 +674,8 @@ fn write_beside(
                     shown_path(&partial)
                 ))
             })
-        });
+        })
+        .inspect(|()| directory_synced(target));
     if written.is_err() {
         let _ = std::fs::remove_file(&partial);
     }

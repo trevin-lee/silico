@@ -174,6 +174,45 @@ fn a_save_says_when_it_syncs_its_new_text_and_how_long_that_took() {
 }
 
 #[test]
+fn a_file_a_command_writes_syncs_its_new_file_and_then_the_directory_it_was_renamed_in() {
+    // A render's PNG (`file::write_output`): the new file beside it, then the directory it's
+    // renamed in, so a power cut after the write can't bring back the old file, as a save's.
+    let scratch = Scratch::new("output");
+    let directory = std::fs::canonicalize(&scratch.0).unwrap();
+    let rules = silico_core::file::Output {
+        field: "to",
+        extension: "png",
+        replace: false,
+        workspace: Some(&directory),
+        held: &[],
+    };
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let subscriber = tracing_subscriber::registry().with(Recorder(Arc::clone(&seen)));
+    tracing::subscriber::with_default(subscriber, || {
+        silico_core::file::write_output(&directory.join("view.png"), b"PNG", &rules).unwrap();
+    });
+    let seen = std::mem::take(&mut *seen.lock().unwrap());
+    let beside = directory.join(format!(".view.png.part-{}", std::process::id()));
+    let said: Vec<(&str, Option<String>)> = seen
+        .said
+        .iter()
+        .filter(|s| s.message.starts_with("sync"))
+        .map(|s| (s.message.as_str(), s.path.clone()))
+        .collect();
+    let at = |p: &std::path::Path| Some(p.display().to_string());
+    assert_eq!(
+        said,
+        [
+            ("syncing the new file", at(&beside)),
+            ("synced the new file", at(&beside)),
+            ("syncing the directory it was renamed in", at(&directory)),
+            ("synced the directory it was renamed in", at(&directory)),
+        ]
+    );
+    assert_eq!(std::fs::read(directory.join("view.png")).unwrap(), b"PNG");
+}
+
+#[test]
 fn a_save_in_place_says_when_it_syncs_the_old_text_kept_and_then_the_new() {
     let scratch = Scratch::new("linked");
     let file = scratch.0.join("part.silico");
