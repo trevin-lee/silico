@@ -864,7 +864,10 @@ fn a_mesh_the_kernel_fails_names_its_body_and_the_next_render_works() {
     let bench = failing_while(Arc::clone(&failing), |op| {
         matches!(op, Op::Tessellate { .. })
     });
-    let e = refused(bench.render(&view("front", 100, 100)));
+    let problems = bench.render(&view("front", 100, 100)).unwrap_err();
+    // The kernel's one error, counted once: none unlisted.
+    assert_eq!(problems.total(), 1, "{problems:?}");
+    let e = refused(Err(problems));
     assert!(bench.renderer.sent().is_empty());
     failing.store(false, std::sync::atomic::Ordering::SeqCst);
     bench.render(&view("front", 100, 100)).unwrap();
@@ -1091,4 +1094,185 @@ fn a_broken_highlights_candidates_are_the_likeliest_by_m2_8s_rule() {
     let e = refused(bench.render(&request));
     assert!(!e.candidates().is_empty(), "{e:?}");
     assert!(e.candidates().iter().all(|c| c.contains(".Edge")), "{e:?}");
+}
+
+// --- Mutants that survived #170 ------------------------------------------------------
+
+/// The fake kernel answering every mesh with `mesh`, at the deflection asked.
+fn meshing_to(text: &str, mesh: Mesh) -> Bench {
+    Bench::with(text, move |k| {
+        k.answer_instead(move |op| match op {
+            Op::Tessellate { deflection, .. } => Some(Reply::MeshAt(MeshAt {
+                mesh: mesh.clone(),
+                deflection: *deflection,
+            })),
+            _ => None,
+        });
+    })
+}
+
+/// A mesh of `faces` faces of a triangle each, and `edges` edges of a point each, every
+/// point within 1 mm of the origin.
+fn faces_and_edges(faces: usize, edges: usize) -> Mesh {
+    Mesh {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        normals: vec![[0.0, -1.0, 0.0]; 3],
+        triangles: vec![[0, 1, 2]; faces],
+        face_triangles: vec![1; faces],
+        edge_points: vec![[0.0; 3]; edges],
+        edge_point_counts: vec![1; edges],
+        valid: None,
+    }
+}
+
+#[test]
+fn a_scene_too_large_with_a_body_out_of_view_isnt_told_to_widen_the_view() {
+    // M4.6: a camera's advice for meshes past the triangle cap adds a wider view only where
+    // no body was left out of it; where one was, a wider view brings it in. The body in view
+    // meshes to 2,000,001 triangles either way.
+    let two = boxes(&[
+        ("aaaaaaaa", [0.0; 3], [1.0; 3]),
+        ("bbbbbbbb", [1000.0, 0.0, 0.0], [1.0; 3]),
+    ]);
+    let bench = Bench::with(&two, |k| {
+        k.answer_instead(|op| match op {
+            Op::Tessellate { deflection, .. } => {
+                Some(one_face_of(MAX_RENDER_TRIANGLES + 1, *deflection))
+            }
+            _ => None,
+        });
+    });
+    // From −y onto the first box, 10 high: the second, 1,000 to the right, out of view.
+    let on_the_first = Camera {
+        projection: Projection::Orthographic { view_height: 10.0 },
+        eye: [0.5, -100.0, 0.5],
+        target: [0.5, 0.5, 0.5],
+        up: [0.0, 0.0, 1.0],
+    };
+    let e = refused(bench.render(&camera(on_the_first, 100, 100)));
+    assert_eq!(e.parameter(), Some("height"), "{e:?}");
+    assert!(e.message().contains("2000001 triangles"), "{e:?}");
+    assert_eq!(
+        e.suggestion(),
+        Some("give a smaller height: it meshes the bodies coarser"),
+        "{e:?}"
+    );
+    // The example's one body, in view: both.
+    let bench = Bench::with(EXAMPLE, |k| {
+        k.answer_instead(|op| match op {
+            Op::Tessellate { deflection, .. } => {
+                Some(one_face_of(MAX_RENDER_TRIANGLES + 1, *deflection))
+            }
+            _ => None,
+        });
+    });
+    let e = refused(bench.render(&camera(front(60.0), 100, 100)));
+    assert_eq!(e.parameter(), Some("height"), "{e:?}");
+    assert_eq!(
+        e.suggestion(),
+        Some("give a smaller height, or a wider view: either meshes the bodies coarser"),
+        "{e:?}"
+    );
+    assert!(bench.renderer.sent().is_empty());
+}
+
+#[test]
+fn a_named_views_scene_reaching_past_its_zoom_is_the_views_and_a_mesh_past_the_render_the_cores() {
+    // A mesh with a point 1e11 mm out (the fake's: a kernel's lies on the body's box): the
+    // front view, fitted to the box, is 1.1 × 40 = 44 high, under 1e-5 of the scene's
+    // reach. The scene's check refuses its zoom: the view's to change, not Silico's bug.
+    let mut far = faces_and_edges(1, 0);
+    far.positions[1] = [1e11, 0.0, 0.0];
+    let bench = meshing_to(EXAMPLE, far);
+    let e = refused(bench.render(&view("front", 100, 100)));
+    assert_eq!(
+        (e.code(), e.parameter()),
+        (ErrorCode::InvalidInput, Some("view")),
+        "{e:?}"
+    );
+    assert!(
+        e.message()
+            .starts_with("the view fitted can't draw the bodies: camera.view_height"),
+        "{e:?}"
+    );
+    assert_eq!(e.suggestion(), Some("give a camera on the bodies"), "{e:?}");
+    assert!(bench.renderer.sent().is_empty());
+    // A point past the 1e12 mm a render draws, under a camera given: no request makes it,
+    // so it's the core's, naming the scene's field.
+    let mut past = faces_and_edges(1, 0);
+    past.positions[1] = [2e12, 0.0, 0.0];
+    let bench = meshing_to(EXAMPLE, past);
+    let e = refused(bench.render(&camera(front(60.0), 100, 100)));
+    assert_eq!(
+        (e.code(), e.parameter()),
+        (ErrorCode::Internal, Some("bodies")),
+        "{e:?}"
+    );
+    assert_eq!(
+        e.message(),
+        "the core built a scene the render worker can't draw",
+        "{e:?}"
+    );
+    assert!(bench.renderer.sent().is_empty());
+}
+
+#[test]
+fn meshes_of_exactly_the_faces_and_edges_a_render_draws_are_drawn_and_one_more_edge_refused() {
+    // 20,000 faces and 200,000 edges, the caps exactly: drawn. 200,001 edges: refused
+    // before anything is sent, naming `camera`, as a camera on part of the model has fewer.
+    let bench = meshing_to(EXAMPLE, faces_and_edges(20_000, 200_000));
+    bench.render(&view("front", 100, 100)).unwrap();
+    let sent = bench.renderer.sent();
+    assert_eq!(sent[0].bodies[0].mesh.face_triangles.len(), 20_000);
+    assert_eq!(sent[0].bodies[0].mesh.edge_point_counts.len(), 200_000);
+    let bench = meshing_to(EXAMPLE, faces_and_edges(1, 200_001));
+    let e = refused(bench.render(&view("front", 100, 100)));
+    assert_eq!(
+        (e.code(), e.parameter()),
+        (ErrorCode::InvalidInput, Some("camera")),
+        "{e:?}"
+    );
+    assert!(e.message().contains("200001 edges"), "{e:?}");
+    assert!(bench.renderer.sent().is_empty());
+}
+
+#[test]
+fn a_highlight_past_its_bodys_mesh_is_the_cores_naming_it_by_kind_and_number() {
+    // The fake meshes the Hole (9 faces, 15 edges) to one face and no edge: its second face
+    // and its first edge, each one past the mesh, are Silico's bug, said by kind and number
+    // from 1, never drawn.
+    let bench = meshing_to(EXAMPLE, faces_and_edges(1, 0));
+    let hole = silico_core::document::FeatureId::new("m3tq8v0z").unwrap();
+    let map = bench.model.element_map(&hole).unwrap();
+    let name = |element| map.name(element).unwrap().to_string();
+    for (element, says) in [
+        (
+            silico_core::kernel::ElementRef {
+                kind: silico_core::kernel::ElementKind::Face,
+                index: 2,
+            },
+            "m3tq8v0z's element map names a face 2, past its mesh's 1",
+        ),
+        (
+            silico_core::kernel::ElementRef {
+                kind: silico_core::kernel::ElementKind::Edge,
+                index: 1,
+            },
+            "m3tq8v0z's element map names an edge 1, past its mesh's 0",
+        ),
+    ] {
+        let mut request = view("front", 100, 100);
+        request.highlight = vec![name(element)];
+        let e = refused(bench.render(&request));
+        assert_eq!(e.code(), ErrorCode::Internal, "{e:?}");
+        assert_eq!(e.message(), says, "{e:?}");
+    }
+    // Its first face is in the mesh: drawn, lit.
+    let mut request = view("front", 100, 100);
+    request.highlight = vec![name(silico_core::kernel::ElementRef {
+        kind: silico_core::kernel::ElementKind::Face,
+        index: 1,
+    })];
+    bench.render(&request).unwrap();
+    assert_eq!(bench.renderer.sent()[0].bodies[0].highlight_faces, [0]);
 }

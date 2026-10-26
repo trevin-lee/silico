@@ -158,3 +158,89 @@ fn a_render_cancelled_through_its_session_answers_cancelled() {
     );
     assert!(renderer.sent().is_empty());
 }
+
+/// A renderer that, asked to draw, cancels the read that asked (its stopper, once the test
+/// has handed it over) and then answers as the fake does: the read cancelled after its PNG
+/// is drawn, before it's written.
+struct CancelsOnceDrawn {
+    inner: FakeRenderer,
+    stopper: Arc<(
+        std::sync::Mutex<Option<silico_core::command::Stopper>>,
+        std::sync::Condvar,
+    )>,
+}
+
+impl silico_core::command::render::Renderer for CancelsOnceDrawn {
+    fn render(&self, scene: silico_protocol::RenderScene) -> silico_core::render::RenderTicket {
+        let (slot, handed) = &*self.stopper;
+        let slot = handed
+            .wait_timeout_while(slot.lock().unwrap(), super::listing::HANG, |s| s.is_none())
+            .unwrap()
+            .0;
+        assert!(slot.as_ref().unwrap().cancel());
+        drop(slot);
+        self.inner.render(scene)
+    }
+}
+
+#[test]
+fn a_render_cancelled_once_drawn_answers_cancelled_and_writes_no_file() {
+    // Decision 34: a cancelled command leaves no trace. The cancel comes after the PNG is
+    // drawn: the render settles before writing it, the settle refuses, and nothing is
+    // written, neither the file nor one beside it.
+    let Fixture {
+        dir,
+        kernel,
+        sessions,
+    } = fixture();
+    let stopper = Arc::new((std::sync::Mutex::new(None), std::sync::Condvar::new()));
+    let f = Fixture {
+        dir,
+        kernel,
+        sessions: sessions.rendering(CancelsOnceDrawn {
+            inner: FakeRenderer::new(),
+            stopper: Arc::clone(&stopper),
+        }),
+    };
+    let s = f.open("example.silico", EXAMPLE);
+    let out = f.dir.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    let mut request = front();
+    request.to = Some(out.join("view.png"));
+    let running = f.sessions.render(&s, ModelChoice::Current, request);
+    *stopper.0.lock().unwrap() = Some(running.stopper());
+    stopper.1.notify_all();
+    let refused = answer(running).result.unwrap_err();
+    assert_eq!(
+        refused.errors()[0].code(),
+        ErrorCode::Cancelled,
+        "{refused:?}"
+    );
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
+}
+
+#[test]
+fn a_render_to_a_document_a_session_holds_is_refused_and_the_document_kept() {
+    // Decision 35: a file a command writes is never a document the sessions hold, whatever
+    // it's named. One named `.png`, open in a session, isn't replaced by its own render.
+    let (f, renderer, _) = rendering();
+    let held = f.dir.path().join("held.png");
+    let s = f.open("held.png", EXAMPLE);
+    let mut request = front();
+    request.to = Some(held.clone());
+    request.replace = true;
+    let done = answer(f.sessions.render(&s, ModelChoice::Current, request));
+    let problems = done.result.unwrap_err();
+    let e = &problems.errors()[0];
+    assert_eq!(
+        (e.code(), e.parameter()),
+        (ErrorCode::InvalidInput, Some("to")),
+        "{e:?}"
+    );
+    assert!(
+        e.message().contains("is a document a session holds"),
+        "{e:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&held).unwrap(), EXAMPLE);
+    assert!(renderer.sent().is_empty());
+}
