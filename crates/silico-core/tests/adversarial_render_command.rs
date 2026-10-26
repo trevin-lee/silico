@@ -344,10 +344,11 @@ fn a_perspective_eye_inside_an_unmeasured_body_is_refused() {
 }
 
 #[test]
-fn a_failed_cut_leaves_its_inputs_as_bodies_numbered_in_order_and_its_names_broken() {
+fn a_failed_cut_leaves_its_inputs_as_bodies_numbered_in_order_and_its_names_say_its_failure() {
     // The cut refused: the block and the pin stay bodies (a failed feature consumes
-    // nothing), 1 and 2; the cut's own names find nothing; each input's first face is its
-    // own, index 0, by body.
+    // nothing), 1 and 2; a name of the cut's own is answered with the cut's failure (design
+    // §2's A1, as every lookup by name answers it); each input's first face is its own,
+    // index 0, by body.
     let bench = Bench::with(EXAMPLE, |k| {
         k.refuse(|op| {
             matches!(
@@ -364,8 +365,9 @@ fn a_failed_cut_leaves_its_inputs_as_bodies_numbered_in_order_and_its_names_brok
     request.highlight = vec!["m3tq8v0z.cut.Face(I a91cw0de.cylinder.Face1)".to_owned()];
     let e = refused(bench.render(&request));
     assert_eq!(
-        (e.code(), e.parameter()),
-        (ErrorCode::ReferenceBroken, Some("highlight.0"))
+        (e.code(), e.feature()),
+        (ErrorCode::KernelFailed, Some("m3tq8v0z")),
+        "{e:?}"
     );
     assert!(bench.renderer.sent().is_empty());
     request.highlight = vec![
