@@ -235,10 +235,9 @@ fn a_barrels_centre_of_mass_turned_whole_or_in_part_is_by_hand() {
 /// The barrel turned about the sketch's x (model x), not its y: its profile on XZ is the
 /// first one's with the sketch's x and y swapped, x = ±4 from y = 1 to the arc through
 /// (4, 4), (0, 5), and (−4, 4) about (0, −3.5), counter-clockwise from 62° to 118°. (The
-/// barrel about z, its arc from −28° to 28° across the circle's angle 0, isn't cut by
-/// OCCT 7.9.3's boolean at all: the cut below leaves it whole, and so does a box through
-/// its side; open, docs/ports/measure.md, Known wrong results: a sketch arc across its
-/// circle's angle 0.)
+/// barrel about z, its arc from −28° to 28° across the circle's angle 0, is cut alike since
+/// its edge takes OCCT's range: below, and docs/ports/measure.md, Known wrong results: a
+/// sketch arc across its circle's angle 0.)
 fn barrel_about_x(k: &mut KernelWorker) -> ShapeData {
     let (c, r) = barrel_circle();
     let [x, z] = END;
