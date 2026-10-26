@@ -45,6 +45,8 @@ mod sweeps;
 mod adversarial_arc_range;
 #[path = "adversarial_boolean.rs"]
 mod adversarial_boolean;
+#[path = "adversarial_boolean_skipped.rs"]
+mod adversarial_boolean_skipped;
 #[path = "adversarial_chamfer.rs"]
 mod adversarial_chamfer;
 #[path = "adversarial_chamfer_report.rs"]
