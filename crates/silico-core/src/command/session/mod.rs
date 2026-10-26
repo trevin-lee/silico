@@ -91,7 +91,9 @@ use super::{Gated, Problems, ReadCommand, SessionCommand};
 use crate::cache::Cache;
 use crate::document::json::Node;
 use crate::document::{self, FeatureId};
-use crate::file::{self, Workspace, shown_path};
+#[cfg(doc)]
+use crate::file;
+use crate::file::{Workspace, shown_path};
 use crate::kernel::{Clients, Kernel};
 use crate::recompute::SketchSolvers;
 use crate::sketch::SketchSolver;
@@ -168,6 +170,10 @@ struct Session<C: Kernel + 'static> {
     /// Where its commands wait as each starts, in this crate's tests only.
     #[cfg(test)]
     gate: Gate,
+    /// Where `cache_clear` waits once it has settled, before it removes anything, in this
+    /// crate's tests only.
+    #[cfg(test)]
+    settled: Gate,
 }
 
 /// Where a file a command writes may go ([`Sessions::write_rules`]).
@@ -767,27 +773,32 @@ impl<P: Clients + 'static> Sessions<P> {
     /// the session's path names it, and how many entries it removed. Refused, `io_failed`,
     /// naming each file it couldn't remove and each directory it couldn't read (the first
     /// hundred, all counted), having removed every other. Settled before it removes any, so
-    /// a cancel that comes after it starts comes too late. Runs inside a transaction too:
-    /// the document isn't touched.
+    /// a cancel that comes after it starts comes too late. It never reads the session's
+    /// file (decision 2, as `close`): it needs nothing of the document, so a file gone or
+    /// changed neither refuses it nor moves the session's revision; and it runs inside a
+    /// transaction too.
     pub fn cache_clear(&self, session: &SessionId) -> Running<CacheCleared> {
-        self.queued(session, SessionCommand::CacheClear, |session, stop, _| {
-            let cache = lock(&session.rebuilds).engine.cache().cloned();
-            let (path, resolved) = {
-                let held = session.held.read();
-                (held.path.clone(), held.resolved.clone())
-            };
-            let cache = cache.unwrap_or_else(|| Cache::unsealed(file::cache_directory(&resolved)));
-            let directory = shown_cache_directory(&path, cache.directory());
-            stop.settle()?;
-            match cache.clear() {
-                Ok(removed) => Ok(CacheCleared { directory, removed }),
-                Err(partly) => Err(partly_cleared_problems(
-                    &directory,
-                    cache.directory(),
-                    partly,
-                )),
-            }
-        })
+        self.queued_with(
+            session,
+            SessionCommand::CacheClear,
+            Rereads::Never,
+            |session, stop, _, _| {
+                let cache = lock(&session.rebuilds).cache.clone();
+                let path = session.held.read().path.clone();
+                let directory = shown_cache_directory(&path, cache.directory());
+                stop.settle()?;
+                #[cfg(test)]
+                session.settled.pass();
+                match cache.clear() {
+                    Ok(removed) => Ok(CacheCleared { directory, removed }),
+                    Err(partly) => Err(partly_cleared_problems(
+                        &directory,
+                        cache.directory(),
+                        partly,
+                    )),
+                }
+            },
+        )
     }
 
     /// Runs `read` on the model `choice` names, off the caller's thread (decision 33), as

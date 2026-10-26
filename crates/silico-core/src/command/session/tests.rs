@@ -52,6 +52,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
         queue: Mutex::new(Some(sender)),
         rebuilds: Mutex::new(Rebuilds {
             engine: Recompute::new(kernel.client()),
+            cache: Cache::unsealed("/nonexistent/.silico-cache"),
             running: None,
             published: None,
             ended: None,
@@ -65,6 +66,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
         command: Mutex::new(None),
         newest: Arc::default(),
         gate: Gate::default(),
+        settled: Gate::default(),
     });
     (session, jobs)
 }
@@ -3536,4 +3538,42 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
     assert_eq!(f.file(), BOX);
     assert_eq!(f.session().held.read().revision, Revision::OPENED);
     assert!(renderer.sent().is_empty());
+}
+
+#[test]
+fn a_cancel_after_cache_clear_settles_comes_too_late_and_the_clear_answers_with_its_result() {
+    // Held once it has settled, before it removes anything: a cancel by name stops nothing,
+    // and the clear, let through, removes the box's one entry and answers so.
+    let f = opened(BOX);
+    let checked = f.sessions.check(&f.id, ModelChoice::Current).wait();
+    assert!(checked.result.unwrap().problems.is_empty());
+    let cache = f.path.parent().unwrap().join(".silico-cache");
+    let entries = || {
+        std::fs::read_dir(&cache)
+            .unwrap()
+            .flatten()
+            .filter(|sub| sub.path().is_dir())
+            .flat_map(|sub| std::fs::read_dir(sub.path()).unwrap().flatten())
+            .count()
+    };
+    assert_eq!(entries(), 1);
+    let (started, was_started) = mpsc::channel();
+    let (through, wait) = mpsc::channel();
+    f.session().settled.shut(started, wait);
+    let clearing = f.sessions.cache_clear(&f.id);
+    was_started.recv_timeout(WAIT).unwrap();
+    let cancelled = f
+        .sessions
+        .cancel(&f.id, SessionCommand::CacheClear)
+        .result
+        .unwrap();
+    assert_eq!(
+        (cancelled.command, cancelled.stopped),
+        (SessionCommand::CacheClear, false)
+    );
+    assert_eq!(entries(), 1);
+    through.send(()).unwrap();
+    let cleared = clearing.wait().result.unwrap();
+    assert_eq!(cleared.removed, 1);
+    assert_eq!(entries(), 0);
 }

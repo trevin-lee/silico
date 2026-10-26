@@ -368,9 +368,10 @@ fn a_clear_during_a_rebuild_of_the_same_session_leaves_only_sound_entries() {
 }
 
 #[test]
-fn a_clear_of_a_session_whose_file_has_gone_is_refused_and_removes_nothing() {
-    // Before each command outside a transaction the session reads its file (decision 2):
-    // gone, the clear is refused, `io_failed`, and the cache is as it was.
+fn a_clear_of_a_session_whose_file_has_gone_or_changed_clears_and_reads_nothing() {
+    // `cache_clear` needs nothing of the document, so it never reads the file (decision 2,
+    // as `close`): gone, the clear runs all the same, and the session stays at its
+    // revision, not reloaded.
     let f = fixture();
     let a = f.open("a.silico", EXAMPLE);
     assert!(
@@ -380,15 +381,32 @@ fn a_clear_of_a_session_whose_file_has_gone_is_refused_and_removes_nothing() {
             .problems
             .is_empty()
     );
+    let revision = f.sessions.status(&a).session.unwrap().revision;
     std::fs::remove_file(f.docs().join("a.silico")).unwrap();
-    let refused = f.clear(&a).result.unwrap_err();
-    assert_eq!(refused.errors()[0].code(), ErrorCode::IoFailed);
-    assert_eq!(refused.errors()[0].parameter(), Some("path"));
-    assert_eq!(f.entries().len(), 4);
-    // Inside a transaction, it isn't read: the clear runs.
-    let b = f.open("b.silico", EXAMPLE);
-    assert!(answer(f.sessions.begin(&b)).result.is_ok());
-    std::fs::remove_file(f.docs().join("b.silico")).unwrap();
-    assert_eq!(f.clear(&b).result.unwrap().removed, 4);
+    let cleared = f.clear(&a);
+    assert_eq!(cleared.result.unwrap().removed, 4);
+    let session = cleared.session.unwrap();
+    assert_eq!(session.revision, revision);
+    assert!(!session.reloaded);
     assert!(f.entries().is_empty());
+    assert_eq!(f.sessions.status(&a).session.unwrap().revision, revision);
+    // Changed outside the session: not reloaded either.
+    let b = f.open("b.silico", EXAMPLE);
+    assert!(
+        answer(f.sessions.check(&b, ModelChoice::Current))
+            .result
+            .unwrap()
+            .problems
+            .is_empty()
+    );
+    let revision = f.sessions.status(&b).session.unwrap().revision;
+    let changed = EXAMPLE.replace(r#""radius": 2.5"#, r#""radius": 3"#);
+    assert_ne!(changed, EXAMPLE);
+    std::fs::write(f.docs().join("b.silico"), &changed).unwrap();
+    let cleared = f.clear(&b);
+    assert_eq!(cleared.result.unwrap().removed, 4);
+    let session = cleared.session.unwrap();
+    assert_eq!(session.revision, revision);
+    assert!(!session.reloaded);
+    assert_eq!(f.sessions.status(&b).session.unwrap().revision, revision);
 }

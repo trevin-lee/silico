@@ -1295,11 +1295,6 @@ impl<K: Kernel + 'static> Recompute<K> {
         self.begin(document.into(), Reads::Nothing)
     }
 
-    /// The cache this engine keeps its results in, if it keeps them on disk.
-    pub fn cache(&self) -> Option<&Cache> {
-        self.engine.cache.as_ref()
-    }
-
     /// [`start`](Self::start), reading what's kept as `reads` says.
     fn begin(&self, document: Arc<Checked>, reads: Reads) -> Run {
         let (reply, outcome) = mpsc::sync_channel(1);

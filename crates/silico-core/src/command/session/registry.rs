@@ -206,7 +206,8 @@ pub(super) fn start<P: Clients + 'static>(
             held: Holding::new(held),
             queue: Mutex::new(Some(queue)),
             rebuilds: Mutex::new(Rebuilds {
-                engine: registry.engine(cache),
+                engine: registry.engine(cache.clone()),
+                cache,
                 running: None,
                 published: None,
                 ended: None,
@@ -221,6 +222,8 @@ pub(super) fn start<P: Clients + 'static>(
             newest,
             #[cfg(test)]
             gate: super::Gate::default(),
+            #[cfg(test)]
+            settled: super::Gate::default(),
         });
         // Open from here: the commands sent while it opened are in its queue, ahead of any
         // sent after, and its published reads sent then start now, in the order sent,
