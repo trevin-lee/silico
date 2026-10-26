@@ -45,7 +45,7 @@ jobs:
   sweep:
     needs: yield
     if: ${{ !cancelled() }}
-    runs-on: ${{ inputs.filler && fromJSON('["self-hosted", "linux", "x64", "filler"]') || fromJSON('["self-hosted", "linux", "x64", "mutants"]') }}
+    runs-on: ${{ inputs.filler && fromJSON('["self-hosted", "linux", "x64", "filler"]') || fromJSON('["self-hosted", "linux", "x64", "sweep"]') }}
     timeout-minutes: 120
     outputs:
       sweep: ${{ steps.sweep.outcome }}
