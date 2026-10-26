@@ -200,6 +200,7 @@ fn distance_answer(
             to: to.map(mm),
             center_distance: center.map(mm),
             normal_distance: normal.map(mm),
+            center_to_element: None,
         })),
         vertex_at: None,
     }
@@ -639,6 +640,7 @@ fn a_witness_exactly_two_nanometres_off_its_distance_is_within_its_rounding() {
             to: [0.0, 0.0, z].map(mm),
             center_distance: None,
             normal_distance: None,
+            center_to_element: None,
         })),
         vertex_at: None,
     };

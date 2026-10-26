@@ -1,9 +1,9 @@
 {
   "a_face_and_itself": {
-    "answer": "ba4285a46e8c3d88"
+    "answer": "ebae85e4e8ac6c17"
   },
   "adjacent_faces_touch": {
-    "answer": "a625f5c675f8d713"
+    "answer": "9b5356d56eaa88fe"
   },
   "barrel_across_angle_0": {
     "brep": "582faadd72cb6d00",
@@ -34,7 +34,7 @@
     "answer": "eba51da4c0847a44"
   },
   "box_bottom_and_top": {
-    "answer": "746e90cab14e55ff"
+    "answer": "e06137e1f220e182"
   },
   "box_edges_at_a_corner": {
     "answer": "1b2885de1bac813e"
@@ -53,7 +53,7 @@
     "summary": "fbbca0cb55ea50c3"
   },
   "box_top_and_bottom": {
-    "answer": "3d8d167ec64e1ebf"
+    "answer": "e9d3d08782bd4e42"
   },
   "box_unround": {
     "brep": "6dc876c7047684fa",
@@ -111,19 +111,19 @@
     "topology": "ddd4de316aeb3ba2"
   },
   "circle_and_a_line": {
-    "answer": "34c6c62fc6e10e14"
+    "answer": "c8b935cd9c79ea6b"
   },
   "circle_circle": {
-    "answer": "a009edc22b863989"
+    "answer": "e30f6b2def892cac"
   },
   "circle_circle_placed": {
-    "answer": "a4de8bcbd298d2ff"
+    "answer": "e04cf0123dce0082"
   },
   "collinear_edges_angle": {
     "answer": "1bb44d7e1c63d581"
   },
   "collinear_edges_apart": {
-    "answer": "3c0ec933a7285eba"
+    "answer": "01d2de216e4b5971"
   },
   "common_box_sphere": {
     "brep": "579f170f1520496a",
@@ -153,7 +153,7 @@
     "topology": "08171133d5f08968"
   },
   "concentric_rims": {
-    "answer": "8b51c3dc19629464"
+    "answer": "a15ffe54430ac9bb"
   },
   "cone_almost_pointed": {
     "brep": "f07532975ed31c97",
@@ -177,13 +177,13 @@
     "summary": "b958904241f2adeb"
   },
   "crossing_edges": {
-    "answer": "18f610e08231bffd"
+    "answer": "a73e11800e93f3c8"
   },
   "crossing_faces": {
-    "answer": "cae727955cc63775"
+    "answer": "3e53705aaa728ab0"
   },
   "crossing_rims": {
-    "answer": "8ec7caa751b04cfd"
+    "answer": "c9398bc81a49c2c8"
   },
   "cut_box_cylinder": {
     "brep": "660968b1a25ff262",
@@ -243,10 +243,10 @@
     "summary": "f191ec6c226363d5"
   },
   "disc_and_plane": {
-    "answer": "55519c68d9dc6c67"
+    "answer": "ec36f4db0df12c3a"
   },
   "discs_overlapping": {
-    "answer": "8522da70728b2916"
+    "answer": "61e939da59614f75"
   },
   "extrude_film": {
     "brep": "b074820d55d62d01",
@@ -276,7 +276,7 @@
     "topology": "fa5d97668685fada"
   },
   "faces_a_nanometre_apart": {
-    "answer": "1869c550a0552609"
+    "answer": "63473801f514b62c"
   },
   "fillet_box_edge1": {
     "brep": "7740454fdbc4e0e2",
@@ -1021,13 +1021,13 @@
     "answer": "57d82b5395f9fb2c"
   },
   "hole_rims": {
-    "answer": "20eef37429d1c0cd"
+    "answer": "6e7e9e86783d39b8"
   },
   "hole_wall_to_counterbore_wall": {
-    "answer": "04bbf8ab0d80ca1a"
+    "answer": "ee0db2c1efbb2ed1"
   },
   "hole_wall_to_side": {
-    "answer": "c22d5869cffcd055"
+    "answer": "5cc19cb12b63639c"
   },
   "line_30_off_a_plane": {
     "answer": "cede4b76889e2a9a"
@@ -1042,10 +1042,10 @@
     "answer": "1bb44d7e1c63d581"
   },
   "opposite_quarter_arcs": {
-    "answer": "cc812f755ef3ba74"
+    "answer": "992f8ed13531cd2b"
   },
   "opposite_quarter_arcs_swapped": {
-    "answer": "0b6e4a8bda7c7e72"
+    "answer": "40e035473ae5ec99"
   },
   "pad_one_side_reversed_xy": {
     "brep": "26c7f001cfc2bad2",
@@ -1183,13 +1183,13 @@
     "topology": "fa5d97668685fada"
   },
   "parallel_edges": {
-    "answer": "57c6305430d51c44"
+    "answer": "f3086c4b4e44cd1b"
   },
   "parallel_edges_angle": {
     "answer": "1bb44d7e1c63d581"
   },
   "parallel_faces_apart": {
-    "answer": "3f3de397c27c57df"
+    "answer": "259cedf49e3367e2"
   },
   "plane_and_a_line_30_off_it": {
     "answer": "cede4b76889e2a9a"
@@ -1441,13 +1441,13 @@
     "topology": "beb131353f8ebf30"
   },
   "rims_r3_r4": {
-    "answer": "e4ad937a83c3f45a"
+    "answer": "83e13baca05c2b11"
   },
   "segment_over_a_segment": {
-    "answer": "422ac6121b32e0c3"
+    "answer": "f9c817f63d84694e"
   },
   "skew_edges": {
-    "answer": "c3b95a2784d7f5c7"
+    "answer": "418d39cf7572b39a"
   },
   "slot_plate": {
     "brep": "003df2bbf29bff54",
@@ -1482,7 +1482,7 @@
     "summary": "60fd03eef9271f11"
   },
   "sphere_to_a_wall": {
-    "answer": "262f4c6db08f8ed0"
+    "answer": "6832a71bf6d3b8af"
   },
   "sphere_unround": {
     "brep": "20847dd2ea1d5946",
@@ -1495,13 +1495,13 @@
     "answer": "89c5b1a536eda71e"
   },
   "split_top_halves": {
-    "answer": "362cf3127db74c46"
+    "answer": "d2ff63073ec40045"
   },
   "split_top_halves_angle": {
     "answer": "aec8c1b190f7ab24"
   },
   "step_tops": {
-    "answer": "50b0531e76c9601e"
+    "answer": "67449aad05833fad"
   },
   "step_tops_angle": {
     "answer": "aec8c1b190f7ab24"
@@ -1975,7 +1975,7 @@
     "answer": "152c3ef7d3abb5b5"
   },
   "two_boxes_moved": {
-    "answer": "c8490df47c3a32e9"
+    "answer": "d9689f2fdf9da00c"
   },
   "two_holes": {
     "brep": "9ee1b7953cc8dba4",
@@ -2008,19 +2008,19 @@
     "answer": "152c3ef7d3abb5b5"
   },
   "vertex_beyond_a_tops_corner": {
-    "answer": "e18916d2bdd84a31"
+    "answer": "8b106bac2136d528"
   },
   "vertex_inside_to_a_top": {
-    "answer": "ade6c2035f764918"
+    "answer": "9b22ee0905b959e3"
   },
   "vertex_over_a_top": {
-    "answer": "b31026f7e55e9387"
+    "answer": "22843a22e1973ef2"
   },
   "vertex_to_rim": {
-    "answer": "af4ccffca4c270a4"
+    "answer": "2746bf9345953ffb"
   },
   "walls_r3_r4": {
-    "answer": "e4ad937a83c3f45a"
+    "answer": "83e13baca05c2b11"
   },
   "wedge_30": {
     "answer": "cede4b76889e2a9a"
