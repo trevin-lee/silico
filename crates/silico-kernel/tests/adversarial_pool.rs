@@ -997,6 +997,17 @@ fn a_killer_ends_a_call_at_once_and_is_harmless_after_the_worker_is_gone() {
     let killer = worker.killer();
     assert_eq!(killer.pid(), worker.pid());
     assert!(!worker.has_exited());
+    // Answered once, so it has started: a kill mid-call is then a crash. A worker killed
+    // before it said it started is `worker_unavailable` (its install, not its request), and
+    // one slow to start (a loaded machine, a binary just built and checked by macOS) took
+    // longer than the 150 ms below to say it.
+    worker
+        .call(
+            Generation(0),
+            Op::Debug(DebugOp::Sleep { millis: 0 }),
+            Duration::from_secs(60),
+        )
+        .unwrap();
     let start = Instant::now();
     let err = std::thread::scope(|scope| {
         scope.spawn(|| {
