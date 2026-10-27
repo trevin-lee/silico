@@ -991,8 +991,10 @@ fn a_worker_named_by_an_unusable_variable_says_so() {
 const LATER_CHILD: &str = "SILICO_ADVERSARIAL_WORKER_LATER_CHILD";
 
 /// Not a test of its own: in the copy, a pool started with no worker where the variable
-/// points refuses a request, and once the worker is put there, the next request runs, the
-/// pool's and a client's made before it opened.
+/// points refuses each request, saying why its last look failed; once the worker is put
+/// there, the next requests run, the pool's and a client's made before it opened, eight at
+/// once opening it once; the pool then has the worker's identity, and stops superseded
+/// requests as an opened pool does.
 #[test]
 fn later_child_entry() {
     use silico_core::kernel::{KERNEL_WORKER_ENV, Kernel as _};
@@ -1002,21 +1004,74 @@ fn later_child_entry() {
     let exe = PathBuf::from(std::env::var_os(KERNEL_WORKER_ENV).unwrap());
     let pool = KernelPool::start();
     let client = pool.client();
+    let built = |identity: &str| identity.starts_with("kernel worker sha256:");
     // Nothing there yet: refused, as a worker that can't be had, and no slot.
-    let err = done(pool.submit(Generation(1), sleep(0))).expect_err("a pool with no worker ran");
-    assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
-    assert!(pool.refused().is_some());
+    let missing =
+        done(pool.submit(Generation(1), sleep(0))).expect_err("a pool with no worker ran");
+    assert_eq!(missing.code(), ErrorCode::WorkerUnavailable, "{missing}");
+    assert_eq!(pool.refused(), Some(missing.clone()));
     assert_eq!((pool.size(), pool.pids()), (0, Vec::new()));
-    // The worker built after the pool started: the next request finds it, and runs.
+    assert!(
+        !built(pool.identity()) && !built(client.identity()),
+        "{}",
+        pool.identity()
+    );
+    // Something there it can't use (a file it may not read): the next look says so.
     std::fs::write(&exe, format!("#!/bin/sh\nexec '{TEST_WORKER}'\n")).unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let unreadable =
+        done(client.submit(Generation(0), sleep(0))).expect_err("an unreadable worker ran");
+    assert_ne!(unreadable.message(), missing.message(), "{unreadable}");
+    assert_eq!(pool.refused(), Some(unreadable));
+    // Half put in place (a copy under way): it doesn't answer, so the pool isn't opened on
+    // it, and goes on looking.
     std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-    done(pool.submit(Generation(1), sleep(0))).unwrap();
+    std::fs::write(&exe, "#!/bin/sh\nexi").unwrap();
+    let half = done(pool.submit(Generation(1), sleep(0))).expect_err("a half-copied worker ran");
+    assert_eq!(pool.refused(), Some(half));
+    assert_eq!(pool.size(), 0);
+    assert!(!built(pool.identity()), "{}", pool.identity());
+    std::fs::write(&exe, format!("#!/bin/sh\nexec '{TEST_WORKER}'\n")).unwrap();
+    // The worker built after the pool started: eight requests at once find it, and run,
+    // and the pool opens once (each starts a worker of its own at most, none lost).
+    let barrier = std::sync::Barrier::new(8);
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                barrier.wait();
+                done(pool.submit(Generation(1), sleep(50))).unwrap();
+            });
+        }
+    });
     assert_eq!(pool.refused(), None);
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
     assert_eq!(pool.size(), cores.min(silico_core::pool::MAX_WORKERS));
-    // A client made before the pool opened is served by it too.
+    let pids = pool.pids();
+    let distinct: BTreeSet<u32> = pids.iter().copied().collect();
+    assert!(pids.len() <= 8 && distinct.len() == pids.len(), "{pids:?}");
+    // The worker's identity now, the pool's and a client's made before it opened alike.
+    assert!(built(pool.identity()), "{}", pool.identity());
+    assert_eq!(client.identity(), pool.identity());
+    // A client made before the pool opened is served by it too, and its superseded request
+    // is stopped by the stopper the open started, long before the request would end.
     done(client.submit(Generation(0), sleep(0))).unwrap();
-    assert_eq!(pool.pids().len(), 1, "{:?}", pool.pids());
+    // Superseded before it's due (a second's stop-after, 100 ms in), so only the stopper,
+    // not the advance itself, can stop it.
+    pool.set_stop_after(Duration::from_secs(1));
+    let long = client.submit(Generation(1), sleep(60_000));
+    std::thread::sleep(Duration::from_millis(100));
+    let asked = Instant::now();
+    client.advance(Generation(2));
+    assert!(matches!(outcome(long), Outcome::Superseded));
+    assert!(
+        asked.elapsed() < Duration::from_secs(20),
+        "{:?}",
+        asked.elapsed()
+    );
+    // Dropping it stops every worker it started.
+    drop(client);
+    drop(pool);
+    wait_no_children("after the pool opened late");
 }
 
 #[test]

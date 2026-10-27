@@ -784,6 +784,16 @@ fn spawn_thread(
 /// How a pool not opened looks for its worker again ([`KernelPool::start`]'s, `worker_path`).
 type Finder = Box<dyn Fn() -> Result<PathBuf, Error> + Send + Sync>;
 
+/// What a look for a pool's worker came to ([`Shared::open_again`]).
+enum Opening {
+    /// The pool is open, by this look or an earlier one.
+    Open,
+    /// It isn't, and this is why.
+    Refused(Error),
+    /// The pool is stopping: nothing is opened.
+    Stopping,
+}
+
 /// Why a pool isn't open, and how it looks again.
 struct Unopened {
     /// What a request fails with: why the last look found no worker it could use.
@@ -796,8 +806,8 @@ struct Unopened {
 }
 
 /// What the pool's threads share. Its locks are taken in the order `unopened`, then
-/// `state`, `slots`, or `stopper`; `state`, then `slots` (then a worker's process lock);
-/// and `state`, then `threads`; never the other way. The executable's stamp lock
+/// `state`, `slots`, or `stopper`; `state`, then `slots` (then a worker's process lock),
+/// `stopper`, or `threads`; never the other way. The executable's stamp lock
 /// (`Executable`) is taken alone, never while another is.
 struct Shared {
     /// The workers' executable, once the pool has one: the pool's identity is its identity,
@@ -895,46 +905,64 @@ impl Shared {
         Ok(())
     }
 
-    /// Opens a pool that isn't open, if it looks for its worker and finds it now: its
-    /// executable set, its slots made (none started: they start on demand, as
-    /// [`KernelPool::start_on_demand`]'s do), and its stopper started. `Err` with why it
-    /// still isn't, for the request that asked to fail with. One look at a time, so two
-    /// requests don't open it twice.
-    fn open_again(self: &Arc<Self>) -> Result<(), Error> {
+    /// Opens a pool that isn't open, if it looks for its worker and finds one that works
+    /// now: its executable set, its slots made (none started: they start on demand, as
+    /// [`KernelPool::start_on_demand`]'s do), and its stopper started. A file found is taken
+    /// only once a worker started from it answers a request, so a worker caught half put in
+    /// place (a copy under way) doesn't fix the pool's identity to a build that never
+    /// runs: the pool goes on looking. One look at a time, so two requests don't open it
+    /// twice.
+    fn open_again(self: &Arc<Self>) -> Opening {
         let mut unopened = lock(&self.unopened);
         let Some(u) = unopened.as_mut() else {
             // Opened by another request meanwhile.
-            return Ok(());
+            return Opening::Open;
         };
         let Some(find) = &u.find else {
-            return Err(u.why.clone());
+            return Opening::Refused(u.why.clone());
         };
         let found = find().and_then(|exe| {
             let exe = std::path::absolute(&exe).unwrap_or(exe);
-            Executable::of(&exe, WorkerKind::Kernel)
+            let executable = Executable::of(&exe, WorkerKind::Kernel)?;
+            let mut worker = executable.spawn()?;
+            let answered = worker.call(
+                Generation(0),
+                silico_protocol::Op::Echo {
+                    data: silico_protocol::Blob::inline(Vec::new()),
+                },
+                crate::kernel::DEFAULT_TIMEOUT,
+            );
+            worker.shut_down();
+            answered.map(|_| executable)
         });
         let executable = match found {
             Ok(executable) => executable,
             Err(why) => {
                 u.why = why.clone();
-                return Err(why);
+                return Opening::Refused(why);
             }
         };
-        if lock(&self.state).stopping {
-            return Err(u.why.clone());
+        // Under the state lock, so a drop (which sets `stopping` under it, then joins the
+        // stopper) either comes first, and nothing is started, or finds the stopper to join.
+        let mut state = lock(&self.state);
+        if state.stopping {
+            return Opening::Stopping;
         }
-        self.start_stopper()?;
+        if let Err(why) = self.start_stopper() {
+            return Opening::Refused(why);
+        }
         let size = u.size;
         *lock(&self.slots) = (0..size).map(|_| Slot::default()).collect();
-        lock(&self.state).unstarted = (0..size).rev().collect();
+        state.unstarted = (0..size).rev().collect();
         self.size.store(size, Ordering::Relaxed);
         let _ = self.executable.set(executable);
+        drop(state);
         *unopened = None;
         tracing::info!(
             size,
             "opened the kernel pool: its worker was found, after it wasn't"
         );
-        Ok(())
+        Opening::Open
     }
 
     fn stopping(&self) -> bool {
@@ -1011,9 +1039,14 @@ impl Shared {
             // A pool that isn't open: it looks for its worker again, and fails the request
             // with why if there's still none to wait for.
             drop(state);
-            if let Err(why) = self.open_again() {
-                task.fail(why);
-                return pending;
+            match self.open_again() {
+                Opening::Open => {}
+                Opening::Refused(why) => {
+                    task.fail(why);
+                    return pending;
+                }
+                // Dropping the task tells the caller the pool stopped.
+                Opening::Stopping => return pending,
             }
             state = lock(&self.state);
             if state.stopping {
