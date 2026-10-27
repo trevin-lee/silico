@@ -159,10 +159,10 @@ pub enum Refusal {
     /// no CPU adapter (Mesa's lavapipe, its compiled-in paths gone, or none built in).
     /// `cause` names what it looked for and what it found.
     NoAdapter { cause: String },
-    /// A reply the worker made but couldn't send: `bytes` encoded, past the `most` a frame
+    /// A reply the worker made but couldn't send: `bytes` encoded, past the `limit` a frame
     /// may carry ([`crate::MAX_FRAME_LEN`]). Sent in the reply's place, so the worker goes
     /// on, rather than ending as if it had crashed.
-    ReplyTooLarge { bytes: u64, most: u64 },
+    ReplyTooLarge { bytes: u64, limit: u64 },
 }
 
 /// What OCCT gave back nothing of.
@@ -707,9 +707,9 @@ impl Refusal {
                         .to_owned(),
                 ),
             ),
-            Refusal::ReplyTooLarge { bytes, most } => (
+            Refusal::ReplyTooLarge { bytes, limit } => (
                 format!(
-                    "the worker's reply would be {bytes} bytes, more than the {most} a reply may \
+                    "the worker's reply would be {bytes} bytes, more than the {limit} a reply may \
                      carry"
                 ),
                 Some(
@@ -1108,7 +1108,7 @@ mod tests {
             },
             Refusal::ReplyTooLarge {
                 bytes: 536_870_913,
-                most: 536_870_912,
+                limit: 536_870_912,
             },
         ]
     }
@@ -1122,6 +1122,25 @@ mod tests {
             let said = refusal.describe(None, &|e| e.to_string());
             assert!(!said.message.is_empty(), "{refusal:?}");
         }
+    }
+
+    #[test]
+    fn a_reply_too_large_says_its_size_and_the_limit_and_to_ask_for_less() {
+        let said = Refusal::ReplyTooLarge {
+            bytes: 536_870_913,
+            limit: 536_870_912,
+        }
+        .describe(None, &|e| e.to_string());
+        assert_eq!(
+            said.message,
+            "the worker's reply would be 536870913 bytes, more than the 536870912 a reply may carry"
+        );
+        assert_eq!(
+            said.suggestion.as_deref(),
+            Some(
+                "ask for less at once: a coarser tolerance, fewer elements or features, or a smaller part"
+            )
+        );
     }
 
     #[test]

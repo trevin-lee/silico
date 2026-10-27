@@ -370,26 +370,22 @@ impl ToWire for Error {
 
 /// `error` in the error contract's shape, `suggestion` its suggestion.
 fn error_with<'a>(error: &'a Error, suggestion: Json<'a>) -> Json<'a> {
-    said_as(error.said(), error.code().as_str(), suggestion)
+    said_as(error.said(), suggestion)
 }
 
 impl ToWire for Warning {
     /// The error contract's shape, as an error's, its code a warning's (decision 17).
     fn to_wire(&self) -> Json<'_> {
-        said_as(
-            self.said(),
-            self.code().as_str(),
-            Json::or_null(self.suggestion(), Json::str),
-        )
+        said_as(self.said(), Json::or_null(self.suggestion(), Json::str))
     }
 }
 
 /// What an error or a warning says (`said`, taken whole, so a field it gains is one this
 /// must write) in the error contract's shape (`tests/contract/error-full.json`), in its
-/// order: its code written as `code`, and `suggestion` its suggestion.
-fn said_as<'a, C>(said: Said<'a, C>, code: &'static str, suggestion: Json<'a>) -> Json<'a> {
+/// order, `suggestion` written as its suggestion (a fault's, kept, is said its own way).
+fn said_as<'a>(said: Said<'a>, suggestion: Json<'a>) -> Json<'a> {
     let Said {
-        code: _,
+        code,
         message,
         feature,
         elements,

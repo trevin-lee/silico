@@ -89,25 +89,37 @@ pub fn write_message<W: Write + ?Sized, T: Serialize>(
 }
 
 /// As [`write_message`], refusing a payload past `max` bytes ([`FrameError::TooLarge`])
-/// before writing anything: for a test of what's past [`MAX_FRAME_LEN`] without as many bytes.
+/// before writing anything: for a worker's reply, which takes the limit for its tests to
+/// reach without as many bytes.
 pub fn write_message_within<W: Write + ?Sized, T: Serialize>(
     writer: &mut W,
     message: &T,
     max: u32,
 ) -> Result<(), FrameError> {
     let payload = postcard::to_allocvec(message).map_err(FrameError::Encode)?;
-    let len = u32::try_from(payload.len())
-        .ok()
-        .filter(|len| *len <= max)
-        .ok_or(FrameError::TooLarge {
-            len: payload.len() as u64,
-            max,
-        })?;
+    let len = within(payload.len(), max)?;
     writer
         .write_all(&len.to_le_bytes())
         .map_err(FrameError::Io)?;
     writer.write_all(&payload).map_err(FrameError::Io)?;
     writer.flush().map_err(FrameError::Io)
+}
+
+/// How many bytes `message` encodes to, counted without encoding it (a pass over it, but
+/// no allocation): so a reply too large to send is known before it's built.
+pub fn encoded_len<T: Serialize + ?Sized>(message: &T) -> Result<usize, FrameError> {
+    postcard::experimental::serialized_size(message).map_err(FrameError::Encode)
+}
+
+/// `len` as a frame's length, if it's at most `max` bytes ([`FrameError::TooLarge`] if not).
+fn within(len: usize, max: u32) -> Result<u32, FrameError> {
+    u32::try_from(len)
+        .ok()
+        .filter(|len| *len <= max)
+        .ok_or(FrameError::TooLarge {
+            len: len as u64,
+            max,
+        })
 }
 
 /// Reads frames, one at a time, from any byte stream.

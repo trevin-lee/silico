@@ -44,8 +44,8 @@ pub use faces::{
     area_and_perimeter, distance, loop_area, on_circle, sliver,
 };
 pub use frame::{
-    FrameError, FrameReader, MAX_FRAME_LEN, decode, write_message, write_message_within,
-    write_started,
+    FrameError, FrameReader, MAX_FRAME_LEN, decode, encoded_len, write_message,
+    write_message_within, write_started,
 };
 pub use history::{
     ElementCounts, ElementFate, ElementKind, ElementRef, Ends, History, InputHistory, Reported,

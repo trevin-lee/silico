@@ -268,8 +268,9 @@ impl<C> Fields<C> {
 }
 
 impl<C: Copy> Fields<C> {
-    /// What it says, every field of it the error contract writes.
-    fn said(&self) -> Said<'_, C> {
+    /// What it says, every field of it the error contract writes, its code as `word` writes
+    /// it.
+    fn said(&self, word: impl Fn(C) -> &'static str) -> Said<'_> {
         let Fields {
             code,
             message,
@@ -285,7 +286,7 @@ impl<C: Copy> Fields<C> {
             advice: _,
         } = self;
         Said {
-            code: *code,
+            code: word(*code),
             message,
             feature: feature.as_deref(),
             elements,
@@ -303,8 +304,9 @@ impl<C: Copy> Fields<C> {
 /// and taken whole by each writer of the contract (the command API's, `check --json`'s), so
 /// a field added to an error is a field each of them must write, or it doesn't compile.
 #[derive(Debug, Clone, Copy)]
-pub struct Said<'a, C> {
-    pub code: C,
+pub struct Said<'a> {
+    /// Its code, as the contract writes it (an error's or a warning's).
+    pub code: &'static str,
     pub message: &'a str,
     pub feature: Option<&'a str>,
     pub elements: &'a [String],
@@ -491,8 +493,8 @@ impl Error {
     }
 
     /// What it says, every field the error contract writes.
-    pub fn said(&self) -> Said<'_, ErrorCode> {
-        self.0.said()
+    pub fn said(&self) -> Said<'_> {
+        self.0.said(ErrorCode::as_str)
     }
 
     /// Logs the error at info, `what` before its message (`the step failed`), with its
@@ -678,8 +680,8 @@ impl Warning {
 
     /// What it says, every field the error contract writes (its candidates none: nothing's
     /// broken for it to have meant).
-    pub fn said(&self) -> Said<'_, WarningCode> {
-        self.0.said()
+    pub fn said(&self) -> Said<'_> {
+        self.0.said(WarningCode::as_str)
     }
 }
 

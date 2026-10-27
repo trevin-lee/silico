@@ -1011,6 +1011,25 @@ fn replace_text_refuses_text_without_naming_and_what_check_refuses() {
             Some("add \"naming\": 5 after units")
         )
     );
+    // JSON, but not a document's object (so no header to lack naming): the reader's own
+    // error, naming text, not "the document's header has no naming".
+    for not_an_object in ["[]", "5"] {
+        let error = the_error(&answer(f.sessions.replace_text(
+            &f.id,
+            Revision::OPENED,
+            not_an_object.to_owned(),
+        )));
+        assert_eq!(
+            error.parameter(),
+            Some("text"),
+            "{not_an_object}: {error:?}"
+        );
+        assert_ne!(
+            error.message(),
+            "the document's header has no naming",
+            "{not_an_object}"
+        );
+    }
     // Not JSON: the reader's error, with where, naming text.
     let error = the_error(&answer(f.sessions.replace_text(
         &f.id,

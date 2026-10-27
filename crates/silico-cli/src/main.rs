@@ -761,7 +761,7 @@ impl<'a> FailedLine<'a> {
 struct LineError<'a> {
     candidates: &'a [String],
     cause: Option<&'a str>,
-    code: ErrorCode,
+    code: &'static str,
     elements: &'a [String],
     elements_total: u64,
     feature: Option<&'a str>,

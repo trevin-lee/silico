@@ -198,24 +198,22 @@ fn a_cache_directory_thats_a_file_a_link_or_unreadable_is_cleared_safely() {
         std::fs::read_dir(f.cache()).is_err(),
         "the cache's directory is still readable at 0o333 (run as root?): this case can't be tested"
     );
-    {
-        let refused = f.clear(&a).result.unwrap_err();
-        assert_eq!(refused.total(), 1);
-        let error = &refused.errors()[0];
-        assert_eq!(error.code(), ErrorCode::IoFailed);
-        assert!(
-            error.message().starts_with(&format!(
-                "couldn't read the cache's directory \"{}\": ",
-                f.cache().display()
-            )),
-            "{}",
-            error.message()
-        );
-        assert_eq!(
-            error.cause(),
-            Some("the clear removed 0 entries and left what it couldn't remove or read")
-        );
-    }
+    let refused = f.clear(&a).result.unwrap_err();
+    assert_eq!(refused.total(), 1);
+    let error = &refused.errors()[0];
+    assert_eq!(error.code(), ErrorCode::IoFailed);
+    assert!(
+        error.message().starts_with(&format!(
+            "couldn't read the cache's directory \"{}\": ",
+            f.cache().display()
+        )),
+        "{}",
+        error.message()
+    );
+    assert_eq!(
+        error.cause(),
+        Some("the clear removed 0 entries and left what it couldn't remove or read")
+    );
     std::fs::set_permissions(f.cache(), std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(f.clear(&a).result.unwrap().removed, 4);
 }
