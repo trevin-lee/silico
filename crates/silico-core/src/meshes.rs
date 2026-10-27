@@ -103,6 +103,12 @@ impl<K: Ord + Clone> MeshCache<K> {
         }
     }
 
+    /// The step's floor, once a mesh kept has met it: the deflection its every mesh at or
+    /// under the floor is made at.
+    pub fn floor(&self, key: &K) -> Option<f64> {
+        lock(&self.inner).floors.get(key).copied()
+    }
+
     /// The step's mesh at `deflection`, if it's kept (and now the most recently used).
     pub fn get(&self, key: &K, deflection: f64) -> Option<Arc<Mesh>> {
         let mut inner = lock(&self.inner);

@@ -242,19 +242,20 @@ pub struct RenderOn<'a, K: Kernel> {
 }
 
 /// The camera asked for: a named view's, fitted once the bodies are known, or one given.
-enum Asked {
+pub(crate) enum Asked {
     Named(NamedView),
     Given(Camera),
 }
 
 /// A body of the model: its number (its place among the model's bodies, from 1), its
 /// feature, its last step's key and result, and its tight box, if it has one.
-struct Body<'m> {
-    number: u32,
-    id: &'m FeatureId,
-    key: Key,
-    built: &'m Built,
-    bounds: Option<[[f64; 3]; 2]>,
+#[derive(Clone)]
+pub(crate) struct Body<'m> {
+    pub(crate) number: u32,
+    pub(crate) id: &'m FeatureId,
+    pub(crate) key: Key,
+    pub(crate) built: &'m Built,
+    pub(crate) bounds: Option<[[f64; 3]; 2]>,
 }
 
 /// A highlight found: the body's place in the model's bodies, and the face's or edge's
@@ -293,76 +294,7 @@ pub fn render<K: Kernel>(
     let asked = checked(request, &output)?;
     let bodies = bodies(model);
     let lit = highlighted(model, &bodies, &request.highlight)?;
-    // The camera used is the one answered: a given one's up made perpendicular and of unit
-    // length; a named view's as it's fitted, already so.
-    let (camera, fit_side) = match asked {
-        Asked::Given(camera) => (camera, None),
-        Asked::Named(view) => {
-            // Fitted to every body's box: one that couldn't be measured has none to fit.
-            if let Some(unmeasured) = bodies.iter().find(|b| b.bounds.is_none()) {
-                return Err(Problems::from(
-                    Error::new(
-                        ErrorCode::InvalidInput,
-                        format!(
-                            "view {} fits the bodies by their boxes, and {}'s solid couldn't be measured for one",
-                            view.name(),
-                            unmeasured.id
-                        ),
-                    )
-                    .with_feature(unmeasured.id.as_str())
-                    .with_parameter("view")
-                    .with_suggestion("give a camera on the bodies, or check the model's measures"),
-                ));
-            }
-            let Some(bounds) = joined(bodies.iter().filter_map(|b| b.bounds)) else {
-                return Err(Problems::from(
-                    Error::new(
-                        ErrorCode::InvalidInput,
-                        format!(
-                            "view {} fits the model's bodies, and it has none to fit",
-                            view.name()
-                        ),
-                    )
-                    .with_parameter("view")
-                    .with_suggestion("give a camera: one renders a model with no bodies"),
-                ));
-            };
-            let (camera, side) = view.fit(bounds, request.width, request.height);
-            if let Err(invalid) = camera.check() {
-                return Err(Problems::from(
-                    Error::new(
-                        ErrorCode::InvalidInput,
-                        format!(
-                            "view {} can't fit the model's bodies: {}",
-                            view.name(),
-                            invalid.message
-                        ),
-                    )
-                    .with_parameter("view")
-                    .with_suggestion("give a camera on the bodies"),
-                ));
-            }
-            (camera, Some(side))
-        }
-    };
-    // The camera answered is the one drawn, as the wire writes it (lengths to the nanometre,
-    // the angle to the nanodegree), so it passes back unchanged; checked again, as rounding
-    // a camera at its limits could move it past one.
-    let answered = match AnsweredCamera::of(&camera) {
-        Some(answered) => answered,
-        _ => {
-            let parameter = if fit_side.is_some() { "view" } else { "camera" };
-            return Err(Problems::from(
-                Error::new(
-                    ErrorCode::InvalidInput,
-                    "the camera, its lengths to the nanometre and its angle to the nanodegree as a result writes it, can't make a view",
-                )
-                .with_parameter(parameter)
-                .with_suggestion("give a camera within the render's limits"),
-            ));
-        }
-    };
-    let camera = answered.camera();
+    let (camera, answered, fit_side) = camera_for(asked, &bodies, request.width, request.height)?;
     let kept: Vec<&Body> = bodies
         .iter()
         // A body with no box (its measure failed) can't be shown out of view: it's kept.
@@ -379,8 +311,12 @@ pub fn render<K: Kernel>(
             .filter_map(|b| b.built.summary())
             .map(|s| (s.faces, s.edges)),
     )?;
-    eye_outside(&camera, &bodies, on)?;
-    let meshes = meshed(&camera, request.height, &kept, on)?;
+    eye_outside(&camera, &bodies, on.kernel)?;
+    let meshes: Vec<std::sync::Arc<Mesh>> =
+        meshed(&camera, request.height, &kept, on.kernel, on.meshes)?
+            .into_iter()
+            .map(|m| m.mesh)
+            .collect();
     // Again by the meshes: a body unmeasured wasn't counted before.
     within_caps(meshes.iter().map(|m| {
         (
@@ -454,17 +390,107 @@ pub fn render<K: Kernel>(
     })
 }
 
-/// The request's own values checked, in M4.1's order, every reason it's refused for found:
-/// the view or the camera, the size, the highlights' count, and `to`.
-fn checked(request: &Render, output: &Output) -> Result<Asked, Problems> {
-    let mut errors = Vec::new();
+/// The camera a view is taken with, as it's answered: a given one's up made perpendicular
+/// and of unit length, or a named view fitted to every body's box (`fit_side` the side that
+/// bound the fit); with the camera as the wire writes it, which passes back unchanged.
+/// Refused, naming `view` or `camera`: a named view of bodies with no box, or none, or one
+/// that can't fit them; and a camera that can't make a view once rounded as it's written.
+/// `render`'s and `meshes`', so both take one view one way.
+pub(crate) fn camera_for(
+    asked: Asked,
+    bodies: &[Body],
+    width: u32,
+    height: u32,
+) -> Result<(Camera, AnsweredCamera, Option<&'static str>), Problems> {
+    // The camera used is the one answered: a given one's up made perpendicular and of unit
+    // length; a named view's as it's fitted, already so.
+    let (camera, fit_side) = match asked {
+        Asked::Given(camera) => (camera, None),
+        Asked::Named(view) => {
+            // Fitted to every body's box: one that couldn't be measured has none to fit.
+            if let Some(unmeasured) = bodies.iter().find(|b| b.bounds.is_none()) {
+                return Err(Problems::from(
+                    Error::new(
+                        ErrorCode::InvalidInput,
+                        format!(
+                            "view {} fits the bodies by their boxes, and {}'s solid couldn't be measured for one",
+                            view.name(),
+                            unmeasured.id
+                        ),
+                    )
+                    .with_feature(unmeasured.id.as_str())
+                    .with_parameter("view")
+                    .with_suggestion("give a camera on the bodies, or check the model's measures"),
+                ));
+            }
+            let Some(bounds) = joined(bodies.iter().filter_map(|b| b.bounds)) else {
+                return Err(Problems::from(
+                    Error::new(
+                        ErrorCode::InvalidInput,
+                        format!(
+                            "view {} fits the model's bodies, and it has none to fit",
+                            view.name()
+                        ),
+                    )
+                    .with_parameter("view")
+                    .with_suggestion("give a camera: one renders a model with no bodies"),
+                ));
+            };
+            let (camera, side) = view.fit(bounds, width, height);
+            if let Err(invalid) = camera.check() {
+                return Err(Problems::from(
+                    Error::new(
+                        ErrorCode::InvalidInput,
+                        format!(
+                            "view {} can't fit the model's bodies: {}",
+                            view.name(),
+                            invalid.message
+                        ),
+                    )
+                    .with_parameter("view")
+                    .with_suggestion("give a camera on the bodies"),
+                ));
+            }
+            (camera, Some(side))
+        }
+    };
+    // The camera answered is the one drawn, as the wire writes it (lengths to the nanometre,
+    // the angle to the nanodegree), so it passes back unchanged; checked again, as rounding
+    // a camera at its limits could move it past one.
+    let answered = match AnsweredCamera::of(&camera) {
+        Some(answered) => answered,
+        _ => {
+            let parameter = if fit_side.is_some() { "view" } else { "camera" };
+            return Err(Problems::from(
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    "the camera, its lengths to the nanometre and its angle to the nanodegree as a result writes it, can't make a view",
+                )
+                .with_parameter(parameter)
+                .with_suggestion("give a camera within the render's limits"),
+            ));
+        }
+    };
+    Ok((answered.camera(), answered, fit_side))
+}
+
+/// A view's request checked, every reason it's refused for put in `errors`: a named view or
+/// a camera (one, and the camera's own values), and the size, each side from 1 to
+/// [`MAX_RENDER_SIDE`]. `render`'s and `meshes`'.
+pub(crate) fn asked_view(
+    view: &Option<NamedView>,
+    camera: &Option<Camera>,
+    width: u32,
+    height: u32,
+    errors: &mut Vec<Error>,
+) -> Option<Asked> {
     let invalid = |parameter: &str, message: String, suggestion: &str| {
         Error::new(ErrorCode::InvalidInput, message)
             .with_parameter(parameter)
             .with_suggestion(suggestion)
     };
     let mut asked = None;
-    match (&request.view, &request.camera) {
+    match (view, camera) {
         (Some(_), Some(_)) => errors.push(invalid(
             "camera",
             "give a named view or a camera, not both".to_owned(),
@@ -485,7 +511,7 @@ fn checked(request: &Render, output: &Output) -> Result<Asked, Problems> {
             )),
         },
     }
-    for (parameter, side) in [("width", request.width), ("height", request.height)] {
+    for (parameter, side) in [("width", width), ("height", height)] {
         if !(1..=MAX_RENDER_SIDE).contains(&side) {
             errors.push(invalid(
                 parameter,
@@ -494,6 +520,20 @@ fn checked(request: &Render, output: &Output) -> Result<Asked, Problems> {
             ));
         }
     }
+    asked
+}
+
+/// The request's own values checked, in M4.1's order, every reason it's refused for found:
+/// the view or the camera, the size, the highlights' count, and `to`.
+fn checked(request: &Render, output: &Output) -> Result<Asked, Problems> {
+    let mut errors = Vec::new();
+    let asked = asked_view(
+        &request.view,
+        &request.camera,
+        request.width,
+        request.height,
+        &mut errors,
+    );
     if request.highlight.len() > MAX_HIGHLIGHTS {
         errors.push(too_many_highlights(request.highlight.len()));
     }
@@ -509,7 +549,7 @@ fn checked(request: &Render, output: &Output) -> Result<Asked, Problems> {
 }
 
 /// The model's bodies, in its order, each numbered by its place among them from 1.
-fn bodies(model: &Model) -> Vec<Body<'_>> {
+pub(crate) fn bodies(model: &Model) -> Vec<Body<'_>> {
     model
         .bodies()
         .iter()
@@ -664,10 +704,10 @@ fn coarser(left_out: bool, fit_side: Option<&'static str>) -> (&'static str, Str
 /// Refuses a perspective camera whose eye is inside a body or on its boundary, by the
 /// kernel's classifier, asked only of the bodies whose tight box holds the eye. An
 /// orthographic view uses only the eye's direction, so where its eye is doesn't matter.
-fn eye_outside<K: Kernel>(
+pub(crate) fn eye_outside<K: Kernel>(
     camera: &Camera,
     bodies: &[Body],
-    on: &RenderOn<'_, K>,
+    kernel: &K,
 ) -> Result<(), Problems> {
     if !matches!(camera.projection, Projection::Perspective { .. }) {
         return Ok(());
@@ -682,7 +722,7 @@ fn eye_outside<K: Kernel>(
         })
         .map(|b| {
             let request = KernelRequest::classify(&b.built.shape, eye);
-            (b, on.kernel.submit(on.kernel.generation(), request))
+            (b, kernel.submit(kernel.generation(), request))
         })
         .collect();
     for (body, pending) in asked {
@@ -704,14 +744,26 @@ fn eye_outside<K: Kernel>(
     Ok(())
 }
 
-/// The bodies in view meshed at about half a pixel (`mesh_level`), each from the cache if
-/// it's there, the rest asked of the kernel at once and kept as they come.
-fn meshed<K: Kernel>(
+/// A body's display mesh, the level its view asked for (`mesh_level` of its half pixel, or
+/// the finest there is at no depth), and the deflection the kernel used, the level or the
+/// body's floor.
+pub(crate) struct Meshed {
+    pub(crate) mesh: std::sync::Arc<Mesh>,
+    pub(crate) level: f64,
+    pub(crate) deflection: f64,
+}
+
+/// The bodies meshed at about half a pixel (`mesh_level`), each from the cache if it's
+/// there, the rest asked of the kernel at once and kept as they come: `render`'s, for the
+/// bodies in view, and `meshes`', for every body asked, so a body read both ways at one
+/// view is meshed once.
+pub(crate) fn meshed<K: Kernel>(
     camera: &Camera,
     height: u32,
     kept: &[&Body],
-    on: &RenderOn<'_, K>,
-) -> Result<Vec<std::sync::Arc<Mesh>>, Problems> {
+    kernel: &K,
+    cache: &MeshCache<Key>,
+) -> Result<Vec<Meshed>, Problems> {
     if camera.frame().is_err() {
         return Err(Problems::from(
             Error::new(
@@ -732,32 +784,40 @@ fn meshed<K: Kernel>(
     };
     enum Got {
         Kept(std::sync::Arc<Mesh>),
-        Asked(f64, Pending<MeshAt>),
+        Asked(Pending<MeshAt>),
     }
-    let got: Vec<Got> = kept
+    let got: Vec<(f64, f64, Got)> = kept
         .iter()
         .map(|b| {
-            let deflection = on.meshes.deflection_for(&b.key, level(b));
-            match on.meshes.get(&b.key, deflection) {
+            let level = level(b);
+            let deflection = cache.deflection_for(&b.key, level);
+            let got = match cache.get(&b.key, deflection) {
                 Some(mesh) => Got::Kept(mesh),
-                None => Got::Asked(
-                    deflection,
-                    on.kernel.submit(
-                        on.kernel.generation(),
-                        KernelRequest::tessellate_at_least_the_floor(&b.built.shape, deflection),
-                    ),
-                ),
-            }
+                None => Got::Asked(kernel.submit(
+                    kernel.generation(),
+                    KernelRequest::tessellate_at_least_the_floor(&b.built.shape, deflection),
+                )),
+            };
+            (level, deflection, got)
         })
         .collect();
     kept.iter()
         .zip(got)
-        .map(|(b, got)| match got {
-            Got::Kept(mesh) => Ok(mesh),
-            Got::Asked(asked, pending) => {
+        .map(|(b, (level, asked, got))| match got {
+            Got::Kept(mesh) => Ok(Meshed {
+                mesh,
+                level,
+                deflection: asked,
+            }),
+            Got::Asked(pending) => {
                 let made = super::done(pending.wait(), session_closed)
                     .map_err(|p| naming_the_body(p, b.id))?;
-                Ok(on.meshes.put(&b.key, asked, made))
+                let deflection = made.deflection;
+                Ok(Meshed {
+                    mesh: cache.put(&b.key, asked, made),
+                    level,
+                    deflection,
+                })
             }
         })
         .collect()

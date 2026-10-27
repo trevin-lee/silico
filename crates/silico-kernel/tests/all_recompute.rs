@@ -54,6 +54,8 @@ mod fingerprint;
 mod mass_properties;
 #[path = "measures.rs"]
 mod measures;
+#[path = "meshes_read.rs"]
+mod meshes_read;
 #[path = "recompute.rs"]
 mod recompute;
 #[path = "recompute_spans_close.rs"]
