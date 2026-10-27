@@ -311,17 +311,24 @@ fn pages_read_while_rebuilds_log_never_repeat_skip_or_reorder_an_event() {
     let sessions = Arc::new(sessions(refusing_fillets_with("no".to_owned(), None), &dir));
     let s1 = opened(&sessions, &dir, "part.silico", &rounded("f0000001"));
     let stop = Arc::new(AtomicBool::new(false));
-    // Set once the writer's last check has answered, every event it logged kept before.
+    // Set once the writer's last check has answered, every event it logged kept before; or
+    // as it panics, so the reader stops and the join below says why, never spinning on.
     let done = Arc::new(AtomicBool::new(false));
+    struct Done(Arc<AtomicBool>);
+    impl Drop for Done {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
     let writer = {
         let (sessions, stop, done) = (Arc::clone(&sessions), Arc::clone(&stop), Arc::clone(&done));
         std::thread::spawn(move || {
+            let _done = Done(done);
             let mut n = 0;
             while !stop.load(Ordering::Relaxed) && n < 200 {
                 checked(&sessions, &s1, true);
                 n += 1;
             }
-            done.store(true, Ordering::Release);
         })
     };
     // Pages of 7, from the oldest, each from the last's cursor, until a page read after the
