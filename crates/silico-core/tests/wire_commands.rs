@@ -1468,6 +1468,8 @@ fn exported(
             document: "bracket.silico",
             workspace: Some(&silico_core::file::Workspace::new(workspace).unwrap()),
             held: &[],
+            turns: &silico_core::command::export::MeshTurns::new(),
+            stopped: &|| false,
             settle: &|| Ok(()),
         },
     )

@@ -67,9 +67,20 @@ impl Bench {
                 document: "part.silico",
                 workspace: None,
                 held: &[],
+                turns: &silico_core::command::export::MeshTurns::new(),
+                stopped: &|| false,
                 settle,
             },
         )
+    }
+
+    /// The export meshes submitted to the kernel so far, whether or not they started.
+    fn asked_meshes(&self) -> usize {
+        self.kernel
+            .asked()
+            .iter()
+            .filter(|c| matches!(c.op, Op::ExportMesh { .. }))
+            .count()
     }
 
     /// The export meshes asked of the kernel so far.
@@ -834,9 +845,9 @@ fn every_body_of_a_model_with_more_failures_than_listed_counts_every_one() {
 
 #[test]
 fn more_bodies_than_are_meshed_at_once_are_each_written_in_the_timelines_order() {
-    // The export asks as many meshes ahead as the machine runs at once: three more boxes than
-    // that, so the window is refilled past its first fill. Every box written, in order, each
-    // meshed once.
+    // Three more boxes than the machine runs at once (as many as an export once asked of the
+    // kernel ahead, each mesh now asked in turn): every box written, in order, each meshed
+    // once.
     let count = std::thread::available_parallelism().map_or(1, usize::from) + 3;
     let ids: Vec<String> = (0..count).map(|n| format!("b{n:07}")).collect();
     let features: Vec<String> = ids
@@ -867,6 +878,40 @@ fn more_bodies_than_are_meshed_at_once_are_each_written_in_the_timelines_order()
         .collect();
     let names: Vec<(&str, &str)> = names.iter().map(|(n, id)| (n.as_str(), *id)).collect();
     assert_eq!(std::fs::read(&path).unwrap(), archive_of(&names));
+}
+
+#[test]
+fn an_exports_meshes_are_asked_of_the_kernel_one_at_a_time() {
+    // A fine tolerance's mesh takes OCCT tens of seconds and gigabytes: one asked at a time,
+    // never one for each core. Two bodies, a kernel that runs two requests at once, the
+    // first mesh held: the second isn't asked, let alone run, until the first is done.
+    let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "b2b2b2b2", "type": "box", "v": 1, "name": "Other", "position": [100, 0, 0], "length": 1, "width": 2, "height": 3}]}"#;
+    let bench = Arc::new(Bench::of(text));
+    let hold = bench.kernel.hold(|op| matches!(op, Op::ExportMesh { .. }));
+    let dir = Scratch::new("one-at-a-time");
+    let path = dir.0.join("out.3mf");
+    let exporting = {
+        let bench = Arc::clone(&bench);
+        let path = path.clone();
+        std::thread::spawn(move || bench.export(&request(&path)))
+    };
+    assert!(
+        bench
+            .kernel
+            .wait_running(1, std::time::Duration::from_secs(60))
+    );
+    // Long enough for a mesh asked ahead to start on the kernel's other thread.
+    assert!(
+        !bench
+            .kernel
+            .wait_running(2, std::time::Duration::from_millis(500))
+    );
+    assert_eq!(bench.asked_meshes(), 1);
+    hold.release();
+    let done = exporting.join().unwrap().unwrap();
+    let ids: Vec<&str> = done.objects.iter().map(|o| o.feature.as_str()).collect();
+    assert_eq!(ids, ["k7f2qx3m", "b2b2b2b2"]);
+    assert_eq!(bench.meshed(), 2);
 }
 
 #[test]

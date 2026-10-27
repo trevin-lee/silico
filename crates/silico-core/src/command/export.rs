@@ -3,15 +3,17 @@
 //! printable 3MF file or a STEP file. The request is checked in M4.1's order (the format,
 //! the tolerance, the path, the features), every reason found refused at once. For 3MF,
 //! each feature's solid is then meshed at the tolerance on the read's own client of the
-//! kernel (as many at once as the machine runs), joined and checked as a slicer needs
+//! kernel (one export mesh at a time across the sessions, [`MeshTurns`]), joined and checked
+//! as a slicer needs
 //! ([`crate::export::printable`]), and written as one 3MF archive
 //! ([`crate::export::three_mf`]); for STEP, every solid is written by the STEP worker as one
 //! file, each a product named by its feature, its header written from the document. Once
 //! the read settles, the file is saved through the writer every command's files share
 //! (decision 35). Nothing is written for a request refused.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Condvar, Mutex, PoisonError};
 
 use super::{Problems, Running, SessionCommand, SessionId, Sessions};
 use crate::document::{FeatureId, Length, Measure};
@@ -21,7 +23,7 @@ use crate::export::{
 };
 use crate::file::{self, Output};
 use crate::kernel::{Clients, Kernel, KernelRequest};
-use crate::pool::{Outcome, Pending};
+use crate::pool::Outcome;
 use crate::recompute::Model;
 use crate::{Error, ErrorCode};
 
@@ -114,21 +116,27 @@ impl<P: Clients + 'static> Sessions<P> {
     pub fn export(&self, session: &SessionId, request: Export) -> Running<Exported> {
         let rules = self.write_rules();
         let step = self.step_exporter();
+        let turns = self.export_turns();
         self.read_current(session, SessionCommand::Export, move |read| {
-            // Its STEP writing stopped with the read, as its meshing is (the read's client).
+            // Its STEP writing stopped with the read, as its meshing is (the read's client),
+            // and its wait for a turn to mesh.
             read.exporting_step(&*step, |step| {
-                export(
-                    read.model(),
-                    &request,
-                    &ExportOn {
-                        kernel: read.kernel(),
-                        step,
-                        document: read.path(),
-                        workspace: rules.workspace.as_ref(),
-                        held: &rules.held,
-                        settle: &|| read.settle(),
-                    },
-                )
+                read.meshing(&turns, |stopped| {
+                    export(
+                        read.model(),
+                        &request,
+                        &ExportOn {
+                            kernel: read.kernel(),
+                            step,
+                            document: read.path(),
+                            workspace: rules.workspace.as_ref(),
+                            held: &rules.held,
+                            turns: &turns,
+                            stopped,
+                            settle: &|| read.settle(),
+                        },
+                    )
+                })
             })
         })
     }
@@ -148,9 +156,72 @@ pub struct ExportOn<'a, K: Kernel> {
     pub workspace: Option<&'a file::Workspace>,
     /// The documents the sessions hold, which a file written is never.
     pub held: &'a [PathBuf],
+    /// Where each solid's mesh waits its turn: one export mesh at a time across the sessions.
+    pub turns: &'a MeshTurns,
+    /// Whether the export was stopped (cancelled, or its session closed): a wait for a turn
+    /// ends then, [`MeshTurns::wake`] called as it's stopped.
+    pub stopped: &'a dyn Fn() -> bool,
     /// Called just before the file is written, the export's one trace: refused (the read
     /// was cancelled, decision 34), nothing is written and its error is the answer.
     pub settle: &'a dyn Fn() -> Result<(), Error>,
+}
+
+/// The turn to mesh a solid for export, one at a time across every session of a process
+/// (owned by [`Sessions`], one for all of them): a mesh at a fine tolerance takes OCCT tens of
+/// seconds and gigabytes (about 50 s and 3 GB at 0.001 mm on curved faces), its only bound
+/// the kernel request's timeout, so meshes on every core at once would take tens of
+/// gigabytes before the first timed out. A turn is held while its mesh is asked, made, and
+/// checked; a wait for one ends when the export is stopped.
+#[derive(Debug, Default)]
+pub struct MeshTurns {
+    /// Whether a turn is held.
+    taken: Mutex<bool>,
+    /// A turn was given back, or a waiting export was stopped.
+    freed: Condvar,
+}
+
+/// A turn to mesh, held until it's dropped.
+#[must_use = "dropping a turn gives it back"]
+struct MeshTurn<'a>(&'a MeshTurns);
+
+impl MeshTurns {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The turn, once no other export holds it; none if `stopped` says the export was
+    /// stopped, before or while it waits ([`wake`](Self::wake) wakes it to look).
+    fn take(&self, stopped: &dyn Fn() -> bool) -> Option<MeshTurn<'_>> {
+        let mut taken = crate::worker::lock(&self.taken);
+        loop {
+            if stopped() {
+                return None;
+            }
+            if !*taken {
+                *taken = true;
+                return Some(MeshTurn(self));
+            }
+            taken = self
+                .freed
+                .wait(taken)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// Wakes every export waiting for a turn to look whether it was stopped: called once a
+    /// `stopped` given to a wait says so. Under the lock, so a waiter that looked before it
+    /// waited is waiting when it's told.
+    pub(crate) fn wake(&self) {
+        let _taken = crate::worker::lock(&self.taken);
+        self.freed.notify_all();
+    }
+}
+
+impl Drop for MeshTurn<'_> {
+    fn drop(&mut self) {
+        *crate::worker::lock(&self.0.taken) = false;
+        self.0.freed.notify_all();
+    }
 }
 
 /// Exports `model` as `request` asks, on `on` (the module's steps). Refused, each reason
@@ -200,33 +271,18 @@ fn meshed<K: Kernel>(
     tolerance: f64,
     on: &ExportOn<'_, K>,
 ) -> Result<(Vec<u8>, Vec<ExportedObject>), Problems> {
-    let ask = |solid: &Solid| {
-        KernelRequest::export_mesh(&solid.built.shape, tolerance)
-            .map(|request| on.kernel.submit(on.kernel.generation(), request))
-            .map_err(|e| Problems::from(e.with_feature(solid.id.as_str())))
-    };
-    // A few solids asked of the kernel ahead, as many as the machine runs at once, so meshes
-    // done but not yet taken are never more than that; each taken, checked, and counted in
-    // turn, so a file past the triangles one may hold is refused once it's past them.
-    let ahead = std::thread::available_parallelism().map_or(1, usize::from);
-    let mut asked: VecDeque<Pending<_>> = VecDeque::with_capacity(ahead);
     let mut meshes = Vec::with_capacity(solids.len());
     let mut triangles = 0_u64;
-    for (n, solid) in solids.iter().enumerate() {
-        while asked.len() < ahead {
-            let Some(next) = solids.get(n + asked.len()) else {
-                break;
-            };
-            asked.push_back(ask(next)?);
-        }
-        let Some(pending) = asked.pop_front() else {
-            return Err(Problems::from(
-                Error::new(
-                    ErrorCode::Internal,
-                    format!("{}'s mesh was never asked of the kernel", solid.id),
-                )
-                .with_suggestion(crate::worker::SILICO_BUG),
-            ));
+    for solid in solids {
+        let request = KernelRequest::export_mesh(&solid.built.shape, tolerance)
+            .map_err(|e| Problems::from(e.with_feature(solid.id.as_str())))?;
+        // One solid at a time, its turn held until it's checked (its unraised mesh, if one,
+        // asked under it too): a mesh at a fine tolerance takes OCCT tens of seconds and
+        // gigabytes, so meshes on every core at once, this export's or other sessions', would
+        // take tens of gigabytes before the first timed out. Each taken, checked, and counted
+        // in turn, so a file past the triangles one may hold is refused once it's past them.
+        let Some(_turn) = on.turns.take(on.stopped) else {
+            return Err(Problems::from(session_closed()));
         };
         // A mesh that took past a kernel request's time is the tolerance's to change (M4.1's
         // `export`).
@@ -237,6 +293,7 @@ fn meshed<K: Kernel>(
             };
             super::of_solid(solid.id, e)
         };
+        let pending = on.kernel.submit(on.kernel.generation(), request);
         let mesh = super::done(pending.wait(), session_closed).map_err(|p| p.map(at_feature))?;
         // Asked by `printable` only when a face was raised.
         let unraised = || {
