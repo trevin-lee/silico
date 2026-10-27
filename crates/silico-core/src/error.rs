@@ -492,6 +492,14 @@ impl Error {
         &self.0.candidates
     }
 
+    /// Whether the same request, sent again, could end otherwise: false only where a
+    /// worker's advice says the request's values crashed it and would crash it again (read
+    /// from the advice as data, never from its words). A client that adds its own "try
+    /// again" leaves it out then: the CLI's "run it again".
+    pub fn retry_helps(&self) -> bool {
+        !matches!(self.advice(), Some(Advice::ChangeTheValues { .. }))
+    }
+
     /// What it says, every field the error contract writes.
     pub fn said(&self) -> Said<'_> {
         self.0.said(ErrorCode::as_str)

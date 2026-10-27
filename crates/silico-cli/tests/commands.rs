@@ -1740,3 +1740,83 @@ fn cache_clear_of_several_files_says_each_and_exits_with_the_worst() {
         assert_eq!(entries(&caches[1]), Vec::<PathBuf>::new());
     }
 }
+
+/// A kernel worker that says it started (an empty frame on its socket, descriptor 3), takes
+/// a byte of the first request, and then runs `end`: how a worker's crash during a request
+/// is met, without a real crash of OCCT.
+fn worker_that_ends(scratch: &Scratch, name: &str, end: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = scratch.0.join(name);
+    std::fs::write(
+        &path,
+        format!("#!/bin/sh\nprintf '\\0\\0\\0\\0' >&3\nhead -c 1 <&3 >/dev/null\n{end}\nexec sleep 600\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[test]
+fn a_crash_the_requests_values_caused_says_to_change_them_and_not_to_run_check_again() {
+    // docs/cli.md (`check`): a kernel fault's suggestion is the worker's own, then to run
+    // `silico check` again to retry it; but after a crash the request's values caused, whose
+    // suggestion says the same request would crash the worker again, the worker's own
+    // alone. The words are the design's (docs/design/m4.1-command-api.md, section 6, *As
+    // built (M4.3)*): "change the operation's values: these crashed the kernel, and the
+    // same request would crash it again", and "the kernel worker was stopped from outside,
+    // stopped responding, or was gone before the request reached it, not by these values"
+    // after "try the request again". A kill, which may have been for the memory, is "once
+    // more"; a worker that exits on its own is its install. Each of those is worth running
+    // again, so each keeps the CLI's line.
+    const RETRY: &str = "; run `silico check` again to retry it";
+    let scratch = Scratch::new("crash-advice");
+    let file = scratch.0.join("part.silico");
+    std::fs::write(&file, EXAMPLE).unwrap();
+    let values = "change the operation's values: these crashed the kernel, and the same request \
+                  would crash it again";
+    let outside = "try the request again: the kernel worker was stopped from outside, stopped \
+                   responding, or was gone before the request reached it, not by these values";
+    let terminated = format!("{outside}{RETRY}");
+    // Each worker's end, and its suggestion: the whole of it, or how it starts, and whether
+    // the CLI's line follows.
+    let cases = [
+        ("segfault", "kill -SEGV $$", values, false),
+        ("terminated", "kill -TERM $$", terminated.as_str(), true),
+        (
+            "killed",
+            "kill -KILL $$",
+            "try the request once more: ",
+            true,
+        ),
+        ("exited", "exit 1", "check Silico's install: ", true),
+    ];
+    for (name, end, opening, retried) in cases {
+        let kernel = worker_that_ends(&scratch, name, end);
+        let out = silico_on_kernel(&scratch, &["check", "--json"], &file, &kernel);
+        assert_eq!(out.status.code(), Some(2), "{name}: {}", stderr(&out));
+        let line: serde_json::Value =
+            serde_json::from_slice(out.stdout.split(|&b| b == b'\n').next().unwrap()).unwrap();
+        assert_eq!(line["ok"], false, "{name}: {line}");
+        assert_eq!(line["error"]["code"], "worker_crashed", "{name}: {line}");
+        let suggestion = line["error"]["suggestion"].as_str().unwrap();
+        assert!(suggestion.starts_with(opening), "{name}: {suggestion:?}");
+        assert_eq!(
+            suggestion.ends_with(RETRY),
+            retried,
+            "{name}: {suggestion:?}"
+        );
+        if !retried || opening.ends_with(RETRY) {
+            // Whole: the values' crash says no more than the design's words; another
+            // given in full, the design's words and the CLI's line.
+            assert_eq!(suggestion, opening, "{name}");
+        }
+        // Without --json, the same suggestion, said once.
+        let out = silico_on_kernel(&scratch, &["check"], &file, &kernel);
+        assert_eq!(out.status.code(), Some(2), "{name}: {}", stderr(&out));
+        let said = stderr(&out);
+        assert_eq!(said.matches(suggestion).count(), 1, "{name}: {said}");
+        if name == "segfault" {
+            assert!(!said.contains("again to retry it"), "{said}");
+        }
+    }
+}
