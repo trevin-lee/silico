@@ -694,11 +694,13 @@ fn a_length_and_an_angle_bound_are_read_to_their_places_and_range() {
         suggestion,
         "round it to 9 decimals: angles are whole nanodegrees"
     );
-    let (_, suggestion) = bound("half_angle", "9223372036.854775808").unwrap_err();
-    assert_eq!(
-        suggestion,
-        "an angle is at most 9223372036.854775807 degrees either way"
-    );
+    for past in ["9223372036.854775808", "-9223372036.854775808"] {
+        let (_, suggestion) = bound("half_angle", past).unwrap_err();
+        assert_eq!(
+            suggestion,
+            "an angle is at most 9223372036.854775807 degrees either way"
+        );
+    }
     // A bound of the wrong kind says the measure's quantity.
     let (message, _) = bound("half_angle", "\"30\"").unwrap_err();
     assert_eq!(
