@@ -2449,6 +2449,146 @@ mod tests {
         }
     }
 
+    #[test]
+    fn every_handle_the_cache_opens_is_closed_on_exec_and_a_directorys_is_a_directory() {
+        // Found by the M4 milestone's mutation run: a new file opened without O_CLOEXEC
+        // (and O_NOFOLLOW, which O_EXCL makes moot), and a directory through links opened
+        // without O_CLOEXEC or O_DIRECTORY, passed every test. A worker the core starts
+        // meanwhile would inherit the handle: on a partial entry, or on the user's secret as
+        // it's written (0o600, through `new_file`). Each of the cache's opens, its handle
+        // closed on exec; and a file isn't a directory to open, as the system refuses it.
+        use rustix::io::{FdFlags, fcntl_getfd};
+        let _partial_files = PARTIAL_FILES.lock().unwrap_or_else(|e| e.into_inner());
+        let scratch = Scratch::new("closed-on-exec");
+        let file = scratch.0.join("file");
+        std::fs::write(&file, b"a file").unwrap();
+        let closed_on_exec =
+            |fd: BorrowedFd<'_>| fcntl_getfd(fd).unwrap().contains(FdFlags::CLOEXEC);
+        let through = at::open_dir_through_links(&scratch.0).unwrap();
+        assert!(closed_on_exec(through.as_fd()));
+        assert!(closed_on_exec(
+            at::open_dir(CWD, &scratch.0).unwrap().as_fd()
+        ));
+        assert!(closed_on_exec(
+            at::open_to_read(&through, "file").unwrap().as_fd()
+        ));
+        let (_, partial) = at::new_file(&through, Mode::from_raw_mode(0o600)).unwrap();
+        assert!(closed_on_exec(partial.as_fd()));
+        assert_eq!(
+            at::open_dir_through_links(&file).unwrap_err(),
+            Errno::NOTDIR
+        );
+    }
+
+    #[test]
+    fn an_entrys_subdirectory_a_link_is_refused_as_one_and_a_file_for_the_systems_reason() {
+        // Found by the M4 milestone's mutation run: a write whose subdirectory is a link
+        // (put there after the put looked) failing for the system's reason alone, and one
+        // whose subdirectory is a file failing as if it were a link, passed every test. `ab`
+        // a link to a directory elsewhere: refused as a link, nothing written there. `cd` a
+        // file: refused as the system refuses a file opened as a directory, ENOTDIR, the
+        // file left as it was.
+        let _partial_files = PARTIAL_FILES.lock().unwrap_or_else(|e| e.into_inner());
+        let scratch = Scratch::new("subdirectory-kinds");
+        let (cache, elsewhere) = (scratch.0.join("cache"), scratch.0.join("elsewhere"));
+        std::fs::create_dir(&cache).unwrap();
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, cache.join("ab")).unwrap();
+        std::fs::write(cache.join("cd"), b"a file").unwrap();
+        let root = opened_at(&cache);
+        let linked =
+            write_entry(&root, &cache, "ab", "ef", &Seal([0; 32]), b"payload").unwrap_err();
+        assert_eq!(linked.raw_os_error(), None, "{linked}");
+        assert_eq!(linked.to_string(), "its directory is a link");
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+        let filed = write_entry(&root, &cache, "cd", "ef", &Seal([0; 32]), b"payload").unwrap_err();
+        assert_eq!(filed.raw_os_error(), Some(libc::ENOTDIR), "{filed}");
+        assert_eq!(std::fs::read(cache.join("cd")).unwrap(), b"a file");
+    }
+
+    #[test]
+    fn a_cache_directory_a_link_one_moment_and_gone_the_next_is_missing_or_refused_never_failed() {
+        // Found by the M4 milestone's mutation run: a directory whose open met a link, and
+        // whose look at what's there then found nothing (the link removed between), taken
+        // as a failure (warned of, each time), not as missing, passed every test. With
+        // `.silico-cache` a link one moment and nothing the next, again and again, each
+        // open for a read is missing, or refused as a link, never a failure. A race, so a
+        // loop: opens, as another thread flips the two at uneven intervals, until one
+        // fails, 300,000 opens, or 20 seconds, whichever is first. A pass is no proof, but a
+        // failure is one.
+        use std::sync::atomic::AtomicBool;
+        let scratch = Scratch::new("link-or-nothing");
+        let elsewhere = scratch.0.join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let aside = scratch.0.join("aside");
+        std::os::unix::fs::symlink(&elsewhere, &aside).unwrap();
+        let dir = scratch.0.join(".silico-cache");
+        let cache = Cache::new(dir.clone(), this_platform(), Some(Secret([7; 32])));
+        let stop = Arc::new(AtomicBool::new(false));
+        let flipper = {
+            let (stop, dir, aside) = (Arc::clone(&stop), dir.clone(), aside.clone());
+            std::thread::spawn(move || {
+                let mut k: u64 = 0;
+                while !stop.load(Ordering::Relaxed) {
+                    std::fs::rename(&aside, &dir).unwrap();
+                    k = (k + 7919) % 4001;
+                    for _ in 0..k {
+                        std::hint::spin_loop();
+                    }
+                    std::fs::rename(&dir, &aside).unwrap();
+                }
+            })
+        };
+        let began = std::time::Instant::now();
+        let mut failed = None;
+        for i in 0..300_000 {
+            match cache.root(false) {
+                Err(Unopened::Missing | Unopened::Refused) => {}
+                other => {
+                    failed = Some((i, format!("{other:?}")));
+                    break;
+                }
+            }
+            if began.elapsed() > Duration::from_secs(20) {
+                break;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        flipper.join().unwrap();
+        assert_eq!(failed, None);
+    }
+
+    #[test]
+    fn a_documents_directory_not_there_is_made_only_for_a_write_without_a_workspace() {
+        // Found by the M4 milestone's mutation run (caught there only by a test that timed
+        // out under load): making a missing document's directory on a read too, or in a
+        // workspace, passed every test. A read's open, with or without a workspace, and a
+        // write's in one: missing, and nothing made. A write's without one (a tool's cache,
+        // anywhere): made, with the directories above it, as it always was.
+        let dir = tempfile::tempdir().unwrap();
+        let work = std::fs::canonicalize(dir.path()).unwrap().join("work");
+        std::fs::create_dir(&work).unwrap();
+        let workspace = Workspace::new(&work).unwrap();
+        let gone = work.join("gone/below");
+        let cache = Cache::new(
+            gone.join(".silico-cache"),
+            this_platform(),
+            Some(Secret([7; 32])),
+        );
+        assert!(matches!(
+            cache.clone().within(workspace.clone()).root(false),
+            Err(Unopened::Missing)
+        ));
+        assert!(matches!(
+            cache.clone().within(workspace).root(true),
+            Err(Unopened::Missing)
+        ));
+        assert!(matches!(cache.root(false), Err(Unopened::Missing)));
+        assert!(!work.join("gone").exists());
+        assert!(cache.root(true).is_ok());
+        assert!(gone.join(".silico-cache").is_dir());
+    }
+
     /// What [`walk`] gave its visitor, as data: what it found, and where.
     fn walked(found: Walked<'_>) -> (&'static str, PathBuf) {
         match found {
