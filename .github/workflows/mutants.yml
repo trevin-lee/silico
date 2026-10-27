@@ -19,7 +19,7 @@ name: mutants
 # The ref, base, packages, files, and regex, so concurrent runs can be told apart
 # (review-tests finds its run by this title). A filler run's starts "filler a" or "filler
 # b<k>": the filler reads its own last runs back from these titles.
-run-name: "${{ inputs.filler && format('filler {0} ', inputs.filler) || '' }}mutants ${{ inputs.ref || github.ref_name }} since ${{ inputs.base || 'nothing' }} in ${{ inputs.packages || 'every package' }}${{ inputs.files && format(' files {0}', inputs.files) || '' }}${{ inputs.re && format(' matching {0}', inputs.re) || '' }}"
+run-name: "${{ inputs.filler && format('filler {0} ', inputs.filler) || '' }}mutants ${{ inputs.ref || github.ref_name }} since ${{ inputs.base || 'nothing' }} in ${{ inputs.packages || 'every package' }}${{ inputs.files && format(' files {0}', inputs.files) || '' }}${{ inputs.re && format(' matching {0}', inputs.re) || '' }}${{ inputs.long && ' (long)' || '' }}"
 
 on:
   workflow_dispatch:
@@ -40,8 +40,11 @@ on:
         description: "Only mutants whose names match this regex, cargo-mutants' --re, searched in each name (path:line:col: what was replaced, often ending ' in fn'); match a survivor by its description rather than its line, which moves; escape regex characters; no single quotes (write . for one) or newlines (empty: every mutant)"
         default: ""
       shards:
-        description: "Number of shards to share the work (1 to 16; up to seven run at once, one per runner labelled mutants)"
+        description: "Number of shards to share the work (1 to 16; up to nine run at once, one a runner: seven for a long run)"
         default: "2"
+      long:
+        description: "Empty (the default) for a run that gates a merge: its shards take any of the nine runners labelled mutants-pr. Set (true) for a long one, a milestone's or a whole crate's, hours long: its shards take only the seven labelled mutants, so a run that gates a merge never waits behind it, on silico-20 and -21"
+        default: ""
       filler:
         description: "Empty for a real run. Set only by the filler (filler.yml): a, the commits main gained since its last such run, or b<k>, the k-th slice of the source; such a run yields to real ones, stops after an hour, tests its mutants in random order, and fails only on misses not in .github/mutants-triaged.txt"
         default: ""
@@ -113,19 +116,21 @@ jobs:
   shard:
     needs: plan
     # A filler run's shards only on the runners labelled filler (silico-9 to -12), which
-    # take no gates: so filler never holds a runner a gate could use. A run narrowed to some
-    # files, packages, or names (a PR's, before it merges) asks for `mutants-pr`, which every
-    # mutants runner has and two more (silico-20, -21) have alone: so a PR's run never waits
-    # for a whole-diff run (a milestone's, hours long) to free the pool, and starts beside it.
-    runs-on: ${{ inputs.filler != '' && fromJSON('["self-hosted", "linux", "x64", "filler"]') || (inputs.files != '' || inputs.packages != '' || inputs.re != '') && fromJSON('["self-hosted", "linux", "x64", "mutants-pr"]') || fromJSON('["self-hosted", "linux", "x64", "mutants"]') }}
+    # take no gates: so filler never holds a runner a gate could use. A long run (`long`: a
+    # milestone's, hours long) asks for `mutants`, which only silico-9 to -12 and -15 to -17
+    # have; any other run (one that gates a merge) asks for `mutants-pr`, which those have and
+    # silico-20 and -21 have alone: so a run that gates a merge never waits for a long one to
+    # free the pool, but starts beside it, on 20 and 21 at least (a freed runner with both
+    # labels goes to whichever shard GitHub queued first).
+    runs-on: ${{ inputs.filler != '' && fromJSON('["self-hosted", "linux", "x64", "filler"]') || inputs.long != '' && fromJSON('["self-hosted", "linux", "x64", "mutants"]') || fromJSON('["self-hosted", "linux", "x64", "mutants-pr"]') }}
     # A whole-workspace run is about 2,300 mutants: hours, even sharded. A filler run stops
     # after an hour: it fills idle time, and comes back to its work on a later turn.
     timeout-minutes: ${{ inputs.filler != '' && 60 || 1440 }}
     strategy:
       fail-fast: false
-      # As many at once as there are runners a shard may take: `mutants` (silico-9 to -12
-      # and -15 to -17, through /etc/ci-runner/labels on the runner VM), and for a narrowed
-      # run, `mutants-pr` (those and silico-20, -21). silico-1 to -8 carry only
+      # As many at once as there are runners a shard may take: for a long run, `mutants`
+      # (silico-9 to -12 and -15 to -17, through /etc/ci-runner/labels on the runner VM); for
+      # any other, `mutants-pr` (those and silico-20, -21). silico-1 to -8 carry only
       # `gate`, so gates always have eight runners however many shards are queued (silico-5
       # to -8 took both until 2026-10-26). silico-9 to -12 (also `filler`) and -15 to -17
       # carry `mutants`, not `pve`, so no gate (nor a job from a branch older than these
@@ -158,6 +163,7 @@ jobs:
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ inputs.shards }}
           FILLER: ${{ inputs.filler }}
+          LONG: ${{ inputs.long }}
         run: |
           # Branch names as they are on GitHub, and commits, abbreviated or not.
           resolve() { git rev-parse --verify --quiet "origin/$1^{commit}" || git rev-parse --verify "$1^{commit}"; }
@@ -183,17 +189,18 @@ jobs:
           # A filler run is cut off after an hour: in random order (cargo-mutants shuffles each
           # shard's share after sharding), so each turn at a slice reaches different mutants.
           if [ -n "$FILLER" ]; then args+=(--shuffle); fi
-          # A seventh of the machine each (4 threads of 30): seven shards can run at once, one
-          # a mutants runner, and two more of a narrowed run on silico-20 and -21, all at the
-          # idle weight. At 2 threads a shard (twelve runners), the VM sat 27% idle over a day
-          # (2026-10-25, ~/.cache/silico-review/ci-ext4/idle-day-after-3.tsv) while shards
-          # queued for a runner: the runners were the limit, not the CPU. A shard takes only
-          # CPU nothing else wants: its runner's cgroup is at the idle weight (CPUWeight=idle
-          # on silico-9 to -12, -15 to -17, -20, and -21, set 2026-10-26 with systemctl
-          # set-property), so between runners a gate always wins. Nice and the idle scheduling
-          # class rank threads only within their own cgroup; between runner services only the
-          # cgroups' weights count, so nice 19 alone let two gates fail tests held to a wall
-          # clock beside full shards on 2026-10-25. Nice 19 (below) still orders a shard's own
+          # A seventh of the machine each (4 threads of 30) for a long run, whose seven shards
+          # can run at once, and a tenth for another, whose two on silico-20 and -21 may run
+          # beside them (below), all at the idle weight. At 2 threads a shard (twelve
+          # runners), the VM sat 27% idle over a day (2026-10-25,
+          # ~/.cache/silico-review/ci-ext4/idle-day-after-3.tsv) while shards queued for a
+          # runner: the runners were the limit, not the CPU. A shard takes only CPU nothing
+          # else wants: its runner's cgroup is at the idle weight (CPUWeight=idle on silico-9
+          # to -12, -15 to -17, -20, and -21, set 2026-10-26 with systemctl set-property), so
+          # between runners a gate always wins. Nice and the idle scheduling class rank
+          # threads only within their own cgroup; between runner services only the cgroups'
+          # weights count, so nice 19 alone let two gates fail tests held to a wall clock
+          # beside full shards on 2026-10-25. Nice 19 (below) still orders a shard's own
           # threads. (On a full machine a gate can still fail a test held to a wall clock:
           # tests/mutants.sh lists them.) Retry a failed test here, since one that fails only
           # under load would fail the baseline or count a mutant as caught; a mutant that
@@ -209,7 +216,12 @@ jobs:
           # a target directory of its own (below): dependencies' fingerprints hold their source's
           # absolute path in the Cargo home, so sharing target-mutants/ with real shards would
           # make each switch between them rebuild everything.
-          running=7
+          # A long run's shards a seventh each (4 threads of 30), as seven can run; another
+          # run's a tenth (3), as its two on silico-20 and -21 may run beside a long run's
+          # seven: 34 threads at most, all at the idle weight, near the 30 measured safe
+          # for the tests held to nextest's limit (76 s of 120, 2026-10-23).
+          running=10
+          if [ -n "$LONG" ]; then running=7; fi
           priority=(nice -n 19)
           # A Cargo home of its own, filler's or a real shard's: at the idle CPU weight a shard
           # can stall while gates fill the VM, and a stalled shard holding the package cache's
