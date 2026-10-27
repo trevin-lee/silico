@@ -23,11 +23,12 @@ use silico_protocol::Reply;
 
 fn request(path: std::path::PathBuf) -> Export {
     Export {
-        format: ExportFormat::ThreeMf,
+        format: ExportFormat::ThreeMf {
+            tolerance: Length::rounded(0.1).unwrap(),
+        },
         path,
         replace: false,
         features: None,
-        tolerance: Length::rounded(0.1).unwrap(),
     }
 }
 
@@ -156,4 +157,44 @@ fn an_export_cancelled_once_meshed_answers_cancelled_and_writes_no_file() {
             .count(),
         1
     );
+}
+
+#[test]
+fn a_step_export_cancelled_while_it_writes_stops_and_answers_cancelled_writing_nothing() {
+    // Decision 34: the STEP worker's writing is stopped with the read (its worker killed;
+    // the fake's request superseded). Held in the fake, the export is cancelled: it answers
+    // `cancelled` at once, not when the writing would have ended, and leaves no file.
+    let f = fixture();
+    let sessions = f.sessions.exporting_step(Arc::clone(&f.kernel));
+    let file = f.dir.path().join("example.silico");
+    std::fs::write(&file, EXAMPLE).unwrap();
+    let s = answer(sessions.open(file, false)).session.unwrap().id;
+    answer(sessions.check(&s, CheckModel::Current { fresh: false }))
+        .result
+        .unwrap();
+    let out = f.dir.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    let hold = f.kernel.hold(|op| matches!(op, Op::ExportStep(_)));
+    let running = sessions.export(
+        &s,
+        Export {
+            format: ExportFormat::Step,
+            path: out.join("part.step"),
+            replace: false,
+            features: None,
+        },
+    );
+    assert!(f.kernel.wait_running(1, Duration::from_secs(60)));
+    assert!(running.stopper().cancel());
+    let refused = match running.wait_timeout(Duration::from_secs(10)) {
+        Ok(response) => response.result.unwrap_err(),
+        Err(_) => panic!("the export went on writing past its cancel"),
+    };
+    drop(hold);
+    assert_eq!(
+        refused.errors()[0].code(),
+        ErrorCode::Cancelled,
+        "{refused:?}"
+    );
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
 }

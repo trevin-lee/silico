@@ -32,6 +32,7 @@ pub mod recompute;
 mod references;
 pub mod render;
 pub mod sketch;
+pub mod step_worker;
 pub mod sweep;
 pub mod views;
 pub mod worker;

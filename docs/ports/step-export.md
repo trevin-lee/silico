@@ -2,7 +2,9 @@
 
 A document's bodies written as a STEP file (ISO 10303-21) that other CAD systems read as solids: each body a product named by its feature, in millimetres, its bytes the same in every run and on every checked platform. This is M4.8's `format: "step"` (docs/design/m4.1-command-api.md, the `export` entry and decision 6: "its header written from the document so its bytes are deterministic"). It sits beside the 3MF export (docs/ports/mesh-export.md) and shares its command, its path rules, and its `left_out`.
 
-**Not built.** This note is the study before it, and its experiments. The probes ran outside the repository; each, and what it showed, is listed under *Experiments*. Their sources are kept with the maintainer's review notes, to be turned into tests when it's built.
+**Built (M4.8, `format: "step"`):** `silico_protocol::step_encoded` (every string, as *Strings* says), `Op::ExportStep` and the STEP worker (`silico-step-worker`, in silico-kernel: the recipe below, OCCT built with `TKDESTEP`, linked into that worker alone), and the `export` command's STEP path (`silico_core::command::export`): each body a product, its id the feature's ID and its name the feature's, under an assembly named by the document's stem if there are two or more, the header's file name the document's. As Fable decided the contract (2026-10-26): `tolerance` is `null` for STEP and a length for 3MF, each mismatch refused naming it; a STEP object's `triangles`, `vertices`, and `volume` are `null`. The worker reports each part's faces left out (INTERNAL and EXTERNAL), anything else the writer's check list failed to transfer, and the faces and face bounds the parts have against those the file holds; the core refuses a failure or a count that differs (`invalid_result`, naming the feature and the elements), never a file with geometry missing. The writer's warnings, which say what it corrected, are logged.
+
+The study before it, and its experiments, follow. The probes ran outside the repository; each, and what it showed, is listed under *Experiments*.
 
 Citations are to FreeCAD 1.1.3 (tag `1.1.3`, commit `145529fe74`; the files fetched from GitHub, since the local clone has no tags) unless marked **main** (`876271d660`). OCCT citations are to 7.9.3 with Silico's patch series, `src/<Package>/<file>:line`.
 
@@ -67,7 +69,7 @@ Everything else is OCCT's (next section): the **name stays "Open CASCADE Shape M
 | `7d0e06c961` (2019) | 7-bit ASCII only in header fields | Silico encodes every non-ASCII character instead (below) |
 | `78c6cc1362` (2020, #4477) | raw UTF-8 in FILE_NAME made files unreadable | encode, never raw (below) |
 | `c8c4686543` (2022, #6282) | `exportStep` after an XCAF export wrote assembly structure, because `write.step.assembly` is a process-wide static left at On | **pass parameters explicitly, never through statics** (below) |
-| `70c18c8017` (2022) | pcurves off by default | followed |
+| `70c18c8017` (2022) | pcurves off by default | not followed: on, for curved booleans' read-back (*Settings*, pcurves) |
 | `9074fccc99` (2026, **main only**) | OCCT 8's STEP regression (OCCT #1327: curved faces lost): sets the shape-fix parameters and processing flags explicitly | not needed on 7.9.3: `STEPControl_Writer::Transfer` already sets the same defaults when none are set (`InitializeMissingParameters`, `STEPControl_Writer.cxx:282-295`); Silico's round trips below keep every face |
 
 ### FreeCAD's tests
@@ -144,7 +146,7 @@ This checks the writer, not the recipe's geometry: the input is the same B-rep o
 ## The recipe for deterministic bytes
 
 1. **Write with `STEPCAFControl_Writer`**, from an XCAF document built per request (`new TDocStd_Document("XmlXCAF")`, no application, no storage drivers needed), never `STEPControl_Writer`, whose product counter runs per process.
-2. **Pass `DESTEP_Parameters` to `Transfer(doc, params, STEPControl_AsIs)`**, every field the export cares about set: `WriteSchema = AP214IS`, `WriteUnit = Millimeter`, `WriteSurfaceCurMode = false`, `WriteAssembly = Auto`, `WritePrecisionMode = Average`, `WriteColor`/`WriteName` true, the rest OCCT's defaults. Never set an `Interface_Static`.
+2. **Pass `DESTEP_Parameters` to `Transfer(doc, params, STEPControl_AsIs)`**, every field the export cares about set: `WriteSchema = AP214IS`, `WriteUnit = Millimeter`, `WriteSurfaceCurMode = true` (as built: see *pcurves* below), `WriteAssembly = Auto`, `WritePrecisionMode = Average`, `WriteColor`/`WriteName` true, the rest OCCT's defaults. Never set an `Interface_Static`.
 3. **After `Transfer`, overwrite every header field** through `APIHeaderSection_MakeHeader(writer.ChangeWriter().Model())`: `SetName`, `SetTimeStamp`, `SetAuthorValue(1, …)`, `SetOrganizationValue(1, …)`, `SetPreprocessorVersion`, `SetOriginatingSystem`, `SetAuthorisation`, `SetDescriptionValue(1, …)`. The schema and the implementation level ('2;1') come from the parameters and are fixed.
 4. **Write with `WriteStream`** into memory, and return the bytes; the core writes the file (a new file renamed into place, as the 3MF does).
 5. **Encode every string before OCCT sees it** (the next section), so OCCT's escaping is never asked to guess.
@@ -173,9 +175,9 @@ OCCT 7.9 escapes strings itself (`cleanTextForSend`, `StepData_StepWriter.cxx:88
 | `a\X2\005C\X0\N\X2\005C\X0\b` (backslashes encoded) | as given | `a\N\b`: exact |
 | `Kl\X2\00F6\X0\tzchen` | as given | `Klötzchen`: exact |
 | `smile \X4\0001F600\X0\ end` | as given | `smile 😀 end`: exact |
-| `it's` | `it''s` | exact |
+| `it's` | `it''s` | exact (but `'` before `,` or `)` isn't: encoded, as built) |
 
-So Silico encodes every string itself, in Rust where it's testable without OCCT, and hands OCCT only strings that pass through it unchanged but for `'`: every character from U+0020 to U+007E except `\` as itself; every other character (backslash, control characters, all non-ASCII), in maximal runs, as `\X2\` and four hex digits each, then `\X0\`, using `\X4\` with eight hex digits for a character above U+FFFF (ISO 10303-21:2002 §6.4.3.3: `\X2\` is UCS-2, so no surrogate pairs). Uppercase hex, so the bytes are unique. The worker checks that what it's given is in that form (a protocol `check`, as `Primitive::check` does) and refuses anything else. With this encoding **every name a document can hold can be written**; nothing is refused for its characters, unlike 3MF's XML (docs/ports/mesh-export.md refuses control characters).
+So Silico encodes every string itself, in Rust where it's testable without OCCT, and never hands OCCT one (as built, from `/break-it`): OCCT breaks a string past 72 columns where it can (after a space, else a backslash, else an `_`, else at column 72), inside an encoded run too, and its reader decodes the run before it joins the lines, so a long name came back as `?`; it does so in time quadratic in the string's length (a 4 MiB name took 36 s); and its reader ends a string at a doubled `'` before `,` or `)`, so `Bracket 'A', left` came back as `Bracket 'A'`. The worker gives OCCT a short token for each string (`SILICO-NAME-0`, `SILICO-ASSEMBLY-0`, `SILICO-FILE-0`), and splices the encoded string in where each token is, once the file is written, in one pass, every token found or refused. The encoding: every character from U+0020 to U+007E except `\` and `'` as itself; every other character (backslash, control characters, all non-ASCII), in maximal runs, as `\X2\` and four hex digits each, then `\X0\`, using `\X4\` with eight hex digits for a character above U+FFFF (ISO 10303-21:2002 §6.4.3.3: `\X2\` is UCS-2, so no surrogate pairs). Uppercase hex, so the bytes are unique. The worker checks that what it's given is in that form (a protocol `check`, as `Primitive::check` does) and refuses anything else. With this encoding **every name a document can hold can be written**; nothing is refused for its characters, unlike 3MF's XML (docs/ports/mesh-export.md refuses control characters).
 
 ## "Header written from the document": recommendations
 
@@ -193,7 +195,7 @@ So Silico encodes every string itself, in Rust where it's testable without OCCT,
 | Several bodies | **an assembly product named by the document's file stem**, id `''`, each body a component | FreeCAD's GUI path does this, and a reader keeps the bodies apart | the same, the assembly named by the document's internal `Name` |
 | Schema | **AP214IS** (`AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }`) | It is FreeCAD's default and OCCT's, so Silico's file is FreeCAD's in everything but the header. Every reader reads it. OCCT 7.9.3's AP242 option is `AP242DIS`, and for B-rep solids it writes the same entities under another schema name, so it would gain nothing until PMI exists. FreeCAD reads all five of OCCT's schemas back the same (2e-14). | AP214IS |
 | Units | **mm** (`SI_UNIT(.MILLI.,.METRE.)`), no option | The document is in mm. A unit option would only rescale the numbers, and lose digits doing it. | preference, default mm |
-| pcurves | **off** (`WriteSurfaceCurMode = false`) | FreeCAD's default since `70c18c8017`. Files are 40 to 60% smaller (fillet 63 kB vs 25 kB), and the read-back is closer: FreeCAD's volume within 4e-16 relative without them and 3e-14 with them, since a pcurve written to 12 decimals is an approximation the reader then trusts (area is within 2e-14 either way). | off |
+| pcurves | **on** (`WriteSurfaceCurMode = true`), as built | Recommended off at first: FreeCAD's default since `70c18c8017` (which gives no reason), files 40 to 60% smaller, and the study's read-backs (a box, fillets, a B-spline pad) closer without them (4e-16 against 3e-14). Built, the oracle's whole case set read back through FreeCAD showed the other side: without pcurves the reader rebuilds them, and two spheres fused read back 1.1e-6 off in volume (a sphere common a box 4e-10); with them, 4.5e-11 and exact to 1e-10. Exactness over size: on. | off |
 | Uncertainty | OCCT's `Average` (each part's mean tolerance) | FreeCAD's; deterministic, the shape's own tolerances | the same |
 
 ## Round trips through FreeCAD 1.1.3
@@ -215,6 +217,10 @@ Each file read back with `Part.read` (`TopoShape::importStep`) and `Import.inser
 
 The plain writer's files read back the same, named `Box 1`, `Fillet 1`, … (the counter).
 
+As built, the oracle's whole case set read back through FreeCAD 1.1.3 (`silico-oracle`'s `step_oracle`): every case within 1e-10 in volume and area, where it was (its tight box and center within 1e-9 of its diagonal), its faces and face bounds all written, its name its label; and two parts placed apart, each at its box by hand.
+
+**A name with no ASCII graphic character reads back as the product's id on Linux** (an OCCT reader bug, followed and said, not worked around; upstream draft for the maintainer to post). `STEPCAFControl_Reader::ReadNames` takes a product's name only if `UsefullLength() > 0`, which counts bytes `isgraph` accepts; glibc's C and UTF-8 locales accept no byte past ASCII, and macOS accepts most. So 支架, `ü`, or 😀 alone is read on Linux as `f0000003`, its id; a name holding any ASCII graphic character (`Klötzchen`) reads back exactly everywhere. The file holds the name exactly either way (`adversarial_step_oracle`).
+
 ## How it fits Silico
 
 ### The build
@@ -224,44 +230,56 @@ The plain writer's files read back the same, named `Box 1`, `Fillet 1`, … (the
 - 4,701 build steps against 2,220 now; about 20 minutes at `-j 4`, `nice`.
 - About 15 MB more libraries (`TKDESTEP` 7 MB). It changes no existing library, so the stress reference stays byte-identical.
 - No new inexact math imports: `nm -u` on all ten new libraries finds none of the shim's functions.
-- On macOS, `TKService` links AppKit, IOKit, CoreGraphics, Foundation, and CoreFoundation, so the kernel worker would load them; startup of a probe that writes a box is 0.11 s in all. If that matters, a STEP worker binary of its own would keep them out of the modeling worker. Linux links no GUI library (`USE_OPENGL=OFF`, `USE_FREETYPE=OFF`, no X11 needed by `TKService` there; not verified).
+- On macOS, `TKService` links AppKit, IOKit, CoreGraphics, Foundation, and CoreFoundation, so whatever links it loads them. As built, that's the STEP worker alone (`silico-step-worker`, in silico-kernel, which stays the only crate that links OCCT): linked into the kernel worker, they took its startup from about 30 to 70 ms and its memory from 8.4 to 18.5 MB (debug), past what the pool's rule for stopping superseded work assumes, in every worker of the pool. The STEP worker is started for each export (exports are rare, and a fresh process is deterministic by construction), its own bridge (`cpp/step.cpp`) and its own import check; the kernel worker links none of STEP's toolkits, tested.
+- On Linux, `TKService` includes X11's headers unless OCCT is configured with `USE_XLIB=OFF`, as build.sh does (nothing Silico calls draws).
 - The writer prints transfer statistics to stdout through `Message::DefaultMessenger()`. The worker removes the default printers (or routes them to `tracing`).
 
 ### The worker's request
 
-`Op::ExportStep` beside `Op::ExportMesh`:
+`Op::ExportStep`, answered by the STEP worker (the kernel worker refuses it as another worker's):
 
 ```
 ExportStep {
-  parts: [ { shape: <a body's solid, as the worker holds it>, id: "f0000003", name: "<encoded>" } ],  // timeline order, at least one
+  parts: [ { shape: <a body's B-rep>, id: "f0000003", name: "<encoded>" } ],  // the file's order, at least one
   assembly: "<encoded document stem>",   // used only with two or more parts
-  header: { file_name: "<encoded>" }     // the rest are constants in the worker
+  file_name: "<encoded document file name>"  // the header's; its other fields the worker's constants
 }
-→ { step: <bytes>, left_out: [ { part: 0, faces: [<face indices>] } ] }
+→ StepFile {
+  step: <bytes>,
+  left_out: [ [<face numbers>], ... ],          // a list a part: its INTERNAL and EXTERNAL faces
+  unwritten: [ { part, element, messages } ],   // the writer's check-list failures, of anything else
+  faces: { expected, written },                 // the parts' faces that bound material, and the file's
+  bounds: { expected, written },                // their wires, and the file's face bounds
+}
 ```
 
-The core encodes the strings, names the parts, and words refusals; the worker checks the strings' form (`ExportStep::check`), builds the XCAF document, transfers with the parameters above, sets the ids and the header, and returns `WriteStream`'s bytes.
+The core encodes the strings, names the parts, and words refusals (`command::export`'s `unwritten`); the worker checks the strings' form (`ExportStep::check`) and each part's B-rep (as the kernel does), builds the XCAF document, transfers with the parameters above, sets the ids and the header, splices in the strings, and reports what it finds. Whatever wrote a file, its identity (the STEP worker's build: `STEP worker sha256:...`) is logged with it, as a kernel's keys its results.
 
 Refused:
 
 - **No parts** (`features: []`, or a document with no body): `invalid_input`, naming `features`, as the 3MF export refuses it (after FreeCAD's mesh export, `04005b5e45`). FreeCAD's STEP export doesn't refuse: `ExportOCAF2::exportObjects` returns at once on an empty list (`ExportOCAF2.cpp:347-349`) and the writer is handed an empty document (what it writes then is not verified).
 - **A feature that didn't build**: its own failure, as `describe` answers it.
 - **A string not in the encoded form**: a protocol error (the core never sends one).
-- **A transfer OCCT fails** (`Transfer` returns false, or `WriteStream` fails): `invalid_result`, naming the feature, with OCCT's message.
+- **A transfer OCCT fails** (`Transfer` returns false, or `WriteStream` fails): `invalid_result`, naming the feature if there's one, with OCCT's message.
+- **A check-list failure, or fewer faces or face bounds written than the parts have**: `invalid_result`, naming the feature (one part's) and the elements, the core's words.
+- **No STEP worker to be had**: `worker_unavailable`, saying how to build it or name it (`SILICO_STEP_WORKER`).
 - **Names: nothing.** Every Unicode string can be encoded. A name's length is bounded by the document's (16 MiB).
 
-`export`'s `tolerance` means nothing for STEP. Refusing it with `format: "step"`, naming `tolerance`, is clearer than ignoring it; M4.1's design should say which.
+`export`'s `tolerance` means nothing for STEP: decided (Fable, 2026-10-26), it's `null` for STEP, and a length is refused naming it, as a camera's `view_height` is for a perspective camera.
 
 ### Edge cases
 
 - **INTERNAL and EXTERNAL faces.** OCCT's writer drops them with only a transfer warning ("Face from Non Manifold Topology", `TopoDSToStep_MakeStepFace.cxx:143-149`), and FreeCAD's export does the same with no word. Silico finds them before the transfer and reports them in `left_out`, as the 3MF export does (decided for 3MF in m4.8-export-fable). The solid's volume is unchanged (OCCT's volume ignores them too) and its area loses theirs.
 - **Several solids in one feature**: one product, one `MANIFOLD_SOLID_BREP` each (measured, `rt4/compound-one-feature.step`).
+- **Assembly links**: OCCT numbers each `NEXT_ASSEMBLY_USAGE_OCCURRENCE` by a counter that runs for the life of the process (`STEPConstruct_Assembly::MakeRelationship`), so a worker's second assembly read `'3'`, `'4'`: the worker sets each link's id to its place among them, from 1 (found by `/break-it`).
+- **Two solids sharing a face** (a general fuse's): the writer writes the face once for each solid, so the worker counts it once for each solid too, and the counts must match exactly. A face shared by a solid and a free shell, or by two free shells, is written more than once and counted once, so it's refused: no feature makes one, and a refusal is safer than geometry missing unsaid.
 - **Two features with the same name**: two products with the same name and different ids (allowed); FreeCAD renames the second `Box001` on import.
 - **Shared shapes.** `XCAFDoc_ShapeTool::AddComponent` reuses a label for a shape it already holds (the same `TShape`), which would make two bodies instances of one product. Bodies a worker builds or reads separately never share a `TShape`; the request should still be built so that each part is its own (`AddShape(…, makeAssembly = false)` per part, then `AddComponent` of that label).
 - **Very small and very large coordinates.** The 12-decimal and 13-significant-digit format loses up to 5e-13 mm absolute in [0.1, 1000) mm and 5e-14 relative outside it. At 1.2e7 mm that moves a vertex by 4.5e-6 mm, past OCCT's 1e-7 confusion, yet the read-back is valid and within 2e-14 in volume. Parts at the kernel's length limits (1e8 mm) lose up to 5e-6 mm. That is FreeCAD's precision too. A 17-digit format isn't available safely: `StepData_StepWriter::Send(Real)` formats into `char lval[24]` (`StepData_StepWriter.cxx:968`), which a 17-digit `%E` of a negative value with a three-digit exponent overflows, and the zero-suppression scans only 16 characters (`Interface_FloatWriter.cxx:127`). Silico follows FreeCAD and says so in the export's documentation. It can't be fixed under the patch policy, which allows only determinism and crash fixes.
 - **Non-finite values** can't reach the writer: the kernel refuses non-finite geometry.
 - **Faces in no solid** (a shell or free faces in a body, as some of the NIST corpus has) would be written as a shell-based surface model under `AsIs`. Silico's bodies are solids, so this waits for import.
 - **Timeouts.** The transfer runs inside the kernel request's 60 s, as the 3MF mesh does.
+- **What the writer reports** (as built, refining Fable's residual-risk item): every failure on the transfer's check list, of anything but a face left out, is reported for the core to refuse, naming the part and the element. Its warnings are not: it warns of what it corrects as it writes ("Direction of Face of revolution corrected" on every cylinder), so they're logged. What makes a dropped face loud whatever the messages say is a count: the file must hold as many face surfaces as the parts have faces that bound material, or the export is refused.
 
 ### Tests to write (expected values from FreeCAD 1.1.3 or by hand)
 
@@ -279,7 +297,8 @@ Refused:
 - Product ids are feature IDs; FreeCAD writes the label twice.
 - Names keep every character, encoded; FreeCAD writes raw UTF-8 and leaves the file name out because of it.
 - INTERNAL faces are reported; FreeCAD drops them silently (both drop them).
-- No unit, schema, or pcurve option. FreeCAD's defaults are taken as the only values.
+- No unit, schema, or pcurve option. FreeCAD's defaults are taken as the only values, but pcurves, written (FreeCAD's default omits them).
+- A part placed by a location is one product. XCAF makes a located shape a reference to a prototype (two products for one body, the inner one named `SOLID`), so the worker gives it in a compound of its own.
 
 ## Experiments
 

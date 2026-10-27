@@ -27,6 +27,10 @@ name = "silico-kernel-worker"
 path = "src/bin/silico-kernel-worker.rs"
 
 [[bin]]
+name = "silico-step-worker"
+path = "src/bin/silico-step-worker.rs"
+
+[[bin]]
 name = "silico-brep-convert"
 path = "src/bin/silico-brep-convert.rs"
 

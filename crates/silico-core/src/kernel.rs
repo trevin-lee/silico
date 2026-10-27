@@ -983,6 +983,46 @@ impl KernelRequest<ExportMesh> {
     }
 }
 
+impl KernelRequest<silico_protocol::StepFile> {
+    /// `export` written as a STEP file (docs/ports/step-export.md): every part a product, in
+    /// order, its strings already encoded ([`silico_protocol::step_encoded`]). Refused if
+    /// it has no part or a string isn't encoded, which the core never sends: Silico's bug.
+    /// The reply is checked to give each part its faces left out, each numbered from 1.
+    pub fn export_step(export: silico_protocol::ExportStep) -> Result<Self, Error> {
+        if let Err(invalid) = export.check() {
+            return Err(
+                refused("STEP export", None, invalid).with_suggestion(crate::worker::SILICO_BUG)
+            );
+        }
+        let parts = export.parts.len();
+        Ok(Self::new(
+            Op::ExportStep(Box::new(export)),
+            move |name, reply| match reply {
+                Reply::StepFile(file)
+                    if file.left_out.len() != parts
+                        || file.left_out.iter().flatten().any(|&face| face == 0)
+                        || file.unwritten.iter().any(|u| {
+                            u.part.is_some_and(|p| p as usize >= parts)
+                                || u.element.is_some_and(|e| e.index == 0)
+                        }) =>
+                {
+                    Err(Error::new(
+                        ErrorCode::ProtocolError,
+                        format!(
+                            "the kernel worker sent the faces left out of {} parts, an element \
+                             numbered 0, or a part past the last, for a STEP export of {parts}",
+                            file.left_out.len()
+                        ),
+                    )
+                    .with_suggestion("start a new kernel worker"))
+                }
+                Reply::StepFile(file) => Ok(*file),
+                other => Err(unexpected(name, &other)),
+            },
+        ))
+    }
+}
+
 impl KernelRequest<Blob> {
     /// `data`, sent to the worker and back: a health check, and the cheapest round trip.
     pub fn echo(data: Blob) -> Self {
@@ -1392,6 +1432,14 @@ impl KernelWorker {
         tolerance: f64,
     ) -> Result<ExportMesh, Error> {
         self.run(KernelRequest::unraised_export_mesh(shape, tolerance)?)
+    }
+
+    /// [`KernelRequest::export_step`], run on this worker.
+    pub fn export_step(
+        &mut self,
+        export: silico_protocol::ExportStep,
+    ) -> Result<silico_protocol::StepFile, Error> {
+        self.run(KernelRequest::export_step(export)?)
     }
 }
 

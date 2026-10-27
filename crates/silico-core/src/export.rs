@@ -77,6 +77,28 @@ impl PrintableMesh {
     }
 }
 
+/// The names of `faces` of a shape `names` is the element map of (or, without one, as
+/// FreeCAD numbers them, `Face3`), in order: a STEP export's `left_out`, named as a mesh's
+/// is. A map that doesn't name one of them is another shape's, Silico's bug.
+pub(crate) fn face_names(names: Option<&ElementMap>, faces: &[u32]) -> Result<Vec<String>, Error> {
+    if let Some(map) = names
+        && let Some(&missing) = faces
+            .iter()
+            .find(|&&f| map.name(ElementRef::face(f)).is_none())
+    {
+        return Err(Error::new(
+            ErrorCode::Internal,
+            format!(
+                "the element map given for the export names no Face{missing}: it isn't the map \
+                 of the shape exported"
+            ),
+        )
+        .with_suggestion(crate::worker::SILICO_BUG));
+    }
+    let namer = FaceNamer { names };
+    Ok(faces.iter().map(|&f| namer.name(f)).collect())
+}
+
 /// Names faces in a refusal as the feature's element map names them (or as FreeCAD numbers
 /// them, `Face3`, without one), and makes the refusal: the first [`FACES_NAMED`], and how
 /// many there are.

@@ -1,0 +1,7 @@
+{
+  "path": "out/bracket.step",
+  "bytes": 27418,
+  "objects": [
+    {"feature": "f0000003", "name": "Bracket", "triangles": null, "vertices": null, "volume": null, "left_out": []}
+  ]
+}
