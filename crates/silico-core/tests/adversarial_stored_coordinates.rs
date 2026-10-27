@@ -570,7 +570,6 @@ fn a_superseded_recompute_returns_without_waiting_behind_the_newer_ones_solve() 
     // not wait on it.
     let sketches = FakeSketches::new();
     let engine = engine(&sketches);
-    let mut waited = Vec::new();
     for round in 0..5u32 {
         sketches.hold();
         let stops = sketches.stops();
@@ -588,10 +587,13 @@ fn a_superseded_recompute_returns_without_waiting_behind_the_newer_ones_solve() 
             Ok(Ok(RunOutcome::Superseded)) => {}
             Ok(other) => panic!("{round} b: {other:?}"),
             Err(b) => {
-                // Waiting behind c's held solve: let c's solve go, and b comes back.
+                // Waiting behind c's held solve: let c's solve go, and b comes back, to say
+                // so in this round, not after every round's full wait.
                 sketches.release();
                 match b.wait_timeout(WAIT) {
-                    Ok(Ok(RunOutcome::Superseded)) => waited.push(round),
+                    Ok(Ok(RunOutcome::Superseded)) => panic!(
+                        "superseded, b waited behind the newer recompute's solve in round {round}"
+                    ),
                     Ok(other) => panic!("{round} b: {other:?}"),
                     Err(_) => panic!("{round} b: hung even with every solve let go"),
                 }
@@ -604,10 +606,6 @@ fn a_superseded_recompute_returns_without_waiting_behind_the_newer_ones_solve() 
             Err(_) => panic!("{round} c: didn't finish"),
         }
     }
-    assert!(
-        waited.is_empty(),
-        "superseded, b waited behind the newer recompute's solve in rounds {waited:?}"
-    );
 }
 
 #[test]
