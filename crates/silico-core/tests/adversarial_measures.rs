@@ -944,16 +944,11 @@ fn the_vertex_two_edges_meet_at_is_named_by_its_own_name_though_unstable() {
         // Every element at once: the edges given, the faces and vertices the fake's.
         Op::DescribeAll { shape } => {
             let fake = FakeKernel::described(shape)?;
-            Some(Reply::DescribedAll {
-                faces: fake.faces.len() as u32,
-                edges: edges.len() as u32,
-                vertices: fake.vertices.len() as u32,
-                description: Description {
-                    faces: fake.faces,
-                    edges: edges.clone(),
-                    vertices: fake.vertices,
-                },
-            })
+            Some(Reply::DescribedAll(Description {
+                faces: fake.faces,
+                edges: edges.clone(),
+                vertices: fake.vertices,
+            }))
         }
         Op::Describe {
             kind: ElementKind::Edge,

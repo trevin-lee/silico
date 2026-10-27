@@ -99,12 +99,7 @@ pub fn other_edge(n: u32) -> EdgeDescription {
 /// batch of `whole`, or, asked for every element at once, with `whole` itself.
 pub fn forge(kernel: &FakeKernel, whole: Description) {
     kernel.answer_instead(move |op| match op {
-        Op::DescribeAll { .. } => Some(Reply::DescribedAll {
-            faces: 6,
-            edges: 12,
-            vertices: 8,
-            description: whole.clone(),
-        }),
+        Op::DescribeAll { .. } => Some(Reply::DescribedAll(whole.clone())),
         Op::Describe {
             kind, first, count, ..
         } => {

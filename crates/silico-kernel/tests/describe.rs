@@ -499,7 +499,7 @@ fn a_solid_of_more_than_a_batch_is_described_whole_each_element_once() {
 #[test]
 fn a_solid_of_a_batch_or_fewer_is_described_all_at_once_as_its_batches_describe_it() {
     // A 10 × 20 × 30 box (6 faces, 12 edges, 8 vertices: 26) through a worker: one
-    // `DescribeAll` gives the counts and the description its three batches give, to the bit.
+    // `DescribeAll` gives the description its three batches give, to the bit.
     let shape = make(&Primitive::Box {
         dx: 10.0,
         dy: 20.0,
@@ -517,15 +517,59 @@ fn a_solid_of_a_batch_or_fewer_is_described_all_at_once_as_its_batches_describe_
     let all = worker
         .run(silico_core::kernel::KernelRequest::describe_all(&data))
         .unwrap();
-    assert_eq!((all.faces, all.edges, all.vertices), (6, 12, 8));
-    assert_eq!(all.description, worker.describe(&data).unwrap());
+    assert_eq!(
+        (all.faces.len(), all.edges.len(), all.vertices.len()),
+        (6, 12, 8)
+    );
+    assert_eq!(all, worker.describe(&data).unwrap());
+}
+
+#[test]
+fn a_solid_of_exactly_a_batch_of_elements_is_described_all_at_once() {
+    // A 165-gon prism (by hand 167 faces, 495 edges, 330 vertices: 992) and, apart from it,
+    // a cylinder (3 faces, 3 edges, 2 vertices: 8) fused: 1,000 elements, the most one
+    // request describes, described all at once as its batches describe it.
+    let corners = 165;
+    let points = (0..corners)
+        .map(|i| {
+            let t = std::f64::consts::TAU * f64::from(i) / f64::from(corners);
+            [10.0 * libm::cos(t), 10.0 * libm::sin(t), 0.0]
+        })
+        .collect();
+    let prism = silico_kernel::extrude(&silico_kernel::Profile { points }, 1.0, None)
+        .unwrap()
+        .shape;
+    let cylinder = make(&Primitive::Cylinder {
+        radius: 1.0,
+        height: 1.0,
+    })
+    .unwrap();
+    let cylinder = translate(&cylinder, [50.0, 0.0, 0.0]).unwrap().shape;
+    let both = boolean(BooleanOp::Fuse, &prism, &cylinder).unwrap().shape;
+    let data = silico_core::kernel::ShapeData::checked(
+        silico_core::kernel::Blob::inline(silico_kernel::to_brep(&both).unwrap()),
+        true,
+    );
+    let mut worker = silico_core::kernel::KernelWorker::start_worker(std::path::Path::new(env!(
+        "CARGO_BIN_EXE_silico-kernel-worker"
+    )))
+    .unwrap();
+    let all = worker
+        .run(silico_core::kernel::KernelRequest::describe_all(&data))
+        .unwrap();
+    assert_eq!(
+        (all.faces.len(), all.edges.len(), all.vertices.len()),
+        (170, 498, 332)
+    );
+    assert_eq!(all, worker.describe(&data).unwrap());
 }
 
 #[test]
 fn a_solid_of_more_than_a_batch_is_refused_all_at_once_before_any_is_described() {
     // The 340-gon prism: by hand 342 + 1,020 + 680 = 2,042 elements, past the 1,000 one
-    // request describes. Refused as invalid input, naming the shape and the count, and the
-    // worker goes on: its batches still describe it.
+    // request describes. Refused as the worker's fault (the core never asks it of a shape
+    // its summary counts past a batch), naming the count, and the worker goes on: its
+    // batches still describe it.
     let corners = 340;
     let points = (0..corners)
         .map(|i| {
@@ -545,14 +589,11 @@ fn a_solid_of_more_than_a_batch_is_refused_all_at_once_before_any_is_described()
     let refused = worker
         .run(silico_core::kernel::KernelRequest::describe_all(&data))
         .unwrap_err();
-    assert_eq!(refused.code(), silico_core::ErrorCode::InvalidInput);
-    assert_eq!(refused.parameter(), Some("shape"));
+    assert_eq!(refused.code(), silico_core::ErrorCode::Internal);
     assert!(
-        refused
-            .message()
-            .contains("the shape has 2042 faces, edges, and vertices, more than the 1000"),
-        "{}",
-        refused.message()
+        refused.cause().is_some_and(|cause| cause
+            .contains("the shape has 2042 faces, edges, and vertices, more than the 1000")),
+        "{refused}"
     );
     let d = worker.describe(&data).unwrap();
     assert_eq!(

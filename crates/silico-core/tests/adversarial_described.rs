@@ -123,20 +123,11 @@ fn is_block(shape: &silico_core::kernel::ShapeData) -> bool {
 }
 
 /// The fake's description of every element of the block, changed by `change`, as a
-/// `DescribeAll` reply counting `counts` faces, edges, and vertices: a worker at fault.
-fn block_all(
-    shape: &silico_core::kernel::ShapeData,
-    counts: [u32; 3],
-    change: impl Fn(&mut Description),
-) -> Reply {
+/// `DescribeAll` reply: a worker at fault.
+fn block_all(shape: &silico_core::kernel::ShapeData, change: impl Fn(&mut Description)) -> Reply {
     let mut description = FakeKernel::described(shape).unwrap();
     change(&mut description);
-    Reply::DescribedAll {
-        faces: counts[0],
-        edges: counts[1],
-        vertices: counts[2],
-        description,
-    }
+    Reply::DescribedAll(description)
 }
 
 /// Whether `op` describes the example's block: a batch, or all of it at once.
@@ -297,19 +288,19 @@ fn a_later_edge_batch_a_worker_crashed_on_keeps_the_summary_and_is_described_aga
 // Batches a worker at fault answers (`FakeKernel::answer_instead`).
 
 #[test]
-fn a_face_batch_whose_total_isnt_the_summarys_is_a_workers_fault_kept_beside_the_summary() {
-    // The block's faces answered as a worker at fault might: a total of 5, and 5 faces, a
-    // batch that holds together, where the summary counts 6. A protocol error, naming both
-    // totals, beside the block's summary, which stands; drift is empty; the pin and the hole
+fn a_description_short_of_the_summarys_faces_is_a_workers_fault_kept_beside_the_summary() {
+    // The block's faces answered as a worker at fault might: 5 faces, a description that
+    // holds together, where the summary counts 6. A protocol error, naming both counts,
+    // beside the block's summary, which stands; drift is empty; the pin and the hole
     // are described whole. A worker's fault, so the next recompute asks the block's
     // description again (and only that), the cache keeps nothing of it, and a fresh session
     // over the cache describes the block again, whole, making and summarizing nothing.
     let dir = Scratch::new("face-total-short");
     let first = session(&dir.0);
     // The block, 26 elements, is described in one request (`DescribeAll`), so its faces
-    // come in that reply: 5 of them, and a count of 5.
+    // come in that reply: 5 of them.
     first.kernel().answer_instead(|op| match op {
-        Op::DescribeAll { shape } if is_block(shape) => Some(block_all(shape, [5, 12, 8], |d| {
+        Op::DescribeAll { shape } if is_block(shape) => Some(block_all(shape, |d| {
             d.faces.pop();
         })),
         _ => None,
@@ -320,7 +311,7 @@ fn a_face_batch_whose_total_isnt_the_summarys_is_a_workers_fault_kept_beside_the
     assert_eq!(block.summary().unwrap().faces, 6);
     assert_eq!(
         block.why_undescribed().unwrap().cause(),
-        Some("it says the shape has 5 faces, and its summary counts 6")
+        Some("it describes 5 faces, and its summary counts 6")
     );
     assert_described_whole(&model, "a91cw0de");
     assert_described_whole(&model, "m3tq8v0z");
@@ -383,31 +374,28 @@ fn a_second_edge_batch_whose_total_isnt_the_summarys_is_a_workers_fault_and_the_
 }
 
 #[test]
-fn a_description_holding_more_or_fewer_elements_than_it_counts_is_a_workers_fault_kept_beside_the_summary()
- {
+fn a_description_of_more_vertices_or_fewer_edges_than_the_summary_counts_is_a_workers_fault() {
     // The block, described in one request (`DescribeAll`), answered with a ninth vertex,
-    // sound in itself, where it counts 8; or with an edge short of the 12 it counts. Each a
+    // sound in itself, where the summary counts 8; or with an edge short of its 12. Each a
     // protocol error saying what's wrong, beside the block's summary; and the next
     // recompute asks the block's description again.
     type Change = fn(&mut Description);
     let answers: [(Change, &str); 2] = [
         (
             |d| d.vertices.push([9.0, 0.0, 0.0]),
-            "it describes 9 vertices, not 8",
+            "it describes 9 vertices, and its summary counts 8",
         ),
         (
             |d| {
                 d.edges.pop();
             },
-            "it describes 11 edges, not 12",
+            "it describes 11 edges, and its summary counts 12",
         ),
     ];
     for (change, cause) in answers {
         let engine = Recompute::new(FakeKernel::new(2).unwrap());
         engine.kernel().answer_instead(move |op| match op {
-            Op::DescribeAll { shape } if is_block(shape) => {
-                Some(block_all(shape, [6, 12, 8], change))
-            }
+            Op::DescribeAll { shape } if is_block(shape) => Some(block_all(shape, change)),
             _ => None,
         });
         let model = published(&engine, checked(EXAMPLE));
@@ -653,6 +641,18 @@ fn assert_no_entry_half_measured(dir: &Path) {
     }
 }
 
+/// Asserts every feature of `fused_boxes(n)` in `model` described whole: its boxes and its
+/// fusions, the solids held mid-describe among them.
+#[track_caller]
+fn assert_every_box_and_fusion_described_whole(model: &Model, n: usize) {
+    for i in 0..n {
+        assert_described_whole(model, &format!("b{i:07}"));
+    }
+    for i in 1..n {
+        assert_described_whole(model, &format!("f{i:07}"));
+    }
+}
+
 #[test]
 fn a_recompute_superseded_mid_describe_leaves_nothing_half_measured_in_memory_or_on_disk() {
     // 90 boxes fused (540 faces, 1,080 edges, 720 vertices, so described in batches): every
@@ -679,15 +679,13 @@ fn a_recompute_superseded_mid_describe_leaves_nothing_half_measured_in_memory_or
         Err(_) => panic!("the newer recompute didn't finish in {WAIT:?}"),
     };
     assert!(model.drift().is_empty(), "{:?}", model.drift());
-    for feature in ["f0000089", "f0000090"] {
-        assert_described_whole(&model, feature);
-    }
+    assert_every_box_and_fusion_described_whole(&model, 91);
     assert_no_entry_half_measured(&dir.0);
     let next = session(&dir.0);
     let again = published(&next, checked(&fused_boxes(90)));
     assert!(calls(&next).is_empty(), "{:?}", calls(&next));
     assert!(again.drift().is_empty(), "{:?}", again.drift());
-    assert_described_whole(&again, "f0000089");
+    assert_every_box_and_fusion_described_whole(&again, 90);
     assert_no_entry_half_measured(&dir.0);
 }
 
@@ -712,18 +710,22 @@ fn a_recompute_cancelled_mid_describe_publishes_nothing_and_the_next_describes_w
     assert_no_entry_half_measured(&dir.0);
     let model = published(&engine, checked(&document));
     assert!(model.drift().is_empty(), "{:?}", model.drift());
-    assert_described_whole(&model, "f0000089");
+    assert_every_box_and_fusion_described_whole(&model, 90);
     assert_no_entry_half_measured(&dir.0);
 }
 
 #[test]
 fn a_batch_that_fails_cancels_the_batches_still_waiting_and_none_after_is_asked() {
     // 256 boxes fused (1,536 faces, 3,072 edges, 2,048 vertices: nine batches, four in
-    // flight at once), on a kernel of one thread: its first batch, of faces, refused, while
-    // its second holds the thread. The third and fourth, still waiting, are cancelled (the
-    // fake counts them given up while they wait); the five planned after are never asked.
-    // Released, the second runs out, the cancelled two never start, and the model is
-    // published, the tree's refusal beside its summary.
+    // flight at once: both of faces, then the first two of edges), on a kernel of one
+    // thread, its first batch, of faces, refused, its second held. The batches of edges
+    // still waiting are cancelled, so they never start, and the five planned after are never
+    // asked. Which of two orders comes is the scheduler's: the fake's thread takes the
+    // second batch, held, before the core drops it, and the two of edges wait cancelled
+    // until it's released; or the core drops all three first, and the thread passes over
+    // them, nothing held. Either way, the model is published, the tree's refusal beside its
+    // summary. A core that didn't cancel would leave the thread held, the edges waiting
+    // uncancelled, and the run unfinished.
     let engine = Recompute::new(FakeKernel::new(1).unwrap());
     let face_batch = |op: &Op, from: u32| {
         describes_the_tree(op)
@@ -734,17 +736,24 @@ fn a_batch_that_fails_cancels_the_batches_still_waiting_and_none_after_is_asked(
             .then(|| silico_core::Error::new(ErrorCode::KernelFailed, "no faces today"))
     });
     let hold = engine.kernel().hold(move |op| face_batch(op, 1001));
-    let run = engine.start(checked(&fused_tree(8)));
+    let mut run = engine.start(checked(&fused_tree(8)));
     let deadline = Instant::now() + Duration::from_secs(10);
-    while engine.kernel().cancelled_waiting() < 2 {
+    let outcome = loop {
+        if engine.kernel().cancelled_waiting() >= 2 {
+            hold.release();
+            break run.wait_timeout(WAIT);
+        }
+        match run.wait_timeout(Duration::from_millis(5)) {
+            Ok(outcome) => break Ok(outcome),
+            Err(waiting) => run = waiting,
+        }
         assert!(
             Instant::now() < deadline,
             "the waiting batches weren't cancelled"
         );
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    };
     hold.release();
-    let model = match run.wait_timeout(WAIT) {
+    let model = match outcome {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("not published: {other:?}"),
         Err(_) => panic!("the recompute didn't finish in {WAIT:?}"),
@@ -752,14 +761,32 @@ fn a_batch_that_fails_cancels_the_batches_still_waiting_and_none_after_is_asked(
     let tree = assert_refused_beside_its_summary(&model, "t8000000", ErrorCode::KernelFailed);
     assert_eq!(tree.why_undescribed().unwrap().message(), "no faces today");
     assert!(engine.kernel().wait_idle(WAIT));
-    let of_tree = |calls: Vec<silico_core::fake::Call>| {
+    let of_tree = |calls: Vec<silico_core::fake::Call>| -> Vec<(ElementKind, u32)> {
         calls
             .into_iter()
-            .filter(|call| describes_the_tree(&call.op))
-            .count()
+            .filter_map(|call| match call.op {
+                Op::Describe { kind, first, .. } if describes_the_tree(&call.op) => {
+                    Some((kind, first))
+                }
+                _ => None,
+            })
+            .collect()
     };
-    assert_eq!(of_tree(engine.kernel().asked()), 4);
-    assert_eq!(of_tree(engine.kernel().calls()), 2, "a cancelled batch ran");
+    assert_eq!(
+        of_tree(engine.kernel().asked()),
+        [
+            (ElementKind::Face, 1),
+            (ElementKind::Face, 1001),
+            (ElementKind::Edge, 1),
+            (ElementKind::Edge, 1001),
+        ]
+    );
+    let ran = of_tree(engine.kernel().calls());
+    assert!(
+        ran == [(ElementKind::Face, 1), (ElementKind::Face, 1001)]
+            || ran == [(ElementKind::Face, 1)],
+        "a cancelled batch ran: {ran:?}"
+    );
     assert_eq!(engine.kernel().cancelled_waiting(), 0);
 }
 

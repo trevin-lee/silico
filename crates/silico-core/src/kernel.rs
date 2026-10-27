@@ -580,63 +580,24 @@ impl KernelRequest<DescribedBatch> {
     }
 }
 
-/// Every face, edge, and vertex of a shape described ([`KernelRequest::describe_all`]), and how
-/// many of each it has.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DescribedAll {
-    pub faces: u32,
-    pub edges: u32,
-    pub vertices: u32,
-    pub description: Description,
-}
-
-impl KernelRequest<DescribedAll> {
+impl KernelRequest<Description> {
     /// Every face, edge, and vertex of `shape` described, for a shape with at most
     /// [`DESCRIBE_BATCH`] of them in all: one request where [`describe`](KernelRequest::describe)
-    /// would take a batch of each kind ([`Op::DescribeAll`]). The reply is checked as a
-    /// batch is ([`batch_problem`]): its values in range, and each kind's list as long as the
-    /// count it gives.
+    /// would take a batch of each kind ([`Op::DescribeAll`]). The reply's values are checked as
+    /// a batch's are ([`Description::validate`]); its counts against the shape's summary are
+    /// its caller's (`description_fault`).
     pub fn describe_all(shape: &ShapeData) -> Self {
         let op = Op::DescribeAll {
             shape: shape.clone(),
         };
         Self::new(op, move |name, reply| match reply {
-            Reply::DescribedAll {
-                faces,
-                edges,
-                vertices,
-                description,
-            } => match all_problem([faces, edges, vertices], &description) {
-                None => Ok(DescribedAll {
-                    faces,
-                    edges,
-                    vertices,
-                    description,
-                }),
-                Some(problem) => Err(description_error(problem)),
+            Reply::DescribedAll(description) => match description.validate(1) {
+                Ok(()) => Ok(description),
+                Err(problem) => Err(description_error(problem)),
             },
             other => Err(unexpected(name, &other)),
         })
     }
-}
-
-/// What's wrong with a reply to [`Op::DescribeAll`] of `counts` faces, edges, and vertices,
-/// if anything: a value out of range ([`Description::validate`]), or a kind's list not as
-/// long as its count.
-fn all_problem(counts: [u32; 3], description: &Description) -> Option<String> {
-    if let Err(problem) = description.validate(1) {
-        return Some(problem);
-    }
-    let lengths = [
-        description.faces.len(),
-        description.edges.len(),
-        description.vertices.len(),
-    ];
-    ["faces", "edges", "vertices"]
-        .into_iter()
-        .zip(counts.into_iter().zip(lengths))
-        .find(|(_, (count, length))| *length as u64 != u64::from(*count))
-        .map(|(kind, (count, length))| format!("it describes {length} {kind}, not {count}"))
 }
 
 impl KernelRequest<Distance> {
@@ -1770,6 +1731,47 @@ mod tests {
                 (ErrorCode::InvalidInput, Some(parameter))
             );
         }
+    }
+
+    #[test]
+    fn a_whole_description_whose_values_cant_be_trusted_is_a_protocol_error() {
+        // Checked as a whole description is, its elements numbered from 1: the second edge is
+        // the kernel's Edge2. Its counts are its caller's to check.
+        use silico_protocol::{EdgeCurve, EdgeDescription};
+        let line = EdgeDescription {
+            curve: EdgeCurve::Line,
+            length: 1.0,
+            start: [0.0; 3],
+            end: [1.0, 0.0, 0.0],
+            middle: [0.5, 0.0, 0.0],
+        };
+        let two = Description {
+            faces: Vec::new(),
+            edges: vec![line.clone(), line],
+            vertices: Vec::new(),
+        };
+        let shape = ShapeData::unchecked(Blob::inline(vec![1]));
+        let answer = |reply: Reply| KernelRequest::describe_all(&shape).answer(Ok(reply));
+        assert_eq!(answer(Reply::DescribedAll(two.clone())).unwrap(), two);
+        let mut short = two.clone();
+        short.edges[1].length = 0.0;
+        let mut lost = two.clone();
+        lost.edges[1].start[1] = f64::NAN;
+        for (description, cause) in [
+            (short, "the kernel's Edge2's length is 0"),
+            (lost, "the kernel's Edge2's start is NaN"),
+        ] {
+            let e = answer(Reply::DescribedAll(description)).unwrap_err();
+            assert_eq!(e.code(), ErrorCode::ProtocolError);
+            assert_eq!(e.cause(), Some(cause));
+        }
+        // A batch's reply to it is no answer.
+        let e = answer(Reply::Described {
+            total: 2,
+            description: two,
+        })
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::ProtocolError);
     }
 
     #[test]

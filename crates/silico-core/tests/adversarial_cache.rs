@@ -1261,9 +1261,9 @@ fn a_kept_summary_no_shape_has_is_measured_again() {
 fn a_kept_description_no_worker_could_send_is_described_again_its_summary_kept() {
     // As a summary no shape has: a description the core would refuse from a worker (here a
     // face of area -1, its summary sound) isn't taken back from the cache. The summary is
-    // sound, so it's kept: the block is described again, a batch of each kind (6 faces, 12
-    // edges, 8 vertices, each under a batch), not summarized again, and the model holds the
-    // kernel's description, not the planted one, which is written over on disk.
+    // sound, so it's kept: the block is described again, in one request (its 26 elements
+    // within a batch), not summarized again, and the model holds the kernel's description,
+    // not the planted one, which is written over on disk.
     let dir = Scratch::new("bad-description");
     let model = seed(&dir.0);
     let (_, block) = built(&model, "k7f2qx3m");

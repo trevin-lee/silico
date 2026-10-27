@@ -73,16 +73,11 @@ fn forged_box(faces: Vec<FaceDescription>, edges: Option<Vec<EdgeDescription>>) 
         Op::DescribeAll { shape } => {
             let fake = FakeKernel::described(shape)?;
             let edges = edges.clone().unwrap_or(fake.edges);
-            Some(Reply::DescribedAll {
-                faces: faces.len() as u32,
-                edges: edges.len() as u32,
-                vertices: fake.vertices.len() as u32,
-                description: Description {
-                    faces: faces.clone(),
-                    edges,
-                    vertices: fake.vertices,
-                },
-            })
+            Some(Reply::DescribedAll(Description {
+                faces: faces.clone(),
+                edges,
+                vertices: fake.vertices,
+            }))
         }
         Op::Describe {
             kind: ElementKind::Face,

@@ -201,7 +201,7 @@ impl FakeKernel {
         lock(&self.shared.state).asked.clone()
     }
 
-    /// How many requests waiting their callers gave up ([`Pending::cancel`]), each to be
+    /// How many requests waiting their callers gave up (dropped their [`Pending`]), each to be
     /// dropped unrun when its turn comes: what a test waits on to know a caller cancelled
     /// them before a thread took them.
     pub fn cancelled_waiting(&self) -> usize {
@@ -310,7 +310,7 @@ impl FakeKernel {
     pub fn described(shape: &ShapeData) -> Option<Description> {
         let counts = Symbolic::read(shape).ok()?.counts();
         match described_all_any_size(&counts) {
-            Ok(Reply::DescribedAll { description, .. }) => Some(description),
+            Ok(Reply::DescribedAll(description)) => Some(description),
             _ => None,
         }
     }
@@ -505,7 +505,7 @@ trait Task: ClientTask + Send {
 struct Submitted<T> {
     client: ClientId,
     generation: Generation,
-    /// Its caller's [`Pending::cancel`].
+    /// Set once its caller gives it up ([`Pending`]).
     cancelled: Arc<AtomicBool>,
     request: KernelRequest<T>,
     reply: SyncSender<Outcome<T>>,
@@ -584,12 +584,14 @@ impl<T: Send + 'static> Task for Submitted<T> {
 /// kernel stops.
 fn serve(shared: &Shared) {
     loop {
+        // Declared before the lock's guard, so dropped after it.
+        let mut given_up = Vec::new();
         let mut state = lock(&shared.state);
         let task = loop {
             if state.stopping {
                 return;
             }
-            if let Some(task) = state.clients.next() {
+            if let Some(task) = state.clients.next(&mut given_up) {
                 break task;
             }
             state = shared
@@ -1077,18 +1079,17 @@ fn point_distance(
 /// test of what's done with a description; a real worker's geometry is tested on a real
 /// worker.
 /// Every element of a shape of `counts` described ([`Op::DescribeAll`]), each as
-/// [`described`] describes it; refused as invalid input past a batch in all, as a worker
-/// refuses it.
+/// [`described`] describes it; refused past a batch in all, as a worker refuses it: as its
+/// fault (`internal`).
 fn described_all(counts: &ElementCounts) -> Result<Reply, Error> {
     let all = u64::from(counts.faces) + u64::from(counts.edges) + u64::from(counts.vertices);
     if all > u64::from(DESCRIBE_BATCH) {
         return Err(Error::new(
-            ErrorCode::InvalidInput,
+            ErrorCode::Internal,
             format!(
                 "the fake kernel describes at most {DESCRIBE_BATCH} elements at once, not {all}"
             ),
-        )
-        .with_parameter("shape"));
+        ));
     }
     described_all_any_size(counts)
 }
@@ -1102,16 +1103,11 @@ fn described_all_any_size(counts: &ElementCounts) -> Result<Reply, Error> {
             format!("the fake kernel described with a {} reply", other.kind()),
         )),
     };
-    Ok(Reply::DescribedAll {
-        faces: counts.faces,
-        edges: counts.edges,
-        vertices: counts.vertices,
-        description: Description {
-            faces: of(ElementKind::Face, counts.faces)?.faces,
-            edges: of(ElementKind::Edge, counts.edges)?.edges,
-            vertices: of(ElementKind::Vertex, counts.vertices)?.vertices,
-        },
-    })
+    Ok(Reply::DescribedAll(Description {
+        faces: of(ElementKind::Face, counts.faces)?.faces,
+        edges: of(ElementKind::Edge, counts.edges)?.edges,
+        vertices: of(ElementKind::Vertex, counts.vertices)?.vertices,
+    }))
 }
 
 fn described(

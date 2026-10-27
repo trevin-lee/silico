@@ -225,10 +225,12 @@ fn check_finite(summary: &ShapeSummary) -> Result<(), Failure> {
 }
 
 /// Every face, edge, and vertex of `shape` described ([`Op::DescribeAll`]): counted first
-/// (a description of none of a kind counts it), and refused as invalid input, before any is
-/// described, past [`DESCRIBE_BATCH`](silico_protocol::DESCRIBE_BATCH) in all, so no request
-/// describes more than a batch does; then each kind described from its first, and the whole
-/// checked as a batch is ([`check_description`]).
+/// (a description of none of a kind counts it), and refused, before any is described, past
+/// [`DESCRIBE_BATCH`](silico_protocol::DESCRIBE_BATCH) in all, so no request describes more
+/// than a batch does; then each kind described from its first, and the whole checked as a
+/// batch is ([`check_description`]). The refusal is the worker's fault, not a fact about the
+/// shape: the core asks only of a shape its summary counts within a batch, so a count past
+/// it is the worker disagreeing with the summary, asked again, never kept.
 fn describe_all(shape: &crate::Shape) -> Result<Reply, Failure> {
     use silico_protocol::{DESCRIBE_BATCH, ElementKind};
     let total = |kind| {
@@ -243,9 +245,8 @@ fn describe_all(shape: &crate::Shape) -> Result<Reply, Failure> {
     );
     let all = u64::from(faces) + u64::from(edges) + u64::from(vertices);
     if all > u64::from(DESCRIBE_BATCH) {
-        return Err(Failure::new(Refusal::InvalidParameter {
-            parameter: "shape".to_owned(),
-            message: format!(
+        return Err(Failure::new(Refusal::Internal {
+            what: format!(
                 "the shape has {all} faces, edges, and vertices, more than the {DESCRIBE_BATCH} \
                  one request describes: ask a batch of each kind at a time"
             ),
@@ -262,12 +263,7 @@ fn describe_all(shape: &crate::Shape) -> Result<Reply, Failure> {
         vertices: of(ElementKind::Vertex, vertices)?.vertices,
     };
     check_description(1, &description)?;
-    Ok(Reply::DescribedAll {
-        faces,
-        edges,
-        vertices,
-        description,
-    })
+    Ok(Reply::DescribedAll(description))
 }
 
 /// A batch of a description, its first numbered `first`, as the worker sends it: refused,

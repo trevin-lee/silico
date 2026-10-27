@@ -558,16 +558,11 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             solutions: u32::MAX,
         })),
         // Every kind of surface and curve, at extremes a frame must carry exactly.
-        Ok(Reply::DescribedAll {
-            faces: 0,
-            edges: u32::MAX,
-            vertices: 1,
-            description: Description {
-                faces: Vec::new(),
-                edges: Vec::new(),
-                vertices: vec![[f64::MIN_POSITIVE, -0.0, 1e300]],
-            },
-        }),
+        Ok(Reply::DescribedAll(Description {
+            faces: Vec::new(),
+            edges: Vec::new(),
+            vertices: vec![[f64::MIN_POSITIVE, -0.0, 1e300]],
+        })),
         Ok(Reply::Described {
             total: u32::MAX,
             description: Description {
@@ -751,7 +746,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::Classified { .. }) => 21,
             Ok(Reply::MeshAt(_)) => 22,
             Ok(Reply::StepFile(_)) => 23,
-            Ok(Reply::DescribedAll { .. }) => 24,
+            Ok(Reply::DescribedAll(_)) => 24,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
