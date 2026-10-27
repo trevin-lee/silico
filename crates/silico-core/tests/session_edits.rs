@@ -959,6 +959,31 @@ fn replace_text_inside_a_transaction_gives_back_nothing() {
 }
 
 #[test]
+fn a_document_saved_before_naming_was_recorded_takes_its_own_text_back() {
+    // A document with no naming (saved before M4.0): `text` gives its bytes, and those bytes
+    // given back to replace_text are the same document, not text written now without its
+    // header. A change to it, still without naming, is taken too, and written with the header.
+    let unnamed = BLOCK.replacen(r#""naming": 5, "#, "", 1);
+    assert!(!unnamed.contains("naming"));
+    let f = opened(&unnamed);
+    assert_eq!(f.text(), unnamed);
+    let replaced = answer(
+        f.sessions
+            .replace_text(&f.id, Revision::OPENED, unnamed.clone()),
+    )
+    .result
+    .unwrap();
+    assert!(!replaced.changed);
+    assert_eq!(f.file(), unnamed);
+    let longer = unnamed.replacen(r#""length": 40"#, r#""length": 41"#, 1);
+    let replaced = answer(f.sessions.replace_text(&f.id, Revision::OPENED, longer))
+        .result
+        .unwrap();
+    assert!(replaced.changed);
+    assert!(f.text().contains("\"naming\": 5"), "{}", f.text());
+}
+
+#[test]
 fn replace_text_refuses_text_without_naming_and_what_check_refuses() {
     let f = opened(BLOCK);
     let unnamed =

@@ -1199,7 +1199,7 @@ impl<P: Clients + 'static> Sessions<P> {
                             )
                         };
                         let (features, candidate) =
-                            edit::replace_text(base.gated, text.as_bytes())?;
+                            edit::replace_text(base.gated, base.text, text.as_bytes())?;
                         Ok(((features, before), candidate))
                     },
                     model,

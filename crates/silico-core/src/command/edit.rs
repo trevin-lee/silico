@@ -772,10 +772,12 @@ pub(super) fn remove_feature(
 /// number of features, and the state it leads to, none if it's the document `before` holds
 /// already, as canonical form writes them ([`Document::canonically_eq`]). Refused with
 /// what the reader or the gate says of the text (the reader's own refusals naming `text`),
-/// and if its header has no `naming`: the reader takes a document without it as one saved
-/// before M4.0, and text written now isn't one.
+/// and if its header has no `naming` but the document's text (`held`, the session's) has
+/// one: the reader takes a document without it as one saved before M4.0, and text written
+/// now isn't one; but the text of a document saved before M4.0, as `text` gives it back, is.
 pub(super) fn replace_text(
     before: &Gated,
+    held: &[u8],
     text: &[u8],
 ) -> Result<(usize, Option<Candidate>), Problems> {
     let of_text = |e: Error| match e.parameter() {
@@ -783,9 +785,7 @@ pub(super) fn replace_text(
         None => e.with_parameter("text"),
     };
     let root = document::tree(text).map_err(of_text)?;
-    if let Value::Object(members) = &root.value
-        && !members.iter().any(|m| m.key == "naming")
-    {
+    if !names_its_scheme(&root) && document::tree(held).is_ok_and(|held| names_its_scheme(&held)) {
         return Err(Problems::from(
             Error::new(ErrorCode::InvalidInput, "the document's header has no naming")
                 .with_parameter("naming")
@@ -805,6 +805,15 @@ pub(super) fn replace_text(
         .document()
         .is_ok_and(|before| before.canonically_eq(&replaced));
     Ok((features, (!unchanged).then_some(candidate)))
+}
+
+/// Whether a document's tree is an object whose header has a `naming` (or isn't an object
+/// at all, which the reader refuses for itself).
+fn names_its_scheme(root: &Node) -> bool {
+    match &root.value {
+        Value::Object(members) => members.iter().any(|m| m.key == "naming"),
+        _ => true,
+    }
 }
 
 /// Where new feature IDs come from (M2.1, decision 20): the system's randomness, five bytes
