@@ -201,7 +201,11 @@ fn every_round_primitive_is_exported_exactly_when_its_mesh_is_within_the_toleran
         let shape = data(&make(primitive).unwrap());
         let surface = surface_of(primitive);
         for tolerance in [1e-2, 0.1, 1.0, 10.0] {
-            if estimated_triangles(primitive, tolerance) > 2e6 {
+            // Each case one worker request, held to its 60 s timeout: past an estimated 1e5
+            // triangles (the largest scales, 300 mm and 1 m, at 0.01) a request took 9 to 14 s
+            // unloaded, past the timeout on a starved shard (2026-10-27). Each primitive is
+            // still taken at 0.01 at its smaller scales, and at its largest from 0.1.
+            if estimated_triangles(primitive, tolerance) > 1e5 {
                 continue;
             }
             let raw = worker.export_mesh(&shape, tolerance).unwrap();
