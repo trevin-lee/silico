@@ -1868,4 +1868,15 @@ mod tests {
         assert!(!sweeps_past_half_turn(c, [11.0, 10.0], [10.0, 11.0]));
         assert!(sweeps_past_half_turn(c, [11.0, 10.0], [10.0, 9.0]));
     }
+
+    #[test]
+    fn a_quarter_turn_whose_products_underflow_to_zero_is_short_of_a_half_turn() {
+        // Counter-clockwise from (1e-170, 0) to (0, 1e-170) about the origin: a quarter
+        // turn, short of a half. Both products are 0 as doubles: the cross product,
+        // 1e-170 · 1e-170 = 1e-340, is below the least subnormal (about 4.9e-324), and the
+        // dot product is 1e-170 · 0 + 0 · 1e-170. Neither negative nor positive, so not past.
+        let (c, s, e) = ([0.0, 0.0], [1e-170, 0.0], [0.0, 1e-170]);
+        assert_eq!(1e-170_f64 * 1e-170, 0.0);
+        assert!(!sweeps_past_half_turn(c, s, e));
+    }
 }

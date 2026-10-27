@@ -242,6 +242,7 @@ fn ends_closer_than_freecads_joining_distance_warn_and_others_dont() {
                     "{at:?}"
                 );
                 assert_eq!(checked.warnings.total(), 1);
+                assert!(!checked.warnings.is_empty(), "{at:?}");
             }
             None => assert!(checked.warnings.is_empty(), "{at:?}: {:?}", said(&checked)),
         }
@@ -1426,6 +1427,32 @@ fn a_carried_feature_isnt_warned_of_in_a_published_check_of_an_older_model_while
         std::slice::from_ref(&k7)
     );
     assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
+}
+
+#[test]
+fn a_carried_feature_is_warned_of_in_a_published_check_of_an_older_model_with_no_transaction() {
+    // After the carried feature builds, the file is changed on disk, box m0000003 (9 long)
+    // added, and reloaded at a new revision while the kernel holds the new box, so a
+    // published check reads the model rebuilt before: older than the session's
+    // revision, and its own revision no transaction's. None is open now either, so no
+    // commit writes the carried feature's record and format can: the check warns of
+    // m0000002, as the model's own check did (decision 28; `Reached::committing`).
+    let (f, both) = carried_and_built();
+    let before = f.sessions.status(&s1()).session.unwrap().revision;
+    let _hold = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx == 9.0));
+    let m2 = r#"{"id": "m0000002", "type": "box", "v": 1, "name": "Block", "position": [10, 0, 0], "length": 7, "width": 2, "height": 1}"#;
+    let m3 = r#"{"id": "m0000003", "type": "box", "v": 1, "name": "Block", "position": [20, 0, 0], "length": 9, "width": 2, "height": 1}"#;
+    let text = document(&[block("k7f2qx3m", 0), m2.to_owned(), m3.to_owned()]);
+    std::fs::write(f.path(), text).unwrap();
+    // `text` reads the file, reloading it, and waits for no model.
+    let read = answer(f.sessions.text(&s1(), None));
+    let session = read.session.unwrap();
+    assert!(session.reloaded);
+    assert!(!session.transaction);
+    assert_ne!(session.revision, before);
+    assert_eq!(said(&published_check(&f, before)), both);
 }
 
 #[test]
