@@ -1195,9 +1195,7 @@ fn output_target(
             "give a path in a directory that exists",
         ),
     })?;
-    // Where it would be written: through a link already at the path, to what it names; and
-    // a file already there by the name it has on disk, as the documents held are named (on
-    // a case-insensitive file system, `HELD.png` is a held `Held.png`).
+    // Where it would be written: through a link already at the path, to what it names.
     let existing = std::fs::symlink_metadata(dir.join(name)).ok();
     let target = match &existing {
         // Through a link at the path as every path is resolved: in a workspace, never
@@ -1240,18 +1238,23 @@ fn output_target(
             "write it to a path that isn't a link to another kind of file",
         ));
     }
-    let held: Vec<PathBuf> = rules
-        .held
-        .iter()
-        .filter_map(|p| std::fs::canonicalize(p).ok())
-        .collect();
-    if held.contains(&target) {
+    // A held document is the file, not a spelling of its path: whatever name reaches it (a
+    // hard link's, or another case of its own on a case-insensitive file system, which
+    // Linux's `realpath` keeps as given), it's the device and inode of one held. Both, since
+    // inode numbers repeat across file systems: a file on another volume may have a held
+    // document's inode. The tests reach only one device, so the device's half is untested.
+    let there = std::fs::metadata(&target);
+    if let Ok(meta) = &there
+        && rules.held.iter().any(|held| {
+            std::fs::metadata(held).is_ok_and(|h| h.dev() == meta.dev() && h.ino() == meta.ino())
+        })
+    {
         return Err(a_document(
             "is a document a session holds",
             "write it to a path that isn't a document's".to_owned(),
         ));
     }
-    let replaced = match std::fs::metadata(&target) {
+    let replaced = match there {
         Ok(meta) if !meta.is_file() => {
             return Err(refuse(
                 "is there, and isn't a file".to_owned(),

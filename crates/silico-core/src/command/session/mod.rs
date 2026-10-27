@@ -408,6 +408,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 meshes: Arc::new(crate::meshes::MeshCache::new(
                     crate::meshes::MESH_CACHE_BYTES,
                 )),
+                export_turns: Arc::default(),
                 workspace: None,
             }),
         }
@@ -475,6 +476,11 @@ impl<P: Clients + 'static> Sessions<P> {
     /// What writes `export`'s STEP files.
     pub(crate) fn step_exporter(&self) -> Arc<dyn crate::step_worker::StepExporter> {
         Arc::clone(&lock(&self.registry.step))
+    }
+
+    /// The turn each export's mesh waits for, one for every session.
+    pub(crate) fn export_turns(&self) -> Arc<crate::command::export::MeshTurns> {
+        Arc::clone(&self.registry.export_turns)
     }
 
     /// The renderer `render` draws with, and the meshes it keeps.

@@ -67,9 +67,20 @@ impl Bench {
                 document: "part.silico",
                 workspace: None,
                 held: &[],
+                turns: &silico_core::command::export::MeshTurns::new(),
+                stopped: &|| false,
                 settle,
             },
         )
+    }
+
+    /// The export meshes submitted to the kernel so far, whether or not they started.
+    fn asked_meshes(&self) -> usize {
+        self.kernel
+            .asked()
+            .iter()
+            .filter(|c| matches!(c.op, Op::ExportMesh { .. }))
+            .count()
     }
 
     /// The export meshes asked of the kernel so far.
@@ -834,9 +845,9 @@ fn every_body_of_a_model_with_more_failures_than_listed_counts_every_one() {
 
 #[test]
 fn more_bodies_than_are_meshed_at_once_are_each_written_in_the_timelines_order() {
-    // The export asks as many meshes ahead as the machine runs at once: three more boxes than
-    // that, so the window is refilled past its first fill. Every box written, in order, each
-    // meshed once.
+    // Three more boxes than the machine runs at once (as many as an export once asked of the
+    // kernel ahead, each mesh now asked in turn): every box written, in order, each meshed
+    // once.
     let count = std::thread::available_parallelism().map_or(1, usize::from) + 3;
     let ids: Vec<String> = (0..count).map(|n| format!("b{n:07}")).collect();
     let features: Vec<String> = ids
@@ -867,6 +878,81 @@ fn more_bodies_than_are_meshed_at_once_are_each_written_in_the_timelines_order()
         .collect();
     let names: Vec<(&str, &str)> = names.iter().map(|(n, id)| (n.as_str(), *id)).collect();
     assert_eq!(std::fs::read(&path).unwrap(), archive_of(&names));
+}
+
+#[test]
+fn an_exports_meshes_are_asked_of_the_kernel_one_at_a_time() {
+    // A fine tolerance's mesh takes OCCT tens of seconds and gigabytes: one asked at a time,
+    // never one for each core. Two bodies, a kernel that runs two requests at once, the
+    // first mesh held: the second isn't asked, let alone run, until the first is done.
+    let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "b2b2b2b2", "type": "box", "v": 1, "name": "Other", "position": [100, 0, 0], "length": 1, "width": 2, "height": 3}]}"#;
+    let bench = Arc::new(Bench::of(text));
+    let hold = bench.kernel.hold(|op| matches!(op, Op::ExportMesh { .. }));
+    let dir = Scratch::new("one-at-a-time");
+    let path = dir.0.join("out.3mf");
+    let exporting = {
+        let bench = Arc::clone(&bench);
+        let path = path.clone();
+        std::thread::spawn(move || bench.export(&request(&path)))
+    };
+    assert!(
+        bench
+            .kernel
+            .wait_running(1, std::time::Duration::from_secs(60))
+    );
+    // Long enough for a mesh asked ahead to start on the kernel's other thread.
+    assert!(
+        !bench
+            .kernel
+            .wait_running(2, std::time::Duration::from_millis(500))
+    );
+    assert_eq!(bench.asked_meshes(), 1);
+    hold.release();
+    let done = exporting.join().unwrap().unwrap();
+    let ids: Vec<&str> = done.objects.iter().map(|o| o.feature.as_str()).collect();
+    assert_eq!(ids, ["k7f2qx3m", "b2b2b2b2"]);
+    assert_eq!(bench.meshed(), 2);
+}
+
+/// Two boxes, two bodies: "Block" (k7f2qx3m) and "Other" (b2b2b2b2).
+const TWO_BOXES: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "b2b2b2b2", "type": "box", "v": 1, "name": "Other", "position": [100, 0, 0], "length": 1, "width": 2, "height": 3}]}"#;
+
+#[test]
+fn two_bodies_stopped_after_the_first_writes_no_partial_file() {
+    // The session closes while the second body waits its turn to mesh: the export answers
+    // the session closed, naming `session`, and writes nothing, never a file of the first
+    // body alone (decision 34).
+    let bench = Bench::of(TWO_BOXES);
+    let dir = Scratch::new("partial");
+    let path = dir.0.join("out.3mf");
+    // Each wait for a turn looks once before it takes a free one: open at the first body's
+    // look, closed from the second's on.
+    let looks = std::sync::atomic::AtomicUsize::new(0);
+    let result = export(
+        &bench.model,
+        &request(&path),
+        &ExportOn {
+            kernel: &bench.kernel,
+            step: &*bench.kernel,
+            document: "part.silico",
+            workspace: None,
+            held: &[],
+            turns: &silico_core::command::export::MeshTurns::new(),
+            stopped: &|| looks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 1,
+            settle: &|| Ok(()),
+        },
+    );
+    assert!(!path.exists(), "a partial file was written: {result:?}");
+    let problems = refused(result);
+    let e = &problems.errors()[0];
+    assert_eq!(
+        (e.code(), e.parameter(), e.feature()),
+        (ErrorCode::InvalidInput, Some("session"), None),
+        "{e:?}"
+    );
+    // The first body meshed, the second never asked.
+    assert_eq!(bench.asked_meshes(), 1);
+    assert!(dir.names().is_empty());
 }
 
 #[test]
@@ -1311,4 +1397,121 @@ fn a_step_file_past_a_requests_time_suggests_exporting_fewer_features() {
         ),
         "{e:?}"
     );
+}
+
+/// Boxes `sizes` (each a cube of that edge, side by side), as a document.
+fn cubes(sizes: &[u32]) -> String {
+    let features: Vec<String> = sizes
+        .iter()
+        .enumerate()
+        .map(|(n, size)| {
+            format!(
+                r#"{{"id": "c{n:07}", "type": "box", "v": 1, "name": "Cube{n}", "position": [{}, 0, 0], "length": {size}, "width": {size}, "height": {size}}}"#,
+                n * 20
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        features.join(", ")
+    )
+}
+
+/// Each export mesh asked of `kernel` so far, in the order they started, by its cube's edge
+/// as `labels` names it (`("box(7", "B1")`: the cube of edge 7 is B1).
+fn meshes_started(kernel: &FakeKernel, labels: &[(&str, &str)]) -> Vec<String> {
+    kernel
+        .calls()
+        .iter()
+        .filter_map(|c| match &c.op {
+            Op::ExportMesh { shape, .. } => Some(FakeKernel::describe(shape).unwrap()),
+            _ => None,
+        })
+        .map(|made| {
+            labels
+                .iter()
+                .find(|(edge, _)| made.contains(edge))
+                .map_or(made.clone(), |(_, label)| (*label).to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn an_export_waiting_its_turn_to_mesh_is_served_before_the_export_ahead_takes_another() {
+    // Turns are served in the order they're asked for, as the kernel pool serves its clients
+    // in turn: an export of many bodies, its first mesh held, and another export waiting for
+    // a turn; once the first mesh is done, the waiting export meshes next, before the first
+    // export's second body, so a long export can't hold another session's export (and its
+    // whole queue) for its whole length. The first export A, of three cubes (edges 1, 2,
+    // and 3), the second, B, of one (edge 7), on one kernel, sharing the turns.
+    let a = Arc::new(Bench::of(&cubes(&[1, 2, 3])));
+    let b_model = command::rebuild(
+        &Recompute::new(Arc::clone(&a.kernel)),
+        command::gate(cubes(&[7]).as_bytes()).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let turns = Arc::new(silico_core::command::export::MeshTurns::new());
+    let dir = Arc::new(Scratch::new("first-come"));
+    let hold = a.kernel.hold(|op| matches!(op, Op::ExportMesh { .. }));
+    let first = {
+        let (a, turns, dir) = (Arc::clone(&a), Arc::clone(&turns), Arc::clone(&dir));
+        std::thread::spawn(move || {
+            export(
+                &a.model,
+                &request(&dir.0.join("a.3mf")),
+                &ExportOn {
+                    kernel: &a.kernel,
+                    step: &*a.kernel,
+                    document: "a.silico",
+                    workspace: None,
+                    held: &[],
+                    turns: &turns,
+                    stopped: &|| false,
+                    settle: &|| Ok(()),
+                },
+            )
+        })
+    };
+    assert!(a.kernel.wait_running(1, std::time::Duration::from_secs(60)));
+    assert_eq!(a.asked_meshes(), 1);
+    // B's wait looks whether it was stopped, with the turns locked, before it waits: once
+    // it has looked, it's in the line before A's first mesh can give the turn back.
+    let (looked, looks) = std::sync::mpsc::channel();
+    let second = {
+        let (a, turns, dir) = (Arc::clone(&a), Arc::clone(&turns), Arc::clone(&dir));
+        std::thread::spawn(move || {
+            export(
+                &b_model,
+                &request(&dir.0.join("b.3mf")),
+                &ExportOn {
+                    kernel: &a.kernel,
+                    step: &*a.kernel,
+                    document: "b.silico",
+                    workspace: None,
+                    held: &[],
+                    turns: &turns,
+                    stopped: &|| {
+                        let _ = looked.send(());
+                        false
+                    },
+                    settle: &|| Ok(()),
+                },
+            )
+        })
+    };
+    looks
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .unwrap();
+    assert_eq!(a.asked_meshes(), 1);
+    hold.release();
+    first.join().unwrap().unwrap();
+    second.join().unwrap().unwrap();
+    let labels = [
+        ("box(1", "A1"),
+        ("box(2", "A2"),
+        ("box(3", "A3"),
+        ("box(7", "B1"),
+    ];
+    assert_eq!(meshes_started(&a.kernel, &labels), ["A1", "B1", "A2", "A3"]);
 }

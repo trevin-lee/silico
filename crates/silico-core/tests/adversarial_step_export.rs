@@ -68,6 +68,8 @@ impl Bench {
                 document,
                 workspace: None,
                 held: &[],
+                turns: &silico_core::command::export::MeshTurns::new(),
+                stopped: &|| false,
                 settle: &|| Ok(()),
             },
         )

@@ -221,6 +221,22 @@ impl<C> Read<'_, C> {
         f(&read)
     }
 
+    /// `f` given whether the read was stopped (a cancel, or the session closing), `turns`
+    /// woken as it is: so an export waiting for its turn to mesh stops waiting then.
+    pub(crate) fn meshing<T>(
+        &self,
+        turns: &Arc<crate::command::export::MeshTurns>,
+        f: impl FnOnce(&dyn Fn() -> bool) -> T,
+    ) -> T {
+        let wait = Arc::new(TurnWait {
+            turns: Arc::clone(turns),
+            stopped: std::sync::atomic::AtomicBool::new(false),
+        });
+        let interrupt: Arc<dyn super::cancel::Interrupt> = Arc::clone(&wait) as _;
+        self.stop.interrupt_with(Arc::downgrade(&interrupt));
+        f(&|| wait.stopped.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
     /// `f` given `renderer`, its renders cancelled with the read: a cancel, or the session
     /// closing, cancels each render it asked for (a queued one never sent, a running one's
     /// worker killed).
@@ -267,6 +283,21 @@ struct StepExportStop(crate::step_worker::StepStop);
 impl super::cancel::Interrupt for StepExportStop {
     fn interrupt(&self, _why: super::cancel::Why) {
         self.0.stop();
+    }
+}
+
+/// A read's wait for a turn to mesh, as its stop interrupts it: stopped, and the waits woken
+/// to see it.
+struct TurnWait {
+    turns: Arc<crate::command::export::MeshTurns>,
+    stopped: std::sync::atomic::AtomicBool,
+}
+
+impl super::cancel::Interrupt for TurnWait {
+    fn interrupt(&self, _why: super::cancel::Why) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.turns.wake();
     }
 }
 

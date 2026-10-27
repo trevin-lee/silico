@@ -52,6 +52,8 @@ pub(super) struct Registry<P: Clients + 'static> {
     pub(super) step: Mutex<Arc<dyn crate::step_worker::StepExporter>>,
     /// The display meshes `render` makes, shared by the sessions of this kernel.
     pub(super) meshes: Arc<crate::meshes::MeshCache<crate::recompute::Key>>,
+    /// The turn each export's mesh waits for: one export mesh at a time across the sessions.
+    pub(super) export_turns: Arc<crate::command::export::MeshTurns>,
     /// The workspace every path a session is given, and every file it reads, writes, or
     /// keeps its cache in, must lie in (decision 26): given as the sessions are made
     /// ([`Sessions::in_workspace`](super::Sessions::in_workspace)), fixed for their life.
