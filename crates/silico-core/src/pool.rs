@@ -32,11 +32,11 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::ops::Bound;
 use std::os::unix::process::ExitStatusExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -84,10 +84,6 @@ pub const MAX_WORKERS: usize = 1024;
 /// once (requests still waiting or running end without a result) and joins its threads.
 pub struct KernelPool {
     shared: Arc<Shared>,
-    /// How many slots the pool has.
-    size: usize,
-    /// Stops superseded requests when they're due.
-    stopper: Option<JoinHandle<()>>,
 }
 
 /// A client of a [`KernelPool`] ([`KernelPool::client`]): a handle with generations of its
@@ -397,35 +393,54 @@ impl KernelPool {
     /// the workers it uses at once, and one from the cache none.
     ///
     /// A pool that couldn't be opened (its worker isn't where Silico looks, say) is still a
-    /// pool: it keeps why, and fails each request with it at once, as an on-demand pool
-    /// fails a request whose worker couldn't be started. So a client holds one pool
-    /// whatever happened, runs what needs no kernel (the gate, an outline), and each
-    /// rebuild that needs one meets that error as the kernel fault it is
-    /// (docs/design/m4.1-command-api.md, section 6).
+    /// pool: it keeps why, and fails a request with it at once, as an on-demand pool fails
+    /// a request whose worker couldn't be started. So a client holds one pool whatever
+    /// happened, runs what needs no kernel (the gate, an outline), and each rebuild that
+    /// needs one meets that error as the kernel fault it is (docs/design/m4.1-command-api.md,
+    /// section 6). It looks for its worker again at each request it's given, so a worker
+    /// built, or put in place, after the pool started is found by the next request, and the
+    /// pool then opens as `start_on_demand` opens it: an app started before its worker was
+    /// built doesn't keep the error.
     pub fn start() -> Self {
         let cores = std::thread::available_parallelism().map_or(1, usize::from);
+        let size = cores.min(MAX_WORKERS);
         crate::kernel::worker_path()
-            .and_then(|exe| Self::start_on_demand(&exe, cores.min(MAX_WORKERS)))
-            .unwrap_or_else(Self::refusing)
+            .and_then(|exe| Self::start_on_demand(&exe, size))
+            .unwrap_or_else(|why| {
+                Self::unopened(why, Some(Box::new(crate::kernel::worker_path)), size)
+            })
     }
 
     /// Why the pool couldn't be opened, if it couldn't ([`start`](Self::start) found no
-    /// worker it could use): every request it's given fails with this. `None` for a pool
-    /// with an executable, whether or not its workers have started.
-    pub fn refused(&self) -> Option<&Error> {
-        self.shared.executable.as_ref().err()
+    /// worker it could use, the last time it looked): a request it's given now fails with
+    /// this, unless the worker is found then. `None` for a pool with an executable, whether
+    /// or not its workers have started.
+    pub fn refused(&self) -> Option<Error> {
+        if self.shared.executable.get().is_some() {
+            return None;
+        }
+        lock(&self.shared.unopened).as_ref().map(|u| u.why.clone())
     }
 
     /// A pool with no workers, slots, or threads, every request of which, the pool's own or
     /// a client's, fails with `why` at once, unless it's superseded (each client's
-    /// generations are its own, as an opened pool's are): what [`start`](Self::start) gives
-    /// when it can't open one, and a pool for a client that rebuilds nothing (`silico
-    /// show`), which shouldn't look for a worker it never uses.
+    /// generations are its own, as an opened pool's are): a pool for a client that rebuilds
+    /// nothing (`silico show`), which shouldn't look for a worker it never uses. It never
+    /// looks for one, unlike the pool [`start`](Self::start) gives when it can't open one.
     pub fn refusing(why: Error) -> Self {
+        Self::unopened(why, None, 0)
+    }
+
+    /// A pool not opened, failing each request with `why`, or, with `find`, looking for its
+    /// worker again at each request and opening `size` slots on demand once it finds it.
+    fn unopened(why: Error, find: Option<Finder>, size: usize) -> Self {
         tracing::debug!("the kernel pool couldn't be opened: {why}");
         Self {
             shared: Arc::new(Shared {
-                executable: Err(why),
+                executable: OnceLock::new(),
+                unopened: Mutex::new(Some(Unopened { why, find, size })),
+                size: AtomicUsize::new(0),
+                stopper: Mutex::new(None),
                 state: Mutex::new(State {
                     clients: ClientQueues::new(),
                     stopping: false,
@@ -441,8 +456,6 @@ impl KernelPool {
                 slots: Mutex::new(Vec::new()),
                 threads: Mutex::new(Vec::new()),
             }),
-            size: 0,
-            stopper: None,
         }
     }
 
@@ -480,7 +493,10 @@ impl KernelPool {
             .with_cause(e.to_string())
         })?;
         let shared = Arc::new(Shared {
-            executable: Ok(Executable::of(&exe, WorkerKind::Kernel)?),
+            executable: OnceLock::from(Executable::of(&exe, WorkerKind::Kernel)?),
+            unopened: Mutex::new(None),
+            size: AtomicUsize::new(size),
+            stopper: Mutex::new(None),
             state: Mutex::new(State {
                 clients: ClientQueues::new(),
                 stopping: false,
@@ -499,15 +515,8 @@ impl KernelPool {
             slots: Mutex::new((0..size).map(|_| Slot::default()).collect()),
             threads: Mutex::new(Vec::with_capacity(size)),
         });
-        let mut pool = Self {
-            shared,
-            size,
-            stopper: None,
-        };
-        let shared = Arc::clone(&pool.shared);
-        pool.stopper = Some(spawn_thread("kernel-pool-stopper".to_owned(), move || {
-            stop_when_due(&shared);
-        })?);
+        let pool = Self { shared };
+        pool.shared.start_stopper()?;
         if let Starts::OnDemand = starts {
             // Slots start as requests need them (`grow`).
             tracing::debug!(size, exe = %exe.display(), "opened kernel pool, its workers on demand");
@@ -542,7 +551,7 @@ impl KernelPool {
     /// How many slots the pool has: the most workers it holds at once (on demand, fewer
     /// until requests need them: see [`pids`](Self::pids)).
     pub fn size(&self) -> usize {
-        self.size
+        self.shared.size.load(Ordering::Relaxed)
     }
 
     /// The process IDs of the pool's workers, one per worker it holds (a worker being
@@ -690,7 +699,8 @@ impl Drop for KernelPool {
             }
         }
         self.shared.join_threads();
-        if let Some(stopper) = self.stopper.take() {
+        let stopper = lock(&self.shared.stopper).take();
+        if let Some(stopper) = stopper {
             let _ = stopper.join();
         }
     }
@@ -771,14 +781,36 @@ fn spawn_thread(
         .map_err(|e| crate::worker::thread_error(KERNEL, &e))
 }
 
-/// What the pool's threads share. Its locks are taken in the order `state`, then `slots`
-/// (then a worker's process lock), and `state`, then `threads`, never the other way; the
-/// executable's stamp lock (`Executable`) is taken alone, never while another is.
+/// How a pool not opened looks for its worker again ([`KernelPool::start`]'s, `worker_path`).
+type Finder = Box<dyn Fn() -> Result<PathBuf, Error> + Send + Sync>;
+
+/// Why a pool isn't open, and how it looks again.
+struct Unopened {
+    /// What a request fails with: why the last look found no worker it could use.
+    why: Error,
+    /// How to look again, at each request; `None` for a pool that never does
+    /// ([`KernelPool::refusing`]).
+    find: Option<Finder>,
+    /// The slots it opens once it finds its worker.
+    size: usize,
+}
+
+/// What the pool's threads share. Its locks are taken in the order `unopened`, then
+/// `state`, `slots`, or `stopper`; `state`, then `slots` (then a worker's process lock);
+/// and `state`, then `threads`; never the other way. The executable's stamp lock
+/// (`Executable`) is taken alone, never while another is.
 struct Shared {
-    /// The workers' executable: the pool's identity is its identity, as the pool started,
-    /// and a worker is started from it, and taken, only while it's still that build. Or why
-    /// the pool couldn't be opened ([`KernelPool::start`]), which every request fails with.
-    executable: Result<Arc<Executable>, Error>,
+    /// The workers' executable, once the pool has one: the pool's identity is its identity,
+    /// as the pool opened, and a worker is started from it, and taken, only while it's
+    /// still that build. Set once, when the pool opens, and never changed.
+    executable: OnceLock<Arc<Executable>>,
+    /// Why the pool isn't open yet, and how it looks again; `None` once it's open.
+    unopened: Mutex<Option<Unopened>>,
+    /// How many slots the pool has: 0 until it opens.
+    size: AtomicUsize,
+    /// Stops superseded requests when they're due; started when the pool opens, joined when
+    /// it's dropped.
+    stopper: Mutex<Option<JoinHandle<()>>>,
     state: Mutex<State>,
     /// Signalled when a request is queued or the pool stops.
     work: Condvar,
@@ -848,10 +880,61 @@ impl Shared {
     /// The executable's identity; for a pool that couldn't be opened, one no kept result
     /// carries, since nothing is built on it.
     fn identity(&self) -> &str {
-        match &self.executable {
-            Ok(executable) => executable.identity(),
-            Err(_) => UNOPENED,
+        self.executable
+            .get()
+            .map_or(UNOPENED, |executable| executable.identity())
+    }
+
+    /// Starts the stopper, which stops each superseded request when it's due.
+    fn start_stopper(self: &Arc<Self>) -> Result<(), Error> {
+        let shared = Arc::clone(self);
+        let stopper = spawn_thread("kernel-pool-stopper".to_owned(), move || {
+            stop_when_due(&shared);
+        })?;
+        *lock(&self.stopper) = Some(stopper);
+        Ok(())
+    }
+
+    /// Opens a pool that isn't open, if it looks for its worker and finds it now: its
+    /// executable set, its slots made (none started: they start on demand, as
+    /// [`KernelPool::start_on_demand`]'s do), and its stopper started. `Err` with why it
+    /// still isn't, for the request that asked to fail with. One look at a time, so two
+    /// requests don't open it twice.
+    fn open_again(self: &Arc<Self>) -> Result<(), Error> {
+        let mut unopened = lock(&self.unopened);
+        let Some(u) = unopened.as_mut() else {
+            // Opened by another request meanwhile.
+            return Ok(());
+        };
+        let Some(find) = &u.find else {
+            return Err(u.why.clone());
+        };
+        let found = find().and_then(|exe| {
+            let exe = std::path::absolute(&exe).unwrap_or(exe);
+            Executable::of(&exe, WorkerKind::Kernel)
+        });
+        let executable = match found {
+            Ok(executable) => executable,
+            Err(why) => {
+                u.why = why.clone();
+                return Err(why);
+            }
+        };
+        if lock(&self.state).stopping {
+            return Err(u.why.clone());
         }
+        self.start_stopper()?;
+        let size = u.size;
+        *lock(&self.slots) = (0..size).map(|_| Slot::default()).collect();
+        lock(&self.state).unstarted = (0..size).rev().collect();
+        self.size.store(size, Ordering::Relaxed);
+        let _ = self.executable.set(executable);
+        *unopened = None;
+        tracing::info!(
+            size,
+            "opened the kernel pool: its worker was found, after it wasn't"
+        );
+        Ok(())
     }
 
     fn stopping(&self) -> bool {
@@ -924,11 +1007,18 @@ impl Shared {
             task.supersede();
             return pending;
         }
-        if let Err(why) = &self.executable {
-            // A pool that couldn't be opened: there's no worker to wait for.
+        if self.executable.get().is_none() {
+            // A pool that isn't open: it looks for its worker again, and fails the request
+            // with why if there's still none to wait for.
             drop(state);
-            task.fail(why.clone());
-            return pending;
+            if let Err(why) = self.open_again() {
+                task.fail(why);
+                return pending;
+            }
+            state = lock(&self.state);
+            if state.stopping {
+                return pending;
+            }
         }
         state.clients.push(task);
         drop(state);
@@ -1441,9 +1531,12 @@ impl Keeper<'_> {
             None => {
                 // Started only from the pool's own build, and taken only if it is once it's
                 // started (`Executable::spawn`).
-                let spawned = match &self.shared.executable {
-                    Ok(executable) => executable.spawn(),
-                    Err(why) => Err(why.clone()),
+                let spawned = match self.shared.executable.get() {
+                    Some(executable) => executable.spawn(),
+                    None => Err(Error::new(
+                        ErrorCode::Internal,
+                        "a kernel pool slot ran before the pool had its worker",
+                    )),
                 };
                 let worker = match spawned {
                     Ok(worker) => worker,
