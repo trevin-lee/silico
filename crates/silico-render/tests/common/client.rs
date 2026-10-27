@@ -9,6 +9,11 @@ use silico_protocol::RenderScene;
 use silico_render::bench::front_of_a_box;
 use silico_render::test_scenes;
 
+/// The one wait these tests allow for something they expect to happen (a worker to start or
+/// end, a render to answer): long enough for a loaded machine, so only a real hang fails,
+/// and it costs nothing when the event comes. Half nextest's 120 s, so a hang is said here.
+pub const WAIT: Duration = Duration::from_secs(60);
+
 pub const WORKER: &str = env!("CARGO_BIN_EXE_silico-render-worker");
 pub const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-render-test-worker");
 

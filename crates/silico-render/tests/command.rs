@@ -14,7 +14,7 @@ use silico_core::recompute::Recompute;
 use silico_core::render::{RenderClient, RenderSettings};
 use silico_core::views::NamedView;
 
-use crate::common::WORKER;
+use crate::common::{WAIT, WORKER};
 
 const EXAMPLE: &str = r#"{
   "silico": 1,
@@ -120,7 +120,7 @@ fn a_render_through_a_session_cancelled_while_it_runs_answers_cancelled_and_stop
         ModelChoice::Current,
         hangs(silico_render::test_scenes::HANGS),
     );
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + WAIT;
     while client.pid().is_none() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -139,7 +139,7 @@ fn a_render_through_a_session_cancelled_while_it_runs_answers_cancelled_and_stop
         "{:?}",
         start.elapsed()
     );
-    assert!(crate::common::eventually(Duration::from_secs(5), || {
+    assert!(crate::common::eventually(WAIT, || {
         !crate::common::process_exists(pid)
     }));
     let drawn = sessions
