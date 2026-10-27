@@ -22,8 +22,12 @@
 //! **Recording.** With `SILICO_BRACKET_RECORD=1` set, the session is first driven live by
 //! [`record`], which plays the agent (each request built from the replies before it, as an
 //! agent reads them), and `session.jsonl` is written from the real replies; the replay and
-//! every check below then run on what was written:
-//! `SILICO_BRACKET_RECORD=1 cargo nextest run -p silico-cli -E 'test(bracket)'`.
+//! every check below then run on what was written. Build the workers first, then record:
+//!
+//! ```text
+//! pixi run cargo build -p silico-kernel -p silico-sketch -p silico-render --bins
+//! SILICO_BRACKET_RECORD=1 pixi run cargo nextest run -p silico-cli -E 'test(bracket)'
+//! ```
 //!
 //! It lives in silico-cli's tests, not silico-mcp's, so the `silico` binary it serves with
 //! comes from Cargo (`CARGO_BIN_EXE_silico`), built for every run that runs it. Its workers
@@ -31,19 +35,25 @@
 //! builds them).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/run.rs"]
+mod run;
+#[path = "common/serve.rs"]
+mod serve;
+#[path = "common/threemf.rs"]
+mod threemf;
+
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
-use std::time::Duration;
+use std::process::{Child, ChildStdin, Stdio};
+use std::sync::mpsc::Receiver;
 
 use serde::Deserialize;
 use serde_json::Value;
 use serde_json::value::RawValue;
 
-/// Longer than any one reply takes on a loaded machine: past it, the server hangs.
-const REPLY: Duration = Duration::from_secs(240);
+use serve::{ask_line, exited, lines, serve_working};
+use threemf::{model, printable};
 
 /// π, as `std::f64::consts::PI`.
 const PI: f64 = std::f64::consts::PI;
@@ -59,22 +69,6 @@ fn session_file() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/bracket/session.jsonl")
 }
 
-/// The `silico` binary, from Cargo, with its workers beside it, where it finds them.
-fn silico() -> PathBuf {
-    let silico = PathBuf::from(env!("CARGO_BIN_EXE_silico"));
-    for worker in [
-        "silico-kernel-worker",
-        "silico-sketch-worker",
-        "silico-render-worker",
-    ] {
-        assert!(
-            silico.with_file_name(worker).is_file(),
-            "{worker} isn't built beside silico: cargo build -p silico-kernel -p silico-sketch -p silico-render --bins"
-        );
-    }
-    silico
-}
-
 /// Panics, naming `what`, unless `value` holds to `schema`.
 fn holds(schema: &Value, value: &Value, what: &str) {
     let validator = jsonschema::validator_for(schema).unwrap();
@@ -85,16 +79,14 @@ fn holds(schema: &Value, value: &Value, what: &str) {
     assert!(errors.is_empty(), "{what}: {errors:?}");
 }
 
-/// `silico serve` in a temporary workspace of its own, as an MCP client starts it: its
-/// stdin and stdout piped, its stdout's lines as they come, its stderr kept for a failure's
-/// message, its cache's secret in a cache home of its own.
+/// `silico serve` with the real workers in a temporary workspace of its own
+/// ([`serve_working`]), its stderr the test's, its stdout's lines as they come.
 struct Serve {
     _dir: tempfile::TempDir,
     work: PathBuf,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     lines: Receiver<String>,
-    stderr: Option<std::thread::JoinHandle<String>>,
 }
 
 impl Serve {
@@ -106,109 +98,34 @@ impl Serve {
         let root = std::fs::canonicalize(dir.path()).unwrap();
         let work = root.join("work");
         std::fs::create_dir(&work).unwrap();
-        // A secret of its own, as silico would make one, so the run neither reads nor
-        // writes the user's.
-        let home = root.join("cache-home");
-        std::fs::create_dir_all(home.join("silico")).unwrap();
-        let mut secret = [0u8; 32];
-        std::fs::File::open("/dev/urandom")
-            .unwrap()
-            .read_exact(&mut secret)
-            .unwrap();
-        std::fs::write(home.join("silico/cache-secret"), secret).unwrap();
-        let mut child = Command::new(silico())
-            .args(["serve", "--workspace"])
-            .arg(&work)
-            .env("XDG_CACHE_HOME", &home)
-            .env_remove("SILICO_LOG")
-            .env_remove("SILICO_KERNEL_WORKER")
-            .env_remove("SILICO_SKETCH_WORKER")
-            .env_remove("SILICO_RENDER_WORKER")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let mut child = serve_working(&work, &root.join("cache-home"), Stdio::inherit());
         let stdin = child.stdin.take();
-        let mut stderr = child.stderr.take().unwrap();
-        let stderr = std::thread::spawn(move || {
-            let mut text = String::new();
-            let _ = stderr.read_to_string(&mut text);
-            text
-        });
-        let (to, lines) = mpsc::channel();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
-        std::thread::spawn(move || {
-            for line in stdout.lines() {
-                let Ok(line) = line else { return };
-                if to.send(line).is_err() {
-                    return;
-                }
-            }
-        });
+        let lines = lines(&mut child);
         Serve {
             _dir: dir,
             work,
             child: Some(child),
             stdin,
             lines,
-            stderr: Some(stderr),
         }
     }
 
-    /// Sends `line`; then, if it's a request, waits for the reply carrying its ID and gives
-    /// it as written, every message before it (a progress notification, timing) skipped.
+    /// Sends `line`; then, if it's a request, gives the reply carrying its ID as written,
+    /// every message before it (a progress notification, timing) skipped.
     fn send(&mut self, line: &str) -> Option<String> {
         let message: Value = serde_json::from_str(line).unwrap();
         let stdin = self.stdin.as_mut().unwrap();
-        writeln!(stdin, "{line}").unwrap();
-        stdin.flush().unwrap();
-        let id = message.get("id")?;
-        loop {
-            let Ok(reply) = self.lines.recv_timeout(REPLY) else {
-                panic!(
-                    "no reply to {line} in {REPLY:?}; silico serve's stderr:\n{}",
-                    self.kill()
-                );
-            };
-            let parsed: Value = serde_json::from_str(&reply)
-                .unwrap_or_else(|e| panic!("not JSON on stdout ({e}): {reply}"));
-            assert_eq!(parsed["jsonrpc"], "2.0", "{reply}");
-            if parsed.get("id") == Some(id) && parsed.get("method").is_none() {
-                return Some(reply);
-            }
-            assert_eq!(parsed["method"], "notifications/progress", "{reply}");
-        }
+        let Some(id) = message.get("id") else {
+            writeln!(stdin, "{line}").unwrap();
+            return None;
+        };
+        Some(ask_line(stdin, &self.lines, line, &id.to_string()))
     }
 
-    /// Kills the server, and gives its stderr.
-    fn kill(&mut self) -> String {
+    /// Ends the server (its stdin closed), checking it exits 0.
+    fn end(&mut self) {
         self.stdin = None;
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        self.stderr
-            .take()
-            .map(|stderr| stderr.join().unwrap())
-            .unwrap_or_default()
-    }
-
-    /// Ends the server (its stdin closed), checking it exits 0, and gives its stderr.
-    fn end(&mut self) -> String {
-        self.stdin = None;
-        let mut child = self.child.take().unwrap();
-        let (done, exited) = mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = done.send(child.wait());
-        });
-        let status = exited.recv_timeout(REPLY);
-        let stderr = self.stderr.take().unwrap().join().unwrap();
-        match status {
-            Ok(Ok(status)) => assert_eq!(status.code(), Some(0), "{stderr}"),
-            _ => panic!("silico serve didn't end in {REPLY:?}: {stderr}"),
-        }
-        stderr
+        assert_eq!(exited(self.child.take().unwrap()).code(), Some(0));
     }
 }
 
@@ -255,18 +172,36 @@ fn compared(structured: &str) -> String {
     )
 }
 
-/// `initialize`'s result as compared: `serverInfo.version`, the build's, and the
-/// workspace's absolute path in `instructions` put as `<version>` and `<workspace>`.
-fn compared_initialize(reply: &str, work: &Path) -> Value {
-    let mut reply: Value = serde_json::from_str(reply).unwrap();
-    let result = &mut reply["result"];
-    assert!(result["serverInfo"]["version"].is_string(), "{result}");
-    result["serverInfo"]["version"] = Value::from("<version>");
-    let instructions = result["instructions"].as_str().unwrap();
-    let workspace = work.to_str().unwrap();
-    assert!(instructions.contains(workspace), "{instructions}");
-    result["instructions"] = Value::from(instructions.replace(workspace, "<workspace>"));
-    reply["result"].take()
+/// `initialize`'s result as the server writes it, but as compared: `serverInfo.version`, the build's,
+/// and the workspace's absolute path in `instructions` put as `<version>` and
+/// `<workspace>`.
+fn compared_initialize(reply: &str, work: &Path) -> String {
+    #[derive(Deserialize)]
+    struct Initialized<'a> {
+        #[serde(borrow)]
+        result: &'a RawValue,
+    }
+    let text = serde_json::from_str::<Initialized>(reply)
+        .unwrap()
+        .result
+        .get();
+    let result: Value = serde_json::from_str(text).unwrap();
+    let value = serde_json::to_string(&result["serverInfo"]["version"]).unwrap();
+    // The key as the server writes it, with a space after its colon or none.
+    let version = [
+        format!("\"version\": {value}"),
+        format!("\"version\":{value}"),
+    ]
+    .into_iter()
+    .find(|v| text.contains(v.as_str()))
+    .unwrap_or_else(|| panic!("no serverInfo version in {text}"));
+    assert_eq!(text.matches(&version).count(), 1, "{text}");
+    let masked = version.replace(&value, "\"<version>\"");
+    let workspace = serde_json::to_string(work.to_str().unwrap()).unwrap();
+    let workspace = workspace.trim_matches('"');
+    assert!(text.contains(workspace), "{text}");
+    text.replacen(&version, &masked, 1)
+        .replace(workspace, "<workspace>")
 }
 
 /// One line of `session.jsonl`: what it's for, the JSON-RPC message the client sends, and
@@ -339,8 +274,11 @@ fn replay() -> Replayed {
         let method = sent["method"].as_str().unwrap();
         match (method, reply) {
             ("initialize", Some(reply)) => {
-                let expected: Value = serde_json::from_str(line.expect.unwrap().get()).unwrap();
-                assert_eq!(compared_initialize(&reply, &serve.work), expected, "{step}");
+                assert_eq!(
+                    compared_initialize(&reply, &serve.work),
+                    line.expect.unwrap().get(),
+                    "{step}: the reply differs from the recording's"
+                );
             }
             ("tools/call", Some(reply)) => {
                 let answer: Reply =
@@ -402,8 +340,9 @@ fn holes(id: &str, name: &str, plane: &str, (x, y): (u32, u32), along: &str) -> 
         "x" => (x + 16, y, "horizontal_points"),
         _ => (x, y + 16, "vertical_points"),
     };
+    let diameter = 2.0 * HOLE_R;
     format!(
-        r#"{{"id": "{id}", "type": "sketch", "name": "{name}", "plane": "{plane}", "points": [{{"id": "pb000001", "x": {x}, "y": {y}, "construction": false}}, {{"id": "pb000002", "x": {x2}, "y": {y2}, "construction": false}}], "lines": [], "circles": [{{"id": "cb000001", "center": "pb000001", "radius": 2.75, "construction": false}}, {{"id": "cb000002", "center": "pb000002", "radius": 2.75, "construction": false}}], "arcs": [], "constraints": [{{"id": "kb000001", "type": "diameter", "curve": "cb000001", "value": 5.5, "driving": true}}, {{"id": "kb000002", "type": "equal", "a": "cb000001", "b": "cb000002"}}, {{"id": "kb000003", "type": "distance_x", "a": "origin", "b": "pb000001", "value": {x}, "driving": true}}, {{"id": "kb000004", "type": "distance_y", "a": "origin", "b": "pb000001", "value": {y}, "driving": true}}, {{"id": "kb000005", "type": "{aligned}", "a": "pb000001", "b": "pb000002"}}, {{"id": "kb000006", "type": "distance_{along}", "a": "pb000001", "b": "pb000002", "value": 16, "driving": true}}]}}"#
+        r#"{{"id": "{id}", "type": "sketch", "name": "{name}", "plane": "{plane}", "points": [{{"id": "pb000001", "x": {x}, "y": {y}, "construction": false}}, {{"id": "pb000002", "x": {x2}, "y": {y2}, "construction": false}}], "lines": [], "circles": [{{"id": "cb000001", "center": "pb000001", "radius": {HOLE_R}, "construction": false}}, {{"id": "cb000002", "center": "pb000002", "radius": {HOLE_R}, "construction": false}}], "arcs": [], "constraints": [{{"id": "kb000001", "type": "diameter", "curve": "cb000001", "value": {diameter}, "driving": true}}, {{"id": "kb000002", "type": "equal", "a": "cb000001", "b": "cb000002"}}, {{"id": "kb000003", "type": "distance_x", "a": "origin", "b": "pb000001", "value": {x}, "driving": true}}, {{"id": "kb000004", "type": "distance_y", "a": "origin", "b": "pb000001", "value": {y}, "driving": true}}, {{"id": "kb000005", "type": "{aligned}", "a": "pb000001", "b": "pb000002"}}, {{"id": "kb000006", "type": "distance_{along}", "a": "pb000001", "b": "pb000002", "value": 16, "driving": true}}]}}"#
     )
 }
 
@@ -478,7 +417,7 @@ fn record() -> Vec<String> {
         revision: 0,
     };
     let reply = r.serve.send(INITIALIZE).unwrap();
-    let expect = compared_initialize(&reply, &r.serve.work).to_string();
+    let expect = compared_initialize(&reply, &r.serve.work);
     r.push("initialize", INITIALIZE, Some(&expect));
     assert!(r.serve.send(INITIALIZED).is_none());
     r.push("initialized", INITIALIZED, None);
@@ -533,7 +472,7 @@ fn record() -> Vec<String> {
     r.add(
         "fillet the inside corner, radius 5",
         &format!(
-            r#"{{"id": "f0000001", "type": "fillet", "name": "Inside corner", "base": "h0000002", "edges": [{corner}], "radius": 5}}"#
+            r#"{{"id": "f0000001", "type": "fillet", "name": "Inside corner", "base": "h0000002", "edges": [{corner}], "radius": {FILLET_R}}}"#
         ),
     );
     r.call("commit: the file is saved", "commit", SESSION);
@@ -548,7 +487,9 @@ fn record() -> Vec<String> {
     let rims = r.call(
         "find the holes' rims: circles of radius 2.75",
         "query",
-        r#"{"session": "s1", "model": "current", "feature": null, "kind": "edge", "type": "circle", "stable": null, "facing": null, "measures": [{"measure": "radius", "at_least": 2.75, "at_most": 2.75}], "order": null, "limit": 8}"#,
+        &format!(
+            r#"{{"session": "s1", "model": "current", "feature": null, "kind": "edge", "type": "circle", "stable": null, "facing": null, "measures": [{{"measure": "radius", "at_least": {HOLE_R}, "at_most": {HOLE_R}}}], "order": null, "limit": 8}}"#
+        ),
     );
     let rim = rims["result"]["elements"]
         .as_array()
@@ -574,7 +515,9 @@ fn record() -> Vec<String> {
     r.call(
         "export it for printing",
         "export",
-        r#"{"session": "s1", "format": "3mf", "path": "bracket.3mf", "replace": false, "features": null, "tolerance": 0.1}"#,
+        &format!(
+            r#"{{"session": "s1", "format": "3mf", "path": "bracket.3mf", "replace": false, "features": null, "tolerance": {TOLERANCE}}}"#
+        ),
     );
     r.call("close the session", "close", SESSION);
     r.serve.end();
@@ -676,109 +619,44 @@ fn mass(answer: &Value) -> &Value {
     &bodies[0]
 }
 
-// --- The 3MF, read from its bytes -----------------------------------------------------------
+// --- The export's mesh, by hand -------------------------------------------------------------
 
-/// The archive's entries (stored, as Silico writes them): each name and its data, from the
-/// local headers (APPNOTE 6.3.3, 4.3.7).
-fn entries(archive: &[u8]) -> BTreeMap<String, Vec<u8>> {
-    let u16_at = |at: usize| usize::from(u16::from_le_bytes([archive[at], archive[at + 1]]));
-    let u32_at = |at: usize| u32::from_le_bytes(archive[at..at + 4].try_into().unwrap());
-    let mut out = BTreeMap::new();
-    let mut at = 0;
-    while u32_at(at) == 0x0403_4b50 {
-        assert_eq!(u16_at(at + 8), 0, "stored");
-        let size = u32_at(at + 18) as usize;
-        assert_eq!(u32_at(at + 22) as usize, size);
-        let (name_len, extra) = (u16_at(at + 26), u16_at(at + 28));
-        let name = String::from_utf8(archive[at + 30..at + 30 + name_len].to_vec()).unwrap();
-        let data = at + 30 + name_len + extra;
-        out.insert(name, archive[data..data + size].to_vec());
-        at = data + size;
-    }
-    out
+/// How many chords OCCT cuts an arc of `angle` radians and radius `r` into, meshing at the
+/// tolerance `t` with FreeCAD's angular deflection `a` = min(0.1, 5t + 0.005) (FreeCAD's
+/// `defaultAngularDeflection`, docs/ports/mesh-export.md, *Same as FreeCAD*): an edge is
+/// meshed at half the face's deflections (`BRepMesh_CurveTessellator::init`, 0.5 × the
+/// angular and the linear), and a circle in equal steps of at most min(2 acos(1 − (t/2)/r),
+/// a/2) (`GCPnts_TangentialDeflection::PerformCircular` and `ArcAngularStep`), so in
+/// ⌈angle / step⌉. Here the angle is the smaller, which the assert holds: so it's the
+/// angle's rule alone, whatever the worker takes off the tolerance for rounding.
+fn chords(angle: f64, r: f64, t: f64) -> usize {
+    let a = (5.0 * t + 0.005).min(0.1);
+    let linear = 2.0 * libm::acos(1.0 - t / 2.0 / r);
+    assert!(linear > a / 2.0, "the linear rule binds at r {r}, t {t}");
+    (angle / (a / 2.0)).ceil() as usize
 }
 
-/// A tag's attribute `name`, from the tag's text after its name.
-fn attribute(tag: &str, name: &str) -> String {
-    let tag = format!(" {tag}");
-    let key = format!(" {name}=\"");
-    let at = tag
-        .find(&key)
-        .unwrap_or_else(|| panic!("no {name} in {tag}"))
-        + key.len();
-    tag[at..].split('"').next().unwrap().to_owned()
-}
-
-/// The 3MF model's one object: its type, name, vertices, and triangles, as written.
-struct Object {
-    kind: String,
-    name: String,
-    vertices: Vec<[f64; 3]>,
-    triangles: Vec<[usize; 3]>,
-}
-
-fn object(model: &str) -> Object {
-    let header = &model[model.find("<model ").unwrap()..];
-    assert_eq!(attribute(header, "unit"), "millimeter");
-    let objects: Vec<&str> = model.split("<object ").skip(1).collect();
-    assert_eq!(objects.len(), 1, "one object, the bracket's");
-    let object = objects[0];
-    let vertices = object
-        .split("<vertex ")
-        .skip(1)
-        .map(|tag| ["x", "y", "z"].map(|k| attribute(tag, k).parse::<f32>().unwrap().into()))
-        .collect();
-    let triangles = object
-        .split("<triangle ")
-        .skip(1)
-        .map(|tag| ["v1", "v2", "v3"].map(|k| attribute(tag, k).parse().unwrap()))
-        .collect();
-    Object {
-        kind: attribute(object, "type"),
-        name: attribute(object, "name"),
-        vertices,
-        triangles,
-    }
-}
-
-/// Checks `o` is printable as M4.8 promises (docs/ports/mesh-export.md, *A printable
-/// mesh*), from its triangles alone: no triangle with a repeated index or two corners at
-/// one place; every directed edge on exactly one triangle and its reverse on exactly one
-/// other (closed, manifold, consistently oriented); and the volume it encloses, which it
-/// gives, positive (facing outward).
-fn printable(o: &Object) -> f64 {
-    let mut directed: BTreeMap<(usize, usize), u32> = BTreeMap::new();
-    for &[a, b, c] in &o.triangles {
-        assert!(a != b && b != c && a != c, "a repeated index: {a} {b} {c}");
-        let (p, q, s) = (o.vertices[a], o.vertices[b], o.vertices[c]);
-        assert!(
-            p != q && q != s && p != s,
-            "two corners at one place: {a} {b} {c}"
-        );
-        for edge in [(a, b), (b, c), (c, a)] {
-            *directed.entry(edge).or_default() += 1;
-        }
-    }
-    for (&(a, b), &count) in &directed {
-        assert_eq!(count, 1, "edge {a}→{b} on {count} triangles one way");
-        assert_eq!(
-            directed.get(&(b, a)),
-            Some(&1),
-            "edge {a}→{b} without its reverse: open, or misoriented"
-        );
-    }
-    let volume = o
-        .triangles
+/// How many of `vertices` lie on the circle of radius `r` about `centre` in the plane
+/// `axis` = `at` (0, 1, 2 for x, y, z), and within `within` of it (a box about the arc).
+fn on_circle(
+    vertices: &[[f64; 3]],
+    axis: usize,
+    at: f64,
+    centre: [f64; 3],
+    r: f64,
+    within: impl Fn(&[f64; 3]) -> bool,
+) -> usize {
+    vertices
         .iter()
-        .map(|&[a, b, c]| {
-            let (a, b, c) = (o.vertices[a], o.vertices[b], o.vertices[c]);
-            a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
-                + a[2] * (b[0] * c[1] - b[1] * c[0])
+        .filter(|v| v[axis] == at && within(v))
+        .filter(|v| {
+            let d: f64 = (0..3)
+                .filter(|&i| i != axis)
+                .map(|i| (v[i] - centre[i]) * (v[i] - centre[i]))
+                .sum();
+            (d.sqrt() - r).abs() < 1e-5
         })
-        .sum::<f64>()
-        / 6.0;
-    assert!(volume > 0.0, "the mesh faces inward: {volume}");
-    volume
+        .count()
 }
 
 /// What FreeCAD 1.1.3 reads from the 3MF at `path`: the mesh's own checks, and the shape
@@ -894,8 +772,14 @@ fn the_bracket_session_replays_measures_as_by_hand_and_its_3mf_reads_back_in_the
     let queries = run.answers("query");
     assert_eq!(queries.len(), 3);
     assert_eq!(queries[0]["result"]["matched"], 6, "{}", queries[0]);
-    let fillet = run.arguments("add_feature")[8]["feature"].clone();
-    assert_eq!(fillet["type"], "fillet");
+    let fillets: Vec<&Value> = run
+        .arguments("add_feature")
+        .into_iter()
+        .map(|a| &a["feature"])
+        .filter(|f| f["type"] == "fillet")
+        .collect();
+    assert_eq!(fillets.len(), 1);
+    let fillet = fillets[0];
     assert_eq!(fillet["radius"], 5);
     let edge = queries[0]["result"]["elements"]
         .as_array()
@@ -1013,26 +897,57 @@ fn the_bracket_session_replays_measures_as_by_hand_and_its_3mf_reads_back_in_the
     }
 
     // The export: one object, the bracket's last feature, its counts and its volume those
-    // of the mesh in the file.
+    // of the mesh in the file, which is printable as M4.8 promises.
     let export = &run.answers("export")[0]["result"];
     let archive = std::fs::read(run.work.join("bracket.3mf")).unwrap();
     assert_eq!(export["bytes"], archive.len());
-    let entries = entries(&archive);
-    let model = String::from_utf8(entries["3D/3dmodel.model"].clone()).unwrap();
-    let mesh = object(&model);
-    assert_eq!(mesh.kind, "model");
+    let meshes = model(&archive);
+    assert_eq!(meshes.len(), 1, "one object, the bracket's");
+    let mesh = &meshes[0];
     assert_eq!(mesh.name, "Inside corner");
     let objects = export["objects"].as_array().unwrap();
     assert_eq!(objects.len(), 1);
     assert_eq!(objects[0]["feature"], "f0000001");
     assert_eq!(objects[0]["triangles"], mesh.triangles.len());
     assert_eq!(objects[0]["vertices"], mesh.vertices.len());
-    let mesh_volume = printable(&mesh);
+    let mesh_volume = printable(mesh);
     measured("the export's volume", &objects[0]["volume"], mesh_volume);
-    // Closed and of genus 4 (four through holes): V − E + F = 2 − 2 · 4, each edge on two
-    // triangles, E = 3F/2.
-    let (v, f) = (mesh.vertices.len() as i64, mesh.triangles.len() as i64);
-    assert_eq!(2 * v - f, 2 * (2 - 2 * 4), "V {v}, F {f}");
+    // Meshed at the tolerance asked, by hand from OCCT's rule ([`chords`]): at 0.1 mm each
+    // rim a circle of 126 chords (2π over 0.05 rad), so 126 points, and each of the
+    // fillet's two quarter arcs 32 chords (π/2 over 0.05), 33 points. (At 0.01 mm they'd
+    // be 229 and 58.)
+    let rim = chords(2.0 * PI, HOLE_R, TOLERANCE);
+    let arc = chords(PI / 2.0, FILLET_R, TOLERANCE);
+    assert_eq!((rim, arc), (126, 32));
+    let any = |_: &[f64; 3]| true;
+    for y in [12.0, 28.0] {
+        for at in [0.0, 5.0] {
+            let v = &mesh.vertices;
+            assert_eq!(
+                on_circle(v, 2, at, [40.0, y, at], HOLE_R, any),
+                rim,
+                "base, y {y}"
+            );
+            assert_eq!(
+                on_circle(v, 0, at, [at, y, 35.0], HOLE_R, any),
+                rim,
+                "upright, y {y}"
+            );
+        }
+    }
+    let corner = |v: &[f64; 3]| v[0] <= 10.0 && v[2] <= 10.0;
+    for y in [0.0, 40.0] {
+        let points = on_circle(&mesh.vertices, 1, y, [10.0, y, 10.0], FILLET_R, corner);
+        assert_eq!(points, arc + 1, "the fillet's arc at y {y}");
+    }
+    // Nothing else is a vertex but the profile's five corners left at each end: the
+    // walls and the fillet are meshed with no nodes inside them (a cylinder's splitter
+    // places none, docs/ports/mesh-export.md), so 8 · 126 + 2 · 33 + 2 · 5 = 1,084; and,
+    // closed and of genus 4 (four through holes), V − E + F = 2 − 2 · 4 with E = 3F/2, so
+    // F = 2V + 12 = 2,180.
+    let vertices = 8 * rim + 2 * (arc + 1) + 2 * 5;
+    assert_eq!(mesh.vertices.len(), vertices);
+    assert_eq!(mesh.triangles.len(), 2 * vertices + 12);
     // The mesh's box is the part's, [0, 0, 0]–[60, 40, 50], exactly: its corners are the
     // B-rep's vertices, whole numbers in 32 bits too.
     let mut low = [f64::INFINITY; 3];
@@ -1044,28 +959,26 @@ fn the_bracket_session_replays_measures_as_by_hand_and_its_3mf_reads_back_in_the
         }
     }
     assert_eq!((low, high), ([0.0; 3], [60.0, 40.0, 50.0]));
-    // The mesh's volume against the hand's, within the tolerance's bound. Every vertex is
-    // on the B-rep, and each curved face (the holes' walls, the fillet) is concave to the
-    // material, so its triangles are chords inside the cylinder: the mesh holds all the
-    // part's material and more, by at most the area between each arc and its chords, along
-    // the face. An arc of radius r cut in chords each subtending at most a (FreeCAD's
-    // angular deflection, min(0.1, 5t + 0.005) = 0.1 rad at t = 0.1 mm, which the export
-    // ports) leaves a sagitta s ≤ r(1 − cos(a/2)) ≤ r·a²/8, and the area between the arc
-    // and its chords is at most the arc's length × s. So the excess is at most each curved
-    // face's area × its s: the holes' walls 4 · 2π · 2.75 · 5 = 110π mm² at 2.75 · 0.01/8,
-    // the fillet's 100π mm² at 5 · 0.01/8, 1.003125π ≈ 3.15 mm³ in all; under the
-    // tolerance's own bound, the curved area × t = 21π. Rounding each coordinate to 32 bits
-    // moves a vertex at most √3 · 60 · 2⁻²⁴, which moves the volume by at most that times
-    // the surface (under 10,000 mm²): ε ≈ 0.062 mm³, either way.
-    let angle = (5.0 * TOLERANCE + 0.005).min(0.1);
-    let sagitta = |r: f64| (r * angle * angle / 8.0).min(TOLERANCE);
-    let excess = 110.0 * PI * sagitta(HOLE_R) + 100.0 * PI * sagitta(FILLET_R);
+    // The mesh's volume, by hand. Every vertex is on the B-rep, on the rims and arcs
+    // counted above, so each hole's wall is the prism on its rim's 126 chords and the
+    // fillet's the prism on its arc's 32: each curved face concave to the material, the
+    // mesh holds the part's material and, past each arc, the segments between it and its
+    // chords. A hole's prism is short of its cylinder by h(πr² − (n/2)r² sin(2π/n)); a
+    // chord across θ cuts off (r²/2)(θ − sin θ), under r²θ³/12. So the mesh encloses
+    // V + 4 · 5 · (π · 2.75² − 63 · 2.75² sin(2π/126)) + 40 · 32 · (25/2)(θ − sin θ) at
+    // θ = π/64, about V + 0.193 + 0.315 = V + 0.508 mm³, to what rounding each coordinate
+    // to 32 bits moves it: a vertex by at most √3 · 60 · 2⁻²⁴, the volume by at most that
+    // times the surface (under 10,000 mm²), ε ≈ 0.062 mm³ either way.
+    let n = rim as f64;
+    let hole_short = HOLE_R * HOLE_R * (PI - n / 2.0 * libm::sin(2.0 * PI / n));
+    let theta = PI / 2.0 / arc as f64;
+    let spandrel = arc as f64 * FILLET_R * FILLET_R / 2.0 * (theta - libm::sin(theta));
+    assert!(spandrel <= arc as f64 * FILLET_R * FILLET_R * theta * theta * theta / 12.0);
+    let enclosed = volume + 4.0 * 5.0 * hole_short + 40.0 * spandrel;
     let rounding = 10_000.0 * 3f64.sqrt() * 60.0 / 16_777_216.0;
     assert!(
-        mesh_volume >= volume - rounding && mesh_volume <= volume + excess + rounding,
-        "the mesh encloses {mesh_volume} mm³; by hand {volume}, so from {} to {}",
-        volume - rounding,
-        volume + excess + rounding
+        (mesh_volume - enclosed).abs() <= rounding,
+        "the mesh encloses {mesh_volume} mm³; by hand {enclosed} (the part's {volume}), to {rounding}"
     );
 
     // FreeCAD reads it back as a solid: the mesh closed, manifold, and oriented by its own

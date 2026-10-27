@@ -5142,6 +5142,7 @@ version = "0.0.0"
 dependencies = [
  "jsonschema",
  "libc",
+ "libm",
  "serde",
  "serde_json",
  "signal-hook",

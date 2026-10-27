@@ -19,9 +19,11 @@ tracing.workspace = true
 
 [dev-dependencies]
 # The bracket (tests/bracket.rs): its replies validated against their tools' output
-# schemas, read as written (raw_value), and its 3MF read back by FreeCAD, the oracle.
+# schemas, read as written (raw_value), its mesh worked out by hand (libm), and its 3MF
+# read back by FreeCAD, the oracle.
 jsonschema.workspace = true
 libc.workspace = true
+libm.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 silico-oracle.workspace = true
