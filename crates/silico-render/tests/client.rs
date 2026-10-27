@@ -11,8 +11,8 @@ use silico_render::bench::front_of_a_box;
 use silico_render::test_scenes;
 
 use crate::common::{
-    TEST_WORKER, WORKER, at, client, crashing, drawn, eventually, failed, hanging, process_exists,
-    small,
+    TEST_WORKER, WAIT, WORKER, at, client, crashing, drawn, eventually, failed, hanging,
+    process_exists, small,
 };
 
 #[test]
@@ -42,9 +42,9 @@ fn an_idle_worker_is_stopped_and_the_next_render_starts_another() {
     );
     drawn(c.render(front_of_a_box(16, 16)).wait());
     let pid = c.pid().unwrap();
-    assert!(eventually(Duration::from_secs(5), || c.pid().is_none()));
+    assert!(eventually(WAIT, || c.pid().is_none()));
     assert!(
-        eventually(Duration::from_secs(5), || !process_exists(pid)),
+        eventually(WAIT, || !process_exists(pid)),
         "pid {pid} still runs"
     );
     drawn(c.render(front_of_a_box(16, 16)).wait());
@@ -121,7 +121,7 @@ fn a_worker_that_answers_other_than_asked_is_a_protocol_error_and_stopped() {
         assert!(e.suggestion().is_some(), "{what}: {e:?}");
         assert_eq!(c.pid(), None, "{what}: the worker kept");
         assert!(
-            eventually(Duration::from_secs(5), || !process_exists(pid)),
+            eventually(WAIT, || !process_exists(pid)),
             "{what}: pid {pid} still runs"
         );
     }
@@ -277,7 +277,7 @@ fn a_render_cancelled_while_queued_is_never_sent_and_one_running_is_stopped() {
     // The queued one, cancelled first, is dropped when its turn comes.
     queued.cancel();
     // The running one, hung (its time is 30 s), stops at once when cancelled.
-    assert!(eventually(Duration::from_secs(10), || c.pid().is_some()));
+    assert!(eventually(WAIT, || c.pid().is_some()));
     std::thread::sleep(Duration::from_millis(200));
     let start = Instant::now();
     running.cancel();
