@@ -114,7 +114,7 @@ use registry::{
 };
 pub use threads::MAX_PUBLISHED_READS;
 use threads::{Counted, Reads, Threads};
-use transaction::{Checking, Claim, Held, Reload, Rereads, transaction_open};
+use transaction::{Claim, Held, Reload, Rereads, transaction_open};
 pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
@@ -927,7 +927,7 @@ impl<P: Clients + 'static> Sessions<P> {
             return refused(not_open(*session));
         };
         let (info, read) = found.published_now();
-        published_answer(info, read, |published, _| Ok(published.clone()))
+        published_answer(info, read, |published, _, _| Ok(published.clone()))
     }
 
     /// `session`'s document's outline ([`super::outline`]), as `silico show` prints it.
@@ -1405,15 +1405,7 @@ fn start_published<C: Kernel + 'static, T: Send + 'static>(
                 || {
                     let (info, published) = session.published_now();
                     let path = session.held.read().path.clone();
-                    // The session's revision and whether a transaction is open, as one lock
-                    // held them, before the published model was taken (never newer).
-                    let now = info.as_ref().map(|info| (info.revision, info.transaction));
-                    published_answer(info, published, |published, model| {
-                        // A published model is read only of a session open, which `now` is.
-                        let checking = now
-                            .map_or(Checking::Older { open: false }, |(now, open)| {
-                                Checking::of(open, now, published.revision)
-                            });
+                    published_answer(info, published, |published, checking, model| {
                         read(Read {
                             path,
                             model: &published.model,
