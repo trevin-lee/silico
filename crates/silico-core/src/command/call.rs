@@ -16,9 +16,10 @@
 //! `call` never waits on a session: a command it starts is queued on its session (or, for a
 //! read of the published model, started on a thread of its own) and runs off the caller's
 //! thread, so commands a caller sends to one session reach it in the order sent, and `open`s
-//! take their session IDs in that order. `status`, `cancel`, `version`, and `schema`, which
-//! take no place in a session's queue, are answered when the [`Calling`] is waited on, on
-//! the waiting thread, so the caller (MCP's reader) never takes what they lock.
+//! take their session IDs in that order. `status`, `cancel`, `read_logs`, `version`, and
+//! `schema`, which take no place in a session's queue, are answered when the [`Calling`] is
+//! waited on, on the waiting thread, so the caller (MCP's reader) never takes what they
+//! lock.
 
 use std::time::Duration;
 
@@ -29,6 +30,7 @@ use super::wire::edits::{
 };
 use super::wire::elements::{ElementsRequest, QueryRequest};
 use super::wire::export::ExportRequest;
+use super::wire::logs::ReadLogsRequest;
 use super::wire::measure::{MassPropertiesRequest, PairRequest};
 use super::wire::reads::{CheckRequest, TextRequest};
 use super::wire::render::RenderRequest;
@@ -69,12 +71,13 @@ pub enum Command {
     Distance,
     Angle,
     Render,
+    ReadLogs,
     Export,
 }
 
 impl Command {
     /// Every command, in the design's order.
-    pub const ALL: [Command; 25] = [
+    pub const ALL: [Command; 26] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -99,6 +102,7 @@ impl Command {
         Command::Distance,
         Command::Angle,
         Command::Render,
+        Command::ReadLogs,
         Command::Export,
     ];
 
@@ -129,6 +133,7 @@ impl Command {
             Command::Distance => "distance",
             Command::Angle => "angle",
             Command::Render => "render",
+            Command::ReadLogs => "read_logs",
             Command::Export => "export",
         }
     }
@@ -389,8 +394,8 @@ impl<P: Clients + 'static> Sessions<P> {
     /// false, for a request either reader refuses). Never waits on a session: the command
     /// is queued (or, a published read, started) before this returns, so a caller's
     /// commands to one session run in the order it sent them. `status`, `cancel`,
-    /// `version`, and `schema` are answered when the call is waited on, on the waiting
-    /// thread.
+    /// `read_logs`, `version`, and `schema` are answered when the call is waited on, on the
+    /// waiting thread.
     pub fn call(&self, name: &str, arguments: &str) -> Call {
         let Some(command) = Command::named(name) else {
             return Call::Unknown;
@@ -478,6 +483,12 @@ impl<P: Clients + 'static> Sessions<P> {
                 Ok(r) => Calling::waiting(self.render(&r.session, r.model, r.render), rendered),
                 Err(problems) => Calling::refused(problems),
             },
+            Command::ReadLogs => {
+                let sessions: WeakSessions<P> = self.weak();
+                later(ReadLogsRequest::read(request), move |r| {
+                    sessions.read_logs(&r.session, &r.query)
+                })
+            }
             Command::Export => typed(ExportRequest::read(request), |r| {
                 self.export(&r.session, r.export)
             }),

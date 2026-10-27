@@ -168,3 +168,9 @@ crates/silico-core/src/warnings.rs | cluster_warning | replace + with * | #189
 # `k * 1` compares each point with itself too: 0 apart along x, so no break, and joining a
 # point to itself leaves the groups as they were.
 crates/silico-core/src/profile.rs | one_place_groups | replace + with * | #189
+# A field past a read's mebibyte is cut away with the message it's appended to: the
+# message is cut to a room of at most LOG_READ_BYTES, so the same prefix is kept.
+crates/silico-core/src/command/logs.rs | EventFields::field | replace < with <= | #194
+# Raising an info directive to info writes the same directive (`silico=info`, `info`).
+crates/silico-worker/src/lib.rs | worker_filter | replace < with <= | #194
+crates/silico-worker/src/lib.rs | worker_filter | replace < with <= | #194

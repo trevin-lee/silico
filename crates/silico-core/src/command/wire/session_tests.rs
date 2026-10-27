@@ -578,7 +578,10 @@ fn the_commands_a_session_runs_are_the_wires_in_the_designs_order() {
         .into_iter()
         .filter(|name| !SESSION_COMMANDS.contains(name))
         .collect();
-    assert_eq!(others, ["version", "open", "status", "cancel", "schema"]);
+    assert_eq!(
+        others,
+        ["version", "open", "status", "cancel", "schema", "read_logs"]
+    );
     // The design's reads of the published model (section 2: those that take `model`).
     assert_eq!(
         PUBLISHED_READS,

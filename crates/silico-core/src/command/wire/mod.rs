@@ -814,6 +814,12 @@ impl<'a> RequestFields<'a> {
     /// fraction, exponent, or leading zero.
     fn whole_in(&mut self, key: &str, low: u64, high: u64) -> Option<u64> {
         let node = self.take(key)?;
+        self.whole_of(key, node, low, high, "")
+    }
+
+    /// `node`, `key`'s value, as [`whole_in`](RequestFields::whole_in) reads it, said to
+    /// take `or`, too (` or null`), if it's refused.
+    fn whole_of(&mut self, key: &str, node: &Node, low: u64, high: u64, or: &str) -> Option<u64> {
         let whole = match &node.value {
             Value::Number(text) => super::whole_number(text).filter(|n| (low..=high).contains(n)),
             _ => None,
@@ -821,11 +827,19 @@ impl<'a> RequestFields<'a> {
         if whole.is_none() {
             self.wrong(
                 key,
-                format_args!("a whole number from {low} to {high}"),
+                format_args!("a whole number from {low} to {high}{or}"),
                 node,
             );
         }
         whole
+    }
+
+    /// A whole number from 0 to `u64::MAX`, or `null`.
+    pub fn nullable_u64(&mut self, key: &str) -> Option<Option<u64>> {
+        match self.take_nullable(key)? {
+            None => Some(None),
+            Some(node) => self.whole_of(key, node, 0, u64::MAX, " or null").map(Some),
+        }
     }
 
     /// A whole number from 0 to `u32::MAX`.
@@ -1687,6 +1701,9 @@ const fn snapshot_of(command: Command) -> MakeSnapshot {
         Command::Render => {
             command_schema::<render::RenderRequestSchema, render::RenderResultSchema>
         }
+        Command::ReadLogs => {
+            command_schema::<logs::ReadLogsRequestSchema, logs::ReadLogsResultSchema>
+        }
         Command::Export => {
             command_schema::<export::ExportRequestSchema, export::ExportResultSchema>
         }
@@ -1782,6 +1799,7 @@ pub mod cache;
 pub mod edits;
 pub mod elements;
 pub mod export;
+pub mod logs;
 pub mod measure;
 pub mod reads;
 pub mod render;

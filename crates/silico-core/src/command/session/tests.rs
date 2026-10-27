@@ -66,6 +66,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
         reads: Mutex::new(Reads::new()),
         command: Mutex::new(None),
         newest: Arc::default(),
+        logs: crate::command::logs::LogBuffer::new(),
         gate: Gate::default(),
         settled: Gate::default(),
     });

@@ -1008,6 +1008,7 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "distance",
                 "angle",
                 "render",
+                "read_logs",
                 "export"
             ]
         );

@@ -84,6 +84,7 @@ fn the_commands_are_one_list_in_one_order() {
             "distance",
             "angle",
             "render",
+            "read_logs",
             "export",
         ]
     );
@@ -150,7 +151,8 @@ fn a_name_no_command_has_is_unknown() {
         " check",
         "tools/call",
         "Export",
-        "read_logs",
+        "read_log",
+        "Read_logs",
         "cache-clear",
         "cache clear",
         "versions",
