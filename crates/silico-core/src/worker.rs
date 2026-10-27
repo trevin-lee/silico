@@ -3532,6 +3532,33 @@ mod tests {
     }
 
     #[test]
+    fn a_worker_that_is_a_link_is_found_and_one_left_dangling_is_missing() {
+        // break-it: a worker installed as a relative link to the build's is used as it is;
+        // one whose build is gone is no worker, said as one missing.
+        let (_root, base) = install(false);
+        let bin = base.join("bin");
+        std::fs::create_dir(base.join("build")).unwrap();
+        std::fs::write(base.join("build/silico-kernel-worker"), "").unwrap();
+        std::os::unix::fs::symlink(
+            "../build/silico-kernel-worker",
+            bin.join("silico-kernel-worker"),
+        )
+        .unwrap();
+        assert_eq!(
+            kernel_worker_beside(&base.join("link/silico")).unwrap(),
+            bin.join("silico-kernel-worker")
+        );
+        std::fs::remove_file(base.join("build/silico-kernel-worker")).unwrap();
+        let e = kernel_worker_beside(&base.join("link/silico")).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::WorkerUnavailable);
+        assert!(
+            e.message().starts_with("no kernel worker in "),
+            "{}",
+            e.message()
+        );
+    }
+
+    #[test]
     fn an_executable_that_cant_be_resolved_says_so_and_how_to_name_the_worker() {
         let (_root, base) = install(true);
         // A link left dangling: the build it led to is gone.
