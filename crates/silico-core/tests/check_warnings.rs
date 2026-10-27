@@ -317,6 +317,19 @@ fn ends_not_joined_is_the_designs_example_word_for_word() {
         .unwrap(),
     )
     .unwrap();
+    // A warning is described by a definition of its own, its codes warning-codes.txt's.
+    assert_eq!(
+        schema["result"]["properties"]["warnings"]["items"]["$ref"],
+        "#/$defs/Warning"
+    );
+    let warning = &schema["result"]["$defs"]["Warning"];
+    assert!(
+        warning["properties"]["code"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("warning-codes.txt"),
+        "{warning}"
+    );
     let result = write(&checked.to_wire(), Layout::Canonical).unwrap();
     let value: serde_json::Value = serde_json::from_str(&result).unwrap();
     assert!(

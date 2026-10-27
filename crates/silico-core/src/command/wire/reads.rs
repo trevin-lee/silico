@@ -13,7 +13,7 @@
 use schemars::JsonSchema;
 
 use super::elements::ModelChoiceSchema;
-use super::{ErrorSchema, Json, RequestFields, ToWire, problems, wire_shape};
+use super::{ErrorSchema, Json, RequestFields, ToWire, WarningSchema, problems, wire_shape};
 use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{
     CheckAnswer, CheckModel, ModelChoice, OutlineAnswer, Problems, SessionId, TextAnswer,
@@ -219,7 +219,7 @@ pub struct CheckResultSchema {
     /// The document's warnings, the first 100, in the error contract's shape: they never
     /// fail anything.
     #[schemars(length(max = PROBLEMS_LISTED))]
-    pub warnings: Vec<ErrorSchema>,
+    pub warnings: Vec<WarningSchema>,
     /// How many warnings there are, listed or not.
     pub warnings_total: u64,
 }

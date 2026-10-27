@@ -1490,6 +1490,35 @@ pub struct ErrorSchema {
     pub candidates: Vec<String>,
 }
 
+/// Something `check` found that fails nothing: it never refuses a command, blocks a save, or
+/// sets an exit code. In the error contract's shape, each field as an error's: a code, a
+/// message, and, where they apply, the feature, the elements it's of (the first of them,
+/// and how many in all), the field it's of, the cause, what to do, and the names that might
+/// have been meant. Every field is always present: null, or empty, where it doesn't apply.
+#[derive(JsonSchema)]
+#[schemars(rename = "Warning", transform = wire_shape)]
+pub struct WarningSchema {
+    /// What kind of warning it is: one of Silico's warning codes, listed in
+    /// `warning-codes.txt`, such as `ends_not_joined`.
+    pub code: String,
+    /// What was found, in a sentence.
+    pub message: String,
+    /// The ID of the feature it's of, if one is.
+    pub feature: Option<String>,
+    /// The elements it's of, by name: the first of them, if there are many.
+    pub elements: Vec<String>,
+    /// How many elements it's of, listed or not.
+    pub elements_total: u64,
+    /// The field it's of, as a dotted path (`position.2`), if one is.
+    pub parameter: Option<String>,
+    /// What lay under it, if known.
+    pub cause: Option<String>,
+    /// What to do about it, if Silico can say.
+    pub suggestion: Option<String>,
+    /// What might have been meant, if anything.
+    pub candidates: Vec<String>,
+}
+
 /// The session as the command left it.
 #[derive(JsonSchema)]
 #[schemars(rename = "Session", transform = wire_shape)]
