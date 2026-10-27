@@ -6,6 +6,7 @@
 mod client;
 
 mod adversarial_server;
+mod bracket;
 mod calls;
 mod contract;
 mod errors;
