@@ -12,7 +12,7 @@ use super::Sessions;
 use super::cancel::Ticket;
 use super::rebuilds::met_fault;
 use super::rebuilds::{Label, Newest};
-use super::transaction::Reached;
+use super::transaction::{Checking, Reached};
 use super::{Problems, ReadCommand, SessionCommand};
 #[cfg(doc)]
 use crate::document;
@@ -154,9 +154,9 @@ pub struct Read<'a, C> {
     pub(super) stop: &'a Ticket,
     pub(super) kernel: &'a ReadClient<C>,
     pub(super) reached: &'a Reached,
-    /// Whether a transaction is open in the session as the read is answered: for the
-    /// published model, the session's now, not its revision's ([`Reached::committing`]).
-    pub(super) transaction: bool,
+    /// The session as the read is answered: whether the model is its revision's, and
+    /// whether a transaction is open in it now ([`Reached::committing`]).
+    pub(super) checking: Checking,
 }
 
 impl<C> Read<'_, C> {

@@ -261,16 +261,62 @@ impl Reached {
         })
     }
 
-    /// The features whose records only a commit writes, `open` saying whether a transaction
-    /// is open in the session as it's checked (not at the revision, whose model may have been
-    /// published before a `begin` or kept after a commit that wrote nothing): those reached
-    /// ([`get`](Self::get)) if one is, where `format` is refused and its commit writes them;
-    /// none if not, where what's reached is only what's carried from a save that couldn't
-    /// write it, which a `format` writes. Those whose missing fingerprint a check doesn't warn
-    /// of ([`crate::warnings`]).
-    pub(crate) fn committing(&self, open: bool) -> &BTreeSet<FeatureId> {
+    /// The features whose records only a commit writes, as `checking` says the session is
+    /// as it's checked: those reached ([`get`](Self::get)) where a transaction's commit
+    /// writes them, and `format`, refused in a transaction, can't; none otherwise, where
+    /// what's reached is only what's carried from a save that couldn't write it, which a
+    /// `format` writes. Those whose missing fingerprint a check doesn't warn of
+    /// ([`crate::warnings`]).
+    ///
+    /// For a model of the session's revision ([`Checking::Latest`]), exactly when a
+    /// transaction is open now: not when the revision was, since a model published before a
+    /// `begin` is the revision's still, and so is one relabelled by a commit that wrote
+    /// nothing (`unwritten`). For an older model ([`Checking::Older`]), also when
+    /// its own revision was a transaction's: with none open now, that model can only be
+    /// left published by a commit that wrote the file without publishing (its sketches'
+    /// solves written back), which wrote every built feature's record (a rollback restores
+    /// the model `begin` kept, and a commit that writes nothing relabels the model, which
+    /// is then the revision's); with one open now, by a `begin` made while its rebuild ran.
+    pub(crate) fn committing(&self, checking: Checking) -> &BTreeSet<FeatureId> {
         static NONE: BTreeSet<FeatureId> = BTreeSet::new();
-        if open { self.get() } else { &NONE }
+        let spared = match checking {
+            Checking::Latest { open } => open,
+            Checking::Older { open } => open || self.of_transaction(),
+        };
+        if spared { self.get() } else { &NONE }
+    }
+
+    /// Whether the revision this is of was a transaction's: what it's worked out from held
+    /// the transaction's snapshot.
+    fn of_transaction(&self) -> bool {
+        self.0
+            .reaching
+            .as_ref()
+            .is_some_and(|reaching| reaching.begun.is_some())
+    }
+}
+
+/// The session as a check of a model finds it, taken under its lock with its revision: what
+/// decides which missing fingerprints the check leaves to a commit
+/// ([`Reached::committing`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Checking {
+    /// The model is of the session's revision; `open`, whether a transaction is open.
+    Latest { open: bool },
+    /// The model is an older revision's, the newest published; `open`, whether a
+    /// transaction is open in the session now.
+    Older { open: bool },
+}
+
+impl Checking {
+    /// A check of the model of revision `model`, in a session at revision `now`, a
+    /// transaction open in it or not (`open`), both as one lock held them.
+    pub(crate) fn of(open: bool, now: Revision, model: Revision) -> Self {
+        if model == now {
+            Checking::Latest { open }
+        } else {
+            Checking::Older { open }
+        }
     }
 }
 
@@ -645,8 +691,9 @@ impl<C: Kernel + 'static> Session<C> {
             // is what's reached at the new revision: the transaction's edits came back to the
             // document `begin` saw, so they reach nothing (`document::net_reach`), and what's
             // reached at both is what was carried, with every feature that uses it. Whether a
-            // transaction is open differs (it was then, it isn't now): a check asks the
-            // session that as it checks, never the revision (`Reached::committing`).
+            // transaction is open differs (it was then, it isn't now): for a model of the
+            // session's revision, as this one is from now on, a check asks the session that
+            // as it checks, never the revision (`Reached::committing`).
             if let Some(published) = &mut rebuilds.published
                 && published.revision == revision
             {

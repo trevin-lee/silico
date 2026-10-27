@@ -1367,6 +1367,58 @@ fn a_carried_feature_is_warned_of_in_a_published_check_after_a_commit_that_write
 }
 
 #[test]
+fn a_feature_a_transaction_added_isnt_warned_of_in_a_published_check_after_a_commit_that_wrote_it_without_publishing()
+ {
+    // Found by the review (A4-1): in a transaction, a sketch whose solve moves pa000001 from
+    // (0, 0) to (0.25, 0) and box m0000002 are added, and checked (the transaction's model
+    // published). The commit writes the file, with m0000002's fingerprint and the sketch's
+    // solve, so it doesn't publish its own model: the published model is still the
+    // transaction's. No transaction is open, but the file stores m0000002's fingerprint,
+    // so its published check spares it, as the current check of the committed revision does.
+    let f = opened(&document(&[block("k7f2qx3m", 0)]));
+    // Values 0 to 5 are the origin's and the axes' ends; 6 is pa000001's x.
+    f.sketches.answer(|system| {
+        let mut solved = FakeSketches::as_sent(system);
+        solved.values[6] = 0.25;
+        Ok(solved)
+    });
+    let only_k7 = [(
+        WarningCode::FingerprintMissing,
+        "k7f2qx3m".to_owned(),
+        vec![],
+        None,
+    )];
+    answer(f.sessions.begin(&s1())).result.unwrap();
+    let drawn = sketch(
+        "s0000002",
+        &[point("pa000001", 0.0, 0.0), point("pb000001", 10.0, 0.0)],
+        &[line("na000001", "pa000001", "pb000001", false)],
+        &[],
+        "",
+    );
+    for added in [drawn, block("m0000002", 10)] {
+        let revision = f.sessions.status(&s1()).session.unwrap().revision;
+        let added: Node = silico_core::document::json::read(added.as_bytes()).unwrap();
+        answer(f.sessions.add_feature(&s1(), revision, added))
+            .result
+            .unwrap();
+    }
+    let transactions = f.sessions.status(&s1()).session.unwrap().revision;
+    assert_eq!(said(&f.check()), only_k7);
+    let committed = answer(f.sessions.commit(&s1())).result.unwrap();
+    assert!(committed.written, "{committed:?}");
+    assert_eq!(committed.resolved, [id("s0000002")]);
+    assert_eq!(committed.refingerprinted, [id("m0000002")]);
+    let session = f.sessions.status(&s1()).session.unwrap();
+    assert!(!session.transaction);
+    assert_ne!(session.revision, transactions);
+    // Before any current check, which would wait for the committed revision's model and
+    // publish it.
+    assert_eq!(said(&published_check(&f, transactions)), only_k7);
+    assert_eq!(said(&f.check()), only_k7);
+}
+
+#[test]
 fn a_feature_whose_solid_couldnt_be_measured_isnt_warned_of_for_its_fingerprint() {
     // The kernel refuses every Summarize: the box built, but couldn't be measured (a
     // problem), so a save has no fingerprint to store: no warning.

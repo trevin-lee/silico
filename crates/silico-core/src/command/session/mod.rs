@@ -114,7 +114,7 @@ use registry::{
 };
 pub use threads::MAX_PUBLISHED_READS;
 use threads::{Counted, Reads, Threads};
-use transaction::{Claim, Held, Reload, Rereads, transaction_open};
+use transaction::{Checking, Claim, Held, Reload, Rereads, transaction_open};
 pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
@@ -708,8 +708,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// reached at that model's revision, kept with it ([`Read::reached`]): exactly that
     /// revision's, whatever edits came since. With nothing published, it's refused as every
     /// published read is: naming `model`, or, for a document the gate refused, with the
-    /// gate's problems. Its warnings leave out a missing fingerprint a commit writes if a
-    /// transaction is open as it's checked, whatever the model's revision was
+    /// gate's problems. Its warnings leave out a missing fingerprint a commit writes: if a
+    /// transaction is open as it's checked, or, for a model older than the session's
+    /// revision, if that model's revision was a transaction's
     /// ([`Reached::committing`](transaction::Reached::committing)).
     ///
     /// Either way, a kernel fault (a worker that crashed or hung) isn't the document's: it's
@@ -735,7 +736,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     Ok(CheckAnswer::of(
                         super::check_except(read.model(), read.reached()),
                         read.model(),
-                        read.reached.committing(read.transaction),
+                        read.reached.committing(read.checking),
                     ))
                 },
             ),
@@ -767,7 +768,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 stop,
                 kernel: &kernel,
                 reached: &current.reached,
-                transaction: current.transaction,
+                checking: current.checking,
             })
         })
     }
@@ -785,7 +786,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     Ok(CheckAnswer::of(
                         super::check_except(&current.model, current.reached.get()),
                         &current.model,
-                        current.reached.committing(current.transaction),
+                        current.reached.committing(current.checking),
                     ))
                 }
                 Err(Unbuilt::Gated(problems)) => Ok(CheckAnswer::refused(problems)),
@@ -1404,9 +1405,15 @@ fn start_published<C: Kernel + 'static, T: Send + 'static>(
                 || {
                     let (info, published) = session.published_now();
                     let path = session.held.read().path.clone();
-                    // Taken with the published model, under the same lock.
-                    let transaction = info.as_ref().is_some_and(|info| info.transaction);
+                    // The session's revision and whether a transaction is open, as one lock
+                    // held them, before the published model was taken (never newer).
+                    let now = info.as_ref().map(|info| (info.revision, info.transaction));
                     published_answer(info, published, |published, model| {
+                        // A published model is read only of a session open, which `now` is.
+                        let checking = now
+                            .map_or(Checking::Older { open: false }, |(now, open)| {
+                                Checking::of(open, now, published.revision)
+                            });
                         read(Read {
                             path,
                             model: &published.model,
@@ -1414,7 +1421,7 @@ fn start_published<C: Kernel + 'static, T: Send + 'static>(
                             stop: &stop,
                             kernel: &kernel,
                             reached: &published.reached,
-                            transaction,
+                            checking,
                         })
                     })
                 },

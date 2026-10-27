@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use super::cancel::{Ticket, cancelled};
 use super::threads::Threads;
-use super::transaction::{Reached, Reaching};
+use super::transaction::{Checking, Reached, Reaching};
 use super::{
     Gated, ModelChoice, ModelRead, Problems, Progress, Published, Rebuild, RebuildState, Response,
     Revision, Session, SessionId, SessionInfo, not_open,
@@ -561,13 +561,15 @@ impl<C: Kernel + 'static> Session<C> {
         stop: &Ticket,
         reads: Reads,
     ) -> Result<Current, Unbuilt> {
-        let (revision, gated, reaching, transaction) = {
+        let (revision, gated, reaching, checking) = {
             let held = self.held.read();
             (
                 held.revision,
                 Arc::clone(&held.gated),
                 held.reaching(),
-                held.transaction.is_some(),
+                Checking::Latest {
+                    open: held.transaction.is_some(),
+                },
             )
         };
         let reached = Reached::of(reaching);
@@ -578,7 +580,7 @@ impl<C: Kernel + 'static> Session<C> {
                     read: ModelRead::of(revision, ModelChoice::Current, &model),
                     model,
                     reached,
-                    transaction,
+                    checking,
                 })
                 .map_err(Unbuilt::Unavailable),
             refused => Err(Unbuilt::Gated(refused.problems())),
@@ -729,8 +731,9 @@ pub(super) struct Current {
     pub(super) read: ModelRead,
     /// What the session's edits reach at its revision.
     pub(super) reached: Reached,
-    /// Whether a transaction was open as the revision was read.
-    pub(super) transaction: bool,
+    /// The session as the revision was read: its model the revision's, and whether a
+    /// transaction was open.
+    pub(super) checking: Checking,
 }
 
 /// Why a session's model couldn't be read.
