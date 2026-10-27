@@ -139,9 +139,10 @@ fn a_render_through_a_session_cancelled_while_it_runs_answers_cancelled_and_stop
         "{:?}",
         start.elapsed()
     );
-    assert!(crate::common::eventually(WAIT, || {
-        !crate::common::process_exists(pid)
-    }));
+    assert!(crate::common::eventually(
+        crate::common::CANCEL_KILLS,
+        || { !crate::common::process_exists(pid) }
+    ));
     let drawn = sessions
         .render(&s, ModelChoice::Current, hangs((40, 30)))
         .wait();

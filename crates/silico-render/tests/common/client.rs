@@ -14,6 +14,11 @@ use silico_render::test_scenes;
 /// and it costs nothing when the event comes. Half nextest's 120 s, so a hang is said here.
 pub const WAIT: Duration = Duration::from_secs(60);
 
+/// How soon a cancel must end a hung render's worker, or answer it: a bound, not a wait for
+/// something to happen. The render's own timeout (`RENDER_TIMEOUT`, 30 s) ends the worker
+/// anyway, so a wait longer than it couldn't tell the cancel's kill from the timeout's.
+pub const CANCEL_KILLS: Duration = Duration::from_secs(5);
+
 pub const WORKER: &str = env!("CARGO_BIN_EXE_silico-render-worker");
 pub const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-render-test-worker");
 

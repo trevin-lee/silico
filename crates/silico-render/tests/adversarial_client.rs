@@ -447,7 +447,7 @@ fn a_render_waited_on_in_one_thread_is_cancelled_from_another() {
         start.elapsed()
     );
     assert!(
-        eventually(WAIT, || !process_exists(pid)),
+        eventually(CANCEL_KILLS, || !process_exists(pid)),
         "the cancelled render's worker {pid} still runs"
     );
     // Cancelling again, after the answer, does nothing.
@@ -470,7 +470,7 @@ fn a_ticket_polled_or_waited_on_for_a_while_comes_back_until_it_answers() {
         };
     }
     ticket.cancel();
-    let outcome = wait_within(ticket, WAIT).expect("no outcome");
+    let outcome = wait_within(ticket, CANCEL_KILLS).expect("no outcome");
     assert!(matches!(outcome, RenderOutcome::Cancelled), "{outcome:?}");
     // A drawn one, taken by polling.
     let mut ticket = c.render(small());
