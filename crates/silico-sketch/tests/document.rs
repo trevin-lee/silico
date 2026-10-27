@@ -109,6 +109,46 @@ fn freecads_rectangle_is_fully_constrained_at_its_corners() {
 }
 
 #[test]
+fn a_midpoint_whose_equation_along_y_repeats_two_others_is_partially_redundant_as_in_freecad() {
+    // The port review's sketch (check's warnings, decision 17): line na000001 from (−5, 0)
+    // to (5, 0), its ends held by distances from the origin, and point pa000003 at (0, 0)
+    // held at the line's midpoint (k0000001), at y 0 (k0000002), and on the line
+    // (k0000003). FreeCAD 1.1.3, the same sketch, its constraints in the same order:
+    // solve() 0, RedundantConstraints [], PartiallyRedundantConstraints [1], fully
+    // constrained, the point at (0, 0). So here: the midpoint partially redundant, kept
+    // apart from the redundant (of which there are none), nothing free.
+    let doc = document(
+        &[
+            point("pa000001", -5.0, 0.0),
+            point("pa000002", 5.0, 0.0),
+            point("pa000003", 0.0, 0.0),
+        ],
+        &[line("na000001", "pa000001", "pa000002")],
+        &[],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "midpoint", "point": "pa000003", "line": "na000001"}"#,
+            r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "pa000003", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000003", "type": "on", "point": "pa000003", "curve": "na000001"}"#,
+            r#"{"id": "k0000004", "type": "distance_x", "a": "origin", "b": "pa000001", "value": -5, "driving": true}"#,
+            r#"{"id": "k0000005", "type": "distance_y", "a": "origin", "b": "pa000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000006", "type": "distance_x", "a": "origin", "b": "pa000002", "value": 5, "driving": true}"#,
+            r#"{"id": "k0000007", "type": "distance_y", "a": "origin", "b": "pa000002", "value": 0, "driving": true}"#,
+        ],
+    );
+    let s = solved(&doc, &mut worker()).unwrap();
+    assert!(s.redundant.is_empty(), "{s:?}");
+    assert_eq!(
+        s.partially_redundant.keys().collect::<Vec<_>>(),
+        [&id("k0000001")],
+        "{s:?}"
+    );
+    assert_eq!(s.dofs, 0);
+    assert!(s.free.is_empty(), "{s:?}");
+    assert_at(&s, "pa000003", [0.0, 0.0]);
+}
+
+#[test]
 fn freecads_box_takes_its_corners_from_two_datums() {
     // TestSketcherSolver.py's testBoxCase: a box drawn at FreeCAD's coordinates, its top
     // and bottom horizontal, its sides vertical, its right side 81.370787 and top 187.573036

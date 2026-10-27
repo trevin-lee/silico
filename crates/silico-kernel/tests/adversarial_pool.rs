@@ -1319,16 +1319,28 @@ fn a_test_operation_sent_to_production_workers_is_refused_and_the_worker_kept() 
 #[test]
 fn a_superseded_request_whose_worker_is_killed_ends_superseded_and_the_worker_is_replaced() {
     // `advance` stops a superseded request that's running by killing its worker: the
-    // request ends Superseded, not when its sleep would have (longer than its outcome is
-    // waited for, and allowed an hour before the pool would stop it as hung), and the
-    // worker is replaced.
-    let pool = pool(TEST_WORKER, 1);
+    // request ends Superseded, not when its worker would answer (never: it's held until
+    // let go, and allowed an hour before the pool would stop it as hung), and the worker is
+    // replaced. The advance comes once the worker says it has the request: one still
+    // waiting for the slot would be dropped unrun, and its worker kept.
+    let pool = KernelPool::start_workers(&fake_worker("hold"), 1).unwrap();
     let before = pool.pids();
+    let dir = scratch_dir("killed-held");
+    let mut hold = HOLD.to_vec();
+    hold.extend_from_slice(dir.to_str().unwrap().as_bytes());
     let slow = pool.submit(
         Generation(1),
-        sleep(2 * PATIENCE.as_millis() as u64).with_timeout(Duration::from_secs(3600)),
+        echo(&hold).with_timeout(Duration::from_secs(3600)),
     );
-    std::thread::sleep(Duration::from_millis(100));
+    let started = dir.join("started");
+    let deadline = Instant::now() + PATIENCE;
+    while !started.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the held request didn't reach its worker within {PATIENCE:?}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
     pool.advance(Generation(2));
     assert!(matches!(outcome(slow), Outcome::Superseded));
     wait_full(&pool, 1, &before.iter().copied().collect());

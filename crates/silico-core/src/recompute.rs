@@ -303,8 +303,26 @@ pub struct Model {
     /// description and its names the first time they're read, once for the model, so paging
     /// through a large solid costs one build and a copy of each page, not a build a page.
     entries: Vec<OnceLock<Result<Arc<[Entry]>, Error>>>,
+    /// Each feature's live body, by index ([`Model::live_body`]): built the first time a
+    /// name is looked for in every body, once for the model, from `bodies` and `naming`,
+    /// which nothing changes once it's built.
+    live: OnceLock<Vec<Option<usize>>>,
     /// The engine's maps named so far.
     known: NamedMaps,
+}
+
+/// How many features [`Model::element_map`]'s reads have visited on this thread so far:
+/// one a read of a feature named already, or of a primitive.
+#[cfg(test)]
+pub(crate) fn walked() -> u64 {
+    WALKED.with(std::cell::Cell::get)
+}
+
+/// How many visits [`Model::live_bodies`]' second pass has made on this thread so far:
+/// one for each feature whose uses it read, and one for each of those.
+#[cfg(test)]
+pub(crate) fn live_visits() -> u64 {
+    LIVE_VISITS.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
@@ -313,6 +331,8 @@ thread_local! {
     /// for a read of a feature named already): a test's measure of a read's walk down what
     /// a feature's made from.
     static WALKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// What [`live_visits`] says.
+    static LIVE_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Element maps named so far, by naming key: shared by the engine and the models it
@@ -519,6 +539,66 @@ impl Model {
     /// read that looks up each feature isn't quadratic.
     fn place(&self, id: &FeatureId) -> Option<usize> {
         self.source.place(id)
+    }
+
+    /// The body the feature `id`'s solid ends up in, if one does: the feature itself, if
+    /// it's a body, or the body made from it, through the feature that consumes it, the one
+    /// that consumes that, and so on. One at most: the gate lets each solid be consumed
+    /// once (`document::validate`), so a feature's consumers make one chain, and it ends at
+    /// one body. A feature's map names its elements from its inputs' maps (its `uses`, the
+    /// features it consumes) and as its own, so every name in a body's element map is of
+    /// that body or of a feature in its chain; never of a sketch, whose names a sweep makes
+    /// its own (`OpCode::side`: a sweep keeps neither side of its profile), and whose own
+    /// names no body's map holds. So a name's element can be in no body but its feature's
+    /// live body: a name is looked for there, not in every body. None for a feature that
+    /// didn't build, a sketch, and a feature the document hasn't. (A built feature always
+    /// has its naming, whose key is made from its inputs', all built, so each solid a built
+    /// feature consumes is in its `uses`.)
+    pub(crate) fn live_body(&self, id: &FeatureId) -> Option<&FeatureId> {
+        let live = self.live.get_or_init(|| self.live_bodies());
+        let body = (*live.get(self.place(id)?)?)?;
+        self.features.get(body).map(|(id, _)| id)
+    }
+
+    /// Each feature's live body's place in the timeline ([`live_body`](Self::live_body)),
+    /// in two passes. The first walks the timeline forward beside the bodies (built
+    /// features none consumes, in timeline order), each a feature's place found with no
+    /// lookup: a body is its own. The second walks it back: each solid a feature with a
+    /// live body consumes (by its naming's `uses`) takes that live body; a feature's
+    /// consumer comes after it, so its live body is known by the time it's reached. Each
+    /// feature visited once a pass, and each use once: linear in the timeline.
+    fn live_bodies(&self) -> Vec<Option<usize>> {
+        let _span = tracing::debug_span!("live_bodies", features = self.features.len()).entered();
+        let mut live = vec![None; self.features.len()];
+        let mut bodies = self.bodies.iter().peekable();
+        for (i, (id, _)) in self.features.iter().enumerate() {
+            if bodies.next_if(|body| *body == id).is_some()
+                && let Some(slot) = live.get_mut(i)
+            {
+                *slot = Some(i);
+            }
+        }
+        for j in (0..live.len()).rev() {
+            let Some(body) = live.get(j).copied().flatten() else {
+                continue;
+            };
+            // The features whose solids it's made from, by place, as its naming has them.
+            let uses = self
+                .naming
+                .get(j)
+                .and_then(Option::as_ref)
+                .map_or(&[][..], |naming| naming.uses.as_slice());
+            // Counted under test (`live_visits`): one visit for the feature, and one for
+            // each it uses.
+            #[cfg(test)]
+            LIVE_VISITS.with(|visits| visits.set(visits.get() + 1 + uses.len() as u64));
+            for &used in uses {
+                if let Some(slot) = live.get_mut(used) {
+                    *slot = Some(body);
+                }
+            }
+        }
+        live
     }
 
     /// The feature `id` as its document holds it, found by the document's index.
@@ -3775,6 +3855,7 @@ fn model(
         naming,
         maps,
         entries,
+        live: OnceLock::new(),
         known,
     }
 }
@@ -4253,7 +4334,6 @@ mod tests {
         let (last, _) = model.features().last().unwrap();
         assert!(model.element_map(last).is_some());
         assert!(model.maps.iter().all(|slot| slot.get().is_some()));
-        let walked = || WALKED.with(std::cell::Cell::get);
         let before = walked();
         let maps: Vec<&ElementMap> = model
             .features()

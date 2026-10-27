@@ -4,6 +4,8 @@
 //! process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::running::{marking_worker, submit_running};
+
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,22 +15,29 @@ use silico_core::kernel::KernelRequest;
 use silico_core::pool::{KernelPool, Outcome};
 use silico_protocol::{DebugOp, Generation};
 use tracing::field::{Field, Visit};
+use tracing::span::{Attributes, Id};
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
-const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-test-worker");
-
 /// Blocks on the pool's event about a superseded request until released (or ten seconds
-/// pass), and records the spans it was logged in.
+/// pass), and records the spans it was logged in. Holds each slot's thread `slot_start` as
+/// it starts (as its span is made), before it takes a request.
 #[derive(Clone, Default)]
 struct Blocking {
     entered: Arc<AtomicBool>,
     release: Arc<AtomicBool>,
     spans: Arc<Mutex<Vec<Vec<&'static str>>>>,
+    slot_start: Duration,
 }
 
 impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Blocking {
+    fn on_new_span(&self, attrs: &Attributes<'_>, _id: &Id, _ctx: Context<'_, S>) {
+        if attrs.metadata().name() == "kernel_pool" {
+            std::thread::sleep(self.slot_start);
+        }
+    }
+
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
         if !event.metadata().target().starts_with("silico_core::pool") {
             return;
@@ -61,19 +70,39 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Blocking {
 
 #[test]
 fn a_blocked_superseded_log_neither_holds_the_pool_nor_loses_its_span() {
-    let layer = Blocking::default();
+    blocked_superseded_log(Duration::ZERO);
+}
+
+#[test]
+fn a_blocked_superseded_log_is_tested_once_its_request_runs_though_its_slot_starts_late() {
+    // The test above supersedes its request once the worker has it, not after a guess at
+    // how soon an on-demand slot starts and takes it. Here the slot's thread is held a
+    // second as it starts: an advance a fixed 100 ms in, as the test once made, drops the
+    // request unrun, so nothing is logged and the test fails waiting for the log.
+    blocked_superseded_log(Duration::from_secs(1));
+}
+
+/// A request superseded once it's running on an on-demand pool's worker (each slot's thread
+/// held `slot_start` as it starts), and stopped at once: its failure is logged in the span
+/// it was submitted in, and while that log blocks, the pool's lock is free.
+fn blocked_superseded_log(slot_start: Duration) {
+    let layer = Blocking {
+        slot_start,
+        ..Blocking::default()
+    };
     tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer.clone()))
         .unwrap();
-    let pool = KernelPool::start_on_demand(Path::new(TEST_WORKER), 1).unwrap();
+    let marker = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("pool-blocked-log-received-{}", std::process::id()));
+    let pool = KernelPool::start_on_demand(&marking_worker(&marker), 1).unwrap();
     pool.set_stop_after(Duration::ZERO);
     let feature = tracing::info_span!("recompute_feature", feature = "pad1");
-    let stopped = feature.in_scope(|| {
-        pool.submit(
-            Generation(1),
-            KernelRequest::debug(DebugOp::Sleep { millis: 5_000 }),
-        )
-    });
-    std::thread::sleep(Duration::from_millis(100));
+    let stopped = submit_running(
+        &pool,
+        &feature,
+        &marker,
+        KernelRequest::debug(DebugOp::Sleep { millis: 5_000 }),
+    );
     pool.advance(Generation(2));
     let deadline = Instant::now() + Duration::from_secs(5);
     while !layer.entered.load(Ordering::SeqCst) {
@@ -100,4 +129,5 @@ fn a_blocked_superseded_log_neither_holds_the_pool_nor_loses_its_span() {
         !spans.is_empty() && spans.iter().all(|s| s.contains(&"recompute_feature")),
         "the superseded request's log isn't in its submitter's span: {spans:?}"
     );
+    let _ = std::fs::remove_file(&marker);
 }

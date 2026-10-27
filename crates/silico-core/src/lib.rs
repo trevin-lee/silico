@@ -11,7 +11,8 @@
 //! document's file read and saved safely ([`file`]); and a solved sketch's profile
 //! ([`profile`]: its loops, nested into regions and oriented, or what keeps it from being
 //! one, named), and what a sketch feature's rebuild refuses of its profile, its solve, and
-//! its result ([`sweep`]); the rest of the command API arrives later.
+//! its result ([`sweep`]); and a rebuilt document's warnings ([`warnings`]: what `check` finds
+//! that fails nothing); the rest of the command API arrives later.
 
 pub mod cache;
 pub mod command;
@@ -35,9 +36,10 @@ pub mod sketch;
 pub mod step_worker;
 pub mod sweep;
 pub mod views;
+pub mod warnings;
 pub mod worker;
 
-pub use error::{Error, ErrorCode};
+pub use error::{Error, ErrorCode, Warning, WarningCode};
 
 /// `bytes` in lowercase hex, two digits each.
 pub(crate) fn hex(bytes: &[u8]) -> String {

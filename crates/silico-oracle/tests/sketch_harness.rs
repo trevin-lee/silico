@@ -352,6 +352,7 @@ fn how_each_side_ended_is_compared_as_the_harness_says_they_agree() {
             dofs: 0,
             free: Default::default(),
             redundant: Default::default(),
+            partially_redundant: Default::default(),
             algorithm: silico_protocol::Algorithm::DogLeg,
         })
     };

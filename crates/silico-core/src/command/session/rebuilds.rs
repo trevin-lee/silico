@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use super::cancel::{Ticket, cancelled};
 use super::threads::Threads;
-use super::transaction::{Reached, Reaching};
+use super::transaction::{Checking, Reached, Reaching};
 use super::{
     Gated, ModelChoice, ModelRead, Problems, Progress, Published, Rebuild, RebuildState, Response,
     Revision, Session, SessionId, SessionInfo, not_open,
@@ -561,9 +561,16 @@ impl<C: Kernel + 'static> Session<C> {
         stop: &Ticket,
         reads: Reads,
     ) -> Result<Current, Unbuilt> {
-        let (revision, gated, reaching) = {
+        let (revision, gated, reaching, checking) = {
             let held = self.held.read();
-            (held.revision, Arc::clone(&held.gated), held.reaching())
+            (
+                held.revision,
+                Arc::clone(&held.gated),
+                held.reaching(),
+                Checking::Latest {
+                    open: held.transaction.is_some(),
+                },
+            )
         };
         let reached = Reached::of(reaching);
         match &*gated {
@@ -573,6 +580,7 @@ impl<C: Kernel + 'static> Session<C> {
                     read: ModelRead::of(revision, ModelChoice::Current, &model),
                     model,
                     reached,
+                    checking,
                 })
                 .map_err(Unbuilt::Unavailable),
             refused => Err(Unbuilt::Gated(refused.problems())),
@@ -584,15 +592,18 @@ impl<C: Kernel + 'static> Session<C> {
     /// newest published model, if there's one, even when the gate refused the current
     /// revision's document (the model's revision says it's an older one's; the gate's problems
     /// are `check`'s); with none, the gate's (or the reader's) problems for a document it
-    /// refused, starting nothing.
+    /// refused, starting nothing. With the model, the session as a check of it finds it
+    /// ([`Checking`]): the session's revision and whether a transaction is open, as the lock
+    /// that gave `revision` held them, before the model was taken (never newer).
     pub(super) fn published_now(
         self: &Arc<Self>,
-    ) -> (Option<SessionInfo>, Result<Published, Unbuilt>) {
-        let (info, revision, gated, reaching) = {
+    ) -> (Option<SessionInfo>, Result<(Published, Checking), Unbuilt>) {
+        let (info, revision, open, gated, reaching) = {
             let held = self.held.read();
             (
                 self.info_of(&held, false),
                 held.revision,
+                held.transaction.is_some(),
                 Arc::clone(&held.gated),
                 held.reaching(),
             )
@@ -614,6 +625,10 @@ impl<C: Kernel + 'static> Session<C> {
                 .filter(|published| published.revision <= revision)
                 .ok_or_else(|| Unbuilt::Gated(refused.problems())),
         };
+        let read = read.map(|published| {
+            let checking = Checking::of(open, revision, published.revision);
+            (published, checking)
+        });
         (Some(info), read)
     }
 
@@ -723,6 +738,9 @@ pub(super) struct Current {
     pub(super) read: ModelRead,
     /// What the session's edits reach at its revision.
     pub(super) reached: Reached,
+    /// The session as the revision was read: its model the revision's, and whether a
+    /// transaction was open.
+    pub(super) checking: Checking,
 }
 
 /// Why a session's model couldn't be read.
@@ -742,19 +760,19 @@ impl Unbuilt {
     }
 }
 
-/// A published read's response: `then` on the model read, if there was one, the response
-/// naming it; or why there wasn't.
+/// A published read's response: `then` on the model read, if there was one, and the session
+/// as a check of it finds it, the response naming it; or why there wasn't.
 pub(super) fn published_answer<T>(
     info: Option<SessionInfo>,
-    read: Result<Published, Unbuilt>,
-    then: impl FnOnce(&Published, ModelRead) -> Result<T, Problems>,
+    read: Result<(Published, Checking), Unbuilt>,
+    then: impl FnOnce(&Published, Checking, ModelRead) -> Result<T, Problems>,
 ) -> Response<T> {
     match read {
-        Ok(published) => {
+        Ok((published, checking)) => {
             let read = ModelRead::of(published.revision, ModelChoice::Published, &published.model);
             Response {
                 session: info,
-                result: then(&published, read.clone()),
+                result: then(&published, checking, read.clone()),
                 model: Some(read),
             }
         }

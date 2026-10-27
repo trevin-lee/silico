@@ -163,6 +163,64 @@ fn check_json_is_a_line_an_agent_reads() {
 }
 
 #[test]
+fn check_says_warnings_on_stderr_as_warnings_and_they_never_change_the_exit_code() {
+    // The example, saved by hand with no fingerprint: one warning, exit 0.
+    let scratch = Scratch::new("warnings");
+    let file = scratch.file(EXAMPLE);
+    let out = silico(&scratch, &["check"], &file);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let said = format!(
+        "{}: warning: fingerprint_missing: k7f2qx3m built, but its file stores no \
+         fingerprint, so a change in what it builds isn't caught as drift (feature k7f2qx3m, \
+         parameter fingerprint). Suggestion: format the document to store it.\n",
+        file.display()
+    );
+    assert_eq!(stderr(&out), said);
+    // `--json`'s line is its contract's (check-line.json), with no warnings in it: they're
+    // said on stderr, as without it.
+    let out = silico(&scratch, &["check", "--json"], &file);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(stderr(&out), said);
+    let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        line,
+        serde_json::json!({"file": file.display().to_string(), "ok": true, "problems": [], "total": 0})
+    );
+    // Formatted, its fingerprint stored: nothing to say.
+    assert_eq!(silico(&scratch, &["fmt"], &file).status.code(), Some(0));
+    let out = silico(&scratch, &["check"], &file);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(out.stderr.is_empty(), "{}", stderr(&out));
+    // Its volume edited by hand (drift, a problem), and a second box added with no
+    // fingerprint (a warning): exit 1, the problem said first, then the warning.
+    let text = std::fs::read_to_string(&file).unwrap();
+    let edited = text
+        .replacen(r#""volume": 8000,"#, r#""volume": 8001,"#, 1)
+        .replacen(
+            "}\n  ]",
+            "},\n    {\"id\": \"m0000002\", \"type\": \"box\", \"v\": 1, \"name\": \"Other\", \"position\": [50, 0, 0], \"length\": 1, \"width\": 1, \"height\": 1}\n  ]",
+            1,
+        );
+    assert_eq!(edited.matches("m0000002").count(), 1, "{text}");
+    std::fs::write(&file, &edited).unwrap();
+    let out = silico(&scratch, &["check"], &file);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let lines: Vec<String> = stderr(&out).lines().map(str::to_owned).collect();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[0].starts_with(&format!("{}: drift: ", file.display())),
+        "{lines:?}"
+    );
+    assert!(
+        lines[1].starts_with(&format!(
+            "{}: warning: fingerprint_missing: m0000002 built",
+            file.display()
+        )),
+        "{lines:?}"
+    );
+}
+
+#[test]
 fn drift_is_exit_1_naming_the_feature() {
     let scratch = Scratch::new("drift");
     let file = scratch.file(EXAMPLE);
@@ -536,9 +594,9 @@ fn checking_several_files_starts_its_workers_once_whatever_their_directories() {
     }
 }
 
-/// What `tests/contract/check-line.json` pins: the line `silico check --json` writes for
-/// a document with problems, and for a file it couldn't check.
-fn check_lines(scratch: &Scratch) -> serde_json::Value {
+/// What `silico check --json` writes for a document with problems, and for a file it
+/// couldn't check: its two lines, as text.
+fn check_text(scratch: &Scratch) -> String {
     let bad = scratch.0.join("bad.silico");
     std::fs::write(&bad, EXAMPLE.replace(r#""length": 40"#, r#""length": 0"#)).unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_silico"));
@@ -550,8 +608,13 @@ fn check_lines(scratch: &Scratch) -> serde_json::Value {
         .stdin(Stdio::null());
     let out = run::output(cmd);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    let lines: Vec<serde_json::Value> = String::from_utf8(out.stdout)
-        .unwrap()
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// What `tests/contract/check-line.json` pins: the line `silico check --json` writes for
+/// a document with problems, and for a file it couldn't check.
+fn check_lines(scratch: &Scratch) -> serde_json::Value {
+    let lines: Vec<serde_json::Value> = check_text(scratch)
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
@@ -574,6 +637,33 @@ fn check_jsons_lines_are_the_contracts() {
     let contract: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(check_lines(&scratch), contract);
+}
+
+#[test]
+fn check_jsons_lines_hold_their_keys_in_the_contracts_order_in_any_build() {
+    // The lines' text, not a value read from it (which compares objects whatever their
+    // keys' order): every object's keys sorted, as tests/contract/check-line.json holds
+    // them, whether or not something in the build turns on serde_json's `preserve_order`
+    // (Rerun does, in the workspace's build), which a line built as a `serde_json::Value`
+    // came out in the order its keys were added in, the error's in its fields' order.
+    let scratch = Scratch::new("contract-text");
+    assert_eq!(
+        check_text(&scratch),
+        concat!(
+            r#"{"file":"bad.silico","ok":false,"problems":[{"candidates":[],"cause":null,"#,
+            r#""code":"invalid_input","elements":[],"elements_total":0,"feature":"k7f2qx3m","#,
+            r#""message":"box length must be a length above 1e-7 mm and at most 1e6 mm (a "#,
+            r#"kilometre), got 0","parameter":"length","suggestion":"give the box a valid "#,
+            r#"length"}],"total":1}"#,
+            "\n",
+            r#"{"error":{"candidates":[],"cause":null,"code":"io_failed","elements":[],"#,
+            r#""elements_total":0,"feature":null,"message":"couldn't be read: No such file "#,
+            r#"or directory (os error 2)","parameter":null,"suggestion":"check the file's "#,
+            r#"name, and that it's a regular file this user may read"},"file":"missing.silico","#,
+            r#""ok":false}"#,
+            "\n",
+        )
+    );
 }
 
 /// M3.4: a 40 × 20 rectangle, fully constrained, its first corner at the origin, drawn
@@ -1244,14 +1334,33 @@ fn a_kernel_fault_is_said_in_the_clis_words_by_check_and_check_json() {
     // line: the worker's own suggestion, then to run it again.
     let scratch = Scratch::new("check-fault-words");
     let file = scratch.file(SKETCH_AND_BOX);
+    // The block built, with no fingerprint in the file: its warning is said before the
+    // fault, as the document's problems would be.
     let out = silico_with(&scratch, &["check"], &file, Path::new("/nowhere"));
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let path = file.display();
     assert_eq!(
         stderr(&out),
-        format!("{}: {}\n", file.display(), no_sketch_worker("check"))
+        format!(
+            "{path}: warning: fingerprint_missing: k7f2qx3m built, but its file stores no \
+             fingerprint, so a change in what it builds isn't caught as drift (feature \
+             k7f2qx3m, parameter fingerprint). Suggestion: format the document to store \
+             it.\n{path}: {}\n",
+            no_sketch_worker("check")
+        )
     );
     let out = silico_with(&scratch, &["check", "--json"], &file, Path::new("/nowhere"));
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    // With `--json`, the warning on stderr too; the fault is the line's.
+    assert_eq!(
+        stderr(&out),
+        format!(
+            "{path}: warning: fingerprint_missing: k7f2qx3m built, but its file stores no \
+             fingerprint, so a change in what it builds isn't caught as drift (feature \
+             k7f2qx3m, parameter fingerprint). Suggestion: format the document to store \
+             it.\n"
+        )
+    );
     let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(line["ok"], false, "{line}");
     assert_eq!(line["error"]["code"], "worker_unavailable", "{line}");

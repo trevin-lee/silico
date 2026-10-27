@@ -176,10 +176,17 @@ fn a_partially_redundant_constraint_alone_is_solved_again_too() {
     });
     let save = t.solve(&mut s).unwrap();
     assert_eq!(*starts.lock().unwrap(), [3.0, 4.0, 5.0]);
-    assert_eq!(
-        says(&save),
-        (Ok(vec!["k0000003".to_owned()]), 5f64.to_bits())
-    );
+    // Kept apart from the redundant: none of those, and it partially redundant.
+    assert_eq!(says(&save), (Ok(vec![]), 5f64.to_bits()));
+    let partly: Vec<&str> = save
+        .outcome
+        .as_ref()
+        .unwrap()
+        .partially_redundant
+        .keys()
+        .map(|id| id.as_str())
+        .collect();
+    assert_eq!(partly, ["k0000003"]);
 }
 
 #[test]

@@ -5141,6 +5141,7 @@ name = "silico-cli"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "serde",
  "serde_json",
  "signal-hook",
  "silico-core",

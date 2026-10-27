@@ -42,6 +42,8 @@ pub use session::{
 };
 pub use session_command::{ReadCommand, SessionCommand};
 
+pub use crate::warnings::Warnings;
+
 /// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for
 /// each change to a request's or result's shape that an older client couldn't read.
 const API_VERSION: u32 = 1;

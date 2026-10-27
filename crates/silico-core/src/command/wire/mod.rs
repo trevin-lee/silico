@@ -51,7 +51,8 @@ use crate::document::write::{self, Out, text};
 use crate::document::{
     Angle, Coordinate, Feature, FeatureId, Length, Measure, NumberError, PROBLEMS_LISTED, Position,
 };
-use crate::{Error, ErrorCode};
+use crate::warnings::Warnings;
+use crate::{Error, ErrorCode, Warning};
 
 pub use crate::document::write::{Layout, TooLong};
 
@@ -369,23 +370,89 @@ impl ToWire for Error {
 
 /// `error` in the error contract's shape, `suggestion` its suggestion.
 fn error_with<'a>(error: &'a Error, suggestion: Json<'a>) -> Json<'a> {
-    Json::object([
-        ("code", Json::str(error.code().as_str())),
-        ("message", Json::str(error.message())),
-        ("feature", Json::or_null(error.feature(), Json::str)),
-        (
-            "elements",
-            Json::array(error.elements().iter().map(|e| Json::str(e))),
-        ),
-        ("elements_total", Json::whole(error.elements_total())),
-        ("parameter", Json::or_null(error.parameter(), Json::str)),
-        ("cause", Json::or_null(error.cause(), Json::str)),
-        ("suggestion", suggestion),
-        (
-            "candidates",
-            Json::array(error.candidates().iter().map(|c| Json::str(c))),
-        ),
-    ])
+    Said {
+        code: error.code().as_str(),
+        message: error.message(),
+        feature: error.feature(),
+        elements: error.elements(),
+        elements_total: error.elements_total(),
+        parameter: error.parameter(),
+        cause: error.cause(),
+        suggestion,
+        candidates: error.candidates(),
+    }
+    .into_wire()
+}
+
+impl ToWire for Warning {
+    /// The error contract's shape, as an error's, its code a warning's (decision 17).
+    fn to_wire(&self) -> Json<'_> {
+        Said {
+            code: self.code().as_str(),
+            message: self.message(),
+            feature: self.feature(),
+            elements: self.elements(),
+            elements_total: self.elements_total(),
+            parameter: self.parameter(),
+            cause: self.cause(),
+            suggestion: Json::or_null(self.suggestion(), Json::str),
+            // A warning names no candidates: nothing's broken for it to have meant.
+            candidates: &[],
+        }
+        .into_wire()
+    }
+}
+
+/// What an error or a warning says, field for field, as the error contract writes it.
+struct Said<'a> {
+    code: &'static str,
+    message: &'a str,
+    feature: Option<&'a str>,
+    elements: &'a [String],
+    elements_total: u64,
+    parameter: Option<&'a str>,
+    cause: Option<&'a str>,
+    suggestion: Json<'a>,
+    candidates: &'a [String],
+}
+
+impl<'a> Said<'a> {
+    /// The error contract's shape (`tests/contract/error-full.json`), in its order.
+    fn into_wire(self) -> Json<'a> {
+        Json::object([
+            ("code", Json::str(self.code)),
+            ("message", Json::str(self.message)),
+            ("feature", Json::or_null(self.feature, Json::str)),
+            (
+                "elements",
+                Json::array(self.elements.iter().map(|e| Json::str(e))),
+            ),
+            ("elements_total", Json::whole(self.elements_total)),
+            ("parameter", Json::or_null(self.parameter, Json::str)),
+            ("cause", Json::or_null(self.cause, Json::str)),
+            ("suggestion", self.suggestion),
+            (
+                "candidates",
+                Json::array(self.candidates.iter().map(|c| Json::str(c))),
+            ),
+        ])
+    }
+}
+
+/// A list of warnings as `check`'s result writes them: the first [`PROBLEMS_LISTED`], in the
+/// error contract's shape, and how many there are, listed or not (`warnings` and
+/// `warnings_total`).
+pub fn warnings(warnings: &Warnings) -> (Json<'_>, Json<'_>) {
+    listed(warnings.listed(), warnings.total())
+}
+
+/// The first [`PROBLEMS_LISTED`] of `items`, in the error contract's shape, and `total`, how
+/// many there are, listed or not: the one rule for problems and warnings alike.
+fn listed<T: ToWire>(items: &[T], total: u64) -> (Json<'_>, Json<'_>) {
+    (
+        Json::array(items.iter().take(PROBLEMS_LISTED).map(ToWire::to_wire)),
+        Json::whole(total),
+    )
 }
 
 /// A list of problems as a result or the envelope writes them: the first
@@ -393,16 +460,7 @@ fn error_with<'a>(error: &'a Error, suggestion: Json<'a>) -> Json<'a> {
 /// listed or not (`problems` and `problems_total` in a result, `errors` and `total` in a
 /// refusal).
 pub fn problems(problems: &Problems) -> (Json<'_>, Json<'_>) {
-    (
-        Json::array(
-            problems
-                .errors()
-                .iter()
-                .take(PROBLEMS_LISTED)
-                .map(ToWire::to_wire),
-        ),
-        Json::whole(problems.total()),
-    )
+    listed(problems.errors(), problems.total())
 }
 
 /// A command's response, in its envelope (section 2): `ok`, the session as the command left
@@ -1429,6 +1487,35 @@ pub struct ErrorSchema {
     /// What to do about it, if Silico can say.
     pub suggestion: Option<String>,
     /// What might have been meant, such as the names nearest one that found nothing.
+    pub candidates: Vec<String>,
+}
+
+/// Something `check` found that fails nothing: it never refuses a command, blocks a save, or
+/// sets an exit code. In the error contract's shape, each field as an error's: a code, a
+/// message, and, where they apply, the feature, the elements it's of (the first of them,
+/// and how many in all), the field it's of, the cause, what to do, and the names that might
+/// have been meant. Every field is always present: null, or empty, where it doesn't apply.
+#[derive(JsonSchema)]
+#[schemars(rename = "Warning", transform = wire_shape)]
+pub struct WarningSchema {
+    /// What kind of warning it is: one of Silico's warning codes, listed in
+    /// `warning-codes.txt`, such as `ends_not_joined`.
+    pub code: String,
+    /// What was found, in a sentence.
+    pub message: String,
+    /// The ID of the feature it's of, if one is.
+    pub feature: Option<String>,
+    /// The elements it's of, by name: the first of them, if there are many.
+    pub elements: Vec<String>,
+    /// How many elements it's of, listed or not.
+    pub elements_total: u64,
+    /// The field it's of, as a dotted path (`position.2`), if one is.
+    pub parameter: Option<String>,
+    /// What lay under it, if known.
+    pub cause: Option<String>,
+    /// What to do about it, if Silico can say.
+    pub suggestion: Option<String>,
+    /// What might have been meant, if anything.
     pub candidates: Vec<String>,
 }
 

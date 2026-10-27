@@ -5,14 +5,15 @@
 //! runs each test in its own): it installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::running::{marking_worker, submit_running};
 use super::scripts;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use silico_core::kernel::KernelRequest;
-use silico_core::pool::{KernelPool, Outcome, Pending};
+use silico_core::pool::{KernelPool, Outcome};
 use silico_protocol::{DebugOp, Generation};
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
@@ -114,40 +115,6 @@ fn assert_superseded_logged(seen: &[Logged], level: Level, text: &str, code: &st
     assert!(e.message.contains(text), "{e:#?}");
     assert_eq!(e.code, code, "{e:#?}");
     assert!(e.spans.contains(&"recompute_feature"), "{e:#?}");
-}
-
-/// A worker that says it started (its first frame, empty, as a worker's is), then, given a
-/// request, notes it by writing `marker`, then sleeps without replying until it's killed: so
-/// a test knows its request is running, on a worker that had started.
-fn marking_worker(marker: &Path) -> PathBuf {
-    scripts::script(
-        "marks-its-request",
-        &format!(
-            "printf '\\0\\0\\0\\0' >&3\nhead -c 1 <&3 >/dev/null\n: > '{}'\nexec sleep 30",
-            marker.display()
-        ),
-    )
-}
-
-/// Submits `request` for the pool's generation, in `span`, and waits until the worker has
-/// it (`marker` written). A request superseded only then can't have been dropped unrun.
-fn submit_running<T: Send + 'static>(
-    pool: &KernelPool,
-    span: &tracing::Span,
-    marker: &Path,
-    request: KernelRequest<T>,
-) -> Pending<T> {
-    let _ = std::fs::remove_file(marker);
-    let pending = span.in_scope(|| pool.submit(pool.generation(), request));
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !marker.exists() {
-        assert!(
-            Instant::now() < deadline,
-            "the worker never got the request"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    pending
 }
 
 #[test]
