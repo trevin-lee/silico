@@ -47,7 +47,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use silico_core::cache::Cache;
 use silico_core::command::wire::{Layout, ToWire, write};
-use silico_core::command::{CheckAnswer, CheckModel, SessionId, Sessions};
+use silico_core::command::{CheckAnswer, CheckModel, Revision, SessionId, Sessions};
 use silico_core::document::json::Node;
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::{Op, Primitive};
@@ -128,8 +128,11 @@ impl Fixture {
     }
 }
 
+/// A warning as [`said`] gives it: its code, feature, elements, and cause.
+type Said = (WarningCode, String, Vec<String>, Option<String>);
+
 /// Each warning listed: its code, feature, elements, and cause.
-fn said(answer: &CheckAnswer) -> Vec<(WarningCode, String, Vec<String>, Option<String>)> {
+fn said(answer: &CheckAnswer) -> Vec<Said> {
     answer
         .warnings
         .listed()
@@ -1150,13 +1153,14 @@ fn a_feature_a_transactions_edits_reached_isnt_warned_of_for_its_fingerprint_its
     answer(f.sessions.add_feature(&s1(), revision, added))
         .result
         .unwrap();
+    let added_at = f.sessions.status(&s1()).session.unwrap().revision;
+    assert_ne!(added_at, revision);
     let checked = f.check();
     assert!(checked.problems.is_empty(), "{:?}", checked.problems);
     assert_eq!(said(&checked), only_k7);
-    // The published model is the transaction's revision's too (the check above waited for
-    // its rebuild): a published check spares m0000002 as well.
-    let published = answer(f.sessions.check(&s1(), CheckModel::Published));
-    assert_eq!(said(&published.result.unwrap()), only_k7);
+    // The published model is the edit's revision's too (the check above waited for its
+    // rebuild): a published check spares m0000002 as well.
+    assert_eq!(said(&published_check(&f, added_at)), only_k7);
     let committed = answer(f.sessions.commit(&s1())).result.unwrap();
     assert_eq!(committed.refingerprinted, [id("m0000002")]);
     assert_eq!(said(&f.check()), only_k7);
@@ -1164,14 +1168,12 @@ fn a_feature_a_transactions_edits_reached_isnt_warned_of_for_its_fingerprint_its
     assert!(f.check().warnings.is_empty());
 }
 
-#[test]
-fn a_feature_carried_from_a_commit_that_couldnt_fingerprint_it_warns_once_it_builds_outside_a_transaction()
- {
-    // In a transaction, box m0000002 (7 long) is added while the kernel refuses it: its
-    // commit writes the file with no fingerprint for it, which stays carried (decision 28).
-    // Then the kernel makes it, and a fresh check builds it: outside a transaction nothing
-    // writes its fingerprint until the next save, and format can, so it warns, in the
-    // current model's check and the published one's; format stores it, and none warns.
+/// A feature carried from a commit that couldn't fingerprint it, built since: in a
+/// transaction, box m0000002 (7 long) is added while the kernel refuses it, so its commit
+/// writes the file with no fingerprint for it, which stays carried (decision 28); then the
+/// kernel makes it, and a fresh check builds it, warning of k7f2qx3m and m0000002. Gives the
+/// fixture and those two warnings.
+fn carried_and_built() -> (Fixture, [Said; 2]) {
     let refusing = Arc::new(AtomicBool::new(true));
     let f = opened(&document(&[block("k7f2qx3m", 0)]));
     let refuses = Arc::clone(&refusing);
@@ -1211,10 +1213,70 @@ fn a_feature_carried_from_a_commit_that_couldnt_fingerprint_it_warns_once_it_bui
         None,
     );
     assert_eq!(said(&checked), [k7.clone(), m2.clone()]);
+    (f, [k7, m2])
+}
+
+/// The published check of s1, its model's revision asserted to be `revision`.
+fn published_check(f: &Fixture, revision: Revision) -> CheckAnswer {
+    let published = answer(f.sessions.check(&s1(), CheckModel::Published));
+    assert_eq!(published.model.unwrap().revision, revision);
+    published.result.unwrap()
+}
+
+#[test]
+fn a_feature_carried_from_a_commit_that_couldnt_fingerprint_it_warns_once_it_builds_outside_a_transaction()
+ {
+    // Outside a transaction nothing writes the carried feature's fingerprint until the next
+    // save, and format can, so it warns, in the current model's check and the published
+    // one's; format stores it, and none warns.
+    let (f, [k7, m2]) = carried_and_built();
     let published = answer(f.sessions.check(&s1(), CheckModel::Published));
     assert_eq!(said(&published.result.unwrap()), [k7, m2]);
     answer(f.sessions.format(&s1(), None, true)).result.unwrap();
     assert!(f.check().warnings.is_empty());
+}
+
+#[test]
+fn a_carried_feature_isnt_warned_of_in_a_published_check_once_a_transaction_begins() {
+    // Found by the review (A3-1): right after begin, the published model is the one rebuilt
+    // outside the transaction. Whether a commit writes the carried feature's record is the
+    // session's now: one is open, format is refused, and the commit writes it, so neither
+    // check warns of m0000002 (the published one did, advising format).
+    let (f, [k7, _]) = carried_and_built();
+    answer(f.sessions.begin(&s1())).result.unwrap();
+    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
+    assert_eq!(
+        said(&published_check(&f, revision)),
+        std::slice::from_ref(&k7)
+    );
+}
+
+#[test]
+fn a_carried_feature_is_warned_of_in_a_published_check_after_a_commit_that_writes_nothing() {
+    // Found by the review (A3-1): in a transaction, box m0000003 is added and checked, then
+    // removed and checked, so the published model is the transaction's; its commit writes
+    // nothing. Outside the transaction now, format writes the carried feature's record, so
+    // both checks warn of m0000002 (the published one didn't).
+    let (f, [k7, m2]) = carried_and_built();
+    answer(f.sessions.begin(&s1())).result.unwrap();
+    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let added: Node = silico_core::document::json::read(block("m0000003", 20).as_bytes()).unwrap();
+    answer(f.sessions.add_feature(&s1(), revision, added))
+        .result
+        .unwrap();
+    assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
+    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    answer(f.sessions.remove_feature(&s1(), revision, id("m0000003")))
+        .result
+        .unwrap();
+    assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
+    let committed = answer(f.sessions.commit(&s1())).result.unwrap();
+    assert!(!committed.written, "{committed:?}");
+    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let both = [k7, m2];
+    assert_eq!(said(&f.check()), both);
+    assert_eq!(said(&published_check(&f, revision)), both);
 }
 
 #[test]

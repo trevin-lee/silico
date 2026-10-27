@@ -154,6 +154,9 @@ pub struct Read<'a, C> {
     pub(super) stop: &'a Ticket,
     pub(super) kernel: &'a ReadClient<C>,
     pub(super) reached: &'a Reached,
+    /// Whether a transaction is open in the session as the read is answered: for the
+    /// published model, the session's now, not its revision's ([`Reached::committing`]).
+    pub(super) transaction: bool,
 }
 
 impl<C> Read<'_, C> {

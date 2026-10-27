@@ -561,9 +561,14 @@ impl<C: Kernel + 'static> Session<C> {
         stop: &Ticket,
         reads: Reads,
     ) -> Result<Current, Unbuilt> {
-        let (revision, gated, reaching) = {
+        let (revision, gated, reaching, transaction) = {
             let held = self.held.read();
-            (held.revision, Arc::clone(&held.gated), held.reaching())
+            (
+                held.revision,
+                Arc::clone(&held.gated),
+                held.reaching(),
+                held.transaction.is_some(),
+            )
         };
         let reached = Reached::of(reaching);
         match &*gated {
@@ -573,6 +578,7 @@ impl<C: Kernel + 'static> Session<C> {
                     read: ModelRead::of(revision, ModelChoice::Current, &model),
                     model,
                     reached,
+                    transaction,
                 })
                 .map_err(Unbuilt::Unavailable),
             refused => Err(Unbuilt::Gated(refused.problems())),
@@ -723,6 +729,8 @@ pub(super) struct Current {
     pub(super) read: ModelRead,
     /// What the session's edits reach at its revision.
     pub(super) reached: Reached,
+    /// Whether a transaction was open as the revision was read.
+    pub(super) transaction: bool,
 }
 
 /// Why a session's model couldn't be read.

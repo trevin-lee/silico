@@ -708,7 +708,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// reached at that model's revision, kept with it ([`Read::reached`]): exactly that
     /// revision's, whatever edits came since. With nothing published, it's refused as every
     /// published read is: naming `model`, or, for a document the gate refused, with the
-    /// gate's problems.
+    /// gate's problems. Its warnings leave out a missing fingerprint a commit writes if a
+    /// transaction is open as it's checked, whatever the model's revision was
+    /// ([`Reached::committing`](transaction::Reached::committing)).
     ///
     /// Either way, a kernel fault (a worker that crashed or hung) isn't the document's: it's
     /// given once, beside them, in the response's `model` ([`ModelRead::fault`]), and kept as
@@ -733,7 +735,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     Ok(CheckAnswer::of(
                         super::check_except(read.model(), read.reached()),
                         read.model(),
-                        read.reached.committing(),
+                        read.reached.committing(read.transaction),
                     ))
                 },
             ),
@@ -765,6 +767,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 stop,
                 kernel: &kernel,
                 reached: &current.reached,
+                transaction: current.transaction,
             })
         })
     }
@@ -782,7 +785,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     Ok(CheckAnswer::of(
                         super::check_except(&current.model, current.reached.get()),
                         &current.model,
-                        current.reached.committing(),
+                        current.reached.committing(current.transaction),
                     ))
                 }
                 Err(Unbuilt::Gated(problems)) => Ok(CheckAnswer::refused(problems)),
@@ -1401,6 +1404,8 @@ fn start_published<C: Kernel + 'static, T: Send + 'static>(
                 || {
                     let (info, published) = session.published_now();
                     let path = session.held.read().path.clone();
+                    // Taken with the published model, under the same lock.
+                    let transaction = info.as_ref().is_some_and(|info| info.transaction);
                     published_answer(info, published, |published, model| {
                         read(Read {
                             path,
@@ -1409,6 +1414,7 @@ fn start_published<C: Kernel + 'static, T: Send + 'static>(
                             stop: &stop,
                             kernel: &kernel,
                             reached: &published.reached,
+                            transaction,
                         })
                     })
                 },

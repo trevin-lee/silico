@@ -261,19 +261,16 @@ impl Reached {
         })
     }
 
-    /// The features whose records only a commit writes: those reached ([`get`](Self::get)),
-    /// if the revision was a transaction's, where `format` is refused and its commit writes
-    /// them; none outside one, where what's reached is only what's carried from a save that
-    /// couldn't write it, which a `format` writes. Those whose missing fingerprint a check
-    /// doesn't warn of ([`crate::warnings`]).
-    pub(crate) fn committing(&self) -> &BTreeSet<FeatureId> {
+    /// The features whose records only a commit writes, `open` saying whether a transaction
+    /// is open in the session as it's checked (not at the revision, whose model may have been
+    /// published before a `begin` or kept after a commit that wrote nothing): those reached
+    /// ([`get`](Self::get)) if one is, where `format` is refused and its commit writes them;
+    /// none if not, where what's reached is only what's carried from a save that couldn't
+    /// write it, which a `format` writes. Those whose missing fingerprint a check doesn't warn
+    /// of ([`crate::warnings`]).
+    pub(crate) fn committing(&self, open: bool) -> &BTreeSet<FeatureId> {
         static NONE: BTreeSet<FeatureId> = BTreeSet::new();
-        let in_transaction = self
-            .0
-            .reaching
-            .as_ref()
-            .is_some_and(|reaching| reaching.begun.is_some());
-        if in_transaction { self.get() } else { &NONE }
+        if open { self.get() } else { &NONE }
     }
 }
 
@@ -647,7 +644,9 @@ impl<C: Kernel + 'static> Session<C> {
             // The same document: its model is the new revision's too, and what it reached
             // is what's reached at the new revision: the transaction's edits came back to the
             // document `begin` saw, so they reach nothing (`document::net_reach`), and what's
-            // reached at both is what was carried, with every feature that uses it.
+            // reached at both is what was carried, with every feature that uses it. Whether a
+            // transaction is open differs (it was then, it isn't now): a check asks the
+            // session that as it checks, never the revision (`Reached::committing`).
             if let Some(published) = &mut rebuilds.published
                 && published.revision == revision
             {
