@@ -399,24 +399,6 @@ fn serve_on_sigterm_mid_commit_leaves_the_document_whole() {
     drop(stdin);
 }
 
-/// `silico serve` run as `exe`, in the workspace `dir`, with no worker named by a variable:
-/// each found beside the executable or not at all.
-fn serve_as(exe: &std::path::Path, dir: &std::path::Path) -> std::process::Child {
-    Command::new(exe)
-        .args(["serve", "--workspace"])
-        .arg(dir)
-        .env_remove("SILICO_KERNEL_WORKER")
-        .env_remove("SILICO_SKETCH_WORKER")
-        .env_remove("SILICO_RENDER_WORKER")
-        .env_remove("SILICO_STEP_WORKER")
-        .env_remove("SILICO_LOG")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap()
-}
-
 /// A directory `bin/` holding a copy of `silico` and, linked from the build's, each of
 /// `workers`: an install with only those workers beside it. Its resolved `bin/`.
 fn install(root: &std::path::Path, workers: &[&str]) -> std::path::PathBuf {
@@ -431,6 +413,57 @@ fn install(root: &std::path::Path, workers: &[&str]) -> std::path::PathBuf {
         std::os::unix::fs::symlink(from, bin.join(worker)).unwrap();
     }
     bin
+}
+
+/// All of `pipe`, read on a thread of its own, given once it ends: received under
+/// [`DEADLINE`], so a server that doesn't end fails the test, saying so, rather than hanging.
+fn read_all(pipe: impl Read + Send + 'static) -> mpsc::Receiver<String> {
+    let (to, read) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut pipe = pipe;
+        let mut text = String::new();
+        let _ = pipe.read_to_string(&mut text);
+        let _ = to.send(text);
+    });
+    read
+}
+
+/// How `command`, a `silico serve` that shouldn't start, ends, and what it said on stdout
+/// and stderr, sent an `initialize` and then its input's end, as a client starts one (a
+/// server that did start would answer, then end).
+fn refused_start(mut command: Command) -> (Option<i32>, String, String) {
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let _ = writeln!(stdin, "{INITIALIZE}");
+    drop(stdin);
+    let stdout = read_all(child.stdout.take().unwrap());
+    let stderr = read_all(child.stderr.take().unwrap());
+    let stdout = stdout
+        .recv_timeout(DEADLINE)
+        .expect("serve's stdout didn't end: it's still running");
+    let stderr = stderr
+        .recv_timeout(DEADLINE)
+        .expect("serve's stderr didn't end: it's still running");
+    (exited(child).code(), stdout, stderr)
+}
+
+/// `silico serve` as `exe`, in the workspace `dir`, with no worker named by a variable.
+fn serve_command(exe: &std::path::Path, dir: &std::path::Path) -> Command {
+    let mut command = Command::new(exe);
+    command
+        .args(["serve", "--workspace"])
+        .arg(dir)
+        .env_remove("SILICO_KERNEL_WORKER")
+        .env_remove("SILICO_SKETCH_WORKER")
+        .env_remove("SILICO_RENDER_WORKER")
+        .env_remove("SILICO_STEP_WORKER")
+        .env_remove("SILICO_LOG");
+    command
 }
 
 #[test]
@@ -448,27 +481,8 @@ fn serve_without_a_kernel_worker_doesnt_start_and_says_where_it_looked() {
     );
     let workspace = root.path().join("models");
     std::fs::create_dir(&workspace).unwrap();
-    let mut child = serve_as(&bin.join("silico"), &workspace);
-    // A client's first message, sent as a client sends it, then its input's end: never
-    // answered (a server that did start would answer, then end).
-    let mut stdin = child.stdin.take().unwrap();
-    let _ = writeln!(stdin, "{INITIALIZE}");
-    drop(stdin);
-    let mut stdout = String::new();
-    child
-        .stdout
-        .take()
-        .unwrap()
-        .read_to_string(&mut stdout)
-        .unwrap();
-    let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut stderr)
-        .unwrap();
-    assert_eq!(exited(child).code(), Some(2), "{stderr}");
+    let (code, stdout, stderr) = refused_start(serve_command(&bin.join("silico"), &workspace));
+    assert_eq!(code, Some(2), "{stderr}");
     assert_eq!(stdout, "", "no handshake");
     let said = format!(
         "silico serve: there's no kernel worker, so nothing can be built: worker_unavailable: no kernel worker in {}: Silico looks for silico-kernel-worker beside its own executable, {}",
@@ -484,6 +498,25 @@ fn serve_without_a_kernel_worker_doesnt_start_and_says_where_it_looked() {
 }
 
 #[test]
+fn serve_with_a_kernel_worker_variable_naming_nothing_doesnt_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut command = serve_command(
+        std::path::Path::new(env!("CARGO_BIN_EXE_silico")),
+        dir.path(),
+    );
+    command.env("SILICO_KERNEL_WORKER", "/nowhere");
+    let (code, stdout, stderr) = refused_start(command);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(stdout, "", "no handshake");
+    assert!(
+        stderr.starts_with(
+            "silico serve: there's no kernel worker, so nothing can be built: worker_unavailable: SILICO_KERNEL_WORKER names \"/nowhere\", which isn't a file"
+        ),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn serve_with_only_a_kernel_worker_warns_of_each_missing_one_and_serves() {
     // Every command but those that need the missing workers still works: each is said at
     // startup, and the server answers.
@@ -492,17 +525,63 @@ fn serve_with_only_a_kernel_worker_warns_of_each_missing_one_and_serves() {
     let workspace = root.path().join("models");
     std::fs::create_dir(&workspace).unwrap();
     std::fs::write(workspace.join("box.silico"), BOX).unwrap();
-    let mut child = serve_as(&bin.join("silico"), &workspace);
-    let mut stderr = child.stderr.take().unwrap();
-    let logs = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = stderr.read_to_string(&mut text);
-        text
+    let mut child = serve_command(&bin.join("silico"), &workspace)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Stderr's lines as they come, so the warnings are checked while the server runs.
+    let (to, said) = mpsc::channel();
+    let stderr = BufReader::new(child.stderr.take().unwrap());
+    std::thread::spawn(move || {
+        for line in stderr.lines().map_while(Result::ok) {
+            let _ = to.send(line);
+        }
     });
     let mut stdin = child.stdin.take().unwrap();
     let lines = lines(&mut child);
     let init = ask(&mut stdin, &lines, INITIALIZE, "0");
     assert_eq!(init["result"]["serverInfo"]["name"], "silico");
+    // Each missing worker said at startup: already said once the handshake is answered,
+    // while the server runs, never only as it ends.
+    let warnings = [
+        (
+            "sketches are refused: there's no sketch worker",
+            "silico-sketch-worker",
+        ),
+        (
+            "STEP export is refused: there's no STEP worker",
+            "silico-step-worker",
+        ),
+        (
+            "render is refused: there's no render worker",
+            "silico-render-worker",
+        ),
+    ];
+    let mut seen: Vec<String> = Vec::new();
+    while !warnings
+        .iter()
+        .all(|(warning, _)| seen.iter().any(|line| line.contains(warning)))
+    {
+        match said.recv_timeout(DEADLINE) {
+            Ok(line) => seen.push(line),
+            Err(_) => panic!(
+                "not every missing worker was said while serving:\n{}",
+                seen.join("\n")
+            ),
+        }
+    }
+    for (warning, worker) in warnings {
+        let line = seen.iter().find(|line| line.contains(warning)).unwrap();
+        assert!(
+            line.contains(&format!(
+                "Silico looks for {worker} beside its own executable"
+            )),
+            "{line}"
+        );
+        assert!(line.contains(&bin.display().to_string()), "{line}");
+    }
     // The box builds on the kernel worker there.
     let opened = ask(
         &mut stdin,
@@ -529,31 +608,4 @@ fn serve_with_only_a_kernel_worker_warns_of_each_missing_one_and_serves() {
     );
     drop(stdin);
     assert_eq!(exited(child).code(), Some(0));
-    let stderr = logs.join().unwrap();
-    for (said, worker) in [
-        (
-            "sketches are refused: there's no sketch worker",
-            "silico-sketch-worker",
-        ),
-        (
-            "STEP export is refused: there's no STEP worker",
-            "silico-step-worker",
-        ),
-        (
-            "render is refused: there's no render worker",
-            "silico-render-worker",
-        ),
-    ] {
-        let line = stderr
-            .lines()
-            .find(|line| line.contains(said))
-            .unwrap_or_else(|| panic!("{said:?} not in\n{stderr}"));
-        assert!(
-            line.contains(&format!(
-                "Silico looks for {worker} beside its own executable"
-            )),
-            "{line}"
-        );
-        assert!(line.contains(&bin.display().to_string()), "{line}");
-    }
 }

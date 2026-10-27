@@ -298,9 +298,10 @@ const SIGNAL_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 /// stdout closes, or SIGTERM, its sessions in the workspace `DIR` (or the current
 /// directory), on one kernel pool, sketch solver, and render worker. `/` (or a drive's
 /// root) is refused: some MCP clients start servers there, which would make the whole disk
-/// the workspace. A kernel worker that can't be had is refused too (exit 2, before the
-/// handshake); a sketch, render, or STEP worker that isn't there is warned of, and the
-/// server runs. Logs go to stderr; stdout holds nothing but MCP's messages. A second
+/// the workspace. A kernel worker that isn't there (or can't be read) is refused too (exit 2,
+/// before the handshake: one there that can't be run is met at the first rebuild, as its
+/// fault); a sketch, render, or STEP worker that isn't there is warned of, and the server
+/// runs. Logs go to stderr; stdout holds nothing but MCP's messages. A second
 /// SIGTERM, while the first is still ending it, ends it at once (exit 1).
 fn serve(workspace: Option<&Path>) -> Ended {
     let root = match workspace.map_or_else(std::env::current_dir, |dir| Ok(dir.to_owned())) {
