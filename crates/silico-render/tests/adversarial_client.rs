@@ -15,8 +15,8 @@ use silico_protocol::{Mesh, RenderScene};
 use silico_render::bench::front_of_a_box;
 
 use crate::common::{
-    TEST_WORKER, WAIT, WORKER, client, crashing, drawn, ended, eventually, failed, hanging,
-    process_exists, scratch, signal, small, state, wait_within, zombie,
+    CANCEL_KILLS, TEST_WORKER, WAIT, WORKER, client, crashing, drawn, ended, eventually, failed,
+    hanging, process_exists, scratch, signal, small, state, wait_within, zombie,
 };
 
 // ---- Dropping the client ----
