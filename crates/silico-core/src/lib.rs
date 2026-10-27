@@ -39,7 +39,7 @@ pub mod views;
 pub mod warnings;
 pub mod worker;
 
-pub use error::{Error, ErrorCode, Warning, WarningCode};
+pub use error::{Error, ErrorCode, Said, Warning, WarningCode};
 
 /// `bytes` in lowercase hex, two digits each.
 pub(crate) fn hex(bytes: &[u8]) -> String {

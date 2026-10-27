@@ -26,7 +26,7 @@ use silico_core::cache::Cache;
 use silico_core::command::{self, CheckModel, Problems, Response, SessionId, Sessions, Warnings};
 use silico_core::file::opened_and_read;
 use silico_core::pool::KernelPool;
-use silico_core::{Error, ErrorCode};
+use silico_core::{Error, ErrorCode, Said};
 
 /// A line on stderr (the workspace forbids `eprintln!`, which panics if stderr is closed).
 macro_rules! say {
@@ -761,7 +761,7 @@ impl<'a> FailedLine<'a> {
 struct LineError<'a> {
     candidates: &'a [String],
     cause: Option<&'a str>,
-    code: ErrorCode,
+    code: &'static str,
     elements: &'a [String],
     elements_total: u64,
     feature: Option<&'a str>,
@@ -771,17 +771,30 @@ struct LineError<'a> {
 }
 
 impl<'a> LineError<'a> {
+    /// `error`'s every field, taken whole ([`Said`]), so a field an error gains is one this
+    /// must write.
     fn new(error: &'a Error) -> Self {
+        let Said {
+            code,
+            message,
+            feature,
+            elements,
+            elements_total,
+            parameter,
+            cause,
+            suggestion,
+            candidates,
+        } = error.said();
         LineError {
-            candidates: error.candidates(),
-            cause: error.cause(),
-            code: error.code(),
-            elements: error.elements(),
-            elements_total: error.elements_total(),
-            feature: error.feature(),
-            message: error.message(),
-            parameter: error.parameter(),
-            suggestion: error.suggestion(),
+            candidates,
+            cause,
+            code,
+            elements,
+            elements_total,
+            feature,
+            message,
+            parameter,
+            suggestion,
         }
     }
 }

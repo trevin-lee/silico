@@ -3,10 +3,12 @@
 //! that read a model, the current one or the published one ([`ReadCommand`]), which
 //! `status` lists among its reads when they read the published one.
 
+use super::call::Command;
+
 /// A command that runs in a session (docs/design/m4.1-command-api.md, section 7): every
-/// command but those answered at once, never running (`version`, `status`, `cancel`, and
-/// `schema`), and `open`, which runs before its session is there to name it. Its name is the
-/// one requests and tools give it ([`as_str`](Self::as_str)).
+/// command but those answered at once, never running (`version`, `status`, `cancel`,
+/// `read_logs`, and `schema`), and `open`, which runs before its session is there to name
+/// it. Its name is the command's ([`command`](Self::command)), as requests and tools give it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SessionCommand {
     Close,
@@ -56,30 +58,35 @@ impl SessionCommand {
         SessionCommand::Export,
     ];
 
+    /// The command it is, of every command ([`Command`]).
+    pub const fn command(self) -> Command {
+        match self {
+            SessionCommand::Close => Command::Close,
+            SessionCommand::Begin => Command::Begin,
+            SessionCommand::Commit => Command::Commit,
+            SessionCommand::Rollback => Command::Rollback,
+            SessionCommand::Format => Command::Format,
+            SessionCommand::AddFeature => Command::AddFeature,
+            SessionCommand::SetField => Command::SetField,
+            SessionCommand::RemoveFeature => Command::RemoveFeature,
+            SessionCommand::ReplaceText => Command::ReplaceText,
+            SessionCommand::Text => Command::Text,
+            SessionCommand::Outline => Command::Outline,
+            SessionCommand::Check => Command::Check,
+            SessionCommand::CacheClear => Command::CacheClear,
+            SessionCommand::Elements => Command::Elements,
+            SessionCommand::Query => Command::Query,
+            SessionCommand::MassProperties => Command::MassProperties,
+            SessionCommand::Distance => Command::Distance,
+            SessionCommand::Angle => Command::Angle,
+            SessionCommand::Render => Command::Render,
+            SessionCommand::Export => Command::Export,
+        }
+    }
+
     /// The command's name, as requests, `status`, and `cancel` give it.
     pub const fn as_str(self) -> &'static str {
-        match self {
-            SessionCommand::Close => "close",
-            SessionCommand::Begin => "begin",
-            SessionCommand::Commit => "commit",
-            SessionCommand::Rollback => "rollback",
-            SessionCommand::Format => "format",
-            SessionCommand::AddFeature => "add_feature",
-            SessionCommand::SetField => "set_field",
-            SessionCommand::RemoveFeature => "remove_feature",
-            SessionCommand::ReplaceText => "replace_text",
-            SessionCommand::Text => "text",
-            SessionCommand::Outline => "outline",
-            SessionCommand::Check => "check",
-            SessionCommand::CacheClear => "cache_clear",
-            SessionCommand::Elements => "elements",
-            SessionCommand::Query => "query",
-            SessionCommand::MassProperties => "mass_properties",
-            SessionCommand::Distance => "distance",
-            SessionCommand::Angle => "angle",
-            SessionCommand::Render => "render",
-            SessionCommand::Export => "export",
-        }
+        self.command().as_str()
     }
 }
 

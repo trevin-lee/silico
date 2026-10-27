@@ -743,8 +743,8 @@ impl<C: Kernel + 'static> Session<C> {
     /// rebuild and saving nothing (what it reaches is the session's to work out,
     /// `Reaching::reach`); refused whole, the session as it was, as the edit is.
     fn applied(&self, stop: &Ticket, text: &str) -> Result<Revision, Problems> {
-        let (_, gated) = self.document();
-        match edit::replace_text(&gated, text.as_bytes())?.1 {
+        let (held, gated) = self.document();
+        match edit::replace_text(&gated, &held, text.as_bytes())?.1 {
             Some(candidate) => self.hold(stop, candidate),
             None => Ok(self.held.read().revision),
         }

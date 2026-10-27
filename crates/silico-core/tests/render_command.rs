@@ -283,10 +283,15 @@ fn three_bodies_and_a_camera_on_the_third_send_the_third_alone_numbered_three() 
         target: [205.0, 5.0, 5.0],
         up: [0.0, 0.0, 1.0],
     };
-    bench.render(&camera(on_c, 100, 100)).unwrap();
+    // C's Face2 lit: the one body drawn holds it, as C's own face (index 1), not as the
+    // third body's place among all three.
+    let mut on_c_lit = camera(on_c, 100, 100);
+    on_c_lit.highlight = vec!["cccccccc.box.Face2".to_owned()];
+    bench.render(&on_c_lit).unwrap();
     let sent = bench.renderer.sent();
     let numbers: Vec<u32> = sent[0].bodies.iter().map(|b| b.body).collect();
     assert_eq!(numbers, [3]);
+    assert_eq!(sent[0].bodies[0].highlight_faces, [1]);
     // Only C was meshed.
     assert_eq!(bench.meshed().len(), 1);
     // A named view takes all three, numbered in the model's order.
