@@ -4,7 +4,7 @@
 //! returned. The distances of real solids are measured on a worker (silico-kernel's
 //! tests/distance.rs).
 
-use std::time::Duration;
+use super::model::WAIT;
 
 use silico_core::ErrorCode;
 use silico_core::fake::FakeKernel;
@@ -15,9 +15,9 @@ use silico_core::pool::{Outcome, Pending};
 use silico_protocol::Reply;
 
 fn within<T: std::fmt::Debug>(pending: Pending<T>) -> Outcome<T> {
-    match pending.wait_timeout(Duration::from_secs(5)) {
+    match pending.wait_timeout(WAIT) {
         Ok(outcome) => outcome,
-        Err(_) => panic!("no outcome within 5 s (the fake hung)"),
+        Err(_) => panic!("no outcome within {WAIT:?} (the fake hung)"),
     }
 }
 

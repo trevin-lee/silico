@@ -6,6 +6,7 @@
 
 use super::example;
 use super::listing::{answer, fixture, model_of};
+use super::model::WAIT;
 use super::model::id;
 
 use example::EXAMPLE;
@@ -341,10 +342,10 @@ fn closing_a_session_stops_its_reads_kernel_work_and_says_so() {
         pair("k7f2qx3m.box.Face1", "k7f2qx3m.box.Face6"),
         None,
     );
-    assert!(f.kernel.wait_running(1, Duration::from_secs(10)));
+    assert!(f.kernel.wait_running(1, WAIT));
     let started = Instant::now();
     answer(f.sessions.close(&s)).result.unwrap();
-    let read = match reading.wait_timeout(Duration::from_secs(10)) {
+    let read = match reading.wait_timeout(WAIT) {
         Ok(read) => read,
         Err(_) => panic!("the read went on after its session closed"),
     };
@@ -372,7 +373,7 @@ fn closing_a_session_stops_its_reads_kernel_work_and_says_so() {
         pair("k7f2qx3m.box.Face1", "k7f2qx3m.box.Face6"),
         None,
     );
-    assert!(f.kernel.wait_running(1, Duration::from_secs(10)));
+    assert!(f.kernel.wait_running(1, WAIT));
     let started = Instant::now();
     drop(f.sessions);
     assert!(

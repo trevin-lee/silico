@@ -17,6 +17,8 @@ mod export_report;
 mod fixture;
 #[path = "common/hostile_profiles.rs"]
 mod hostile;
+#[path = "common/model.rs"]
+mod model;
 #[path = "common/sweeps.rs"]
 mod sweeps;
 

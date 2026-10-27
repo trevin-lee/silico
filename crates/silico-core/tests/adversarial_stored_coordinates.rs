@@ -11,6 +11,7 @@
 
 use super::commands;
 use super::fixture;
+use super::model::WAIT;
 
 use fixture::{line, point_debug};
 
@@ -38,10 +39,7 @@ fn checked(text: &str) -> Checked {
 }
 
 fn published(engine: &Recompute<FakeKernel>, text: &str) -> Arc<Model> {
-    match engine
-        .start(checked(text))
-        .wait_timeout(Duration::from_secs(20))
-    {
+    match engine.start(checked(text)).wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("{other:?}"),
         Err(_) => panic!("the recompute didn't finish"),
@@ -485,10 +483,7 @@ fn a_solver_that_panics_fails_the_rebuild_and_the_engine_still_solves_after() {
     sketches.answer(|_| panic!("the fake solver panicked"));
     let engine = engine(&sketches);
     let text = length(true);
-    match engine
-        .start(checked(&text))
-        .wait_timeout(Duration::from_secs(20))
-    {
+    match engine.start(checked(&text)).wait_timeout(WAIT) {
         Ok(Err(e)) => {
             assert_eq!(e.code(), ErrorCode::Internal, "{e}");
             assert!(
@@ -509,15 +504,15 @@ fn a_solver_that_panics_fails_the_rebuild_and_the_engine_still_solves_after() {
     // And a supersede after it still stops a solve, despite the stopper the panic left.
     sketches.hold();
     let older = engine.start(checked(&length(false)));
-    assert!(sketches.wait_held(Duration::from_secs(10)));
+    assert!(sketches.wait_held(WAIT));
     let newer = engine.start(checked(&fixture::constrained("")));
     assert!(matches!(
-        older.wait_timeout(Duration::from_secs(10)),
+        older.wait_timeout(WAIT),
         Ok(Ok(RunOutcome::Superseded))
     ));
     sketches.release();
     assert!(matches!(
-        newer.wait_timeout(Duration::from_secs(10)),
+        newer.wait_timeout(WAIT),
         Ok(Ok(RunOutcome::Published(_)))
     ));
 }
@@ -580,22 +575,22 @@ fn a_superseded_recompute_returns_without_waiting_behind_the_newer_ones_solve() 
         sketches.hold();
         let stops = sketches.stops();
         let a = engine.start(checked(&sketches_at(100 + round, 3)));
-        assert!(sketches.wait_held(Duration::from_secs(10)), "{round}");
+        assert!(sketches.wait_held(WAIT), "{round}");
         let b = engine.start(checked(&sketches_at(200 + round, 300)));
         let c = engine.start(checked(&sketches_at(300 + round, 1)));
-        match a.wait_timeout(Duration::from_secs(10)) {
+        match a.wait_timeout(WAIT) {
             Ok(Ok(RunOutcome::Superseded)) => {}
             Ok(other) => panic!("{round} a: {other:?}"),
             Err(_) => panic!("{round} a: waited out its solve"),
         }
         assert!(sketches.stops() > stops, "{round}: nothing was stopped");
-        match b.wait_timeout(Duration::from_secs(2)) {
+        match b.wait_timeout(WAIT) {
             Ok(Ok(RunOutcome::Superseded)) => {}
             Ok(other) => panic!("{round} b: {other:?}"),
             Err(b) => {
                 // Waiting behind c's held solve: let c's solve go, and b comes back.
                 sketches.release();
-                match b.wait_timeout(Duration::from_secs(10)) {
+                match b.wait_timeout(WAIT) {
                     Ok(Ok(RunOutcome::Superseded)) => waited.push(round),
                     Ok(other) => panic!("{round} b: {other:?}"),
                     Err(_) => panic!("{round} b: hung even with every solve let go"),
@@ -603,7 +598,7 @@ fn a_superseded_recompute_returns_without_waiting_behind_the_newer_ones_solve() 
             }
         }
         sketches.release();
-        match c.wait_timeout(Duration::from_secs(10)) {
+        match c.wait_timeout(WAIT) {
             Ok(Ok(RunOutcome::Published(model))) => solved_as_drawn(&model),
             Ok(other) => panic!("{round} c: {other:?}"),
             Err(_) => panic!("{round} c: didn't finish"),
@@ -650,7 +645,7 @@ fn recomputes_started_at_random_moments_while_sketches_solve_publish_only_their_
     }
     let last = engine.start(checked(&sketches_at(77, 3)));
     for run in runs {
-        match run.wait_timeout(Duration::from_secs(20)) {
+        match run.wait_timeout(WAIT) {
             Ok(Ok(RunOutcome::Published(model))) => {
                 solved_as_drawn(&model);
             }
@@ -659,7 +654,7 @@ fn recomputes_started_at_random_moments_while_sketches_solve_publish_only_their_
             Err(_) => panic!("a superseded recompute hung"),
         }
     }
-    match last.wait_timeout(Duration::from_secs(20)) {
+    match last.wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => solved_as_drawn(&model),
         Ok(other) => panic!("{other:?}"),
         Err(_) => panic!("the newest recompute hung"),
@@ -675,9 +670,9 @@ fn a_cancel_at_the_generations_end_still_stops_the_solve() {
     engine.kernel().advance(Generation(u64::MAX - 1));
     sketches.hold();
     let run = engine.start(checked(&length(true)));
-    assert!(sketches.wait_held(Duration::from_secs(10)));
+    assert!(sketches.wait_held(WAIT));
     engine.cancel();
-    match run.wait_timeout(Duration::from_secs(10)) {
+    match run.wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Superseded)) => {}
         Ok(other) => panic!("{other:?}"),
         Err(_) => panic!("the cancelled recompute waited out its solve"),
@@ -685,10 +680,7 @@ fn a_cancel_at_the_generations_end_still_stops_the_solve() {
     assert_eq!(sketches.stops(), 1);
     sketches.release();
     // No generation left: the next start says so, rather than hanging or solving.
-    match engine
-        .start(checked(&length(true)))
-        .wait_timeout(Duration::from_secs(10))
-    {
+    match engine.start(checked(&length(true))).wait_timeout(WAIT) {
         Ok(Err(e)) => assert_eq!(e.code(), ErrorCode::ResourceExhausted, "{e}"),
         Ok(other) => panic!("{other:?}"),
         Err(_) => panic!("hung"),

@@ -5,6 +5,7 @@
 //! design's messages, documents written by hand and their exact bytes, and boxes'
 //! fingerprints by hand arithmetic (l × w × h, and 2(lw + lh + wh)).
 
+use crate::model::WAIT;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1619,7 +1620,7 @@ fn dropping_the_sessions_while_an_edit_rebuilds_refuses_it_and_writes_nothing() 
         "points.pb000000.x".to_owned(),
         value("11"),
     );
-    assert!(f.sketches.wait_held(std::time::Duration::from_secs(10)));
+    assert!(f.sketches.wait_held(WAIT));
     let Fixture {
         _dir,
         sessions,
