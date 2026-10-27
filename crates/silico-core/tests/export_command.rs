@@ -1398,3 +1398,120 @@ fn a_step_file_past_a_requests_time_suggests_exporting_fewer_features() {
         "{e:?}"
     );
 }
+
+/// Boxes `sizes` (each a cube of that edge, side by side), as a document.
+fn cubes(sizes: &[u32]) -> String {
+    let features: Vec<String> = sizes
+        .iter()
+        .enumerate()
+        .map(|(n, size)| {
+            format!(
+                r#"{{"id": "c{n:07}", "type": "box", "v": 1, "name": "Cube{n}", "position": [{}, 0, 0], "length": {size}, "width": {size}, "height": {size}}}"#,
+                n * 20
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        features.join(", ")
+    )
+}
+
+/// Each export mesh asked of `kernel` so far, in the order they started, by its cube's edge
+/// as `labels` names it (`("box(7", "B1")`: the cube of edge 7 is B1).
+fn meshes_started(kernel: &FakeKernel, labels: &[(&str, &str)]) -> Vec<String> {
+    kernel
+        .calls()
+        .iter()
+        .filter_map(|c| match &c.op {
+            Op::ExportMesh { shape, .. } => Some(FakeKernel::describe(shape).unwrap()),
+            _ => None,
+        })
+        .map(|made| {
+            labels
+                .iter()
+                .find(|(edge, _)| made.contains(edge))
+                .map_or(made.clone(), |(_, label)| (*label).to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn an_export_waiting_its_turn_to_mesh_is_served_before_the_export_ahead_takes_another() {
+    // Turns are served in the order they're asked for, as the kernel pool serves its clients
+    // in turn: an export of many bodies, its first mesh held, and another export waiting for
+    // a turn; once the first mesh is done, the waiting export meshes next, before the first
+    // export's second body, so a long export can't hold another session's export (and its
+    // whole queue) for its whole length. The first export A, of three cubes (edges 1, 2,
+    // and 3), the second, B, of one (edge 7), on one kernel, sharing the turns.
+    let a = Arc::new(Bench::of(&cubes(&[1, 2, 3])));
+    let b_model = command::rebuild(
+        &Recompute::new(Arc::clone(&a.kernel)),
+        command::gate(cubes(&[7]).as_bytes()).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let turns = Arc::new(silico_core::command::export::MeshTurns::new());
+    let dir = Arc::new(Scratch::new("first-come"));
+    let hold = a.kernel.hold(|op| matches!(op, Op::ExportMesh { .. }));
+    let first = {
+        let (a, turns, dir) = (Arc::clone(&a), Arc::clone(&turns), Arc::clone(&dir));
+        std::thread::spawn(move || {
+            export(
+                &a.model,
+                &request(&dir.0.join("a.3mf")),
+                &ExportOn {
+                    kernel: &a.kernel,
+                    step: &*a.kernel,
+                    document: "a.silico",
+                    workspace: None,
+                    held: &[],
+                    turns: &turns,
+                    stopped: &|| false,
+                    settle: &|| Ok(()),
+                },
+            )
+        })
+    };
+    assert!(a.kernel.wait_running(1, std::time::Duration::from_secs(60)));
+    assert_eq!(a.asked_meshes(), 1);
+    // B's wait looks whether it was stopped, with the turns locked, before it waits: once
+    // it has looked, it's in the line before A's first mesh can give the turn back.
+    let (looked, looks) = std::sync::mpsc::channel();
+    let second = {
+        let (a, turns, dir) = (Arc::clone(&a), Arc::clone(&turns), Arc::clone(&dir));
+        std::thread::spawn(move || {
+            export(
+                &b_model,
+                &request(&dir.0.join("b.3mf")),
+                &ExportOn {
+                    kernel: &a.kernel,
+                    step: &*a.kernel,
+                    document: "b.silico",
+                    workspace: None,
+                    held: &[],
+                    turns: &turns,
+                    stopped: &|| {
+                        let _ = looked.send(());
+                        false
+                    },
+                    settle: &|| Ok(()),
+                },
+            )
+        })
+    };
+    looks
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .unwrap();
+    assert_eq!(a.asked_meshes(), 1);
+    hold.release();
+    first.join().unwrap().unwrap();
+    second.join().unwrap().unwrap();
+    let labels = [
+        ("box(1", "A1"),
+        ("box(2", "A2"),
+        ("box(3", "A3"),
+        ("box(7", "B1"),
+    ];
+    assert_eq!(meshes_started(&a.kernel, &labels), ["A1", "B1", "A2", "A3"]);
+}

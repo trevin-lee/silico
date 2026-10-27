@@ -543,3 +543,87 @@ fn a_filter_on_the_subscriber_itself_keeps_no_session_logs_and_says_so() {
     let (code, ..) = refusal(&sessions.read_logs(&s1, &query(LogLevel::Trace, None, None, 10)));
     assert_eq!(code, ErrorCode::Internal);
 }
+
+/// A box of ID `id`, alone in a document.
+fn a_box(id: &str) -> String {
+    format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{{"id": "{id}", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}}]}}"#
+    )
+}
+
+#[test]
+fn an_export_waiting_for_another_exports_mesh_logs_its_wait_and_its_turn_naming_its_feature() {
+    // One export mesh at a time across the sessions: an export kept waiting by another
+    // session's says so in its own session's logs, naming the feature whose mesh waits, and
+    // again once its turn comes; the export that never waited says neither.
+    keep_logs();
+    let dir = tempfile::tempdir().unwrap();
+    let kernel = Arc::new(FakeKernel::new(2).unwrap());
+    kernel.answer_instead(|op| match op {
+        Op::ExportMesh { .. } => Some(silico_protocol::Reply::ExportMesh(Box::new(
+            crate::export_report::tetra(),
+        ))),
+        _ => None,
+    });
+    let sessions = sessions(Arc::clone(&kernel), &dir);
+    let s1 = opened(&sessions, &dir, "a.silico", &a_box("a1a1a1a1"));
+    let s2 = opened(&sessions, &dir, "b.silico", &a_box("b2b2b2b2"));
+    checked(&sessions, &s1, false);
+    checked(&sessions, &s2, false);
+    let export = |s: &SessionId, name: &str| {
+        sessions.export(
+            s,
+            silico_core::command::export::Export {
+                format: silico_core::command::export::ExportFormat::ThreeMf {
+                    tolerance: silico_core::document::Length::rounded(0.1).unwrap(),
+                },
+                path: dir.path().join(name),
+                replace: false,
+                features: None,
+            },
+        )
+    };
+    let held = kernel.hold(|op| matches!(op, Op::ExportMesh { .. }));
+    let first = export(&s1, "a.3mf");
+    assert!(kernel.wait_running(1, crate::sessions::HANG));
+    let second = export(&s2, "b.3mf");
+    let waiting = "waiting for another export's mesh: one export mesh at a time";
+    let turn = "the turn to mesh for export, after another export's mesh";
+    let deadline = std::time::Instant::now() + crate::sessions::HANG;
+    let wait = loop {
+        let logs = read(&sessions, &s2, &query(LogLevel::Info, None, None, 1000));
+        if let Some(e) = logs.events.iter().find(|e| e.message.starts_with(waiting)) {
+            break e.clone();
+        }
+        assert!(std::time::Instant::now() < deadline, "{:?}", logs.events);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert_eq!(wait.level, LogLevel::Info);
+    assert_eq!(wait.feature, Some(id("b2b2b2b2")));
+    assert_eq!(wait.spans[0], "export");
+    held.release();
+    assert!(answer(first).result.is_ok());
+    assert!(answer(second).result.is_ok());
+    let logs = read(
+        &sessions,
+        &s2,
+        &query(LogLevel::Info, Some("b2b2b2b2"), None, 1000),
+    );
+    let said: Vec<&str> = messages(&logs.events)
+        .into_iter()
+        .filter(|m| m.starts_with(waiting) || m.starts_with(turn))
+        .collect();
+    assert_eq!(said.len(), 2, "{:?}", logs.events);
+    assert!(
+        said[0].starts_with(waiting) && said[1].starts_with(turn),
+        "{said:?}"
+    );
+    let logs = every(&sessions, &s1);
+    assert!(
+        logs.events
+            .iter()
+            .all(|e| !e.message.starts_with(waiting) && !e.message.starts_with(turn)),
+        "{:?}",
+        logs.events
+    );
+}

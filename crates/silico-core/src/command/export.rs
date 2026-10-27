@@ -11,7 +11,7 @@
 //! the read settles, the file is saved through the writer every command's files share
 //! (decision 35). Nothing is written for a request refused.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, PoisonError};
 
@@ -171,13 +171,27 @@ pub struct ExportOn<'a, K: Kernel> {
 /// seconds and gigabytes (about 50 s and 3 GB at 0.001 mm on curved faces), its only bound
 /// the kernel request's timeout, so meshes on every core at once would take tens of
 /// gigabytes before the first timed out. A turn is held while its mesh is asked, made, and
-/// checked; a wait for one ends when the export is stopped.
+/// checked. Turns are given in the order they're asked for, as the kernel pool serves its
+/// clients in turn: an export that gives one back and asks again for its next solid goes
+/// behind the exports already waiting, so a long export can't keep another session's (and
+/// that session's whole queue) waiting for its whole length. A wait for one ends when the
+/// export is stopped, its place in the line given up.
 #[derive(Debug, Default)]
 pub struct MeshTurns {
-    /// Whether a turn is held.
-    taken: Mutex<bool>,
-    /// A turn was given back, or a waiting export was stopped.
+    line: Mutex<Line>,
+    /// A turn was given back, a waiting export left the line, or one was stopped.
     freed: Condvar,
+}
+
+/// Who holds the turn to mesh, and who waits for it, in order.
+#[derive(Debug, Default)]
+struct Line {
+    /// Whether a turn is held.
+    held: bool,
+    /// The ticket the next export to wait takes.
+    next: u64,
+    /// The tickets of the exports waiting, the first served first.
+    waiting: VecDeque<u64>,
 }
 
 /// A turn to mesh, held until it's dropped.
@@ -189,21 +203,50 @@ impl MeshTurns {
         Self::default()
     }
 
-    /// The turn, once no other export holds it; none if `stopped` says the export was
+    /// The turn to mesh `feature`'s solid, once no other export holds it and every export
+    /// waiting before this one has had its own; none if `stopped` says the export was
     /// stopped, before or while it waits ([`wake`](Self::wake) wakes it to look).
-    fn take(&self, stopped: &dyn Fn() -> bool) -> Option<MeshTurn<'_>> {
-        let mut taken = crate::worker::lock(&self.taken);
+    fn take(&self, feature: &FeatureId, stopped: &dyn Fn() -> bool) -> Option<MeshTurn<'_>> {
+        let mut line = crate::worker::lock(&self.line);
+        let mut ticket = None;
         loop {
             if stopped() {
+                if let Some(ticket) = ticket {
+                    // Its place given up: the export behind it may be first now.
+                    line.waiting.retain(|&waiting| waiting != ticket);
+                    self.freed.notify_all();
+                }
                 return None;
             }
-            if !*taken {
-                *taken = true;
+            let first = match ticket {
+                Some(ticket) => line.waiting.front() == Some(&ticket),
+                None => line.waiting.is_empty(),
+            };
+            if !line.held && first {
+                if ticket.is_some() {
+                    line.waiting.pop_front();
+                    tracing::info!(
+                        feature = feature.as_str(),
+                        "the turn to mesh for export, after another export's mesh"
+                    );
+                }
+                line.held = true;
                 return Some(MeshTurn(self));
             }
-            taken = self
+            if ticket.is_none() {
+                let taken = line.next;
+                line.next = taken.wrapping_add(1);
+                line.waiting.push_back(taken);
+                ticket = Some(taken);
+                tracing::info!(
+                    feature = feature.as_str(),
+                    ahead = line.waiting.len().saturating_sub(1),
+                    "waiting for another export's mesh: one export mesh at a time"
+                );
+            }
+            line = self
                 .freed
-                .wait(taken)
+                .wait(line)
                 .unwrap_or_else(PoisonError::into_inner);
         }
     }
@@ -212,14 +255,14 @@ impl MeshTurns {
     /// `stopped` given to a wait says so. Under the lock, so a waiter that looked before it
     /// waited is waiting when it's told.
     pub(crate) fn wake(&self) {
-        let _taken = crate::worker::lock(&self.taken);
+        let _line = crate::worker::lock(&self.line);
         self.freed.notify_all();
     }
 }
 
 impl Drop for MeshTurn<'_> {
     fn drop(&mut self) {
-        *crate::worker::lock(&self.0.taken) = false;
+        crate::worker::lock(&self.0.line).held = false;
         self.0.freed.notify_all();
     }
 }
@@ -281,7 +324,7 @@ fn meshed<K: Kernel>(
         // gigabytes, so meshes on every core at once, this export's or other sessions', would
         // take tens of gigabytes before the first timed out. Each taken, checked, and counted
         // in turn, so a file past the triangles one may hold is refused once it's past them.
-        let Some(_turn) = on.turns.take(on.stopped) else {
+        let Some(_turn) = on.turns.take(solid.id, on.stopped) else {
             return Err(Problems::from(session_closed()));
         };
         // A mesh that took past a kernel request's time is the tolerance's to change (M4.1's
@@ -719,7 +762,143 @@ fn session_closed() -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_TOLERANCE, TOLERANCES};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    use super::{DEFAULT_TOLERANCE, MeshTurns, TOLERANCES};
+    use crate::document::FeatureId;
+
+    /// Long enough for any wait here, so one that stalls fails instead.
+    const STALL: Duration = Duration::from_secs(60);
+
+    fn feature() -> FeatureId {
+        FeatureId::new("k7f2qx3m").unwrap()
+    }
+
+    /// Waits until `count` exports wait in `turns`' line.
+    fn wait_in_line(turns: &MeshTurns, count: usize) {
+        let deadline = Instant::now() + STALL;
+        while crate::worker::lock(&turns.line).waiting.len() != count {
+            assert!(Instant::now() < deadline, "{count} never waited");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// A thread waiting for a turn in `turns` as `label`, stopped once `stop` is set: once it
+    /// has the turn, `label` added to `order`, and the turn given back. Started once `ahead`
+    /// wait, and returned once it waits too.
+    fn waiter(
+        turns: &Arc<MeshTurns>,
+        label: &'static str,
+        stop: &Arc<AtomicBool>,
+        order: &Arc<Mutex<Vec<&'static str>>>,
+        ahead: usize,
+    ) -> std::thread::JoinHandle<bool> {
+        wait_in_line(turns, ahead);
+        let (turns_, stop, order) = (Arc::clone(turns), Arc::clone(stop), Arc::clone(order));
+        let thread = std::thread::spawn(move || {
+            let turn = turns_.take(&feature(), &|| stop.load(Ordering::SeqCst));
+            let took = turn.is_some();
+            if took {
+                order.lock().unwrap().push(label);
+            }
+            took
+        });
+        wait_in_line(turns, ahead + 1);
+        thread
+    }
+
+    #[test]
+    fn turns_are_given_in_the_order_they_were_asked_for_the_holder_asking_again_behind() {
+        // As the kernel pool serves its clients in turn: three exports wait, one after
+        // another, while a turn is held; the holder gives it back and asks again at once,
+        // ahead of every waiter's waking. Each waiter is served in the order it asked, and
+        // the holder after them all.
+        let turns = Arc::new(MeshTurns::new());
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let never = Arc::new(AtomicBool::new(false));
+        let held = turns.take(&feature(), &|| false).unwrap();
+        let waiters: Vec<_> = ["first", "second", "third"]
+            .into_iter()
+            .enumerate()
+            .map(|(ahead, label)| waiter(&turns, label, &never, &order, ahead))
+            .collect();
+        drop(held);
+        let again = turns.take(&feature(), &|| false).unwrap();
+        order.lock().unwrap().push("holder");
+        drop(again);
+        for waiter in waiters {
+            assert!(waiter.join().unwrap());
+        }
+        assert_eq!(
+            *order.lock().unwrap(),
+            ["first", "second", "third", "holder"]
+        );
+        assert!(!crate::worker::lock(&turns.line).held);
+    }
+
+    #[test]
+    fn a_waiter_stopped_mid_line_gives_up_its_place_and_the_one_behind_is_served() {
+        // The middle of three waiters stopped, woken as a cancel wakes it: it leaves the line
+        // with no turn, and the turn, given back, goes to the first and then the last, the
+        // line never stalled on the place it left.
+        let turns = Arc::new(MeshTurns::new());
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let never = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let held = turns.take(&feature(), &|| false).unwrap();
+        let first = waiter(&turns, "first", &never, &order, 0);
+        let middle = waiter(&turns, "middle", &stop, &order, 1);
+        let last = waiter(&turns, "last", &never, &order, 2);
+        stop.store(true, Ordering::SeqCst);
+        turns.wake();
+        assert!(!middle.join().unwrap());
+        assert_eq!(
+            crate::worker::lock(&turns.line).waiting.len(),
+            2,
+            "the stopped waiter kept its place"
+        );
+        drop(held);
+        let (done, joined) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send((first.join().unwrap(), last.join().unwrap()));
+        });
+        assert_eq!(joined.recv_timeout(STALL).unwrap(), (true, true));
+        assert_eq!(*order.lock().unwrap(), ["first", "last"]);
+    }
+
+    #[test]
+    fn a_first_waiter_stopped_as_the_turn_is_given_back_passes_it_to_the_one_behind() {
+        // The first waiter stopped, unwoken, then the turn given back: whichever wakes first,
+        // the stopped waiter leaves the line and the one behind it is served, never left
+        // waiting for a turn nobody takes.
+        let turns = Arc::new(MeshTurns::new());
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let never = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let held = turns.take(&feature(), &|| false).unwrap();
+        let first = waiter(&turns, "first", &stop, &order, 0);
+        let behind = waiter(&turns, "behind", &never, &order, 1);
+        stop.store(true, Ordering::SeqCst);
+        drop(held);
+        let (done, joined) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send((first.join().unwrap(), behind.join().unwrap()));
+        });
+        assert_eq!(joined.recv_timeout(STALL).unwrap(), (false, true));
+        assert_eq!(*order.lock().unwrap(), ["behind"]);
+        assert!(crate::worker::lock(&turns.line).waiting.is_empty());
+    }
+
+    #[test]
+    fn an_export_stopped_before_it_waits_takes_no_turn_and_no_place() {
+        let turns = MeshTurns::new();
+        assert!(turns.take(&feature(), &|| true).is_none());
+        let line = crate::worker::lock(&turns.line);
+        assert!(!line.held && line.waiting.is_empty());
+    }
 
     #[test]
     fn the_tolerances_version_gives_are_the_ones_an_export_takes() {
