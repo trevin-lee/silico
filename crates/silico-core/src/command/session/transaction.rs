@@ -272,11 +272,14 @@ impl Reached {
     /// transaction is open now: not when the revision was, since a model published before a
     /// `begin` is the revision's still, and so is one relabelled by a commit that wrote
     /// nothing (`unwritten`). For an older model ([`Checking::Older`]), also when
-    /// its own revision was a transaction's: with none open now, that model can only be
-    /// left published by a commit that wrote the file without publishing (its sketches'
-    /// solves written back), which wrote every built feature's record (a rollback restores
-    /// the model `begin` kept, and a commit that writes nothing relabels the model, which
-    /// is then the revision's); with one open now, by a `begin` made while its rebuild ran.
+    /// its own revision was a transaction's. With one open now, a `begin` made while its
+    /// rebuild ran left it. With none, a commit that wrote the file without publishing (its
+    /// sketches' solves written back), which wrote every built feature's record; or one that
+    /// wrote nothing and left the text byte for byte as it was, keeping the revision, which a
+    /// later reload, `format` or edit's commit leaves older until its own model is published.
+    /// Then what's spared is only what was carried from an earlier save (the edits came back
+    /// to `begin`'s document, so they reach nothing), whose warning is missed for that while.
+    /// A rollback restores the model `begin` kept.
     pub(crate) fn committing(&self, checking: Checking) -> &BTreeSet<FeatureId> {
         static NONE: BTreeSet<FeatureId> = BTreeSet::new();
         let spared = match checking {
