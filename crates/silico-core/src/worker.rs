@@ -3594,6 +3594,33 @@ mod tests {
                 "; silico-kernel-worker there is a link to a directory"
             )
         );
+        // Mutants: something there that's neither a file nor a directory (a socket), by a
+        // link and as itself, is said to be neither.
+        let socket = base.join("build/socket");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        std::fs::remove_file(bin.join("silico-kernel-worker")).unwrap();
+        std::os::unix::fs::symlink(&socket, bin.join("silico-kernel-worker")).unwrap();
+        let e = kernel_worker_beside(&bin.join("silico")).unwrap_err();
+        assert_eq!(
+            e.message(),
+            missing(
+                &bin,
+                &bin.join("silico"),
+                "; silico-kernel-worker there is a link to something that isn't a regular file"
+            )
+        );
+        std::fs::remove_file(bin.join("silico-kernel-worker")).unwrap();
+        let _there =
+            std::os::unix::net::UnixListener::bind(bin.join("silico-kernel-worker")).unwrap();
+        let e = kernel_worker_beside(&bin.join("silico")).unwrap_err();
+        assert_eq!(
+            e.message(),
+            missing(
+                &bin,
+                &bin.join("silico"),
+                "; silico-kernel-worker there isn't a regular file"
+            )
+        );
     }
 
     #[test]
