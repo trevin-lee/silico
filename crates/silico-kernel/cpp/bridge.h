@@ -420,6 +420,12 @@ std::unique_ptr<Shape> debug_empty_shape();
 // A compound of a 10 x 20 x 30 box and a face with a surface and no wires (a plane at x = 50,
 // Face7), which OCCT's STEP writer drops with only a warning.
 std::unique_ptr<Shape> debug_box_with_wireless_face();
+// The box and a 10 x 10 square face at x = 50 with a second, empty wire, which OCCT's STEP
+// writer drops (" a Wire not mapped") with only a warning.
+std::unique_ptr<Shape> debug_box_with_empty_wire_face();
+// The box and the square face with an INTERNAL wire (a slit), which OCCT's STEP writer skips
+// on purpose.
+std::unique_ptr<Shape> debug_box_with_internal_wire_face();
 #endif
 
 } // namespace silico

@@ -506,6 +506,10 @@ mod ffi {
         fn debug_empty_shape() -> Result<UniquePtr<Shape>>;
         #[cfg(feature = "test_ops")]
         fn debug_box_with_wireless_face() -> Result<UniquePtr<Shape>>;
+        #[cfg(feature = "test_ops")]
+        fn debug_box_with_empty_wire_face() -> Result<UniquePtr<Shape>>;
+        #[cfg(feature = "test_ops")]
+        fn debug_box_with_internal_wire_face() -> Result<UniquePtr<Shape>>;
     }
 }
 
@@ -2359,6 +2363,18 @@ pub mod test_ops {
     /// which OCCT's STEP writer drops with only a warning.
     pub fn box_with_wireless_face() -> Result<super::Shape, KernelError> {
         Ok(super::Shape::new(ffi::debug_box_with_wireless_face()?))
+    }
+
+    /// A compound of a 10 × 20 × 30 box and a square face with a second, empty wire, which
+    /// OCCT's STEP writer drops with only a warning.
+    pub fn box_with_empty_wire_face() -> Result<super::Shape, KernelError> {
+        Ok(super::Shape::new(ffi::debug_box_with_empty_wire_face()?))
+    }
+
+    /// A compound of a 10 × 20 × 30 box and a square face with an INTERNAL wire, which OCCT's
+    /// STEP writer skips on purpose.
+    pub fn box_with_internal_wire_face() -> Result<super::Shape, KernelError> {
+        Ok(super::Shape::new(ffi::debug_box_with_internal_wire_face()?))
     }
 }
 

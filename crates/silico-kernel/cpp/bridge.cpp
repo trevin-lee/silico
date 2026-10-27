@@ -121,13 +121,6 @@
 #include <cmath>
 #include <csignal>
 #include <sstream>
-#include <TopTools_IndexedMapOfShape.hxx>
-#include <TCollection_HAsciiString.hxx>
-#include <TCollection_ExtendedString.hxx>
-#include <Message.hxx>
-#include <Message_Messenger.hxx>
-#include <Message_Printer.hxx>
-#include <Standard_Version.hxx>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -2216,6 +2209,38 @@ std::unique_ptr<Shape> debug_box_with_wireless_face() {
   builder.MakeFace(face, new Geom_Plane(gp_Pnt(50, 0, 0), gp_Dir(1, 0, 0)), Precision::Confusion());
   builder.Add(compound, face);
   return std::make_unique<Shape>(Shape{compound});
+}
+
+namespace {
+// A 10 x 10 square face at x = 50 (its outer wire), with `inner` added as a second wire.
+TopoDS_Face square_face_with(const TopoDS_Wire &inner) {
+  BRepBuilderAPI_MakePolygon square(gp_Pnt(50, 0, 0), gp_Pnt(50, 10, 0), gp_Pnt(50, 10, 10),
+                                    gp_Pnt(50, 0, 10), Standard_True);
+  TopoDS_Face face = BRepBuilderAPI_MakeFace(square.Wire()).Face();
+  BRep_Builder().Add(face, inner);
+  return face;
+}
+
+// A compound of the 10 x 20 x 30 box and `face`.
+std::unique_ptr<Shape> box_and(const TopoDS_Face &face) {
+  BRep_Builder builder;
+  TopoDS_Compound compound;
+  builder.MakeCompound(compound);
+  builder.Add(compound, BRepPrimAPI_MakeBox(10, 20, 30).Shape());
+  builder.Add(compound, face);
+  return std::make_unique<Shape>(Shape{compound});
+}
+} // namespace
+
+std::unique_ptr<Shape> debug_box_with_empty_wire_face() {
+  TopoDS_Wire empty;
+  BRep_Builder().MakeWire(empty);
+  return box_and(square_face_with(empty));
+}
+
+std::unique_ptr<Shape> debug_box_with_internal_wire_face() {
+  BRepBuilderAPI_MakePolygon slit(gp_Pnt(50, 2, 5), gp_Pnt(50, 8, 5));
+  return box_and(square_face_with(TopoDS::Wire(slit.Wire().Oriented(TopAbs_INTERNAL))));
 }
 
 std::unique_ptr<Shape> debug_empty_shape() {

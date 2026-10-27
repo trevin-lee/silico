@@ -40,14 +40,12 @@
 #include <StdFail_NotDone.hxx>
 #include <Standard_DomainError.hxx>
 #include <StepShape_FaceBound.hxx>
-#include <StepShape_FaceSurface.hxx>
 #include <TopAbs.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
 #include <TopoDS_Compound.hxx>
 #include <UnitsMethods_LengthUnit.hxx>
-#include <XCAFDoc_DocumentTool.hxx>
 
 #include <algorithm>
 #include <cstdint>
@@ -398,17 +396,39 @@ std::unique_ptr<StepOut> StepWriter::write(rust::Str assembly, rust::Str file_na
   // The faces that bound material, and the face surfaces the file holds (an advanced face is
   // one; an oriented face refers to one), for the caller to compare: the writer drops a face
   // it can't transfer with only a warning (" No Wires of this Face were mapped").
-  // And their bounds: the writer drops a wire it can't map from its face (" a Wire not
-  // mapped"), a hole filled, with only a warning too.
-  for (size_t i = 0; i < parts; ++i) {
-    for (int f = 1; f <= faces[i].Extent(); ++f) {
-      const TopAbs_Orientation o = faces[i](f).Orientation();
-      if (o == TopAbs_INTERNAL || o == TopAbs_EXTERNAL) {
-        continue;
-      }
-      ++out->faces_expected_;
-      for (TopExp_Explorer wire(faces[i](f), TopAbs_WIRE); wire.More(); wire.Next()) {
+  // As the writer writes them: each solid's faces, a face two solids share once for each (it
+  // keeps a map a solid), then the faces in no solid, once; each but those left out, and each
+  // face's wires but INTERNAL and EXTERNAL ones (which it skips on purpose,
+  // TopoDSToStep_MakeStepWire). It drops a face or a wire it can't map with only a warning
+  // (" No Wires of this Face were mapped", " a Wire not mapped"), so the counts make it loud.
+  const auto bounds_material = [](const TopoDS_Shape &shape) {
+    const TopAbs_Orientation o = shape.Orientation();
+    return o != TopAbs_INTERNAL && o != TopAbs_EXTERNAL;
+  };
+  const auto count_face = [&](const TopoDS_Shape &face) {
+    if (!bounds_material(face)) {
+      return;
+    }
+    ++out->faces_expected_;
+    for (TopExp_Explorer wire(face, TopAbs_WIRE); wire.More(); wire.Next()) {
+      if (bounds_material(wire.Current())) {
         ++out->bounds_expected_;
+      }
+    }
+  };
+  for (size_t i = 0; i < parts; ++i) {
+    TopTools_IndexedMapOfShape in_solids;
+    for (TopExp_Explorer solid(shapes_[i], TopAbs_SOLID); solid.More(); solid.Next()) {
+      TopTools_IndexedMapOfShape its;
+      TopExp::MapShapes(solid.Current(), TopAbs_FACE, its);
+      for (int f = 1; f <= its.Extent(); ++f) {
+        count_face(its(f));
+        in_solids.Add(its(f));
+      }
+    }
+    for (int f = 1; f <= faces[i].Extent(); ++f) {
+      if (!in_solids.Contains(faces[i](f))) {
+        count_face(faces[i](f));
       }
     }
   }

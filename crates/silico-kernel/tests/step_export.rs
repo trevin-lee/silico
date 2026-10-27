@@ -186,6 +186,12 @@ fn a_face_that_bounds_no_material_is_left_out_and_said_and_nothing_else() {
         assert_eq!(file.left_out[0].len(), 1, "{name}: {:?}", file.left_out);
         assert!(file.unwritten.is_empty(), "{name}: {:?}", file.unwritten);
         assert_eq!(entities(&text(&file), "ADVANCED_FACE"), 5, "{name}");
+        // Counted without it: five faces, five bounds, all written.
+        let five = silico_protocol::StepCount {
+            expected: 5,
+            written: 5,
+        };
+        assert_eq!((file.faces, file.bounds), (five, five), "{name}");
     }
 }
 
@@ -310,4 +316,23 @@ fn a_part_placed_by_a_location_is_one_product_named_by_its_feature() {
     );
     assert_eq!(entities(&text, "ADVANCED_FACE"), 6);
     assert!(file.unwritten.is_empty(), "{:?}", file.unwritten);
+}
+
+#[test]
+fn a_wire_the_writer_drops_is_said_by_the_bounds_count_and_one_it_skips_on_purpose_isnt() {
+    // A square face beside the box with a second, empty wire: the writer drops that wire
+    // (" a Wire not mapped") with only a warning, so the file holds 7 of the 8 bounds. With an
+    // INTERNAL wire (a slit) instead, which the writer skips on purpose
+    // (TopoDSToStep_MakeStepWire), it isn't counted: 7 of 7, whole.
+    let count = |expected, written| silico_protocol::StepCount { expected, written };
+    let dropped = silico_kernel::test_ops::box_with_empty_wire_face().unwrap();
+    let file = step()
+        .export_step(export(&[(&dropped, "k7f2qx3m", "Block")]))
+        .unwrap();
+    assert_eq!((file.faces, file.bounds), (count(7, 7), count(8, 7)));
+    let skipped = silico_kernel::test_ops::box_with_internal_wire_face().unwrap();
+    let file = step()
+        .export_step(export(&[(&skipped, "k7f2qx3m", "Block")]))
+        .unwrap();
+    assert_eq!((file.faces, file.bounds), (count(7, 7), count(7, 7)));
 }

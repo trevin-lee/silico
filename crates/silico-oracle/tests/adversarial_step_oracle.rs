@@ -29,7 +29,7 @@ fn read_back(cases: &[(&str, &str)]) -> Vec<(String, String, serde_json::Value)>
         })
         .unwrap();
     for (n, &(name, file_name)) in cases.iter().enumerate() {
-        let file = step
+        let written = step
             .export_step(ExportStep {
                 parts: vec![StepPart {
                     shape: block.clone(),
@@ -40,8 +40,18 @@ fn read_back(cases: &[(&str, &str)]) -> Vec<(String, String, serde_json::Value)>
                 file_name: step_encoded(file_name),
             })
             .unwrap();
-        assert!(file.unwritten.is_empty(), "{name:?}: {:?}", file.unwritten);
-        std::fs::write(dir.join(format!("{n}.step")), file.step.as_bytes()).unwrap();
+        assert!(
+            written.unwritten.is_empty(),
+            "{name:?}: {:?}",
+            written.unwritten
+        );
+        // The file holds the name exactly, encoded, whatever a reader makes of it.
+        let text = String::from_utf8(written.step.as_bytes().to_vec()).unwrap();
+        assert!(
+            text.contains(&format!("PRODUCT('f0000001','{}'", step_encoded(name))),
+            "{name:?}"
+        );
+        std::fs::write(dir.join(format!("{n}.step")), written.step.as_bytes()).unwrap();
     }
     let value = silico_oracle::freecad::script(&format!(
         r#"
@@ -76,7 +86,22 @@ print("SILICO_ORACLE " + json.dumps(out))
         .collect()
 }
 
-/// The cases whose file FreeCAD didn't read back as the box named `name`.
+/// The label FreeCAD gives the box named `name`: the name, but on Linux, where OCCT's STEP
+/// reader takes a product's name only if `TCollection_HAsciiString::UsefullLength` finds a
+/// byte `std::isgraph` accepts (STEPCAFControl_Reader.cxx, `ReadNames`) and glibc accepts no
+/// byte past ASCII, a name with no ASCII graphic character comes back as the product's id
+/// (docs/ports/step-export.md, *Round trips*). The file holds the name either way.
+fn label_of(name: &str) -> String {
+    let readable = name.bytes().any(|b| b.is_ascii_graphic());
+    if cfg!(target_os = "linux") && !readable {
+        "f0000001".to_owned()
+    } else {
+        name.to_owned()
+    }
+}
+
+/// The cases whose file FreeCAD didn't read back as the box named `name` (as its reader
+/// can: [`label_of`]).
 fn misread(cases: &[(&str, &str)]) -> Vec<String> {
     read_back(cases)
         .into_iter()
@@ -84,7 +109,7 @@ fn misread(cases: &[(&str, &str)]) -> Vec<String> {
             let volume_ok = read["volume"]
                 .as_f64()
                 .is_some_and(|v| (v - 6000.0).abs() < 1e-6);
-            !volume_ok || read["labels"] != serde_json::json!([name])
+            !volume_ok || read["labels"] != serde_json::json!([label_of(name)])
         })
         .map(|(name, file_name, read)| format!("{name:?} in {file_name:?}: {read}"))
         .collect()
@@ -144,6 +169,19 @@ fn a_document_file_name_that_is_hostile_still_gives_a_file_that_reads_back() {
         ("Block", "rev 'A', left.silico"),
         ("Block", "Kl\u{F6}tzchen \u{1F600}.silico"),
         ("Block", ""),
+    ]);
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[test]
+fn a_name_of_no_ascii_at_all_is_written_exactly_and_read_as_the_platforms_reader_can() {
+    // Short names with no ASCII graphic character: written exactly (read_back checks the
+    // file), read back as themselves on macOS and as the product's id by OCCT's reader on
+    // Linux (label_of): OCCT's bug, followed and said, not worked around.
+    let wrong = misread(&[
+        ("\u{652F}\u{67B6}", "part.silico"),
+        ("\u{FC}", "part.silico"),
+        ("\u{1F600}", "part.silico"),
     ]);
     assert!(wrong.is_empty(), "{wrong:#?}");
 }

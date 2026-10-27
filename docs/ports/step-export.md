@@ -2,7 +2,7 @@
 
 A document's bodies written as a STEP file (ISO 10303-21) that other CAD systems read as solids: each body a product named by its feature, in millimetres, its bytes the same in every run and on every checked platform. This is M4.8's `format: "step"` (docs/design/m4.1-command-api.md, the `export` entry and decision 6: "its header written from the document so its bytes are deterministic"). It sits beside the 3MF export (docs/ports/mesh-export.md) and shares its command, its path rules, and its `left_out`.
 
-**Built (M4.8, `format: "step"`):** `silico_protocol::step_encoded` (every string, as *Strings* says), `Op::ExportStep` and `silico_kernel::export_step` (the recipe below, in the kernel worker, OCCT built with `TKDESTEP`), and the `export` command's STEP path (`silico_core::command::export`): each body a product, its id the feature's ID and its name the feature's, under an assembly named by the document's stem if there are two or more, the header's file name the document's. As Fable decided the contract (2026-10-26): `tolerance` is `null` for STEP and a length for 3MF, each mismatch refused naming it; a STEP object's `triangles`, `vertices`, and `volume` are `null`. The worker reports each part's faces left out (INTERNAL and EXTERNAL) and anything else the writer's check list failed or warned of, which the core refuses (`invalid_result`, naming the feature and the elements), never a file with geometry missing.
+**Built (M4.8, `format: "step"`):** `silico_protocol::step_encoded` (every string, as *Strings* says), `Op::ExportStep` and the STEP worker (`silico-step-worker`, in silico-kernel: the recipe below, OCCT built with `TKDESTEP`, linked into that worker alone), and the `export` command's STEP path (`silico_core::command::export`): each body a product, its id the feature's ID and its name the feature's, under an assembly named by the document's stem if there are two or more, the header's file name the document's. As Fable decided the contract (2026-10-26): `tolerance` is `null` for STEP and a length for 3MF, each mismatch refused naming it; a STEP object's `triangles`, `vertices`, and `volume` are `null`. The worker reports each part's faces left out (INTERNAL and EXTERNAL), anything else the writer's check list failed to transfer, and the faces and face bounds the parts have against those the file holds; the core refuses a failure or a count that differs (`invalid_result`, naming the feature and the elements), never a file with geometry missing. The writer's warnings, which say what it corrected, are logged.
 
 The study before it, and its experiments, follow. The probes ran outside the repository; each, and what it showed, is listed under *Experiments*.
 
@@ -216,6 +216,10 @@ Each file read back with `Part.read` (`TopoShape::importStep`) and `Import.inser
 | box with an INTERNAL face (General Fuse) | **7 → 6** | 0 | **8.3e-2** (the face's area) | yes | |
 
 The plain writer's files read back the same, named `Box 1`, `Fillet 1`, … (the counter).
+
+As built, the oracle's whole case set read back through FreeCAD 1.1.3 (`silico-oracle`'s `step_oracle`): every case within 1e-10 in volume and area, where it was (its tight box and center within 1e-9 of its diagonal), its faces and face bounds all written, its name its label; and two parts placed apart, each at its box by hand.
+
+**A name with no ASCII graphic character reads back as the product's id on Linux** (an OCCT reader bug, followed and said, not worked around; upstream draft for the maintainer to post). `STEPCAFControl_Reader::ReadNames` takes a product's name only if `UsefullLength() > 0`, which counts bytes `isgraph` accepts; glibc accepts no byte past ASCII, in any locale, and macOS accepts most. So 支架, `ü`, or 😀 alone is read on Linux as `f0000003`, its id; a name holding any ASCII graphic character (`Klötzchen`) reads back exactly everywhere. The file holds the name exactly either way (`adversarial_step_oracle`).
 
 ## How it fits Silico
 

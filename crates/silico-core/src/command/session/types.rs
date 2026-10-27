@@ -202,6 +202,21 @@ impl<C> Read<'_, C> {
         self.stop.settle()
     }
 
+    /// `f` given `exporter`, its STEP exports stopped with the read: a cancel, or the
+    /// session closing, kills each one's worker.
+    pub(crate) fn exporting_step<T>(
+        &self,
+        exporter: &dyn crate::step_worker::StepExporter,
+        f: impl FnOnce(&dyn crate::step_worker::StepExporter) -> T,
+    ) -> T {
+        let read = ReadStepExporter {
+            inner: exporter,
+            stop: self.stop,
+            kept: std::sync::Mutex::new(Vec::new()),
+        };
+        f(&read)
+    }
+
     /// `f` given `renderer`, its renders cancelled with the read: a cancel, or the session
     /// closing, cancels each render it asked for (a queued one never sent, a running one's
     /// worker killed).
@@ -216,6 +231,38 @@ impl<C> Read<'_, C> {
             kept: std::sync::Mutex::new(Vec::new()),
         };
         f(&read)
+    }
+}
+
+/// A read's STEP writer: each export it starts stopped when the read is (a cancel, or the
+/// session's close), as [`ReadRenderer`] cancels its renders.
+struct ReadStepExporter<'a> {
+    inner: &'a dyn crate::step_worker::StepExporter,
+    stop: &'a Ticket,
+    kept: std::sync::Mutex<Vec<Arc<dyn super::cancel::Interrupt>>>,
+}
+
+impl crate::step_worker::StepExporter for ReadStepExporter<'_> {
+    fn export_step(
+        &self,
+        export: silico_protocol::ExportStep,
+        started: &dyn Fn(crate::step_worker::StepStop),
+    ) -> Result<(silico_protocol::StepFile, String), crate::Error> {
+        self.inner.export_step(export, &|step_stop| {
+            let stop: Arc<dyn super::cancel::Interrupt> = Arc::new(StepExportStop(step_stop));
+            self.stop.interrupt_with(Arc::downgrade(&stop));
+            crate::worker::lock(&self.kept).push(stop);
+            started(crate::step_worker::StepStop::new(|| {}));
+        })
+    }
+}
+
+/// A STEP export's stop, as a read's stop interrupts it: cancelled or closed, it stops.
+struct StepExportStop(crate::step_worker::StepStop);
+
+impl super::cancel::Interrupt for StepExportStop {
+    fn interrupt(&self, _why: super::cancel::Why) {
+        self.0.stop();
     }
 }
 

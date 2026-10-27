@@ -72,6 +72,9 @@ fn every_oracle_case_written_as_step_reads_back_in_freecad_as_the_solid_it_was()
             case.name,
             file.unwritten
         );
+        // Every face and every face bound written, exactly as many as the solid has.
+        assert_eq!(file.faces.written, file.faces.expected, "{}", case.name);
+        assert_eq!(file.bounds.written, file.bounds.expected, "{}", case.name);
         std::fs::write(
             dir.join(format!("{}.step", case.name)),
             file.step.as_bytes(),

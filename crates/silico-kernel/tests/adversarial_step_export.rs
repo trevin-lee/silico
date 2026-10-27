@@ -184,6 +184,12 @@ fn a_membrane_inside_a_box_is_left_out_and_the_box_written_whole() {
     assert_eq!(file.left_out, [vec![7]]);
     assert!(file.unwritten.is_empty(), "{:?}", file.unwritten);
     assert_eq!(entities(&text(&file), "ADVANCED_FACE"), 6);
+    // Counted without the membrane: six faces, six bounds, all written.
+    let six = silico_protocol::StepCount {
+        expected: 6,
+        written: 6,
+    };
+    assert_eq!((file.faces, file.bounds), (six, six));
 }
 
 #[test]
@@ -207,8 +213,15 @@ fn two_solids_sharing_a_face_are_written_whole_and_nothing_said() {
         .export_step(export(&[(&shape, "f0000001", "Split")]))
         .unwrap();
     let written = entities(&text(&file), "ADVANCED_FACE");
-    assert!(written >= 11, "{written}");
+    assert_eq!(written, 12);
     assert!(file.unwritten.is_empty(), "{:?}", file.unwritten);
+    // Counted as the writer writes them, the shared face once a solid: twelve and twelve,
+    // so one dropped can't hide behind it.
+    let twelve = silico_protocol::StepCount {
+        expected: 12,
+        written: 12,
+    };
+    assert_eq!((file.faces, file.bounds), (twelve, twelve));
 }
 
 #[test]

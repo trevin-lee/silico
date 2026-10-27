@@ -5,7 +5,7 @@
 //! each feature's solid is then meshed at the tolerance on the read's own client of the
 //! kernel (as many at once as the machine runs), joined and checked as a slicer needs
 //! ([`crate::export::printable`]), and written as one 3MF archive
-//! ([`crate::export::three_mf`]); for STEP, every solid is written by the kernel as one
+//! ([`crate::export::three_mf`]); for STEP, every solid is written by the STEP worker as one
 //! file, each a product named by its feature, its header written from the document. Once
 //! the read settles, the file is saved through the writer every command's files share
 //! (decision 35). Nothing is written for a request refused.
@@ -110,18 +110,21 @@ impl<P: Clients + 'static> Sessions<P> {
         let rules = self.write_rules();
         let step = self.step_exporter();
         self.read_current(session, SessionCommand::Export, move |read| {
-            export(
-                read.model(),
-                &request,
-                &ExportOn {
-                    kernel: read.kernel(),
-                    step: &*step,
-                    document: read.path(),
-                    workspace: rules.workspace.as_ref(),
-                    held: &rules.held,
-                    settle: &|| read.settle(),
-                },
-            )
+            // Its STEP writing stopped with the read, as its meshing is (the read's client).
+            read.exporting_step(&*step, |step| {
+                export(
+                    read.model(),
+                    &request,
+                    &ExportOn {
+                        kernel: read.kernel(),
+                        step,
+                        document: read.path(),
+                        workspace: rules.workspace.as_ref(),
+                        held: &rules.held,
+                        settle: &|| read.settle(),
+                    },
+                )
+            })
         })
     }
 }
@@ -262,7 +265,7 @@ fn meshed<K: Kernel>(
     Ok((bytes, answered))
 }
 
-/// `solids` as one STEP file, written by the kernel (docs/ports/step-export.md): each a
+/// `solids` as one STEP file, written by the STEP worker (`on.step`; docs/ports/step-export.md): each a
 /// product, its id the feature's ID and its name the feature's, under an assembly named by
 /// the document's stem if there are two or more; the header's file name the document's;
 /// every string encoded ([`silico_protocol::step_encoded`]), so every name is written as it
@@ -290,7 +293,7 @@ fn stepped<K: Kernel>(
         assembly: text(document.file_stem()),
         file_name: text(document.file_name()),
     };
-    let (file, writer) = on.step.export_step(export).map_err(|e| {
+    let (file, writer) = on.step.export_step(export, &|_| {}).map_err(|e| {
         // A file that took past a request's time is the bodies' to split.
         let e = match e.code() {
             ErrorCode::WorkerTimeout => e.with_suggestion(STEP_TIMED_OUT),
@@ -550,17 +553,17 @@ fn object(solid: &Solid, mesh: &PrintableMesh) -> Result<ExportedObject, Problem
 /// The refusal of a STEP file its writer didn't write whole (docs/ports/step-export.md,
 /// *Edge cases*), never a file with geometry missing: what the writer's check list says it
 /// couldn't transfer of a part (other than the faces left out), one error a part, naming its
-/// feature and the elements at fault by its element map, OCCT's words its cause; and fewer
+/// feature and the elements at fault by its element map, OCCT's words its cause; and other
 /// faces, or face bounds (a face's outer edge and its holes), in the file than the parts
-/// have that bound material, which the writer drops with only a warning. One part's, each
-/// names its feature. None if it's whole.
+/// have that bound material (fewer: the writer drops what it can't map with only a warning).
+/// One part's, each names its feature. None if it's whole.
 fn unwritten(
     model: &Model,
     solids: &[Solid<'_>],
     file: &silico_protocol::StepFile,
 ) -> Option<Problems> {
-    let short = |count: silico_protocol::StepCount| count.written < count.expected;
-    if file.unwritten.is_empty() && !short(file.faces) && !short(file.bounds) {
+    let off = |count: silico_protocol::StepCount| count.written != count.expected;
+    if file.unwritten.is_empty() && !off(file.faces) && !off(file.bounds) {
         return None;
     }
     // Of no part: of the one there is, if there's one.
@@ -621,20 +624,26 @@ fn unwritten(
         refused.push(named(error, solid));
     }
     for (count, what) in [(file.faces, "faces"), (file.bounds, "face bounds")] {
-        if short(count) {
+        if off(count) {
             let solid = of(None);
-            let error = Error::new(
-                ErrorCode::InvalidResult,
+            let message = if count.written < count.expected {
                 format!(
                     "the STEP file holds {} of the {} {what} the bodies have that bound \
                      material: OCCT's writer dropped {}",
                     count.written,
                     count.expected,
                     count.expected - count.written
-                ),
-            )
-            .with_cause("OCCT's writer drops what it can't map with only a warning")
-            .with_suggestion(advice(solid));
+                )
+            } else {
+                format!(
+                    "the STEP file holds {} {what} where the bodies have {} that bound \
+                     material: OCCT's writer didn't write them as they are",
+                    count.written, count.expected
+                )
+            };
+            let error = Error::new(ErrorCode::InvalidResult, message)
+                .with_cause("OCCT's writer drops what it can't map with only a warning")
+                .with_suggestion(advice(solid));
             refused.push(named(error, solid));
         }
     }

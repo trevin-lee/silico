@@ -92,7 +92,11 @@ fn export_step(export: &ExportStep) -> Result<StepFile, Failure> {
         // Refused as the kernel refuses a B-rep (its checksum, its defects), then read again
         // by the writer from the body the checksum was of.
         silico_kernel::from_brep(brep).map_err(failure)?;
-        let body = brep.get(..brep.len() - 4).unwrap_or_default();
+        let body = brep
+            .len()
+            .checked_sub(4)
+            .and_then(|len| brep.get(..len))
+            .unwrap_or_default();
         adding
             .as_mut()
             .add_part(body, &part.id, &part.name)

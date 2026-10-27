@@ -643,15 +643,23 @@ impl crate::step_worker::StepExporter for FakeKernel {
     fn export_step(
         &self,
         export: silico_protocol::ExportStep,
+        started: &dyn Fn(crate::step_worker::StepStop),
     ) -> Result<(silico_protocol::StepFile, String), Error> {
         let request = crate::kernel::KernelRequest::export_step(export)?;
-        match self.submit(self.generation(), request).wait() {
+        let generation = self.generation();
+        let pending = self.submit(generation, request);
+        // Stopped, as the STEP worker is killed: its request superseded.
+        let shared = Arc::clone(&self.shared);
+        started(crate::step_worker::StepStop::new(move || {
+            shared.advance(ClientId::KERNEL, Generation(generation.0 + 1));
+        }));
+        match pending.wait() {
             Outcome::Done(file) => Ok((file?, "fake STEP worker".to_owned())),
             Outcome::Superseded => Err(Error::new(
-                ErrorCode::Internal,
-                "the fake kernel superseded a STEP export",
+                ErrorCode::WorkerCrashed,
+                "the fake STEP worker was stopped",
             )
-            .with_suggestion("fix the test: a STEP export has no generation to supersede")),
+            .with_suggestion("the export was stopped: run it again")),
         }
     }
 }

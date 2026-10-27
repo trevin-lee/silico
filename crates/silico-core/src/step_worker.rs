@@ -21,8 +21,39 @@ pub const STEP_WORKER_ENV: &str = "SILICO_STEP_WORKER";
 pub trait StepExporter: Send + Sync {
     /// `export` written as one STEP file, and the identity of what wrote it (the STEP
     /// worker's build, as a kernel's identity is its worker's: an export's bytes are its
-    /// writer's), checked as [`KernelRequest::export_step`] checks a reply.
-    fn export_step(&self, export: ExportStep) -> Result<(StepFile, String), Error>;
+    /// writer's), checked as [`KernelRequest::export_step`] checks a reply. Once the writing
+    /// has started, `started` is given what stops it (the worker killed), which a cancel or
+    /// the session's close calls (decision 34): stopped, it answers an error, never a file.
+    fn export_step(
+        &self,
+        export: ExportStep,
+        started: &dyn Fn(StepStop),
+    ) -> Result<(StepFile, String), Error>;
+}
+
+/// A shared exporter writes as it does.
+impl<T: StepExporter + ?Sized> StepExporter for Arc<T> {
+    fn export_step(
+        &self,
+        export: ExportStep,
+        started: &dyn Fn(StepStop),
+    ) -> Result<(StepFile, String), Error> {
+        (**self).export_step(export, started)
+    }
+}
+
+/// What stops a STEP export under way ([`StepExporter::export_step`]'s `started`).
+pub struct StepStop(Box<dyn Fn() + Send + Sync>);
+
+impl StepStop {
+    pub fn new(stop: impl Fn() + Send + Sync + 'static) -> Self {
+        Self(Box::new(stop))
+    }
+
+    /// Stops the export.
+    pub fn stop(&self) {
+        (self.0)();
+    }
 }
 
 /// The STEP worker, found once (the one [`STEP_WORKER_ENV`] names, or `silico-step-worker`
@@ -52,10 +83,19 @@ impl StepWorkers {
 }
 
 impl StepExporter for StepWorkers {
-    fn export_step(&self, export: ExportStep) -> Result<(StepFile, String), Error> {
+    fn export_step(
+        &self,
+        export: ExportStep,
+        started: &dyn Fn(StepStop),
+    ) -> Result<(StepFile, String), Error> {
+        let request = KernelRequest::export_step(export)?;
         let exe = self.executable()?;
         let mut worker = exe.spawn()?;
-        let file = KernelRequest::export_step(export)?.run_on(&mut worker, Generation(0))?;
+        let killer = worker.killer();
+        started(StepStop::new(move || {
+            killer.kill();
+        }));
+        let file = request.run_on(&mut worker, Generation(0))?;
         Ok((file, exe.identity().to_owned()))
     }
 }
