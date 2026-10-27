@@ -100,6 +100,8 @@ impl Maker {
 
     /// How a document's feature makes its elements.
     pub fn of(operation: &Operation) -> Maker {
+        #[cfg(test)]
+        MAKERS_READ.with(|read| read.set(read.get() + 1));
         match operation.made() {
             Made::Primitive(primitive) => Maker::Itself(PrimitiveKind::of(&primitive)),
             Made::Boolean(op) => Maker::By(op.into()),
@@ -109,6 +111,19 @@ impl Maker {
             Made::Sweep(kind) => Maker::By(kind.into()),
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many features' makers ([`Maker::of`]) this thread has read.
+    static MAKERS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many features' makers ([`Maker::of`]) this thread has read so far: a test's count of
+/// the features a plan or a read looked at to know what they make.
+#[cfg(test)]
+pub(crate) fn makers_read() -> u64 {
+    MAKERS_READ.with(std::cell::Cell::get)
 }
 
 /// Every type word, as a message lists them: `box`, ..., `chamfer`.

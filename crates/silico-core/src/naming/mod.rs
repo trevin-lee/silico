@@ -12,6 +12,8 @@ mod build;
 pub mod freecad;
 mod parse;
 
+#[cfg(test)]
+pub(crate) use parse::makers_read;
 pub use parse::{Maker, NameError};
 
 use std::collections::{BTreeMap, BTreeSet};
