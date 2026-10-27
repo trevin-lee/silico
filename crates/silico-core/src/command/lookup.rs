@@ -193,11 +193,7 @@ impl<'m> Lookup<'m> {
             );
             return None;
         }
-        let hit = self.solids.iter().find_map(|id| {
-            let map = model.element_map(id)?;
-            map.element(&name).map(|element| (*id, map, element))
-        });
-        let Some((id, map, element)) = hit else {
+        let Some((id, map, element)) = self.located(&name) else {
             // An element of a feature that failed, was broken, or was blocked is in no
             // solid: that feature's own failure is why, said once (as `elements` and the
             // measures answer one: M4.1 section 7, M4.5), never a
@@ -236,6 +232,26 @@ impl<'m> Lookup<'m> {
         Some((id, map, element))
     }
 
+    /// The solid `name`'s element is in, its map, and the element, if the request's solids
+    /// have it: the first in timeline order that does. Looked for in every body, it can be
+    /// in one only, its feature's live body ([`Model::live_body`]), so it's looked for there,
+    /// one map read, not one a body; and, not found there, in each, as before, so what's
+    /// said of a name found nowhere doesn't change.
+    fn located(&self, name: &Name) -> Option<(&'m FeatureId, &'m ElementMap, ElementRef)> {
+        let model = self.model;
+        let in_solid = |id: &'m FeatureId| {
+            let map = model.element_map(id)?;
+            map.element(name).map(|element| (id, map, element))
+        };
+        let live = if self.asked {
+            None
+        } else {
+            model.live_body(name.feature())
+        };
+        live.and_then(in_solid)
+            .or_else(|| self.solids.iter().find_map(|id| in_solid(id)))
+    }
+
     /// A refusal of the request's own, kept with the lookup's to say in its order.
     pub(crate) fn refuse(&mut self, error: Error) {
         self.refused.push(error);
@@ -253,6 +269,7 @@ mod tests {
     use crate::document::Checked;
     use crate::fake::FakeKernel;
     use crate::recompute::{Recompute, RunOutcome};
+    use std::collections::BTreeSet;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -273,6 +290,227 @@ mod tests {
             Ok(Ok(RunOutcome::Published(model))) => model,
             _ => panic!("not published"),
         }
+    }
+
+    fn published(checked: Checked) -> Arc<Model> {
+        let engine = Recompute::new(FakeKernel::new(2).unwrap())
+            .with_sketches(crate::fake::FakeSketches::new());
+        match engine
+            .start(Arc::new(checked))
+            .wait_timeout(Duration::from_secs(120))
+        {
+            Ok(Ok(RunOutcome::Published(model))) => model,
+            _ => panic!("not published"),
+        }
+    }
+
+    fn checked(features: &[String]) -> Checked {
+        let text = format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+            features.join(", ")
+        );
+        Checked::new(crate::document::read(text.as_bytes()).unwrap()).unwrap()
+    }
+
+    fn a_box(id: &str, x: usize) -> String {
+        format!(
+            r#"{{"id": "{id}", "type": "box", "v": 1, "name": "Block", "position": [{x}, 0, 0], "length": 1, "width": 1, "height": 1}}"#
+        )
+    }
+
+    /// This thread's map reads (features visited by `Model::element_map`) and lookups in
+    /// indexes so far.
+    fn counted() -> (u64, u64) {
+        (crate::recompute::walked(), crate::document::looked_up())
+    }
+
+    #[test]
+    fn a_name_in_every_body_reads_one_map_not_one_a_body_before_its_own() {
+        // #187's architecture review: a name looked for in every body read each body's map
+        // in timeline order until one had it, so B names, one of each of B bodies, read
+        // 1 + 2 + ... + B = B (B + 1) / 2 maps: 500,500 for 1,000 bodies, 8,002,000 for
+        // 4,000. Its element can be in no body but its feature's live body, so that's the
+        // one read. B boxes, each its own body, and a face of each named: B map reads (a
+        // box is made of nothing, so a read visits it alone, named yet or not). And 3 B
+        // lookups by ID: one as the name is parsed (what its feature is), one for its
+        // feature's live body, and one as that body's map is read. Each body's place is found
+        // as the timeline is walked once, with no lookup. The scan's were 1 + (i + 1) for the
+        // ith name, B + B (B + 1) / 2 in all. Counted, not timed, where maps are read and
+        // IDs looked up, so the scan put back is counted as the live body's read is.
+        for b in [1_000, 4_000] {
+            let ids: Vec<String> = (0..b).map(|i| format!("b{i:07}")).collect();
+            let features: Vec<String> =
+                ids.iter().enumerate().map(|(i, id)| a_box(id, i)).collect();
+            let model = published(checked(&features));
+            assert_eq!(model.bodies().len(), b);
+            let mut lookup = Lookup::new(&model, None, FACES_AND_EDGES);
+            let (walked, looked_up) = counted();
+            for (i, id) in ids.iter().enumerate() {
+                let (found, element) = lookup
+                    .find_element(&format!("highlight.{i}"), &format!("{id}.box.Face3"))
+                    .unwrap();
+                assert_eq!(found.as_str(), id);
+                assert_eq!(element.kind, ElementKind::Face);
+            }
+            let (walked, looked_up) = (counted().0 - walked, counted().1 - looked_up);
+            let b = b as u64;
+            assert_eq!(walked, b, "{walked} map reads for {b} names");
+            assert_eq!(looked_up, 3 * b, "{looked_up} lookups for {b} names");
+            assert!(lookup.finish().is_ok());
+        }
+    }
+
+    #[test]
+    fn a_name_is_found_in_the_body_the_scan_of_every_body_finds_it_in_or_in_none() {
+        // The live body is the scan's first match, whatever the name: every name of every
+        // built feature's map (bodies', and those of features consumed, some of which no
+        // body keeps), found by `located` and by the scan of every body in timeline order
+        // that it replaced, in a model of several bodies: two pads of one sketch, a fuse of
+        // two boxes filleted twice, a pad on a box, a cut of a pad, and a box alone. And a
+        // sketch's own names, which no body holds, and a name of a feature that isn't one.
+        const SKETCH: &str = r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "Outline", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 4, "y": 0, "construction": false}, {"id": "pa000003", "x": 4, "y": 2, "construction": false}, {"id": "pa000004", "x": 0, "y": 2, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": []}"#;
+        let pad = |id: &str, base: &str, length: u32| {
+            format!(
+                r#"{{"id": "{id}", "type": "pad", "v": 1, "name": "Pad", {base}"sketch": "s0000001", "extent": {{"type": "one_side", "length": {length}, "reversed": false}}}}"#
+            )
+        };
+        let operation = |id: &str, kind: &str, base: &str, tool: &str| {
+            format!(
+                r#"{{"id": "{id}", "type": "{kind}", "v": 1, "name": "Op", "base": "{base}", "tool": "{tool}"}}"#
+            )
+        };
+        let fillet = |id: &str, base: &str, edge: &str| {
+            format!(
+                r#"{{"id": "{id}", "type": "fillet", "v": 1, "name": "Round", "base": "{base}", "edges": ["{edge}"], "radius": 0.1}}"#
+            )
+        };
+        let features = vec![
+            SKETCH.to_owned(),
+            pad("p0000001", "", 10),
+            pad("p0000002", "", 5),
+            a_box("a0000001", 0),
+            a_box("a0000002", 20),
+            operation("v0000001", "fuse", "a0000001", "a0000002"),
+            fillet("f0000001", "v0000001", "a0000001.box.Edge1"),
+            fillet("f0000002", "f0000001", "a0000002.box.Edge2"),
+            a_box("c0000001", 40),
+            pad("p0000003", r#""base": "c0000001", "#, 3),
+            a_box("d0000001", 60),
+            operation("k0000001", "cut", "p0000001", "d0000001"),
+            a_box("e0000001", 80),
+        ];
+        let model = published(checked(&features));
+        assert!(
+            model.errors().next().is_none(),
+            "{:?}",
+            model.errors().collect::<Vec<_>>()
+        );
+        let bodies: Vec<&str> = model.bodies().iter().map(FeatureId::as_str).collect();
+        assert_eq!(
+            bodies,
+            ["p0000002", "f0000002", "p0000003", "k0000001", "e0000001"]
+        );
+        let lookup = Lookup::new(&model, None, FACES_AND_EDGES);
+        // The scan of every body it replaced, as it was.
+        let scanned = |name: &Name| {
+            lookup.solids.iter().find_map(|id| {
+                let map = model.element_map(id)?;
+                map.element(name).map(|element| (*id, map, element))
+            })
+        };
+        // Every map named first, so a read of one visits it alone.
+        for (id, _) in model.features() {
+            model.element_map(id);
+        }
+        let same = |name: &Name| {
+            let before = counted().0;
+            let found = lookup.located(name);
+            let read = counted().0 - before;
+            // Found, it was found in the first map read: its live body's, even for a name
+            // of a feature three consumers back from its body (a box under a fuse and two
+            // fillets).
+            if found.is_some() {
+                assert_eq!(read, 1, "{name}");
+            }
+            let scan = scanned(name);
+            assert_eq!(
+                found.map(|(id, map, element)| (id, map as *const ElementMap, element)),
+                scan.map(|(id, map, element)| (id, map as *const ElementMap, element)),
+                "{name}"
+            );
+            found.map(|(id, _, _)| (name.feature().as_str().to_owned(), id.as_str()))
+        };
+        let (mut found, mut not) = (BTreeSet::new(), 0);
+        for (id, _) in model.features() {
+            let Some(map) = model.element_map(id) else {
+                continue;
+            };
+            for (_, names) in map.iter() {
+                for name in names {
+                    match same(name) {
+                        Some(pair) => {
+                            found.insert(pair);
+                        }
+                        None => not += 1,
+                    }
+                }
+            }
+        }
+        // Names found in each body, of features down each chain: each box's three
+        // consumers back (the fake's fillets name nothing of their own), a pad's base, the
+        // cut's base; and of the consumed features' elements, some found nowhere.
+        let pair = |feature: &str, body: &'static str| (feature.to_owned(), body);
+        for expected in [
+            pair("a0000001", "f0000002"),
+            pair("a0000002", "f0000002"),
+            pair("c0000001", "p0000003"),
+            pair("p0000003", "p0000003"),
+            pair("p0000001", "k0000001"),
+            pair("k0000001", "k0000001"),
+            pair("p0000002", "p0000002"),
+            pair("e0000001", "e0000001"),
+        ] {
+            assert!(found.contains(&expected), "{expected:?} in {found:?}");
+        }
+        assert!(not > 0);
+        // A sketch's names: in no body, and found in none.
+        let sketch = FeatureId::new("s0000001").unwrap();
+        for (kind, element) in [
+            (ElementKind::Edge, "na000001"),
+            (ElementKind::Vertex, "pa000001"),
+        ] {
+            let name = Name::Sketch {
+                feature: sketch.clone(),
+                kind,
+                id: crate::document::ElementId::new(element).unwrap(),
+            };
+            assert_eq!(same(&name), None);
+        }
+        // A name of a feature the document doesn't have.
+        let nowhere = Name::Element {
+            feature: FeatureId::new("z0000001").unwrap(),
+            made: crate::naming::TypeWord::Primitive(crate::naming::PrimitiveKind::Box),
+            element: ElementRef::face(1),
+        };
+        assert_eq!(same(&nowhere), None);
+        // Each body's own faces and edges, as text, found in it (vertices aren't
+        // highlights).
+        let mut lookup = Lookup::new(&model, None, FACES_AND_EDGES);
+        for body in model.bodies() {
+            let map = model.element_map(body).unwrap();
+            for (element, names) in map.iter() {
+                if element.kind == ElementKind::Vertex {
+                    continue;
+                }
+                let text = names[0].to_string();
+                assert_eq!(
+                    lookup.find_element("highlight.0", &text),
+                    Some((body, element)),
+                    "{text}"
+                );
+            }
+        }
+        assert!(lookup.finish().is_ok());
     }
 
     #[test]
