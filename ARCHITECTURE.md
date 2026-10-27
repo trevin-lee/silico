@@ -29,9 +29,10 @@ This document records decisions. The **Invariants** section is enforced by the r
 │                                   recompute scheduler · cache · errors       │
 └──────────────────────────────────────┬───────────────────────────────────────┘
                                        │ IPC (silico-protocol)
-         ┌──────────────┬──────────────┼───────────────┬───────────────┐
-   kernel worker  kernel worker  sketch worker  assembly worker  render worker
-       (OCCT)         (OCCT)       (PlaneGCS)    (OndselSolver)    (lavapipe)
+      ┌────────────┬────────────┬──────┴──────┬─────────────┬─────────────┐
+    kernel       kernel       sketch       assembly       render         STEP
+    worker       worker       worker        worker        worker        worker
+    (OCCT)       (OCCT)     (PlaneGCS)  (OndselSolver)  (lavapipe)   (OCCT STEP)
 ```
 
 - **Worker pool.** Up to one kernel worker a core, each started when a request first needs it and kept, so a rebuild pays only for the workers it uses at once. Independent branches of the feature DAG recompute in parallel across them. OCCT isn't reliably thread-safe, so process-level parallelism is the safe route.
@@ -71,7 +72,7 @@ Evidence, in `tests/determinism/`: with OCCT 7.9.3, PR #1600, and the full shim,
 |---|---|
 | `silico-core` | Document model, feature DAG, recompute, topological naming, cache, serialization, command API |
 | `silico-protocol` | IPC message types shared by the core and workers. Few dependencies. |
-| `silico-kernel` | Thin C++ shim over OCCT plus the worker binary. The only crate that links OCCT. |
+| `silico-kernel` | Thin C++ shim over OCCT plus the worker binaries: the kernel worker, and the STEP worker (OCCT's STEP writer, `TKDESTEP`, linked into it alone; started for each export, M4.8). The only crate that links OCCT. |
 | `silico-sketch` | PlaneGCS binding and sketch worker |
 | `silico-worker` | What every worker process is: the inherited socket, the request loop, and logging, shared by every worker; the floating-point trap checks, by those whose output is a result |
 | `silico-assembly` | OndselSolver binding and assembly worker (later) |
