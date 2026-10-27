@@ -66,7 +66,7 @@ use silico_protocol::{Description, Failure};
 
 mod at;
 use at::Meta;
-pub(crate) use at::path_of;
+pub(crate) use at::{open_dir, path_of};
 
 /// The first bytes of every entry, naming its format: a change to the format changes it.
 /// It's part of every entry's key too, so an entry of another format is never looked for.

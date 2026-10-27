@@ -132,14 +132,8 @@ impl Step {
 /// only if it is the directory `canonical` names now (the same device and inode), so a link
 /// put there meanwhile gives none, never its target's spelling.
 fn held_spelling(canonical: &Path) -> Option<PathBuf> {
-    use rustix::fs::{CWD, Mode, OFlags};
-    let handle = rustix::fs::openat(
-        CWD,
-        canonical,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .ok()?;
+    use rustix::fs::CWD;
+    let handle = crate::cache::open_dir(CWD, canonical).ok()?;
     let opened = rustix::fs::fstat(&handle).ok()?;
     let named = rustix::fs::statat(CWD, canonical, rustix::fs::AtFlags::SYMLINK_NOFOLLOW).ok()?;
     if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino) {
