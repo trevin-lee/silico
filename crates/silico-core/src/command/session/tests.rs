@@ -3750,11 +3750,12 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
             erased(s.export(
                 at,
                 crate::command::export::Export {
-                    format: crate::command::export::ExportFormat::ThreeMf,
+                    format: crate::command::export::ExportFormat::ThreeMf {
+                        tolerance: crate::document::Length::from_nm(100_000),
+                    },
                     path: never.clone(),
                     replace: false,
                     features: None,
-                    tolerance: crate::document::Length::from_nm(100_000),
                 },
             ))
         }),

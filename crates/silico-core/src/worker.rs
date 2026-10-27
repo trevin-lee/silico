@@ -96,15 +96,18 @@ pub enum WorkerKind {
     Sketch,
     /// re_renderer's, on lavapipe (silico-render).
     Render,
+    /// OCCT's STEP writer (silico-kernel's silico-step-worker).
+    Step,
 }
 
 impl WorkerKind {
-    /// As errors name it: "kernel worker", "sketch worker", "render worker".
+    /// As errors name it: "kernel worker", "sketch worker", "render worker", "STEP worker".
     pub fn noun(self) -> &'static str {
         match self {
             WorkerKind::Kernel => "kernel worker",
             WorkerKind::Sketch => "sketch worker",
             WorkerKind::Render => "render worker",
+            WorkerKind::Step => "STEP worker",
         }
     }
 
@@ -114,6 +117,7 @@ impl WorkerKind {
             WorkerKind::Kernel => "the kernel",
             WorkerKind::Sketch => "the sketch solver",
             WorkerKind::Render => "the renderer",
+            WorkerKind::Step => "the STEP writer",
         }
     }
 }

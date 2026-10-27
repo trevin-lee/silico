@@ -480,6 +480,7 @@ mod ffi {
         fn edge_deflections(self: &ExportTriangulation) -> &[f64];
         fn edge_node_counts(self: &ExportTriangulation) -> &[u32];
         fn edge_nodes(self: &ExportTriangulation) -> &[u32];
+
         fn shape_to_brep(shape: &Shape) -> Result<UniquePtr<CxxString>>;
         fn shape_from_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
         fn shape_from_text_brep(brep: &[u8]) -> Result<UniquePtr<Shape>>;
@@ -503,6 +504,12 @@ mod ffi {
         fn debug_box_with_loose_edge() -> Result<UniquePtr<Shape>>;
         #[cfg(feature = "test_ops")]
         fn debug_empty_shape() -> Result<UniquePtr<Shape>>;
+        #[cfg(feature = "test_ops")]
+        fn debug_box_with_wireless_face() -> Result<UniquePtr<Shape>>;
+        #[cfg(feature = "test_ops")]
+        fn debug_box_with_empty_wire_face() -> Result<UniquePtr<Shape>>;
+        #[cfg(feature = "test_ops")]
+        fn debug_box_with_internal_wire_face() -> Result<UniquePtr<Shape>>;
     }
 }
 
@@ -2350,6 +2357,24 @@ pub mod test_ops {
     /// A compound with nothing in it.
     pub fn empty_shape() -> Result<super::Shape, KernelError> {
         Ok(super::Shape::new(ffi::debug_empty_shape()?))
+    }
+
+    /// A compound of a 10 × 20 × 30 box and a face with a surface and no wires (Face7),
+    /// which OCCT's STEP writer drops with only a warning.
+    pub fn box_with_wireless_face() -> Result<super::Shape, KernelError> {
+        Ok(super::Shape::new(ffi::debug_box_with_wireless_face()?))
+    }
+
+    /// A compound of a 10 × 20 × 30 box and a square face with a second, empty wire, which
+    /// OCCT's STEP writer drops with only a warning.
+    pub fn box_with_empty_wire_face() -> Result<super::Shape, KernelError> {
+        Ok(super::Shape::new(ffi::debug_box_with_empty_wire_face()?))
+    }
+
+    /// A compound of a 10 × 20 × 30 box and a square face with an INTERNAL wire, which OCCT's
+    /// STEP writer skips on purpose.
+    pub fn box_with_internal_wire_face() -> Result<super::Shape, KernelError> {
+        Ok(super::Shape::new(ffi::debug_box_with_internal_wire_face()?))
     }
 }
 

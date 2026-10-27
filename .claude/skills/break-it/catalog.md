@@ -166,6 +166,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Values nested in an object (`size.distance`) refused by a helper that names its own key: the reader says `distance`, the gate and schema `size.distance`
 - Names and notes shown to people (an outline, a diff view) with every bidi control, not only U+202A..202E and U+200E/F: the isolates U+2066..2069 and U+061C slip past most hand lists, and General_Category=Cf (soft hyphen, tag characters U+E0020..E007F) prints as nothing
 - Size limits a gate counts against what the translation really sends (the origin's 2 values, while the axes' ends add 4 more and 3 pieces of geometry): a sketch at the gate's limit passes, and the worker refuses it
+- Names in exported text formats whose writer wraps long strings (OCCT's STEP writer breaks a string past 72 columns at a space, else a `\`, else a `_`, else anywhere, and its reader decodes `\X2\` runs and `''` pairs before it drops the line ends): 40 `ü` or 100 `'` read back otherwise in FreeCAD; read every exported name back through a real consumer, not the writer's bytes
+- Apostrophes before `,` or `)` in a STEP string (`'Bracket ''A'', left'`): OCCT's lexer ends a string at an apostrophe followed by either, so the name is cut short or the entity misread, from FreeCAD's own export too
+- Writers quadratic in a string's length (OCCT's STEP writer copies the rest of a long string at each 72-column wrap): a 4 MiB name takes 36 s, an 8 MiB one runs past the worker's 60 s
 
 ## Command line
 
@@ -232,6 +235,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Resource stops decided by a proxy (pixels, faces) on a worker kept warm: one face of 2 million triangles is "small" and the kept worker holds 1 GB; read the worker's RSS after the request the proxy calls small
 - Idle timers restarted by every request taken from the queue, cancelled ones included: ask-and-cancel in a loop and see whether the worker is ever stopped
 - A list from a worker or OCCT deduplicated with `Vec::contains`: 200,000 distinct entries, 2.4 MB of a 512 MiB frame, are 2·10^10 comparisons; time it, and give exactly one more than its words name ("and 1 more pair", not "pairs"), and none at all
+- Process-wide statics in OCCT's writers (`static Standard_Integer id` for each STEP NEXT_ASSEMBLY_USAGE_OCCURRENCE): a determinism test of one-part files never reaches them; compare an assembly's bytes in a fresh worker and in one that wrote an assembly before
+- Checks that count entities written against the topology (STEP face surfaces against `TopExp::MapShapes` faces): a face two solids of a compound share is written once a solid, so an exact count refuses a whole file as missing faces
 
 ## Recompute and scheduling
 

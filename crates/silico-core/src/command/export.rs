@@ -1,21 +1,23 @@
-//! `export` (docs/design/m4.1-command-api.md, `export`; docs/ports/mesh-export.md): the
-//! current model's bodies, or the features asked, as a printable 3MF file. The request is
-//! checked in M4.1's order (the format, the tolerance, the path, the features), every reason
-//! found refused at once; then each feature's solid is meshed at the tolerance on the read's
-//! own client of the kernel (as many at once as the machine runs), joined and checked as a
-//! slicer needs
-//! ([`crate::export::printable`]), written as one 3MF archive ([`crate::export::three_mf`]),
-//! and, once the read settles, saved through the writer every command's files share
+//! `export` (docs/design/m4.1-command-api.md, `export`; docs/ports/mesh-export.md,
+//! docs/ports/step-export.md): the current model's bodies, or the features asked, as a
+//! printable 3MF file or a STEP file. The request is checked in M4.1's order (the format,
+//! the tolerance, the path, the features), every reason found refused at once. For 3MF,
+//! each feature's solid is then meshed at the tolerance on the read's own client of the
+//! kernel (as many at once as the machine runs), joined and checked as a slicer needs
+//! ([`crate::export::printable`]), and written as one 3MF archive
+//! ([`crate::export::three_mf`]); for STEP, every solid is written by the STEP worker as one
+//! file, each a product named by its feature, its header written from the document. Once
+//! the read settles, the file is saved through the writer every command's files share
 //! (decision 35). Nothing is written for a request refused.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::{Problems, Running, SessionCommand, SessionId, Sessions};
 use crate::document::{FeatureId, Length, Measure};
 use crate::export::{
-    Object, PrintableMesh, UNHOLDABLE_ADVICE, holds_in_3mf, printable, three_mf, unholdable,
-    within_triangles,
+    Object, PrintableMesh, UNHOLDABLE_ADVICE, face_names, holds_in_3mf, printable, three_mf,
+    unholdable, within_triangles,
 };
 use crate::file::{self, Output};
 use crate::kernel::{Clients, Kernel, KernelRequest};
@@ -23,23 +25,36 @@ use crate::pool::{Outcome, Pending};
 use crate::recompute::Model;
 use crate::{Error, ErrorCode};
 
-/// The formats `export` writes, by the words a request gives them.
+/// The formats `export` writes, by the words a request gives them, each with what it takes:
+/// a mesh format its tolerance, an exact one nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ExportFormat {
-    /// 3MF (3MF Core 1.4.0): each body a mesh, as a slicer prints it.
-    ThreeMf,
+    /// 3MF (3MF Core 1.4.0): each body a mesh, as a slicer prints it, meshed at
+    /// `tolerance`: the mesher's linear deflection, as FreeCAD's export takes it.
+    ThreeMf { tolerance: Length },
+    /// STEP (ISO 10303-21, AP214): each body's exact B-rep, as other CAD systems read it.
+    Step,
 }
 
 impl ExportFormat {
     /// The format's word, as a request gives it, and its file's extension.
     pub const fn name(self) -> &'static str {
         match self {
-            ExportFormat::ThreeMf => "3mf",
+            ExportFormat::ThreeMf { .. } => "3mf",
+            ExportFormat::Step => "step",
+        }
+    }
+
+    /// The mesh's tolerance, for a mesh format; none for an exact one.
+    pub const fn tolerance(self) -> Option<Length> {
+        match self {
+            ExportFormat::ThreeMf { tolerance } => Some(tolerance),
+            ExportFormat::Step => None,
         }
     }
 }
 
-/// The tolerance an export is meshed at when a client gives none (a request always gives
+/// The tolerance a 3MF export is meshed at when a client gives none (a request always gives
 /// one; `silico export` without `--tolerance`): FreeCAD's 0.1 mm
 /// ([`silico_protocol::DEFAULT_EXPORT_TOLERANCE`]), as a length.
 pub const DEFAULT_TOLERANCE: Length = Length::from_nm(100_000);
@@ -56,8 +71,6 @@ pub struct Export {
     /// The features whose solids to write, each by its ID, in the file's order; or none,
     /// for every body, in the timeline's order.
     pub features: Option<Vec<FeatureId>>,
-    /// The mesh's tolerance: the mesher's linear deflection, as FreeCAD's export takes it.
-    pub tolerance: Length,
 }
 
 /// What an export answers (M4.1's result): where the file was written, as the request gave
@@ -69,17 +82,24 @@ pub struct Exported {
     pub objects: Vec<ExportedObject>,
 }
 
-/// One object of an export: its feature and name, its mesh's triangles and vertices, the
-/// mesh's volume (computed in doubles from the coordinates as written), and the faces left
-/// out of it as bounding no material, by their names.
+/// One object of an export: its feature and name, its mesh, for a mesh format, and the
+/// faces left out of the file as bounding no material, by their names.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExportedObject {
     pub feature: FeatureId,
     pub name: String,
+    /// The mesh written, for a mesh format (3MF); none for an exact one (STEP).
+    pub mesh: Option<MeshWritten>,
+    pub left_out: Vec<String>,
+}
+
+/// An object's mesh, as written: its triangles and vertices, and its volume, computed in
+/// doubles from the coordinates as written.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeshWritten {
     pub triangles: u64,
     pub vertices: u64,
     pub volume: Measure,
-    pub left_out: Vec<String>,
 }
 
 impl<P: Clients + 'static> Sessions<P> {
@@ -88,17 +108,23 @@ impl<P: Clients + 'static> Sessions<P> {
     /// file written once the read settles, so a cancelled export leaves no trace.
     pub fn export(&self, session: &SessionId, request: Export) -> Running<Exported> {
         let rules = self.write_rules();
+        let step = self.step_exporter();
         self.read_current(session, SessionCommand::Export, move |read| {
-            export(
-                read.model(),
-                &request,
-                &ExportOn {
-                    kernel: read.kernel(),
-                    workspace: rules.workspace.as_ref(),
-                    held: &rules.held,
-                    settle: &|| read.settle(),
-                },
-            )
+            // Its STEP writing stopped with the read, as its meshing is (the read's client).
+            read.exporting_step(&*step, |step| {
+                export(
+                    read.model(),
+                    &request,
+                    &ExportOn {
+                        kernel: read.kernel(),
+                        step,
+                        document: read.path(),
+                        workspace: rules.workspace.as_ref(),
+                        held: &rules.held,
+                        settle: &|| read.settle(),
+                    },
+                )
+            })
         })
     }
 }
@@ -107,6 +133,11 @@ impl<P: Clients + 'static> Sessions<P> {
 /// must keep clear of (decision 35), and the settle that comes before it.
 pub struct ExportOn<'a, K: Kernel> {
     pub kernel: &'a K,
+    /// What writes a STEP file: the STEP worker (`step_worker::StepWorkers`), or a test's.
+    pub step: &'a dyn crate::step_worker::StepExporter,
+    /// The document's path, whose file name a STEP file's header gives, and whose stem
+    /// names its assembly.
+    pub document: &'a str,
     /// The workspace a file written must be inside, if the sessions have one: a relative
     /// path is relative to its root.
     pub workspace: Option<&'a file::Workspace>,
@@ -132,7 +163,7 @@ pub fn export<K: Kernel>(
     let _span = tracing::info_span!(
         "export",
         format = request.format.name(),
-        tolerance = request.tolerance.mm()
+        tolerance = request.format.tolerance().map(Length::mm)
     )
     .entered();
     let output = Output {
@@ -144,7 +175,26 @@ pub fn export<K: Kernel>(
         held: on.held,
     };
     let solids = checked(model, request, &output)?;
-    let tolerance = request.tolerance.mm();
+    let (bytes, objects) = match request.format {
+        ExportFormat::ThreeMf { tolerance } => meshed(model, &solids, tolerance.mm(), on)?,
+        ExportFormat::Step => stepped(model, &solids, on)?,
+    };
+    (on.settle)().map_err(Problems::from)?;
+    file::write_output(&request.path, &bytes, &output).map_err(Problems::from)?;
+    Ok(Exported {
+        path: request.path.clone(),
+        bytes: bytes.len() as u64,
+        objects,
+    })
+}
+
+/// `solids` as a 3MF archive, each meshed at `tolerance` mm, and each object as written.
+fn meshed<K: Kernel>(
+    model: &Model,
+    solids: &[Solid<'_>],
+    tolerance: f64,
+    on: &ExportOn<'_, K>,
+) -> Result<(Vec<u8>, Vec<ExportedObject>), Problems> {
     let ask = |solid: &Solid| {
         KernelRequest::export_mesh(&solid.built.shape, tolerance)
             .map(|request| on.kernel.submit(on.kernel.generation(), request))
@@ -173,8 +223,8 @@ pub fn export<K: Kernel>(
                 .with_suggestion(crate::worker::SILICO_BUG),
             ));
         };
-        // Each refusal names the feature whose solid it's of; a mesh that took past a kernel
-        // request's time is the tolerance's to change (M4.1's `export`).
+        // A mesh that took past a kernel request's time is the tolerance's to change (M4.1's
+        // `export`).
         let at_feature = |e: Error| {
             let e = match e.code() {
                 ErrorCode::WorkerTimeout => e.with_suggestion(TIMED_OUT),
@@ -212,14 +262,75 @@ pub fn export<K: Kernel>(
         .zip(&meshes)
         .map(|(solid, mesh)| object(solid, mesh))
         .collect::<Result<Vec<_>, _>>()?;
-    (on.settle)().map_err(Problems::from)?;
-    file::write_output(&request.path, &bytes, &output).map_err(Problems::from)?;
-    Ok(Exported {
-        path: request.path.clone(),
-        bytes: bytes.len() as u64,
-        objects: answered,
-    })
+    Ok((bytes, answered))
 }
+
+/// `solids` as one STEP file, written by the STEP worker (`on.step`; docs/ports/step-export.md): each a
+/// product, its id the feature's ID and its name the feature's, under an assembly named by
+/// the document's stem if there are two or more; the header's file name the document's;
+/// every string encoded ([`silico_protocol::step_encoded`]), so every name is written as it
+/// is. Each object's faces left out named by its feature's element map.
+fn stepped<K: Kernel>(
+    model: &Model,
+    solids: &[Solid<'_>],
+    on: &ExportOn<'_, K>,
+) -> Result<(Vec<u8>, Vec<ExportedObject>), Problems> {
+    let document = Path::new(on.document);
+    let text = |component: Option<&std::ffi::OsStr>| {
+        silico_protocol::step_encoded(
+            &component.map_or_else(String::new, |c| c.to_string_lossy().into_owned()),
+        )
+    };
+    let export = silico_protocol::ExportStep {
+        parts: solids
+            .iter()
+            .map(|solid| silico_protocol::StepPart {
+                shape: solid.built.shape.clone(),
+                id: silico_protocol::step_encoded(solid.id.as_str()),
+                name: silico_protocol::step_encoded(solid.name),
+            })
+            .collect(),
+        assembly: text(document.file_stem()),
+        file_name: text(document.file_name()),
+    };
+    let (file, writer) = on.step.export_step(export, &|_| {}).map_err(|e| {
+        // A file that took past a request's time is the bodies' to split.
+        let e = match e.code() {
+            ErrorCode::WorkerTimeout => e.with_suggestion(STEP_TIMED_OUT),
+            _ => e,
+        };
+        Problems::from(match solids {
+            // One part: whatever the writer refused is its.
+            [solid] => super::of_solid(solid.id, e),
+            _ => e,
+        })
+    })?;
+    // Its bytes are its writer's: which build wrote it, as a kernel's identity keys its results.
+    tracing::info!(writer = %writer, bytes = file.step.as_bytes().len(), "STEP file written");
+    if let Some(refused) = unwritten(model, solids, &file) {
+        return Err(refused);
+    }
+    let objects = solids
+        .iter()
+        .zip(&file.left_out)
+        .map(|(solid, faces)| {
+            let left_out = face_names(model.element_map(solid.id), faces)
+                .map_err(|e| super::of_solid(solid.id, e))?;
+            Ok(ExportedObject {
+                feature: solid.id.clone(),
+                name: solid.name.to_owned(),
+                mesh: None,
+                left_out,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()
+        .map_err(Problems::from)?;
+    Ok((file.step.into_bytes(), objects))
+}
+
+/// What a STEP export that took past a request's time suggests.
+const STEP_TIMED_OUT: &str =
+    "export fewer features at once: the STEP writer writes every body in one request";
 
 /// What an export whose mesh took past a kernel request's time suggests.
 const TIMED_OUT: &str =
@@ -244,7 +355,9 @@ fn checked<'m>(
     output: &Output,
 ) -> Result<Vec<Solid<'m>>, Problems> {
     let mut refused = Problems::none();
-    if silico_protocol::check_export_tolerance(request.tolerance.mm()).is_err() {
+    if let Some(tolerance) = request.format.tolerance()
+        && silico_protocol::check_export_tolerance(tolerance.mm()).is_err()
+    {
         // In the document's own numbers, as the request wrote it.
         let bound = |mm: f64| Length::rounded(mm).map_or_else(|| mm.to_string(), |l| l.to_string());
         refused.push(
@@ -254,7 +367,7 @@ fn checked<'m>(
                     "tolerance must be a length from {} mm to {} mm, got {}",
                     bound(silico_protocol::MIN_EXPORT_TOLERANCE),
                     bound(silico_protocol::MAX_EXPORT_TOLERANCE),
-                    request.tolerance
+                    tolerance
                 ),
             )
             .with_parameter("tolerance")
@@ -297,7 +410,8 @@ fn checked<'m>(
             }
         };
         let name = features.get(id).copied().unwrap_or(id.as_str());
-        if !holds_in_3mf(name) {
+        // STEP encodes every character; XML 1.0 holds most.
+        if matches!(request.format, ExportFormat::ThreeMf { .. }) && !holds_in_3mf(name) {
             refused.push_with(|| {
                 Error::new(
                     ErrorCode::InvalidInput,
@@ -427,11 +541,113 @@ fn object(solid: &Solid, mesh: &PrintableMesh) -> Result<ExportedObject, Problem
     Ok(ExportedObject {
         feature: solid.id.clone(),
         name: solid.name.to_owned(),
-        triangles: mesh.triangles().len() as u64,
-        vertices: mesh.vertices().len() as u64,
-        volume,
+        mesh: Some(MeshWritten {
+            triangles: mesh.triangles().len() as u64,
+            vertices: mesh.vertices().len() as u64,
+            volume,
+        }),
         left_out: mesh.left_out().to_vec(),
     })
+}
+
+/// The refusal of a STEP file its writer didn't write whole (docs/ports/step-export.md,
+/// *Edge cases*), never a file with geometry missing: what the writer's check list says it
+/// couldn't transfer of a part (other than the faces left out), one error a part, naming its
+/// feature and the elements at fault by its element map, OCCT's words its cause; and other
+/// faces, or face bounds (a face's outer edge and its holes), in the file than the parts
+/// have that bound material (fewer: the writer drops what it can't map with only a warning).
+/// One part's, each names its feature. None if it's whole.
+fn unwritten(
+    model: &Model,
+    solids: &[Solid<'_>],
+    file: &silico_protocol::StepFile,
+) -> Option<Problems> {
+    let off = |count: silico_protocol::StepCount| count.written != count.expected;
+    if file.unwritten.is_empty() && !off(file.faces) && !off(file.bounds) {
+        return None;
+    }
+    // Of no part: of the one there is, if there's one.
+    let of = |part: Option<u32>| match (part, solids) {
+        (Some(p), _) => solids.get(p as usize),
+        (None, [solid]) => Some(solid),
+        (None, _) => None,
+    };
+    let advice = |solid: Option<&Solid<'_>>| match solid {
+        Some(_) => {
+            "this solid can't be exported as STEP until the kernel writes it whole: there's no \
+             workaround in the request; export it as 3MF, or rebuild it otherwise"
+        }
+        None => "export the bodies one at a time, to find which the writer can't write whole",
+    };
+    let named = |error: Error, solid: Option<&Solid<'_>>| match solid {
+        Some(solid) => error.with_feature(solid.id.as_str()),
+        None => error,
+    };
+    let mut refused = Problems::none();
+    let mut parts: BTreeMap<Option<u32>, Vec<&silico_protocol::StepUnwritten>> = BTreeMap::new();
+    for entry in &file.unwritten {
+        parts.entry(entry.part).or_default().push(entry);
+    }
+    for (part, entries) in parts {
+        let solid = of(part);
+        let elements: BTreeSet<silico_protocol::ElementRef> =
+            entries.iter().filter_map(|e| e.element).collect();
+        let map = solid.and_then(|s| model.element_map(s.id));
+        let names: Vec<String> = elements
+            .iter()
+            .take(silico_protocol::FACES_NAMED)
+            .map(|&element| {
+                map.and_then(|m| m.name(element))
+                    .map_or_else(|| element.to_string(), |n| n.to_string())
+            })
+            .collect();
+        let messages: Vec<&str> = entries
+            .iter()
+            .flat_map(|e| e.messages.iter().map(String::as_str))
+            .collect();
+        let whose = solid.map_or_else(|| "the file".to_owned(), |s| format!("{}'s solid", s.id));
+        let error = Error::new(
+            ErrorCode::InvalidResult,
+            format!(
+                "the STEP writer couldn't write all of {whose}: OCCT reports what it couldn't \
+                 transfer"
+            ),
+        )
+        .with_elements(names)
+        .with_elements_total(elements.len() as u64)
+        .with_cause(if messages.is_empty() {
+            "OCCT's check list names it, with no message".to_owned()
+        } else {
+            messages.join("; ")
+        })
+        .with_suggestion(advice(solid));
+        refused.push(named(error, solid));
+    }
+    for (count, what) in [(file.faces, "faces"), (file.bounds, "face bounds")] {
+        if off(count) {
+            let solid = of(None);
+            let message = if count.written < count.expected {
+                format!(
+                    "the STEP file holds {} of the {} {what} the bodies have that bound \
+                     material: OCCT's writer dropped {}",
+                    count.written,
+                    count.expected,
+                    count.expected - count.written
+                )
+            } else {
+                format!(
+                    "the STEP file holds {} {what} where the bodies have {} that bound \
+                     material: OCCT's writer didn't write them as they are",
+                    count.written, count.expected
+                )
+            };
+            let error = Error::new(ErrorCode::InvalidResult, message)
+                .with_cause("OCCT's writer drops what it can't map with only a warning")
+                .with_suggestion(advice(solid));
+            refused.push(named(error, solid));
+        }
+    }
+    Some(refused)
 }
 
 /// The answer of an export stopped by its session closing, as `render` answers one.

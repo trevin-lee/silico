@@ -10,11 +10,9 @@ use crate::client::Client;
 #[test]
 fn initialize_answers_with_the_pinned_revision_whatever_the_client_asks() {
     let mut c = Client::start();
-    let reply = c.request(
-        1,
-        "initialize",
-        r#"{"protocolVersion": "2024-11-05", "capabilities": {"sampling": {}}, "clientInfo": {"name": "old", "version": "0"}}"#,
-    );
+    c.send(r#"{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {"sampling": {}}, "clientInfo": {"name": "old", "version": "0"}}}"#);
+    let (line, _) = c.reply_line("1");
+    let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
     let result = &reply["result"];
     assert_eq!(reply["jsonrpc"], "2.0");
     assert_eq!(reply["id"], 1);
@@ -27,15 +25,14 @@ fn initialize_answers_with_the_pinned_revision_whatever_the_client_asks() {
         result["serverInfo"],
         json!({"name": "silico", "title": "Silico", "version": env!("CARGO_PKG_VERSION")})
     );
-    let keys: Vec<&String> = result.as_object().unwrap().keys().collect();
-    assert_eq!(
-        keys,
-        [
-            "capabilities",
-            "instructions",
-            "protocolVersion",
-            "serverInfo"
-        ]
+    // In MCP's order, as written: read from the line's text, since a `Value`'s keys come
+    // out in an order set by serde_json's features, not by what was sent.
+    let at = |key: &str| line.find(&format!("\"{key}\":")).unwrap();
+    assert!(
+        at("protocolVersion") < at("capabilities")
+            && at("capabilities") < at("serverInfo")
+            && at("serverInfo") < at("instructions"),
+        "{line}"
     );
     // The workspace, as relative paths resolve against it, and the three things an agent
     // most needs.

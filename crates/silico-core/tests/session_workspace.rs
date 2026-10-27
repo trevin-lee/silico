@@ -448,11 +448,12 @@ fn an_exports_path_is_relative_to_the_workspace_and_refused_outside_it() {
         .unwrap()
         .id;
     let export = |path: &str| Export {
-        format: ExportFormat::ThreeMf,
+        format: ExportFormat::ThreeMf {
+            tolerance: silico_core::document::Length::from_nm(100_000),
+        },
         path: PathBuf::from(path),
         replace: false,
         features: None,
-        tolerance: silico_core::document::Length::from_nm(100_000),
     };
     let done = answer(sessions.export(&s, export("part.3mf")))
         .result

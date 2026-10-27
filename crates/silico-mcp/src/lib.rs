@@ -36,7 +36,6 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use serde::Deserialize;
-use serde_json::json;
 use serde_json::value::RawValue;
 use silico_core::command::{Answered, Calling, Command, Problems, Sessions};
 use silico_core::kernel::Clients;
@@ -176,12 +175,23 @@ impl<P: Clients + 'static> Server<P> {
             )
         })?;
         let workspace = sessions.workspace().map(|w| w.root().display().to_string());
-        let initialized = serde_json::to_string(&json!({
-            "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": {"tools": {"listChanged": false}},
-            "serverInfo": {"name": "silico", "title": "Silico", "version": env!("CARGO_PKG_VERSION")},
-            "instructions": instructions(workspace.as_deref()),
-        }))
+        // Written from structs, whose fields serialize in their order, never through a
+        // `Value`, whose keys' order depends on whether some crate in the build turned on
+        // serde_json's `preserve_order` (the Linux gate's workspace build did).
+        let initialized = serde_json::to_string(&Initialized {
+            protocol_version: PROTOCOL_VERSION,
+            capabilities: Capabilities {
+                tools: ToolsCapability {
+                    list_changed: false,
+                },
+            },
+            server_info: ServerInfo {
+                name: "silico",
+                title: "Silico",
+                version: env!("CARGO_PKG_VERSION"),
+            },
+            instructions: instructions(workspace.as_deref()),
+        })
         .map_err(|e| {
             Error::new(
                 ErrorCode::Internal,
@@ -733,4 +743,32 @@ impl<P: Clients + 'static> Dispatch<'_, P> {
 /// Every tool's name, in the list's order.
 fn tools_named() -> Vec<&'static str> {
     Command::ALL.iter().map(|c| c.as_str()).collect()
+}
+
+/// `initialize`'s answer, in MCP's order.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Initialized {
+    protocol_version: &'static str,
+    capabilities: Capabilities,
+    server_info: ServerInfo,
+    instructions: String,
+}
+
+#[derive(serde::Serialize)]
+struct Capabilities {
+    tools: ToolsCapability,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolsCapability {
+    list_changed: bool,
+}
+
+#[derive(serde::Serialize)]
+struct ServerInfo {
+    name: &'static str,
+    title: &'static str,
+    version: &'static str,
 }

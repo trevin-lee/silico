@@ -281,7 +281,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::Export => (
             "Export",
-            "Write the current model's bodies, or the features named, as a printable 3MF file at `path` in the workspace, each solid meshed at the tolerance (FreeCAD's default is 0.1 mm). A file already at `path` is replaced only with `replace: true`.",
+            "Write the current model's bodies, or the features named, to `path` in the workspace: as a printable 3MF, each solid meshed at the tolerance (FreeCAD's default is 0.1 mm), or as STEP, exact, with `tolerance: null`. A file already at `path` is replaced only with `replace: true`.",
         ),
         Command::Render => (
             "Render",
