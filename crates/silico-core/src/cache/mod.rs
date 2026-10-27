@@ -96,6 +96,11 @@ pub struct Cache {
     /// The workspace its directory must lead nowhere out of ([`Cache::within`]), or none (the
     /// CLI's).
     workspace: Option<Workspace>,
+    /// The workspace's root as the system names an open handle of it ([`at::path_of`]),
+    /// taken once by [`Cache::within`]: a handle's path is compared with this spelling, the
+    /// system's own, as well as the root's canonical one, since the two can differ (macOS
+    /// names `/System/Volumes/Data/Users/...` as `/Users/...` through its firmlink).
+    workspace_as_held: Option<PathBuf>,
     /// Whether this cache (or a clone) has said its directory is a link it won't use.
     said_linked: Arc<AtomicBool>,
     /// Whether this cache (or a clone) has said its directory leads out of its workspace.
@@ -282,6 +287,7 @@ impl Cache {
             platform,
             secret,
             workspace: None,
+            workspace_as_held: None,
             said_linked: Arc::default(),
             said_outside: Arc::default(),
             bound: DEFAULT_BOUND,
@@ -324,6 +330,9 @@ impl Cache {
     /// and the directory is used wherever the path to it leads.
     #[must_use]
     pub fn within(mut self, workspace: Workspace) -> Self {
+        self.workspace_as_held = at::open_dir_through_links(workspace.root())
+            .and_then(at::path_of)
+            .ok();
         self.workspace = Some(workspace);
         self
     }
@@ -741,7 +750,13 @@ impl Cache {
     /// refused (said once while it's out); one the system can't place, said.
     fn inside(&self, workspace: &Workspace, above: &OwnedFd) -> Result<(), Unopened> {
         match at::path_of(above) {
-            Ok(path) if workspace.holds(&path) => {
+            Ok(path)
+                if workspace.holds(&path)
+                    || self
+                        .workspace_as_held
+                        .as_ref()
+                        .is_some_and(|root| path.starts_with(root)) =>
+            {
                 // Inside again: should it lead out later, that's said again.
                 if self.said_outside.load(Ordering::Relaxed) {
                     self.said_outside.store(false, Ordering::Relaxed);
@@ -2392,15 +2407,45 @@ mod tests {
         assert!(first.is_file() && !second.exists() && !later.exists());
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_workspace_spelled_through_the_data_volume_keeps_its_cache() {
+        // From the review (round 3): macOS names a handle on `/System/Volumes/Data/Users/...`
+        // as `/Users/...` (its firmlink), where `realpath` keeps the spelling given; compared
+        // with the canonical root alone, every operation of such a workspace's cache was
+        // refused as out of it. The root as the system names its own handle is taken too.
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let Ok(rest) = root.strip_prefix("/") else {
+            panic!("{root:?} isn't from the top");
+        };
+        let data = PathBuf::from("/System/Volumes/Data").join(rest);
+        std::fs::create_dir_all(data.join("work/sub")).unwrap();
+        let workspace = Workspace::new(&data.join("work")).unwrap();
+        let cache = Cache::new(
+            data.join("work/sub/.silico-cache"),
+            this_platform(),
+            Some(Secret([7; 32])),
+        )
+        .within(workspace);
+        assert!(!cache.leads_out());
+        let opened = cache.root(true);
+        assert!(opened.is_ok(), "{:?}", opened.err());
+    }
+
     #[test]
     fn a_directorys_names_are_listed_in_order_of_name_whatever_order_they_were_made_in() {
-        // Sixty-four names, `00` to `3f`, made last first, so a file system that lists in
-        // the order names were made (or the reverse, or by a hash of each, as APFS and ext4
-        // do) lists them otherwise than sorted: checked first, so the test can fail. Listed
-        // by `at::names`, they're in order of name, written out by hand.
+        // Sixty-four names, `00` to `3f`, made in a shuffled order, so a file system that
+        // lists in the order names were made (or the reverse, or by a hash of each, as APFS
+        // and ext4 do) lists them otherwise than sorted: checked first, so the test can
+        // fail. Listed by `at::names`, they're in order of name, written out by hand.
         let scratch = Scratch::new("names-sorted");
         let sorted: Vec<String> = (0..64).map(|i| format!("{i:02x}")).collect();
-        for name in sorted.iter().rev() {
+        // Made in a fixed shuffle (37 is prime to 64, so i * 37 mod 64 visits each once), not
+        // last first: a file system that lists newest first (Linux's tmpfs before 6.6) would
+        // list names made last first sorted already (the Linux gate, round 3).
+        for i in 0..64 {
+            let name = &sorted[(i * 37) % 64];
             std::fs::write(scratch.0.join(name), b"").unwrap();
         }
         let raw: Vec<String> = std::fs::read_dir(&scratch.0)
