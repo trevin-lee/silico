@@ -8,8 +8,8 @@ A study note for M5 (docs/roadmap/m5-app.md, *Study*): what SolidWorks does in t
 
 - Select is the mode when no command is active, and most commands return to it when they end ([Select](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Select.htm)).
 - Dynamic highlighting shows which entity a click would select as the pointer moves over faces, edges, and vertices; it's an option, *Dynamic highlight from graphics view* ([Display Options](https://help.solidworks.com/2027/english/SolidWorks/sldworks/r_display_options.htm), [Select](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Select.htm)).
-- A hovered edge highlights as a thick solid line; a hovered face highlights by its edges, as thin solid lines ([Highlighting](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Highlighting.htm)).
-- A selected edge highlights as a thick solid line and a selected face as a solid colour (shaded, RealView off) ([Highlighting](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Highlighting.htm)).
+- A hovered edge highlights, and a hovered face highlights by its edges (SolidWorks' look, kept for reference only: thick and thin solid lines) ([Highlighting](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Highlighting.htm)).
+- A selected edge and a selected face highlight (SolidWorks' look, for reference only: a thick solid line, and a solid colour when shaded with RealView off) ([Highlighting](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Highlighting.htm)).
 - In a sketch, endpoints, midpoints, and vertices highlight as the pointer approaches, and change colour when a click would take them ([Highlighting](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Highlighting.htm)).
 
 ### Click, Ctrl, Shift
@@ -23,10 +23,10 @@ A study note for M5 (docs/roadmap/m5-app.md, *Study*): what SolidWorks does in t
 ### Box, cross, and lasso
 
 - A drag from empty space draws a box. Left to right selects only items completely inside it; right to left (cross select) also selects items crossing its boundary ([Box Selection](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Box_Selection.htm), [Cross Selection](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Cross_Selection.htm)).
-- A box is drawn in solid lines, a cross selection in dotted lines ([Cross Selection](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Cross_Selection.htm)).
+- (SolidWorks' look, for reference only.) A box is drawn in solid lines, a cross selection in dotted lines ([Cross Selection](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Cross_Selection.htm)).
 - In a part, a box selects edges by default; selection filters select other types ([Box Selection](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Box_Selection.htm)). In a sketch, a cross selection takes sketch entities and dimensions ([Cross Selection](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Cross_Selection.htm)).
 - Shift with a box adds everything inside it, selected or not; Ctrl with a box inverts the selection inside it; either way, selections outside the box stay ([Box Selection](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Box_Selection.htm)).
-- Hidden edges aren't box-selected unless *Allow selection in HLR and shaded modes* is on ([Box Selection](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Box_Selection.htm), [Selection Options](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_OPTIONS_SELECTION.htm)).
+- In drawings, hidden edges and faces aren't box-selected unless *Allow selection in wireframe and HLV modes* or *Allow selection in HLR and shaded modes* is on, each for its display modes ([Box Selection](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Box_Selection.htm), [Selection Options](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_OPTIONS_SELECTION.htm)).
 - A drag that starts on geometry selects the geometry under the press and draws no box. In *Select over Geometry* mode (T) a drag draws a box anywhere: a drag replaces the selection, Shift with a drag adds to it ([Selecting Over Geometry](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_select_over_geometry.htm)).
 - Lasso replaces the box when chosen as the default bulk selection method. A clockwise lasso selects only items inside the loop; a counterclockwise one also selects items crossing it, in sketches and drawings only. The loop needn't be closed ([Selecting Items by Lasso](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_lasso_selection.htm)).
 
@@ -92,7 +92,7 @@ A study note for M5 (docs/roadmap/m5-app.md, *Study*): what SolidWorks does in t
 - A dimension that over-defines a sketch, with the option set to prompt, asks: make it driven (the sketch is repaired, the dimension gray), leave it driving (the sketch stays over defined), or Cancel (it isn't placed) ([Relations/Snaps Options](https://help.solidworks.com/2027/english/SolidWorks/sldworks/r_relations_snaps_options.htm), [Sketch Geometry Status](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Sketch_Geometry_Status.htm)).
 - Over-defined error text: "The sketch conflicts. Consider deleting some over defining dimensions or relations." ([Error Message - Item Conflicts](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDE_SKETCH_OVERDEFINED.htm)).
 - Dangling: a dimension or relation to geometry that no longer exists, drawn dashed in the dangling colour; text: "This sketch contains dimensions or relations to model geometry which no longer exists." ([Error Message - Dangling Geometry](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDE_SKETCH_EXTREFS_FAIL.htm)).
-- Unsolvable text: "The sketch has not been updated because solving it would result in invalid geometry (such as a zero-length line)." ([Error Message - No Solution Found](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDE_SKETCH_HAS_INVALID_GEOM.htm)).
+- *No Solution Found* message text (which state it names is the conflict above): "The sketch has not been updated because solving it would result in invalid geometry (such as a zero-length line)." ([Error Message - No Solution Found](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDE_SKETCH_HAS_INVALID_GEOM.htm)).
 
 ## 3. Dragging in a sketch
 
@@ -174,7 +174,12 @@ A study note for M5 (docs/roadmap/m5-app.md, *Study*): what SolidWorks does in t
 ### Errors and warnings
 
 - Geometry is built when there are warnings, not when there are errors. Common errors: dangling dimensions or relations, and features that can't be built, such as a fillet too large ([What's Wrong?](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_NEW_WHATS_WRONG.htm)).
-- Tree marks: an error icon on the document's name and on the feature in error, their text red; a warning icon on the document and on the parent of the feature that warned, and on that feature, their text green; one combined icon for both ([What's Wrong?](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_NEW_WHATS_WRONG.htm)).
+- Tree marks, four icons, each with where it appears ([What's Wrong?](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_NEW_WHATS_WRONG.htm)):
+  - an error with the model: on the document's name, and on the feature that contains the error;
+  - an error with a feature: on the feature's name;
+  - a warning underneath the node: on the document's name and on the parent feature;
+  - a warning with a feature or sketch: on that feature.
+- So a mark on a node says either that the problem is its own or that it's passed up from beneath it. Items in error have red text and items with a warning green, and one combined icon shows both ([What's Wrong?](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_NEW_WHATS_WRONG.htm)).
 - Selecting an error or warning in the tree or the graphics area shows a box describing it, with suggestions and links to *Edit Feature* or *Edit Sketch* (sometimes Preview and Help); a click on the tree's top node lists them all ([What's Wrong?](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_NEW_WHATS_WRONG.htm)).
 - The *What's Wrong* dialog lists type, feature, preview, help, and description, sortable by column, with *Show errors* and *Show warnings* ([What's Wrong?](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_NEW_WHATS_WRONG.htm)).
 - At the first rebuild error, by option: Stop (fix first; hovering a feature in the tree explains its error), Continue (rebuild the rest without asking), or Prompt ([Messages/Errors/Warnings](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_OPTIONS_ADVANCED.htm)).
@@ -198,7 +203,8 @@ A study note for M5 (docs/roadmap/m5-app.md, *Study*): what SolidWorks does in t
 - *Reload* loads documents again from disk, and can undo changes since the last save; its list shows *Needs Save?* and *Newer Version On Disk?*, and marks in red a reload that would lose unsaved changes ([Reload](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_FILE_RELOAD_MULTIPLE.htm)).
 - With the multi-user environment on, files opened read-only are checked every set number of minutes; when another user has saved one, a tooltip points to a status-bar icon that opens *Reload* ([Collaboration Options](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_OPTIONS_COLLABORATION.htm), [Reload](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_FILE_RELOAD_MULTIPLE.htm)).
 - Starting to change a read-only document warns that it's read-only ([Multi-User Environment](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_multi_user_environment.htm)).
-- The help doesn't say what happens when a document open for writing is changed on disk by another program; its checks cover only files opened read-only.
+- With the multi-user environment on, one user holds write access at a time: a document someone else has open for writing opens read-only, its tooltip naming that user, and *Get Write Access* or *Make Read-Only* changes it ([Multi-User Environment](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_multi_user_environment.htm)). When the writer gives up write access, *Reload* can take it ([Reload](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_FILE_RELOAD_MULTIPLE.htm)).
+- Beyond its own multi-user locking, the help doesn't say what happens when a document open for writing is changed on disk by another program.
 
 ## Not covered
 
@@ -213,4 +219,14 @@ What this note looked for and couldn't source from the help:
 - What a PropertyManager shows when its preview fails.
 - What a feature downstream of a failed one is built on.
 - What is undoable, and whether undo crosses a save, a rebuild, leaving a sketch, or a feature's OK.
-- What happens when a document open for writing changes on disk.
+- What happens when a document open for writing changes on disk, beyond SolidWorks' own one-writer locking.
+- Dimensioning: Smart Dimension's type chosen from the pick, the Modify box, Enter and Esc, a value driving the geometry. Not read for this note; M5.11 needs it from the help.
+- Starting a sketch beyond the view: which planes and faces may be picked. (*Auto-rotate view normal to sketch plane on sketch creation and sketch edit* is an option, and the view reverts if the changes are discarded: [Sketch Options](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_OPTIONS_SKETCH.htm).)
+- The export dialog (M5.12), what happens to a selection when a rebuild removes its entity (M5.7), and the pick tolerance.
+
+## For M5.0
+
+Two of the draft plan's tests (docs/roadmap/m5-app.md) read otherwise than the lines above:
+
+- M5.11 tests "a closed rectangle from four clicks", where SolidWorks' corner rectangle is a press, a drag, and a release (§4).
+- M5.1 tests that a suppressed feature's dependents fail and that unsuppressing restores everything, where SolidWorks suppresses the children with the parent and leaves them suppressed when the parent is unsuppressed (§5, [Dependency Editing](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Dependency_Editing.htm)).

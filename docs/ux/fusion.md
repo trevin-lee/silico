@@ -32,11 +32,11 @@ A study note for M5's design (M5.0): how Autodesk Fusion lays out its window and
 - Visibility icon: an eye, and an eye struck through when hidden (the help's own 16 px icons, `visible.png` and `hidden.png`) [vis]. Clicking it toggles the object in browser and canvas; `V` toggles the selection's visibility [vis]. The API docs still call it a "light bulb" [apivis]: older wording.
 - Hidden categories set in the Navigation Bar's Object Visibility override the browser's eyes [vis].
 - A fully constrained sketch shows a red lock on its icon [fully].
-- Ordering: the browser groups objects by type in folders. It isn't the feature history: in Parametric Modeling mode the history is the Timeline; in Direct Modeling mode features such as Extrude, Fillet, and Hole are listed in the browser instead [modes]. (M5.4's plan puts the document's features in the browser tree, as SolidWorks' FeatureManager does; M5.0 decides.)
+- Ordering: the browser groups objects by type in folders. It isn't the feature history: in Parametric Modeling mode the history is the Timeline; in Direct Modeling mode features such as Extrude, Fillet, and Hole are listed in the browser instead [modes]. CLAUDE.md's rule settles this for Silico, since it's layout: the browser groups by type as Fusion's does, and the timeline holds the features (M5.4, docs/roadmap/m5-app.md). A failed feature's mark is error feedback, so it behaves as SolidWorks' does (docs/ux/solidworks.md), drawn with Fusion's look on its timeline entry and its browser entry.
 
 ## The timeline
 
-- Records each feature, in order, in Parametric Modeling mode only [modes]. One icon per feature, left to right *(diagram)*. The help has no table of the icons; forum users say so too [fticons].
+- Records each feature, in order, in Parametric Modeling mode only [modes]. One icon per feature, left to right *(diagram)*. The help has no table of the icons; forum users say so too (*unofficial*, [fticons]).
 - Playback buttons at its left: Move to Beginning, Previous Step, Play, Next Step, Move to End [tl]. They move the Timeline Marker, which is out of M5 (the plan's Study section).
 - Options (a settings control) at its right end [tl] *(diagram)*.
 - Double-click a feature, or right-click and Edit Feature, to edit it [tl]. Right-click also gives Rename, Suppress/Unsuppress, Create Group, Find in Browser, Create Selection Set [tl].
@@ -47,8 +47,8 @@ A study note for M5's design (M5.0): how Autodesk Fusion lays out its window and
 ## Feature dialogs
 
 - A command dialog is a vertical stack of inputs with OK and CANCEL at the bottom [cmds].
-- Position and width are shared by all commands: the next dialog opens where the user left the last one; height follows the inputs [cmds] (also an Autodesk API expert, *unofficial*: [fpos]).
-- Default side: the help doesn't say. Forum users say dialogs open on the right; one reply says the left (*unofficial*, conflicting: [fside]).
+- Position and width are shared by all commands: the next dialog opens where the user left the last one; height follows the inputs [cmds] (also an Autodesk API expert, *unofficial*: [fpos]). Per session only: a moved dialog goes back to the right when Fusion restarts (*unofficial*, [fside]).
+- Default side: the help doesn't say. Forum users say dialogs open on the right; a reply from Autodesk staff in the same thread says the left (forum, conflicting: [fside]).
 - OK stays disabled until the inputs are valid; an unparseable value turns red and disables OK [cmds] [inputs].
 - Preview: most commands preview their result; each input change discards the last preview and builds it again [cmds].
 - Field types [inputs]: value inputs with units (length, angle), with a drop-down of previous values and a Measure option; selection boxes; drop-downs (checkbox list, labelled icons, text list; Extrude's Direction, Operation, and Extents are labelled-icon drop-downs); checkboxes and toggle buttons; button rows; radio groups; sliders; spinners; collapsible groups; tabs; tables (Loft's profile list); text boxes.
@@ -72,7 +72,7 @@ A study note for M5's design (M5.0): how Autodesk Fusion lays out its window and
 
 - Preset: Preferences, General, "Mouse setup (pan, zoom, orbit)": Fusion (default), Alias, Inventor, PowerMill, SolidWorks, Tinkercad [prefs]. A 2024 Autodesk blog post calls it "Pan, Zoom, Orbit Shortcuts" [pzo].
 - Fusion preset: zoom rolls the wheel (or Ctrl+Shift+middle drag); pan holds the middle button; orbit holds Shift and the middle button [prefs] [keys]. Orbit about a point: Shift+click+middle button [keys].
-- SolidWorks preset as Fusion lists it: zoom Shift+wheel, pan Ctrl+middle (Cmd on macOS), orbit middle [prefs]. (SolidWorks' own defaults are docs/ux/solidworks.md's.)
+- SolidWorks preset as Fusion lists it: zoom Shift+wheel, pan Ctrl+middle (Cmd on macOS), orbit middle [prefs]. Navigation follows Fusion (M5.6); SolidWorks' own defaults aren't recorded.
 - F6 fits the view [prefs]; double-clicking the wheel zooms to fit [pzo].
 - Options named in the blog: reverse zoom direction, camera pivot (window centre or the part's focal point), trackpad gestures [pzo]. Whether zoom goes toward the cursor is not documented.
 - Default modeling orientation: Z up; Y up is an option needing a restart [prefs].
@@ -84,20 +84,22 @@ A study note for M5's design (M5.0): how Autodesk Fusion lays out its window and
 - The Sketch contextual tab and its Finish Sketch button are highlighted blue while the sketch is open [esk]. Its panels include Create (Sketch Dimension) [dims] and Constraints [cons]; constraints are visible by default [esk].
 - Finish: Finish Sketch on the Sketch tab, or Marking Menu, Sketch, Finish Sketch [fin].
 - Sketch Palette: a floating palette in the canvas [pal]. Top: Status: Under-Constrained or Status: Constrained [under]. Then the active tool's options, then: Linetype (Construction, Centerline), Look At, Sketch Grid, Snap, Slice, Show Profile, Show Points, Show Dimensions, Show Constraints, Show Construction Geometries, Show Projected Geometries, 3D Sketch [pal]; Find Under-Constrained, Compute Sketch, AutoConstrain [under].
-- Colours: new geometry is blue, centerlines orange; fully constrained geometry turns black [fully] [dims]. Closed profiles have a light blue shading (Show Profile) [pal].
+- Colours: new geometry is blue, centerlines orange; fully constrained geometry turns black [fully] [dims]. Closed profiles have a blue shading (Show Profile) [pal].
 - Points: an unconstrained end point is a white dot; spline fit points are grey; a point-to-point coincidence shows nothing; a point-to-curve coincidence shows the coincident glyph [coinc].
 - Constraint glyphs: small icons beside the constrained curves (Horizontal/Vertical, Coincident, Tangent, Equal, Parallel, Perpendicular, Fix, Midpoint, Concentric, Collinear, Symmetry, Curvature) [cons] [fully] *(the example image)*. Their art isn't copied here.
-- Dimensions: drawn in the canvas with arrows and extension lines; double-click to edit; Enter accepts [dims]. Driven dimensions are toggled from the right-click menu [dims].
+- Dimensions: drawn in the canvas, with arrows and extension lines *(the example image)*; double-click to edit; Enter accepts [dims]. Driven dimensions are toggled from the right-click menu [dims].
 - Over-constrained colour: not described in Fusion's help. (M5.11 colours by SolidWorks' states anyway.)
 
 ## Selection look
 
 - Pre-highlight: entities valid for selection pre-highlight under the cursor [cmds]. Colours: not published. The style is a setting: "Selection display style" (Preferences, Graphics) and Selection Effect: Normal, Fast, Simplified, None (Display Settings) [prefs] [nav].
-- Window selection is the default mode; others are Freeform (2) and Paint (3) [sel].
-- Window: drag left to right takes objects wholly inside; right to left takes objects inside or crossed. The area inside fills with a translucent colour [sel].
-- Freeform: [sel] says clockwise is window and counterclockwise crossing; [selmodes] says left-to-right and right-to-left, as for the rectangle. Conflict, unresolved.
-- Ctrl (Cmd) adds or removes; Shift only adds [sel]. Click and hold opens a depth list of the objects under the cursor [selobj].
-- Filters: Select, Selection Filters, a checklist (Bodies, Body Edges, Body Faces, Body Vertices, Sketch Curves, Sketch Points, Sketch Profiles, Work Geometry, and more) with Select Through [selfilt]. Priorities: Body, Face, Edge, Component, one at a time [selprio].
+Lines below marked *behavior* are Fusion's, kept for reference only: selection behaves as SolidWorks' does (docs/ux/solidworks.md, §1), and where they differ, SolidWorks' governs.
+
+- *Behavior.* Window selection is the default mode; others are Freeform (2) and Paint (3) [sel].
+- *Behavior.* Window: drag left to right takes objects wholly inside; right to left takes objects inside or crossed. The area inside fills with a translucent colour [sel].
+- *Behavior.* Freeform: [sel] says clockwise is window and counterclockwise crossing; [selmodes] says left-to-right and right-to-left, as for the rectangle. Conflict, unresolved.
+- *Behavior.* Ctrl (Cmd) adds or removes; Shift only adds [sel]. Click and hold opens a depth list of the objects under the cursor [selobj].
+- *Behavior.* Filters: Select, Selection Filters, a checklist (Bodies, Body Edges, Body Faces, Body Vertices, Sketch Curves, Sketch Points, Sketch Profiles, Work Geometry, and more) with Select Through [selfilt]. Priorities: Body, Face, Edge, Component, one at a time [selprio].
 - The Select icon on the toolbar shows the current mode [selmodes].
 
 ## The look, as Autodesk publishes it
@@ -114,7 +116,7 @@ Read from Rerun's source at tag `0.38.1` (`crates/viewer_support/re_ui`: `src/de
 | Fusion element | Setting | Value |
 |---|---|---|
 | Theme, Match OS default | `egui::Options::theme_preference` | `ThemePreference::System` by default; `re_ui` sets `fallback_theme = Dark` |
-| UI font | `DesignTokens::set_fonts` | Inter Medium (bundled, OFL-1.1); Body, Button, Monospace 12 px; Heading 16 px; token line height 16 px |
+| UI font | `DesignTokens::set_fonts` (the family) and `set_text_styles` (the sizes), both private, applied by `apply_style_and_install_loaders` | Inter Medium (bundled, OFL-1.1); Body, Button, Monospace 12 px; Heading 16 px; token line height 16 px |
 | Application bar | `DesignTokens::top_bar_height()`, `top_bar_margin()`, `top_panel_frame()`; `top_bar_color` | 28; 8 x 0; `#0d0d0d` / `#e0dfdf` |
 | Toolbar buttons | `large_button_size`, `large_button_icon_size`, `small_icon_size` | 22, 12, 14 (no ribbon widget in `re_ui`) |
 | Browser panel | `egui::Panel::left(..)`: `default_size`, `min_size`, `resizable` | egui: 200, 96, resizable; *re_viewer* blueprint panel: `min(0.35 w, 200)`, min 120 |
@@ -145,6 +147,7 @@ Read from Rerun's source at tag `0.38.1` (`crates/viewer_support/re_ui`: `src/de
 ## Conflicts and gaps
 
 - Freeform selection direction: clockwise/counterclockwise [sel] against left/right [selmodes].
+- Shift on a click: Fusion's adds to the selection [sel]; SolidWorks' reverses selection through transparency, and Shift with a box adds (docs/ux/solidworks.md, §1). SolidWorks governs; M5.7 takes it from there. Fusion's Ctrl-click removing an item fills a gap SolidWorks' help leaves, for M5.0 to decide.
 - Dialogs' default side: right (forum users) against left (one forum reply) [fside]; the help is silent.
 - The visibility icon: an eye in the help [vis], a "light bulb" in the API docs [apivis].
 - Not documented: projection default, zoom toward the cursor, selection and pre-highlight colours, the timeline's error and warning drawing, an over-constrained sketch colour, in-canvas value boxes, and every size, colour, and spacing value.
