@@ -9,7 +9,7 @@
 //! described, why. An unstable name is taken: what's found is answered once and stored
 //! nowhere.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::Problems;
 use super::elements::built;
@@ -58,7 +58,7 @@ pub(crate) struct Lookup<'m> {
     kinds: Kinds,
     refused: Problems,
     /// Features whose failure is said already: once each.
-    unbuilt: Vec<FeatureId>,
+    unbuilt: BTreeSet<FeatureId>,
     /// Solids whose missing description is said already: once each.
     undescribed: Vec<&'m FeatureId>,
     /// Each kind's candidates, built once a request, the first time a name of it breaks.
@@ -79,7 +79,7 @@ impl<'m> Lookup<'m> {
             },
             kinds,
             refused: Problems::none(),
-            unbuilt: Vec::new(),
+            unbuilt: BTreeSet::new(),
             undescribed: Vec::new(),
             candidates: BTreeMap::new(),
         };
@@ -89,7 +89,7 @@ impl<'m> Lookup<'m> {
                 Err(problems) => {
                     lookup.refused.absorb(problems);
                     // Said once: a name of its own elements adds nothing to it.
-                    lookup.unbuilt.push(id.clone());
+                    lookup.unbuilt.insert(id.clone());
                     Vec::new()
                 }
             },
@@ -206,7 +206,7 @@ impl<'m> Lookup<'m> {
             }
             if let Err(problems) = built(model, maker, false) {
                 self.refused.absorb(problems);
-                self.unbuilt.push(maker.clone());
+                self.unbuilt.insert(maker.clone());
                 return None;
             }
             // The request's `feature` was refused already: its solid has nothing to look in.
@@ -239,10 +239,10 @@ impl<'m> Lookup<'m> {
     /// feature's live body's map alone ([`Model::live_body`]), one read, or none for a
     /// feature with no live body: every name in a body's map is of a feature whose live
     /// body that is, so a name not in its feature's live body's map is in no body's, and a
-    /// name of a feature with no live body (one that didn't build, a sketch, one the
-    /// document hasn't) is in none. What's said of a name found nowhere (its feature's
-    /// failure, or `reference_broken` with candidates from every body) is `found`'s, never
-    /// this read's.
+    /// name of a feature with no live body (one that didn't build, a sketch, or one the
+    /// document hasn't, as [`Model::live_body`] says) is in none. What's said of a name
+    /// found nowhere (its feature's failure, or `reference_broken` with candidates from
+    /// every body) is `found`'s, never this read's.
     fn located(&self, name: &Name) -> Option<(&'m FeatureId, &'m ElementMap, ElementRef)> {
         let model = self.model;
         let in_solid = |id: &'m FeatureId| {
@@ -376,7 +376,8 @@ mod tests {
         // name's lookups are its parse's, its live body's, its map read's, and its
         // feature's outcome (built, so not refused for its failure): 4 B, and the
         // candidates' B map reads' B: 5 B. The scan read B + 1 maps a name, B (B + 2) in
-        // all.
+        // all. The misses at B = 1,000 only: their bounds are exact, and the scan's B² reads
+        // of them fail them as surely at 1,000 as at 4,000, at a sixteenth of the time.
         for b in [1_000, 4_000] {
             let ids: Vec<String> = (0..b).map(|i| format!("b{i:07}")).collect();
             let mut features: Vec<String> =
@@ -399,6 +400,10 @@ mod tests {
             let (walked, looked_up) = (counted().0 - walked, counted().1 - looked_up);
             assert_eq!(walked, b, "{walked} map reads for {b} names");
             assert_eq!(looked_up, 3 * b, "{looked_up} lookups for {b} names");
+            if b > 1_000 {
+                assert!(lookup.finish().is_ok());
+                continue;
+            }
             let (walked, looked_up) = counted();
             for i in 0..b {
                 let text = format!("x0000000.box.Face{}", i % 6 + 1);
@@ -442,6 +447,16 @@ mod tests {
         // from it visits each feature after a box up to its fuse, with each fuse's two
         // uses: B + 2 + i for box 2i, B + 1 + i for box 2i + 1, 5 B² / 4 + B in all:
         // 1,251,000. Built once: asked again, no visit.
+        //
+        // And the first pass, which `live_visits` doesn't count: the timeline walked beside
+        // the bodies, each feature's ID compared with the next body's while one is left (N
+        // comparisons: the last body, w0000499, is the last feature, so one's left at every
+        // feature), and none in the second pass, which goes by place. With the lookup of
+        // `b0000000`'s place in the model's index (at most ⌈log₂ N⌉ + 1 = 12 comparisons:
+        // 1,500 is between 2¹⁰ and 2¹¹), the first `live_body` compares at most N + 12 =
+        // 1,512 IDs (`document::compared`). Asking each feature whether it's a body, by a
+        // scan of the bodies, compares B / 2 for each box (none is one) and i + 1 for fuse
+        // i: 500,000 + 125,250.
         let b = 1_000;
         let mut features: Vec<String> = (0..b).map(|i| a_box(&format!("b{i:07}"), 3 * i)).collect();
         for i in 0..b / 2 {
@@ -451,13 +466,18 @@ mod tests {
         let model = published(checked(&features));
         assert!(model.errors().next().is_none());
         assert_eq!(model.bodies().len(), b / 2);
-        let before = crate::recompute::live_visits();
         let first = FeatureId::new("b0000000").unwrap();
+        let (before, compared) = (crate::recompute::live_visits(), crate::document::compared());
         assert_eq!(
             model.live_body(&first).map(FeatureId::as_str),
             Some("w0000000")
         );
         assert_eq!(crate::recompute::live_visits() - before, 5 * b as u64 / 2);
+        let compared = crate::document::compared() - compared;
+        assert!(
+            compared <= 1_512,
+            "{compared} IDs compared for 1,500 features"
+        );
         let before = crate::recompute::live_visits();
         for i in 0..b {
             let id = FeatureId::new(&format!("b{i:07}")).unwrap();
