@@ -1179,8 +1179,64 @@ fn a_step_reply_for_another_number_of_parts_is_the_workers_fault() {
         &dir.0.join("out.step"),
         Some(&["m3tq8v0z", "k7f2qx3m"]),
     )));
-    assert_eq!(problems.errors()[0].code(), ErrorCode::ProtocolError);
+    let e = &problems.errors()[0];
+    assert_eq!(e.code(), ErrorCode::ProtocolError);
+    // The STEP worker's fault, which sent it, and a new one starts for the next export.
+    assert_eq!(
+        e.message(),
+        "the STEP worker sent the faces left out of 1 parts, an element numbered 0, or a part \
+         past the last, for a STEP export of 2"
+    );
+    assert_eq!(
+        e.suggestion(),
+        Some("export again: each export starts a STEP worker of its own")
+    );
     assert!(dir.names().is_empty());
+}
+
+#[test]
+fn a_step_check_lists_messages_each_once_and_as_many_as_it_names_elements() {
+    // 103 faces at fault: faces 1 and 2 with one message between them, said once; faces 3
+    // to 103 each with a message of its own. 102 messages, once each: the first hundred
+    // said, in order, and how many more ("same", m3 ... m101, then m102 and m103 unsaid).
+    let with = |faces: u32| {
+        let entries: Vec<silico_protocol::StepUnwritten> = (1..=faces)
+            .map(|n| silico_protocol::StepUnwritten {
+                part: Some(0),
+                element: Some(silico_protocol::ElementRef::face(n)),
+                messages: vec![if n <= 2 {
+                    "same".to_owned()
+                } else {
+                    format!("m{n}")
+                }],
+            })
+            .collect();
+        let bench = step_answered(silico_protocol::StepFile {
+            step: silico_protocol::Blob::inline(b"STEP".to_vec()),
+            left_out: vec![vec![]],
+            unwritten: entries,
+            faces: WHOLE,
+            bounds: WHOLE,
+        });
+        let dir = Scratch::new("step-messages");
+        let problems =
+            refused(bench.export(&step_request(&dir.0.join("out.step"), Some(&["k7f2qx3m"]))));
+        assert_eq!(problems.total(), 1);
+        problems.errors()[0].cause().unwrap().to_owned()
+    };
+    let said = |last: u32| {
+        std::iter::once("same".to_owned())
+            .chain((3..=last).map(|n| format!("m{n}")))
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    assert_eq!(with(103), format!("{}; and 2 other messages", said(101)));
+    // 101 messages: one unsaid.
+    assert_eq!(with(102), format!("{}; and 1 other message", said(101)));
+    // A hundred: every one said.
+    assert_eq!(with(101), said(101));
+    // Two faces, one message: said once.
+    assert_eq!(with(2), "same");
 }
 
 #[test]

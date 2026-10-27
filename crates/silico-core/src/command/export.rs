@@ -751,10 +751,19 @@ fn unwritten(
                     .map_or_else(|| element.to_string(), |n| n.to_string())
             })
             .collect();
-        let messages: Vec<&str> = entries
+        // OCCT's messages, each once, in the order first given (one for each element at
+        // fault, often the same), and as many as the elements named, with how many more.
+        let mut messages: Vec<&str> = Vec::new();
+        for message in entries
             .iter()
             .flat_map(|e| e.messages.iter().map(String::as_str))
-            .collect();
+        {
+            if !messages.contains(&message) {
+                messages.push(message);
+            }
+        }
+        let unsaid = messages.len().saturating_sub(silico_protocol::FACES_NAMED);
+        messages.truncate(silico_protocol::FACES_NAMED);
         let whose = solid.map_or_else(|| "the file".to_owned(), |s| format!("{}'s solid", s.id));
         let error = Error::new(
             ErrorCode::InvalidResult,
@@ -765,10 +774,11 @@ fn unwritten(
         )
         .with_elements(names)
         .with_elements_total(elements.len() as u64)
-        .with_cause(if messages.is_empty() {
-            "OCCT's check list names it, with no message".to_owned()
-        } else {
-            messages.join("; ")
+        .with_cause(match (messages.is_empty(), unsaid) {
+            (true, _) => "OCCT's check list names it, with no message".to_owned(),
+            (false, 0) => messages.join("; "),
+            (false, 1) => format!("{}; and 1 other message", messages.join("; ")),
+            (false, n) => format!("{}; and {n} other messages", messages.join("; ")),
         })
         .with_suggestion(advice(solid));
         refused.push(named(error, solid));

@@ -1009,12 +1009,12 @@ impl KernelRequest<silico_protocol::StepFile> {
                     Err(Error::new(
                         ErrorCode::ProtocolError,
                         format!(
-                            "the kernel worker sent the faces left out of {} parts, an element \
+                            "the STEP worker sent the faces left out of {} parts, an element \
                              numbered 0, or a part past the last, for a STEP export of {parts}",
                             file.left_out.len()
                         ),
                     )
-                    .with_suggestion("start a new kernel worker"))
+                    .with_suggestion("export again: each export starts a STEP worker of its own"))
                 }
                 Reply::StepFile(file) => Ok(*file),
                 other => Err(unexpected(name, &other)),
