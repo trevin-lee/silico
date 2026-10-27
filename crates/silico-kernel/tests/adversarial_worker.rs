@@ -256,7 +256,7 @@ fn a_reply_no_message_encodes_to_is_a_protocol_error() {
 #[test]
 fn a_reply_longer_than_the_maximum_is_refused_without_waiting_for_it() {
     // The worker hangs after the header: refusing it must not wait for 512 MiB, or for the
-    // call's timeout, longer than the 30 s echo_through gives the whole call (a refusal that
+    // call's timeout, longer than the `WAIT` echo_through gives the whole call (a refusal that
     // waited would fail there, or as a timeout, not a protocol error).
     let (result, _, _) = echo_through("over-max", Duration::from_secs(120));
     let err = result.unwrap_err();
@@ -343,7 +343,7 @@ fn a_started_worker_that_times_out_blames_the_request() {
     assert!(err.cause().is_none(), "{err}");
 }
 
-/// Waits up to ten seconds for a stand-in worker to make `marker`, so a test's timeout
+/// Waits up to [`WAIT`] for a stand-in worker to make `marker`, so a test's timeout
 /// counts from there, not from the script's start, which a loaded machine can slow.
 fn wait_for(marker: &Path) {
     let deadline = Instant::now() + WAIT;
@@ -561,7 +561,7 @@ fn short_of_descriptors<T>(spare: u64, f: impl FnOnce() -> T) -> T {
     result
 }
 
-/// Waits up to five seconds for this process's open descriptors to fall to `fds`.
+/// Waits up to [`WAIT`] for this process's open descriptors to fall to `fds`.
 fn wait_fds(fds: usize, context: &str) {
     let deadline = Instant::now() + WAIT;
     while open_fds() > fds {

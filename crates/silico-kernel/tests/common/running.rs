@@ -12,12 +12,14 @@ use super::scripts;
 
 /// A worker that says it started (its first frame, empty, as a worker's is), then, given a
 /// request, notes it by writing `marker`, then sleeps without replying until it's killed: so
-/// a test knows its request is running, on a worker that had started.
+/// a test knows its request is running, on a worker that had started. It sleeps 600 s, past
+/// [`WAIT`](crate::wait::WAIT), so a test waiting for the pool to stop it can't be satisfied
+/// by the worker ending on its own.
 pub fn marking_worker(marker: &Path) -> PathBuf {
     scripts::script(
         "marks-its-request",
         &format!(
-            "printf '\\0\\0\\0\\0' >&3\nhead -c 1 <&3 >/dev/null\n: > '{}'\nexec sleep 30",
+            "printf '\\0\\0\\0\\0' >&3\nhead -c 1 <&3 >/dev/null\n: > '{}'\nexec sleep 600",
             marker.display()
         ),
     )

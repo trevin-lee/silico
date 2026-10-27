@@ -40,7 +40,7 @@ struct Events(Arc<Mutex<Vec<Logged>>>);
 
 impl Events {
     /// The events logged since the last call, once one about a superseded request is among
-    /// them (waiting up to two seconds): the pool logs it after delivering the outcome, and
+    /// them (waiting up to [`WAIT`]): the pool logs it after delivering the outcome, and
     /// outside its lock, so it can come a moment after the outcome. Then a moment more, for
     /// any other the pool logs with it.
     fn take_once_superseded(&self) -> Vec<Logged> {

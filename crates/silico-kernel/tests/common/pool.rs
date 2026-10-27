@@ -88,7 +88,7 @@ pub fn wait_no_children(context: &str) {
 /// Checks that this process has no children but `only` (which may or may not be among
 /// them), failing with `context` if it has. `ps` can still list a process reaped an
 /// instant before, one it can no longer give a state for (`?E`), on a loaded machine: such
-/// a one is given up to a second to go. Any other is a process left running, or never
+/// a one is given up to [`WAIT`](crate::wait::WAIT) to go. Any other is a process left running, or never
 /// reaped, and fails at once.
 pub fn wait_no_children_besides(only: &BTreeSet<u32>, context: &str) {
     let deadline = Instant::now() + WAIT;
@@ -149,7 +149,8 @@ pub fn spin(d: Duration) {
     }
 }
 
-/// Waits up to five seconds for the pool to hold `size` live workers, none of `gone`.
+/// Waits up to [`WAIT`](crate::wait::WAIT) for the pool to hold `size` live workers, none of
+/// `gone`.
 pub fn wait_full(pool: &KernelPool, size: usize, gone: &BTreeSet<u32>) -> Vec<u32> {
     wait_full_by(pool, size, gone, Instant::now() + WAIT)
 }

@@ -819,7 +819,7 @@ const STDERR_FD: i32 = 2;
 /// descriptor 3, which it may copy). One listing can miss a worker's socket for a moment
 /// (on Linux, `lsof` reads `/proc/net/unix` in chunks, and an entry is skipped when a
 /// socket before it closes in between; the socket is then listed as `sock`, not `unix`),
-/// so the listing is taken again, for up to five seconds, until it shows every worker's
+/// so the listing is taken again, for up to [`WAIT`], until it shows every worker's
 /// socket.
 fn not_allowed(
     round: usize,
@@ -901,8 +901,8 @@ fn sockets_and_pipes(pids: &[u32]) -> Vec<Descriptor> {
     found
 }
 
-/// Starts a pool on another thread, failing the test if it hasn't started within ten
-/// seconds (a pool of a few workers starts in well under one).
+/// Starts a pool on another thread, failing the test if it hasn't started within [`WAIT`]
+/// (a pool of a few workers starts in well under a second).
 fn start_within(exe: &Path, size: usize) -> KernelPool {
     let (tx, rx) = std::sync::mpsc::channel();
     let exe = exe.to_owned();
@@ -925,7 +925,7 @@ fn running_workers_hold_only_their_own_descriptors() {
     // held), and nothing the app holds without close-on-exec (a test runner's jobserver
     // pipe, say). Workers now start one at a time, and close what they inherit when they
     // run. Pools as large as `KernelPool::start` makes on this machine, started 40 times;
-    // each worker is given up to five seconds to start running.
+    // each worker is given up to `WAIT` to start running.
     let size = std::thread::available_parallelism()
         .map_or(8, usize::from)
         .max(8);
@@ -960,7 +960,9 @@ fn workers_started_together_inherit_no_siblings_socket() {
     // at once after the pool starts, holds only its own: and no start hangs.
     let dir = scratch_dir("noclose");
     let exe = dir.join("worker");
-    write_executable(&exe, "#!/bin/sh\nexec sleep 30\n");
+    // It sleeps past `WAIT`, so a start hung on a sibling's pipe isn't released by that
+    // sibling ending within it.
+    write_executable(&exe, "#!/bin/sh\nexec sleep 600\n");
     let size = std::thread::available_parallelism()
         .map_or(8, usize::from)
         .max(8);
