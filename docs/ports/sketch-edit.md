@@ -8,7 +8,7 @@ The sketch edits M4 left out (docs/design/m4.1-command-api.md, section 5's *Not 
 - deleting a curve while keeping its neighbours' shared point;
 - merging ends that touch (decision 17's `--merge-touching`).
 
-M5's sketch mode needs them, and the draft M5 plan (#196) puts them in a step of their own, M5.10. This note is the study it starts from. It says what FreeCAD does, the edge cases, the fixes in FreeCAD's history, the tests to port, and where Silico's shared points make it differ. The decisions at the end each carry a recommendation, for M5's design to take.
+M5's sketch mode needs them, and the draft M5 plan (#196) puts them in a step of their own, M5.10. This note is the study it starts from. It says what FreeCAD does, the edge cases, the fixes in FreeCAD's history, the tests to port, and where Silico's shared points make it differ. **This note decides nothing.** The decisions at the end are open, each with a recommendation, for M5.0's design and the maintainer to take or change. Wherever the note says what Silico does, "recommended" or a column headed *Silico*, it's that recommendation, not a settled rule.
 
 ## Sources
 
@@ -433,7 +433,7 @@ FreeCAD has no test for how constraints move on split, for extend, or for most o
 
 ## Open decisions
 
-Each with a recommendation, for M5's design (M5.0) to take into the commands' text. They follow FreeCAD where it gives one answer, choose between 1.1.3 and main where they differ, and follow Silico's exactness rule where FreeCAD's tolerances would snap.
+Open: none is decided. Each has a recommendation, for M5.0's design to propose and the maintainer to approve, change, or refuse, as M4.1's decisions were. They follow FreeCAD where it gives one answer, choose between 1.1.3 and main where they differ, and follow Silico's exactness rule where FreeCAD's tolerances would snap.
 
 1. **A split line's two pieces.** 1.1.3 leaves them free to kink and copies `horizontal`, `vertical`, `parallel` and `angle` to both, which makes a constraint redundant when two are present. Main, since `6d06b61c7e`, holds them collinear with an endpoint tangency and puts those on the first piece. **Recommended: main's.** Join the pieces with `tangent_at` (`same`) at the split point, and put direction constraints on the start-side piece only. The shape and its freedoms are what they were, plus the split point's slide along the line, and nothing is redundant. Trim's pieces stay independent, as FreeCAD's do.
 2. **A constraint that no piece can take.** With decision 1, a split's pieces lie on the original's line or share its circle, and D4's `on`, `point_line_distance`, edge `tangent` and `symmetric` about a line act on the whole line or circle, so every such constraint means on a piece what it meant before. **Recommended:** in a split, each goes to the piece whose span holds its point, else the nearer end's, else the start-side piece; nothing is refused or dropped. In a trim, where the pieces really are independent, a constraint no piece can take (an arc's edge `tangent` that no piece touches, `symmetric` about the trimmed line) is refused, naming it, so the person or agent removes it first. FreeCAD drops these silently.
