@@ -2703,6 +2703,11 @@ fn kept(error: &Error) -> bool {
     )
 }
 
+/// Why a description that hung is kept, and that it may not hang again: the advice a read of
+/// the solid's elements words as `check` with `fresh` to try it again.
+const HUNG_KEPT: &str = "describing this solid hung, which a busy machine can cause as well \
+     as the solid; the session keeps that rather than wait on it at every rebuild";
+
 /// Whether a solid's description that couldn't be had is kept for the session, beside its
 /// summary, and not asked again until something changes its step (a fresh rebuild asks
 /// again): refused for its values, as [`kept`] judges, or hung. A describe that hangs would
@@ -2711,6 +2716,7 @@ fn kept(error: &Error) -> bool {
 /// disk: a hang isn't a fact about the shape (`cache::lasting`), so the next session asks
 /// once again. A crash, or a reply no shape has, is asked again, as before.
 fn kept_undescribed(error: &Error) -> bool {
+    // (`measure` keeps a hang with [`HUNG_KEPT`] as its advice.)
     kept(error) || error.code() == ErrorCode::WorkerTimeout
 }
 
@@ -3617,6 +3623,14 @@ impl<K: Kernel + 'static> Engine<K> {
         let described = match self.describe(&built.shape, &summary, generation) {
             Outcome::Superseded => return Outcome::Superseded,
             Outcome::Done(Ok(description)) => Described::Whole(description),
+            // A hang is kept, but may be a busy machine's: the read that meets it is told
+            // so, and to check with fresh to ask again.
+            Outcome::Done(Err(error)) if error.code() == ErrorCode::WorkerTimeout => {
+                Described::Refused(error.with_advice(crate::worker::Advice::TryAgain {
+                    once_more: false,
+                    why: HUNG_KEPT.to_owned(),
+                }))
+            }
             Outcome::Done(Err(error)) if kept_undescribed(&error) => Described::Refused(error),
             Outcome::Done(Err(error)) => Described::Failed(error),
         };

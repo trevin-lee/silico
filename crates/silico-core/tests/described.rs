@@ -321,6 +321,20 @@ fn a_description_that_hung_is_kept_for_the_session_and_asked_again_fresh_or_in_t
     let kept = published(&failing, checked(EXAMPLE));
     assert_eq!(failing.kernel().calls().len(), asked_before);
     assert_summarized_not_described(&kept, code);
+    // An agent reading the block's elements is told the hang was kept, and how to ask
+    // again: `check` with `fresh`.
+    let refused = silico_core::command::elements::entries(&kept, &id("k7f2qx3m")).unwrap_err();
+    let error = &refused.errors()[0];
+    assert_eq!(error.code(), ErrorCode::WorkerTimeout);
+    assert_eq!(error.feature(), Some("k7f2qx3m"));
+    assert_eq!(
+        error.suggestion(),
+        Some(
+            "check with fresh to try it again: describing this solid hung, which a busy \
+             machine can cause as well as the solid; the session keeps that rather than wait \
+             on it at every rebuild"
+        )
+    );
     // On disk: the summary, and nothing of the description.
     for feature in FEATURES {
         let (key, _) = built(&failed, feature);
