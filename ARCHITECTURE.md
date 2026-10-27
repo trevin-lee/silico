@@ -21,20 +21,24 @@ This document records decisions. The **Invariants** section is enforced by the r
 ## Process model
 
 ```
-┌─────────────────────── silico app process (Rust only) ───────────────────────┐
-│                                                                              │
-│   egui UI ──┐                                                                │
-│   MCP server ├──► command API ──► silico-core                                │
-│   CLI ──────┘                     document · feature DAG · naming ·          │
-│                                   recompute scheduler · cache · errors       │
-└──────────────────────────────────────┬───────────────────────────────────────┘
-                                       │ IPC (silico-protocol)
-      ┌────────────┬────────────┬──────┴──────┬─────────────┬─────────────┐
+┌─ silico app ────────┐  ┌─ silico serve ──────┐  ┌─ silico (CLI) ──────┐
+│ egui UI             │  │ MCP server (stdio)  │  │ check · fmt · show  │
+│   └► command API    │  │   └► command API    │  │   └► command API    │
+└─────────┬───────────┘  └─────────┬───────────┘  └─────────┬───────────┘
+          └────────────────────────┬────────────────────────┘
+                                   │
+                  silico-core, linked into each process:
+               document · feature DAG · naming · recompute
+               scheduler · cache · errors (Rust only)
+                                   │ IPC (silico-protocol), each process
+                                   │ starting its own workers
+      ┌────────────┬────────────┬──┴──────────┬─────────────┬─────────────┐
     kernel       kernel       sketch       assembly       render         STEP
     worker       worker       worker        worker        worker        worker
     (OCCT)       (OCCT)     (PlaneGCS)  (OndselSolver)  (lavapipe)   (OCCT STEP)
 ```
 
+- **Clients are processes of their own** (docs/design/m4.1-command-api.md, decision 30(a)). The app, `silico serve` (the MCP server, one client over stdio), and the CLI each link `silico-core` and run every capability through its command API; a session belongs to one client, and clients share a document across processes through its file (decision 2: a session reloads what another commits, outside its own transaction). Each process starts its own workers.
 - **Worker pool.** Up to one kernel worker a core, each started when a request first needs it and kept, so a rebuild pays only for the workers it uses at once. Independent branches of the feature DAG recompute in parallel across them. OCCT isn't reliably thread-safe, so process-level parallelism is the safe route.
 - **Failure handling.** Every request has a timeout. A crashed or hung worker is killed and respawned, and the request fails with a structured error naming the feature. Each request carries a generation number of the client that submitted it (the pool's own, or a client the pool gives, `KernelPool::client`, each with generations of its own: a session's rebuilds take one, and its reads of the published model one or more others (docs/design/m4.1-command-api.md, decision 33)): results for that client's superseded generations are discarded, and work still running for them is stopped once it has run longer than replacing a worker takes (50 ms by default), unless it finishes first. One client's newer generation never touches another's work, and the pool serves its clients' waiting requests in turn.
 - **Worker output.** Serialized B-rep (OCCT binary format), raw history maps, and tessellation when requested. The render worker's: a PNG, and the ID buffer (each pixel's body and face or edge number) when asked.
