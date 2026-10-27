@@ -877,16 +877,14 @@ fn answer(op: &Op) -> Result<Reply, Error> {
 /// The fake's STEP file of `export`: a text saying what was asked, line by line (the
 /// header's file name; the assembly, if there are two or more parts; each part's product id,
 /// name, and how the fake made its shape), so a test reads what the core sent; no face
-/// left out, every one written.
+/// left out, nothing dropped (neither faces nor their bounds counted).
 fn step_file(export: &silico_protocol::ExportStep) -> Result<Reply, Error> {
     let mut text = format!("FAKE STEP\nFILE_NAME('{}')\n", export.file_name);
     if export.parts.len() > 1 {
         text.push_str(&format!("ASSEMBLY('{}')\n", export.assembly));
     }
-    let mut faces = 0_u64;
     for part in &export.parts {
         let made = Symbolic::read(&part.shape)?;
-        faces += u64::from(made.counts().faces);
         text.push_str(&format!(
             "PRODUCT('{}','{}') {}\n",
             part.id,
@@ -898,10 +896,9 @@ fn step_file(export: &silico_protocol::ExportStep) -> Result<Reply, Error> {
         step: Blob::inline(text.into_bytes()),
         left_out: vec![Vec::new(); export.parts.len()],
         unwritten: Vec::new(),
-        // Every face written, its bounds not counted.
         faces: silico_protocol::StepCount {
-            expected: faces,
-            written: faces,
+            expected: 0,
+            written: 0,
         },
         bounds: silico_protocol::StepCount {
             expected: 0,
