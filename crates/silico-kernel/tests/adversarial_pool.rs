@@ -1224,12 +1224,13 @@ fn a_request_over_the_frame_limit_is_refused_and_its_worker_kept() {
 
 #[test]
 fn requests_whose_callers_stopped_waiting_dont_jam_the_pool() {
-    // 40 requests submitted and their `Pending`s dropped at once: they still run (there's
-    // no cancelling but `advance`), and a request after them is answered once they've run.
+    // 40 requests submitted whose callers never wait on them (their `Pending`s kept, so
+    // they aren't given up): they run, and a request after them is answered once they've
+    // run. (A `Pending` dropped gives its request up, `pool::Pending`.)
     let pool = pool(TEST_WORKER, 2);
-    for _ in 0..40 {
-        drop(pool.submit(Generation(1), sleep(10)));
-    }
+    let unwaited: Vec<_> = (0..40)
+        .map(|_| pool.submit(Generation(1), sleep(10)))
+        .collect();
     let start = Instant::now();
     assert_eq!(
         done(pool.submit(Generation(1), echo(&[4]))).unwrap(),
@@ -1243,11 +1244,13 @@ fn requests_whose_callers_stopped_waiting_dont_jam_the_pool() {
         "{:?}",
         start.elapsed()
     );
-    // And `advance` drops what's still queued: a request after it waits at most for the two
-    // sleeps already running, where the queue would take 40 × 500 ms on two workers, 10 s.
-    for _ in 0..40 {
-        drop(pool.submit(Generation(1), sleep(500)));
-    }
+    drop(unwaited);
+    // And `advance` drops what's still queued, their `Pending`s kept so only it can: a
+    // request after it waits at most for the two sleeps already running, where the queue
+    // would take 40 × 500 ms on two workers, 10 s.
+    let unwaited: Vec<_> = (0..40)
+        .map(|_| pool.submit(Generation(1), sleep(500)))
+        .collect();
     pool.advance(Generation(2));
     let start = Instant::now();
     done(pool.submit(Generation(2), echo(&[5]))).unwrap();
@@ -1256,6 +1259,7 @@ fn requests_whose_callers_stopped_waiting_dont_jam_the_pool() {
         "{:?}",
         start.elapsed()
     );
+    drop(unwaited);
 }
 
 #[test]

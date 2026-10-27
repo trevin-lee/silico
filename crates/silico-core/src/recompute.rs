@@ -62,11 +62,11 @@ use crate::document::{
 };
 use crate::elements::Entry;
 use crate::kernel::{
-    BooleanOp, BuiltData, DESCRIBE_BATCH, FaceRegions, Generation, History, Kernel, KernelRequest,
-    Primitive, ShapeData, ShapeSummary, SweepKind,
+    BooleanOp, BuiltData, DESCRIBE_BATCH, DescribedBatch, ElementKind, FaceRegions, Generation,
+    History, Kernel, KernelRequest, Primitive, ShapeData, ShapeSummary, SweepKind,
 };
 use crate::naming::{ElementMap, Maker, NAMING_SCHEME, OpCode};
-use crate::pool::Outcome;
+use crate::pool::{Outcome, Pending};
 use crate::profile::Profile;
 use crate::references::EdgeNames;
 use crate::sketch::{SketchSolution, SketchSolver, SketchWorker, SolveStopper};
@@ -120,11 +120,12 @@ pub struct Built {
 pub(crate) enum Described {
     /// Described whole: each of its faces, edges, and vertices, in the kernel's numbering.
     Whole(Description),
-    /// Refused for the shape's values (`kept`): it would be refused again, so it isn't
-    /// asked again in the session, nor, if it lasts (`cache::lasting`), from the cache.
+    /// Refused for the shape's values ([`kept`]), or hung ([`hung`]): it would be again, so
+    /// it isn't asked again in the session, nor, if it lasts (`cache::lasting`: a refusal
+    /// for invalid input or an invalid result, never a hang), from the cache.
     Refused(Error),
-    /// A worker's failure (a crash, a hang, a reply no shape has): asked again by the next
-    /// recompute.
+    /// Any other failure of a worker (a crash, a reply no shape has): asked again by the
+    /// next recompute.
     Failed(Error),
 }
 
@@ -2666,14 +2667,17 @@ enum MeasureKnown {
     Refused,
     /// Its summary, its description not had (not yet asked, or failed).
     Summary,
-    /// Its summary, and its description or why it was refused.
-    Described,
+    /// Its summary, and why its description was refused or hung, kept.
+    Kept,
+    /// Its summary, and its description: a kept refusal or hang never replaces it.
+    Whole,
 }
 
 /// How much `built` knows of its measure.
 fn measure_known(built: &Built) -> MeasureKnown {
     match (built.summary(), built.described(), built.measure_refused()) {
-        (Some(_), Some(Described::Whole(_) | Described::Refused(_)), _) => MeasureKnown::Described,
+        (Some(_), Some(Described::Whole(_)), _) => MeasureKnown::Whole,
+        (Some(_), Some(Described::Refused(_)), _) => MeasureKnown::Kept,
         (Some(_), _, _) => MeasureKnown::Summary,
         (None, _, Some(_)) => MeasureKnown::Refused,
         (None, _, None) => MeasureKnown::Nothing,
@@ -2700,6 +2704,25 @@ fn kept(error: &Error) -> bool {
         error.code(),
         ErrorCode::InvalidInput | ErrorCode::KernelFailed | ErrorCode::InvalidResult
     )
+}
+
+/// Why a description that hung is kept, and that it may not hang again: the advice a read of
+/// the solid's elements words as `check` with `fresh` to try it again.
+const HUNG_KEPT: &str = "describing this solid hung, which a busy machine can cause as well \
+     as the solid; the session keeps that rather than wait on it at every rebuild";
+
+/// Whether `error` is a hang of a worker that had started, which `measure` keeps for the
+/// session beside the solid's summary, with [`HUNG_KEPT`] as its advice, as it keeps a
+/// refusal for the solid's values ([`kept`]): not asked again until something changes its
+/// step (a fresh rebuild asks again). A describe that hangs would likely hang again on the
+/// same solid, and each rebuild asking it again would hold a worker for the kernel's
+/// timeout (a viewport reading every rebuild would ask it every time). Not on disk: a hang
+/// isn't a fact about the shape (`cache::lasting`), so the next session asks once again. A
+/// worker that hadn't started (a slow first launch, whose advice is to try again) says
+/// nothing about the solid, and is asked again, as a crash is.
+fn hung(error: &Error) -> bool {
+    error.code() == ErrorCode::WorkerTimeout
+        && !matches!(error.advice(), Some(crate::worker::Advice::TryAgain { .. }))
 }
 
 /// A job a recompute's threads run: making a step, or measuring a feature's solid.
@@ -3605,23 +3628,51 @@ impl<K: Kernel + 'static> Engine<K> {
         let described = match self.describe(&built.shape, &summary, generation) {
             Outcome::Superseded => return Outcome::Superseded,
             Outcome::Done(Ok(description)) => Described::Whole(description),
+            // A hang is kept, but may be a busy machine's: the read that meets it is told
+            // so, and to check with fresh to ask again.
+            Outcome::Done(Err(error)) if hung(&error) => {
+                Described::Refused(error.with_advice(crate::worker::Advice::TryAgain {
+                    once_more: false,
+                    why: HUNG_KEPT.to_owned(),
+                }))
+            }
             Outcome::Done(Err(error)) if kept(&error) => Described::Refused(error),
             Outcome::Done(Err(error)) => Described::Failed(error),
         };
         Outcome::Done(Ok(built.with_described(described)))
     }
 
-    /// Each of `shape`'s faces, edges, and vertices described, for `generation`: batches of
-    /// at most [`DESCRIBE_BATCH`](crate::kernel::DESCRIBE_BATCH) planned from `summary`'s
-    /// counts, [`DESCRIBE_AT_ONCE`] of them in flight at a time (each carries the shape),
-    /// joined in order. Each batch's total is checked against the summary's count, and the
-    /// whole against the summary, before it's taken.
+    /// Each of `shape`'s faces, edges, and vertices described, for `generation`: in one
+    /// request if `summary` counts at most [`DESCRIBE_BATCH`](crate::kernel::DESCRIBE_BATCH)
+    /// of them in all ([`KernelRequest::describe_all`]), else in batches of at most that many
+    /// planned from its counts, [`DESCRIBE_AT_ONCE`] of them in flight at a time (each carries
+    /// the shape), joined in order. Each batch's total is checked against the summary's count, and the
+    /// whole against the summary, before it's taken. A batch that fails gives the
+    /// description up: the batches still in flight are dropped, which cancels them
+    /// ([`Pending`]), so no worker is spent on what won't be used.
     fn describe(
         &self,
         shape: &ShapeData,
         summary: &ShapeSummary,
         generation: Generation,
     ) -> Outcome<Description> {
+        let all = u64::from(summary.faces) + u64::from(summary.edges) + u64::from(summary.vertices);
+        if all <= u64::from(DESCRIBE_BATCH) {
+            let description = match self
+                .kernel
+                .submit(generation, KernelRequest::describe_all(shape))
+                .wait()
+            {
+                Outcome::Done(Ok(description)) => description,
+                Outcome::Done(Err(error)) => return Outcome::Done(Err(error)),
+                Outcome::Superseded => return Outcome::Superseded,
+            };
+            // As many of each kind as the summary counts.
+            return match crate::kernel::description_fault(summary, &description) {
+                None => Outcome::Done(Ok(description)),
+                Some(fault) => Outcome::Done(Err(crate::kernel::description_error(fault))),
+            };
+        }
         let mut planned = silico_protocol::batches(summary.faces, summary.edges, summary.vertices);
         let mut description = Description {
             faces: Vec::new(),
@@ -3632,7 +3683,9 @@ impl<K: Kernel + 'static> Engine<K> {
             .iter()
             .any(|&n| n > DESCRIBE_BATCH);
         let at_once = if large { DESCRIBE_AT_ONCE } else { 1 };
-        let mut in_flight = VecDeque::new();
+        // Given up at a failure by returning: the batches still in flight are dropped with it,
+        // which cancels them ([`Pending`]: one still waiting is dropped unrun).
+        let mut in_flight: VecDeque<(ElementKind, Pending<DescribedBatch>)> = VecDeque::new();
         loop {
             while in_flight.len() < at_once
                 && let Some((kind, first, count)) = planned.next()
@@ -3656,6 +3709,7 @@ impl<K: Kernel + 'static> Engine<K> {
                     description.vertices.extend(batch.description.vertices);
                 }
                 Outcome::Done(Err(error)) => return Outcome::Done(Err(error)),
+                // The generation's other requests are superseded with it.
                 Outcome::Superseded => return Outcome::Superseded,
             }
         }
@@ -4138,6 +4192,59 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_describe_timed_out_before_its_worker_started_is_asked_again_and_one_after_is_kept() {
+        // A box's description refused as a timeout, twice recomputed on one engine: one whose
+        // worker hadn't started (advised to try again) says nothing about the solid, so the
+        // second recompute asks again; one whose worker had (advised to simplify or wait) is
+        // kept, so the second asks nothing.
+        use crate::worker::Advice;
+        let not_started = || Advice::TryAgain {
+            once_more: true,
+            why: "the worker was slow to start".to_owned(),
+        };
+        for (advice, asked) in [(not_started(), 2), (Advice::SimplifyOrWait, 1)] {
+            let kernel = crate::fake::FakeKernel::new(2).unwrap();
+            let given = advice.clone();
+            kernel.refuse(move |op| {
+                matches!(op, silico_protocol::Op::DescribeAll { .. }).then(|| {
+                    Error::new(ErrorCode::WorkerTimeout, "the kernel worker timed out")
+                        .with_advice(given.clone())
+                })
+            });
+            let engine = Recompute::new(kernel);
+            let document = Arc::new(boxes(1, |_| false));
+            for _ in 0..2 {
+                published(engine.start(Arc::clone(&document)));
+            }
+            let described = engine
+                .kernel()
+                .asked()
+                .iter()
+                .filter(|call| matches!(call.op, silico_protocol::Op::DescribeAll { .. }))
+                .count();
+            assert_eq!(described, asked, "{advice:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_hang_of_a_worker_that_had_started_is_kept() {
+        use crate::worker::Advice;
+        let timeout = || Error::new(ErrorCode::WorkerTimeout, "the kernel worker timed out");
+        // Started: its advice to simplify or wait, or none.
+        assert!(hung(&timeout().with_advice(Advice::SimplifyOrWait)));
+        assert!(hung(&timeout()));
+        // Not started: try again, said of the launch, not the solid.
+        assert!(!hung(&timeout().with_advice(Advice::TryAgain {
+            once_more: true,
+            why: "the worker was slow to start".to_owned(),
+        })));
+        // Not a hang.
+        assert!(!hung(
+            &Error::new(ErrorCode::KernelFailed, "no").with_advice(Advice::SimplifyOrWait)
+        ));
+    }
 
     #[test]
     fn a_recompute_runs_with_the_threads_that_start_and_fails_only_with_none() {
@@ -4688,10 +4795,15 @@ mod tests {
             let lost: StepResult = Ok(Arc::new(summarized.with_described(Described::Failed(
                 Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed"),
             ))));
-            // By hand: what each knows, most first.
+            let hung: StepResult = Ok(Arc::new(summarized.with_described(Described::Refused(
+                Error::new(ErrorCode::WorkerTimeout, "the kernel worker took too long"),
+            ))));
+            // By hand: what each knows, most first; a refusal or a hang kept never replaces
+            // a description had (a superseded recompute's whole one, say).
             let ranked = [
-                (&whole, 3),
+                (&whole, 4),
                 (&kept, 3),
+                (&hung, 3),
                 (&lost, 2),
                 (&measured, 2),
                 (&refused, 1),

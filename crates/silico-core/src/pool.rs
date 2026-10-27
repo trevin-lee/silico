@@ -34,7 +34,7 @@ use std::ops::Bound;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::ExitStatus;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
@@ -122,16 +122,29 @@ impl<T> Outcome<T> {
 }
 
 /// A request submitted to a [`Kernel`](crate::kernel::Kernel), whose outcome comes when the
-/// kernel has run it.
+/// kernel has run it. Dropped before its outcome came, it's given up: one still waiting for
+/// a worker is dropped unrun when its turn comes, and one already running runs on, its result
+/// dropped; its generation, and every other request, go on as they were. So a caller that
+/// stops wanting what it asked for (a description whose other batch failed, a render that
+/// found its eye in the first body) spends no worker on it.
 #[must_use = "a request's outcome is only had by waiting for it"]
 pub struct Pending<T> {
     name: &'static str,
+    /// Set when its caller drops it ([`Pending`]); the queued request holds it too.
+    cancelled: Arc<AtomicBool>,
     /// What ran it, for the error if it stops first: `kernel pool`, `fake kernel`.
     kernel: &'static str,
     /// Whether a client of the kernel submitted it ([`Clients::client`]), not the kernel's
     /// own [`Kernel`](crate::kernel::Kernel): what the error if it stops first suggests.
     client: bool,
     outcome: Receiver<Outcome<T>>,
+}
+
+impl<T> Drop for Pending<T> {
+    fn drop(&mut self) {
+        // After an outcome came, the request is out of the queue, and this changes nothing.
+        self.cancelled.store(true, Ordering::Release);
+    }
 }
 
 impl<T> Pending<T> {
@@ -146,10 +159,16 @@ impl<T> Pending<T> {
     ) -> Self {
         Self {
             name,
+            cancelled: Arc::new(AtomicBool::new(false)),
             kernel,
             client: client != ClientId::KERNEL,
             outcome,
         }
+    }
+
+    /// What the queued request holds to know it was given up.
+    pub(crate) fn cancelled(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancelled)
     }
 
     /// The outcome of the request once its kernel has stopped before running it.
@@ -205,6 +224,9 @@ fn stopped(kernel: &str, name: &str, client: bool) -> Error {
 pub(crate) trait ClientTask {
     fn client(&self) -> ClientId;
     fn generation(&self) -> Generation;
+    /// Whether its caller gave it up (dropped its [`Pending`]) before it ran: it's dropped
+    /// without running when its turn comes.
+    fn cancelled(&self) -> bool;
 }
 
 /// A kernel's clients ([`Clients`]) and their requests waiting, kept by the pool and the
@@ -284,24 +306,45 @@ impl<T: ClientTask + ?Sized> ClientQueues<T> {
         self.queued
     }
 
+    /// How many of the requests waiting their callers gave up: each to be dropped unrun
+    /// when its turn comes ([`next`](Self::next)).
+    #[cfg(feature = "fake")]
+    pub(crate) fn cancelled_waiting(&self) -> usize {
+        self.queues
+            .values()
+            .flatten()
+            .filter(|task| task.cancelled())
+            .count()
+    }
+
     /// The next request to take: the first waiting of the next client after the one whose
-    /// request was taken last, round the clients in order, so each client's turn comes.
-    pub(crate) fn next(&mut self) -> Option<Box<T>> {
-        let after = self.turn.map_or(Bound::Unbounded, Bound::Excluded);
-        let client = self
-            .queues
-            .range((after, Bound::Unbounded))
-            .next()
-            .or_else(|| self.queues.first_key_value())
-            .map(|(&client, _)| client)?;
-        let queue = self.queues.get_mut(&client)?;
-        let task = queue.pop_front()?;
-        if queue.is_empty() {
-            self.queues.remove(&client);
+    /// request was taken last, round the clients in order, so each client's turn comes. Those
+    /// passed over as given up go into `given_up`, for the caller to drop once it has let go
+    /// of the lock it holds these queues under: each may hold a shape's bytes.
+    pub(crate) fn next(&mut self, given_up: &mut Vec<Box<T>>) -> Option<Box<T>> {
+        loop {
+            let after = self.turn.map_or(Bound::Unbounded, Bound::Excluded);
+            let client = self
+                .queues
+                .range((after, Bound::Unbounded))
+                .next()
+                .or_else(|| self.queues.first_key_value())
+                .map(|(&client, _)| client)?;
+            let queue = self.queues.get_mut(&client)?;
+            let task = queue.pop_front()?;
+            if queue.is_empty() {
+                self.queues.remove(&client);
+            }
+            self.queued -= 1;
+            // Given up by its caller: dropped unrun, nobody waiting for it, and the client's
+            // turn not taken.
+            if task.cancelled() {
+                given_up.push(task);
+                continue;
+            }
+            self.turn = Some(client);
+            return Some(task);
         }
-        self.queued -= 1;
-        self.turn = Some(client);
-        Some(task)
     }
 
     /// Every request waiting, taken from the queues, client by client.
@@ -866,6 +909,7 @@ impl Shared {
         let task = Box::new(Submitted {
             client,
             generation,
+            cancelled: pending.cancelled(),
             request,
             reply,
             span: tracing::Span::current(),
@@ -910,12 +954,14 @@ impl Shared {
 
     /// The next request for a thread, waiting up to [`IDLE_CHECK`] for one.
     fn next(&self) -> Next {
+        // Declared before the lock's guard, so dropped after it.
+        let mut given_up = Vec::new();
         let mut state = lock(&self.state);
         loop {
             if state.stopping {
                 return Next::Stop;
             }
-            if let Some(task) = state.clients.next() {
+            if let Some(task) = state.clients.next(&mut given_up) {
                 state.busy += 1;
                 return Next::Task(task);
             }
@@ -1028,6 +1074,8 @@ trait Task: ClientTask + Send {
 struct Submitted<T> {
     client: ClientId,
     generation: Generation,
+    /// Set once its caller gives it up ([`Pending`]).
+    cancelled: Arc<AtomicBool>,
     request: KernelRequest<T>,
     reply: SyncSender<Outcome<T>>,
     /// The span current where the request was submitted.
@@ -1042,6 +1090,10 @@ impl<T> ClientTask for Submitted<T> {
     fn generation(&self) -> Generation {
         self.generation
     }
+
+    fn cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
 }
 
 impl<T: Send + 'static> Task for Submitted<T> {
@@ -1055,6 +1107,7 @@ impl<T: Send + 'static> Task for Submitted<T> {
         let Submitted {
             client,
             generation,
+            cancelled: _,
             request,
             reply,
             span,
@@ -1257,6 +1310,12 @@ fn serve(slot: usize, shared: &Arc<Shared>, start: SlotStart) {
                 continue;
             }
         };
+        // Given up by its caller while its slot started a worker (hundreds of milliseconds,
+        // a first launch): dropped unrun, as the queue drops one.
+        if task.cancelled() {
+            drop(busy);
+            continue;
+        }
         // Marked running before the generation is checked: an `advance` either came first
         // (and the request is superseded here, without running) or finds it marked (and the
         // pool may stop it, condemning the worker, even before it runs).
@@ -1557,6 +1616,74 @@ mod tests {
         fn generation(&self) -> Generation {
             self.1
         }
+
+        fn cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    /// A request of `.0`'s, numbered `.1`, its caller having given it up if `.2`.
+    struct Given(ClientId, u32, bool);
+
+    impl ClientTask for Given {
+        fn client(&self) -> ClientId {
+            self.0
+        }
+
+        fn generation(&self) -> Generation {
+            Generation(0)
+        }
+
+        fn cancelled(&self) -> bool {
+            self.2
+        }
+    }
+
+    #[test]
+    fn a_request_given_up_is_dropped_unrun_and_the_turn_is_the_next_clients() {
+        // Client 1 queues 0, 1 (given up), and 2; client 2 queues 0, and then 1 (given up),
+        // its last. Taken in turn: 1's 0, 2's 0, then 1's 1 is passed over for 1's 2, and 2's
+        // 1, the last waiting, is dropped too: nothing more, and nothing counted waiting.
+        let mut queues = ClientQueues::new();
+        let (one, two) = (queues.add_client(), queues.add_client());
+        for task in [
+            Given(one, 0, false),
+            Given(one, 1, true),
+            Given(one, 2, false),
+            Given(two, 0, false),
+            Given(two, 1, true),
+        ] {
+            queues.push(Box::new(task));
+        }
+        assert_eq!(queues.queued(), 5);
+        let mut given_up = Vec::new();
+        let taken: Vec<(u64, u32)> = std::iter::from_fn(|| queues.next(&mut given_up))
+            .map(|task| (task.0.number(), task.1))
+            .collect();
+        assert_eq!(taken, [(1, 0), (2, 0), (1, 2)]);
+        assert_eq!(queues.queued(), 0);
+        assert!(queues.next(&mut given_up).is_none());
+        // The two passed over, given to the caller to drop.
+        let passed: Vec<(u64, u32)> = given_up
+            .iter()
+            .map(|task| (task.0.number(), task.1))
+            .collect();
+        assert_eq!(passed, [(1, 1), (2, 1)]);
+        // A request given up doesn't take its client's turn: client 1's first given up, its
+        // second is still taken before client 2's first.
+        let mut queues = ClientQueues::new();
+        let (one, two) = (queues.add_client(), queues.add_client());
+        for task in [
+            Given(one, 0, true),
+            Given(one, 1, false),
+            Given(two, 0, false),
+        ] {
+            queues.push(Box::new(task));
+        }
+        let taken: Vec<(u64, u32)> = std::iter::from_fn(|| queues.next(&mut Vec::new()))
+            .map(|task| (task.0.number(), task.1))
+            .collect();
+        assert_eq!(taken, [(1, 1), (2, 0)]);
     }
 
     /// Bookkeeping with three clients beside the kernel's own, and `counts[i]` requests
@@ -1578,7 +1705,8 @@ mod tests {
 
     /// What `queues` gives, drained, as (client number, place) pairs.
     fn drain(queues: &mut ClientQueues<Request>) -> Vec<(u64, u32)> {
-        std::iter::from_fn(|| queues.next())
+        let mut given_up = Vec::new();
+        std::iter::from_fn(|| queues.next(&mut given_up))
             .map(|r| (r.0.number(), r.2))
             .collect()
     }
@@ -1666,7 +1794,7 @@ mod tests {
         assert_eq!(queues.queued(), 2);
         assert_eq!(queues.take_all().len(), 2);
         assert_eq!(queues.queued(), 0);
-        assert!(queues.next().is_none());
+        assert!(queues.next(&mut Vec::new()).is_none());
     }
 
     #[test]

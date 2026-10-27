@@ -580,6 +580,26 @@ impl KernelRequest<DescribedBatch> {
     }
 }
 
+impl KernelRequest<Description> {
+    /// Every face, edge, and vertex of `shape` described, for a shape with at most
+    /// [`DESCRIBE_BATCH`] of them in all: one request where [`describe`](KernelRequest::describe)
+    /// would take a batch of each kind ([`Op::DescribeAll`]). The reply's values are checked as
+    /// a batch's are ([`Description::validate`]); its counts against the shape's summary are
+    /// its caller's (`description_fault`).
+    pub fn describe_all(shape: &ShapeData) -> Self {
+        let op = Op::DescribeAll {
+            shape: shape.clone(),
+        };
+        Self::new(op, move |name, reply| match reply {
+            Reply::DescribedAll(description) => match description.validate(1) {
+                Ok(()) => Ok(description),
+                Err(problem) => Err(description_error(problem)),
+            },
+            other => Err(unexpected(name, &other)),
+        })
+    }
+}
+
 impl KernelRequest<Distance> {
     /// The least distance between `first`, an element of `shape`, and `second`, one of
     /// `other` (or of `shape` too, if there's no other), as bounded, with a pair of points
@@ -1711,6 +1731,47 @@ mod tests {
                 (ErrorCode::InvalidInput, Some(parameter))
             );
         }
+    }
+
+    #[test]
+    fn a_whole_description_whose_values_cant_be_trusted_is_a_protocol_error() {
+        // Checked as a whole description is, its elements numbered from 1: the second edge is
+        // the kernel's Edge2. Its counts are its caller's to check.
+        use silico_protocol::{EdgeCurve, EdgeDescription};
+        let line = EdgeDescription {
+            curve: EdgeCurve::Line,
+            length: 1.0,
+            start: [0.0; 3],
+            end: [1.0, 0.0, 0.0],
+            middle: [0.5, 0.0, 0.0],
+        };
+        let two = Description {
+            faces: Vec::new(),
+            edges: vec![line.clone(), line],
+            vertices: Vec::new(),
+        };
+        let shape = ShapeData::unchecked(Blob::inline(vec![1]));
+        let answer = |reply: Reply| KernelRequest::describe_all(&shape).answer(Ok(reply));
+        assert_eq!(answer(Reply::DescribedAll(two.clone())).unwrap(), two);
+        let mut short = two.clone();
+        short.edges[1].length = 0.0;
+        let mut lost = two.clone();
+        lost.edges[1].start[1] = f64::NAN;
+        for (description, cause) in [
+            (short, "the kernel's Edge2's length is 0"),
+            (lost, "the kernel's Edge2's start is NaN"),
+        ] {
+            let e = answer(Reply::DescribedAll(description)).unwrap_err();
+            assert_eq!(e.code(), ErrorCode::ProtocolError);
+            assert_eq!(e.cause(), Some(cause));
+        }
+        // A batch's reply to it is no answer.
+        let e = answer(Reply::Described {
+            total: 2,
+            description: two,
+        })
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::ProtocolError);
     }
 
     #[test]

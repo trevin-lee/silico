@@ -992,18 +992,12 @@ fn sketches_between_solids_change_nothing_about_them() {
         );
     }
     // Two boxes, one translate, one fuse, and the three measured: each summarized and
-    // described, a batch each of its faces, edges, and vertices.
+    // described in one request.
     let mut sorted = calls.clone();
     sorted.sort();
     assert_eq!(
         sorted,
         [
-            "Describe",
-            "Describe",
-            "Describe",
-            "Describe",
-            "Describe",
-            "Describe",
             "Describe",
             "Describe",
             "Describe",

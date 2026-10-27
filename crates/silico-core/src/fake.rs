@@ -54,6 +54,7 @@
 //! turn with the other clients'.
 
 use std::collections::{BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
@@ -61,8 +62,9 @@ use std::time::{Duration, Instant};
 
 use silico_protocol::vec3::{dot, sub};
 use silico_protocol::{
-    Algorithm, Description, EdgeCurve, EdgeDescription, FaceDescription, PointPlace, Reply,
-    ShapeSummary, SketchSystem, SolveStatus, Solved, Surface, Tag, area_and_perimeter, loop_area,
+    Algorithm, DESCRIBE_BATCH, Description, EdgeCurve, EdgeDescription, FaceDescription,
+    PointPlace, Reply, ShapeSummary, SketchSystem, SolveStatus, Solved, Surface, Tag,
+    area_and_perimeter, loop_area,
 };
 
 use crate::kernel::{
@@ -199,6 +201,13 @@ impl FakeKernel {
         lock(&self.shared.state).asked.clone()
     }
 
+    /// How many requests waiting their callers gave up (dropped their [`Pending`]), each to be
+    /// dropped unrun when its turn comes: what a test waits on to know a caller cancelled
+    /// them before a thread took them.
+    pub fn cancelled_waiting(&self) -> usize {
+        lock(&self.shared.state).clients.cancelled_waiting()
+    }
+
     /// The most requests that have run at once.
     pub fn most_running(&self) -> usize {
         lock(&self.shared.state).most_running
@@ -293,6 +302,17 @@ impl FakeKernel {
     /// The faces, edges, vertices, and solids of `shape`, if it's a fake kernel's shape.
     pub fn counts(shape: &ShapeData) -> Option<ElementCounts> {
         Symbolic::read(shape).ok().map(|made| made.counts())
+    }
+
+    /// Every face, edge, and vertex of `shape` as the fake describes them, if it's a fake
+    /// kernel's shape: what its [`Op::DescribeAll`] answers, for a test that answers part of
+    /// a description itself and leaves the rest the fake's.
+    pub fn described(shape: &ShapeData) -> Option<Description> {
+        let counts = Symbolic::read(shape).ok()?.counts();
+        match described_all_any_size(&counts) {
+            Ok(Reply::DescribedAll(description)) => Some(description),
+            _ => None,
+        }
     }
 }
 
@@ -422,6 +442,7 @@ impl Shared {
         let task = Box::new(Submitted {
             client,
             generation,
+            cancelled: pending.cancelled(),
             request,
             reply,
             span: tracing::Span::current(),
@@ -484,6 +505,8 @@ trait Task: ClientTask + Send {
 struct Submitted<T> {
     client: ClientId,
     generation: Generation,
+    /// Set once its caller gives it up ([`Pending`]).
+    cancelled: Arc<AtomicBool>,
     request: KernelRequest<T>,
     reply: SyncSender<Outcome<T>>,
     /// The span current where the request was submitted.
@@ -498,6 +521,10 @@ impl<T> ClientTask for Submitted<T> {
     fn generation(&self) -> Generation {
         self.generation
     }
+
+    fn cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
 }
 
 impl<T: Send + 'static> Task for Submitted<T> {
@@ -509,6 +536,7 @@ impl<T: Send + 'static> Task for Submitted<T> {
         let Submitted {
             client,
             generation,
+            cancelled: _,
             request,
             reply,
             span,
@@ -556,12 +584,14 @@ impl<T: Send + 'static> Task for Submitted<T> {
 /// kernel stops.
 fn serve(shared: &Shared) {
     loop {
+        // Declared before the lock's guard, so dropped after it.
+        let mut given_up = Vec::new();
         let mut state = lock(&shared.state);
         let task = loop {
             if state.stopping {
                 return;
             }
-            if let Some(task) = state.clients.next() {
+            if let Some(task) = state.clients.next(&mut given_up) {
                 break task;
             }
             state = shared
@@ -847,6 +877,7 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             first,
             count,
         } => described(&Symbolic::read(shape)?.counts(), *kind, *first, *count),
+        Op::DescribeAll { shape } => described_all(&Symbolic::read(shape)?.counts()),
         Op::Distance {
             shape,
             first,
@@ -1038,6 +1069,38 @@ fn point_distance(
         from: point,
         to: at,
         solutions: 1,
+    }))
+}
+
+/// Every element of a shape of `counts` described ([`Op::DescribeAll`]), each as
+/// [`described`] describes it; refused past a batch in all, as a worker refuses it: as its
+/// fault (`internal`).
+fn described_all(counts: &ElementCounts) -> Result<Reply, Error> {
+    let all = u64::from(counts.faces) + u64::from(counts.edges) + u64::from(counts.vertices);
+    if all > u64::from(DESCRIBE_BATCH) {
+        return Err(Error::new(
+            ErrorCode::Internal,
+            format!(
+                "the fake kernel describes at most {DESCRIBE_BATCH} elements at once, not {all}"
+            ),
+        ));
+    }
+    described_all_any_size(counts)
+}
+
+/// [`described_all`] of a shape of any size.
+fn described_all_any_size(counts: &ElementCounts) -> Result<Reply, Error> {
+    let of = |kind, count| match described(counts, kind, 1, count)? {
+        Reply::Described { description, .. } => Ok(description),
+        other => Err(Error::new(
+            ErrorCode::Internal,
+            format!("the fake kernel described with a {} reply", other.kind()),
+        )),
+    };
+    Ok(Reply::DescribedAll(Description {
+        faces: of(ElementKind::Face, counts.faces)?.faces,
+        edges: of(ElementKind::Edge, counts.edges)?.edges,
+        vertices: of(ElementKind::Vertex, counts.vertices)?.vertices,
     }))
 }
 

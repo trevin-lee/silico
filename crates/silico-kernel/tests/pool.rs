@@ -578,9 +578,11 @@ fn a_request_after_advance_never_lands_on_a_killed_worker() {
     sweep_across(300, Duration::from_micros(100), |delay| {
         let g = pool.generation().0;
         let before = pool.pids();
-        drop(pool.submit(Generation(g), sleep(200)));
+        // Kept until after `advance`, so it's superseded, not given up by its drop.
+        let superseded = pool.submit(Generation(g), sleep(200));
         spin(delay);
         pool.advance(Generation(g + 1));
+        drop(superseded);
         match outcome(pool.submit(Generation(g + 1), echo(&[1]))) {
             Outcome::Done(Ok(_)) => {}
             other => failures.push((delay, format!("{other:?}"))),
@@ -773,6 +775,25 @@ impl Drop for Released<'_> {
     fn drop(&mut self) {
         let _ = std::fs::write(self.0.join("release"), b"");
     }
+}
+
+#[test]
+fn a_request_dropped_while_it_waits_never_reaches_a_worker_and_the_next_runs() {
+    // One worker, held by a long sleep; a sleep submitted and dropped at once while it waits,
+    // then another kept. Let go, the worker takes the kept one: two sleeps ran, not three.
+    let marks = marks_dir("dropped");
+    let _released = Released(&marks);
+    let pool = KernelPool::start_workers(&sleep_marking_worker(&marks), 1).unwrap();
+    let long = pool.submit(Generation(0), long_sleep());
+    wait_started(&marks, 1);
+    drop(pool.submit(Generation(0), sleep(1)));
+    let kept = pool.submit(Generation(0), sleep(1));
+    release(&marks);
+    done(kept).unwrap();
+    done(long).unwrap();
+    let started = std::fs::read_to_string(marks.join("running")).unwrap();
+    assert_eq!(started.lines().count(), 2, "the dropped request ran");
+    let _ = std::fs::remove_dir_all(&marks);
 }
 
 #[test]

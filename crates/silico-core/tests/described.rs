@@ -117,10 +117,10 @@ fn each_built_features_solid_is_described_as_its_rebuilt_element_for_element() {
             .sum::<usize>();
         assert_eq!(listed.len(), total, "{feature}");
     }
-    // Three solids measured: each one summary, and one batch of each kind, every kind
-    // under a batch.
+    // Three solids measured: each one summary, and described in one request
+    // (`DescribeAll`, named `Describe`), its elements fewer than a batch in all.
     assert_eq!(asked(engine.kernel(), "Summarize"), 3);
-    assert_eq!(asked(engine.kernel(), "Describe"), 9);
+    assert_eq!(asked(engine.kernel(), "Describe"), 3);
 }
 
 #[test]
@@ -222,8 +222,7 @@ fn a_description_refused_for_its_values_keeps_the_summary_and_the_refusal() {
         assert!(model.drift().is_empty(), "{code:?}: {:?}", model.drift());
         assert_eq!(hole(&model), HOLE);
         assert_summarized_not_described(&model, code);
-        // Each solid's batches one after another (a batch of each kind, so not at once): its
-        // first, its faces, refused, and no more asked of it.
+        // Each solid described in one request, refused, and no more asked of it.
         assert_eq!(settled(first.kernel(), describe, 3), 3, "{code:?}");
         // Asked once a solid in the session.
         let asked_before = first.kernel().calls().len();
@@ -261,8 +260,8 @@ fn a_description_refused_for_its_values_keeps_the_summary_and_the_refusal() {
             assert!(second.kernel().calls().is_empty(), "{code:?}");
             assert_summarized_not_described(&again, code);
         } else {
-            // Described again, a batch of each kind for each solid, and whole.
-            assert_eq!(asked(second.kernel(), "Describe"), 9, "{code:?}");
+            // Described again, in one request for each solid, and whole.
+            assert_eq!(asked(second.kernel(), "Describe"), 3, "{code:?}");
             for feature in FEATURES {
                 assert_eq!(
                     again.description(&id(feature)).map(|d| d.faces.len()),
@@ -275,31 +274,96 @@ fn a_description_refused_for_its_values_keeps_the_summary_and_the_refusal() {
 }
 
 #[test]
-fn a_description_a_worker_failed_is_asked_again_and_only_it() {
-    // A crash or a hang follows from nothing about the solid: the summary stands (drift is
-    // empty), and each recompute asks the description again, not the summary; the cache
-    // keeps the summary and nothing of the description, so the next session describes it,
-    // making and summarizing nothing.
-    for code in [ErrorCode::WorkerCrashed, ErrorCode::WorkerTimeout] {
-        let dir = Scratch::new(&format!("describe-failed-{}", code.as_str()));
-        let failing = session(&dir.0);
-        refusing_to(failing.kernel(), code, "Describe");
-        let failed = published(&failing, checked(EXAMPLE));
-        assert!(failed.drift().is_empty(), "{code:?}: {:?}", failed.drift());
-        assert_summarized_not_described(&failed, code);
-        // Each solid's faces asked first, and failing, nothing more of it: three asked, and
-        // three again.
-        assert_eq!(settled(failing.kernel(), describe, 3), 3, "{code:?}");
-        let again = published(&failing, checked(EXAMPLE));
-        assert_eq!(settled(failing.kernel(), describe, 6), 6, "{code:?}");
-        assert_eq!(asked(failing.kernel(), "Summarize"), 3, "{code:?}");
-        assert_summarized_not_described(&again, code);
-        let next = session(&dir.0);
-        let model = published(&next, checked(EXAMPLE));
-        assert!(calls(&next).is_empty(), "{code:?}: {:?}", calls(&next));
-        assert_eq!(asked(next.kernel(), "Summarize"), 0, "{code:?}");
-        assert_eq!(asked(next.kernel(), "Describe"), 9, "{code:?}");
-        assert!(model.drift().is_empty(), "{code:?}");
-        assert!(model.description(&id("m3tq8v0z")).is_some(), "{code:?}");
+fn a_description_a_worker_crashed_on_is_asked_again_and_only_it() {
+    // A crash follows from nothing about the solid: the summary stands (drift is empty), and
+    // each recompute asks the description again, not the summary; the cache keeps the
+    // summary and nothing of the description, so the next session describes it, making and
+    // summarizing nothing.
+    let code = ErrorCode::WorkerCrashed;
+    let dir = Scratch::new("describe-failed-worker_crashed");
+    let failing = session(&dir.0);
+    refusing_to(failing.kernel(), code, "Describe");
+    let failed = published(&failing, checked(EXAMPLE));
+    assert!(failed.drift().is_empty(), "{:?}", failed.drift());
+    assert_summarized_not_described(&failed, code);
+    // Each solid described in one request, failing: three asked, and three again.
+    assert_eq!(settled(failing.kernel(), describe, 3), 3);
+    let again = published(&failing, checked(EXAMPLE));
+    assert_eq!(settled(failing.kernel(), describe, 6), 6);
+    assert_eq!(asked(failing.kernel(), "Summarize"), 3);
+    assert_summarized_not_described(&again, code);
+    let next = session(&dir.0);
+    let model = published(&next, checked(EXAMPLE));
+    assert!(calls(&next).is_empty(), "{:?}", calls(&next));
+    assert_eq!(asked(next.kernel(), "Summarize"), 0);
+    assert_eq!(asked(next.kernel(), "Describe"), 3);
+    assert!(model.drift().is_empty());
+    assert!(model.description(&id("m3tq8v0z")).is_some());
+}
+
+#[test]
+fn a_description_that_hung_is_kept_for_the_session_and_asked_again_fresh_or_in_the_next() {
+    // A hang would hang again on the same solid, holding a worker for the kernel's timeout
+    // each time: it's kept for the session beside the summary, as a refusal is, so a second
+    // recompute asks nothing, and element reads say why. Not on disk, as it's no fact about
+    // the shape: a fresh recompute asks again, and so does the next session, which then
+    // describes it.
+    let code = ErrorCode::WorkerTimeout;
+    let dir = Scratch::new("describe-failed-worker_timeout");
+    let failing = session(&dir.0);
+    refusing_to(failing.kernel(), code, "Describe");
+    let failed = published(&failing, checked(EXAMPLE));
+    assert!(failed.drift().is_empty(), "{:?}", failed.drift());
+    assert_summarized_not_described(&failed, code);
+    assert_eq!(settled(failing.kernel(), describe, 3), 3);
+    // Asked once a solid in the session: the second recompute asks nothing.
+    let asked_before = failing.kernel().calls().len();
+    let kept = published(&failing, checked(EXAMPLE));
+    assert_eq!(failing.kernel().calls().len(), asked_before);
+    assert_summarized_not_described(&kept, code);
+    // An agent reading the block's elements is told the hang was kept, and how to ask
+    // again: `check` with `fresh`.
+    let refused = silico_core::command::elements::entries(&kept, &id("k7f2qx3m")).unwrap_err();
+    let error = &refused.errors()[0];
+    assert_eq!(error.code(), ErrorCode::WorkerTimeout);
+    assert_eq!(error.feature(), Some("k7f2qx3m"));
+    assert_eq!(
+        error.suggestion(),
+        Some(
+            "check with fresh to try it again: describing this solid hung, which a busy \
+             machine can cause as well as the solid; the session keeps that rather than wait \
+             on it at every rebuild"
+        )
+    );
+    // On disk: the summary, and nothing of the description.
+    for feature in FEATURES {
+        let (key, _) = built(&failed, feature);
+        assert!(
+            matches!(
+                decode(&std::fs::read(entry_path(&dir.0, &key)).unwrap()).measure,
+                Measure::Measured {
+                    description: KeptDescription::Unknown,
+                    ..
+                }
+            ),
+            "{feature} kept no description on disk"
+        );
     }
+    // A fresh recompute reads nothing kept, so asks again (and hangs again).
+    let fresh = match failing
+        .start_fresh(checked(EXAMPLE))
+        .wait_timeout(model::WAIT)
+    {
+        Ok(Ok(silico_core::recompute::RunOutcome::Published(model))) => model,
+        Ok(other) => panic!("not published: {other:?}"),
+        Err(_) => panic!("the fresh recompute didn't finish in {:?}", model::WAIT),
+    };
+    assert_eq!(settled(failing.kernel(), describe, 6), 6);
+    assert_summarized_not_described(&fresh, code);
+    let next = session(&dir.0);
+    let model = published(&next, checked(EXAMPLE));
+    assert!(calls(&next).is_empty(), "{:?}", calls(&next));
+    assert_eq!(asked(next.kernel(), "Summarize"), 0);
+    assert_eq!(asked(next.kernel(), "Describe"), 3);
+    assert!(model.description(&id("m3tq8v0z")).is_some());
 }

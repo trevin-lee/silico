@@ -597,16 +597,63 @@ fn dropping_the_kernel_with_requests_held_from_many_threads_ends_them_all() {
 
 #[test]
 fn a_caller_that_stops_waiting_does_not_wedge_the_kernel() {
+    // An echo dropped once it has started, held, so its reply has nowhere to go; and a
+    // thousand more dropped while they wait, so each is given up and passed over unrun. Let
+    // go, the started one runs out, and the request after them all is answered: the only
+    // other to run.
     let kernel = FakeKernel::new(1).unwrap();
-    for n in 0..1000u32 {
-        // Dropped at once: the reply has nowhere to go.
-        drop(kernel.submit(
-            Generation(0),
-            KernelRequest::echo(Blob::inline(n.to_le_bytes().to_vec())),
-        ));
+    let echo = |n: u32| KernelRequest::echo(Blob::inline(n.to_le_bytes().to_vec()));
+    let hold = kernel.hold(|op| matches!(op, Op::Echo { .. }));
+    let started = kernel.submit(Generation(0), echo(0));
+    assert!(kernel.wait_running(1, Duration::from_secs(10)));
+    drop(started);
+    for n in 1..=1000u32 {
+        drop(kernel.submit(Generation(0), echo(n)));
     }
+    assert_eq!(kernel.cancelled_waiting(), 1000);
+    hold.release();
     run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
-    assert_eq!(kernel.calls().len(), 1001);
+    assert_eq!(kernel.asked().len(), 1002);
+    let ran: Vec<&str> = kernel.calls().iter().map(|call| call.op.name()).collect();
+    assert_eq!(ran, ["Echo", "MakeBox"]);
+    assert_eq!(kernel.cancelled_waiting(), 0);
+}
+
+#[test]
+fn the_fake_describes_at_once_at_most_a_batch_of_elements_counting_every_kind() {
+    // Found by mutation testing: nothing held that a shape's vertices count toward the
+    // bound on one DescribeAll. A box is 6 faces, 12 edges, and 8 vertices, and a fuse of
+    // the fake holds both its inputs': 38 boxes are 988 elements, described at once, and 39
+    // are 1,014, past the 1,000 one request describes, refused as a worker refuses them.
+    let kernel = FakeKernel::new(1).unwrap();
+    let a_box = run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
+    let mut fused = a_box.clone();
+    for _ in 1..38 {
+        fused = run(
+            &kernel,
+            KernelRequest::boolean(BooleanOp::Fuse, &fused, &a_box),
+        )
+        .shape;
+    }
+    let whole = run(&kernel, KernelRequest::describe_all(&fused));
+    assert_eq!(
+        (whole.faces.len(), whole.edges.len(), whole.vertices.len()),
+        (228, 456, 304)
+    );
+    let past = run(
+        &kernel,
+        KernelRequest::boolean(BooleanOp::Fuse, &fused, &a_box),
+    )
+    .shape;
+    let outcome = within(
+        kernel.submit(kernel.generation(), KernelRequest::describe_all(&past)),
+        "a description of 1,014 elements at once",
+    );
+    let Outcome::Done(Err(error)) = outcome else {
+        panic!("{outcome:?}")
+    };
+    assert_eq!(error.code(), ErrorCode::Internal);
+    assert!(error.to_string().contains("not 1014"), "{error}");
 }
 
 #[test]
