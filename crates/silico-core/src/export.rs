@@ -34,6 +34,7 @@
 
 use std::collections::BTreeMap;
 
+use silico_protocol::vec3::{cross, dot, sub};
 use silico_protocol::{ElementRef, ExportMesh, FACES_NAMED};
 
 use crate::naming::ElementMap;
@@ -742,22 +743,6 @@ impl Joined {
         let first = *at.entry(vertex).or_insert(node);
         self.union(first, node);
     }
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {

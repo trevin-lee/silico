@@ -12,6 +12,7 @@ use std::f64::consts::TAU;
 
 use crate::history::{ElementKind, History, InputHistory};
 use crate::primitive::{InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, format_number};
+use crate::vec3::{dot, sub};
 
 /// OCCT's angular tolerance (`Precision::Angular()`), in radians: a revolution of no more
 /// than this is no revolution, and one within it of a whole turn is a whole turn
@@ -114,7 +115,7 @@ pub fn check_leaves_plane(
     vector: [f64; 3],
 ) -> Result<(), InvalidParameter> {
     let size = length(vector);
-    let along = (vector[0] * normal[0] + vector[1] * normal[1] + vector[2] * normal[2]).abs();
+    let along = dot(vector, normal).abs();
     if size > 0.0 && along >= crate::profile::MIN_DIRECTION_FACTOR * size {
         Ok(())
     } else {
@@ -133,8 +134,7 @@ pub fn check_leaves_plane(
 /// their plane into a flat "solid". The core's axes are lines of the sketch, in its plane,
 /// so this is the kernel's own guard.
 pub fn check_axis_in_plane(normal: [f64; 3], direction: [f64; 3]) -> Result<(), InvalidParameter> {
-    let lean =
-        (direction[0] * normal[0] + direction[1] * normal[1] + direction[2] * normal[2]).abs();
+    let lean = dot(direction, normal).abs();
     if lean <= crate::profile::MIN_DIRECTION_FACTOR {
         Ok(())
     } else {
@@ -157,7 +157,7 @@ pub fn check_through_all(direction: [f64; 3]) -> Result<(), InvalidParameter> {
 /// (design S3). Refused past a kilometre (a base about 500 m across), as any sweep is, and
 /// for a box with no extent, which no base and profile have.
 pub fn through_all_length([low, high]: [[f64; 3]; 2]) -> Result<f64, InvalidParameter> {
-    let diagonal = length([high[0] - low[0], high[1] - low[1], high[2] - low[2]]);
+    let diagonal = length(sub(high, low));
     let sweep = THROUGH_ALL_FACTOR * diagonal;
     if sweep > LENGTH_TOLERANCE && sweep <= MAX_LENGTH {
         Ok(sweep)

@@ -4,6 +4,7 @@
 //! the bodies' tight box. Computed in f64, in the order the design writes it, with no
 //! trigonometry, so a view's camera is the same on every platform: it's a result.
 
+use silico_protocol::vec3::{cross, dot, sub};
 use silico_protocol::{Camera, Projection};
 
 /// A named view: where it looks from, as Fusion's ViewCube names it.
@@ -160,7 +161,7 @@ impl NamedView {
         let extent_up = along_up.1 - along_up.0;
         let extent_right = (along_right.1 - along_right.0) * f64::from(height) / f64::from(width);
         let half_diagonal = {
-            let d = [high[0] - low[0], high[1] - low[1], high[2] - low[2]];
+            let d = sub(high, low);
             dot(d, d).sqrt() / 2.0
         };
         // Never under what the render draws of the box's reach from its centre (its half
@@ -290,18 +291,6 @@ pub fn sees(camera: &Camera, width: u32, height: u32, [low, high]: [[f64; 3]; 2]
             !outside.iter().any(|&out| out)
         }
     })
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 #[cfg(test)]

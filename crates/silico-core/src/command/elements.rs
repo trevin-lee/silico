@@ -14,6 +14,7 @@ use crate::kernel::{Clients, ElementKind, ShapeSummary};
 use crate::naming::Name;
 use crate::recompute::{Built, FeatureOutcome, Model};
 use crate::{Error, ErrorCode};
+use silico_protocol::vec3::cross;
 
 impl<P: Clients + 'static> Sessions<P> {
     /// `elements` (M4.4): `limit` entries of the model `model` names (decision 33), of the
@@ -729,12 +730,7 @@ fn faces(normal: [f64; 3], facing: &Facing) -> bool {
         .iter()
         .fold(0.0f64, |largest, c| largest.max(c.abs()));
     let d = facing.direction.map(|c| c / largest);
-    let cross = [
-        normal[1] * d[2] - normal[2] * d[1],
-        normal[2] * d[0] - normal[0] * d[2],
-        normal[0] * d[1] - normal[1] * d[0],
-    ];
-    let sin = cross.iter().map(|c| c * c).sum::<f64>().sqrt();
+    let sin = cross(normal, d).iter().map(|c| c * c).sum::<f64>().sqrt();
     let cos: f64 = normal.iter().zip(d).map(|(n, d)| n * d).sum();
     Angle::rounded(libm::atan2(sin, cos).to_degrees()).is_some_and(|angle| angle <= facing.within)
 }

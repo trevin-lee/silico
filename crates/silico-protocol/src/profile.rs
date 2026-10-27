@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::primitive::{InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, format_number};
 use crate::sweep::EndAtStart;
+use crate::vec3::{cross, dot, sub};
 
 /// The most points a profile may have. Checking that a profile doesn't cross itself costs
 /// the square of its points.
@@ -49,22 +50,6 @@ pub fn radians(degrees: f64) -> f64 {
 pub struct Axis {
     pub origin: [f64; 3],
     pub direction: [f64; 3],
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 fn scale(a: [f64; 3], k: f64) -> [f64; 3] {
