@@ -119,7 +119,7 @@ A study note for M5 (docs/roadmap/m5-app.md, *Study*): what SolidWorks does in t
 
 ### Rectangle, circle, arc, point
 
-- Corner rectangle: press at the first corner, drag, release; Shift held before the release makes a square ([Sketching Corner Rectangles and Squares](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_Sketching_Corner_Rectangles.htm)).
+- Corner rectangle: press at the first corner, drag, release; Shift held before the release makes a square ([Sketching Corner Rectangles and Squares](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_Sketching_Corner_Rectangles.htm)). The rectangle's page describes only that, but every 2D sketch tool takes click-drag or click-click, the first click deciding ([Sketch Modes](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Sketch_Modes.htm)), so two clicks draw one too.
 - Other types: centre, 3-point corner, 3-point centre, parallelogram; centrelines can be added from the corners or the midpoints ([Rectangle PropertyManager](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_DVE_SKETCH_RECTANGLES.htm)).
 - Circle: click the centre, then drag and click to set the radius ([Sketching Circles](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_Sketching_Circles.htm)).
 - Centrepoint arc: click the centre, drag to the radius, click the start, then click the end ([Sketching Centerpoint Arcs](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_Sketching_Centerpoint_Arcs.htm)).
