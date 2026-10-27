@@ -1049,24 +1049,40 @@ fn later_child_entry() {
     let pids = pool.pids();
     let distinct: BTreeSet<u32> = pids.iter().copied().collect();
     assert!(pids.len() <= 8 && distinct.len() == pids.len(), "{pids:?}");
+    // Every worker alive is one the pool lists (and can kill): a pool opened twice would
+    // lose one, its slot's killer written over. The opening's checking workers are reaped
+    // a moment after they're shut down.
+    let live = || -> BTreeSet<u32> {
+        pool::children()
+            .into_iter()
+            .filter(|(_, state)| !state.starts_with('Z'))
+            .map(|(pid, _)| pid)
+            .collect()
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while live() != distinct && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(live(), distinct, "workers alive that the pool doesn't list");
     // The worker's identity now, the pool's and a client's made before it opened alike.
     assert!(built(pool.identity()), "{}", pool.identity());
     assert_eq!(client.identity(), pool.identity());
     // A client made before the pool opened is served by it too, and its superseded request
     // is stopped by the stopper the open started, long before the request would end.
     done(client.submit(Generation(0), sleep(0))).unwrap();
-    // Superseded before it's due (a second's stop-after, 100 ms in), so only the stopper,
-    // not the advance itself, can stop it.
-    pool.set_stop_after(Duration::from_secs(1));
+    // Superseded before it's due (a stop-after of 2 s, 300 ms in), so only the stopper,
+    // not the advance itself, can stop it: not at once (a request still queued would be),
+    // and long before it would end.
+    pool.set_stop_after(Duration::from_secs(2));
     let long = client.submit(Generation(1), sleep(60_000));
-    std::thread::sleep(Duration::from_millis(100));
+    std::thread::sleep(Duration::from_millis(300));
     let asked = Instant::now();
     client.advance(Generation(2));
     assert!(matches!(outcome(long), Outcome::Superseded));
+    let took = asked.elapsed();
     assert!(
-        asked.elapsed() < Duration::from_secs(20),
-        "{:?}",
-        asked.elapsed()
+        took >= Duration::from_secs(1) && took < Duration::from_secs(20),
+        "{took:?}"
     );
     // Dropping it stops every worker it started.
     drop(client);
