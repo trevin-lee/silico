@@ -914,6 +914,47 @@ fn an_exports_meshes_are_asked_of_the_kernel_one_at_a_time() {
     assert_eq!(bench.meshed(), 2);
 }
 
+/// Two boxes, two bodies: "Block" (k7f2qx3m) and "Other" (b2b2b2b2).
+const TWO_BOXES: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "b2b2b2b2", "type": "box", "v": 1, "name": "Other", "position": [100, 0, 0], "length": 1, "width": 2, "height": 3}]}"#;
+
+#[test]
+fn two_bodies_stopped_after_the_first_writes_no_partial_file() {
+    // The session closes while the second body waits its turn to mesh: the export answers
+    // the session closed, naming `session`, and writes nothing, never a file of the first
+    // body alone (decision 34).
+    let bench = Bench::of(TWO_BOXES);
+    let dir = Scratch::new("partial");
+    let path = dir.0.join("out.3mf");
+    // Each wait for a turn looks once before it takes a free one: open at the first body's
+    // look, closed from the second's on.
+    let looks = std::sync::atomic::AtomicUsize::new(0);
+    let result = export(
+        &bench.model,
+        &request(&path),
+        &ExportOn {
+            kernel: &bench.kernel,
+            step: &*bench.kernel,
+            document: "part.silico",
+            workspace: None,
+            held: &[],
+            turns: &silico_core::command::export::MeshTurns::new(),
+            stopped: &|| looks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 1,
+            settle: &|| Ok(()),
+        },
+    );
+    assert!(!path.exists(), "a partial file was written: {result:?}");
+    let problems = refused(result);
+    let e = &problems.errors()[0];
+    assert_eq!(
+        (e.code(), e.parameter(), e.feature()),
+        (ErrorCode::InvalidInput, Some("session"), None),
+        "{e:?}"
+    );
+    // The first body meshed, the second never asked.
+    assert_eq!(bench.asked_meshes(), 1);
+    assert!(dir.names().is_empty());
+}
+
 #[test]
 fn a_mesh_superseded_by_the_sessions_close_is_the_sessions_not_the_solids() {
     // The mesh held, the kernel's generation moved on (as a session's close moves its read's

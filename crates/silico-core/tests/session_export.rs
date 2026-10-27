@@ -300,3 +300,70 @@ fn an_export_waiting_its_turn_to_mesh_stops_at_once_when_cancelled() {
     .unwrap();
     assert!(f.dir.path().join("b.3mf").is_file());
 }
+
+#[test]
+fn an_export_waiting_its_turn_to_mesh_when_its_session_closes_answers_closed_not_cancelled() {
+    // An export reads the current model, on its session's thread, so `close`, queued behind
+    // it, never stops it: its session closes under it as the sessions are dropped (every
+    // session closed, each command running stopped as closed). The first session's mesh
+    // held, answered though its session closes (`AnswersAnyway`), so it keeps the turn; the
+    // second's export, waiting its turn, answers as of a session that closed (decision 34;
+    // as a published render does), never `cancelled`, since no client stopped it, and
+    // writes nothing, never asking for a mesh.
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let kernel = Arc::new(FakeKernel::new(2).unwrap());
+    kernel.answer_instead(|op| match op {
+        Op::ExportMesh { .. } => Some(Reply::ExportMesh(Box::new(tetra()))),
+        _ => None,
+    });
+    let sketches = FakeSketches::new();
+    let sessions = Sessions::with_stand_ins(
+        AnswersAnyway(Arc::clone(&kernel)),
+        move |cache| Cache::with_secret(cache, &secret),
+        move || Ok(Box::new(sketches.clone()) as Box<dyn SketchSolver>),
+    );
+    let s: Vec<_> = ["a.silico", "b.silico"]
+        .iter()
+        .map(|name| {
+            let file = dir.path().join(name);
+            std::fs::write(&file, EXAMPLE).unwrap();
+            let s = answer(sessions.open(file, false)).session.unwrap().id;
+            // Rebuilt first, so the one kernel work after is the exports'.
+            answer(sessions.check(&s, CheckModel::Current { fresh: false }))
+                .result
+                .unwrap();
+            s
+        })
+        .collect();
+    let hold = kernel.hold(|op| matches!(op, Op::ExportMesh { .. }));
+    let first = sessions.export(&s[0], request(dir.path().join("a.3mf")));
+    // The first session's mesh asked, and held: its export holds the turn.
+    assert!(kernel.wait_running(1, Duration::from_secs(60)));
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while asked_meshes(&kernel) == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(asked_meshes(&kernel), 1);
+    let second = sessions.export(&s[1], request(dir.path().join("b.3mf")));
+    // Long enough for the second export to reach its wait for a turn.
+    assert!(!kernel.wait_running(2, Duration::from_millis(500)));
+    // Every session closed; the drop waits for the first's mesh, held, so it's let go on a
+    // thread of its own.
+    let dropping = std::thread::spawn(move || drop(sessions));
+    let refused = answer(second).result.unwrap_err();
+    let e = &refused.errors()[0];
+    assert_eq!(
+        (e.code(), e.parameter(), e.feature()),
+        (ErrorCode::InvalidInput, Some("session"), None),
+        "{e:?}"
+    );
+    assert!(!dir.path().join("b.3mf").exists());
+    // Only the first session's mesh was asked of the kernel, still held.
+    assert_eq!(asked_meshes(&kernel), 1);
+    hold.release();
+    answer(first);
+    dropping.join().unwrap();
+    assert_eq!(asked_meshes(&kernel), 1);
+    assert!(!dir.path().join("b.3mf").exists());
+}
