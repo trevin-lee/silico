@@ -986,6 +986,140 @@ fn a_worker_named_by_an_unusable_variable_says_so() {
 }
 
 /// Set in a copy of this test binary that
+/// `a_pool_started_before_its_worker_was_built_finds_it_on_a_later_request` runs, with
+/// `SILICO_KERNEL_WORKER` naming where the worker will be.
+const LATER_CHILD: &str = "SILICO_ADVERSARIAL_WORKER_LATER_CHILD";
+
+/// Not a test of its own: in the copy, a pool started with no worker where the variable
+/// points refuses each request, saying why its last look failed; once the worker is put
+/// there, the next requests run, the pool's and a client's made before it opened, eight at
+/// once opening it once; the pool then has the worker's identity, and stops superseded
+/// requests as an opened pool does.
+#[test]
+fn later_child_entry() {
+    use silico_core::kernel::{KERNEL_WORKER_ENV, Kernel as _};
+    if std::env::var_os(LATER_CHILD).is_none() {
+        return;
+    }
+    let exe = PathBuf::from(std::env::var_os(KERNEL_WORKER_ENV).unwrap());
+    let pool = KernelPool::start();
+    let client = pool.client();
+    let built = |identity: &str| identity.starts_with("kernel worker sha256:");
+    // Nothing there yet: refused, as a worker that can't be had, and no slot.
+    let missing =
+        done(pool.submit(Generation(1), sleep(0))).expect_err("a pool with no worker ran");
+    assert_eq!(missing.code(), ErrorCode::WorkerUnavailable, "{missing}");
+    assert_eq!(pool.refused(), Some(missing.clone()));
+    assert_eq!((pool.size(), pool.pids()), (0, Vec::new()));
+    assert!(
+        !built(pool.identity()) && !built(client.identity()),
+        "{}",
+        pool.identity()
+    );
+    // Something there it can't use (a file it may not read): the next look says so.
+    std::fs::write(&exe, format!("#!/bin/sh\nexec '{TEST_WORKER}'\n")).unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let unreadable =
+        done(client.submit(Generation(0), sleep(0))).expect_err("an unreadable worker ran");
+    assert_ne!(unreadable.message(), missing.message(), "{unreadable}");
+    assert_eq!(pool.refused(), Some(unreadable));
+    // Half put in place (a copy under way): it doesn't answer, so the pool isn't opened on
+    // it, and goes on looking.
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(&exe, "#!/bin/sh\nexi").unwrap();
+    let half = done(pool.submit(Generation(1), sleep(0))).expect_err("a half-copied worker ran");
+    assert_eq!(pool.refused(), Some(half));
+    assert_eq!(pool.size(), 0);
+    assert!(!built(pool.identity()), "{}", pool.identity());
+    std::fs::write(&exe, format!("#!/bin/sh\nexec '{TEST_WORKER}'\n")).unwrap();
+    // The worker built after the pool started: eight requests at once find it, and run,
+    // and the pool opens once (each starts a worker of its own at most, none lost).
+    let barrier = std::sync::Barrier::new(8);
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                barrier.wait();
+                done(pool.submit(Generation(1), sleep(50))).unwrap();
+            });
+        }
+    });
+    assert_eq!(pool.refused(), None);
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    assert_eq!(pool.size(), cores.min(silico_core::pool::MAX_WORKERS));
+    let pids = pool.pids();
+    let distinct: BTreeSet<u32> = pids.iter().copied().collect();
+    assert!(pids.len() <= 8 && distinct.len() == pids.len(), "{pids:?}");
+    // Every worker alive is one the pool lists (and can kill): a pool opened twice would
+    // lose one, its slot's killer written over. The opening's checking workers are reaped
+    // a moment after they're shut down.
+    let live = || -> BTreeSet<u32> {
+        pool::children()
+            .into_iter()
+            .filter(|(_, state)| !state.starts_with('Z'))
+            .map(|(pid, _)| pid)
+            .collect()
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while live() != distinct && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(live(), distinct, "workers alive that the pool doesn't list");
+    // The worker's identity now, the pool's and a client's made before it opened alike.
+    assert!(built(pool.identity()), "{}", pool.identity());
+    assert_eq!(client.identity(), pool.identity());
+    // A client made before the pool opened is served by it too, and its superseded request
+    // is stopped by the stopper the open started, long before the request would end.
+    done(client.submit(Generation(0), sleep(0))).unwrap();
+    // Superseded before it's due (a stop-after of 2 s, 300 ms in), so only the stopper,
+    // not the advance itself, can stop it: not at once (a request still queued would be),
+    // and long before it would end.
+    pool.set_stop_after(Duration::from_secs(2));
+    let submitted = Instant::now();
+    let long = client.submit(Generation(1), sleep(60_000));
+    std::thread::sleep(Duration::from_millis(300));
+    client.advance(Generation(2));
+    assert!(matches!(outcome(long), Outcome::Superseded));
+    // The stopper stops it no sooner than 2 s after it started (after it was submitted);
+    // a request superseded while still queued would end well before.
+    let took = submitted.elapsed();
+    assert!(
+        took >= Duration::from_secs(2) && took < Duration::from_secs(20),
+        "{took:?}"
+    );
+    // Dropping it stops every worker it started.
+    drop(client);
+    drop(pool);
+    wait_no_children("after the pool opened late");
+}
+
+#[test]
+fn a_pool_started_before_its_worker_was_built_finds_it_on_a_later_request() {
+    // An app started before its kernel worker was built: its pool refuses at first, and
+    // finds the worker on a later request instead of keeping the error (#196's M5.4).
+    use silico_core::kernel::KERNEL_WORKER_ENV;
+    let dir = scratch_dir("later");
+    let exe = dir.join("silico-kernel-worker");
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "later_child_entry",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(LATER_CHILD, "1")
+        .env(KERNEL_WORKER_ENV, &exe)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Set in a copy of this test binary that
 /// `a_worker_named_by_a_bare_name_runs_the_one_in_the_working_directory` runs.
 const RELATIVE_CHILD: &str = "SILICO_ADVERSARIAL_WORKER_RELATIVE_CHILD";
 
