@@ -241,8 +241,8 @@ impl LogBuffer {
     /// its limit, or until the next would pass [`LOG_READ_BYTES`] (the first is returned
     /// whatever its size), the cursor then the last returned; otherwise the cursor is the
     /// newest event, every one having been read. Refused, naming the field, for a limit
-    /// past what a read returns or a cursor past the newest event; and refused if the
-    /// process keeps no events for the session.
+    /// past what a read returns, then if the process keeps no events for the session, then
+    /// for a cursor past the newest event.
     pub(crate) fn read(&self, session: SessionId, query: &LogQuery) -> Result<Logs, Error> {
         if query.limit == 0 || query.limit > LOG_READ_EVENTS {
             return Err(Error::new(
@@ -258,6 +258,20 @@ impl LogBuffer {
                  next"
             )));
         }
+        // Before the cursor is checked: no cursor is right of a buffer kept by none.
+        if !self.kept.load(Ordering::Relaxed) {
+            return Err(Error::new(
+                ErrorCode::Internal,
+                format!(
+                    "this process keeps no events of {session}: its tracing subscriber has no \
+                     session log layer, or filters out the session's spans"
+                ),
+            )
+            .with_suggestion(
+                "run Silico as `silico serve`, whose subscriber keeps each session's logs \
+                 (a process of its own adds silico_core::command::logs::layer to its subscriber)",
+            ));
+        }
         let kept = lock(&self.events);
         if let Some(after) = query.after.filter(|&after| after > kept.newest) {
             return Err(Error::new(
@@ -270,19 +284,6 @@ impl LogBuffer {
             .with_parameter("after")
             .with_suggestion(
                 "give the last read's next, or null to read from the oldest event kept",
-            ));
-        }
-        if !self.kept.load(Ordering::Relaxed) {
-            return Err(Error::new(
-                ErrorCode::Internal,
-                format!(
-                    "this process keeps no events of {session}: its tracing subscriber has no \
-                     session log layer, or filters out the session's spans"
-                ),
-            )
-            .with_suggestion(
-                "run Silico as `silico serve`, whose subscriber keeps each session's logs \
-                 (a process of its own adds silico_core::command::logs::layer to its subscriber)",
             ));
         }
         // The kept events are numbered on from the first, one by one.

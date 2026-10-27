@@ -38,7 +38,7 @@ const STDERR_TAIL_LINES: usize = 20;
 
 /// The longest log line kept; the rest of a longer line is dropped, so a worker can't make
 /// the core buffer without limit.
-const MAX_LOG_LINE: usize = 8 * 1024;
+const MAX_LOG_LINE: usize = silico_protocol::MAX_LOG_LINE;
 
 /// How much of the workers' logs may wait for the log sink, all workers' together, in
 /// bytes (each line's message and [`LOG_ITEM_COST`]): a burst of tens of thousands of

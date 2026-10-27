@@ -95,6 +95,12 @@ pub const WORKER_FD_ENV: &str = "SILICO_WORKER_FD";
 /// request was asked in until it reads it, so every log line of the request goes under it.
 pub const REQUEST_DONE: &str = "silico_request_done";
 
+/// The longest log line of a worker's the core reads, in bytes: the rest of a longer line
+/// is dropped, so a worker can't make the core buffer without limit, and what's left isn't a
+/// line it can read. A worker keeps a line it writes of a size that grows with its request
+/// within it.
+pub const MAX_LOG_LINE: usize = 8 * 1024;
+
 /// Identifies a request to a worker. Chosen by the core; the response carries it back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct RequestId(pub u64);

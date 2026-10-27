@@ -95,6 +95,69 @@ pub fn check_fp_trap_mask(mask: u32) -> Result<(), String> {
     }
 }
 
+/// How much of a worker's line a refusal's message may take, written as the line's JSON
+/// escapes it: half of the line the core reads ([`silico_protocol::MAX_LOG_LINE`]), the rest
+/// room for its time, level, target, and spans.
+const REFUSAL_LINE_ROOM: usize = silico_protocol::MAX_LOG_LINE / 2;
+
+/// `text`, or as much of it as fits in `room` bytes once JSON escapes it (a quote or a
+/// backslash two bytes, a control character two or six), cut at a character's boundary and
+/// ending in `…`.
+fn within_line(text: &str, room: usize) -> std::borrow::Cow<'_, str> {
+    const CUT: char = '…';
+    let escaped = |c: char| match c {
+        '"' | '\\' | '\u{8}' | '\u{c}' | '\n' | '\r' | '\t' => 2,
+        c if c < ' ' => 6,
+        c => c.len_utf8(),
+    };
+    if text.chars().map(escaped).sum::<usize>() <= room {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let room = room.saturating_sub(CUT.len_utf8());
+    let mut used = 0;
+    let mut end = 0;
+    for (at, c) in text.char_indices() {
+        used += escaped(c);
+        if used > room {
+            break;
+        }
+        end = at + c.len_utf8();
+    }
+    let mut cut = text[..end].to_owned();
+    cut.push(CUT);
+    std::borrow::Cow::Owned(cut)
+}
+
+/// A worker's log filter, from the `SILICO_LOG` it inherits: its directives, but a level
+/// for every target (a bare `warn`, `error`, or `off`) raised to info, so a worker always
+/// writes its info lines, whatever the app's log shows. The core filters what it re-emits to
+/// the app's log itself, by the same `SILICO_LOG`, and keeps each session's events at every
+/// level for `read_logs` (silico_core::command::logs), where a request's refusal, in the
+/// worker's words, is an info line. Unset, empty, or a filter it can't use (which the app
+/// reports, silico_core::logging), it's info.
+fn worker_filter(value: Option<&str>) -> tracing_subscriber::EnvFilter {
+    let raised = value.filter(|value| !value.trim().is_empty()).map(|value| {
+        value
+            .split(',')
+            .map(|directive| {
+                let bare = directive.trim();
+                if ["off", "error", "warn"]
+                    .iter()
+                    .any(|level| bare.eq_ignore_ascii_case(level))
+                {
+                    "info"
+                } else {
+                    directive
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    });
+    raised
+        .and_then(|value| tracing_subscriber::EnvFilter::try_new(value).ok())
+        .unwrap_or_else(|| tracing_subscriber::EnvFilter::new("info"))
+}
+
 /// Serves requests from `socket` until the core closes it. `handle` performs each
 /// operation, given the request's id and generation, and may write to the socket directly
 /// (the test workers' garbage and out-of-turn operations do). Returns an error if the
@@ -116,18 +179,6 @@ where
         );
         let _entered = span.enter();
         let mut result = handle(request.id, request.generation, request.op, &mut writer);
-        // In the request's span, so the core files it under the call that asked: a
-        // session's logs hold the worker's own words for what it refused.
-        if let Err(failure) = &result {
-            let described = failure
-                .refusal
-                .describe(failure.cause.as_deref(), &|element| element.to_string());
-            // Its cause in the message: the core re-emits a worker's line by its message.
-            match &failure.cause {
-                Some(cause) => tracing::info!("{name} refused: {} ({cause})", described.message),
-                None => tracing::info!("{name} refused: {}", described.message),
-            }
-        }
         // Traps switched on during a request would make later results platform-
         // dependent, so the request fails, and the traps are switched back off.
         let traps = platform.traps;
@@ -141,6 +192,20 @@ where
                 mask: bits,
                 op: name.to_owned(),
             }));
+        }
+        // In the request's span, so the core files it under the call that asked: a
+        // session's logs hold the worker's own words for what it refused.
+        if let Err(failure) = &result {
+            let described = failure
+                .refusal
+                .describe(failure.cause.as_deref(), &|element| element.to_string());
+            // Its cause in the message: the core re-emits a worker's line by its message. Cut
+            // to fit the line the core reads: a refusal names every edge it refused.
+            let message = match &failure.cause {
+                Some(cause) => format!("{name} refused: {} ({cause})", described.message),
+                None => format!("{name} refused: {}", described.message),
+            };
+            tracing::info!("{}", within_line(&message, REFUSAL_LINE_ROOM));
         }
         // The request's last log line, after any it logged and before its reply: the core
         // keeps the span the request was asked in until it has read this, so every line of
@@ -249,16 +314,7 @@ where
     F: FnMut(RequestId, Generation, Op, &mut dyn Write) -> Result<Reply, Failure>,
 {
     close_inherited_descriptors();
-    // The app reports a SILICO_LOG it can't use (silico_core::logging); a worker, which
-    // inherits it, quietly uses its default: info, a level below the app's own (warn),
-    // since the core filters what it re-emits to the app's log itself, and keeps each
-    // session's for `read_logs` (silico_core::command::logs), where a request's refusal, in
-    // the worker's words, is an info line.
-    let filter = std::env::var("SILICO_LOG")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .and_then(|value| tracing_subscriber::EnvFilter::try_new(value).ok())
-        .unwrap_or_else(|| tracing_subscriber::EnvFilter::new("info"));
+    let filter = worker_filter(std::env::var("SILICO_LOG").ok().as_deref());
     let _ = tracing_subscriber::fmt()
         .json()
         .with_env_filter(filter)
@@ -297,7 +353,9 @@ mod tests {
         Response, TraceId, write_message,
     };
 
-    use super::{Platform, Traps, serve, traps_at_start};
+    use super::{
+        Platform, REFUSAL_LINE_ROOM, Traps, serve, traps_at_start, within_line, worker_filter,
+    };
 
     /// What a test's subscriber writes.
     #[derive(Clone, Default)]
@@ -345,6 +403,125 @@ mod tests {
         let response = frames.read_message::<Response>().unwrap().unwrap();
         let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
         (response, log)
+    }
+
+    #[test]
+    fn a_refusal_is_logged_at_info_in_its_requests_span_its_line_within_what_the_core_reads() {
+        // A refusal whose words grow with its request (an op's name, here), in characters
+        // JSON escapes: its line, as the worker's JSON subscriber writes it, still fits.
+        let (core, worker) = UnixStream::pair().unwrap();
+        let request = Request {
+            id: RequestId(0),
+            generation: Generation(0),
+            trace: TraceId(7),
+            op: Op::Debug(DebugOp::Sleep { millis: 0 }),
+        };
+        write_message(&mut &core, &request).unwrap();
+        core.shutdown(std::net::Shutdown::Write).unwrap();
+        // Its reply, which names the op too, read as it's written, so the worker never
+        // waits on a full socket.
+        let replies = std::thread::spawn(move || {
+            let mut frames = FrameReader::new(core);
+            frames.read_frame().unwrap();
+            frames.read_message::<Response>().unwrap().unwrap()
+        });
+        let log = Log::default();
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_writer(move || writer.clone())
+            .finish();
+        let op = "\"\u{1}é\\".repeat(3000);
+        let platform = Platform {
+            traps: Traps::Unchecked,
+            built_from: "test",
+        };
+        tracing::subscriber::with_default(subscriber, || {
+            serve(worker, &platform, |_, _, _, _| {
+                Err(Failure::new(Refusal::OtherWorkersOp { op: op.clone() }))
+            })
+        })
+        .unwrap();
+        assert!(replies.join().unwrap().result.is_err());
+        let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        let line = log
+            .lines()
+            .find(|line| line.contains("DebugSleep refused: "))
+            .unwrap_or_else(|| panic!("{log}"));
+        assert!(
+            line.len() <= silico_protocol::MAX_LOG_LINE,
+            "{}",
+            line.len()
+        );
+        let event: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(event["level"], "INFO");
+        assert_eq!(event["span"]["trace"], 7);
+        let message = event["fields"]["message"].as_str().unwrap();
+        assert!(message.ends_with('…'), "{message}");
+        assert!(message.starts_with("DebugSleep refused: "), "{message}");
+    }
+
+    #[test]
+    fn a_line_is_cut_to_fit_as_json_escapes_it_at_a_characters_boundary() {
+        // Each cut checked against serde_json's own escaping, which the worker's JSON
+        // subscriber writes with.
+        let escaped = |text: &str| serde_json::to_string(text).unwrap().len() - 2;
+        for text in [
+            "plain",
+            "\"quoted\" and \\ back",
+            "\u{1}\u{1f}\n\t\r\u{8}\u{c}",
+            "é🦀\u{7f}",
+            &"\"".repeat(100),
+            &"\u{1}".repeat(100),
+            &"🦀".repeat(100),
+        ] {
+            for room in [0, 1, 2, 3, 4, 5, 6, 7, 10, 64, 1000] {
+                let cut = within_line(text, room);
+                if escaped(text) <= room {
+                    assert_eq!(cut, text, "{text:?} in {room}");
+                    continue;
+                }
+                let kept = cut.strip_suffix('…').unwrap();
+                assert!(text.starts_with(kept), "{text:?} in {room}: {cut:?}");
+                assert!(escaped(&cut) <= room.max(3), "{text:?} in {room}: {cut:?}");
+                // As much as fits: one character more wouldn't have.
+                let more = text[kept.len()..].chars().next().unwrap();
+                assert!(
+                    escaped(kept) + escaped(&more.to_string()) + 3 > room,
+                    "{text:?} in {room}: {cut:?}"
+                );
+            }
+        }
+        const { assert!(REFUSAL_LINE_ROOM * 2 <= silico_protocol::MAX_LOG_LINE) };
+    }
+
+    #[test]
+    fn a_worker_writes_info_whatever_level_silico_log_gives_every_target() {
+        use tracing::level_filters::LevelFilter;
+        let hint = |value: Option<&str>| worker_filter(value).max_level_hint();
+        for value in [
+            None,
+            Some(""),
+            Some(" "),
+            Some("warn"),
+            Some("WARN"),
+            Some("error"),
+            Some("off"),
+            Some("info"),
+            Some("silico=loud"),
+        ] {
+            assert_eq!(hint(value), Some(LevelFilter::INFO), "{value:?}");
+        }
+        // More than info, or a target's own, as given.
+        assert_eq!(hint(Some("debug")), Some(LevelFilter::DEBUG));
+        assert_eq!(
+            hint(Some("warn,silico_kernel=trace")),
+            Some(LevelFilter::TRACE)
+        );
+        assert_eq!(
+            worker_filter(Some("warn,silico_kernel=trace")).to_string(),
+            "silico_kernel=trace,info"
+        );
     }
 
     #[test]
