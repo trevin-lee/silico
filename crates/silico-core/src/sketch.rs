@@ -155,16 +155,22 @@ pub struct SketchWorker {
     begun: bool,
 }
 
+/// The sketch worker executable: [`SKETCH_WORKER_ENV`], or `silico-sketch-worker` beside
+/// the running executable ([`worker::worker_path`](crate::worker::worker_path)).
+pub fn worker_path() -> Result<std::path::PathBuf, Error> {
+    crate::worker::worker_path(
+        SKETCH_WORKER_ENV,
+        "silico-sketch-worker",
+        "sketch worker",
+        "cargo build -p silico-sketch --bin silico-sketch-worker",
+    )
+}
+
 impl SketchWorker {
     /// Starts the sketch worker: [`SKETCH_WORKER_ENV`], or `silico-sketch-worker` next to
     /// the running executable.
     pub fn start() -> Result<Self, Error> {
-        Self::start_worker(&crate::worker::worker_path(
-            SKETCH_WORKER_ENV,
-            "silico-sketch-worker",
-            "sketch worker",
-            "cargo build -p silico-sketch --bin silico-sketch-worker",
-        )?)
+        Self::start_worker(&worker_path()?)
     }
 
     /// Starts the sketch worker at `exe`.

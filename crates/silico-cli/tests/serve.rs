@@ -398,3 +398,162 @@ fn serve_on_sigterm_mid_commit_leaves_the_document_whole() {
     assert_eq!(listed(dir.path()), ["part.silico"]);
     drop(stdin);
 }
+
+/// `silico serve` run as `exe`, in the workspace `dir`, with no worker named by a variable:
+/// each found beside the executable or not at all.
+fn serve_as(exe: &std::path::Path, dir: &std::path::Path) -> std::process::Child {
+    Command::new(exe)
+        .args(["serve", "--workspace"])
+        .arg(dir)
+        .env_remove("SILICO_KERNEL_WORKER")
+        .env_remove("SILICO_SKETCH_WORKER")
+        .env_remove("SILICO_RENDER_WORKER")
+        .env_remove("SILICO_STEP_WORKER")
+        .env_remove("SILICO_LOG")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+/// A directory `bin/` holding a copy of `silico` and, linked from the build's, each of
+/// `workers`: an install with only those workers beside it. Its resolved `bin/`.
+fn install(root: &std::path::Path, workers: &[&str]) -> std::path::PathBuf {
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let bin = std::fs::canonicalize(&bin).unwrap();
+    let built = std::path::Path::new(env!("CARGO_BIN_EXE_silico"));
+    std::fs::copy(built, bin.join("silico")).unwrap();
+    for worker in workers {
+        let from = built.with_file_name(worker);
+        assert!(from.is_file(), "{} isn't built", from.display());
+        std::os::unix::fs::symlink(from, bin.join(worker)).unwrap();
+    }
+    bin
+}
+
+#[test]
+fn serve_without_a_kernel_worker_doesnt_start_and_says_where_it_looked() {
+    // Nothing would build: a broken install, said before the handshake, never a server that
+    // answers every read with its fault.
+    let root = tempfile::tempdir().unwrap();
+    let bin = install(
+        root.path(),
+        &[
+            "silico-sketch-worker",
+            "silico-render-worker",
+            "silico-step-worker",
+        ],
+    );
+    let workspace = root.path().join("models");
+    std::fs::create_dir(&workspace).unwrap();
+    let mut child = serve_as(&bin.join("silico"), &workspace);
+    // A client's first message, sent as a client sends it, then its input's end: never
+    // answered (a server that did start would answer, then end).
+    let mut stdin = child.stdin.take().unwrap();
+    let _ = writeln!(stdin, "{INITIALIZE}");
+    drop(stdin);
+    let mut stdout = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .unwrap();
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert_eq!(exited(child).code(), Some(2), "{stderr}");
+    assert_eq!(stdout, "", "no handshake");
+    let said = format!(
+        "silico serve: there's no kernel worker, so nothing can be built: worker_unavailable: no kernel worker in {}: Silico looks for silico-kernel-worker beside its own executable, {}",
+        bin.display(),
+        bin.join("silico").display()
+    );
+    assert!(stderr.starts_with(&said), "{said}\nin {stderr}");
+    assert!(
+        stderr.contains(&format!("or put it in {}", bin.display())),
+        "{stderr}"
+    );
+    assert!(listed(&workspace).is_empty());
+}
+
+#[test]
+fn serve_with_only_a_kernel_worker_warns_of_each_missing_one_and_serves() {
+    // Every command but those that need the missing workers still works: each is said at
+    // startup, and the server answers.
+    let root = tempfile::tempdir().unwrap();
+    let bin = install(root.path(), &["silico-kernel-worker"]);
+    let workspace = root.path().join("models");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::write(workspace.join("box.silico"), BOX).unwrap();
+    let mut child = serve_as(&bin.join("silico"), &workspace);
+    let mut stderr = child.stderr.take().unwrap();
+    let logs = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stderr.read_to_string(&mut text);
+        text
+    });
+    let mut stdin = child.stdin.take().unwrap();
+    let lines = lines(&mut child);
+    let init = ask(&mut stdin, &lines, INITIALIZE, "0");
+    assert_eq!(init["result"]["serverInfo"]["name"], "silico");
+    // The box builds on the kernel worker there.
+    let opened = ask(
+        &mut stdin,
+        &lines,
+        r#"{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "open", "arguments": {"path": "box.silico", "create": false}}}"#,
+        "1",
+    );
+    assert_eq!(
+        opened["result"]["structuredContent"]["ok"], true,
+        "{opened}"
+    );
+    let measured = ask(
+        &mut stdin,
+        &lines,
+        r#"{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "mass_properties", "arguments": {"session": "s1", "model": "current", "feature": null}}}"#,
+        "2",
+    );
+    let envelope = &measured["result"]["structuredContent"];
+    assert_eq!(envelope["model"]["fault"], Value::Null, "{measured}");
+    // 40 × 20 × 10.
+    assert_eq!(
+        envelope["result"]["bodies"][0]["volume"], 8000,
+        "{measured}"
+    );
+    drop(stdin);
+    assert_eq!(exited(child).code(), Some(0));
+    let stderr = logs.join().unwrap();
+    for (said, worker) in [
+        (
+            "sketches are refused: there's no sketch worker",
+            "silico-sketch-worker",
+        ),
+        (
+            "STEP export is refused: there's no STEP worker",
+            "silico-step-worker",
+        ),
+        (
+            "render is refused: there's no render worker",
+            "silico-render-worker",
+        ),
+    ] {
+        let line = stderr
+            .lines()
+            .find(|line| line.contains(said))
+            .unwrap_or_else(|| panic!("{said:?} not in\n{stderr}"));
+        assert!(
+            line.contains(&format!(
+                "Silico looks for {worker} beside its own executable"
+            )),
+            "{line}"
+        );
+        assert!(line.contains(&bin.display().to_string()), "{line}");
+    }
+}
