@@ -1083,7 +1083,7 @@ fn an_arcs_equal_and_radius_stay_on_the_start_side_piece() {
         &[point("y0000000", 100.0, 0.0)],
         "",
         &circle("c0000000", "y0000000", 25.0),
-        r#"{"id": "k0000000", "type": "equal", "a": "a0000000", "b": "c0000000"}"#,
+        r#"{"id": "k0000000", "type": "equal", "a": "a0000000", "b": "c0000000"}, {"id": "k0000001", "type": "radius", "curve": "a0000000", "value": 25, "driving": true}"#,
     );
     let done = split(
         sketch_of(&before),
@@ -1099,6 +1099,10 @@ fn an_arcs_equal_and_radius_stay_on_the_start_side_piece() {
             a: element("a0000000"),
             b: element("c0000000")
         }
+    );
+    assert_eq!(
+        form(&sketch, "k0000001"),
+        form(sketch_of(&before), "k0000001")
     );
     assert_eq!(done.edited.modified, ids(&["a0000000"]));
     assert!(done.edited.removed.is_empty());
