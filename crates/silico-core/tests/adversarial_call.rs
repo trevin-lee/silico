@@ -650,27 +650,14 @@ fn commands_sent_while_an_open_is_held_wait_behind_it_and_run_once_it_opens() {
     assert!(answers[1].ok, "{}", answers[1].text);
     assert_eq!(envelope(&answers[1])["result"]["problems_total"], 0);
     // A published read is never queued: it's started as the session opens, beside the
-    // queue, and a read's session closing ends it (docs/design/m4.1-command-api.md, *What a
-    // published read costs*: "a read's client ends ... when its session closes"). So the
-    // close queued after it may end the session before the read looks: then it answers as
-    // any read of a session not open does, no session, "no session s1 is open" (run
-    // 40512437858). Which of the three comes is the threads' timing, as a published read's
-    // model is; each is exactly one of these.
+    // queue, and answers as of a session that closed if its session closes before it reads
+    // (`Session::close`; `published_now`'s check, on the read's own thread). So the close
+    // queued after it may end the session first: then it answers as any read of a session
+    // not open does (run 40512437858). Which comes is the threads' timing (M4.1 section 10,
+    // *The published model*); each is exactly one of these.
     let published = envelope(&answers[2]);
     if published["session"].is_null() {
-        assert!(!answers[2].ok, "{published}");
-        assert_eq!(
-            published["errors"][0]["code"], "invalid_input",
-            "{published}"
-        );
-        assert_eq!(
-            published["errors"][0]["message"], "no session s1 is open",
-            "{published}"
-        );
-        assert_eq!(
-            published["errors"][0]["parameter"], "session",
-            "{published}"
-        );
+        assert_unopened(&answers[2], "the published read the close ended");
     } else {
         assert_eq!(published["session"]["id"], "s1", "{published}");
         if !answers[2].ok {
