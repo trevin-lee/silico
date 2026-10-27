@@ -260,6 +260,21 @@ impl Reached {
                 .map_or_else(BTreeSet::new, Reaching::reach)
         })
     }
+
+    /// The features whose records only a commit writes: those reached ([`get`](Self::get)),
+    /// if the revision was a transaction's, where `format` is refused and its commit writes
+    /// them; none outside one, where what's reached is only what's carried from a save that
+    /// couldn't write it, which a `format` writes. Those whose missing fingerprint a check
+    /// doesn't warn of ([`crate::warnings`]).
+    pub(crate) fn committing(&self) -> &BTreeSet<FeatureId> {
+        static NONE: BTreeSet<FeatureId> = BTreeSet::new();
+        let in_transaction = self
+            .0
+            .reaching
+            .as_ref()
+            .is_some_and(|reaching| reaching.begun.is_some());
+        if in_transaction { self.get() } else { &NONE }
+    }
 }
 
 impl std::fmt::Debug for Reached {

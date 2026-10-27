@@ -12,14 +12,19 @@
 //!   is 1e-7 exactly, and doesn't; ends at 10 and 10.0000001 along x join, their difference
 //!   as doubles being 9.99999993922529e-8 (docs/ports/profile.md measured FreeCAD joining
 //!   ends "1e-7 apart along an axis" for that reason). Points that join, and so on through
-//!   each other, are one cluster and one warning, as FreeCAD's `SketchAnalysis` groups them
+//!   each other, are one cluster, as FreeCAD's wire join chains them (`BRepLib_MakeWire`
+//!   grows the tolerance of the vertex it joins an end to; FreeCAD's `SketchAnalysis` groups
+//!   only the ends near the first of a run sorted by position, each axis apart, without
+//!   chaining), and one warning, as `SketchAnalysis` reports a group, not pairs
 //!   (c036128aa0): its points, in ID order, then the curves ending at them, in ID order,
-//!   each once, the first 100 of the list named and all counted.
+//!   each once, the first 100 of the list named and all counted; its suggestion to lengthen
+//!   first a curve with both its ends in the cluster, as the profile's refusal says.
 //! - FreeCAD's own tests, ported: `TestSketchValidateCoincidents.testSingleMissingCoincidentCase`
 //!   (a rectangle closing 3.552713678800501e-15 mm short: FreeCAD finds 1 missing
 //!   coincidence), and `TestSketcherSolver.testThreeLinesWithCoincidences_1`/`_2` (three
-//!   ends at one place: none missing where they're coincident, 2 where they aren't, k − 1
-//!   for a cluster of k, which Silico says as one warning naming the three).
+//!   ends at one place made coincident: none missing). Silico adds the same three ends not
+//!   made coincident, with FreeCAD 1.1.3's count for them, run headless: 2 missing, k − 1
+//!   for a cluster of k, which Silico says as one warning naming the three.
 //! - `constraints_redundant` names the constraints the solver calls redundant, where each
 //!   holds on the solution (decision 5); one that doesn't is a problem, and so is a
 //!   conflict. Those it calls partially redundant are a warning of their own, which doesn't
@@ -28,14 +33,17 @@
 //!   [1], fully constrained), and removing it frees the point along the line.
 //! - `fingerprint_missing` is once a feature that built with no fingerprint stored, none
 //!   after `format` writes it, none for a feature that failed, was blocked, or couldn't be
-//!   measured, none for a sketch, which holds none, and none for a feature a transaction's
-//!   edits reached, whose commit writes it (decision 28).
+//!   measured, none for a sketch, which holds none, and none for a feature an open
+//!   transaction's edits reached, whose commit writes it (decision 28); but once a feature
+//!   carried from a commit that couldn't write its record has built, outside a transaction,
+//!   where `format` writes it.
 //! - The first 100 are listed and all counted; the order is by timeline, then code
 //!   (`ends_not_joined`, `constraints_redundant`, `fingerprint_missing`), then, for ends, by
 //!   cluster, by its least point ID.
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use silico_core::cache::Cache;
 use silico_core::command::wire::{Layout, ToWire, write};
@@ -715,10 +723,12 @@ fn a_clusters_points_come_first_then_its_curves_sorted_by_id() {
 #[test]
 fn ends_joined_through_each_other_are_one_cluster_its_cause_their_farthest() {
     // pa000001 at 0, pa000002 at 6e-8, pa000003 at 1.2e-7 along x: 1 joins 2 and 2 joins 3,
-    // though 1 and 3 are 1.2e-7 apart: one cluster of three (FreeCAD's analysis groups them
-    // so, c036128aa0), its cause their largest distance, 1.2e-7 as doubles' differences:
-    // 1.2e-7 − 0 is 1.2e-7 exactly. A fourth point, pa000004, 2e-7 past pa000003 (3.2e-7),
-    // joins none.
+    // though 1 and 3 are 1.2e-7 apart: one cluster of three, as FreeCAD's wire join chains
+    // them (FreeCAD 1.1.3, run headless on these ends: one vertex at 6e-8 with a tolerance
+    // grown to 1.6e-7, 6 vertices, not 7; its `SketchAnalysis` doesn't chain, and at 1e-7
+    // groups 0 and 6e-8 alone), its cause their largest distance, 1.2e-7 as doubles'
+    // differences: 1.2e-7 − 0 is 1.2e-7 exactly. A fourth point, pa000004, 2e-7 past
+    // pa000003 (3.2e-7), joins none, as FreeCAD keeps it apart.
     let text = document(&[sketch(
         "s0000001",
         &[
@@ -756,6 +766,97 @@ fn ends_joined_through_each_other_are_one_cluster_its_cause_their_farthest() {
         checked.warnings.listed()[0].message(),
         "3 points that end curves are at one place but aren't one point, so the profile is \
          open there"
+    );
+}
+
+#[test]
+fn a_curve_with_both_ends_in_a_cluster_is_named_once_and_its_suggestion_is_to_lengthen_it_first() {
+    // Line na000001 from pa000001 at 0 to pa000002 at 1.5e-7 along x (longer than 1e-7, so
+    // the gate takes it); line na000002 from pa000003 at 7.5e-8, 7.5e-8 from each (1.5e-7
+    // halved, exactly, so both differences are 7.5e-8 exactly), to pz000001. One cluster of
+    // the three, its cause 1.5e-7 (1.5e-7 − 0), its curves na000001, once though both its
+    // ends are in it, and na000002: 5 named. Sharing one point would shrink na000001 to
+    // nothing, so the suggestion is first the profile's for those ends, "lengthen line
+    // na000001, or ...".
+    let text = document(&[sketch(
+        "s0000001",
+        &[
+            point("pa000001", 0.0, 0.0),
+            point("pa000002", 1.5e-7, 0.0),
+            point("pa000003", 7.5e-8, 0.0),
+            point("pz000001", 0.0, 10.0),
+        ],
+        &[
+            line("na000001", "pa000001", "pa000002", false),
+            line("na000002", "pa000003", "pz000001", false),
+        ],
+        &[],
+        "",
+    )]);
+    let checked = opened(&text).check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    assert_eq!(
+        said(&checked),
+        [(
+            WarningCode::EndsNotJoined,
+            "s0000001".to_owned(),
+            strings(&["pa000001", "pa000002", "pa000003", "na000001", "na000002"]),
+            Some(at_most("1.5e-7")),
+        )]
+    );
+    let warning = &checked.warnings.listed()[0];
+    assert_eq!(warning.elements_total(), 5);
+    assert_eq!(
+        warning.suggestion(),
+        Some(
+            "lengthen line na000001, or share one point: make the curves named end at one of \
+             the points named"
+        )
+    );
+}
+
+#[test]
+fn every_curve_with_both_ends_in_a_cluster_is_to_be_lengthened_in_id_order() {
+    // Two short lines across one cluster, their IDs against their points' order: nz000002
+    // from pa000001 at 0 to pa000003 at 1.5e-7, na000009 from pa000002 at 7.5e-8 to
+    // pa000004 at 2.25e-7 (each 1.5e-7 long; pa000002 and pa000003, 7.5e-8 apart, chain
+    // them), and an arc nm000005 from pa000004 round to pz000001, whose end, not both, is in
+    // the cluster. Named lengthened: both lines, by ID, with their nouns.
+    let arc = r#"{"id": "nm000005", "center": "pz000002", "start": "pa000004", "end": "pz000001", "construction": false}"#;
+    let text = document(&[sketch(
+        "s0000001",
+        &[
+            point("pa000001", 0.0, 0.0),
+            point("pa000002", 7.5e-8, 0.0),
+            point("pa000003", 1.5e-7, 0.0),
+            point("pa000004", 2.25e-7, 0.0),
+            point("pz000001", 10.000000225, 10.0),
+            point("pz000002", 10.000000225, 0.0),
+        ],
+        &[
+            line("nz000002", "pa000001", "pa000003", false),
+            line("na000009", "pa000002", "pa000004", false),
+        ],
+        &[arc.to_owned()],
+        "",
+    )]);
+    let checked = opened(&text).check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    let [warning] = checked.warnings.listed() else {
+        panic!("{:?}", said(&checked));
+    };
+    assert_eq!(
+        warning.elements(),
+        strings(&[
+            "pa000001", "pa000002", "pa000003", "pa000004", "na000009", "nm000005", "nz000002"
+        ])
+    );
+    assert_eq!(
+        warning.suggestion(),
+        Some(
+            "lengthen line na000009 and line nz000002, or share one point: make the curves \
+             named end at one of the points named"
+        )
     );
 }
 
@@ -799,9 +900,9 @@ fn freecads_three_lines_with_coincidences_warn_of_nothing_and_without_them_once(
     let checked = opened(&three_lines(true)).check();
     assert!(checked.problems.is_empty(), "{:?}", checked.problems);
     assert!(checked.warnings.is_empty(), "{:?}", said(&checked));
-    // Without the coincidences FreeCAD 1.1.3 finds 2 missing (k − 1 for k = 3); here the
-    // three points at one place are one cluster: one warning naming them, then the three
-    // curves.
+    // Silico's own case, not FreeCAD's tests': the same ends without the coincidences, for
+    // which FreeCAD 1.1.3, run headless, finds 2 missing (k − 1 for k = 3); here the three
+    // points at one place are one cluster: one warning naming them, then the three curves.
     let checked = opened(&three_lines(false)).check();
     assert!(checked.problems.is_empty(), "{:?}", checked.problems);
     assert_eq!(
@@ -1052,12 +1153,66 @@ fn a_feature_a_transactions_edits_reached_isnt_warned_of_for_its_fingerprint_its
     let checked = f.check();
     assert!(checked.problems.is_empty(), "{:?}", checked.problems);
     assert_eq!(said(&checked), only_k7);
-    // The published model, the file as saved, hasn't m0000002.
+    // The published model is the transaction's revision's too (the check above waited for
+    // its rebuild): a published check spares m0000002 as well.
     let published = answer(f.sessions.check(&s1(), CheckModel::Published));
     assert_eq!(said(&published.result.unwrap()), only_k7);
     let committed = answer(f.sessions.commit(&s1())).result.unwrap();
     assert_eq!(committed.refingerprinted, [id("m0000002")]);
     assert_eq!(said(&f.check()), only_k7);
+    answer(f.sessions.format(&s1(), None, true)).result.unwrap();
+    assert!(f.check().warnings.is_empty());
+}
+
+#[test]
+fn a_feature_carried_from_a_commit_that_couldnt_fingerprint_it_warns_once_it_builds_outside_a_transaction()
+ {
+    // In a transaction, box m0000002 (7 long) is added while the kernel refuses it: its
+    // commit writes the file with no fingerprint for it, which stays carried (decision 28).
+    // Then the kernel makes it, and a fresh check builds it: outside a transaction nothing
+    // writes its fingerprint until the next save, and format can, so it warns, in the
+    // current model's check and the published one's; format stores it, and none warns.
+    let refusing = Arc::new(AtomicBool::new(true));
+    let f = opened(&document(&[block("k7f2qx3m", 0)]));
+    let refuses = Arc::clone(&refusing);
+    f.kernel.refuse(move |op| {
+        (refuses.load(Ordering::SeqCst)
+            && matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx == 7.0))
+        .then(|| Error::new(ErrorCode::KernelFailed, "the box can't be made"))
+    });
+    let k7 = (
+        WarningCode::FingerprintMissing,
+        "k7f2qx3m".to_owned(),
+        vec![],
+        None,
+    );
+    answer(f.sessions.begin(&s1())).result.unwrap();
+    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let added = r#"{"id": "m0000002", "type": "box", "v": 1, "name": "Block", "position": [10, 0, 0], "length": 7, "width": 2, "height": 1}"#;
+    let added: Node = silico_core::document::json::read(added.as_bytes()).unwrap();
+    answer(f.sessions.add_feature(&s1(), revision, added))
+        .result
+        .unwrap();
+    let committed = answer(f.sessions.commit(&s1())).result.unwrap();
+    assert!(committed.written);
+    assert!(committed.refingerprinted.is_empty(), "{committed:?}");
+    let checked = f.check();
+    assert_eq!(checked.problems.total(), 1, "{:?}", checked.problems);
+    assert_eq!(checked.problems.errors()[0].feature(), Some("m0000002"));
+    assert_eq!(said(&checked), std::slice::from_ref(&k7));
+    refusing.store(false, Ordering::SeqCst);
+    let fresh = CheckModel::Current { fresh: true };
+    let checked = answer(f.sessions.check(&s1(), fresh)).result.unwrap();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    let m2 = (
+        WarningCode::FingerprintMissing,
+        "m0000002".to_owned(),
+        vec![],
+        None,
+    );
+    assert_eq!(said(&checked), [k7.clone(), m2.clone()]);
+    let published = answer(f.sessions.check(&s1(), CheckModel::Published));
+    assert_eq!(said(&published.result.unwrap()), [k7, m2]);
     answer(f.sessions.format(&s1(), None, true)).result.unwrap();
     assert!(f.check().warnings.is_empty());
 }

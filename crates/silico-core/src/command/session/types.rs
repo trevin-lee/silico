@@ -563,12 +563,13 @@ pub struct CheckAnswer {
 
 impl CheckAnswer {
     /// The answer of a check of `model`: its problems, as `problems` gives them, and its
-    /// warnings, none of a missing fingerprint for a feature in `reached`, which the
-    /// session's edits reached since its last save (its commit writes one: decision 28).
-    pub(super) fn of(problems: Problems, model: &Model, reached: &BTreeSet<FeatureId>) -> Self {
+    /// warnings, none of a missing fingerprint for a feature in `committing`, which an open
+    /// transaction's edits reached (its commit writes one, and `format` is refused there:
+    /// decision 28; [`Reached::committing`]).
+    pub(super) fn of(problems: Problems, model: &Model, committing: &BTreeSet<FeatureId>) -> Self {
         CheckAnswer {
             problems,
-            warnings: crate::warnings::of(model, reached),
+            warnings: crate::warnings::of(model, committing),
         }
     }
 

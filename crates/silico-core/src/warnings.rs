@@ -7,23 +7,31 @@
 //! - `ends_not_joined` (M3.2's D2): ends of a sketch's profile curves (lines and arcs that
 //!   aren't construction geometry) that are separate points FreeCAD would join, on the sketch
 //!   as it solved: points strictly closer than FreeCAD's joining distance, 1e-7 mm, grouped
-//!   with each other and so on through each other, as FreeCAD's missing-coincidence analysis
-//!   groups them (`SketchAnalysis`, FreeCAD's c036128aa0, its tests 6e4c61881b). One warning
-//!   a group of points (a cluster), naming its points, then the curves ending at them; its
-//!   cause the largest distance between two of its points. The grouping is the profile's
-//!   ([`crate::profile`]'s open ends that should be one point), each with its own comparison.
+//!   with each other and so on through each other, as FreeCAD's wire join chains them
+//!   (`BRepLib_MakeWire` grows the tolerance of the vertex it joins an end to: ends at
+//!   x = 0, 6e-8, and 1.2e-7 become one vertex, at 6e-8 with a tolerance of 1.6e-7, and an
+//!   end at 3.2e-7 stays apart, in FreeCAD 1.1.3, run headless). One warning a group of
+//!   points (a cluster), not one a pair, as FreeCAD's missing-coincidence analysis reports
+//!   a group (k − 1 missing for a group of k: `SketchAnalysis`, c036128aa0, its tests
+//!   6e4c61881b), though that analysis groups only the ends near the first of a run sorted
+//!   by position, each axis apart, without chaining. Naming its points, then the curves
+//!   ending at them; its cause the largest distance between two of its points; its
+//!   suggestion to share one point, after one to lengthen each curve with both its ends in
+//!   the cluster, which sharing one would shrink to nothing, as the profile's refusal of the
+//!   same ends says. The grouping is the profile's ([`crate::profile`]'s open ends that
+//!   should be one point), each with its own comparison.
 //!
 //!   *Scope.* Measured between the points the file holds, as M3.5's profile measures them
 //!   and as a fix moves them: FreeCAD measures between the vertices of the edges it builds
 //!   from them (a line's end at its start plus its direction times its length, an arc's at
 //!   its angles on its circle), which sit some ulps off (an arc's, up to the solve's
 //!   convergence), by arithmetic that differs between its platforms; so within that much of
-//!   1e-7 the verdict can differ from FreeCAD's. FreeCAD's join is also transitive and
-//!   depends on the edges' order (`BRepLib_MakeWire` grows a vertex's tolerance as it joins
-//!   ends to it), which grouping through each other mostly matches. FreeCAD's Validate tool
-//!   finds gaps up to 1e-4 mm by default (`Precision::Confusion()` × 1000, each axis apart,
-//!   inclusive); Silico warns only of the gaps FreeCAD's wires would join (1e-7, strictly),
-//!   and a larger gap a feature sweeps is M3.5's profile refusal.
+//!   1e-7 the verdict can differ from FreeCAD's. FreeCAD's join also depends on the edges'
+//!   order (which vertex the others join to, and how far its tolerance grows), which
+//!   grouping through each other mostly matches. FreeCAD's Validate tool finds gaps up to
+//!   1e-4 mm by default (`Precision::Confusion()` × 1000, each axis apart, inclusive);
+//!   Silico warns only of the gaps FreeCAD's wires would join (1e-7, strictly), and a larger
+//!   gap a feature sweeps is M3.5's profile refusal.
 //! - `constraints_redundant` (M3.3): a solved sketch's redundant constraints, each agreeing
 //!   with the rest (decision 5; one that disagrees is a problem, `over_constrained`, and the
 //!   sketch doesn't solve). One warning a sketch for those all of whose equations repeat
@@ -34,8 +42,10 @@
 //!   stores no fingerprint, so a change in what it builds isn't caught as drift. Only where a
 //!   save would store one: a feature that failed, was blocked, couldn't be measured, or
 //!   measures past what a fingerprint holds has none to store, and a sketch never holds one.
-//!   Nor one a session's edits reached since its last save (decision 28): its commit writes
-//!   its fingerprint, and a transaction's `format` is refused.
+//!   Nor one an open transaction's edits reached (decision 28): its commit writes its
+//!   fingerprint, and `format` is refused there. Outside a transaction a feature carried
+//!   from a save that couldn't write its record (it failed, or the kernel faulted) and has
+//!   built since is warned of: nothing writes it until the next save, and `format` can.
 //!
 //! **Order:** by timeline (the document's features, in order), then by code, in
 //! [`WarningCode`]'s order (`ends_not_joined`, `constraints_redundant`,
@@ -52,7 +62,7 @@ use silico_protocol::{LENGTH_TOLERANCE, format_number};
 use crate::document::{
     ElementId, Feature, FeatureId, Fingerprint, Operation, PROBLEMS_LISTED, Sketch,
 };
-use crate::profile::one_place_groups;
+use crate::profile::{CurveKind, one_place_groups};
 use crate::recompute::{Built, FeatureOutcome, Model};
 use crate::sketch::SketchSolution;
 use crate::{Warning, WarningCode};
@@ -113,9 +123,9 @@ impl Warnings {
 }
 
 /// `model`'s warnings, in order (the module's *Order*): none of a missing fingerprint for a
-/// feature in `reached`, the features a session's edits reached since its last save, whose
-/// commit writes their fingerprints (decision 28).
-pub fn of(model: &Model, reached: &BTreeSet<FeatureId>) -> Warnings {
+/// feature in `committing`, the features an open transaction's edits reached, whose commit
+/// writes their fingerprints (decision 28).
+pub fn of(model: &Model, committing: &BTreeSet<FeatureId>) -> Warnings {
     let _span = tracing::info_span!("warnings").entered();
     let mut warnings = Warnings::none();
     // The model's features are its document's, in order.
@@ -125,7 +135,7 @@ pub fn of(model: &Model, reached: &BTreeSet<FeatureId>) -> Warnings {
                 ends_not_joined(&feature.id, sketch, solution, &mut warnings);
                 constraints_redundant(&feature.id, solution, &mut warnings);
             }
-            (_, FeatureOutcome::Built { built, .. }) if !reached.contains(&feature.id) => {
+            (_, FeatureOutcome::Built { built, .. }) if !committing.contains(&feature.id) => {
                 fingerprint_missing(feature, built, &mut warnings);
             }
             _ => {}
@@ -160,6 +170,12 @@ struct End<'a> {
     curves: Vec<&'a ElementId>,
 }
 
+/// A profile curve of the sketch: its kind, and the points it ends at.
+struct Curve<'a> {
+    kind: CurveKind,
+    ends: [&'a ElementId; 2],
+}
+
 /// Each cluster of `sketch`'s curve ends FreeCAD would join that aren't one point, a warning
 /// each (the module's `ends_not_joined`), by its least point ID.
 fn ends_not_joined(
@@ -168,21 +184,23 @@ fn ends_not_joined(
     solution: &SketchSolution,
     warnings: &mut Warnings,
 ) {
-    // Each point a profile curve ends at, by ID, with the curves ending there.
+    // The profile curves, by ID, and each point one ends at, by ID, with the curves ending
+    // there.
+    let lines = sketch.lines.iter().filter(|l| !l.construction).map(|l| {
+        let ends = [&l.from, &l.to];
+        let kind = CurveKind::Line;
+        (&l.id, Curve { kind, ends })
+    });
+    let arcs = sketch.arcs.iter().filter(|a| !a.construction).map(|a| {
+        let ends = [&a.start, &a.end];
+        let kind = CurveKind::Arc;
+        (&a.id, Curve { kind, ends })
+    });
+    let curves: BTreeMap<&ElementId, Curve<'_>> = lines.chain(arcs).collect();
     let mut at: BTreeMap<&ElementId, Vec<&ElementId>> = BTreeMap::new();
-    let lines = sketch
-        .lines
-        .iter()
-        .filter(|l| !l.construction)
-        .map(|l| (&l.id, [&l.from, &l.to]));
-    let arcs = sketch
-        .arcs
-        .iter()
-        .filter(|a| !a.construction)
-        .map(|a| (&a.id, [&a.start, &a.end]));
-    for (curve, ends) in lines.chain(arcs) {
-        for point in ends {
-            at.entry(point).or_default().push(curve);
+    for (&id, curve) in &curves {
+        for point in curve.ends {
+            at.entry(point).or_default().push(id);
         }
     }
     // In the points' ID order, so each cluster is too, and the clusters by their least.
@@ -207,14 +225,22 @@ fn ends_not_joined(
     let all: Vec<usize> = (0..ends.len()).collect();
     let clusters = one_place_groups(&all, &places, |p, q| freecad_joins(freecad_distance(p, q)));
     for cluster in clusters.iter().filter(|cluster| cluster.len() >= 2) {
-        warnings.push_with(|| cluster_warning(id, &ends, cluster));
+        warnings.push_with(|| cluster_warning(id, &ends, &curves, cluster));
     }
 }
 
 /// The warning of `cluster`, indices into `ends` in ID order: its points, then the curves
 /// ending at them in ID order, each once (the first [`PROBLEMS_LISTED`] of them, all
-/// counted); its cause the largest distance between two of its points.
-fn cluster_warning(id: &FeatureId, ends: &[End<'_>], cluster: &[usize]) -> Warning {
+/// counted); its cause the largest distance between two of its points. A curve (of
+/// `profile`, the sketch's) with both its ends in the cluster would shrink to nothing if they
+/// were one point, so its suggestion is first to lengthen it, as the profile's refusal of
+/// the same ends says (`crate::profile`).
+fn cluster_warning(
+    id: &FeatureId,
+    ends: &[End<'_>],
+    profile: &BTreeMap<&ElementId, Curve<'_>>,
+    cluster: &[usize],
+) -> Warning {
     let points: Vec<&ElementId> = cluster.iter().map(|&i| ends[i].point).collect();
     let mut curves: Vec<&ElementId> = cluster
         .iter()
@@ -222,6 +248,14 @@ fn cluster_warning(id: &FeatureId, ends: &[End<'_>], cluster: &[usize]) -> Warni
         .collect();
     curves.sort();
     curves.dedup();
+    let both_ends: Vec<String> = curves
+        .iter()
+        .filter_map(|&c| {
+            let curve = profile.get(c)?;
+            let both = curve.ends.iter().all(|end| points.contains(end));
+            both.then(|| format!("{} {}", curve.kind.noun(), c.as_str()))
+        })
+        .collect();
     let mut farthest = 0.0_f64;
     for (k, &i) in cluster.iter().enumerate() {
         for &j in &cluster[k + 1..] {
@@ -255,8 +289,17 @@ fn cluster_warning(id: &FeatureId, ends: &[End<'_>], cluster: &[usize]) -> Warni
     .with_elements(named.clone().take(PROBLEMS_LISTED).map(|e| e.as_str()))
     .with_elements_total((n + curves.len()) as u64)
     .with_cause(cause)
-    .with_suggestion("share one point: make the curves named end at one of the points named")
+    .with_suggestion(if both_ends.is_empty() {
+        SHARE_ONE_POINT.to_owned()
+    } else {
+        format!("lengthen {}, or {SHARE_ONE_POINT}", both_ends.join(" and "))
+    })
 }
+
+/// `ends_not_joined`'s suggestion, after the profile's advice to lengthen a curve with both
+/// its ends in the cluster, if there's one.
+const SHARE_ONE_POINT: &str =
+    "share one point: make the curves named end at one of the points named";
 
 /// A solved sketch's redundant constraints, which agree with the rest: one warning naming
 /// those all of whose equations repeat others', then one naming those only part of whose
