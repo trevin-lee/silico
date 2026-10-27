@@ -810,50 +810,78 @@ pub(in crate::command) fn met_fault(fault: &Error) -> Error {
 /// A kernel fault as a session's client reads it (the envelope's `model.fault`, decision
 /// 32), and as a command that needs a faulted feature's solid is refused with it: kept as
 /// the revision's outcome, so its suggestion, the worker's own kept, goes on to say how to
-/// try again ([`kept_suggestion`]).
+/// try again ([`fault_suggestion`]).
 pub(in crate::command) fn kept_fault(fault: &Error) -> Error {
     let fault = met_fault(fault);
-    let suggestion = kept_suggestion(&fault);
+    let suggestion = fault_suggestion(&fault, TryAgainBy::CheckWithFresh);
     fault.reworded(suggestion)
 }
 
-/// [`kept_fault`]'s suggestion (the design's section 6): reading the revision again won't try
-/// it again, so how to, keeping the worker's own advice, read as the data it was worded from
-/// ([`Advice`]), never by its words. A crash on a feature's values, which the same values
-/// would crash again, says to edit them (an edit makes a new revision, which rebuilds
-/// anyway), as the design's example does; with no feature named, the worker's advice alone.
-/// A timeout says to simplify the operation, or `check` with `fresh`: the time allowed isn't
-/// the command API's to give. Advice to try the request again says to `check` with `fresh`
-/// in its place, so a retry is said once. Any other advice of the worker's own (the memory
-/// it ran short of, its install), then `check` with `fresh`. With none of its own, a crash
-/// that met a feature says `check` with `fresh`, then the document reported if the same
-/// feature crashes the worker again; any other fault, `check` with `fresh` alone. (A fault
-/// is never known to have met the same feature twice running: each model holds the one its
-/// rebuild met.)
-pub(in crate::command) fn kept_suggestion(fault: &Error) -> String {
-    const FRESH: &str = "check with fresh to try it again";
+/// How a client tries a kernel fault again, which [`fault_suggestion`] words in: a
+/// session's client by `check` with `fresh` (reading the revision again won't), and the
+/// CLI by running its command again (each run is a new session, which rebuilds anew).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TryAgainBy<'a> {
+    /// A session's `check` with `fresh`: "check with fresh".
+    CheckWithFresh,
+    /// The CLI's command run again, named as its user types it (`check`, `fmt`, `export`):
+    /// "run `silico check`".
+    Running(&'a str),
+}
+
+impl TryAgainBy<'_> {
+    /// How to try it again, as a suggestion says it before "to try it again".
+    fn how(self) -> String {
+        match self {
+            TryAgainBy::CheckWithFresh => "check with fresh".to_owned(),
+            TryAgainBy::Running(command) => format!("run `silico {command}`"),
+        }
+    }
+}
+
+/// A kernel fault's suggestion for a client that tries it again `by`, worded once for every
+/// client (the design's section 6), keeping the worker's own advice, read as the data it was
+/// worded from ([`Advice`]), never by its words, and saying how to try again once.
+///
+/// - A crash on the request's values, which the same request would crash again: with a
+///   feature named, a session's client is told to edit its values (an edit makes a new
+///   revision, which rebuilds anyway), as the design's example does; the CLI, and any
+///   client with no feature named, the worker's advice alone. Trying again can't help.
+/// - A timeout: to simplify the operation, or try again; never "allow it more time", which
+///   no client can give.
+/// - Advice to try the request again: trying again `by`, in its place, so a retry is said
+///   once.
+/// - Any other advice of the worker's own (the memory it ran short of, its install): it,
+///   then trying again.
+/// - With none of its own: a crash that met a feature, trying again, then the document
+///   reported if the same feature crashes the worker again; any other fault, trying again
+///   alone. (A fault is never known to have met the same feature twice running: each model
+///   holds the one its rebuild met.)
+pub fn fault_suggestion(fault: &Error, by: TryAgainBy<'_>) -> String {
+    let how = by.how();
+    let again = format!("{how} to try it again");
     let Some(own) = fault.suggestion() else {
         return match (fault.code(), fault.feature()) {
             (ErrorCode::WorkerCrashed, Some(_)) => format!(
-                "{FRESH}; if the same feature crashes the worker again, report it with the \
+                "{again}; if the same feature crashes the worker again, report it with the \
                  document"
             ),
-            _ => FRESH.to_owned(),
+            _ => again,
         };
     };
-    match (fault.advice(), fault.feature()) {
-        (Some(Advice::ChangeTheValues { why }), Some(_)) => {
+    match (fault.advice(), fault.feature(), by) {
+        (Some(Advice::ChangeTheValues { why }), Some(_), TryAgainBy::CheckWithFresh) => {
             format!(
                 "edit the feature's values: {why}; an edit makes a new revision, which rebuilds it"
             )
         }
-        (Some(Advice::ChangeTheValues { .. }), None) => own.to_owned(),
-        (Some(Advice::SimplifyOrWait), _) => format!("simplify the operation, or {FRESH}"),
-        (Some(Advice::TryAgain { once_more, why }), _) => {
+        (Some(Advice::ChangeTheValues { .. }), _, _) => own.to_owned(),
+        (Some(Advice::SimplifyOrWait), _, _) => format!("simplify the operation, or {again}"),
+        (Some(Advice::TryAgain { once_more, why }), _, _) => {
             let again = if *once_more { "once more" } else { "again" };
-            format!("check with fresh to try it {again}: {why}")
+            format!("{how} to try it {again}: {why}")
         }
-        (Some(Advice::Other(_)) | None, _) => format!("{own}; then {FRESH}"),
+        (Some(Advice::Other(_)) | None, _, _) => format!("{own}; then {again}"),
     }
 }
 

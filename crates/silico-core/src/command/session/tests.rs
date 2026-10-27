@@ -2932,6 +2932,70 @@ fn each_change_of_what_the_session_holds_is_past_a_cancel() {
 }
 
 #[test]
+fn the_cli_words_each_fault_as_a_session_does_trying_again_by_running_its_command() {
+    // The design's section 6: the CLI words a fault with the session's function, trying
+    // again by running its command, said once; a timeout never says "allow it more time"; a
+    // crash on the request's values is the worker's advice alone. Each expected suggestion
+    // is the design's own quote of the CLI's wording, for `silico check`.
+    use crate::worker::{Reached, WorkerKind, crash_advice, timeout_advice};
+    use std::os::unix::process::ExitStatusExt;
+    let signalled = |signal| Some(std::process::ExitStatus::from_raw(signal));
+    let cli = |fault: &Error| fault_suggestion(fault, TryAgainBy::Running("check"));
+    let crashed = |signal, reached| {
+        Error::new(ErrorCode::WorkerCrashed, "the worker crashed")
+            .with_feature("f0000001")
+            .with_advice(crash_advice(WorkerKind::Kernel, signalled(signal), reached))
+    };
+    assert_eq!(
+        cli(&crashed(libc::SIGSEGV, Reached::Request)),
+        "change the operation's values: these crashed the kernel, and the same request would \
+         crash it again"
+    );
+    assert_eq!(
+        cli(&crashed(libc::SIGTERM, Reached::Request)),
+        "run `silico check` to try it again: the kernel worker was stopped from outside, \
+         stopped responding, or was gone before the request reached it, not by these values"
+    );
+    let timed_out = Error::new(ErrorCode::WorkerTimeout, "the worker took too long")
+        .with_advice(timeout_advice(WorkerKind::Kernel, true));
+    assert_eq!(
+        cli(&timed_out),
+        "simplify the operation, or run `silico check` to try it again"
+    );
+    // Any other advice of the worker's own (its install, here), then trying again.
+    let exited =
+        Error::new(ErrorCode::WorkerCrashed, "the worker crashed").with_advice(crash_advice(
+            WorkerKind::Kernel,
+            Some(std::process::ExitStatus::from_raw(1 << 8)),
+            Reached::Request,
+        ));
+    let own = exited.suggestion().unwrap().to_owned();
+    assert_eq!(
+        cli(&exited),
+        format!("{own}; then run `silico check` to try it again")
+    );
+    // With none of its own.
+    let bare = Error::new(ErrorCode::WorkerCrashed, "the worker crashed").with_feature("f0000001");
+    assert_eq!(
+        cli(&bare),
+        "run `silico check` to try it again; if the same feature crashes the worker again, \
+         report it with the document"
+    );
+    let bare = Error::new(ErrorCode::WorkerTimeout, "the worker took too long");
+    assert_eq!(cli(&bare), "run `silico check` to try it again");
+    // A command names itself; the retry is said once in every case.
+    assert_eq!(
+        fault_suggestion(&bare, TryAgainBy::Running("export")),
+        "run `silico export` to try it again"
+    );
+    for fault in [crashed(libc::SIGTERM, Reached::Request), timed_out, exited] {
+        let words = cli(&fault);
+        assert_eq!(words.matches("try it").count(), 1, "{words}");
+        assert!(!words.contains("allow it more time"), "{words}");
+    }
+}
+
+#[test]
 fn a_kept_fault_rewords_the_workers_advice_for_a_session_then_says_to_check_with_fresh() {
     // Decision 32 and the design's section 6: reading the revision again won't run it
     // again, so the worker's own advice, reworded for a session, and how to try again. The

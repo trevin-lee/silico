@@ -657,18 +657,12 @@ impl Refusal {
 }
 
 /// `fault`, a kernel fault the rebuild of a file met (its suggestion the worker's own), as
-/// `silico command` says it: then, to run the command again, which rebuilds the file anew;
-/// but not after a crash the request's values caused, which the same file would cause again
-/// ([`Error::would_crash_again`]): its own suggestion, to change the values, is all of it.
+/// `silico command` says it: worded as every client words one (`command::fault_suggestion`),
+/// trying again by running the command again, which rebuilds the file anew; said once, and
+/// not at all after a crash the request's values caused, which the same file would cause
+/// again.
 fn with_retry(fault: &Error, command: &str) -> Error {
-    if fault.would_crash_again() {
-        return fault.clone();
-    }
-    let again = format!("run `silico {command}` again to retry it");
-    let suggestion = match fault.suggestion() {
-        Some(own) => format!("{own}; {again}"),
-        None => again,
-    };
+    let suggestion = command::fault_suggestion(fault, command::TryAgainBy::Running(command));
     fault.clone().with_suggestion(suggestion)
 }
 
@@ -1385,7 +1379,7 @@ mod tests {
             (stopped.code(), stopped.suggestion()),
             (
                 ErrorCode::WorkerCrashed,
-                Some("report it; run `silico fmt` again to retry it")
+                Some("report it; then run `silico fmt` to try it again")
             )
         );
         let cancelled = Problems::from(Error::new(ErrorCode::Cancelled, "cancelled"));
@@ -1406,7 +1400,7 @@ mod tests {
         assert_eq!(once.errors.len(), 1);
         assert_eq!(
             once.errors[0].suggestion(),
-            Some("install it; run `silico export` again to retry it")
+            Some("install it; then run `silico export` to try it again")
         );
         assert!(failed(&once.ended()));
         for other in [
@@ -1430,12 +1424,12 @@ mod tests {
         let timeout = Error::new(ErrorCode::WorkerTimeout, "timed out");
         assert_eq!(
             with_retry(&timeout, "check").suggestion(),
-            Some("run `silico check` again to retry it")
+            Some("run `silico check` to try it again")
         );
         let own = timeout.with_suggestion("simplify the part");
         assert_eq!(
             with_retry(&own, "check").suggestion(),
-            Some("simplify the part; run `silico check` again to retry it")
+            Some("simplify the part; then run `silico check` to try it again")
         );
     }
 }
