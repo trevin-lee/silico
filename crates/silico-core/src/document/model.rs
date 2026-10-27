@@ -268,14 +268,15 @@ pub type Position = [Length; 3];
 
 /// An element of a feature's solid, by its name in Silico's form as written
 /// (docs/ports/naming.md, `m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)`):
-/// never an element's number, which an upstream edit can make another's. The gate reads it back
+/// in a document, never an element's number, which an upstream edit can make another's. The gate reads it back
 /// (`naming::Name::parse`), knowing what each feature before it is; recompute finds the
 /// element it names, or fails the feature saying so.
 ///
 /// Commands answer with it too, as the text the wire writes: `angle`'s vertex and an
 /// `elements` page's cursor, by their names (from a [`crate::naming::Name`]), and an export's faces left
 /// out, by their names or, for a solid with no element map, as FreeCAD numbers them
-/// ([`ElementName::numbered`]). Never empty, but for a cursor's name as a client sent it
+/// ([`ElementName::numbered`]), which names the face only in that answer and is no reference
+/// a document can hold (the gate refuses it). Never empty, but for a cursor's name as a client sent it
 /// ([`ElementName::as_sent`]), which the listing reads as a name before it goes on from it,
 /// refusing one that isn't.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
