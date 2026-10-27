@@ -370,10 +370,18 @@ fn a_cancel_read_before_a_command_was_sent_never_stops_it_however_far_behind_the
         ));
     }
     c.send_call(11, "cancel", r#"{"session": "s1", "command": "check"}"#);
+    // The cancel read and run: the held request stopped running (superseded, its hold still
+    // in place), though nothing's been read back. Released before then, the check could end
+    // first and answer as it finished (the gate, 2026-10-27, run 40515239415).
+    assert!(
+        c.kernel.wait_idle(crate::client::HANG),
+        "the cancel wasn't run as it was read: the rebuild the check waits on still runs"
+    );
     c.send_call(12, "check", CHECK);
     // The first check, cancelled as the cancel was read, ends before the second runs. Given
-    // time to end before the output is free (as a cancel run late would let it), it still
-    // answers cancelled: the cancel stopped it while it was held.
+    // time to end before the output is free, it still answers cancelled: the cancel stopped
+    // it while it was held (the wait above already shows the cancel ran; the pause is for
+    // its answer, which mustn't change once the check could have finished).
     hold.release();
     std::thread::sleep(std::time::Duration::from_millis(300));
     c.release_output();
