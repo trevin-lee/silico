@@ -8,7 +8,7 @@ use std::f64::consts::TAU;
 
 use silico_protocol::{LENGTH_TOLERANCE, arc_from_points, distance, format_number};
 
-use super::{Edited, kinds_of, no_member, ordered, own_curve};
+use super::{Edited, kinds_of, new_ids, no_member, ordered, own_curve};
 use crate::document::sketch::{
     Coordinate, Direction, ElementId, ElementKind, Form, Reference, Sketch, SketchArc,
     SketchConstraint, SketchLine, SketchPoint, TangentSide,
@@ -182,28 +182,13 @@ pub fn split(
     // The new IDs, in added's order.
     let needed =
         shared.iter().filter(|s| s.is_none()).count() + 1 + usize::from(kind == ElementKind::Line);
-    if ids.len() != needed {
-        return Err(Error::new(
-            ErrorCode::InvalidInput,
-            format!("the split needs {needed} new IDs, got {}", ids.len()),
-        )
-        .with_parameter("ids")
-        .with_suggestion(
-            "give one ID for each member the split adds, in order: its new points along the curve, its new piece, then a line's join",
-        ));
-    }
-    for (place, id) in ids.iter().enumerate() {
-        let message = if kinds.contains_key(id) {
-            format!("the sketch already has a member {id}")
-        } else if ids[..place].contains(id) {
-            format!("ID {id} is given twice")
-        } else {
-            continue;
-        };
-        return Err(Error::new(ErrorCode::InvalidInput, message)
-            .with_parameter(format!("ids.{place}"))
-            .with_suggestion("give IDs no member of the sketch has, each once"));
-    }
+    new_ids(
+        &kinds,
+        ids,
+        needed,
+        "the split",
+        "its new points along the curve, its new piece, then a line's join",
+    )?;
     let mut fresh = ids.iter().cloned();
     let construction = shape.construction(sketch, curve);
     let mut edited = sketch.clone();
@@ -216,8 +201,8 @@ pub fn split(
                 let id = next(&mut fresh)?;
                 edited.points.push(SketchPoint {
                     id: id.clone(),
-                    x: coordinate(cut[0])?,
-                    y: coordinate(cut[1])?,
+                    x: coordinate(cut[0], "at")?,
+                    y: coordinate(cut[1], "at")?,
                     construction,
                 });
                 added.push(id.clone());
@@ -350,30 +335,30 @@ pub fn split(
 }
 
 /// The next of the request's IDs: counted already, so never short.
-fn next(fresh: &mut impl Iterator<Item = ElementId>) -> Result<ElementId, Error> {
+pub(super) fn next(fresh: &mut impl Iterator<Item = ElementId>) -> Result<ElementId, Error> {
     fresh.next().ok_or_else(|| {
         Error::new(
             ErrorCode::Internal,
-            "the split ran out of the IDs it counted",
+            "the edit ran out of the IDs it counted",
         )
         .with_parameter("ids")
     })
 }
 
 /// A computed coordinate, which is finite for any curve the gate takes.
-fn coordinate(value: f64) -> Result<Coordinate, Error> {
+pub(super) fn coordinate(value: f64, parameter: &str) -> Result<Coordinate, Error> {
     Coordinate::new(value).ok_or_else(|| {
         Error::new(
             ErrorCode::InvalidInput,
-            "the split point isn't a finite position",
+            "the edit's new point isn't a finite position",
         )
-        .with_parameter("at")
+        .with_parameter(parameter.to_owned())
         .with_suggestion("give a position on the curve")
     })
 }
 
 /// A point's stored coordinates; the origin's for `origin`.
-fn point_at(sketch: &Sketch, id: &ElementId) -> Option<[f64; 2]> {
+pub(super) fn point_at(sketch: &Sketch, id: &ElementId) -> Option<[f64; 2]> {
     sketch
         .points
         .iter()
@@ -381,7 +366,7 @@ fn point_at(sketch: &Sketch, id: &ElementId) -> Option<[f64; 2]> {
         .map(|p| [p.x.mm(), p.y.mm()])
 }
 
-fn reference_at(sketch: &Sketch, reference: &Reference) -> Option<[f64; 2]> {
+pub(super) fn reference_at(sketch: &Sketch, reference: &Reference) -> Option<[f64; 2]> {
     match reference {
         Reference::Origin => Some([0.0, 0.0]),
         Reference::Element(id) => point_at(sketch, id),
@@ -560,12 +545,12 @@ impl Shape {
 
 /// Where `point` projects onto the line through `from` and `to`, as a fraction of the way
 /// from one to the other.
-fn line_parameter(from: [f64; 2], to: [f64; 2], point: [f64; 2]) -> f64 {
+pub(super) fn line_parameter(from: [f64; 2], to: [f64; 2], point: [f64; 2]) -> f64 {
     let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
     ((point[0] - from[0]) * dx + (point[1] - from[1]) * dy) / (dx * dx + dy * dy)
 }
 
-fn project_on_line(from: [f64; 2], to: [f64; 2], point: [f64; 2]) -> [f64; 2] {
+pub(super) fn project_on_line(from: [f64; 2], to: [f64; 2], point: [f64; 2]) -> [f64; 2] {
     let t = line_parameter(from, to, point);
     [
         from[0] + t * (to[0] - from[0]),
@@ -832,7 +817,7 @@ impl Pieces<'_> {
 
 /// Whether the line or arc `curve` starts at `point` (`Some(false)`: ends there); none if
 /// it's neither.
-fn starts_at(sketch: &Sketch, curve: &Reference, point: &Reference) -> Option<bool> {
+pub(super) fn starts_at(sketch: &Sketch, curve: &Reference, point: &Reference) -> Option<bool> {
     let (curve, point) = (curve.element()?, point.element()?);
     let (start, end) = match sketch.lines.iter().find(|l| &l.id == curve) {
         Some(line) => (&line.from, &line.to),
@@ -851,7 +836,7 @@ fn starts_at(sketch: &Sketch, curve: &Reference, point: &Reference) -> Option<bo
 }
 
 /// A line's two points: a sketch line's, or an axis's.
-fn line_of(sketch: &Sketch, reference: &Reference) -> Option<([f64; 2], [f64; 2])> {
+pub(super) fn line_of(sketch: &Sketch, reference: &Reference) -> Option<([f64; 2], [f64; 2])> {
     match reference {
         Reference::XAxis => Some(([0.0, 0.0], [1.0, 0.0])),
         Reference::YAxis => Some(([0.0, 0.0], [0.0, 1.0])),
@@ -864,7 +849,7 @@ fn line_of(sketch: &Sketch, reference: &Reference) -> Option<([f64; 2], [f64; 2]
 }
 
 /// A round's centre and radius: a circle's, or an arc's, as the profile measures it.
-fn round_of(sketch: &Sketch, reference: &Reference) -> Option<([f64; 2], f64)> {
+pub(super) fn round_of(sketch: &Sketch, reference: &Reference) -> Option<([f64; 2], f64)> {
     let id = reference.element()?;
     if let Some(circle) = sketch.circles.iter().find(|c| &c.id == id) {
         return Some((point_at(sketch, &circle.center)?, circle.radius.mm()));
