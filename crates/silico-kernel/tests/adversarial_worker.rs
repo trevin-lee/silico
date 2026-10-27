@@ -1074,14 +1074,16 @@ fn later_child_entry() {
     // not the advance itself, can stop it: not at once (a request still queued would be),
     // and long before it would end.
     pool.set_stop_after(Duration::from_secs(2));
+    let submitted = Instant::now();
     let long = client.submit(Generation(1), sleep(60_000));
     std::thread::sleep(Duration::from_millis(300));
-    let asked = Instant::now();
     client.advance(Generation(2));
     assert!(matches!(outcome(long), Outcome::Superseded));
-    let took = asked.elapsed();
+    // The stopper stops it no sooner than 2 s after it started (after it was submitted);
+    // a request superseded while still queued would end well before.
+    let took = submitted.elapsed();
     assert!(
-        took >= Duration::from_secs(1) && took < Duration::from_secs(20),
+        took >= Duration::from_secs(2) && took < Duration::from_secs(20),
         "{took:?}"
     );
     // Dropping it stops every worker it started.
