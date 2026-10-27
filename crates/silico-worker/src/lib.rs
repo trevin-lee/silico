@@ -139,8 +139,10 @@ fn worker_filter(value: Option<&str>) -> tracing_subscriber::EnvFilter {
     let level = |text: &str| text.trim().parse::<LevelFilter>().ok();
     let raised = value.filter(|value| !value.trim().is_empty()).map(|value| {
         let mut every_target = false;
+        // An empty one is none, as the app's filter reads it (`debug,`): never a level.
         let mut directives: Vec<String> = value
             .split(',')
+            .filter(|directive| !directive.trim().is_empty())
             .map(|directive| match directive.rsplit_once('=') {
                 Some((what, at)) if level(at).is_some_and(|at| at < LevelFilter::INFO) => {
                     format!("{what}=info")
@@ -167,20 +169,6 @@ fn worker_filter(value: Option<&str>) -> tracing_subscriber::EnvFilter {
     raised
         .and_then(|value| tracing_subscriber::EnvFilter::try_new(value).ok())
         .unwrap_or_else(|| tracing_subscriber::EnvFilter::new("info"))
-}
-
-/// A refusal's kind, in the core's words for its error codes (`kernel_failed`).
-fn kind_word(kind: silico_protocol::FailureKind) -> &'static str {
-    use silico_protocol::FailureKind;
-    match kind {
-        FailureKind::InvalidInput => "invalid_input",
-        FailureKind::KernelFailed => "kernel_failed",
-        FailureKind::InvalidResult => "invalid_result",
-        FailureKind::UnknownOp => "unknown_op",
-        FailureKind::Internal => "internal",
-        FailureKind::ResourceExhausted => "resource_exhausted",
-        FailureKind::Unavailable => "unavailable",
-    }
 }
 
 /// Serves requests from `socket` until the core closes it. `handle` performs each
@@ -224,7 +212,7 @@ where
         // which aren't the document's names, and the core's line for the refusal names
         // them (ARCHITECTURE.md, invariant 2: the core words a refusal).
         if let Err(failure) = &result {
-            let kind = kind_word(failure.refusal.kind());
+            let kind = failure.refusal.kind().word();
             // Its cause in the message: the core re-emits a worker's line by its message. Cut
             // to fit the line the core reads: OCCT's words can be long.
             let message = match &failure.cause {
@@ -576,6 +564,32 @@ mod tests {
             "silico=info,info"
         );
         assert_eq!(hint(Some("silico_core=debug")), Some(LevelFilter::DEBUG));
+        // A level more verbose than info, as given: the lines written, not the filter's hint,
+        // which a directive overwritten by a later one keeps (tests round 2's proof), and an
+        // empty directive is none (robustness round 2's: `debug,` read `debug,info`).
+        for value in [
+            "debug",
+            "warn,debug",
+            "debug,",
+            ",debug",
+            "silico_worker=debug",
+        ] {
+            let log = Log::default();
+            let writer = log.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .json()
+                .with_env_filter(worker_filter(Some(value)))
+                .with_writer(move || writer.clone())
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::debug!(target: "silico_worker", "a debug line");
+                tracing::trace!(target: "silico_worker", "not this");
+            });
+            let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+            assert!(log.contains("a debug line"), "SILICO_LOG={value}: {log}");
+            assert!(!log.contains("not this"), "SILICO_LOG={value}: {log}");
+        }
+        assert_eq!(worker_filter(Some("debug,")).to_string(), "debug");
         // More than info, or a target's own, as given.
         assert_eq!(hint(Some("debug")), Some(LevelFilter::DEBUG));
         assert_eq!(

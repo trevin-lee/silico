@@ -518,7 +518,7 @@ mod tests {
         }
     }
 
-    fn kept() -> Arc<LogBuffer> {
+    fn attached_buffer() -> Arc<LogBuffer> {
         let buffer = LogBuffer::new();
         buffer.attached.store(true, Ordering::Relaxed);
         buffer
@@ -786,8 +786,42 @@ mod tests {
     }
 
     #[test]
+    fn an_errors_log_names_each_element_it_lists_and_how_many_in_all() {
+        // Tests round 2: several elements, names with spaces among them, and more at fault
+        // than listed; then one with none of them.
+        keep_logs();
+        let (buffer, span) = attached("check");
+        let error = Error::new(ErrorCode::KernelFailed, "Fillet failed")
+            .with_parameter("edges.2")
+            .with_elements([
+                "a.box.Edge1",
+                "m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)",
+                "c \"quoted\"",
+            ])
+            .with_elements_total(5)
+            .with_cause("Standard_Failure");
+        span.in_scope(|| {
+            error.log("the step failed");
+            Error::new(ErrorCode::Internal, "bare").log("plain");
+        });
+        let logs = buffer
+            .read(s1(), &query(LogLevel::Info, None, 1000))
+            .unwrap();
+        assert_eq!(
+            messages(&logs),
+            [
+                "the step failed: Fillet failed code=kernel_failed parameter=edges.2 \
+                 elements=[\"a.box.Edge1\", \"m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face6, G \
+                 a91cw0de.cylinder.Face1)\", \"c \\\"quoted\\\"\"] elements_total=5 \
+                 cause=Standard_Failure",
+                "plain: bare code=internal",
+            ]
+        );
+    }
+
+    #[test]
     fn each_event_is_numbered_on_and_the_oldest_dropped_past_the_count() {
-        let buffer = kept();
+        let buffer = attached_buffer();
         for n in 0..LOG_EVENTS + 3 {
             buffer.push(LogLevel::Info, vec![], None, format!("{n}"));
         }

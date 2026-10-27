@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use silico_core::cache::Cache;
 use silico_core::command::logs::{LogEvent, LogLevel, LogQuery};
-use silico_core::command::{CheckModel, ModelChoice, Running, Sessions};
+use silico_core::command::{CheckModel, ModelChoice, Running, SessionId, Sessions};
 use silico_core::document::FeatureId;
 use silico_core::pool::KernelPool;
 use tracing_subscriber::layer::SubscriberExt;
@@ -26,29 +26,46 @@ fn answer<T>(running: Running<T>) -> silico_core::command::Response<T> {
         .unwrap_or_else(|_| panic!("the command didn't answer"))
 }
 
-#[test]
-fn a_failed_fillets_logs_hold_the_request_that_failed_and_the_workers_own_line() {
+/// Sets the process's subscriber to the core's log layer alone.
+fn keep_logs() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::registry().with(silico_core::command::logs::layer()),
     )
     .unwrap();
-    let dir = tempfile::tempdir().unwrap();
+}
+
+/// Sessions on a pool of kernel workers, their cache sealed with a secret in `dir`, and
+/// `text` written there and opened: the session.
+fn opened(dir: &tempfile::TempDir, text: &str) -> (Sessions<KernelPool>, SessionId) {
     let secret = dir.path().join("secret");
     let path = dir.path().join("part.silico");
-    std::fs::write(&path, TOO_ROUND).unwrap();
+    std::fs::write(&path, text).unwrap();
     let pool = KernelPool::start_on_demand(Path::new(WORKER), 2).unwrap();
     let sessions =
         Sessions::with_cache_opener(pool, move |cache| Cache::with_secret(cache, &secret));
     let s1 = answer(sessions.open(&path, false)).session.unwrap().id;
+    (sessions, s1)
+}
+
+/// A read of `level` and above, of `feature` if given, after `after`, up to 1,000 events.
+fn query(level: LogLevel, feature: Option<&str>, after: Option<u64>) -> LogQuery {
+    LogQuery {
+        level,
+        feature: feature.and_then(FeatureId::new),
+        after,
+        limit: 1000,
+    }
+}
+
+#[test]
+fn a_failed_fillets_logs_hold_the_request_that_failed_and_the_workers_own_line() {
+    keep_logs();
+    let dir = tempfile::tempdir().unwrap();
+    let (sessions, s1) = opened(&dir, TOO_ROUND);
     let checked = answer(sessions.check(&s1, CheckModel::Current { fresh: false }));
     let problems = checked.result.unwrap().problems;
     assert_eq!(problems.errors()[0].feature(), Some("f0000001"));
-    let query = LogQuery {
-        level: LogLevel::Info,
-        feature: FeatureId::new("f0000001"),
-        after: None,
-        limit: 1000,
-    };
+    let query = query(LogLevel::Info, Some("f0000001"), None);
     // The worker's line comes through the core's log thread, which may emit it after the
     // check answers: read until it's there.
     // Its kind and OCCT's words, no element: the worker knows them only by their places.
@@ -107,7 +124,7 @@ fn a_failed_fillets_logs_hold_the_request_that_failed_and_the_workers_own_line()
     // Its element by its name, and the fillet's field it's in.
     let request = by(
         "the kernel worker refused Fillet: Fillet failed code=kernel_failed parameter=edges.0 \
-         elements=k7f2qx3m.box.Edge1 elements_total=1 cause=Standard_Failure: the fillet \
+         elements=[\"k7f2qx3m.box.Edge1\"] elements_total=1 cause=Standard_Failure: the fillet \
          couldn't be built",
     );
     under_the_step(request);
@@ -119,7 +136,7 @@ fn a_failed_fillets_logs_hold_the_request_that_failed_and_the_workers_own_line()
     // And the step's failure, as the check reports it.
     let step = by(
         "the step failed: Fillet failed code=kernel_failed parameter=edges.0 \
-         elements=k7f2qx3m.box.Edge1 elements_total=1 cause=Standard_Failure: the fillet \
+         elements=[\"k7f2qx3m.box.Edge1\"] elements_total=1 cause=Standard_Failure: the fillet \
          couldn't be built",
     );
     under_the_step(step);
@@ -153,10 +170,7 @@ const RIM: &str = "m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.F
 fn a_failed_fillet_of_a_cuts_edge_is_logged_by_the_edges_name_never_its_place() {
     // Architecture round 1: the worker knows an edge by its place in the cut's edges; the
     // logs give its name, as the check's error does.
-    tracing::subscriber::set_global_default(
-        tracing_subscriber::registry().with(silico_core::command::logs::layer()),
-    )
-    .unwrap();
+    keep_logs();
     let hole = r#""note": "Clearance for an M5 bolt"}"#;
     assert!(super::example::EXAMPLE.contains(hole));
     let text = super::example::EXAMPLE.replace(
@@ -167,24 +181,13 @@ fn a_failed_fillet_of_a_cuts_edge_is_logged_by_the_edges_name_never_its_place() 
         ),
     );
     let dir = tempfile::tempdir().unwrap();
-    let secret = dir.path().join("secret");
-    let path = dir.path().join("part.silico");
-    std::fs::write(&path, text).unwrap();
-    let pool = KernelPool::start_on_demand(Path::new(WORKER), 2).unwrap();
-    let sessions =
-        Sessions::with_cache_opener(pool, move |cache| Cache::with_secret(cache, &secret));
-    let s1 = answer(sessions.open(&path, false)).session.unwrap().id;
+    let (sessions, s1) = opened(&dir, &text);
     let checked = answer(sessions.check(&s1, CheckModel::Current { fresh: false }));
     let problems = checked.result.unwrap().problems;
     let error = &problems.errors()[0];
     assert_eq!(error.feature(), Some("f0000001"));
     assert_eq!(error.elements(), [RIM]);
-    let query = LogQuery {
-        level: LogLevel::Info,
-        feature: FeatureId::new("f0000001"),
-        after: None,
-        limit: 1000,
-    };
+    let query = query(LogLevel::Info, Some("f0000001"), None);
     let deadline = Instant::now() + Duration::from_secs(30);
     let events: Vec<LogEvent> = loop {
         let events = sessions.read_logs(&s1, &query).result.unwrap().events;
@@ -198,7 +201,7 @@ fn a_failed_fillet_of_a_cuts_edge_is_logged_by_the_edges_name_never_its_place() 
         std::thread::sleep(Duration::from_millis(20));
     };
     // The core's lines, the request's and the step's, each name the rim, once in all.
-    let named = format!(" elements={RIM} elements_total=1 ");
+    let named = format!(" elements=[\"{RIM}\"] elements_total=1 ");
     for start in ["the kernel worker refused Fillet: ", "the step failed: "] {
         let event = events
             .iter()
@@ -226,34 +229,16 @@ fn a_failed_fillet_of_a_cuts_edge_is_logged_by_the_edges_name_never_its_place() 
 fn a_read_of_the_published_model_is_kept_under_its_command_and_the_model_it_reads() {
     // Tests round 1: a published read runs on a thread of its own, beside the session's
     // queue; its events are the session's, labelled with the model it read.
-    tracing::subscriber::set_global_default(
-        tracing_subscriber::registry().with(silico_core::command::logs::layer()),
-    )
-    .unwrap();
+    keep_logs();
     let dir = tempfile::tempdir().unwrap();
-    let secret = dir.path().join("secret");
-    let path = dir.path().join("block.silico");
-    std::fs::write(
-        &path,
-        TOO_ROUND.replace(r#""radius": 20"#, r#""radius": 1"#),
-    )
-    .unwrap();
-    let pool = KernelPool::start_on_demand(Path::new(WORKER), 2).unwrap();
-    let sessions =
-        Sessions::with_cache_opener(pool, move |cache| Cache::with_secret(cache, &secret));
-    let s1 = answer(sessions.open(&path, false)).session.unwrap().id;
+    let (sessions, s1) = opened(
+        &dir,
+        &TOO_ROUND.replace(r#""radius": 20"#, r#""radius": 1"#),
+    );
     let checked = answer(sessions.check(&s1, CheckModel::Current { fresh: false }));
     assert!(checked.result.unwrap().problems.errors().is_empty());
     let before = sessions
-        .read_logs(
-            &s1,
-            &LogQuery {
-                level: LogLevel::Trace,
-                feature: None,
-                after: None,
-                limit: 1000,
-            },
-        )
+        .read_logs(&s1, &query(LogLevel::Trace, None, None))
         .result
         .unwrap()
         .next;
@@ -264,15 +249,7 @@ fn a_read_of_the_published_model_is_kept_under_its_command_and_the_model_it_read
     let distance = answer(sessions.distance(&s1, ModelChoice::Published, faces, None));
     assert!(distance.result.is_ok(), "{distance:?}");
     let after = sessions
-        .read_logs(
-            &s1,
-            &LogQuery {
-                level: LogLevel::Trace,
-                feature: None,
-                after: Some(before),
-                limit: 1000,
-            },
-        )
+        .read_logs(&s1, &query(LogLevel::Trace, None, Some(before)))
         .result
         .unwrap();
     // The distance's own events (its kernel request's among them), each under it.

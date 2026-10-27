@@ -435,7 +435,7 @@ fn a_fillet_whose_edges_are_broken_logs_its_steps_failure_naming_the_first_broke
     assert!(
         // Its fields after its message: the first's field and its name, one of one.
         event.message.ends_with(
-            " code=reference_broken parameter=edges.0 elements=k7f2qx3m.box.Edge98 \
+            " code=reference_broken parameter=edges.0 elements=[\"k7f2qx3m.box.Edge98\"] \
              elements_total=1"
         ),
         "{event:?}"

@@ -1345,3 +1345,38 @@ fn every_failure_counts_the_elements_it_names() {
     };
     assert_eq!(few.elements_total(), 2);
 }
+
+#[test]
+fn each_failure_kinds_word_is_its_name_in_snake_case() {
+    // Every kind, by its place in a match that names each (a new kind fails to compile
+    // here until it's listed), its word checked against its derived Debug name.
+    let place = |kind: FailureKind| match kind {
+        FailureKind::InvalidInput => 0,
+        FailureKind::KernelFailed => 1,
+        FailureKind::InvalidResult => 2,
+        FailureKind::UnknownOp => 3,
+        FailureKind::Internal => 4,
+        FailureKind::ResourceExhausted => 5,
+        FailureKind::Unavailable => 6,
+    };
+    let all = [
+        FailureKind::InvalidInput,
+        FailureKind::KernelFailed,
+        FailureKind::InvalidResult,
+        FailureKind::UnknownOp,
+        FailureKind::Internal,
+        FailureKind::ResourceExhausted,
+        FailureKind::Unavailable,
+    ];
+    assert_eq!(all.map(place), [0, 1, 2, 3, 4, 5, 6]);
+    for kind in all {
+        let mut snake = String::new();
+        for (i, c) in format!("{kind:?}").chars().enumerate() {
+            if c.is_ascii_uppercase() && i > 0 {
+                snake.push('_');
+            }
+            snake.push(c.to_ascii_lowercase());
+        }
+        assert_eq!(kind.word(), snake);
+    }
+}

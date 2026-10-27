@@ -772,6 +772,23 @@ pub enum FailureKind {
     Unavailable,
 }
 
+impl FailureKind {
+    /// The kind's word, its name in snake case (`kernel_failed`): the worker's, as a
+    /// worker's log says what it refused. Not the core's error code, which the core words
+    /// from the kind its own way (`unknown_op` is an `internal` error there).
+    pub const fn word(self) -> &'static str {
+        match self {
+            FailureKind::InvalidInput => "invalid_input",
+            FailureKind::KernelFailed => "kernel_failed",
+            FailureKind::InvalidResult => "invalid_result",
+            FailureKind::UnknownOp => "unknown_op",
+            FailureKind::Internal => "internal",
+            FailureKind::ResourceExhausted => "resource_exhausted",
+            FailureKind::Unavailable => "unavailable",
+        }
+    }
+}
+
 /// A shape as it crosses the worker boundary: OCCT's binary B-rep (with its checksum), and
 /// whether OCCT's `BRepCheck_Analyzer` finds the whole shape valid, if that's known. A
 /// worker checks each shape it makes and says; the core sends the shape back as it got it,

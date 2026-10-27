@@ -27,6 +27,7 @@ struct Seen {
     level: tracing::Level,
     target: String,
     message: String,
+    fields: String,
     spans: Vec<String>,
 }
 
@@ -34,19 +35,24 @@ static SEEN: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
 
 struct Recording;
 
+/// An event's message, and its other fields, ` key=value` each.
 #[derive(Default)]
-struct Message(String);
+struct Message(String, String);
 
 impl Visit for Message {
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "message" {
             self.0.push_str(value);
+        } else {
+            self.1.push_str(&format!(" {}={value}", field.name()));
         }
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
             self.0.push_str(&format!("{value:?}"));
+        } else {
+            self.1.push_str(&format!(" {}={value:?}", field.name()));
         }
     }
 }
@@ -63,6 +69,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Recording {
             level: *event.metadata().level(),
             target: event.metadata().target().to_owned(),
             message: message.0,
+            fields: message.1,
             spans,
         });
     }
@@ -161,6 +168,35 @@ fn a_fillet_refused_on_a_thousand_seams_comes_back_as_the_workers_info_line_unde
         .unwrap_or_else(|| panic!("no refusal line of the worker's in {worker_lines:#?}"));
     assert_eq!(line.level, tracing::Level::INFO);
     assert!(line.spans.iter().any(|s| s == "asking"), "{:?}", line.spans);
+    // And the core's line for the refusal: every seam the worker's error names, of 1,024
+    // (tests round 2: one element alone can't tell a list from its first).
+    let core = SEEN
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|seen| {
+            seen.message
+                .starts_with("the kernel worker refused Fillet: ")
+        })
+        .cloned()
+        .unwrap_or_else(|| panic!("no refusal line of the core's"));
+    assert!(
+        core.fields.contains(" elements_total=1024"),
+        "{}",
+        core.fields
+    );
+    let listed: Vec<String> = refused
+        .elements()
+        .iter()
+        .map(|n| format!("{n:?}"))
+        .collect();
+    assert_eq!(listed.len(), 1024);
+    assert!(
+        core.fields
+            .contains(&format!(" elements=[{}]", listed.join(", "))),
+        "{}",
+        &core.fields[..300.min(core.fields.len())]
+    );
 }
 
 /// Set in the child that
