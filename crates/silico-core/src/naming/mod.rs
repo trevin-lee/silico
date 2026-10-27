@@ -462,6 +462,63 @@ impl Name {
         }
     }
 
+    /// Every feature named in it, its makers, in the order it writes them, each once: a
+    /// feature whose elements a reference to it stores, so an edit that would leave one of
+    /// them missing or after the feature storing it is refused (the M5.0 design's chain). A
+    /// modified element's are its source's, as it's written as that name.
+    pub fn features(&self) -> Vec<&FeatureId> {
+        let mut found = Vec::new();
+        self.collect_features(&mut found);
+        found
+    }
+
+    fn collect_features<'a>(&'a self, found: &mut Vec<&'a FeatureId>) {
+        fn add<'a>(id: &'a FeatureId, found: &mut Vec<&'a FeatureId>) {
+            if !found.contains(&id) {
+                found.push(id);
+            }
+        }
+        match self {
+            Name::Element { feature, .. } | Name::Sketch { feature, .. } => add(feature, found),
+            Name::Derived {
+                feature,
+                first,
+                more,
+                ..
+            } => {
+                add(feature, found);
+                for source in std::iter::once(first).chain(more) {
+                    source.name.collect_features(found);
+                }
+            }
+            Name::Upper {
+                feature,
+                upper,
+                more,
+                ..
+            } => {
+                add(feature, found);
+                for name in std::iter::once(upper).chain(more) {
+                    name.collect_features(found);
+                }
+            }
+            Name::Lower {
+                feature,
+                first,
+                more,
+                ..
+            } => {
+                add(feature, found);
+                for name in std::iter::once(first).chain(more) {
+                    name.collect_features(found);
+                }
+            }
+            Name::Duplicate { name, .. } | Name::Modified { name, .. } => {
+                name.collect_features(found);
+            }
+        }
+    }
+
     /// The feature named in it, first: for a modified element, its source's (it's written
     /// as that name), not the feature that modified it; for a duplicate, its name's.
     pub fn feature(&self) -> &FeatureId {

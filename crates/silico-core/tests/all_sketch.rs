@@ -5,6 +5,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 // Shared by the files below, each loaded once.
+#[path = "common/bracket.rs"]
+mod bracket;
 #[path = "common/command.rs"]
 mod commands;
 #[path = "common/sketch.rs"]
@@ -32,6 +34,8 @@ mod adversarial_sketch_features;
 mod adversarial_sketch_solve;
 #[path = "adversarial_stored_coordinates.rs"]
 mod adversarial_stored_coordinates;
+#[path = "chain.rs"]
+mod chain;
 #[path = "sketch.rs"]
 mod sketch;
 #[path = "sketch_features.rs"]
