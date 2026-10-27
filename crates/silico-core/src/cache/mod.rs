@@ -2115,6 +2115,70 @@ mod tests {
     }
 
     #[test]
+    fn a_make_raced_by_a_directory_flipping_with_a_link_out_makes_nothing_outside() {
+        // From the review (round 3): `.silico-cache` made by its path after the document's
+        // directory was checked would be made through a link put there since; it's made
+        // from the checked handle. A loop, as the race needs one: a pass is no proof, a
+        // failure is (capped at 20 s or 300,000 makes).
+        use rustix::fs::{RenameFlags, renameat_with};
+        use std::sync::atomic::AtomicBool;
+        let dir = tempfile::tempdir().unwrap();
+        let top = std::fs::canonicalize(dir.path()).unwrap();
+        let (work, outside) = (top.join("work"), top.join("outside"));
+        std::fs::create_dir_all(work.join("sub")).unwrap();
+        std::fs::create_dir_all(outside.join("x")).unwrap();
+        std::os::unix::fs::symlink(outside.join("x"), work.join("link")).unwrap();
+        let real = opened_at(&work.join("sub"));
+        let cache = Cache::new(
+            work.join("sub/.silico-cache"),
+            this_platform(),
+            Some(Secret([7; 32])),
+        )
+        .within(Workspace::new(&work).unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let flipper = {
+            let (stop, work) = (Arc::clone(&stop), work.clone());
+            std::thread::spawn(move || {
+                let mut k: u64 = 0;
+                while !stop.load(Ordering::Relaxed) {
+                    renameat_with(
+                        CWD,
+                        work.join("sub"),
+                        CWD,
+                        work.join("link"),
+                        RenameFlags::EXCHANGE,
+                    )
+                    .unwrap();
+                    k = (k + 7919) % 4001;
+                    for _ in 0..k {
+                        std::hint::spin_loop();
+                    }
+                }
+            })
+        };
+        let began = std::time::Instant::now();
+        let mut made_out = None;
+        for i in 0..300_000 {
+            let _ = cache.root(true);
+            // Removed through the handle on the real directory, so each make makes it again.
+            let _ = rustix::fs::unlinkat(&real, ".silico-cache", rustix::fs::AtFlags::REMOVEDIR);
+            if outside.join("x/.silico-cache").exists() {
+                made_out = Some(i);
+                break;
+            }
+            if began.elapsed() > std::time::Duration::from_secs(20) {
+                break;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        flipper.join().unwrap();
+        assert_eq!(
+            made_out, None,
+            "a make made a directory outside the workspace"
+        );
+    }
+
+    #[test]
     fn a_documents_directory_moved_out_between_its_open_and_its_check_isnt_used() {
         // A move after the document's directory is opened and before it's checked: the
         // handle opened on `work/sub`, then that directory moved out of the workspace and
