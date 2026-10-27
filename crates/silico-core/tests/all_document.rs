@@ -28,6 +28,8 @@ mod forged;
 mod lateness;
 #[path = "common/entries.rs"]
 mod listing;
+#[path = "common/logs.rs"]
+mod logged;
 #[path = "common/model.rs"]
 mod model;
 #[path = "common/references.rs"]

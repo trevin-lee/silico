@@ -12,87 +12,17 @@
 use std::sync::Arc;
 
 use silico_core::ErrorCode;
-use silico_core::cache::Cache;
-use silico_core::command::logs::{LogEvent, LogLevel, LogQuery, Logs};
+use silico_core::command::logs::{LogEvent, LogLevel, Logs};
 use silico_core::command::{CheckModel, Response, SessionId, Sessions};
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::Op;
 use silico_core::{Error, document::FeatureId};
-use tempfile::TempDir;
 use tracing_subscriber::layer::SubscriberExt;
 
+use crate::logged::{
+    checked, every, keep_logs, opened, query, read, refusing_fillets, rounded, sessions,
+};
 use crate::sessions::{answer, id, refusal};
-
-/// A box and a fillet of one of its edges, `fillet` its ID.
-fn rounded(fillet: &str) -> String {
-    format!(
-        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}}, {{"id": "{fillet}", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge1"], "radius": 2}}]}}"#
-    )
-}
-
-/// Sets the process's subscriber to the core's log layer alone.
-fn keep_logs() {
-    tracing::subscriber::set_global_default(
-        tracing_subscriber::registry().with(silico_core::command::logs::layer()),
-    )
-    .unwrap();
-}
-
-/// A fake kernel that refuses every fillet, as a kernel worker refuses one OCCT can't
-/// build.
-fn refusing_fillets() -> Arc<FakeKernel> {
-    let kernel = Arc::new(FakeKernel::new(2).unwrap());
-    kernel.refuse(|op| {
-        matches!(op, Op::Fillet { .. })
-            .then(|| Error::new(ErrorCode::KernelFailed, "Fillet failed"))
-    });
-    kernel
-}
-
-/// Sessions on `kernel` in `dir`, their cache sealed with a secret there.
-fn sessions(kernel: Arc<FakeKernel>, dir: &TempDir) -> Sessions<Arc<FakeKernel>> {
-    let secret = dir.path().join("secret");
-    Sessions::with_cache_opener(kernel, move |cache| Cache::with_secret(cache, &secret))
-}
-
-/// The document `text` written as `name` in `dir` and opened.
-fn opened(
-    sessions: &Sessions<Arc<FakeKernel>>,
-    dir: &TempDir,
-    name: &str,
-    text: &str,
-) -> SessionId {
-    let path = dir.path().join(name);
-    std::fs::write(&path, text).unwrap();
-    answer(sessions.open(&path, false)).session.unwrap().id
-}
-
-fn query(level: LogLevel, feature: Option<&str>, after: Option<u64>, limit: u32) -> LogQuery {
-    LogQuery {
-        level,
-        feature: feature.map(id),
-        after,
-        limit,
-    }
-}
-
-/// What `read_logs` answers, which must be events.
-fn read(sessions: &Sessions<Arc<FakeKernel>>, session: &SessionId, query: &LogQuery) -> Logs {
-    let response = sessions.read_logs(session, query);
-    assert_eq!(response.session.as_ref().map(|s| s.id), Some(*session));
-    assert!(response.model.is_none());
-    response.result.unwrap()
-}
-
-/// Every event `session` kept, from the oldest.
-fn every(sessions: &Sessions<Arc<FakeKernel>>, session: &SessionId) -> Logs {
-    read(sessions, session, &query(LogLevel::Trace, None, None, 1000))
-}
-
-fn checked(sessions: &Sessions<Arc<FakeKernel>>, session: &SessionId, fresh: bool) {
-    let response = answer(sessions.check(session, CheckModel::Current { fresh }));
-    assert!(response.result.is_ok(), "{response:?}");
-}
 
 fn messages(events: &[LogEvent]) -> Vec<&str> {
     events.iter().map(|e| e.message.as_str()).collect()
@@ -432,7 +362,10 @@ fn a_process_whose_subscriber_keeps_no_session_logs_says_so() {
          or filters out the session's spans"
     );
     assert_eq!(parameter, None);
-    assert!(suggestion.unwrap().contains("silico serve"));
+    assert!(
+        suggestion.unwrap().contains("silico_core::logging::init"),
+        "the advice names what keeps them"
+    );
 }
 
 #[test]
@@ -461,4 +394,152 @@ fn the_apps_logging_keeps_each_sessions_events_at_every_level_whatever_its_log_s
         "{:?}",
         all.events
     );
+}
+
+/// The step-failure events among `session`'s, of `feature`.
+fn failures(
+    sessions: &Sessions<Arc<FakeKernel>>,
+    session: &SessionId,
+    feature: &str,
+) -> Vec<LogEvent> {
+    read(
+        sessions,
+        session,
+        &query(LogLevel::Trace, Some(feature), None, 1000),
+    )
+    .events
+    .into_iter()
+    .filter(|e| e.message.starts_with("the step failed: "))
+    .collect()
+}
+
+#[test]
+fn a_fillet_whose_edges_are_broken_logs_its_steps_failure_naming_the_first_broken_one() {
+    // M2.8's failure: no kernel request is made, the step fails on its references. Two
+    // broken, the first said (as the step's error says it), the rest in the check's result.
+    keep_logs();
+    let dir = tempfile::tempdir().unwrap();
+    let sessions = sessions(Arc::new(FakeKernel::new(2).unwrap()), &dir);
+    let text = rounded("f0000001").replace(
+        r#"["k7f2qx3m.box.Edge1"]"#,
+        r#"["k7f2qx3m.box.Edge98", "k7f2qx3m.box.Edge99"]"#,
+    );
+    let s1 = opened(&sessions, &dir, "part.silico", &text);
+    checked(&sessions, &s1, false);
+    let failed = failures(&sessions, &s1, "f0000001");
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    let event = &failed[0];
+    assert_eq!(event.level, LogLevel::Info);
+    assert!(event.message.contains("k7f2qx3m.box.Edge98"), "{event:?}");
+    assert!(!event.message.contains("Edge99"), "{event:?}");
+    assert!(
+        // Its fields after its message: the first's field and its name, one of one.
+        event.message.ends_with(
+            " code=reference_broken parameter=edges.0 elements=k7f2qx3m.box.Edge98 \
+             elements_total=1"
+        ),
+        "{event:?}"
+    );
+    assert!(
+        event.spans[3].starts_with("recompute_step feature=f0000001 ")
+            && event.spans[3].ends_with(" job=make"),
+        "{event:?}"
+    );
+}
+
+#[test]
+fn a_solid_that_cant_be_measured_logs_its_measure_steps_failure() {
+    keep_logs();
+    let dir = tempfile::tempdir().unwrap();
+    let kernel = Arc::new(FakeKernel::new(2).unwrap());
+    kernel.refuse(|op| {
+        matches!(op, Op::Summarize { .. })
+            .then(|| Error::new(ErrorCode::KernelFailed, "Summarize failed"))
+    });
+    let sessions = sessions(kernel, &dir);
+    let s1 = opened(&sessions, &dir, "part.silico", &rounded("f0000001"));
+    checked(&sessions, &s1, false);
+    // The box's measure fails (and the fillet's): each its own step's, at info.
+    let failed = failures(&sessions, &s1, "k7f2qx3m");
+    assert!(!failed.is_empty());
+    for event in &failed {
+        assert_eq!(event.level, LogLevel::Info);
+        assert_eq!(
+            event.message,
+            "the step failed: Summarize failed code=kernel_failed"
+        );
+        let step = event.spans.last().unwrap();
+        assert!(
+            step.starts_with("recompute_step feature=k7f2qx3m ") && step.ends_with(" job=measure"),
+            "{event:?}"
+        );
+    }
+}
+
+#[test]
+fn a_cancel_is_kept_under_its_own_command_its_time_since_the_session_opened() {
+    // Tests round 1's proof: the cancel's own event, filed under `cancel`, not the check's,
+    // at least as late as the wait before it.
+    keep_logs();
+    let dir = tempfile::tempdir().unwrap();
+    let kernel = Arc::new(FakeKernel::new(2).unwrap());
+    let held = kernel.hold(|op| matches!(op, Op::Fillet { .. }));
+    let sessions = sessions(Arc::clone(&kernel), &dir);
+    let s1 = opened(&sessions, &dir, "part.silico", &rounded("f0000001"));
+    let check = sessions.check(&s1, CheckModel::Current { fresh: false });
+    assert!(kernel.wait_running(1, crate::sessions::HANG));
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    let cancel = sessions.cancel(&s1, silico_core::command::SessionCommand::Check);
+    assert!(cancel.result.is_ok(), "{cancel:?}");
+    held.release();
+    let _ = answer(check);
+    let all = every(&sessions, &s1);
+    let cancelled: Vec<&LogEvent> = all
+        .events
+        .iter()
+        .filter(|e| e.message.starts_with("cancelled"))
+        .collect();
+    assert_eq!(cancelled.len(), 1, "{:?}", all.events);
+    assert_eq!(cancelled[0].spans, ["cancel"]);
+    assert_eq!(cancelled[0].level, LogLevel::Info);
+    assert!(cancelled[0].at_ms >= 60, "{:?}", cancelled[0]);
+}
+
+#[test]
+fn a_subscriber_without_the_log_layer_keeps_no_session_logs_and_says_so() {
+    // Tests round 1's proof: a registry with a log of its own, but not the layer.
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer().with_writer(std::io::sink)),
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let sessions = sessions(refusing_fillets(), &dir);
+    let s1 = opened(&sessions, &dir, "part.silico", &rounded("f0000001"));
+    checked(&sessions, &s1, false);
+    let (code, message, ..) =
+        refusal(&sessions.read_logs(&s1, &query(LogLevel::Trace, None, None, 10)));
+    assert_eq!(code, ErrorCode::Internal);
+    assert!(
+        message.starts_with("this process keeps no events of s1"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_filter_on_the_subscriber_itself_keeps_no_session_logs_and_says_so() {
+    // The layer, but under a filter of the whole subscriber at warn: the sessions' spans
+    // (info) are off for every layer, so none is kept, and a read says so.
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry()
+            .with(silico_core::command::logs::layer())
+            .with(tracing_subscriber::EnvFilter::new("warn")),
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let sessions = sessions(refusing_fillets(), &dir);
+    let s1 = opened(&sessions, &dir, "part.silico", &rounded("f0000001"));
+    checked(&sessions, &s1, false);
+    let (code, ..) = refusal(&sessions.read_logs(&s1, &query(LogLevel::Trace, None, None, 10)));
+    assert_eq!(code, ErrorCode::Internal);
 }

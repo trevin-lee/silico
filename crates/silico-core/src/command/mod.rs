@@ -52,7 +52,7 @@ const API_VERSION: u32 = 1;
 /// What `version` answers: the API's version, the document format's and naming scheme's,
 /// and the limits (the design's section 6) of the commands built so far, as data. Each
 /// later step adds its own command's limits as it comes (renders with M4.6, logs with M4.7,
-/// exports with M4.8, added with the logs').
+/// exports with M4.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Version {
     pub api: u32,

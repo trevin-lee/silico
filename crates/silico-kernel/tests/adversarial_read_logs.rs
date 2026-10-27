@@ -16,6 +16,8 @@ use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
+use super::session_logs::TOO_ROUND;
+
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 
 /// One event the core emitted: its level, target, message, and the names of the spans it
@@ -132,7 +134,7 @@ fn a_fillet_refused_on_a_thousand_seams_comes_back_as_the_workers_info_line_unde
             .cloned()
             .collect();
         let refusal_seen = lines.iter().any(|seen| {
-            seen.message.starts_with("Fillet refused:") || seen.message.contains("Fillet refused")
+            seen.message.starts_with("Fillet refused, ") || seen.message.contains("Fillet refused")
         });
         if refusal_seen || Instant::now() > deadline {
             break lines;
@@ -155,7 +157,7 @@ fn a_fillet_refused_on_a_thousand_seams_comes_back_as_the_workers_info_line_unde
     // The worker's own words, at info, under the call that asked.
     let line = worker_lines
         .iter()
-        .find(|seen| seen.message.starts_with("Fillet refused:"))
+        .find(|seen| seen.message.starts_with("Fillet refused, "))
         .unwrap_or_else(|| panic!("no refusal line of the worker's in {worker_lines:#?}"));
     assert_eq!(line.level, tracing::Level::INFO);
     assert!(line.spans.iter().any(|s| s == "asking"), "{:?}", line.spans);
@@ -165,9 +167,6 @@ fn a_fillet_refused_on_a_thousand_seams_comes_back_as_the_workers_info_line_unde
 /// [`an_explicit_silico_log_of_warn_still_lets_the_workers_refusal_into_the_sessions_logs`]
 /// runs: the child reads the logs.
 const LOG_CHILD: &str = "SILICO_BREAK_IT_LOG_CHILD";
-
-/// A 10 mm cube and a fillet of one of its edges at 20 mm, which OCCT can't build.
-const TOO_ROUND: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}, {"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge1"], "radius": 20}]}"#;
 
 /// The child: a session's failed fillet, its logs read for the worker's own line, as
 /// silico-kernel's session_logs test reads them with SILICO_LOG unset. Exits 0 if the line
@@ -217,7 +216,7 @@ fn read_logs_child_entry() {
         let events = sessions.read_logs(&s1, &query).result.unwrap().events;
         if events
             .iter()
-            .any(|e| e.message.starts_with("Fillet refused:"))
+            .any(|e| e.message.starts_with("Fillet refused, "))
         {
             std::process::exit(0);
         }

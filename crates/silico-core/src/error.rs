@@ -440,6 +440,25 @@ impl Error {
     pub fn candidates(&self) -> &[String] {
         &self.0.candidates
     }
+
+    /// Logs the error at info, `what` before its message (`the step failed`), with its
+    /// code, the request's field at fault, the elements it names by their names (those it
+    /// lists, space-separated, and how many in all), and its cause: in the span it's logged
+    /// in, so a session's logs say what failed by the names the document uses, never by a
+    /// worker's own numbering.
+    pub(crate) fn log(&self, what: &str) {
+        let elements = (!self.0.elements.is_empty()).then(|| self.0.elements.join(" "));
+        let total = (self.0.elements_total > 0).then_some(self.0.elements_total);
+        tracing::info!(
+            code = self.0.code.as_str(),
+            parameter = self.parameter(),
+            elements = elements.as_deref(),
+            elements_total = total,
+            cause = self.cause(),
+            "{what}: {}",
+            self.0.message
+        );
+    }
 }
 
 /// What [`Error`]'s and [`Warning`]'s `Display` write (as [`Error`]'s says).

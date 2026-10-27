@@ -54,8 +54,7 @@ pub enum Traps {
     /// Not read: a worker whose output is no result (the render worker's pixels), which
     /// *Deterministic kernel*'s rules don't bind. Logged at startup at info level (seen in
     /// the app's log with `SILICO_LOG=info`; the default shows warnings), never stubbed as a
-    /// mask of 0, which
-    /// would say every trap is off rather than that none was looked at.
+    /// mask of 0, which would say every trap is off rather than that none was looked at.
     Unchecked,
 }
 
@@ -128,34 +127,60 @@ fn within_line(text: &str, room: usize) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(cut)
 }
 
-/// A worker's log filter, from the `SILICO_LOG` it inherits: its directives, but a level
-/// for every target (a bare `warn`, `error`, or `off`) raised to info, so a worker always
-/// writes its info lines, whatever the app's log shows. The core filters what it re-emits to
-/// the app's log itself, by the same `SILICO_LOG`, and keeps each session's events at every
-/// level for `read_logs` (silico_core::command::logs), where a request's refusal, in the
-/// worker's words, is an info line. Unset, empty, or a filter it can't use (which the app
-/// reports, silico_core::logging), it's info.
+/// A worker's log filter, from the `SILICO_LOG` it inherits: its directives, each one less
+/// than info (`warn`, `silico=error`, `[step]=off`) raised to info, and info for every target
+/// none names, so a worker always writes its info lines, whatever the app's log shows. The
+/// core filters what it re-emits to the app's log itself, by the same `SILICO_LOG`, and
+/// keeps each session's events at every level for `read_logs` (silico_core::command::logs),
+/// where a request's refusal, in the worker's words, is an info line. Unset, empty, or a
+/// filter it can't use (which the app reports, silico_core::logging), it's info.
 fn worker_filter(value: Option<&str>) -> tracing_subscriber::EnvFilter {
+    use tracing::level_filters::LevelFilter;
+    let level = |text: &str| text.trim().parse::<LevelFilter>().ok();
     let raised = value.filter(|value| !value.trim().is_empty()).map(|value| {
-        value
+        let mut every_target = false;
+        let mut directives: Vec<String> = value
             .split(',')
-            .map(|directive| {
-                let bare = directive.trim();
-                if ["off", "error", "warn"]
-                    .iter()
-                    .any(|level| bare.eq_ignore_ascii_case(level))
-                {
-                    "info"
-                } else {
-                    directive
+            .map(|directive| match directive.rsplit_once('=') {
+                Some((what, at)) if level(at).is_some_and(|at| at < LevelFilter::INFO) => {
+                    format!("{what}=info")
                 }
+                Some(_) => directive.to_owned(),
+                None => match level(directive) {
+                    Some(at) => {
+                        every_target = true;
+                        if at < LevelFilter::INFO {
+                            "info".to_owned()
+                        } else {
+                            directive.to_owned()
+                        }
+                    }
+                    None => directive.to_owned(),
+                },
             })
-            .collect::<Vec<_>>()
-            .join(",")
+            .collect();
+        if !every_target {
+            directives.push("info".to_owned());
+        }
+        directives.join(",")
     });
     raised
         .and_then(|value| tracing_subscriber::EnvFilter::try_new(value).ok())
         .unwrap_or_else(|| tracing_subscriber::EnvFilter::new("info"))
+}
+
+/// A refusal's kind, in the core's words for its error codes (`kernel_failed`).
+fn kind_word(kind: silico_protocol::FailureKind) -> &'static str {
+    use silico_protocol::FailureKind;
+    match kind {
+        FailureKind::InvalidInput => "invalid_input",
+        FailureKind::KernelFailed => "kernel_failed",
+        FailureKind::InvalidResult => "invalid_result",
+        FailureKind::UnknownOp => "unknown_op",
+        FailureKind::Internal => "internal",
+        FailureKind::ResourceExhausted => "resource_exhausted",
+        FailureKind::Unavailable => "unavailable",
+    }
 }
 
 /// Serves requests from `socket` until the core closes it. `handle` performs each
@@ -194,16 +219,17 @@ where
             }));
         }
         // In the request's span, so the core files it under the call that asked: a
-        // session's logs hold the worker's own words for what it refused.
+        // session's logs hold the worker's own line for what it refused, its kind and OCCT's
+        // words. Not its elements: the worker knows them only by their places in its shapes,
+        // which aren't the document's names, and the core's line for the refusal names
+        // them (ARCHITECTURE.md, invariant 2: the core words a refusal).
         if let Err(failure) = &result {
-            let described = failure
-                .refusal
-                .describe(failure.cause.as_deref(), &|element| element.to_string());
+            let kind = kind_word(failure.refusal.kind());
             // Its cause in the message: the core re-emits a worker's line by its message. Cut
-            // to fit the line the core reads: a refusal names every edge it refused.
+            // to fit the line the core reads: OCCT's words can be long.
             let message = match &failure.cause {
-                Some(cause) => format!("{name} refused: {} ({cause})", described.message),
-                None => format!("{name} refused: {}", described.message),
+                Some(cause) => format!("{name} refused, {kind}: {cause}"),
+                None => format!("{name} refused, {kind}"),
             };
             tracing::info!("{}", within_line(&message, REFUSAL_LINE_ROOM));
         }
@@ -407,7 +433,7 @@ mod tests {
 
     #[test]
     fn a_refusal_is_logged_at_info_in_its_requests_span_its_line_within_what_the_core_reads() {
-        // A refusal whose words grow with its request (an op's name, here), in characters
+        // A refusal whose words grow with its request (OCCT's, here), in characters
         // JSON escapes: its line, as the worker's JSON subscriber writes it, still fits.
         let (core, worker) = UnixStream::pair().unwrap();
         let request = Request {
@@ -431,14 +457,18 @@ mod tests {
             .json()
             .with_writer(move || writer.clone())
             .finish();
-        let op = "\"\u{1}é\\".repeat(3000);
+        // OCCT's words, which the line carries whole when they fit.
+        let cause = "\"\u{1}é\\".repeat(3000);
         let platform = Platform {
             traps: Traps::Unchecked,
             built_from: "test",
         };
         tracing::subscriber::with_default(subscriber, || {
             serve(worker, &platform, |_, _, _, _| {
-                Err(Failure::new(Refusal::OtherWorkersOp { op: op.clone() }))
+                Err(Failure {
+                    refusal: Refusal::OtherWorkersOp { op: "x".to_owned() },
+                    cause: Some(cause.clone()),
+                })
             })
         })
         .unwrap();
@@ -446,7 +476,7 @@ mod tests {
         let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
         let line = log
             .lines()
-            .find(|line| line.contains("DebugSleep refused: "))
+            .find(|line| line.contains("DebugSleep refused, "))
             .unwrap_or_else(|| panic!("{log}"));
         assert!(
             line.len() <= silico_protocol::MAX_LOG_LINE,
@@ -458,7 +488,10 @@ mod tests {
         assert_eq!(event["span"]["trace"], 7);
         let message = event["fields"]["message"].as_str().unwrap();
         assert!(message.ends_with('…'), "{message}");
-        assert!(message.starts_with("DebugSleep refused: "), "{message}");
+        assert!(
+            message.starts_with("DebugSleep refused, unknown_op: \"\u{1}é"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -512,6 +545,37 @@ mod tests {
         ] {
             assert_eq!(hint(value), Some(LevelFilter::INFO), "{value:?}");
         }
+        // Targets or spans alone (robustness's proof, round 1): every target none names is
+        // at info, and one named below info is raised to it.
+        for value in [
+            "silico_core=debug",
+            "silico=warn",
+            "[recompute_step]=debug",
+            "silico_worker=off",
+        ] {
+            let log = Log::default();
+            let writer = log.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .json()
+                .with_env_filter(worker_filter(Some(value)))
+                .with_writer(move || writer.clone())
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::info!(target: "silico_worker", "DebugSleep refused: x");
+                tracing::debug!(target: "silico_worker", "not this");
+            });
+            let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+            assert!(
+                log.contains("refused"),
+                "SILICO_LOG={value}: no info line: {log}"
+            );
+            assert!(!log.contains("not this"), "SILICO_LOG={value}: {log}");
+        }
+        assert_eq!(
+            worker_filter(Some("silico=warn")).to_string(),
+            "silico=info,info"
+        );
+        assert_eq!(hint(Some("silico_core=debug")), Some(LevelFilter::DEBUG));
         // More than info, or a target's own, as given.
         assert_eq!(hint(Some("debug")), Some(LevelFilter::DEBUG));
         assert_eq!(

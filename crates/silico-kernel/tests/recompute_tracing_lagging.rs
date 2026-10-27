@@ -136,7 +136,7 @@ fn a_worker_line_read_long_after_its_request_still_goes_under_its_span() {
     for (k, (spans, round)) in lines.iter().enumerate() {
         assert_eq!(
             spans,
-            &["recompute_step", "recompute", "user_edit"],
+            &["worker_lines", "recompute_step", "recompute", "user_edit"],
             "line {k}"
         );
         // Each line under its own round's edit, not another's.

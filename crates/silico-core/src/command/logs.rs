@@ -110,7 +110,7 @@ pub struct LogEvent {
     pub at_ms: u64,
     /// The spans it happened in, from the command's down: the command (`check`, or `check
     /// model=published` for a read of the published model), then each span within it, its
-    /// name and fields (`step feature=f0000001`).
+    /// name and fields (`recompute_step feature=f0000001 key=… job=make`).
     pub spans: Vec<String>,
     /// The feature it's of: the event's own `feature` field, or else its innermost span's
     /// that has one; none for an event of no feature.
@@ -155,7 +155,7 @@ pub(crate) struct LogBuffer {
     made: Instant,
     /// Whether the process's subscriber keeps events for it: set once a span of the
     /// session's is attached to it ([`LogBuffer::attach`]).
-    kept: AtomicBool,
+    attached: AtomicBool,
     events: Mutex<Kept>,
 }
 
@@ -173,7 +173,7 @@ impl LogBuffer {
     pub(crate) fn new() -> Arc<LogBuffer> {
         Arc::new(LogBuffer {
             made: Instant::now(),
-            kept: AtomicBool::new(false),
+            attached: AtomicBool::new(false),
             events: Mutex::default(),
         })
     }
@@ -201,7 +201,7 @@ impl LogBuffer {
             true
         });
         if attached == Some(true) {
-            self.kept.store(true, Ordering::Relaxed);
+            self.attached.store(true, Ordering::Relaxed);
         }
     }
 
@@ -259,7 +259,7 @@ impl LogBuffer {
             )));
         }
         // Before the cursor is checked: no cursor is right of a buffer kept by none.
-        if !self.kept.load(Ordering::Relaxed) {
+        if !self.attached.load(Ordering::Relaxed) {
             return Err(Error::new(
                 ErrorCode::Internal,
                 format!(
@@ -268,8 +268,8 @@ impl LogBuffer {
                 ),
             )
             .with_suggestion(
-                "run Silico as `silico serve`, whose subscriber keeps each session's logs \
-                 (a process of its own adds silico_core::command::logs::layer to its subscriber)",
+                "add silico_core::command::logs::layer to the process's subscriber, as \
+                 silico_core::logging::init does, with no filter on the subscriber itself",
             ));
         }
         let kept = lock(&self.events);
@@ -418,8 +418,8 @@ where
     }
 }
 
-/// A span's text, its name and fields (`step feature=f0000001`), at most [`SPAN_BYTES`],
-/// and its feature, if a field named `feature` is a feature's ID.
+/// A span's text, its name and fields (`recompute_step feature=f0000001 key=… job=make`),
+/// at most [`SPAN_BYTES`], and its feature, if a field named `feature` is a feature's ID.
 struct SpanFields {
     text: String,
     feature: Option<FeatureId>,
@@ -520,7 +520,7 @@ mod tests {
 
     fn kept() -> Arc<LogBuffer> {
         let buffer = LogBuffer::new();
-        buffer.kept.store(true, Ordering::Relaxed);
+        buffer.attached.store(true, Ordering::Relaxed);
         buffer
     }
 
@@ -735,6 +735,54 @@ mod tests {
             .unwrap();
         assert_eq!(messages(&logs), ["inside", "on another thread"]);
         assert_eq!(logs.events[1].spans, ["check", "recompute"]);
+    }
+
+    #[test]
+    fn the_innermost_spans_feature_wins_each_level_reads_as_itself_and_a_long_span_is_cut() {
+        // Tests round 1's lows: two spans with features, the inner one's the event's; every
+        // level as logged; a span's text past its bound cut, ending in the mark.
+        keep_logs();
+        let (buffer, span) = attached("check");
+        let long = "x".repeat(SPAN_BYTES + 1000);
+        span.in_scope(|| {
+            let outer = tracing::info_span!("outer", feature = "f0000001");
+            outer.in_scope(|| {
+                tracing::info_span!("inner", feature = "f0000002")
+                    .in_scope(|| tracing::info!("nested"));
+            });
+            tracing::error!("e");
+            tracing::warn!("w");
+            tracing::info!("i");
+            tracing::debug!("d");
+            tracing::trace!("t");
+            tracing::info_span!("walk", path = %long).in_scope(|| tracing::info!("long"));
+        });
+        let logs = buffer
+            .read(s1(), &query(LogLevel::Trace, None, 1000))
+            .unwrap();
+        let nested = &logs.events[0];
+        assert_eq!(
+            nested.feature.as_ref().map(FeatureId::as_str),
+            Some("f0000002")
+        );
+        let levels: Vec<(&str, LogLevel)> = logs.events[1..6]
+            .iter()
+            .map(|e| (e.message.as_str(), e.level))
+            .collect();
+        assert_eq!(
+            levels,
+            [
+                ("e", LogLevel::Error),
+                ("w", LogLevel::Warn),
+                ("i", LogLevel::Info),
+                ("d", LogLevel::Debug),
+                ("t", LogLevel::Trace),
+            ]
+        );
+        let walk = &logs.events[6].spans[1];
+        assert!(walk.starts_with("walk path=xxx"), "{}", &walk[..20]);
+        assert!(walk.ends_with(CUT));
+        assert_eq!(walk.len(), SPAN_BYTES);
     }
 
     #[test]

@@ -111,7 +111,7 @@
             "type": "integer"
           },
           "spans": {
-            "description": "The spans it happened in, from the command's down: the command (with `model=published`\nfor a read of the published model), then each span within it, its name and fields\n(`step feature=f0000001`).",
+            "description": "The spans it happened in, from the command's down: the command (with `model=published`\nfor a read of the published model), then each span within it, its name and fields:\n`rebuild revision=2 fresh=false`, a rebuild step's `recompute_step feature=f0000001\nkey=… job=make`, a kernel request's `worker_call … op=Fillet`, and a worker's own\nlines' `worker_lines trace=…`.",
             "items": {
               "type": "string"
             },

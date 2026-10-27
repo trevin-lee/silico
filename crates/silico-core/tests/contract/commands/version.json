@@ -8,6 +8,10 @@
   },
   "result": {
     "$defs": {
+      "Length": {
+        "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+        "type": "number"
+      },
       "Limits": {
         "additionalProperties": false,
         "description": "The limits every command holds to (the design's section 6), each the value the commands\nuse. A request past one is refused, as `invalid_input`, unless its description says\notherwise.",
@@ -33,8 +37,7 @@
           "export_tolerance": {
             "description": "The least and the most tolerance a `3mf` export takes, in millimetres.",
             "items": {
-              "format": "double",
-              "type": "number"
+              "$ref": "#/$defs/Length"
             },
             "maxItems": 2,
             "minItems": 2,

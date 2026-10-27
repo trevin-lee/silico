@@ -142,8 +142,10 @@ pub struct LogEventSchema {
     /// When it happened, in milliseconds since the session opened.
     pub at_ms: u64,
     /// The spans it happened in, from the command's down: the command (with `model=published`
-    /// for a read of the published model), then each span within it, its name and fields
-    /// (`step feature=f0000001`).
+    /// for a read of the published model), then each span within it, its name and fields:
+    /// `rebuild revision=2 fresh=false`, a rebuild step's `recompute_step feature=f0000001
+    /// key=… job=make`, a kernel request's `worker_call … op=Fillet`, and a worker's own
+    /// lines' `worker_lines trace=…`.
     pub spans: Vec<String>,
     /// The feature it's of, its own or its innermost span's: null for an event of none.
     pub feature: Option<FeatureId>,

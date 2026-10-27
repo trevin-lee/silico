@@ -2750,12 +2750,7 @@ impl Ran {
             },
             _ => return,
         };
-        tracing::info!(
-            code = error.code().as_str(),
-            cause = error.cause(),
-            "the step failed: {}",
-            error.message()
-        );
+        error.log("the step failed");
     }
 }
 

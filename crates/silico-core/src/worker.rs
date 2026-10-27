@@ -26,8 +26,9 @@ use std::time::{Duration, Instant};
 
 use command_fds::{CommandFdExt, FdMapping};
 use silico_protocol::{
-    ElementRef, Failure, FailureKind, FrameError, FrameReader, Generation, Op, Refusal, Reply,
-    Request, RequestId, Response, TraceId, WORKER_FD, WORKER_FD_ENV, decode, write_message,
+    ElementRef, Failure, FailureKind, FrameError, FrameReader, Generation, MAX_LOG_LINE, Op,
+    Refusal, Reply, Request, RequestId, Response, TraceId, WORKER_FD, WORKER_FD_ENV, decode,
+    write_message,
 };
 
 use crate::references::EdgeNames;
@@ -35,10 +36,6 @@ use crate::{Error, ErrorCode};
 
 /// How many of a worker's last log lines a crash report carries.
 const STDERR_TAIL_LINES: usize = 20;
-
-/// The longest log line kept; the rest of a longer line is dropped, so a worker can't make
-/// the core buffer without limit.
-const MAX_LOG_LINE: usize = silico_protocol::MAX_LOG_LINE;
 
 /// How much of the workers' logs may wait for the log sink, all workers' together, in
 /// bytes (each line's message and [`LOG_ITEM_COST`]): a burst of tens of thousands of
@@ -612,16 +609,15 @@ impl Worker {
         let id = RequestId(self.next_id);
         self.next_id += 1;
         let trace = TraceId(NEXT_TRACE.fetch_add(1, Ordering::Relaxed));
-        // The worker's log lines for this request go under the span it was asked in, so at
-        // any level they trace back to it (ARCHITECTURE.md, invariant 9). The log sink runs
-        // only outside the lock, which the log thread takes for every line: taking the span,
-        // and warning of and letting go of one pushed out.
-        // Under a span of their own, at error level, within the one it was asked in: every
-        // layer keeps it whatever it filters (a log's `SILICO_LOG`, beside the session logs'
-        // layer, which keeps every level), so each files the lines under the nearest span it
-        // keeps of those above.
-        let asked_in = tracing::error_span!("worker_lines", trace = trace.0);
-        let pushed_out = lock(&self.callers).push(trace.0, asked_in);
+        // The worker's log lines for this request go under a span of their own, made here
+        // within the span it was asked in, so at any level they trace back to it
+        // (ARCHITECTURE.md, invariant 9). At error level, so every layer keeps it whatever
+        // it filters (a log's `SILICO_LOG`, beside the session logs' layer, which keeps every
+        // level), and each files the lines under the nearest span it keeps of those above.
+        // The log sink runs only outside the lock, which the log thread takes for every line:
+        // taking the span, and warning of and letting go of one pushed out.
+        let lines = tracing::error_span!("worker_lines", trace = trace.0);
+        let pushed_out = lock(&self.callers).push(trace.0, lines);
         pushed_out_of_callers(pushed_out);
         let span = tracing::debug_span!(
             "worker_call",
@@ -706,14 +702,8 @@ impl Worker {
                             let error =
                                 failure_error_with_edge_names(self.kind, name, failure, names);
                             // In the call's span, so a session's logs hold the request
-                            // refused, of its feature.
-                            tracing::info!(
-                                code = error.code().as_str(),
-                                cause = error.cause(),
-                                "the {} refused {name}: {}",
-                                self.kind.noun(),
-                                error.message()
-                            );
+                            // refused, of its feature, its elements by their names.
+                            error.log(&format!("the {} refused {name}", self.kind.noun()));
                             Err(error)
                         }
                         Err(misfit) => Err(self.stop(

@@ -21,7 +21,7 @@ use crate::command::{
     Status, Version,
 };
 use crate::document::json::Node;
-use crate::document::{FeatureId, PROBLEMS_LISTED};
+use crate::document::{FeatureId, Length, PROBLEMS_LISTED};
 
 /// A `version` request: it has no fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,8 +355,7 @@ pub struct LimitsSchema {
     /// not refused, the oldest events are dropped and counted.
     pub log_bytes: u64,
     /// The least and the most tolerance a `3mf` export takes, in millimetres.
-    #[schemars(length(min = 2, max = 2))]
-    pub export_tolerance: Vec<f64>,
+    pub export_tolerance: [Length; 2],
     /// The most triangles one `3mf` export writes, every part's in all: past it, refused,
     /// naming `tolerance`.
     pub export_triangles: u64,
