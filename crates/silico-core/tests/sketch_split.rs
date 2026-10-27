@@ -6,10 +6,10 @@
 use silico_core::Error;
 use silico_core::document::sketch_edit::{Split, split};
 use silico_core::document::{
-    Direction, Document, ElementId, Form, Operation, Reference, Sketch, read, validate,
+    Direction, Document, ElementId, Form, Operation, Reference, Sketch, TangentSide, read, validate,
 };
 
-use crate::fixture::{arc, circle, document, fields, line, line_as, point};
+use crate::fixture::{arc, circle, circle_as, document, fields, line, line_as, point};
 
 fn id(text: &str) -> ElementId {
     ElementId::new(text).unwrap()
@@ -970,4 +970,312 @@ fn a_constraint_the_shared_point_would_make_a_pieces_own_is_refused_naming_it() 
         error.suggestion(),
         Some("remove the constraint first, or split elsewhere")
     );
+}
+
+// ---- the tests review's: rounds' pieces, contacts, and floors
+
+/// Arc a0000000 about z0 (0, 0), radius 25, counter-clockwise from e0 (25, 0), at 0, to e1
+/// (−15, −20), at 233.13°; beside `points`.
+fn an_arc(points: &[String], lines: &str, circles: &str, constraints: &str) -> Document {
+    let all = [
+        point("z0000000", 0.0, 0.0),
+        point("e0000000", 25.0, 0.0),
+        point("e0000001", -15.0, -20.0),
+    ]
+    .into_iter()
+    .chain(points.iter().cloned())
+    .collect::<Vec<_>>()
+    .join(", ");
+    doc(
+        &all,
+        lines,
+        circles,
+        &arc("a0000000", "z0000000", "e0000000", "e0000001"),
+        constraints,
+    )
+}
+
+#[test]
+fn points_on_an_arc_go_to_the_piece_holding_them_or_past_its_ends_the_nearer_ends() {
+    // Split at (0, 25), 90°: s0 (20, 15) at 36.9° is on a; s1 (−25, 0) at 180° on b; s2
+    // (24, −7) at 343.7°, past both, nearer e0 (7.07 against 41.0): a; s3 (0, −25) at 270°,
+    // past, nearer e1 (15.8 against 35.4): b.
+    let points = [
+        point("s0000000", 20.0, 15.0),
+        point("s0000001", -25.0, 0.0),
+        point("s0000002", 24.0, -7.0),
+        point("s0000003", 0.0, -25.0),
+    ];
+    let constraints = (0..4)
+        .map(|i| {
+            format!(r#"{{"id": "k000000{i}", "type": "on", "point": "s000000{i}", "curve": "a0000000"}}"#)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let before = an_arc(&points, "", "", &constraints);
+    let done = split(
+        sketch_of(&before),
+        &id("a0000000"),
+        &[[0.0, 25.0]],
+        &ids(&["n0000000", "b1000000"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    let on = |name: &str| match form(&sketch, name) {
+        Form::On { curve, .. } => curve.to_string(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        ["k0000000", "k0000001", "k0000002", "k0000003"].map(on),
+        ["a0000000", "b1000000", "a0000000", "b1000000"]
+    );
+}
+
+#[test]
+fn an_arcs_tangencies_go_to_the_piece_touching_the_contact() {
+    // Split at (0, 25): the line m, x = −25, touches a at (−25, 0), 180°, on b; the circle c
+    // about (25, 0) of radius 50 holds a inside it, touching at (−25, 0) too (the side away
+    // from c's centre), on b.
+    let points = [
+        point("q0000000", -25.0, -30.0),
+        point("q0000001", -25.0, 30.0),
+        point("y0000000", 25.0, 0.0),
+    ];
+    let before = an_arc(
+        &points,
+        &line("m0000000", "q0000000", "q0000001"),
+        &circle("c0000000", "y0000000", 50.0),
+        r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "m0000000", "side": "right"}, {"id": "k0000001", "type": "tangent", "a": "a0000000", "b": "c0000000", "side": "inside"}"#,
+    );
+    let done = split(
+        sketch_of(&before),
+        &id("a0000000"),
+        &[[0.0, 25.0]],
+        &ids(&["n0000000", "b1000000"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        &Form::Tangent {
+            a: element("b1000000"),
+            b: element("m0000000"),
+            side: TangentSide::Right,
+        }
+    );
+    assert_eq!(
+        form(&sketch, "k0000001"),
+        &Form::Tangent {
+            a: element("b1000000"),
+            b: element("c0000000"),
+            side: TangentSide::Inside,
+        }
+    );
+    assert_eq!(
+        done.edited.modified,
+        ids(&["a0000000", "k0000000", "k0000001"])
+    );
+}
+
+#[test]
+fn an_arcs_equal_and_radius_stay_on_the_start_side_piece() {
+    let before = an_arc(
+        &[point("y0000000", 100.0, 0.0)],
+        "",
+        &circle("c0000000", "y0000000", 25.0),
+        r#"{"id": "k0000000", "type": "equal", "a": "a0000000", "b": "c0000000"}"#,
+    );
+    let done = split(
+        sketch_of(&before),
+        &id("a0000000"),
+        &[[0.0, 25.0]],
+        &ids(&["n0000000", "b1000000"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        &Form::Equal {
+            a: element("a0000000"),
+            b: element("c0000000")
+        }
+    );
+    assert_eq!(done.edited.modified, ids(&["a0000000"]));
+    assert!(done.edited.removed.is_empty());
+}
+
+#[test]
+fn a_tangent_on_at_a_lines_start_stays_and_at_its_far_end_goes_to_the_new_piece() {
+    // a's start p0 is tangent on circle c0 about (0, −10), its end p4 on c1 about (32, 10).
+    let before = a_line(
+        r#"{"id": "y0000000", "x": 0, "y": -10, "construction": false}, {"id": "y0000001", "x": 32, "y": 10, "construction": false}"#,
+        "",
+        &[
+            circle("c0000000", "y0000000", 10.0),
+            circle("c1000000", "y0000001", 10.0),
+        ]
+        .join(", "),
+        "",
+        r#"{"id": "k0000000", "type": "tangent_on", "a": "a0000000", "at": "p0000000", "b": "c0000000", "direction": "same"}, {"id": "k0000001", "type": "tangent_on", "a": "a0000000", "at": "p0000004", "b": "c1000000", "direction": "same"}"#,
+    );
+    let done = split(
+        sketch_of(&before),
+        &id("a0000000"),
+        &[[10.0, 0.0]],
+        &ids(&["n0000000", "b1000000", "j0000000"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        form(sketch_of(&before), "k0000000")
+    );
+    assert_eq!(
+        form(&sketch, "k0000001"),
+        &Form::TangentOn {
+            a: element("b1000000"),
+            at: element("p0000004"),
+            b: element("c1000000"),
+            direction: Direction::Same,
+        }
+    );
+    assert_eq!(done.edited.modified, ids(&["a0000000", "k0000001"]));
+}
+
+#[test]
+fn a_construction_circles_and_arcs_pieces_and_points_are_construction() {
+    let before = doc(
+        &point("z0000000", 0.0, 0.0),
+        "",
+        &circle_as("c0000000", "z0000000", 25.0, true),
+        "",
+        "",
+    );
+    let done = split(
+        sketch_of(&before),
+        &id("c0000000"),
+        &[[25.0, 0.0], [0.0, 25.0]],
+        &ids(&["n0000000", "n0000001", "c1000000"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(sketch.arcs.len(), 2);
+    assert!(sketch.arcs.iter().all(|a| a.construction));
+    assert!(at(&sketch, "n0000000").2 && at(&sketch, "n0000001").2);
+    let before = doc(
+        &[
+            point("z0000000", 0.0, 0.0),
+            point("e0000000", 25.0, 0.0),
+            point("e0000001", -15.0, -20.0),
+        ]
+        .join(", "),
+        "",
+        "",
+        r#"{"id": "a0000000", "center": "z0000000", "start": "e0000000", "end": "e0000001", "construction": true}"#,
+        "",
+    );
+    let done = split(
+        sketch_of(&before),
+        &id("a0000000"),
+        &[[0.0, 25.0]],
+        &ids(&["n0000000", "b1000000"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert!(sketch.arcs.iter().all(|a| a.construction));
+    assert!(at(&sketch, "n0000000").2);
+}
+
+/// The point on the circle of radius 25 about the origin whose chord from (25, 0) is
+/// `chord` long.
+fn chord_from_the_start(chord: f64) -> [f64; 2] {
+    let angle = 2.0 * libm::asin(chord / 50.0);
+    [25.0 * libm::cos(angle), 25.0 * libm::sin(angle)]
+}
+
+#[test]
+fn a_rounds_split_within_1e_7_mm_of_an_end_or_of_its_other_position_is_refused_and_past_it_splits()
+{
+    // 5e-8 from the arc's start (chord), refused naming e0; 5e-7, split. A circle's two
+    // positions 5e-8 apart, refused at at.1; 5e-7, split.
+    let before = an_arc(&[], "", "", "");
+    let error = split(
+        sketch_of(&before),
+        &id("a0000000"),
+        &[chord_from_the_start(0.00000005)],
+        &ids(&["n0000000", "b1000000"]),
+    )
+    .unwrap_err();
+    let (message, parameter, elements) = said(&error);
+    assert!(
+        message.starts_with("the split position is ")
+            && message.ends_with(" mm from arc a0000000's end e0000000, within 1e-7 mm"),
+        "{message}"
+    );
+    assert_eq!(
+        (parameter, elements),
+        (Some("at.0"), vec!["a0000000", "e0000000"])
+    );
+    let done = split(
+        sketch_of(&before),
+        &id("a0000000"),
+        &[chord_from_the_start(0.0000005)],
+        &ids(&["n0000000", "b1000000"]),
+    )
+    .unwrap();
+    gated(&before, &done);
+    let circle_doc = doc(
+        &point("z0000000", 0.0, 0.0),
+        "",
+        &circle("c0000000", "z0000000", 25.0),
+        "",
+        "",
+    );
+    let three = ids(&["n0000000", "n0000001", "c1000000"]);
+    let error = split(
+        sketch_of(&circle_doc),
+        &id("c0000000"),
+        &[[25.0, 0.0], chord_from_the_start(0.00000005)],
+        &three,
+    )
+    .unwrap_err();
+    assert_eq!(error.parameter(), Some("at.1"));
+    assert!(
+        error.message().starts_with("the two split positions are "),
+        "{}",
+        error.message()
+    );
+    let done = split(
+        sketch_of(&circle_doc),
+        &id("c0000000"),
+        &[[25.0, 0.0], chord_from_the_start(0.0000005)],
+        &three,
+    )
+    .unwrap();
+    gated(&circle_doc, &done);
+}
+
+#[test]
+fn of_two_points_held_at_the_split_the_least_id_is_shared() {
+    // t0 at (10, 0) and s0 5e-8 above it, both held on a: s0 is shared, t0 left beside it.
+    let before = a_line(
+        r#"{"id": "t0000000", "x": 10, "y": 0, "construction": false}, {"id": "s0000000", "x": 10, "y": 0.00000005, "construction": false}"#,
+        "",
+        "",
+        "",
+        r#"{"id": "k0000000", "type": "on", "point": "t0000000", "curve": "a0000000"}, {"id": "k0000001", "type": "on", "point": "s0000000", "curve": "a0000000"}"#,
+    );
+    let done = split(
+        sketch_of(&before),
+        &id("a0000000"),
+        &[[10.0, 0.0]],
+        &ids(&["b1000000", "j0000000"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        ends(&sketch, "a0000000"),
+        ("p0000000".to_owned(), "s0000000".to_owned())
+    );
+    assert_eq!(done.edited.removed, ids(&["k0000001"]));
 }
