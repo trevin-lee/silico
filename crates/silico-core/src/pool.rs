@@ -366,6 +366,13 @@ impl KernelPool {
             .unwrap_or_else(Self::refusing)
     }
 
+    /// Why the pool couldn't be opened, if it couldn't ([`start`](Self::start) found no
+    /// worker it could use): every request it's given fails with this. `None` for a pool
+    /// with an executable, whether or not its workers have started.
+    pub fn refused(&self) -> Option<&Error> {
+        self.shared.executable.as_ref().err()
+    }
+
     /// A pool with no workers, slots, or threads, every request of which, the pool's own or
     /// a client's, fails with `why` at once, unless it's superseded (each client's
     /// generations are its own, as an opened pool's are): what [`start`](Self::start) gives
