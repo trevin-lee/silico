@@ -1377,7 +1377,8 @@ fn output_target(
     // hard link's, or another case of its own on a case-insensitive file system, which
     // Linux's `realpath` keeps as given), it's the device and inode of one held. Both, since
     // inode numbers repeat across file systems: a file on another volume may have a held
-    // document's inode. The tests reach only one device, so the device's half is untested.
+    // document's inode. The device's half is tested on Linux only, where a test makes two
+    // file systems of its own (tests/file.rs, two tmpfs mounts in a namespace of its own).
     let there = std::fs::metadata(&target);
     if let Ok(meta) = &there
         && rules.held.iter().any(|held| {

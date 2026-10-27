@@ -2,16 +2,19 @@
 //! `Op::Distance`; docs/ports/measure.md), on OCCT's `BRepExtrema_DistShapeShape`: boxes'
 //! faces, apart, touching, and across shapes; corners; a sphere against a plane (FreeCAD's
 //! `testCurvedFaceDistance`); a cylinder's rims; the witness pair chosen by coordinates and
-//! swapped with the elements; and each refusal. Every expected value is by hand.
+//! swapped with the elements, never a pair OCCT's filter leaves past its precision; and each
+//! refusal. Every expected value is by hand.
 
-use super::cube_elements::{cube, vertex_at};
+use super::cube_elements::{cube, edge_between, vertex_at};
 
 use std::path::Path;
 
 use silico_core::ErrorCode;
 use silico_core::kernel::{Blob, KernelRequest, KernelWorker, ShapeData};
-use silico_kernel::{Primitive, Shape, describe_whole, distance, make, to_brep, translate};
-use silico_protocol::{EdgeCurve, ElementKind, ElementRef, Refusal};
+use silico_kernel::{
+    Primitive, Shape, describe_whole, distance, extrude, make, to_brep, translate,
+};
+use silico_protocol::{EdgeCurve, ElementKind, ElementRef, Profile, Refusal};
 
 fn moved(shape: &Shape, by: [f64; 3]) -> Shape {
     translate(shape, by).unwrap().shape
@@ -289,4 +292,53 @@ fn corners_of_two_shapes_are_measured_across_them() {
     assert_eq!(d.distance, 50.0);
     assert_eq!(d.from, [0.0, 0.0, 0.0]);
     assert_eq!(d.to, [50.0, 0.0, 0.0]);
+}
+
+#[test]
+fn a_pair_occts_filter_leaves_past_its_precision_is_never_the_witness() {
+    // OCCT's last step (BRepExtrema_DistShapeShape::Perform) removes each pair further than
+    // its precision (1e-7) from the distance, but its loop steps on after a removal, so the
+    // pair after each removed one is never looked at. Two edges 1250 mm apart along x,
+    // crossed: a, in x = 0, from A' = (0, −0.02, 0) to A = (0, 0, 0); b, in x = 1250, from
+    // B' = (1250, 0, 0.014) to B = (1250, 0, 0). A and B are nearest, 1250 apart; each
+    // other pair's excess over 1250 is its offset across, squared, over 2 × 1250 (to 1e-15):
+    // A'B' (0.02² + 0.014²) / 2500 = 2.384e-7, A'B 0.02² / 2500 = 1.6e-7, AB'
+    // 0.014² / 2500 = 0.784e-7. OCCT pairs the vertices first, a's first, each from its
+    // first vertex (A', B'), keeping a pair within 1e-7 of the least so far and lowering
+    // it: A'B', A'B (0.784e-7 below), AB' (0.816e-7 below), AB (0.784e-7 below), so its
+    // reference ends at 1250, every step within its precision. Its filter removes A'B'
+    // (2.384e-7 over), steps past A'B, which moved into its place, and keeps AB' and AB:
+    // three pairs, A'B 1.6e-7 over (each element's other searches find their least at the
+    // vertices, which these pairs have). By the witness's order, A'B comes first (its lesser
+    // point, A', is below A by y): unfiltered, the witness would be a pair 1.6e-7 further
+    // apart than the distance. Within the precision, AB' and AB, of which AB is first (B is
+    // below B' by z): the nearest pair itself.
+    let prism = |points: Vec<[f64; 3]>| extrude(&Profile { points }, 1.0, None).unwrap().shape;
+    let (a_far, a_near) = ([0.0, -0.02, 0.0], [0.0, 0.0, 0.0]);
+    let (b_far, b_near) = ([1250.0, 0.0, 0.014], [1250.0, 0.0, 0.0]);
+    // Each edge the first of its triangle's profile, so it runs from the far end to the
+    // near one, as the walk above has it.
+    let a = prism(vec![a_far, a_near, [0.0, -0.01, -1.0]]);
+    let b = prism(vec![b_far, b_near, [1250.0, 1.0, 0.007]]);
+    let (ea, eb) = (
+        edge_between(&a, a_far, a_near),
+        edge_between(&b, b_far, b_near),
+    );
+    let runs = |shape: &Shape, e: ElementRef| {
+        let edge = &describe_whole(shape).unwrap().edges[e.index as usize - 1];
+        (edge.start, edge.end)
+    };
+    assert_eq!(runs(&a, ea), (a_far, a_near));
+    assert_eq!(runs(&b, eb), (b_far, b_near));
+    let d = distance(&a, ea, Some(&b), eb).unwrap();
+    assert_eq!(d.distance, 1250.0);
+    assert_eq!((d.from, d.to), (a_near, b_near));
+    assert_eq!(d.solutions, 3);
+    // Swapped: the same pair, its points swapped.
+    let back = distance(&b, eb, Some(&a), ea).unwrap();
+    assert_eq!(
+        (back.distance, back.from, back.to),
+        (1250.0, b_near, a_near)
+    );
+    assert_eq!(back.solutions, 3);
 }
