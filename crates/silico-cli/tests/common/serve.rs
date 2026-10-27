@@ -2,6 +2,8 @@
 //! stdout piped, its stdout's lines as they come, each checked to be one JSON-RPC message,
 //! requests sent and their replies waited for, and its end waited for, each failing past
 //! [`DEADLINE`](crate::run::DEADLINE) rather than hanging.
+// Each test program that includes this uses only some of it.
+#![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -37,6 +39,37 @@ pub fn serve(dir: &Path, log: Option<&str>, stderr: Stdio) -> Child {
     command.spawn().unwrap()
 }
 
+/// `silico serve` in the workspace `dir` as [`serve`] starts it, but with the real workers
+/// (the ones built beside it), no log, and its cache's secret in the cache home `home`,
+/// written as [`give_secret`](crate::run::give_secret) writes one.
+pub fn serve_working(dir: &Path, home: &Path, stderr: Stdio) -> Child {
+    crate::run::give_secret(&home.join("silico").join("cache-secret"));
+    let silico = Path::new(env!("CARGO_BIN_EXE_silico"));
+    for worker in [
+        "silico-kernel-worker",
+        "silico-sketch-worker",
+        "silico-render-worker",
+    ] {
+        assert!(
+            silico.with_file_name(worker).is_file(),
+            "{worker} isn't built beside silico: pixi run cargo build -p silico-kernel -p silico-sketch -p silico-render --bins"
+        );
+    }
+    Command::new(silico)
+        .args(["serve", "--workspace"])
+        .arg(dir)
+        .env("XDG_CACHE_HOME", home)
+        .env_remove("SILICO_LOG")
+        .env_remove("SILICO_KERNEL_WORKER")
+        .env_remove("SILICO_SKETCH_WORKER")
+        .env_remove("SILICO_RENDER_WORKER")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(stderr)
+        .spawn()
+        .unwrap()
+}
+
 /// Each line of `child`'s stdout, as it comes.
 pub fn lines(child: &mut Child) -> Receiver<String> {
     let (to, lines) = mpsc::channel();
@@ -60,13 +93,20 @@ pub fn lines(child: &mut Child) -> Receiver<String> {
 /// Sends `line`, and gives the reply whose ID is `id` (JSON text), every line before it
 /// checked to be JSON-RPC.
 pub fn ask(stdin: &mut ChildStdin, lines: &Receiver<String>, line: &str, id: &str) -> Value {
+    json_rpc(&ask_line(stdin, lines, line, id))
+}
+
+/// [`ask`], the reply as written.
+pub fn ask_line(stdin: &mut ChildStdin, lines: &Receiver<String>, line: &str, id: &str) -> String {
     writeln!(stdin, "{line}").unwrap();
     let id: Value = serde_json::from_str(id).unwrap();
     loop {
-        let line = lines.recv_timeout(DEADLINE).expect("no reply");
+        let line = lines
+            .recv_timeout(DEADLINE)
+            .unwrap_or_else(|e| panic!("no reply to {id} in {DEADLINE:?}: {e}"));
         let message = json_rpc(&line);
         if message.get("id") == Some(&id) {
-            return message;
+            return line;
         }
     }
 }

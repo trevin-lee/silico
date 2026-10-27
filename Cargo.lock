@@ -5140,12 +5140,15 @@ dependencies = [
 name = "silico-cli"
 version = "0.0.0"
 dependencies = [
+ "jsonschema",
  "libc",
+ "libm",
  "serde",
  "serde_json",
  "signal-hook",
  "silico-core",
  "silico-mcp",
+ "silico-oracle",
  "tempfile",
  "tracing",
 ]

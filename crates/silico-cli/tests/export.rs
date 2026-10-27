@@ -8,9 +8,13 @@
 
 #[path = "common/run.rs"]
 mod run;
+#[path = "common/threemf.rs"]
+mod threemf;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+
+use threemf::{model, printable};
 
 const BOX: &str = r#"{
   "silico": 1,
@@ -84,54 +88,6 @@ fn silico_export_with(dir: &Path, args: &[&str], sketch_worker: Option<&Path>) -
     run::output(cmd)
 }
 
-/// An object of a 3MF model: its vertices and its triangles, as written.
-type MeshObject = (Vec<[f64; 3]>, Vec<[usize; 3]>);
-
-/// The model in the 3MF archive `bytes`: each object, as written.
-fn model(bytes: &[u8]) -> Vec<MeshObject> {
-    let text = String::from_utf8_lossy(bytes);
-    let start = text.find("<model ").expect("a model in the archive");
-    let end = text.find("</model>").expect("the model ends");
-    let xml = &text[start..end];
-    // A tag's attribute, the tag's text from just after its name.
-    let attribute = |tag: &str, name: &str| -> String {
-        let tag = format!(" {tag}");
-        let at = tag.find(&format!(" {name}=\"")).unwrap() + name.len() + 3;
-        tag[at..].split('"').next().unwrap().to_owned()
-    };
-    xml.split("<object ")
-        .skip(1)
-        .map(|object| {
-            let vertices = object
-                .split("<vertex ")
-                .skip(1)
-                .map(|tag| ["x", "y", "z"].map(|k| attribute(tag, k).parse().unwrap()))
-                .collect();
-            let triangles = object
-                .split("<triangle ")
-                .skip(1)
-                .map(|tag| ["v1", "v2", "v3"].map(|k| attribute(tag, k).parse().unwrap()))
-                .collect();
-            (vertices, triangles)
-        })
-        .collect()
-}
-
-/// The volume `triangles` enclose, from the coordinates as written: the sum of each
-/// triangle's signed tetrahedron with the origin, its determinants summed before the one
-/// division, so whole-number coordinates give an exact volume.
-fn volume(vertices: &[[f64; 3]], triangles: &[[usize; 3]]) -> f64 {
-    let determinants: f64 = triangles
-        .iter()
-        .map(|&[a, b, c]| {
-            let (a, b, c) = (vertices[a], vertices[b], vertices[c]);
-            a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
-                + a[2] * (b[0] * c[1] - b[1] * c[0])
-        })
-        .sum();
-    determinants / 6.0
-}
-
 #[test]
 fn a_box_is_exported_as_its_8_corners_and_12_triangles_enclosing_its_volume() {
     let dir = Scratch::new("box");
@@ -150,9 +106,10 @@ fn a_box_is_exported_as_its_8_corners_and_12_triangles_enclosing_its_volume() {
     );
     let objects = model(&bytes);
     assert_eq!(objects.len(), 1);
-    let (vertices, triangles) = &objects[0];
-    assert_eq!((vertices.len(), triangles.len()), (8, 12));
-    let mut corners = vertices.clone();
+    let object = &objects[0];
+    assert_eq!(object.name, "Block");
+    assert_eq!((object.vertices.len(), object.triangles.len()), (8, 12));
+    let mut corners = object.vertices.clone();
     corners.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mut want: Vec<[f64; 3]> = (0..8)
         .map(|i| {
@@ -165,7 +122,7 @@ fn a_box_is_exported_as_its_8_corners_and_12_triangles_enclosing_its_volume() {
         .collect();
     want.sort_by(|a, b| a.partial_cmp(b).unwrap());
     assert_eq!(corners, want);
-    assert_eq!(volume(vertices, triangles), 8000.0);
+    assert_eq!(printable(object), 8000.0);
     // The same bytes every run: an archive whose bytes depend on the mesh and names alone.
     let again = silico_export(&dir.0, &["--replace", "part.silico", "part.3mf"]);
     assert_eq!(again.status.code(), Some(0));
@@ -264,7 +221,7 @@ fn the_features_listed_are_written_in_their_order() {
     let named: Vec<&str> = stdout.lines().skip(1).map(|l| &l[..8]).collect();
     assert_eq!(named, ["b2b2b2b2", "k7f2qx3m"]);
     let objects = model(&std::fs::read(dir.0.join("part.3mf")).unwrap());
-    let volumes: Vec<f64> = objects.iter().map(|(v, t)| volume(v, t)).collect();
+    let volumes: Vec<f64> = objects.iter().map(printable).collect();
     assert_eq!(volumes, [6.0, 8000.0]);
 }
 
