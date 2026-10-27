@@ -409,3 +409,65 @@ fn a_clear_whose_directory_is_swapped_for_a_link_out_as_it_walks_removes_only_it
     assert!(entries(&moved).is_empty(), "{:?}", entries(&moved));
     assert!(std::fs::symlink_metadata(&ours).unwrap().is_symlink());
 }
+
+#[test]
+fn a_clear_raced_by_a_directory_flipping_with_a_link_out_removes_nothing_outside() {
+    // Found by #188's second review: the clear opened `work/sub/.silico-cache` (only its own
+    // name not followed), then resolved the path and compared the two by device and inode.
+    // With `work/sub` exchanged, again and again, with `work/link` (a link to `outside/x`),
+    // the open could go through the link, and the resolve and the stat through the
+    // directory and then the link again, so the handle on `outside/x/.silico-cache` passed,
+    // and the clear removed another cache's entry there. A race, so a loop: clears, as
+    // another thread flips the two at uneven intervals, until the entry outside is gone
+    // (the bug, found within seconds each run before the fix), 300,000 clears, or 20
+    // seconds, whichever is first. A pass is no proof, but a failure is one.
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+    let scene = Scene::new();
+    let (work, outside) = (scene.work.clone(), scene.outside.clone());
+    std::fs::create_dir_all(work.join("sub/.silico-cache")).unwrap();
+    let theirs = outside.join("x/.silico-cache");
+    std::fs::create_dir_all(theirs.join("ab")).unwrap();
+    let entry = theirs.join("ab").join(NAME);
+    std::fs::write(&entry, b"theirs").unwrap();
+    std::os::unix::fs::symlink(outside.join("x"), work.join("link")).unwrap();
+    let cache = scene.within();
+    let stop = Arc::new(AtomicBool::new(false));
+    let flipper = {
+        let (stop, work) = (Arc::clone(&stop), work.clone());
+        std::thread::spawn(move || {
+            let mut k: u64 = 0;
+            while !stop.load(Ordering::Relaxed) {
+                renameat_with(
+                    CWD,
+                    work.join("sub"),
+                    CWD,
+                    work.join("link"),
+                    RenameFlags::EXCHANGE,
+                )
+                .unwrap();
+                k = (k + 7919) % 4001;
+                for _ in 0..k {
+                    std::hint::spin_loop();
+                }
+            }
+        })
+    };
+    let began = std::time::Instant::now();
+    let mut removed_at = None;
+    for i in 0..300_000 {
+        let _ = cache.clear();
+        if !entry.exists() {
+            removed_at = Some(i);
+            break;
+        }
+        if began.elapsed() > Duration::from_secs(20) {
+            break;
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    flipper.join().unwrap();
+    assert_eq!(
+        removed_at, None,
+        "a clear removed an entry outside the workspace"
+    );
+}

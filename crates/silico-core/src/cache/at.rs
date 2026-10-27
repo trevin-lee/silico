@@ -3,9 +3,10 @@
 //! directory, whatever has since been done to the paths that led to it, and its own name is
 //! never followed through a link.
 
-use std::ffi::CString;
+use std::ffi::{CString, OsString};
 use std::os::fd::{AsFd, OwnedFd};
-use std::path::Path;
+use std::os::unix::ffi::OsStringExt as _;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
@@ -25,15 +26,51 @@ pub(super) fn open_dir(dir: impl AsFd, name: impl Arg) -> rustix::io::Result<Own
     )
 }
 
-/// Whether the directory `dir` holds open is the one at `path` now, its own name not
-/// followed: the same file on the same device.
-pub(super) fn is_at(dir: impl AsFd, path: &Path) -> bool {
-    match (
-        rustix::fs::fstat(dir),
-        rustix::fs::statat(CWD, path, AtFlags::SYMLINK_NOFOLLOW),
-    ) {
-        (Ok(open), Ok(there)) => (open.st_dev, open.st_ino) == (there.st_dev, there.st_ino),
-        _ => false,
+/// The directory at `path` (from [`CWD`]), opened to find what's in it, through any link
+/// on its way, its own name's included: a cache's document's directory, which may be reached
+/// through a link (in a workspace, the handle is then asked where it is: [`path_of`]).
+pub(super) fn open_dir_through_links(path: &Path) -> rustix::io::Result<OwnedFd> {
+    rustix::fs::openat(
+        CWD,
+        path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+}
+
+/// Where the directory `dir` holds open is now, as the system has it, through no link:
+/// asked of the handle (macOS's `F_GETPATH`), never of a path, so no link put on the way
+/// since it was opened changes the answer.
+#[cfg(target_os = "macos")]
+pub(super) fn path_of(dir: impl AsFd) -> rustix::io::Result<PathBuf> {
+    rustix::fs::getpath(dir).map(|path| PathBuf::from(OsString::from_vec(path.into_bytes())))
+}
+
+/// Where the directory `dir` holds open is now, as the system has it, through no link:
+/// asked of the handle (its link in `/proc/self/fd`, which the kernel keeps for the open
+/// file itself), never of a path, so no link put on the way since it was opened changes the
+/// answer. A directory removed since is its path then, ` (deleted)` after it: nothing can be
+/// made in it.
+#[cfg(target_os = "linux")]
+pub(super) fn path_of(dir: impl AsFd) -> rustix::io::Result<PathBuf> {
+    use std::os::fd::AsRawFd as _;
+    let link = format!("/proc/self/fd/{}", dir.as_fd().as_raw_fd());
+    rustix::fs::readlinkat(CWD, link.as_str(), Vec::new())
+        .map(|path| PathBuf::from(OsString::from_vec(path.into_bytes())))
+}
+
+/// Where the directory `dir` holds open is: on a system that can't say, not known.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(super) fn path_of(_dir: impl AsFd) -> rustix::io::Result<PathBuf> {
+    Err(Errno::NOSYS)
+}
+
+/// Makes the directory `name` in `dir`, unless something's at its name already (which
+/// [`open_dir`] then opens, or refuses).
+pub(super) fn make_dir(dir: impl AsFd, name: impl Arg) -> rustix::io::Result<()> {
+    match rustix::fs::mkdirat(dir, name, Mode::from_raw_mode(0o777)) {
+        Ok(()) | Err(Errno::EXIST) => Ok(()),
+        Err(e) => Err(e),
     }
 }
 

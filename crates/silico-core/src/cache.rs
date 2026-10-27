@@ -17,15 +17,16 @@
 //! docs/design/m4.1-command-api.md; [`Cache::within`]).
 //!
 //! Each read, write (with the eviction it makes room by), and clear opens the directory
-//! once, never through a link at its own name, and does everything it does through that
-//! handle: every file below it is found from the handle a name at a time (each subdirectory
-//! opened from it, never through a link, and walked by its own handle), never by a path. So
-//! nothing done to the paths on its way once the handle is open (a link put at its name, at
-//! its document's directory, or above) takes the operation anywhere else; in a workspace,
-//! one done before is refused, as the handle is checked to be the directory its path
-//! resolves to, inside ([`Cache::within`]). The handle is what keeps other directories
-//! safe, not the names the cache acts on alone: its layout of entries (two hex digits, then
-//! 62) is a SHA-256 git repository's of loose objects.
+//! once, from a handle on its document's directory, never through a link at its own name,
+//! and does everything it does through that handle: every file below it is found from the
+//! handle a name at a time (each subdirectory opened from it, never through a link, and
+//! walked by its own handle), never by a path. So nothing done to the paths on its way once
+//! the handle is open (a link put at its name, at its document's directory, or above) takes
+//! the operation anywhere else; in a workspace, one done before is refused, as the system is
+//! asked where the document's directory's handle is, and it must be in the workspace
+//! ([`Cache::within`]). The handle is what keeps other directories safe, not the names the
+//! cache acts on alone: its layout of entries (two hex digits, then 62) is a SHA-256 git
+//! repository's of loose objects.
 //!
 //! Only results are kept, never a step's failure: a failure's cause may not last (memory,
 //! say), and recompute keeps those that follow from the values in memory. A result's
@@ -301,23 +302,26 @@ impl Cache {
 
     /// This cache, in `workspace`: the workspace of the `Sessions` it serves
     /// (`Sessions::in_workspace`; decision 26 of docs/design/m4.1-command-api.md). It keeps
-    /// results only in a directory that leads nowhere out of the workspace, through
-    /// [`file::resolve`], checked as each read, write (with the eviction it makes room by),
-    /// and clear opens the directory, since a link may be put on its way at any time (its
-    /// own name, its document's directory, or one above it, in a transaction that reads
-    /// nothing again): the handle it opens must be the directory its path resolves to then,
-    /// inside the workspace (the same file on the same device), or it's not used. So a link
-    /// put on the way before the handle opens is refused, and one put after redirects
-    /// nothing, since nothing below the handle is found by a path. A cache whose directory
-    /// leads out is one that keeps nothing, as one whose directory is a link is (M2.5): a
-    /// read misses, and a write, an eviction, and a clear do nothing, said once while it
-    /// leads out (and again if it leads out again after it came back). One that doesn't
-    /// exist yet is made only if it leads nowhere out then; one swapped out just as it's
-    /// made is left empty, and refused. What the handle can't help: the directory itself,
-    /// moved out of the workspace whole while an operation has it open, takes that
-    /// operation's work with it, its own files only. A cache never changes a result, so a
-    /// rebuild through a cache that keeps nothing is still right, only uncached. Without a
-    /// workspace, the directory is used wherever the path to it leads.
+    /// results only in a directory in the workspace, checked as each read, write (with the
+    /// eviction it makes room by), and clear opens the directory, since a link may be put on
+    /// its way at any time (its own name, its document's directory, or one above it, in a
+    /// transaction that reads nothing again). Each opens its document's directory, through
+    /// any link on the way (a document may be reached through a link inside the
+    /// workspace), and asks the system where that handle is (macOS's `F_GETPATH`, Linux's
+    /// `/proc/self/fd`): it must be in the workspace, or it's not used. Never a path
+    /// resolved again, which a link flipped on the way between the open and the check would
+    /// take elsewhere than the handle. Then `.silico-cache` is opened from that handle, never
+    /// through a link (and made from it first, for a write), and nothing below is found by a
+    /// path. So a link put on the way before the handle opens is refused, and one put after
+    /// redirects nothing. A cache whose directory leads out is one that keeps nothing, as
+    /// one whose directory is a link is (M2.5): a read misses, and a write, an eviction, and
+    /// a clear do nothing, said once while it leads out (and again if it leads out again
+    /// after it came back). What the handle can't help: its document's directory (or the
+    /// cache's own), moved out of the workspace whole while an operation has it open, takes
+    /// that operation's work with it, its own files only, since they're what the handle
+    /// holds. A cache never changes a result, so a rebuild through a cache that keeps
+    /// nothing is still right, only uncached. Without a workspace, the same opens are made,
+    /// and the directory is used wherever the path to it leads.
     #[must_use]
     pub fn within(mut self, workspace: Workspace) -> Self {
         self.workspace = Some(workspace);
@@ -671,37 +675,57 @@ impl Cache {
     }
 
     /// Its directory, opened for one operation (made first if `make` and it isn't there),
-    /// or why not. Never through a link at its own name (said once). In a workspace, the
-    /// handle is used only if, opened, it's the directory its path resolves to then, inside
-    /// the workspace ([`within`](Self::within)): one open, one resolve, and two stats (and,
-    /// as it's made, a resolve before, so it isn't made where it would lead out).
+    /// or why not: its document's directory opened, through any link on the way; in a
+    /// workspace, used only if the system says that handle is in the workspace
+    /// ([`within`](Self::within)); and then its own name opened from that handle, never
+    /// through a link (said once), made from it first if need be. One open, one question of
+    /// where the handle is, and one more open (with, as it's made, a make and an open). In
+    /// a workspace, nothing is made by a path: a document's directory that isn't there
+    /// (moved, or removed) has a cache that keeps nothing.
     fn root(&self, make: bool) -> Result<OwnedFd, Unopened> {
-        let root = match at::open_dir(CWD, &self.dir) {
-            Ok(root) => root,
-            Err(Errno::NOENT) if make => {
-                // Not made where it would lead out (its document's directory a link out).
-                if self.leads_out() {
-                    return Err(Unopened::Refused);
-                }
-                std::fs::create_dir_all(&self.dir).map_err(Unopened::Failed)?;
-                at::open_dir(CWD, &self.dir).map_err(|e| self.unopened(e))?
+        let (above, name) = self.parts();
+        let above = match at::open_dir_through_links(above) {
+            Ok(above) => above,
+            // Without a workspace (a tool's cache, anywhere), made with the directories
+            // above it, as it always was; a session's document's directory is there.
+            Err(Errno::NOENT) if make && self.workspace.is_none() => {
+                std::fs::create_dir_all(above).map_err(Unopened::Failed)?;
+                at::open_dir_through_links(above).map_err(|e| Unopened::Failed(e.into()))?
             }
-            Err(e) => return Err(self.unopened(e)),
+            Err(Errno::NOENT) => return Err(Unopened::Missing),
+            Err(e) => return Err(Unopened::Failed(e.into())),
         };
-        match &self.workspace {
-            Some(workspace) if !self.verified(workspace, &root) => Err(Unopened::Refused),
-            _ => Ok(root),
+        if let Some(workspace) = &self.workspace {
+            self.inside(workspace, &above)?;
+        }
+        match at::open_dir(&above, name) {
+            Ok(root) => Ok(root),
+            Err(Errno::NOENT) if make => {
+                at::make_dir(&above, name).map_err(|e| Unopened::Failed(e.into()))?;
+                at::open_dir(&above, name).map_err(|e| self.unopened(&above, name, e))
+            }
+            Err(e) => Err(self.unopened(&above, name, e)),
         }
     }
 
-    /// Why its directory couldn't be opened, for the system's `error`: what's at its name
-    /// (a link, said once; a file; nothing), looked at as it is now.
-    fn unopened(&self, error: Errno) -> Unopened {
+    /// Its directory's two parts: the directory it's in, its document's (`.` for a bare
+    /// name), and its own name (`.` for a path that has none: `/`, or one ending in `..`).
+    fn parts(&self) -> (&Path, &OsStr) {
+        match self.dir.file_name() {
+            Some(name) => (file::directory(&self.dir), name),
+            None => (&self.dir, OsStr::new(".")),
+        }
+    }
+
+    /// Why its directory, `name` in the directory `above` holds open, couldn't be opened,
+    /// for the system's `error`: what's at its name (a link, said once; a file; nothing),
+    /// looked at as it is now, from the handle.
+    fn unopened(&self, above: &OwnedFd, name: &OsStr, error: Errno) -> Unopened {
         if error == Errno::NOENT {
             return Unopened::Missing;
         }
-        match std::fs::symlink_metadata(&self.dir) {
-            Ok(meta) if meta.file_type().is_symlink() => {
+        match at::stat(above, name) {
+            Ok(meta) if meta.is_link() => {
                 self.say_linked(&self.dir);
                 Unopened::Refused
             }
@@ -711,33 +735,26 @@ impl Cache {
         }
     }
 
-    /// Whether `root`, its directory as just opened, is the one its path resolves to now,
-    /// inside `workspace`: a link put on the way before it was opened leads out (said once),
-    /// and one put after it was opened and before it was resolved leads to another
-    /// directory than the one it holds (said). Either way it isn't used, this once.
-    fn verified(&self, workspace: &Workspace, root: &OwnedFd) -> bool {
-        match file::resolve(Some(workspace), &self.dir) {
-            Ok(resolved) if at::is_at(root, &resolved) => {
+    /// Whether the directory `above` holds open, its document's, is in `workspace` now, by
+    /// where the system says the handle is: never by where a path leads, which a link put on
+    /// the way since the handle was opened would take elsewhere. One out of the workspace is
+    /// refused (said once while it's out); one the system can't place, said.
+    fn inside(&self, workspace: &Workspace, above: &OwnedFd) -> Result<(), Unopened> {
+        match at::path_of(above) {
+            Ok(path) if workspace.holds(&path) => {
                 // Inside again: should it lead out later, that's said again.
                 if self.said_outside.load(Ordering::Relaxed) {
                     self.said_outside.store(false, Ordering::Relaxed);
                 }
-                true
+                Ok(())
             }
             Ok(_) => {
-                tracing::warn!(
-                    dir = %self.dir.display(),
-                    "the cache's directory was replaced as it was opened: keeping no results \
-                     through it this time"
-                );
-                false
-            }
-            Err(Unresolved::Outside) => {
                 self.say_outside();
-                false
+                Err(Unopened::Refused)
             }
-            // Gone, or no longer a directory, since it was opened.
-            Err(Unresolved::Unreachable(_)) => false,
+            Err(e) => Err(Unopened::Failed(std::io::Error::other(format!(
+                "the system couldn't say where its document's directory is ({e})"
+            )))),
         }
     }
 
@@ -761,7 +778,8 @@ impl Cache {
     /// Whether its directory leads out of its workspace now, through a link on its way (its
     /// own name, or a directory above it), by [`file::resolve`]'s one rule, said once if it
     /// does; never without a workspace. One not made yet, inside, doesn't. Asked before a
-    /// session's cache is opened (`Registry::cache`), and before its directory is made.
+    /// session's cache is opened (`Registry::cache`); each operation asks its handle again
+    /// ([`root`](Self::root)).
     pub(crate) fn leads_out(&self) -> bool {
         let out = self.workspace.as_ref().is_some_and(|workspace| {
             matches!(
@@ -1457,10 +1475,7 @@ fn write_entry(
     seal: &Seal,
     payload: &[u8],
 ) -> std::io::Result<()> {
-    match rustix::fs::mkdirat(root, subdirectory, Mode::from_raw_mode(0o777)) {
-        Ok(()) | Err(Errno::EXIST) => {}
-        Err(e) => return Err(e.into()),
-    }
+    at::make_dir(root, subdirectory)?;
     let sub = match at::open_dir(root, subdirectory) {
         Ok(sub) => sub,
         Err(_) if at::is_link(root, subdirectory) => {
@@ -2088,28 +2103,65 @@ mod tests {
     }
 
     #[test]
-    fn a_cache_directory_replaced_between_its_open_and_its_check_isnt_used() {
-        // A swap after the directory's opened and before its path is resolved: the handle
-        // opened on `work/sub/.silico-cache`, then that directory moved aside and another
-        // made at its name, inside the workspace. The path resolves inside, but to another
-        // directory than the handle's (another inode), so the handle isn't used, which is
-        // said; one opened on the directory there now is.
+    fn a_documents_directory_moved_out_between_its_open_and_its_check_isnt_used() {
+        // A move after the document's directory is opened and before it's checked: the
+        // handle opened on `work/sub`, then that directory moved out of the workspace and
+        // another made at its name. The path leads inside, to the new one, but the handle
+        // is where the system says it is, `outside/sub`, so it isn't used, which is said;
+        // one opened on the directory there now is.
         let dir = tempfile::tempdir().unwrap();
-        let work = std::fs::canonicalize(dir.path()).unwrap().join("work");
-        let cache_dir = work.join("sub/.silico-cache");
-        std::fs::create_dir_all(&cache_dir).unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (work, outside) = (root.join("work"), root.join("outside"));
+        std::fs::create_dir_all(work.join("sub")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
         let workspace = Workspace::new(&work).unwrap();
-        let cache = Cache::new(cache_dir.clone(), this_platform(), Some(Secret([7; 32])))
-            .within(workspace.clone());
-        let first = opened_at(&cache_dir);
-        std::fs::rename(&cache_dir, work.join("sub/aside")).unwrap();
-        std::fs::create_dir(&cache_dir).unwrap();
+        let cache = Cache::new(
+            work.join("sub/.silico-cache"),
+            this_platform(),
+            Some(Secret([7; 32])),
+        )
+        .within(workspace.clone());
+        let first = opened_at(&work.join("sub"));
+        std::fs::rename(work.join("sub"), outside.join("sub")).unwrap();
+        std::fs::create_dir(work.join("sub")).unwrap();
         let (subscriber, warnings) = counting_warnings();
         tracing::subscriber::with_default(subscriber, || {
-            assert!(!cache.verified(&workspace, &first));
-            assert!(cache.verified(&workspace, &opened_at(&cache_dir)));
+            assert!(matches!(
+                cache.inside(&workspace, &first),
+                Err(Unopened::Refused)
+            ));
+            assert!(
+                cache
+                    .inside(&workspace, &opened_at(&work.join("sub")))
+                    .is_ok()
+            );
         });
         assert_eq!(*warnings.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_documents_directory_reached_through_a_link_inside_its_workspace_is_used() {
+        // `work/near` a link to `work/real`: the cache at `work/near/.silico-cache` is made,
+        // from the handle, in `work/real`, and used; the same through a link out isn't, and
+        // nothing is made there.
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (work, outside) = (root.join("work"), root.join("outside"));
+        std::fs::create_dir_all(work.join("real")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink("real", work.join("near")).unwrap();
+        std::os::unix::fs::symlink(&outside, work.join("away")).unwrap();
+        let workspace = Workspace::new(&work).unwrap();
+        let within = |dir: PathBuf| {
+            Cache::new(dir, this_platform(), Some(Secret([7; 32]))).within(workspace.clone())
+        };
+        assert!(within(work.join("near/.silico-cache")).root(true).is_ok());
+        assert!(work.join("real/.silico-cache").is_dir());
+        assert!(matches!(
+            within(work.join("away/.silico-cache")).root(true),
+            Err(Unopened::Refused)
+        ));
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
     }
 
     #[test]
