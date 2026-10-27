@@ -437,6 +437,8 @@ fn devices_entry() {
         &rules,
         "its directory can't be reached",
     );
+    // Said only past every check, so the run outside can tell it from the early return.
+    println!("devices checked");
 }
 
 #[cfg(target_os = "linux")]
@@ -475,9 +477,10 @@ fn a_file_on_another_device_with_a_held_documents_inode_is_another_file() {
         "{}\nstdout:\n{out}\nstderr:\n{err}",
         run.status
     );
-    // It ran, and passed: not filtered out by its name.
+    // It ran, and passed: not filtered out by its name, nor returned early for want of
+    // its variable.
     assert!(
-        out.contains("test devices_entry ... ok"),
+        out.contains("test devices_entry ... ok") && out.contains("devices checked"),
         "stdout:\n{out}\nstderr:\n{err}"
     );
 }
