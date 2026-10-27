@@ -5287,6 +5287,7 @@ name = "silico-worker"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "serde_json",
  "silico-protocol",
  "tracing",
  "tracing-subscriber",

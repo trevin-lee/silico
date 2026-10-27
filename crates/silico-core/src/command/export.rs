@@ -59,6 +59,11 @@ impl ExportFormat {
 /// ([`silico_protocol::DEFAULT_EXPORT_TOLERANCE`]), as a length.
 pub const DEFAULT_TOLERANCE: Length = Length::from_nm(100_000);
 
+/// The least and the most tolerance a 3MF export takes, 1e-5 and 1e8 mm
+/// ([`silico_protocol::MIN_EXPORT_TOLERANCE`], [`silico_protocol::MAX_EXPORT_TOLERANCE`]), as
+/// lengths: what `version` gives.
+pub const TOLERANCES: [Length; 2] = [Length::from_nm(10), Length::from_nm(100_000_000_000_000)];
+
 /// An export asked for (M4.1's request, its session aside: an export reads the current
 /// model only).
 #[derive(Debug, Clone, PartialEq)]
@@ -657,7 +662,18 @@ fn session_closed() -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::DEFAULT_TOLERANCE;
+    use super::{DEFAULT_TOLERANCE, TOLERANCES};
+
+    #[test]
+    fn the_tolerances_version_gives_are_the_ones_an_export_takes() {
+        assert_eq!(
+            TOLERANCES.map(|t| t.mm()),
+            [
+                silico_protocol::MIN_EXPORT_TOLERANCE,
+                silico_protocol::MAX_EXPORT_TOLERANCE
+            ]
+        );
+    }
 
     #[test]
     fn the_default_tolerance_is_freecads() {

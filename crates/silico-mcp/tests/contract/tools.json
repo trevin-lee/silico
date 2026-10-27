@@ -91,6 +91,10 @@
             ],
             "type": "object"
           },
+          "Length": {
+            "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+            "type": "number"
+          },
           "Limits": {
             "additionalProperties": false,
             "description": "The limits every command holds to (the design's section 6), each the value the commands\nuse. A request past one is refused, as `invalid_input`, unless its description says\notherwise.",
@@ -103,6 +107,27 @@
               },
               "elements": {
                 "description": "The most entries an `elements` call lists: its `limit` at most.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "export_bytes": {
+                "description": "The most bytes one `3mf` export's archive may be (a plain zip's, with no ZIP64):\npast it, refused, naming `tolerance`.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "export_tolerance": {
+                "description": "The least and the most tolerance a `3mf` export takes, in millimetres.",
+                "items": {
+                  "$ref": "#/$defs/Length"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "type": "array"
+              },
+              "export_triangles": {
+                "description": "The most triangles one `3mf` export writes, every part's in all: past it, refused,\nnaming `tolerance`.",
                 "format": "uint64",
                 "minimum": 0,
                 "type": "integer"
@@ -121,6 +146,30 @@
               },
               "listed": {
                 "description": "How many errors (or problems, or warnings) a response lists: the rest are counted,\nnever refused.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "log_bytes": {
+                "description": "The most text a session's log buffer keeps, in bytes, counted as a read counts it:\nnot refused, the oldest events are dropped and counted.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "log_events": {
+                "description": "The most events a session's log buffer keeps: not refused, the oldest are dropped\nand counted (`read_logs`' `dropped`).",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "log_read_bytes": {
+                "description": "The most text one `read_logs` returns, in bytes (its events' messages, spans, and\nfeatures): a read stops before the event that would pass it, its `next` saying where.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "log_read_events": {
+                "description": "The most events one `read_logs` returns: its `limit` at most.",
                 "format": "uint64",
                 "minimum": 0,
                 "type": "integer"
@@ -189,9 +238,16 @@
             "required": [
               "document_bytes",
               "elements",
+              "export_bytes",
+              "export_tolerance",
+              "export_triangles",
               "highlight",
               "kernel_seconds",
               "listed",
+              "log_bytes",
+              "log_events",
+              "log_read_bytes",
+              "log_read_events",
               "published_reads",
               "query",
               "query_measures",
@@ -14141,6 +14197,439 @@
         "type": "object"
       },
       "title": "Render"
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Read logs"
+      },
+      "description": "A session's recent log events, answered at once even while another of its commands runs: those of a level and every level more severe, of one feature or every feature, after a cursor (the last read's `next`, or null from the oldest kept). Diagnostics: an event's time and its order among other threads' depend on the machine, never on the model.",
+      "inputSchema": {
+        "$defs": {
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "LogLevel": {
+            "description": "An event's level, from the most severe: error, warn, info, debug, trace.",
+            "enum": [
+              "error",
+              "warn",
+              "info",
+              "debug",
+              "trace"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`read_logs`' request: the session's recent log events, of a level and every level more\nsevere, of one feature or all, after a cursor.",
+        "properties": {
+          "after": {
+            "description": "Read the events after this one: the last read's `next`; or null, from the oldest\nkept. Refused if it's past the session's newest event.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "feature": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FeatureId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The feature whose events to read (an event's feature, or its spans'), or null for\nevery event."
+          },
+          "level": {
+            "$ref": "#/$defs/LogLevel",
+            "description": "The least severe level to read: it and every level more severe (`info` reads error,\nwarn, and info)."
+          },
+          "limit": {
+            "description": "How many events to read at most.",
+            "format": "uint32",
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "after",
+          "feature",
+          "level",
+          "limit",
+          "session"
+        ],
+        "title": "ReadLogsRequest",
+        "type": "object"
+      },
+      "name": "read_logs",
+      "outputSchema": {
+        "$defs": {
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "LogEvent": {
+            "additionalProperties": false,
+            "description": "One event a session kept. Its time and its place among events of other threads depend\non the machine and on scheduling: diagnostics, never results.",
+            "properties": {
+              "at_ms": {
+                "description": "When it happened, in milliseconds since the session opened.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The feature it's of, its own or its innermost span's: null for an event of none."
+              },
+              "level": {
+                "$ref": "#/$defs/LogLevel"
+              },
+              "message": {
+                "description": "Its message, then its other fields (`key=value`); cut, ending in `…`, to fit one read.",
+                "type": "string"
+              },
+              "seq": {
+                "description": "Its number in the session, from 1, one more for each event the session kept.",
+                "format": "uint64",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "spans": {
+                "description": "The spans it happened in, from the command's down: the command (with `model=published`\nfor a read of the published model), then each span within it, its name and fields:\n`rebuild revision=2 fresh=false`, a rebuild step's `recompute_step feature=f0000001\nkey=… job=make`, a kernel request's `worker_call … op=Fillet`, and a worker's own\nlines' `worker_lines trace=…`.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "at_ms",
+              "feature",
+              "level",
+              "message",
+              "seq",
+              "spans"
+            ],
+            "type": "object"
+          },
+          "LogLevel": {
+            "description": "An event's level, from the most severe: error, warn, info, debug, trace.",
+            "enum": [
+              "error",
+              "warn",
+              "info",
+              "debug",
+              "trace"
+            ],
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "format": "uint64",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "format": "uint64",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`read_logs`' result.",
+                "properties": {
+                  "dropped": {
+                    "description": "How many events the session's buffer dropped since it opened, oldest first, to keep\nwithin its bound.",
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "events": {
+                    "description": "The events read, oldest first.",
+                    "items": {
+                      "$ref": "#/$defs/LogEvent"
+                    },
+                    "type": "array"
+                  },
+                  "next": {
+                    "description": "Where the next read goes on from, its `after`: the last event returned, if the read\nstopped at its limit or at 1 MiB of text; else the session's newest event.",
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "dropped",
+                  "events",
+                  "next"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Read logs"
     },
     {
       "annotations": {

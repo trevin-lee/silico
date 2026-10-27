@@ -131,7 +131,7 @@ fn a_tools_call_before_initialize_is_refused_and_after_it_runs() {
     assert_eq!(error["message"], "tools/call came before initialize");
     // tools/list needs no initialize; the call does.
     let listed = c.request(2, "tools/list", "{}");
-    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 25);
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 26);
     c.request(3, "initialize", "{}");
     let ran = c.request(4, "tools/call", r#"{"name": "version"}"#);
     assert_eq!(ran["result"]["isError"], false, "{ran}");
@@ -158,7 +158,7 @@ fn an_unknown_method_is_method_not_found_naming_the_methods() {
 }
 
 /// Every tool's name, in the list's order, written out by hand.
-pub const TOOLS: [&str; 25] = [
+pub const TOOLS: [&str; 26] = [
     "version",
     "open",
     "close",
@@ -183,6 +183,7 @@ pub const TOOLS: [&str; 25] = [
     "distance",
     "angle",
     "render",
+    "read_logs",
     "export",
 ];
 

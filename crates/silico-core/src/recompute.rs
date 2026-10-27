@@ -2735,6 +2735,25 @@ enum Ran {
     Measured(Outcome<Built>),
 }
 
+impl Ran {
+    /// Logs, at info, why the step failed, if it did: the first broken reference of one it
+    /// couldn't run, or its error. A failure is the document's, not the process's, so it's
+    /// no warning; the rebuild's result reports it too.
+    fn log_failure(&self) {
+        let error = match self {
+            Ran::Made(Outcome::Done(Err(error))) | Ran::Measured(Outcome::Done(Err(error))) => {
+                error
+            }
+            Ran::Unresolved(broken) => match broken.errors.first() {
+                Some(error) => error,
+                None => return,
+            },
+            _ => return,
+        };
+        error.log("the step failed");
+    }
+}
+
 /// An error that's a bug in Silico.
 fn silico_bug(message: &str) -> Error {
     Error::new(ErrorCode::Internal, message).with_suggestion(crate::worker::SILICO_BUG)
@@ -3336,7 +3355,7 @@ impl<K: Kernel + 'static> Engine<K> {
                     job = job.name(),
                 )
                 .entered();
-                match job {
+                let ran = match job {
                     Job::Make(key) => match (plan.steps.get(&key), plan.dresses.get(&key)) {
                         (Some(step), Some(dress)) => {
                             let sources = sources.unwrap_or_default();
@@ -3364,7 +3383,10 @@ impl<K: Kernel + 'static> Engine<K> {
                             "a feature's solid was measured before it was made",
                         )))),
                     },
-                }
+                };
+                // In the step's span, so a session's logs hold why its feature failed.
+                ran.log_failure();
+                ran
             }));
             let mut s = lock(schedule);
             let ran = match outcome {

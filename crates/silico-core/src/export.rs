@@ -776,7 +776,7 @@ pub struct Object<'a> {
 
 /// The largest archive [`three_mf`] writes: a plain zip's limit, 4 GiB less a byte, since
 /// ZIP64 is left out.
-const MAX_ARCHIVE: u64 = u32::MAX as u64;
+pub(crate) const MAX_ARCHIVE: u64 = u32::MAX as u64;
 
 /// Nothing, if `triangles` in all are few enough for one file
 /// ([`silico_protocol::MAX_EXPORT_TRIANGLES`]); otherwise the kernel's refusal of a mesh

@@ -17,11 +17,10 @@
 //! `check`'s broken reference is a real kernel's: silico-kernel's wire_examples.rs writes it
 //! on kernel workers, and it's the design's own text here too.
 //!
-//! The design's examples not in the contract are three, each for its reason ([`LEFT_OUT`]):
-//! `version`'s result, which holds limits not built yet (its real result is pinned in
-//! wire_session_reads.rs); `open` outside a workspace, whose example file is the
-//! maintainer's to add (its message quotes the path, which the design's doesn't); and `commit`'s
-//! `io_failed`, a disk out of room, which no test can make happen.
+//! The design's examples not in the contract are two, each for its reason ([`LEFT_OUT`]):
+//! `open` outside a workspace, whose example file is the maintainer's to add (its message
+//! quotes the path, which the design's doesn't); and `commit`'s `io_failed`, a disk out of
+//! room, which no test can make happen.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -226,7 +225,7 @@ fn the_examples_are_the_designs_own_text() {
             "### `version` (M4.2)",
             "### `open` (M4.2)",
             "version",
-            &[Some("request"), None],
+            &[Some("request"), Some("result")],
         ),
         (
             "### `open` (M4.2)",
@@ -439,13 +438,7 @@ fn the_examples_are_the_designs_own_text() {
 
 /// The design's examples not in the contract, by command and what each is (a refusal's code
 /// and parameter, or `result` for a result), each with why.
-const LEFT_OUT: [(&str, &str, &str, &str); 3] = [
-    (
-        "version",
-        "result",
-        "",
-        "its limits include those of render, read_logs and export, not built yet",
-    ),
+const LEFT_OUT: [(&str, &str, &str, &str); 2] = [
     (
         "open",
         "invalid_input",

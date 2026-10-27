@@ -84,6 +84,7 @@ fn the_commands_are_one_list_in_one_order() {
             "distance",
             "angle",
             "render",
+            "read_logs",
             "export",
         ]
     );
@@ -150,7 +151,8 @@ fn a_name_no_command_has_is_unknown() {
         " check",
         "tools/call",
         "Export",
-        "read_logs",
+        "read_log",
+        "Read_logs",
         "cache-clear",
         "cache clear",
         "versions",
@@ -779,7 +781,7 @@ fn status_and_cancel_are_answered_when_waited_on_not_when_called() {
 
 #[test]
 fn each_commands_calling_is_answered_when_waited_on_exactly_as_the_command_says() {
-    // The four that take no place in a session's queue, written out by hand (the design's
+    // The five that take no place in a session's queue, written out by hand (the design's
     // *Running a call*): the rest run off the caller's thread, and are waited on.
     let later: Vec<Command> = Command::ALL
         .into_iter()
@@ -791,7 +793,8 @@ fn each_commands_calling_is_answered_when_waited_on_exactly_as_the_command_says(
             Command::Version,
             Command::Status,
             Command::Cancel,
-            Command::Schema
+            Command::Schema,
+            Command::ReadLogs
         ]
     );
     // Each command's own example request (the contract's, which its reader takes), on a

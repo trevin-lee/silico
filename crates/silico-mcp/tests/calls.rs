@@ -1,6 +1,6 @@
 //! Running calls (docs/design/m4.9-mcp.md, *Running a call*): cancellation stops a call
 //! and it gets no reply; progress only grows; at most 64 calls wait on sessions at once,
-//! `status`, `cancel`, `version`, and `schema` outside that; calls back to back on a
+//! `status`, `cancel`, `read_logs`, `version`, and `schema` outside that; calls back to back on a
 //! session run in the order sent. Timing comes from the fake kernel's holds, never the
 //! clock. Expected values: the note's rules and messages, written here by hand.
 

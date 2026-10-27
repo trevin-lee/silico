@@ -149,6 +149,7 @@ fn effect(command: Command) -> Effect {
     match command {
         Command::Version
         | Command::Status
+        | Command::ReadLogs
         | Command::Text
         | Command::Outline
         | Command::Check
@@ -202,6 +203,10 @@ fn words(command: Command) -> (&'static str, String) {
         Command::Status => (
             "Session status",
             "What a session holds, answered at once even while another of its commands runs: its features, whether a transaction is open, what's running, and how far its rebuild has got.",
+        ),
+        Command::ReadLogs => (
+            "Read logs",
+            "A session's recent log events, answered at once even while another of its commands runs: those of a level and every level more severe, of one feature or every feature, after a cursor (the last read's `next`, or null from the oldest kept). Diagnostics: an event's time and its order among other threads' depend on the machine, never on the model.",
         ),
         Command::Cancel => (
             "Cancel a command",
@@ -303,6 +308,7 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::Open
         | Command::Close
         | Command::Status
+        | Command::ReadLogs
         | Command::Cancel
         | Command::Rollback
         | Command::Format

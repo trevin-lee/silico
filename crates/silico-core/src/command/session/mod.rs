@@ -6,8 +6,9 @@
 //! its commands one at a time, in the order they arrive, on a thread of its own
 //! (`session-s1`, ...), never the caller's (ARCHITECTURE.md, invariant 4): even `open`'s
 //! file read and gate. A command returns a [`Running`] handle at once, which the app polls,
-//! MCP's server waits on, and the CLI waits for; only [`Sessions::status`] and
-//! [`Sessions::published`] answer on the caller's thread, from what the session holds. Each
+//! MCP's server waits on, and the CLI waits for; only [`Sessions::status`],
+//! [`Sessions::read_logs`], and [`Sessions::published`] answer on the caller's thread, from
+//! what the session holds (its logs, kept by the process's subscriber: `logs`). Each
 //! answer is a [`Response`]: the session as the command left it, the model it read, if it
 //! read one ([`ModelRead`]), and the command's result, or every reason it was refused.
 //!
@@ -90,6 +91,7 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use super::edit::{self, FeatureIds};
+use super::logs::{LogBuffer, LogQuery, Logs};
 use super::{Gated, Problems, ReadCommand, SessionCommand};
 use crate::cache::Cache;
 use crate::document::json::Node;
@@ -170,6 +172,8 @@ struct Session<C: Kernel + 'static> {
     /// How far its newest rebuild has got, under a lock of its own: what `status` and each
     /// command's handle read.
     newest: Arc<Newest>,
+    /// Its logs: the events of its commands' spans, as `read_logs` reads them.
+    logs: Arc<LogBuffer>,
     /// Where its commands wait as each starts, in this crate's tests only.
     #[cfg(test)]
     gate: Gate,
@@ -560,6 +564,9 @@ impl<P: Clients + 'static> Sessions<P> {
         let caller = tracing::Span::current();
         let ticket = Ticket::opening();
         let stop = Arc::clone(&ticket);
+        // Its logs, kept from here, so its open's are too.
+        let logs = LogBuffer::new();
+        let opening_logs = Arc::clone(&logs);
         // Its queue, made now, so a command sent before it opens waits in it.
         let (queue, jobs) = mpsc::channel();
         // Spawned with the book held, so the thread is recorded opening before it can end.
@@ -574,9 +581,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 };
                 let started = {
                     let _caller = caller.enter();
-                    let _span =
-                        tracing::info_span!("session_command", session = %id, command = "open")
-                            .entered();
+                    let _span = command_span(&opening_logs, id, "open", None).entered();
                     start(registry, id, &path, create, &stop, &reply, jobs)
                 };
                 if let Some(Started { session, jobs }) = started {
@@ -590,6 +595,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     Opening {
                         queue,
                         newest: Arc::default(),
+                        logs,
                         reads: Vec::new(),
                     },
                 );
@@ -630,6 +636,13 @@ impl<P: Clients + 'static> Sessions<P> {
     /// revision's outcome (decision 32), `stopped` if it was cancelled.
     pub fn status(&self, session: &SessionId) -> Response<Status> {
         status_in(&self.registry, session)
+    }
+
+    /// `session`'s logs (M4.7): the events `query` asks for, from what its buffer keeps,
+    /// answered on the caller's thread, never queued and never reading the file, and adding
+    /// no event of its own, so a read of the same cursor again finds only what's new.
+    pub fn read_logs(&self, session: &SessionId, query: &LogQuery) -> Response<Logs> {
+        read_logs_in(&self.registry, session, query)
     }
 
     /// Stops `session`'s command named `command` (decision 34), answered at once on the
@@ -1256,12 +1269,8 @@ impl<P: Clients + 'static> Sessions<P> {
             let response = match turn {
                 Turn::Run(session) => {
                     let _caller = caller.enter();
-                    let _span = tracing::info_span!(
-                        "session_command",
-                        session = %session.id,
-                        command = command.as_str()
-                    )
-                    .entered();
+                    let _span =
+                        command_span(&session.logs, session.id, command.as_str(), None).entered();
                     // A cancel wakes it from a wait on the session's rebuild (at once, if
                     // one came while it was queued).
                     stop.interrupt_with(Arc::downgrade(session) as Weak<dyn Interrupt>);
@@ -1391,11 +1400,11 @@ fn start_published<C: Kernel + 'static, T: Send + 'static>(
         .name(format!("session-{}-read", found.id))
         .spawn(move || {
             let _caller = caller.enter();
-            let _span = tracing::info_span!(
-                "session_command",
-                session = %session.id,
-                command = command.as_str(),
-                model = "published"
+            let _span = command_span(
+                &session.logs,
+                session.id,
+                command.as_str(),
+                Some("published"),
             )
             .entered();
             #[cfg(test)]
@@ -1483,17 +1492,54 @@ fn status_in<P: Clients + 'static>(
     }
 }
 
+/// [`Sessions::read_logs`], of `registry`'s sessions.
+fn read_logs_in<P: Clients + 'static>(
+    registry: &Registry<P>,
+    session: &SessionId,
+    query: &LogQuery,
+) -> Response<Logs> {
+    let Some(found) = find_in(registry, session) else {
+        return refused(not_open(*session));
+    };
+    Response {
+        session: Some(found.info(false)),
+        model: None,
+        result: found.logs.read(found.id, query).map_err(Problems::from),
+    }
+}
+
+/// The span a command of the session `id` runs in, its events kept in `logs`, written in
+/// them as `command` (and `model=` the model it reads, for a read of the published one). At
+/// info level: kept by the log layer, which filters nothing, while a log filtered at warn
+/// (`silico_core::logging`'s default, a filter of that layer's own) leaves it out.
+fn command_span(
+    logs: &Arc<LogBuffer>,
+    id: SessionId,
+    command: &'static str,
+    model: Option<&'static str>,
+) -> tracing::Span {
+    let span = match model {
+        Some(model) => tracing::info_span!("session_command", session = %id, command, model),
+        None => tracing::info_span!("session_command", session = %id, command),
+    };
+    let label = match model {
+        Some(model) => format!("{command} model={model}"),
+        None => command.to_owned(),
+    };
+    logs.attach(&span, label);
+    span
+}
+
 /// [`Sessions::cancel`], of `registry`'s sessions.
 fn cancel_in<P: Clients + 'static>(
     registry: &Registry<P>,
     session: &SessionId,
     command: SessionCommand,
 ) -> Response<Cancelled> {
-    let _span =
-        tracing::info_span!("session_command", session = %session, command = "cancel").entered();
     let Some(found) = find_in(registry, session) else {
         return refused(not_open(*session));
     };
+    let _span = command_span(&found.logs, found.id, "cancel", None).entered();
     let queued = found.running();
     let reads: Vec<Arc<Ticket>> = {
         let reads = lock(&found.reads);
@@ -1527,10 +1573,10 @@ fn cancel_in<P: Clients + 'static>(
     }
 }
 
-/// `status` and `cancel` of a [`Sessions`], answered later, on whichever thread asks
-/// ([`Sessions::weak`]): as the sessions answer them, or, once they're dropped, refused as
-/// of sessions closed ([`gone`]). It holds them only weakly, so it keeps nothing of theirs
-/// alive.
+/// `status`, `read_logs`, and `cancel` of a [`Sessions`], answered later, on whichever thread
+/// asks ([`Sessions::weak`]): as the sessions answer them, or, once they're dropped, refused
+/// as of sessions closed ([`gone`]). It holds them only weakly, so it keeps nothing of
+/// theirs alive.
 pub(crate) struct WeakSessions<P: Clients + 'static>(Weak<Registry<P>>);
 
 impl<P: Clients + 'static> WeakSessions<P> {
@@ -1538,6 +1584,14 @@ impl<P: Clients + 'static> WeakSessions<P> {
     pub(crate) fn status(&self, session: &SessionId) -> Response<Status> {
         match self.0.upgrade() {
             Some(registry) => status_in(&registry, session),
+            None => refused(gone()),
+        }
+    }
+
+    /// [`Sessions::read_logs`].
+    pub(crate) fn read_logs(&self, session: &SessionId, query: &LogQuery) -> Response<Logs> {
+        match self.0.upgrade() {
+            Some(registry) => read_logs_in(&registry, session, query),
             None => refused(gone()),
         }
     }
@@ -1620,7 +1674,7 @@ fn not_open(id: SessionId) -> Error {
         )
 }
 
-/// The refusal of `status` or `cancel` answered after the sessions were dropped
+/// The refusal of `status`, `read_logs`, or `cancel` answered after the sessions were dropped
 /// ([`WeakSessions`]): every session closed with them, so there's none to report on or stop.
 fn gone() -> Error {
     Error::new(

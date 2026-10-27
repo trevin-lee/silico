@@ -95,6 +95,12 @@ pub const WORKER_FD_ENV: &str = "SILICO_WORKER_FD";
 /// request was asked in until it reads it, so every log line of the request goes under it.
 pub const REQUEST_DONE: &str = "silico_request_done";
 
+/// The longest log line of a worker's the core reads, in bytes: the rest of a longer line
+/// is dropped, so a worker can't make the core buffer without limit, and what's left isn't a
+/// line it can read. A worker keeps a line it writes of a size that grows with its request
+/// within it.
+pub const MAX_LOG_LINE: usize = 8 * 1024;
+
 /// Identifies a request to a worker. Chosen by the core; the response carries it back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct RequestId(pub u64);
@@ -764,6 +770,23 @@ pub enum FailureKind {
     /// worker, an adapter to draw on): not the values' fault, and it won't change by asking
     /// again.
     Unavailable,
+}
+
+impl FailureKind {
+    /// The kind's word, its name in snake case (`kernel_failed`): the worker's, as a
+    /// worker's log says what it refused. Not the core's error code, which the core words
+    /// from the kind its own way (`unknown_op` is an `internal` error there).
+    pub const fn word(self) -> &'static str {
+        match self {
+            FailureKind::InvalidInput => "invalid_input",
+            FailureKind::KernelFailed => "kernel_failed",
+            FailureKind::InvalidResult => "invalid_result",
+            FailureKind::UnknownOp => "unknown_op",
+            FailureKind::Internal => "internal",
+            FailureKind::ResourceExhausted => "resource_exhausted",
+            FailureKind::Unavailable => "unavailable",
+        }
+    }
 }
 
 /// A shape as it crosses the worker boundary: OCCT's binary B-rep (with its checksum), and

@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use crate::Error;
 use crate::document::{
-    self, Checked, Document, Feature, FeatureId, Fingerprint, NamingScheme, Operation,
+    self, Checked, Document, Feature, FeatureId, Fingerprint, Length, NamingScheme, Operation,
 };
 use crate::kernel::Kernel;
 use crate::recompute::{Model, Recompute, RunOutcome, Save};
@@ -24,6 +24,7 @@ mod call;
 mod edit;
 pub mod elements;
 pub mod export;
+pub mod logs;
 mod lookup;
 pub mod measure;
 pub mod render;
@@ -90,6 +91,20 @@ pub struct Limits {
     pub render_side: u32,
     /// A render's time, in seconds, from when its scene is sent.
     pub render_seconds: u64,
+    /// The most events one `read_logs` returns, and the most its `limit` asks for.
+    pub log_read_events: u32,
+    /// The most text one `read_logs` returns, in bytes.
+    pub log_read_bytes: usize,
+    /// The most events a session's log buffer keeps.
+    pub log_events: usize,
+    /// The most text a session's log buffer keeps, in bytes.
+    pub log_bytes: usize,
+    /// The least and the most tolerance a 3MF export takes.
+    pub export_tolerance: [Length; 2],
+    /// The most triangles one 3MF export writes, in all.
+    pub export_triangles: u64,
+    /// The most bytes one 3MF export's archive may be.
+    pub export_bytes: u64,
     /// A kernel request's time, in seconds.
     pub kernel_seconds: u64,
     /// A sketch solve's time, in seconds.
@@ -115,6 +130,13 @@ pub const VERSION: Version = Version {
         highlight: render::MAX_HIGHLIGHTS,
         render_side: silico_protocol::MAX_RENDER_SIDE,
         render_seconds: crate::render::RENDER_TIMEOUT.as_secs(),
+        log_read_events: logs::LOG_READ_EVENTS,
+        log_read_bytes: logs::LOG_READ_BYTES,
+        log_events: logs::LOG_EVENTS,
+        log_bytes: logs::LOG_BYTES,
+        export_tolerance: export::TOLERANCES,
+        export_triangles: silico_protocol::MAX_EXPORT_TRIANGLES,
+        export_bytes: crate::export::MAX_ARCHIVE,
         kernel_seconds: crate::kernel::DEFAULT_TIMEOUT.as_secs(),
         sketch_seconds: crate::sketch::SKETCH_TIMEOUT.as_secs(),
     },
