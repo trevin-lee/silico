@@ -400,6 +400,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     stopping: false,
                 }),
                 renderer: Mutex::new(None),
+                step: Mutex::new(Arc::new(crate::step_worker::StepWorkers::new())),
                 meshes: Arc::new(crate::meshes::MeshCache::new(
                     crate::meshes::MESH_CACHE_BYTES,
                 )),
@@ -457,6 +458,19 @@ impl<P: Clients + 'static> Sessions<P> {
     pub fn rendering(self, renderer: impl crate::command::render::Renderer + 'static) -> Self {
         *lock(&self.registry.renderer) = Some(Arc::new(renderer));
         self
+    }
+
+    /// The same sessions, writing `export`'s STEP files with `exporter` (a test's stand-in)
+    /// rather than the STEP worker.
+    #[must_use]
+    pub fn exporting_step(self, exporter: impl crate::step_worker::StepExporter + 'static) -> Self {
+        *lock(&self.registry.step) = Arc::new(exporter);
+        self
+    }
+
+    /// What writes `export`'s STEP files.
+    pub(crate) fn step_exporter(&self) -> Arc<dyn crate::step_worker::StepExporter> {
+        Arc::clone(&lock(&self.registry.step))
     }
 
     /// The renderer `render` draws with, and the meshes it keeps.
@@ -741,7 +755,9 @@ impl<P: Clients + 'static> Sessions<P> {
             stop.interrupt_with(Arc::downgrade(&kernel) as Weak<dyn Interrupt>);
             let current = session.current(stop).map_err(Unbuilt::problems)?;
             *model = Some(current.read.clone());
+            let path = session.held.read().path.clone();
             read(Read {
+                path,
                 model: &current.model,
                 read: current.read,
                 stop,
@@ -1381,8 +1397,10 @@ fn start_published<C: Kernel + 'static, T: Send + 'static>(
                 || Some(session.info(false)),
                 || {
                     let (info, published) = session.published_now();
+                    let path = session.held.read().path.clone();
                     published_answer(info, published, |published, model| {
                         read(Read {
+                            path,
                             model: &published.model,
                             read: model,
                             stop: &stop,

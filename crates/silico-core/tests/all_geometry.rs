@@ -36,6 +36,8 @@ mod adversarial_meshes;
 mod adversarial_profile;
 #[path = "adversarial_profile_faces.rs"]
 mod adversarial_profile_faces;
+#[path = "adversarial_step_export.rs"]
+mod adversarial_step_export;
 #[path = "adversarial_sweep_recompute.rs"]
 mod adversarial_sweep_recompute;
 #[path = "adversarial_sweep_refusals.rs"]

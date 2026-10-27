@@ -9,12 +9,15 @@ use silico_protocol::{
 };
 use silico_protocol::{
     Axis, Blob, BooleanOp, BuiltData, ChamferSize, DebugOp, DressingKind, ElementCounts,
-    ElementFate, ElementKind, ElementRef, Ends, ExportMesh, Failure, FailureKind, FrameError,
-    FrameReader, FreecadMeasures, Generation, History, InputHistory, MAX_FRAME_LEN, Mesh,
-    Misbehavior, Op, Operation, OutOfTurn, Primitive, Profile, Refusal, Reply, Reported, Request,
-    RequestId, Response, ShapeData, ShapeSummary, Topology, TraceId, write_message,
+    ElementFate, ElementKind, ElementRef, Ends, ExportMesh, ExportStep, Failure, FailureKind,
+    FrameError, FrameReader, FreecadMeasures, Generation, History, InputHistory, MAX_FRAME_LEN,
+    Mesh, Misbehavior, Op, Operation, OutOfTurn, Primitive, Profile, Refusal, Reply, Reported,
+    Request, RequestId, Response, ShapeData, ShapeSummary, Topology, TraceId, write_message,
 };
-use silico_protocol::{Camera, EDGE_BIT, Projection, RenderBody, RenderScene};
+use silico_protocol::{
+    Camera, EDGE_BIT, Projection, RenderBody, RenderScene, StepCount, StepFile, StepPart,
+    StepUnwritten,
+};
 use silico_protocol::{Curve, Distance, FaceRegions, Region, SketchPlane};
 use silico_protocol::{Description, EdgeCurve, EdgeDescription, FaceDescription, Surface};
 
@@ -303,6 +306,22 @@ fn every_op() -> Vec<Op> {
             },
             point: [1e12, -0.0, f64::MIN_POSITIVE],
         },
+        Op::ExportStep(Box::new(ExportStep {
+            parts: vec![
+                StepPart {
+                    shape: ShapeData::checked(Blob::inline(vec![9, 3]), true),
+                    id: "f0000003".to_owned(),
+                    name: "Kl\\X2\\00F6\\X0\\tzchen".to_owned(),
+                },
+                StepPart {
+                    shape: ShapeData::unchecked(Blob::inline(vec![])),
+                    id: String::new(),
+                    name: "it's".to_owned(),
+                },
+            ],
+            assembly: "bracket".to_owned(),
+            file_name: "bracket.silico".to_owned(),
+        })),
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
@@ -371,9 +390,10 @@ fn every_op() -> Vec<Op> {
             Op::Render(_) => 44,
             Op::Classify { .. } => 45,
             Op::PointDistance { .. } => 46,
+            Op::ExportStep(_) => 47,
         })
         .collect();
-    assert_eq!(indices, (0..47).collect(), "an operation has no case");
+    assert_eq!(indices, (0..48).collect(), "an operation has no case");
     ops
 }
 
@@ -669,6 +689,33 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             refusal: Refusal::OutOfMemory,
             cause: Some("Standard_OutOfMemory".to_owned()),
         }),
+        Ok(Reply::StepFile(Box::new(StepFile {
+            step: Blob::inline(b"ISO-10303-21;\n".to_vec()),
+            left_out: vec![vec![], vec![5, u32::MAX]],
+            unwritten: vec![
+                StepUnwritten {
+                    part: Some(1),
+                    element: Some(ElementRef {
+                        kind: ElementKind::Face,
+                        index: 7,
+                    }),
+                    messages: vec!["Face from Non Manifold Topology".to_owned()],
+                },
+                StepUnwritten {
+                    part: None,
+                    element: None,
+                    messages: vec![],
+                },
+            ],
+            faces: StepCount {
+                expected: u64::MAX,
+                written: 0,
+            },
+            bounds: StepCount {
+                expected: 0,
+                written: 12,
+            },
+        }))),
     ];
     let indices: std::collections::BTreeSet<usize> = results
         .iter()
@@ -689,6 +736,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::Rendered { .. }) => 19,
             Ok(Reply::Classified { .. }) => 21,
             Ok(Reply::MeshAt(_)) => 22,
+            Ok(Reply::StepFile(_)) => 23,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
@@ -702,7 +750,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         .collect();
     assert_eq!(
         indices,
-        (0..23).collect(),
+        (0..24).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -1114,6 +1162,7 @@ fn every_op_has_its_own_name() {
             "Render",
             "Classify",
             "PointDistance",
+            "ExportStep",
         ]
     );
 }

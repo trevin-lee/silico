@@ -637,6 +637,33 @@ fn rule_panicked(kind: &str, op: &Op) -> Error {
     .with_suggestion("fix the test's rule")
 }
 
+/// The fake writes STEP as it answers `Op::ExportStep` (a text saying what was asked, or a
+/// test's rule's reply), as the STEP worker would, on its own client's generation.
+impl crate::step_worker::StepExporter for FakeKernel {
+    fn export_step(
+        &self,
+        export: silico_protocol::ExportStep,
+        started: &dyn Fn(crate::step_worker::StepStop),
+    ) -> Result<(silico_protocol::StepFile, String), Error> {
+        let request = crate::kernel::KernelRequest::export_step(export)?;
+        let generation = self.generation();
+        let pending = self.submit(generation, request);
+        // Stopped, as the STEP worker is killed: its request superseded.
+        let shared = Arc::clone(&self.shared);
+        started(crate::step_worker::StepStop::new(move || {
+            shared.advance(ClientId::KERNEL, Generation(generation.0 + 1));
+        }));
+        match pending.wait() {
+            Outcome::Done(file) => Ok((file?, "fake STEP worker".to_owned())),
+            Outcome::Superseded => Err(Error::new(
+                ErrorCode::WorkerCrashed,
+                "the fake STEP worker was stopped",
+            )
+            .with_suggestion("the export was stopped: run it again")),
+        }
+    }
+}
+
 /// The fake's reply to `op`.
 fn answer(op: &Op) -> Result<Reply, Error> {
     match op {
@@ -838,12 +865,46 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             point,
         } => point_distance(&Symbolic::read(shape)?.counts(), *element, *point),
         Op::Echo { data } => Ok(Reply::Echo { data: data.clone() }),
+        Op::ExportStep(export) => step_file(export),
         other => Err(Error::new(
             ErrorCode::Internal,
             format!("the fake kernel doesn't do {}", other.name()),
         )
         .with_suggestion("run this test on a real kernel worker")),
     }
+}
+
+/// The fake's STEP file of `export`: a text saying what was asked, line by line (the
+/// header's file name; the assembly, if there are two or more parts; each part's product id,
+/// name, and how the fake made its shape), so a test reads what the core sent; no face
+/// left out, nothing dropped (neither faces nor their bounds counted).
+fn step_file(export: &silico_protocol::ExportStep) -> Result<Reply, Error> {
+    let mut text = format!("FAKE STEP\nFILE_NAME('{}')\n", export.file_name);
+    if export.parts.len() > 1 {
+        text.push_str(&format!("ASSEMBLY('{}')\n", export.assembly));
+    }
+    for part in &export.parts {
+        let made = Symbolic::read(&part.shape)?;
+        text.push_str(&format!(
+            "PRODUCT('{}','{}') {}\n",
+            part.id,
+            part.name,
+            made.describe()
+        ));
+    }
+    Ok(Reply::StepFile(Box::new(silico_protocol::StepFile {
+        step: Blob::inline(text.into_bytes()),
+        left_out: vec![Vec::new(); export.parts.len()],
+        unwritten: Vec::new(),
+        faces: silico_protocol::StepCount {
+            expected: 0,
+            written: 0,
+        },
+        bounds: silico_protocol::StepCount {
+            expected: 0,
+            written: 0,
+        },
+    })))
 }
 
 /// The fake's display mesh of `made`, as the kernel's is checked: a triangle for each face

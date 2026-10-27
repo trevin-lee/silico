@@ -1,0 +1,1 @@
+{"code": "invalid_input", "message": "tolerance must be null for a step export, got 0.1", "feature": null, "elements": [], "elements_total": 0, "parameter": "tolerance", "cause": null, "suggestion": "give null: STEP writes each body's exact B-rep, not a mesh, so it takes no tolerance", "candidates": []}
