@@ -1187,24 +1187,54 @@ fn a_step_reply_for_another_number_of_parts_is_the_workers_fault() {
         "the STEP worker sent the faces left out of 1 parts, an element numbered 0, or a part \
          past the last, for a STEP export of 2"
     );
+    // A bug in that worker, which the next request's worker won't mend: report it.
     assert_eq!(
         e.suggestion(),
-        Some("export again: each export starts a STEP worker of its own")
+        Some(
+            "this is a bug in Silico's STEP worker, not in the request: report it (the worker \
+             was stopped, and the next request starts another)"
+        )
+    );
+    assert!(dir.names().is_empty());
+}
+
+#[test]
+fn a_step_export_answered_with_another_kind_of_reply_is_the_step_workers_bug() {
+    // Not a StepFile: the STEP worker's fault, named so, and reported, not retried.
+    let bench = Bench::with(EXAMPLE, |kernel| {
+        kernel.answer_instead(|op| matches!(op, Op::ExportStep(_)).then_some(Reply::Done));
+    });
+    let dir = Scratch::new("step-wrong-kind");
+    let problems =
+        refused(bench.export(&step_request(&dir.0.join("out.step"), Some(&["k7f2qx3m"]))));
+    let e = &problems.errors()[0];
+    assert_eq!(e.code(), ErrorCode::ProtocolError);
+    assert_eq!(
+        e.message(),
+        "the STEP worker answered ExportStep with the wrong kind of reply"
+    );
+    assert_eq!(
+        e.suggestion(),
+        Some(
+            "this is a bug in Silico's STEP worker, not in the request: report it (the worker \
+             was stopped, and the next request starts another)"
+        )
     );
     assert!(dir.names().is_empty());
 }
 
 #[test]
 fn a_step_check_lists_messages_each_once_and_as_many_as_it_names_elements() {
-    // 103 faces at fault: faces 1 and 2 with one message between them, said once; faces 3
-    // to 103 each with a message of its own. 102 messages, once each: the first hundred
-    // said, in order, and how many more ("same", m3 ... m101, then m102 and m103 unsaid).
+    // 103 faces at fault: faces 1 and 3 with one message between them, not one after the
+    // other, said once where it's first given; face 2 and faces 4 to 103 each with a message
+    // of its own. 102 messages, once each: the first hundred said, in order, and how many
+    // more ("same", m2, m4 ... m101, then m102 and m103 unsaid).
     let with = |faces: u32| {
         let entries: Vec<silico_protocol::StepUnwritten> = (1..=faces)
             .map(|n| silico_protocol::StepUnwritten {
                 part: Some(0),
                 element: Some(silico_protocol::ElementRef::face(n)),
-                messages: vec![if n <= 2 {
+                messages: vec![if n == 1 || n == 3 {
                     "same".to_owned()
                 } else {
                     format!("m{n}")
@@ -1226,7 +1256,7 @@ fn a_step_check_lists_messages_each_once_and_as_many_as_it_names_elements() {
     };
     let said = |last: u32| {
         std::iter::once("same".to_owned())
-            .chain((3..=last).map(|n| format!("m{n}")))
+            .chain((2..=last).filter(|&n| n != 3).map(|n| format!("m{n}")))
             .collect::<Vec<_>>()
             .join("; ")
     };
@@ -1235,8 +1265,8 @@ fn a_step_check_lists_messages_each_once_and_as_many_as_it_names_elements() {
     assert_eq!(with(102), format!("{}; and 1 other message", said(101)));
     // A hundred: every one said.
     assert_eq!(with(101), said(101));
-    // Two faces, one message: said once.
-    assert_eq!(with(2), "same");
+    // Three faces, the first and last one message: said once, before the second's.
+    assert_eq!(with(3), "same; m2");
 }
 
 #[test]

@@ -1014,10 +1014,12 @@ impl KernelRequest<silico_protocol::StepFile> {
                             file.left_out.len()
                         ),
                     )
-                    .with_suggestion("export again: each export starts a STEP worker of its own"))
+                    .with_suggestion(crate::worker::broken_worker(
+                        crate::worker::WorkerKind::Step,
+                    )))
                 }
                 Reply::StepFile(file) => Ok(*file),
-                other => Err(unexpected(name, &other)),
+                other => Err(unexpected_of(crate::worker::WorkerKind::Step, name, &other)),
             },
         ))
     }
@@ -1234,6 +1236,19 @@ fn unexpected(op: &str, reply: &Reply) -> Error {
     )
     .with_cause(format!("a {} reply", reply.kind()))
     .with_suggestion("start a new kernel worker")
+}
+
+/// The worker of `kind` answered `op` with the wrong kind of reply: a bug in that worker.
+fn unexpected_of(kind: crate::worker::WorkerKind, op: &str, reply: &Reply) -> Error {
+    Error::new(
+        ErrorCode::ProtocolError,
+        format!(
+            "the {} answered {op} with the wrong kind of reply",
+            kind.noun()
+        ),
+    )
+    .with_cause(format!("a {} reply", reply.kind()))
+    .with_suggestion(crate::worker::broken_worker(kind))
 }
 
 /// A kernel worker, and the operations it performs. Its typed methods are the one-worker

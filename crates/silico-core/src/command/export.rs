@@ -753,17 +753,18 @@ fn unwritten(
             .collect();
         // OCCT's messages, each once, in the order first given (one for each element at
         // fault, often the same), and as many as the elements named, with how many more.
+        // Seen in a set, so a reply of many is read once through (a log search each).
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
         let mut messages: Vec<&str> = Vec::new();
         for message in entries
             .iter()
             .flat_map(|e| e.messages.iter().map(String::as_str))
         {
-            if !messages.contains(&message) {
+            if seen.insert(message) && messages.len() < silico_protocol::FACES_NAMED {
                 messages.push(message);
             }
         }
-        let unsaid = messages.len().saturating_sub(silico_protocol::FACES_NAMED);
-        messages.truncate(silico_protocol::FACES_NAMED);
+        let unsaid = seen.len() - messages.len();
         let whose = solid.map_or_else(|| "the file".to_owned(), |s| format!("{}'s solid", s.id));
         let error = Error::new(
             ErrorCode::InvalidResult,
