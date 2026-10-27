@@ -188,7 +188,14 @@ crates/silico-core/src/cache/at.rs | open_dir_through_links | replace | with ^ |
 # macOS's `path_of` (F_GETPATH), not compiled on Linux; killed on macOS. Linux's, with
 # the same key, is killed.
 crates/silico-core/src/cache/at.rs | path_of | replace path_of -> rustix::io::Result<PathBuf> with Ok(Default::default()) | #212
+# The stub for systems that are neither macOS nor Linux, the same key: not compiled on Linux.
+crates/silico-core/src/cache/at.rs | path_of | replace path_of -> rustix::io::Result<PathBuf> with Ok(Default::default()) | #212
 # As at.rs's opens: `^` on two flags that share no bit.
 crates/silico-core/src/file.rs | held_spelling | replace | with ^ | #212
 crates/silico-core/src/file.rs | held_spelling | replace | with ^ | #212
 crates/silico-core/src/file.rs | held_spelling | replace | with ^ | #212
+# The third `|` → `&`: `NOFOLLOW & CLOEXEC` drops both. Without NOFOLLOW a link at the path
+# opens its target, whose device and inode then differ from the link's: none, as ELOOP gives.
+# CLOEXEC matters only to a process started during the call; the handle is closed before it
+# returns.
+crates/silico-core/src/file.rs | held_spelling | replace | with & | #212
