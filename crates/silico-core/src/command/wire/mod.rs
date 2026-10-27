@@ -49,7 +49,8 @@ use super::{
 use crate::document::json::{Member, Node, Plain, Value};
 use crate::document::write::{self, Out, text};
 use crate::document::{
-    Angle, Coordinate, Feature, FeatureId, Length, Measure, NumberError, PROBLEMS_LISTED, Position,
+    Angle, Coordinate, ElementName, Feature, FeatureId, Length, Measure, NumberError,
+    PROBLEMS_LISTED, Position,
 };
 use crate::warnings::Warnings;
 use crate::{Error, ErrorCode, Said, Warning};
@@ -317,6 +318,13 @@ impl ToWire for SessionId {
 
 impl ToWire for FeatureId {
     /// Its 8 characters.
+    fn to_wire(&self) -> Json<'_> {
+        Json::str(self.as_str())
+    }
+}
+
+impl ToWire for ElementName {
+    /// Its text, as written.
     fn to_wire(&self) -> Json<'_> {
         Json::str(self.as_str())
     }

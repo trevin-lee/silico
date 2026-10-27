@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, PoisonError};
 
 use super::{Problems, Running, SessionCommand, SessionId, Sessions};
-use crate::document::{FeatureId, Length, Measure};
+use crate::document::{ElementName, FeatureId, Length, Measure};
 use crate::export::{
     Object, PrintableMesh, UNHOLDABLE_ADVICE, face_names, holds_in_3mf, printable, three_mf,
     unholdable, within_triangles,
@@ -97,7 +97,7 @@ pub struct ExportedObject {
     pub name: String,
     /// The mesh written, for a mesh format (3MF); none for an exact one (STEP).
     pub mesh: Option<MeshWritten>,
-    pub left_out: Vec<String>,
+    pub left_out: Vec<ElementName>,
 }
 
 /// An object's mesh, as written: its triangles and vertices, and its volume, computed in

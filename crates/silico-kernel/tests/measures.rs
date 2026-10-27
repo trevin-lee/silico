@@ -13,7 +13,7 @@ use std::sync::Arc;
 use silico_core::ErrorCode;
 use silico_core::command::elements::ElementType;
 use silico_core::command::measure::{AngleAnswer, DistanceAnswer, angle};
-use silico_core::document::{Angle, Length};
+use silico_core::document::{Angle, ElementName, Length};
 use silico_core::kernel::ElementKind;
 use silico_core::pool::KernelPool;
 use silico_core::recompute::{Model, Recompute};
@@ -312,7 +312,7 @@ fn edges_meeting_at_a_corner_read_the_angle_at_it_and_name_it() {
         at,
         AngleAnswer {
             angle: Angle::from_ndeg(90_000_000_000),
-            vertex: Some(corner),
+            vertex: Some(ElementName::new(&corner).unwrap()),
         }
     );
     let far_z = along([10.0, 20.0, 0.0], [10.0, 20.0, 30.0]);

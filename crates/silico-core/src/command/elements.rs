@@ -8,7 +8,7 @@
 
 use super::session::{kept_fault, retried};
 use super::{ModelChoice, Problems, ReadCommand, Revision, Running, SessionId, Sessions};
-use crate::document::{Angle, FeatureId, Length, Measure};
+use crate::document::{Angle, ElementName, FeatureId, Length, Measure};
 pub use crate::elements::{Alias, AxisToken, ElementType, Entry, EntryAxis};
 use crate::kernel::{Clients, ElementKind, ShapeSummary};
 use crate::naming::Name;
@@ -232,7 +232,7 @@ fn sources<'m>(
 pub struct Cursor {
     pub revision: Revision,
     pub feature: FeatureId,
-    pub name: String,
+    pub name: ElementName,
 }
 
 /// A page of `elements`: its entries, how many there are in all, and where the next page
@@ -285,7 +285,8 @@ pub fn list(
                     ErrorCode::InvalidInput,
                     format!(
                         "the cursor names {} of {}, which this listing doesn't hold",
-                        cursor.name, cursor.feature
+                        cursor.name.as_str(),
+                        cursor.feature
                     ),
                 )
                 .with_parameter("after")
@@ -317,7 +318,7 @@ pub fn list(
         .map(|last| Cursor {
             revision,
             feature: last.feature.clone(),
-            name: last.name.to_string(),
+            name: ElementName::from(&*last.name),
         });
     Ok(Listed {
         entries,
@@ -378,7 +379,7 @@ fn cursor_name(
         return None;
     }
     let makers = |id: &FeatureId| model.maker(id);
-    match Name::parse(&cursor.name, &makers) {
+    match Name::parse(cursor.name.as_str(), &makers) {
         Ok(name) => Some(name),
         Err(error) => {
             refused.push(
@@ -386,7 +387,7 @@ fn cursor_name(
                     ErrorCode::InvalidInput,
                     format!(
                         "the cursor's name, {}, isn't an element's name: {error}",
-                        crate::document::json::shown(&cursor.name)
+                        crate::document::json::shown(cursor.name.as_str())
                     ),
                 )
                 .with_parameter("after")

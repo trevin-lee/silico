@@ -12,7 +12,7 @@
 use super::elements::summarized;
 use super::lookup::{Kinds, Lookup};
 use super::{ModelChoice, Problems, ReadCommand, Running, SessionId, Sessions};
-use crate::document::{Angle, FeatureId, Fingerprint, Length, Measure};
+use crate::document::{Angle, ElementName, FeatureId, Fingerprint, Length, Measure};
 use crate::kernel::{
     Clients, EdgeCurve, EdgeDescription, ElementKind, ElementRef, FaceDescription, Kernel,
     KernelRequest, ShapeData, Surface,
@@ -171,7 +171,7 @@ pub struct DistanceAnswer {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AngleAnswer {
     pub angle: Angle,
-    pub vertex: Option<String>,
+    pub vertex: Option<ElementName>,
 }
 
 /// One of a measure's two elements, found by its name in a solid of the model.
@@ -716,7 +716,7 @@ pub fn angle(
                     index,
                 })
             })
-            .map(|name| name.to_string());
+            .map(|name| ElementName::from(&*name));
         // A valid solid's edges sharing an end share its named vertex: one not found is a
         // bug, said, never a quiet change to the angle between the lines.
         let Some(vertex) = vertex else {

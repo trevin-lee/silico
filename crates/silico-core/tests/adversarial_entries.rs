@@ -24,7 +24,7 @@ use silico_core::command::elements::{
     AxisToken, Cursor, ENTRIES_AT_MOST, ElementType, Entry, Facing, MEASURES_AT_MOST, MeasureName,
     Order, Quantity, Query, Range, entries, list, query,
 };
-use silico_core::document::{Angle, Length, Measure};
+use silico_core::document::{Angle, ElementName, Length, Measure};
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{
     Axis, BooleanOp, BuiltData, ElementCounts, ElementFate, ElementKind, History, InputHistory, Op,
@@ -384,7 +384,7 @@ fn a_cursors_long_bad_name_is_refused_short_and_cut() {
         let cursor = Cursor {
             revision: Revision::OPENED,
             feature: id("aaaaaaaa"),
-            name,
+            name: ElementName::as_sent(&name),
         };
         let refused = list(&model, Revision::OPENED, None, Some(&cursor), 10).unwrap_err();
         let error = &refused.errors()[0];
@@ -401,7 +401,7 @@ fn a_cursors_long_bad_name_is_refused_short_and_cut() {
     let cursor = Cursor {
         revision: Revision::OPENED,
         feature: id("aaaaaaaa"),
-        name: "Face\u{1b}".to_owned(),
+        name: ElementName::as_sent("Face\u{1b}"),
     };
     let refused = list(&model, Revision::OPENED, None, Some(&cursor), 10).unwrap_err();
     assert_eq!(refused.errors()[0].code(), ErrorCode::InvalidInput);
@@ -439,7 +439,7 @@ fn a_cursor_naming_an_entry_the_listing_hasnt_is_refused_naming_after() {
         let cursor = Cursor {
             revision: Revision::OPENED,
             feature: id(feature),
-            name: name.to_owned(),
+            name: ElementName::as_sent(name),
         };
         let refused = list(&model, Revision::OPENED, None, Some(&cursor), 10).unwrap_err();
         assert_eq!(
@@ -452,7 +452,7 @@ fn a_cursor_naming_an_entry_the_listing_hasnt_is_refused_naming_after() {
     let second = Cursor {
         revision: Revision::OPENED,
         feature: id("bbbbbbbb"),
-        name: "bbbbbbbb.box.Face1".to_owned(),
+        name: ElementName::as_sent("bbbbbbbb.box.Face1"),
     };
     let refused = list(
         &model,
@@ -468,7 +468,7 @@ fn a_cursor_naming_an_entry_the_listing_hasnt_is_refused_naming_after() {
     let at_end = Cursor {
         revision: Revision::OPENED,
         feature: last.feature.clone(),
-        name: last.name.to_string(),
+        name: ElementName::from(&*last.name),
     };
     let page = list(&model, Revision::OPENED, None, Some(&at_end), 10).unwrap();
     assert_eq!((page.entries.len(), page.total, page.next), (0, 52, None));
@@ -477,7 +477,7 @@ fn a_cursor_naming_an_entry_the_listing_hasnt_is_refused_naming_after() {
     let cursor = Cursor {
         revision: Revision::OPENED,
         feature: first.feature.clone(),
-        name: first.name.to_string(),
+        name: ElementName::from(&*first.name),
     };
     let page = list(
         &model,
@@ -624,7 +624,7 @@ fn a_listings_refusals_come_in_its_requests_order_feature_then_cursor_then_limit
     let cursor = Cursor {
         revision: Revision::OPENED.next().unwrap(),
         feature: id("bbbbbbbb"),
-        name: "bbbbbbbb.box.Face1".to_owned(),
+        name: ElementName::as_sent("bbbbbbbb.box.Face1"),
     };
     let refused = list(
         &model,

@@ -29,7 +29,7 @@ use silico_core::command::wire::schema::SchemaRequest;
 use silico_core::command::wire::{COMMANDS, Layout, ToWire, snapshot, snapshot_value, write};
 use silico_core::command::{ModelChoice, Problems, SessionId};
 use silico_core::document::json::{Node, read};
-use silico_core::document::{Angle, FeatureId, Length, Measure};
+use silico_core::document::{Angle, ElementName, FeatureId, Length, Measure};
 use silico_core::kernel::ElementKind;
 use silico_core::views::NamedView;
 
@@ -538,7 +538,7 @@ fn a_cursor_and_ranges_of_each_quantity_are_read_and_written_back() {
         Some(Cursor {
             revision: revision(6),
             feature: id("m3tq8v0z"),
-            name: "k7f2qx3m.box.Face2".to_owned(),
+            name: ElementName::as_sent("k7f2qx3m.box.Face2"),
         })
     );
     assert_eq!(request.feature, Some(id("m3tq8v0z")));
@@ -608,7 +608,7 @@ fn the_designs_refusals_are_the_commands_own_and_hold_to_the_error_contract() {
     let older = Cursor {
         revision: revision(6),
         feature: id("k7f2qx3m"),
-        name: "k7f2qx3m.box.Face2".to_owned(),
+        name: ElementName::as_sent("k7f2qx3m.box.Face2"),
     };
     let stale = list(&model, revision(7), None, Some(&older), 2).unwrap_err();
     assert_eq!(stale.errors()[0].code(), ErrorCode::Conflict);
@@ -1521,6 +1521,34 @@ fn an_export_request_naming_features_and_replacing_is_read_as_it_says_and_writte
     );
     assert_eq!(written(&call), format!("{text}\n"));
     holds(&schema_of("export", "request", None), text, "export");
+}
+
+#[test]
+fn an_export_results_faces_left_out_are_written_by_name_as_the_example_writes_none() {
+    // The design's example with names in `left_out`: each written as a JSON string, its quote
+    // escaped, in order, and every other byte the example's.
+    use silico_core::command::export::{Exported, ExportedObject};
+    let named = |text: &str| silico_core::document::ElementName::new(text).unwrap();
+    let result = Exported {
+        path: std::path::PathBuf::from("out/bracket.3mf"),
+        bytes: 48_213,
+        objects: vec![ExportedObject {
+            feature: silico_core::document::FeatureId::new("f0000003").unwrap(),
+            name: "Bracket".to_owned(),
+            mesh: Some(silico_core::command::export::MeshWritten {
+                triangles: 1204,
+                vertices: 596,
+                volume: silico_core::document::Measure::parse("15187.442817").unwrap(),
+            }),
+            left_out: vec![named("k7f2qx3m.cut.Face5"), named("Face7"), named("a\"b")],
+        }],
+    };
+    let want = example("export/result").replace(
+        r#""left_out": []"#,
+        r#""left_out": ["k7f2qx3m.cut.Face5", "Face7", "a\"b"]"#,
+    );
+    assert_ne!(want, example("export/result"));
+    assert_eq!(written(&result), want);
 }
 
 #[test]
