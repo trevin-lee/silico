@@ -1839,20 +1839,21 @@ pub fn worker_path(env: &str, binary: &str, noun: &str, build: &str) -> Result<P
 }
 
 /// `binary` beside `exe` once `exe`'s links are resolved (or beside its `deps` directory's
-/// parent), if it's a file there.
+/// parent), if it's a file there. An `exe` that can't be resolved is looked beside as it's
+/// given: on Linux, an executable replaced while it runs (a rebuild, an upgrade) reads as
+/// `PATH (deleted)`, whose directory is the one it ran from, as the lookup did before
+/// it resolved links.
 fn beside(exe: &Path, env: &str, binary: &str, noun: &str, build: &str) -> Result<PathBuf, Error> {
-    let resolved = std::fs::canonicalize(exe).map_err(|e| {
-        Error::new(
-            ErrorCode::WorkerUnavailable,
-            format!(
-                "can't find the {noun}: the running executable, {}, can't be resolved to \
-                 the file it is, to look beside",
-                exe.display()
-            ),
-        )
-        .with_cause(e.to_string())
-        .with_suggestion(format!("name the {binary} binary in {env}"))
-    })?;
+    let resolved = std::fs::canonicalize(exe).unwrap_or_else(|_| {
+        use std::os::unix::ffi::OsStrExt as _;
+        exe.as_os_str()
+            .as_bytes()
+            .strip_suffix(b" (deleted)")
+            .map_or_else(
+                || exe.to_path_buf(),
+                |kept| PathBuf::from(std::ffi::OsStr::from_bytes(kept)),
+            )
+    });
     let name = format!("{binary}{}", std::env::consts::EXE_SUFFIX);
     let dir = resolved.parent().unwrap_or(Path::new("."));
     let dir = if dir.file_name().is_some_and(|n| n == "deps") {
@@ -1864,15 +1865,23 @@ fn beside(exe: &Path, env: &str, binary: &str, noun: &str, build: &str) -> Resul
     if worker.is_file() {
         return Ok(worker);
     }
-    let reached = if resolved == exe {
+    let ran_as = if resolved == exe {
         String::new()
     } else {
-        format!(", reached through {}", exe.display())
+        format!(", run as {}", exe.display())
+    };
+    // What's at the worker's place, if something is: so a name that's there isn't said to
+    // be missing.
+    let there = match std::fs::symlink_metadata(&worker) {
+        Ok(meta) if meta.is_symlink() => format!("; {name} there is a link to no file"),
+        Ok(meta) if meta.is_dir() => format!("; {name} there is a directory"),
+        Ok(_) => format!("; {name} there isn't a regular file"),
+        Err(_) => String::new(),
     };
     Err(Error::new(
         ErrorCode::WorkerUnavailable,
         format!(
-            "no {noun} in {}: Silico looks for {name} beside its own executable, {}{reached}",
+            "no {noun} in {}: Silico looks for {name} beside its own executable, {}{ran_as}{there}",
             dir.display(),
             resolved.display()
         ),
@@ -3465,6 +3474,16 @@ mod tests {
         )
     }
 
+    /// The message for a kernel worker missing from `dir`, looked for beside `exe`, then
+    /// `rest`: written out, never made by the lookup.
+    fn missing(dir: &std::path::Path, exe: &std::path::Path, rest: &str) -> String {
+        format!(
+            "no kernel worker in {}: Silico looks for silico-kernel-worker beside its own executable, {}{rest}",
+            dir.display(),
+            exe.display()
+        )
+    }
+
     #[test]
     fn a_worker_is_found_beside_the_executable_a_link_leads_to() {
         let (_root, base) = install(true);
@@ -3473,7 +3492,9 @@ mod tests {
             kernel_worker_beside(&base.join("bin/silico")).unwrap(),
             worker
         );
-        // Through the link: beside bin/silico, not beside the link in link/.
+        // Through the link: beside bin/silico, never beside the link, even with a worker
+        // there (a stale one left beside a link on PATH).
+        std::fs::write(base.join("link/silico-kernel-worker"), "").unwrap();
         assert_eq!(
             kernel_worker_beside(&base.join("link/silico")).unwrap(),
             worker
@@ -3492,49 +3513,47 @@ mod tests {
     fn a_worker_missing_names_the_directory_looked_in_and_the_worker_looked_for() {
         let (_root, base) = install(false);
         let bin = base.join("bin");
-        let e = kernel_worker_beside(&base.join("link/silico")).unwrap_err();
+        let link = base.join("link/silico");
+        let e = kernel_worker_beside(&link).unwrap_err();
         assert_eq!(e.code(), ErrorCode::WorkerUnavailable);
         assert_eq!(
             e.message(),
-            format!(
-                "no kernel worker in {}: Silico looks for silico-kernel-worker beside its own \
-                 executable, {}, reached through {}",
-                bin.display(),
-                bin.join("silico").display(),
-                base.join("link/silico").display()
+            missing(
+                &bin,
+                &bin.join("silico"),
+                &format!(", run as {}", link.display())
             )
         );
-        assert_eq!(
-            e.suggestion(),
-            Some(
-                format!(
-                    "build it (cargo build -p silico-kernel --bin silico-kernel-worker) or put \
-                     it in {}, or name it in SILICO_KERNEL_WORKER",
-                    bin.display()
-                )
-                .as_str()
-            )
+        let suggestion = format!(
+            "build it (cargo build -p silico-kernel --bin silico-kernel-worker) or put it in {}, or name it in SILICO_KERNEL_WORKER",
+            bin.display()
         );
-        // Not through a link: no "reached through".
+        assert_eq!(e.suggestion(), Some(suggestion.as_str()));
+        // Run as itself: no "run as".
         let direct = kernel_worker_beside(&bin.join("silico")).unwrap_err();
-        assert!(
-            direct.message().ends_with(&format!(
-                "beside its own executable, {}",
-                bin.join("silico").display()
-            )),
-            "{}",
-            direct.message()
-        );
-        // A worker that's a directory isn't one.
+        assert_eq!(direct.message(), missing(&bin, &bin.join("silico"), ""));
+        // A test binary in deps/: the directory looked in, and to put it in, is bin/.
+        let deps = kernel_worker_beside(&bin.join("deps/a-test")).unwrap_err();
+        assert_eq!(deps.message(), missing(&bin, &bin.join("deps/a-test"), ""));
+        assert_eq!(deps.suggestion(), Some(suggestion.as_str()));
+        // A worker that's a directory isn't one, and is said to be one.
         std::fs::create_dir(bin.join("silico-kernel-worker")).unwrap();
         let dir = kernel_worker_beside(&bin.join("silico")).unwrap_err();
         assert_eq!(dir.code(), ErrorCode::WorkerUnavailable);
+        assert_eq!(
+            dir.message(),
+            missing(
+                &bin,
+                &bin.join("silico"),
+                "; silico-kernel-worker there is a directory"
+            )
+        );
     }
 
     #[test]
-    fn a_worker_that_is_a_link_is_found_and_one_left_dangling_is_missing() {
+    fn a_worker_that_is_a_link_is_found_and_one_left_dangling_is_said_to_be() {
         // break-it: a worker installed as a relative link to the build's is used as it is;
-        // one whose build is gone is no worker, said as one missing.
+        // one whose build is gone is no worker, said as what's there.
         let (_root, base) = install(false);
         let bin = base.join("bin");
         std::fs::create_dir(base.join("build")).unwrap();
@@ -3545,39 +3564,48 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            kernel_worker_beside(&base.join("link/silico")).unwrap(),
+            kernel_worker_beside(&bin.join("silico")).unwrap(),
             bin.join("silico-kernel-worker")
         );
         std::fs::remove_file(base.join("build/silico-kernel-worker")).unwrap();
-        let e = kernel_worker_beside(&base.join("link/silico")).unwrap_err();
+        let e = kernel_worker_beside(&bin.join("silico")).unwrap_err();
         assert_eq!(e.code(), ErrorCode::WorkerUnavailable);
-        assert!(
-            e.message().starts_with("no kernel worker in "),
-            "{}",
-            e.message()
+        assert_eq!(
+            e.message(),
+            missing(
+                &bin,
+                &bin.join("silico"),
+                "; silico-kernel-worker there is a link to no file"
+            )
         );
     }
 
     #[test]
-    fn an_executable_that_cant_be_resolved_says_so_and_how_to_name_the_worker() {
+    fn an_executable_that_cant_be_resolved_is_looked_beside_as_given() {
+        // On Linux, an executable replaced while it runs reads as "PATH (deleted)": its
+        // directory is still the one it ran from, as it was before links were resolved.
         let (_root, base) = install(true);
-        // A link left dangling: the build it led to is gone.
-        let gone = base.join("gone");
-        std::os::unix::fs::symlink(base.join("nowhere/silico"), &gone).unwrap();
+        let worker = base.join("bin/silico-kernel-worker");
+        assert_eq!(
+            kernel_worker_beside(&base.join("bin/silico (deleted)")).unwrap(),
+            worker
+        );
+        // A name that isn't there, without the mark: its directory, as given.
+        assert_eq!(
+            kernel_worker_beside(&base.join("bin/gone")).unwrap(),
+            worker
+        );
+        // Not found there either: said as missing from that directory.
+        let gone = base.join("link/gone (deleted)");
         let e = kernel_worker_beside(&gone).unwrap_err();
         assert_eq!(e.code(), ErrorCode::WorkerUnavailable);
         assert_eq!(
             e.message(),
-            format!(
-                "can't find the kernel worker: the running executable, {}, can't be resolved \
-                 to the file it is, to look beside",
-                gone.display()
+            missing(
+                &base.join("link"),
+                &base.join("link/gone"),
+                &format!(", run as {}", gone.display())
             )
-        );
-        assert!(e.cause().is_some());
-        assert_eq!(
-            e.suggestion(),
-            Some("name the silico-kernel-worker binary in SILICO_KERNEL_WORKER")
         );
     }
 }

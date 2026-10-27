@@ -180,7 +180,9 @@ fn check_as(exe: &Path, dir: &Path, text: &str) -> (Option<i32>, String) {
 #[test]
 fn a_silico_reached_through_a_link_finds_the_workers_beside_its_build() {
     // As a `silico` on PATH is: a link, in a directory of its own, to the build's. Its
-    // workers are beside the build, never beside the link.
+    // workers are beside the build, never beside the link. This fails without the fix on
+    // macOS, whose running executable is the path as run; Linux's is already resolved, and
+    // the core's tests of the lookup itself hold it there.
     let dir = scratch("linked");
     let link = dir.join("silico");
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_silico"), &link).unwrap();
@@ -210,7 +212,11 @@ fn a_silico_copied_alone_names_where_it_looked_for_its_worker() {
         bin.display(),
         bin.join("silico").display()
     );
-    assert!(stdout.contains(&message), "{message}\nin {stdout}");
+    // The whole message: run as itself, nothing after it.
+    assert!(
+        stdout.contains(&format!("\"{message}\"")),
+        "{message}\nin {stdout}"
+    );
     let suggestion = format!(
         "build it (cargo build -p silico-kernel --bin silico-kernel-worker) or put it in {}, or name it in SILICO_KERNEL_WORKER",
         bin.display()
