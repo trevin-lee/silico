@@ -52,24 +52,15 @@ fn messages(errors: &[Error]) -> Vec<String> {
     errors.iter().map(|e| e.message().to_owned()).collect()
 }
 
-/// The edit's contract for a merge whose result would break one of the gate's rules for
-/// `constraint`: refused, naming it (FreeCAD's coincident command refuses or substitutes),
-/// or its result one the gate takes (the constraint converted, or dropped as implied).
+/// A merge whose result would break one of the gate's rules for a constraint, refused as
+/// the merge says it (FreeCAD's coincident command refuses or substitutes; which one is
+/// M5.0's open item 13): `message` word for word, `elements` the constraint and what it names.
 #[track_caller]
-fn refused_naming_or_gated(before: &Document, result: Result<Edited, Error>, constraint: &str) {
-    match result {
-        Err(error) => assert!(
-            error.elements().iter().any(|e| e == constraint),
-            "refused without naming {constraint}: {error:?}"
-        ),
-        Ok(edited) => {
-            let refused = gate(before, &edited.sketch);
-            assert!(
-                refused.is_empty(),
-                "the merge says Ok, but the gate refuses the sketch it made: {refused:#?}"
-            );
-        }
-    }
+fn refused_as(result: Result<Edited, Error>, message: &str, elements: &[&str]) {
+    let error = result.unwrap_err();
+    assert_eq!(error.message(), message);
+    assert_eq!(error.elements(), elements);
+    assert_eq!(error.parameter(), Some("points"));
 }
 
 // p0 (0, 0) to p4 (40, 0) along x; q0 (10, 10), q1 (10, -10), q2 (20, 10) off it; p9
@@ -99,8 +90,20 @@ fn merging_an_end_held_on_a_line_with_that_lines_own_end() {
         r#"{"id": "k0000000", "type": "on", "point": "p0000009", "curve": "a0000000"}"#,
     );
     assert_eq!(gate(&before, sketch_of(&before)), Vec::<String>::new());
-    for order in [["p0000001", "p0000009"], ["p0000009", "p0000001"]] {
-        refused_naming_or_gated(&before, merge(sketch_of(&before), &ids(&order)), "k0000000");
+    // Either point kept: the on holds it on a, whose end it is.
+    for kept in ["p0000001", "p0000009"] {
+        let other = if kept == "p0000001" {
+            "p0000009"
+        } else {
+            "p0000001"
+        };
+        refused_as(
+            merge(sketch_of(&before), &ids(&[kept, other])),
+            &format!(
+                "merging them would make constraint k0000000 hold {kept}, a point of a0000000, on a0000000 itself"
+            ),
+            &["k0000000", kept, "a0000000"],
+        );
     }
 }
 
@@ -121,8 +124,19 @@ fn merging_a_tangent_on_end_with_an_end_of_its_b() {
         r#"{"id": "k0000000", "type": "tangent_on", "a": "a0000000", "at": "p0000001", "b": "r0000000", "direction": "same"}"#,
     );
     assert_eq!(gate(&before, sketch_of(&before)), Vec::<String>::new());
-    for order in [["p0000001", "p0000009"], ["p0000009", "p0000001"]] {
-        refused_naming_or_gated(&before, merge(sketch_of(&before), &ids(&order)), "k0000000");
+    for kept in ["p0000001", "p0000009"] {
+        let other = if kept == "p0000001" {
+            "p0000009"
+        } else {
+            "p0000001"
+        };
+        refused_as(
+            merge(sketch_of(&before), &ids(&[kept, other])),
+            &format!(
+                "merging them would make constraint k0000000 hold a0000000's end {kept}, a point of r0000000, tangent on r0000000: where curves meet, a tangency is a tangent_at"
+            ),
+            &["k0000000", "a0000000", kept, "r0000000"],
+        );
     }
 }
 
@@ -140,10 +154,10 @@ fn merging_a_tangent_on_end_with_the_center_of_its_b() {
         r#"{"id": "k0000000", "type": "tangent_on", "a": "a0000000", "at": "p0000001", "b": "c0000000", "direction": "same"}"#,
     );
     assert_eq!(gate(&before, sketch_of(&before)), Vec::<String>::new());
-    refused_naming_or_gated(
-        &before,
+    refused_as(
         merge(sketch_of(&before), &ids(&["q0000001", "p0000001"])),
-        "k0000000",
+        "merging them would make constraint k0000000 hold a0000000's end q0000001, a point of c0000000, tangent on c0000000: where curves meet, a tangency is a tangent_at",
+        &["k0000000", "a0000000", "q0000001", "c0000000"],
     );
 }
 
@@ -164,23 +178,30 @@ fn merging_an_end_with_a_point_on_the_curve_its_line_is_tangent_to() {
         r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "c0000000", "side": "left"}, {"id": "k0000001", "type": "on", "point": "p0000009", "curve": "c0000000"}"#,
     );
     assert_eq!(gate(&before, sketch_of(&before)), Vec::<String>::new());
-    let result = merge(sketch_of(&before), &ids(&["p0000001", "p0000009"]));
-    match &result {
-        Err(error) => assert!(
-            error
-                .elements()
-                .iter()
-                .any(|e| e == "k0000000" || e == "k0000001"),
-            "{error:?}"
-        ),
-        Ok(edited) => {
-            let refused = gate(&before, &edited.sketch);
-            assert!(
-                refused.is_empty(),
-                "the merge says Ok, but the gate refuses the sketch it made: {refused:#?}"
-            );
-        }
-    }
+    refused_as(
+        merge(sketch_of(&before), &ids(&["p0000001", "p0000009"])),
+        "merging them would make constraint k0000000 an edge tangency of a0000000 and c0000000 where k0000001 holds an end of one on the other: that's a tangent_on",
+        &["k0000000", "k0000001", "a0000000", "c0000000"],
+    );
+}
+
+#[test]
+fn merging_an_end_with_a_point_on_the_curve_tangent_to_its_line_listed_first() {
+    // The case before, its tangent listing the circle as a: the end held on a is the
+    // line's, the tangent's b.
+    let before = doc(
+        POINTS,
+        &line("a0000000", "p0000000", "p0000001"),
+        &circle("c0000000", "q0000000", 10.0),
+        "",
+        r#"{"id": "k0000000", "type": "tangent", "a": "c0000000", "b": "a0000000", "side": "left"}, {"id": "k0000001", "type": "on", "point": "p0000009", "curve": "c0000000"}"#,
+    );
+    assert_eq!(gate(&before, sketch_of(&before)), Vec::<String>::new());
+    refused_as(
+        merge(sketch_of(&before), &ids(&["p0000001", "p0000009"])),
+        "merging them would make constraint k0000000 an edge tangency of c0000000 and a0000000 where k0000001 holds an end of one on the other: that's a tangent_on",
+        &["k0000000", "k0000001", "c0000000", "a0000000"],
+    );
 }
 
 #[test]
@@ -197,10 +218,10 @@ fn merging_a_midpoint_with_an_end_of_its_line() {
         r#"{"id": "k0000000", "type": "midpoint", "point": "q0000000", "line": "a0000000"}"#,
     );
     assert_eq!(gate(&before, sketch_of(&before)), Vec::<String>::new());
-    refused_naming_or_gated(
-        &before,
+    refused_as(
         merge(sketch_of(&before), &ids(&["q0000000", "p0000000"])),
-        "k0000000",
+        "merging them would make constraint k0000000 hold q0000000, a point of a0000000, on a0000000 itself",
+        &["k0000000", "q0000000", "a0000000"],
     );
 }
 
@@ -216,10 +237,10 @@ fn merging_a_point_line_distance_point_with_an_end_of_its_line() {
         r#"{"id": "k0000000", "type": "point_line_distance", "point": "q0000000", "line": "a0000000", "value": 10, "side": "left", "driving": true}"#,
     );
     assert_eq!(gate(&before, sketch_of(&before)), Vec::<String>::new());
-    refused_naming_or_gated(
-        &before,
+    refused_as(
         merge(sketch_of(&before), &ids(&["p0000001", "q0000000"])),
-        "k0000000",
+        "merging them would make constraint k0000000 hold p0000001, a point of a0000000, on a0000000 itself",
+        &["k0000000", "p0000001", "a0000000"],
     );
 }
 
@@ -237,10 +258,16 @@ fn merging_a_mirrored_point_with_an_end_of_the_mirror_line() {
         r#"{"id": "k0000000", "type": "symmetric", "a": "q0000000", "b": "q0000001", "about": "a0000000"}"#,
     );
     assert_eq!(gate(&before, sketch_of(&before)), Vec::<String>::new());
-    refused_naming_or_gated(
-        &before,
+    refused_as(
         merge(sketch_of(&before), &ids(&["p0000001", "q0000000"])),
-        "k0000000",
+        "merging them would make constraint k0000000 mirror an end of a0000000 about a0000000 itself",
+        &["k0000000", "p0000001", "q0000001", "a0000000"],
+    );
+    // Its other point, b, merged into the same end.
+    refused_as(
+        merge(sketch_of(&before), &ids(&["p0000001", "q0000001"])),
+        "merging them would make constraint k0000000 mirror an end of a0000000 about a0000000 itself",
+        &["k0000000", "q0000000", "p0000001", "a0000000"],
     );
 }
 
@@ -256,10 +283,10 @@ fn merging_a_point_on_a_circle_with_its_center() {
         r#"{"id": "k0000000", "type": "on", "point": "q0000000", "curve": "c0000000"}"#,
     );
     assert_eq!(gate(&before, sketch_of(&before)), Vec::<String>::new());
-    refused_naming_or_gated(
-        &before,
+    refused_as(
         merge(sketch_of(&before), &ids(&["p0000003", "q0000000"])),
-        "k0000000",
+        "merging them would make constraint k0000000 hold p0000003, a point of c0000000, on c0000000 itself",
+        &["k0000000", "p0000003", "c0000000"],
     );
 }
 
@@ -374,11 +401,18 @@ fn removing_an_unknown_member_named_many_times_lists_at_most_the_problems_listed
     // Broke, before the fix: remove returns one error for each of the 100,000 places, unbounded.
     let before = doc(POINTS, "", "", "", "");
     let members = vec![id("zzzzzzzz"); 100_000];
-    let errors = remove(sketch_of(&before), &members).unwrap_err().errors;
-    assert!(
-        errors.len() <= PROBLEMS_LISTED,
-        "{} errors for one unknown ID",
-        errors.len()
+    let refused = remove(sketch_of(&before), &members).unwrap_err();
+    assert_eq!((refused.errors.len(), refused.total), (1, 1));
+    assert_eq!(refused.errors[0].parameter(), Some("members.0"));
+    // 150 unknown IDs, each once: the first 100 listed, in the request's order, all counted.
+    let members: Vec<ElementId> = (0..150).map(|i| id(&format!("z{i:07}"))).collect();
+    let refused = remove(sketch_of(&before), &members).unwrap_err();
+    assert_eq!(PROBLEMS_LISTED, 100);
+    assert_eq!((refused.errors.len(), refused.total), (100, 150));
+    assert_eq!(refused.errors[99].parameter(), Some("members.99"));
+    assert_eq!(
+        refused.errors[99].message(),
+        "the sketch has no member z0000099"
     );
 }
 
@@ -400,6 +434,28 @@ fn removing_a_used_point_named_twice_refuses_it_once() {
         messages(&errors),
         ["point p0000001 is used by line a0000000"]
     );
+    // Named where it's first named.
+    assert_eq!(errors[0].parameter(), Some("members.0"));
+}
+
+#[test]
+fn removing_a_point_a_line_and_an_arc_use_names_them_as_curves() {
+    let before = doc(
+        POINTS,
+        &line("a0000000", "p0000000", "p0000001"),
+        "",
+        &arc("r0000000", "q0000000", "p0000001", "q0000002"),
+        "",
+    );
+    let errors = remove(sketch_of(&before), &ids(&["p0000001"]))
+        .unwrap_err()
+        .errors;
+    assert_eq!(
+        messages(&errors),
+        ["point p0000001 is used by curves a0000000 and r0000000"]
+    );
+    assert_eq!(errors[0].elements(), ["p0000001", "a0000000", "r0000000"]);
+    assert_eq!(errors[0].elements_total(), 3);
 }
 
 #[test]
@@ -428,15 +484,13 @@ fn removing_a_hub_point_names_at_most_the_problems_listed_and_counts_the_rest() 
     assert_eq!(errors.len(), 1);
     let error = &errors[0];
     assert_eq!(error.elements_total(), 512);
-    assert!(
-        error.elements().len() <= PROBLEMS_LISTED,
-        "{} elements",
-        error.elements().len()
-    );
-    assert!(
-        error.message().len() < 1_000,
-        "a {}-byte message",
-        error.message().len()
+    // The point, then the first 99 lines.
+    assert_eq!(error.elements().len(), 100);
+    assert_eq!(error.elements()[0], "h0000000");
+    assert_eq!(error.elements()[99], "n0000098");
+    assert_eq!(
+        error.message(),
+        "point h0000000 is used by lines n0000000, n0000001, n0000002 and 508 more"
     );
 }
 
@@ -551,9 +605,29 @@ fn a_refused_remove_names_every_problem_at_once() {
     let errors = remove(sketch_of(&before), &ids(&["p0000000", "zzzzzzzz"]))
         .unwrap_err()
         .errors;
+    // In the request's order.
     let parameters: Vec<Option<&str>> = errors.iter().map(|e| e.parameter()).collect();
-    assert_eq!(parameters.len(), 2);
-    assert!(parameters.contains(&Some("members.0")) && parameters.contains(&Some("members.1")));
+    assert_eq!(parameters, [Some("members.0"), Some("members.1")]);
+    assert_eq!(
+        messages(&errors),
+        [
+            "point p0000000 is used by line a0000000",
+            "the sketch has no member zzzzzzzz"
+        ]
+    );
+    // The other way round, the other way round.
+    let errors = remove(sketch_of(&before), &ids(&["zzzzzzzz", "p0000000"]))
+        .unwrap_err()
+        .errors;
+    let parameters: Vec<Option<&str>> = errors.iter().map(|e| e.parameter()).collect();
+    assert_eq!(parameters, [Some("members.0"), Some("members.1")]);
+    assert_eq!(
+        messages(&errors),
+        [
+            "the sketch has no member zzzzzzzz",
+            "point p0000000 is used by line a0000000"
+        ]
+    );
 }
 
 // ------------------------------------------------------------------ unjoin
@@ -717,6 +791,7 @@ fn unjoining_names_a_curve_that_is_a_constraint_or_a_point_as_no_curve() {
     )
     .unwrap_err();
     assert_eq!(error.parameter(), Some("point"));
+    assert_eq!(error.message(), "the sketch has no point a0000000");
 }
 
 #[test]

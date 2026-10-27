@@ -36,24 +36,10 @@ pub struct Edited {
 /// `tangent_at` naming a removed curve goes with it, never onto a neighbour (`9ce5756011`).
 pub fn remove(sketch: &Sketch, members: &[ElementId]) -> Result<Edited, Refused> {
     let kinds = kinds_of(sketch);
-    let mut refused = Refused::default();
-    let mut named: BTreeSet<&ElementId> = BTreeSet::new();
-    // Each problem once, at the first place its member is named.
-    let mut unknown: BTreeSet<&ElementId> = BTreeSet::new();
-    for (place, id) in members.iter().enumerate() {
-        if kinds.contains_key(id) {
-            named.insert(id);
-        } else if unknown.insert(id) {
-            refused.push(|| {
-                Error::new(
-                    ErrorCode::InvalidInput,
-                    format!("the sketch has no member {id}"),
-                )
-                .with_parameter(format!("members.{place}"))
-                .with_suggestion("name a point, curve, or constraint of this sketch by its ID")
-            });
-        }
-    }
+    let named: BTreeSet<&ElementId> = members
+        .iter()
+        .filter(|id| kinds.contains_key(*id))
+        .collect();
     let curves_removed: BTreeSet<&ElementId> = named
         .iter()
         .copied()
@@ -73,15 +59,27 @@ pub fn remove(sketch: &Sketch, members: &[ElementId]) -> Result<Edited, Refused>
             }
         }
     }
-    let mut used: BTreeSet<&ElementId> = BTreeSet::new();
+    // Each problem once, at the first place its member is named, in the request's order.
+    let mut refused = Refused::default();
+    let mut said: BTreeSet<&ElementId> = BTreeSet::new();
     for (place, id) in members.iter().enumerate() {
-        if kinds.get(id) != Some(&ElementKind::Point) {
-            continue;
-        }
-        if let Some(using) = users.get(id)
-            && used.insert(id)
-        {
-            refused.push(|| point_in_use(id, using, format!("members.{place}")));
+        match kinds.get(id) {
+            None if said.insert(id) => refused.push(|| {
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    format!("the sketch has no member {id}"),
+                )
+                .with_parameter(format!("members.{place}"))
+                .with_suggestion("name a point, curve, or constraint of this sketch by its ID")
+            }),
+            Some(ElementKind::Point) => {
+                if let Some(using) = users.get(id)
+                    && said.insert(id)
+                {
+                    refused.push(|| point_in_use(id, using, format!("members.{place}")));
+                }
+            }
+            _ => {}
         }
     }
     if refused.total > 0 {
@@ -133,7 +131,10 @@ pub fn remove(sketch: &Sketch, members: &[ElementId]) -> Result<Edited, Refused>
 /// Delete keeps an end-to-end tangency, which an unjoin that left them joined wouldn't be).
 /// A `tangent_on` whose `a` is `curve` and whose `at` is the point goes with `curve`, to the
 /// new point, so its `at` stays an end of `a` (docs/design/m5.0-app.md, open item 14,
-/// pending the maintainer). Refused, as data naming them: a point or curve the sketch hasn't,
+/// pending the maintainer). The point's other constraints (a lock, an `on`) stay with the
+/// curves that keep it, where FreeCAD's vertex Delete (`delConstraintOnPoint`, its
+/// `onlyCoincident`) leaves them on the detached curve's end: a shared point doesn't say
+/// which curve's end a constraint was on. Refused, as data naming them: a point or curve the sketch hasn't,
 /// a curve that doesn't use the point, and a point no other curve shares (FreeCAD
 /// `bc4d463cdf`, where it was an error).
 pub fn unjoin(
@@ -249,6 +250,10 @@ pub fn unjoin(
 /// An edge `tangent` between two curves that would then share an end is refused too, as
 /// decision 10 has it, until the maintainer settles docs/design/m5.0-app.md's open item 13,
 /// which recommends making it a `tangent_at` instead (sketch-edit decision 8).
+///
+/// A request with one bad pair is refused whole, where FreeCAD's coincident command skips
+/// that pair and makes the rest coincident (`CommandConstraints.cpp`, its multi-select): an
+/// edit is made whole or not at all.
 pub fn merge(sketch: &Sketch, points: &[ElementId]) -> Result<Edited, Error> {
     let kinds = kinds_of(sketch);
     let Some(kept) = points.first() else {

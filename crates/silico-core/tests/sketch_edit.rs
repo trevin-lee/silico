@@ -127,6 +127,68 @@ fn a_tangent_at_naming_the_removed_curve_goes_with_it_whatever_the_constraints_o
 }
 
 #[test]
+fn a_tangent_at_of_two_curves_survives_removing_a_third_at_their_joint_whatever_the_order() {
+    // FreeCAD 358942b771: deleting a third curve at a joint lost the tangencies there; and
+    // 1.1.3's result depends on the constraints' order (f8f159c4d3). a, b, d meet at p1, a
+    // tangent_at joins a and b, another a and d; removing d takes only d's.
+    let lines = [
+        line("a0000000", "p0000000", "p0000001"),
+        line("b0000000", "p0000001", "p0000002"),
+        line("d0000000", "p0000001", "q0000000"),
+    ]
+    .join(", ");
+    let ab = r#"{"id": "k0000001", "type": "tangent_at", "a": "a0000000", "b": "b0000000", "at": "p0000001", "direction": "same"}"#;
+    let ad = r#"{"id": "k0000002", "type": "tangent_at", "a": "a0000000", "b": "d0000000", "at": "p0000001", "direction": "same"}"#;
+    for constraints in [format!("{ad}, {ab}"), format!("{ab}, {ad}")] {
+        let before = doc(POINTS, &lines, "", "", &constraints);
+        let edited = remove(sketch_of(&before), &ids(&["d0000000"])).unwrap();
+        let sketch = sketch_of(&gated(&before, &edited)).clone();
+        assert_eq!(
+            (sketch.lines[0].to.clone(), sketch.lines[1].from.clone()),
+            (id("p0000001"), id("p0000001"))
+        );
+        assert_eq!(
+            sketch
+                .constraints
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["k0000001"]
+        );
+        assert_eq!(edited.removed, ids(&["q0000000", "d0000000", "k0000002"]));
+    }
+}
+
+#[test]
+fn a_symmetry_about_a_point_another_curve_still_uses_stays() {
+    // FreeCAD 51cf34a596: a symmetric's third reference, its about, counts as the others do.
+    // q0 and q1 mirror each other about p1, which a and b share; removing b leaves p1 to a.
+    let lines = [
+        line("a0000000", "p0000000", "p0000001"),
+        line("b0000000", "p0000001", "p0000002"),
+    ]
+    .join(", ");
+    let before = doc(
+        POINTS,
+        &lines,
+        "",
+        "",
+        r#"{"id": "k0000000", "type": "symmetric", "a": "q0000000", "b": "q0000001", "about": "p0000001"}"#,
+    );
+    let edited = remove(sketch_of(&before), &ids(&["b0000000"])).unwrap();
+    let sketch = sketch_of(&gated(&before, &edited)).clone();
+    assert_eq!(edited.removed, ids(&["p0000002", "b0000000"]));
+    assert_eq!(
+        sketch
+            .constraints
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
+        ["k0000000"]
+    );
+}
+
+#[test]
 fn removing_one_of_two_lines_removes_their_angle_and_a_symmetry_about_it() {
     let lines = [
         line("a0000000", "p0000000", "p0000001"),
@@ -297,6 +359,38 @@ fn unjoining_moves_one_curve_to_a_new_point_and_leaves_the_others_joined() {
 }
 
 #[test]
+fn unjoining_a_construction_point_gives_a_construction_point() {
+    let points = POINTS.replace(
+        r#""id": "p0000001", "x": 10, "y": 0, "construction": false"#,
+        r#""id": "p0000001", "x": 10, "y": 0, "construction": true"#,
+    );
+    assert_ne!(points, POINTS);
+    let lines = [
+        line("a0000000", "p0000000", "p0000001"),
+        line("b0000000", "p0000001", "p0000002"),
+    ]
+    .join(", ");
+    let before = doc(&points, &lines, "", "", "");
+    let edited = unjoin(
+        sketch_of(&before),
+        &id("p0000001"),
+        &id("b0000000"),
+        id("p0000009"),
+    )
+    .unwrap();
+    let sketch = sketch_of(&gated(&before, &edited)).clone();
+    let new = sketch
+        .points
+        .iter()
+        .find(|p| p.id == id("p0000009"))
+        .unwrap();
+    assert_eq!(
+        (new.x.mm(), new.y.mm(), new.construction),
+        (10.0, 0.0, true)
+    );
+}
+
+#[test]
 fn unjoining_moves_a_tangent_on_of_the_detached_curve_to_its_new_point() {
     // b ends at p1 tangent on a circle about q1 of radius 10 that p1 lies on; a shares p1.
     let lines = [
@@ -342,6 +436,7 @@ fn unjoining_a_point_no_other_curve_shares_or_a_curve_that_doesnt_use_it_is_refu
         "point p0000000 is used by no curve but line a0000000, so there's nothing to unjoin"
     );
     assert_eq!(alone.parameter(), Some("point"));
+    assert_eq!(alone.elements(), ["p0000000", "a0000000"]);
     let elsewhere = unjoin(
         sketch_of(&before),
         &id("p0000001"),
@@ -361,6 +456,8 @@ fn unjoining_a_point_no_other_curve_shares_or_a_curve_that_doesnt_use_it_is_refu
         missing.message(),
         "line a0000000 doesn't use point p0000002"
     );
+    assert_eq!(missing.parameter(), Some("curve"));
+    assert_eq!(missing.elements(), ["p0000002", "a0000000"]);
     let taken = unjoin(
         sketch_of(&before),
         &id("p0000001"),
@@ -386,10 +483,22 @@ fn touching(constraints: &str) -> Document {
 
 #[test]
 fn merging_keeps_the_first_point_where_it_is_and_points_the_others_users_to_it() {
-    // The ends carry a horizontal_points to another point, an on to another curve, and a
-    // lock from the origin: still merged (1.1.3 reports 0 missing for each).
-    let before = touching(
-        r#"{"id": "k0000000", "type": "horizontal_points", "a": "p0000009", "b": "p0000003"}, {"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 10, "driving": true}"#,
+    // §9's ends carrying a horizontal_points to another point, an on to another curve (d,
+    // up x = 10 through them), and a lock from the origin, here beside a symmetric about the
+    // merged end too: still merged (1.1.3 reports 0 missing for each, c036128aa0).
+    let points = format!("{POINTS}, {}", point("p0000009", 10.0, 0.00000004));
+    let lines = [
+        line("a0000000", "p0000000", "p0000001"),
+        line("b0000000", "p0000009", "p0000002"),
+        line("d0000000", "q0000000", "q0000001"),
+    ]
+    .join(", ");
+    let before = doc(
+        &points,
+        &lines,
+        "",
+        "",
+        r#"{"id": "k0000000", "type": "horizontal_points", "a": "p0000009", "b": "p0000003"}, {"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 10, "driving": true}, {"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}, {"id": "k0000003", "type": "on", "point": "p0000009", "curve": "d0000000"}, {"id": "k0000004", "type": "symmetric", "a": "p0000000", "b": "p0000002", "about": "p0000009"}"#,
     );
     let edited = merge(sketch_of(&before), &ids(&["p0000001", "p0000009"])).unwrap();
     let sketch = sketch_of(&gated(&before, &edited)).clone();
@@ -401,14 +510,64 @@ fn merging_keeps_the_first_point_where_it_is_and_points_the_others_users_to_it()
         .unwrap();
     assert_eq!((kept.x.mm(), kept.y.mm()), (10.0, 0.0));
     assert_eq!(sketch.lines[1].from, id("p0000001"));
-    let points_of = match &sketch.constraints[0].form {
-        silico_core::document::Form::HorizontalPoints { a, b } => (a.to_string(), b.to_string()),
-        other => panic!("{other:?}"),
-    };
-    assert_eq!(points_of, ("p0000001".to_owned(), "p0000003".to_owned()));
-    assert_eq!(edited.modified, ids(&["b0000000", "k0000000"]));
+    use silico_core::document::Form;
+    let points_of: Vec<Vec<String>> = sketch
+        .constraints
+        .iter()
+        .map(|c| match &c.form {
+            Form::HorizontalPoints { a, b } => vec![a.to_string(), b.to_string()],
+            Form::DistanceX { a, b, .. } | Form::DistanceY { a, b, .. } => {
+                vec![a.to_string(), b.to_string()]
+            }
+            Form::On { point, curve } => vec![point.to_string(), curve.to_string()],
+            Form::Symmetric { a, b, about } => {
+                vec![a.to_string(), b.to_string(), about.to_string()]
+            }
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        points_of,
+        [
+            vec!["p0000001", "p0000003"],
+            vec!["origin", "p0000001"],
+            vec!["origin", "p0000001"],
+            vec!["p0000001", "d0000000"],
+            vec!["p0000000", "p0000002", "p0000001"],
+        ]
+    );
+    assert_eq!(
+        edited.modified,
+        ids(&["b0000000", "k0000000", "k0000003", "k0000004"])
+    );
     assert_eq!(edited.removed, ids(&["p0000009"]));
     assert!(edited.added.is_empty());
+}
+
+#[test]
+fn a_merge_beside_edge_tangents_to_a_curve_that_doesnt_end_there_is_made() {
+    // a and b touch at p1 and p9, each tangent to circle c about q0 of radius 10 (y = 0 is
+    // tangent to it), listed once as a and once as b: after the merge a and b share an end,
+    // c none, so each tangent stays an edge tangency.
+    let points = format!("{POINTS}, {}", point("p0000009", 10.0, 0.00000004));
+    let lines = [
+        line("a0000000", "p0000000", "p0000001"),
+        line("b0000000", "p0000009", "p0000002"),
+    ]
+    .join(", ");
+    let before = doc(
+        &points,
+        &lines,
+        r#"{"id": "c0000000", "center": "q0000000", "radius": 10, "construction": false}"#,
+        "",
+        r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "c0000000", "side": "left"}, {"id": "k0000001", "type": "tangent", "a": "c0000000", "b": "b0000000", "side": "left"}"#,
+    );
+    let edited = merge(sketch_of(&before), &ids(&["p0000001", "p0000009"])).unwrap();
+    let sketch = sketch_of(&gated(&before, &edited)).clone();
+    assert_eq!(sketch.lines[1].from, id("p0000001"));
+    assert_eq!(sketch.constraints, sketch_of(&before).constraints);
+    assert_eq!(edited.modified, ids(&["b0000000"]));
+    assert_eq!(edited.removed, ids(&["p0000009"]));
 }
 
 #[test]
@@ -456,12 +615,11 @@ fn a_merge_that_leaves_an_edge_tangent_at_a_shared_end_is_refused() {
         r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "r0000000", "side": "left"}"#,
     );
     let error = merge(sketch_of(&before), &ids(&["p0000001", "p0000009"])).unwrap_err();
-    assert!(
-        error
-            .message()
-            .starts_with("merging them would leave tangent k0000000"),
-        "{error}"
+    assert_eq!(
+        error.message(),
+        "merging them would leave tangent k0000000 between a0000000 and r0000000, which would then share an end, where a tangency must be a tangent_at"
     );
+    assert_eq!(error.parameter(), Some("points"));
     assert_eq!(error.elements(), ["k0000000", "a0000000", "r0000000"]);
 }
 
@@ -474,10 +632,17 @@ fn a_point_named_twice_fewer_than_two_or_one_the_sketch_hasnt_is_refused() {
         "point p0000001 is named twice: it's already one point"
     );
     assert_eq!(twice.parameter(), Some("points.1"));
+    assert_eq!(twice.elements(), ["p0000001"]);
     let one = merge(sketch_of(&before), &ids(&["p0000001"])).unwrap_err();
-    assert_eq!(one.message(), "a merge takes two or more points");
+    assert_eq!(
+        (one.message(), one.parameter()),
+        ("a merge takes two or more points", Some("points"))
+    );
     let none = merge(sketch_of(&before), &[]).unwrap_err();
-    assert_eq!(none.message(), "a merge takes two or more points");
+    assert_eq!(
+        (none.message(), none.parameter()),
+        ("a merge takes two or more points", Some("points"))
+    );
     let missing = merge(sketch_of(&before), &ids(&["p0000001", "zzzzzzzz"])).unwrap_err();
     assert_eq!(
         (missing.message(), missing.parameter()),
