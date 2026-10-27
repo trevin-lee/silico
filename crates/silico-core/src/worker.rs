@@ -1969,14 +1969,21 @@ mod tests {
             )
         );
         // The one fault the same request would meet again: a client's "try again" is left
-        // out for it (docs/cli.md, `check`), read from the advice, never the words. Reworded,
-        // the advice is gone with the words, and nothing says it would repeat.
-        assert!(!crashed.retry_helps(), "{crashed}");
+        // out for it (docs/cli.md, `check`), read from the advice, never the words. Reworded
+        // by anything but a session's wording of it, the advice is gone with the words.
+        assert!(crashed.would_crash_again(), "{crashed}");
         let reworded = crashed
             .clone()
             .with_suggestion("the same words, said otherwise");
-        assert!(reworded.retry_helps());
-        assert!(crate::Error::new(ErrorCode::WorkerCrashed, "no advice").retry_helps());
+        assert!(!reworded.would_crash_again());
+        assert!(!crate::Error::new(ErrorCode::WorkerCrashed, "no advice").would_crash_again());
+        // The words alone, without the advice, say nothing: it's read from the data.
+        assert!(
+            !crate::Error::new(ErrorCode::WorkerCrashed, "crashed")
+                .with_suggestion(crashed.suggestion().unwrap())
+                .would_crash_again(),
+            "the same words without the advice"
+        );
         // Started, and never answering: past its time.
         let dir = scratch("advice-late");
         let path = script(&dir, "printf '\\0\\0\\0\\0' >&3\nexec sleep 600");
@@ -1997,7 +2004,7 @@ mod tests {
         assert_eq!(late.code(), ErrorCode::WorkerTimeout, "{late}");
         assert_eq!(late.cause(), None, "{late}");
         assert_eq!(late.advice(), Some(&Advice::SimplifyOrWait), "{late}");
-        assert!(late.retry_helps(), "{late}");
+        assert!(!late.would_crash_again(), "{late}");
         assert_eq!(
             late.suggestion(),
             Some("simplify the operation, or allow it more time")
@@ -2018,7 +2025,7 @@ mod tests {
         assert_eq!(late.code(), ErrorCode::WorkerTimeout, "{late}");
         assert_eq!(late.cause(), None, "{late}");
         assert_eq!(late.advice(), Some(&Advice::SimplifyOrWait), "{late}");
-        assert!(late.retry_helps(), "{late}");
+        assert!(!late.would_crash_again(), "{late}");
         assert_eq!(
             late.suggestion(),
             Some("simplify the operation, or allow it more time")
@@ -2041,7 +2048,7 @@ mod tests {
             ),
             "{unstarted}"
         );
-        assert!(unstarted.retry_helps(), "{unstarted}");
+        assert!(!unstarted.would_crash_again(), "{unstarted}");
         assert_eq!(
             unstarted.suggestion(),
             Some(

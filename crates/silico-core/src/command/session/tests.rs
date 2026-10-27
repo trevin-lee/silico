@@ -2964,6 +2964,9 @@ fn a_kept_fault_rewords_the_workers_advice_for_a_session_then_says_to_check_with
              would crash it again"
         )
     );
+    // Worded for a session, it keeps the advice its words come from: a client of the
+    // session's refusal (an `elements` of the feature) reads that it would crash again.
+    assert!(kept_fault(&crashed).would_crash_again());
     assert_eq!(
         said(&kept_fault(&crashed)),
         (
@@ -3081,6 +3084,7 @@ fn a_kept_fault_rewords_the_workers_advice_for_a_session_then_says_to_check_with
              stopped responding, or was gone before the request reached it, not by these values"
         )
     );
+    assert!(!kept_fault(&outside).would_crash_again());
     let killed = Error::new(ErrorCode::WorkerCrashed, "the worker crashed")
         .with_feature("f0000001")
         .with_advice(crash_advice(

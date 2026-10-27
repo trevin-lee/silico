@@ -1819,4 +1819,45 @@ fn a_crash_the_requests_values_caused_says_to_change_them_and_not_to_run_check_a
             assert!(!said.contains("again to retry it"), "{said}");
         }
     }
+    // fmt and export say a kernel fault as check does (docs/cli.md, their rows): after the
+    // values' crash, the worker's own suggestion alone; after any other, then the CLI's line.
+    let exe = Path::new(env!("CARGO_BIN_EXE_silico"));
+    let out = scratch.0.join("part.3mf");
+    for (name, end, retried) in [
+        ("segfault", "kill -SEGV $$", false),
+        ("terminated", "kill -TERM $$", true),
+    ] {
+        let kernel = worker_that_ends(&scratch, name, end);
+        for (command, args) in [
+            ("fmt", vec![file.clone()]),
+            ("export", vec![file.clone(), out.clone()]),
+        ] {
+            let mut cmd = Command::new(exe);
+            cmd.arg(command)
+                .args(&args)
+                .env("SILICO_KERNEL_WORKER", &kernel)
+                .env(
+                    "SILICO_SKETCH_WORKER",
+                    exe.with_file_name("silico-sketch-worker"),
+                )
+                .env("XDG_CACHE_HOME", scratch.0.join("cache-home"))
+                .env_remove("SILICO_LOG")
+                .stdin(Stdio::null());
+            let ran = run::output(cmd);
+            let said = stderr(&ran);
+            assert_eq!(ran.status.code(), Some(2), "{command} {name}: {said}");
+            assert_eq!(
+                said.matches(values).count(),
+                usize::from(!retried),
+                "{command} {name}: {said}"
+            );
+            let line = format!("run `silico {command}` again to retry it");
+            assert_eq!(said.contains(&line), retried, "{command} {name}: {said}");
+            assert!(
+                !said.contains("again to retry it") || retried,
+                "{command} {name}: {said}"
+            );
+        }
+    }
+    assert!(!out.exists());
 }

@@ -814,7 +814,7 @@ pub(in crate::command) fn met_fault(fault: &Error) -> Error {
 pub(in crate::command) fn kept_fault(fault: &Error) -> Error {
     let fault = met_fault(fault);
     let suggestion = kept_suggestion(&fault);
-    fault.with_suggestion(suggestion)
+    fault.reworded(suggestion)
 }
 
 /// [`kept_fault`]'s suggestion (the design's section 6): reading the revision again won't try

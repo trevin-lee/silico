@@ -659,9 +659,9 @@ impl Refusal {
 /// `fault`, a kernel fault the rebuild of a file met (its suggestion the worker's own), as
 /// `silico command` says it: then, to run the command again, which rebuilds the file anew;
 /// but not after a crash the request's values caused, which the same file would cause again
-/// ([`Error::retry_helps`]): its own suggestion, to change the values, is all of it.
+/// ([`Error::would_crash_again`]): its own suggestion, to change the values, is all of it.
 fn with_retry(fault: &Error, command: &str) -> Error {
-    if !fault.retry_helps() {
+    if fault.would_crash_again() {
         return fault.clone();
     }
     let again = format!("run `silico {command}` again to retry it");

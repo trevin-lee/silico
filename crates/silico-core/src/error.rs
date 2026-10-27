@@ -418,6 +418,15 @@ impl Error {
         self
     }
 
+    /// The suggestion, worded again from this error's own advice (a session's wording of a
+    /// kept fault): unlike [`with_suggestion`](Self::with_suggestion), the advice is kept,
+    /// since the words still say it.
+    #[must_use]
+    pub(crate) fn reworded(mut self, suggestion: impl Into<String>) -> Self {
+        self.0.suggestion = Some(suggestion.into());
+        self
+    }
+
     /// The worker's advice the suggestion was worded from, if it was.
     pub(crate) fn advice(&self) -> Option<&Advice> {
         self.0.advice.as_deref()
@@ -492,12 +501,13 @@ impl Error {
         &self.0.candidates
     }
 
-    /// Whether the same request, sent again, could end otherwise: false only where a
-    /// worker's advice says the request's values crashed it and would crash it again (read
-    /// from the advice as data, never from its words). A client that adds its own "try
-    /// again" leaves it out then: the CLI's "run it again".
-    pub fn retry_helps(&self) -> bool {
-        !matches!(self.advice(), Some(Advice::ChangeTheValues { .. }))
+    /// Whether the worker's advice says the request's values crashed it, and the same request
+    /// would crash it again: read from the advice as data, never from the suggestion's words.
+    /// Meaningful for a kernel fault, as the model read meets it or a session words it
+    /// ([`kept_fault`](crate::command)); false for any error without that advice. A client
+    /// that adds its own "try again" leaves it out then: the CLI's "run it again".
+    pub fn would_crash_again(&self) -> bool {
+        matches!(self.advice(), Some(Advice::ChangeTheValues { .. }))
     }
 
     /// What it says, every field the error contract writes.
