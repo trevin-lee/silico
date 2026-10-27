@@ -1873,7 +1873,11 @@ fn beside(exe: &Path, env: &str, binary: &str, noun: &str, build: &str) -> Resul
     // What's at the worker's place, if something is: so a name that's there isn't said to
     // be missing.
     let there = match std::fs::symlink_metadata(&worker) {
-        Ok(meta) if meta.is_symlink() => format!("; {name} there is a link to no file"),
+        Ok(meta) if meta.is_symlink() => match std::fs::metadata(&worker) {
+            Err(_) => format!("; {name} there is a link to nothing"),
+            Ok(target) if target.is_dir() => format!("; {name} there is a link to a directory"),
+            Ok(_) => format!("; {name} there is a link to something that isn't a regular file"),
+        },
         Ok(meta) if meta.is_dir() => format!("; {name} there is a directory"),
         Ok(_) => format!("; {name} there isn't a regular file"),
         Err(_) => String::new(),
@@ -3553,7 +3557,7 @@ mod tests {
     #[test]
     fn a_worker_that_is_a_link_is_found_and_one_left_dangling_is_said_to_be() {
         // break-it: a worker installed as a relative link to the build's is used as it is;
-        // one whose build is gone is no worker, said as what's there.
+        // one whose build is gone, or that leads to a directory, is no worker, said as what's there.
         let (_root, base) = install(false);
         let bin = base.join("bin");
         std::fs::create_dir(base.join("build")).unwrap();
@@ -3575,7 +3579,19 @@ mod tests {
             missing(
                 &bin,
                 &bin.join("silico"),
-                "; silico-kernel-worker there is a link to no file"
+                "; silico-kernel-worker there is a link to nothing"
+            )
+        );
+        // A link to a directory leads somewhere, and is said to.
+        std::fs::remove_file(bin.join("silico-kernel-worker")).unwrap();
+        std::os::unix::fs::symlink("../build", bin.join("silico-kernel-worker")).unwrap();
+        let e = kernel_worker_beside(&bin.join("silico")).unwrap_err();
+        assert_eq!(
+            e.message(),
+            missing(
+                &bin,
+                &bin.join("silico"),
+                "; silico-kernel-worker there is a link to a directory"
             )
         );
     }

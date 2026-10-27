@@ -204,6 +204,9 @@ fn a_silico_copied_alone_names_where_it_looked_for_its_worker() {
     let copy = bin.join("silico");
     std::fs::copy(env!("CARGO_BIN_EXE_silico"), &copy).unwrap();
     let bin = std::fs::canonicalize(&bin).unwrap();
+    // Run by its resolved path, so on macOS (whose running executable is the path as run) a
+    // scratch directory reached through a link adds no "run as".
+    let copy = bin.join("silico");
     let (status, stdout) = check_as(&copy, &dir, BOX);
     assert_eq!(status, Some(2), "{stdout}");
     assert_eq!(code(&stdout), "worker_unavailable", "{stdout}");
