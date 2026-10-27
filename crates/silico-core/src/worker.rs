@@ -1565,7 +1565,7 @@ fn signal_name(signal: i32) -> Option<&'static str> {
 }
 
 /// What to try when the worker itself misbehaved: nothing about the request will help.
-fn broken_worker(kind: WorkerKind) -> String {
+pub(crate) fn broken_worker(kind: WorkerKind) -> String {
     format!(
         "this is a bug in Silico's {}, not in the request: report it (the worker was \
          stopped, and the next request starts another)",
