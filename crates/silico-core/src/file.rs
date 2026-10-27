@@ -70,6 +70,12 @@ pub fn cache_directory(file: &Path) -> PathBuf {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
     root: PathBuf,
+    /// The root as the system names an open handle of it, taken once, as the workspace is
+    /// made, from a handle opened on the canonical root and checked to be it: a spelling
+    /// the system may give a handle's path in that `realpath` doesn't (macOS names
+    /// `/System/Volumes/Data/Users/...` as `/Users/...`, its firmlink). None if it can't
+    /// be had; the canonical root then stands alone.
+    as_held: Option<PathBuf>,
 }
 
 /// How many links [`Workspace::walk`] follows through a path before it decides by the
@@ -121,6 +127,27 @@ impl Step {
     }
 }
 
+/// `canonical`, a directory's canonical path, as the system names a handle opened on it
+/// ([`Workspace::as_held`]): the handle opened with no link followed at its name, and taken
+/// only if it is the directory `canonical` names now (the same device and inode), so a link
+/// put there meanwhile gives none, never its target's spelling.
+fn held_spelling(canonical: &Path) -> Option<PathBuf> {
+    use rustix::fs::{CWD, Mode, OFlags};
+    let handle = rustix::fs::openat(
+        CWD,
+        canonical,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .ok()?;
+    let opened = rustix::fs::fstat(&handle).ok()?;
+    let named = rustix::fs::statat(CWD, canonical, rustix::fs::AtFlags::SYMLINK_NOFOLLOW).ok()?;
+    if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino) {
+        return None;
+    }
+    crate::cache::path_of(&handle).ok()
+}
+
 impl Workspace {
     /// The workspace at `root`, through its links: refused if it isn't a directory that can
     /// be reached.
@@ -139,7 +166,11 @@ impl Workspace {
             )
             .with_suggestion("start Silico in a directory"));
         }
-        Ok(Workspace { root: canonical })
+        let as_held = held_spelling(&canonical);
+        Ok(Workspace {
+            root: canonical,
+            as_held,
+        })
     }
 
     /// Its root, through its links.
@@ -151,6 +182,10 @@ impl Workspace {
     /// below it.
     pub fn holds(&self, resolved: &Path) -> bool {
         resolved.starts_with(&self.root)
+            || self
+                .as_held
+                .as_ref()
+                .is_some_and(|root| resolved.starts_with(root))
     }
 
     /// Whether `path`, a path from the file system's top, leads out of the workspace, decided

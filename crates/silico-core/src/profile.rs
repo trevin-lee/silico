@@ -420,7 +420,7 @@ pub fn profile(
     feature: &FeatureId,
     solution: &SketchSolution,
 ) -> Result<Profile, Refused> {
-    let found = document.document().feature(feature).map_err(Refused::of)?;
+    let found = document.feature(feature).map_err(Refused::of)?;
     let Operation::Sketch(sketch) = &found.operation else {
         return Err(Refused::of(
             Error::new(

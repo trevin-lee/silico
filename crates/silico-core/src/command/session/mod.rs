@@ -64,8 +64,11 @@
 //! read and write only inside it: `open`'s path and `render`'s `to` are relative to its
 //! root, a path out of it (or through a link out of it) is refused, naming the field, and so
 //! is a command whose session's file leads out of it now, found as the file is read again
-//! or saved; a `.silico-cache/` that leads out of it is never opened. Without one (the
-//! CLI's), `open` reads any file this user may read.
+//! or saved; a `.silico-cache/` that leads out of it is never opened, and one that comes to
+//! lead out of it later is read, written, and cleared nothing through while it does (the
+//! cache checks as each of those opens its directory, and does all it does through the
+//! handle it opened, [`Cache::within`]). Without one (the CLI's), `open` reads any file
+//! this user may read.
 //!
 //! What it doesn't bound: the caches, one kept for each directory a session has opened a
 //! document in, for the process's life; and each session's queue, which holds every command
@@ -101,7 +104,7 @@ use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
 use cancel::{Interrupt, Ticket, Why, not_running};
-use clearing::{leads_out, partly_cleared_problems, shown_cache_directory};
+use clearing::{partly_cleared_problems, shown_cache_directory};
 use edits::{as_committed, not_given_back};
 use holding::Holding;
 use rebuilds::{Newest, Rebuilds, Unbuilt, published_answer};
@@ -412,8 +415,11 @@ impl<P: Clients + 'static> Sessions<P> {
     /// one that reaches out of it through a link, is refused, `invalid_input` naming the
     /// field, and so is a command whose session's file now leads out of it, as the session
     /// reads it again or saves it (a link put on its path since `open`). A `.silico-cache/`
-    /// that leads out of it is never opened: its sessions keep no results. Without one (the
-    /// CLI), paths resolve as the system resolves them. Refused if the root isn't a
+    /// that leads out of it is never opened: its sessions keep no results; nor through one
+    /// that comes to lead out later, while it does (the cache checks as each read, write,
+    /// eviction, and clear opens its directory, and does all it does through the handle it
+    /// opened, [`Cache::within`]). Without one (the CLI), paths resolve as the system
+    /// resolves them. Refused if the root isn't a
     /// directory that can be reached, and if these sessions have a workspace already, or
     /// have been asked to open a document.
     pub fn in_workspace(mut self, root: &Path) -> Result<Self, Error> {
@@ -781,18 +787,22 @@ impl<P: Clients + 'static> Sessions<P> {
     /// file (decision 2, as `close`): it needs nothing of the document, so a file gone or
     /// changed neither refuses it nor moves the session's revision; and it runs inside a
     /// transaction too. In a workspace (decision 26), the directory is named from its root,
-    /// and whether it leads out of it is checked as it clears: nothing is removed through one
-    /// that does then (`removed` 0), and one inside then is cleared, whatever it was as the
-    /// session opened.
+    /// and whether it leads out of it is checked by the cache as the clear opens it
+    /// ([`Cache::within`]): nothing is removed through one that does then (`removed` 0), and
+    /// one inside then is cleared, whatever it was as the session opened, through the handle
+    /// the clear opened, so a link put on its way during the clear redirects nothing.
     pub fn cache_clear(&self, session: &SessionId) -> Running<CacheCleared> {
         self.queued_with(
             session,
             SessionCommand::CacheClear,
             Rereads::Never,
             |session, stop, _, _| {
-                // The engine's own cache: a stand-in that writes nothing if its directory led
-                // out of the workspace as the session opened (`Registry::cache`); whether this
-                // clear goes through is checked below, as it clears.
+                // The engine's own cache, in the workspace if there's one: a stand-in that
+                // writes nothing if its directory led out of it as the session opened
+                // (`Registry::cache`). Whether this clear goes through is the cache's to
+                // check, as it opens the directory (decision 26: where a path resolves):
+                // nothing is removed through one that leads out then, and it says it removed
+                // none.
                 let cache = lock(&session.rebuilds).cache.clone();
                 let path = session.held.read().path.clone();
                 let workspace = session.workspace.as_ref();
@@ -800,18 +810,6 @@ impl<P: Clients + 'static> Sessions<P> {
                 stop.settle()?;
                 #[cfg(test)]
                 session.settled.pass();
-                // Checked as it's cleared (decision 26: where a path resolves): nothing is
-                // removed through a directory that leads out now, through any link on its way.
-                if leads_out(workspace, cache.directory()) {
-                    tracing::warn!(
-                        dir = %cache.directory().display(),
-                        "the cache directory leads out of the workspace: removing nothing"
-                    );
-                    return Ok(CacheCleared {
-                        directory,
-                        removed: 0,
-                    });
-                }
                 match cache.clear() {
                     Ok(removed) => Ok(CacheCleared { directory, removed }),
                     Err(partly) => Err(partly_cleared_problems(
