@@ -318,18 +318,15 @@ fn a_point_held_on_the_line_goes_to_the_piece_whose_span_holds_it_or_the_nearer_
 }
 
 #[test]
-fn a_point_held_on_the_line_at_the_split_is_shared_and_its_tangent_on_becomes_a_tangent_at() {
-    // s0 at (10, 0) is held on a (k0), and arc c about z0 (10, 10) starts there tangent on
-    // a (k1: leaving its start along +x, as a runs: same). Split at s0's place, the pieces
-    // share s0, no point is made, the on goes as implied, and the tangent_on becomes a
-    // tangent_at of c and the start-side piece, whose own direction at s0 is a's: same.
-    let points = r#"{"id": "s0000000", "x": 10, "y": 0, "construction": false}, {"id": "z0000000", "x": 10, "y": 10, "construction": false}, {"id": "z0000001", "x": 20, "y": 10, "construction": false}"#;
+fn a_point_held_on_the_line_at_the_split_by_an_on_is_shared_and_the_on_goes() {
+    // s0 at (10, 0) is held on a (k0). Split at s0's place, the pieces share s0, no point
+    // is made, and the on goes as implied.
     let before = a_line(
-        points,
+        r#"{"id": "s0000000", "x": 10, "y": 0, "construction": false}"#,
         "",
         "",
-        &arc("c0000000", "z0000000", "s0000000", "z0000001"),
-        r#"{"id": "k0000000", "type": "on", "point": "s0000000", "curve": "a0000000"}, {"id": "k0000001", "type": "tangent_on", "a": "c0000000", "at": "s0000000", "b": "a0000000", "direction": "same"}"#,
+        "",
+        r#"{"id": "k0000000", "type": "on", "point": "s0000000", "curve": "a0000000"}"#,
     );
     // Two new IDs, not three: the piece and the join.
     let error = split(
@@ -359,6 +356,38 @@ fn a_point_held_on_the_line_at_the_split_is_shared_and_its_tangent_on_becomes_a_
         ends(&sketch, "b1000000"),
         ("s0000000".to_owned(), "p0000004".to_owned())
     );
+    assert_eq!(sketch.points.len(), sketch_of(&before).points.len());
+    assert_eq!(done.edited.added, ids(&["b1000000", "j0000000"]));
+    assert_eq!(done.edited.modified, ids(&["a0000000"]));
+    assert_eq!(done.edited.removed, ids(&["k0000000"]));
+}
+
+#[test]
+fn a_point_held_on_the_line_at_the_split_by_a_tangent_on_is_shared_and_it_becomes_a_tangent_at() {
+    // Arc c about z0 (10, 10) starts at s0 (10, 0) tangent on a (k1: leaving its start
+    // along +x, as a runs: same), which holds s0 on a as an on would (decision 5). Split at
+    // s0's place, the pieces share s0, and the tangent_on becomes a tangent_at of c and the
+    // start-side piece, whose own direction at s0 is a's: same.
+    let points = r#"{"id": "s0000000", "x": 10, "y": 0, "construction": false}, {"id": "z0000000", "x": 10, "y": 10, "construction": false}, {"id": "z0000001", "x": 20, "y": 10, "construction": false}"#;
+    let before = a_line(
+        points,
+        "",
+        "",
+        &arc("c0000000", "z0000000", "s0000000", "z0000001"),
+        r#"{"id": "k0000001", "type": "tangent_on", "a": "c0000000", "at": "s0000000", "b": "a0000000", "direction": "same"}"#,
+    );
+    let done = split(
+        sketch_of(&before),
+        &id("a0000000"),
+        &[[10.0, 0.0]],
+        &ids(&["b1000000", "j0000000"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        ends(&sketch, "b1000000"),
+        ("s0000000".to_owned(), "p0000004".to_owned())
+    );
     assert_eq!(
         form(&sketch, "k0000001"),
         &Form::TangentAt {
@@ -371,7 +400,7 @@ fn a_point_held_on_the_line_at_the_split_is_shared_and_its_tangent_on_becomes_a_
     assert_eq!(sketch.points.len(), sketch_of(&before).points.len());
     assert_eq!(done.edited.added, ids(&["b1000000", "j0000000"]));
     assert_eq!(done.edited.modified, ids(&["a0000000", "k0000001"]));
-    assert_eq!(done.edited.removed, ids(&["k0000000"]));
+    assert!(done.edited.removed.is_empty());
 }
 
 #[test]

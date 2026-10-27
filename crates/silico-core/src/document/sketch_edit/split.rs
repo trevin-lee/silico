@@ -32,9 +32,10 @@ pub struct Split {
 /// follow §3's table, each keeping its ID: a retype or a move to the other piece is listed
 /// in `modified`, a constraint dropped in `removed`.
 ///
-/// A point the sketch holds `on` the curve within 1e-7 mm of the split position is the
-/// split point, shared, in place of a new one, and its `on` is removed (implied by then);
-/// a `tangent_on` whose `at` it is becomes a `tangent_at`.
+/// A point the sketch holds on the curve, by an `on` or as a `tangent_on`'s `at` (decision
+/// 5), within 1e-7 mm of the split position is the split point, shared, in place of a new
+/// one: its `on` is removed (implied by then), and a `tangent_on` whose `at` it is becomes
+/// a `tangent_at`.
 ///
 /// `ids` are the new members' IDs, in `added`'s order: the new points along the curve from
 /// its start (a circle's from `at.0`), the new piece, then a line's join.
@@ -134,6 +135,8 @@ pub fn split(
             .iter()
             .filter_map(|c| match &c.form {
                 Form::On { point, curve } if *curve == on_curve => point.element(),
+                // A tangent_on onto the curve holds its `at` on it too (decision 5).
+                Form::TangentOn { at, b, .. } if *b == on_curve => at.element(),
                 _ => None,
             })
             .filter(|p| !shared.iter().flatten().any(|s| s == *p))
@@ -584,6 +587,10 @@ impl Pieces<'_> {
     /// The piece whose span holds `point`'s projection; outside every span, the nearer
     /// end's (FreeCAD's `closestParameter` fallback, `Part/App/Geometry.cpp:1073-1083`,
     /// `bbbff1f8f1`); a circle's pieces span the whole turn between them (`263331f6fb`).
+    /// For an arc this departs from FreeCAD, whose `closestParameter` takes a point outside
+    /// the arc to its antipode when that's on it (1.1.3: 330° on an arc from 0 to 270° goes
+    /// to 150°): the nearer end is the piece the point is nearer, and an `on` acts on the
+    /// whole circle either way.
     fn holding(&self, point: [f64; 2]) -> &Reference {
         let start_side = match (self.shape, self.cuts) {
             (Shape::Line { from, to }, [cut]) => {

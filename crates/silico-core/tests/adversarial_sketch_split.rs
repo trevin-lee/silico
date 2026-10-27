@@ -691,10 +691,11 @@ fn a_refused_split_leaves_the_sketch_and_the_next_split_works() {
 // ------------------------------------------------------------------ points held otherwise
 
 #[test]
-fn a_tangent_on_point_at_the_cut_without_an_on_is_left_beside_the_new_point() {
-    // Spec question: a tangent_on holds its `at` on `b` as an `on` does, but only an `on`
-    // makes a point the split point. Here x's end s, tangent on a at (8, 0), is left at the
-    // place of the new point, unjoined: two points at one place. Gated, as it stands.
+fn a_tangent_on_point_at_the_cut_without_an_on_is_the_split_point() {
+    // A tangent_on holds its `at` on `b` as an `on` does (decision 5): x's end s, tangent on
+    // a at (8, 0), is the split point, and the tangent_on a tangent_at. Broke, before the
+    // fix: only an `on` made a point the split point, so s was left beside a new point at
+    // its place, unjoined (the port review's medium).
     let points = [
         point("p0000000", 0.0, 0.0),
         point("p0000004", 32.0, 0.0),
@@ -711,7 +712,11 @@ fn a_tangent_on_point_at_the_cut_without_an_on_is_left_beside_the_new_point() {
         r#"{"id": "k0000000", "type": "tangent_on", "a": "x0000000", "at": "s0000000", "b": "a0000000", "direction": "same"}"#,
     );
     let done = refused_or_gated(&before, "a0000000", &[[8.0, 0.0]]).unwrap();
-    assert_eq!(done.edited.added.len(), 3, "{:?}", done.edited.added);
+    assert_eq!(done.edited.added.len(), 2, "{:?}", done.edited.added);
+    assert!(matches!(
+        form(&done.edited.sketch, "k0000000"),
+        Form::TangentAt { .. }
+    ));
 }
 
 #[test]
