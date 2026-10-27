@@ -915,7 +915,7 @@ fn an_elements_limit_and_cursor_revision_are_read_to_their_types_edges() {
         ElementsRequest::read(&parsed(&text("4294967295", "18446744073709551615"))).unwrap();
     assert_eq!(request.limit, u32::MAX);
     assert_eq!(request.after.as_ref().unwrap().revision.number(), u64::MAX);
-    assert_eq!(request.after.as_ref().unwrap().name, "");
+    assert_eq!(request.after.as_ref().unwrap().name.as_str(), "");
     let back = written(&request);
     assert_eq!(ElementsRequest::read(&parsed(&back)).unwrap(), request);
     for (limit, revision, want) in [
@@ -956,7 +956,7 @@ fn a_cursor_passed_back_as_the_result_wrote_it_is_read_to_itself() {
         let cursor = Cursor {
             revision: top,
             feature: silico_core::document::FeatureId::new("k7f2qx3m").unwrap(),
-            name: name.clone(),
+            name: name.clone().into(),
         };
         for layout in [Layout::Canonical, Layout::OneLine] {
             let next = write(&cursor.to_wire(), layout).unwrap();

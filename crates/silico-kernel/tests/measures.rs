@@ -312,7 +312,7 @@ fn edges_meeting_at_a_corner_read_the_angle_at_it_and_name_it() {
         at,
         AngleAnswer {
             angle: Angle::from_ndeg(90_000_000_000),
-            vertex: Some(corner),
+            vertex: Some(corner.into()),
         }
     );
     let far_z = along([10.0, 20.0, 0.0], [10.0, 20.0, 30.0]);

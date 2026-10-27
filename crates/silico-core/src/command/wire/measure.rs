@@ -13,6 +13,7 @@ use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{ModelChoice, Problems, SessionId};
 use crate::document::json::Node;
 use crate::document::{Angle, FeatureId, Length, Measure};
+use crate::naming::ElementName;
 
 /// A `mass_properties` request: the session, the model it reads, and which solid (`None`
 /// for every body).
@@ -187,7 +188,10 @@ impl ToWire for AngleAnswer {
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("angle", Json::angle(self.angle)),
-            ("vertex", Json::or_null(self.vertex.as_deref(), Json::str)),
+            (
+                "vertex",
+                Json::or_null(self.vertex.as_ref().map(ElementName::as_str), Json::str),
+            ),
         ])
     }
 }

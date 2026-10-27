@@ -23,6 +23,7 @@ use crate::export::{
 };
 use crate::file::{self, Output};
 use crate::kernel::{Clients, Kernel, KernelRequest};
+use crate::naming::ElementName;
 use crate::pool::Outcome;
 use crate::recompute::Model;
 use crate::{Error, ErrorCode};
@@ -97,7 +98,7 @@ pub struct ExportedObject {
     pub name: String,
     /// The mesh written, for a mesh format (3MF); none for an exact one (STEP).
     pub mesh: Option<MeshWritten>,
-    pub left_out: Vec<String>,
+    pub left_out: Vec<ElementName>,
 }
 
 /// An object's mesh, as written: its triangles and vertices, and its volume, computed in

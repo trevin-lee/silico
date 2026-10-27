@@ -975,7 +975,12 @@ fn export(
                             let _ = writeln!(
                                 stdout,
                                 "  left out as bounding no material: {}",
-                                object.left_out.join(", ")
+                                object
+                                    .left_out
+                                    .iter()
+                                    .map(|n| n.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
                             );
                         }
                     }

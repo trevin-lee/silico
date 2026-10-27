@@ -17,7 +17,7 @@ use crate::kernel::{
     Clients, EdgeCurve, EdgeDescription, ElementKind, ElementRef, FaceDescription, Kernel,
     KernelRequest, ShapeData, Surface,
 };
-use crate::naming::ElementMap;
+use crate::naming::{ElementMap, ElementName};
 use crate::pool::Outcome;
 use crate::recompute::Model;
 use crate::{Error, ErrorCode};
@@ -171,7 +171,7 @@ pub struct DistanceAnswer {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AngleAnswer {
     pub angle: Angle,
-    pub vertex: Option<String>,
+    pub vertex: Option<ElementName>,
 }
 
 /// One of a measure's two elements, found by its name in a solid of the model.
@@ -734,7 +734,7 @@ pub fn angle(
         let degrees = libm::atan2(norm(cross(u, w)), dot(u, w)).to_degrees();
         return Ok(AngleAnswer {
             angle: rounded(Angle::rounded(degrees))?,
-            vertex: Some(vertex),
+            vertex: Some(ElementName::from(vertex)),
         });
     }
     Ok(AngleAnswer {

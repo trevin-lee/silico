@@ -37,7 +37,7 @@ use std::collections::BTreeMap;
 use silico_protocol::vec3::{cross, dot, sub};
 use silico_protocol::{ElementRef, ExportMesh, FACES_NAMED};
 
-use crate::naming::ElementMap;
+use crate::naming::{ElementMap, ElementName};
 use crate::{Error, ErrorCode};
 
 /// A solid's mesh, ready to print: closed, manifold, oriented outward, no triangle with two
@@ -50,7 +50,7 @@ pub struct PrintableMesh {
     vertices: Vec<[f32; 3]>,
     triangles: Vec<[u32; 3]>,
     volume: f64,
-    left_out: Vec<String>,
+    left_out: Vec<ElementName>,
 }
 
 impl PrintableMesh {
@@ -73,7 +73,7 @@ impl PrintableMesh {
     /// Faces of the solid left out, named as the feature's element map names them (as
     /// FreeCAD numbers them, `Face7`, without one): INTERNAL and EXTERNAL faces, which bound
     /// no change of material (as OCCT's own volume leaves them out, `BRepGProp.cxx:264-270`).
-    pub fn left_out(&self) -> &[String] {
+    pub fn left_out(&self) -> &[ElementName] {
         &self.left_out
     }
 }
@@ -81,7 +81,10 @@ impl PrintableMesh {
 /// The names of `faces` of a shape `names` is the element map of (or, without one, as
 /// FreeCAD numbers them, `Face3`), in order: a STEP export's `left_out`, named as a mesh's
 /// is. A map that doesn't name one of them is another shape's, Silico's bug.
-pub(crate) fn face_names(names: Option<&ElementMap>, faces: &[u32]) -> Result<Vec<String>, Error> {
+pub(crate) fn face_names(
+    names: Option<&ElementMap>,
+    faces: &[u32],
+) -> Result<Vec<ElementName>, Error> {
     if let Some(map) = names
         && let Some(&missing) = faces
             .iter()
@@ -97,7 +100,10 @@ pub(crate) fn face_names(names: Option<&ElementMap>, faces: &[u32]) -> Result<Ve
         .with_suggestion(crate::worker::SILICO_BUG));
     }
     let namer = FaceNamer { names };
-    Ok(faces.iter().map(|&f| namer.name(f)).collect())
+    Ok(faces
+        .iter()
+        .map(|&f| ElementName::from(namer.name(f)))
+        .collect())
 }
 
 /// Names faces in a refusal as the feature's element map names them (or as FreeCAD numbers
@@ -167,14 +173,21 @@ pub fn printable(
     names: Option<&ElementMap>,
 ) -> Result<PrintableMesh, Error> {
     let namer = FaceNamer { names };
-    let left_out: Vec<String> = mesh
+    let left_out: Vec<ElementName> = mesh
         .unoriented_faces
         .iter()
-        .map(|&f| namer.name(f))
+        .map(|&f| ElementName::from(namer.name(f)))
         .collect();
+    let listed = || {
+        left_out
+            .iter()
+            .map(ElementName::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     if !left_out.is_empty() {
         tracing::info!(
-            faces = left_out.join(", "),
+            faces = listed(),
             "left out of the export as bounding no material (INTERNAL or EXTERNAL)"
         );
     }
@@ -183,7 +196,7 @@ pub fn printable(
         (None, false) => {
             let cause = format!(
                 "left out of the mesh as bounding no material (INTERNAL or EXTERNAL): {}",
-                left_out.join(", ")
+                listed()
             );
             error.with_cause(cause)
         }
@@ -643,7 +656,7 @@ fn checked(
         left_out: mesh
             .unoriented_faces
             .iter()
-            .map(|&f| faces.name(f))
+            .map(|&f| ElementName::from(faces.name(f)))
             .collect(),
     })
 }

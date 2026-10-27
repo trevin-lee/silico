@@ -191,7 +191,7 @@ fn a_model_that_holds_a_fault_gives_no_cursor_and_refuses_one_as_a_conflict() {
     let cursor = Cursor {
         revision: Revision::OPENED,
         feature: last.feature.clone(),
-        name: last.name.to_string(),
+        name: last.name.to_string().into(),
     };
     fault.store(false, Ordering::SeqCst);
     // The published model is still the faulted one: a conflict, naming after.

@@ -222,7 +222,7 @@ fn edges_meeting_at_an_obtuse_corner_read_the_angle_at_it_past_90() {
     let corner = named(&m, "w5mb4c2n", at([20.0, 0.0, 0.0]));
     let expected = AngleAnswer {
         angle: deg(135),
-        vertex: Some(corner),
+        vertex: Some(corner.into()),
     };
     assert_eq!(angled(&m, &back, &up), expected);
     assert_eq!(angled(&m, &up, &back), expected);
@@ -241,7 +241,7 @@ fn edges_meeting_at_an_obtuse_corner_read_the_angle_at_it_past_90() {
         angled(&m, &vertical, &up),
         AngleAnswer {
             angle: deg(90),
-            vertex: Some(corner),
+            vertex: Some(corner.into()),
         }
     );
 }
@@ -728,7 +728,7 @@ fn a_corner_between_edges_of_one_and_two_reads_its_10_degrees_with_the_vertex_na
         answer,
         AngleAnswer {
             angle: deg(10),
-            vertex: Some(corner.clone()),
+            vertex: Some(corner.clone().into()),
         }
     );
     let written = silico_core::command::wire::write(

@@ -95,7 +95,7 @@ fn pages_follow_on_from_their_cursor_and_together_list_every_entry_once() {
                 assert_eq!(next.revision, Revision::OPENED);
                 assert_eq!(
                     (next.feature.clone(), next.name.clone()),
-                    (last.feature.clone(), last.name.to_string())
+                    (last.feature.clone(), last.name.to_string().into())
                 );
                 after = Some(next);
             }
@@ -144,7 +144,7 @@ fn a_cursor_of_another_revision_is_a_conflict_said_with_every_other_reason() {
     assert!(list(&model, later, None, Some(&fresh), 1).is_ok());
     // A cursor that names no entry of the listing is refused, naming after.
     let mut lost = fresh.clone();
-    lost.name = "k7f2qx3m.box.Face99".to_owned();
+    lost.name = "k7f2qx3m.box.Face99".into();
     let refused = list(&model, later, None, Some(&lost), 1).unwrap_err();
     assert_eq!(
         codes(&refused),

@@ -538,7 +538,7 @@ fn a_cursor_and_ranges_of_each_quantity_are_read_and_written_back() {
         Some(Cursor {
             revision: revision(6),
             feature: id("m3tq8v0z"),
-            name: "k7f2qx3m.box.Face2".to_owned(),
+            name: "k7f2qx3m.box.Face2".into(),
         })
     );
     assert_eq!(request.feature, Some(id("m3tq8v0z")));
@@ -608,7 +608,7 @@ fn the_designs_refusals_are_the_commands_own_and_hold_to_the_error_contract() {
     let older = Cursor {
         revision: revision(6),
         feature: id("k7f2qx3m"),
-        name: "k7f2qx3m.box.Face2".to_owned(),
+        name: "k7f2qx3m.box.Face2".into(),
     };
     let stale = list(&model, revision(7), None, Some(&older), 2).unwrap_err();
     assert_eq!(stale.errors()[0].code(), ErrorCode::Conflict);

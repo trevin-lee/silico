@@ -991,11 +991,15 @@ fn the_vertex_two_edges_meet_at_is_named_by_its_own_name_though_unstable() {
     ] {
         let answer = angle(&model, &names, feature.as_ref()).unwrap();
         assert_eq!(
-            answer.vertex.as_deref(),
+            answer.vertex.as_ref().map(|v| v.as_str()),
             Some("rrrrrrrr.cut.Vertex1"),
             "{names:?}"
         );
-        assert_eq!(answer.vertex, Some(entry.name.to_string()), "{names:?}");
+        assert_eq!(
+            answer.vertex,
+            Some(entry.name.to_string().into()),
+            "{names:?}"
+        );
         assert_eq!(answer.angle, Angle::from_ndeg(135_000_000_000), "{names:?}");
     }
 }

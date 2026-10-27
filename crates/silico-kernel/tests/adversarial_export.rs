@@ -900,7 +900,13 @@ print("SILICO_ORACLE " + json.dumps({{"faces": len(s.Faces)}}))
     assert_eq!(mesh.triangles().len(), 12);
     assert_eq!(mesh.vertices().len(), 8);
     assert_eq!(mesh.volume(), 6000.0);
-    assert_eq!(mesh.left_out(), ["Face7"]);
+    assert_eq!(
+        mesh.left_out()
+            .iter()
+            .map(|n| n.as_str())
+            .collect::<Vec<_>>(),
+        ["Face7"]
+    );
 }
 
 #[test]

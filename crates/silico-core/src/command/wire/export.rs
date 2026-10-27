@@ -148,7 +148,7 @@ fn object_to_wire(object: &ExportedObject) -> Json<'_> {
         ),
         (
             "left_out",
-            Json::array(object.left_out.iter().map(|n| Json::str(n))),
+            Json::array(object.left_out.iter().map(|n| Json::str(n.as_str()))),
         ),
     ])
 }
