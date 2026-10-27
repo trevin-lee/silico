@@ -121,11 +121,15 @@ mod tests {
         // Its entries are places in the list it was built from, whose IDs it reads there: a
         // thousand features' index clones none of their IDs (it held a clone of each).
         let ids: Vec<FeatureId> = (0..1000).map(|i| id(&format!("f{i:07}"))).collect();
+        // Nor does a lookup: every ID found, and one missing, copies none.
         let before = cloned();
         let index = FeatureIndex::new(&ids);
-        assert_eq!(cloned() - before, 0);
         assert_eq!(index.0.len(), 1000);
-        assert_eq!(index.get(&ids[999], |place| ids.get(place)), Some(999));
+        for (place, feature) in ids.iter().enumerate() {
+            assert_eq!(index.get(feature, |place| ids.get(place)), Some(place));
+        }
+        assert_eq!(index.get(&id("g0000000"), |place| ids.get(place)), None);
+        assert_eq!(cloned() - before, 0);
     }
 
     #[test]

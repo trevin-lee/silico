@@ -4521,13 +4521,27 @@ mod tests {
         let plan = Plan::of(&document, &BTreeMap::new());
         assert_eq!(crate::naming::makers_read() - read, 0);
         let copies = crate::document::cloned() - copied;
+        // Each asked for by the document's index: one lookup, of at most ⌈log₂ N⌉ + 1
+        // comparisons (11 for N = 1,000), found or not. A scan of the timeline compares
+        // up to all N.
+        let most = ceil_log2(n) + 1;
         let last = &document.document().features[n - 1].id;
+        let before = counted();
+        let found = plan.maker(last);
+        let (compared, looked_up) = (counted().0 - before.0, counted().1 - before.1);
         assert_eq!(
-            plan.maker(last),
+            found,
             Some(Maker::Itself(crate::naming::PrimitiveKind::Box))
         );
+        assert_eq!(looked_up, 1);
+        assert!((1..=most).contains(&compared), "{compared} comparisons");
         assert_eq!(crate::naming::makers_read() - read, 1);
-        assert_eq!(plan.maker(&FeatureId::new("zzzzzzzz").unwrap()), None);
+        let missing = FeatureId::new("zzzzzzzz").unwrap();
+        let before = counted();
+        assert_eq!(plan.maker(&missing), None);
+        let (compared, looked_up) = (counted().0 - before.0, counted().1 - before.1);
+        assert_eq!(looked_up, 1);
+        assert!((1..=most).contains(&compared), "{compared} comparisons");
         // The plan copies each box's ID twice: for the box's own entry (`Planned`), and for
         // its step's first feature (N steps: one Make step for them all, first used by the
         // first box, and a Translate step for each of the others). A map of makers copied
