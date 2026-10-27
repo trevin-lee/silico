@@ -973,15 +973,18 @@ fn each_superseded_request_is_stopped_when_it_is_due() {
 fn lowering_the_stop_after_stops_superseded_work_already_running() {
     // A superseded request left running under a stop-after longer than the test waits is
     // stopped once the stop-after is lowered to zero, not left to its end (longer than its
-    // outcome is waited for).
-    let pool = pool(TEST_WORKER, 1);
+    // outcome is waited for). It's superseded once its worker says it's running it.
+    let marks = marks_dir("lowering");
+    let pool = KernelPool::start_workers(&sleep_marking_worker(&marks), 1).unwrap();
     pool.set_stop_after(Duration::from_secs(3600));
     let stale = pool.submit(Generation(1), long_sleep());
-    std::thread::sleep(Duration::from_millis(100));
+    wait_started(&marks, 1);
     pool.advance(Generation(2));
     std::thread::sleep(Duration::from_millis(100));
     pool.set_stop_after(Duration::ZERO);
     assert!(matches!(outcome(stale), Outcome::Superseded));
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&marks);
 }
 
 #[test]
