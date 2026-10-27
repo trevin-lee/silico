@@ -583,9 +583,10 @@ impl Refusal {
     }
 
     /// This refusal of `silico command`, with `fault`, a kernel fault its response's model
-    /// read carries: the command's failure (exit 2), as a fault beside a result is, with
-    /// the CLI's advice to run it again. Said once: where the refusal lists it already (a
-    /// solid it stopped, asked for), there, in the CLI's words, not a session's.
+    /// read carries: the command's failure (exit 2), as a fault beside a result is, worded
+    /// with running the command again ([`with_retry`]). Said once: where the refusal lists
+    /// it already (a solid it stopped, asked for), there, reworded from the fault as met, not
+    /// as a session worded it.
     fn with_fault(self, fault: Option<Error>, command: &str) -> Self {
         let Some(fault) = fault else {
             return self;

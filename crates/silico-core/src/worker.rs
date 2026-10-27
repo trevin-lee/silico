@@ -1934,8 +1934,9 @@ mod tests {
 
     #[test]
     fn a_crash_and_a_timeout_say_their_advice_as_data_beside_its_words() {
-        // What a session words its own way (`command::fault_suggestion`) it reads from the advice as
-        // data, so each real end of a worker sets it, with the words the suggestion gives.
+        // What a session and the CLI word their own way (`command::fault_suggestion`) they read
+        // from the advice as data, so each real end of a worker sets it, with the words the
+        // suggestion gives.
         use super::Advice;
         use std::time::Duration;
         let echo = || silico_protocol::Op::Echo {

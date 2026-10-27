@@ -2956,6 +2956,20 @@ fn the_cli_words_each_fault_as_a_session_does_trying_again_by_running_its_comman
         "run `silico check` to try it again: the kernel worker was stopped from outside, \
          stopped responding, or was gone before the request reached it, not by these values"
     );
+    assert_eq!(
+        cli(&crashed(libc::SIGKILL, Reached::Request)),
+        "run `silico check` to try it once more: the kernel worker was killed, most likely by \
+         the system for running out of memory; if it's killed again, the request needs too much \
+         memory: simplify it"
+    );
+    let unstarted = Error::new(ErrorCode::WorkerTimeout, "the worker took too long")
+        .with_advice(timeout_advice(WorkerKind::Kernel, false));
+    assert_eq!(
+        cli(&unstarted),
+        "run `silico check` to try it again: the kernel worker hadn't started in the time \
+         allowed (a new worker binary's first launch can be slow while the system checks it); if \
+         it never starts, check Silico's install"
+    );
     let timed_out = Error::new(ErrorCode::WorkerTimeout, "the worker took too long")
         .with_advice(timeout_advice(WorkerKind::Kernel, true));
     assert_eq!(

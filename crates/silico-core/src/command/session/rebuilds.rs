@@ -798,8 +798,8 @@ pub(in crate::command) fn retried(done: &str) -> String {
 /// A kernel fault as the model read holds it ([`ModelRead::fault`](super::ModelRead)): as
 /// it was met, its suggestion the worker's own, but a worker that couldn't be had, which
 /// says nothing of the feature that asked for it, naming none. A session's client words
-/// how to try again its own way: the wire, and a session command refused with it, with
-/// [`kept_fault`]; the CLI with its own.
+/// how to try again where it reads it: the wire, and a session command refused with it, with
+/// [`kept_fault`]; the CLI with [`fault_suggestion`] and its own command to run again.
 pub(in crate::command) fn met_fault(fault: &Error) -> Error {
     match fault.code() {
         ErrorCode::WorkerUnavailable => fault.clone().without_feature(),

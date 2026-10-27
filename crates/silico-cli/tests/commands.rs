@@ -1793,7 +1793,7 @@ fn each_crash_says_the_designs_words_once_and_a_values_crash_only_to_change_them
             "killed",
             "kill -KILL $$",
             "run `silico check` to try it once more: the kernel worker was killed",
-            "",
+            "the request needs too much memory: simplify it",
         ),
         (
             "exited",
