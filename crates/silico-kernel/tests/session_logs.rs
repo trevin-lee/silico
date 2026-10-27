@@ -47,11 +47,12 @@ fn opened(dir: &tempfile::TempDir, text: &str) -> (Sessions<KernelPool>, Session
     (sessions, s1)
 }
 
-/// A read of `level` and above, of `feature` if given, after `after`, up to 1,000 events.
+/// A read of `level` and above, of `feature` if given (which must be a feature's ID), after
+/// `after`, up to 1,000 events.
 fn query(level: LogLevel, feature: Option<&str>, after: Option<u64>) -> LogQuery {
     LogQuery {
         level,
-        feature: feature.and_then(FeatureId::new),
+        feature: feature.map(|id| FeatureId::new(id).unwrap()),
         after,
         limit: 1000,
     }

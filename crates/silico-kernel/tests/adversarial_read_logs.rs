@@ -37,22 +37,26 @@ struct Recording;
 
 /// An event's message, and its other fields, ` key=value` each.
 #[derive(Default)]
-struct Message(String, String);
+struct Message {
+    message: String,
+    fields: String,
+}
 
 impl Visit for Message {
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "message" {
-            self.0.push_str(value);
+            self.message.push_str(value);
         } else {
-            self.1.push_str(&format!(" {}={value}", field.name()));
+            self.fields.push_str(&format!(" {}={value}", field.name()));
         }
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
-            self.0.push_str(&format!("{value:?}"));
+            self.message.push_str(&format!("{value:?}"));
         } else {
-            self.1.push_str(&format!(" {}={value:?}", field.name()));
+            self.fields
+                .push_str(&format!(" {}={value:?}", field.name()));
         }
     }
 }
@@ -68,8 +72,8 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Recording {
         SEEN.lock().unwrap().push(Seen {
             level: *event.metadata().level(),
             target: event.metadata().target().to_owned(),
-            message: message.0,
-            fields: message.1,
+            message: message.message,
+            fields: message.fields,
             spans,
         });
     }

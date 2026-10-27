@@ -572,6 +572,8 @@ mod tests {
             "warn,debug",
             "debug,",
             ",debug",
+            "debug, ",
+            " ,debug",
             "silico_worker=debug",
         ] {
             let log = Log::default();
@@ -590,6 +592,7 @@ mod tests {
             assert!(!log.contains("not this"), "SILICO_LOG={value}: {log}");
         }
         assert_eq!(worker_filter(Some("debug,")).to_string(), "debug");
+        assert_eq!(worker_filter(Some("debug, ")).to_string(), "debug");
         // More than info, or a target's own, as given.
         assert_eq!(hint(Some("debug")), Some(LevelFilter::DEBUG));
         assert_eq!(
