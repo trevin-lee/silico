@@ -44,5 +44,7 @@ mod sketch_features_gate;
 mod sketch_gate;
 #[path = "sketch_solve.rs"]
 mod sketch_solve;
+#[path = "sketch_split.rs"]
+mod sketch_split;
 #[path = "stored_coordinates.rs"]
 mod stored_coordinates;

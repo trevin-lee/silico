@@ -13,6 +13,9 @@ use super::PROBLEMS_LISTED;
 use super::sketch::{ElementId, ElementKind, Form, Reference, Sketch, SketchPoint};
 use crate::{Error, ErrorCode};
 
+mod split;
+pub use split::{Split, split};
+
 /// A sketch edited, and what changed: each list by kind (points, lines, circles, arcs,
 /// constraints), then by ID (docs/design/m5.0-app.md, section 7, *The sketch edits*).
 #[derive(Debug, Clone, PartialEq, Eq)]
