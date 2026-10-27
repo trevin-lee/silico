@@ -15,6 +15,8 @@ Each command is a thin client of the core's commands (`silico_core::command`), w
 
 `--` ends the options, so a file can be named like one; `cache`'s `clear` comes before the files, and before `--` or after it. `check`, `fmt`, `show`, and `cache clear` refuse a file whose name isn't UTF-8 as a file that couldn't be read (exit 2), as the session commands every client runs refuse it, since a response couldn't name it exactly: the refusal names the parameter `path`; `textconv` reads it. A file's name is shown as it is, unless it holds a character a terminal would act on or draw as nothing (a control, an invisible character, a space but the plain one), a quote, or a backslash: then it's shown quoted, with those escaped as an outline escapes a document's text (`"bad\u{1b}.silico"`). A JSON line holds the name itself.
 
+**Workers.** `silico` runs OCCT, PlaneGCS, and the renderer in worker processes (`silico-kernel-worker`, `silico-sketch-worker`, `silico-render-worker`, `silico-step-worker`), each found in the directory of `silico`'s own executable, its links resolved: a link to the build's `silico` (on `PATH`, say) finds the workers beside the build. `SILICO_KERNEL_WORKER`, `SILICO_SKETCH_WORKER`, `SILICO_RENDER_WORKER`, and `SILICO_STEP_WORKER` name one elsewhere. A worker that isn't there is `worker_unavailable`, naming the directory looked in and the worker looked for (exit 2).
+
 **Exit codes:**
 - 0: nothing wrong.
 - 1: a document has problems, or (with `fmt --check`) isn't in canonical form, or a file is longer than a document may be.

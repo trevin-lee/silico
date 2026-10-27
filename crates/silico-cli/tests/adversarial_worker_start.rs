@@ -155,3 +155,74 @@ fn every_unusable_worker_variable_is_unavailable_exit_2() {
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
+
+/// `silico check --json part.silico` run as `exe`, in `dir`, with no worker named by a
+/// variable: each found beside the executable or not at all. Its exit code and stdout.
+fn check_as(exe: &Path, dir: &Path, text: &str) -> (Option<i32>, String) {
+    std::fs::write(dir.join("part.silico"), text).unwrap();
+    let mut c = Command::new(exe);
+    c.args(["check", "--json", "part.silico"])
+        .current_dir(dir)
+        .env_remove("SILICO_KERNEL_WORKER")
+        .env_remove("SILICO_SKETCH_WORKER")
+        .env_remove("SILICO_RENDER_WORKER")
+        .env_remove("SILICO_STEP_WORKER")
+        .env("XDG_CACHE_HOME", dir.join("cache-home"))
+        .env_remove("SILICO_LOG")
+        .stdin(Stdio::null());
+    let out = run::output(c);
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn a_silico_reached_through_a_link_finds_the_workers_beside_its_build() {
+    // As a `silico` on PATH is: a link, in a directory of its own, to the build's. Its
+    // workers are beside the build, never beside the link. This fails without the fix on
+    // macOS, whose running executable is the path as run; Linux's is already resolved, and
+    // the core's tests of the lookup itself hold it there.
+    let dir = scratch("linked");
+    let link = dir.join("silico");
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_silico"), &link).unwrap();
+    let (status, stdout) = check_as(&link, &dir, BOX);
+    assert_eq!(status, Some(0), "{stdout}");
+    assert!(stdout.contains("\"ok\":true"), "{stdout}");
+    // A sketch, which the sketch worker solves, as well.
+    let (status, stdout) = check_as(&link, &dir, SKETCH);
+    assert_eq!(status, Some(0), "{stdout}");
+}
+
+#[test]
+fn a_silico_copied_alone_names_where_it_looked_for_its_worker() {
+    // A copy has no workers beside it: the kernel fault names the directory looked in and
+    // the worker looked for, and how to put it right.
+    let dir = scratch("copied");
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let copy = bin.join("silico");
+    std::fs::copy(env!("CARGO_BIN_EXE_silico"), &copy).unwrap();
+    let bin = std::fs::canonicalize(&bin).unwrap();
+    // Run by its resolved path, so on macOS (whose running executable is the path as run) a
+    // scratch directory reached through a link adds no "run as".
+    let copy = bin.join("silico");
+    let (status, stdout) = check_as(&copy, &dir, BOX);
+    assert_eq!(status, Some(2), "{stdout}");
+    assert_eq!(code(&stdout), "worker_unavailable", "{stdout}");
+    let message = format!(
+        "no kernel worker in {}: Silico looks for silico-kernel-worker beside its own executable, {}",
+        bin.display(),
+        bin.join("silico").display()
+    );
+    // The whole message: run as itself, nothing after it.
+    assert!(
+        stdout.contains(&format!("\"{message}\"")),
+        "{message}\nin {stdout}"
+    );
+    let suggestion = format!(
+        "build it (cargo build -p silico-kernel --bin silico-kernel-worker) or put it in {}, or name it in SILICO_KERNEL_WORKER",
+        bin.display()
+    );
+    assert!(stdout.contains(&suggestion), "{suggestion}\nin {stdout}");
+}
