@@ -8,7 +8,7 @@
 //! what's never compared: a PNG's bytes, `render`'s `png_bytes`, progress notifications,
 //! and `initialize`'s `serverInfo.version` and the workspace's absolute path in its
 //! `instructions` (the session uses only relative paths, so nothing else quotes it). Each
-//! reply also holds to its tool's `outputSchema` in the committed `tools.json`.
+//! reply also holds to its tool's `outputSchema` in silico-mcp's committed `tools.json`.
 //!
 //! **Checked by hand,** never read from the recording: the expected values below are the
 //! spec's dimensions worked out on paper (prisms, cylinders, the fillet's spandrel), each
@@ -22,9 +22,14 @@
 //! **Recording.** With `SILICO_BRACKET_RECORD=1` set, the session is first driven live by
 //! [`record`], which plays the agent (each request built from the replies before it, as an
 //! agent reads them), and `session.jsonl` is written from the real replies; the replay and
-//! every check below then run on what was written. The `silico` binary and its workers are
-//! the ones built beside this test program (`cargo build -p silico-cli -p silico-kernel
-//! -p silico-sketch -p silico-render --bins`, which `pixi run test` does).
+//! every check below then run on what was written:
+//! `SILICO_BRACKET_RECORD=1 cargo nextest run -p silico-cli -E 'test(bracket)'`.
+//!
+//! It lives in silico-cli's tests, not silico-mcp's, so the `silico` binary it serves with
+//! comes from Cargo (`CARGO_BIN_EXE_silico`), built for every run that runs it. Its workers
+//! are the ones built beside it, as silico-cli's other tests take them (`pixi run test`
+//! builds them).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -36,8 +41,6 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::Value;
 use serde_json::value::RawValue;
-
-use crate::contract::holds;
 
 /// Longer than any one reply takes on a loaded machine: past it, the server hangs.
 const REPLY: Duration = Duration::from_secs(240);
@@ -56,19 +59,30 @@ fn session_file() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/bracket/session.jsonl")
 }
 
-/// The `silico` binary built beside this test program (`target/<profile>/silico`), with its
-/// workers next to it, where it finds them.
+/// The `silico` binary, from Cargo, with its workers beside it, where it finds them.
 fn silico() -> PathBuf {
-    let me = std::env::current_exe().unwrap();
-    // target/<profile>/deps/all_mcp-<hash>
-    let profile = me.parent().unwrap().parent().unwrap();
-    let silico = profile.join(format!("silico{}", std::env::consts::EXE_SUFFIX));
-    assert!(
-        silico.is_file(),
-        "{} isn't built: cargo build -p silico-cli -p silico-kernel -p silico-sketch -p silico-render --bins",
-        silico.display()
-    );
+    let silico = PathBuf::from(env!("CARGO_BIN_EXE_silico"));
+    for worker in [
+        "silico-kernel-worker",
+        "silico-sketch-worker",
+        "silico-render-worker",
+    ] {
+        assert!(
+            silico.with_file_name(worker).is_file(),
+            "{worker} isn't built beside silico: cargo build -p silico-kernel -p silico-sketch -p silico-render --bins"
+        );
+    }
     silico
+}
+
+/// Panics, naming `what`, unless `value` holds to `schema`.
+fn holds(schema: &Value, value: &Value, what: &str) {
+    let validator = jsonschema::validator_for(schema).unwrap();
+    let errors: Vec<String> = validator
+        .iter_errors(value)
+        .map(|e| e.to_string())
+        .collect();
+    assert!(errors.is_empty(), "{what}: {errors:?}");
 }
 
 /// `silico serve` in a temporary workspace of its own, as an MCP client starts it: its
@@ -296,9 +310,10 @@ impl Replayed {
     }
 }
 
-/// The committed `tools/list` reply's tools, by name.
+/// The committed `tools/list` reply's tools (silico-mcp's contract), by name.
 fn tools() -> BTreeMap<String, Value> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/contract/tools.json");
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../silico-mcp/tests/contract/tools.json");
     let list: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     list["tools"]
         .as_array()
