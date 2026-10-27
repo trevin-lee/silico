@@ -130,7 +130,7 @@ impl<T> Outcome<T> {
 #[must_use = "a request's outcome is only had by waiting for it"]
 pub struct Pending<T> {
     name: &'static str,
-    /// Set when its caller gives it up ([`Pending::cancel`]); the queued request holds it too.
+    /// Set when its caller drops it ([`Pending`]); the queued request holds it too.
     cancelled: Arc<AtomicBool>,
     /// What ran it, for the error if it stops first: `kernel pool`, `fake kernel`.
     kernel: &'static str,

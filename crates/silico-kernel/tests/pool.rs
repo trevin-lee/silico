@@ -578,9 +578,11 @@ fn a_request_after_advance_never_lands_on_a_killed_worker() {
     sweep_across(300, Duration::from_micros(100), |delay| {
         let g = pool.generation().0;
         let before = pool.pids();
-        drop(pool.submit(Generation(g), sleep(200)));
+        // Kept until after `advance`, so it's superseded, not given up by its drop.
+        let superseded = pool.submit(Generation(g), sleep(200));
         spin(delay);
         pool.advance(Generation(g + 1));
+        drop(superseded);
         match outcome(pool.submit(Generation(g + 1), echo(&[1]))) {
             Outcome::Done(Ok(_)) => {}
             other => failures.push((delay, format!("{other:?}"))),

@@ -597,16 +597,25 @@ fn dropping_the_kernel_with_requests_held_from_many_threads_ends_them_all() {
 
 #[test]
 fn a_caller_that_stops_waiting_does_not_wedge_the_kernel() {
+    // An echo dropped once it has started, held, so its reply has nowhere to go; and a
+    // thousand more dropped while they wait, so each is given up and passed over unrun. Let
+    // go, the started one runs out, and the request after them all is answered: the only
+    // other to run.
     let kernel = FakeKernel::new(1).unwrap();
-    for n in 0..1000u32 {
-        // Dropped at once: the reply has nowhere to go.
-        drop(kernel.submit(
-            Generation(0),
-            KernelRequest::echo(Blob::inline(n.to_le_bytes().to_vec())),
-        ));
+    let echo = |n: u32| KernelRequest::echo(Blob::inline(n.to_le_bytes().to_vec()));
+    let hold = kernel.hold(|op| matches!(op, Op::Echo { .. }));
+    let started = kernel.submit(Generation(0), echo(0));
+    assert!(kernel.wait_running(1, Duration::from_secs(10)));
+    drop(started);
+    for n in 1..=1000u32 {
+        drop(kernel.submit(Generation(0), echo(n)));
     }
+    hold.release();
     run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
-    assert_eq!(kernel.calls().len(), 1001);
+    assert_eq!(kernel.asked().len(), 1002);
+    let ran: Vec<&str> = kernel.calls().iter().map(|call| call.op.name()).collect();
+    assert_eq!(ran, ["Echo", "MakeBox"]);
+    assert_eq!(kernel.cancelled_waiting(), 0);
 }
 
 #[test]

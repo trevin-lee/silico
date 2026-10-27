@@ -3683,20 +3683,16 @@ impl<K: Kernel + 'static> Engine<K> {
             .iter()
             .any(|&n| n > DESCRIBE_BATCH);
         let at_once = if large { DESCRIBE_AT_ONCE } else { 1 };
-        let mut in_flight = VecDeque::new();
-        // The description given up: every batch still in flight dropped, which cancels it
-        // ([`Pending`]: one still waiting is dropped unrun).
-        let given_up = |in_flight: VecDeque<(ElementKind, Pending<DescribedBatch>)>, error| {
-            drop(in_flight);
-            Outcome::Done(Err(error))
-        };
+        // Given up at a failure by returning: the batches still in flight are dropped with it,
+        // which cancels them ([`Pending`]: one still waiting is dropped unrun).
+        let mut in_flight: VecDeque<(ElementKind, Pending<DescribedBatch>)> = VecDeque::new();
         loop {
             while in_flight.len() < at_once
                 && let Some((kind, first, count)) = planned.next()
             {
                 let request = match KernelRequest::describe(shape, kind, first, count) {
                     Ok(request) => request,
-                    Err(error) => return given_up(in_flight, error),
+                    Err(error) => return Outcome::Done(Err(error)),
                 };
                 in_flight.push_back((kind, self.kernel.submit(generation, request)));
             }
@@ -3706,13 +3702,13 @@ impl<K: Kernel + 'static> Engine<K> {
             match pending.wait() {
                 Outcome::Done(Ok(batch)) => {
                     if let Some(fault) = crate::kernel::total_fault(summary, kind, batch.total) {
-                        return given_up(in_flight, fault);
+                        return Outcome::Done(Err(fault));
                     }
                     description.faces.extend(batch.description.faces);
                     description.edges.extend(batch.description.edges);
                     description.vertices.extend(batch.description.vertices);
                 }
-                Outcome::Done(Err(error)) => return given_up(in_flight, error),
+                Outcome::Done(Err(error)) => return Outcome::Done(Err(error)),
                 // The generation's other requests are superseded with it.
                 Outcome::Superseded => return Outcome::Superseded,
             }
@@ -4196,6 +4192,41 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_describe_timed_out_before_its_worker_started_is_asked_again_and_one_after_is_kept() {
+        // A box's description refused as a timeout, twice recomputed on one engine: one whose
+        // worker hadn't started (advised to try again) says nothing about the solid, so the
+        // second recompute asks again; one whose worker had (advised to simplify or wait) is
+        // kept, so the second asks nothing.
+        use crate::worker::Advice;
+        let not_started = || Advice::TryAgain {
+            once_more: true,
+            why: "the worker was slow to start".to_owned(),
+        };
+        for (advice, asked) in [(not_started(), 2), (Advice::SimplifyOrWait, 1)] {
+            let kernel = crate::fake::FakeKernel::new(2).unwrap();
+            let given = advice.clone();
+            kernel.refuse(move |op| {
+                matches!(op, silico_protocol::Op::DescribeAll { .. }).then(|| {
+                    Error::new(ErrorCode::WorkerTimeout, "the kernel worker timed out")
+                        .with_advice(given.clone())
+                })
+            });
+            let engine = Recompute::new(kernel);
+            let document = Arc::new(boxes(1, |_| false));
+            for _ in 0..2 {
+                published(engine.start(Arc::clone(&document)));
+            }
+            let described = engine
+                .kernel()
+                .asked()
+                .iter()
+                .filter(|call| matches!(call.op, silico_protocol::Op::DescribeAll { .. }))
+                .count();
+            assert_eq!(described, asked, "{advice:?}");
+        }
+    }
 
     #[test]
     fn only_a_hang_of_a_worker_that_had_started_is_kept() {
