@@ -4,6 +4,9 @@
 //! nextest's, after which it's killed and the test is told where its time went: the run's
 //! elapsed time, the longest waits between its log lines, and the log's last lines.
 
+// Each test program that includes this uses only some of it.
+#![allow(dead_code)]
+
 use std::io::Read as _;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
@@ -27,7 +30,7 @@ pub struct Finished {
 
 /// 32 random bytes, a cache secret, written to `file`: what silico would make, without the
 /// sync it makes it with.
-fn give_secret(file: &Path) {
+pub fn give_secret(file: &Path) {
     let mut bytes = [0u8; 32];
     std::fs::File::open("/dev/urandom")
         .unwrap()
