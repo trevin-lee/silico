@@ -1767,3 +1767,35 @@ fn after_a_commit_that_wrote_nothing_and_a_reload_a_carried_feature_is_warned_of
     assert_ne!(session.revision, kept);
     assert_eq!(said(&published_check(&f, kept)), [k7, m2]);
 }
+
+#[test]
+fn after_a_commit_that_wrote_nothing_and_a_reload_of_a_file_that_doesnt_read_a_published_check_spares_the_transactions_reach()
+ {
+    // As the reload test above, but the file reloaded doesn't read, so it says nothing of
+    // what's stored: the rule falls back to A4-1's (docs/design/m4.1-warnings-addendum.md),
+    // and the older model, a transaction's, spares what that transaction reached. So only
+    // k7f2qx3m, which no edit reached, is warned of; m0000002 is spared.
+    let (f, [k7, _]) = carried_and_built();
+    answer(f.sessions.begin(&s1())).result.unwrap();
+    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let added: Node = silico_core::document::json::read(block("m0000003", 20).as_bytes()).unwrap();
+    answer(f.sessions.add_feature(&s1(), revision, added))
+        .result
+        .unwrap();
+    assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
+    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    answer(f.sessions.remove_feature(&s1(), revision, id("m0000003")))
+        .result
+        .unwrap();
+    assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
+    let committed = answer(f.sessions.commit(&s1())).result.unwrap();
+    assert!(!committed.written, "{committed:?}");
+    let kept = f.sessions.status(&s1()).session.unwrap().revision;
+    std::fs::write(f.path(), "{\"silico\": 1,").unwrap();
+    let read = answer(f.sessions.text(&s1(), None));
+    let session = read.session.unwrap();
+    assert!(session.reloaded);
+    assert!(!session.transaction);
+    assert_ne!(session.revision, kept);
+    assert_eq!(said(&published_check(&f, kept)), std::slice::from_ref(&k7));
+}
