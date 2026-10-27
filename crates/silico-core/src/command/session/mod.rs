@@ -681,7 +681,8 @@ impl<P: Clients + 'static> Sessions<P> {
     }
 
     /// `session`'s document's problems ([`super::check`]) from the model `model` names
-    /// (decision 33), and its warnings (none yet): a `check` request's `model` and `fresh`,
+    /// (decision 33), and its warnings ([`crate::warnings`]: none for a document the gate
+    /// refused, which has no model to find them in): a `check` request's `model` and `fresh`,
     /// as the wire reads them (`CheckRequest::model`).
     ///
     /// The current revision's: the gate's problems, if it refused the document, or, from the
@@ -707,7 +708,10 @@ impl<P: Clients + 'static> Sessions<P> {
     /// reached at that model's revision, kept with it ([`Read::reached`]): exactly that
     /// revision's, whatever edits came since. With nothing published, it's refused as every
     /// published read is: naming `model`, or, for a document the gate refused, with the
-    /// gate's problems.
+    /// gate's problems. Its warnings leave out a missing fingerprint a commit writes: if a
+    /// transaction is open as it's checked, or, for a model older than the session's
+    /// revision, if that model's revision was a transaction's
+    /// ([`Reached::committing`](transaction::Reached::committing)).
     ///
     /// Either way, a kernel fault (a worker that crashed or hung) isn't the document's: it's
     /// given once, beside them, in the response's `model` ([`ModelRead::fault`]), and kept as
@@ -729,10 +733,11 @@ impl<P: Clients + 'static> Sessions<P> {
                 ModelChoice::Published,
                 move |read| {
                     let _span = tracing::info_span!("check").entered();
-                    Ok(CheckAnswer::of(super::check_except(
+                    Ok(CheckAnswer::of(
+                        super::check_except(read.model(), read.reached()),
                         read.model(),
-                        read.reached(),
-                    )))
+                        read.reached.committing(read.checking),
+                    ))
                 },
             ),
         }
@@ -763,6 +768,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 stop,
                 kernel: &kernel,
                 reached: &current.reached,
+                checking: current.checking,
             })
         })
     }
@@ -777,12 +783,13 @@ impl<P: Clients + 'static> Sessions<P> {
                     *model = Some(current.read);
                     let fresh = reads == recompute::Reads::Nothing;
                     let _span = tracing::info_span!("check", fresh).entered();
-                    Ok(CheckAnswer::of(super::check_except(
+                    Ok(CheckAnswer::of(
+                        super::check_except(&current.model, current.reached.get()),
                         &current.model,
-                        current.reached.get(),
-                    )))
+                        current.reached.committing(current.checking),
+                    ))
                 }
-                Err(Unbuilt::Gated(problems)) => Ok(CheckAnswer::of(problems)),
+                Err(Unbuilt::Gated(problems)) => Ok(CheckAnswer::refused(problems)),
                 Err(Unbuilt::Unavailable(problems)) => Err(problems),
             },
         )
@@ -920,7 +927,7 @@ impl<P: Clients + 'static> Sessions<P> {
             return refused(not_open(*session));
         };
         let (info, read) = found.published_now();
-        published_answer(info, read, |published, _| Ok(published.clone()))
+        published_answer(info, read, |published, _, _| Ok(published.clone()))
     }
 
     /// `session`'s document's outline ([`super::outline`]), as `silico show` prints it.
@@ -1398,7 +1405,7 @@ fn start_published<C: Kernel + 'static, T: Send + 'static>(
                 || {
                     let (info, published) = session.published_now();
                     let path = session.held.read().path.clone();
-                    published_answer(info, published, |published, model| {
+                    published_answer(info, published, |published, checking, model| {
                         read(Read {
                             path,
                             model: &published.model,
@@ -1406,6 +1413,7 @@ fn start_published<C: Kernel + 'static, T: Send + 'static>(
                             stop: &stop,
                             kernel: &kernel,
                             reached: &published.reached,
+                            checking,
                         })
                     })
                 },

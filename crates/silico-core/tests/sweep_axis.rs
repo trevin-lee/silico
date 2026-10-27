@@ -42,6 +42,7 @@ fn axis_case(type_name: &str, axis: &str, pa: [f64; 2], pb: [f64; 2]) -> (Checke
         dofs: 0,
         free: BTreeSet::new(),
         redundant: BTreeMap::new(),
+        partially_redundant: BTreeMap::new(),
         algorithm: silico_protocol::Algorithm::DogLeg,
     };
     (document, solution)

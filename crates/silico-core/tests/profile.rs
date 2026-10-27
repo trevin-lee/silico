@@ -1854,7 +1854,8 @@ fn open_ends_grouped_with_both_ends_of_one_line_name_each_curve_once_and_say_len
     // L1 from p (0, 0) to q (1.5e-7, 0), longer than the tolerance; L2 from r (0.75e-7, 0)
     // to (5, 5). r is within 1e-7 of both p and q, so the three open ends are one group,
     // though p and q aren't within it of each other. L1 has both its ends in the group:
-    // sharing one point would shrink it to nothing, so the advice is to lengthen it.
+    // sharing one point would shrink it to nothing, so the advice is to lengthen it, then
+    // to end the curves at one point.
     let mut d = Draw::new();
     let p = d.point(0.0, 0.0);
     let r = d.point(0.75e-7, 0.0);
@@ -1883,16 +1884,18 @@ fn open_ends_grouped_with_both_ends_of_one_line_name_each_curve_once_and_say_len
     assert_eq!(errors[0].elements_total(), 5);
     assert_eq!(
         errors[0].suggestion(),
-        Some(format!("lengthen line {l1}, or end the curves at one point").as_str())
+        Some(format!("lengthen line {l1}; then end the curves at one point").as_str())
     );
 }
 
 #[test]
-fn an_arc_with_both_ends_in_an_open_group_is_to_be_lengthened() {
+fn an_arc_with_both_ends_in_an_open_group_is_given_the_gates_advice_for_an_arc_whose_ends_meet() {
     // An arc of radius 10 about the origin, counter-clockwise from s (10, 0) round to e at
     // the angle −1.5e-8, so its ends are 1.5e-7 apart; a line from r (10, −0.75e-7),
-    // within 1e-7 of both ends, out to (20, 20). The arc has both its ends in the group,
-    // so it's the arc that's to be lengthened, as a line would be.
+    // within 1e-7 of both ends, out to (20, 20). The arc has both its ends in the group, so
+    // sharing one point would close it into a circle: the advice is the sketch gate's for an
+    // arc whose ends are one place, "draw a circle instead, or open the arc" (sketch_gate.rs),
+    // naming the arc; lengthening it would make it overlap itself (the port review, #189).
     let mut d = Draw::new();
     let o = d.point(0.0, 0.0);
     let delta: f64 = 1.5e-8;
@@ -1922,8 +1925,44 @@ fn an_arc_with_both_ends_in_an_open_group_is_to_be_lengthened() {
     );
     assert_eq!(
         errors[0].suggestion(),
-        Some(format!("lengthen arc {a}, or end the curves at one point").as_str())
+        Some(
+            format!("for arc {a}, draw a circle instead, or open the arc; then end the curves at one point")
+                .as_str()
+        )
     );
+}
+
+#[test]
+fn a_tiny_arc_short_of_a_half_turn_with_both_ends_in_an_open_group_is_to_be_lengthened() {
+    // An arc about o (0, 0), counter-clockwise from s (7.5e-8, 1e-6) to e (−7.5e-8, 1e-6):
+    // a radius of about 1e-6 and a sweep of 2·atan(0.075), about 8.6°, its ends 1.5e-7
+    // apart, so it's built; a line from r (0, 1e-6), 7.5e-8 from each end, down to (5, −5).
+    // The three open ends are one group, both the arc's ends in it. The arc is short of a
+    // half turn (the cross product of its ends from its centre is positive), so lengthening
+    // it moves its ends apart: "lengthen arc a", as for a line, not the gate's advice for
+    // an arc whose ends are one place (the port review, #189).
+    let mut d = Draw::new();
+    let o = d.point(0.0, 0.0);
+    let s = d.point(7.5e-8, 1e-6);
+    let e = d.point(-7.5e-8, 1e-6);
+    let r = d.point(0.0, 1e-6);
+    let far = d.point(5.0, -5.0);
+    let a = d.arc(&o, &s, &e);
+    let l = d.line(&r, &far);
+    let errors = d.refused();
+    let [group, open] = errors.as_slice() else {
+        panic!("{:#?}", named(&errors));
+    };
+    let mut got = group.elements().to_vec();
+    got.sort();
+    let mut expected = vec![s, e, r, a.clone(), l.clone()];
+    expected.sort();
+    assert_eq!(got, expected, "{group}");
+    assert_eq!(
+        group.suggestion(),
+        Some(format!("lengthen arc {a}; then end the curves at one point").as_str())
+    );
+    assert_eq!(open.elements(), [far, l]);
 }
 
 #[test]
@@ -1977,6 +2016,31 @@ fn two_lines_with_both_ends_in_one_open_group_are_both_to_be_lengthened() {
     );
     assert_eq!(
         errors[0].suggestion(),
-        Some(format!("lengthen line {l1} and line {l3}, or end the curves at one point").as_str())
+        Some(
+            format!("lengthen line {l1} and line {l3}; then end the curves at one point").as_str()
+        )
+    );
+}
+
+#[test]
+fn the_lines_to_be_lengthened_are_named_in_id_order_as_checks_warning_names_them() {
+    // The geometry above, the line through the group's first points named after the other:
+    // nz000001 from p (0, 0) to q (1.5e-7, 0), na000001 from a (0, 0.9e-7) to b (1.5e-7,
+    // 0.9e-7). The suggestion names them by ID, na000001 first, as check's ends_not_joined
+    // does (the port review, #189), not as the group's points meet them.
+    let mut d = Draw::new();
+    let p = d.point(0.0, 0.0);
+    let q = d.point(1.5e-7, 0.0);
+    let a = d.point(0.0, 0.9e-7);
+    let b = d.point(1.5e-7, 0.9e-7);
+    let r = d.point(0.75e-7, 0.45e-7);
+    let far = d.point(-5.0, 5.0);
+    d.line_named("nz000001", &p, &q);
+    d.line(&r, &far);
+    d.line_named("na000001", &a, &b);
+    let errors = d.refused();
+    assert_eq!(
+        errors[0].suggestion(),
+        Some("lengthen line na000001 and line nz000001; then end the curves at one point")
     );
 }
