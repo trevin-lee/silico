@@ -10,7 +10,9 @@
 pixi run build      # OCCT first if its inputs changed, then the workspace
 ```
 
-This puts `silico` and its workers (`silico-kernel-worker`, `silico-sketch-worker`, `silico-render-worker`, `silico-step-worker`) in `target/debug/`. `silico` looks for each worker in the directory its own executable is in, not the working directory or `PATH`. So point the client at `target/debug/silico` itself, since a symlink to it counts as a copy. A copy or symlink elsewhere finds no workers until each is beside it or named by `SILICO_KERNEL_WORKER`, `SILICO_SKETCH_WORKER`, `SILICO_RENDER_WORKER`, or `SILICO_STEP_WORKER`. Until then its reads answer with no bodies and `worker_unavailable` in `model.fault`. Without a render worker the server still runs, and `render` is refused.
+This puts `silico` and its workers (`silico-kernel-worker`, `silico-sketch-worker`, `silico-render-worker`, `silico-step-worker`) in `target/debug/`. `silico` looks for each worker beside its own executable, following any links to it, not in the working directory or on `PATH`. So the client can run `target/debug/silico` or a symlink to it. A copy elsewhere finds no workers until each is beside it or named by `SILICO_KERNEL_WORKER`, `SILICO_SKETCH_WORKER`, `SILICO_RENDER_WORKER`, or `SILICO_STEP_WORKER`.
+
+`silico serve` checks its workers when it starts. Without a kernel worker it doesn't start: it exits 2 before the handshake, and stderr names the directory it looked in and the worker it looked for. Without a sketch, render, or STEP worker it warns on stderr and runs, and what needs that worker (solving a sketch, `render`, `export` as `step`) is refused with `worker_unavailable`.
 
 **Connect Claude Code.** One server per client, started by the client over stdio:
 
