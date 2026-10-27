@@ -355,7 +355,7 @@ fn a_finite_pick_whose_projection_overflows_is_trimmed_or_refused_naming_the_pic
     }
 }
 
-// BREAKS (low): a pick at (f64::MAX, f64::MAX), 45° from the circle's centre: its distance
+// Broke, before the fix (low): a pick at (f64::MAX, f64::MAX), 45° from the circle's centre: its distance
 // from the centre, hypot, overflows to ∞, the projection scales by r / ∞ = 0 and lands on
 // the centre, and the trim takes the pick at angle 0, removing the piece about (25, 0)
 // instead of the one about 45°. Expected: the piece between 16.26° and 53.13° removed, or the
@@ -489,7 +489,7 @@ fn a_chords_ends_held_on_a_circle_are_the_arcs_ends_when_its_trimmed() {
 
 // ------------------------------------------------------------------ tangencies
 
-// BREAKS (low: the drawing doesn't meet its own tangent): a line through a circle with an
+// Broke, before the fix (low: the drawing doesn't meet its own tangent): a line through a circle with an
 // edge tangent to it. Picked at the centre, both cuts are the circle's, and each join takes
 // the tangency over; the first piece's end gets it as a tangent_on, and the second piece's
 // new start is left on nothing at all (no on is made for a join with a tangency). Expected:
@@ -1552,6 +1552,47 @@ fn pieces_left(sketch: &Sketch, done: &Trim) -> Vec<([f64; 2], [f64; 2])> {
         .collect()
 }
 
+/// How far `at` is from the nearer end of line or arc `curve` (infinite for a circle).
+fn off_ends(sketch: &Sketch, at: [f64; 2], curve: &ElementId) -> f64 {
+    let ends: Vec<&str> = match sketch.lines.iter().find(|l| l.id == *curve) {
+        Some(l) => vec![l.from.as_str(), l.to.as_str()],
+        None => sketch
+            .arcs
+            .iter()
+            .find(|a| a.id == *curve)
+            .map_or(vec![], |a| vec![a.start.as_str(), a.end.as_str()]),
+    };
+    ends.into_iter()
+        .map(|e| {
+            let p = xy(sketch, e);
+            libm::hypot(at[0] - p[0], at[1] - p[1])
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// How far `at` is from curve `curve`'s carrier: a line's through its ends, a round's circle
+/// (an arc's radius its start's distance from its centre), worked here, not by the trim.
+fn off_curve(sketch: &Sketch, at: [f64; 2], curve: &ElementId) -> f64 {
+    if let Some(l) = sketch.lines.iter().find(|l| l.id == *curve) {
+        let (a, b) = (xy(sketch, l.from.as_str()), xy(sketch, l.to.as_str()));
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        return ((at[0] - a[0]) * dy - (at[1] - a[1]) * dx).abs() / libm::hypot(dx, dy);
+    }
+    let (center, radius) = match sketch.circles.iter().find(|c| c.id == *curve) {
+        Some(c) => (xy(sketch, c.center.as_str()), c.radius.mm()),
+        None => {
+            let a = sketch.arcs.iter().find(|a| a.id == *curve).unwrap();
+            let center = xy(sketch, a.center.as_str());
+            let start = xy(sketch, a.start.as_str());
+            (
+                center,
+                libm::hypot(start[0] - center[0], start[1] - center[1]),
+            )
+        }
+    };
+    (libm::hypot(at[0] - center[0], at[1] - center[1]) - radius).abs()
+}
+
 proptest! {
     #![proptest_config(config(2000))]
 
@@ -1567,6 +1608,15 @@ proptest! {
                 prop_assert_eq!(e.parameter(), Some("pick"), "{:?}", e);
                 prop_assert!(!e.elements().is_empty(), "{:?}", e);
                 prop_assert!(e.suggestion().is_some(), "{:?}", e);
+                // Only decision 2's refusals, a constraint a shared end would make a piece's
+                // own (as split's), and a pick at a round's centre: anything else is a trim
+                // refusing what it should make.
+                prop_assert!(
+                    e.message().ends_with("on no piece of it")
+                        || e.message().starts_with("the trim would make constraint ")
+                        || e.message().starts_with("the pick is at "),
+                    "{:?}", e
+                );
             }
             Ok(done) => {
                 prop_assert_eq!(gate(&before, &done.edited.sketch), Vec::<String>::new(), "pick {:?}", pick);
@@ -1592,6 +1642,23 @@ proptest! {
                 let at = [p.x.mm(), p.y.mm()];
                 prop_assert!(t.off(at) <= 1e-7 + 1e-12, "new point {} at {:?} is {} off the curve", a, at, t.off(at));
             }
+        }
+        // Each new end held on its cutter (an on or a tangent_on) lies on that cutter, or at
+        // one of its ends (an arc's end the recipe draws off its own circle cuts where it
+        // is, and the solve settles it).
+        for c in &sketch.constraints {
+            let (point, cutter) = match &c.form {
+                Form::On { point, curve } => (point, curve),
+                Form::TangentOn { at, b, .. } => (at, b),
+                _ => continue,
+            };
+            let (Some(p), Some(k)) = (point.element(), cutter.element()) else { continue };
+            if !done.edited.added.contains(p) {
+                continue;
+            }
+            let at = xy(sketch, p.as_str());
+            let off = off_curve(sketch, at, k).min(off_ends(sketch, at, k));
+            prop_assert!(off <= 1e-7 + 1e-12, "new end {} at {:?} is {} off its cutter {}", p, at, off, k);
         }
         let projected = t.along(pick);
         let length = |s: f64, e: f64| if t.round() { (e - s).rem_euclid(25.0 * std::f64::consts::TAU) } else { e - s };
