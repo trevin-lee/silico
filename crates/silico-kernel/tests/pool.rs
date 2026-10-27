@@ -861,18 +861,20 @@ fn an_advance_after_a_result_never_replaces_the_worker_that_gave_it() {
 
 #[test]
 fn superseded_work_is_stopped_its_stop_after_from_its_start_not_from_the_advance() {
-    // With a stop-after of 3 s, a request superseded 2.9 s in is stopped 3 s from its start,
-    // not 3 s from the advance (5.9 s): no sooner than 3 s after it was submitted (it can't
-    // have started before), and within what a stop takes and the machine's lateness of
-    // that. Due 0.1 s after the advance, so a stopper that looks again only once a second
-    // stops it 0.9 s late.
+    // With a stop-after of 3 s, a request superseded 2.9 s in (from when its worker says it
+    // took it) is stopped 3 s from its start, not 3 s from the advance (5.9 s): no sooner
+    // than 3 s after it was submitted (it can't have started before), and within what a
+    // stop takes and the machine's lateness of that. Due 0.1 s after the advance, so a
+    // stopper that looks again only once a second stops it 0.9 s late.
     let stop_after = Duration::from_secs(3);
-    let pool = pool(TEST_WORKER, 1);
+    let marks = marks_dir("from-its-start");
+    let pool = KernelPool::start_workers(&sleep_marking_worker(&marks), 1).unwrap();
     pool.set_stop_after(stop_after);
     let before: BTreeSet<u32> = pool.pids().into_iter().collect();
     let lateness = Lateness::start();
     let submitted = Instant::now();
     let stale = pool.submit(Generation(1), sleep(30_000));
+    wait_started(&marks, 1);
     std::thread::sleep(Duration::from_millis(2_900));
     let advanced = Instant::now();
     pool.advance(Generation(2));
@@ -899,11 +901,14 @@ fn superseded_work_is_stopped_its_stop_after_from_its_start_not_from_the_advance
         ended - advanced
     );
     wait_full_by(&pool, 1, &before, Instant::now() + HANG);
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&marks);
 }
 
 #[test]
 fn each_superseded_request_is_stopped_when_it_is_due() {
-    // Three superseded requests, started 2 s apart, with a stop-after of 7.1 s: each is
+    // Three superseded requests, started 2 s apart (each submitted 2 s after its worker says
+    // the one before is running, so each has a slot), with a stop-after of 7.1 s: each is
     // stopped at its own 7.1 s, none kept waiting for another's, whichever slots they ran
     // on. The advance comes 2 s after the last starts, before the first is due. Each ends
     // no sooner than 7.1 s after it was submitted (it can't have started before), and
@@ -915,7 +920,8 @@ fn each_superseded_request_is_stopped_when_it_is_due() {
     const SLEEP: Duration = Duration::from_secs(30);
     let stop_after = Duration::from_millis(7_100);
     let stagger = Duration::from_secs(2);
-    let pool = pool(TEST_WORKER, COUNT);
+    let marks = marks_dir("each-when-due");
+    let pool = KernelPool::start_workers(&sleep_marking_worker(&marks), COUNT).unwrap();
     pool.set_stop_after(stop_after);
     let lateness = Lateness::start();
     let mut submitted = Vec::new();
@@ -926,6 +932,7 @@ fn each_superseded_request_is_stopped_when_it_is_due() {
         }
         submitted.push(Instant::now());
         stale.push(pool.submit(Generation(1), sleep(SLEEP.as_millis() as u64)));
+        wait_started(&marks, i + 1);
     }
     std::thread::sleep(stagger);
     let advanced = Instant::now();
@@ -958,6 +965,8 @@ fn each_superseded_request_is_stopped_when_it_is_due() {
             );
         }
     }
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&marks);
 }
 
 #[test]
@@ -977,13 +986,16 @@ fn lowering_the_stop_after_stops_superseded_work_already_running() {
 
 #[test]
 fn a_stop_after_too_long_for_the_clock_never_stops_superseded_work() {
-    // Any duration is a stop-after; one too long to add to an instant means never.
-    let pool = pool(TEST_WORKER, 1);
+    // Any duration is a stop-after; one too long to add to an instant means never. The
+    // advance comes once the request is running (its worker says so): one still waiting
+    // would be dropped unrun.
+    let marks = marks_dir("too-long");
+    let pool = KernelPool::start_workers(&sleep_marking_worker(&marks), 1).unwrap();
     pool.set_stop_after(Duration::MAX);
     let before = pool.pids();
     let start = Instant::now();
     let stale = pool.submit(Generation(1), sleep(300));
-    std::thread::sleep(Duration::from_millis(100));
+    wait_started(&marks, 1);
     pool.advance(Generation(2));
     assert!(matches!(outcome(stale), Outcome::Superseded));
     assert!(start.elapsed() >= Duration::from_millis(300));
@@ -992,23 +1004,29 @@ fn a_stop_after_too_long_for_the_clock_never_stops_superseded_work() {
         done(pool.submit(Generation(2), echo(&[1]))).unwrap(),
         Blob::inline(vec![1])
     );
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&marks);
 }
 
 #[test]
 fn a_longer_stop_after_lets_superseded_work_run_on() {
     // The stop-after set on a pool is the one it keeps to (the tests above set it to zero,
     // to stop every superseded request at once): with ten seconds, a 300 ms request
-    // superseded 100 ms in runs to its end on its worker, where STOP_AFTER would stop it.
-    let pool = pool(TEST_WORKER, 1);
+    // superseded once it's running (its worker says so) runs to its end on its worker, where
+    // STOP_AFTER would stop it.
+    let marks = marks_dir("longer");
+    let pool = KernelPool::start_workers(&sleep_marking_worker(&marks), 1).unwrap();
     pool.set_stop_after(Duration::from_secs(10));
     let before = pool.pids();
     let start = Instant::now();
     let stale = pool.submit(Generation(1), sleep(300));
-    std::thread::sleep(Duration::from_millis(100));
+    wait_started(&marks, 1);
     pool.advance(Generation(2));
     assert!(matches!(outcome(stale), Outcome::Superseded));
     assert!(start.elapsed() >= Duration::from_millis(300));
     assert_eq!(pool.pids(), before, "the superseded request was stopped");
+    drop(pool);
+    let _ = std::fs::remove_dir_all(&marks);
 }
 
 #[test]
