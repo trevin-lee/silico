@@ -825,8 +825,10 @@ fn freecads_single_missing_coincidence_is_one_warning() {
     // it started (FreeCAD's coincidence of the third line's end and the fourth's start is a
     // point they share here, pa000004). FreeCAD 1.1.3 finds 1 missing coincidence, the
     // points 3.552713678800501e-15 apart.
-    assert_eq!(18.824165000000004_f64 - 18.824165, 2f64.powi(-48));
-    assert_eq!(2f64.powi(-48), 3.552713678800501e-15);
+    // 2^-48, a double's spacing between 16 and 32.
+    let ulp = 1.0 / 281_474_976_710_656.0_f64;
+    assert_eq!(18.824165000000004_f64 - 18.824165, ulp);
+    assert_eq!(ulp, 3.552713678800501e-15);
     let horizontal =
         |k: &str, l: &str| format!(r#"{{"id": "{k}", "type": "horizontal", "line": "{l}"}}"#);
     let vertical =

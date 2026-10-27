@@ -778,10 +778,13 @@ fn few() -> impl Strategy<Value = Vec<(usize, usize, bool, usize, bool)>> {
     )
 }
 
+/// An end of `many`'s: its centre, its offset along x, and whether it's negative.
+type Nudged = (usize, usize, bool);
+
 /// Both ends of each of many lines, each at one of 60 centres of its side's grid, nudged
 /// along x as `few`'s are along both axes: enough clusters (more than 100 in most cases,
 /// by a simulation of this draw) to pass the hundred listed.
-fn many() -> impl Strategy<Value = Vec<((usize, usize, bool), (usize, usize, bool))>> {
+fn many() -> impl Strategy<Value = Vec<(Nudged, Nudged)>> {
     let end = (0usize..60, 0usize..OFFSETS.len(), any::<bool>());
     prop::collection::vec((end.clone(), end), 200..=250)
 }
