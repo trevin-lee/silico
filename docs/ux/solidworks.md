@@ -224,9 +224,4 @@ What this note looked for and couldn't source from the help:
 - Starting a sketch beyond the view: which planes and faces may be picked. (*Auto-rotate view normal to sketch plane on sketch creation and sketch edit* is an option, and the view reverts if the changes are discarded: [Sketch Options](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_OPTIONS_SKETCH.htm).)
 - The export dialog (M5.12), what happens to a selection when a rebuild removes its entity (M5.7), and the pick tolerance.
 
-## For M5.0
-
-Two of the draft plan's tests (docs/roadmap/m5-app.md) read otherwise than the lines above:
-
-- M5.11 tests "a closed rectangle from four clicks", where SolidWorks' corner rectangle is a press, a drag, and a release (§4).
-- M5.1 tests that a suppressed feature's dependents fail and that unsuppressing restores everything, where SolidWorks suppresses the children with the parent and leaves them suppressed when the parent is unsuppressed (§5, [Dependency Editing](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Dependency_Editing.htm)).
+The draft M5 plan's corner rectangle (M5.11) and suppression (M5.1) follow §4 and §5 above.
