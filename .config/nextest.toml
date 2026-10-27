@@ -47,6 +47,12 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 filter = 'package(silico-kernel) & test(=adversarial_export::the_largest_sphere_and_torus_at_the_finest_tolerance_are_exported_within_it)'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
+# An export of ten million triangles, the command's limit, and the solid past it (silico-core
+# export_command): 44 s unloaded in a debug build, longer on a loaded machine.
+[[profile.default.overrides]]
+filter = 'package(silico-core) & test(=export_command::ten_million_triangles_in_all_are_taken_and_the_first_solid_past_them_refused_naming_the_tolerance)'
+slow-timeout = { period = "60s", terminate-after = 10 }
+
 # The fake kernel compared with the real one over 2,000 generated primitives: a minute
 # alone, longer on a loaded machine.
 [[profile.default.overrides]]

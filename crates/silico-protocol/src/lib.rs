@@ -24,6 +24,8 @@ mod step;
 mod sweep;
 pub mod vec3;
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 pub use chamfer::ChamferSize;
@@ -859,14 +861,18 @@ pub struct BuiltData {
 /// Bytes carried by a message, such as a serialized shape. Sent inline in the frame for
 /// now; a shared-memory variant can be added for large payloads without changing any
 /// message that carries a `Blob`.
+///
+/// Its bytes are shared: a copy of a blob (of a request that names a shape, queued for a
+/// worker beside others naming the same one) is a count, not the bytes again. On the wire
+/// they're written as `serde_bytes` writes a `Vec<u8>`.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Blob {
-    Inline(#[serde(with = "serde_bytes")] Vec<u8>),
+    Inline(#[serde(with = "shared_bytes")] Arc<Vec<u8>>),
 }
 
 impl Blob {
     pub fn inline(bytes: Vec<u8>) -> Self {
-        Blob::Inline(bytes)
+        Blob::Inline(Arc::new(bytes))
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -875,11 +881,32 @@ impl Blob {
         }
     }
 
-    /// The bytes, taken.
+    /// The bytes, taken: without a copy when no other blob shares them.
     pub fn into_bytes(self) -> Vec<u8> {
         match self {
-            Blob::Inline(bytes) => bytes,
+            Blob::Inline(bytes) => Arc::unwrap_or_clone(bytes),
         }
+    }
+}
+
+/// A blob's shared bytes, written and read exactly as `serde_bytes` writes and reads a
+/// `Vec<u8>`.
+mod shared_bytes {
+    use std::sync::Arc;
+
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        bytes: &Arc<Vec<u8>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serde_bytes::serialize(bytes.as_slice(), serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Arc<Vec<u8>>, D::Error> {
+        serde_bytes::deserialize::<Vec<u8>, D>(deserializer).map(Arc::new)
     }
 }
 

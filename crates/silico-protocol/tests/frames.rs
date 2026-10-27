@@ -1029,6 +1029,34 @@ fn blob_gives_back_its_bytes_and_prints_its_length() {
     assert_eq!(format!("{blob:?}"), "Blob::Inline(3 bytes)");
 }
 
+#[test]
+fn a_copy_of_a_blob_shares_its_bytes_and_the_wire_carries_them_as_before() {
+    // A shape a describe asks of a worker a batch at a time is in every batch's request:
+    // each copy shares the one allocation, not a copy of a shape's megabytes.
+    let blob = Blob::inline(vec![1, 2, 3]);
+    let copies: Vec<Blob> = (0..4).map(|_| blob.clone()).collect();
+    for copy in &copies {
+        assert!(std::ptr::eq(copy.as_bytes(), blob.as_bytes()));
+    }
+    // Postcard writes the enum's variant index (0), the length (3), then the bytes: as
+    // `serde_bytes` wrote the `Vec<u8>` a blob held before.
+    let wire = postcard::to_allocvec(&blob).unwrap();
+    assert_eq!(wire, [0, 3, 1, 2, 3]);
+    let back: Blob = postcard::from_bytes(&wire).unwrap();
+    assert_eq!(back, blob);
+    // Taken while shared, the bytes are copied and the other copies keep theirs; taken
+    // alone, they're the allocation itself.
+    let held = copies[0].as_bytes().as_ptr();
+    let taken = copies.into_iter().next().unwrap().into_bytes();
+    assert_eq!(taken, [1, 2, 3]);
+    assert_ne!(taken.as_ptr(), held);
+    assert_eq!(blob.as_bytes(), [1, 2, 3]);
+    let alone = Blob::inline(vec![4, 5]);
+    let at = alone.as_bytes().as_ptr();
+    let bytes = alone.into_bytes();
+    assert_eq!(bytes.as_ptr(), at);
+}
+
 /// A reader that's interrupted (EINTR) before every chunk it hands out.
 struct Interrupting<'a> {
     data: &'a [u8],

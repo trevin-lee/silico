@@ -168,11 +168,19 @@ fn feature_refused(message: String, suggestion: &str) -> crate::Error {
 /// A feature's ID: 8 characters of Crockford's base32 in lower case, unique within the
 /// document. Other features refer to it by this.
 ///
-/// Compared, ordered, and hashed as its text, exactly as derived; written out by hand only
-/// so a test can count every comparison of two IDs (`document::compared`, in test
-/// builds), wherever it's made.
-#[derive(Debug, Clone)]
+/// Compared, ordered, hashed, and cloned as its text, exactly as derived; written out by
+/// hand only so a test can count every comparison of two IDs (`document::compared`, in
+/// test builds) and every copy of one (`document::cloned`), wherever it's made.
+#[derive(Debug)]
 pub struct FeatureId(String);
+
+impl Clone for FeatureId {
+    fn clone(&self) -> Self {
+        #[cfg(test)]
+        CLONED.with(|cloned| cloned.set(cloned.get() + 1));
+        FeatureId(self.0.clone())
+    }
+}
 
 impl PartialEq for FeatureId {
     fn eq(&self, other: &Self) -> bool {
@@ -209,6 +217,19 @@ impl std::hash::Hash for FeatureId {
 thread_local! {
     /// How many times two IDs have been compared on this thread.
     static COMPARED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times an ID has been cloned on this thread.
+    static CLONED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times an ID has been cloned on this thread so far, by anything: a test's count
+/// of the copies a structure holds of IDs it could read where they are.
+#[cfg(test)]
+pub(crate) fn cloned() -> u64 {
+    CLONED.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]

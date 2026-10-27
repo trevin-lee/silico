@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use cache::{Scratch, calls, session, subdirectory_files};
 use cache_format::{KeptDescription, MAGIC, Measure, decode, encode, entry_path};
-use describing::{asked, fused_boxes, fused_tree, settled};
+use describing::{asked, asked_of, fused_boxes, fused_tree, settled};
 use example::EXAMPLE;
 use model::{WAIT, checked, id, published};
 use refusals::worker_failure;
@@ -245,10 +245,13 @@ fn a_later_edge_batch_refused_for_its_values_keeps_the_summary_and_the_refusal_o
 #[test]
 fn a_later_edge_batch_a_worker_crashed_on_keeps_the_summary_and_is_described_again_alone() {
     // The first time each solid's second batch of edges is asked, the worker crashes: the
-    // solid keeps its summary, and the crash beside it, and drift is empty. The next
-    // recompute summarizes nothing again and describes those two again, every batch from
-    // the first (four each), joined in order: 1,020 edges for 85 boxes, the 1,001st edge the
-    // fake's 1,001st.
+    // solid keeps its summary, and the crash beside it, and drift is empty. Each solid's
+    // batches are its faces, its first and second thousand edges, and its vertices, sent
+    // together and awaited in order: the crash is the third's, so the first three of each
+    // start, and its vertex batch, cancelled unrun if it's still waiting (#220), may or may
+    // not: between 6 and 8 for the two. The next recompute summarizes nothing again
+    // and describes those two again, every batch from the first (four each), joined in
+    // order: 1,020 edges for 85 boxes, the 1,001st edge the fake's 1,001st.
     let engine = Recompute::new(FakeKernel::new(2).unwrap());
     let crashes = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&crashes);
@@ -263,7 +266,13 @@ fn a_later_edge_batch_a_worker_crashed_on_keeps_the_summary_and_is_described_aga
         assert_refused_beside_its_summary(&failed, fusion, ErrorCode::WorkerCrashed);
     }
     assert_described_whole(&failed, "f0000082");
-    assert_eq!(settled(engine.kernel(), of_many_edges, 8), 8);
+    // Every batch taken has run out; one cancelled while it waited never will.
+    assert!(engine.kernel().wait_idle(WAIT));
+    let first = asked_of(engine.kernel(), of_many_edges);
+    assert!(
+        (6..=8).contains(&first),
+        "{first} of the two fusions' batches started"
+    );
     let summaries = asked(engine.kernel(), "Summarize");
     let describes = asked(engine.kernel(), "Describe");
     let again = published(&engine, checked(&document));
@@ -273,8 +282,9 @@ fn a_later_edge_batch_a_worker_crashed_on_keeps_the_summary_and_is_described_aga
         summaries,
         "summarized again"
     );
-    // The two fusions' eight batches, and no other solid's.
-    assert_eq!(settled(engine.kernel(), of_many_edges, 16), 16);
+    // The two fusions' eight batches, and no other solid's: none fails, so every one is
+    // awaited before the model is published.
+    assert_eq!(asked_of(engine.kernel(), of_many_edges), first + 8);
     assert_eq!(asked(engine.kernel(), "Describe"), describes + 8);
     assert_described_whole(&again, "f0000083");
     assert_described_whole(&again, "f0000084");
@@ -611,6 +621,43 @@ fn a_solids_batches_are_sent_four_at_a_time_and_joined_in_order() {
     assert_eq!(
         lengths(model.description(&id("t8000000")).unwrap()),
         [1536, 3072, 2048]
+    );
+}
+
+#[test]
+fn a_solids_batches_share_its_bytes_with_each_other_and_the_model() {
+    // From M4's review: each batch's request held a copy of the solid's bytes, so four in
+    // flight for each of 64 recompute jobs held 256 copies. A request now shares them:
+    // the nine batches of 256 fused boxes name one allocation, the model's own.
+    let engine = Recompute::new(FakeKernel::new(8).unwrap());
+    let model = match engine.start(checked(&fused_tree(8))).wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(model))) => model,
+        Ok(other) => panic!("not published: {other:?}"),
+        Err(_) => panic!("the recompute didn't finish in {WAIT:?}"),
+    };
+    let (_, tree) = built(&model, "t8000000");
+    let held: std::collections::BTreeSet<usize> = engine
+        .kernel()
+        .asked()
+        .iter()
+        .filter(|call| describes_the_tree(&call.op))
+        .map(|call| match &call.op {
+            Op::Describe { shape, .. } => shape.brep().as_bytes().as_ptr() as usize,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    let batches = engine
+        .kernel()
+        .asked()
+        .iter()
+        .filter(|call| describes_the_tree(&call.op))
+        .count();
+    assert_eq!(batches, 9);
+    assert_eq!(
+        held,
+        [tree.shape.brep().as_bytes().as_ptr() as usize].into(),
+        "{batches} batches held {} allocations",
+        held.len()
     );
 }
 

@@ -82,6 +82,99 @@ pub fn tetra() -> ExportMesh {
     report(&P, &TETRA)
 }
 
+/// A box of `n[0]` × `n[1]` × `n[2]` mm from the origin, meshed at 0.1 mm as OCCT meshes a
+/// plane finely: each face a grid of 1 mm squares, two triangles each, so its triangles are
+/// 4·(n0·n1 + n1·n2 + n2·n0) in all. Its faces are numbered as OCCT numbers a box's (x = 0,
+/// x = n0, y = 0, y = n1, z = 0, z = n2), its corners and edges by first use; each face has
+/// its own nodes, and each edge's run from its lower-numbered corner to its higher, as
+/// [`report`]'s do.
+pub fn grid_box(n: [u32; 3]) -> ExportMesh {
+    let mut m = ExportMesh {
+        tolerance: 0.1,
+        deflection: 0.1,
+        solids: 1,
+        shell_solids: vec![0],
+        shell_outer: vec![true],
+        ..ExportMesh::default()
+    };
+    // Each face: a corner, then the axes its grid runs along (u, then v), u × v outward.
+    let faces: [([u32; 3], usize, usize); 6] = [
+        ([0, 0, 0], 2, 1),
+        ([n[0], 0, 0], 1, 2),
+        ([0, 0, 0], 0, 2),
+        ([0, n[1], 0], 2, 0),
+        ([0, 0, 0], 1, 0),
+        ([0, 0, n[2]], 0, 1),
+    ];
+    let mut corners: BTreeMap<[u32; 3], u32> = BTreeMap::new();
+    let mut edge_numbers: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+    for (f, &(origin, u, v)) in faces.iter().enumerate() {
+        let (nu, nv) = (n[u], n[v]);
+        let base = m.nodes.len() as u32;
+        let at = |i: u32, j: u32| {
+            let mut p = origin;
+            p[u] += i;
+            p[v] += j;
+            p
+        };
+        let node = |i: u32, j: u32| base + j * (nu + 1) + i;
+        for j in 0..=nv {
+            for i in 0..=nu {
+                m.nodes.push(at(i, j).map(f64::from));
+            }
+        }
+        for j in 0..nv {
+            for i in 0..nu {
+                let (a, b, c, d) = (
+                    node(i, j),
+                    node(i + 1, j),
+                    node(i + 1, j + 1),
+                    node(i, j + 1),
+                );
+                m.triangles.extend([[a, b, c], [a, c, d]]);
+            }
+        }
+        m.face_nodes.push((nu + 1) * (nv + 1));
+        m.face_triangles.push(2 * nu * nv);
+        m.face_numbers.push(f as u32 + 1);
+        m.face_deflections.push(0.0);
+        m.face_shells.push(0);
+        m.face_tolerances.push(1e-7);
+        // The four sides, each as its grid points from one corner to the other.
+        let sides: [Vec<(u32, u32)>; 4] = [
+            (0..=nu).map(|i| (i, 0)).collect(),
+            (0..=nv).map(|j| (nu, j)).collect(),
+            (0..=nu).map(|i| (i, nv)).collect(),
+            (0..=nv).map(|j| (0, j)).collect(),
+        ];
+        for mut side in sides {
+            let mut corner = |p: [u32; 3]| {
+                let next = corners.len() as u32 + 1;
+                *corners.entry(p).or_insert(next)
+            };
+            let (first, last) = (side[0], side[side.len() - 1]);
+            let (mut va, mut vb) = (corner(at(first.0, first.1)), corner(at(last.0, last.1)));
+            if va > vb {
+                side.reverse();
+                std::mem::swap(&mut va, &mut vb);
+            }
+            let next = edge_numbers.len() as u32 + 1;
+            let number = *edge_numbers.entry((va, vb)).or_insert(next);
+            m.edge_faces.push(f as u32);
+            m.edge_numbers.push(number);
+            m.edge_degenerate.push(false);
+            m.edge_vertices.push([va, vb]);
+            // Its nodes on the straight edge exactly: no deflection, however far from the
+            // origin (`report`'s 0.1 − 1e-6 is past what 32 bits allow 100 mm out).
+            m.edge_deflections.push(0.0);
+            m.edge_node_counts.push(side.len() as u32);
+            m.edge_nodes.extend(side.iter().map(|&(i, j)| node(i, j)));
+        }
+    }
+    m.validate().unwrap();
+    m
+}
+
 /// `extra`'s faces appended to `base` as shell `shell` of solid `solid` (a new shell, and a
 /// new solid if `solid` is past `base`'s), its edges and vertices renumbered past `base`'s
 /// so the two share none.

@@ -24,13 +24,13 @@ pub use fingerprint::{Difference, Fingerprint, MEASURE_DECIMALS, Measure};
 pub(crate) use index::FeatureIndex;
 #[cfg(test)]
 pub(crate) use index::looked_up;
-#[cfg(test)]
-pub(crate) use model::compared;
 pub use model::{
     Axis, ChamferSize, Document, ElementName, Extent, ExtentValue, FEATURE_TYPES, Feature,
     FeatureId, FeatureVersion, FormatVersion, ID_ALPHABET, ID_LENGTH, Made, Name, NamingScheme,
     Operation, PadExtent, PocketExtent, Position, SweepFeature, TurnExtent, Units,
 };
+#[cfg(test)]
+pub(crate) use model::{cloned, compared};
 pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 pub use reach::{Before, QuotedIds, net_reach, with_users};
 pub use sketch::{

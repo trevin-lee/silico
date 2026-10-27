@@ -702,9 +702,10 @@ impl Model {
     /// a worker's failure (a crash, a timeout, a reply no shape has), as
     /// [`drift`](Self::drift) says it.
     pub fn unmeasured(&self, id: &FeatureId) -> Option<&Error> {
-        self.unmeasured
-            .get(self.unmeasured_index.get(id)?)
-            .map(|(_, error)| error)
+        let place = self
+            .unmeasured_index
+            .get(id, |place| self.unmeasured.get(place).map(|(id, _)| id))?;
+        self.unmeasured.get(place).map(|(_, error)| error)
     }
 
     /// [`drift`](Self::drift), each error with the ID of the feature it's of, computed once
@@ -1801,8 +1802,9 @@ struct Plan {
     results: BTreeSet<Key>,
     /// Each fillet's or chamfer's step, by key: the edges it names, and of what.
     dresses: BTreeMap<Key, Dress>,
-    /// How each feature makes its elements, for reading names back.
-    makers: BTreeMap<FeatureId, Maker>,
+    /// The document planned, where each feature's [`Maker`] is found by its index when a
+    /// fillet's names are read back ([`Plan::maker`]), rather than kept for every feature.
+    document: Arc<Checked>,
     /// Each sketch to solve, in timeline order: its feature, and its solve's key.
     sketches: Vec<(FeatureId, Key)>,
     /// Each sweep feature's own check of its result, by ID, until its `Planned` takes it.
@@ -2108,7 +2110,7 @@ impl Plan {
 
     /// `document`'s steps, every sketch a feature sweeps solved and profiled in `swept`
     /// (one that didn't solve is missing).
-    fn of(document: &Checked, swept: &BTreeMap<FeatureId, Swept>) -> Plan {
+    fn of(document: &Arc<Checked>, swept: &BTreeMap<FeatureId, Swept>) -> Plan {
         let features = &document.document().features;
         let mut plan = Plan {
             steps: BTreeMap::new(),
@@ -2117,10 +2119,7 @@ impl Plan {
             features: Vec::with_capacity(features.len()),
             results: BTreeSet::new(),
             dresses: BTreeMap::new(),
-            makers: features
-                .iter()
-                .map(|f| (f.id.clone(), Maker::of(&f.operation)))
-                .collect(),
+            document: Arc::clone(document),
             sketches: Vec::new(),
             checks_of: BTreeMap::new(),
             owners: BTreeMap::new(),
@@ -2510,6 +2509,14 @@ impl Plan {
             },
         );
         (vec![key], vec![b])
+    }
+
+    /// How the feature `id` makes its elements, as [`Name::parse`](crate::naming::Name::parse)
+    /// asks it of each feature a name mentions: found in the planned document by its index,
+    /// for only the features a fillet's or chamfer's names mention.
+    fn maker(&self, id: &FeatureId) -> Option<Maker> {
+        let feature = self.document.feature(id).ok()?;
+        Some(Maker::of(&feature.operation))
     }
 
     /// Each step's progress label, by key: the ID and type of the first feature it's
@@ -3602,9 +3609,7 @@ impl<K: Kernel + 'static> Engine<K> {
                 "a fillet's feature wasn't planned",
             )));
         };
-        crate::references::resolve(feature, &dress.edges, &map, &|f| {
-            plan.makers.get(f).copied()
-        })
+        crate::references::resolve(feature, &dress.edges, &map, &|f| plan.maker(f))
     }
 
     /// Measures `built`, a feature's solid, on the kernel, for `generation`: a copy of it
@@ -4486,7 +4491,7 @@ mod tests {
         // document's scan (`Document::feature`, as the labels found their features before)
         // compares every ID each, N²: 1,000,000.
         let n = 1000;
-        let document = boxes(n, |_| false);
+        let document = Arc::new(boxes(n, |_| false));
         let plan = Plan::of(&document, &BTreeMap::new());
         assert_eq!(plan.first_feature.len(), n);
         let (compared, looked_up) = counted();
@@ -4502,6 +4507,46 @@ mod tests {
         for (key, id) in &plan.first_feature {
             assert_eq!(labels[key], format!("{id} box"));
         }
+    }
+
+    #[test]
+    fn planning_reads_no_features_maker_until_a_name_asks_for_one() {
+        // From M4's review: each plan built a map of every feature's maker, a copy of each
+        // feature's ID and a read of its operation, though only a fillet's or a chamfer's
+        // names are read with it. The planned document's index finds a maker when a name
+        // asks: planning 1,000 boxes reads none, and asking for one reads one.
+        let n = 1000;
+        let document = Arc::new(boxes(n, |_| false));
+        let (read, copied) = (crate::naming::makers_read(), crate::document::cloned());
+        let plan = Plan::of(&document, &BTreeMap::new());
+        assert_eq!(crate::naming::makers_read() - read, 0);
+        let copies = crate::document::cloned() - copied;
+        // Each asked for by the document's index: one lookup, of at most ⌈log₂ N⌉ + 1
+        // comparisons (11 for N = 1,000), found or not. A scan of the timeline compares
+        // up to all N.
+        let most = ceil_log2(n) + 1;
+        let last = &document.document().features[n - 1].id;
+        let before = counted();
+        let found = plan.maker(last);
+        let (compared, looked_up) = (counted().0 - before.0, counted().1 - before.1);
+        assert_eq!(
+            found,
+            Some(Maker::Itself(crate::naming::PrimitiveKind::Box))
+        );
+        assert_eq!(looked_up, 1);
+        assert!((1..=most).contains(&compared), "{compared} comparisons");
+        assert_eq!(crate::naming::makers_read() - read, 1);
+        let missing = FeatureId::new("zzzzzzzz").unwrap();
+        let before = counted();
+        assert_eq!(plan.maker(&missing), None);
+        let (compared, looked_up) = (counted().0 - before.0, counted().1 - before.1);
+        assert_eq!(looked_up, 1);
+        assert!((1..=most).contains(&compared), "{compared} comparisons");
+        // The plan copies each box's ID twice: for the box's own entry (`Planned`), and for
+        // its step's first feature (N steps: one Make step for them all, first used by the
+        // first box, and a Translate step for each of the others). A map of makers copied
+        // each a third time.
+        assert_eq!(copies, 2 * n as u64, "{copies} IDs copied");
     }
 
     #[test]
