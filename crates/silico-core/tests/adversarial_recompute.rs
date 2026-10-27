@@ -11,6 +11,7 @@ use super::recompute;
 use super::share;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write as _;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
@@ -896,7 +897,8 @@ fn published_costing(
         lateness.most(),
     );
     // Kept by nextest when the test fails or is retried, so a bound's reading is seen.
-    eprintln!(
+    let _ = writeln!(
+        std::io::stderr(),
         "the recompute took {took:?} of {most:?}, the machine running handed-on work {:.2} \
          times slower than a quiet one",
         measured.slowdown
