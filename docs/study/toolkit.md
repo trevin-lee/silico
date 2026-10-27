@@ -23,16 +23,21 @@ It describes what was found. The decisions stay with M5.0 and the maintainer.
   - `egui_kittest` 0.36.2;
   - `egui_tiles` 0.17.1, as a development dependency.
   - `eframe` 0.36.2's `egui-wgpu` uses wgpu 30, as `re_renderer` 0.38.1 does, so one wgpu serves the viewport and the UI.
-- **`re_ui`'s tree isn't clean, and it isn't offline.**
+- **What `re_ui` adds.**
   - It brings 279 crates more than the toolkit needs on its own (657 against 390). Among them are Rerun's data model, Arrow, a gRPC and HTTP server and client stack (tonic, hyper, axum, h2), rustls, and an HTTP client (ureq).
-  - Its setup function installs an image loader that fetches any `http://` or `https://` image over the network.
-  - Under Silico's `deny.toml` it fails licences (OFL-1.1 on `re_ui` itself) beyond what the toolkit alone fails.
-- **The toolkit alone isn't clean under today's `deny.toml` either.** Three findings, each a decision for the maintainer rather than a defect:
+  - Those crates are already in Silico's lock file, through `silico-view`'s dependency on `rerun`, and already pass the gate's `cargo deny check bans licenses sources`. What's new is linking them into the app's binary: its size, and code it doesn't use.
+  - Under Silico's `deny.toml`, `re_ui` adds one failure of its own: OFL-1.1, for the Inter font it embeds. Copying its style with the font would need OFL-1.1 allowed too.
+  - It isn't offline by default: its style function installs an image loader that fetches any `http://` or `https://` image. Nothing is fetched unless such an image is shown, and the loader can be taken out after setup.
+- **The toolkit alone isn't clean under today's `deny.toml`.** Three findings, each a decision for the maintainer rather than a defect:
   - wgpu is banned outside `silico-render` (Silico's own rule, "until M5's viewport");
   - egui's default fonts are OFL-1.1 and Ubuntu-font-1.0;
-  - two unmaintained-crate advisories come in through `eframe`'s Linux accessibility bridge.
-- **Recommendation for decision 11.** Its own condition ("`re_ui` itself as a dependency only if the study finds its tree clean under `cargo-deny` and offline") is not met. So: `re_ui`'s style constants, copied with attribution, and not `re_ui`.
-- **`egui_kittest` drives a UI through its accessibility tree.** A scratch test with egui 0.36.2, `egui_tiles` 0.17.1, and `egui_kittest` 0.36.2 did each of these, without pixels or a GPU:
+  - three unmaintained-crate advisories (RUSTSEC-2026-0370, 0371, and 0372) come in through `eframe`'s Linux accessibility bridge. The gate doesn't check advisories today (`deny.toml:52-53`).
+- **Recommendation for decision 11.** Its condition reads "`re_ui` itself as a dependency only if the study finds its tree clean under `cargo-deny` and offline". Neither leg fails by much:
+  - its one `cargo-deny` failure of its own, OFL-1.1, is needed by the copy too;
+  - it is offline once its HTTP loader is taken out after setup.
+  - So the condition is met only if the maintainer counts the loader's removal as offline.
+  - The recommendation is still `re_ui`'s style constants, copied with attribution, and not `re_ui`: the app would otherwise link Rerun's data model and a gRPC and HTTP stack it never uses, carry a loader to remove, and follow `re_ui`'s widget API as it changes. This is a judgement, not a failed condition (section 5).
+- **`egui_kittest` drives a UI through its accessibility tree.** A scratch test with egui 0.36.2, `egui_tiles` 0.17.1, and `egui_kittest` 0.36.2 did each of these, without pixels or a GPU. Without its `wgpu` feature nothing is drawn, so the viewport's paint callback and picking never run (section 4):
   - found a button by its role and label, clicked it, and saw the state change;
   - read a label's text;
   - clicked a tab;
@@ -78,7 +83,7 @@ Three trees were resolved against crates.io and checked with Silico's `deny.toml
 | sources | ok | ok | ok |
 | bans | wgpu banned | wgpu banned | wgpu banned |
 | licences | OFL-1.1 (`re_ui`); OFL-1.1 and Ubuntu-font-1.0 (`epaint_default_fonts`) | OFL-1.1 and Ubuntu-font-1.0 (`epaint_default_fonts`) | the same |
-| advisories | RUSTSEC-2026-0370 (`zvariant`, `zvariant_derive`), RUSTSEC-2026-0371 (`zbus_names`): unmaintained | the same | the same |
+| advisories | RUSTSEC-2026-0370 (`zvariant`), RUSTSEC-2026-0371 (`zbus_names`), RUSTSEC-2026-0372 (`zvariant_derive`): unmaintained | the same | the same |
 
 What each finding is:
 
@@ -86,12 +91,13 @@ What each finding is:
 - **OFL-1.1 on `re_ui`.** Its licence is `(MIT OR Apache-2.0) AND OFL-1.1`, for the Inter font it embeds (`re_ui-0.38.1/data/Inter-Medium.otf`, `OFL.txt`).
 - **OFL-1.1 and Ubuntu-font-1.0 on `epaint_default_fonts`.** egui's default fonts (`eframe`'s `default_fonts`), whose licence is `(MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0`. Without `default_fonts`, the app ships its own font, which is likely OFL-1.1 too, as Inter is.
   - Whether Silico's `deny.toml` allows OFL-1.1 is the decision, in either tree. It is a font licence, OSI-approved and FSF-free by `cargo-deny`'s own report; whether it suits Silico's GPL is the maintainer's call.
-- **RUSTSEC-2026-0370 and 0371.** `zvariant`, `zvariant_derive`, and `zbus_names` are marked unmaintained ("No safe upgrade is available"; announcement `github.com/z-galaxy/zbus/issues/2043`).
+- **RUSTSEC-2026-0370, 0371, and 0372.** `zvariant`, `zbus_names`, and `zvariant_derive` are marked unmaintained ("No safe upgrade is available"; announcement `github.com/z-galaxy/zbus/issues/2043`).
   - They come only through `eframe`'s `accesskit` feature on Linux: `eframe` → `egui-winit` → `accesskit_winit` → `accesskit_unix` → `atspi` and `zbus`, the bridge to Linux screen readers.
   - `egui_kittest` doesn't need them: its own tree, with egui and `egui_tiles`, is 87 crates with no `zbus` (section 4).
   - So the choice is between the platform's screen-reader support on Linux, with these advisories ignored by name in `deny.toml`, and none.
+  - The gate runs `cargo deny check bans licenses sources`, not advisories, which need the network (`deny.toml:1, 52-53`). So these don't fail the gate today; they will when advisories are checked.
 
-What `re_ui` adds: 279 crates that the toolkit tree doesn't have. Grouped by what brings them in (`cargo tree -i`):
+What `re_ui` adds: 279 crates that the toolkit tree doesn't have. Every one of the groups below is already in Silico's own lock file through `silico-view` → `rerun` (for example tonic through `re_auth` → `re_redap_client` → `rerun`, ureq through `ehttp` → `re_redap_client`), where they pass the gate's checks. Grouped by what brings them into `re_ui`'s tree (`cargo tree -i`):
 
 - **Rerun's data model:** `re_entity_db`, `re_log_types`, `re_chunk`, `re_chunk_store`, `re_query`, `re_sdk_types`, `re_sorbet`, `re_protos`, and Arrow (`arrow` and its eleven sub-crates). `re_ui` uses them for:
   - entity paths in its syntax highlighting (`re_ui-0.38.1/src/syntax_highlighting.rs:3-7`);
@@ -100,7 +106,7 @@ What `re_ui` adds: 279 crates that the toolkit tree doesn't have. Grouped by wha
 - **A gRPC and HTTP stack:** tonic (features `channel`, `server`, `router`, `transport`), hyper (`client`, `server`, `http1`, `http2`), axum, h2, tower, and `opentelemetry`. They come through `re_protos` and `re_grpc_headers`, which `re_entity_db` and `re_log_types` pull in.
 - **An HTTP client with TLS:** ureq (`rustls`, `gzip`), rustls, ring, `webpki-roots`. They come through `ehttp`, which `egui_extras`'s `http` feature pulls in, which `re_ui` turns on.
 - **Opening links:** `webbrowser`, through `egui-winit`'s `links` feature, which `re_ui` turns on in `eframe`.
-- **File watching:** `notify`, used by `re_ui`'s hot reloading of its design tokens. That is compiled only for a debug build inside Rerun's own workspace (`re_ui-0.38.1/build.rs`: `DeveloperInWorkspace && !is_release`).
+- **File watching:** `notify`, a dependency on every native target, used only by `re_ui`'s hot reloading of its design tokens, which is compiled only for a debug build inside Rerun's own workspace (`re_ui-0.38.1/build.rs`: `DeveloperInWorkspace && !is_release`).
 - **Others:** profiling (`puffin`), `regex`, `chrono`, `jiff`, `resvg` and `usvg` (SVG), the ICU crates, `rand`, `crossterm`, `cargo_metadata` (Rerun's build info), and more.
 
 ## 3. Does anything in it reach the network?
@@ -113,6 +119,7 @@ What `re_ui` adds: 279 crates that the toolkit tree doesn't have. Grouped by wha
    - The loader fetches any image whose URI starts with `http://` or `https://` (`egui_extras-0.36.2/src/loaders/http_loader.rs:65-76`), through ureq.
    - So after `re_ui`'s setup, any `egui::Image` given such a URI goes to the network: one from Silico's own code, or from rendered Markdown such as a help text.
    - The loader isn't installed unless that function is called. But it is the function that applies `re_ui`'s style.
+   - It can be taken out afterwards: egui's `Loaders` keeps its byte loaders in a public `bytes: Mutex<Vec<...>>` (`egui-0.36.2/src/load.rs:613-618`), reached through `ctx.loaders()` (`context.rs:3929`).
 2. **Links: on a click, through the system's browser.** `ui.open_url` (`src/ui_ext.rs:992-994`, `src/help.rs:160`, `src/link_button.rs:82`, `src/notifications.rs:567`) goes through `eframe`'s `links` feature to `webbrowser`, which asks the operating system to open the URL. The app makes no request itself.
 3. **Analytics: no, by default.** The one call, `re_analytics::record` when a help button is first clicked (`src/ui_ext.rs:1149-1150`), is behind `#[cfg(feature = "analytics")]`. `analytics` isn't a default feature (`re_ui-0.38.1/Cargo.toml`: `default = []`).
 4. **The gRPC and HTTP stack: compiled in, with no call from `re_ui` found.** `re_ui`'s source uses `re_uri` and `re_log_types` only as types (`src/command/environment.rs`, `src/command/table_command.rs`). Nothing in it starts a client or a server. The code is linked into the app all the same.
@@ -134,7 +141,10 @@ The lean tree has none of these crates: no ureq, `ehttp`, rustls, `webbrowser`, 
   - `node.click_accesskit()` sends AccessKit's `Click` action, which also reaches a widget that isn't on screen (`node.rs:103-115`).
   - `type_text`, `focus`, the scrolls, and key presses are there too.
 - **Stepping.** `harness.run()` steps frames until the UI settles. `harness.state()` reads the app's state.
-- **No GPU needed.** The `wgpu` and `snapshot` features are only for rendering and comparing images. Neither is needed to drive a UI through its tree.
+- **No GPU needed, and none used.** The `wgpu` and `snapshot` features are for rendering and comparing images (`egui_kittest-0.36.2/src/renderer.rs:16-21`). Neither is needed to drive a UI through its tree. But without them nothing is drawn, so a paint callback, the viewport's `re_renderer` callback among them, never runs: no GPU picking, so no click in the viewport selects anything.
+  - Tests that select by clicking in the viewport (M5.7's, and M5.12's scripted session) need the `wgpu` feature and an adapter on CI (lavapipe). Or they select by name, through the browser or the command API.
+  - Driving the `eframe::App` itself, with `Harness::new_eframe`, needs the `eframe` feature (`lib.rs:240-247`).
+- **A UI that keeps repainting.** `harness.run()` steps until the UI settles and panics past its step limit. Its message says to "call Harness::step or Harness::run_steps instead" when the UI keeps repainting (`lib.rs:44-57, 356-362`). An app that polls a `Running` command every frame keeps repainting while one runs, so its tests step frames with `step` or `run_steps`.
 
 **What a scratch test did** (egui 0.36.2, `egui_tiles` 0.17.1, `egui_kittest` 0.36.2 with no features, `cargo test`; both tests passed):
 
@@ -142,7 +152,7 @@ The lean tree has none of these crates: no ureq, `ehttp`, rustls, `webbrowser`, 
 - `get_by_label("Pad0")` found the label.
 - `get_by_role_and_label(Role::Button, "Pad").click()` and a `run()` made `n` 1. A query of every `Role::Label` node read back `value = "Pad1"`.
 - `click_accesskit()` on the same button made `n` 2, without a pointer.
-- With the panes as tabs, the tree read:
+- With the panes as tabs, and before the panes were labelled (the first version of the test), the tree read:
   - `Window` → containers → `Button "Browser"`, `Button "Toolbar"`;
   - the active pane, an unlabelled `GenericContainer`, holding `Label` with value `"Pad0"`.
   - So `egui_tiles` 0.17.1's tabs are buttons (role `Button`, not `Tab`), and its panes have no accessible name.
@@ -176,9 +186,14 @@ Decision 11 recommends taking `re_ui` itself only if its tree is clean under `ca
 
 **What sections 2 and 3 found against that condition:**
 
-- **It is not offline.** Its style setup installs an HTTP image loader.
-- **It is not clean.** It fails licences where the toolkit alone does too, and adds OFL-1.1 of its own. It brings a server-side gRPC and HTTP stack and an HTTP client with TLS. And it turns on wgpu's default backends through `eframe`'s `wgpu` feature.
-- **Recommendation:** its style constants, copied with attribution, and not `re_ui`.
+- **Clean under `cargo-deny`: nearly.** `re_ui` adds one failure of its own, OFL-1.1 for Inter, which copying its style with the font needs allowed as well. Its gRPC and HTTP stack and its HTTP client are already in Silico's lock file through `silico-view` and pass the gate's checks. Everything else it fails, the toolkit alone fails too.
+- **Offline: not by default.** Its style function installs an HTTP image loader. The loader fetches only an `http(s)` image that is shown, and can be taken out after setup (section 3).
+- **What it costs beyond the condition.**
+  - The app would link Rerun's data model, Arrow, and a gRPC and HTTP server and client it never calls, in the binary Silico ships.
+  - It would carry a loader to remove after every style setup.
+  - It would follow `re_ui`'s widget API, which moves with Rerun's releases.
+  - `eframe`'s `wgpu` feature, which `re_ui` turns on, adds wgpu's `dx12` and `parking_lot`; `re_renderer` already sets the rest.
+- **Recommendation:** its style constants, copied with attribution, and not `re_ui`. The condition is close enough to met that this is a judgement on those costs, the maintainer's to weigh.
 
 **What the constants are.** `re_ui`'s look is data plus one function:
 
@@ -198,20 +213,23 @@ Decision 11 recommends taking `re_ui` itself only if its tree is clean under `ca
 
 ## For M5.0 and the maintainer
 
-1. **Decision 11.** Style constants rather than `re_ui`, by the decision's own condition (section 5). `eframe` with `wgpu_no_default_features`, so the workspace keeps choosing wgpu's backends.
+1. **Decision 11.** Style constants rather than `re_ui`. That is a judgement on what `re_ui` would link into the app, since its condition is nearly met (section 5). `eframe` with `wgpu_no_default_features`, which keeps `dx12` and `parking_lot` out of wgpu; `re_renderer` already sets the rest of wgpu's backends (`re_renderer-0.38.1/Cargo.toml`).
 2. **`deny.toml`, three changes any app crate needs, each the maintainer's:**
    - wgpu allowed through the app crate (or through `eframe` and `egui-wgpu` as wrappers);
    - OFL-1.1 allowed for fonts, and Ubuntu-font-1.0 too if egui's default fonts are kept;
-   - RUSTSEC-2026-0370 and 0371 ignored by name with a reason, or `eframe`'s `accesskit` feature left off on Linux at the cost of screen readers there.
-3. **Accessibility tests (decision 7).** `egui_kittest` with no features, labelled panes, and labelled controls. Pane labels are one call each in the pane's UI (section 4).
+   - RUSTSEC-2026-0370, 0371, and 0372 ignored by name with a reason (once the gate checks advisories), or `eframe`'s `accesskit` feature left off on Linux at the cost of screen readers there.
+3. **Accessibility tests (decision 7).** `egui_kittest` through the tree, with labelled panes and labelled controls; pane labels are one call each in the pane's UI (section 4).
+   - Panels and controls need no features.
+   - Selecting by a click in the viewport needs the `wgpu` feature and lavapipe on CI, or selection by name instead.
+   - Frames are stepped with `step` or `run_steps` while a command runs.
 
 ## Method
 
-Scratch crates outside the repository, removed when this note was written. Each was resolved with `cargo generate-lockfile` against crates.io on 2026-10-27, then checked with `cargo-deny check` (0.20.2) using a copy of Silico's `deny.toml`:
+Scratch crates outside the repository. Their manifests and the test are in a comment on the PR that added this note (#223); the crates themselves are removed once it merges. Each was resolved with `cargo generate-lockfile` against crates.io on 2026-10-27, then checked with `cargo-deny check` (0.20.2) using a copy of Silico's `deny.toml`:
 
-- **`toolkit-probe`:** depends on `re_ui = "=0.38.1"` alone.
+- **`re_ui` probe** (the re_ui column of section 2): depends on `re_ui = "=0.38.1"` alone.
 - **`bare-probe`:** `eframe = "=0.36.2"` (no default features; `accesskit`, `default_fonts`, `wayland`, `x11`, `wgpu`), `egui_tiles = "=0.17.1"`, and the development dependency `egui_kittest = "=0.36.2"` with `wgpu`, `snapshot`, and `eframe`. This is the toolkit column of section 2.
-- **`lean-probe`:** the same, with `wgpu_no_default_features` in place of `wgpu`; wgpu 30 with Vulkan, Vulkan portability, Metal, WGSL, and `std`; and `egui_kittest` with no features.
-- **`kittest-probe`:** egui 0.36.2 and `egui_tiles` 0.17.1, with `egui_kittest` 0.36.2 (no features) as a development dependency. Two tests, built under the build lock with three jobs and run once each.
+- **`lean-probe`:** the same, with `wgpu_no_default_features` in place of `wgpu`; wgpu 30 with Vulkan, Vulkan portability, Metal, WGSL, and `std`; and `egui_kittest` with no features. It leaves out `re_renderer` and `silico-render`, so 373 isn't the app's crate count, only the toolkit's.
+- **`kittest-probe`:** egui 0.36.2 and `egui_tiles` 0.17.1, with `egui_kittest` 0.36.2 (no features) as a development dependency. Two tests, built under the build lock with three jobs and run once each. The unlabelled tree in section 4 is from its first version, before the pane-labelling call was added.
 
 The crate counts are the lock files' `[[package]]` entries, which cover every target. Paths into a crate are into its published source in Cargo's registry.

@@ -26,16 +26,19 @@ It describes what the code does and what was measured. The decisions stay with M
 - **Picking is per instance, and a draw is per mesh.**
   - `re_renderer` batches instances that share a `GpuMesh` into one instanced draw.
   - `silico-render` makes each B-rep face a `GpuMesh` of its own, so that each face gets an ID. That makes each face its own batch, drawn once in each pass it takes part in.
-- **What that costs.** For NIST CTC 02 (664 faces), the per-face meshes take twice the frame time of one mesh. For ten copies of it (6,640 faces), they take 20 times as long: about 27 ms a frame against 1.4 ms, which misses 60 frames a second.
+- **What that costs.** Every frame here waited for the GPU, so a frame's time is the CPU's and the GPU's added together; a viewport that pipelines them would take about the larger of the two, which wasn't measured.
+  - **NIST CTC 02 (664 faces), the corpus's largest part.** The per-face meshes take 2.0 ms a frame against 1.0 ms for one mesh. That is well inside a frame, so it passes the M5 plan's open decision 4, which keeps per-instance picking unless the largest part misses a frame. A camera move that rebuilds every mesh adds 3.1 ms.
+  - **Ten copies of it (6,640 faces).** The per-face meshes take 14.6 ms of CPU time before submitting: inside 60 Hz (16.7 ms), past 120 Hz (8.3 ms). With the wait, 28 ms in all, against 1.4 ms for one mesh. A camera move that rebuilds every mesh adds 33 ms.
 - **The way out needs no fork.**
   - `re_renderer`'s `Renderer` and `DrawData` traits are public, and Rerun ships an example of a renderer outside the crate.
   - A 200-line renderer in the scratch program draws a body in one call and writes each pixel's face number into the picking layer.
   - It costs what one mesh costs, and its picking IDs matched the per-face meshes' on every pixel of the picking rectangle.
-  - The same renderer lights with M4.6's lights, fixed to the camera, in its shader. Without that, every orbit would rebuild every mesh, as the next point shows.
-- **Lighting is baked today.**
-  - `re_renderer`'s mesh shader lights from two lights fixed in the world.
-  - So `silico-render` bakes M4.6's camera-fixed lights into vertex colours.
-  - In a viewport, that means rebuilding every face's mesh whenever the camera moves: 3 ms for CTC 02 and 34 ms for 6,640 faces.
+  - Caveats: it ran on an M4 Pro's Metal only, not on lavapipe, where agents' renders draw. Its colour wasn't compared with `silico-render`'s. And it lights per pixel where M4.6 lights per vertex, so curved faces would shade slightly differently.
+  - The same renderer lights with M4.6's lights, fixed to the camera, in its shader. That removes one reason every orbit rebuilds every mesh, as the next point shows.
+- **Light and position are baked for one view today.**
+  - `re_renderer`'s mesh shader lights from two lights fixed in the world, so `silico-render` bakes M4.6's camera-fixed lights into vertex colours.
+  - It also places every vertex relative to the eye (or the target), in f64, before it's f32: M4.6's precision design.
+  - In a viewport, either one means rebuilding every face's mesh whenever the camera moves: 3.1 ms for CTC 02 and 33 ms for 6,640 faces (section 5).
 - **Edges, silhouettes, and hidden lines.**
   - Crisp B-rep edges exist: lines of a width in points, offset in depth. They're blended with a mode Rerun documents as suited only to 2D.
   - Silhouettes of curved faces, and hidden or dashed lines, exist nowhere in `re_renderer`.
@@ -108,7 +111,7 @@ A resize needs nothing special: the view builder is new each frame at the curren
 
 - **The target.**
   - `Rgba32Uint`: red and green hold a 64-bit object ID, blue and alpha a 64-bit instance ID. Its depth is `Depth32Float`, read back too. No MSAA, so each pixel is one ID (`re_renderer/src/draw_phases/picking_layer.rs:6-8, 89-128, 159-168`).
-  - Only the rectangle asked for is drawn, through a cropped projection (229-254). A rectangle partly off screen is allowed (`view_builder.rs:288-295`).
+  - Only the rectangle asked for is drawn, through a cropped projection (229-254). A rectangle partly or wholly off screen is allowed; what's off it reads as if the target were bigger (`view_builder.rs:298-301`).
 - **How Rerun asks for it** (`crates/views/re_view_spatial/src/picking_ui.rs:44-63`):
   - nothing is picked while a drag is under way;
   - the rectangle is centred on the pointer, twice the interaction radius (5 points) times `pixels_per_point`, from 8 to 128 pixels;
@@ -179,20 +182,26 @@ Hidden edges aren't drawn, and nothing draws a silhouette.
 
 - `re_renderer`'s mesh shader lights a mesh with a non-zero normal by `simple_lighting`: an ambient of 0.2 and two lights fixed in world space (`re_renderer/shader/utils/lighting.wgsl:1-9`; `instanced_mesh.wgsl:93-99`). Its TODO (#1800) asks for scene lighting.
 - M4.6's look lights from the camera (Fusion's). So `silico-render` computes the light per vertex on the CPU, for one view, and stores it as the vertex colour.
-- That is right for one render. In a viewport it means every face's mesh is rebuilt on every camera move. Measured in section 5: about 3 ms for CTC 02, and 34 ms for 6,640 faces.
-- A renderer of Silico's own computes the same light in its fragment shader from the view matrix, so a camera move changes no buffer (section 5).
+- That is right for one render. In a viewport it means every face's mesh is rebuilt on every camera move. Measured in section 5: 3.1 ms for CTC 02, and 33 ms for 6,640 faces, building the meshes alone.
+- A renderer of Silico's own computes the same light in its fragment shader from the view matrix (section 5), so the light needs no rebuild.
+- The light isn't the only thing baked for one view. `silico-render` also places each vertex relative to the eye, or to the target for an orthographic view, subtracting in f64 before it's f32 (`render.rs:288-291`, the reference set at 260 and 278). That is M4.6's precision design: "a part 5·10⁴ mm from the origin would round there to 4e-3 mm, more than a pixel" (`docs/design/m4.6-render.md`, *Drawn about the target, or the eye*). So a camera move rebuilds the positions too.
+  - A viewport that rebuilds nothing on a camera move needs that offset moved out of the vertices: positions about each body's own origin, and the body's origin minus the eye, in f64, sent as an f32 transform each frame. Or the precision traded.
+  - The probe in section 5 did neither: it placed positions about the part's centre once.
+- Another way, with `re_renderer`'s own meshes: keep the camera fixed in the world and move the bodies through each instance's `world_from_mesh`, which `MeshDrawData::new` takes afresh every frame anyway. `re_renderer`'s world-fixed lights then follow the camera, the eye offset becomes the transform, and no mesh is rebuilt. The light is then `re_renderer`'s formula (an ambient of 0.2 and two lights), not M4.6's, which changes M4.6's look. This wasn't tried.
 
 ## 5. The cost of a picking ID per face, measured
 
 **What was measured.**
 
-- **The part.** NIST's CTC 02 (`nist_ctc_02_asme1_rc`), the corpus's largest by faces: 664 faces and 1,647 edges. Counts are of the `Fa` and `Ed` shapes in the cached OCCT B-reps of the 33 parts (`~/.cache/silico/corpus/nist/brep`). It was meshed by the kernel worker at half a pixel of a 1,080-pixel view of its widest side, as `render` meshes (`crates/silico-core/src/command/render.rs:707-729`): deflection 0.398 for an extent of 860, giving 24,460 triangles.
+- **The part.** NIST's CTC 02 (`nist_ctc_02_asme1_rc`), the corpus's largest by faces: 664 faces and 1,647 edges. Counts are of the `Fa` and `Ed` shapes in the cached OCCT B-reps of the 33 parts (`~/.cache/silico/corpus/nist/brep`). It was meshed by the kernel worker at deflection 0.398, the part's extent (860) over 2 × 1,080, giving 24,460 triangles.
+  - `render` meshes at half a pixel at the part's nearest depth, rounded to a power of two on M4.6's ladder (`crates/silico-core/src/command/render.rs:724-731`, `mesh_level`). So the viewport's triangle count may differ from this by up to a step of the ladder.
 - **The frame.**
   - 1920 × 1080, 4× MSAA, perspective;
   - a 32 × 32 picking rectangle at the centre, read back every frame;
   - one face outlined (the whole body, for the one-mesh variant);
-  - composited into an egui-sized target, as a viewport frame is.
-- **Timing.** Median and 95th percentile of 300 frames after 30 to warm up: the CPU's time to submit, and the time until the GPU is done.
+  - composited into an egui-sized target, as a viewport frame is;
+  - faces only: no edges were drawn, though M4.6 draws every B-rep edge as a line strip (1,647 for CTC 02). So a viewport frame with edges costs more than these. The comparison between the variants holds.
+- **Timing.** Median and 95th percentile of 300 frames after 30 to warm up: the CPU's time to submit, and the time until the GPU is done. Each frame waits for the GPU before the next begins, so "GPU done" is the CPU's time and the GPU's added together. A viewport that lets them overlap would take about the larger of the two; that wasn't measured.
 - **The three variants:**
   - **per face:** a `GpuMesh` per face, as `silico-render` builds them;
   - **one mesh:** the same triangles as one `GpuMesh`, one ID for the body;
@@ -214,7 +223,8 @@ Notes on the results:
 
 - The very first run gave 5.0 ms to GPU done for one copy per face, and later runs gave 2.0 ms. The first run is left out of the table.
 - The one-mesh rebuild took 1.1 ms after the per-face rebuild had run and 2.7 to 3.3 ms in the one-copy runs. It depends on the state of `re_renderer`'s upload belt, which this study didn't look into.
-- With ten copies, the per-face frame misses 60 frames a second (16.7 ms) on the CPU alone.
+- With ten copies, the per-face frame's CPU time (14.6 ms) is inside 60 Hz (16.7 ms) and past 120 Hz (8.3 ms). A camera move on top of it (33 ms to rebuild) misses a 60 Hz frame.
+- The rebuild times are for building the GPU meshes only, from a fixed colour. Computing each vertex's light, as `silico-render` does, adds to them.
 
 **The face renderer.** It shows that a picking ID per face needs no fork. It is about 200 lines of Rust and 60 of WGSL in the scratch program, built against the published crate, modelled on Rerun's `examples/rust/custom_visualizer/src/height_field_renderer.rs`:
 
@@ -232,9 +242,13 @@ Notes on the results:
 
 **What this changes.**
 
+- **Against open decision 4.** The M5 plan keeps per-instance picking unless the corpus's largest part misses a frame in M5.7's benchmark. CTC 02 doesn't miss one per instance: 2.0 ms, or about 5 ms on a frame that also rebuilds for a camera move. So the case for a renderer of Silico's own isn't CTC 02's frame time. It rests on:
+  - parts of several thousand faces (the ten-copy scene: 14.6 ms of CPU a frame, and 33 ms to rebuild for a camera move);
+  - the camera-fixed light and the eye offset, which otherwise rebuild every mesh on every orbit, whatever the part;
+  - an outline by face.
 - M4.6's design names two ways to meet the per-face cost: a fork of `re_renderer`, or a per-triangle `R32Uint` target of Silico's own. ARCHITECTURE.md (line 205) allows a fork "only if CAD features need changes to its internals".
 - The public traits give a third way that changes no internals: a renderer of Silico's own inside `re_renderer`'s phases. It draws its colour, its picking IDs, and its outline mask in the same passes as everything else.
-- The same renderer is the natural home for the camera-fixed light, for an outline by face, and later for a hidden-line pass. Agents' renders and the viewport could both draw through it, keeping M4.6's R1 (one renderer).
+- The same renderer is the natural home for the camera-fixed light, for an outline by face, and later for a hidden-line pass. To rebuild nothing on a camera move, it also needs the eye offset as a per-body transform (section 4, Light), which the probe didn't build. Agents' renders and the viewport could both draw through it, keeping M4.6's R1 (one renderer).
 - Two costs come with it:
   - Silico owns a WGSL shader and its pipelines, built against `re_renderer`'s descriptors, which a version bump can change;
   - its shader must be registered in the in-memory file system before the renderer is created.
@@ -243,7 +257,7 @@ Notes on the results:
 
 What the design has to settle, from the above. Each item is a question, not a decision:
 
-1. **Faces: a renderer of Silico's own, or `re_renderer`'s meshes.** The measurements favour Silico's own for any part past a few hundred faces. It also fixes the lighting rebuild. M5.6 and M5.7 both depend on the answer.
+1. **Faces: a renderer of Silico's own, or `re_renderer`'s meshes** (an amendment to open decision 4, if taken). By decision 4's own test, CTC 02 stays per-instance: it doesn't miss a frame. The case for Silico's own is the larger parts, the rebuild on every camera move (light and eye offset), and outlines by face (section 5). The other way to avoid the rebuild is to move the bodies, not the camera, at the cost of `re_renderer`'s light formula (section 4). M5.6 and M5.7 both depend on the answer.
 2. **Edge antialiasing in the viewport.** Blended, as M4.6 draws, with its documented depth-ordering caveat; or coverage under MSAA on a hardware GPU.
 3. **Silhouettes.** Which of the three ways in section 4, and in which step (M5.6 promises "silhouettes").
 4. **Hidden-line display.** Whether M5 has it at all (Fusion's default style shows visible edges only, M4.6, Look). If it does, it needs a line renderer of Silico's own.
@@ -252,10 +266,10 @@ What the design has to settle, from the above. Each item is a question, not a de
 
 ## Method
 
-The scratch program and the reading are outside the repository, and were removed when this note was written.
+The scratch programs are outside the repository. Their sources are in a comment on the PR that added this note (#223), so the numbers can be reproduced; the programs themselves are removed once it merges.
 
 - **The program.** A crate depending on `silico-core` (by path, at `main`), `re_renderer` 0.38.1 (`default-features = false`), and `wgpu` 30 with Metal only, built in release.
 - **The part.** It loads CTC 02's cached OCCT B-rep, converted to Silico's with `silico-brep-convert`, and meshes it on a kernel worker built from `main`, at deflection 1 and then at half a pixel.
-- **The frames.** It draws offscreen and composites into a `Bgra8Unorm` target, as egui's would be. It polls the device until each frame is done, so "GPU done" includes the CPU's share, and picking results arrive within the same frame. A viewport that doesn't wait sees them a frame or more later (section 3).
+- **The frames.** It draws offscreen and composites into a `Bgra8Unorm` target, as egui's would be. It polls the device until each frame is done, so "GPU done" includes the CPU's share. Picking results still arrive a frame late, because the readback is mapped at the next `begin_frame` (`re_renderer/src/context.rs:327-329`): 329 results in 330 frames. A viewport that doesn't wait sees them that frame or later (section 3).
 - **The checks.** Each variant ran twice in each run, in the order per face, one mesh, face renderer, and the whole program ran three times. The picking comparison is between the per-face and face-renderer variants' last results.
 - **The rest.** Rerun's sources were read at the tag, and every citation above was checked against them. Rerun's custom-renderer example was read, not built.
