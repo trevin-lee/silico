@@ -32,6 +32,8 @@ mod adversarial_sketch_solve;
 mod adversarial_stored_coordinates;
 #[path = "sketch.rs"]
 mod sketch;
+#[path = "sketch_edit.rs"]
+mod sketch_edit;
 #[path = "sketch_features.rs"]
 mod sketch_features;
 #[path = "sketch_features_gate.rs"]
