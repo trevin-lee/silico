@@ -665,6 +665,30 @@ fn cache_clear_after_its_directory_is_swapped_for_a_link_out_removes_nothing_thr
 }
 
 #[test]
+fn cache_clear_of_a_stand_in_whose_documents_directory_is_swapped_out_removes_nothing() {
+    let f = fixture();
+    f.file("sub/part.silico", BOX);
+    let theirs = f.outside.join("cache");
+    std::fs::create_dir_all(&theirs).unwrap();
+    let link = f.work.join("sub/.silico-cache");
+    std::os::unix::fs::symlink(&theirs, &link).unwrap();
+    assert!(f.open("sub/part.silico", false).ok);
+    assert!(f.caches.lock().unwrap().is_empty());
+    std::fs::remove_file(&link).unwrap();
+    let moved = f.outside.join("sub");
+    std::fs::rename(f.work.join("sub"), &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, f.work.join("sub")).unwrap();
+    let planted = plant_entries(&moved.join(".silico-cache"));
+    assert_eq!(
+        cleared_by_name(&f, "s1"),
+        serde_json::json!({"directory": "sub/.silico-cache", "removed": 0})
+    );
+    for entry in &planted {
+        assert_eq!(std::fs::read(entry).unwrap(), b"theirs", "{entry:?}");
+    }
+}
+
+#[test]
 fn cache_clear_of_a_cache_that_led_out_as_it_opened_and_is_inside_as_it_clears_clears_it() {
     // Whether a clear goes through is decided as it clears: `.silico-cache` a link out as the
     // session opens (its engine's cache a stand-in, writing nothing there), then the link
