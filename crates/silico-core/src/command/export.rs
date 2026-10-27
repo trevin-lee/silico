@@ -183,7 +183,8 @@ pub struct MeshTurns {
     freed: Condvar,
 }
 
-/// Who holds the turn to mesh, and who waits for it, in order.
+/// Who holds the turn to mesh, and who waits for it, in order: the line's every decision,
+/// made under [`MeshTurns`]'s lock, which waits and wakes as they say.
 #[derive(Debug, Default)]
 struct Line {
     /// Whether a turn is held.
@@ -192,6 +193,52 @@ struct Line {
     next: u64,
     /// The tickets of the exports waiting, the first served first.
     waiting: VecDeque<u64>,
+}
+
+impl Line {
+    /// Takes the turn for the export holding `ticket` (none: one not in line), and says
+    /// whether it did: only when no turn is held, and the export is first in line, or, not
+    /// in line, nobody waits (a newcomer never goes ahead of the line). Its place given up
+    /// once it has the turn.
+    fn take(&mut self, ticket: Option<u64>) -> bool {
+        let first = match ticket {
+            Some(ticket) => self.waiting.front() == Some(&ticket),
+            None => self.waiting.is_empty(),
+        };
+        if self.held || !first {
+            return false;
+        }
+        if ticket.is_some() {
+            self.waiting.pop_front();
+        }
+        self.held = true;
+        true
+    }
+
+    /// A place at the back of the line: its ticket.
+    fn join(&mut self) -> u64 {
+        let ticket = self.next;
+        self.next = ticket.wrapping_add(1);
+        self.waiting.push_back(ticket);
+        ticket
+    }
+
+    /// `ticket`'s place given up, and whether the exports waiting must be woken to look: when
+    /// it was first and no turn is held, the one behind it may take the turn now. (Behind the
+    /// first, or with a turn held, nobody may take one it couldn't before: the turn given back
+    /// wakes them.)
+    fn leave(&mut self, ticket: u64) -> bool {
+        let first = self.waiting.front() == Some(&ticket);
+        self.waiting.retain(|&waiting| waiting != ticket);
+        first && !self.held && !self.waiting.is_empty()
+    }
+
+    /// The turn given back, and whether the exports waiting must be woken to look: whether
+    /// any wait, the first of them free to take it now.
+    fn give_back(&mut self) -> bool {
+        self.held = false;
+        !self.waiting.is_empty()
+    }
 }
 
 /// A turn to mesh, held until it's dropped.
@@ -212,32 +259,21 @@ impl MeshTurns {
         loop {
             if stopped() {
                 if let Some(ticket) = ticket {
-                    // Its place given up: the export behind it may be first now.
-                    line.waiting.retain(|&waiting| waiting != ticket);
-                    self.freed.notify_all();
+                    self.leave(&mut line, ticket);
                 }
                 return None;
             }
-            let first = match ticket {
-                Some(ticket) => line.waiting.front() == Some(&ticket),
-                None => line.waiting.is_empty(),
-            };
-            if !line.held && first {
+            if line.take(ticket) {
                 if ticket.is_some() {
-                    line.waiting.pop_front();
                     tracing::info!(
                         feature = feature.as_str(),
                         "the turn to mesh for export, after another export's mesh"
                     );
                 }
-                line.held = true;
                 return Some(MeshTurn(self));
             }
             if ticket.is_none() {
-                let taken = line.next;
-                line.next = taken.wrapping_add(1);
-                line.waiting.push_back(taken);
-                ticket = Some(taken);
+                ticket = Some(line.join());
                 tracing::info!(
                     feature = feature.as_str(),
                     ahead = line.waiting.len().saturating_sub(1),
@@ -248,6 +284,14 @@ impl MeshTurns {
                 .freed
                 .wait(line)
                 .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// `ticket`'s place in `line` (this one's, locked) given up, the exports waiting woken if
+    /// the one behind it may take the turn now.
+    fn leave(&self, line: &mut Line, ticket: u64) {
+        if line.leave(ticket) {
+            self.freed.notify_all();
         }
     }
 
@@ -262,8 +306,9 @@ impl MeshTurns {
 
 impl Drop for MeshTurn<'_> {
     fn drop(&mut self) {
-        crate::worker::lock(&self.0.line).held = false;
-        self.0.freed.notify_all();
+        if crate::worker::lock(&self.0.line).give_back() {
+            self.0.freed.notify_all();
+        }
     }
 }
 
@@ -767,7 +812,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use super::{DEFAULT_TOLERANCE, MeshTurns, TOLERANCES};
+    use super::{DEFAULT_TOLERANCE, Line, MeshTurns, TOLERANCES};
     use crate::document::FeatureId;
 
     /// Long enough for any wait here, so one that stalls fails instead.
@@ -890,6 +935,135 @@ mod tests {
         assert_eq!(joined.recv_timeout(STALL).unwrap(), (false, true));
         assert_eq!(*order.lock().unwrap(), ["behind"]);
         assert!(crate::worker::lock(&turns.line).waiting.is_empty());
+    }
+
+    /// A line whose turn is `held`, `waiting` its tickets in order, the next ticket past
+    /// them all.
+    fn a_line(held: bool, waiting: &[u64]) -> Line {
+        Line {
+            held,
+            next: waiting.iter().max().map_or(0, |last| last + 1),
+            waiting: waiting.iter().copied().collect(),
+        }
+    }
+
+    /// `line`'s turn held, and its tickets waiting in order.
+    fn state(line: &Line) -> (bool, Vec<u64>) {
+        (line.held, line.waiting.iter().copied().collect())
+    }
+
+    #[test]
+    fn a_newcomer_takes_a_free_turn_only_when_nobody_waits() {
+        let mut free = a_line(false, &[]);
+        assert!(free.take(None));
+        assert_eq!(state(&free), (true, vec![]));
+        // A turn held: no turn for it.
+        let mut held = a_line(true, &[]);
+        assert!(!held.take(None));
+        assert_eq!(state(&held), (true, vec![]));
+        // A turn given back but not yet taken by the line's first: a newcomer never goes
+        // ahead of the exports waiting.
+        let mut waited = a_line(false, &[4, 5]);
+        assert!(!waited.take(None));
+        assert_eq!(state(&waited), (false, vec![4, 5]));
+    }
+
+    #[test]
+    fn only_the_first_in_line_takes_a_free_turn_and_gives_up_its_place() {
+        let mut first = a_line(false, &[4, 5, 6]);
+        assert!(first.take(Some(4)));
+        assert_eq!(state(&first), (true, vec![5, 6]));
+        // Behind the first, or at the back, whichever wakes first: no turn, the line kept.
+        for behind in [5, 6] {
+            let mut later = a_line(false, &[4, 5, 6]);
+            assert!(!later.take(Some(behind)), "{behind} went ahead of 4");
+            assert_eq!(state(&later), (false, vec![4, 5, 6]));
+        }
+        // First, but the turn held.
+        let mut held = a_line(true, &[4, 5]);
+        assert!(!held.take(Some(4)));
+        assert_eq!(state(&held), (true, vec![4, 5]));
+        // A ticket not in line at all (one that left).
+        let mut gone = a_line(false, &[4]);
+        assert!(!gone.take(Some(3)));
+        assert_eq!(state(&gone), (false, vec![4]));
+    }
+
+    #[test]
+    fn joining_gives_each_export_the_next_ticket_at_the_back() {
+        let mut line = Line::default();
+        assert_eq!((line.join(), line.join(), line.join()), (0, 1, 2));
+        assert_eq!(state(&line), (false, vec![0, 1, 2]));
+        // The ticket counter goes on past the tickets served: a ticket is never handed twice
+        // to exports in line together.
+        assert!(line.take(Some(0)));
+        assert_eq!(line.join(), 3);
+        assert_eq!(state(&line), (true, vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn leaving_first_with_the_turn_free_and_someone_behind_wakes_the_line() {
+        // The turn given back, the first in line stopped before it woke to take it: the one
+        // behind it may take it now, and is told.
+        let mut front = a_line(false, &[4, 5, 6]);
+        assert!(front.leave(4));
+        assert_eq!(state(&front), (false, vec![5, 6]));
+        let mut pair = a_line(false, &[4, 5]);
+        assert!(pair.leave(4));
+        assert_eq!(state(&pair), (false, vec![5]));
+    }
+
+    #[test]
+    fn leaving_wakes_nobody_when_nobody_behind_could_take_a_turn() {
+        // The first still first: from the middle or the back.
+        for (leaving, kept) in [(5, vec![4, 6]), (6, vec![4, 5])] {
+            let mut line = a_line(false, &[4, 5, 6]);
+            assert!(!line.leave(leaving), "{leaving}");
+            assert_eq!(state(&line), (false, kept));
+        }
+        // First, but the turn held: its giving back wakes the line.
+        let mut held = a_line(true, &[4, 5]);
+        assert!(!held.leave(4));
+        assert_eq!(state(&held), (true, vec![5]));
+        // First and alone: nobody to wake.
+        let mut alone = a_line(false, &[4]);
+        assert!(!alone.leave(4));
+        assert_eq!(state(&alone), (false, vec![]));
+    }
+
+    #[test]
+    fn giving_back_wakes_the_line_when_anyone_waits() {
+        let mut waited = a_line(true, &[4, 5]);
+        assert!(waited.give_back());
+        assert_eq!(state(&waited), (false, vec![4, 5]));
+        let mut nobody = a_line(true, &[]);
+        assert!(!nobody.give_back());
+        assert_eq!(state(&nobody), (false, vec![]));
+    }
+
+    #[test]
+    fn a_first_waiter_leaving_a_free_turn_wakes_the_one_behind_to_take_it() {
+        // The state a stopped first waiter leaves from, made by hand so no wake but its
+        // leaving's can come: the turn free, a ticket first in line that no thread holds (the
+        // stopped waiter's), and a thread waiting behind it. The waiter, woken only as the
+        // ticket's place is given up as a stopped waiter's is, takes the turn; untold, it'd
+        // wait for good.
+        let turns = Arc::new(MeshTurns::new());
+        let first = crate::worker::lock(&turns.line).join();
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let never = Arc::new(AtomicBool::new(false));
+        let behind = waiter(&turns, "behind", &never, &order, 1);
+        turns.leave(&mut crate::worker::lock(&turns.line), first);
+        let (done, joined) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(behind.join().unwrap());
+        });
+        assert!(
+            joined.recv_timeout(STALL).unwrap(),
+            "the waiter behind was never woken"
+        );
+        assert_eq!(*order.lock().unwrap(), ["behind"]);
+        assert_eq!(state(&crate::worker::lock(&turns.line)), (false, vec![]));
     }
 
     #[test]

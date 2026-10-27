@@ -12,7 +12,8 @@ use super::listing::{answer, fixture};
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::export::{Export, ExportFormat};
-use silico_core::command::{CheckModel, Sessions};
+use silico_core::command::logs::LogLevel;
+use silico_core::command::{CheckModel, SessionId, Sessions};
 use silico_core::document::Length;
 use silico_core::fake::{FakeClient, FakeKernel, FakeSketches};
 use silico_core::kernel::{Clients, Kernel, KernelRequest, Op};
@@ -301,6 +302,29 @@ fn an_export_waiting_its_turn_to_mesh_stops_at_once_when_cancelled() {
     assert!(f.dir.path().join("b.3mf").is_file());
 }
 
+/// Waits until `session`'s logs say its export waits for another export's mesh, so what a
+/// test does next finds it waiting (the process's subscriber keeping session logs).
+fn waiting_its_turn<K: Clients + 'static>(sessions: &Sessions<K>, session: &SessionId) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let query = crate::logged::query(LogLevel::Info, None, None, 1000);
+        let logs = sessions.read_logs(session, &query).result.unwrap();
+        if logs
+            .events
+            .iter()
+            .any(|e| e.message.starts_with("waiting for another export's mesh"))
+        {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the export never waited its turn: {:?}",
+            logs.events
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 #[test]
 fn an_export_waiting_its_turn_to_mesh_when_its_session_closes_answers_closed_not_cancelled() {
     // An export reads the current model, on its session's thread, so `close`, queued behind
@@ -310,6 +334,7 @@ fn an_export_waiting_its_turn_to_mesh_when_its_session_closes_answers_closed_not
     // second's export, waiting its turn, answers as of a session that closed (decision 34;
     // as a published render does), never `cancelled`, since no client stopped it, and
     // writes nothing, never asking for a mesh.
+    crate::logged::keep_logs();
     let dir = tempfile::tempdir().unwrap();
     let secret = dir.path().join("secret");
     let kernel = Arc::new(FakeKernel::new(2).unwrap());
@@ -346,8 +371,8 @@ fn an_export_waiting_its_turn_to_mesh_when_its_session_closes_answers_closed_not
     }
     assert_eq!(asked_meshes(&kernel), 1);
     let second = sessions.export(&s[1], request(dir.path().join("b.3mf")));
-    // Long enough for the second export to reach its wait for a turn.
-    assert!(!kernel.wait_running(2, Duration::from_millis(500)));
+    // The second export waiting its turn, as its session's logs say, before the close.
+    waiting_its_turn(&sessions, &s[1]);
     // Every session closed; the drop waits for the first's mesh, held, so it's let go on a
     // thread of its own.
     let dropping = std::thread::spawn(move || drop(sessions));

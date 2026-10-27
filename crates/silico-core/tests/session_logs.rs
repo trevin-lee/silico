@@ -551,11 +551,30 @@ fn a_box(id: &str) -> String {
     )
 }
 
+/// The first event of `session` whose message starts with `waiting`, once it's kept.
+fn first_kept(
+    sessions: &Sessions<Arc<FakeKernel>>,
+    session: &SessionId,
+    waiting: &str,
+) -> LogEvent {
+    let deadline = std::time::Instant::now() + crate::sessions::HANG;
+    loop {
+        let logs = read(sessions, session, &query(LogLevel::Info, None, None, 1000));
+        if let Some(e) = logs.events.iter().find(|e| e.message.starts_with(waiting)) {
+            return e.clone();
+        }
+        assert!(std::time::Instant::now() < deadline, "{:?}", logs.events);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 #[test]
 fn an_export_waiting_for_another_exports_mesh_logs_its_wait_and_its_turn_naming_its_feature() {
     // One export mesh at a time across the sessions: an export kept waiting by another
-    // session's says so in its own session's logs, naming the feature whose mesh waits, and
-    // again once its turn comes; the export that never waited says neither.
+    // session's says so in its own session's logs, naming the feature whose mesh waits and
+    // how many exports wait ahead of it, and again once its turn comes; the export that
+    // never waited says neither. Three sessions export, each once the one before it holds
+    // the turn or waits: the second waits with none ahead of it, the third behind the second.
     keep_logs();
     let dir = tempfile::tempdir().unwrap();
     let kernel = Arc::new(FakeKernel::new(2).unwrap());
@@ -568,8 +587,10 @@ fn an_export_waiting_for_another_exports_mesh_logs_its_wait_and_its_turn_naming_
     let sessions = sessions(Arc::clone(&kernel), &dir);
     let s1 = opened(&sessions, &dir, "a.silico", &a_box("a1a1a1a1"));
     let s2 = opened(&sessions, &dir, "b.silico", &a_box("b2b2b2b2"));
+    let s3 = opened(&sessions, &dir, "c.silico", &a_box("c3c3c3c3"));
     checked(&sessions, &s1, false);
     checked(&sessions, &s2, false);
+    checked(&sessions, &s3, false);
     let export = |s: &SessionId, name: &str| {
         sessions.export(
             s,
@@ -589,35 +610,39 @@ fn an_export_waiting_for_another_exports_mesh_logs_its_wait_and_its_turn_naming_
     let second = export(&s2, "b.3mf");
     let waiting = "waiting for another export's mesh: one export mesh at a time";
     let turn = "the turn to mesh for export, after another export's mesh";
-    let deadline = std::time::Instant::now() + crate::sessions::HANG;
-    let wait = loop {
-        let logs = read(&sessions, &s2, &query(LogLevel::Info, None, None, 1000));
-        if let Some(e) = logs.events.iter().find(|e| e.message.starts_with(waiting)) {
-            break e.clone();
-        }
-        assert!(std::time::Instant::now() < deadline, "{:?}", logs.events);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    };
+    let wait = first_kept(&sessions, &s2, waiting);
     assert_eq!(wait.level, LogLevel::Info);
     assert_eq!(wait.feature, Some(id("b2b2b2b2")));
     assert_eq!(wait.spans[0], "export");
+    assert_eq!(wait.message, format!("{waiting} feature=b2b2b2b2 ahead=0"));
+    let third = export(&s3, "c.3mf");
+    let wait = first_kept(&sessions, &s3, waiting);
+    assert_eq!(wait.feature, Some(id("c3c3c3c3")));
+    assert_eq!(wait.message, format!("{waiting} feature=c3c3c3c3 ahead=1"));
     held.release();
     assert!(answer(first).result.is_ok());
     assert!(answer(second).result.is_ok());
-    let logs = read(
-        &sessions,
-        &s2,
-        &query(LogLevel::Info, Some("b2b2b2b2"), None, 1000),
-    );
-    let said: Vec<&str> = messages(&logs.events)
-        .into_iter()
-        .filter(|m| m.starts_with(waiting) || m.starts_with(turn))
-        .collect();
-    assert_eq!(said.len(), 2, "{:?}", logs.events);
-    assert!(
-        said[0].starts_with(waiting) && said[1].starts_with(turn),
-        "{said:?}"
-    );
+    assert!(answer(third).result.is_ok());
+    for (s, feature, ahead) in [(&s2, "b2b2b2b2", 0), (&s3, "c3c3c3c3", 1)] {
+        let logs = read(
+            &sessions,
+            s,
+            &query(LogLevel::Info, Some(feature), None, 1000),
+        );
+        let said: Vec<&str> = messages(&logs.events)
+            .into_iter()
+            .filter(|m| m.starts_with(waiting) || m.starts_with(turn))
+            .collect();
+        assert_eq!(
+            said,
+            [
+                format!("{waiting} feature={feature} ahead={ahead}"),
+                format!("{turn} feature={feature}"),
+            ],
+            "{:?}",
+            logs.events
+        );
+    }
     let logs = every(&sessions, &s1);
     assert!(
         logs.events
