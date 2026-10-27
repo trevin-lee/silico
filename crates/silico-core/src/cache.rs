@@ -14,8 +14,18 @@
 //! `.gitignore` of `*`, put back if it's anything else), so it isn't committed with a
 //! document in any repository; a directory that's a link, which may point anywhere, keeps
 //! nothing. So does one that leads out of its sessions' workspace (decision 26 of
-//! docs/design/m4.1-command-api.md; [`Cache::within`]), checked as each read, write,
-//! eviction, and clear begins, not only as the cache is opened.
+//! docs/design/m4.1-command-api.md; [`Cache::within`]).
+//!
+//! Each read, write (with the eviction it makes room by), and clear opens the directory
+//! once, never through a link at its own name, and does everything it does through that
+//! handle: every file below it is found from the handle a name at a time (each subdirectory
+//! opened from it, never through a link, and walked by its own handle), never by a path. So
+//! nothing done to the paths on its way once the handle is open (a link put at its name, at
+//! its document's directory, or above) takes the operation anywhere else; in a workspace,
+//! one done before is refused, as the handle is checked to be the directory its path
+//! resolves to, inside ([`Cache::within`]). The handle is what keeps other directories
+//! safe, not the names the cache acts on alone: its layout of entries (two hex digits, then
+//! 62) is a SHA-256 git repository's of loose objects.
 //!
 //! Only results are kept, never a step's failure: a failure's cause may not last (memory,
 //! say), and recompute keeps those that follow from the values in memory. A result's
@@ -33,14 +43,18 @@
 //! removes partial files left by writes that were killed. Eviction only makes misses: a miss
 //! is a rebuild, which comes to the same bytes.
 
+use std::ffi::{CStr, CString, OsStr};
 use std::io::{Read as _, Write as _};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use hmac::{Hmac, Mac};
+use rustix::fs::{AtFlags, CWD, Mode};
+use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
@@ -48,6 +62,9 @@ use crate::file::{self, Unresolved, Workspace};
 use crate::kernel::{Blob, History, ShapeData, ShapeSummary};
 use crate::recompute::{Built, Described, Key};
 use silico_protocol::{Description, Failure};
+
+mod at;
+use at::Meta;
 
 /// The first bytes of every entry, naming its format: a change to the format changes it.
 /// It's part of every entry's key too, so an entry of another format is never looked for.
@@ -282,16 +299,25 @@ impl Cache {
         self
     }
 
-    /// This cache, in `workspace` (decision 26 of docs/design/m4.1-command-api.md: a
-    /// session's sessions are given one by `Sessions::in_workspace`): it keeps results only
-    /// while its directory leads nowhere out of the workspace, through [`file::resolve`],
-    /// checked once as each read, write (and the eviction it makes room by), and clear
-    /// begins, since a link may be put on its way at any time (its own name, its document's
-    /// directory, or one above it, in a transaction that reads nothing again). One that
-    /// leads out then is a cache that keeps nothing, as one whose directory is a link is
-    /// (M2.5): a read misses, and a write, an eviction, and a clear do nothing through it,
-    /// said once. A cache never changes a result, so a rebuild through it is still right,
-    /// only uncached. Without a workspace, the directory is used wherever it leads.
+    /// This cache, in `workspace`: the workspace of the `Sessions` it serves
+    /// (`Sessions::in_workspace`; decision 26 of docs/design/m4.1-command-api.md). It keeps
+    /// results only in a directory that leads nowhere out of the workspace, through
+    /// [`file::resolve`], checked as each read, write (with the eviction it makes room by),
+    /// and clear opens the directory, since a link may be put on its way at any time (its
+    /// own name, its document's directory, or one above it, in a transaction that reads
+    /// nothing again): the handle it opens must be the directory its path resolves to then,
+    /// inside the workspace (the same file on the same device), or it's not used. So a link
+    /// put on the way before the handle opens is refused, and one put after redirects
+    /// nothing, since nothing below the handle is found by a path. A cache whose directory
+    /// leads out is one that keeps nothing, as one whose directory is a link is (M2.5): a
+    /// read misses, and a write, an eviction, and a clear do nothing, said once while it
+    /// leads out (and again if it leads out again after it came back). One that doesn't
+    /// exist yet is made only if it leads nowhere out then; one swapped out just as it's
+    /// made is left empty, and refused. What the handle can't help: the directory itself,
+    /// moved out of the workspace whole while an operation has it open, takes that
+    /// operation's work with it, its own files only. A cache never changes a result, so a
+    /// rebuild through a cache that keeps nothing is still right, only uncached. Without a
+    /// workspace, the directory is used wherever the path to it leads.
     #[must_use]
     pub fn within(mut self, workspace: Workspace) -> Self {
         self.workspace = Some(workspace);
@@ -301,18 +327,26 @@ impl Cache {
     /// The result kept for `step` on `kernel` (its [`identity`](crate::kernel::Kernel::identity)),
     /// if there's a sound one.
     pub(crate) fn get(&self, kernel: &str, step: &Key) -> Option<Built> {
-        let secret = self.secret()?;
+        let secret = self.secret.as_ref()?;
         let key = secret.entry_key([kernel, &self.platform, &step.to_string()])?;
+        let root = self.opened(false)?;
+        let (subdirectory, name) = entry_names(&key);
         let path = self.path(&key);
-        if self.linked_below(&path) {
-            return None;
-        }
-        let bytes = match read_file(&path) {
+        let dir = match at::open_dir(&root, subdirectory.as_str()) {
+            Ok(dir) => dir,
+            Err(Errno::NOENT) => return None,
+            Err(_) if self.linked_below(&root, &subdirectory) => return None,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), "couldn't read a cache entry: {e}");
+                return None;
+            }
+        };
+        let bytes = match read_file(&dir, name.as_str()) {
             FileRead::Bytes(bytes) => bytes,
             FileRead::Missing => return None,
             FileRead::Unusable(why) => {
                 tracing::warn!(path = %path.display(), "a cache entry {why}: rebuilding it");
-                let _ = std::fs::remove_file(&path);
+                let _ = at::remove(&dir, name.as_str());
                 return None;
             }
             FileRead::Failed(e) => {
@@ -322,12 +356,12 @@ impl Cache {
         };
         match read_entry(&bytes, secret, &key).map(built_of) {
             Some(built) => {
-                renew(&path);
+                renew(&dir, &name);
                 Some(built)
             }
             None => {
                 tracing::warn!(path = %path.display(), "a cache entry doesn't hold together: rebuilding it");
-                let _ = std::fs::remove_file(&path);
+                let _ = at::remove(&dir, name.as_str());
                 None
             }
         }
@@ -336,7 +370,7 @@ impl Cache {
     /// Keeps `built`, the result of `step` on `kernel`, if the worker said whether its shape
     /// is valid (a shape it hasn't checked isn't kept, so a hit is always checked).
     pub(crate) fn put(&self, kernel: &str, step: &Key, built: &Built) {
-        let (Some(secret), Some(valid)) = (self.secret(), built.shape.valid()) else {
+        let (Some(secret), Some(valid)) = (self.secret.as_ref(), built.shape.valid()) else {
             return;
         };
         let Some(key) = secret.entry_key([kernel, &self.platform, &step.to_string()]) else {
@@ -390,10 +424,6 @@ impl Cache {
         let Some(seal) = secret.seal(&payload) else {
             return;
         };
-        let path = self.path(&key);
-        if self.linked_below(&path) {
-            return;
-        }
         let size = (MAGIC.len() + seal.0.len() + payload.len()) as u64;
         if size > self.bound {
             tracing::debug!(
@@ -403,7 +433,14 @@ impl Cache {
             );
             return;
         }
-        match self.make_room(size) {
+        let Some(root) = self.opened(true) else {
+            return;
+        };
+        let (subdirectory, name) = entry_names(&key);
+        if self.linked_below(&root, &subdirectory) {
+            return;
+        }
+        match self.make_room(&root, size) {
             Room::Made => {}
             Room::Stuck => {
                 self.say_full();
@@ -418,7 +455,7 @@ impl Cache {
                 return;
             }
         }
-        let written = write_entry(&self.dir, &path, &seal, &payload);
+        let written = write_entry(&root, &self.dir, &subdirectory, &name, &seal, &payload);
         {
             let mut usage = self.usage();
             usage.writing = usage.writing.saturating_sub(size);
@@ -428,6 +465,7 @@ impl Cache {
             }
         }
         if let Err(e) = written {
+            let path = self.path(&key);
             tracing::warn!(path = %path.display(), "couldn't write a cache entry: {e}");
         }
     }
@@ -442,15 +480,17 @@ impl Cache {
     /// nothing, if even then the entry would take the cache past its bound, beside what
     /// can't be evicted: entries being written, partial files not yet stale, and files it
     /// couldn't remove.
-    fn make_room(&self, size: u64) -> Room {
-        self.make_room_scanning(size, Cache::scan_and_evict)
+    fn make_room(&self, root: &OwnedFd, size: u64) -> Room {
+        self.make_room_scanning(root, size, Cache::scan_and_evict)
     }
 
-    /// [`make_room`](Cache::make_room), each scan by `scan` (a test's runs a put during it).
+    /// [`make_room`](Cache::make_room) in the directory `root` holds open, each scan by
+    /// `scan` (a test's runs a put during it).
     fn make_room_scanning(
         &self,
+        root: &OwnedFd,
         size: u64,
-        mut scan: impl FnMut(&Cache, u64, u64) -> Scan,
+        mut scan: impl FnMut(&Cache, &OwnedFd, u64, u64) -> Scan,
     ) -> Room {
         let (_, scanned) = &*self.usage;
         let over = |known: u64| known.saturating_add(size) > self.bound;
@@ -475,7 +515,7 @@ impl Cache {
                     cache: self,
                     armed: true,
                 };
-                let left = scan(self, size, writing);
+                let left = scan(self, root, size, writing);
                 unwinding.armed = false;
                 usage = self.usage();
                 usage.scanning = false;
@@ -518,10 +558,10 @@ impl Cache {
         }
     }
 
-    /// Scans the directory, removing stale partial files, and, if what it holds, `writing`
-    /// bytes being written, and an entry of `size` would pass the bound, evicts until those
-    /// take at most three quarters of it. Returns what's left.
-    fn scan_and_evict(&self, size: u64, writing: u64) -> Scan {
+    /// Scans the directory `root` holds open, removing stale partial files, and, if what it
+    /// holds, `writing` bytes being written, and an entry of `size` would pass the bound,
+    /// evicts until those take at most three quarters of it. Returns what's left.
+    fn scan_and_evict(&self, root: &OwnedFd, size: u64, writing: u64) -> Scan {
         let span = tracing::debug_span!(
             "cache.evict",
             dir = %self.dir.display(),
@@ -532,7 +572,7 @@ impl Cache {
             partials_removed = tracing::field::Empty,
         );
         let _entered = span.enter();
-        let mut found = scan(&self.dir, SystemTime::now());
+        let mut found = scan(root, &self.dir, SystemTime::now());
         span.record("entries", found.entries.len());
         span.record("bytes", found.bytes);
         span.record("partials_removed", found.partials_removed);
@@ -540,7 +580,7 @@ impl Cache {
         let bound = u128::from(self.bound);
         if found.bytes + coming > bound {
             let (evicted, evicted_bytes) =
-                evict(&mut found, (bound - bound / 4).saturating_sub(coming));
+                evict(&mut found, root, (bound - bound / 4).saturating_sub(coming));
             span.record("evicted", evicted);
             span.record("evicted_bytes", evicted_bytes);
         }
@@ -568,19 +608,20 @@ impl Cache {
     /// under way, whose rename would then fail; a stale one is removed by the next put's
     /// scan), and anything else, under any name; nothing is followed through a link, the
     /// directory's own included (a cache through a link keeps nothing there, so none is
-    /// removed), and nothing is removed while the directory leads out of its workspace
-    /// ([`within`](Self::within)), checked as the clear begins. An entry removed is only a miss: one another process reads as it's removed
-    /// is read whole, from the file it holds open, and one renamed into place after it's
-    /// listed is left, whole (M2.5's sealed entries: an entry is whole or absent, never
-    /// trusted half-written). Read and removed in order of name, so what it says of a failure
-    /// is the same each time.
+    /// removed), and nothing is removed in a directory that leads out of its workspace as
+    /// the clear opens it ([`within`](Self::within)). An entry removed is only a miss: one
+    /// another process reads as it's removed is read whole, from the file it holds open, and
+    /// one renamed into place after it's listed is left, whole (M2.5's sealed entries: an
+    /// entry is whole or absent, never trusted half-written). Read and removed in order of
+    /// name, so what it says of a failure is the same each time.
     ///
-    /// Each directory is found to be no link, then listed, by its path: a process that
-    /// replaces one with a link between the two (one that may write in `.silico-cache/`
-    /// already, as only this user's may) has the clear list the link's target, and remove
-    /// what's named as an entry there. Never more: removing a file never follows a link at its
-    /// own name. Listing each directory from a handle opened without following links would
-    /// close that gap; the standard library lists directories only by path.
+    /// The directory is opened once, and walked by that handle: each subdirectory opened
+    /// from it without following a link, listed, and its entries removed, by its own
+    /// handle. A link put in place of the directory, of a subdirectory, or of a directory
+    /// above them during the clear (by a process that may write there, as only this user's
+    /// may) has the clear go on in the directories it opened, removing nothing where the link
+    /// leads. The names alone wouldn't keep it out: a SHA-256 git repository's loose objects
+    /// are named as entries are.
     ///
     /// How many entries it removed (not those another process removed first); or, if any
     /// couldn't be removed, or a directory of the cache couldn't be read, each, with how many
@@ -596,18 +637,16 @@ impl Cache {
         let _entered = span.enter();
         let mut clearing = PartlyCleared::default();
         // A directory that's a link (followed nowhere), one that leads out of the workspace
-        // now, a file, or nothing holds no entry of the cache's.
-        match std::fs::symlink_metadata(&self.dir).map(|meta| meta.is_dir()) {
-            Ok(true) if !self.usable() => {}
-            Ok(true) => walk(&self.dir, |found| match found {
-                Walked::Entry(path, _) => clearing.remove(path),
+        // as it's opened, a file, or nothing holds no entry of the cache's.
+        match self.root(false) {
+            Ok(root) => walk(&root, &self.dir, |found| match found {
+                Walked::Entry(place, _) => clearing.remove(place),
                 Walked::Partial(..) => {}
                 Walked::Unread(path, why) => clearing.failed(path, ClearStep::Read, why),
                 Walked::Unknown(path, why) => clearing.failed(path, ClearStep::Remove, why),
             }),
-            Ok(false) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => clearing.failed(&self.dir, ClearStep::Read, e),
+            Err(Unopened::Missing | Unopened::Refused | Unopened::NotADirectory(_)) => {}
+            Err(Unopened::Failed(e)) => clearing.failed(&self.dir, ClearStep::Read, e),
         }
         // What it knew of the directory's size is gone: its next put scans it.
         self.usage().known = None;
@@ -631,58 +670,130 @@ impl Cache {
         self.secret.is_some()
     }
 
-    /// The secret to key and seal entries with, if the cache keeps any: not when its
-    /// directory can't be used now ([`usable`](Self::usable)). Nor is a subdirectory that's
-    /// a link used, for the same reason ([`linked_below`](Self::linked_below)).
-    fn secret(&self) -> Option<&Secret> {
-        let secret = self.secret.as_ref()?;
-        self.usable().then_some(secret)
+    /// Its directory, opened for one operation (made first if `make` and it isn't there),
+    /// or why not. Never through a link at its own name (said once). In a workspace, the
+    /// handle is used only if, opened, it's the directory its path resolves to then, inside
+    /// the workspace ([`within`](Self::within)): one open, one resolve, and two stats (and,
+    /// as it's made, a resolve before, so it isn't made where it would lead out).
+    fn root(&self, make: bool) -> Result<OwnedFd, Unopened> {
+        let root = match at::open_dir(CWD, &self.dir) {
+            Ok(root) => root,
+            Err(Errno::NOENT) if make => {
+                // Not made where it would lead out (its document's directory a link out).
+                if self.leads_out() {
+                    return Err(Unopened::Refused);
+                }
+                std::fs::create_dir_all(&self.dir).map_err(Unopened::Failed)?;
+                at::open_dir(CWD, &self.dir).map_err(|e| self.unopened(e))?
+            }
+            Err(e) => return Err(self.unopened(e)),
+        };
+        match &self.workspace {
+            Some(workspace) if !self.verified(workspace, &root) => Err(Unopened::Refused),
+            _ => Ok(root),
+        }
     }
 
-    /// Whether its directory may be read, written, scanned, or cleared now, checked once as
-    /// each of those begins: not if it's a link (one that came with a document may point
-    /// anywhere: inside the repository, where its entries would be committed, or at anyone's
-    /// files), nor if it leads out of its workspace ([`within`](Self::within)), each said
-    /// once.
-    fn usable(&self) -> bool {
-        if is_link(&self.dir) {
-            self.say_linked(&self.dir);
-            return false;
+    /// Why its directory couldn't be opened, for the system's `error`: what's at its name
+    /// (a link, said once; a file; nothing), looked at as it is now.
+    fn unopened(&self, error: Errno) -> Unopened {
+        if error == Errno::NOENT {
+            return Unopened::Missing;
         }
-        if self.leads_out() {
-            if !self.said_outside.swap(true, Ordering::Relaxed) {
+        match std::fs::symlink_metadata(&self.dir) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                self.say_linked(&self.dir);
+                Unopened::Refused
+            }
+            Ok(meta) if !meta.is_dir() => Unopened::NotADirectory(error.into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Unopened::Missing,
+            _ => Unopened::Failed(error.into()),
+        }
+    }
+
+    /// Whether `root`, its directory as just opened, is the one its path resolves to now,
+    /// inside `workspace`: a link put on the way before it was opened leads out (said once),
+    /// and one put after it was opened and before it was resolved leads to another
+    /// directory than the one it holds (said). Either way it isn't used, this once.
+    fn verified(&self, workspace: &Workspace, root: &OwnedFd) -> bool {
+        match file::resolve(Some(workspace), &self.dir) {
+            Ok(resolved) if at::is_at(root, &resolved) => {
+                // Inside again: should it lead out later, that's said again.
+                if self.said_outside.load(Ordering::Relaxed) {
+                    self.said_outside.store(false, Ordering::Relaxed);
+                }
+                true
+            }
+            Ok(_) => {
                 tracing::warn!(
                     dir = %self.dir.display(),
-                    "the cache's directory leads out of the workspace, through a link on its \
-                     way: keeping no results through it"
+                    "the cache's directory was replaced as it was opened: keeping no results \
+                     through it this time"
                 );
+                false
             }
-            return false;
+            Err(Unresolved::Outside) => {
+                self.say_outside();
+                false
+            }
+            // Gone, or no longer a directory, since it was opened.
+            Err(Unresolved::Unreachable(_)) => false,
         }
-        true
+    }
+
+    /// Its directory, opened for a read or a write ([`root`](Self::root)), or none: what
+    /// kept it from being opened is said, but for nothing there, a link, and a directory
+    /// that leads out of its workspace, each said already, once, if at all.
+    fn opened(&self, make: bool) -> Option<OwnedFd> {
+        match self.root(make) {
+            Ok(root) => Some(root),
+            Err(Unopened::Missing | Unopened::Refused) => None,
+            Err(Unopened::NotADirectory(e) | Unopened::Failed(e)) => {
+                tracing::warn!(
+                    dir = %self.dir.display(),
+                    "couldn't open the cache's directory: {e}"
+                );
+                None
+            }
+        }
     }
 
     /// Whether its directory leads out of its workspace now, through a link on its way (its
-    /// own name, or a directory above it), by [`file::resolve`]'s one rule; never without a
-    /// workspace. One not made yet, inside, doesn't.
-    fn leads_out(&self) -> bool {
-        self.workspace.as_ref().is_some_and(|workspace| {
+    /// own name, or a directory above it), by [`file::resolve`]'s one rule, said once if it
+    /// does; never without a workspace. One not made yet, inside, doesn't. Asked before a
+    /// session's cache is opened (`Registry::cache`), and before its directory is made.
+    pub(crate) fn leads_out(&self) -> bool {
+        let out = self.workspace.as_ref().is_some_and(|workspace| {
             matches!(
                 file::resolve(Some(workspace), &self.dir),
                 Err(Unresolved::Outside)
             )
-        })
+        });
+        if out {
+            self.say_outside();
+        }
+        out
     }
 
-    /// Whether the subdirectory an entry at `path` lives in is a link, said once.
-    fn linked_below(&self, path: &Path) -> bool {
-        match path.parent().filter(|dir| is_link(dir)) {
-            Some(dir) => {
-                self.say_linked(dir);
-                true
-            }
-            None => false,
+    /// Says, once while it does, that its directory leads out of its workspace.
+    fn say_outside(&self) {
+        if !self.said_outside.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                dir = %self.dir.display(),
+                "the cache's directory leads out of the workspace, through a link on its \
+                 way: keeping no results through it"
+            );
         }
+    }
+
+    /// Whether the subdirectory `subdirectory` of its directory, which `root` holds open, is
+    /// a link, said once.
+    fn linked_below(&self, root: &OwnedFd, subdirectory: &str) -> bool {
+        let linked = at::is_link(root, subdirectory);
+        if linked {
+            self.say_linked(&self.dir.join(subdirectory));
+        }
+        linked
     }
 
     /// Says, once, that a directory of the cache is a link, which it doesn't use.
@@ -695,13 +806,33 @@ impl Cache {
         }
     }
 
-    /// Where an entry lives: under the first two hex digits of its key, so no directory
-    /// holds every entry.
+    /// Where an entry lives ([`entry_names`]), as a path: to name it by, never to find it.
     fn path(&self, key: &EntryKey) -> PathBuf {
-        let hex = crate::hex(&key.0);
-        let (subdirectory, name) = hex.split_at(SUBDIRECTORY_DIGITS);
+        let (subdirectory, name) = entry_names(key);
         self.dir.join(subdirectory).join(name)
     }
+}
+
+/// Why a cache's directory couldn't be opened for an operation.
+#[derive(Debug)]
+enum Unopened {
+    /// Nothing's there.
+    Missing,
+    /// A directory it doesn't use: a link, or one that leads out of its workspace (each
+    /// said once), or one replaced as it was opened.
+    Refused,
+    /// Something that's not a directory (a file) is there: the system's error.
+    NotADirectory(std::io::Error),
+    /// It couldn't be opened or looked at: the system's error.
+    Failed(std::io::Error),
+}
+
+/// Where the entry keyed `key` lives in a cache's directory: under the first two hex digits
+/// of its key (so no directory holds every entry), named by the other 62.
+fn entry_names(key: &EntryKey) -> (String, String) {
+    let mut hex = crate::hex(&key.0);
+    let name = hex.split_off(SUBDIRECTORY_DIGITS);
+    (hex, name)
 }
 
 /// What [`Cache::clear`] did when it couldn't do all of it: how many entries it removed, and
@@ -754,12 +885,12 @@ impl PartlyCleared {
         }
     }
 
-    /// The entry at `path` removed, and counted, unless another process removed it first.
-    fn remove(&mut self, path: &Path) {
-        match remove_file(path) {
+    /// The entry at `place` removed, and counted, unless another process removed it first.
+    fn remove(&mut self, place: Place<'_>) {
+        match at::remove(place.dir, place.name) {
             Ok(true) => self.removed += 1,
             Ok(false) => {}
-            Err(e) => self.failed(path, ClearStep::Remove, e),
+            Err(e) => self.failed(place.path, ClearStep::Remove, e),
         }
     }
 }
@@ -772,33 +903,34 @@ const SUBDIRECTORY_DIGITS: usize = 2;
 const ENTRY_DIGITS: usize = 2 * std::mem::size_of::<EntryKey>() - SUBDIRECTORY_DIGITS;
 
 /// Whether `name` is a subdirectory's of the cache, in which its entries are.
-fn is_entry_directory(name: &std::ffi::OsStr) -> bool {
+fn is_entry_directory(name: &CStr) -> bool {
     is_hex(name, SUBDIRECTORY_DIGITS)
 }
 
 /// Whether `name` is an entry's, in a subdirectory of the cache.
-fn is_entry_name(name: &std::ffi::OsStr) -> bool {
+fn is_entry_name(name: &CStr) -> bool {
     is_hex(name, ENTRY_DIGITS)
 }
 
-/// Removes the file (or link, never followed) at `path`: whether this removed it, not
-/// another process first.
-fn remove_file(path: &Path) -> std::io::Result<bool> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e),
-    }
+/// Where [`walk`] found a name: the directory of the cache it's in, as the walk holds it
+/// open (what's done to it is done there), and that directory's name if it's a
+/// subdirectory; the name; and its path (to name it by).
+#[derive(Clone, Copy)]
+struct Place<'a> {
+    dir: BorrowedFd<'a>,
+    subdirectory: Option<&'a CStr>,
+    name: &'a CStr,
+    path: &'a Path,
 }
 
 /// What [`walk`] finds in a cache's directory, as it finds it.
 enum Walked<'a> {
     /// A partial file's name (a write's, under way or killed), in the directory or a
     /// subdirectory, of whatever type, and its metadata (a link's own).
-    Partial(&'a Path, &'a std::fs::Metadata),
+    Partial(Place<'a>, &'a Meta),
     /// An entry: a regular file named as one in a subdirectory named as one, and its
     /// metadata.
-    Entry(&'a Path, &'a std::fs::Metadata),
+    Entry(Place<'a>, &'a Meta),
     /// A directory of the cache it couldn't read, or list whole (what of it could be listed
     /// is walked), or a name of a subdirectory's whose metadata it couldn't read.
     Unread(&'a Path, std::io::Error),
@@ -806,18 +938,22 @@ enum Walked<'a> {
     Unknown(&'a Path, std::io::Error),
 }
 
-/// Walks the cache in `dir`, following no link below it, each directory in order of name:
-/// its partial files and its entries, and each directory and name it couldn't read, given
-/// to `visit` as it finds them. What has any other name, at either level, is passed over,
-/// unread; what's gone as it's read (another process's clear or eviction) without a word.
-/// The one way the cache's layout is read: [`scan`] and [`Cache::clear`] both walk it.
-fn walk(dir: &Path, mut visit: impl FnMut(Walked<'_>)) {
-    for (name, path) in names_in(dir, &mut visit) {
+/// Walks the cache whose directory `root` holds open (at `dir`, to name what it finds by),
+/// following no link below it, each directory in order of name: its partial files and its
+/// entries, and each directory and name it couldn't read, given to `visit` as it finds them.
+/// Each subdirectory is opened from `root`, never through a link, and walked by its own
+/// handle (in a span, `cache.walk`), so nothing is found by a path. What has any other name,
+/// at either level, is passed over, unread; what's gone as it's read (another process's
+/// clear or eviction), or no longer a directory, without a word. The one way the cache's
+/// layout is read: [`scan`] and [`Cache::clear`] both walk it.
+fn walk(root: &OwnedFd, dir: &Path, mut visit: impl FnMut(Walked<'_>)) {
+    for name in names_in(root, dir, &mut visit) {
         let partial = is_partial(&name);
         if !partial && !is_entry_directory(&name) {
             continue;
         }
-        let meta = match std::fs::symlink_metadata(&path) {
+        let path = dir.join(OsStr::from_bytes(name.to_bytes()));
+        let meta = match at::stat(root, name.as_c_str()) {
             Ok(meta) => meta,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(_) if partial => continue,
@@ -826,64 +962,65 @@ fn walk(dir: &Path, mut visit: impl FnMut(Walked<'_>)) {
                 continue;
             }
         };
+        let place = Place {
+            dir: root.as_fd(),
+            subdirectory: None,
+            name: &name,
+            path: &path,
+        };
         if partial {
-            visit(Walked::Partial(&path, &meta));
+            visit(Walked::Partial(place, &meta));
             continue;
         }
         if !meta.is_dir() {
             // A file or a link at a subdirectory's name: not the cache's.
             continue;
         }
-        for (name, path) in names_in(&path, &mut visit) {
+        let _walking = tracing::trace_span!("cache.walk", subdirectory = %path.display()).entered();
+        let sub = match at::open_dir(root, name.as_c_str()) {
+            Ok(sub) => sub,
+            // Gone, or put in its place by a link or a file, since it was looked at.
+            Err(Errno::NOENT | Errno::LOOP | Errno::NOTDIR) => continue,
+            Err(e) => {
+                visit(Walked::Unread(&path, e.into()));
+                continue;
+            }
+        };
+        let subdirectory = name;
+        for name in names_in(&sub, &path, &mut visit) {
             let partial = is_partial(&name);
             if !partial && !is_entry_name(&name) {
                 continue;
             }
-            match std::fs::symlink_metadata(&path) {
-                Ok(meta) if partial => visit(Walked::Partial(&path, &meta)),
-                Ok(meta) if meta.is_file() => visit(Walked::Entry(&path, &meta)),
+            let entry = path.join(OsStr::from_bytes(name.to_bytes()));
+            let place = Place {
+                dir: sub.as_fd(),
+                subdirectory: Some(&subdirectory),
+                name: &name,
+                path: &entry,
+            };
+            match at::stat(&sub, name.as_c_str()) {
+                Ok(meta) if partial => visit(Walked::Partial(place, &meta)),
+                Ok(meta) if meta.is_file() => visit(Walked::Entry(place, &meta)),
                 // A link, a directory, a pipe at an entry's name: not one the cache made.
                 Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(_) if partial => {}
-                Err(e) => visit(Walked::Unknown(&path, e)),
+                Err(e) => visit(Walked::Unknown(&entry, e)),
             }
         }
     }
 }
 
-/// The names in the directory `dir`, and their paths, in order of name; one that can't be
-/// read (or listed whole) given to `visit`, as what's in it that can be is listed. Nothing,
-/// without a word, for a directory gone (another process's clear, say).
-fn names_in(dir: &Path, visit: &mut impl FnMut(Walked<'_>)) -> Vec<(std::ffi::OsString, PathBuf)> {
-    let items = match std::fs::read_dir(dir) {
-        Ok(items) => items,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-        Err(e) => {
-            visit(Walked::Unread(dir, e));
-            return Vec::new();
-        }
-    };
-    let mut names = Vec::new();
-    let mut unread = None;
-    for item in items {
-        match item {
-            Ok(item) => names.push((item.file_name(), item.path())),
-            Err(e) => {
-                unread.get_or_insert(e);
-            }
-        }
-    }
+/// The names in the directory `handle` holds open (at `dir`), in order of name; one that
+/// can't be read (or listed whole) given to `visit`, as what's in it that can be is listed.
+/// Nothing, without a word, for a directory gone (another process's clear, say).
+fn names_in(handle: &OwnedFd, dir: &Path, visit: &mut impl FnMut(Walked<'_>)) -> Vec<CString> {
+    let (names, unread) = at::names(handle);
     if let Some(e) = unread {
         visit(Walked::Unread(dir, e));
     }
-    names.sort();
     names
-}
-
-/// Whether `path` is a symbolic link (not followed).
-fn is_link(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
 }
 
 /// `path` with no trailing slash (through which a link would be followed, not seen) and no
@@ -929,8 +1066,8 @@ fn settle(usage: &mut Usage, left: u128, writing: u64, size: u64, bound: u64) ->
 
 /// What a scan of a cache's directory found.
 struct Scan {
-    /// Every entry, as its last use (its modification time), its path, and its size.
-    entries: Vec<(SystemTime, PathBuf, u64)>,
+    /// Every entry it found.
+    entries: Vec<Listed>,
     /// The bytes of its entries and of the partial files it left, by their lengths: wider
     /// than they are, since lengths (of sparse files) can sum past what a `u64` holds.
     bytes: u128,
@@ -940,7 +1077,19 @@ struct Scan {
     warned: bool,
 }
 
-/// Lists the entries of the cache in `dir`, and removes its partial files last written
+/// An entry a scan found: its last use (its modification time), its path, its
+/// subdirectory's name and its own (by which it's found again, from the cache's directory
+/// as the scan holds it open, to be evicted), and its size.
+struct Listed {
+    used: SystemTime,
+    path: PathBuf,
+    subdirectory: CString,
+    name: CString,
+    size: u64,
+}
+
+/// Lists the entries of the cache whose directory `root` holds open (at `dir`, to name them
+/// by), and removes its partial files last written
 /// [`STALE_PARTIAL`] or more from `now`. Reads metadata only, and follows no link
 /// ([`walk`]): an entry is a regular file named by [`ENTRY_DIGITS`] hex digits in a
 /// subdirectory named by [`SUBDIRECTORY_DIGITS`]; a partial is a file named `.partial-…` in
@@ -948,7 +1097,7 @@ struct Scan {
 /// yet stale, which its puts count as being written (a process keeps one cache, and its
 /// clones, for a directory: two would each miss the other's). What it can't read it passes
 /// over.
-fn scan(dir: &Path, now: SystemTime) -> Scan {
+fn scan(root: &OwnedFd, dir: &Path, now: SystemTime) -> Scan {
     let mut found = Scan {
         entries: Vec::new(),
         bytes: 0,
@@ -956,12 +1105,20 @@ fn scan(dir: &Path, now: SystemTime) -> Scan {
         warned: false,
     };
     let own = format!(".partial-{}-", std::process::id());
-    walk(dir, |item| match item {
-        Walked::Partial(path, meta) => found.remove_or_count_partial(path, meta, now, &own),
-        Walked::Entry(path, meta) => {
-            let used = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    walk(root, dir, |item| match item {
+        Walked::Partial(place, meta) => found.remove_or_count_partial(place, meta, now, &own),
+        Walked::Entry(place, meta) => {
             found.bytes = found.bytes.saturating_add(u128::from(meta.len()));
-            found.entries.push((used, path.to_owned(), meta.len()));
+            // An entry is always in a subdirectory.
+            if let Some(subdirectory) = place.subdirectory {
+                found.entries.push(Listed {
+                    used: meta.modified(),
+                    path: place.path.to_owned(),
+                    subdirectory: subdirectory.to_owned(),
+                    name: place.name.to_owned(),
+                    size: meta.len(),
+                });
+            }
         }
         Walked::Unread(..) | Walked::Unknown(..) => {}
     });
@@ -969,64 +1126,97 @@ fn scan(dir: &Path, now: SystemTime) -> Scan {
 }
 
 impl Scan {
-    /// Removes the partial file at `path` if it was last written [`STALE_PARTIAL`] or more
+    /// Removes the partial file at `place` if it was last written [`STALE_PARTIAL`] or more
     /// from `now`, before or after (a link that's named as one, by its own time: never what
     /// it points at); otherwise counts it, unless it's this process's (named from `own`).
     fn remove_or_count_partial(
         &mut self,
-        path: &Path,
-        meta: &std::fs::Metadata,
+        place: Place<'_>,
+        meta: &Meta,
         now: SystemTime,
         own: &str,
     ) {
-        let written = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let written = meta.modified();
         let apart = match now.duration_since(written) {
             Ok(age) => age,
             Err(ahead) => ahead.duration(),
         };
-        if apart >= STALE_PARTIAL && !meta.is_dir() && self.remove(path) {
-            self.partials_removed += 1;
-        } else if meta.is_file()
-            && !path
-                .file_name()
-                .is_some_and(|name| name.as_encoded_bytes().starts_with(own.as_bytes()))
+        if apart >= STALE_PARTIAL
+            && !meta.is_dir()
+            && self.remove(place.dir, place.name, place.path)
         {
+            self.partials_removed += 1;
+        } else if meta.is_file() && !place.name.to_bytes().starts_with(own.as_bytes()) {
             self.bytes = self.bytes.saturating_add(u128::from(meta.len()));
         }
     }
 
-    /// Removes the file (or link) at `path`, warning of a failure (once a scan): whether
-    /// it's gone, as it is if another session removed it first.
-    fn remove(&mut self, path: &Path) -> bool {
-        match remove_file(path) {
+    /// Removes the file (or link) `name` in `dir`, at `path`, warning of a failure (once a
+    /// scan): whether it's gone, as it is if another session removed it first.
+    fn remove(&mut self, dir: BorrowedFd<'_>, name: &CStr, path: &Path) -> bool {
+        match at::remove(dir, name) {
             Ok(_) => true,
             Err(e) => {
-                if !std::mem::replace(&mut self.warned, true) {
-                    tracing::warn!(path = %path.display(), "couldn't remove a cache file: {e}");
-                }
+                self.warn(path, &e);
                 false
             }
+        }
+    }
+
+    /// Warns that the file at `path` couldn't be removed, for `e`, unless it has this scan.
+    fn warn(&mut self, path: &Path, e: &std::io::Error) {
+        if !std::mem::replace(&mut self.warned, true) {
+            tracing::warn!(path = %path.display(), "couldn't remove a cache file: {e}");
+        }
+    }
+
+    /// Evicts the entry `listed`, found again from `root` (its subdirectory opened from it,
+    /// never through a link, unless it's the one `open` holds already): whether it's gone,
+    /// as it is if another session removed it, or its subdirectory, first.
+    fn evict(
+        &mut self,
+        root: &OwnedFd,
+        listed: &Listed,
+        open: &mut Option<(CString, OwnedFd)>,
+    ) -> bool {
+        if open
+            .as_ref()
+            .is_none_or(|(name, _)| *name != listed.subdirectory)
+        {
+            *open = match at::open_dir(root, listed.subdirectory.as_c_str()) {
+                Ok(dir) => Some((listed.subdirectory.clone(), dir)),
+                Err(Errno::NOENT) => return true,
+                Err(e) => {
+                    self.warn(&listed.path, &e.into());
+                    return false;
+                }
+            };
+        }
+        match open {
+            Some((_, dir)) => self.remove(dir.as_fd(), &listed.name, &listed.path),
+            None => false,
         }
     }
 }
 
 /// Evicts `found`'s entries, least recently used first (by path, of two used at once),
-/// until its bytes are at most `target` or no entry is left. Returns how many it evicted,
-/// and their bytes.
-fn evict(found: &mut Scan, target: u128) -> (usize, u128) {
+/// from the cache's directory `root` holds open, until its bytes are at most `target` or no
+/// entry is left. Returns how many it evicted, and their bytes.
+fn evict(found: &mut Scan, root: &OwnedFd, target: u128) -> (usize, u128) {
     let mut entries = std::mem::take(&mut found.entries);
-    entries.sort();
+    entries.sort_by(|a, b| (a.used, &a.path).cmp(&(b.used, &b.path)));
     let (mut evicted, mut evicted_bytes) = (0, 0_u128);
     let mut kept = Vec::new();
-    for (used, path, size) in entries {
+    let mut open = None;
+    for listed in entries {
         // Gone already counts as evicted: another session evicted it, or rebuilt it after a
         // bad read.
-        if found.bytes > target && found.remove(&path) {
-            found.bytes = found.bytes.saturating_sub(u128::from(size));
+        if found.bytes > target && found.evict(root, &listed, &mut open) {
+            found.bytes = found.bytes.saturating_sub(u128::from(listed.size));
             evicted += 1;
-            evicted_bytes = evicted_bytes.saturating_add(u128::from(size));
+            evicted_bytes = evicted_bytes.saturating_add(u128::from(listed.size));
         } else {
-            kept.push((used, path, size));
+            kept.push(listed);
         }
     }
     found.entries = kept;
@@ -1034,31 +1224,22 @@ fn evict(found: &mut Scan, target: u128) -> (usize, u128) {
 }
 
 /// Whether `name` is a partial file's: one [`new_file`] makes.
-fn is_partial(name: &std::ffi::OsStr) -> bool {
-    name.as_encoded_bytes().starts_with(b".partial-")
+fn is_partial(name: &CStr) -> bool {
+    name.to_bytes().starts_with(b".partial-")
 }
 
 /// Whether `name` is `digits` lowercase hex digits, as an entry's path is.
-fn is_hex(name: &std::ffi::OsStr, digits: usize) -> bool {
-    let name = name.as_encoded_bytes();
+fn is_hex(name: &CStr, digits: usize) -> bool {
+    let name = name.to_bytes();
     name.len() == digits && name.iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// Marks the entry at `path` as used now, so it's evicted after those used before it. A
-/// hit whose time can't be set (a read-only cache, say) is still a hit.
-fn renew(path: &Path) {
-    if let Ok(file) = open_to_read(path) {
+/// Marks the entry `name` in `dir` as used now, so it's evicted after those used before it.
+/// A hit whose time can't be set (a read-only cache, say) is still a hit.
+fn renew(dir: &OwnedFd, name: &str) {
+    if let Ok(file) = at::open_to_read(dir, name) {
         let _ = file.set_modified(SystemTime::now());
     }
-}
-
-/// The file at `path`, opened to read without following a symbolic link or waiting on a
-/// pipe.
-fn open_to_read(path: &Path) -> std::io::Result<std::fs::File> {
-    std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
 }
 
 /// The user's secret file: `silico/cache-secret` in `$XDG_CACHE_HOME`, if that's an absolute
@@ -1095,7 +1276,7 @@ fn secret_in(file: &Path) -> Option<Secret> {
 fn read_or_make_secret(file: &Path) -> std::io::Result<[u8; 32]> {
     // Twice at most: a session that loses a race to make the file reads the winner's.
     for _ in 0..2 {
-        match read_file(file) {
+        match read_file(CWD, file) {
             FileRead::Bytes(bytes) => {
                 return <[u8; 32]>::try_from(bytes.as_slice())
                     .map_err(|_| std::io::Error::other("it isn't 32 bytes"));
@@ -1109,13 +1290,23 @@ fn read_or_make_secret(file: &Path) -> std::io::Result<[u8; 32]> {
             .parent()
             .ok_or_else(|| std::io::Error::other("it has no directory"))?;
         std::fs::create_dir_all(dir)?;
-        let (partial, mut out) = new_file(dir, 0o600)?;
+        let dir = rustix::fs::open(
+            dir,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let (partial, mut out) = at::new_file(&dir, Mode::from_raw_mode(0o600))?;
         // Durable before it's linked: a secret lost after entries were sealed with it
         // would leave a damaged file in its place.
         let written = out.write_all(&secret).and_then(|()| out.sync_all());
         // Linked, not renamed, to its name: two sessions making it at once agree on one.
-        let linked = written.and_then(|()| std::fs::hard_link(&partial, file));
-        let _ = std::fs::remove_file(&partial);
+        let linked = written.and_then(|()| {
+            rustix::fs::linkat(&dir, partial.as_str(), CWD, file, AtFlags::empty())
+                .map_err(std::io::Error::from)
+        });
+        let _ = at::remove(&dir, partial.as_str());
         match linked {
             Ok(()) => return Ok(secret),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -1139,16 +1330,15 @@ enum FileRead {
     Failed(std::io::Error),
 }
 
-/// The bytes of the regular file at `path`, read without following a symbolic link or
-/// waiting on a pipe, and no more than [`MAX_ENTRY`] of them.
-fn read_file(path: &Path) -> FileRead {
-    let file = match open_to_read(path) {
+/// The bytes of the regular file `name` in `dir` (or at the path `name`, from [`CWD`]),
+/// read without following a symbolic link or waiting on a pipe, and no more than
+/// [`MAX_ENTRY`] of them.
+fn read_file(dir: impl AsFd, name: impl rustix::path::Arg) -> FileRead {
+    let file = match at::open_to_read(dir, name) {
         Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return FileRead::Missing,
-        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
-            return FileRead::Unusable("is a symbolic link");
-        }
-        Err(e) => return FileRead::Failed(e),
+        Err(Errno::NOENT) => return FileRead::Missing,
+        Err(Errno::LOOP) => return FileRead::Unusable("is a symbolic link"),
+        Err(e) => return FileRead::Failed(e.into()),
     };
     match file.metadata() {
         Ok(meta) if !meta.is_file() => return FileRead::Unusable("isn't a file"),
@@ -1251,27 +1441,35 @@ fn read_entry(bytes: &[u8], secret: &Secret, key: &EntryKey) -> Option<Entry> {
     (entry.key == *key).then_some(entry)
 }
 
-/// Writes an entry at `path`, in the cache at `root`, whole or not at all: to a file of its
-/// own beside it, then renamed over it, so a reader never sees a part of one, and two
-/// writers of the same entry (two sessions) leave one or the other. Not synced to the disk:
-/// an entry a crash cuts short or empties doesn't hold together, so it's a miss. Its
-/// modification time, its last use, is set to now, to the nanosecond (Linux's own moves only
-/// once a tick).
-fn write_entry(root: &Path, path: &Path, seal: &Seal, payload: &[u8]) -> std::io::Result<()> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("no directory"))?;
-    std::fs::create_dir_all(root)?;
-    match std::fs::create_dir(dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(e),
+/// Writes an entry named `name` in the subdirectory `subdirectory` of the cache's directory,
+/// which `root` holds open (at `dir`, to name its `.gitignore` by), whole or not at all: to
+/// a file of its own beside it, then renamed over it, so a reader never sees a part of one,
+/// and two writers of the same entry (two sessions) leave one or the other. Every step is
+/// taken from `root`: the subdirectory made in it, and opened from it without following a
+/// link. Not synced to the disk: an entry a crash cuts short or empties doesn't hold
+/// together, so it's a miss. Its modification time, its last use, is set to now, to the
+/// nanosecond (Linux's own moves only once a tick).
+fn write_entry(
+    root: &OwnedFd,
+    dir: &Path,
+    subdirectory: &str,
+    name: &str,
+    seal: &Seal,
+    payload: &[u8],
+) -> std::io::Result<()> {
+    match rustix::fs::mkdirat(root, subdirectory, Mode::from_raw_mode(0o777)) {
+        Ok(()) | Err(Errno::EXIST) => {}
+        Err(e) => return Err(e.into()),
     }
-    if is_link(dir) {
-        return Err(std::io::Error::other("its directory is a link"));
-    }
-    ignore_itself(root);
-    let (partial, mut file) = new_file(dir, 0o644)?;
+    let sub = match at::open_dir(root, subdirectory) {
+        Ok(sub) => sub,
+        Err(_) if at::is_link(root, subdirectory) => {
+            return Err(std::io::Error::other("its directory is a link"));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    ignore_itself(root, dir);
+    let (partial, mut file) = at::new_file(&sub, Mode::from_raw_mode(0o644))?;
     let written = file
         .write_all(MAGIC)
         .and_then(|()| file.write_all(&seal.0))
@@ -1279,61 +1477,34 @@ fn write_entry(root: &Path, path: &Path, seal: &Seal, payload: &[u8]) -> std::io
     // Where the file system won't take a time (vfat, some network shares), it keeps its
     // own: the entry is still kept.
     let _ = file.set_modified(SystemTime::now());
-    let renamed = written.and_then(|()| std::fs::rename(&partial, path));
+    let renamed = written.and_then(|()| at::rename(&sub, partial.as_str(), name));
     if renamed.is_err() {
-        let _ = std::fs::remove_file(&partial);
+        let _ = at::remove(&sub, partial.as_str());
     }
     renamed
 }
 
-/// Gives the cache at `root` its `.gitignore`, unless it has it: written whole, over
-/// anything else at its name (a file emptied by a failed write, or one that came with a
-/// clone), as an entry is.
-fn ignore_itself(root: &Path) {
-    let path = root.join(".gitignore");
-    if let FileRead::Bytes(bytes) = read_file(&path)
+/// Gives the cache's directory, which `root` holds open (at `dir`, to name it by), its
+/// `.gitignore`, unless it has it: written whole, over anything else at its name (a file
+/// emptied by a failed write, or one that came with a clone), as an entry is.
+fn ignore_itself(root: &OwnedFd, dir: &Path) {
+    if let FileRead::Bytes(bytes) = read_file(root, ".gitignore")
         && bytes == GITIGNORE
     {
         return;
     }
-    let written = new_file(root, 0o644).and_then(|(partial, mut file)| {
+    let written = at::new_file(root, Mode::from_raw_mode(0o644)).and_then(|(partial, mut file)| {
         let renamed = file
             .write_all(GITIGNORE)
-            .and_then(|()| std::fs::rename(&partial, &path));
+            .and_then(|()| at::rename(root, partial.as_str(), ".gitignore"));
         if renamed.is_err() {
-            let _ = std::fs::remove_file(&partial);
+            let _ = at::remove(root, partial.as_str());
         }
         renamed
     });
     if let Err(e) = written {
+        let path = dir.join(".gitignore");
         tracing::warn!(path = %path.display(), "couldn't write the cache's .gitignore: {e}");
-    }
-}
-
-/// A new file in `dir`, with permissions `mode`, never one already there (a link planted at
-/// the name would otherwise be followed, and what it points at written over).
-fn new_file(dir: &Path, mode: u32) -> std::io::Result<(PathBuf, std::fs::File)> {
-    static FILES: AtomicU64 = AtomicU64::new(0);
-    let mut attempt = 0;
-    loop {
-        let partial = dir.join(format!(
-            ".partial-{}-{}",
-            std::process::id(),
-            FILES.fetch_add(1, Ordering::Relaxed)
-        ));
-        let created = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(mode)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&partial);
-        match created {
-            Ok(file) => return Ok((partial, file)),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && attempt < 8 => {
-                attempt += 1;
-            }
-            Err(e) => return Err(e),
-        }
     }
 }
 
@@ -1374,9 +1545,42 @@ mod tests {
         let path = cache.path(&EntryKey(key));
         let name = format!("{}01", "0".repeat(60));
         assert_eq!(path, Path::new("/cache/ab").join(&name));
-        assert!(is_entry_directory(std::ffi::OsStr::new("ab")));
-        assert!(is_entry_name(std::ffi::OsStr::new(&name)));
-        assert!(!is_entry_name(std::ffi::OsStr::new(&name[1..])));
+        assert!(is_entry_directory(c"ab"));
+        assert!(is_entry_name(&CString::new(name.clone()).unwrap()));
+        assert!(!is_entry_name(&CString::new(&name[1..]).unwrap()));
+    }
+
+    /// The directory of `cache`, opened for an operation (made if need be).
+    fn root(cache: &Cache) -> OwnedFd {
+        cache.root(true).unwrap()
+    }
+
+    /// The directory at `path`, opened as the cache opens its own.
+    fn opened_at(path: &Path) -> OwnedFd {
+        at::open_dir(CWD, path).unwrap()
+    }
+
+    /// Counts the warnings logged where it's the subscriber.
+    struct Warnings(Arc<std::sync::Mutex<u32>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Warnings {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if *event.metadata().level() == tracing::Level::WARN {
+                *self.0.lock().unwrap() += 1;
+            }
+        }
+    }
+
+    /// A subscriber that counts the warnings logged under it, and its count.
+    fn counting_warnings() -> (impl tracing::Subscriber, Arc<std::sync::Mutex<u32>>) {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let warnings = Arc::new(std::sync::Mutex::new(0));
+        let subscriber = tracing_subscriber::registry().with(Warnings(Arc::clone(&warnings)));
+        (subscriber, warnings)
     }
 
     /// A directory of its own for one test, removed after.
@@ -1422,12 +1626,12 @@ mod tests {
             scans: 0,
         };
         // 60 + 50 is past 100: refused, for what's being written, and nothing counted.
-        assert_eq!(cache.make_room(50), Room::Busy);
+        assert_eq!(cache.make_room(&root(&cache), 50), Room::Busy);
         let usage = cache.usage();
         assert_eq!((usage.known, usage.writing), (Some(60), 60));
         drop(usage);
         // 60 + 40 is exactly 100: kept, and counted.
-        assert_eq!(cache.make_room(40), Room::Made);
+        assert_eq!(cache.make_room(&root(&cache), 40), Room::Made);
         let usage = cache.usage();
         assert_eq!((usage.known, usage.writing), (Some(100), 100));
     }
@@ -1457,8 +1661,8 @@ mod tests {
             Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(100);
         let mut scans = 0;
         let (mut c, mut d) = (PathBuf::new(), PathBuf::new());
-        let room = cache.make_room_scanning(30, |cache, size, writing| {
-            let left = cache.scan_and_evict(size, writing);
+        let room = cache.make_room_scanning(&root(&cache), 30, |cache, root, size, writing| {
+            let left = cache.scan_and_evict(root, size, writing);
             scans += 1;
             if scans == 1 {
                 c = entry_file(&cache.dir, 'c', 40, Duration::from_secs(2));
@@ -1490,8 +1694,8 @@ mod tests {
         let cache =
             Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(100);
         let mut scans = 0;
-        let room = cache.make_room_scanning(30, |cache, size, writing| {
-            let left = cache.scan_and_evict(size, writing);
+        let room = cache.make_room_scanning(&root(&cache), 30, |cache, root, size, writing| {
+            let left = cache.scan_and_evict(root, size, writing);
             scans += 1;
             assert!(scans <= 3, "it scanned again and again");
             let byte = if scans == 1 { 'e' } else { 'f' };
@@ -1524,11 +1728,11 @@ mod tests {
             Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(100);
         cache.usage().known = Some(60);
         let mut scans = 0;
-        let room = cache.make_room_scanning(30, |cache, size, writing| {
-            let left = cache.scan_and_evict(size, writing);
+        let room = cache.make_room_scanning(&root(&cache), 30, |cache, root, size, writing| {
+            let left = cache.scan_and_evict(root, size, writing);
             scans += 1;
             if scans == 1 {
-                assert_eq!(cache.make_room(40), Room::Made);
+                assert_eq!(cache.make_room(root, 40), Room::Made);
             }
             left
         });
@@ -1555,14 +1759,14 @@ mod tests {
         let cache =
             Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(800);
         cache.usage().known = Some(760);
-        assert_eq!(cache.make_room(40), Room::Made);
+        assert_eq!(cache.make_room(&root(&cache), 40), Room::Made);
         let usage = cache.usage();
         assert_eq!((usage.known, usage.scans), (Some(800), 0));
         drop(usage);
         let other =
             Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(800);
         other.usage().known = Some(760);
-        assert_eq!(other.make_room(41), Room::Made);
+        assert_eq!(other.make_room(&root(&other), 41), Room::Made);
         assert_eq!(other.usage().scans, 1);
     }
 
@@ -1579,13 +1783,13 @@ mod tests {
         std::fs::write(&own, vec![0; 200]).unwrap();
         let cache =
             Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(100);
-        assert_eq!(cache.make_room(10), Room::Made);
+        assert_eq!(cache.make_room(&root(&cache), 10), Room::Made);
         assert_eq!(cache.usage().known, Some(10));
         let theirs = sub.join(".partial-1-0");
         std::fs::write(&theirs, vec![0; 200]).unwrap();
         let fresh =
             Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(100);
-        assert_eq!(fresh.make_room(10), Room::Stuck);
+        assert_eq!(fresh.make_room(&root(&fresh), 10), Room::Stuck);
         assert!(own.exists() && theirs.exists());
     }
 
@@ -1643,7 +1847,7 @@ mod tests {
         let scratch = Scratch::new("scans");
         let cache = Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32])));
         for _ in 0..10 {
-            assert_eq!(cache.make_room(100), Room::Made);
+            assert_eq!(cache.make_room(&root(&cache), 100), Room::Made);
         }
         assert_eq!(cache.usage().scans, 1);
         // A bound of 800, an eighth of 100: puts of 50 scan at the first (50 since), not
@@ -1652,12 +1856,12 @@ mod tests {
         let cache =
             Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(800);
         for _ in 0..9 {
-            assert_eq!(cache.make_room(50), Room::Made);
+            assert_eq!(cache.make_room(&root(&cache), 50), Room::Made);
         }
         assert_eq!(cache.usage().scans, 5);
         // A clone shares what its cache knows (50 since): no scan of its own.
         let twin = cache.clone();
-        assert_eq!(twin.make_room(10), Room::Made);
+        assert_eq!(twin.make_room(&root(&twin), 10), Room::Made);
         assert_eq!(twin.usage().scans, 5);
     }
 
@@ -1685,31 +1889,22 @@ mod tests {
         let cache = Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32])));
         let subscriber = tracing_subscriber::registry().with(PanicAtScan);
         let unwound = tracing::subscriber::with_default(subscriber, || {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cache.make_room(10)))
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                cache.make_room(&root(&cache), 10)
+            }))
         });
         assert!(unwound.is_err());
         assert!(!cache.usage().scanning);
-        assert_eq!(cache.make_room(10), Room::Made);
+        assert_eq!(cache.make_room(&root(&cache), 10), Room::Made);
         assert_eq!(cache.usage().scans, 2);
     }
 
     #[test]
     fn a_full_cache_says_so_once_for_itself_and_its_clones() {
         // Found by review: saying it at every refusal but the first passed every test.
-        use std::sync::Mutex;
-        use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
-        struct Warnings(Arc<Mutex<u32>>);
-        impl<S: tracing::Subscriber> Layer<S> for Warnings {
-            fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
-                if *event.metadata().level() == tracing::Level::WARN {
-                    *self.0.lock().unwrap() += 1;
-                }
-            }
-        }
         let scratch = Scratch::new("full");
         let cache = Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32])));
-        let warnings = Arc::new(Mutex::new(0));
-        let subscriber = tracing_subscriber::registry().with(Warnings(Arc::clone(&warnings)));
+        let (subscriber, warnings) = counting_warnings();
         tracing::subscriber::with_default(subscriber, || {
             cache.say_full();
             cache.say_full();
@@ -1724,21 +1919,34 @@ mod tests {
         // plain add panicked; a saturating one undercounts, and leaves a planted entry).
         // Three entries of 2^63 bytes (gone already, so each is evicted as if by another
         // session), 3 * 2^63 in all, evicted to 2^63: the oldest two go, 2^64 bytes.
+        let scratch = Scratch::new("evict-sparse");
         let half = 1_u64 << 63;
-        let gone = |n: u8| PathBuf::from(format!("/nonexistent-silico-cache/{n}"));
+        let gone = |n: u8| {
+            scratch
+                .0
+                .join(format!("0{n}"))
+                .join("0".repeat(ENTRY_DIGITS))
+        };
         let mut scan = Scan {
             entries: (0..3)
-                .map(|n| (SystemTime::UNIX_EPOCH, gone(n), half))
+                .map(|n| Listed {
+                    used: SystemTime::UNIX_EPOCH,
+                    path: gone(n),
+                    subdirectory: CString::new(format!("0{n}")).unwrap(),
+                    name: CString::new("0".repeat(ENTRY_DIGITS)).unwrap(),
+                    size: half,
+                })
                 .collect(),
             bytes: 3 * u128::from(half),
             partials_removed: 0,
             warned: false,
         };
-        assert_eq!(evict(&mut scan, u128::from(half)), (2, 1_u128 << 64));
+        let root = opened_at(&scratch.0);
+        assert_eq!(evict(&mut scan, &root, u128::from(half)), (2, 1_u128 << 64));
         assert_eq!(scan.bytes, u128::from(half));
         // What's left is the newest.
         assert_eq!(scan.entries.len(), 1);
-        assert_eq!(scan.entries[0].1, gone(2));
+        assert_eq!(scan.entries[0].path, gone(2));
     }
 
     #[test]
@@ -1754,42 +1962,34 @@ mod tests {
     #[test]
     fn a_scan_warns_of_the_first_file_it_couldnt_remove_and_only_that() {
         // Found by the mutation run: warning at every failure but the first passed every
-        // test (two failures warn once either way). A path through a regular file can't be
+        // test (two failures warn once either way). A name through a regular file can't be
         // removed (ENOTDIR, on Linux and macOS, as root too): its first failure is warned
         // of at once, and the two after it aren't.
-        use std::sync::Mutex;
-        use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
-        struct Warnings(Arc<Mutex<u32>>);
-        impl<S: tracing::Subscriber> Layer<S> for Warnings {
-            fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
-                if *event.metadata().level() == tracing::Level::WARN {
-                    *self.0.lock().unwrap() += 1;
-                }
-            }
-        }
         let scratch = Scratch::new("remove-warns");
         let file = scratch.0.join("file");
         std::fs::write(&file, b"x").unwrap();
         let through = file.join("entry");
+        let dir = opened_at(&scratch.0);
+        let remove =
+            |scan: &mut Scan, name: &CStr, path: &Path| scan.remove(dir.as_fd(), name, path);
         let mut scan = Scan {
             entries: Vec::new(),
             bytes: 0,
             partials_removed: 0,
             warned: false,
         };
-        let warnings = Arc::new(Mutex::new(0));
-        let subscriber = tracing_subscriber::registry().with(Warnings(Arc::clone(&warnings)));
+        let (subscriber, warnings) = counting_warnings();
         tracing::subscriber::with_default(subscriber, || {
-            assert!(!scan.remove(&through));
+            assert!(!remove(&mut scan, c"file/entry", &through));
             assert_eq!(
                 *warnings.lock().unwrap(),
                 1,
                 "the first failure is warned of"
             );
-            assert!(!scan.remove(&through));
-            assert!(!scan.remove(&through));
+            assert!(!remove(&mut scan, c"file/entry", &through));
+            assert!(!remove(&mut scan, c"file/entry", &through));
             // Gone already counts as removed, and isn't warned of.
-            assert!(scan.remove(&scratch.0.join("none")));
+            assert!(remove(&mut scan, c"none", &scratch.0.join("none")));
         });
         assert_eq!(*warnings.lock().unwrap(), 1);
         assert!(scan.warned);
@@ -1800,28 +2000,17 @@ mod tests {
     fn a_cache_through_a_link_says_so_once_for_itself_and_its_clones() {
         // Found by the milestone's mutation run: saying it never, or every time but the
         // first, passed every test.
-        use std::sync::Mutex;
-        use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
-        struct Warnings(Arc<Mutex<u32>>);
-        impl<S: tracing::Subscriber> Layer<S> for Warnings {
-            fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
-                if *event.metadata().level() == tracing::Level::WARN {
-                    *self.0.lock().unwrap() += 1;
-                }
-            }
-        }
         let scratch = Scratch::new("said-once");
         let real = scratch.0.join("real");
         std::fs::create_dir(&real).unwrap();
         let linked = scratch.0.join("linked");
         std::os::unix::fs::symlink(&real, &linked).unwrap();
         let cache = Cache::new(linked, this_platform(), Some(Secret([7; 32])));
-        let warnings = Arc::new(Mutex::new(0));
-        let subscriber = tracing_subscriber::registry().with(Warnings(Arc::clone(&warnings)));
+        let (subscriber, warnings) = counting_warnings();
         tracing::subscriber::with_default(subscriber, || {
-            assert!(cache.secret().is_none());
-            assert!(cache.secret().is_none());
-            assert!(cache.clone().secret().is_none());
+            assert!(cache.opened(false).is_none());
+            assert!(cache.opened(true).is_none());
+            assert!(cache.clone().opened(false).is_none());
         });
         assert_eq!(*warnings.lock().unwrap(), 1);
     }
@@ -1856,43 +2045,71 @@ mod tests {
 
     #[test]
     fn a_cache_that_leads_out_of_its_workspace_keeps_nothing_and_says_so_once() {
-        // Its document's directory swapped for a link out after it was made: no secret to
-        // read or write with, said once for itself and its clones; put back inside, it keeps
-        // results again. Without a workspace, the same directory is used.
-        use std::sync::Mutex;
-        use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
-        struct Warnings(Arc<Mutex<u32>>);
-        impl<S: tracing::Subscriber> Layer<S> for Warnings {
-            fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
-                if *event.metadata().level() == tracing::Level::WARN {
-                    *self.0.lock().unwrap() += 1;
-                }
-            }
-        }
+        // Its document's directory swapped for a link out after it was made: its directory
+        // isn't opened, which is said once for itself and its clones; put back inside, it's
+        // opened again, and should it lead out again, that's said again. Without a
+        // workspace, the same directory is used.
         let dir = tempfile::tempdir().unwrap();
         let real = std::fs::canonicalize(dir.path()).unwrap();
         let (work, outside) = (real.join("work"), real.join("outside"));
-        std::fs::create_dir_all(work.join("sub")).unwrap();
+        std::fs::create_dir_all(work.join("sub/.silico-cache")).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         let cache_dir = work.join("sub/.silico-cache");
         let cache = Cache::new(cache_dir.clone(), this_platform(), Some(Secret([7; 32])))
             .within(Workspace::new(&work).unwrap());
         let anywhere = Cache::new(cache_dir, this_platform(), Some(Secret([7; 32])));
-        assert!(cache.secret().is_some());
-        std::fs::rename(work.join("sub"), outside.join("sub")).unwrap();
-        std::os::unix::fs::symlink(outside.join("sub"), work.join("sub")).unwrap();
-        let warnings = Arc::new(Mutex::new(0));
-        let subscriber = tracing_subscriber::registry().with(Warnings(Arc::clone(&warnings)));
+        assert!(cache.opened(false).is_some());
+        let swap_out = || {
+            std::fs::rename(work.join("sub"), outside.join("sub")).unwrap();
+            std::os::unix::fs::symlink(outside.join("sub"), work.join("sub")).unwrap();
+        };
+        let put_back = || {
+            std::fs::remove_file(work.join("sub")).unwrap();
+            std::fs::rename(outside.join("sub"), work.join("sub")).unwrap();
+        };
+        swap_out();
+        let (subscriber, warnings) = counting_warnings();
         tracing::subscriber::with_default(subscriber, || {
-            assert!(cache.secret().is_none());
-            assert!(cache.secret().is_none());
-            assert!(cache.clone().secret().is_none());
-            assert!(anywhere.secret().is_some());
+            assert!(cache.opened(false).is_none());
+            assert!(cache.opened(true).is_none());
+            assert!(cache.clone().opened(false).is_none());
+            assert!(anywhere.opened(false).is_some());
         });
         assert_eq!(*warnings.lock().unwrap(), 1);
-        std::fs::remove_file(work.join("sub")).unwrap();
-        std::fs::rename(outside.join("sub"), work.join("sub")).unwrap();
-        assert!(cache.secret().is_some());
+        put_back();
+        assert!(cache.opened(false).is_some());
+        swap_out();
+        let (subscriber, warnings) = counting_warnings();
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(cache.opened(false).is_none());
+            assert!(cache.opened(false).is_none());
+        });
+        assert_eq!(*warnings.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_cache_directory_replaced_between_its_open_and_its_check_isnt_used() {
+        // A swap after the directory's opened and before its path is resolved: the handle
+        // opened on `work/sub/.silico-cache`, then that directory moved aside and another
+        // made at its name, inside the workspace. The path resolves inside, but to another
+        // directory than the handle's (another inode), so the handle isn't used, which is
+        // said; one opened on the directory there now is.
+        let dir = tempfile::tempdir().unwrap();
+        let work = std::fs::canonicalize(dir.path()).unwrap().join("work");
+        let cache_dir = work.join("sub/.silico-cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let workspace = Workspace::new(&work).unwrap();
+        let cache = Cache::new(cache_dir.clone(), this_platform(), Some(Secret([7; 32])))
+            .within(workspace.clone());
+        let first = opened_at(&cache_dir);
+        std::fs::rename(&cache_dir, work.join("sub/aside")).unwrap();
+        std::fs::create_dir(&cache_dir).unwrap();
+        let (subscriber, warnings) = counting_warnings();
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(!cache.verified(&workspace, &first));
+            assert!(cache.verified(&workspace, &opened_at(&cache_dir)));
+        });
+        assert_eq!(*warnings.lock().unwrap(), 1);
     }
 
     #[test]
@@ -1918,16 +2135,16 @@ mod tests {
         let scratch = Scratch::new("read-file");
         let file = scratch.0.join("entry");
         std::fs::write(&file, b"an entry").unwrap();
-        assert!(matches!(read_file(&file), FileRead::Bytes(b) if b == b"an entry"));
+        assert!(matches!(read_file(CWD, &file), FileRead::Bytes(b) if b == b"an entry"));
         assert!(matches!(
-            read_file(&scratch.0.join("none")),
+            read_file(CWD, scratch.0.join("none").as_path()),
             FileRead::Missing
         ));
         // A link isn't followed, even to a regular file.
         let link = scratch.0.join("link");
         std::os::unix::fs::symlink(&file, &link).unwrap();
         assert!(matches!(
-            read_file(&link),
+            read_file(CWD, &link),
             FileRead::Unusable("is a symbolic link")
         ));
         // A pipe (opened without waiting for a writer, so it reads as empty) and a
@@ -1941,16 +2158,16 @@ mod tests {
                 .success()
         );
         assert!(matches!(
-            read_file(&fifo),
+            read_file(CWD, &fifo),
             FileRead::Unusable("isn't a file")
         ));
         assert!(matches!(
-            read_file(&scratch.0),
+            read_file(CWD, &scratch.0),
             FileRead::Unusable("isn't a file")
         ));
         // A path through a file (ENOTDIR) is neither missing nor a link: a failure.
         assert!(matches!(
-            read_file(&file.join("below")),
+            read_file(CWD, file.join("below").as_path()),
             FileRead::Failed(e) if e.raw_os_error() == Some(libc::ENOTDIR)
         ));
     }
@@ -1976,7 +2193,7 @@ mod tests {
         let f = std::fs::File::create(&file).unwrap();
         f.set_len(MAX_ENTRY).unwrap();
         let start = cpu_time::ThreadTime::now();
-        match read_file(&file) {
+        match read_file(CWD, &file) {
             FileRead::Bytes(bytes) => assert_eq!(bytes.len() as u64, MAX_ENTRY),
             FileRead::Missing => panic!("missing"),
             FileRead::Unusable(why) => panic!("unusable: {why}"),
@@ -1984,7 +2201,7 @@ mod tests {
         }
         f.set_len(MAX_ENTRY + 1).unwrap();
         assert!(matches!(
-            read_file(&file),
+            read_file(CWD, &file),
             FileRead::Unusable("is too large")
         ));
         let spent = start.elapsed();
@@ -2007,7 +2224,7 @@ mod tests {
             .set_len(64 << 30)
             .unwrap();
         let start = cpu_time::ThreadTime::now();
-        let read = read_file(&file);
+        let read = read_file(CWD, &file);
         let spent = start.elapsed();
         assert!(matches!(read, FileRead::Unusable("is too large")));
         assert!(
@@ -2028,13 +2245,9 @@ mod tests {
             // Running as root: permissions don't bite.
             return;
         }
-        let error = write_entry(
-            &scratch.0,
-            &scratch.0.join("ab").join("cdef"),
-            &Seal([0; 32]),
-            b"payload",
-        )
-        .unwrap_err();
+        let root = opened_at(&scratch.0);
+        let error =
+            write_entry(&root, &scratch.0, "ab", "cdef", &Seal([0; 32]), b"payload").unwrap_err();
         assert_eq!(
             error.kind(),
             std::io::ErrorKind::PermissionDenied,
@@ -2052,26 +2265,20 @@ mod tests {
         let scratch = Scratch::new("partial-names");
         let pid = std::process::id();
         let named = |n: u64| scratch.0.join(format!(".partial-{pid}-{n}"));
-        let (first, _) = new_file(&scratch.0, 0o600).unwrap();
+        let dir = opened_at(&scratch.0);
+        let mode = Mode::from_raw_mode(0o600);
+        let (first, _) = at::new_file(&dir, mode).unwrap();
         let prefix = format!(".partial-{pid}-");
-        let n: u64 = first
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .strip_prefix(&prefix)
-            .unwrap()
-            .parse()
-            .unwrap();
+        let n: u64 = first.strip_prefix(&prefix).unwrap().parse().unwrap();
         for taken in n + 1..=n + 8 {
             std::fs::write(named(taken), b"planted").unwrap();
         }
-        let (ninth, _) = new_file(&scratch.0, 0o600).unwrap();
-        assert_eq!(ninth, named(n + 9));
+        let (ninth, _) = at::new_file(&dir, mode).unwrap();
+        assert_eq!(scratch.0.join(ninth), named(n + 9));
         for taken in n + 10..=n + 18 {
             std::fs::write(named(taken), b"planted").unwrap();
         }
-        let error = new_file(&scratch.0, 0o600).unwrap_err();
+        let error = at::new_file(&dir, mode).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
         assert!(!named(n + 19).exists());
         // Planted names are left as they were.
@@ -2083,8 +2290,8 @@ mod tests {
     /// What [`walk`] gave its visitor, as data: what it found, and where.
     fn walked(found: Walked<'_>) -> (&'static str, PathBuf) {
         match found {
-            Walked::Partial(path, _) => ("partial", path.to_owned()),
-            Walked::Entry(path, _) => ("entry", path.to_owned()),
+            Walked::Partial(place, _) => ("partial", place.path.to_owned()),
+            Walked::Entry(place, _) => ("entry", place.path.to_owned()),
             Walked::Unread(path, _) => ("unread", path.to_owned()),
             Walked::Unknown(path, _) => ("unknown", path.to_owned()),
         }
@@ -2092,12 +2299,15 @@ mod tests {
 
     #[test]
     fn a_walk_of_a_cache_directory_gone_finds_nothing_and_says_nothing() {
-        // Another process's clear (or the user) removed the directory before it's listed:
-        // nothing in it, and nothing it couldn't read.
+        // Another process's clear (or the user) removed the directory once it was opened,
+        // before it's listed: nothing in it, and nothing it couldn't read.
         let scratch = Scratch::new("walk-gone");
         let gone = scratch.0.join("cache");
+        std::fs::create_dir(&gone).unwrap();
+        let root = opened_at(&gone);
+        std::fs::remove_dir(&gone).unwrap();
         let mut seen = Vec::new();
-        walk(&gone, |found| seen.push(walked(found)));
+        walk(&root, &gone, |found| seen.push(walked(found)));
         assert_eq!(seen, []);
     }
 
@@ -2121,8 +2331,9 @@ mod tests {
             std::fs::write(path, b"an entry").unwrap();
         }
         let mut seen = Vec::new();
-        walk(&scratch.0, |found| {
-            if matches!(&found, Walked::Entry(path, _) if *path == first.as_path()) {
+        let root = opened_at(&scratch.0);
+        walk(&root, &scratch.0, |found| {
+            if matches!(&found, Walked::Entry(place, _) if place.path == first.as_path()) {
                 std::fs::remove_file(&second).unwrap();
                 std::fs::remove_dir_all(scratch.0.join("01")).unwrap();
             }

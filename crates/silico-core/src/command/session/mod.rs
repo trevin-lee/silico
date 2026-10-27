@@ -66,8 +66,9 @@
 //! is a command whose session's file leads out of it now, found as the file is read again
 //! or saved; a `.silico-cache/` that leads out of it is never opened, and one that comes to
 //! lead out of it later is read, written, and cleared nothing through while it does (the
-//! cache checks as each of those begins, [`Cache::within`]). Without one (the CLI's), `open`
-//! reads any file this user may read.
+//! cache checks as each of those opens its directory, and does all it does through the
+//! handle it opened, [`Cache::within`]). Without one (the CLI's), `open` reads any file
+//! this user may read.
 //!
 //! What it doesn't bound: the caches, one kept for each directory a session has opened a
 //! document in, for the process's life; and each session's queue, which holds every command
@@ -416,8 +417,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// reads it again or saves it (a link put on its path since `open`). A `.silico-cache/`
     /// that leads out of it is never opened: its sessions keep no results; nor through one
     /// that comes to lead out later, while it does (the cache checks as each read, write,
-    /// eviction, and clear begins, [`Cache::within`]). Without one (the
-    /// CLI), paths resolve as the system resolves them. Refused if the root isn't a
+    /// eviction, and clear opens its directory, and does all it does through the handle it
+    /// opened, [`Cache::within`]). Without one (the CLI), paths resolve as the system
+    /// resolves them. Refused if the root isn't a
     /// directory that can be reached, and if these sessions have a workspace already, or
     /// have been asked to open a document.
     pub fn in_workspace(mut self, root: &Path) -> Result<Self, Error> {
@@ -785,9 +787,10 @@ impl<P: Clients + 'static> Sessions<P> {
     /// file (decision 2, as `close`): it needs nothing of the document, so a file gone or
     /// changed neither refuses it nor moves the session's revision; and it runs inside a
     /// transaction too. In a workspace (decision 26), the directory is named from its root,
-    /// and whether it leads out of it is checked as it clears, by the cache
+    /// and whether it leads out of it is checked by the cache as the clear opens it
     /// ([`Cache::within`]): nothing is removed through one that does then (`removed` 0), and
-    /// one inside then is cleared, whatever it was as the session opened.
+    /// one inside then is cleared, whatever it was as the session opened, through the handle
+    /// the clear opened, so a link put on its way during the clear redirects nothing.
     pub fn cache_clear(&self, session: &SessionId) -> Running<CacheCleared> {
         self.queued_with(
             session,
@@ -796,8 +799,10 @@ impl<P: Clients + 'static> Sessions<P> {
             |session, stop, _, _| {
                 // The engine's own cache, in the workspace if there's one: a stand-in that
                 // writes nothing if its directory led out of it as the session opened
-                // (`Registry::cache`); whether this clear goes through is the cache's to
-                // check, as it clears.
+                // (`Registry::cache`). Whether this clear goes through is the cache's to
+                // check, as it opens the directory (decision 26: where a path resolves):
+                // nothing is removed through one that leads out then, and it says it removed
+                // none.
                 let cache = lock(&session.rebuilds).cache.clone();
                 let path = session.held.read().path.clone();
                 let workspace = session.workspace.as_ref();
@@ -805,9 +810,6 @@ impl<P: Clients + 'static> Sessions<P> {
                 stop.settle()?;
                 #[cfg(test)]
                 session.settled.pass();
-                // Checked by the cache as it clears (decision 26: where a path resolves):
-                // nothing is removed through a directory that leads out now, through any link
-                // on its way, and the clear says it removed none.
                 match cache.clear() {
                     Ok(removed) => Ok(CacheCleared { directory, removed }),
                     Err(partly) => Err(partly_cleared_problems(

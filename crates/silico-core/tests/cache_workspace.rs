@@ -1,15 +1,22 @@
 //! The rebuild cache in a workspace (decision 26 of docs/design/m4.1-command-api.md;
-//! `Cache::within`): every read, write, eviction, and clear checks, as it begins, that the
-//! cache's directory still leads nowhere out of the workspace, so a link put on its way after
+//! `Cache::within`): every read, write, eviction, and clear checks, as it opens the cache's
+//! directory, that it still leads nowhere out of the workspace, so a link put on its way after
 //! the cache was opened (its document's directory, a directory above it, or `.silico-cache`
 //! itself, in a transaction, which reads nothing again) has nothing read, written, evicted,
 //! or removed through it: a read misses, the rest do nothing, and the rebuild is still right.
-//! Without a workspace (the CLI), a cache through a link is used as it always was. Expected
-//! values are by hand: the files each test planted, which kernel calls a rebuild makes, and
-//! the shapes as the fake describes what made them.
+//! Without a workspace (the CLI), a cache through a link is used as it always was. A swap
+//! made while a read, write, or clear has the directory open redirects nothing: each does
+//! all it does through the handle it opened. Expected values are by hand: the files each
+//! test planted, which kernel calls a rebuild makes, and the shapes as the fake describes
+//! what made them.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
+
+use tracing::span::{Attributes, Id};
+use tracing_subscriber::layer::{Context, Layer, SubscriberExt as _};
 
 use silico_core::cache::Cache;
 use silico_core::command::{CheckModel, SessionId};
@@ -242,6 +249,19 @@ fn a_put_after_its_directory_leads_out_evicts_and_removes_nothing_outside() {
     assert_eq!(subdirectory_files(&outside), [entry]);
 }
 
+/// Two files named as entries in `dir`, `ab/NAME` and `cd/NAME`, each holding `bytes`.
+fn plant(dir: &Path, bytes: &[u8]) -> Vec<PathBuf> {
+    ["ab", "cd"]
+        .into_iter()
+        .map(|sub| {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+            let entry = dir.join(sub).join(NAME);
+            std::fs::write(&entry, bytes).unwrap();
+            entry
+        })
+        .collect()
+}
+
 #[test]
 fn a_clear_after_its_directory_leads_out_removes_nothing_outside() {
     // Two files named as entries, outside, where the cache's directory leads through the
@@ -249,15 +269,7 @@ fn a_clear_after_its_directory_leads_out_removes_nothing_outside() {
     // cache clears both.
     let scene = Scene::new();
     let outside = scene.swap();
-    let planted: Vec<PathBuf> = ["ab", "cd"]
-        .into_iter()
-        .map(|sub| {
-            std::fs::create_dir_all(outside.join(sub)).unwrap();
-            let entry = outside.join(sub).join(NAME);
-            std::fs::write(&entry, b"theirs").unwrap();
-            entry
-        })
-        .collect();
+    let planted = plant(&outside, b"theirs");
     let cache = scene.within();
     assert_eq!(cache.clear().unwrap(), 0);
     for entry in &planted {
@@ -284,4 +296,116 @@ fn without_a_workspace_a_cache_through_a_link_is_used_as_before() {
     assert_eq!(hole(&model), HOLE);
     assert_eq!(scene.cache().clear().unwrap(), 4);
     assert!(entries(&outside).is_empty());
+}
+
+/// A log layer that runs its swap once, as the first span named `span` opens, and says
+/// whether it has.
+struct SwapAt {
+    span: &'static str,
+    swap: Box<dyn Fn() + Send + Sync>,
+    done: Arc<AtomicBool>,
+}
+
+impl SwapAt {
+    fn new(span: &'static str, swap: impl Fn() + Send + Sync + 'static) -> Self {
+        SwapAt {
+            span,
+            swap: Box::new(swap),
+            done: Arc::default(),
+        }
+    }
+}
+
+impl<S: tracing::Subscriber> Layer<S> for SwapAt {
+    fn on_new_span(&self, attrs: &Attributes<'_>, _: &Id, _: Context<'_, S>) {
+        if attrs.metadata().name() == self.span && !self.done.swap(true, Ordering::SeqCst) {
+            (self.swap)();
+        }
+    }
+}
+
+#[test]
+fn a_put_whose_documents_directory_is_swapped_out_as_it_evicts_evicts_and_writes_none_out() {
+    // Found by #188's review: a put checked its directory once, then scanned, evicted, and
+    // wrote by path, so its document's directory swapped for a link out during the scan
+    // had it evict outside and write its entry there. Outside, where the link leads: an
+    // entry of the whole bound, used a day ago, and a partial file two hours stale, which
+    // a scan through the link would evict and remove. The box's one step is put; as its
+    // eviction opens its span (`cache.evict`), `work/sub` is moved aside, inside, and a link
+    // to `outside/sub` put in its place. Both files outside are left as they were, nothing
+    // beside them, and the box's entry is written in the directory the put opened, now
+    // `work/sub-was/.silico-cache`. The put runs on the recompute's thread, so the layer is
+    // the process's: nextest runs each test in a process of its own.
+    let scene = Scene::new();
+    let theirs = scene.outside.join("sub/.silico-cache");
+    let bound = 1 << 20;
+    std::fs::create_dir_all(theirs.join("ab")).unwrap();
+    let entry = theirs.join("ab").join(NAME);
+    std::fs::File::create(&entry)
+        .unwrap()
+        .set_len(bound)
+        .unwrap();
+    age(&entry, Duration::from_secs(24 * 60 * 60));
+    let partial = theirs.join(".partial-1-1");
+    std::fs::write(&partial, b"theirs").unwrap();
+    age(&partial, Duration::from_secs(2 * 60 * 60));
+    let (work, outside) = (scene.work.clone(), scene.outside.clone());
+    let moved = scene.work.join("sub-was");
+    let aside = moved.clone();
+    let layer = SwapAt::new("cache.evict", move || {
+        std::fs::rename(work.join("sub"), &aside).unwrap();
+        std::os::unix::fs::symlink(outside.join("sub"), work.join("sub")).unwrap();
+    });
+    let swapped = Arc::clone(&layer.done);
+    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer)).unwrap();
+    let engine = engine(scene.within().with_bound(bound));
+    published(&engine, checked(BOX));
+    assert_eq!(calls(&engine), ["MakeBox"]);
+    assert!(swapped.load(Ordering::SeqCst));
+    assert_eq!(std::fs::metadata(&entry).unwrap().len(), bound);
+    assert_eq!(std::fs::read(&partial).unwrap(), b"theirs");
+    let mut names: Vec<_> = std::fs::read_dir(&theirs)
+        .unwrap()
+        .map(|item| item.unwrap().file_name())
+        .collect();
+    names.sort();
+    assert_eq!(names, [".partial-1-1", "ab"]);
+    assert_eq!(subdirectory_files(&theirs), [entry]);
+    assert_eq!(entries(&moved.join(".silico-cache")).len(), 1);
+}
+
+#[test]
+fn a_clear_whose_directory_is_swapped_for_a_link_out_as_it_walks_removes_only_its_own() {
+    // Found by #188's review: a clear checked its directory once, then walked it by path, so
+    // `.silico-cache` swapped mid-walk for a link to another directory had it remove all
+    // that's named as entries there, as a SHA-256 git repository's loose objects are (two
+    // hex digits, then 62). The cache's own two entries, `ab/NAME` and `cd/NAME`; two named
+    // alike outside, in `objects`; and, as the walk enters its first subdirectory (its span,
+    // `cache.walk`, on this thread), `.silico-cache` moved aside and a link to `objects` put
+    // in its place. The clear goes on in the directory it opened: its own two removed, and
+    // counted, and those outside left.
+    let scene = Scene::new();
+    let ours = scene.work.join("sub/.silico-cache");
+    plant(&ours, b"ours");
+    let objects = scene.outside.join("objects");
+    let theirs = plant(&objects, b"theirs");
+    let moved = scene.work.join("sub/.silico-cache-was");
+    let (link, aside, target) = (ours.clone(), moved.clone(), objects.clone());
+    let layer = SwapAt::new("cache.walk", move || {
+        std::fs::rename(&link, &aside).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+    });
+    let swapped = Arc::clone(&layer.done);
+    let cache = scene.within();
+    let cleared =
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), || {
+            cache.clear()
+        });
+    assert!(swapped.load(Ordering::SeqCst));
+    assert_eq!(cleared.unwrap(), 2);
+    for entry in &theirs {
+        assert_eq!(std::fs::read(entry).unwrap(), b"theirs", "{entry:?}");
+    }
+    assert!(entries(&moved).is_empty(), "{:?}", entries(&moved));
+    assert!(std::fs::symlink_metadata(&ours).unwrap().is_symlink());
 }

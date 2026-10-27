@@ -17,7 +17,7 @@ hmac.workspace = true
 libc.workspace = true
 libm.workspace = true
 postcard.workspace = true
-rustix.workspace = true
+rustix = { workspace = true, features = ["fs"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -40,7 +40,6 @@ required-features = ["fake"]
 cpu-time.workspace = true
 jsonschema.workspace = true
 proptest.workspace = true
-rustix = { workspace = true, features = ["fs"] }
 silico-core = { path = ".", features = ["fake"] }
 tempfile.workspace = true
 
