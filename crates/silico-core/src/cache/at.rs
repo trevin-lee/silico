@@ -48,7 +48,7 @@ pub(super) fn open_dir_through_links(path: &Path) -> rustix::io::Result<OwnedFd>
 /// asked of the handle (macOS's `F_GETPATH`), never of a path, so no link put on the way
 /// since it was opened changes the answer.
 #[cfg(target_os = "macos")]
-pub(super) fn path_of(dir: impl AsFd) -> rustix::io::Result<PathBuf> {
+pub(crate) fn path_of(dir: impl AsFd) -> rustix::io::Result<PathBuf> {
     rustix::fs::getpath(dir).map(|path| PathBuf::from(OsString::from_vec(path.into_bytes())))
 }
 
@@ -58,7 +58,7 @@ pub(super) fn path_of(dir: impl AsFd) -> rustix::io::Result<PathBuf> {
 /// answer. A directory removed since is its path then, ` (deleted)` after it: nothing can be
 /// made in it.
 #[cfg(target_os = "linux")]
-pub(super) fn path_of(dir: impl AsFd) -> rustix::io::Result<PathBuf> {
+pub(crate) fn path_of(dir: impl AsFd) -> rustix::io::Result<PathBuf> {
     use std::os::fd::AsRawFd as _;
     let link = format!("/proc/self/fd/{}", dir.as_fd().as_raw_fd());
     rustix::fs::readlinkat(CWD, link.as_str(), Vec::new())
@@ -67,7 +67,7 @@ pub(super) fn path_of(dir: impl AsFd) -> rustix::io::Result<PathBuf> {
 
 /// Where the directory `dir` holds open is: on a system that can't say, not known.
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub(super) fn path_of(_dir: impl AsFd) -> rustix::io::Result<PathBuf> {
+pub(crate) fn path_of(_dir: impl AsFd) -> rustix::io::Result<PathBuf> {
     Err(Errno::NOSYS)
 }
 

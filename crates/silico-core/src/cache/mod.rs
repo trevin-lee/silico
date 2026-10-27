@@ -66,6 +66,7 @@ use silico_protocol::{Description, Failure};
 
 mod at;
 use at::Meta;
+pub(crate) use at::path_of;
 
 /// The first bytes of every entry, naming its format: a change to the format changes it.
 /// It's part of every entry's key too, so an entry of another format is never looked for.
@@ -96,11 +97,6 @@ pub struct Cache {
     /// The workspace its directory must lead nowhere out of ([`Cache::within`]), or none (the
     /// CLI's).
     workspace: Option<Workspace>,
-    /// The workspace's root as the system names an open handle of it ([`at::path_of`]),
-    /// taken once by [`Cache::within`]: a handle's path is compared with this spelling, the
-    /// system's own, as well as the root's canonical one, since the two can differ (macOS
-    /// names `/System/Volumes/Data/Users/...` as `/Users/...` through its firmlink).
-    workspace_as_held: Option<PathBuf>,
     /// Whether this cache (or a clone) has said its directory is a link it won't use.
     said_linked: Arc<AtomicBool>,
     /// Whether this cache (or a clone) has said its directory leads out of its workspace.
@@ -287,7 +283,6 @@ impl Cache {
             platform,
             secret,
             workspace: None,
-            workspace_as_held: None,
             said_linked: Arc::default(),
             said_outside: Arc::default(),
             bound: DEFAULT_BOUND,
@@ -330,9 +325,6 @@ impl Cache {
     /// and the directory is used wherever the path to it leads.
     #[must_use]
     pub fn within(mut self, workspace: Workspace) -> Self {
-        self.workspace_as_held = at::open_dir_through_links(workspace.root())
-            .and_then(at::path_of)
-            .ok();
         self.workspace = Some(workspace);
         self
     }
@@ -750,13 +742,7 @@ impl Cache {
     /// refused (said once while it's out); one the system can't place, said.
     fn inside(&self, workspace: &Workspace, above: &OwnedFd) -> Result<(), Unopened> {
         match at::path_of(above) {
-            Ok(path)
-                if workspace.holds(&path)
-                    || self
-                        .workspace_as_held
-                        .as_ref()
-                        .is_some_and(|root| path.starts_with(root)) =>
-            {
+            Ok(path) if workspace.holds(&path) => {
                 // Inside again: should it lead out later, that's said again.
                 if self.said_outside.load(Ordering::Relaxed) {
                     self.said_outside.store(false, Ordering::Relaxed);
@@ -2112,6 +2098,54 @@ mod tests {
             assert!(cache.opened(false).is_none());
         });
         assert_eq!(*warnings.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_workspace_root_relinked_before_a_session_opens_lets_nothing_out() {
+        // From the review (round 4): the root's spelling as the system names its handle was
+        // taken at each session's open, through links, so a root moved away and a link put
+        // at its name made the link's target count as the workspace. It's taken once, as
+        // the workspace is made, from the canonical root.
+        let dir = tempfile::tempdir().unwrap();
+        let top = std::fs::canonicalize(dir.path()).unwrap();
+        let (work, elsewhere) = (top.join("work"), top.join("elsewhere"));
+        std::fs::create_dir_all(work.join("sub")).unwrap();
+        std::fs::create_dir_all(elsewhere.join("sub")).unwrap();
+        let workspace = Workspace::new(&work).unwrap();
+        std::fs::rename(&work, top.join("work-was")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &work).unwrap();
+        let cache = Cache::new(
+            work.join("sub/.silico-cache"),
+            this_platform(),
+            Some(Secret([7; 32])),
+        )
+        .within(workspace);
+        let opened = cache.root(true);
+        assert!(
+            matches!(opened, Err(Unopened::Refused)),
+            "{:?}",
+            opened.err()
+        );
+        assert!(!elsewhere.join("sub/.silico-cache").exists());
+    }
+
+    #[test]
+    fn a_sibling_whose_name_starts_with_the_workspaces_isnt_inside() {
+        // `work2` beside `work`: compared by whole names, never by bytes (the review, round 4).
+        let dir = tempfile::tempdir().unwrap();
+        let top = std::fs::canonicalize(dir.path()).unwrap();
+        let (work, sibling) = (top.join("work"), top.join("work2"));
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(sibling.join("sub")).unwrap();
+        std::os::unix::fs::symlink("../work2/sub", work.join("sub")).unwrap();
+        let cache = Cache::new(
+            work.join("sub/.silico-cache"),
+            this_platform(),
+            Some(Secret([7; 32])),
+        )
+        .within(Workspace::new(&work).unwrap());
+        assert!(matches!(cache.root(true), Err(Unopened::Refused)));
+        assert!(!sibling.join("sub/.silico-cache").exists());
     }
 
     #[test]
