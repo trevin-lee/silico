@@ -1,8 +1,8 @@
 //! The arithmetic of 3-vectors in `f64` that the core, the render worker, and the protocol's
 //! own checks share: each written once, so each gives the same bits wherever it's used (no
 //! fused multiply-add: Rust contracts none). Lengths aren't here: a profile's check scales
-//! before it squares (`profile.rs`), so a huge vector's length doesn't overflow, while a
-//! measure's is the plain root (`command::measure`), whose bits its results hold.
+//! before it squares (`profile.rs`), so a huge vector's length doesn't overflow, where the
+//! rest take the plain root of a vector's dot with itself.
 
 /// `a - b`.
 pub fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -40,8 +40,11 @@ mod tests {
 
     #[test]
     fn a_dot_sums_x_then_y_then_z() {
-        // 1e16 + 1 rounds back to 1e16 (the spacing there is 2), then − 1e16 gives 0; summed
-        // the other way round it would be 1. The order is the bits.
+        // The spacing of doubles at 1e16 is 2, so 1e16 + 1 and 1 − 1e16 round to ±1e16
+        // (ties to even). Each sum below is 0 only added x, then y, then z (or y and x, then
+        // z, the same); every other order gives 1: x and z first, in the first; y and z
+        // first (x + (y + z), or z, y, x), in the second. The order is the bits.
         assert_eq!(dot([1e16, 1.0, -1e16], [1.0, 1.0, 1.0]), 0.0);
+        assert_eq!(dot([1.0, 1e16, -1e16], [1.0, 1.0, 1.0]), 0.0);
     }
 }

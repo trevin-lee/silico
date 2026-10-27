@@ -59,6 +59,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use silico_protocol::vec3::{dot, sub};
 use silico_protocol::{
     Algorithm, Description, EdgeCurve, EdgeDescription, FaceDescription, PointPlace, Reply,
     ShapeSummary, SketchSystem, SolveStatus, Solved, Surface, Tag, area_and_perimeter, loop_area,
@@ -1031,9 +1032,9 @@ fn point_distance(
         });
     }
     let at = [f64::from(element.index), 0.0, 0.0];
-    let d = [point[0] - at[0], point[1] - at[1], point[2] - at[2]];
+    let d = sub(point, at);
     Ok(Reply::Distance(silico_protocol::Distance {
-        distance: (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt(),
+        distance: dot(d, d).sqrt(),
         from: point,
         to: at,
         solutions: 1,
@@ -2138,7 +2139,6 @@ impl Measured {
         }
         let [low, high] = faces.bounds;
         let middle = [0, 1, 2].map(|k| (low[k] + high[k]) / 2.0);
-        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
         let size = |a: [f64; 3]| dot(a, a).sqrt();
         let (volume, area, center, bounds) = match *sweep {
             Sweep::Prism { start, vector } => {
