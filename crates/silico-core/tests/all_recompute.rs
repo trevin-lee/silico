@@ -23,6 +23,8 @@ mod model;
 mod recompute;
 #[path = "common/refusals.rs"]
 mod refusals;
+#[path = "common/share.rs"]
+mod share;
 #[path = "common/sweeps.rs"]
 mod sweeps;
 
