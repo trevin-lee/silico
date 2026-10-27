@@ -174,3 +174,21 @@ crates/silico-core/src/command/logs.rs | EventFields::field | replace < with <= 
 # Raising an info directive to info writes the same directive (`silico=info`, `info`).
 crates/silico-worker/src/lib.rs | worker_filter | replace < with <= | #194
 crates/silico-worker/src/lib.rs | worker_filter | replace < with <= | #194
+# `^` binds tighter than `|`, so each mutant XORs two flags of one open, which share no bit
+# (or one is O_RDONLY, 0): the same flags. One line for each `|` in the call.
+crates/silico-core/src/cache/at.rs | new_file | replace | with ^ | #212
+crates/silico-core/src/cache/at.rs | new_file | replace | with ^ | #212
+crates/silico-core/src/cache/at.rs | new_file | replace | with ^ | #212
+crates/silico-core/src/cache/at.rs | new_file | replace | with ^ | #212
+crates/silico-core/src/cache/at.rs | open_dir | replace | with ^ | #212
+crates/silico-core/src/cache/at.rs | open_dir | replace | with ^ | #212
+crates/silico-core/src/cache/at.rs | open_dir | replace | with ^ | #212
+crates/silico-core/src/cache/at.rs | open_dir_through_links | replace | with ^ | #212
+crates/silico-core/src/cache/at.rs | open_dir_through_links | replace | with ^ | #212
+# macOS's `path_of` (F_GETPATH), not compiled on Linux; killed on macOS. Linux's, with
+# the same key, is killed.
+crates/silico-core/src/cache/at.rs | path_of | replace path_of -> rustix::io::Result<PathBuf> with Ok(Default::default()) | #212
+# As at.rs's opens: `^` on two flags that share no bit.
+crates/silico-core/src/file.rs | held_spelling | replace | with ^ | #212
+crates/silico-core/src/file.rs | held_spelling | replace | with ^ | #212
+crates/silico-core/src/file.rs | held_spelling | replace | with ^ | #212
