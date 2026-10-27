@@ -1,10 +1,12 @@
 //! For the tests of descriptions made in the rebuild: what a fake kernel was asked, and
 //! documents of solids too large for one batch of a kind.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::Op;
+
+use super::model::WAIT;
 
 /// How many requests of `op` a kernel was asked.
 pub fn asked(kernel: &FakeKernel, op: &str) -> usize {
@@ -17,16 +19,19 @@ pub fn asked_of(kernel: &FakeKernel, picks: impl Fn(&Op) -> bool) -> usize {
 }
 
 /// How many requests `picks` a kernel has started once it has started `n` of them, and a
-/// little longer: `n`, unless it started more. A description that fails cancels its other
-/// batches in flight, but one a worker had already taken runs on, unwaited, so it may start
-/// after the model is published.
-///
-/// It waits on the condition alone, with no clock of its own: a request held mid-run starts
-/// when the run reaches it, which a loaded machine can delay past any fixed wait (run
-/// 40572762026). A run that never starts `n` is a test that never ends, which nextest's
-/// slow-timeout ends and names (`.config/nextest.toml`).
+/// little longer, failing, with how many started, after [`WAIT`]: `n`, unless it started
+/// more. A description that fails cancels its other batches in flight, but one a worker had
+/// already taken runs on, unwaited, so it may start after the model is published. The wait
+/// is the binary's own for a run, not a shorter one: a request held mid-run starts when the
+/// run reaches it, which a loaded machine delays.
 pub fn settled(kernel: &FakeKernel, picks: impl Fn(&Op) -> bool, n: usize) -> usize {
+    let deadline = Instant::now() + WAIT;
     while asked_of(kernel, &picks) < n {
+        assert!(
+            Instant::now() < deadline,
+            "{} of {n} requests started",
+            asked_of(kernel, &picks)
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
     std::thread::sleep(Duration::from_millis(50));

@@ -102,9 +102,10 @@ fn later_edge_batch(op: &Op) -> bool {
     )
 }
 
-/// Waits until the kernel has started a request `picks`, failing after ten seconds.
+/// Waits until the kernel has started a request `picks`, failing after [`WAIT`]: a request
+/// held mid-run starts when the run reaches it, which a loaded machine delays.
 fn wait_for_call(kernel: &FakeKernel, picks: impl Fn(&Op) -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + WAIT;
     while !kernel.calls().iter().any(|call| picks(&call.op)) {
         assert!(Instant::now() < deadline, "the request never started");
         std::thread::sleep(Duration::from_millis(5));
@@ -784,7 +785,7 @@ fn a_batch_that_fails_cancels_the_batches_still_waiting_and_none_after_is_asked(
     });
     let hold = engine.kernel().hold(move |op| face_batch(op, 1001));
     let mut run = engine.start(checked(&fused_tree(8)));
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + WAIT;
     let outcome = loop {
         if engine.kernel().cancelled_waiting() >= 2 {
             hold.release();
@@ -796,7 +797,8 @@ fn a_batch_that_fails_cancels_the_batches_still_waiting_and_none_after_is_asked(
         }
         assert!(
             Instant::now() < deadline,
-            "the waiting batches weren't cancelled"
+            "the waiting batches weren't cancelled: {} of 2",
+            engine.kernel().cancelled_waiting()
         );
     };
     hold.release();
