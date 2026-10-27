@@ -335,6 +335,32 @@ fn a_png_spelled_otherwise_than_a_held_document_on_disk_is_that_document_and_ref
 }
 
 #[test]
+fn a_hard_link_to_a_held_document_is_that_document_and_refused() {
+    // Another name of the held file (the same device and inode), on every file system: the
+    // document, whatever the name's spelling, refused and kept, replace or not.
+    let dir = Scratch::new("held-link");
+    let held = dir.0.join("Held.png");
+    std::fs::write(&held, b"a document").unwrap();
+    let alias = dir.0.join("Alias.png");
+    std::fs::hard_link(&held, &alias).unwrap();
+    let holding = [held.clone()];
+    for replace in [true, false] {
+        refused_output(
+            &alias,
+            &png_rules(None, &holding, replace),
+            "is a document a session holds",
+        );
+    }
+    assert_eq!(std::fs::read(&held).unwrap(), b"a document");
+    // A copy, another file, is no document: replaced.
+    let copy = dir.0.join("Copy.png");
+    std::fs::write(&copy, b"a document").unwrap();
+    silico_core::file::write_output(&copy, b"PNG", &png_rules(None, &holding, true)).unwrap();
+    assert_eq!(std::fs::read(&copy).unwrap(), b"PNG");
+    assert_eq!(std::fs::read(&held).unwrap(), b"a document");
+}
+
+#[test]
 fn a_png_is_written_whole_where_asked_and_its_canonical_path_given() {
     let dir = Scratch::new("output-new");
     let path = dir.0.join("view.png");
