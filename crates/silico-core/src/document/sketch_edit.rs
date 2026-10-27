@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::PROBLEMS_LISTED;
 use super::sketch::{ElementId, ElementKind, Form, Reference, Sketch, SketchPoint};
 use crate::{Error, ErrorCode};
 
@@ -33,22 +34,24 @@ pub struct Edited {
 /// A curve's points another curve uses stay, with every constraint on them, so the curves
 /// that meet there stay joined (shared points, where FreeCAD re-points coincidences); a
 /// `tangent_at` naming a removed curve goes with it, never onto a neighbour (`9ce5756011`).
-pub fn remove(sketch: &Sketch, members: &[ElementId]) -> Result<Edited, Vec<Error>> {
+pub fn remove(sketch: &Sketch, members: &[ElementId]) -> Result<Edited, Refused> {
     let kinds = kinds_of(sketch);
-    let mut errors = Vec::new();
+    let mut refused = Refused::default();
     let mut named: BTreeSet<&ElementId> = BTreeSet::new();
+    // Each problem once, at the first place its member is named.
+    let mut unknown: BTreeSet<&ElementId> = BTreeSet::new();
     for (place, id) in members.iter().enumerate() {
         if kinds.contains_key(id) {
             named.insert(id);
-        } else {
-            errors.push(
+        } else if unknown.insert(id) {
+            refused.push(|| {
                 Error::new(
                     ErrorCode::InvalidInput,
                     format!("the sketch has no member {id}"),
                 )
                 .with_parameter(format!("members.{place}"))
-                .with_suggestion("name a point, curve, or constraint of this sketch by its ID"),
-            );
+                .with_suggestion("name a point, curve, or constraint of this sketch by its ID")
+            });
         }
     }
     let curves_removed: BTreeSet<&ElementId> = named
@@ -70,16 +73,19 @@ pub fn remove(sketch: &Sketch, members: &[ElementId]) -> Result<Edited, Vec<Erro
             }
         }
     }
+    let mut used: BTreeSet<&ElementId> = BTreeSet::new();
     for (place, id) in members.iter().enumerate() {
         if kinds.get(id) != Some(&ElementKind::Point) {
             continue;
         }
-        if let Some(using) = users.get(id) {
-            errors.push(point_in_use(id, using, format!("members.{place}")));
+        if let Some(using) = users.get(id)
+            && used.insert(id)
+        {
+            refused.push(|| point_in_use(id, using, format!("members.{place}")));
         }
     }
-    if !errors.is_empty() {
-        return Err(errors);
+    if refused.total > 0 {
+        return Err(refused);
     }
     // The points that go: those named, and a removed curve's that no curve uses after.
     let mut gone: BTreeSet<ElementId> = named.iter().map(|id| (*id).clone()).collect();
@@ -282,12 +288,19 @@ pub fn merge(sketch: &Sketch, points: &[ElementId]) -> Result<Edited, Error> {
         let merged: Vec<ElementId> = ends.iter().map(|p| into(p)).collect();
         let twice = (0..merged.len()).any(|i| merged[i + 1..].contains(&merged[i]));
         if twice {
-            let mut elements: Vec<String> = ends.iter().map(|p| p.to_string()).collect();
+            // The curve's points the merge makes one, in the curve's order.
+            let merging: Vec<String> = ends
+                .iter()
+                .filter(|p| **p == kept || others.contains(**p))
+                .map(|p| p.to_string())
+                .collect();
+            let mut elements = merging.clone();
             elements.push(curve.to_string());
             return Err(Error::new(
                 ErrorCode::InvalidInput,
                 format!(
-                    "merging them would give {} {curve} one point twice",
+                    "merging {} would give {} {curve} one point twice",
+                    listed(&merging),
                     kind.noun()
                 ),
             )
@@ -383,6 +396,7 @@ pub fn merge(sketch: &Sketch, points: &[ElementId]) -> Result<Edited, Error> {
             repointed.push(constraint.id.clone());
         }
     }
+    own_curve(&edited)?;
     modified.extend(repointed);
     edited.points.retain(|p| !others.contains(&p.id));
     Ok(Edited {
@@ -391,6 +405,124 @@ pub fn merge(sketch: &Sketch, points: &[ElementId]) -> Result<Edited, Error> {
         modified: ordered(&kinds, modified),
         removed: ordered(&kinds, others.into_iter().cloned()),
     })
+}
+
+/// Refuses a merged sketch in which a constraint holds a curve's own point on it, or leaves
+/// a tangency in a form the gate refuses where the curves meet: what the gate would refuse
+/// of the merge's result, said as the merge's refusal, naming the constraint. Before the
+/// merge these points were apart, so the sketch it was given had none of them.
+///
+/// Refused, not mended: an `on` that the merge makes hold an end on its own line is implied
+/// by then, and could be dropped, as trim drops one (sketch-edit decision 5), but the note's
+/// decision 10 says the merge makes no fix-up, and FreeCAD's coincidence command rolls back a
+/// worse result (`e38154474a`); which one the merge takes is for the M5.0 design to settle.
+fn own_curve(sketch: &Sketch) -> Result<(), Error> {
+    let points: BTreeMap<&ElementId, Vec<&ElementId>> = curves(sketch)
+        .into_iter()
+        .map(|(_, id, points)| (id, points))
+        .collect();
+    let ends: BTreeMap<&ElementId, Vec<&ElementId>> = sketch
+        .lines
+        .iter()
+        .map(|l| (&l.id, vec![&l.from, &l.to]))
+        .chain(sketch.arcs.iter().map(|a| (&a.id, vec![&a.start, &a.end])))
+        .collect();
+    let of = |point: &Reference,
+              curve: &Reference,
+              table: &BTreeMap<&ElementId, Vec<&ElementId>>| {
+        match (point.element(), curve.element()) {
+            (Some(point), Some(curve)) => table.get(curve).is_some_and(|ps| ps.contains(&point)),
+            _ => false,
+        }
+    };
+    let refuse = |constraint: &ElementId, why: String, elements: Vec<String>| {
+        Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!("merging them would make constraint {constraint} {why}"),
+        )
+        .with_elements(std::iter::once(constraint.to_string()).chain(elements))
+        .with_parameter("points")
+        .with_suggestion("remove the constraint first, or merge other points"))
+    };
+    for constraint in &sketch.constraints {
+        let id = &constraint.id;
+        match &constraint.form {
+            Form::On { point, curve }
+            | Form::Midpoint { point, line: curve }
+            | Form::PointLineDistance {
+                point, line: curve, ..
+            } if of(point, curve, &points) => {
+                return refuse(
+                    id,
+                    format!("hold {point}, a point of {curve}, on {curve} itself"),
+                    vec![point.to_string(), curve.to_string()],
+                );
+            }
+            Form::Symmetric { a, b, about } if of(a, about, &points) || of(b, about, &points) => {
+                return refuse(
+                    id,
+                    format!("mirror an end of {about} about {about} itself"),
+                    vec![a.to_string(), b.to_string(), about.to_string()],
+                );
+            }
+            Form::TangentOn { a, at, b, .. } if of(at, b, &points) => {
+                return refuse(
+                    id,
+                    format!(
+                        "hold {a}'s end {at}, a point of {b}, tangent on {b}: where curves meet, a tangency is a tangent_at"
+                    ),
+                    vec![a.to_string(), at.to_string(), b.to_string()],
+                );
+            }
+            Form::Tangent { a, b, .. } => {
+                // An end of one held on the other: the gate takes that as a tangent_on.
+                for on in &sketch.constraints {
+                    if let Form::On { point, curve } = &on.form
+                        && ((curve == b && of(point, a, &ends))
+                            || (curve == a && of(point, b, &ends)))
+                    {
+                        return refuse(
+                            id,
+                            format!(
+                                "an edge tangency of {a} and {b} where {on_id} holds an end of one on the other: that's a tangent_on",
+                                on_id = on.id
+                            ),
+                            vec![on.id.to_string(), a.to_string(), b.to_string()],
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// `ids` as a message lists them: "a", "a and b", "a, b and c".
+fn listed(ids: &[String]) -> String {
+    match ids.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
+    }
+}
+
+/// Why an edit that can find several problems ([`remove`]) was refused: the first
+/// [`PROBLEMS_LISTED`] as errors, in the order found, and how many there are, listed or not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Refused {
+    pub errors: Vec<Error>,
+    pub total: u64,
+}
+
+impl Refused {
+    /// Counts a problem, and makes its error while fewer than [`PROBLEMS_LISTED`] are listed.
+    fn push(&mut self, error: impl FnOnce() -> Error) {
+        if self.errors.len() < PROBLEMS_LISTED {
+            self.errors.push(error());
+        }
+        self.total += 1;
+    }
 }
 
 /// Each member's kind, by ID.
@@ -458,26 +590,40 @@ fn references_mut(form: &mut Form) -> Vec<&mut Reference> {
     }
 }
 
-/// A point that curves still use, refused as removed alone.
+/// A point that curves still use, refused as removed alone: the point and the first of
+/// its curves in `elements`, up to [`PROBLEMS_LISTED`], all counted, and the message naming
+/// the first few.
 fn point_in_use(
     point: &ElementId,
     using: &[(ElementKind, &ElementId)],
     parameter: String,
 ) -> Error {
+    const SAID: usize = 3;
     let nouns: BTreeSet<&str> = using.iter().map(|(kind, _)| kind.noun()).collect();
-    let noun = if using.len() == 1 {
-        using[0].0.noun().to_owned()
-    } else if nouns.len() == 1 {
-        format!("{}s", using[0].0.noun())
-    } else {
-        "curves".to_owned()
+    let noun = match (using, nouns.len()) {
+        ([(kind, _)], _) => kind.noun().to_owned(),
+        ([(kind, _), ..], 1) => format!("{}s", kind.noun()),
+        _ => "curves".to_owned(),
     };
-    let ids: Vec<String> = using.iter().map(|(_, id)| id.to_string()).collect();
+    let said: Vec<String> = using
+        .iter()
+        .take(SAID)
+        .map(|(_, id)| id.to_string())
+        .collect();
+    let curves = match using.len() {
+        n if n <= SAID => listed(&said),
+        n => format!("{} and {} more", said.join(", "), n - SAID),
+    };
+    let elements = std::iter::once(point.to_string())
+        .chain(using.iter().map(|(_, id)| id.to_string()))
+        .take(PROBLEMS_LISTED);
+    let total = u64::try_from(using.len()).map_or(u64::MAX, |n| n.saturating_add(1));
     Error::new(
         ErrorCode::InvalidInput,
-        format!("point {point} is used by {noun} {}", ids.join(" and ")),
+        format!("point {point} is used by {noun} {curves}"),
     )
-    .with_elements(std::iter::once(point.to_string()).chain(ids))
+    .with_elements(elements)
+    .with_elements_total(total)
     .with_parameter(parameter)
     .with_cause("a point that curves use is those curves' end or centre")
     .with_suggestion("remove the curves that use it with it, or unjoin it first")

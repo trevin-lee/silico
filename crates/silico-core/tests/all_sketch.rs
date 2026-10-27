@@ -24,6 +24,8 @@ mod adversarial_load_path;
 mod adversarial_redundant_resolve;
 #[path = "adversarial_sketch.rs"]
 mod adversarial_sketch;
+#[path = "adversarial_sketch_edit.rs"]
+mod adversarial_sketch_edit;
 #[path = "adversarial_sketch_features.rs"]
 mod adversarial_sketch_features;
 #[path = "adversarial_sketch_solve.rs"]

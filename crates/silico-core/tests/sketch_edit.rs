@@ -216,7 +216,8 @@ fn a_point_a_curve_still_uses_is_refused_naming_the_curves() {
         sketch_of(&before),
         &ids(&["k0000000", "p0000001", "a0000000"]),
     )
-    .unwrap_err();
+    .unwrap_err()
+    .errors;
     assert_eq!(
         messages(&errors),
         ["point p0000001 is used by lines b0000000 and c0000000"]
@@ -233,7 +234,9 @@ fn a_point_a_curve_still_uses_is_refused_naming_the_curves() {
 #[test]
 fn a_member_the_sketch_hasnt_is_refused_and_the_origin_cant_be_named() {
     let before = joint();
-    let errors = remove(sketch_of(&before), &ids(&["b0000000", "zzzzzzzz"])).unwrap_err();
+    let errors = remove(sketch_of(&before), &ids(&["b0000000", "zzzzzzzz"]))
+        .unwrap_err()
+        .errors;
     assert_eq!(messages(&errors), ["the sketch has no member zzzzzzzz"]);
     assert_eq!(errors[0].parameter(), Some("members.1"));
     // The fixed references aren't members: no ID names them (FreeCAD 2a401ee895, 83d14b785e).
@@ -420,7 +423,7 @@ fn a_merge_that_collapses_a_curve_directly_or_through_a_chain_is_refused() {
         let error = merge(sketch_of(&before), &ids(names)).unwrap_err();
         assert_eq!(
             error.message(),
-            "merging them would give line a0000000 one point twice"
+            "merging p0000000 and p0000001 would give line a0000000 one point twice"
         );
         assert_eq!(error.elements(), ["p0000000", "p0000001", "a0000000"]);
     }
