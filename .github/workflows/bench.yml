@@ -90,7 +90,7 @@ jobs:
       - name: Render bench
         run: |
           echo "Measuring $(git log -1 --format='%h %s')"
-          pixi run cargo build --release -p silico-render --bin silico-render-bench
+          pixi run cargo build --release -p silico-render --features bench --bin silico-render-bench
           set -o pipefail
           {
             for size in 400 4096; do

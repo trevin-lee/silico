@@ -7,6 +7,7 @@
 //! [`lavapipe::reexec_with`] restarts the process with them set before anything touches
 //! `wgpu`.
 
+#[cfg(feature = "bench")]
 pub mod bench;
 pub mod lavapipe;
 pub mod render;
