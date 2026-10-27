@@ -8,7 +8,7 @@ use std::f64::consts::TAU;
 
 use silico_protocol::{LENGTH_TOLERANCE, arc_from_points, distance, format_number};
 
-use super::{Edited, kinds_of, no_member, ordered};
+use super::{Edited, kinds_of, no_member, ordered, own_curve};
 use crate::document::sketch::{
     Coordinate, Direction, ElementId, ElementKind, Form, Reference, Sketch, SketchArc,
     SketchConstraint, SketchLine, SketchPoint, TangentSide,
@@ -107,22 +107,42 @@ pub fn split(
         }
     }
     let shape = Shape::of(sketch, curve)?;
-    // Each position's projection onto the curve, checked.
+    // Each position's projection onto the curve, checked; and the point the pieces meet
+    // at there: a point held on the curve within 1e-7 mm of it (each taken once), or a new
+    // one at it. The ends are checked against that point, shared or new.
+    let on_curve = Reference::Element(curve.clone());
     let mut cuts: Vec<[f64; 2]> = Vec::new();
+    let mut shared: Vec<Option<ElementId>> = Vec::new();
     for (place, position) in at.iter().enumerate() {
         let parameter = format!("at.{place}");
         let (cut, off) = shape.project(*position);
-        if off > LENGTH_TOLERANCE {
+        // Not a number too: a far position's projection can overflow.
+        if !(off <= LENGTH_TOLERANCE && cut.iter().all(|c| c.is_finite())) {
+            let how_far = if off.is_finite() {
+                format!("{} mm from {noun} {curve}", format_number(off))
+            } else {
+                format!("too far from {noun} {curve} to measure")
+            };
             return Err(refused(
-                format!(
-                    "the split position is {} mm from {noun} {curve}, farther than 1e-7 mm",
-                    format_number(off)
-                ),
+                format!("the split position is {how_far}, farther than 1e-7 mm"),
                 &parameter,
             )
             .with_suggestion("give a position on the curve"));
         }
-        if let Some((end, problem)) = shape.end_problem(cut) {
+        let taken = sketch
+            .constraints
+            .iter()
+            .filter_map(|c| match &c.form {
+                Form::On { point, curve } if *curve == on_curve => point.element(),
+                _ => None,
+            })
+            .filter(|p| !shared.iter().flatten().any(|s| s == *p))
+            .filter_map(|p| point_at(sketch, p).map(|xy| (p, xy)))
+            .filter(|(_, xy)| distance(*xy, cut) <= LENGTH_TOLERANCE)
+            .min_by(|a, b| a.0.cmp(b.0))
+            .map(|(p, xy)| (p.clone(), xy));
+        let meet = taken.as_ref().map_or(cut, |(_, xy)| *xy);
+        if let Some((end, problem)) = shape.end_problem(meet) {
             let message = match problem {
                 EndProblem::Past => {
                     format!("the split position is past {noun} {curve}'s end {end}")
@@ -140,7 +160,8 @@ pub fn split(
                 .with_parameter(parameter)
                 .with_suggestion("give a position between the curve's ends"));
         }
-        cuts.push(cut);
+        cuts.push(meet);
+        shared.push(taken.map(|(p, _)| p));
     }
     if let [first, second] = cuts[..] {
         let apart = distance(first, second);
@@ -154,25 +175,6 @@ pub fn split(
             )
             .with_suggestion("give two positions apart on the circle"));
         }
-    }
-    // A point held on the curve at a cut is that cut's point; each taken once.
-    let on_curve = Reference::Element(curve.clone());
-    let mut shared: Vec<Option<ElementId>> = Vec::new();
-    for cut in &cuts {
-        let taken = sketch
-            .constraints
-            .iter()
-            .filter_map(|c| match &c.form {
-                Form::On { point, curve } if *curve == on_curve => point.element(),
-                _ => None,
-            })
-            .filter(|p| !shared.iter().flatten().any(|s| s == *p))
-            .filter_map(|p| point_at(sketch, p).map(|xy| (p, xy)))
-            .filter(|(_, xy)| distance(*xy, *cut) <= LENGTH_TOLERANCE)
-            .map(|(p, _)| p)
-            .min()
-            .cloned();
-        shared.push(taken);
     }
     // The new IDs, in added's order.
     let needed =
@@ -293,7 +295,7 @@ pub fn split(
     let mut removed = BTreeSet::new();
     let mut constraints = Vec::new();
     for constraint in &sketch.constraints {
-        match pieces.carry(sketch, constraint, outer.as_ref(), &shared) {
+        match pieces.carry(sketch, &edited, constraint, outer.as_ref(), &shared) {
             None => {
                 removed.insert(constraint.id.clone());
             }
@@ -322,6 +324,16 @@ pub fn split(
         added.push(join);
     }
     edited.constraints = constraints;
+    // A constraint on a shared point that the split makes a piece's own (a point_line_distance
+    // or a symmetric about the line, beside the `on`): refused, as the merge refuses one,
+    // naming the position the point was shared at.
+    let place = shared.iter().position(Option::is_some).unwrap_or(0);
+    own_curve(
+        &edited,
+        "the split",
+        &format!("at.{place}"),
+        "split elsewhere",
+    )?;
     let removed_kinds = kinds_of(sketch);
     Ok(Split {
         edited: Edited {
@@ -644,6 +656,7 @@ impl Pieces<'_> {
     fn carry(
         &self,
         sketch: &Sketch,
+        edited: &Sketch,
         constraint: &SketchConstraint,
         outer: Option<&ElementId>,
         shared: &[Option<ElementId>],
@@ -753,9 +766,12 @@ impl Pieces<'_> {
                 direction: *direction,
             },
             // Another curve's end on the split one: at the split point, a tangent_at with
-            // the start-side piece, whose own direction there is the curve's, so `direction`
-            // carries as stored (the note leaves which piece open, both meeting there; M5.0
-            // to settle); elsewhere, on the piece holding it.
+            // the start-side piece (the note leaves which piece open, both meeting there;
+            // M5.0 to settle); elsewhere, on the piece holding it. The tangent_on's
+            // `direction` is `a`'s leaving `at` against the curve's own; the tangent_at's,
+            // of a path along one into `at` and on along the other, which turns with which
+            // of them starts there (sketch.rs's translation): mapped so the solver holds
+            // the same angle, never derived from the drawing.
             Form::TangentOn {
                 a,
                 at,
@@ -765,7 +781,18 @@ impl Pieces<'_> {
                 a: a.clone(),
                 b: curve.clone(),
                 at: at.clone(),
-                direction: *direction,
+                direction: match (starts_at(edited, a, at), starts_at(edited, curve, at)) {
+                    (Some(a_starts), Some(piece_starts)) => {
+                        if (a_starts == (*direction == Direction::Same))
+                            == (a_starts != piece_starts)
+                        {
+                            Direction::Same
+                        } else {
+                            Direction::Opposite
+                        }
+                    }
+                    _ => *direction,
+                },
             },
             Form::TangentOn {
                 a,
@@ -793,6 +820,26 @@ impl Pieces<'_> {
             // line, and a round's radius on the start-side piece (decision 1).
             _ => form.clone(),
         })
+    }
+}
+
+/// Whether the line or arc `curve` starts at `point` (`Some(false)`: ends there); none if
+/// it's neither.
+fn starts_at(sketch: &Sketch, curve: &Reference, point: &Reference) -> Option<bool> {
+    let (curve, point) = (curve.element()?, point.element()?);
+    let (start, end) = match sketch.lines.iter().find(|l| &l.id == curve) {
+        Some(line) => (&line.from, &line.to),
+        None => {
+            let arc = sketch.arcs.iter().find(|a| &a.id == curve)?;
+            (&arc.start, &arc.end)
+        }
+    };
+    if start == point {
+        Some(true)
+    } else if end == point {
+        Some(false)
+    } else {
+        None
     }
 }
 

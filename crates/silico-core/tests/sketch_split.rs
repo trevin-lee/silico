@@ -910,3 +910,35 @@ fn a_circles_two_positions_within_1e_7_mm_or_three_are_refused() {
         )
     );
 }
+
+#[test]
+fn a_constraint_the_shared_point_would_make_a_pieces_own_is_refused_naming_it() {
+    // s0 at (10, 0) held on a, and measured from a by a reference distance of 0: split
+    // there, s0 is the pieces' end, and the distance would hold a piece's own point.
+    let before = a_line(
+        r#"{"id": "s0000000", "x": 10, "y": 0, "construction": false}"#,
+        "",
+        "",
+        "",
+        r#"{"id": "k0000000", "type": "on", "point": "s0000000", "curve": "a0000000"}, {"id": "k0000001", "type": "point_line_distance", "point": "s0000000", "line": "a0000000", "value": 0, "side": "left", "driving": false}"#,
+    );
+    let error = split(
+        sketch_of(&before),
+        &id("a0000000"),
+        &[[10.0, 0.0]],
+        &ids(&["b1000000", "j0000000"]),
+    )
+    .unwrap_err();
+    assert_eq!(
+        said(&error),
+        (
+            "the split would make constraint k0000001 hold s0000000, a point of a0000000, on a0000000 itself",
+            Some("at.0"),
+            vec!["k0000001", "s0000000", "a0000000"]
+        )
+    );
+    assert_eq!(
+        error.suggestion(),
+        Some("remove the constraint first, or split elsewhere")
+    );
+}
