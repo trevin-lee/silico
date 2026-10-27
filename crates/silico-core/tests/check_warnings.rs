@@ -863,6 +863,93 @@ fn every_curve_with_both_ends_in_a_cluster_is_to_be_lengthened_in_id_order() {
     );
 }
 
+#[test]
+fn a_near_full_arc_with_both_ends_in_a_cluster_is_given_the_gates_advice_for_an_arc() {
+    // Arc na000001 of radius 10 about pz000002 (0, 0), counter-clockwise from pa000002
+    // (10, 1.5e-7) round to pa000001 (10, 0): a near-full arc whose ends are 1.5e-7 apart
+    // (the gate refuses only 1e-7 or less). Line na000002 from pa000003 (10, 7.5e-8), 7.5e-8
+    // from each end, to pz000001 (20, 10). One cluster of the three; the arc has both its
+    // ends in it, so sharing one point would close it into a circle, and lengthening it
+    // would make it overlap itself (the port review, #189): the advice is the sketch gate's
+    // for an arc whose ends are one place, "draw a circle instead, or open the arc"
+    // (sketch_gate.rs), naming the arc.
+    let arc = r#"{"id": "na000001", "center": "pz000002", "start": "pa000002", "end": "pa000001", "construction": false}"#;
+    let text = document(&[sketch(
+        "s0000001",
+        &[
+            point("pa000001", 10.0, 0.0),
+            point("pa000002", 10.0, 1.5e-7),
+            point("pa000003", 10.0, 7.5e-8),
+            point("pz000001", 20.0, 10.0),
+            point("pz000002", 0.0, 0.0),
+        ],
+        &[line("na000002", "pa000003", "pz000001", false)],
+        &[arc.to_owned()],
+        "",
+    )]);
+    let checked = opened(&text).check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    assert_eq!(
+        said(&checked),
+        [(
+            WarningCode::EndsNotJoined,
+            "s0000001".to_owned(),
+            strings(&["pa000001", "pa000002", "pa000003", "na000001", "na000002"]),
+            Some(at_most("1.5e-7")),
+        )]
+    );
+    assert_eq!(
+        checked.warnings.listed()[0].suggestion(),
+        Some("for arc na000001, draw a circle instead, or open the arc")
+    );
+}
+
+#[test]
+fn a_cluster_with_a_line_and_an_arc_both_collapsing_gives_each_its_advice_lines_first() {
+    // The arc above, its ends pa000001 (10, 0) and pa000002 (10, 1.5e-7), now na000009; line
+    // na000001 from pa000003 (10, 7.5e-8) to pa000004 (10.00000015, 7.5e-8), 1.5e-7 long,
+    // both its ends in the cluster (pa000004 is 7.5e-8 from pa000005); line na000002 from
+    // pa000005 (10.000000075, 7.5e-8), 7.5e-8 from each of na000001's ends, to pz000001.
+    // Sharing one point would collapse both the arc and na000001: na000001 is to be
+    // lengthened, then the arc is given the gate's advice, and no advice to share a point,
+    // which would collapse them.
+    let arc = r#"{"id": "na000009", "center": "pz000002", "start": "pa000002", "end": "pa000001", "construction": false}"#;
+    let text = document(&[sketch(
+        "s0000001",
+        &[
+            point("pa000001", 10.0, 0.0),
+            point("pa000002", 10.0, 1.5e-7),
+            point("pa000003", 10.0, 7.5e-8),
+            point("pa000004", 10.00000015, 7.5e-8),
+            point("pa000005", 10.000000075, 7.5e-8),
+            point("pz000001", 20.0, 10.0),
+            point("pz000002", 0.0, 0.0),
+        ],
+        &[
+            line("na000001", "pa000003", "pa000004", false),
+            line("na000002", "pa000005", "pz000001", false),
+        ],
+        &[arc.to_owned()],
+        "",
+    )]);
+    let checked = opened(&text).check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    let [warning] = checked.warnings.listed() else {
+        panic!("{:?}", said(&checked));
+    };
+    assert_eq!(
+        warning.elements(),
+        strings(&[
+            "pa000001", "pa000002", "pa000003", "pa000004", "pa000005", "na000001", "na000002",
+            "na000009"
+        ])
+    );
+    assert_eq!(
+        warning.suggestion(),
+        Some("lengthen line na000001; for arc na000009, draw a circle instead, or open the arc")
+    );
+}
+
 /// FreeCAD's `CreateThreeLinesWithCommonPoint` (TestSketcherSolver.py): three lines, the
 /// first two ending and the third starting at (−55.600571, −9.387639); `shared`, at one
 /// point, pa000002; otherwise each at its own point there, pa000002, pa000004, pa000005.

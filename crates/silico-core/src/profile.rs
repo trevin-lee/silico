@@ -589,27 +589,25 @@ fn of_sketch(
             });
         } else {
             let names: Vec<String> = group.iter().map(|&p| point_name(p)).collect();
-            // A curve with both its ends here would shrink to nothing if they shared a
-            // point: it's to be lengthened, not closed up.
-            let mut both_ends: Vec<String> = Vec::new();
-            for &c in group.iter().flat_map(|&p| &at_point[p]) {
-                let curve = &curves[c];
-                let named = curve.named();
-                if curve
-                    .ends
-                    .is_some_and(|ends| ends.iter().all(|p| group.contains(p)))
-                    && !both_ends.contains(&named)
-                {
-                    both_ends.push(named);
-                }
-            }
+            // A curve with both its ends here would collapse if they shared a point: a line
+            // to nothing, an arc to a circle. By ID, as `check`'s warning names them.
+            let mut both_ends: Vec<(&ElementId, CurveKind)> = group
+                .iter()
+                .flat_map(|&p| &at_point[p])
+                .map(|&c| &curves[c])
+                .filter(|curve| {
+                    curve
+                        .ends
+                        .is_some_and(|ends| ends.iter().all(|p| group.contains(p)))
+                })
+                .map(|curve| (curve.id, curve.kind))
+                .collect();
+            both_ends.sort();
+            both_ends.dedup();
             let suggestion = if both_ends.is_empty() {
                 "share the point: end the curves at one point".to_owned()
             } else {
-                format!(
-                    "lengthen {}, or end the curves at one point",
-                    both_ends.join(" and ")
-                )
+                collapsing_advice(&both_ends, "end the curves at one point")
             };
             let elements: Vec<String> = names.iter().cloned().chain(curves_there).collect();
             found.add(elements, |elements| {
@@ -930,6 +928,39 @@ fn gather<'a>(
         curves,
         unbuilt,
     })
+}
+
+/// The advice for ends that should be one point where `collapsing`, curves by ID with their
+/// kinds, in ID order, have both their ends among them, so sharing one point would collapse
+/// each: the lines first, to be lengthened (and then, with no arc among them, the ends can
+/// share a point, `share`), then each arc, named, given the sketch gate's advice for an arc
+/// whose ends are one place, "draw a circle instead, or open the arc" (lengthening an arc
+/// whose ends are that close would make it overlap itself), clauses apart by "; ". The
+/// profile's refusal of those ends and `check`'s warning of them ([`crate::warnings`]) say
+/// it alike.
+pub(crate) fn collapsing_advice<I: std::fmt::Display>(
+    collapsing: &[(I, CurveKind)],
+    share: &str,
+) -> String {
+    let lines: Vec<String> = collapsing
+        .iter()
+        .filter(|(_, kind)| *kind != CurveKind::Arc)
+        .map(|(id, kind)| format!("{} {id}", kind.noun()))
+        .collect();
+    let arcs: Vec<String> = collapsing
+        .iter()
+        .filter(|(_, kind)| *kind == CurveKind::Arc)
+        .map(|(id, _)| format!("for arc {id}, draw a circle instead, or open the arc"))
+        .collect();
+    if arcs.is_empty() {
+        return format!("lengthen {}, or {share}", lines.join(" and "));
+    }
+    let lengthen = (!lines.is_empty()).then(|| format!("lengthen {}", lines.join(" and ")));
+    lengthen
+        .into_iter()
+        .chain(arcs)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// The points `of` names (indices into `points`), grouped: points `joined` (and so on,

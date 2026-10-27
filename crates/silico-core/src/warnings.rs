@@ -16,9 +16,10 @@
 //!   6e4c61881b), though that analysis groups only the ends near the first of a run sorted
 //!   by position, each axis apart, without chaining. Naming its points, then the curves
 //!   ending at them; its cause the largest distance between two of its points; its
-//!   suggestion to share one point, after one to lengthen each curve with both its ends in
-//!   the cluster, which sharing one would shrink to nothing, as the profile's refusal of the
-//!   same ends says. The grouping is the profile's ([`crate::profile`]'s open ends that
+//!   suggestion to share one point, or, for each curve with both its ends in the cluster,
+//!   which sharing one would collapse, to lengthen it (a line) or the sketch gate's advice
+//!   for an arc whose ends are one place (an arc), as the profile's refusal of the same ends
+//!   says (`profile::collapsing_advice`). The grouping is the profile's ([`crate::profile`]'s open ends that
 //!   should be one point), each with its own comparison.
 //!
 //!   *Scope.* Measured between the points the file holds, as M3.5's profile measures them
@@ -62,7 +63,7 @@ use silico_protocol::{LENGTH_TOLERANCE, format_number};
 use crate::document::{
     ElementId, Feature, FeatureId, Fingerprint, Operation, PROBLEMS_LISTED, Sketch,
 };
-use crate::profile::{CurveKind, one_place_groups};
+use crate::profile::{CurveKind, collapsing_advice, one_place_groups};
 use crate::recompute::{Built, FeatureOutcome, Model};
 use crate::sketch::SketchSolution;
 use crate::{Warning, WarningCode};
@@ -232,9 +233,9 @@ fn ends_not_joined(
 /// The warning of `cluster`, indices into `ends` in ID order: its points, then the curves
 /// ending at them in ID order, each once (the first [`PROBLEMS_LISTED`] of them, all
 /// counted); its cause the largest distance between two of its points. A curve (of
-/// `profile`, the sketch's) with both its ends in the cluster would shrink to nothing if they
-/// were one point, so its suggestion is first to lengthen it, as the profile's refusal of
-/// the same ends says (`crate::profile`).
+/// `profile`, the sketch's) with both its ends in the cluster would collapse if they were one
+/// point, so its suggestion is first the advice for it, as the profile's refusal of the same
+/// ends says ([`collapsing_advice`]).
 fn cluster_warning(
     id: &FeatureId,
     ends: &[End<'_>],
@@ -248,12 +249,12 @@ fn cluster_warning(
         .collect();
     curves.sort();
     curves.dedup();
-    let both_ends: Vec<String> = curves
+    let both_ends: Vec<(&str, CurveKind)> = curves
         .iter()
         .filter_map(|&c| {
             let curve = profile.get(c)?;
             let both = curve.ends.iter().all(|end| points.contains(end));
-            both.then(|| format!("{} {}", curve.kind.noun(), c.as_str()))
+            both.then_some((c.as_str(), curve.kind))
         })
         .collect();
     let mut farthest = 0.0_f64;
@@ -292,12 +293,12 @@ fn cluster_warning(
     .with_suggestion(if both_ends.is_empty() {
         SHARE_ONE_POINT.to_owned()
     } else {
-        format!("lengthen {}, or {SHARE_ONE_POINT}", both_ends.join(" and "))
+        collapsing_advice(&both_ends, SHARE_ONE_POINT)
     })
 }
 
-/// `ends_not_joined`'s suggestion, after the profile's advice to lengthen a curve with both
-/// its ends in the cluster, if there's one.
+/// `ends_not_joined`'s suggestion, after the advice to lengthen a line with both its ends in
+/// the cluster, if there's one and no arc has both ([`collapsing_advice`]).
 const SHARE_ONE_POINT: &str =
     "share one point: make the curves named end at one of the points named";
 
