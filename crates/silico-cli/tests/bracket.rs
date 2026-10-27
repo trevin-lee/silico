@@ -15,7 +15,10 @@
 //! derivation beside its assert. The 3MF is read here from its bytes and checked as M4.8
 //! promises a printable mesh (closed, manifold, consistently oriented, no triangle with two
 //! corners at one place, enclosing a positive volume), its genus that of a part with four
-//! through holes, and its volume within the tolerance's bound of the hand calculation; and
+//! through holes, its chords counted by hand from OCCT's rule (126 points a rim and 33 an
+//! arc of the fillet at 0.1 mm: 1,084 vertices and 2,180 triangles), and its volume the
+//! part's and the chord segments' (about 0.512 mm³) within the coordinates' 32-bit
+//! rounding; and
 //! FreeCAD 1.1.3 (the oracle) reads it back, makes a solid of it, and finds that solid
 //! valid, with the mesh's volume.
 //!
@@ -172,8 +175,8 @@ fn compared(structured: &str) -> String {
     )
 }
 
-/// `initialize`'s result as the server writes it, but as compared: `serverInfo.version`, the build's,
-/// and the workspace's absolute path in `instructions` put as `<version>` and
+/// `initialize`'s result as the server writes it, but as compared: `serverInfo.version`,
+/// the build's, and the workspace's absolute path in `instructions` put as `<version>` and
 /// `<workspace>`.
 fn compared_initialize(reply: &str, work: &Path) -> String {
     #[derive(Deserialize)]
@@ -187,14 +190,9 @@ fn compared_initialize(reply: &str, work: &Path) -> String {
         .get();
     let result: Value = serde_json::from_str(text).unwrap();
     let value = serde_json::to_string(&result["serverInfo"]["version"]).unwrap();
-    // The key as the server writes it, with a space after its colon or none.
-    let version = [
-        format!("\"version\": {value}"),
-        format!("\"version\":{value}"),
-    ]
-    .into_iter()
-    .find(|v| text.contains(v.as_str()))
-    .unwrap_or_else(|| panic!("no serverInfo version in {text}"));
+    // The key as the server writes it: compactly, from its structs.
+    let version = format!("\"version\":{value}");
+    assert!(text.contains(&version), "no serverInfo version in {text}");
     assert_eq!(text.matches(&version).count(), 1, "{text}");
     let masked = version.replace(&value, "\"<version>\"");
     let workspace = serde_json::to_string(work.to_str().unwrap()).unwrap();
@@ -780,7 +778,7 @@ fn the_bracket_session_replays_measures_as_by_hand_and_its_3mf_reads_back_in_the
         .collect();
     assert_eq!(fillets.len(), 1);
     let fillet = fillets[0];
-    assert_eq!(fillet["radius"], 5);
+    assert_eq!(fillet["radius"], FILLET_R);
     let edge = queries[0]["result"]["elements"]
         .as_array()
         .unwrap()
@@ -966,7 +964,7 @@ fn the_bracket_session_replays_measures_as_by_hand_and_its_3mf_reads_back_in_the
     // chords. A hole's prism is short of its cylinder by h(πr² − (n/2)r² sin(2π/n)); a
     // chord across θ cuts off (r²/2)(θ − sin θ), under r²θ³/12. So the mesh encloses
     // V + 4 · 5 · (π · 2.75² − 63 · 2.75² sin(2π/126)) + 40 · 32 · (25/2)(θ − sin θ) at
-    // θ = π/64, about V + 0.193 + 0.315 = V + 0.508 mm³, to what rounding each coordinate
+    // θ = π/64, about V + 0.197 + 0.315 = V + 0.512 mm³, to what rounding each coordinate
     // to 32 bits moves it: a vertex by at most √3 · 60 · 2⁻²⁴, the volume by at most that
     // times the surface (under 10,000 mm²), ε ≈ 0.062 mm³ either way.
     let n = rim as f64;
