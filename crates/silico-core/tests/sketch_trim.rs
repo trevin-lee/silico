@@ -1883,3 +1883,41 @@ fn an_on_past_the_lines_start_stays_on_the_first_of_two_pieces() {
     let sketch = gated(&before, &done);
     assert_eq!(form(&sketch, "k0000000"), &on("s0000000", "a0000000"));
 }
+
+#[test]
+fn an_arc_not_starting_at_0_picked_outside_its_sweep_goes_to_the_nearer_end() {
+    // Radius 5 about the origin from r0 (0, 5), at 90°, to r1 (−5, 0), at 180°, cut by a
+    // radius out to 135°. Picked at 300°: 120° past the end, 150° round to the start, so
+    // nearer the end: it loses 135° to 180° and keeps r0 to the cut.
+    let c = 5.0 * libm::cos(135f64.to_radians());
+    let s = 5.0 * libm::sin(135f64.to_radians());
+    let before = doc(
+        &[
+            point("z0000000", 0.0, 0.0),
+            point("r0000000", 0.0, 5.0),
+            point("r0000001", -5.0, 0.0),
+            point("d0000001", 2.0 * c, 2.0 * s),
+        ]
+        .join(", "),
+        &line("d0000000", "z0000000", "d0000001"),
+        "",
+        &arc("a0000000", "z0000000", "r0000000", "r0000001"),
+        "",
+    );
+    let p = [
+        5.0 * libm::cos(300f64.to_radians()),
+        5.0 * libm::sin(300f64.to_radians()),
+    ];
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        p,
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        arc_points(&sketch, "a0000000"),
+        ["z0000000", "r0000000", "n0000000"]
+    );
+}
