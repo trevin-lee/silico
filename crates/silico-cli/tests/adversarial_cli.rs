@@ -296,8 +296,12 @@ fn a_fifo_with_no_writer_is_refused_not_waited_on() {
         let child = command(&scratch, &worker(), &[os(c), os("part.silico")])
             .spawn()
             .unwrap();
-        let out = finish(child, Duration::from_secs(10));
-        assert!(out.status.is_some(), "silico {c} on a FIFO hung for 10s");
+        let out = finish(child, run::DEADLINE);
+        assert!(
+            out.status.is_some(),
+            "silico {c} on a FIFO hung for {:?}",
+            run::DEADLINE
+        );
         assert_eq!(out.code(), Some(2), "{c}: {}", out.stderr);
     }
 }
@@ -340,7 +344,7 @@ fn reading_stops_at_the_most_a_document_may_be() {
         }
         written
     });
-    let out = finish(child, Duration::from_secs(60));
+    let out = finish(child, run::DEADLINE);
     drop(held);
     let written = writer.join().unwrap();
     assert!(out.status.is_some(), "hung");
