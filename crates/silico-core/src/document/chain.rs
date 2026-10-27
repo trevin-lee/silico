@@ -561,56 +561,106 @@ fn stand_in(
 /// maker its base is no longer built from, though its base in `before` was; with that
 /// maker. Pending Trevin: it extends the design's "names its elements" to what a feature's
 /// base is built from, so an edit that would break a reference the text can see is refused
-/// rather than left to fail at the rebuild.
+/// rather than left to fail at the rebuild. A maker outside the base's lineage before the
+/// edit is the rebuild's to report, and never hides one the edit takes out.
 fn lineage_broken(before: &Document, edited: &Document) -> Option<(FeatureId, FeatureId)> {
-    let (old, new) = (Index::of(before), Index::of(edited));
+    let (old, new) = (Lineage::of(before), Lineage::of(edited));
     edited.features.iter().find_map(|feature| {
         let base = base_of(&feature.operation)?;
-        let makers: Vec<&FeatureId> = makers_named(&new, feature)
+        let was = old
+            .index
+            .feature(&feature.id)
+            .and_then(|f| base_of(&f.operation));
+        makers_named(&new.index, feature)
             .into_iter()
-            .filter(|m| **m != feature.id)
-            .collect();
-        if makers.is_empty() {
-            return None;
-        }
-        let now = built_from(edited, &new, base, &makers);
-        let missing = makers.iter().find(|m| !now.contains(**m))?;
-        let then = before
-            .features
-            .get(old.place(&feature.id)?)
-            .and_then(|f| base_of(&f.operation))
-            .map(|b| built_from(before, &old, b, &makers))?;
-        then.contains(*missing)
-            .then(|| (feature.id.clone(), (*missing).clone()))
+            .filter(|maker| **maker != feature.id)
+            .find(|maker| {
+                !new.built_from(base, maker) && was.is_some_and(|was| old.built_from(was, maker))
+            })
+            .map(|maker| (feature.id.clone(), maker.clone()))
     })
 }
 
-/// Which of `wanted` the feature `start` is built from: itself, its inputs, and the sketches
-/// they sweep, up every link, stopping once every one is found.
-fn built_from(
-    document: &Document,
-    index: &Index,
-    start: &FeatureId,
-    wanted: &[&FeatureId],
-) -> BTreeSet<FeatureId> {
-    let mut found = BTreeSet::new();
-    let mut seen = BTreeSet::new();
-    let mut stack = vec![start.clone()];
-    while let Some(id) = stack.pop() {
-        if !seen.insert(id.clone()) {
-            continue;
-        }
-        if wanted.contains(&&id) {
-            found.insert(id.clone());
-            if found.len() == wanted.len() {
-                break;
+/// What each feature of a document is built from, read once: a walk of the document's
+/// solids down from each one nothing consumes, through the features each consumes, gives
+/// each a span, so a solid is built from another exactly when the other's place in the walk
+/// falls in its span, and from a sketch when one of the sketch's users' does. Each question
+/// then costs a search, not a walk up the chain.
+struct Lineage<'a> {
+    index: Index<'a>,
+    /// By place in the timeline: the feature's place in the walk, and the last place of
+    /// anything it's built from; none for one the walk never reached (only in a document
+    /// the gate would refuse).
+    spans: Vec<Option<(usize, usize)>>,
+    /// Each sketch's users' places in the walk.
+    users: BTreeMap<&'a FeatureId, BTreeSet<usize>>,
+}
+
+impl<'a> Lineage<'a> {
+    fn of(document: &'a Document) -> Self {
+        let index = Index::of(document);
+        let features = &document.features;
+        let mut spans: Vec<Option<(usize, usize)>> = vec![None; features.len()];
+        let mut walked = 0;
+        for (root, feature) in features.iter().enumerate() {
+            if index.consumer(&feature.id).is_some() {
+                continue;
+            }
+            // Each feature entered, then left once everything it's built from was walked.
+            let mut stack = vec![(root, false)];
+            while let Some((at, leaving)) = stack.pop() {
+                let Some(span) = spans.get_mut(at) else {
+                    continue;
+                };
+                match (leaving, *span) {
+                    (true, Some((start, _))) => *span = Some((start, walked.max(start + 1) - 1)),
+                    (false, None) => {
+                        *span = Some((walked, walked));
+                        walked += 1;
+                        stack.push((at, true));
+                        let inputs = features.get(at).map(|f| f.operation.inputs());
+                        for (_, input) in inputs.into_iter().flatten() {
+                            if let Some(place) = index.place(input) {
+                                stack.push((place, false));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
-        if let Some(feature) = index.place(&id).and_then(|p| document.features.get(p)) {
-            stack.extend(feature.operation.uses().cloned());
+        let mut users: BTreeMap<&'a FeatureId, BTreeSet<usize>> = BTreeMap::new();
+        for (at, feature) in features.iter().enumerate() {
+            if let Some(sketch) = feature.operation.sketch()
+                && let Some(Some((walk, _))) = spans.get(at)
+            {
+                users.entry(sketch).or_default().insert(*walk);
+            }
+        }
+        Lineage {
+            index,
+            spans,
+            users,
         }
     }
-    found
+
+    fn span(&self, id: &FeatureId) -> Option<(usize, usize)> {
+        self.spans.get(self.index.place(id)?).copied().flatten()
+    }
+
+    /// Whether `base` is built from `maker`: is it, or one of the solids it's built from, or
+    /// has a sketch one of those sweeps.
+    fn built_from(&self, base: &FeatureId, maker: &FeatureId) -> bool {
+        let Some((start, end)) = self.span(base) else {
+            return false;
+        };
+        self.span(maker)
+            .is_some_and(|(walk, _)| start <= walk && walk <= end)
+            || self
+                .users
+                .get(maker)
+                .is_some_and(|users| users.range(start..=end).next().is_some())
+    }
 }
 
 /// Why a feature can't do without another: it's its sketch, or it stores names of its
@@ -682,11 +732,12 @@ fn no_feature(id: &FeatureId, parameter: &str) -> Error {
 fn makers_named<'a>(index: &Index<'a>, feature: &Feature) -> Vec<&'a FeatureId> {
     let maker = |id: &FeatureId| index.feature(id).map(|f| Maker::of(&f.operation));
     let mut found: Vec<&'a FeatureId> = Vec::new();
+    let mut seen: BTreeSet<&'a FeatureId> = BTreeSet::new();
     for edge in feature.operation.edges() {
         if let Ok(name) = Name::parse(edge.as_str(), &maker) {
             for id in name.features() {
                 if let Some(held) = index.feature(id)
-                    && !found.contains(&&held.id)
+                    && seen.insert(&held.id)
                 {
                     found.push(&held.id);
                 }

@@ -1,8 +1,8 @@
 //! A document's timeline edited by its chains (`document::chain`: the M5.0 design's
 //! section 7, A9, and section 12's items 1, 2, and 5): insert, move, and remove on the M4.9
 //! bracket and on small documents of boxes, each expected chain written out by hand, each
-//! result through the gate, and the edits rebuilt on the fake kernel beside a document
-//! written in that order by hand, their fingerprints alike.
+//! result through the gate, written by hand as the edit should give it, and rebuilt on the
+//! fake kernel, every feature built and every stored name found.
 
 use super::bracket::*;
 use super::model::published;
@@ -11,7 +11,7 @@ use silico_core::Error;
 use silico_core::document::chain::{self, Inserted, Moved, Removed, Rewired};
 use silico_core::document::{Checked, Document, Feature, FeatureId, read, validate};
 use silico_core::fake::{FakeKernel, FakeSketches};
-use silico_core::recompute::Recompute;
+use silico_core::recompute::{FeatureOutcome, Recompute};
 
 fn id(text: &str) -> FeatureId {
     FeatureId::new(text).unwrap()
@@ -80,8 +80,8 @@ fn rewired(feature: &str, field: &'static str, from: Option<&str>, to: Option<&s
     }
 }
 
-/// `edited` passes the gate and is `expected`, written by hand, feature for feature; both
-/// rebuilt on the fake kernel, every feature's fingerprint alike.
+/// `edited` passes the gate, is `expected`, written by hand, feature for feature, and
+/// builds on the fake kernel: every feature built, every stored name found.
 fn is_written(edited: &Document, expected: &Document) {
     validate(edited).unwrap_or_else(|e| panic!("{e:?}"));
     assert!(
@@ -91,13 +91,12 @@ fn is_written(edited: &Document, expected: &Document) {
         ids(expected)
     );
     let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new());
-    let built = published(&engine, Checked::new(edited.clone()).unwrap());
-    let by_hand = published(&engine, Checked::new(expected.clone()).unwrap());
-    for f in &expected.features {
-        assert_eq!(
-            built.fingerprint(&f.id),
-            by_hand.fingerprint(&f.id),
-            "{}",
+    let model = published(&engine, Checked::new(edited.clone()).unwrap());
+    for f in &edited.features {
+        let outcome = model.outcome(&f.id).unwrap();
+        assert!(
+            !matches!(outcome, FeatureOutcome::Blocked { .. }) && outcome.errors().is_empty(),
+            "{}: {outcome:?}",
             f.id
         );
     }
@@ -289,6 +288,68 @@ fn removing_a_pads_root_lets_the_pad_after_it_begin_the_body() {
     );
     let alone = r#"{"id": "p0000002", "type": "pad", "v": 1, "name": "More", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#;
     is_written(&removed.document, &document(&[S0000001, alone]));
+}
+
+#[test]
+fn removing_a_revolves_root_lets_the_revolve_begin_the_body() {
+    // A revolve's base is optional, as a pad's is.
+    let revolve = r#"{"id": "v0000001", "type": "revolve", "v": 1, "name": "Turn", "base": "p0000001", "sketch": "s0000001", "axis": "x_axis", "extent": {"type": "one_side", "angle": 90, "reversed": false}}"#;
+    let removed = remove(&document(&[S0000001, P0000001, revolve]), &id("p0000001")).unwrap();
+    assert_eq!(
+        removed.rewired,
+        [rewired("v0000001", "base", Some("p0000001"), None)]
+    );
+    let alone = r#"{"id": "v0000001", "type": "revolve", "v": 1, "name": "Turn", "sketch": "s0000001", "axis": "x_axis", "extent": {"type": "one_side", "angle": 90, "reversed": false}}"#;
+    is_written(&removed.document, &document(&[S0000001, alone]));
+}
+
+// FreeCAD's TestFillet.py, testDeletingPreviousFeatureRelinksUniqueMatchingBaseEdge (fix
+// 26c895c30d): the feature under a fillet removed, the fillet's edge, which only passed
+// through it, is found on the new base.
+#[test]
+fn removing_the_fillets_base_builds_it_on_the_base_before_its_name_found_there() {
+    let removed = remove(&bracket(), &id("h0000002")).unwrap();
+    assert_eq!(
+        removed.rewired,
+        [rewired(
+            "f0000001",
+            "base",
+            Some("h0000002"),
+            Some("h0000001")
+        )]
+    );
+    is_written(
+        &removed.document,
+        &document(&[
+            S0000001,
+            P0000001,
+            S0000002,
+            H0000001,
+            S0000003,
+            &on(F0000001, "h0000001"),
+        ]),
+    );
+}
+
+// FreeCAD's testDeletingPreviousFeatureDoesNotRelinkUnsafeBaseEdge: where the fillet names
+// an edge the removed feature made (a hole's rim), FreeCAD leaves the link broken; Silico
+// refuses the removal, naming both.
+#[test]
+fn removing_the_feature_that_made_a_fillets_edge_is_refused_naming_both() {
+    let rim = r#"{"id": "f0000002", "type": "fillet", "v": 1, "name": "Rim", "base": "h0000002", "edges": ["h0000001.pocket.Edge(M s0000002.sketch.Edge.cb000001)"], "radius": 0.5}"#;
+    let document = document(&[
+        S0000001, P0000001, S0000002, H0000001, S0000003, H0000002, rim,
+    ]);
+    let error = remove(&document, &id("h0000001")).unwrap_err();
+    assert_eq!(error.feature(), Some("h0000001"));
+    assert_eq!(
+        error.message(),
+        "f0000002 names h0000001's elements, so h0000001 can't be removed"
+    );
+    assert_eq!(
+        error.suggestion(),
+        Some("remove f0000002 first, or set its edges to names of other features' elements")
+    );
 }
 
 const BLOCK: &str = r#"{"id": "b0000001", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#;
@@ -530,12 +591,11 @@ mod hostile {
     use super::*;
 
     use std::collections::{BTreeMap, BTreeSet};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use proptest::prelude::*;
     use silico_core::ErrorCode;
     use silico_core::document::Operation;
-    use silico_core::recompute::FeatureOutcome;
 
     fn config(cases: u32) -> ProptestConfig {
         ProptestConfig {
@@ -623,6 +683,69 @@ mod hostile {
         assert_eq!(error.suggestion(), Some("remove r0000001 first"));
     }
 
+    /// A fuse of the block and the tool under a fillet naming `edges`, beside a box `z0000001`
+    /// nothing builds on.
+    fn fused_under(edges: &str) -> Document {
+        let other = r#"{"id": "z0000001", "type": "box", "v": 1, "name": "Other", "position": [20, 0, 0], "length": 1, "width": 1, "height": 1}"#;
+        let fillet = format!(
+            r#"{{"id": "r0000001", "type": "fillet", "v": 1, "name": "Round", "base": "j0000001", "edges": {edges}, "radius": 0.5}}"#
+        );
+        document(&[BLOCK, TOOL, other, FUSE, &fillet])
+    }
+
+    // A review finding: the rule looked only at the first maker missing after the edit, and
+    // one missing before it too (z0000001, never in the fillet's lineage) hid t0000001,
+    // which the edit takes out.
+    #[test]
+    fn a_maker_never_in_the_lineage_hides_none_the_edit_takes_out() {
+        for edges in [
+            r#"["t0000001.box.Edge1", "z0000001.box.Edge1"]"#,
+            r#"["z0000001.box.Edge1", "t0000001.box.Edge1"]"#,
+        ] {
+            let fused = fused_under(edges);
+            for error in [
+                move_feature(&fused, &id("j0000001"), None).unwrap_err(),
+                remove(&fused, &id("j0000001")).unwrap_err(),
+            ] {
+                assert_eq!(error.feature(), Some("j0000001"), "{edges}");
+                assert!(
+                    error
+                        .message()
+                        .starts_with("r0000001 names elements of t0000001, which its base"),
+                    "{edges}: {error}"
+                );
+            }
+        }
+        // Only z0000001's edge: the edit takes nothing out of the lineage the fillet had.
+        let fused = fused_under(r#"["z0000001.box.Edge1"]"#);
+        let removed = remove(&fused, &id("j0000001")).unwrap();
+        assert_eq!(
+            removed.rewired,
+            [rewired(
+                "r0000001",
+                "base",
+                Some("j0000001"),
+                Some("b0000001")
+            )]
+        );
+    }
+
+    // A review finding: no test had a maker only a nested source names decide a refusal.
+    #[test]
+    fn a_maker_named_only_inside_a_source_keeps_its_removal_refused() {
+        let rounded_tool = r#"{"id": "t0000002", "type": "fillet", "v": 1, "name": "Rounded tool", "base": "t0000001", "edges": ["t0000001.box.Edge1"], "radius": 0.5}"#;
+        let cut = r#"{"id": "c0000001", "type": "cut", "v": 1, "name": "Cut", "base": "b0000001", "tool": "t0000002"}"#;
+        let fillet = r#"{"id": "r0000001", "type": "fillet", "v": 1, "name": "Round", "base": "c0000001", "edges": ["c0000001.cut.Edge(G b0000001.box.Face6, G t0000002.fillet.Face(G t0000001.box.Edge1))"], "radius": 0.5}"#;
+        let document = document(&[BLOCK, TOOL, rounded_tool, cut, fillet]);
+        validate(&document).unwrap();
+        let error = remove(&document, &id("t0000002")).unwrap_err();
+        assert_eq!(error.feature(), Some("t0000002"));
+        assert_eq!(
+            error.message(),
+            "r0000001 names t0000002's elements, so t0000002 can't be removed"
+        );
+    }
+
     #[test]
     fn the_fillet_removed_first_the_fuse_can_be_removed_and_leaves_both_solids() {
         let fused = document(&[BLOCK, TOOL, FUSE, ROUND_TOOL_EDGE]);
@@ -684,11 +807,19 @@ mod hostile {
         document(&features.iter().map(String::as_str).collect::<Vec<_>>())
     }
 
-    /// How long `f` takes, and its result.
-    fn timed<T>(f: impl FnOnce() -> T) -> (Duration, T) {
-        let start = Instant::now();
-        let value = f();
-        (start.elapsed(), value)
+    /// `edit` of `document`, taking at most twenty times the CPU time the gate takes on it
+    /// and half a second more: CPU time, which a loaded machine doesn't change (`within`).
+    fn promptly<T: Send + 'static>(
+        document: &Document,
+        edit: impl FnOnce(&Checked) -> T + Send + 'static,
+    ) -> T {
+        let start = cpu_time::ThreadTime::now();
+        validate(document).unwrap();
+        let gate = start.elapsed();
+        let checked = gated(document);
+        crate::within::within(gate * 20 + Duration::from_millis(500), move || {
+            edit(&checked)
+        })
     }
 
     // Was (a break-it finding): every edit found each feature of the result in the document
@@ -697,22 +828,14 @@ mod hostile {
     // document at the 16 MB limit (130,000 boxes) took over a minute to lose one. The edits
     // index the document once now, as the gate does.
     #[test]
-    fn removing_or_moving_one_of_40000_boxes_takes_about_as_long_as_the_gate() {
+    fn removing_or_moving_one_of_40000_boxes_promptly() {
         let document = boxes(40_000);
-        let (gate, checked) = timed(|| validate(&document));
-        checked.unwrap();
-        let bound = gate * 20 + Duration::from_millis(500);
-        let last = id("b0009c3f");
-        let document = gated(&document);
-        let (removing, removed) = timed(|| chain::remove(&document, &last));
+        let removed = promptly(&document, |d| chain::remove(d, &id("b0009c3f")));
         assert_eq!(removed.unwrap().index, 39_999);
-        let (moving, moved) =
-            timed(|| chain::move_feature(&document, &last, Some(&id("b0000000"))));
+        let moved = promptly(&document, |d| {
+            chain::move_feature(d, &id("b0009c3f"), Some(&id("b0000000")))
+        });
         assert_eq!(moved.unwrap().to, 0);
-        assert!(
-            removing <= bound && moving <= bound,
-            "remove {removing:?}, move {moving:?}, the gate {gate:?}"
-        );
     }
 
     /// A box, then `n` pockets each on the one before (`h0000001` on the box), of `s0000002`.
@@ -736,14 +859,11 @@ mod hostile {
     // another scan, so a move along a long chain was quadratic too (the walk, then
     // `rewired`).
     #[test]
-    fn moving_the_first_of_10000_pockets_to_the_chains_end_takes_about_as_long_as_the_gate() {
-        let document = pocket_chain(10_000);
-        let (gate, checked) = timed(|| validate(&document));
-        checked.unwrap();
-        let bound = gate * 20 + Duration::from_millis(500);
-        let document = gated(&document);
-        let (moving, moved) = timed(|| chain::move_feature(&document, &id("h0000001"), None));
-        let moved = moved.unwrap();
+    fn moving_the_first_of_10000_pockets_to_the_chains_end_promptly() {
+        let moved = promptly(&pocket_chain(10_000), |d| {
+            chain::move_feature(d, &id("h0000001"), None)
+        })
+        .unwrap();
         // The chain b, h2, ..., h10000, h1: two bases rewired.
         assert_eq!(
             moved.rewired,
@@ -753,7 +873,41 @@ mod hostile {
             ]
         );
         validate(&moved.document).unwrap();
-        assert!(moving <= bound, "move {moving:?}, the gate {gate:?}");
+    }
+
+    /// A box, then `n` fillets each on the one before (`r0000001` on the box), each naming
+    /// the box's edge.
+    fn fillet_chain(n: usize) -> Document {
+        let mut features = vec![BLOCK.to_owned()];
+        for i in 1..=n {
+            let base = if i == 1 {
+                "b0000001".to_owned()
+            } else {
+                format!("r{:07x}", i - 1)
+            };
+            features.push(format!(
+                r#"{{"id": "r{i:07x}", "type": "fillet", "v": 1, "name": "R", "base": "{base}", "edges": ["b0000001.box.Edge1"], "radius": 0.5}}"#
+            ));
+        }
+        document(&features.iter().map(String::as_str).collect::<Vec<_>>())
+    }
+
+    // A review finding: the lineage rule walked each fillet's chain up to the box, so an
+    // edit of a long chain of them was quadratic (8,000 took 31 s against the gate's 15 ms).
+    #[test]
+    fn removing_or_moving_one_of_10000_fillets_naming_the_box_promptly() {
+        let fillets = fillet_chain(10_000);
+        let removed = promptly(&fillets, |d| chain::remove(d, &id("r0002710"))).unwrap();
+        assert_eq!(removed.index, 10_000);
+        assert_eq!(removed.rewired, []);
+        let moved = promptly(&fillets, |d| chain::move_feature(d, &id("r0000001"), None)).unwrap();
+        assert_eq!(
+            moved.rewired,
+            [
+                rewired("r0000002", "base", Some("r0000001"), Some("b0000001")),
+                rewired("r0000001", "base", Some("b0000001"), Some("r0002710")),
+            ]
+        );
     }
 
     // Was (a break-it finding): the refusal listed every earlier solid nothing consumes as a
@@ -761,7 +915,7 @@ mod hostile {
     // and each candidate was found by a scan of the timeline for its consumer, so the
     // refusal was quadratic.
     #[test]
-    fn a_roots_removal_refused_among_20000_unconsumed_boxes_lists_the_first_five_candidates() {
+    fn a_roots_removal_refused_among_20000_unconsumed_boxes_lists_the_first_five_promptly() {
         let mut features: Vec<String> = (0..20_000)
             .map(|i| {
                 format!(
@@ -773,19 +927,11 @@ mod hostile {
         features.push(S0000002.to_owned());
         features.push(H0000001.replace("p0000001", "b0000001"));
         let document = document(&features.iter().map(String::as_str).collect::<Vec<_>>());
-        let (gate, checked) = timed(|| validate(&document));
-        checked.unwrap();
-        let document = gated(&document);
-        let (refusing, error) = timed(|| chain::remove(&document, &id("b0000001")));
-        let error = error.unwrap_err();
+        let error = promptly(&document, |d| chain::remove(d, &id("b0000001"))).unwrap_err();
         assert_eq!(error.feature(), Some("b0000001"));
         assert_eq!(
             error.candidates(),
             ["a0000000", "a0000001", "a0000002", "a0000003", "a0000004"]
-        );
-        assert!(
-            refusing <= gate * 20 + Duration::from_millis(500),
-            "refused in {refusing:?}, the gate {gate:?}"
         );
     }
 
@@ -812,14 +958,12 @@ mod hostile {
         // result for the ID twice; the original is untouched.
         let pocket = r#"{"id": "h0000002", "type": "pocket", "v": 1, "name": "Again", "base": "h0000001", "sketch": "s0000003", "extent": {"type": "through_all", "reversed": true}}"#;
         let original = bracket();
-        let inserted = insert(&original, feature(pocket), Some(&id("h0000002")));
-        if let Ok(inserted) = inserted {
-            let invalid = validate(&inserted.document).unwrap_err();
-            assert!(
-                invalid.errors().iter().any(|e| e.parameter() == Some("id")),
-                "{invalid:?}"
-            );
-        }
+        let inserted = insert(&original, feature(pocket), Some(&id("h0000002"))).unwrap();
+        let invalid = validate(&inserted.document).unwrap_err();
+        assert!(
+            invalid.errors().iter().any(|e| e.parameter() == Some("id")),
+            "{invalid:?}"
+        );
         assert!(original.canonically_eq(&bracket()));
     }
 
@@ -857,6 +1001,14 @@ mod hostile {
             (
                 "ffffffff.fillet.Face(L aaaaaaaa.box.Edge1, aaaaaaaa.box.Edge2)",
                 &["ffffffff", "aaaaaaaa"],
+            ),
+            (
+                "ffffffff.fillet.Vertex(U2/3 aaaaaaaa.box.Face6, bbbbbbbb.box.Edge1)",
+                &["ffffffff", "aaaaaaaa", "bbbbbbbb"],
+            ),
+            (
+                "ffffffff.fillet.Face(L aaaaaaaa.box.Edge1, bbbbbbbb.box.Edge2)",
+                &["ffffffff", "aaaaaaaa", "bbbbbbbb"],
             ),
             (
                 "ffffffff.fillet.Face(G cccccccc.cut.Edge(G aaaaaaaa.box.Face6, G2/3 bbbbbbbb.box.Face1))",
@@ -1103,8 +1255,9 @@ mod hostile {
         relinked(original, &order, None)
     }
 
-    /// A document the gate takes, made from `choices`: boxes, pads (alone or on a body),
-    /// pockets, fillets of a box's edge, booleans of two bodies, and a second sketch.
+    /// A document the gate takes, made from `choices`: boxes, pads and revolves (alone or on
+    /// a body), pockets, grooves, fillets and chamfers of one to three boxes' edges, booleans
+    /// of two bodies, and a second sketch.
     fn generated(choices: &[(u8, u8, u8)]) -> Document {
         let mut texts = vec![S0000001.to_owned()];
         let mut sketches = vec!["s0000001"];
@@ -1113,16 +1266,40 @@ mod hostile {
         for (n, &(kind, a, b)) in choices.iter().enumerate() {
             let pick = |list: &Vec<String>, k: u8| list[k as usize % list.len()].clone();
             let sketch = sketches[b as usize % sketches.len()];
-            let mut kind = kind % 8;
-            if (matches!(kind, 2..=4) && tips.is_empty())
-                || (kind == 4 && boxes.is_empty())
+            let mut kind = kind % 11;
+            if (matches!(kind, 2..=4 | 9 | 10) && tips.is_empty())
+                || (matches!(kind, 4 | 10) && boxes.is_empty())
                 || (kind == 5 && tips.len() < 2)
                 || (kind == 6 && sketches.len() == 2)
             {
                 kind = 0;
             }
+            if kind == 8 && tips.is_empty() {
+                kind = 1;
+            }
+            // One to three different boxes' edges, for a fillet or chamfer to name.
+            let edges = || {
+                let mut named: Vec<String> = Vec::new();
+                for k in 0..=(b / 86) as usize {
+                    let one = format!(
+                        r#""{}.box.Edge1""#,
+                        boxes[(b as usize + 5 * k) % boxes.len()]
+                    );
+                    if !named.contains(&one) {
+                        named.push(one);
+                    }
+                }
+                format!("[{}]", named.join(", "))
+            };
             let id = |prefix: char| format!("{prefix}{n:07}");
             let text = match kind {
+                8 if a % 2 == 0 => {
+                    let id = id('v');
+                    tips.push(id.clone());
+                    format!(
+                        r#"{{"id": "{id}", "type": "revolve", "v": 1, "name": "V", "sketch": "{sketch}", "axis": "x_axis", "extent": {{"type": "one_side", "angle": 90, "reversed": false}}}}"#
+                    )
+                }
                 0 | 7 => {
                     let id = id('b');
                     tips.push(id.clone());
@@ -1138,7 +1315,7 @@ mod hostile {
                         r#"{{"id": "{id}", "type": "pad", "v": 1, "name": "P", "sketch": "{sketch}", "extent": {{"type": "one_side", "length": 5, "reversed": false}}}}"#
                     )
                 }
-                2..=4 => {
+                2..=4 | 8..=10 => {
                     let base = pick(&tips, a);
                     let (prefix, rest) = match kind {
                         2 => (
@@ -1153,15 +1330,32 @@ mod hostile {
                                 r#""type": "pocket", "v": 1, "name": "H", "base": "{base}", "sketch": "{sketch}", "extent": {{"type": "through_all", "reversed": true}}"#
                             ),
                         ),
-                        _ => {
-                            let named = pick(&boxes, b);
-                            (
-                                'r',
-                                format!(
-                                    r#""type": "fillet", "v": 1, "name": "R", "base": "{base}", "edges": ["{named}.box.Edge1"], "radius": 0.5"#
-                                ),
-                            )
-                        }
+                        4 => (
+                            'r',
+                            format!(
+                                r#""type": "fillet", "v": 1, "name": "R", "base": "{base}", "edges": {}, "radius": 0.5"#,
+                                edges()
+                            ),
+                        ),
+                        8 => (
+                            'v',
+                            format!(
+                                r#""type": "revolve", "v": 1, "name": "V", "base": "{base}", "sketch": "{sketch}", "axis": "x_axis", "extent": {{"type": "one_side", "angle": 90, "reversed": false}}"#
+                            ),
+                        ),
+                        9 => (
+                            'g',
+                            format!(
+                                r#""type": "groove", "v": 1, "name": "G", "base": "{base}", "sketch": "{sketch}", "axis": "x_axis", "extent": {{"type": "one_side", "angle": 90, "reversed": false}}"#
+                            ),
+                        ),
+                        _ => (
+                            'c',
+                            format!(
+                                r#""type": "chamfer", "v": 1, "name": "C", "base": "{base}", "edges": {}, "size": {{"distance": 1}}"#,
+                                edges()
+                            ),
+                        ),
                     };
                     let id = id(prefix);
                     tips.retain(|t| *t != base);
