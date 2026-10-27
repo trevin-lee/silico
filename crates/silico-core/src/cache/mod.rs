@@ -54,7 +54,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use hmac::{Hmac, Mac};
-use rustix::fs::{AtFlags, CWD, Mode};
+use rustix::fs::{CWD, Mode};
 use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -730,7 +730,7 @@ impl Cache {
                 Unopened::Refused
             }
             Ok(meta) if !meta.is_dir() => Unopened::NotADirectory(error.into()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Unopened::Missing,
+            Err(Errno::NOENT) => Unopened::Missing,
             _ => Unopened::Failed(error.into()),
         }
     }
@@ -908,7 +908,7 @@ impl PartlyCleared {
         match at::remove(place.dir, place.name) {
             Ok(true) => self.removed += 1,
             Ok(false) => {}
-            Err(e) => self.failed(place.path, ClearStep::Remove, e),
+            Err(e) => self.failed(place.path, ClearStep::Remove, e.into()),
         }
     }
 }
@@ -973,10 +973,10 @@ fn walk(root: &OwnedFd, dir: &Path, mut visit: impl FnMut(Walked<'_>)) {
         let path = dir.join(OsStr::from_bytes(name.to_bytes()));
         let meta = match at::stat(root, name.as_c_str()) {
             Ok(meta) => meta,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(Errno::NOENT) => continue,
             Err(_) if partial => continue,
             Err(e) => {
-                visit(Walked::Unread(&path, e));
+                visit(Walked::Unread(&path, e.into()));
                 continue;
             }
         };
@@ -1022,9 +1022,9 @@ fn walk(root: &OwnedFd, dir: &Path, mut visit: impl FnMut(Walked<'_>)) {
                 Ok(meta) if meta.is_file() => visit(Walked::Entry(place, &meta)),
                 // A link, a directory, a pipe at an entry's name: not one the cache made.
                 Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(Errno::NOENT) => {}
                 Err(_) if partial => {}
-                Err(e) => visit(Walked::Unknown(&entry, e)),
+                Err(e) => visit(Walked::Unknown(&entry, e.into())),
             }
         }
     }
@@ -1036,7 +1036,7 @@ fn walk(root: &OwnedFd, dir: &Path, mut visit: impl FnMut(Walked<'_>)) {
 fn names_in(handle: &OwnedFd, dir: &Path, visit: &mut impl FnMut(Walked<'_>)) -> Vec<CString> {
     let (names, unread) = at::names(handle);
     if let Some(e) = unread {
-        visit(Walked::Unread(dir, e));
+        visit(Walked::Unread(dir, e.into()));
     }
     names
 }
@@ -1175,14 +1175,14 @@ impl Scan {
         match at::remove(dir, name) {
             Ok(_) => true,
             Err(e) => {
-                self.warn(path, &e);
+                self.warn(path, e);
                 false
             }
         }
     }
 
     /// Warns that the file at `path` couldn't be removed, for `e`, unless it has this scan.
-    fn warn(&mut self, path: &Path, e: &std::io::Error) {
+    fn warn(&mut self, path: &Path, e: Errno) {
         if !std::mem::replace(&mut self.warned, true) {
             tracing::warn!(path = %path.display(), "couldn't remove a cache file: {e}");
         }
@@ -1205,7 +1205,7 @@ impl Scan {
                 Ok(dir) => Some((listed.subdirectory.clone(), dir)),
                 Err(Errno::NOENT) => return true,
                 Err(e) => {
-                    self.warn(&listed.path, &e.into());
+                    self.warn(&listed.path, e);
                     return false;
                 }
             };
@@ -1308,22 +1308,16 @@ fn read_or_make_secret(file: &Path) -> std::io::Result<[u8; 32]> {
             .parent()
             .ok_or_else(|| std::io::Error::other("it has no directory"))?;
         std::fs::create_dir_all(dir)?;
-        let dir = rustix::fs::open(
-            dir,
-            rustix::fs::OFlags::RDONLY
-                | rustix::fs::OFlags::DIRECTORY
-                | rustix::fs::OFlags::CLOEXEC,
-            Mode::empty(),
-        )?;
+        // Through any link on the way, the user's own: their cache directory, which they may
+        // have made one (to another disk, say), where no one else may write.
+        let dir = at::open_dir_through_links(dir)?;
         let (partial, mut out) = at::new_file(&dir, Mode::from_raw_mode(0o600))?;
         // Durable before it's linked: a secret lost after entries were sealed with it
         // would leave a damaged file in its place.
         let written = out.write_all(&secret).and_then(|()| out.sync_all());
         // Linked, not renamed, to its name: two sessions making it at once agree on one.
-        let linked = written.and_then(|()| {
-            rustix::fs::linkat(&dir, partial.as_str(), CWD, file, AtFlags::empty())
-                .map_err(std::io::Error::from)
-        });
+        let linked = written
+            .and_then(|()| at::link(&dir, partial.as_str(), file).map_err(std::io::Error::from));
         let _ = at::remove(&dir, partial.as_str());
         match linked {
             Ok(()) => return Ok(secret),
@@ -1492,7 +1486,8 @@ fn write_entry(
     // Where the file system won't take a time (vfat, some network shares), it keeps its
     // own: the entry is still kept.
     let _ = file.set_modified(SystemTime::now());
-    let renamed = written.and_then(|()| at::rename(&sub, partial.as_str(), name));
+    let renamed =
+        written.and_then(|()| at::rename(&sub, partial.as_str(), name).map_err(Into::into));
     if renamed.is_err() {
         let _ = at::remove(&sub, partial.as_str());
     }
@@ -1508,15 +1503,17 @@ fn ignore_itself(root: &OwnedFd, dir: &Path) {
     {
         return;
     }
-    let written = at::new_file(root, Mode::from_raw_mode(0o644)).and_then(|(partial, mut file)| {
-        let renamed = file
-            .write_all(GITIGNORE)
-            .and_then(|()| at::rename(root, partial.as_str(), ".gitignore"));
-        if renamed.is_err() {
-            let _ = at::remove(root, partial.as_str());
-        }
-        renamed
-    });
+    let written = at::new_file(root, Mode::from_raw_mode(0o644))
+        .map_err(std::io::Error::from)
+        .and_then(|(partial, mut file)| {
+            let renamed = file.write_all(GITIGNORE).and_then(|()| {
+                at::rename(root, partial.as_str(), ".gitignore").map_err(Into::into)
+            });
+            if renamed.is_err() {
+                let _ = at::remove(root, partial.as_str());
+            }
+            renamed
+        });
     if let Err(e) = written {
         let path = dir.join(".gitignore");
         tracing::warn!(path = %path.display(), "couldn't write the cache's .gitignore: {e}");
@@ -2331,7 +2328,7 @@ mod tests {
             std::fs::write(named(taken), b"planted").unwrap();
         }
         let error = at::new_file(&dir, mode).unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+        assert_eq!(error, Errno::EXIST, "{error}");
         assert!(!named(n + 19).exists());
         // Planted names are left as they were.
         for taken in (n + 1..=n + 8).chain(n + 10..=n + 18) {

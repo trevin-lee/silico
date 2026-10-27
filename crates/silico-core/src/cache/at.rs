@@ -1,7 +1,11 @@
 //! The rebuild cache's file operations, each on a name in a directory the cache holds open
 //! (the system's `*at` calls, through rustix's safe API): a name is looked up in that
 //! directory, whatever has since been done to the paths that led to it, and its own name is
-//! never followed through a link.
+//! never followed through a link. Every such call the cache makes is here, each failure the
+//! system's [`Errno`], which callers match on. Two open by a path from [`CWD`], following
+//! the links on its way, each saying why: a cache's document's directory
+//! ([`open_dir_through_links`]), and the user's secret ([`link`], and
+//! [`open_dir_through_links`] for its directory).
 
 use std::ffi::{CString, OsString};
 use std::os::fd::{AsFd, OwnedFd};
@@ -28,7 +32,9 @@ pub(super) fn open_dir(dir: impl AsFd, name: impl Arg) -> rustix::io::Result<Own
 
 /// The directory at `path` (from [`CWD`]), opened to find what's in it, through any link
 /// on its way, its own name's included: a cache's document's directory, which may be reached
-/// through a link (in a workspace, the handle is then asked where it is: [`path_of`]).
+/// through a link (in a workspace, the handle is then asked where it is: [`path_of`]); and
+/// the directory of the user's secret, in their own cache directory, which they may have
+/// made a link (to another disk, say), and where no one else may write.
 pub(super) fn open_dir_through_links(path: &Path) -> rustix::io::Result<OwnedFd> {
     rustix::fs::openat(
         CWD,
@@ -129,9 +135,8 @@ impl Meta {
 }
 
 /// The metadata of `name` in `dir`, a link's own.
-pub(super) fn stat(dir: impl AsFd, name: impl Arg) -> std::io::Result<Meta> {
-    let stat = rustix::fs::statat(dir, name, AtFlags::SYMLINK_NOFOLLOW)?;
-    Ok(Meta::of(&stat))
+pub(super) fn stat(dir: impl AsFd, name: impl Arg) -> rustix::io::Result<Meta> {
+    rustix::fs::statat(dir, name, AtFlags::SYMLINK_NOFOLLOW).map(|stat| Meta::of(&stat))
 }
 
 /// Whether `name` in `dir` is a symbolic link (not followed).
@@ -142,7 +147,7 @@ pub(super) fn is_link(dir: impl AsFd, name: impl Arg) -> bool {
 /// The names in the directory `dir` holds open (but `.` and `..`), in order of name, listed
 /// from its start; and, if it couldn't be listed whole (or at all), why. A directory removed
 /// as it's listed (another process's clear) lists nothing, without a word.
-pub(super) fn names(dir: impl AsFd) -> (Vec<CString>, Option<std::io::Error>) {
+pub(super) fn names(dir: impl AsFd) -> (Vec<CString>, Option<Errno>) {
     // Listed from a copy of the handle, which stays the caller's: the copy shares its
     // offset, so it's set to the start first (a directory listed before is listed again
     // whole). Never reopened by a name, not even its own `.`, which a directory that may be
@@ -154,7 +159,7 @@ pub(super) fn names(dir: impl AsFd) -> (Vec<CString>, Option<std::io::Error>) {
     let mut listing = match listing {
         Ok(listing) => listing,
         Err(Errno::NOENT) => return (Vec::new(), None),
-        Err(e) => return (Vec::new(), Some(e.into())),
+        Err(e) => return (Vec::new(), Some(e)),
     };
     let mut names = Vec::new();
     let mut unread = None;
@@ -169,7 +174,7 @@ pub(super) fn names(dir: impl AsFd) -> (Vec<CString>, Option<std::io::Error>) {
             // Removed since it was opened: nothing more is in it (Linux says so, `ENOENT`).
             Err(Errno::NOENT) => break,
             Err(e) => {
-                unread = Some(e.into());
+                unread = Some(e);
                 break;
             }
         }
@@ -180,18 +185,26 @@ pub(super) fn names(dir: impl AsFd) -> (Vec<CString>, Option<std::io::Error>) {
 
 /// Removes the file (or link, never followed) `name` in `dir`: whether this removed it, not
 /// another process first.
-pub(super) fn remove(dir: impl AsFd, name: impl Arg) -> std::io::Result<bool> {
+pub(super) fn remove(dir: impl AsFd, name: impl Arg) -> rustix::io::Result<bool> {
     match rustix::fs::unlinkat(dir, name, AtFlags::empty()) {
         Ok(()) => Ok(true),
         Err(Errno::NOENT) => Ok(false),
-        Err(e) => Err(e.into()),
+        Err(e) => Err(e),
     }
 }
 
 /// Renames `from` in `dir` to `to` in it, over anything at `to` but a directory.
-pub(super) fn rename(dir: impl AsFd, from: impl Arg, to: impl Arg) -> std::io::Result<()> {
+pub(super) fn rename(dir: impl AsFd, from: impl Arg, to: impl Arg) -> rustix::io::Result<()> {
     let dir = dir.as_fd();
-    rustix::fs::renameat(dir, from, dir, to).map_err(Into::into)
+    rustix::fs::renameat(dir, from, dir, to)
+}
+
+/// Links the file `name` in `dir` to the path `to` (from [`CWD`]), never over anything at
+/// `to` (`EEXIST`, a link there included): for the user's secret, so two sessions making it
+/// at once agree on one. The directories on `to`'s way are followed through links, as the
+/// secret's directory is opened ([`open_dir_through_links`]): the user's own.
+pub(super) fn link(dir: impl AsFd, name: impl Arg, to: &Path) -> rustix::io::Result<()> {
+    rustix::fs::linkat(dir, name, CWD, to, AtFlags::empty())
 }
 
 /// The file `name` in `dir`, opened to read without following a symbolic link or waiting on
@@ -209,7 +222,7 @@ pub(super) fn open_to_read(dir: impl AsFd, name: impl Arg) -> rustix::io::Result
 /// A new file in `dir`, with permissions `mode`, and its name: a partial file's, never one
 /// already there (a link planted at the name would otherwise be followed, and what it
 /// points at written over).
-pub(super) fn new_file(dir: impl AsFd, mode: Mode) -> std::io::Result<(String, std::fs::File)> {
+pub(super) fn new_file(dir: impl AsFd, mode: Mode) -> rustix::io::Result<(String, std::fs::File)> {
     static FILES: AtomicU64 = AtomicU64::new(0);
     let dir = dir.as_fd();
     let mut attempt = 0;
@@ -228,7 +241,7 @@ pub(super) fn new_file(dir: impl AsFd, mode: Mode) -> std::io::Result<(String, s
         match created {
             Ok(file) => return Ok((partial, std::fs::File::from(file))),
             Err(Errno::EXIST) if attempt < 8 => attempt += 1,
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(e),
         }
     }
 }

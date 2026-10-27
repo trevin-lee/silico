@@ -5,7 +5,7 @@
 # into the run's summary and one artifact, and fails if any mutant was missed.
 #
 #   gh workflow run mutants.yml --ref main -f ref=<branch> -f base=main -f packages="silico-core"
-#   gh workflow run mutants.yml --ref main -f files="crates/silico-core/src/cache.rs crates/silico-core/src/naming/*.rs"
+#   gh workflow run mutants.yml --ref main -f files="crates/silico-core/src/cache/*.rs crates/silico-core/src/naming/*.rs"
 #   gh workflow run mutants.yml --ref main -f ref=<branch> -f re='profile\.rs:.* in (meeting|on_arc)$'
 #     (re-checks survivors: only the mutants whose names match, in minutes)
 #
