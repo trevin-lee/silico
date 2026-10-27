@@ -6,8 +6,9 @@ use super::FeatureId;
 
 /// Each ID's place in a list of features, sorted by ID and found by binary search: built
 /// once, for a list whose IDs don't change after (a checked document's features, a model's
-/// unmeasured solids). Deterministic: the order is the IDs', never a hash's, and no two entries are
-/// alike (their places differ), so even an unstable sort orders them one way.
+/// unmeasured solids, a render's bodies). Deterministic: the order is the IDs', never a
+/// hash's, and no two entries are alike (their places differ), so even an unstable sort
+/// orders them one way.
 ///
 /// A sorted list rather than a `BTreeMap`, as the gate's `by_id` is: as deterministic (its
 /// order is the IDs' own), as fast to search (⌈log₂ n⌉ + 1 comparisons a lookup), and

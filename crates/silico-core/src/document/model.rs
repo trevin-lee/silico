@@ -169,7 +169,8 @@ fn feature_refused(message: String, suggestion: &str) -> crate::Error {
 /// document. Other features refer to it by this.
 ///
 /// Compared, ordered, and hashed as its text, exactly as derived; written out by hand only
-/// so a test can count every comparison of two IDs ([`compared`]), wherever it's made.
+/// so a test can count every comparison of two IDs (`document::compared`, in test
+/// builds), wherever it's made.
 #[derive(Debug, Clone)]
 pub struct FeatureId(String);
 

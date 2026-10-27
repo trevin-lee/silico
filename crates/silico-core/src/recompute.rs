@@ -309,8 +309,9 @@ pub struct Model {
 
 #[cfg(test)]
 thread_local! {
-    /// How many features [`Model::element_map`]'s walks have visited on this thread: a
-    /// test's measure of a read's walk down what a feature's made from.
+    /// How many features [`Model::element_map`]'s reads have visited on this thread (one
+    /// for a read of a feature named already): a test's measure of a read's walk down what
+    /// a feature's made from.
     static WALKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
@@ -430,6 +431,14 @@ impl Model {
     /// thread, with those of the features it's made from (and no others).
     pub fn element_map(&self, id: &FeatureId) -> Option<&ElementMap> {
         let i = self.place(id)?;
+        // Named already (the model's named, or this one read before): its map, or none, is
+        // settled, so it's read as it is, with nothing walked or allocated. A visit to its own
+        // feature only, as the walk below would make it.
+        if let Some(map) = self.maps.get(i)?.get() {
+            #[cfg(test)]
+            WALKED.with(|walked| walked.set(walked.get() + 1));
+            return map.as_deref();
+        }
         // Those it's made from not named yet, all the way down, in timeline order, so each
         // is named after those it's made from. Not past one named already (its map, or
         // none, is settled, so it needs nothing it's made from): once the model's named,
@@ -4060,11 +4069,17 @@ mod tests {
     /// A document of `n` boxes, `b0000000` on: each its own body, 1 mm high, or 2 mm
     /// where `tall` says.
     fn boxes(n: usize, tall: impl Fn(usize) -> bool) -> Checked {
+        boxes_with(n, |i| format!("b{i:07}"), tall)
+    }
+
+    /// [`boxes`], the box at place i given the ID `id(i)`.
+    fn boxes_with(n: usize, id: impl Fn(usize) -> String, tall: impl Fn(usize) -> bool) -> Checked {
         let features: Vec<String> = (0..n)
             .map(|i| {
                 let height = if tall(i) { 2 } else { 1 };
+                let id = id(i);
                 format!(
-                    r#"{{"id": "b{i:07}", "type": "box", "v": 1, "name": "Block", "position": [{i}, 0, 0], "length": 1, "width": 1, "height": {height}}}"#
+                    r#"{{"id": "{id}", "type": "box", "v": 1, "name": "Block", "position": [{i}, 0, 0], "length": 1, "width": 1, "height": {height}}}"#
                 )
             })
             .collect();
@@ -4222,9 +4237,10 @@ mod tests {
         // #187's architecture review: `element_map` walked down every feature a feature is
         // made from, on every read, named or not, so on a chain of fillets each read cost
         // its depth. It goes no further than a feature named already, whose map needs
-        // nothing it's made from. Once every map is named, a read pops its own feature,
-        // finds it named, and stops: one feature visited a read (`WALKED`, counted as each
-        // is popped). A box and 500 fillets, each of the one before: 501 reads, 501 visits.
+        // nothing it's made from. Once every map is named, a read finds its own feature
+        // named and returns its map: one feature visited a read (`WALKED`, counted as each
+        // is popped, or as the read returns early). A box and 500 fillets, each of the one
+        // before: 501 reads, 501 visits.
         // The full walk visited each feature's depth + 1, 1 + 2 + ... + 501 = 125,751.
         let n = 500;
         let model = published(
@@ -4286,7 +4302,8 @@ mod tests {
         // (`b0000000.box.Face1`, ...) mentions one feature: N lookups, from N to
         // N (⌈log₂ N⌉ + 1) comparisons, 11,000 for N = 1,000. A scan from the start
         // compares each feature's place + 1: N(N + 1) / 2, 500,500. A feature the document
-        // hasn't is one lookup too, and refused.
+        // hasn't is one lookup too, of at most ⌈log₂ N⌉ + 1 comparisons (11), and refused;
+        // a scan compares all N.
         let n = 1000;
         let model = published(
             Recompute::new(crate::fake::FakeKernel::new(2).unwrap())
@@ -4311,14 +4328,25 @@ mod tests {
         for (name, text) in names.iter().zip(&texts) {
             assert_eq!(name.to_string(), *text);
         }
+        let (compared, looked_up) = counted();
         assert!(crate::naming::Name::parse("zzzzzzzz.box.Face1", &makers).is_err());
+        let (compared, looked_up) = (counted().0 - compared, counted().1 - looked_up);
+        assert!(
+            (1..=ceil_log2(n) + 1).contains(&compared),
+            "{compared} comparisons"
+        );
+        assert_eq!(looked_up, 1);
     }
 
     #[test]
     fn a_rebound_model_finds_each_feature_where_it_did() {
         // A model rebound to its saved document finds its features by the new document's
-        // index: the same IDs in the same order, so each at its place, as before.
-        let document = Arc::new(boxes(40, |_| false));
+        // index: the same IDs in the same order, so each at its place, as before. The IDs
+        // descend through the timeline, so a model or a save that sorted its features by ID
+        // would put each elsewhere.
+        let document = Arc::new(boxes_with(40, |i| format!("b{:07}", 39 - i), |_| false));
+        let ids: Vec<&FeatureId> = document.document().features.iter().map(|f| &f.id).collect();
+        assert!(ids.windows(2).all(|pair| pair[0] > pair[1]));
         let model = published(
             Recompute::new(crate::fake::FakeKernel::new(2).unwrap()).start(Arc::clone(&document)),
         );
