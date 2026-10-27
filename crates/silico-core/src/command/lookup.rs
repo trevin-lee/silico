@@ -15,7 +15,7 @@ use super::Problems;
 use super::elements::built;
 use crate::document::FeatureId;
 use crate::kernel::{Description, ElementKind, ElementRef};
-use crate::naming::{ElementMap, Maker, Name};
+use crate::naming::{ElementMap, Name};
 use crate::recompute::{Built, Model};
 use crate::references::Candidates;
 use crate::{Error, ErrorCode};
@@ -151,7 +151,7 @@ impl<'m> Lookup<'m> {
         text: &str,
     ) -> Option<(&'m FeatureId, &'m ElementMap, ElementRef)> {
         let model = self.model;
-        let makers = |id: &FeatureId| model.feature(id).map(|f| Maker::of(&f.operation));
+        let makers = |id: &FeatureId| model.maker(id);
         let broken = |why: String, candidates: Vec<String>| {
             let suggestion = if candidates.is_empty() {
                 "name the element as the model now names it: `elements` lists every one"

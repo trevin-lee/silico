@@ -52,6 +52,11 @@ impl Document {
 
     /// The feature whose ID is `id`; or, refused naming `feature`, why there's no one such
     /// feature: none has it, or (in a document the gate refused) more than one does.
+    ///
+    /// It scans the whole timeline, so it's for a document that may hold an ID twice (one
+    /// the gate hasn't passed, or refused). A holder of a [`Checked`](super::Checked) or a
+    /// [`Model`](crate::recompute::Model) finds a feature by their index instead
+    /// (`Checked::feature`, `Model::feature`), in logarithmic time.
     pub fn feature(&self, id: &FeatureId) -> Result<&Feature, crate::Error> {
         let mut found = self.features.iter().filter(|f| &f.id == id);
         let first = found.next().ok_or_else(|| no_feature(id))?;
@@ -162,8 +167,61 @@ fn feature_refused(message: String, suggestion: &str) -> crate::Error {
 
 /// A feature's ID: 8 characters of Crockford's base32 in lower case, unique within the
 /// document. Other features refer to it by this.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+///
+/// Compared, ordered, and hashed as its text, exactly as derived; written out by hand only
+/// so a test can count every comparison of two IDs ([`compared`]), wherever it's made.
+#[derive(Debug, Clone)]
 pub struct FeatureId(String);
+
+impl PartialEq for FeatureId {
+    fn eq(&self, other: &Self) -> bool {
+        #[cfg(test)]
+        count_comparison();
+        self.0 == other.0
+    }
+}
+
+impl Eq for FeatureId {}
+
+impl PartialOrd for FeatureId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for FeatureId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        #[cfg(test)]
+        count_comparison();
+        self.0.cmp(&other.0)
+    }
+}
+
+/// As its text hashes, so equal IDs hash alike.
+impl std::hash::Hash for FeatureId {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times two IDs have been compared on this thread.
+    static COMPARED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn count_comparison() {
+    COMPARED.with(|compared| compared.set(compared.get() + 1));
+}
+
+/// How many times two IDs have been compared on this thread so far, for equality or order,
+/// by anything (an index's search, a scan, a map's): a test's measure of a read's work
+/// that no clock moves, and that a scan put back can't get past.
+#[cfg(test)]
+pub(crate) fn compared() -> u64 {
+    COMPARED.with(std::cell::Cell::get)
+}
 
 /// The characters of an ID: Crockford's base32, lower case (no `i`, `l`, `o`, or `u`).
 pub const ID_ALPHABET: &str = "0123456789abcdefghjkmnpqrstvwxyz";

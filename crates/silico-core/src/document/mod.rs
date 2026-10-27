@@ -23,7 +23,9 @@ pub(crate) use decode::optional_members;
 pub use fingerprint::{Difference, Fingerprint, MEASURE_DECIMALS, Measure};
 pub(crate) use index::FeatureIndex;
 #[cfg(test)]
-pub(crate) use index::compared;
+pub(crate) use index::looked_up;
+#[cfg(test)]
+pub(crate) use model::compared;
 pub use model::{
     Axis, ChamferSize, Document, ElementName, Extent, ExtentValue, FEATURE_TYPES, Feature,
     FeatureId, FeatureVersion, FormatVersion, ID_ALPHABET, ID_LENGTH, Made, Name, NamingScheme,

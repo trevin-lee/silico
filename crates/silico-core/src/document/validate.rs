@@ -687,10 +687,17 @@ impl Checked {
     /// [`Document::feature`] refuses it, naming `feature`, why there's none: a checked
     /// document has no ID twice.
     pub fn feature(&self, id: &FeatureId) -> Result<&Feature, Error> {
-        self.index
-            .get(id)
+        self.place(id)
             .and_then(|place| self.document.features.get(place))
             .ok_or_else(|| super::model::no_feature(id))
+    }
+
+    /// The place of the feature `id` in the timeline, from 0, if the document has it: found
+    /// by its index, in at most ⌈log₂ n⌉ + 1 comparisons of IDs for n features. The one
+    /// index of the document's features: a model built from it, whose features are its
+    /// features in order, finds its own by it too.
+    pub(crate) fn place(&self, id: &FeatureId) -> Option<usize> {
+        self.index.get(id)
     }
 }
 

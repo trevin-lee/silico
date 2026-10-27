@@ -6,12 +6,13 @@ use super::FeatureId;
 
 /// Each ID's place in a list of features, sorted by ID and found by binary search: built
 /// once, for a list whose IDs don't change after (a checked document's features, a model's
-/// outcomes). Deterministic: the order is the IDs', never a hash's, and no two entries are
+/// unmeasured solids). Deterministic: the order is the IDs', never a hash's, and no two entries are
 /// alike (their places differ), so even an unstable sort orders them one way.
 ///
-/// A sorted list rather than a `BTreeMap`: as fast to search, smaller, and its comparisons
-/// are the search's own, so a test can count them ([`compared`]) and hold the work of a
-/// read to a bound worked out by hand.
+/// A sorted list rather than a `BTreeMap`, as the gate's `by_id` is: as deterministic (its
+/// order is the IDs' own), as fast to search (⌈log₂ n⌉ + 1 comparisons a lookup), and
+/// smaller, one entry of an ID and a place each, in one allocation, with no tree nodes'
+/// slack and pointers, which a model holds as long as it's read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct FeatureIndex(Vec<(FeatureId, usize)>);
 
@@ -33,34 +34,31 @@ impl FeatureIndex {
     /// The place of the feature `id`, if the list has it: at most ⌈log₂ n⌉ + 1 comparisons of
     /// IDs, for n IDs.
     pub(crate) fn get(&self, id: &FeatureId) -> Option<usize> {
-        let at = self
-            .0
-            .binary_search_by(|(held, _)| {
-                #[cfg(test)]
-                COMPARED.with(|compared| compared.set(compared.get() + 1));
-                held.cmp(id)
-            })
-            .ok()?;
+        #[cfg(test)]
+        LOOKED_UP.with(|looked_up| looked_up.set(looked_up.get() + 1));
+        let at = self.0.binary_search_by(|(held, _)| held.cmp(id)).ok()?;
         self.0.get(at).map(|&(_, place)| place)
     }
 }
 
 #[cfg(test)]
 thread_local! {
-    /// How many IDs this thread's lookups have compared.
-    static COMPARED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// How many lookups this thread has made in indexes.
+    static LOOKED_UP: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// How many IDs the lookups made on this thread have compared, so far: a test's measure of
-/// a read's work that no clock moves.
+/// How many lookups ([`FeatureIndex::get`]) this thread has made so far, found or not: so a
+/// test that bounds a read's comparisons of IDs ([`compared`](super::compared)) can say how
+/// many lookups it made too, and notice one lost.
 #[cfg(test)]
-pub(crate) fn compared() -> u64 {
-    COMPARED.with(std::cell::Cell::get)
+pub(crate) fn looked_up() -> u64 {
+    LOOKED_UP.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::compared;
 
     fn id(text: &str) -> FeatureId {
         FeatureId::new(text).unwrap()
