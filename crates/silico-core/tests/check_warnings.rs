@@ -780,7 +780,7 @@ fn a_curve_with_both_ends_in_a_cluster_is_named_once_and_its_suggestion_is_to_le
     // the three, its cause 1.5e-7 (1.5e-7 − 0), its curves na000001, once though both its
     // ends are in it, and na000002: 5 named. Sharing one point would shrink na000001 to
     // nothing, so the suggestion is first the profile's for those ends, "lengthen line
-    // na000001, or ...".
+    // na000001", then to share one point.
     let text = document(&[sketch(
         "s0000001",
         &[
@@ -812,7 +812,7 @@ fn a_curve_with_both_ends_in_a_cluster_is_named_once_and_its_suggestion_is_to_le
     assert_eq!(
         warning.suggestion(),
         Some(
-            "lengthen line na000001, or share one point: make the curves named end at one of \
+            "lengthen line na000001; then share one point: make the curves named end at one of \
              the points named"
         )
     );
@@ -857,7 +857,7 @@ fn every_curve_with_both_ends_in_a_cluster_is_to_be_lengthened_in_id_order() {
     assert_eq!(
         warning.suggestion(),
         Some(
-            "lengthen line na000009 and line nz000002, or share one point: make the curves \
+            "lengthen line na000009 and line nz000002; then share one point: make the curves \
              named end at one of the points named"
         )
     );
@@ -872,7 +872,7 @@ fn a_near_full_arc_with_both_ends_in_a_cluster_is_given_the_gates_advice_for_an_
     // ends in it, so sharing one point would close it into a circle, and lengthening it
     // would make it overlap itself (the port review, #189): the advice is the sketch gate's
     // for an arc whose ends are one place, "draw a circle instead, or open the arc"
-    // (sketch_gate.rs), naming the arc.
+    // (sketch_gate.rs), naming the arc, then to share one point.
     let arc = r#"{"id": "na000001", "center": "pz000002", "start": "pa000002", "end": "pa000001", "construction": false}"#;
     let text = document(&[sketch(
         "s0000001",
@@ -900,7 +900,54 @@ fn a_near_full_arc_with_both_ends_in_a_cluster_is_given_the_gates_advice_for_an_
     );
     assert_eq!(
         checked.warnings.listed()[0].suggestion(),
-        Some("for arc na000001, draw a circle instead, or open the arc")
+        Some(
+            "for arc na000001, draw a circle instead, or open the arc; then share one point: \
+             make the curves named end at one of the points named"
+        )
+    );
+}
+
+#[test]
+fn a_tiny_arc_short_of_a_half_turn_with_both_ends_in_a_cluster_is_to_be_lengthened() {
+    // Arc na000001 about pz000002 (0, 0), counter-clockwise from pa000001 (7.5e-8, 1e-6)
+    // to pa000002 (−7.5e-8, 1e-6): a radius of about 1e-6 and a sweep of 2·atan(0.075),
+    // about 8.6°, its ends 1.5e-7 apart (doubling 7.5e-8 is exact). Line na000002 from
+    // pa000003 (0, 1e-6), 7.5e-8 from each end, to pz000001 (5, −5). One cluster of the
+    // three, both the arc's ends in it; the arc is short of a half turn (the cross product
+    // of its ends from its centre, 7.5e-8 · 1e-6 + 1e-6 · 7.5e-8, is positive), so
+    // lengthening it moves its ends apart: "lengthen arc na000001", as for a line, not the
+    // gate's advice for an arc whose ends are one place (the port review, #189).
+    let arc = r#"{"id": "na000001", "center": "pz000002", "start": "pa000001", "end": "pa000002", "construction": false}"#;
+    let text = document(&[sketch(
+        "s0000001",
+        &[
+            point("pa000001", 7.5e-8, 1e-6),
+            point("pa000002", -7.5e-8, 1e-6),
+            point("pa000003", 0.0, 1e-6),
+            point("pz000001", 5.0, -5.0),
+            point("pz000002", 0.0, 0.0),
+        ],
+        &[line("na000002", "pa000003", "pz000001", false)],
+        &[arc.to_owned()],
+        "",
+    )]);
+    let checked = opened(&text).check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    assert_eq!(
+        said(&checked),
+        [(
+            WarningCode::EndsNotJoined,
+            "s0000001".to_owned(),
+            strings(&["pa000001", "pa000002", "pa000003", "na000001", "na000002"]),
+            Some(at_most("1.5e-7")),
+        )]
+    );
+    assert_eq!(
+        checked.warnings.listed()[0].suggestion(),
+        Some(
+            "lengthen arc na000001; then share one point: make the curves named end at one of \
+             the points named"
+        )
     );
 }
 
@@ -911,8 +958,8 @@ fn a_cluster_with_a_line_and_an_arc_both_collapsing_gives_each_its_advice_lines_
     // both its ends in the cluster (pa000004 is 7.5e-8 from pa000005); line na000002 from
     // pa000005 (10.000000075, 7.5e-8), 7.5e-8 from each of na000001's ends, to pz000001.
     // Sharing one point would collapse both the arc and na000001: na000001 is to be
-    // lengthened, then the arc is given the gate's advice, and no advice to share a point,
-    // which would collapse them.
+    // lengthened, then the arc is given the gate's advice, and then, those done, the ends
+    // are to share one point.
     let arc = r#"{"id": "na000009", "center": "pz000002", "start": "pa000002", "end": "pa000001", "construction": false}"#;
     let text = document(&[sketch(
         "s0000001",
@@ -946,7 +993,10 @@ fn a_cluster_with_a_line_and_an_arc_both_collapsing_gives_each_its_advice_lines_
     );
     assert_eq!(
         warning.suggestion(),
-        Some("lengthen line na000001; for arc na000009, draw a circle instead, or open the arc")
+        Some(
+            "lengthen line na000001; for arc na000009, draw a circle instead, or open the arc; \
+             then share one point: make the curves named end at one of the points named"
+        )
     );
 }
 

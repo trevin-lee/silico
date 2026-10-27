@@ -16,11 +16,12 @@
 //!   6e4c61881b), though that analysis groups only the ends near the first of a run sorted
 //!   by position, each axis apart, without chaining. Naming its points, then the curves
 //!   ending at them; its cause the largest distance between two of its points; its
-//!   suggestion to share one point, or, for each curve with both its ends in the cluster,
-//!   which sharing one would collapse, to lengthen it (a line) or the sketch gate's advice
-//!   for an arc whose ends are one place (an arc), as the profile's refusal of the same ends
-//!   says (`profile::collapsing_advice`). The grouping is the profile's ([`crate::profile`]'s open ends that
-//!   should be one point), each with its own comparison.
+//!   suggestion to share one point, after, for each curve with both its ends in the
+//!   cluster, which sharing one would collapse, the advice to lengthen it (a line, or an
+//!   arc short of a half turn) or the sketch gate's for an arc whose ends are one place (an
+//!   arc past a half turn), as the profile's refusal of the same ends says
+//!   (`profile::collapsing_advice`). The grouping is the profile's ([`crate::profile`]'s
+//!   open ends that should be one point), each with its own comparison.
 //!
 //!   *Scope.* Measured between the points the file holds, as M3.5's profile measures them
 //!   and as a fix moves them: FreeCAD measures between the vertices of the edges it builds
@@ -63,7 +64,9 @@ use silico_protocol::{LENGTH_TOLERANCE, format_number};
 use crate::document::{
     ElementId, Feature, FeatureId, Fingerprint, Operation, PROBLEMS_LISTED, Sketch,
 };
-use crate::profile::{CurveKind, collapsing_advice, one_place_groups};
+use crate::profile::{
+    Collapsing, CurveKind, collapsing_advice, one_place_groups, sweeps_past_half_turn,
+};
 use crate::recompute::{Built, FeatureOutcome, Model};
 use crate::sketch::SketchSolution;
 use crate::{Warning, WarningCode};
@@ -171,10 +174,12 @@ struct End<'a> {
     curves: Vec<&'a ElementId>,
 }
 
-/// A profile curve of the sketch: its kind, and the points it ends at.
+/// A profile curve of the sketch: its kind, the points it ends at, and, for an arc, whether
+/// it sweeps past a half turn as it solved ([`sweeps_past_half_turn`]).
 struct Curve<'a> {
     kind: CurveKind,
     ends: [&'a ElementId; 2],
+    past_half_turn: bool,
 }
 
 /// Each cluster of `sketch`'s curve ends FreeCAD would join that aren't one point, a warning
@@ -190,12 +195,33 @@ fn ends_not_joined(
     let lines = sketch.lines.iter().filter(|l| !l.construction).map(|l| {
         let ends = [&l.from, &l.to];
         let kind = CurveKind::Line;
-        (&l.id, Curve { kind, ends })
+        let past_half_turn = false;
+        (
+            &l.id,
+            Curve {
+                kind,
+                ends,
+                past_half_turn,
+            },
+        )
     });
     let arcs = sketch.arcs.iter().filter(|a| !a.construction).map(|a| {
         let ends = [&a.start, &a.end];
         let kind = CurveKind::Arc;
-        (&a.id, Curve { kind, ends })
+        let solved = [&a.center, &a.start, &a.end].map(|point| solution.point(point));
+        let past_half_turn = match solved {
+            [Some(c), Some(s), Some(e)] => sweeps_past_half_turn(c, s, e),
+            // A point the solve doesn't have ends at no place, so in no cluster.
+            _ => false,
+        };
+        (
+            &a.id,
+            Curve {
+                kind,
+                ends,
+                past_half_turn,
+            },
+        )
     });
     let curves: BTreeMap<&ElementId, Curve<'_>> = lines.chain(arcs).collect();
     let mut at: BTreeMap<&ElementId, Vec<&ElementId>> = BTreeMap::new();
@@ -249,12 +275,16 @@ fn cluster_warning(
         .collect();
     curves.sort();
     curves.dedup();
-    let both_ends: Vec<(&str, CurveKind)> = curves
+    let both_ends: Vec<Collapsing<&str>> = curves
         .iter()
         .filter_map(|&c| {
             let curve = profile.get(c)?;
             let both = curve.ends.iter().all(|end| points.contains(end));
-            both.then_some((c.as_str(), curve.kind))
+            both.then_some(Collapsing {
+                id: c.as_str(),
+                kind: curve.kind,
+                past_half_turn: curve.past_half_turn,
+            })
         })
         .collect();
     let mut farthest = 0.0_f64;
@@ -297,8 +327,8 @@ fn cluster_warning(
     })
 }
 
-/// `ends_not_joined`'s suggestion, after the advice to lengthen a line with both its ends in
-/// the cluster, if there's one and no arc has both ([`collapsing_advice`]).
+/// `ends_not_joined`'s suggestion: alone, or, after the advice for each curve with both its
+/// ends in the cluster, after "then " ([`collapsing_advice`]).
 const SHARE_ONE_POINT: &str =
     "share one point: make the curves named end at one of the points named";
 
