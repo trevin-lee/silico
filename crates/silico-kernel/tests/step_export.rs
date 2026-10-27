@@ -336,3 +336,28 @@ fn a_wire_the_writer_drops_is_said_by_the_bounds_count_and_one_it_skips_on_purpo
         .unwrap();
     assert_eq!((file.faces, file.bounds), (count(7, 7), count(7, 7)));
 }
+
+#[test]
+fn a_step_export_stopped_kills_its_worker_and_writes_nothing() {
+    // The STEP worker as the core starts it for each export (StepWorkers): stopped as soon
+    // as it's started (as a cancel stops it, decision 34), its worker killed, the export an
+    // error, no file. Not stopped, the same export is written.
+    use silico_core::step_worker::{StepExporter, StepWorkers};
+    let workers = StepWorkers::new();
+    let request = || export(&[(&block(), "k7f2qx3m", "Block")]);
+    let stopped = workers.export_step(request(), &|stop| stop.stop());
+    // Killed as it started, or as it wrote: either way an error, the kill its cause (the
+    // session, cancelled, answers `cancelled` whichever it is).
+    let e = stopped.unwrap_err();
+    assert!(
+        matches!(
+            e.code(),
+            silico_core::ErrorCode::WorkerCrashed | silico_core::ErrorCode::WorkerUnavailable
+        ),
+        "{e:?}"
+    );
+    assert!(e.cause().is_some_and(|c| c.contains("SIGKILL")), "{e:?}");
+    let (file, writer) = workers.export_step(request(), &|_| {}).unwrap();
+    assert!(writer.starts_with("STEP worker sha256:"), "{writer}");
+    assert_eq!(hex(file.step.as_bytes()), BOX_STEP_SHA256);
+}

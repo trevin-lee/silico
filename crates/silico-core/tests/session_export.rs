@@ -169,7 +169,7 @@ fn a_step_export_cancelled_while_it_writes_stops_and_answers_cancelled_writing_n
     let file = f.dir.path().join("example.silico");
     std::fs::write(&file, EXAMPLE).unwrap();
     let s = answer(sessions.open(file, false)).session.unwrap().id;
-    answer(sessions.check(&s, ModelChoice::Current))
+    answer(sessions.check(&s, CheckModel::Current { fresh: false }))
         .result
         .unwrap();
     let out = f.dir.path().join("out");
