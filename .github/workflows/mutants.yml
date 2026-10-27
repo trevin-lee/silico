@@ -113,15 +113,19 @@ jobs:
   shard:
     needs: plan
     # A filler run's shards only on the runners labelled filler (silico-9 to -12), which
-    # take no gates: so filler never holds a runner a gate could use.
-    runs-on: ${{ inputs.filler != '' && fromJSON('["self-hosted", "linux", "x64", "filler"]') || fromJSON('["self-hosted", "linux", "x64", "mutants"]') }}
+    # take no gates: so filler never holds a runner a gate could use. A run narrowed to some
+    # files, packages, or names (a PR's, before it merges) asks for `mutants-pr`, which every
+    # mutants runner has and two more (silico-20, -21) have alone: so a PR's run never waits
+    # for a whole-diff run (a milestone's, hours long) to free the pool, and starts beside it.
+    runs-on: ${{ inputs.filler != '' && fromJSON('["self-hosted", "linux", "x64", "filler"]') || (inputs.files != '' || inputs.packages != '' || inputs.re != '') && fromJSON('["self-hosted", "linux", "x64", "mutants-pr"]') || fromJSON('["self-hosted", "linux", "x64", "mutants"]') }}
     # A whole-workspace run is about 2,300 mutants: hours, even sharded. A filler run stops
     # after an hour: it fills idle time, and comes back to its work on a later turn.
     timeout-minutes: ${{ inputs.filler != '' && 60 || 1440 }}
     strategy:
       fail-fast: false
-      # As many at once as there are runners labelled `mutants` (silico-9 to -12 and -15 to
-      # -17, through /etc/ci-runner/labels on the runner VM). silico-1 to -8 carry only
+      # As many at once as there are runners a shard may take: `mutants` (silico-9 to -12
+      # and -15 to -17, through /etc/ci-runner/labels on the runner VM), and for a narrowed
+      # run, `mutants-pr` (those and silico-20, -21). silico-1 to -8 carry only
       # `gate`, so gates always have eight runners however many shards are queued (silico-5
       # to -8 took both until 2026-10-26). silico-9 to -12 (also `filler`) and -15 to -17
       # carry `mutants`, not `pve`, so no gate (nor a job from a branch older than these
@@ -133,7 +137,7 @@ jobs:
       # runners labelled control (silico-13, -14), so they never queue behind shards. The
       # runners share one VM, and free runners don't keep its CPU free: see the shard's
       # share below.
-      max-parallel: 7
+      max-parallel: 9
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
@@ -179,20 +183,21 @@ jobs:
           # A filler run is cut off after an hour: in random order (cargo-mutants shuffles each
           # shard's share after sharding), so each turn at a slice reaches different mutants.
           if [ -n "$FILLER" ]; then args+=(--shuffle); fi
-          # A seventh of the machine each (4 threads of 30): seven shards can run at once
-          # (max-parallel above), one a mutants runner. At 2 threads a shard (twelve runners),
-          # the VM sat 27% idle over a day (2026-10-25, ~/.cache/silico-review/ci-ext4/
-          # idle-day-after-3.tsv) while shards queued for a runner: the runners were the limit,
-          # not the CPU. A shard takes only CPU nothing else wants: its runner's cgroup is at
-          # the idle weight (CPUWeight=idle on silico-9 to -12 and -15 to -17, set 2026-10-26
-          # with systemctl set-property), so between runners a gate always wins. Nice and the
-          # idle scheduling class rank threads only within their own cgroup; between runner
-          # services only the cgroups' weights count, so nice 19 alone let two gates fail
-          # tests held to a wall clock beside full shards on 2026-10-25. Nice 19 (below) still
-          # orders a shard's own threads. (On a full machine a gate can still fail a test held
-          # to a wall clock: tests/mutants.sh lists them.) Retry a failed test here, since one
-          # that fails only under load would fail the baseline or count a mutant as caught; a
-          # mutant that breaks a test fails it every time.
+          # A seventh of the machine each (4 threads of 30): seven shards can run at once, one
+          # a mutants runner, and two more of a narrowed run on silico-20 and -21, all at the
+          # idle weight. At 2 threads a shard (twelve runners), the VM sat 27% idle over a day
+          # (2026-10-25, ~/.cache/silico-review/ci-ext4/idle-day-after-3.tsv) while shards
+          # queued for a runner: the runners were the limit, not the CPU. A shard takes only
+          # CPU nothing else wants: its runner's cgroup is at the idle weight (CPUWeight=idle
+          # on silico-9 to -12, -15 to -17, -20, and -21, set 2026-10-26 with systemctl
+          # set-property), so between runners a gate always wins. Nice and the idle scheduling
+          # class rank threads only within their own cgroup; between runner services only the
+          # cgroups' weights count, so nice 19 alone let two gates fail tests held to a wall
+          # clock beside full shards on 2026-10-25. Nice 19 (below) still orders a shard's own
+          # threads. (On a full machine a gate can still fail a test held to a wall clock:
+          # tests/mutants.sh lists them.) Retry a failed test here, since one that fails only
+          # under load would fail the baseline or count a mutant as caught; a mutant that
+          # breaks a test fails it every time.
           #
           # A filler shard runs at the idle scheduling class, for the CPU and for I/O, on a
           # runner at the idle weight (as a real shard's is), so it can't slow a gate; a real
