@@ -50,7 +50,8 @@
 //!   built since is warned of: nothing writes it until the next save, and `format` can.
 //!   Judged by what the file stores: a model older than its session's document (the newest
 //!   published, after a save that wrote a sketch's solve and so didn't publish) doesn't warn
-//!   of a feature that document stores a fingerprint for now.
+//!   of a feature that document stores a fingerprint for now
+//!   (docs/design/m4.1-warnings-addendum.md).
 //!
 //! **Order:** by timeline (the document's features, in order), then by code, in
 //! [`WarningCode`]'s order (`ends_not_joined`, `constraints_redundant`,

@@ -282,7 +282,9 @@ impl Reached {
     /// to `begin`'s document, so they reach nothing), whose warning is missed for that while.
     /// A rollback restores the model `begin` kept. A `format` or an edit's commit that wrote
     /// a sketch's solve, and so didn't publish, leaves an older model too: what it stored,
-    /// the session's document stores now, which [`Checking::spared`] spares besides.
+    /// the session's document stores now. So for an older model, [`Checking::spared`] asks
+    /// this only when the session's document doesn't read: one that does says what the file
+    /// stores, and the miss above isn't made.
     fn committing(&self, checking: &Checking) -> &BTreeSet<FeatureId> {
         static NONE: BTreeSet<FeatureId> = BTreeSet::new();
         let spared = match *checking {
@@ -331,8 +333,9 @@ impl Checking {
 
     /// The features whose missing fingerprint a check of the model, whose revision's edits
     /// reached `reached`, doesn't warn of ([`crate::warnings`]): those a commit writes
-    /// ([`Reached::committing`]); and, for an older model, those the session's document
-    /// stores a fingerprint for now, if it reads (#189's L3). The warning says what the
+    /// ([`Reached::committing`]); but, for an older model whose session's document reads,
+    /// those an open transaction's commit would write and those the document stores a
+    /// fingerprint for now (#189's L3). The warning says what the
     /// file stores, so a fingerprint a save stored since the model's revision isn't
     /// missing, though the model's own document holds none: one stored by `format`, or by
     /// an edit's commit, that wrote a sketch's solve and so didn't publish its model (the
@@ -344,13 +347,21 @@ impl Checking {
     /// does.
     pub(super) fn spared<'a>(&'a self, reached: &'a Reached) -> Cow<'a, BTreeSet<FeatureId>> {
         let committing = reached.committing(self);
-        let Checking::Older { now, .. } = self else {
+        let Checking::Older { open, now } = self else {
             return Cow::Borrowed(committing);
         };
         let Ok(now) = now.document() else {
             return Cow::Borrowed(committing);
         };
-        let mut spared = committing.clone();
+        // What the file stores now decides, beside what an open transaction's commit will
+        // write: not whether the model's revision was a transaction's, which stands in for
+        // the file only when it doesn't read. After a commit that wrote nothing and a reload,
+        // a feature carried with no fingerprint is missing one, and said so.
+        let mut spared = if *open {
+            reached.get().clone()
+        } else {
+            BTreeSet::new()
+        };
         spared.extend(
             now.features
                 .iter()

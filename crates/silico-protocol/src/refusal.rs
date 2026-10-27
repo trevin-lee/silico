@@ -1123,6 +1123,11 @@ mod tests {
                 limit: 10_000_000,
                 unraised: false,
             },
+            Refusal::TooManyTriangles {
+                triangles: 10_000_001,
+                limit: 10_000_000,
+                unraised: true,
+            },
             Refusal::DistanceNotDone,
             Refusal::ElementMissing {
                 parameter: "second".to_owned(),
@@ -1318,6 +1323,7 @@ mod tests {
             InvalidInput,      // SweepFlat
             InvalidInput,      // RoundingPastTolerance
             InvalidInput,      // TooManyTriangles
+            InvalidInput,      // TooManyTriangles, the unraised mesh's
             KernelFailed,      // DistanceNotDone (new with M4.5)
             InvalidInput,      // ElementMissing (new with M4.5)
             Unavailable,       // NoAdapter
@@ -1372,6 +1378,7 @@ mod tests {
             Some("axis"),       // SweepFlat
             Some("tolerance"),  // RoundingPastTolerance
             Some("tolerance"),  // TooManyTriangles
+            Some("tolerance"),  // TooManyTriangles, the unraised mesh's
             None,               // DistanceNotDone
             Some("second"),     // ElementMissing
             None,               // NoAdapter

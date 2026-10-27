@@ -1697,3 +1697,73 @@ fn fingerprint_missing_on_the_wire_names_its_parameter() {
          it\", \"candidates\": []}"
     );
 }
+
+#[test]
+fn a_refused_document_that_stores_a_fingerprint_still_spares_it_in_a_published_check() {
+    // The rule (docs/design/m4.1-warnings-addendum.md): the warning says what the file
+    // stores, and a document the gate refuses still reads, so its fingerprints count. Here
+    // the file comes to store k7f2qx3m's fingerprint beside a box of no length the gate
+    // refuses (so the reloaded revision's model never publishes): the published check of the
+    // older model, whose own document stores none, warns of nothing.
+    // The text k7f2qx3m's fingerprint is stored in, from a session of its own that formats it.
+    let g = opened(&document(&[block("k7f2qx3m", 0)]));
+    answer(g.sessions.format(&s1(), None, true)).result.unwrap();
+    let formatted = std::fs::read_to_string(g.path()).unwrap();
+    assert!(formatted.contains("fingerprint"), "{formatted}");
+    let f = opened(&document(&[block("k7f2qx3m", 0)]));
+    let before = f.sessions.status(&s1()).session.unwrap().revision;
+    let only_k7 = [(
+        WarningCode::FingerprintMissing,
+        "k7f2qx3m".to_owned(),
+        vec![],
+        None,
+    )];
+    assert_eq!(said(&f.check()), only_k7);
+    let zero = block("m0000009", 20).replace(r#""length": 4"#, r#""length": 0"#);
+    let text = formatted.replacen(r#""features": ["#, &format!(r#""features": [{zero}, "#), 1);
+    assert_ne!(text, formatted);
+    std::fs::write(f.path(), text).unwrap();
+    let read = answer(f.sessions.text(&s1(), None));
+    let session = read.session.unwrap();
+    assert!(session.reloaded);
+    assert_ne!(session.revision, before);
+    let published = published_check(&f, before);
+    assert!(published.warnings.is_empty(), "{:?}", said(&published));
+}
+
+#[test]
+fn after_a_commit_that_wrote_nothing_and_a_reload_a_carried_feature_is_warned_of_in_a_published_check()
+ {
+    // m0000002 is carried with no fingerprint (`carried_and_built`). A transaction adds
+    // m0000003 and removes it again, so its commit writes nothing and keeps the revision: its
+    // model was a transaction's. The file then changes on disk, m0000002 still with no
+    // fingerprint, and is reloaded: the published model is that older one, and by the rule
+    // (what the file stores) both k7f2qx3m and m0000002 are missing fingerprints, though the
+    // model's revision was a transaction's.
+    let (f, [k7, m2]) = carried_and_built();
+    answer(f.sessions.begin(&s1())).result.unwrap();
+    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let added: Node = silico_core::document::json::read(block("m0000003", 20).as_bytes()).unwrap();
+    answer(f.sessions.add_feature(&s1(), revision, added))
+        .result
+        .unwrap();
+    assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
+    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    answer(f.sessions.remove_feature(&s1(), revision, id("m0000003")))
+        .result
+        .unwrap();
+    assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
+    let committed = answer(f.sessions.commit(&s1())).result.unwrap();
+    assert!(!committed.written, "{committed:?}");
+    let kept = f.sessions.status(&s1()).session.unwrap().revision;
+    let m2t = r#"{"id": "m0000002", "type": "box", "v": 1, "name": "Block", "position": [10, 0, 0], "length": 7, "width": 2, "height": 1}"#;
+    let m3 = r#"{"id": "m0000003", "type": "box", "v": 1, "name": "Block", "position": [20, 0, 0], "length": 9, "width": 2, "height": 1}"#;
+    let text = document(&[block("k7f2qx3m", 0), m2t.to_owned(), m3.to_owned()]);
+    std::fs::write(f.path(), text).unwrap();
+    let read = answer(f.sessions.text(&s1(), None));
+    let session = read.session.unwrap();
+    assert!(session.reloaded);
+    assert!(!session.transaction);
+    assert_ne!(session.revision, kept);
+    assert_eq!(said(&published_check(&f, kept)), [k7, m2]);
+}
