@@ -979,6 +979,35 @@ mod tests {
     }
 
     #[test]
+    fn a_values_keys_keep_the_order_they_were_put_in() {
+        // The workspace's serde_json has `preserve_order` (Cargo.toml says why): a `Value`'s
+        // keys come out in the order they went in, in every build. Without it, they'd come
+        // out sorted in a build where nothing else turns the feature on, as `-p silico-cli`
+        // is: this fails then.
+        let value = serde_json::json!({"zeta": 1, "alpha": {"mu": 2, "beta": 3}, "kappa": [4]});
+        assert_eq!(
+            serde_json::to_string(&value).unwrap(),
+            r#"{"zeta":1,"alpha":{"mu":2,"beta":3},"kappa":[4]}"#
+        );
+    }
+
+    #[test]
+    fn the_workspaces_serde_json_keeps_a_values_keys_in_order() {
+        // The test above can only fail in a build where nothing else turns `preserve_order`
+        // on, as `-p silico-cli` is; the workspace's build gets it from Rerun anyway. So the
+        // declaration itself is checked too: dropped from Cargo.toml, this fails in every
+        // build.
+        let manifest =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml"))
+                .unwrap();
+        let line = manifest
+            .lines()
+            .find(|line| line.starts_with("serde_json = "))
+            .unwrap();
+        assert!(line.contains(r#""preserve_order""#), "{line}");
+    }
+
+    #[test]
     fn check_jsons_lines_have_their_keys_sorted_in_any_build() {
         // tests/contract/check-line.json's order, every object's keys sorted, from the text
         // itself: serde_json's `Value` sorts them only in a build where nothing turns on its
