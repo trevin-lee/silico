@@ -188,7 +188,7 @@ FreeCAD avoids this problem by storing each feature's B-rep in the file and load
 
 ## Errors and logging
 
-`tracing` is used throughout. Span IDs are passed into worker requests so a failure can be traced from the user action to the feature to the OCCT call. Worker crash reports are captured and attached to the error. Error codes are stable and documented.
+`tracing` is used throughout. Span IDs are passed into worker requests so a failure can be traced from the user action to the feature to the OCCT call. Worker crash reports are captured and attached to the error. Error codes are stable and documented. Each session keeps the events of its own work (its commands, its rebuilds, and the worker lines re-emitted under the calls that asked for them) in a bounded buffer of its own, which `read_logs` reads by level, feature, and a cursor; one session's events never reach another's. Logs are diagnostics: their times and their order across threads reach no result, name, or file.
 
 ## Performance
 
