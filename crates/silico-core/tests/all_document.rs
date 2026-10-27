@@ -68,6 +68,8 @@ mod adversarial_references;
 mod adversarial_render_command;
 #[path = "adversarial_type_words.rs"]
 mod adversarial_type_words;
+#[path = "adversarial_warnings.rs"]
+mod adversarial_warnings;
 #[path = "adversarial_wire_commands.rs"]
 mod adversarial_wire_commands;
 #[path = "adversarial_workspace.rs"]

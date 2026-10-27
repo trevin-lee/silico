@@ -7,7 +7,12 @@
 //! - `ends_not_joined` (M3.2's D2): two ends of a sketch's profile curves (lines and arcs
 //!   that aren't construction geometry) that are separate points, closer than FreeCAD's
 //!   joining distance, on the sketch as it solved. One warning a pair of points, naming the
-//!   curves that end at them.
+//!   curves that end at them (the first hundred, all counted). Measured between the points
+//!   the file holds, as M3.5's profile measures them and as a fix moves them: FreeCAD
+//!   measures between the vertices of the edges it builds from them (a line's end at its
+//!   start plus its direction times its length, an arc's at its angles on its circle), which
+//!   sit some ulps off (an arc's, up to the solve's convergence), by arithmetic that differs
+//!   between its platforms; so within that much of 1e-7 the verdict can differ from FreeCAD's.
 //! - `constraints_redundant` (M3.3): a solved sketch's redundant constraints, each agreeing
 //!   with the rest (decision 5; one that disagrees is a problem, `over_constrained`, and the
 //!   sketch doesn't solve). One warning a sketch, naming them all.
@@ -212,13 +217,20 @@ fn ends_not_joined(
         warnings.push_with(|| {
             let distance = joining_distance(ends[a].at, ends[b].at);
             let mut curves: Vec<&ElementId> = ends[a].curves.clone();
-            curves.extend(ends[b].curves.iter().filter(|c| !ends[a].curves.contains(c)));
+            // Each list is sorted: a curve ending at both points is named once.
+            curves.extend(
+                ends[b]
+                    .curves
+                    .iter()
+                    .filter(|c| ends[a].curves.binary_search(c).is_err()),
+            );
             Warning::new(
                 WarningCode::EndsNotJoined,
                 "two curve ends are at one place but aren't one point, so the profile is open there",
             )
             .with_feature(id.as_str())
-            .with_elements(curves.iter().map(|c| c.as_str()))
+            .with_elements(curves.iter().take(PROBLEMS_LISTED).map(|c| c.as_str()))
+            .with_elements_total(curves.len() as u64)
             .with_cause(format!(
                 "the ends are {} mm apart, within FreeCAD's joining distance of {} mm",
                 format_number(distance),

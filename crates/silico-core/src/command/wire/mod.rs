@@ -381,7 +381,7 @@ fn error_with<'a>(error: &'a Error, suggestion: Json<'a>) -> Json<'a> {
         suggestion,
         candidates: error.candidates(),
     }
-    .to_wire()
+    .into_wire()
 }
 
 impl ToWire for Warning {
@@ -398,7 +398,7 @@ impl ToWire for Warning {
             suggestion: Json::or_null(self.suggestion(), Json::str),
             candidates: self.candidates(),
         }
-        .to_wire()
+        .into_wire()
     }
 }
 
@@ -417,7 +417,7 @@ struct Said<'a> {
 
 impl<'a> Said<'a> {
     /// The error contract's shape (`tests/contract/error-full.json`), in its order.
-    fn to_wire(self) -> Json<'a> {
+    fn into_wire(self) -> Json<'a> {
         Json::object([
             ("code", Json::str(self.code)),
             ("message", Json::str(self.message)),

@@ -1490,3 +1490,112 @@ fn schema_needs_no_worker_and_writes_nothing_where_it_runs() {
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
+
+/// break-it for `check`'s warnings on the CLI: a sketch of 15 lines, each from its own point
+/// at the origin (15 · 14 / 2 = 105 pairs of ends at one place), and a box saved without a
+/// fingerprint: 106 warnings.
+fn star_and_box(padded: bool) -> String {
+    let mut points = Vec::new();
+    let mut lines = Vec::new();
+    for i in 0..15 {
+        points.push(format!(
+            r#"{{"id": "pa{i:06}", "x": 0, "y": 0, "construction": false}}"#
+        ));
+        points.push(format!(
+            r#"{{"id": "pz{i:06}", "x": 10, "y": {i}, "construction": false}}"#
+        ));
+        lines.push(format!(
+            r#"{{"id": "na{i:06}", "from": "pa{i:06}", "to": "pz{i:06}", "construction": false}}"#
+        ));
+    }
+    let sketch = format!(
+        r#"{{"id": "s0000001", "type": "sketch", "v": 1, "name": "Star", "plane": "xy", "points": [{}], "lines": [{}], "circles": [], "arcs": [], "constraints": []}}"#,
+        points.join(", "),
+        lines.join(", ")
+    );
+    let pad = r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#;
+    let block = r#"{"id": "b0000002", "type": "box", "v": 1, "name": "Block", "position": [50, 0, 0], "length": 1, "width": 1, "height": 1}"#;
+    let features = if padded {
+        vec![sketch, pad.to_owned(), block.to_owned()]
+    } else {
+        vec![sketch, block.to_owned()]
+    };
+    format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        features.join(", ")
+    )
+}
+
+fn check_with_sketch_worker(scratch: &Scratch, file: &Path) -> Ran {
+    let sketch_worker =
+        Path::new(env!("CARGO_BIN_EXE_silico")).with_file_name("silico-sketch-worker");
+    assert!(sketch_worker.exists(), "{}", sketch_worker.display());
+    let mut c = command(scratch, &worker(), &[os("check"), file.as_os_str()]);
+    c.env("SILICO_SKETCH_WORKER", &sketch_worker);
+    let out = run::output(c);
+    Ran {
+        status: Some(out.status),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    }
+}
+
+#[test]
+fn check_says_a_hundred_warnings_then_how_many_more_and_exits_0() {
+    let scratch = Scratch::new("warnings-many");
+    let file = scratch.file("star.silico", &star_and_box(false));
+    let ran = check_with_sketch_worker(&scratch, &file);
+    assert_eq!(ran.code(), Some(0), "{}", ran.stderr);
+    assert!(ran.stdout.is_empty(), "{}", ran.stdout);
+    let shown = file.display().to_string();
+    let lines: Vec<&str> = ran.stderr.lines().collect();
+    assert_eq!(lines.len(), 101, "{}", ran.stderr);
+    assert!(
+        lines[..100]
+            .iter()
+            .all(|l| l.starts_with(&format!("{shown}: warning: ends_not_joined: "))),
+        "{}",
+        ran.stderr
+    );
+    assert!(
+        lines[0].contains("(feature s0000001, elements na000000, na000001)"),
+        "{}",
+        lines[0]
+    );
+    // The box's warning is the 106th: counted, not listed.
+    assert_eq!(lines[100], format!("{shown}: warning: and 6 more warnings"));
+}
+
+#[test]
+fn check_says_problems_first_then_warnings_and_exits_1_for_the_problems_alone() {
+    // The pad of the star has no profile: a problem (exit 1); the sketch's 105 warnings and
+    // the box's after it.
+    let scratch = Scratch::new("warnings-problems");
+    let file = scratch.file("star.silico", &star_and_box(true));
+    let ran = check_with_sketch_worker(&scratch, &file);
+    assert_eq!(ran.code(), Some(1), "{}", ran.stderr);
+    let shown = file.display().to_string();
+    let lines: Vec<&str> = ran.stderr.lines().collect();
+    let warned = format!("{shown}: warning: ");
+    let first_warning = lines.iter().position(|l| l.starts_with(&warned)).unwrap();
+    assert!(first_warning >= 1, "{}", ran.stderr);
+    assert!(
+        lines[..first_warning]
+            .iter()
+            .all(|l| l.starts_with(&shown) && l.contains("p0000001")),
+        "{}",
+        ran.stderr
+    );
+    assert!(
+        lines[first_warning..]
+            .iter()
+            .all(|l| l.starts_with(&warned)),
+        "{}",
+        ran.stderr
+    );
+    assert_eq!(lines.len() - first_warning, 101, "{}", ran.stderr);
+    assert_eq!(
+        *lines.last().unwrap(),
+        format!("{shown}: warning: and 6 more warnings")
+    );
+}
