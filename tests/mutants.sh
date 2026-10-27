@@ -37,7 +37,7 @@ echo "mutants: testing $commit"
 # many elements is written once and stays within its size bound (silico-core's
 # naming/build.rs, MOST_WEIGHT, which names_that_would_double_... tests too); and that a
 # recompute of a long chain or of thousands of features doesn't wait between its steps
-# (recompute.rs's scheduling, beyond the CPU it costs, which they bound too: their wall
+# (recompute.rs's scheduling, beyond the CPU it costs, which only they bound too: their wall
 # clock failed a merge lane shard's baseline three times over at a load of 100 on 30
 # threads, 2026-10-27, run 40486344701).
 core_wall_clock=(

@@ -109,7 +109,7 @@ jobs:
             echo "::error::filler must be empty, a, or b and a number, not '$FILLER'"
             exit 1
           fi
-          # Its shards' runners and threads ask only whether it's set: so only true sets it.
+          # Its shards' runners ask only whether it's set: so only true sets it.
           case $LONG in
           "" | true) ;;
           *) echo "::error::long must be empty or true, not '$LONG'"; exit 1 ;;
