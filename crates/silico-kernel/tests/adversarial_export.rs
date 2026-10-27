@@ -130,22 +130,9 @@ fn raw_deviation(raw: &silico_protocol::ExportMesh, surface: &dyn Fn([f64; 3]) -
 /// ratios' largest is 2.078 here, 2.104 in FreeCAD's mesher at r 300, 0.01).
 const SPHERE_SEAM: f64 = 2.2;
 
-#[test]
-fn every_round_primitive_is_exported_exactly_when_its_mesh_is_within_the_tolerance() {
-    // Rule 7, measured against each primitive's own surface rather than OCCT's figures, at
-    // scales from 10 µm to metres: a mesh taken must be within the tolerance as a reader gets
-    // it (32-bit vertices), and a mesh refused as "further than the tolerance" must be. A
-    // refusal of a mesh within 0.8 of the tolerance (the samples are a lower bound on the
-    // deviation, so a margin) is a part refused for nothing.
-    // Break-it found flat cones refused at every ordinary tolerance though their meshes were
-    // hundreds of times inside it: OCCT's face estimate (Poly_Triangulation::Deflection, a
-    // sample at each triangle's centroid in the face's parameters, not the nearest point)
-    // is far off on a cone (for r 300 mm, h 1 mm, 1.277 mm at a 1 mm tolerance, where the
-    // mesh is 1.0e-3 mm from it). Fixed as FreeCAD has it: a face's estimate isn't compared
-    // with the tolerance. Where OCCT's mesh is in fact past the tolerance (a sphere, along
-    // its seam), the export takes it as FreeCAD's does: held here to SPHERE_SEAM, and each
-    // miss pinned by a_spheres_mesh_misses_the_tolerance_at_its_seam_by_what_occt_makes.
-    let primitives = [
+/// The round primitives the export is held to rule 7 on, at scales from 10 µm to metres.
+fn round_primitives() -> Vec<Primitive> {
+    vec![
         Primitive::Sphere { radius: 5.0 },
         Primitive::Sphere { radius: 1e-2 },
         Primitive::Sphere { radius: 300.0 },
@@ -194,47 +181,133 @@ fn every_round_primitive_is_exported_exactly_when_its_mesh_is_within_the_toleran
             major_radius: 300.0,
             minor_radius: 1.0,
         },
-    ];
+    ]
+}
+
+/// The tolerances each round primitive is exported at.
+const ROUND_TOLERANCES: [f64; 4] = [1e-2, 0.1, 1.0, 10.0];
+
+/// Whether exporting `primitive` at `tolerance` is one of the two heavy requests, a sphere's
+/// or a torus's past an estimated 1e5 triangles (the 300 mm sphere and torus at 0.01: 8.7 s
+/// and 13.6 s unloaded, 303,100 and 249,610 triangles): run in a test of their own, at a
+/// longer time limit, so the others' stay well within a request's 60 s on a starved shard.
+/// A cylinder's or a cone's mesh is a strip about its rim, far below its estimate (a 1 m
+/// disc at 0.01, estimated 493,000, is 3,992 triangles), and stays with the others.
+fn heavy(primitive: &Primitive, tolerance: f64) -> bool {
+    matches!(
+        primitive,
+        Primitive::Sphere { .. } | Primitive::Torus { .. }
+    ) && estimated_triangles(primitive, tolerance) > 1e5
+}
+
+/// What's wrong, if anything, with `primitive` exported at `tolerance` on `worker`, its
+/// request held to `limit`: a mesh taken must be within the tolerance as a reader gets it,
+/// and one refused as further than the tolerance must be.
+fn round_export_wrong(
+    worker: &mut silico_core::kernel::KernelWorker,
+    primitive: &Primitive,
+    tolerance: f64,
+    limit: std::time::Duration,
+) -> Option<String> {
+    let shape = data(&make(primitive).unwrap());
+    let surface = surface_of(primitive);
+    let request = silico_core::kernel::KernelRequest::export_mesh(&shape, tolerance)
+        .unwrap()
+        .with_timeout(limit);
+    let raw = match worker.run(request) {
+        Ok(raw) => raw,
+        Err(error) => return Some(format!("{primitive:?} at {tolerance}: {error}")),
+    };
+    match printable(&raw, unasked, None) {
+        Ok(mesh) => {
+            let d = deviation(&mesh, &*surface);
+            // A sphere's interior is OCCT's to meet, and misses along its seam by up to 2.1
+            // times (the seam test pins the misses): held to 2.2 times.
+            let bound = match primitive {
+                Primitive::Sphere { .. } => SPHERE_SEAM * tolerance,
+                _ => tolerance,
+            };
+            (d > bound)
+                .then(|| format!("{primitive:?} at {tolerance}: taken, {d} from the surface"))
+        }
+        Err(error) if error.message().contains("further than the tolerance") => {
+            let d = raw_deviation(&raw, &*surface);
+            (d <= 0.8 * tolerance).then(|| {
+                format!(
+                    "{primitive:?} at {tolerance}: refused, but {d} from the surface \
+                     (OCCT's face figures {:?})",
+                    raw.face_deflections
+                )
+            })
+        }
+        Err(error) => Some(format!("{primitive:?} at {tolerance}: {error}")),
+    }
+}
+
+#[test]
+fn every_round_primitive_is_exported_exactly_when_its_mesh_is_within_the_tolerance() {
+    // Rule 7, measured against each primitive's own surface rather than OCCT's figures, at
+    // scales from 10 µm to metres: a mesh taken must be within the tolerance as a reader gets
+    // it (32-bit vertices), and a mesh refused as "further than the tolerance" must be. A
+    // refusal of a mesh within 0.8 of the tolerance (the samples are a lower bound on the
+    // deviation, so a margin) is a part refused for nothing.
+    // Break-it found flat cones refused at every ordinary tolerance though their meshes were
+    // hundreds of times inside it: OCCT's face estimate (Poly_Triangulation::Deflection, a
+    // sample at each triangle's centroid in the face's parameters, not the nearest point)
+    // is far off on a cone (for r 300 mm, h 1 mm, 1.277 mm at a 1 mm tolerance, where the
+    // mesh is 1.0e-3 mm from it). Fixed as FreeCAD has it: a face's estimate isn't compared
+    // with the tolerance. Where OCCT's mesh is in fact past the tolerance (a sphere, along
+    // its seam), the export takes it as FreeCAD's does: held here to SPHERE_SEAM, and each
+    // miss pinned by a_spheres_mesh_misses_the_tolerance_at_its_seam_by_what_occt_makes.
+    // The two heavy requests are the next test's.
     let mut wrong = Vec::new();
     let mut worker = kernel();
-    for primitive in &primitives {
-        let shape = data(&make(primitive).unwrap());
-        let surface = surface_of(primitive);
-        for tolerance in [1e-2, 0.1, 1.0, 10.0] {
-            if estimated_triangles(primitive, tolerance) > 2e6 {
+    let mut cases = 0;
+    for primitive in &round_primitives() {
+        for tolerance in ROUND_TOLERANCES {
+            if estimated_triangles(primitive, tolerance) > 2e6 || heavy(primitive, tolerance) {
                 continue;
             }
-            let raw = worker.export_mesh(&shape, tolerance).unwrap();
-            match printable(&raw, unasked, None) {
-                Ok(mesh) => {
-                    let d = deviation(&mesh, &*surface);
-                    // A sphere's interior is OCCT's to meet, and misses along its seam by
-                    // up to 2.1 times (the next test pins the misses): held to 2.2 times.
-                    let bound = match primitive {
-                        Primitive::Sphere { .. } => SPHERE_SEAM * tolerance,
-                        _ => tolerance,
-                    };
-                    if d > bound {
-                        wrong.push(format!(
-                            "{primitive:?} at {tolerance}: taken, {d} from the surface"
-                        ));
-                    }
-                }
-                Err(error) if error.message().contains("further than the tolerance") => {
-                    let d = raw_deviation(&raw, &*surface);
-                    if d <= 0.8 * tolerance {
-                        wrong.push(format!(
-                            "{primitive:?} at {tolerance}: refused, but {d} from the surface \
-                             (OCCT's face figures {:?})",
-                            raw.face_deflections
-                        ));
-                    }
-                }
-                Err(error) => wrong.push(format!("{primitive:?} at {tolerance}: {error}")),
-            }
+            cases += 1;
+            wrong.extend(round_export_wrong(
+                &mut worker,
+                primitive,
+                tolerance,
+                silico_core::kernel::DEFAULT_TIMEOUT,
+            ));
         }
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
+    // 13 primitives at 4 tolerances, less the two heavy requests.
+    assert_eq!(cases, 50);
+}
+
+#[test]
+fn the_largest_sphere_and_torus_at_the_finest_tolerance_are_exported_within_it() {
+    // The two requests the previous test leaves out for their time, held to the same rule,
+    // each at a limit of 10 minutes, not a request's 60 s: 8.7 s and 13.6 s unloaded, several
+    // times that on a starved shard. The 300 mm sphere at 0.01 is where FreeCAD's mesher
+    // comes nearest SPHERE_SEAM (2.104 of the tolerance, m4.8-export-fable). Left out of
+    // mutants runs for its time (tests/mutants.sh); the gate runs it.
+    let mut wrong = Vec::new();
+    let mut worker = kernel();
+    let mut cases = 0;
+    for primitive in &round_primitives() {
+        for tolerance in ROUND_TOLERANCES {
+            if !heavy(primitive, tolerance) {
+                continue;
+            }
+            cases += 1;
+            wrong.extend(round_export_wrong(
+                &mut worker,
+                primitive,
+                tolerance,
+                std::time::Duration::from_secs(600),
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    assert_eq!(cases, 2);
 }
 
 #[test]
