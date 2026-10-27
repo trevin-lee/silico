@@ -21,13 +21,13 @@
 //! unparsed text. A call's answer is waited for on a thread of its own, which sends
 //! progress if the call asked for it and writes the answer: at most [`MAX_IN_FLIGHT`] such
 //! calls run at once, a call past that answered at once with a refusal. `status`,
-//! `cancel`, `version`, and `schema`, which never wait on a session, take no slot: they're
-//! answered in turn on one thread of the server's, with its other replies, so a `cancel`
-//! is answered even with every slot held. Every message is written whole under one lock
-//! on the output; whether a call is answered or cancelled is decided under a lock of its
-//! own, never the output's, so the reader never waits on a slow client's output but when
-//! the replies it has queued pass [`MAX_QUEUED_REPLIES`] (backpressure, never an unbounded
-//! queue).
+//! `cancel`, `read_logs`, `version`, and `schema`, which never wait on a session, take no
+//! slot: they're answered in turn on one thread of the server's, with its other replies,
+//! so a `cancel` is answered even with every slot held. Every message is written whole
+//! under one lock on the output; whether a call is answered or cancelled is decided under a
+//! lock of its own, never the output's, so the reader never waits on a slow client's output
+//! but when the replies it has queued pass [`MAX_QUEUED_REPLIES`] (backpressure, never an
+//! unbounded queue).
 
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
