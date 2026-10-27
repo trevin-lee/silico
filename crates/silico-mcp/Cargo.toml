@@ -1,0 +1,31 @@
+[package]
+name = "silico-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+# The tests are one program (tests/all_mcp.rs), each file in tests/ a module of it: fewer
+# programs to build and link.
+autotests = false
+
+[dependencies]
+silico-core.workspace = true
+# raw_value: a call's arguments reach the core as the bytes the client sent, and the core's
+# envelope is spliced into each reply as written (docs/design/m4.9-mcp.md, *Exact JSON both
+# ways*).
+serde_json = { workspace = true, features = ["raw_value"] }
+serde.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+jsonschema.workspace = true
+silico-core = { workspace = true, features = ["fake"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[[test]]
+name = "all_mcp"
+path = "tests/all_mcp.rs"

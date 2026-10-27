@@ -780,6 +780,106 @@ fn status_and_cancel_are_answered_when_waited_on_not_when_called() {
 }
 
 #[test]
+fn each_commands_calling_is_answered_when_waited_on_exactly_as_the_command_says() {
+    // The five that take no place in a session's queue, written out by hand (the design's
+    // *Running a call*): the rest run off the caller's thread, and are waited on.
+    let later: Vec<Command> = Command::ALL
+        .into_iter()
+        .filter(|c| c.answered_when_waited())
+        .collect();
+    assert_eq!(
+        later,
+        [
+            Command::Version,
+            Command::Status,
+            Command::Cancel,
+            Command::Schema,
+            Command::ReadLogs
+        ]
+    );
+    // Each command's own example request (the contract's, which its reader takes), on a
+    // session open as s1: the call's kind is the command's.
+    let f = fixture();
+    f.opened();
+    for command in Command::ALL {
+        let name = command.as_str();
+        let example = match command {
+            Command::Angle => "wedge.json",
+            Command::Distance => "box-bottom-and-top.json",
+            Command::MassProperties => "every-body.json",
+            Command::Query => "largest-face-up.json",
+            Command::Schema => "request-document.json",
+            _ => "request.json",
+        };
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/contract/commands/examples")
+            .join(name)
+            .join(example);
+        let request = std::fs::read_to_string(&path).unwrap();
+        let calling = f.calling(name, &request);
+        assert_eq!(
+            calling.waits_on_nothing(),
+            command.answered_when_waited(),
+            "{name}"
+        );
+        let answer = answered(calling);
+        // Read by its reader, so it isn't a refusal of the request: it ran, or its typed
+        // method refused it (a feature the box hasn't, say).
+        let envelope = envelope(&answer);
+        if !answer.ok {
+            let code = envelope["errors"][0]["code"].as_str().unwrap();
+            assert!(
+                !envelope["errors"][0]["message"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(" is missing"),
+                "{name}: {}",
+                answer.text
+            );
+            assert_ne!(code, "internal", "{name}: {}", answer.text);
+        }
+    }
+    // A request refused before it ran is answered when it's waited on, whatever its
+    // command; `version`'s `{}` is its whole request, and runs, as it's answered.
+    for command in Command::ALL {
+        let calling = f.calling(command.as_str(), "{}");
+        assert!(calling.waits_on_nothing(), "{command}");
+        let _ = answered(calling);
+        let calling = f.calling(command.as_str(), "not json");
+        assert!(calling.waits_on_nothing(), "{command}");
+        assert!(!answered(calling).ok, "{command}");
+    }
+}
+
+#[test]
+fn a_command_called_as_one_answers_as_it_does_called_by_its_name() {
+    let f = fixture();
+    f.opened();
+    for (command, arguments) in [
+        (Command::Version, "{}"),
+        (Command::Outline, r#"{"session": "s1"}"#),
+        (Command::Check, "{}"),
+        (Command::Text, r#"{"session": "s9", "feature": null}"#),
+    ] {
+        let by_name = answered(f.calling(command.as_str(), arguments));
+        let typed = answered(f.sessions.call_command(command, arguments));
+        assert_eq!(typed, by_name, "{command}");
+    }
+}
+
+#[test]
+fn a_refused_answer_is_the_cores_refused_envelope_on_one_line() {
+    let problems = silico_core::command::Problems::from(silico_core::Error::new(
+        silico_core::ErrorCode::InvalidInput,
+        "no",
+    ));
+    let answer = Answered::refused(problems);
+    assert!(!answer.ok);
+    assert_eq!(answer.png, None);
+    assert_eq!(answer.text, refusal("no", None, None));
+}
+
+#[test]
 fn a_call_running_gives_its_progress_waits_again_and_is_stopped_by_its_stopper() {
     let f = fixture();
     f.file("part.silico", BOX);

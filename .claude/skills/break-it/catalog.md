@@ -199,6 +199,10 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Snapshots' integers (`"type": "integer"`) against a reader that takes digits only: JSON Schema calls `2.0` and `1e3` integers, and a `uint64` with no `maximum` takes 2^64, so a request the schema validates is refused; validate each refused spelling against the snapshot
 - Values the core derives and sends on (a circle's centre as a point to measure from), refused by the request's own check: the refusal is worded as the caller's (`invalid_input`, "change the value the message names") for a value it never gave; forge a description past the check's bound and read the error as the caller would
 - A command pipelined right after the `open` of the session it names (IDs are given in call order, so predictable): refused "no session s1 is open" when called before the open's thread records the session, run when after; the same calls in the same order, answered by timing
+- Line caps against CRLF: a message of exactly the cap sent with `\r\n` is refused when its carriage return counts toward the length, though the same bytes with `\n` are read
+- JSON-RPC frames refused for a member given twice (two `params`, two `jsonrpc`): answered with a null ID though the one `id` was readable, so the client waits on its request forever
+- IDs, progress tokens, and cancels' `requestId`s that are valid JSON strings but no Unicode (`"\ud800"`): a decoder that refuses them calls the string "neither a string nor a number"
+- Every JSON-RPC refusal path (params, `_meta`, a progress token, not just the tool's name) checked for a suggestion, not only a message and a parameter
 
 ## Kernel worker and IPC
 

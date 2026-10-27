@@ -46,7 +46,9 @@ fn a_render_to_a_file_is_a_png_of_the_size_asked_and_the_result_says_its_bytes()
         width: 120,
         height: 90,
         highlight: vec![],
-        to: Some(dir.join("view.png")),
+        // Spelt otherwise than through its links on every system, so a result that resolved
+        // it would differ.
+        to: Some(dir.join(".").join("view.png")),
         replace: false,
     };
     let done = render(
@@ -63,7 +65,10 @@ fn a_render_to_a_file_is_a_png_of_the_size_asked_and_the_result_says_its_bytes()
     )
     .unwrap();
     let path = done.result.path.clone().unwrap();
-    assert_eq!(path, std::fs::canonicalize(dir.join("view.png")).unwrap());
+    // The request's own bytes (#182: a result's path is the request's), not the path through
+    // its links (on macOS, the temporary directory's /var is a link to /private/var), and not
+    // `Path`'s equality, which takes `a//b` and `a/./b` for `a/b`: an `OsStr`'s is its bytes'.
+    assert_eq!(path.as_os_str(), request.to.as_ref().unwrap().as_os_str());
     let bytes = std::fs::read(&path).unwrap();
     assert_eq!(bytes, done.png);
     assert_eq!(done.result.png_bytes, bytes.len() as u64);

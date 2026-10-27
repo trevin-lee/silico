@@ -17,6 +17,7 @@ silico-protocol = { path = "crates/silico-protocol" }
 silico-kernel = { path = "crates/silico-kernel" }
 silico-oracle = { path = "crates/silico-oracle" }
 silico-worker = { path = "crates/silico-worker" }
+silico-mcp = { path = "crates/silico-mcp" }
 cxx = "1.0"
 cxx-build = "1.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -68,6 +69,9 @@ smallvec = "1"
 # The render worker's PNG (silico-render), the version Rerun already brings.
 png = "0.18"
 tracing = "0.1"
+# SIGTERM for `silico serve` (MCP's stdio shutdown), through its safe `flag::register`: no
+# `unsafe` of Silico's own.
+signal-hook = { version = "0.3", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [workspace.lints.rust]
