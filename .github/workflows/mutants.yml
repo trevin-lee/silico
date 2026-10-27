@@ -223,13 +223,14 @@ jobs:
           # make each switch between them rebuild everything.
           # At least a tenth of the machine each (3 threads of 30), a long run's shard or
           # another's, and up to a fifth while CPUs sit idle (.github/shard-threads.sh: those
-          # idle as it starts, beyond a quarter kept for a gate). At a fixed 4 threads a long
-          # shard (34 in all), the VM reached a load of 103 on 30 threads beside three gates,
-          # and a shard's baseline missed a wall clock (2026-10-27, run 40486344701); a test
-          # killed at nextest's limit would count its mutant as caught. At a fixed 3, a long
-          # run's backlog left the VM a third idle once the merge lane emptied (2026-10-27,
-          # ~/.cache/silico-review/ci-ext4/idle-after-210.tsv). The tests held to a wall clock
-          # skipped here (tests/mutants.sh) are the ones a busy VM fails.
+          # idle as it starts, beyond a quarter kept for a gate and what other shards hold, so
+          # the shards' total stays near the VM's 30, within the 24 to 28 the tests held to a
+          # wall clock were measured at, plus the floor). At a fixed 4 threads a long shard (34
+          # in all), the VM reached a load of 103 on 30 threads beside three gates, and a
+          # shard's baseline missed a wall clock (2026-10-27, run 40486344701); a test killed
+          # at nextest's limit would count its mutant as caught. At a fixed 3, a long run's
+          # backlog left the VM a third idle once the merge lane emptied (2026-10-27,
+          # ~/.cache/silico-review/ci-ext4/idle-after-210.tsv).
           running=10
           priority=(nice -n 19)
           # A Cargo home of its own, filler's or a real shard's: at the idle CPU weight a shard
@@ -244,7 +245,16 @@ jobs:
           share=$(( $(nproc) / running > 2 ? $(nproc) / running : 2 ))
           chosen="$share threads, a filler shard's share"
           if [ -z "$FILLER" ]; then
-            { read -r share; read -r chosen; } < <(bash .github/shard-threads.sh "$share" $((2 * share)))
+            # The fixed share if it can't choose: a fault here shouldn't fail a run.
+            if threads=$(bash .github/shard-threads.sh "$share" $((2 * share))); then
+              share=${threads%%$'\n'*}
+              chosen=${threads#*$'\n'}
+            else
+              chosen="$share threads: .github/shard-threads.sh failed"
+            fi
+          else
+            # A real shard's claim this runner's last job left, if it died before releasing it.
+            bash .github/shard-threads.sh release
           fi
           echo "Shard $SHARD: $chosen" | tee -a "$GITHUB_STEP_SUMMARY"
           export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share NEXTEST_RETRIES=2
@@ -287,6 +297,10 @@ jobs:
       - name: Remove the test scratch
         if: ${{ always() }}
         run: bash .github/scratch.sh end
+      # The threads this shard held, for the shards that start after it.
+      - name: Release the shard's threads
+        if: ${{ always() }}
+        run: bash .github/shard-threads.sh release
 
   summary:
     needs: [plan, shard]
@@ -373,7 +387,7 @@ jobs:
             # Each shard's threads, as it chose them (.github/shard-threads.sh).
             if compgen -G 'shards/*/threads' >/dev/null; then
               echo
-              for threads in shards/*/threads; do
+              for threads in $(printf '%s\n' shards/*/threads | sort -V); do
                 shard=${threads#shards/mutants-shard-}
                 echo "- Shard ${shard%/threads}: $(cat "$threads")"
               done
