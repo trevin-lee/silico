@@ -109,7 +109,12 @@ fn an_occt_warning_in_a_worker_traces_back_to_the_step_and_the_edit_with_more_wo
     }
     let lines = seen.lock().unwrap().clone();
     for (spans, feature) in &lines {
-        assert_eq!(spans, &["recompute_step", "recompute", "user_edit"]);
+        // Under the span of the call's lines (M4.7), within the step, the recompute, and
+        // the edit.
+        assert_eq!(
+            spans,
+            &["worker_lines", "recompute_step", "recompute", "user_edit"]
+        );
         // The fuse warned, so the line names it.
         assert_eq!(feature.as_deref(), Some("f0000001"));
     }

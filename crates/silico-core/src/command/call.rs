@@ -16,9 +16,10 @@
 //! `call` never waits on a session: a command it starts is queued on its session (or, for a
 //! read of the published model, started on a thread of its own) and runs off the caller's
 //! thread, so commands a caller sends to one session reach it in the order sent, and `open`s
-//! take their session IDs in that order. `status`, `cancel`, `version`, and `schema`, which
-//! take no place in a session's queue, are answered when the [`Calling`] is waited on, on
-//! the waiting thread, so the caller (MCP's reader) never takes what they lock.
+//! take their session IDs in that order. `status`, `cancel`, `read_logs`, `version`, and
+//! `schema`, which take no place in a session's queue, are answered when the [`Calling`] is
+//! waited on, on the waiting thread, so the caller (MCP's reader) never takes what they
+//! lock.
 
 use std::time::Duration;
 
@@ -29,6 +30,7 @@ use super::wire::edits::{
 };
 use super::wire::elements::{ElementsRequest, QueryRequest};
 use super::wire::export::ExportRequest;
+use super::wire::logs::ReadLogsRequest;
 use super::wire::measure::{MassPropertiesRequest, PairRequest};
 use super::wire::reads::{CheckRequest, TextRequest};
 use super::wire::render::RenderRequest;
@@ -69,12 +71,13 @@ pub enum Command {
     Distance,
     Angle,
     Render,
+    ReadLogs,
     Export,
 }
 
 impl Command {
     /// Every command, in the design's order.
-    pub const ALL: [Command; 25] = [
+    pub const ALL: [Command; 26] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -99,6 +102,7 @@ impl Command {
         Command::Distance,
         Command::Angle,
         Command::Render,
+        Command::ReadLogs,
         Command::Export,
     ];
 
@@ -129,6 +133,7 @@ impl Command {
             Command::Distance => "distance",
             Command::Angle => "angle",
             Command::Render => "render",
+            Command::ReadLogs => "read_logs",
             Command::Export => "export",
         }
     }
@@ -143,11 +148,15 @@ impl Command {
     /// Whether the command is answered when its [`Calling`] is waited on, on the waiting
     /// thread, from what the sessions hold then: taking no place in a session's queue, it
     /// never waits on one (so a transport needn't give it a thread or a slot of its own).
-    /// `status`, `cancel`, `version`, and `schema`; every other command runs off the
+    /// `status`, `cancel`, `read_logs`, `version`, and `schema`; every other command runs off the
     /// caller's thread, and is waited on. Every command matched, so a new one must say.
     pub const fn answered_when_waited(self) -> bool {
         match self {
-            Command::Version | Command::Status | Command::Cancel | Command::Schema => true,
+            Command::Version
+            | Command::Status
+            | Command::Cancel
+            | Command::ReadLogs
+            | Command::Schema => true,
             Command::Open
             | Command::Close
             | Command::Begin
@@ -446,8 +455,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// whose answer is its envelope (refused, `ok` false, for a request either reader
     /// refuses). Never waits on a session: the command is queued (or, a published read,
     /// started) before this returns, so a caller's commands to one session run in the
-    /// order it sent them. `status`, `cancel`, `version`, and `schema` are answered when the
-    /// call is waited on, on the waiting thread ([`Command::answered_when_waited`]).
+    /// order it sent them. `status`, `cancel`, `read_logs`, `version`, and `schema` are
+    /// answered when the call is waited on, on the waiting thread
+    /// ([`Command::answered_when_waited`]).
     pub fn call_command(&self, command: Command, arguments: &str) -> Calling {
         let _span = tracing::info_span!("call", command = command.as_str()).entered();
         match json::read(arguments.as_bytes()) {
@@ -532,6 +542,12 @@ impl<P: Clients + 'static> Sessions<P> {
                 Ok(r) => Calling::waiting(self.render(&r.session, r.model, r.render), rendered),
                 Err(problems) => Calling::refused(problems),
             },
+            Command::ReadLogs => {
+                let sessions: WeakSessions<P> = self.weak();
+                later(ReadLogsRequest::read(request), move |r| {
+                    sessions.read_logs(&r.session, &r.query)
+                })
+            }
             Command::Export => typed(ExportRequest::read(request), |r| {
                 self.export(&r.session, r.export)
             }),

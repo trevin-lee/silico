@@ -431,8 +431,8 @@ fn version_and_open_take_only_their_fields_and_require_each() {
 fn cancel_names_only_a_command_and_any_other_name_is_refused_with_every_command_as_candidates() {
     let text = example("cancel/request");
     let names: Vec<String> = SESSION_COMMANDS.map(str::to_owned).to_vec();
-    // A name close to one, a command not built yet, the session's own probe, commands that
-    // never run in a session, and other types.
+    // A name close to one, the session's own probe, commands that never run in a session
+    // (`read_logs` among them, answered at once), and other types.
     for (value, got) in [
         (r#""Check""#, "Check"),
         (r#""check ""#, r#""check ""#),
@@ -566,22 +566,13 @@ fn checks_fresh_is_refused_with_the_published_model_and_taken_with_the_current()
 }
 
 #[test]
-fn version_is_answered_with_the_limits_built_so_far_and_no_session() {
-    // By hand: the design's result less the limits of commands not built yet (read_logs'
-    // and export's), which is why its example isn't in the contract.
+fn version_is_answered_with_every_limit_as_the_design_gives_them_and_no_session() {
+    // The design's own result, byte for byte, every limit at its value (section 6).
     let text = written(&VERSION);
-    assert_eq!(
-        text,
-        "{\n  \"api\": 1,\n  \"format\": 1,\n  \"naming\": 5,\n  \"limits\": {\"document_bytes\": 16777216, \"request_bytes\": 67108864, \"request_depth\": 64, \"response_bytes\": 134217728, \"listed\": 100, \"sessions\": 16, \"published_reads\": 8, \"elements\": 1000, \"query\": 1000, \"query_measures\": 7, \"highlight\": 1000, \"render_side\": 4096, \"render_seconds\": 30, \"kernel_seconds\": 60, \"sketch_seconds\": 300}\n}\n"
-    );
-    holds(&schema_of("version", "result"), &text, "version");
-    // The design's, with those limits, is the target: the snapshot doesn't take it yet.
     let designed = &design("### `version` (M4.2)", "### `open` (M4.2)")[1];
-    assert!(
-        designed.contains("\"export_triangles\": 10000000"),
-        "{designed}"
-    );
-    fails(&schema_of("version", "result"), designed, "the design's");
+    assert_eq!(text, format!("{designed}\n"));
+    assert_eq!(text, example("version/result"));
+    holds(&schema_of("version", "result"), &text, "version");
     // Its envelope: no session, no model.
     let ran = Response {
         session: None,
@@ -627,13 +618,23 @@ fn version_is_answered_with_the_limits_built_so_far_and_no_session() {
             highlight: 23,
             render_side: 24,
             render_seconds: 25,
+            log_read_events: 26,
+            log_read_bytes: 27,
+            log_events: 28,
+            log_bytes: 29,
+            export_tolerance: [
+                document::Length::from_nm(1),
+                document::Length::from_nm(30_000_000),
+            ],
+            export_triangles: 31,
+            export_bytes: 32,
             kernel_seconds: 21,
             sketch_seconds: 22,
         },
     };
     assert_eq!(
         one_line(&other),
-        r#"{"api": 2, "format": 3, "naming": 4, "limits": {"document_bytes": 11, "request_bytes": 12, "request_depth": 13, "response_bytes": 14, "listed": 15, "sessions": 16, "published_reads": 17, "elements": 18, "query": 19, "query_measures": 20, "highlight": 23, "render_side": 24, "render_seconds": 25, "kernel_seconds": 21, "sketch_seconds": 22}}"#
+        r#"{"api": 2, "format": 3, "naming": 4, "limits": {"document_bytes": 11, "request_bytes": 12, "request_depth": 13, "response_bytes": 14, "listed": 15, "sessions": 16, "published_reads": 17, "elements": 18, "query": 19, "query_measures": 20, "highlight": 23, "render_side": 24, "render_seconds": 25, "log_read_events": 26, "log_read_bytes": 27, "log_events": 28, "log_bytes": 29, "export_tolerance": [0.000001, 30], "export_triangles": 31, "export_bytes": 32, "kernel_seconds": 21, "sketch_seconds": 22}}"#
     );
     holds(&schema_of("version", "result"), &written(&other), "another");
 }
@@ -974,7 +975,7 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
             "VersionRequest",
             &[][..],
             "VersionResult",
-            &["Limits"][..],
+            &["Length", "Limits"][..],
         ),
         (
             "open",

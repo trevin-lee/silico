@@ -23,6 +23,7 @@ use super::{
 };
 use crate::cache::Cache;
 use crate::command::edit::FeatureIds;
+use crate::command::logs::LogBuffer;
 use crate::document::json::MAX_INPUT_LEN;
 use crate::document::{self, Document, FormatVersion, NamingScheme, Units};
 use crate::file::{self, Unresolved, Workspace};
@@ -149,6 +150,8 @@ pub(super) struct Opening<C: Kernel + 'static> {
     /// How far its newest rebuild has got, which its queued commands' handles read: the
     /// session's own once it opens.
     pub(super) newest: Arc<Newest>,
+    /// Its logs, kept from the open on: the session's own once it opens.
+    pub(super) logs: Arc<LogBuffer>,
     /// Its published reads sent now, in the order sent: each started as the session opens,
     /// beside its queue, as one sent then would be.
     pub(super) reads: Vec<Job<C>>,
@@ -200,7 +203,11 @@ pub(super) fn start<P: Clients + 'static>(
         let Some(opening) = book.opening.get(&id) else {
             return Err(Problems::from(closing()));
         };
-        let (queue, newest) = (opening.queue.clone(), Arc::clone(&opening.newest));
+        let (queue, newest, logs) = (
+            opening.queue.clone(),
+            Arc::clone(&opening.newest),
+            Arc::clone(&opening.logs),
+        );
         // From here it opens, unless it was cancelled first (the file it made goes as above).
         ticket.settle()?;
         let session = Arc::new(Session {
@@ -224,6 +231,7 @@ pub(super) fn start<P: Clients + 'static>(
             reads: Mutex::new(Reads::new()),
             command: Mutex::new(None),
             newest,
+            logs,
             #[cfg(test)]
             gate: super::Gate::default(),
             #[cfg(test)]
