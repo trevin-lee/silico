@@ -19,6 +19,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use serde::Serialize;
 use silico_core::cache::Cache;
 use silico_core::command::{self, CheckModel, Problems, Response, SessionId, Sessions};
 use silico_core::file::opened_and_read;
@@ -554,18 +555,85 @@ fn check(sessions: &Sessions<KernelPool>, file: &Path, json: bool, fresh: bool) 
 
 /// `check --json`'s line for a file it checked: `{"file", "ok", "problems", "total"}`.
 fn problems_line(file: &Path, errors: &[Error], total: u64) {
-    line(serde_json::json!({
-        "file": named(file),
-        "ok": total == 0,
-        "problems": errors,
-        "total": total,
-    }));
+    line(&ProblemsLine::new(file, errors, total));
 }
 
 /// `check --json`'s line for a file it couldn't check: `{"file", "ok": false, "error"}`.
 fn failed_line(file: &Path, error: &Error) -> Ended {
-    line(serde_json::json!({"file": named(file), "ok": false, "error": error}));
+    line(&FailedLine::new(file, error));
     Ended::Failed
+}
+
+/// `check --json`'s line for a file it checked, its keys sorted, as the contract
+/// (`tests/contract/check-line.json`) holds them. A struct, not a `serde_json::Value`: a
+/// value's keys come out in the order they were added, not sorted, in a build where any
+/// crate turns on serde_json's `preserve_order`.
+#[derive(Serialize)]
+struct ProblemsLine<'a> {
+    file: String,
+    ok: bool,
+    problems: Vec<LineError<'a>>,
+    total: u64,
+}
+
+impl<'a> ProblemsLine<'a> {
+    fn new(file: &Path, errors: &'a [Error], total: u64) -> Self {
+        ProblemsLine {
+            file: named(file),
+            ok: total == 0,
+            problems: errors.iter().map(LineError::new).collect(),
+            total,
+        }
+    }
+}
+
+/// `check --json`'s line for a file it couldn't check, its keys sorted.
+#[derive(Serialize)]
+struct FailedLine<'a> {
+    error: LineError<'a>,
+    file: String,
+    ok: bool,
+}
+
+impl<'a> FailedLine<'a> {
+    fn new(file: &Path, error: &'a Error) -> Self {
+        FailedLine {
+            error: LineError::new(error),
+            file: named(file),
+            ok: false,
+        }
+    }
+}
+
+/// An error in the core's error contract, as a `check --json` line holds it: every field
+/// the error writes, its keys sorted.
+#[derive(Serialize)]
+struct LineError<'a> {
+    candidates: &'a [String],
+    cause: Option<&'a str>,
+    code: ErrorCode,
+    elements: &'a [String],
+    elements_total: u64,
+    feature: Option<&'a str>,
+    message: &'a str,
+    parameter: Option<&'a str>,
+    suggestion: Option<&'a str>,
+}
+
+impl<'a> LineError<'a> {
+    fn new(error: &'a Error) -> Self {
+        LineError {
+            candidates: error.candidates(),
+            cause: error.cause(),
+            code: error.code(),
+            elements: error.elements(),
+            elements_total: error.elements_total(),
+            feature: error.feature(),
+            message: error.message(),
+            parameter: error.parameter(),
+            suggestion: error.suggestion(),
+        }
+    }
 }
 
 /// `silico fmt FILE`: open, the session's `format` with no features named (every drift
@@ -860,8 +928,14 @@ fn shown(file: &Path) -> String {
     }
 }
 
-fn line(value: serde_json::Value) {
-    let _ = writeln!(std::io::stdout().lock(), "{value}");
+/// `value` as one line of JSON on stdout.
+fn line(value: &impl Serialize) {
+    match serde_json::to_string(value) {
+        Ok(text) => {
+            let _ = writeln!(std::io::stdout().lock(), "{text}");
+        }
+        Err(e) => say!("silico: a JSON line couldn't be written: {e}"),
+    }
 }
 
 /// Each of `errors` on stderr, after the file it's about: its code and words, then the
@@ -886,10 +960,118 @@ mod tests {
     use silico_core::command::{NOT_RELOADED, Problems};
     use silico_core::{Error, ErrorCode};
 
-    use super::{Ended, Refusal, with_retry};
+    use super::{Ended, FailedLine, LineError, ProblemsLine, Refusal, with_retry};
 
     fn failed(ended: &Ended) -> bool {
         matches!(ended, Ended::Failed)
+    }
+
+    /// An error with every field of the contract set.
+    fn every_field() -> Error {
+        Error::new(ErrorCode::ReferenceBroken, "m \"q\"")
+            .with_feature("k7f2qx3m")
+            .with_elements(["Edge1", "Edge2"])
+            .with_elements_total(5)
+            .with_parameter("edges")
+            .with_cause("c")
+            .with_suggestion("s")
+            .with_candidates(["Edge3"])
+    }
+
+    #[test]
+    fn a_values_keys_keep_the_order_they_were_put_in() {
+        // The workspace's serde_json has `preserve_order` (Cargo.toml says why): a `Value`'s
+        // keys come out in the order they went in, in every build. Without it, they'd come
+        // out sorted in a build where nothing else turns the feature on, as `-p silico-cli`
+        // is: this fails then.
+        let value = serde_json::json!({"zeta": 1, "alpha": {"mu": 2, "beta": 3}, "kappa": [4]});
+        assert_eq!(
+            serde_json::to_string(&value).unwrap(),
+            r#"{"zeta":1,"alpha":{"mu":2,"beta":3},"kappa":[4]}"#
+        );
+    }
+
+    #[test]
+    fn the_workspaces_serde_json_keeps_a_values_keys_in_order() {
+        // The test above can only fail in a build where nothing else turns `preserve_order`
+        // on, as `-p silico-cli` is; the workspace's build gets it from Rerun anyway. So the
+        // declaration itself is checked too: dropped from Cargo.toml, this fails in every
+        // build.
+        let manifest =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml"))
+                .unwrap();
+        let line = manifest
+            .lines()
+            .find(|line| line.starts_with("serde_json = "))
+            .unwrap();
+        assert!(line.contains(r#""preserve_order""#), "{line}");
+    }
+
+    #[test]
+    fn check_jsons_lines_have_their_keys_sorted_in_any_build() {
+        // tests/contract/check-line.json's order, every object's keys sorted, from the text
+        // itself: serde_json's `Value` sorts them only in a build where nothing turns on its
+        // `preserve_order` (Rerun does), so a line built from one came out in another order
+        // in the workspace's build.
+        let error = every_field();
+        let errors = [error.clone(), Error::new(ErrorCode::InvalidInput, "n")];
+        let problems =
+            serde_json::to_string(&ProblemsLine::new(Path::new("a b.silico"), &errors, 7)).unwrap();
+        assert_eq!(
+            problems,
+            concat!(
+                r#"{"file":"a b.silico","ok":false,"problems":["#,
+                r#"{"candidates":["Edge3"],"cause":"c","code":"reference_broken","#,
+                r#""elements":["Edge1","Edge2"],"elements_total":5,"feature":"k7f2qx3m","#,
+                r#""message":"m \"q\"","parameter":"edges","suggestion":"s"},"#,
+                r#"{"candidates":[],"cause":null,"code":"invalid_input","elements":[],"#,
+                r#""elements_total":0,"feature":null,"message":"n","parameter":null,"#,
+                r#""suggestion":null}],"total":7}"#,
+            )
+        );
+        let none =
+            serde_json::to_string(&ProblemsLine::new(Path::new("ok.silico"), &[], 0)).unwrap();
+        assert_eq!(
+            none,
+            r#"{"file":"ok.silico","ok":true,"problems":[],"total":0}"#
+        );
+        let failed =
+            serde_json::to_string(&FailedLine::new(Path::new("m.silico"), &error)).unwrap();
+        assert_eq!(
+            failed,
+            concat!(
+                r#"{"error":{"candidates":["Edge3"],"cause":"c","code":"reference_broken","#,
+                r#""elements":["Edge1","Edge2"],"elements_total":5,"feature":"k7f2qx3m","#,
+                r#""message":"m \"q\"","parameter":"edges","suggestion":"s"},"#,
+                r#""file":"m.silico","ok":false}"#,
+            )
+        );
+    }
+
+    #[test]
+    fn a_lines_error_writes_every_field_the_core_writes() {
+        // The line's error is the core's contract (Error's own Serialize), its keys sorted:
+        // a field the core's error gains is one the line must write too.
+        let error = every_field();
+        let keys = |text: String| {
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let serde_json::Value::Object(map) = value else {
+                panic!("{text}");
+            };
+            let mut keys: Vec<String> = map.into_iter().map(|(k, _)| k).collect();
+            keys.sort();
+            keys
+        };
+        let core = keys(serde_json::to_string(&error).unwrap());
+        let line = keys(serde_json::to_string(&LineError::new(&error)).unwrap());
+        assert_eq!(line, core);
+        assert_eq!(core.len(), 9);
+        // And each value as the core writes it.
+        let core: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&error).unwrap()).unwrap();
+        let line: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&LineError::new(&error)).unwrap()).unwrap();
+        assert_eq!(line, core);
     }
 
     #[test]

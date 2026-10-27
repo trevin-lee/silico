@@ -536,9 +536,9 @@ fn checking_several_files_starts_its_workers_once_whatever_their_directories() {
     }
 }
 
-/// What `tests/contract/check-line.json` pins: the line `silico check --json` writes for
-/// a document with problems, and for a file it couldn't check.
-fn check_lines(scratch: &Scratch) -> serde_json::Value {
+/// What `silico check --json` writes for a document with problems, and for a file it
+/// couldn't check: its two lines, as text.
+fn check_text(scratch: &Scratch) -> String {
     let bad = scratch.0.join("bad.silico");
     std::fs::write(&bad, EXAMPLE.replace(r#""length": 40"#, r#""length": 0"#)).unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_silico"));
@@ -550,8 +550,13 @@ fn check_lines(scratch: &Scratch) -> serde_json::Value {
         .stdin(Stdio::null());
     let out = run::output(cmd);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    let lines: Vec<serde_json::Value> = String::from_utf8(out.stdout)
-        .unwrap()
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// What `tests/contract/check-line.json` pins: the line `silico check --json` writes for
+/// a document with problems, and for a file it couldn't check.
+fn check_lines(scratch: &Scratch) -> serde_json::Value {
+    let lines: Vec<serde_json::Value> = check_text(scratch)
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
@@ -574,6 +579,33 @@ fn check_jsons_lines_are_the_contracts() {
     let contract: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(check_lines(&scratch), contract);
+}
+
+#[test]
+fn check_jsons_lines_hold_their_keys_in_the_contracts_order_in_any_build() {
+    // The lines' text, not a value read from it (which compares objects whatever their
+    // keys' order): every object's keys sorted, as tests/contract/check-line.json holds
+    // them, whether or not something in the build turns on serde_json's `preserve_order`
+    // (Rerun does, in the workspace's build), which a line built as a `serde_json::Value`
+    // came out in the order its keys were added in, the error's in its fields' order.
+    let scratch = Scratch::new("contract-text");
+    assert_eq!(
+        check_text(&scratch),
+        concat!(
+            r#"{"file":"bad.silico","ok":false,"problems":[{"candidates":[],"cause":null,"#,
+            r#""code":"invalid_input","elements":[],"elements_total":0,"feature":"k7f2qx3m","#,
+            r#""message":"box length must be a length above 1e-7 mm and at most 1e6 mm (a "#,
+            r#"kilometre), got 0","parameter":"length","suggestion":"give the box a valid "#,
+            r#"length"}],"total":1}"#,
+            "\n",
+            r#"{"error":{"candidates":[],"cause":null,"code":"io_failed","elements":[],"#,
+            r#""elements_total":0,"feature":null,"message":"couldn't be read: No such file "#,
+            r#"or directory (os error 2)","parameter":null,"suggestion":"check the file's "#,
+            r#"name, and that it's a regular file this user may read"},"file":"missing.silico","#,
+            r#""ok":false}"#,
+            "\n",
+        )
+    );
 }
 
 /// M3.4: a 40 × 20 rectangle, fully constrained, its first corner at the origin, drawn

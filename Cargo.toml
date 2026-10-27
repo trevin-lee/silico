@@ -22,7 +22,13 @@ cxx-build = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 # float_roundtrip: every build parses floats exactly (jsonschema, a dev-dependency, turns it
 # on, so builds with and without it would otherwise parse FreeCAD's numbers differently).
-serde_json = { version = "1.0", features = ["float_roundtrip"] }
+# preserve_order: a `Value`'s keys keep the order they were put in, in every build. Without
+# it, their order depends on whether something else in the build turns the feature on (Cargo
+# unifies features), so the same code wrote `check --json`'s lines and MCP's `initialize`
+# in another order in the workspace's build than in one crate's (M4.9). Output is still
+# written from structs or sorted (`document::sorted`); this makes a `Value` that slips
+# through the same everywhere. Numbers are untouched (no arbitrary_precision: decision 23).
+serde_json = { version = "1.0", features = ["float_roundtrip", "preserve_order"] }
 schemars = "1.0"
 postcard = { version = "1.1", default-features = false, features = ["use-std"] }
 serde_bytes = "0.11"
