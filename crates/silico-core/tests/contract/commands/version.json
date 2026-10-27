@@ -24,6 +24,28 @@
             "minimum": 0,
             "type": "integer"
           },
+          "export_bytes": {
+            "description": "The most bytes one `3mf` export's archive may be (a plain zip's, with no ZIP64):\npast it, refused, naming `tolerance`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "export_tolerance": {
+            "description": "The least and the most tolerance a `3mf` export takes, in millimetres.",
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "export_triangles": {
+            "description": "The most triangles one `3mf` export writes, every part's in all: past it, refused,\nnaming `tolerance`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "highlight": {
             "description": "The most elements one `render` highlights.",
             "format": "uint64",
@@ -38,6 +60,30 @@
           },
           "listed": {
             "description": "How many errors (or problems, or warnings) a response lists: the rest are counted,\nnever refused.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "log_bytes": {
+            "description": "The most text a session's log buffer keeps, in bytes, counted as a read counts it:\nnot refused, the oldest events are dropped and counted.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "log_events": {
+            "description": "The most events a session's log buffer keeps: not refused, the oldest are dropped\nand counted (`read_logs`' `dropped`).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "log_read_bytes": {
+            "description": "The most text one `read_logs` returns, in bytes (its events' messages, spans, and\nfeatures): a read stops before the event that would pass it, its `next` saying where.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "log_read_events": {
+            "description": "The most events one `read_logs` returns: its `limit` at most.",
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
@@ -106,9 +152,16 @@
         "required": [
           "document_bytes",
           "elements",
+          "export_bytes",
+          "export_tolerance",
+          "export_triangles",
           "highlight",
           "kernel_seconds",
           "listed",
+          "log_bytes",
+          "log_events",
+          "log_read_bytes",
+          "log_read_events",
           "published_reads",
           "query",
           "query_measures",

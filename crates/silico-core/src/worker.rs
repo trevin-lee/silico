@@ -616,7 +616,11 @@ impl Worker {
         // any level they trace back to it (ARCHITECTURE.md, invariant 9). The log sink runs
         // only outside the lock, which the log thread takes for every line: taking the span,
         // and warning of and letting go of one pushed out.
-        let asked_in = tracing::Span::current();
+        // Under a span of their own, at error level, within the one it was asked in: every
+        // layer keeps it whatever it filters (a log's `SILICO_LOG`, beside the session logs'
+        // layer, which keeps every level), so each files the lines under the nearest span it
+        // keeps of those above.
+        let asked_in = tracing::error_span!("worker_lines", trace = trace.0);
         let pushed_out = lock(&self.callers).push(trace.0, asked_in);
         pushed_out_of_callers(pushed_out);
         let span = tracing::debug_span!(
@@ -698,9 +702,20 @@ impl Worker {
                     // Checked before it's described, so a refusal the request can't explain
                     // (a broken worker's) costs no more than the request does.
                     Err(failure) => match refusal_fits(&failure.refusal, listed.as_deref()) {
-                        Ok(()) => Err(failure_error_with_edge_names(
-                            self.kind, name, failure, names,
-                        )),
+                        Ok(()) => {
+                            let error =
+                                failure_error_with_edge_names(self.kind, name, failure, names);
+                            // In the call's span, so a session's logs hold the request
+                            // refused, of its feature.
+                            tracing::info!(
+                                code = error.code().as_str(),
+                                cause = error.cause(),
+                                "the {} refused {name}: {}",
+                                self.kind.noun(),
+                                error.message()
+                            );
+                            Err(error)
+                        }
                         Err(misfit) => Err(self.stop(
                             Error::new(
                                 ErrorCode::ProtocolError,

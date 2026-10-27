@@ -52,8 +52,9 @@ pub enum Traps {
         disable: fn() -> Result<(), String>,
     },
     /// Not read: a worker whose output is no result (the render worker's pixels), which
-    /// *Deterministic kernel*'s rules don't bind. Logged at startup at info level (seen with
-    /// `SILICO_LOG=info`; the default shows warnings), never stubbed as a mask of 0, which
+    /// *Deterministic kernel*'s rules don't bind. Logged at startup at info level (seen in
+    /// the app's log with `SILICO_LOG=info`; the default shows warnings), never stubbed as a
+    /// mask of 0, which
     /// would say every trap is off rather than that none was looked at.
     Unchecked,
 }
@@ -115,6 +116,18 @@ where
         );
         let _entered = span.enter();
         let mut result = handle(request.id, request.generation, request.op, &mut writer);
+        // In the request's span, so the core files it under the call that asked: a
+        // session's logs hold the worker's own words for what it refused.
+        if let Err(failure) = &result {
+            let described = failure
+                .refusal
+                .describe(failure.cause.as_deref(), &|element| element.to_string());
+            // Its cause in the message: the core re-emits a worker's line by its message.
+            match &failure.cause {
+                Some(cause) => tracing::info!("{name} refused: {} ({cause})", described.message),
+                None => tracing::info!("{name} refused: {}", described.message),
+            }
+        }
         // Traps switched on during a request would make later results platform-
         // dependent, so the request fails, and the traps are switched back off.
         let traps = platform.traps;
@@ -237,12 +250,15 @@ where
 {
     close_inherited_descriptors();
     // The app reports a SILICO_LOG it can't use (silico_core::logging); a worker, which
-    // inherits it, quietly uses the same default.
+    // inherits it, quietly uses its default: info, a level below the app's own (warn),
+    // since the core filters what it re-emits to the app's log itself, and keeps each
+    // session's for `read_logs` (silico_core::command::logs), where a request's refusal, in
+    // the worker's words, is an info line.
     let filter = std::env::var("SILICO_LOG")
         .ok()
         .filter(|value| !value.is_empty())
         .and_then(|value| tracing_subscriber::EnvFilter::try_new(value).ok())
-        .unwrap_or_else(|| tracing_subscriber::EnvFilter::new("warn"));
+        .unwrap_or_else(|| tracing_subscriber::EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()
         .json()
         .with_env_filter(filter)

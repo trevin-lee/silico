@@ -184,8 +184,9 @@ fn each_commands_schemas_are_the_committed_snapshot() {
             "{of}"
         );
     }
-    // A name that isn't a command's (one the design has, not built yet) has none.
-    assert!(snapshot("read_logs").is_none());
+    // A name that isn't a command's (one a near spelling of one) has none.
+    assert!(snapshot("read_log").is_none());
+    assert!(snapshot("readlogs").is_none());
 }
 
 /// Every object of `schema` with properties that isn't closed to them or doesn't require
@@ -422,6 +423,12 @@ fn the_examples_are_the_designs_own_text() {
             "### `read_logs` (M4.7)",
             "render",
             &["request", "result", "refused-width", "refused-eye-inside"],
+        ),
+        (
+            "### `read_logs` (M4.7)",
+            "### `export` (M4.8)",
+            "read_logs",
+            &["request", "result", "refused-level"],
         ),
         (
             "### `export` (M4.8)",
@@ -778,6 +785,7 @@ fn schema_answers_the_document_and_each_command_as_committed() {
                 "distance",
                 "angle",
                 "render",
+                "read_logs",
                 "export"
             ]
         );
@@ -1862,5 +1870,181 @@ fn a_perspective_result_writes_its_angle_and_no_height() {
         &schema_of("render", "result", None),
         &out,
         "perspective result",
+    );
+}
+
+#[test]
+fn the_designs_read_logs_request_is_read_and_written_back_and_holds_to_its_schema() {
+    use silico_core::command::logs::{LogLevel, LogQuery};
+    use silico_core::command::wire::logs::ReadLogsRequest;
+    let text = example("read_logs/request");
+    let call = ReadLogsRequest::read(&parsed(&text)).unwrap();
+    assert_eq!(
+        call,
+        ReadLogsRequest {
+            session: s1(),
+            query: LogQuery {
+                level: LogLevel::Info,
+                feature: Some(id("f0000001")),
+                after: Some(40),
+                limit: 200,
+            },
+        }
+    );
+    assert_eq!(written(&call), text);
+    holds(&schema_of("read_logs", "request", None), &text, "read_logs");
+    // From the oldest, of every feature: both null, and read so.
+    let every =
+        r#"{"session": "s1", "level": "trace", "feature": null, "after": null, "limit": 1}"#;
+    let call = ReadLogsRequest::read(&parsed(every)).unwrap();
+    assert_eq!(
+        call.query,
+        LogQuery {
+            level: LogLevel::Trace,
+            feature: None,
+            after: None,
+            limit: 1,
+        }
+    );
+    assert_eq!(written(&call), format!("{every}\n"));
+    holds(&schema_of("read_logs", "request", None), every, "every");
+}
+
+#[test]
+fn the_designs_read_logs_result_is_the_writers_and_holds_to_its_schema() {
+    use silico_core::command::logs::{LogEvent, LogLevel, Logs};
+    let spans = || {
+        [
+            "check",
+            "rebuild",
+            "step feature=f0000001",
+            "kernel op=fillet",
+        ]
+        .map(str::to_owned)
+        .to_vec()
+    };
+    let logs = Logs {
+        events: vec![
+            LogEvent {
+                seq: 41,
+                level: LogLevel::Info,
+                at_ms: 1518,
+                spans: spans(),
+                feature: Some(id("f0000001")),
+                message: "fillet of 1 edge, radius 6".to_owned(),
+            },
+            LogEvent {
+                seq: 42,
+                level: LogLevel::Warn,
+                at_ms: 1520,
+                spans: spans(),
+                feature: Some(id("f0000001")),
+                message: "fillet failed: StdFail_NotDone: BRepFilletAPI_MakeFillet".to_owned(),
+            },
+        ],
+        next: 42,
+        dropped: 0,
+    };
+    let want = example("read_logs/result");
+    assert_eq!(written(&logs), want);
+    holds(&schema_of("read_logs", "result", None), &want, "read_logs");
+    // An event of no feature, as null; each other field from its own value.
+    let other = Logs {
+        events: vec![LogEvent {
+            seq: 7,
+            level: LogLevel::Trace,
+            at_ms: 3,
+            spans: vec!["open".to_owned()],
+            feature: None,
+            message: "m".to_owned(),
+        }],
+        next: 9,
+        dropped: 5,
+    };
+    let text = written(&other);
+    assert_eq!(
+        text,
+        "{\n  \"events\": [\n    {\"seq\": 7, \"level\": \"trace\", \"at_ms\": 3, \"spans\": [\"open\"], \"feature\": null, \"message\": \"m\"}\n  ],\n  \"next\": 9,\n  \"dropped\": 5\n}\n"
+    );
+    holds(&schema_of("read_logs", "result", None), &text, "other");
+    // A level that isn't one fails the schema, as the reader refuses it.
+    fails(
+        &schema_of("read_logs", "result", None),
+        &text.replace("\"trace\"", "\"verbose\""),
+        "a verbose event",
+    );
+}
+
+#[test]
+fn the_designs_read_logs_refusal_is_the_readers_own_and_holds_to_the_error_contract() {
+    use silico_core::command::wire::logs::ReadLogsRequest;
+    let text = example("read_logs/request").replace("\"info\"", "\"verbose\"");
+    let refused = ReadLogsRequest::read(&parsed(&text)).unwrap_err();
+    let want = example("read_logs/refused-level");
+    assert_eq!(the_refusal(&refused), want);
+    holds(&error_schema(), &want, "read_logs/refused-level");
+}
+
+#[test]
+fn a_read_logs_cursor_is_a_whole_number_or_null_and_its_other_fields_are_read_strictly() {
+    use silico_core::command::wire::logs::ReadLogsRequest;
+    let with = |field: &str, value: &str| {
+        let text = example("read_logs/request");
+        let mut value_node: serde_json::Value = serde_json::from_str(&text).unwrap();
+        value_node[field] = serde_json::from_str(value).unwrap();
+        ReadLogsRequest::read(&parsed(&value_node.to_string()))
+    };
+    let said = |problems: Problems| -> Vec<(Option<String>, String)> {
+        problems
+            .errors()
+            .iter()
+            .map(|e| (e.parameter().map(str::to_owned), e.message().to_owned()))
+            .collect()
+    };
+    assert_eq!(
+        said(with("after", "-1").unwrap_err()),
+        [(
+            Some("after".to_owned()),
+            "after must be a whole number from 0 to 18446744073709551615 or null, got -1"
+                .to_owned()
+        )]
+    );
+    assert_eq!(
+        said(with("after", "\"40\"").unwrap_err()),
+        [(
+            Some("after".to_owned()),
+            "after must be a whole number from 0 to 18446744073709551615 or null, got \"40\""
+                .to_owned()
+        )]
+    );
+    assert_eq!(with("after", "0").unwrap().query.after, Some(0));
+    assert_eq!(
+        with("after", "18446744073709551615").unwrap().query.after,
+        Some(u64::MAX)
+    );
+    assert_eq!(
+        said(with("feature", "\"F0000001\"").unwrap_err())[0]
+            .0
+            .as_deref(),
+        Some("feature")
+    );
+    // A limit's range is the command's to say (it says the bound); its shape is the reader's.
+    assert_eq!(with("limit", "0").unwrap().query.limit, 0);
+    assert_eq!(
+        said(with("limit", "1.5").unwrap_err())[0].0.as_deref(),
+        Some("limit")
+    );
+    // Every field required, and no other taken.
+    let missing = r#"{"session": "s1", "level": "info", "feature": null, "limit": 1}"#;
+    assert_eq!(
+        said(ReadLogsRequest::read(&parsed(missing)).unwrap_err()),
+        [(Some("after".to_owned()), "after is missing".to_owned())]
+    );
+    let extra = r#"{"session": "s1", "level": "info", "feature": null, "after": null, "limit": 1, "span": "x"}"#;
+    assert_eq!(
+        said(ReadLogsRequest::read(&parsed(extra)).unwrap_err())[0]
+            .0
+            .as_deref(),
+        Some("span")
     );
 }

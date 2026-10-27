@@ -1,0 +1,175 @@
+{
+  "request": {
+    "$defs": {
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "LogLevel": {
+        "description": "An event's level, from the most severe: error, warn, info, debug, trace.",
+        "enum": [
+          "error",
+          "warn",
+          "info",
+          "debug",
+          "trace"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`read_logs`' request: the session's recent log events, of a level and every level more\nsevere, of one feature or all, after a cursor.",
+    "properties": {
+      "after": {
+        "description": "Read the events after this one: the last read's `next`; or null, from the oldest\nkept. Refused if it's past the session's newest event.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "feature": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/FeatureId"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The feature whose events to read (an event's feature, or its spans'), or null for\nevery event."
+      },
+      "level": {
+        "$ref": "#/$defs/LogLevel",
+        "description": "The least severe level to read: it and every level more severe (`info` reads error,\nwarn, and info)."
+      },
+      "limit": {
+        "description": "How many events to read at most.",
+        "format": "uint32",
+        "maximum": 1000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "after",
+      "feature",
+      "level",
+      "limit",
+      "session"
+    ],
+    "title": "ReadLogsRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "LogEvent": {
+        "additionalProperties": false,
+        "description": "One event a session kept. Its time and its place among events of other threads depend\non the machine and on scheduling: diagnostics, never results.",
+        "properties": {
+          "at_ms": {
+            "description": "When it happened, in milliseconds since the session opened.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "feature": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FeatureId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The feature it's of, its own or its innermost span's: null for an event of none."
+          },
+          "level": {
+            "$ref": "#/$defs/LogLevel"
+          },
+          "message": {
+            "description": "Its message, then its other fields (`key=value`); cut, ending in `…`, to fit one read.",
+            "type": "string"
+          },
+          "seq": {
+            "description": "Its number in the session, from 1, one more for each event the session kept.",
+            "format": "uint64",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "spans": {
+            "description": "The spans it happened in, from the command's down: the command (with `model=published`\nfor a read of the published model), then each span within it, its name and fields\n(`step feature=f0000001`).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "at_ms",
+          "feature",
+          "level",
+          "message",
+          "seq",
+          "spans"
+        ],
+        "type": "object"
+      },
+      "LogLevel": {
+        "description": "An event's level, from the most severe: error, warn, info, debug, trace.",
+        "enum": [
+          "error",
+          "warn",
+          "info",
+          "debug",
+          "trace"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`read_logs`' result.",
+    "properties": {
+      "dropped": {
+        "description": "How many events the session's buffer dropped since it opened, oldest first, to keep\nwithin its bound.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "events": {
+        "description": "The events read, oldest first.",
+        "items": {
+          "$ref": "#/$defs/LogEvent"
+        },
+        "type": "array"
+      },
+      "next": {
+        "description": "Where the next read goes on from, its `after`: the last event returned, if the read\nstopped at its limit or at 1 MiB of text; else the session's newest event.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "dropped",
+      "events",
+      "next"
+    ],
+    "title": "ReadLogsResult",
+    "type": "object"
+  }
+}

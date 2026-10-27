@@ -1013,7 +1013,7 @@ const EMPTY_LOG_CHILD: &str = "SILICO_TEST_EMPTY_LOG_CHILD";
 
 #[test]
 fn an_empty_silico_log_leaves_workers_warning() {
-    // An empty SILICO_LOG is the default, warn, in workers as in the app; parsed as a
+    // An empty SILICO_LOG is the default in workers as in the app (info and warn); parsed as a
     // filter it would be "nothing", and a crash report would lose the worker's last lines.
     let out = Command::new(std::env::current_exe().unwrap())
         .args([

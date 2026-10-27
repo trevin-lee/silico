@@ -154,6 +154,16 @@ impl ToWire for Limits {
             ("highlight", Json::count(self.highlight)),
             ("render_side", Json::whole(self.render_side.into())),
             ("render_seconds", Json::whole(self.render_seconds)),
+            ("log_read_events", Json::whole(self.log_read_events.into())),
+            ("log_read_bytes", Json::count(self.log_read_bytes)),
+            ("log_events", Json::count(self.log_events)),
+            ("log_bytes", Json::count(self.log_bytes)),
+            (
+                "export_tolerance",
+                Json::array(self.export_tolerance.map(Json::length)),
+            ),
+            ("export_triangles", Json::whole(self.export_triangles)),
+            ("export_bytes", Json::whole(self.export_bytes)),
             ("kernel_seconds", Json::whole(self.kernel_seconds)),
             ("sketch_seconds", Json::whole(self.sketch_seconds)),
         ])
@@ -333,6 +343,26 @@ pub struct LimitsSchema {
     /// How long one render may take, in seconds: past it, the render worker is stopped, a
     /// `worker_timeout`, which is the machine's fault, never the document's.
     pub render_seconds: u64,
+    /// The most events one `read_logs` returns: its `limit` at most.
+    pub log_read_events: u64,
+    /// The most text one `read_logs` returns, in bytes (its events' messages, spans, and
+    /// features): a read stops before the event that would pass it, its `next` saying where.
+    pub log_read_bytes: u64,
+    /// The most events a session's log buffer keeps: not refused, the oldest are dropped
+    /// and counted (`read_logs`' `dropped`).
+    pub log_events: u64,
+    /// The most text a session's log buffer keeps, in bytes, counted as a read counts it:
+    /// not refused, the oldest events are dropped and counted.
+    pub log_bytes: u64,
+    /// The least and the most tolerance a `3mf` export takes, in millimetres.
+    #[schemars(length(min = 2, max = 2))]
+    pub export_tolerance: Vec<f64>,
+    /// The most triangles one `3mf` export writes, every part's in all: past it, refused,
+    /// naming `tolerance`.
+    pub export_triangles: u64,
+    /// The most bytes one `3mf` export's archive may be (a plain zip's, with no ZIP64):
+    /// past it, refused, naming `tolerance`.
+    pub export_bytes: u64,
     /// How long one request to a kernel worker may take, in seconds: past it, the worker is
     /// stopped, a `worker_timeout`, which is the machine's fault, never the document's.
     pub kernel_seconds: u64,

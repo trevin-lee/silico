@@ -112,6 +112,8 @@ mod session_elements;
 mod session_export;
 #[path = "session_fresh.rs"]
 mod session_fresh;
+#[path = "session_logs.rs"]
+mod session_logs;
 #[path = "session_rebuild.rs"]
 mod session_rebuild;
 #[path = "session_reload.rs"]
