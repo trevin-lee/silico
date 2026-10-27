@@ -425,17 +425,18 @@ proptest! {
 // ---------------------------------------------------------------------------------------
 // The writer: every value the in-memory types hold writes a file that reads back as it.
 
+/// A length as far as a document holds it: at most i64::MAX nm either way (i64::MIN, which
+/// only code can make, the reader refuses).
 fn length_nm() -> impl Strategy<Value = i64> {
     prop_oneof![
-        Just(i64::MIN),
-        Just(i64::MIN + 1),
+        Just(-i64::MAX),
         Just(i64::MAX),
         Just(-1),
         Just(0),
         Just(1),
         Just(1_000_000_000_000),
         Just(1_000_000_000_001),
-        any::<i64>(),
+        any::<i64>().prop_filter("at most i64::MAX either way", |&n| n != i64::MIN),
         -10_000_000i64..10_000_000,
     ]
 }

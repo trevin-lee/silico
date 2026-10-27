@@ -91,12 +91,15 @@ fn one_feature(feature: Feature) -> Document {
 
 #[test]
 fn length_at_i64_bounds_reads_exactly_and_one_nanometre_past_is_refused() {
+    // At most 9223372036854.775807 mm either way, as the refusal says: i64::MAX nm, and its
+    // negation, one more than i64::MIN.
     assert_eq!(the_length("9223372036854.775807").nm(), i64::MAX);
-    assert_eq!(the_length("-9223372036854.775808").nm(), i64::MIN);
+    assert_eq!(the_length("-9223372036854.775807").nm(), -i64::MAX);
     // Trailing zeros past the resolution don't change the bound.
     assert_eq!(the_length("9223372036854.775807000").nm(), i64::MAX);
     for past in [
         "9223372036854.775808",
+        "-9223372036854.775808",
         "-9223372036854.775809",
         "9223372036855",
         "18446744073709.551616",
@@ -843,8 +846,12 @@ fn any_text() -> impl Strategy<Value = String> {
         .prop_map(|chars| chars.into_iter().collect())
 }
 
+/// Any length a document can hold: at most i64::MAX nm either way (i64::MIN, which only
+/// code can make, the reader refuses).
 fn any_length() -> impl Strategy<Value = Length> {
-    edge_i64().prop_map(Length::from_nm)
+    edge_i64()
+        .prop_filter("at most i64::MAX either way", |&n| n != i64::MIN)
+        .prop_map(Length::from_nm)
 }
 
 fn any_id() -> impl Strategy<Value = FeatureId> {
@@ -1008,14 +1015,20 @@ proptest! {
         }
     }
 
-    /// Any i64 writes as a decimal that reads back as it, in both quantities, and the text
-    /// is the shortest: no trailing zero after a point, no point without a fraction.
+    /// Any i64 writes as the shortest decimal (no trailing zero after a point, no point
+    /// without a fraction), in both quantities, and reads back as it if it's at most i64::MAX
+    /// either way, as the reader's refusal says; i64::MIN, one past, is refused.
     #[test]
     fn any_value_writes_as_its_shortest_decimal(n in edge_i64()) {
         let length = Length::from_nm(n).to_string();
-        prop_assert_eq!(Length::parse(&length), Ok(Length::from_nm(n)));
         let angle = Angle::from_ndeg(n).to_string();
-        prop_assert_eq!(Angle::parse(&angle), Ok(Angle::from_ndeg(n)));
+        if n == i64::MIN {
+            prop_assert_eq!(Length::parse(&length), Err(NumberError::OutOfRange));
+            prop_assert_eq!(Angle::parse(&angle), Err(NumberError::OutOfRange));
+        } else {
+            prop_assert_eq!(Length::parse(&length), Ok(Length::from_nm(n)));
+            prop_assert_eq!(Angle::parse(&angle), Ok(Angle::from_ndeg(n)));
+        }
         for text in [&length, &angle] {
             prop_assert!(!text.ends_with('.') && !(text.contains('.') && text.ends_with('0')), "{}", text);
             prop_assert!(!text.starts_with("-0") || text.starts_with("-0."), "{}", text);

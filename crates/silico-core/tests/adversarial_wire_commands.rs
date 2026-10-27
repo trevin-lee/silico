@@ -868,12 +868,20 @@ fn within_is_read_as_any_angle_and_the_command_holds_it_from_0_to_180() {
         "-180",
         "360",
         "9223372036.854775807",
-        "-9223372036.854775808",
+        "-9223372036.854775807",
     ] {
         assert_eq!(run(past), Err(vec!["facing.within".to_owned()]), "{past}");
     }
-    // Past an angle's range or places, or -0: the reader's.
-    for refused in ["9223372036.854775808", "1e-10", "-0", "\"90\"", "null"] {
+    // Past an angle's range (at most 9223372036.854775807 either way) or places, or -0: the
+    // reader's.
+    for refused in [
+        "9223372036.854775808",
+        "-9223372036.854775808",
+        "1e-10",
+        "-0",
+        "\"90\"",
+        "null",
+    ] {
         let problems = query_refused(&facing("[0, 0, 1]", refused));
         assert_eq!(params(&problems), ["facing.within"], "{refused}");
     }
@@ -1220,11 +1228,12 @@ fn results_at_their_counts_edges_hold_to_their_snapshots() {
         };
         holds(&queried, &written(&result), "a query's result");
     }
-    // A facing of the largest angle an angle holds, and every order, written and read back.
+    // A facing of the largest angle a request holds (at most i64::MAX nanodegrees either
+    // way), and every order, written and read back.
     let q = Query {
         facing: Some(Facing {
             direction: [f64::MAX, -5e-324, 0.0],
-            within: Angle::from_ndeg(i64::MIN),
+            within: Angle::from_ndeg(-i64::MAX),
         }),
         ..Query::of(ElementKind::Face, 0)
     };
