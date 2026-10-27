@@ -19,6 +19,8 @@ mod model;
 mod running;
 #[path = "common/scripts.rs"]
 mod scripts;
+#[path = "common/wait.rs"]
+mod wait;
 
 #[path = "adversarial_cache.rs"]
 mod adversarial_cache;

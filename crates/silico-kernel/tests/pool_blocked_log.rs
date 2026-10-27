@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::running::{marking_worker, submit_running};
+use crate::wait::WAIT;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -104,7 +105,7 @@ fn blocked_superseded_log(slot_start: Duration) {
         KernelRequest::debug(DebugOp::Sleep { millis: 5_000 }),
     );
     pool.advance(Generation(2));
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + WAIT;
     while !layer.entered.load(Ordering::SeqCst) {
         assert!(
             Instant::now() < deadline,

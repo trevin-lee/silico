@@ -14,6 +14,8 @@ mod lateness;
 mod pool;
 #[path = "common/scripts.rs"]
 mod scripts;
+#[path = "common/wait.rs"]
+mod wait;
 
 use std::collections::BTreeSet;
 use std::io::Write as _;

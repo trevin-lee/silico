@@ -16,7 +16,10 @@ mod pool;
 mod process;
 #[path = "common/scripts.rs"]
 mod scripts;
+#[path = "common/wait.rs"]
+mod wait;
 
+use crate::wait::WAIT;
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -181,7 +184,7 @@ fn within<T: Send + 'static>(limit: Duration, f: impl FnOnce() -> T + Send + 'st
 fn echo_through(mode: &str, timeout: Duration) -> (Result<Vec<u8>, Error>, Duration, u32) {
     let exe = fake_worker(mode);
     let mode = mode.to_owned();
-    within(Duration::from_secs(30), move || {
+    within(WAIT, move || {
         let mut w = Worker::spawn(&exe).unwrap();
         let pid = w.pid();
         let start = Instant::now();
@@ -204,13 +207,13 @@ fn echo_through(mode: &str, timeout: Duration) -> (Result<Vec<u8>, Error>, Durat
 
 #[test]
 fn a_flood_of_empty_frames_before_the_reply_still_gets_the_reply() {
-    let (result, _, _) = echo_through("empty-frames", Duration::from_secs(20));
+    let (result, _, _) = echo_through("empty-frames", WAIT);
     assert_eq!(result.unwrap(), [1, 2, 3]);
 }
 
 #[test]
 fn a_reply_cut_short_by_an_exit_is_a_crash_naming_the_exit() {
-    let (result, took, _) = echo_through("partial-then-exit", Duration::from_secs(20));
+    let (result, took, _) = echo_through("partial-then-exit", WAIT);
     let err = result.unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
     assert!(
@@ -232,7 +235,7 @@ fn a_reply_cut_short_by_a_worker_that_then_hangs_times_out() {
 
 #[test]
 fn a_reply_with_a_byte_after_the_message_is_a_protocol_error() {
-    let (result, _, _) = echo_through("trailing", Duration::from_secs(20));
+    let (result, _, _) = echo_through("trailing", WAIT);
     let err = result.unwrap_err();
     assert_eq!(err.code(), ErrorCode::ProtocolError, "{err}");
     assert!(
@@ -244,7 +247,7 @@ fn a_reply_with_a_byte_after_the_message_is_a_protocol_error() {
 
 #[test]
 fn a_reply_no_message_encodes_to_is_a_protocol_error() {
-    let (result, _, _) = echo_through("undecodable", Duration::from_secs(20));
+    let (result, _, _) = echo_through("undecodable", WAIT);
     let err = result.unwrap_err();
     assert_eq!(err.code(), ErrorCode::ProtocolError, "{err}");
     assert!(err.suggestion().is_some(), "{err}");
@@ -253,7 +256,7 @@ fn a_reply_no_message_encodes_to_is_a_protocol_error() {
 #[test]
 fn a_reply_longer_than_the_maximum_is_refused_without_waiting_for_it() {
     // The worker hangs after the header: refusing it must not wait for 512 MiB, or for the
-    // call's timeout, longer than the 30 s echo_through gives the whole call (a refusal that
+    // call's timeout, longer than the `WAIT` echo_through gives the whole call (a refusal that
     // waited would fail there, or as a timeout, not a protocol error).
     let (result, _, _) = echo_through("over-max", Duration::from_secs(120));
     let err = result.unwrap_err();
@@ -263,7 +266,7 @@ fn a_reply_longer_than_the_maximum_is_refused_without_waiting_for_it() {
 
 #[test]
 fn a_reply_promising_the_maximum_then_ending_is_a_crash() {
-    let (result, took, _) = echo_through("max-then-exit", Duration::from_secs(20));
+    let (result, took, _) = echo_through("max-then-exit", WAIT);
     let err = result.unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
     assert!(took < Duration::from_secs(5), "{took:?}");
@@ -272,14 +275,11 @@ fn a_reply_promising_the_maximum_then_ending_is_a_crash() {
 #[test]
 fn a_worker_that_answers_then_exits_on_its_own_fails_the_next_call_as_its_install() {
     let exe = fake_worker("exit-after-reply");
-    within(Duration::from_secs(30), move || {
+    within(WAIT, move || {
         let mut w = Worker::spawn(&exe).unwrap();
-        assert_eq!(
-            call_echo(&mut w, &[1], Duration::from_secs(20)).unwrap(),
-            [1]
-        );
+        assert_eq!(call_echo(&mut w, &[1], WAIT).unwrap(), [1]);
         std::thread::sleep(Duration::from_millis(500));
-        let err = call_echo(&mut w, &[2], Duration::from_secs(20)).unwrap_err();
+        let err = call_echo(&mut w, &[2], WAIT).unwrap_err();
         assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
         assert!(
             err.cause()
@@ -304,7 +304,7 @@ fn a_worker_that_never_starts_doesnt_have_its_request_blamed() {
     // timeout, but not one that blames the request ("simplify the operation"): it never had
     // the request to work on.
     let exe = script("never-starts", "exec sleep 600");
-    let err = within(Duration::from_secs(10), move || {
+    let err = within(WAIT, move || {
         let mut w = Worker::spawn(&exe).unwrap();
         call_echo(&mut w, &[1], Duration::from_millis(500)).unwrap_err()
     });
@@ -324,9 +324,9 @@ fn a_worker_that_never_starts_doesnt_have_its_request_blamed() {
 fn a_started_worker_that_times_out_blames_the_request() {
     // The other side of the one above: a worker that has started (it answered) and then
     // runs past the timeout was working on the request.
-    let err = within(Duration::from_secs(10), || {
+    let err = within(WAIT, || {
         let mut w = Worker::spawn(Path::new(TEST_WORKER)).unwrap();
-        call_echo(&mut w, &[1], Duration::from_secs(20)).unwrap();
+        call_echo(&mut w, &[1], WAIT).unwrap();
         w.call(
             Generation(1),
             Op::Debug(DebugOp::Sleep { millis: 60_000 }),
@@ -343,10 +343,10 @@ fn a_started_worker_that_times_out_blames_the_request() {
     assert!(err.cause().is_none(), "{err}");
 }
 
-/// Waits up to ten seconds for a stand-in worker to make `marker`, so a test's timeout
+/// Waits up to [`WAIT`] for a stand-in worker to make `marker`, so a test's timeout
 /// counts from there, not from the script's start, which a loaded machine can slow.
 fn wait_for(marker: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + WAIT;
     while !marker.exists() {
         assert!(Instant::now() < deadline, "{} never made", marker.display());
         std::thread::sleep(Duration::from_millis(5));
@@ -409,7 +409,7 @@ fn a_worker_that_closes_its_socket_mid_request_and_lingers_fails_within_its_time
         ),
     );
     let graces = Graces::record();
-    let (err, took) = within(Duration::from_secs(20), move || {
+    let (err, took) = within(WAIT, move || {
         let mut w = Worker::spawn(&exe).unwrap();
         wait_for(&started);
         let start = Instant::now();
@@ -455,7 +455,7 @@ fn a_worker_whose_child_holds_its_pipes_fails_within_its_timeout() {
         ),
     );
     let graces = Graces::record();
-    let (err, took) = within(Duration::from_secs(20), move || {
+    let (err, took) = within(WAIT, move || {
         let mut w = Worker::spawn(&exe).unwrap();
         wait_for(&started);
         let start = Instant::now();
@@ -561,9 +561,9 @@ fn short_of_descriptors<T>(spare: u64, f: impl FnOnce() -> T) -> T {
     result
 }
 
-/// Waits up to five seconds for this process's open descriptors to fall to `fds`.
+/// Waits up to [`WAIT`] for this process's open descriptors to fall to `fds`.
 fn wait_fds(fds: usize, context: &str) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + WAIT;
     while open_fds() > fds {
         assert!(
             Instant::now() < deadline,
@@ -719,7 +719,7 @@ fn an_idle_worker_that_closed_its_socket_is_replaced_and_reaped_while_idle() {
     let pool = KernelPool::start_workers(&exe, 1).unwrap();
     let first = pool.pids();
     wait_for(&closed);
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + WAIT;
     let held = loop {
         let pids = pool.pids();
         if pids.len() == 1 && pids[0] != first[0] {
@@ -838,7 +838,7 @@ fn dropping_the_pool_amid_crashes_kills_floods_and_advances_leaves_nothing() {
             let _ = dropped.send(());
         });
         assert!(
-            returned.recv_timeout(Duration::from_secs(30)).is_ok(),
+            returned.recv_timeout(WAIT).is_ok(),
             "round {round}: the drop hung"
         );
         assert_reaped(&held, &format!("round {round}"));
@@ -877,7 +877,7 @@ fn dropping_the_pool_amid_crashes_kills_floods_and_advances_leaves_nothing() {
         }
         wait_no_children(&format!("round {round}"));
     }
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + WAIT;
     while (open_fds() > fds || threads() > threads_before) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }

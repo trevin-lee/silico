@@ -7,9 +7,9 @@
 //! through a worker. Every expected value is by hand.
 
 use super::cube_elements::{cube, edge_between, vertex_at};
+use crate::wait::WAIT;
 
 use std::path::Path;
-use std::time::Duration;
 
 use silico_core::ErrorCode;
 use silico_core::kernel::{Blob, KernelRequest, KernelWorker, ShapeData};
@@ -165,7 +165,7 @@ fn the_worker_refuses_a_point_the_core_would_never_send() {
     // The core refuses a point that isn't finite before it asks; the worker refuses one
     // sent to it raw too, as data, naming the point, and goes on.
     let mut w = Worker::spawn(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker"))).unwrap();
-    let timeout = Duration::from_secs(30);
+    let timeout = WAIT;
     let shape = ShapeData::checked(Blob::inline(to_brep(&cube(10.0)).unwrap()), true);
     for point in [[f64::INFINITY, 0.0, 0.0], [0.0, 0.0, 2e12]] {
         let err = w

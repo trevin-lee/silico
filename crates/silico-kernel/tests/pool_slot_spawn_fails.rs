@@ -17,6 +17,10 @@
 //!   joined before it returns, whether it passes or fails.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/wait.rs"]
+mod wait;
+
+use crate::wait::WAIT;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -24,8 +28,6 @@ use silico_core::ErrorCode;
 use silico_core::kernel::{Blob, KernelRequest};
 use silico_core::pool::KernelPool;
 use silico_protocol::{DebugOp, Generation};
-
-const WAIT: Duration = Duration::from_secs(10);
 
 fn echo(byte: u8) -> KernelRequest<Blob> {
     KernelRequest::echo(Blob::inline(vec![byte]))

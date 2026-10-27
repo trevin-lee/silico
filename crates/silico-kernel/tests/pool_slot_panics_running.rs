@@ -5,6 +5,7 @@
 //! installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use crate::wait::WAIT;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -43,12 +44,12 @@ fn a_slot_whose_thread_ends_while_running_leaves_no_entry_behind() {
     let echo = |byte: u8| KernelRequest::echo(Blob::inline(vec![byte]));
     assert!(
         pool.submit(Generation(1), echo(1))
-            .wait_timeout(Duration::from_secs(10))
+            .wait_timeout(WAIT)
             .is_ok(),
         "the first request never ended"
     );
     assert!(PANICKED.load(Ordering::SeqCst));
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + WAIT;
     while !pool.pids().is_empty() {
         assert!(
             Instant::now() < deadline,
@@ -59,7 +60,7 @@ fn a_slot_whose_thread_ends_while_running_leaves_no_entry_behind() {
     }
     let second = pool
         .submit(Generation(1), echo(2))
-        .wait_timeout(Duration::from_secs(10))
+        .wait_timeout(WAIT)
         .unwrap_or_else(|_| panic!("the next request waited: no slot took it"))
         .done()
         .expect("superseded")
