@@ -9,6 +9,7 @@ use std::ffi::OsString;
 use serde::{Deserialize, Serialize};
 
 use crate::classify::point_beyond;
+use crate::vec3::{cross, dot, sub};
 use crate::{InvalidParameter, Mesh};
 
 /// Which adapter the render worker may draw on: the core's one say about the renderer, given
@@ -163,22 +164,6 @@ fn finite3(v: [f64; 3]) -> bool {
 /// Finite and above 0.
 fn positive(x: f64) -> bool {
     x.is_finite() && x > 0.0
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// The camera's frame, unit vectors in f64: from the target toward the eye (`back`), up in

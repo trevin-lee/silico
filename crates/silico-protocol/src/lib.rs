@@ -22,6 +22,7 @@ mod render;
 mod sketch;
 mod step;
 mod sweep;
+pub mod vec3;
 
 use serde::{Deserialize, Serialize};
 

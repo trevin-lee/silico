@@ -21,6 +21,7 @@ use crate::naming::ElementMap;
 use crate::pool::Outcome;
 use crate::recompute::Model;
 use crate::{Error, ErrorCode};
+use silico_protocol::vec3::{cross, dot, sub};
 
 impl<P: Clients + 'static> Sessions<P> {
     /// `mass_properties` (M4.5): the mass properties of the feature `feature`'s solid, or of
@@ -832,22 +833,6 @@ fn article(word: &str) -> String {
         Some('a' | 'e' | 'i' | 'o' | 'u') => format!("an {word}"),
         _ => format!("a {word}"),
     }
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 fn norm(a: [f64; 3]) -> f64 {
