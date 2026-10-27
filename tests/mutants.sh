@@ -35,15 +35,12 @@ echo "mutants: testing $commit"
 # the times its workers log, already is, and stays. What they alone test, so a survivor
 # there is checked against them, unloaded, before it's a finding: that a name reported for
 # many elements is written once and stays within its size bound (silico-core's
-# naming/build.rs, MOST_WEIGHT, which names_that_would_double_... tests too); and that a
-# recompute of a long chain or of thousands of features doesn't wait between its steps
-# (recompute.rs's scheduling, beyond the CPU it costs, which only they bound too: their wall
-# clock failed a merge lane shard's baseline three times over at a load of 100 on 30
-# threads, 2026-10-27, run 40486344701).
+# naming/build.rs, MOST_WEIGHT, which names_that_would_double_... tests too). The recompute
+# tests that held to a wall clock (a chain of four hundred booleans, five thousand
+# independent features) now scale it with the CPU share the process gets
+# (tests/common/share.rs, #207), so they run here.
 core_wall_clock=(
   a_name_reported_for_many_elements_is_written_once_promptly
-  adversarial_recompute::a_chain_of_four_hundred_booleans_finishes_promptly
-  adversarial_recompute::five_thousand_independent_features_finish_promptly
 )
 # The largest sketch no algorithm solves, bounded by its wall clock (a minute or two loaded,
 # against SKETCH_TIMEOUT): what it alone tests is that the worker's time covers every

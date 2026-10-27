@@ -8,6 +8,7 @@ use super::example;
 use super::lateness;
 use super::model;
 use super::recompute;
+use super::share;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::AssertUnwindSafe;
@@ -20,6 +21,7 @@ use lateness::{Lateness, allowance};
 use model::{WAIT, checked, described, id, made, published};
 use proptest::prelude::*;
 use recompute::{calls_since, engine};
+use share::Share;
 use silico_core::document::{Checked, FeatureId, read};
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{BooleanOp, Generation, Kernel, KernelRequest, Op, Primitive, ShapeData};
@@ -857,16 +859,20 @@ const HANG: Duration = Duration::from_secs(60);
 /// Recomputes `document` and gives the model it published, and the CPU time this process
 /// spent meanwhile: every thread's, the engine's and the fake kernel's, which is what the
 /// recompute costs, where a loaded machine's wall clock measures the machine. (Nextest
-/// runs each test in its own process.) CPU time doesn't see a recompute that waits instead
-/// of working, so it must also finish within `wall`, as on a quiet machine, and ten times
-/// how late the machine wakes threads meanwhile ([`allowance`]): a recompute's threads hand
-/// each other work, each waking the next. Fails if it wasn't published, or took longer.
+/// runs each test in its own process; the probes' own CPU is taken out.) CPU time doesn't
+/// see a recompute that waits instead of working, so it must also finish within `wall`, what
+/// it takes a quiet machine with room to spare, times how much slower the machine ran this
+/// process's computing threads meanwhile ([`Share`]: a recompute is work, and a machine that
+/// gives the process a quarter of a CPU per thread takes four times as long over it), and ten
+/// times how late the machine woke threads ([`allowance`]: a recompute's threads hand each
+/// other work, each waking the next). Fails if it wasn't published, or took longer.
 fn published_costing(
     engine: &Recompute<FakeKernel>,
     document: Checked,
     wall: Duration,
 ) -> (Arc<Model>, Duration) {
     let lateness = Lateness::start();
+    let share = Share::start();
     let start = cpu_time::ProcessTime::now();
     let at = Instant::now();
     let model = match engine.start(document).wait_timeout(HANG) {
@@ -875,9 +881,15 @@ fn published_costing(
         Err(_) => panic!("the recompute didn't finish in {HANG:?}"),
     };
     let took = at.elapsed();
-    let cost = start.elapsed();
-    let most = allowance(wall, lateness.most());
-    assert!(took < most, "the recompute took {took:?}, past {most:?}");
+    let measured = share.finish();
+    let cost = start.elapsed().saturating_sub(measured.cost);
+    let most = allowance(wall.mul_f64(measured.slowdown), lateness.most());
+    assert!(
+        took < most,
+        "the recompute took {took:?}, past {most:?} (the machine ran this process {:.2} times \
+         slower than a quiet one)",
+        measured.slowdown
+    );
     (model, cost)
 }
 
