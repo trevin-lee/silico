@@ -163,6 +163,67 @@ fn check_json_is_a_line_an_agent_reads() {
 }
 
 #[test]
+fn check_says_warnings_on_stderr_as_warnings_and_they_never_change_the_exit_code() {
+    // The example, saved by hand with no fingerprint: one warning, exit 0.
+    let scratch = Scratch::new("warnings");
+    let file = scratch.file(EXAMPLE);
+    let out = silico(&scratch, &["check"], &file);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        format!(
+            "{}: warning: fingerprint_missing: k7f2qx3m built, but its file stores no \
+             fingerprint, so a change in what it builds isn't caught as drift (feature \
+             k7f2qx3m, parameter fingerprint). Suggestion: save the document (format or \
+             commit) to store it.\n",
+            file.display()
+        )
+    );
+    // `--json`'s line is its contract's (check-line.json), with no warnings in it, and
+    // nothing on stderr.
+    let out = silico(&scratch, &["check", "--json"], &file);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(out.stderr.is_empty(), "{}", stderr(&out));
+    let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        line,
+        serde_json::json!({"file": file.display().to_string(), "ok": true, "problems": [], "total": 0})
+    );
+    // Formatted, its fingerprint stored: nothing to say.
+    assert_eq!(silico(&scratch, &["fmt"], &file).status.code(), Some(0));
+    let out = silico(&scratch, &["check"], &file);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(out.stderr.is_empty(), "{}", stderr(&out));
+    // Its volume edited by hand (drift, a problem), and a second box added with no
+    // fingerprint (a warning): exit 1, the problem said first, then the warning.
+    let text = std::fs::read_to_string(&file).unwrap();
+    let edited = text
+        .replacen(r#""volume": 8000,"#, r#""volume": 8001,"#, 1)
+        .replacen(
+            "}\n  ]",
+            "},\n    {\"id\": \"m0000002\", \"type\": \"box\", \"v\": 1, \"name\": \"Other\", \"position\": [50, 0, 0], \"length\": 1, \"width\": 1, \"height\": 1}\n  ]",
+            1,
+        );
+    assert_eq!(edited.matches("m0000002").count(), 1, "{text}");
+    std::fs::write(&file, &edited).unwrap();
+    let out = silico(&scratch, &["check"], &file);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let lines: Vec<String> = stderr(&out).lines().map(str::to_owned).collect();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[0].starts_with(&format!("{}: drift: ", file.display())),
+        "{lines:?}"
+    );
+    assert!(
+        lines[1].starts_with(&format!(
+            "{}: warning: fingerprint_missing: m0000002 built",
+            file.display()
+        )),
+        "{lines:?}"
+    );
+}
+
+#[test]
 fn drift_is_exit_1_naming_the_feature() {
     let scratch = Scratch::new("drift");
     let file = scratch.file(EXAMPLE);
@@ -1244,11 +1305,20 @@ fn a_kernel_fault_is_said_in_the_clis_words_by_check_and_check_json() {
     // line: the worker's own suggestion, then to run it again.
     let scratch = Scratch::new("check-fault-words");
     let file = scratch.file(SKETCH_AND_BOX);
+    // The block built, with no fingerprint in the file: its warning is said before the
+    // fault, as the document's problems would be.
     let out = silico_with(&scratch, &["check"], &file, Path::new("/nowhere"));
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let path = file.display();
     assert_eq!(
         stderr(&out),
-        format!("{}: {}\n", file.display(), no_sketch_worker("check"))
+        format!(
+            "{path}: warning: fingerprint_missing: k7f2qx3m built, but its file stores no \
+             fingerprint, so a change in what it builds isn't caught as drift (feature \
+             k7f2qx3m, parameter fingerprint). Suggestion: save the document (format or \
+             commit) to store it.\n{path}: {}\n",
+            no_sketch_worker("check")
+        )
     );
     let out = silico_with(&scratch, &["check", "--json"], &file, Path::new("/nowhere"));
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));

@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use silico_core::cache::Cache;
-use silico_core::command::{self, CheckModel, Problems, Response, SessionId, Sessions};
+use silico_core::command::{self, CheckModel, Problems, Response, SessionId, Sessions, Warnings};
 use silico_core::file::opened_and_read;
 use silico_core::pool::KernelPool;
 use silico_core::{Error, ErrorCode};
@@ -508,7 +508,8 @@ fn with_retry(fault: &Error, command: &str) -> Error {
 
 /// `silico check FILE`: open, the session's `check` of its current revision, close. Its
 /// problems (failed features and sketches, and drift of fingerprints and of sketches' stored
-/// solves), each on stderr, and a kernel fault the rebuild met after them; or, with
+/// solves), each on stderr, then its warnings, each marked `warning:` (they never change
+/// the exit code), and a kernel fault the rebuild met after them; or, with
 /// `--json`, one line of JSON on stdout for each file: `{"file", "ok", "problems", "total"}`,
 /// each problem an error as the core's error contract has it, or, for a file that couldn't
 /// be checked (a refusal that says it couldn't run, or a kernel fault), `{"file", "ok":
@@ -525,8 +526,8 @@ fn check(sessions: &Sessions<KernelPool>, file: &Path, json: bool, fresh: bool) 
     in_session(sessions, file, "check", refused, |id| {
         let Response { model, result, .. } =
             sessions.check(id, CheckModel::Current { fresh }).wait();
-        let problems = match result {
-            Ok(answer) => answer.problems,
+        let (problems, warnings) = match result {
+            Ok(answer) => (answer.problems, answer.warnings),
             Err(problems) => {
                 let fault = model.and_then(|read| read.fault);
                 return refused(Refusal::of_command("check", &problems).with_fault(fault, "check"));
@@ -540,6 +541,7 @@ fn check(sessions: &Sessions<KernelPool>, file: &Path, json: bool, fresh: bool) 
                 return failed_line(file, &fault);
             }
             print_problems(file, problems.errors(), problems.total());
+            print_warnings(file, &warnings);
             say!("{}: {fault}", shown(file));
             return Ended::Failed;
         }
@@ -547,7 +549,9 @@ fn check(sessions: &Sessions<KernelPool>, file: &Path, json: bool, fresh: bool) 
             problems_line(file, problems.errors(), problems.total());
         } else {
             print_problems(file, problems.errors(), problems.total());
+            print_warnings(file, &warnings);
         }
+        // Warnings fail nothing: the exit code is the problems' alone.
         Ended::of(&problems)
     })
 }
@@ -874,6 +878,23 @@ fn print_problems(file: &Path, errors: &[Error], total: u64) {
     let listed = errors.len() as u64;
     if total > listed {
         say!("{}: and {} more problems", shown(file), total - listed);
+    }
+}
+
+/// Each of `warnings` on stderr, after the file it's about and marked as a warning: its
+/// code and words, then the feature and elements it's about, and what to do (the warning's
+/// own `Display`); and how many more there are, if not all are listed.
+fn print_warnings(file: &Path, warnings: &Warnings) {
+    for warning in warnings.listed() {
+        say!("{}: warning: {warning}", shown(file));
+    }
+    let listed = warnings.listed().len() as u64;
+    if warnings.total() > listed {
+        say!(
+            "{}: warning: and {} more warnings",
+            shown(file),
+            warnings.total() - listed
+        );
     }
 }
 
