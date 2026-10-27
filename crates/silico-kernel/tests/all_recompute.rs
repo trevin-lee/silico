@@ -15,6 +15,10 @@ mod example;
 mod measuring;
 #[path = "../../silico-core/tests/common/model.rs"]
 mod model;
+#[path = "common/running.rs"]
+mod running;
+#[path = "common/scripts.rs"]
+mod scripts;
 
 #[path = "adversarial_cache.rs"]
 mod adversarial_cache;

@@ -4,6 +4,8 @@
 //! test in its own): it installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::running::{marking_worker, submit_running};
+
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -68,27 +70,24 @@ fn a_request_refused_before_it_was_sent_lets_its_span_go() {
         assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
     }
     wait_closed(&closed, "crashed_edit");
-    // A request superseded while it runs, and stopped. First the crashed worker's
-    // replacement answers, so the request is sent to a running worker, not dropped from the
-    // queue before it's sent.
-    pool.submit(Generation(1), KernelRequest::echo(Blob::inline(vec![1])))
-        .wait_timeout(Duration::from_secs(60))
-        .unwrap_or_else(|_| panic!("no outcome"))
-        .done()
-        .expect("superseded")
-        .unwrap();
+    drop(pool);
+    // A request superseded while it runs, and stopped: superseded once its worker says it
+    // has it, so it was sent to a running worker, not dropped from the queue before it's
+    // sent.
+    let marker = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("refused-span-received-{}", std::process::id()));
+    let pool = KernelPool::start_on_demand(&marking_worker(&marker), 1).unwrap();
     let stop_after = Duration::from_millis(500);
     pool.set_stop_after(stop_after);
     {
         let edit = tracing::warn_span!("hung_edit");
         let sent = Instant::now();
-        let pending = edit.in_scope(|| {
-            pool.submit(
-                Generation(1),
-                KernelRequest::debug(DebugOp::Sleep { millis: 30_000 }),
-            )
-        });
-        std::thread::sleep(Duration::from_millis(100));
+        let pending = submit_running(
+            &pool,
+            &edit,
+            &marker,
+            KernelRequest::debug(DebugOp::Sleep { millis: 30_000 }),
+        );
         pool.advance(Generation(2));
         let outcome = pending
             .wait_timeout(Duration::from_secs(60))
@@ -107,6 +106,7 @@ fn a_request_refused_before_it_was_sent_lets_its_span_go() {
     }
     wait_closed(&closed, "hung_edit");
     drop(pool);
+    let _ = std::fs::remove_file(&marker);
 }
 
 fn wait_closed(closed: &Mutex<Vec<&'static str>>, name: &str) {
