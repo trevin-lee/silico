@@ -368,6 +368,97 @@ fn a_cache_directory_that_is_a_dangling_symlink_fails_nothing() {
     let _ = std::fs::remove_file(&dir.0);
 }
 
+/// The messages of the warnings logged in this process, in order: set as its subscriber, so
+/// each test that sets it needs a process of its own (nextest runs each in one).
+fn warnings_kept() -> Arc<std::sync::Mutex<Vec<String>>> {
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::layer::{Context, Layer, SubscriberExt as _};
+
+    struct Message(String);
+    impl Visit for Message {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0 = format!("{value:?}");
+            }
+        }
+    }
+    struct Warnings(Arc<std::sync::Mutex<Vec<String>>>);
+    impl<S: tracing::Subscriber> Layer<S> for Warnings {
+        fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+            if *event.metadata().level() == tracing::Level::WARN {
+                let mut message = Message(String::new());
+                event.record(&mut message);
+                self.0.lock().unwrap().push(message.0);
+            }
+        }
+    }
+    let kept = Arc::default();
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(Warnings(Arc::clone(&kept))),
+    )
+    .unwrap();
+    kept
+}
+
+#[test]
+fn subdirectories_planted_as_links_are_never_read_or_written_through_and_said_once() {
+    // Found by the M4 milestone's mutation run: a read whose entry's subdirectory is a link
+    // not checked for one, and the check saying no link ever, passed every test (each read
+    // missed anyway, and each write failed at the link). Every subdirectory name, `00` to
+    // `ff`, a link to a directory elsewhere: the example rebuilds whole, by the kernel,
+    // nothing is written elsewhere, and the cache says once, and only, that a directory of
+    // it is a link; never that it couldn't read or write an entry.
+    let dir = Scratch::new("subdirectory-links");
+    let elsewhere = Scratch::new("subdirectory-links-elsewhere");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    std::fs::create_dir_all(&elsewhere.0).unwrap();
+    for i in 0..=255 {
+        std::os::unix::fs::symlink(&elsewhere.0, dir.0.join(format!("{i:02x}"))).unwrap();
+    }
+    let warnings = warnings_kept();
+    let engine = session(&dir.0);
+    let model = published(&engine, checked(EXAMPLE));
+    assert_eq!(hole(&model), HOLE);
+    assert_eq!(
+        calls(&engine),
+        ["Cut", "MakeBox", "MakeCylinder", "Translate"]
+    );
+    assert_eq!(std::fs::read_dir(&elsewhere.0).unwrap().count(), 0);
+    assert_eq!(
+        *warnings.lock().unwrap(),
+        ["a directory of the cache is a link: keeping no results through it"]
+    );
+}
+
+#[test]
+fn subdirectories_planted_as_files_fail_each_read_and_write_and_each_is_said() {
+    // Found by the M4 milestone's mutation run (caught there only by a test that timed out
+    // under load): a read whose entry's subdirectory can't be opened, for any reason, taken
+    // silently as a link's passed every test. Every subdirectory name a file: the example
+    // rebuilds whole, by the kernel, each of its four steps (box, cylinder, move, cut)
+    // warned of once as unread and once as unwritten, for the system's reason, and nothing
+    // said of a link.
+    let dir = Scratch::new("subdirectory-files");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    for i in 0..=255 {
+        std::fs::write(dir.0.join(format!("{i:02x}")), b"a file").unwrap();
+    }
+    let warnings = warnings_kept();
+    let engine = session(&dir.0);
+    let model = published(&engine, checked(EXAMPLE));
+    assert_eq!(hole(&model), HOLE);
+    assert_eq!(
+        calls(&engine),
+        ["Cut", "MakeBox", "MakeCylinder", "Translate"]
+    );
+    let warnings = warnings.lock().unwrap().clone();
+    let said = |start: &str| warnings.iter().filter(|w| w.starts_with(start)).count();
+    let unread = "couldn't read a cache entry: Not a directory";
+    let unwritten = "couldn't write a cache entry: Not a directory";
+    assert_eq!((said(unread), said(unwritten)), (4, 4), "{warnings:?}");
+    assert_eq!(warnings.len(), 8, "{warnings:?}");
+}
+
 // ---------------------------------------------------------------------------------------
 // Damage at every byte.
 

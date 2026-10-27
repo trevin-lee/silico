@@ -21,7 +21,7 @@ use rustix::path::Arg;
 /// The directory `name` in `dir` (or at the path `name`, from [`CWD`]), opened to list it
 /// and to find what's in it: never a link at its own name (refused, `ELOOP` or `ENOTDIR` as
 /// the system has it).
-pub(super) fn open_dir(dir: impl AsFd, name: impl Arg) -> rustix::io::Result<OwnedFd> {
+pub(crate) fn open_dir(dir: impl AsFd, name: impl Arg) -> rustix::io::Result<OwnedFd> {
     rustix::fs::openat(
         dir,
         name,
