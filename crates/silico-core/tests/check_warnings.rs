@@ -931,6 +931,13 @@ fn a_tiny_arc_short_of_a_half_turn_with_both_ends_in_a_cluster_is_to_be_lengthen
     // of its ends from its centre, 7.5e-8 · 1e-6 + 1e-6 · 7.5e-8, is positive), so
     // lengthening it moves its ends apart: "lengthen arc na000001", as for a line, not the
     // gate's advice for an arc whose ends are one place (the port review, #189).
+    //
+    // By hand: the radius r is √(7.5e-8² + 1e-6²) = 1e-6 · √1.005625 ≈ 1.0028e-6, the half
+    // sweep θ/2 is atan(7.5e-8 / 1e-6) = atan(0.075) ≈ 4.29°, so θ ≈ 8.58°, far short of
+    // 180°: the start at atan2(1e-6, 7.5e-8) ≈ 85.71°, the end at ≈ 94.29°, counter-clockwise.
+    // The chord, 2r · sin(θ/2) = 2r · (7.5e-8 / r) = 1.5e-7, is more than 1e-7, so the gate
+    // builds the arc and its ends don't join each other; each is 7.5e-8 from pa000003,
+    // less than 1e-7, so they join through it, a cluster of 3 points, 5 elements named.
     let arc = r#"{"id": "na000001", "center": "pz000002", "start": "pa000001", "end": "pa000002", "construction": false}"#;
     let text = document(&[sketch(
         "s0000001",
@@ -962,6 +969,18 @@ fn a_tiny_arc_short_of_a_half_turn_with_both_ends_in_a_cluster_is_to_be_lengthen
             "lengthen arc na000001; then share one point: make the curves named end at one of \
              the points named"
         )
+    );
+    // The whole warning, as the wire writes it, in the shape docs/design/m4.1-command-api.md
+    // gives `ends_not_joined` (*Warnings*): its message counting the cluster's 3 points.
+    assert_eq!(
+        write(&checked.warnings.listed()[0].to_wire(), Layout::Canonical).unwrap(),
+        "{\"code\": \"ends_not_joined\", \"message\": \"3 points that end curves are at one \
+         place but aren't one point, so the profile is open there\", \"feature\": \"s0000001\", \
+         \"elements\": [\"pa000001\", \"pa000002\", \"pa000003\", \"na000001\", \"na000002\"], \
+         \"elements_total\": 5, \"parameter\": null, \"cause\": \"the points are at most 1.5e-7 \
+         mm apart, each closer than FreeCAD's joining distance of 1e-7 mm to another of them\", \
+         \"suggestion\": \"lengthen arc na000001; then share one point: make the curves named \
+         end at one of the points named\", \"candidates\": []}"
     );
 }
 
