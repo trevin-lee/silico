@@ -212,6 +212,10 @@ Picked at x = 5, the result is:
 - **Where intersections come from:** FreeCAD uses OCCT. Silico's curves are lines and circular arcs, whose intersections are closed-form (decision 6).
 - **Line pieces stay independent,** with direction constraints on each, as FreeCAD's trim does. Unlike split, nothing joins them.
 - **Where nothing can take a constraint,** because the trim's pieces really are independent (an arc's edge `tangent` that no piece touches, `symmetric` about the trimmed line), FreeCAD drops it; Silico refuses the trim, naming it (decision 2).
+- **A line only shortened keeps a `symmetric` about it,** since the one piece is the same line. FreeCAD 1.1.3 drops it, because `deriveConstraintsForPieces` has no `Symmetric` case. Trimmed into two pieces, it's refused (decision 2).
+- **Of cuts within 1e-7 mm of one another, a cutter's end held on the curve is taken,** so the new end shares it. This replaces FreeCAD's 5e-5 mm merge (decision 5). Otherwise the nearest cut is taken.
+- **An arc's pick outside its sweep is placed at the end nearer in angle,** as its projection is. FreeCAD 1.1.3 removes a middle piece instead: on an arc from 0 to 270° cut at 90° and 180°, a pick at 300°, 315° or 359° removes 90°–180°.
+- **A pick at a round's centre is refused,** naming the pick. FreeCAD 1.1.3 throws "Unknown C++ exception".
 - **A `tangent` turned into an end tangency** needs a `direction` (`tangent_at` or `tangent_on`), which D4 stores and never derives from geometry (decision 8).
 
 ## 5. Pulling a shared point apart

@@ -108,6 +108,22 @@ pub fn trim(
         Geo::Arc { .. } | Geo::Circle { .. } => geo.along(pick),
         Geo::Line { .. } => geo.along(geo.project(pick)),
     };
+    // An arc's pick outside its sweep is at the end nearer in angle, as its projection is:
+    // past the end, or round to the start.
+    let picked = match &geo {
+        Geo::Arc {
+            start_angle,
+            end_angle,
+            ..
+        } if picked > *end_angle => {
+            if start_angle + TAU - picked < picked - end_angle {
+                *start_angle
+            } else {
+                *end_angle
+            }
+        }
+        _ => picked,
+    };
     if !picked.is_finite() {
         return Err(Error::new(
             ErrorCode::InvalidInput,
@@ -359,13 +375,23 @@ pub fn trim(
         .into_iter()
         .filter(|p| !used.contains(p))
         .collect();
+    // A constraint on both of the curve's ends, one trimmed away, goes too, though another
+    // curve keeps that end (`f0d30cb570`, FreeCAD's involvesBothButNotBothKept,
+    // `SketchObjectOperations.cpp:1020-1031`).
+    let both_ends: Option<[&ElementId; 2]> = match (&original.start, &original.end) {
+        (Some(start), Some(end)) if layout.keeps_start() != layout.keeps_end() => {
+            Some([start, end])
+        }
+        _ => None,
+    };
     edited.points.retain(|p| !gone.contains(&p.id));
     edited.constraints.retain(|c| {
-        let names_gone = c
-            .form
-            .references()
+        let references = c.form.references();
+        let names = |id: &ElementId| references.iter().any(|(_, r, _)| r.element() == Some(id));
+        let names_gone = references
             .iter()
-            .any(|(_, r, _)| r.element().is_some_and(|id| gone.contains(id)));
+            .any(|(_, r, _)| r.element().is_some_and(|id| gone.contains(id)))
+            || both_ends.is_some_and(|ends| ends.iter().all(|end| names(end)));
         if names_gone {
             removed.insert(c.id.clone());
             modified.remove(&c.id);
@@ -568,22 +594,24 @@ fn carry(
             },
             None => return Ok(None),
         },
-        // A distance from the line: to the piece holding the point, or the nearer one
-        // (the note leaves it; FreeCAD's findPieceContainingPoint falls back so).
+        // A distance from the line, as an `on`: to the piece holding the point, dropped over
+        // the part removed (FreeCAD's findPieceContainingPoint, which has no fallback:
+        // `SketchObjectConstraints.cpp:1478-1500`).
         Form::PointLineDistance {
             point,
             line,
             value,
             side,
             driving,
-        } if line == curve => Form::PointLineDistance {
-            point: point.clone(),
-            line: holding(point)
-                .or_else(|| reference_at(sketch, point).map(|xy| placing.nearest(xy)))
-                .unwrap_or_else(|| curve.clone()),
-            value: *value,
-            side: *side,
-            driving: *driving,
+        } if line == curve => match holding(point) {
+            Some(line) => Form::PointLineDistance {
+                point: point.clone(),
+                line,
+                value: *value,
+                side: *side,
+                driving: *driving,
+            },
+            None => return Ok(None),
         },
         // A round's edge tangency, to the piece touching the contact; refused if none does
         // (decision 2). A line's is on every piece (copied).
@@ -1165,8 +1193,9 @@ struct Placing<'a> {
 }
 
 impl Placing<'_> {
-    /// The piece whose span holds `xy`'s projection, or past the curve's ends the nearer
-    /// end's piece, or the one piece there is; none on the part removed.
+    /// The piece whose span holds `xy`'s projection, or past the curve's ends the piece
+    /// that keeps the nearer end (a line's projection clamps to its ends, as FreeCAD's
+    /// `closestParameter` does); none on the part removed, or past an end trimmed away.
     fn holding(&self, xy: [f64; 2]) -> Option<Reference> {
         let at = self.geo.project(xy);
         let along = self.geo.along(at);
@@ -1183,7 +1212,18 @@ impl Placing<'_> {
                     Geo::Circle { .. } => false,
                 };
                 if past {
-                    return Some(self.nearest(xy));
+                    let ends = self.geo.ends();
+                    let nearer_start = match &ends[..] {
+                        [start, end] => distance(xy, *start) <= distance(xy, *end),
+                        _ => true,
+                    };
+                    return match (nearer_start, before, after) {
+                        (true, Some(_), _) => Some(self.first.clone()),
+                        (false, _, Some(_)) => {
+                            Some(self.second.clone().unwrap_or_else(|| self.first.clone()))
+                        }
+                        _ => None,
+                    };
                 }
                 match (before, after) {
                     (Some(b), Some(a)) => {
@@ -1200,17 +1240,6 @@ impl Placing<'_> {
                     (None, None) => None,
                 }
             }
-        }
-    }
-
-    /// The piece nearer `xy`: the second only if there is one and its end is nearer.
-    fn nearest(&self, xy: [f64; 2]) -> Reference {
-        let ends = self.geo.ends();
-        match (&self.second, &ends[..]) {
-            (Some(second), [start, end]) if distance(xy, *end) < distance(xy, *start) => {
-                second.clone()
-            }
-            _ => self.first.clone(),
         }
     }
 }

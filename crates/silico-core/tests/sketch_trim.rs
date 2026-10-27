@@ -1160,3 +1160,151 @@ fn a_pick_at_a_rounds_centre_is_refused_naming_the_pick() {
         )
     );
 }
+
+// ---- the port review's
+
+#[test]
+fn an_arc_picked_outside_its_sweep_is_trimmed_at_the_end_nearer_in_angle() {
+    // An arc of radius 5 about the origin from r0 (5, 0), at 0, to r1 (0, −5), at 270°,
+    // cut by radii up to 90° and out to 180°, which cut it at (0, 5) and (−5, 0). Picked at
+    // 359°, 1° round from its start (89° past its end), it loses 0 to 90°; picked at 300°,
+    // 30° past its end, it loses 180° to 270°.
+    let before = doc(
+        &[
+            point("z0000000", 0.0, 0.0),
+            point("r0000000", 5.0, 0.0),
+            point("r0000001", 0.0, -5.0),
+            point("d0000001", 0.0, 10.0),
+            point("e0000001", -10.0, 0.0),
+        ]
+        .join(", "),
+        &[
+            line("d0000000", "z0000000", "d0000001"),
+            line("e0000000", "z0000000", "e0000001"),
+        ]
+        .join(", "),
+        "",
+        &arc("a0000000", "z0000000", "r0000000", "r0000001"),
+        "",
+    );
+    let degrees = |d: f64| {
+        let angle = d.to_radians();
+        [5.0 * libm::cos(angle), 5.0 * libm::sin(angle)]
+    };
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        degrees(359.0),
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(at(&sketch, "n0000000"), (0.0, 5.0, false));
+    assert_eq!(
+        arc_points(&sketch, "a0000000"),
+        ["z0000000", "n0000000", "r0000001"]
+    );
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000000", "d0000000"));
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        degrees(300.0),
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(at(&sketch, "n0000000"), (-5.0, 0.0, false));
+    assert_eq!(
+        arc_points(&sketch, "a0000000"),
+        ["z0000000", "r0000000", "n0000000"]
+    );
+}
+
+#[test]
+fn a_distance_or_on_over_the_part_removed_or_past_an_end_trimmed_away_is_dropped() {
+    // FreeCAD 1.1.3 (the port review's probes; findPieceContainingPoint has no fallback):
+    // cutters at 8 and 24, picked at 16: a distance from (16, 3) is dropped, one from
+    // (28, 3) moves to the second piece. One cutter at 8, picked at 4: an on at (−2, 0)
+    // and a distance from (−2, 3), past the start trimmed away, are dropped; an on at
+    // (40, 0), past the end kept, stays.
+    let (mut points, d) = upright('d', 8.0);
+    let (more, e) = upright('e', 24.0);
+    points.extend(more);
+    points.push(point("s0000000", 16.0, 3.0));
+    points.push(point("s0000001", 28.0, 3.0));
+    let before = a_line(
+        &points,
+        &[d.clone(), e],
+        "",
+        r#"{"id": "k0000000", "type": "point_line_distance", "point": "s0000000", "line": "a0000000", "value": 3, "side": "left", "driving": true}, {"id": "k0000001", "type": "point_line_distance", "point": "s0000001", "line": "a0000000", "value": 3, "side": "left", "driving": true}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [16.0, 0.0],
+        &ids(&["n0000000", "n0000001", "b1000000", "k0000008", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert!(!has(&sketch, "k0000000"));
+    match form(&sketch, "k0000001") {
+        Form::PointLineDistance { line, .. } => assert_eq!(line, &element("b1000000")),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(done.edited.removed, ids(&["k0000000"]));
+    let (mut points, _) = upright('d', 8.0);
+    points.extend([
+        point("s0000000", -2.0, 0.0),
+        point("s0000001", -2.0, 3.0),
+        point("s0000002", 40.0, 0.0),
+    ]);
+    let before = a_line(
+        &points,
+        &[d],
+        "",
+        r#"{"id": "k0000000", "type": "on", "point": "s0000000", "curve": "a0000000"}, {"id": "k0000001", "type": "point_line_distance", "point": "s0000001", "line": "a0000000", "value": 3, "side": "left", "driving": true}, {"id": "k0000002", "type": "on", "point": "s0000002", "curve": "a0000000"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [4.0, 0.0],
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(form(&sketch, "k0000002"), &on("s0000002", "a0000000"));
+    assert_eq!(
+        done.edited.removed,
+        ids(&["p0000000", "k0000000", "k0000001"])
+    );
+}
+
+#[test]
+fn a_constraint_on_both_ends_goes_when_one_is_trimmed_away_though_a_neighbour_keeps_it() {
+    // f0d30cb570 (involvesBothButNotBothKept): b shares a's start p0; a distance of a's
+    // ends goes with the trim back to the cutter at 8, though p0 stays, b's; a distance_x
+    // of p0 alone stays.
+    let (mut points, d) = upright('d', 8.0);
+    points.push(point("b0000001", 0.0, 10.0));
+    let before = a_line(
+        &points,
+        &[d, line("b0000000", "p0000000", "b0000001")],
+        "",
+        r#"{"id": "k0000000", "type": "distance", "a": "p0000000", "b": "p0000004", "value": 32, "driving": true}, {"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000000", "value": 0, "driving": true}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [4.0, 0.0],
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert!(has(&sketch, "p0000000"));
+    assert!(!has(&sketch, "k0000000"));
+    assert_eq!(
+        form(&sketch, "k0000001"),
+        form(sketch_of(&before), "k0000001")
+    );
+    assert_eq!(done.edited.removed, ids(&["k0000000"]));
+}
