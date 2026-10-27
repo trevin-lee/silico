@@ -29,7 +29,7 @@
 
 ## As built
 
-Each step as it stands, with its PRs (merged unless marked open). Recorded 2026-10-26, for M4's close.
+Each step as it stands, with its PRs (merged unless marked open). Recorded 2026-10-27, for M4's close, against main at 906cef94.
 
 - **M4.0, the naming scheme in the document: built.** #112.
 - **M4.1, the command API's design: built.** The design, docs/design/m4.1-command-api.md, approved by the maintainer on 2026-10-24 (all recommended, decisions 1–7 and 9–35; it takes in amendments A1–A3 and A7): #119. Added to since, reopening no decision: #126 (a cone's half-angle and apex, an edge's ends), #130 and #131 (export's left-out faces, the tolerance, the 4 GiB archive, a raised face meshed again). The study notes: #111 (measure), #113 (mesh export), #114 (the attacher, for A4).
@@ -38,10 +38,12 @@ Each step as it stands, with its PRs (merged unless marked open). Recorded 2026-
 - **M4.4, elements and queries: built.** The kernel's `describe`: #121. Every solid described as it's rebuilt: #133. `elements` and `query`: #140. On the wire, with `schema` and `silico schema`: #152.
 - **M4.5, measurement: built.** The kernel's least distance: #150. `mass_properties`: #155. `distance` and `angle`: #156, with `center_to_element`: #173 (and #180). The name lookup shared by every command: #164. Compared with FreeCAD 1.1.3's Measure, 61 cases: #165. Measurement's accuracy on OCCT: #132 and #143 (known wrong results recorded), #161 (patch 0003), #172 (patch 0004, and each shape measured about its own centre); and #168, arcs revolved across their circle's angle 0, found on the way.
 - **M4.6, offscreen PNG: built.** The design: #135. Its steps: #141 (a worker's traps as data, step 0), #142 (the probe, step 1), #147 (the render worker, step 2), #149 (the core's client, step 3), #170 (`render`, step 4). Follow-ups: #166, #175, #176, #179, #181 (render's mutants).
-- **M4.7, logs: not yet built.** `read_logs`: #194 (open, in review).
+- **M4.7, logs: built.** `read_logs`, each session's events (the workers' included) in a bounded buffer, read by level, feature, and cursor, and `version` giving every limit: #194.
 - **M4.8, export: built.** The export core: #123. `export` as 3MF and `silico export`: #182. STEP (decision 6), written by a STEP worker of its own: #186.
-- **M4.9, the MCP server and the bracket: not yet built.** The core's entry by name and the workspace, with docs/design/m4.9-mcp.md: #184. The server, `silico-mcp` and `silico serve`: #185 (open). The bracket: #190 (open, stacked on #185). The maintainer's live run with a fresh agent, recorded in docs/walkthrough/m4.md: not yet.
-- **Not a step of this plan, built in M4:** ROADMAP.md's check warnings (decision 17: `ends_not_joined`, `constraints_redundant`, `fingerprint_missing`): #189 (open). Lookups by ID and by name in logarithmic time: #187, #193. `check --json`'s key order in every build: #192. Kernel fixes: #171 (a boolean's skipped pairs logged by name), #177 (patch 0005, a section edge with no 3D curve). Tests: #120 (the core's tests as 9 programs), #124, #160, #178, #191.
+- **M4.9, the MCP server and the bracket: built, but for the live run.** The core's entry by name and the workspace, with docs/design/m4.9-mcp.md: #184. The server, `silico-mcp` and `silico serve`: #185. The bracket, designed over MCP from a spec and checked by hand: #190. Workers found beside `silico` reached through a link: #198. `serve` refusing to start without a kernel worker, and warning of each other one missing: #199. The guide for agents, docs/mcp.md: #197. The maintainer's live run with a fresh agent, recorded in docs/walkthrough/m4.md: not yet.
+- **Not a step of this plan, built in M4:** ROADMAP.md's check warnings (decision 17: `ends_not_joined`, `constraints_redundant`, `fingerprint_missing`): #189. A length or an angle bounded by `i64::MAX` either way: #200. Lookups by ID and by name in logarithmic time: #187, #193. `check --json`'s key order in every build: #192. Kernel fixes: #171 (a boolean's skipped pairs logged by name), #177 (patch 0005, a section edge with no 3D curve). Tests: #120 (the core's tests as 9 programs), #124, #160, #178, #191. Dependencies: #146. CI: #116, #169, #204 (a PR's mutants run on runners of its own).
+- **The milestone review:** its round-1 lows: #203. Its other fixes: #202 and #205 (open).
+- **M3's close, finished during M4:** #110, #117, #118, #129, #137, #138, #139.
 - **Amendment A4, sketches on faces: not built in M4.** The bracket sketches on origin planes. `elements` reports each planar face's `default_x` (F1) already (#140, #152).
 - **The open decisions below:** 1 to 7 were taken as recommended with M4.1's design (2026-10-24, #119); 8 was decided on 2026-10-21 and built in #112.
 
