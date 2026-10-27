@@ -489,6 +489,8 @@ mod tests {
         let escaped = |text: &str| serde_json::to_string(text).unwrap().len() - 2;
         for text in [
             "plain",
+            // A space is one byte, as written: the first character not escaped.
+            "a b",
             "\"quoted\" and \\ back",
             "\u{1}\u{1f}\n\t\r\u{8}\u{c}",
             "é🦀\u{7f}",

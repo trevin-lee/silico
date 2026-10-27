@@ -540,6 +540,11 @@ mod tests {
         let mut tiny = "abcdef".to_owned();
         cut(&mut tiny, 2);
         assert_eq!(tiny, "ab");
+        // 6 bytes: 3 for the text would end within the second "é", so back to the first's
+        // end (2), and the mark: 5 bytes, never past the room.
+        let mut within = "é".repeat(4);
+        cut(&mut within, 6);
+        assert_eq!(within, "é…");
     }
 
     #[test]
@@ -783,6 +788,48 @@ mod tests {
         assert!(walk.starts_with("walk path=xxx"), "{}", &walk[..20]);
         assert!(walk.ends_with(CUT));
         assert_eq!(walk.len(), SPAN_BYTES);
+    }
+
+    #[test]
+    fn a_span_at_its_bound_takes_no_more_fields_and_one_recorded_later_is_kept() {
+        // Mutants: a span's text exactly SPAN_BYTES long is whole, not cut for a field past
+        // it; and a field recorded after the span was made is in its text.
+        keep_logs();
+        let (buffer, span) = attached("check");
+        let full = "x".repeat(SPAN_BYTES - "walk path=".len());
+        span.in_scope(|| {
+            tracing::info_span!("walk", path = %full, more = 1).in_scope(|| tracing::info!("full"));
+            let step = tracing::info_span!("step", n = tracing::field::Empty);
+            step.record("n", 5);
+            step.in_scope(|| tracing::info!("recorded"));
+        });
+        let logs = buffer
+            .read(s1(), &query(LogLevel::Trace, None, 1000))
+            .unwrap();
+        assert_eq!(logs.events[0].spans[1], format!("walk path={full}"));
+        assert_eq!(logs.events[1].spans, ["check", "step n=5"]);
+    }
+
+    #[test]
+    fn a_read_holds_events_of_exactly_a_mebibyte() {
+        // Mutant: a read stops past LOG_READ_BYTES, not at it. Two events, each its
+        // message and its span "check", a mebibyte in all.
+        keep_logs();
+        let (buffer, span) = attached("check");
+        let half = "m".repeat(LOG_READ_BYTES / 2 - "check".len());
+        span.in_scope(|| {
+            tracing::info!("{half}");
+            tracing::info!("{half}");
+        });
+        let logs = buffer
+            .read(s1(), &query(LogLevel::Info, None, 1000))
+            .unwrap();
+        assert_eq!(logs.events.len(), 2);
+        assert_eq!(
+            logs.events.iter().map(LogEvent::bytes).sum::<usize>(),
+            LOG_READ_BYTES
+        );
+        assert_eq!(logs.next, 2);
     }
 
     #[test]
