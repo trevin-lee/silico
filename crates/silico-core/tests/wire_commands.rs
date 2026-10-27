@@ -348,12 +348,18 @@ fn the_word_lists_in_the_snapshots_are_the_commands_own() {
 #[test]
 fn the_examples_are_the_designs_own_text() {
     // Each section's blocks, in order, each file the block and a newline.
-    let sections: [(&str, &str, &str, &[&str]); 9] = [
+    let sections: [(&str, &str, &str, &[&str]); 10] = [
         (
             "### Element entries",
             "### Warnings",
             "entry",
             &["plane-face", "cylinder-face"],
+        ),
+        (
+            "### Warnings",
+            "## 3. Sessions",
+            "warning",
+            &["ends-not-joined"],
         ),
         (
             "### `elements` (M4.4)",

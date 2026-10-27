@@ -12,13 +12,14 @@ use super::Sessions;
 use super::cancel::Ticket;
 use super::rebuilds::met_fault;
 use super::rebuilds::{Label, Newest};
-use super::transaction::Reached;
+use super::transaction::{Checking, Reached};
 use super::{Problems, ReadCommand, SessionCommand};
 #[cfg(doc)]
 use crate::document;
 use crate::document::json::Plain;
 use crate::document::{Feature, FeatureId};
 use crate::recompute::{Model, StepCount};
+use crate::warnings::Warnings;
 use crate::{Error, ErrorCode};
 
 /// A session's ID as a request's schema gives it, the IDs [`SessionId::parse`] reads: `s`
@@ -153,6 +154,9 @@ pub struct Read<'a, C> {
     pub(super) stop: &'a Ticket,
     pub(super) kernel: &'a ReadClient<C>,
     pub(super) reached: &'a Reached,
+    /// The session as the read is answered: whether the model is its revision's, and
+    /// whether a transaction is open in it now ([`Reached::committing`]).
+    pub(super) checking: Checking,
 }
 
 impl<C> Read<'_, C> {
@@ -550,23 +554,34 @@ pub struct OutlineAnswer {
 }
 
 /// What `check` answers: the document's problems, and its warnings, which never fail
-/// anything, and of which there are none yet (the first, M3's two curve ends at one place
-/// that aren't one point, comes with its code).
+/// anything (docs/design/m4.1-command-api.md, *Warnings*, decision 17;
+/// [`crate::warnings`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckAnswer {
     pub problems: Problems,
-    /// In the error contract's shape, as the wire writes them. Decision 17 gives warnings
-    /// codes of their own: this type changes with the first warning code, when warnings
-    /// are made.
-    pub warnings: Problems,
+    /// In the error contract's shape, as the wire writes them, each with a warning code of
+    /// its own: none for a document the gate refused, which has no model to find them in.
+    pub warnings: Warnings,
 }
 
 impl CheckAnswer {
-    /// The answer of a check that found `problems`, and no warnings (none are made yet).
-    pub(super) fn of(problems: Problems) -> Self {
+    /// The answer of a check of `model`: its problems, as `problems` gives them, and its
+    /// warnings, none of a missing fingerprint for a feature in `committing`, which an open
+    /// transaction's edits reached (its commit writes one, and `format` is refused there:
+    /// decision 28; [`Reached::committing`]).
+    pub(super) fn of(problems: Problems, model: &Model, committing: &BTreeSet<FeatureId>) -> Self {
         CheckAnswer {
             problems,
-            warnings: Problems::none(),
+            warnings: crate::warnings::of(model, committing),
+        }
+    }
+
+    /// The answer of a check of a document the gate refused: its problems, and no warnings,
+    /// since there's no model to find them in.
+    pub(super) fn refused(problems: Problems) -> Self {
+        CheckAnswer {
+            problems,
+            warnings: Warnings::none(),
         }
     }
 }

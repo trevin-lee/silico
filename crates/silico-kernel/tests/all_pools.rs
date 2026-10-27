@@ -12,6 +12,8 @@ mod test_programs;
 // Shared by the files below, each loaded once.
 #[path = "common/launches.rs"]
 mod launches;
+#[path = "common/running.rs"]
+mod running;
 #[path = "common/scripts.rs"]
 mod scripts;
 

@@ -9679,7 +9679,7 @@
         "readOnlyHint": true,
         "title": "Check"
       },
-      "description": "The document's problems and warnings, from the model named: failed features, broken references, drift. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "description": "The document's problems and warnings, from the model named: failed features, broken references, drift; and, failing nothing, ends FreeCAD would join, redundant constraints that agree, and features saved without a fingerprint. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
       "inputSchema": {
         "$defs": {
           "ModelChoice": {
@@ -9929,6 +9929,80 @@
               "transaction"
             ],
             "type": "object"
+          },
+          "Warning": {
+            "additionalProperties": false,
+            "description": "Something `check` found that fails nothing: it never refuses a command, blocks a save, or\nsets an exit code. In the error contract's shape, each field as an error's: a code, a\nmessage, and, where they apply, the feature, the elements it's of (the first of them,\nand how many in all), the field it's of, the cause, what to do, and the names that might\nhave been meant. Every field is always present: null, or empty, where it doesn't apply.",
+            "properties": {
+              "candidates": {
+                "description": "What might have been meant, if anything.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of warning it is: one of Silico's warning codes, listed in\n`warning-codes.txt`, such as `ends_not_joined`.",
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements it's of, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements it's of, listed or not.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature it's of, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What was found, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field it's of, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -9973,7 +10047,7 @@
                   "warnings": {
                     "description": "The document's warnings, the first 100, in the error contract's shape: they never\nfail anything.",
                     "items": {
-                      "$ref": "#/$defs/Error"
+                      "$ref": "#/$defs/Warning"
                     },
                     "maxItems": 100,
                     "type": "array"

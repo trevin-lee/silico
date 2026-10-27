@@ -162,6 +162,7 @@ impl Draw {
             dofs: 0,
             free: BTreeSet::new(),
             redundant: BTreeMap::new(),
+            partially_redundant: BTreeMap::new(),
             algorithm: Algorithm::DogLeg,
         }
     }

@@ -153,7 +153,7 @@ FreeCAD's result depends on which point comes first in a wire, on where a circle
 - **The core decides; the worker builds** (decision 2). The core finds loops, refusals, nesting, and direction from the solved coordinates. The worker gets the plane and the regions (each an outer loop and its holes, every loop its curves in order, already oriented) and builds faces without classifying anything. FreeCAD fits a plane, sorts by size, and classifies one vertex, all in OCCT.
 - **Curves join only at shared points** (D2), never by distance. FreeCAD joins any ends within 1e-7, and a joined vertex then reaches further.
 - **An open profile is refused**, naming each open end and its curve. SolidWorks offers a thin feature for an open contour; Silico has no thin features.
-- **Near-closed ends are refused** with "share the point" (D2): two open ends within 1e-7, which FreeCAD would join.
+- **Near-closed ends are refused** with "share the point" (or, for a curve with both ends there, `collapsing_advice`) (D2): two open ends within 1e-7, which FreeCAD would join.
 - **Every profile point joins exactly two curves.** A point where three or more curves meet is refused, naming the point and its curves: a T, a shared line, a figure-8's waist, loops meeting at a corner. FreeCAD fails the first two and builds the others.
 - **Crossing, overlapping, and touching curves are refused**, naming both curves, or the point and the curve where a point touches one. SolidWorks refuses to extrude a whole sketch whose contours intersect and points to Contour Select. Silico's version of Contour Select is decision 8's later step.
 - **Zero-area loops are refused** (area ≤ 1e-7 × perimeter, `Profile::check`'s rule). FreeCAD pads them into a zero-volume "valid" solid.
@@ -170,7 +170,7 @@ The input is the sketch and its `SketchSolution` (points by ID, circles' radii).
 
 1. **The graph.** Lines run from one point to another, arcs from start to end counter-clockwise about their centre, and circles have no ends. Count each point's curve ends; a point that's only a centre counts 0.
    - No curves: refused, no closed profile.
-   - Points with 1: open. Two of them within 1e-7 of each other are refused with "share the point", naming both. Otherwise each open end is named.
+   - Points with 1: open. Two of them within 1e-7 of each other are refused with "share the point" (or, for a curve with both ends there, `collapsing_advice`), naming both. Otherwise each open end is named.
    - A point with 3 or more: refused, naming it and its curves.
    - Every point with 2: each connected group is one loop, and a circle is a loop by itself. Each loop is walked from its curve with the smallest ID.
 2. **No two curves meet except at a shared point.** Every pair is tested. Two curves meet where they come within 1e-7: crossing, overlapping, touching, or a point of one on the other.

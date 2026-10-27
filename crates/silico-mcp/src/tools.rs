@@ -249,7 +249,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::Check => (
             "Check",
-            "The document's problems and warnings, from the model named: failed features, broken references, drift.",
+            "The document's problems and warnings, from the model named: failed features, broken references, drift; and, failing nothing, ends FreeCAD would join, redundant constraints that agree, and features saved without a fingerprint.",
         ),
         Command::CacheClear => (
             "Clear the cache",

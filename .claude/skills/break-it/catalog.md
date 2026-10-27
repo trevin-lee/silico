@@ -41,6 +41,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A symmetry of a line's own end and another point about that line (the gate refuses both ends, not one): the solve puts the point on the end, and the next solve refuses two points drawn at one place
 - Profiles the core takes but the kernel request's check refuses (a corner arc of radius in (1e-7/√2, 1e-7], whose ends are r√2 apart; a loop of two curves whose shared points are within the tolerance, where no end is unshared for a neighbour test to see): send every profile the core makes through the request's check
 - A lone curve whose own two ends are within the tolerance (a nearly closed arc, a 5e-8 line): "share the point" makes a curve from a point to itself, which the gate refuses; follow each refusal's suggestion and gate the result
+- Checks that predict FreeCAD's joining of ends from the sketch's points: FreeCAD joins its edges' vertices, and a line's end vertex is `start + dir · length` (GC_MakeSegment's trimmed line), ulps from the `to` point, so within a few ulps of 1e-7 the verdict flips both ways (5 in 600 random lines drawn within 5e-12 of it); build each in FreeCAD and count `Shape.Vertexes`
+- k ends at one place reported a pair at a time: k(k − 1)/2 warnings where FreeCAD's missing-coincidence analysis (`SketchAnalysis::getMissingCoincidences`) gives k − 1, crowding later features' out of the first hundred
+- A hub where hundreds of curves meet, near another point: a report about the two points that names every curve at each puts all of them in `elements`, where the contract lists the first hundred and counts the rest
 
 ## Sketch solver
 
