@@ -212,8 +212,9 @@ jobs:
           #
           # A filler shard runs at the idle scheduling class, for the CPU and for I/O, on a
           # runner at the idle weight (as a real shard's is), so it can't slow a gate; a real
-          # run's plan cancels filler (cancel-filler.sh), so it doesn't share the pool with
-          # one either. Four can run
+          # run's plan cancels the filler going (cancel-filler.sh), and the filler starts
+          # nothing while a real run starts or has work waiting (filler.yml), but beside a
+          # real run's shards already running it can share the CPU. Four can run at once
           # (the runners labelled filler), so it takes a quarter of the machine. It has a Cargo
           # home of its own (the toolchains stay on PATH): starved of CPU, it could hold the
           # package cache's lock, which every other build on the VM shares, for minutes. And so
