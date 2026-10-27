@@ -41,6 +41,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A symmetry of a line's own end and another point about that line (the gate refuses both ends, not one): the solve puts the point on the end, and the next solve refuses two points drawn at one place
 - Profiles the core takes but the kernel request's check refuses (a corner arc of radius in (1e-7/√2, 1e-7], whose ends are r√2 apart; a loop of two curves whose shared points are within the tolerance, where no end is unshared for a neighbour test to see): send every profile the core makes through the request's check
 - A lone curve whose own two ends are within the tolerance (a nearly closed arc, a 5e-8 line): "share the point" makes a curve from a point to itself, which the gate refuses; follow each refusal's suggestion and gate the result
+- Checks that predict FreeCAD's joining of ends from the sketch's points: FreeCAD joins its edges' vertices, and a line's end vertex is `start + dir · length` (GC_MakeSegment's trimmed line), ulps from the `to` point, so within a few ulps of 1e-7 the verdict flips both ways (5 in 600 random lines drawn within 5e-12 of it); build each in FreeCAD and count `Shape.Vertexes`
+- k ends at one place reported a pair at a time: k(k − 1)/2 warnings where FreeCAD's missing-coincidence analysis (`SketchAnalysis::getMissingCoincidences`) gives k − 1, crowding later features' out of the first hundred
+- A hub where hundreds of curves meet, near another point: a report about the two points that names every curve at each puts all of them in `elements`, where the contract lists the first hundred and counts the rest
 
 ## Sketch solver
 
@@ -196,6 +199,10 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Snapshots' integers (`"type": "integer"`) against a reader that takes digits only: JSON Schema calls `2.0` and `1e3` integers, and a `uint64` with no `maximum` takes 2^64, so a request the schema validates is refused; validate each refused spelling against the snapshot
 - Values the core derives and sends on (a circle's centre as a point to measure from), refused by the request's own check: the refusal is worded as the caller's (`invalid_input`, "change the value the message names") for a value it never gave; forge a description past the check's bound and read the error as the caller would
 - A command pipelined right after the `open` of the session it names (IDs are given in call order, so predictable): refused "no session s1 is open" when called before the open's thread records the session, run when after; the same calls in the same order, answered by timing
+- Line caps against CRLF: a message of exactly the cap sent with `\r\n` is refused when its carriage return counts toward the length, though the same bytes with `\n` are read
+- JSON-RPC frames refused for a member given twice (two `params`, two `jsonrpc`): answered with a null ID though the one `id` was readable, so the client waits on its request forever
+- IDs, progress tokens, and cancels' `requestId`s that are valid JSON strings but no Unicode (`"\ud800"`): a decoder that refuses them calls the string "neither a string nor a number"
+- Every JSON-RPC refusal path (params, `_meta`, a progress token, not just the tool's name) checked for a suggestion, not only a message and a parameter
 
 ## Kernel worker and IPC
 
@@ -220,6 +227,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Worker replies checked only for finiteness, then stored in fixed point (a summary's centre of 1e13 mm, past an i64 of nanometres; a volume of -1 or 0): the overflow surfaces later as `internal`, "a bug in Silico", and an inside-out or empty solid is measured Ok; forge each through the fake's `answer_instead`
 - Worker refusals passed up as they came (a value index, `kernel_failed`, no feature): check the core adds the feature and maps indices to the elements it knows
 - Log sinks that misbehave each way, as a global `tracing` layer under a shell-script worker that writes chosen log bytes: stalled on events, stalled in `on_close` (a synchronous span exporter), panicking, merely slower than the reader (a `fmt` layer to a file, in a 20,000-line burst); check every line is given or counted, counts are said promptly, crash reports still wait for a log a worker's child holds open, and no lock is held while sink code runs
+- A worker log line whose text grows with the request (a refusal naming every refused edge: a plate with 1,024 holes, every edge filleted, refuses 1,024 seams in one ~10 KB line): past the core's line cut it's no longer JSON, so it's re-emitted as a raw warning under no span, lost to the request's caller
+- Environment the workers inherit (`SILICO_LOG`) set to the value the app already defaults to: a worker's own default can differ from the app's, so `SILICO_LOG=warn` changes what the worker sends (and what a session's logs hold) though it changes nothing in the app; run each such variable unset and set to its default
 - A pool that grows on demand, fed requests strictly one after another (thousands of submit-then-wait, and every other one crashing its worker): a slot that counts itself busy until after it has delivered, or while it replaces its worker, makes the next submit start another slot and worker
 - A worker executable replaced by a FIFO, or a symlink to `/dev/zero`, under a running pool or as its worker starts: whatever hashes or reads the executable blocks opening the FIFO (a slot thread, a reply thread, a pool drop that joins them) or reads without end
 - An executable rewritten in place with another build of the same size, its modification time put back (`cp -p`, `rsync --inplace -t`): a size, time, and inode stamp calls it unchanged; only its change time (`st_ctime`) shows it

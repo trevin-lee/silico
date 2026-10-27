@@ -1,0 +1,8 @@
+{
+  "events": [
+    {"seq": 41, "level": "info", "at_ms": 1518, "spans": ["check", "rebuild", "step feature=f0000001", "kernel op=fillet"], "feature": "f0000001", "message": "fillet of 1 edge, radius 6"},
+    {"seq": 42, "level": "warn", "at_ms": 1520, "spans": ["check", "rebuild", "step feature=f0000001", "kernel op=fillet"], "feature": "f0000001", "message": "fillet failed: StdFail_NotDone: BRepFilletAPI_MakeFillet"}
+  ],
+  "next": 42,
+  "dropped": 0
+}

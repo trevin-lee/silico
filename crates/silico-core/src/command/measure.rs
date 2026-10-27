@@ -90,7 +90,8 @@ pub struct Bodies {
 /// `check` says it: the kernel's refusal of its values, or the worker's failure to measure
 /// it (`elements::summarized`).
 pub fn mass_properties(model: &Model, feature: Option<&FeatureId>) -> Result<Bodies, Problems> {
-    let _span = tracing::debug_span!("mass_properties", ?feature).entered();
+    let _span =
+        tracing::debug_span!("mass_properties", feature = feature.map(FeatureId::as_str)).entered();
     let mut refused = Problems::none();
     let mut bodies = Vec::new();
     let asked: Vec<(&FeatureId, bool)> = match feature {
@@ -269,7 +270,8 @@ pub fn distance<K: Kernel>(
     names: &[String; 2],
     feature: Option<&FeatureId>,
 ) -> Result<DistanceAnswer, Problems> {
-    let _span = tracing::debug_span!("distance", ?feature).entered();
+    let _span =
+        tracing::debug_span!("distance", feature = feature.map(FeatureId::as_str)).entered();
     let [a, b] = find(model, names, feature)?;
     let other = (a.feature != b.feature).then_some(b.shape);
     let request = KernelRequest::distance(a.shape, a.element, other, b.element)
@@ -663,7 +665,7 @@ pub fn angle(
     names: &[String; 2],
     feature: Option<&FeatureId>,
 ) -> Result<AngleAnswer, Problems> {
-    let _span = tracing::debug_span!("angle", ?feature).entered();
+    let _span = tracing::debug_span!("angle", feature = feature.map(FeatureId::as_str)).entered();
     let [a, b] = find(model, names, feature)?;
     let mut refused = Problems::none();
     let carriers = [&a, &b].map(|found| {

@@ -28,6 +28,8 @@ mod forged;
 mod lateness;
 #[path = "common/entries.rs"]
 mod listing;
+#[path = "common/logs.rs"]
+mod logged;
 #[path = "common/model.rs"]
 mod model;
 #[path = "common/references.rs"]
@@ -62,12 +64,16 @@ mod adversarial_fingerprint;
 mod adversarial_mass_properties;
 #[path = "adversarial_measures.rs"]
 mod adversarial_measures;
+#[path = "adversarial_read_logs.rs"]
+mod adversarial_read_logs;
 #[path = "adversarial_references.rs"]
 mod adversarial_references;
 #[path = "adversarial_render_command.rs"]
 mod adversarial_render_command;
 #[path = "adversarial_type_words.rs"]
 mod adversarial_type_words;
+#[path = "adversarial_warnings.rs"]
+mod adversarial_warnings;
 #[path = "adversarial_wire_commands.rs"]
 mod adversarial_wire_commands;
 #[path = "adversarial_workspace.rs"]
@@ -80,6 +86,8 @@ mod cache_clear;
 mod cache_workspace;
 #[path = "call.rs"]
 mod call;
+#[path = "check_warnings.rs"]
+mod check_warnings;
 #[path = "command.rs"]
 mod command;
 #[path = "document.rs"]
@@ -108,6 +116,8 @@ mod session_elements;
 mod session_export;
 #[path = "session_fresh.rs"]
 mod session_fresh;
+#[path = "session_logs.rs"]
+mod session_logs;
 #[path = "session_rebuild.rs"]
 mod session_rebuild;
 #[path = "session_reload.rs"]

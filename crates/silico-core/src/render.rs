@@ -31,6 +31,18 @@ use crate::{Error, ErrorCode};
 /// The environment variable that names the render worker executable.
 pub const RENDER_WORKER_ENV: &str = "SILICO_RENDER_WORKER";
 
+/// The render worker executable: the one [`RENDER_WORKER_ENV`] names, or
+/// `silico-render-worker` next to the running executable, as the kernel's and the sketch
+/// solver's are found: what a client (`silico serve`) starts its [`RenderClient`] on.
+pub fn worker_path() -> Result<std::path::PathBuf, Error> {
+    crate::worker::worker_path(
+        RENDER_WORKER_ENV,
+        "silico-render-worker",
+        "render worker",
+        "cargo build -p silico-render --bin silico-render-worker",
+    )
+}
+
 /// How long a render may take from when its scene is sent.
 pub const RENDER_TIMEOUT: Duration = Duration::from_secs(30);
 

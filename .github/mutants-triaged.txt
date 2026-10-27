@@ -156,3 +156,21 @@ crates/silico-core/src/file.rs | output_target | replace match guard given.is_re
 # still taken in order and counted (tested past the first fill).
 crates/silico-core/src/command/export.rs | export | replace < with <= | #182
 crates/silico-core/src/command/export.rs | unwritten | replace < with <= | #186
+# `Self::default()` and `Default::default()` returning Self are the same call.
+crates/silico-core/src/warnings.rs | Warnings::none | replace Warnings::none -> Self with Default::default() | #189
+# Two ends at most are two points every profile curve runs between (a line or an arc from a
+# point to itself is refused), which the gate and the solve's check refuse at 1e-7 or less
+# apart by `hypot`; FreeCAD's join, under 1e-7 by sqrt(dx^2 + dy^2), never holds where `hypot`
+# is above it (none in 1.4e8 pairs searched at the boundary), so two ends never warn.
+crates/silico-core/src/warnings.rs | ends_not_joined | replace < with <= | #189
+# `k * 1` adds the pair of each point with itself, 0 apart, to a maximum that starts at 0.
+crates/silico-core/src/warnings.rs | cluster_warning | replace + with * | #189
+# `k * 1` compares each point with itself too: 0 apart along x, so no break, and joining a
+# point to itself leaves the groups as they were.
+crates/silico-core/src/profile.rs | one_place_groups | replace + with * | #189
+# A field past a read's mebibyte is cut away with the message it's appended to: the
+# message is cut to a room of at most LOG_READ_BYTES, so the same prefix is kept.
+crates/silico-core/src/command/logs.rs | EventFields::field | replace < with <= | #194
+# Raising an info directive to info writes the same directive (`silico=info`, `info`).
+crates/silico-worker/src/lib.rs | worker_filter | replace < with <= | #194
+crates/silico-worker/src/lib.rs | worker_filter | replace < with <= | #194

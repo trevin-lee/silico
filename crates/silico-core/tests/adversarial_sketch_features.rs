@@ -751,6 +751,7 @@ fn solution_with(points: &[(&str, [f64; 2])]) -> SketchSolution {
         dofs: 0,
         free: BTreeSet::new(),
         redundant: BTreeMap::new(),
+        partially_redundant: BTreeMap::new(),
         algorithm: silico_protocol::Algorithm::DogLeg,
     }
 }

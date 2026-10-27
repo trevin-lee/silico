@@ -331,8 +331,15 @@ pub struct SketchSolution {
     pub free: BTreeSet<ElementId>,
     /// Constraints that repeat others and agree with them (decision 5): kept, and reported,
     /// each with its gap, in millimetres: the least distance a point would have to move for
-    /// it to hold exactly.
+    /// it to hold exactly. Only those all of whose equations repeat others' (PlaneGCS's
+    /// redundant, FreeCAD's "redundant constraints"); removing one leaves the sketch as
+    /// constrained as it is.
     pub redundant: BTreeMap<ElementId, f64>,
+    /// Constraints some, but not all, of whose equations repeat others' and agree with them
+    /// (PlaneGCS's partially redundant, FreeCAD's "partially redundant" constraints), each
+    /// with its gap, as [`redundant`](Self::redundant)'s: kept apart from those, since
+    /// removing one frees what only it fixes.
+    pub partially_redundant: BTreeMap<ElementId, f64>,
     /// The algorithm that solved.
     pub algorithm: Algorithm,
 }
@@ -1799,14 +1806,20 @@ impl Translation {
             .with_elements(concentric)
             .with_suggestion("dimension their centres apart, or make the tangency inside"));
         }
-        let redundant = gaps
-            .iter()
-            .map(|&(t, gap)| {
-                let id = self.id(t)?;
+        // Each kept constraint as the worker listed it (each list checked sorted, above): one
+        // it lists as both is redundant.
+        let mut redundant = BTreeMap::new();
+        let mut partially_redundant = BTreeMap::new();
+        for &(t, gap) in &gaps {
+            let id = self.id(t)?.clone();
+            if solved.redundant.binary_search(&t).is_ok() {
                 tracing::info!("{id} repeats others, met within {gap:.1e} mm");
-                Ok((id.clone(), gap))
-            })
-            .collect::<Result<_, Error>>()?;
+                redundant.insert(id, gap);
+            } else {
+                tracing::info!("{id} partly repeats others, met within {gap:.1e} mm");
+                partially_redundant.insert(id, gap);
+            }
+        }
         let (points, radii, references) = self.placed(values)?;
         Ok(SketchSolution {
             points,
@@ -1815,6 +1828,7 @@ impl Translation {
             dofs: solved.dofs,
             free: self.free(solved),
             redundant,
+            partially_redundant,
             algorithm,
         })
     }

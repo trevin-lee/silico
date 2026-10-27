@@ -1012,9 +1012,9 @@ fn a_fillet_reply_says_when_its_result_is_invalid() {
 const EMPTY_LOG_CHILD: &str = "SILICO_TEST_EMPTY_LOG_CHILD";
 
 #[test]
-fn an_empty_silico_log_leaves_workers_warning() {
-    // An empty SILICO_LOG is the default, warn, in workers as in the app; parsed as a
-    // filter it would be "nothing", and a crash report would lose the worker's last lines.
+fn an_empty_silico_log_leaves_workers_at_their_default() {
+    // An empty SILICO_LOG is each one's default: info in workers, warn in the app. Parsed as
+    // a filter it would be "nothing", and a crash report would lose the worker's last lines.
     let out = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",

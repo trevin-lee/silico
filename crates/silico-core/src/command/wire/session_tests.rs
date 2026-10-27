@@ -13,11 +13,11 @@ use std::path::PathBuf;
 use super::{Json, Layout, RequestFields, ToWire, write};
 use crate::command::{
     Added, Begun, CacheCleared, CheckAnswer, Committed, FieldSet, Opened, Problems, Reformatted,
-    Removed, Replaced, Revision, RolledBack, SessionId,
+    Removed, Replaced, Revision, RolledBack, SessionId, Warnings,
 };
 use crate::document::json::{Plain, read};
 use crate::document::{Feature, FeatureId};
-use crate::{Error, ErrorCode};
+use crate::{Error, ErrorCode, Warning, WarningCode};
 
 fn example(name: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -192,7 +192,7 @@ fn opens_and_checks_problems_are_their_first_hundred_and_all_counted() {
     };
     let check = CheckAnswer {
         problems: many(),
-        warnings: Problems::none(),
+        warnings: Warnings::none(),
     };
     for (of, text) in [("open", written(&opened)), ("check", written(&check))] {
         holds(of, &text);
@@ -211,14 +211,17 @@ fn opens_and_checks_problems_are_their_first_hundred_and_all_counted() {
     );
     let warned = CheckAnswer {
         problems: Problems::none(),
-        warnings: many(),
+        warnings: Warnings::of(
+            (0..150).map(|i| Warning::new(WarningCode::FingerprintMissing, format!("missing {i}"))),
+        ),
     };
     let text = written(&warned);
     holds("check", &text);
     let value: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(value["warnings"].as_array().unwrap().len(), 100);
-    assert_eq!(value["warnings"][0]["message"], "drift 0");
-    assert_eq!(value["warnings"][99]["message"], "drift 99");
+    assert_eq!(value["warnings"][0]["message"], "missing 0");
+    assert_eq!(value["warnings"][0]["code"], "fingerprint_missing");
+    assert_eq!(value["warnings"][99]["message"], "missing 99");
     assert_eq!(value["warnings_total"], 150);
     assert_eq!(
         (&value["problems"], &value["problems_total"]),
@@ -575,7 +578,10 @@ fn the_commands_a_session_runs_are_the_wires_in_the_designs_order() {
         .into_iter()
         .filter(|name| !SESSION_COMMANDS.contains(name))
         .collect();
-    assert_eq!(others, ["version", "open", "status", "cancel", "schema"]);
+    assert_eq!(
+        others,
+        ["version", "open", "status", "cancel", "schema", "read_logs"]
+    );
     // The design's reads of the published model (section 2: those that take `model`).
     assert_eq!(
         PUBLISHED_READS,
