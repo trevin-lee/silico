@@ -1491,21 +1491,29 @@ fn schema_needs_no_worker_and_writes_nothing_where_it_runs() {
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// break-it for `check`'s warnings on the CLI: a sketch of 15 lines, each from its own point
-/// at the origin (15 · 14 / 2 = 105 pairs of ends at one place), and a box saved without a
-/// fingerprint: 106 warnings.
+/// break-it for `check`'s warnings on the CLI: a sketch of 105 clusters of ends at one
+/// place, each two points 4e-8 apart (cluster i's at x = 10i, pa{i} ending line na{i} and
+/// pb{i} ending nb{i}), and a box saved without a fingerprint: 106 warnings.
 fn star_and_box(padded: bool) -> String {
     let mut points = Vec::new();
     let mut lines = Vec::new();
-    for i in 0..15 {
-        points.push(format!(
-            r#"{{"id": "pa{i:06}", "x": 0, "y": 0, "construction": false}}"#
-        ));
-        points.push(format!(
-            r#"{{"id": "pz{i:06}", "x": 10, "y": {i}, "construction": false}}"#
-        ));
+    for i in 0..105 {
+        let x = 10.0 * i as f64;
+        for (id, px, py) in [
+            (format!("pa{i:06}"), x, 0.0),
+            (format!("pb{i:06}"), x + 4e-8, 0.0),
+            (format!("py{i:06}"), x, -5.0),
+            (format!("pz{i:06}"), x, 5.0),
+        ] {
+            points.push(format!(
+                r#"{{"id": "{id}", "x": {px}, "y": {py}, "construction": false}}"#
+            ));
+        }
         lines.push(format!(
             r#"{{"id": "na{i:06}", "from": "pa{i:06}", "to": "pz{i:06}", "construction": false}}"#
+        ));
+        lines.push(format!(
+            r#"{{"id": "nb{i:06}", "from": "pb{i:06}", "to": "py{i:06}", "construction": false}}"#
         ));
     }
     let sketch = format!(
@@ -1558,7 +1566,7 @@ fn check_says_a_hundred_warnings_then_how_many_more_and_exits_0() {
         ran.stderr
     );
     assert!(
-        lines[0].contains("(feature s0000001, elements na000000, na000001)"),
+        lines[0].contains("(feature s0000001, elements pa000000, pb000000, na000000, nb000000)"),
         "{}",
         lines[0]
     );

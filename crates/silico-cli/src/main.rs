@@ -510,7 +510,8 @@ fn with_retry(fault: &Error, command: &str) -> Error {
 /// problems (failed features and sketches, and drift of fingerprints and of sketches' stored
 /// solves), each on stderr, then its warnings, each marked `warning:` (they never change
 /// the exit code), and a kernel fault the rebuild met after them; or, with
-/// `--json`, one line of JSON on stdout for each file: `{"file", "ok", "problems", "total"}`,
+/// `--json`, its warnings on stderr as without it, and one line of JSON on stdout for each
+/// file: `{"file", "ok", "problems", "total"}`,
 /// each problem an error as the core's error contract has it, or, for a file that couldn't
 /// be checked (a refusal that says it couldn't run, or a kernel fault), `{"file", "ok":
 /// false, "error"}`, the error that stopped it, in the same shape
@@ -538,6 +539,7 @@ fn check(sessions: &Sessions<KernelPool>, file: &Path, json: bool, fresh: bool) 
         if let Some(fault) = model.and_then(|read| read.fault) {
             let fault = with_retry(&fault, "check");
             if json {
+                print_warnings(file, &warnings);
                 return failed_line(file, &fault);
             }
             print_problems(file, problems.errors(), problems.total());
@@ -546,6 +548,9 @@ fn check(sessions: &Sessions<KernelPool>, file: &Path, json: bool, fresh: bool) 
             return Ended::Failed;
         }
         if json {
+            // The line is a contract with no warnings in it: they're said on stderr, as
+            // without `--json`.
+            print_warnings(file, &warnings);
             problems_line(file, problems.errors(), problems.total());
         } else {
             print_problems(file, problems.errors(), problems.total());

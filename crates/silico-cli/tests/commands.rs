@@ -169,21 +169,18 @@ fn check_says_warnings_on_stderr_as_warnings_and_they_never_change_the_exit_code
     let file = scratch.file(EXAMPLE);
     let out = silico(&scratch, &["check"], &file);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    assert_eq!(
-        stderr(&out),
-        format!(
-            "{}: warning: fingerprint_missing: k7f2qx3m built, but its file stores no \
-             fingerprint, so a change in what it builds isn't caught as drift (feature \
-             k7f2qx3m, parameter fingerprint). Suggestion: save the document (format or \
-             commit) to store it.\n",
-            file.display()
-        )
+    let said = format!(
+        "{}: warning: fingerprint_missing: k7f2qx3m built, but its file stores no \
+         fingerprint, so a change in what it builds isn't caught as drift (feature k7f2qx3m, \
+         parameter fingerprint). Suggestion: format the document to store it.\n",
+        file.display()
     );
-    // `--json`'s line is its contract's (check-line.json), with no warnings in it, and
-    // nothing on stderr.
+    assert_eq!(stderr(&out), said);
+    // `--json`'s line is its contract's (check-line.json), with no warnings in it: they're
+    // said on stderr, as without it.
     let out = silico(&scratch, &["check", "--json"], &file);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    assert!(out.stderr.is_empty(), "{}", stderr(&out));
+    assert_eq!(stderr(&out), said);
     let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
         line,
@@ -1315,13 +1312,23 @@ fn a_kernel_fault_is_said_in_the_clis_words_by_check_and_check_json() {
         format!(
             "{path}: warning: fingerprint_missing: k7f2qx3m built, but its file stores no \
              fingerprint, so a change in what it builds isn't caught as drift (feature \
-             k7f2qx3m, parameter fingerprint). Suggestion: save the document (format or \
-             commit) to store it.\n{path}: {}\n",
+             k7f2qx3m, parameter fingerprint). Suggestion: format the document to store \
+             it.\n{path}: {}\n",
             no_sketch_worker("check")
         )
     );
     let out = silico_with(&scratch, &["check", "--json"], &file, Path::new("/nowhere"));
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    // With `--json`, the warning on stderr too; the fault is the line's.
+    assert_eq!(
+        stderr(&out),
+        format!(
+            "{path}: warning: fingerprint_missing: k7f2qx3m built, but its file stores no \
+             fingerprint, so a change in what it builds isn't caught as drift (feature \
+             k7f2qx3m, parameter fingerprint). Suggestion: format the document to store \
+             it.\n"
+        )
+    );
     let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(line["ok"], false, "{line}");
     assert_eq!(line["error"]["code"], "worker_unavailable", "{line}");
