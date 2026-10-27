@@ -245,10 +245,11 @@ fn a_later_edge_batch_refused_for_its_values_keeps_the_summary_and_the_refusal_o
 #[test]
 fn a_later_edge_batch_a_worker_crashed_on_keeps_the_summary_and_is_described_again_alone() {
     // The first time each solid's second batch of edges is asked, the worker crashes: the
-    // solid keeps its summary, and the crash beside it, and drift is empty. Its batches
-    // still waiting then are cancelled, unrun (#220), and those a worker had taken run on:
-    // how many of the third and fourth started is the threads' timing, so between the
-    // first two of each (4) and all four (8). The next recompute summarizes nothing again
+    // solid keeps its summary, and the crash beside it, and drift is empty. Each solid's
+    // batches are its faces, its first and second thousand edges, and its vertices, sent
+    // together and awaited in order: the crash is the third's, so the first three of each
+    // start, and its vertex batch, cancelled unrun if it's still waiting (#220), may or may
+    // not: between 6 and 8 for the two. The next recompute summarizes nothing again
     // and describes those two again, every batch from the first (four each), joined in
     // order: 1,020 edges for 85 boxes, the 1,001st edge the fake's 1,001st.
     let engine = Recompute::new(FakeKernel::new(2).unwrap());
@@ -269,7 +270,7 @@ fn a_later_edge_batch_a_worker_crashed_on_keeps_the_summary_and_is_described_aga
     assert!(engine.kernel().wait_idle(WAIT));
     let first = asked_of(engine.kernel(), of_many_edges);
     assert!(
-        (4..=8).contains(&first),
+        (6..=8).contains(&first),
         "{first} of the two fusions' batches started"
     );
     let summaries = asked(engine.kernel(), "Summarize");
