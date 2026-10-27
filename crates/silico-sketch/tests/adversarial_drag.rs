@@ -11,6 +11,7 @@
 
 use super::generate;
 use super::systems;
+use super::wait::WAIT;
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -29,6 +30,8 @@ use systems::{Builder, Rng};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
 const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-test-worker");
+/// The time the largest admitted drag's move is allowed: the bound its test holds it to
+/// (a move answered in time), not a wait for something to happen, which is [`WAIT`].
 const TIMEOUT: Duration = Duration::from_secs(30);
 const CLOSE: f64 = 1e-9;
 
@@ -146,7 +149,7 @@ fn a_drag_ended_on_a_line_of_no_length_leaves_a_sketch_the_closing_solve_refuses
     // invalid input naming geometry 0. The user's last frame can't be kept.
     let (system, line) = line_from_the_origin(false);
     let mut w = Worker::spawn_as(Path::new(WORKER), WorkerKind::Sketch).unwrap();
-    let call = |w: &mut Worker, op| w.call(Generation(1), op, TIMEOUT);
+    let call = |w: &mut Worker, op| w.call(Generation(1), op, WAIT);
     assert!(matches!(
         call(
             &mut w,
@@ -637,7 +640,7 @@ fn a_debug_op_between_moves_leaves_the_drag_alone_and_a_crash_ends_it() {
     // as the refusal's suggestion says ("when the sketch worker restarts").
     let (system, line) = line_from_the_origin(false);
     let mut w = Worker::spawn_as(Path::new(TEST_WORKER), WorkerKind::Sketch).unwrap();
-    let call = |w: &mut Worker, op| w.call(Generation(1), op, TIMEOUT);
+    let call = |w: &mut Worker, op| w.call(Generation(1), op, WAIT);
     let begin = Op::DragBegin(DragBegin {
         system,
         point: PointOf::End(line),
@@ -681,7 +684,7 @@ fn a_worker_killed_mid_drag_is_reported_and_its_successor_has_no_drag() {
                 system,
                 point: PointOf::End(line),
             }),
-            TIMEOUT
+            WAIT
         ),
         Ok(Reply::DragStarted { .. })
     ));
@@ -692,7 +695,7 @@ fn a_worker_killed_mid_drag_is_reported_and_its_successor_has_no_drag() {
         .unwrap();
     assert!(status.success());
     let err = w
-        .call(Generation(1), Op::DragMove { to: [1.0, 1.0] }, TIMEOUT)
+        .call(Generation(1), Op::DragMove { to: [1.0, 1.0] }, WAIT)
         .unwrap_err();
     assert!(
         matches!(
@@ -703,7 +706,7 @@ fn a_worker_killed_mid_drag_is_reported_and_its_successor_has_no_drag() {
         err.code()
     );
     let mut w = Worker::spawn_as(Path::new(WORKER), WorkerKind::Sketch).unwrap();
-    let err = w.call(Generation(1), Op::DragEnd, TIMEOUT).unwrap_err();
+    let err = w.call(Generation(1), Op::DragEnd, WAIT).unwrap_err();
     assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
 }
 
@@ -728,7 +731,7 @@ fn a_move_of_the_largest_part_a_drag_admits_is_answered_in_time() {
             system,
             point: PointOf::End(last),
         }),
-        TIMEOUT,
+        WAIT,
     ) {
         Ok(Reply::DragStarted { dofs, conflicting }) => {
             // 4 unknowns a link, 3 equations a link (its length, and the two joining it to
