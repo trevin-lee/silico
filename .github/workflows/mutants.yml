@@ -79,6 +79,7 @@ jobs:
           FILES: ${{ inputs.files }}
           RE: ${{ inputs.re }}
           FILLER: ${{ inputs.filler }}
+          LONG: ${{ inputs.long }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
@@ -108,6 +109,11 @@ jobs:
             echo "::error::filler must be empty, a, or b and a number, not '$FILLER'"
             exit 1
           fi
+          # Its shards' runners and threads ask only whether it's set: so only true sets it.
+          case $LONG in
+          "" | true) ;;
+          *) echo "::error::long must be empty or true, not '$LONG'"; exit 1 ;;
+          esac
           # A real run takes precedence over filler: it cancels every filler run. Its own
           # shards then queue for the runners that frees, like any other run's.
           if [ -z "$FILLER" ]; then bash .github/cancel-filler.sh; fi
