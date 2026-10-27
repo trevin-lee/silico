@@ -442,9 +442,7 @@ impl Error {
     }
 }
 
-/// `code: message (feature F, elements E1, E2, parameter P): cause. Suggestion: S.
-/// Candidates: A, B.`, leaving out whatever is absent (`element E` for one; `elements E1, E2,
-/// and 3 more` for five, two named).
+/// What [`Error`]'s and [`Warning`]'s `Display` write (as [`Error`]'s says).
 impl<C: fmt::Display> fmt::Display for Fields<C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.code, self.message)?;
@@ -490,6 +488,9 @@ impl<C: fmt::Display> fmt::Display for Fields<C> {
     }
 }
 
+/// `code: message (feature F, elements E1, E2, parameter P): cause. Suggestion: S.
+/// Candidates: A, B.`, leaving out whatever is absent (`element E` for one; `elements E1, E2,
+/// and 3 more` for five, two named).
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -600,10 +601,6 @@ impl Warning {
 
     pub fn suggestion(&self) -> Option<&str> {
         self.0.suggestion.as_deref()
-    }
-
-    pub fn candidates(&self) -> &[String] {
-        &self.0.candidates
     }
 }
 

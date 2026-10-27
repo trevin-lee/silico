@@ -396,7 +396,8 @@ impl ToWire for Warning {
             parameter: self.parameter(),
             cause: self.cause(),
             suggestion: Json::or_null(self.suggestion(), Json::str),
-            candidates: self.candidates(),
+            // A warning names no candidates: nothing's broken for it to have meant.
+            candidates: &[],
         }
         .into_wire()
     }
@@ -442,15 +443,15 @@ impl<'a> Said<'a> {
 /// error contract's shape, and how many there are, listed or not (`warnings` and
 /// `warnings_total`).
 pub fn warnings(warnings: &Warnings) -> (Json<'_>, Json<'_>) {
+    listed(warnings.listed(), warnings.total())
+}
+
+/// The first [`PROBLEMS_LISTED`] of `items`, in the error contract's shape, and `total`, how
+/// many there are, listed or not: the one rule for problems and warnings alike.
+fn listed<T: ToWire>(items: &[T], total: u64) -> (Json<'_>, Json<'_>) {
     (
-        Json::array(
-            warnings
-                .listed()
-                .iter()
-                .take(PROBLEMS_LISTED)
-                .map(ToWire::to_wire),
-        ),
-        Json::whole(warnings.total()),
+        Json::array(items.iter().take(PROBLEMS_LISTED).map(ToWire::to_wire)),
+        Json::whole(total),
     )
 }
 
@@ -459,16 +460,7 @@ pub fn warnings(warnings: &Warnings) -> (Json<'_>, Json<'_>) {
 /// listed or not (`problems` and `problems_total` in a result, `errors` and `total` in a
 /// refusal).
 pub fn problems(problems: &Problems) -> (Json<'_>, Json<'_>) {
-    (
-        Json::array(
-            problems
-                .errors()
-                .iter()
-                .take(PROBLEMS_LISTED)
-                .map(ToWire::to_wire),
-        ),
-        Json::whole(problems.total()),
-    )
+    listed(problems.errors(), problems.total())
 }
 
 /// A command's response, in its envelope (section 2): `ok`, the session as the command left

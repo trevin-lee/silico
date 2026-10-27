@@ -4,36 +4,56 @@
 //! exit code.
 //!
 //! Three codes, each from the model alone, so a gate's refusal (no model) has none:
-//! - `ends_not_joined` (M3.2's D2): two ends of a sketch's profile curves (lines and arcs
-//!   that aren't construction geometry) that are separate points, closer than FreeCAD's
-//!   joining distance, on the sketch as it solved. One warning a pair of points, naming the
-//!   curves that end at them (the first hundred, all counted). Measured between the points
-//!   the file holds, as M3.5's profile measures them and as a fix moves them: FreeCAD
-//!   measures between the vertices of the edges it builds from them (a line's end at its
-//!   start plus its direction times its length, an arc's at its angles on its circle), which
-//!   sit some ulps off (an arc's, up to the solve's convergence), by arithmetic that differs
-//!   between its platforms; so within that much of 1e-7 the verdict can differ from FreeCAD's.
+//! - `ends_not_joined` (M3.2's D2): ends of a sketch's profile curves (lines and arcs that
+//!   aren't construction geometry) that are separate points FreeCAD would join, on the sketch
+//!   as it solved: points strictly closer than FreeCAD's joining distance, 1e-7 mm, grouped
+//!   with each other and so on through each other, as FreeCAD's missing-coincidence analysis
+//!   groups them (`SketchAnalysis`, FreeCAD's c036128aa0, its tests 6e4c61881b). One warning
+//!   a group of points (a cluster), naming its points, then the curves ending at them; its
+//!   cause the largest distance between two of its points. The grouping is the profile's
+//!   ([`crate::profile`]'s open ends that should be one point), each with its own comparison.
+//!
+//!   *Scope.* Measured between the points the file holds, as M3.5's profile measures them
+//!   and as a fix moves them: FreeCAD measures between the vertices of the edges it builds
+//!   from them (a line's end at its start plus its direction times its length, an arc's at
+//!   its angles on its circle), which sit some ulps off (an arc's, up to the solve's
+//!   convergence), by arithmetic that differs between its platforms; so within that much of
+//!   1e-7 the verdict can differ from FreeCAD's. FreeCAD's join is also transitive and
+//!   depends on the edges' order (`BRepLib_MakeWire` grows a vertex's tolerance as it joins
+//!   ends to it), which grouping through each other mostly matches. FreeCAD's Validate tool
+//!   finds gaps up to 1e-4 mm by default (`Precision::Confusion()` × 1000, each axis apart,
+//!   inclusive); Silico warns only of the gaps FreeCAD's wires would join (1e-7, strictly),
+//!   and a larger gap a feature sweeps is M3.5's profile refusal.
 //! - `constraints_redundant` (M3.3): a solved sketch's redundant constraints, each agreeing
 //!   with the rest (decision 5; one that disagrees is a problem, `over_constrained`, and the
-//!   sketch doesn't solve). One warning a sketch, naming them all.
+//!   sketch doesn't solve). One warning a sketch for those all of whose equations repeat
+//!   others' (FreeCAD's "redundant constraints", which it advises removing), and another for
+//!   those only part of whose equations do (FreeCAD's "partially redundant", which it doesn't:
+//!   removing one frees what only it fixes), each naming them all.
 //! - `fingerprint_missing` (the maintainer, 2026-10-26): a feature that built, whose file
 //!   stores no fingerprint, so a change in what it builds isn't caught as drift. Only where a
 //!   save would store one: a feature that failed, was blocked, couldn't be measured, or
 //!   measures past what a fingerprint holds has none to store, and a sketch never holds one.
+//!   Nor one a session's edits reached since its last save (decision 28): its commit writes
+//!   its fingerprint, and a transaction's `format` is refused.
 //!
 //! **Order:** by timeline (the document's features, in order), then by code, in
 //! [`WarningCode`]'s order (`ends_not_joined`, `constraints_redundant`,
-//! `fingerprint_missing`), then, for a sketch's `ends_not_joined`, by its pair of points, in
-//! ID order (the lesser point's ID, then the greater's). The first
-//! [`PROBLEMS_LISTED`](crate::document::PROBLEMS_LISTED) are listed, all counted, as problems
-//! are. Nothing depends on the order the file lists a sketch's members in.
+//! `fingerprint_missing`), then, for a sketch's `ends_not_joined`, by cluster, by its least
+//! point ID, and for its `constraints_redundant`, the redundant before the partially
+//! redundant. The first [`PROBLEMS_LISTED`](crate::document::PROBLEMS_LISTED) are listed,
+//! all counted, as problems are. Nothing depends on the order the file lists a sketch's
+//! members in.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use silico_protocol::{LENGTH_TOLERANCE, format_number};
 
-use crate::document::{ElementId, Feature, FeatureId, Operation, PROBLEMS_LISTED, Sketch};
-use crate::recompute::{FeatureOutcome, Model};
+use crate::document::{
+    ElementId, Feature, FeatureId, Fingerprint, Operation, PROBLEMS_LISTED, Sketch,
+};
+use crate::profile::one_place_groups;
+use crate::recompute::{Built, FeatureOutcome, Model};
 use crate::sketch::SketchSolution;
 use crate::{Warning, WarningCode};
 
@@ -42,7 +62,7 @@ use crate::{Warning, WarningCode};
 /// whose `BRepBuilderAPI_MakeWire::Add` joins a vertex `l < tolerance` from one already in
 /// the wire, each vertex's tolerance `Precision::Confusion()`, 1e-7 mm:
 /// `BRepLib_MakeWire.cxx`). OCCT's length tolerance, [`LENGTH_TOLERANCE`].
-pub const JOINING_DISTANCE: f64 = LENGTH_TOLERANCE;
+const FREECAD_WIRE_JOIN: f64 = LENGTH_TOLERANCE;
 
 /// A document's warnings: the first [`PROBLEMS_LISTED`] in order (the module's *Order*),
 /// and how many there are, listed or not.
@@ -83,27 +103,19 @@ impl Warnings {
         self.total == 0
     }
 
-    /// How many more can be listed.
-    fn room(&self) -> usize {
-        PROBLEMS_LISTED.saturating_sub(self.listed.len())
-    }
-
     /// The warning `warning` makes counted, and listed if there's room: made only then.
     fn push_with(&mut self, warning: impl FnOnce() -> Warning) {
         self.total += 1;
-        if self.room() > 0 {
+        if self.listed.len() < PROBLEMS_LISTED {
             self.listed.push(warning());
         }
     }
-
-    /// `unlisted` more counted, none of them listed.
-    fn count(&mut self, unlisted: u64) {
-        self.total += unlisted;
-    }
 }
 
-/// `model`'s warnings, in order (the module's *Order*).
-pub fn of(model: &Model) -> Warnings {
+/// `model`'s warnings, in order (the module's *Order*): none of a missing fingerprint for a
+/// feature in `reached`, the features a session's edits reached since its last save, whose
+/// commit writes their fingerprints (decision 28).
+pub fn of(model: &Model, reached: &BTreeSet<FeatureId>) -> Warnings {
     let _span = tracing::info_span!("warnings").entered();
     let mut warnings = Warnings::none();
     // The model's features are its document's, in order.
@@ -113,8 +125,8 @@ pub fn of(model: &Model) -> Warnings {
                 ends_not_joined(&feature.id, sketch, solution, &mut warnings);
                 constraints_redundant(&feature.id, solution, &mut warnings);
             }
-            (_, FeatureOutcome::Built { .. }) => {
-                fingerprint_missing(model, feature, &mut warnings);
+            (_, FeatureOutcome::Built { built, .. }) if !reached.contains(&feature.id) => {
+                fingerprint_missing(feature, built, &mut warnings);
             }
             _ => {}
         }
@@ -125,28 +137,31 @@ pub fn of(model: &Model) -> Warnings {
 
 /// The distance between two points as FreeCAD measures it when it joins a sketch's wires
 /// (`gp_Pnt::Distance` on the sketch's own coordinates, z 0): the square root of the sum of
-/// the squared differences, each step rounded as a double, in that order.
-pub fn joining_distance(a: [f64; 2], b: [f64; 2]) -> f64 {
+/// the squared differences, each step rounded as a double, in that order. Not
+/// `silico_protocol::distance`, the profile's and the kernel's (`libm`'s `hypot`), which
+/// can round otherwise in the last bit, and so join otherwise at 1e-7.
+fn freecad_distance(a: [f64; 2], b: [f64; 2]) -> f64 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
     (dx * dx + dy * dy).sqrt()
 }
 
-/// Whether two ends `distance` apart would be joined by FreeCAD: strictly closer than
-/// [`JOINING_DISTANCE`].
-fn joined_by_freecad(distance: f64) -> bool {
-    distance < JOINING_DISTANCE
+/// Whether FreeCAD joins two ends `distance` apart (by [`freecad_distance`]): strictly
+/// closer than [`FREECAD_WIRE_JOIN`].
+fn freecad_joins(distance: f64) -> bool {
+    distance < FREECAD_WIRE_JOIN
 }
 
 /// An end of the sketch's profile curves: the point, where it solved, and the curves that end
 /// there, in ID order.
 struct End<'a> {
+    point: &'a ElementId,
     at: [f64; 2],
     curves: Vec<&'a ElementId>,
 }
 
-/// Each pair of `sketch`'s curve ends that FreeCAD would join and that aren't one point, a
-/// warning each (the module's `ends_not_joined`), by pair, the points in ID order.
+/// Each cluster of `sketch`'s curve ends FreeCAD would join that aren't one point, a warning
+/// each (the module's `ends_not_joined`), by its least point ID.
 fn ends_not_joined(
     id: &FeatureId,
     sketch: &Sketch,
@@ -170,12 +185,14 @@ fn ends_not_joined(
             at.entry(point).or_default().push(curve);
         }
     }
+    // In the points' ID order, so each cluster is too, and the clusters by their least.
     let ends: Vec<End<'_>> = at
         .into_iter()
         .filter_map(|(point, mut curves)| {
             curves.sort();
             curves.dedup();
             Some(End {
+                point,
                 at: solution.point(point)?,
                 curves,
             })
@@ -186,102 +203,132 @@ fn ends_not_joined(
     }
     let _span =
         tracing::debug_span!("ends_not_joined", sketch = id.as_str(), ends = ends.len()).entered();
-    // A sweep along x, each end met with the ends after it within twice the distance in x:
-    // any pair FreeCAD would join is among them, whatever rounding does to the difference.
-    let mut by_x: Vec<usize> = (0..ends.len()).collect();
-    by_x.sort_by(|&a, &b| ends[a].at[0].total_cmp(&ends[b].at[0]).then(a.cmp(&b)));
-    // The first pairs in ID order, as many as can be listed, and how many there are in all.
-    let room = warnings.room();
-    let mut first: BTreeSet<(usize, usize)> = BTreeSet::new();
-    let mut found: u64 = 0;
-    for (i, &a) in by_x.iter().enumerate() {
-        for &b in &by_x[i + 1..] {
-            if ends[b].at[0] - ends[a].at[0] > 2.0 * JOINING_DISTANCE {
-                break;
-            }
-            if !joined_by_freecad(joining_distance(ends[a].at, ends[b].at)) {
-                continue;
-            }
-            found += 1;
-            let pair = (a.min(b), a.max(b));
-            if first.len() < room {
-                first.insert(pair);
-            } else if first.last().is_some_and(|&last| pair < last) {
-                first.pop_last();
-                first.insert(pair);
-            }
-        }
+    let places: Vec<[f64; 2]> = ends.iter().map(|end| end.at).collect();
+    let all: Vec<usize> = (0..ends.len()).collect();
+    let clusters = one_place_groups(&all, &places, |p, q| freecad_joins(freecad_distance(p, q)));
+    for cluster in clusters.iter().filter(|cluster| cluster.len() >= 2) {
+        warnings.push_with(|| cluster_warning(id, &ends, cluster));
     }
-    let listed = first.len() as u64;
-    for (a, b) in first {
-        warnings.push_with(|| {
-            let distance = joining_distance(ends[a].at, ends[b].at);
-            let mut curves: Vec<&ElementId> = ends[a].curves.clone();
-            // Each list is sorted: a curve ending at both points is named once.
-            curves.extend(
-                ends[b]
-                    .curves
-                    .iter()
-                    .filter(|c| ends[a].curves.binary_search(c).is_err()),
-            );
-            Warning::new(
-                WarningCode::EndsNotJoined,
-                "two curve ends are at one place but aren't one point, so the profile is open there",
-            )
-            .with_feature(id.as_str())
-            .with_elements(curves.iter().take(PROBLEMS_LISTED).map(|c| c.as_str()))
-            .with_elements_total(curves.len() as u64)
-            .with_cause(format!(
-                "the ends are {} mm apart, within FreeCAD's joining distance of {} mm",
-                format_number(distance),
-                format_number(JOINING_DISTANCE)
-            ))
-            .with_suggestion("share the point: make one curve end at the other's point")
-        });
-    }
-    warnings.count(found - listed);
 }
 
-/// A solved sketch's redundant constraints, which agree with the rest, as one warning naming
-/// them all (the first hundred, all counted), in ID order.
+/// The warning of `cluster`, indices into `ends` in ID order: its points, then the curves
+/// ending at them in ID order, each once (the first [`PROBLEMS_LISTED`] of them, all
+/// counted); its cause the largest distance between two of its points.
+fn cluster_warning(id: &FeatureId, ends: &[End<'_>], cluster: &[usize]) -> Warning {
+    let points: Vec<&ElementId> = cluster.iter().map(|&i| ends[i].point).collect();
+    let mut curves: Vec<&ElementId> = cluster
+        .iter()
+        .flat_map(|&i| ends[i].curves.iter().copied())
+        .collect();
+    curves.sort();
+    curves.dedup();
+    let mut farthest = 0.0_f64;
+    for (k, &i) in cluster.iter().enumerate() {
+        for &j in &cluster[k + 1..] {
+            farthest = farthest.max(freecad_distance(ends[i].at, ends[j].at));
+        }
+    }
+    let n = points.len();
+    let cause = if n == 2 {
+        format!(
+            "the points are {} mm apart, closer than FreeCAD's joining distance of {} mm",
+            format_number(farthest),
+            format_number(FREECAD_WIRE_JOIN)
+        )
+    } else {
+        format!(
+            "the points are at most {} mm apart, each closer than FreeCAD's joining distance \
+             of {} mm to another of them",
+            format_number(farthest),
+            format_number(FREECAD_WIRE_JOIN)
+        )
+    };
+    let named = points.iter().chain(&curves);
+    Warning::new(
+        WarningCode::EndsNotJoined,
+        format!(
+            "{n} points that end curves are at one place but aren't one point, so the \
+             profile is open there"
+        ),
+    )
+    .with_feature(id.as_str())
+    .with_elements(named.clone().take(PROBLEMS_LISTED).map(|e| e.as_str()))
+    .with_elements_total((n + curves.len()) as u64)
+    .with_cause(cause)
+    .with_suggestion("share one point: make the curves named end at one of the points named")
+}
+
+/// A solved sketch's redundant constraints, which agree with the rest: one warning naming
+/// those all of whose equations repeat others', then one naming those only part of whose
+/// equations do (the first hundred of each, all counted), in ID order.
 fn constraints_redundant(id: &FeatureId, solution: &SketchSolution, warnings: &mut Warnings) {
     let redundant = &solution.redundant;
     let n = redundant.len();
-    if n == 0 {
-        return;
+    if n > 0 {
+        warnings.push_with(|| {
+            // FreeCAD's "Sketch with redundant constraints", "Remove the following redundant
+            // constraints:" (`SketchObject::execute`, `appendRedundantMsg`), in Silico's words.
+            let message = if n == 1 {
+                "a constraint of the sketch is redundant: it repeats what its other \
+                 constraints already fix, and agrees with them"
+                    .to_owned()
+            } else {
+                format!(
+                    "{n} constraints of the sketch are redundant: they repeat what its other \
+                     constraints already fix, and agree with them"
+                )
+            };
+            Warning::new(WarningCode::ConstraintsRedundant, message)
+                .with_feature(id.as_str())
+                .with_elements(redundant.keys().take(PROBLEMS_LISTED).map(|c| c.as_str()))
+                .with_elements_total(n as u64)
+                .with_cause(
+                    "the solver solved the sketch without the equations they repeat, and each \
+                     holds on the solution",
+                )
+                .with_suggestion(
+                    "remove the constraints named, or make a dimension among them a reference \
+                     (`driving: false`), keeping the sketch as constrained as it is",
+                )
+        });
     }
-    warnings.push_with(|| {
-        // FreeCAD's "Sketch with redundant constraints", "Remove the following redundant
-        // constraints:" (`SketchObject::execute`, `appendRedundantMsg`), in Silico's words.
-        let message = if n == 1 {
-            "a constraint of the sketch is redundant: it repeats what its other constraints \
-             already fix, and agrees with them"
-                .to_owned()
-        } else {
-            format!(
-                "{n} constraints of the sketch are redundant: they repeat what its other \
-                 constraints already fix, and agree with them"
-            )
-        };
-        Warning::new(WarningCode::ConstraintsRedundant, message)
-            .with_feature(id.as_str())
-            .with_elements(redundant.keys().take(PROBLEMS_LISTED).map(|c| c.as_str()))
-            .with_elements_total(n as u64)
-            .with_cause(
-                "the solver solved the sketch without the equations they repeat, and each holds \
-                 on the solution",
-            )
-            .with_suggestion(
-                "remove the constraints named, or make a dimension among them a reference \
-                 (`driving: false`), keeping the sketch as constrained as it is",
-            )
-    });
+    let partly = &solution.partially_redundant;
+    let n = partly.len();
+    if n > 0 {
+        warnings.push_with(|| {
+            // FreeCAD's "Some constraints in combination are partially redundant"
+            // (`TaskSketcherMessages`), which it shows apart from the redundant ones, with no
+            // advice to remove them (65fb44df6c, b01313c0d8), in Silico's words.
+            let message = if n == 1 {
+                "a constraint of the sketch is partly redundant: only part of what it fixes \
+                 is repeated by its other constraints, and that part agrees with them"
+                    .to_owned()
+            } else {
+                format!(
+                    "{n} constraints of the sketch are partly redundant: only part of what each \
+                     fixes is repeated by its other constraints, and that part agrees with them"
+                )
+            };
+            Warning::new(WarningCode::ConstraintsRedundant, message)
+                .with_feature(id.as_str())
+                .with_elements(partly.keys().take(PROBLEMS_LISTED).map(|c| c.as_str()))
+                .with_elements_total(n as u64)
+                .with_cause(
+                    "the solver solved the sketch without the equations of theirs that repeat \
+                     others, and each holds on the solution",
+                )
+                .with_suggestion(
+                    "review the constraints named: each also fixes what no other constraint \
+                     does, so removing one would loosen the sketch",
+                )
+        });
+    }
 }
 
-/// `feature`'s `fingerprint_missing` (the module's), if it built and a save would store a
-/// fingerprint its file doesn't hold.
-fn fingerprint_missing(model: &Model, feature: &Feature, warnings: &mut Warnings) {
-    if feature.fingerprint.is_some() || model.fingerprint(&feature.id).is_none() {
+/// `feature`'s `fingerprint_missing` (the module's), if it built as `built` and a save
+/// would store a fingerprint its file doesn't hold.
+fn fingerprint_missing(feature: &Feature, built: &Built, warnings: &mut Warnings) {
+    if feature.fingerprint.is_some() || built.summary().and_then(Fingerprint::of).is_none() {
         return;
     }
     warnings.push_with(|| {
@@ -295,6 +342,6 @@ fn fingerprint_missing(model: &Model, feature: &Feature, warnings: &mut Warnings
         )
         .with_feature(feature.id.as_str())
         .with_parameter("fingerprint")
-        .with_suggestion("save the document (format or commit) to store it")
+        .with_suggestion("format the document to store it")
     });
 }

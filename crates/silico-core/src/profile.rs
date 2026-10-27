@@ -553,7 +553,7 @@ fn of_sketch(
     let open: Vec<usize> = (0..points.len())
         .filter(|&p| at_point[p].len() == 1)
         .collect();
-    let groups = one_point_groups(&open, &points);
+    let groups = one_place_groups(&open, &points, |p, q| touching(distance(p, q)));
     // Each point as the meet test takes it: an open end grouped with others is the group's
     // first, so curves ending there are neighbours, not a meeting.
     let mut shared_as: Vec<usize> = (0..points.len()).collect();
@@ -932,16 +932,25 @@ fn gather<'a>(
     })
 }
 
-/// The open ends, grouped: ends within the tolerance of each other (and so on, through
-/// each other) together, each group in order and the groups by their first.
-fn one_point_groups(open: &[usize], points: &[Xy]) -> Vec<Vec<usize>> {
-    let mut by_x: Vec<usize> = (0..open.len()).collect();
+/// The points `of` names (indices into `points`), grouped: points `joined` (and so on,
+/// through each other) together, each group in `of`'s order and the groups by their first,
+/// singletons too. `joined` holds of no two points further apart along x than twice
+/// [`LENGTH_TOLERANCE`]: the sweep compares only those nearer. Deterministic: nothing
+/// depends on the order the sweep meets the points in. The profile's open ends that should
+/// be one point (`touching`), and `check`'s ends FreeCAD would join
+/// ([`crate::warnings`]), each by its own comparison.
+pub(crate) fn one_place_groups(
+    of: &[usize],
+    points: &[Xy],
+    joined: impl Fn(Xy, Xy) -> bool,
+) -> Vec<Vec<usize>> {
+    let mut by_x: Vec<usize> = (0..of.len()).collect();
     by_x.sort_by(|&a, &b| {
-        points[open[a]][0]
-            .total_cmp(&points[open[b]][0])
+        points[of[a]][0]
+            .total_cmp(&points[of[b]][0])
             .then(a.cmp(&b))
     });
-    let mut parent: Vec<usize> = (0..open.len()).collect();
+    let mut parent: Vec<usize> = (0..of.len()).collect();
     fn root(parent: &mut [usize], mut i: usize) -> usize {
         while parent[i] != i {
             parent[i] = parent[parent[i]];
@@ -950,21 +959,21 @@ fn one_point_groups(open: &[usize], points: &[Xy]) -> Vec<Vec<usize>> {
         i
     }
     for (k, &i) in by_x.iter().enumerate() {
-        let p = points[open[i]];
+        let p = points[of[i]];
         for &j in &by_x[k + 1..] {
-            let q = points[open[j]];
+            let q = points[of[j]];
             // Twice the tolerance: a pair this far apart along x is apart.
             if q[0] - p[0] > 2.0 * LENGTH_TOLERANCE {
                 break;
             }
-            if touching(distance(p, q)) {
+            if joined(p, q) {
                 let (ri, rj) = (root(&mut parent, i), root(&mut parent, j));
                 parent[ri.max(rj)] = ri.min(rj);
             }
         }
     }
     let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    for (i, &p) in open.iter().enumerate() {
+    for (i, &p) in of.iter().enumerate() {
         let r = root(&mut parent, i);
         groups.entry(r).or_default().push(p);
     }

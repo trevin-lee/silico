@@ -2,7 +2,7 @@
 //! distance from both sides, a kilometre out, clusters of coincident ends, a hub of hundreds
 //! of curves, a sketch at the unknowns' limit, thousands of redundant constraints, a solve
 //! that moves ends together, and documents with problems and warnings at once; and a
-//! property test of the sweep and the first hundred against a brute-force reference.
+//! property test of the clusters and the first hundred against a brute-force reference.
 //!
 //! Expected values are independent of the code under test:
 //! - FreeCAD 1.1.3 (the oracle's, on OCCT 7.9.3) as the oracle: each sketch of two lines
@@ -16,7 +16,8 @@
 //! - The error contract's convention (`profile.rs`, `sweep.rs`, `constraints_redundant`): a
 //!   list of elements is its first `PROBLEMS_LISTED`, and `elements_total` counts them all.
 //! - The property test's reference is every pair of ends compared directly, √(dx² + dy²)
-//!   < 1e-7 (the design's rule), sorted by the points' IDs: no sweep, no selection.
+//!   < 1e-7 (the design's rule), closed transitively into clusters, sorted by their least
+//!   point ID: no sweep, no union-find, no selection.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -146,7 +147,43 @@ fn ends_warnings(checked: &CheckAnswer) -> Vec<(Vec<String>, Option<String>)> {
 }
 
 fn apart(distance: &str) -> String {
-    format!("the ends are {distance} mm apart, within FreeCAD's joining distance of 1e-7 mm")
+    format!("the points are {distance} mm apart, closer than FreeCAD's joining distance of 1e-7 mm")
+}
+
+fn at_most(distance: &str) -> String {
+    format!(
+        "the points are at most {distance} mm apart, each closer than FreeCAD's joining \
+         distance of 1e-7 mm to another of them"
+    )
+}
+
+fn strings(names: &[&str]) -> Vec<String> {
+    names.iter().map(|s| (*s).to_owned()).collect()
+}
+
+/// `n` clusters of two points 4e-8 apart, cluster i's at x = 10i: point pa{i} ends line
+/// na{i}, out to (10i, 5), and pb{i} ends nb{i}, out to (10i, −5): its points and its lines.
+fn two_point_clusters(n: usize) -> (Vec<String>, Vec<String>) {
+    let mut points = Vec::new();
+    let mut lines = Vec::new();
+    for i in 0..n {
+        let x = 10.0 * i as f64;
+        points.push(point(&format!("pa{i:06}"), x, 0.0));
+        points.push(point(&format!("pb{i:06}"), x + 4e-8, 0.0));
+        points.push(point(&format!("py{i:06}"), x, -5.0));
+        points.push(point(&format!("pz{i:06}"), x, 5.0));
+        lines.push(line(
+            &format!("na{i:06}"),
+            &format!("pa{i:06}"),
+            &format!("pz{i:06}"),
+        ));
+        lines.push(line(
+            &format!("nb{i:06}"),
+            &format!("pb{i:06}"),
+            &format!("py{i:06}"),
+        ));
+    }
+    (points, lines)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -201,7 +238,7 @@ fn ends_just_under_1e_7_apart_warn_though_freecads_vertices_dont_join_them() {
     assert_eq!(
         ends_warnings(&checked),
         [(
-            vec!["na000001".to_owned(), "nb000001".to_owned()],
+            strings(&["pa000002", "pa000003", "na000001", "nb000001"]),
             Some(apart("9.999999539545001e-8"))
         )]
     );
@@ -235,7 +272,7 @@ fn ends_a_kilometre_out_warn_by_their_doubles_spacing() {
         assert_eq!(
             ends_warnings(&checked),
             [(
-                vec!["na000001".to_owned(), "nb000001".to_owned()],
+                strings(&["pa000002", "pa000003", "na000001", "nb000001"]),
                 Some(apart("5.995389074087143e-8"))
             )],
             "{b:?}"
@@ -288,7 +325,7 @@ fn ends_a_kilometre_apart_in_x_with_one_y_never_pair_and_a_column_of_ends_finds_
     assert!(checked.problems.is_empty(), "{:?}", checked.problems);
     let said = ends_warnings(&checked);
     assert_eq!(said.len(), 1, "{said:?}");
-    assert_eq!(said[0].0, ["na000100", "nb000000"]);
+    assert_eq!(said[0].0, ["pa000100", "pb000000", "na000100", "nb000000"]);
     // 100.00000003 − 100 as doubles: 3e-8 · 2^46 = 2111062.3 spacings of 2^-46 at 100,
     // so 2111062 · 2^-46.
     assert_eq!(
@@ -302,10 +339,11 @@ fn ends_a_kilometre_apart_in_x_with_one_y_never_pair_and_a_column_of_ends_finds_
 // Many warnings, many elements.
 
 #[test]
-fn a_cluster_of_256_ends_at_the_unknowns_limit_counts_every_pair_lists_the_first_hundred() {
+fn a_cluster_of_256_ends_at_the_unknowns_limit_is_one_warning_naming_its_first_hundred() {
     // 256 lines, each from its own point at the origin to its own far point: 512 points,
-    // 1,024 unknowns, the most a sketch may have. 256 · 255 / 2 = 32,640 pairs, the first
-    // hundred by IDs (pa000000 with each of pa000001..pa000100) listed.
+    // 1,024 unknowns, the most a sketch may have. One cluster of 256 points: one warning, its
+    // 256 points then 256 curves, the first hundred (all points, pa000000 to pa000099)
+    // named, all 512 counted.
     let mut points = Vec::new();
     let mut lines = Vec::new();
     for i in (0..256).rev() {
@@ -323,27 +361,37 @@ fn a_cluster_of_256_ends_at_the_unknowns_limit_counts_every_pair_lists_the_first
     let checked = f.check();
     let took = started.elapsed();
     assert!(checked.problems.is_empty(), "{:?}", checked.problems);
-    assert_eq!(checked.warnings.total(), 32_640);
-    let listed: Vec<Vec<String>> = ends_warnings(&checked).into_iter().map(|w| w.0).collect();
-    let expected: Vec<Vec<String>> = (1..=100)
-        .map(|j| vec!["na000000".to_owned(), format!("na{j:06}")])
-        .collect();
-    assert_eq!(listed, expected);
+    assert_eq!(checked.warnings.total(), 1);
+    let warning = &checked.warnings.listed()[0];
+    let expected: Vec<String> = (0..100).map(|i| format!("pa{i:06}")).collect();
+    assert_eq!(warning.elements(), expected);
+    assert_eq!(warning.elements_total(), 512);
+    assert_eq!(warning.cause(), Some(at_most("0").as_str()));
+    assert!(
+        warning
+            .message()
+            .starts_with("256 points that end curves are at one place")
+    );
     assert!(took < Duration::from_secs(20), "{took:?}");
-    // The wire holds to the snapshot: a hundred listed, all counted.
+    // The wire holds to the snapshot.
     let value: serde_json::Value =
         serde_json::from_str(&write(&checked.to_wire(), Layout::Canonical).unwrap()).unwrap();
-    assert_eq!(value["warnings"].as_array().unwrap().len(), 100);
-    assert_eq!(value["warnings_total"], 32_640);
+    assert_eq!(value["warnings"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        value["warnings"][0]["elements"].as_array().unwrap().len(),
+        100
+    );
+    assert_eq!(value["warnings"][0]["elements_total"], 512);
+    assert_eq!(value["warnings_total"], 1);
 }
 
 #[test]
 fn a_hub_of_500_curves_near_another_point_lists_its_first_hundred_curves_all_counted() {
     // BREAKS: hub pa000000 at the origin, hub pa000001 4e-8 from it, each with a line to
-    // each of 250 far points: one warning, about 500 curves. `ends_not_joined` puts all 500
-    // in `elements`, where every other list of elements in the contract is its first
-    // hundred with `elements_total` counting the rest (constraints_redundant's, the
-    // profile's, a sweep's): a star of hubs (15 at one place, 7,000 lines) makes 100
+    // each of 250 far points: one warning, about 2 points and 500 curves. `ends_not_joined`
+    // put all 500 in `elements`, where every other list of elements in the contract is its
+    // first hundred with `elements_total` counting the rest (constraints_redundant's, the
+    // profile's, a sweep's): a star of hubs (15 at one place, 7,000 lines) made 100
     // warnings of ~1,000 elements each on the wire and on the CLI's stderr.
     let mut points = vec![point("pa000000", 0.0, 0.0), point("pa000001", 4e-8, 0.0)];
     let mut lines = Vec::new();
@@ -358,15 +406,15 @@ fn a_hub_of_500_curves_near_another_point_lists_its_first_hundred_curves_all_cou
     }
     let checked = opened(&document(&[sketch("s0000001", &points, &lines, "")])).check();
     assert!(checked.problems.is_empty(), "{:?}", checked.problems);
-    // The far points are distinct (none of them pair): one warning.
+    // The far points are distinct (none of them pair): one warning, its two points, then
+    // the first 98 of the 500 curves by ID (na000000 to na000097), all 502 counted.
     assert_eq!(checked.warnings.total(), 1, "{:?}", ends_warnings(&checked));
     let warning = &checked.warnings.listed()[0];
-    assert_eq!(warning.elements_total(), 500);
-    assert!(
-        warning.elements().len() <= PROBLEMS_LISTED,
-        "{} elements listed",
-        warning.elements().len()
-    );
+    let mut expected = strings(&["pa000000", "pa000001"]);
+    expected.extend((0..98).map(|i| format!("na{i:06}")));
+    assert_eq!(warning.elements(), expected);
+    assert_eq!(warning.elements().len(), PROBLEMS_LISTED);
+    assert_eq!(warning.elements_total(), 502);
 }
 
 #[test]
@@ -410,26 +458,16 @@ fn five_thousand_redundant_constraints_are_one_warning_naming_the_first_hundred(
 }
 
 #[test]
-fn warnings_of_many_features_and_a_cluster_keep_timeline_order_past_the_hundredth() {
-    // A box with no fingerprint, then a sketch of 15 lines at one point (105 pairs), then
-    // another box: 107 counted, the first box listed first, then the first 99 pairs; the
-    // last box counted, not listed.
+fn warnings_of_many_features_and_clusters_keep_timeline_order_past_the_hundredth() {
+    // A box with no fingerprint, then a sketch of 105 clusters, then another box: 107
+    // counted, the first box listed first, then the first 99 clusters; the last box counted,
+    // not listed.
     let block = |id: &str, x: u32| {
         format!(
             r#"{{"id": "{id}", "type": "box", "v": 1, "name": "B", "position": [{x}, 0, 0], "length": 4, "width": 2, "height": 1}}"#
         )
     };
-    let mut points = Vec::new();
-    let mut lines = Vec::new();
-    for i in 0..15 {
-        points.push(point(&format!("pa{i:06}"), 0.0, 0.0));
-        points.push(point(&format!("pz{i:06}"), 10.0, i as f64));
-        lines.push(line(
-            &format!("na{i:06}"),
-            &format!("pa{i:06}"),
-            &format!("pz{i:06}"),
-        ));
-    }
+    let (points, lines) = two_point_clusters(105);
     let text = document(&[
         block("b0000001", 0),
         sketch("s0000001", &points, &lines, ""),
@@ -447,8 +485,10 @@ fn warnings_of_many_features_and_a_cluster_keep_timeline_order_past_the_hundredt
             .iter()
             .all(|w| w.code() == WarningCode::EndsNotJoined)
     );
-    // Pairs from na000000: 14, then 13, 12, ...: the 99th is (na000010, na000014).
-    assert_eq!(listed[99].elements(), ["na000010", "na000014"]);
+    assert_eq!(
+        listed[99].elements(),
+        ["pa000098", "pb000098", "na000098", "nb000098"]
+    );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -483,7 +523,7 @@ fn a_pad_refused_for_ends_not_shared_and_its_sketch_warned_of_them() {
     assert_eq!(
         ends_warnings(&checked),
         [(
-            vec!["na000000".to_owned(), "nc000000".to_owned()],
+            strings(&["pa000000", "pd000000", "na000000", "nc000000"]),
             Some(apart("4e-8"))
         )]
     );
@@ -527,7 +567,7 @@ fn a_solve_that_moves_an_end_near_anothers_drifts_and_warns_from_where_it_solved
     assert_eq!(
         ends_warnings(&checked),
         [(
-            vec!["na000001".to_owned(), "nb000001".to_owned()],
+            strings(&["pa000002", "pa000003", "na000001", "nb000001"]),
             Some(apart("5e-8"))
         )]
     );
@@ -553,16 +593,13 @@ fn a_solve_that_collapses_a_lone_line_never_warns_of_one_curve_with_advice_it_ca
         ErrorCode::InvalidResult
     );
     assert_eq!(checked.problems.errors()[0].feature(), Some("s0000001"));
-    for (elements, _) in ends_warnings(&checked) {
-        let mut distinct = elements.clone();
-        distinct.sort();
-        distinct.dedup();
-        assert!(
-            distinct.len() >= 2,
-            "{elements:?}; problems {:?}",
-            checked.problems
-        );
-    }
+    // A sketch that didn't solve has no solution to warn of.
+    assert!(
+        checked.warnings.is_empty(),
+        "{:?}; problems {:?}",
+        ends_warnings(&checked),
+        checked.problems
+    );
 }
 
 #[test]
@@ -613,74 +650,215 @@ fn joined(a: (f64, f64), b: (f64, f64)) -> Option<f64> {
     (d < 1e-7).then_some(d)
 }
 
+/// A distance as a cause writes it.
+fn shown(d: f64) -> String {
+    if d == 0.0 {
+        "0".to_owned()
+    } else {
+        format!("{d:e}")
+    }
+}
+
+/// An end of a line in the property test: its point's ID, where it is, and its line's ID.
+type End = (String, (f64, f64), String);
+
+/// What `ends_not_joined` should say of `ends`, worked out directly: every pair compared,
+/// clusters closed transitively by search, each warning its points then its curves (sorted,
+/// each once), the first 100 of them named and all counted, and the largest distance
+/// between two of its points; the clusters by their least point ID.
+fn clusters_directly(ends: &[End]) -> Vec<(Vec<String>, u64, String)> {
+    let n = ends.len();
+    let mut cluster_of: Vec<Option<usize>> = vec![None; n];
+    let mut clusters: Vec<Vec<usize>> = Vec::new();
+    for start in 0..n {
+        if cluster_of[start].is_some() {
+            continue;
+        }
+        let c = clusters.len();
+        cluster_of[start] = Some(c);
+        let mut members = vec![start];
+        let mut k = 0;
+        while k < members.len() {
+            let i = members[k];
+            for j in 0..n {
+                if cluster_of[j].is_none() && joined(ends[i].1, ends[j].1).is_some() {
+                    cluster_of[j] = Some(c);
+                    members.push(j);
+                }
+            }
+            k += 1;
+        }
+        clusters.push(members);
+    }
+    let mut said: Vec<(Vec<String>, u64, String)> = Vec::new();
+    for members in clusters.iter().filter(|m| m.len() >= 2) {
+        let mut points: Vec<String> = members.iter().map(|&i| ends[i].0.clone()).collect();
+        points.sort();
+        let mut curves: Vec<String> = members.iter().map(|&i| ends[i].2.clone()).collect();
+        curves.sort();
+        curves.dedup();
+        let mut farthest = 0.0_f64;
+        for &i in members {
+            for &j in members {
+                let (a, b) = (ends[i].1, ends[j].1);
+                let (dx, dy) = (a.0 - b.0, a.1 - b.1);
+                farthest = farthest.max((dx * dx + dy * dy).sqrt());
+            }
+        }
+        let cause = if points.len() == 2 {
+            apart(&shown(farthest))
+        } else {
+            at_most(&shown(farthest))
+        };
+        let total = (points.len() + curves.len()) as u64;
+        let mut named = points;
+        named.extend(curves);
+        named.truncate(PROBLEMS_LISTED);
+        said.push((named, total, cause));
+    }
+    said.sort();
+    said
+}
+
+/// Centres of the property test's second kind of sketch: two grids of 60, one for each end
+/// of its lines, 10 mm apart and far from each other, so no line is short.
+fn grid(side: usize, k: usize) -> (f64, f64) {
+    let x0 = if side == 0 { -2000.0 } else { 2000.0 };
+    (x0 + 10.0 * (k % 10) as f64, 10.0 * (k / 10) as f64)
+}
+
+fn offset(o: usize, negative: bool) -> f64 {
+    if negative { -OFFSETS[o] } else { OFFSETS[o] }
+}
+
+fn sketch_of(ends: &[End], lines_of: &[(String, String, String)], rotate: usize) -> String {
+    let mut points: Vec<String> = ends
+        .iter()
+        .map(|(id, (x, y), _)| point(id, *x, *y))
+        .collect();
+    let mut lines: Vec<String> = lines_of
+        .iter()
+        .map(|(id, from, to)| line(id, from, to))
+        .collect();
+    let (pk, lk) = (rotate % points.len(), rotate % lines.len());
+    points.rotate_left(pk);
+    lines.rotate_left(lk);
+    document(&[sketch("s0000001", &points, &lines, "")])
+}
+
+/// The listed warnings, each its elements, its total, and its cause, and their total.
+fn said_of(checked: &CheckAnswer) -> (Vec<(Vec<String>, u64, String)>, u64) {
+    let listed = checked
+        .warnings
+        .listed()
+        .iter()
+        .map(|w| {
+            (
+                w.elements().to_vec(),
+                w.elements_total(),
+                w.cause().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    (listed, checked.warnings.total())
+}
+
+/// The near end of each of a few lines at a few centres, each nudged by offsets around the
+/// joining distance; the far ends apart.
+fn few() -> impl Strategy<Value = Vec<(usize, usize, bool, usize, bool)>> {
+    prop::collection::vec(
+        (
+            0usize..CENTRES.len(),
+            0usize..OFFSETS.len(),
+            any::<bool>(),
+            0usize..OFFSETS.len(),
+            any::<bool>(),
+        ),
+        2..40,
+    )
+}
+
+/// Both ends of each of many lines, each at one of 60 centres of its side's grid, nudged
+/// as `few`'s are: enough clusters, often, to pass the hundred listed.
+fn many() -> impl Strategy<
+    Value = Vec<(
+        (usize, usize, bool, usize, bool),
+        (usize, usize, bool, usize, bool),
+    )>,
+> {
+    let end = (
+        0usize..60,
+        0usize..OFFSETS.len(),
+        any::<bool>(),
+        0usize..OFFSETS.len(),
+        any::<bool>(),
+    );
+    prop::collection::vec((end.clone(), end), 200..=250)
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 1000, ..ProptestConfig::default() })]
 
     #[test]
-    fn ends_not_joined_matches_every_pair_compared_directly(
-        ends in prop::collection::vec(
-            (0usize..CENTRES.len(), 0usize..OFFSETS.len(), any::<bool>(), 0usize..OFFSETS.len(), any::<bool>()),
-            2..40,
-        ),
+    fn ends_not_joined_matches_clusters_worked_out_directly(
+        ends in few(),
         rotate in 0usize..40,
     ) {
-        let n = ends.len();
-        let near: Vec<(f64, f64)> = ends
-            .iter()
-            .map(|&(c, ox, sx, oy, sy)| {
-                let (cx, cy) = CENTRES[c];
-                let dx = if sx { -OFFSETS[ox] } else { OFFSETS[ox] };
-                let dy = if sy { -OFFSETS[oy] } else { OFFSETS[oy] };
-                (cx + dx, cy + dy)
-            })
-            .collect();
-        let mut points = Vec::new();
+        let mut all: Vec<End> = Vec::new();
         let mut lines = Vec::new();
-        for (i, &(x, y)) in near.iter().enumerate() {
-            points.push(point(&format!("pa{i:06}"), x, y));
-            points.push(point(&format!("pz{i:06}"), 500.0 + 3.0 * i as f64, 400.0 + 7.0 * i as f64));
-            lines.push(line(&format!("na{i:06}"), &format!("pa{i:06}"), &format!("pz{i:06}")));
+        for (i, &(c, ox, sx, oy, sy)) in ends.iter().enumerate() {
+            let (cx, cy) = CENTRES[c];
+            let (near, far, curve) = (format!("pa{i:06}"), format!("pz{i:06}"), format!("na{i:06}"));
+            all.push((near.clone(), (cx + offset(ox, sx), cy + offset(oy, sy)), curve.clone()));
+            all.push((far.clone(), (500.0 + 3.0 * i as f64, 400.0 + 7.0 * i as f64), curve.clone()));
+            lines.push((curve, near, far));
         }
-        let k = rotate % n;
-        points.rotate_left(2 * k);
-        lines.rotate_left(k);
-        let checked = opened(&document(&[sketch("s0000001", &points, &lines, "")])).check();
+        let checked = opened(&sketch_of(&all, &lines, rotate)).check();
         prop_assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+        let expected = clusters_directly(&all);
+        let (listed, total) = said_of(&checked);
+        prop_assert_eq!(total, expected.len() as u64);
+        prop_assert_eq!(listed, expected.into_iter().take(PROBLEMS_LISTED).collect::<Vec<_>>());
+    }
+}
 
-        let mut expected = Vec::new();
-        for i in 0..n {
-            for j in i + 1..n {
-                if let Some(d) = joined(near[i], near[j]) {
-                    expected.push((vec![format!("na{i:06}"), format!("na{j:06}")], d));
-                }
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+
+    #[test]
+    fn many_clusters_past_the_hundredth_match_those_worked_out_directly(
+        lines_ends in many(),
+        rotate in 0usize..500,
+    ) {
+        let mut all: Vec<End> = Vec::new();
+        let mut lines = Vec::new();
+        for (i, (a, b)) in lines_ends.iter().enumerate() {
+            let curve = format!("na{i:06}");
+            let mut ids = Vec::new();
+            for (side, &(c, ox, sx, oy, sy)) in [a, b].into_iter().enumerate() {
+                let (cx, cy) = grid(side, c);
+                let id = format!("p{}{i:06}", ["a", "b"][side]);
+                all.push((id.clone(), (cx + offset(ox, sx), cy + offset(oy, sy)), curve.clone()));
+                ids.push(id);
             }
+            lines.push((curve, ids[0].clone(), ids[1].clone()));
         }
-        prop_assert_eq!(checked.warnings.total(), expected.len() as u64);
-        let listed = ends_warnings(&checked);
-        prop_assert_eq!(listed.len(), expected.len().min(PROBLEMS_LISTED));
-        for ((elements, cause), (want, d)) in listed.iter().zip(&expected) {
-            prop_assert_eq!(elements, want);
-            let shown = if *d == 0.0 { "0".to_owned() } else { format!("{d:e}") };
-            prop_assert_eq!(cause.clone(), Some(apart(&shown)));
-        }
+        let checked = opened(&sketch_of(&all, &lines, rotate)).check();
+        prop_assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+        let expected = clusters_directly(&all);
+        let (listed, total) = said_of(&checked);
+        prop_assert_eq!(total, expected.len() as u64);
+        prop_assert_eq!(listed, expected.into_iter().take(PROBLEMS_LISTED).collect::<Vec<_>>());
     }
 }
 
 #[test]
 fn checks_at_once_current_fresh_and_published_say_the_same_warnings_in_the_same_bytes() {
-    // 15 lines at one place and a box with no fingerprint: 106 warnings, asked for by 8
-    // threads at once, each current, current with fresh, and published, in turns.
-    let mut points = Vec::new();
-    let mut lines = Vec::new();
-    for i in (0..15).rev() {
-        points.push(point(&format!("pa{i:06}"), 0.0, 0.0));
-        points.push(point(&format!("pz{i:06}"), 10.0, i as f64));
-        lines.push(line(
-            &format!("na{i:06}"),
-            &format!("pa{i:06}"),
-            &format!("pz{i:06}"),
-        ));
-    }
+    // 105 clusters and a box with no fingerprint: 106 warnings, asked for by 8 threads at
+    // once, each current, current with fresh, and published, in turns.
+    let (mut points, mut lines) = two_point_clusters(105);
+    points.reverse();
+    lines.reverse();
     let text = document(&[
         sketch("s0000001", &points, &lines, ""),
         r#"{"id": "b0000002", "type": "box", "v": 1, "name": "B", "position": [50, 0, 0], "length": 4, "width": 2, "height": 1}"#.to_owned(),

@@ -733,6 +733,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     Ok(CheckAnswer::of(
                         super::check_except(read.model(), read.reached()),
                         read.model(),
+                        read.reached(),
                     ))
                 },
             ),
@@ -781,6 +782,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     Ok(CheckAnswer::of(
                         super::check_except(&current.model, current.reached.get()),
                         &current.model,
+                        current.reached.get(),
                     ))
                 }
                 Err(Unbuilt::Gated(problems)) => Ok(CheckAnswer::refused(problems)),

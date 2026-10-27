@@ -1,7 +1,8 @@
 //! `check`'s warnings (docs/design/m4.1-command-api.md, *Warnings*, decision 17; the
 //! maintainer's `fingerprint_missing`, 2026-10-26), through a session on the fake kernel and
 //! the fake sketch solver, which solves a sketch where it's drawn unless told otherwise.
-//! Expected values are by hand:
+//! Expected values are by hand, or FreeCAD 1.1.3's (the oracle's, run headless on
+//! 2026-10-26):
 //! - `ends_not_joined` holds to FreeCAD's rule for joining a sketch's wires: two ends join
 //!   when `gp_Pnt::Distance`, the square root of dx² + dy², each step a rounded double, is
 //!   strictly less than 1e-7 mm (`BRepLib_MakeWire::Add`, `l < tolerance`, each vertex's
@@ -10,15 +11,28 @@
 //!   1e-7 does (9.999999999999998e-8); 3e-8 by 4e-8 is 5e-8 exactly, and joins; 6e-8 by 8e-8
 //!   is 1e-7 exactly, and doesn't; ends at 10 and 10.0000001 along x join, their difference
 //!   as doubles being 9.99999993922529e-8 (docs/ports/profile.md measured FreeCAD joining
-//!   ends "1e-7 apart along an axis" for that reason).
+//!   ends "1e-7 apart along an axis" for that reason). Points that join, and so on through
+//!   each other, are one cluster and one warning, as FreeCAD's `SketchAnalysis` groups them
+//!   (c036128aa0): its points, in ID order, then the curves ending at them, in ID order,
+//!   each once, the first 100 of the list named and all counted.
+//! - FreeCAD's own tests, ported: `TestSketchValidateCoincidents.testSingleMissingCoincidentCase`
+//!   (a rectangle closing 3.552713678800501e-15 mm short: FreeCAD finds 1 missing
+//!   coincidence), and `TestSketcherSolver.testThreeLinesWithCoincidences_1`/`_2` (three
+//!   ends at one place: none missing where they're coincident, 2 where they aren't, k − 1
+//!   for a cluster of k, which Silico says as one warning naming the three).
 //! - `constraints_redundant` names the constraints the solver calls redundant, where each
-//!   holds on the solution (decision 5); one that doesn't is a problem, and so is a conflict.
+//!   holds on the solution (decision 5); one that doesn't is a problem, and so is a
+//!   conflict. Those it calls partially redundant are a warning of their own, which doesn't
+//!   advise removing them: FreeCAD 1.1.3 calls the midpoint of the port review's sketch
+//!   partially redundant (`solve()` 0, `RedundantConstraints` [], `PartiallyRedundantConstraints`
+//!   [1], fully constrained), and removing it frees the point along the line.
 //! - `fingerprint_missing` is once a feature that built with no fingerprint stored, none
-//!   after `format` writes it, none for a feature that failed or was blocked, and none for a
-//!   sketch, which holds none.
+//!   after `format` writes it, none for a feature that failed, was blocked, or couldn't be
+//!   measured, none for a sketch, which holds none, and none for a feature a transaction's
+//!   edits reached, whose commit writes it (decision 28).
 //! - The first 100 are listed and all counted; the order is by timeline, then code
 //!   (`ends_not_joined`, `constraints_redundant`, `fingerprint_missing`), then, for ends, by
-//!   the pair of points in ID order.
+//!   cluster, by its least point ID.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,6 +40,7 @@ use std::sync::Arc;
 use silico_core::cache::Cache;
 use silico_core::command::wire::{Layout, ToWire, write};
 use silico_core::command::{CheckAnswer, CheckModel, SessionId, Sessions};
+use silico_core::document::json::Node;
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::{Op, Primitive};
 use silico_core::sketch::SketchSolver;
@@ -35,9 +50,22 @@ use tempfile::TempDir;
 
 use crate::sessions::{answer, id};
 
-/// FreeCAD's words for the cause of `ends_not_joined`, with the distance as it's written.
+/// The cause of `ends_not_joined` for two points, with the distance as it's written.
 fn apart(distance: &str) -> String {
-    format!("the ends are {distance} mm apart, within FreeCAD's joining distance of 1e-7 mm")
+    format!("the points are {distance} mm apart, closer than FreeCAD's joining distance of 1e-7 mm")
+}
+
+/// The cause of `ends_not_joined` for more than two points, with the largest distance.
+fn at_most(distance: &str) -> String {
+    format!(
+        "the points are at most {distance} mm apart, each closer than FreeCAD's joining \
+         distance of 1e-7 mm to another of them"
+    )
+}
+
+/// `names` as owned strings.
+fn strings(names: &[&str]) -> Vec<String> {
+    names.iter().map(|s| (*s).to_owned()).collect()
 }
 
 struct Fixture {
@@ -197,7 +225,7 @@ fn ends_closer_than_freecads_joining_distance_warn_and_others_dont() {
                     [(
                         WarningCode::EndsNotJoined,
                         "s0000001".to_owned(),
-                        vec!["na000001".to_owned(), "nb000001".to_owned()],
+                        strings(&["pa000002", "pa000003", "na000001", "nb000001"]),
                         Some(apart(distance)),
                     )],
                     "{at:?}"
@@ -234,7 +262,7 @@ fn ends_a_tenth_of_a_micron_apart_along_an_axis_away_from_the_origin_join_as_fre
         [(
             WarningCode::EndsNotJoined,
             "s0000001".to_owned(),
-            vec!["na000001".to_owned(), "nb000001".to_owned()],
+            strings(&["pa000002", "pa000003", "na000001", "nb000001"]),
             Some(apart("9.99999993922529e-8")),
         )]
     );
@@ -242,7 +270,8 @@ fn ends_a_tenth_of_a_micron_apart_along_an_axis_away_from_the_origin_join_as_fre
 
 #[test]
 fn ends_not_joined_is_the_designs_example_word_for_word() {
-    // The design's sketch s0000002: curves pb000003 and pb000007, their ends 4e-8 apart.
+    // The design's sketch s0000002: curves pb000003 and pb000007, ending at points pa000002
+    // and pa000004, 4e-8 apart.
     let text = document(&[sketch(
         "s0000002",
         &[
@@ -335,7 +364,7 @@ fn only_profile_curves_ends_that_arent_one_point_warn() {
         [(
             WarningCode::EndsNotJoined,
             "s0000001".to_owned(),
-            vec!["aa000001".to_owned(), "nb000001".to_owned()],
+            strings(&["pa000002", "pa000004", "aa000001", "nb000001"]),
             Some(apart("4e-8")),
         )]
     );
@@ -387,18 +416,19 @@ fn agreeing_redundant_constraints_warn_naming_each_and_disagreeing_or_conflictin
          already fix, and agree with them"
     );
     assert_eq!(warning.parameter(), None);
-    assert!(
-        warning
-            .suggestion()
-            .unwrap()
-            .starts_with("remove the constraints named")
+    assert_eq!(
+        warning.suggestion(),
+        Some(
+            "remove the constraints named, or make a dimension among them a reference \
+             (`driving: false`), keeping the sketch as constrained as it is"
+        )
     );
 
-    // One alone is said in the singular; partially redundant counts as redundant.
+    // One alone is said in the singular.
     let f = opened(&document(&[held_three_times(0.0)]));
     f.sketches.answer(|system| {
         let mut solved = FakeSketches::as_sent(system);
-        solved.partially_redundant = vec![Tag(3)];
+        solved.redundant = vec![Tag(3)];
         Ok(solved)
     });
     let checked = f.check();
@@ -411,6 +441,51 @@ fn agreeing_redundant_constraints_warn_naming_each_and_disagreeing_or_conflictin
         "a constraint of the sketch is redundant: it repeats what its other constraints \
          already fix, and agrees with them"
     );
+
+    // Partially redundant is a warning of its own, after the redundant one, under the same
+    // code, with no advice to remove them: FreeCAD shows them apart, and removing one frees
+    // what only it fixes.
+    let f = opened(&document(&[held_three_times(0.0)]));
+    f.sketches.answer(|system| {
+        let mut solved = FakeSketches::as_sent(system);
+        solved.redundant = vec![Tag(2)];
+        solved.partially_redundant = vec![Tag(1), Tag(3)];
+        Ok(solved)
+    });
+    let checked = f.check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    let [full, partly] = checked.warnings.listed() else {
+        panic!("{:?}", said(&checked));
+    };
+    assert_eq!(full.elements(), ["k0000002"]);
+    assert!(
+        full.message()
+            .starts_with("a constraint of the sketch is redundant")
+    );
+    assert_eq!(partly.code(), WarningCode::ConstraintsRedundant);
+    assert_eq!(partly.feature(), Some("s0000001"));
+    assert_eq!(partly.elements(), ["k0000001", "k0000003"]);
+    assert_eq!(partly.elements_total(), 2);
+    assert_eq!(
+        partly.message(),
+        "2 constraints of the sketch are partly redundant: only part of what each fixes is \
+         repeated by its other constraints, and that part agrees with them"
+    );
+    assert_eq!(
+        partly.cause(),
+        Some(
+            "the solver solved the sketch without the equations of theirs that repeat others, \
+             and each holds on the solution"
+        )
+    );
+    assert_eq!(
+        partly.suggestion(),
+        Some(
+            "review the constraints named: each also fixes what no other constraint does, so \
+             removing one would loosen the sketch"
+        )
+    );
+    assert_eq!(checked.warnings.total(), 2);
 
     // The line rising 1 in 10: the redundant horizontal is 1 mm off on the solution, so it
     // disagrees: a problem, over_constrained, and no warning.
@@ -471,7 +546,7 @@ fn a_feature_built_with_no_fingerprint_warns_once_until_format_stores_it() {
     assert_eq!(warning.cause(), None);
     assert_eq!(
         warning.suggestion(),
-        Some("save the document (format or commit) to store it")
+        Some("format the document to store it")
     );
     // The published model says the same.
     let published = answer(f.sessions.check(&s1(), CheckModel::Published));
@@ -544,53 +619,261 @@ fn warnings_past_the_hundredth_are_counted_not_listed() {
 }
 
 #[test]
-fn ends_at_one_place_are_each_pair_listed_by_their_points_ids_to_the_hundredth_all_counted() {
-    // Fifteen lines, each from its own point at the origin out to its own far point: 15 · 14
-    // / 2 = 105 pairs of ends 0 apart. The first hundred pairs by their points' IDs are
-    // listed: all but (11, 13), (11, 14), (12, 13), (12, 14), (13, 14), counting from 0. The
-    // points are written in reverse, so the file's order isn't the IDs'.
-    let near = |i: usize| format!("pa{i:06}");
-    let far = |i: usize| format!("pz{i:06}");
-    let curve = |i: usize| format!("na{i:06}");
+fn clusters_past_the_hundredth_are_counted_and_the_hundred_listed_are_the_first_by_point_id() {
+    // 105 clusters of two points 4e-8 apart, cluster i at x = 2000 − 10i: their x falls as
+    // their IDs rise, so the sweep, which goes by x, meets them last first. Listed: the
+    // clusters of the least IDs, 0 to 99, in that order; all 105 counted. The points are
+    // written in reverse, so the file's order isn't the IDs' either.
     let mut points = Vec::new();
     let mut lines = Vec::new();
-    for i in (0..15).rev() {
-        points.push(point(&near(i), 0.0, 0.0));
-        points.push(point(&far(i), 10.0, i as f64));
-        lines.push(line(&curve(i), &near(i), &far(i), false));
+    for i in (0..105).rev() {
+        let x = 2000.0 - 10.0 * i as f64;
+        points.push(point(&format!("pa{i:06}"), x, 0.0));
+        points.push(point(&format!("pb{i:06}"), x + 4e-8, 0.0));
+        points.push(point(&format!("py{i:06}"), x, -5.0));
+        points.push(point(&format!("pz{i:06}"), x, 5.0));
+        lines.push(line(
+            &format!("na{i:06}"),
+            &format!("pa{i:06}"),
+            &format!("pz{i:06}"),
+            false,
+        ));
+        lines.push(line(
+            &format!("nb{i:06}"),
+            &format!("pb{i:06}"),
+            &format!("py{i:06}"),
+            false,
+        ));
     }
     let checked = opened(&document(&[sketch("s0000001", &points, &lines, &[], "")])).check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
     assert_eq!(checked.warnings.total(), 105);
-    let mut expected = Vec::new();
-    for a in 0..15 {
-        for b in a + 1..15 {
-            expected.push(vec![curve(a), curve(b)]);
-        }
-    }
-    expected.truncate(100);
-    assert_eq!(expected.last().unwrap(), &vec![curve(11), curve(12)]);
     let listed: Vec<Vec<String>> = checked
         .warnings
         .listed()
         .iter()
         .map(|w| w.elements().to_vec())
         .collect();
+    let expected: Vec<Vec<String>> = (0..100)
+        .map(|i| {
+            vec![
+                format!("pa{i:06}"),
+                format!("pb{i:06}"),
+                format!("na{i:06}"),
+                format!("nb{i:06}"),
+            ]
+        })
+        .collect();
     assert_eq!(listed, expected);
-    assert!(
-        checked
-            .warnings
-            .listed()
-            .iter()
-            .all(|w| w.cause() == Some(apart("0").as_str()))
+}
+
+#[test]
+fn a_clusters_points_come_first_then_its_curves_sorted_by_id() {
+    // Points pa000001 and pa000002, 4e-8 apart: the lesser point ends the curve of the
+    // greater ID (nz000009), the greater the lesser (na000001), and a third curve
+    // (nm000005) runs between them both's far ends, no part of it. Named: the points in ID
+    // order, then the curves in ID order, whatever point each ends at.
+    let text = document(&[sketch(
+        "s0000001",
+        &[
+            point("pa000001", 0.0, 0.0),
+            point("pa000002", 4e-8, 0.0),
+            point("pz000001", 0.0, 10.0),
+            point("pz000002", 10.0, 0.0),
+        ],
+        &[
+            line("nz000009", "pz000001", "pa000001", false),
+            line("na000001", "pa000002", "pz000002", false),
+            line("nm000005", "pz000001", "pz000002", false),
+        ],
+        &[],
+        "",
+    )]);
+    let checked = opened(&text).check();
+    assert_eq!(
+        said(&checked),
+        [(
+            WarningCode::EndsNotJoined,
+            "s0000001".to_owned(),
+            strings(&["pa000001", "pa000002", "na000001", "nz000009"]),
+            Some(apart("4e-8")),
+        )]
+    );
+    let warning = &checked.warnings.listed()[0];
+    assert_eq!(warning.elements_total(), 4);
+    assert_eq!(
+        warning.message(),
+        "2 points that end curves are at one place but aren't one point, so the profile is \
+         open there"
+    );
+    assert_eq!(
+        warning.suggestion(),
+        Some("share one point: make the curves named end at one of the points named")
     );
 }
 
 #[test]
-fn warnings_are_in_timeline_order_then_by_code_then_by_points() {
-    // Sketch s0000001: two pairs of ends (a: pa000001 near pa000004, b: pa000002 near
-    // pa000003; by IDs, b's pair (2, 3) comes after a's (1, 4)), drawn with b's at the
+fn ends_joined_through_each_other_are_one_cluster_its_cause_their_farthest() {
+    // pa000001 at 0, pa000002 at 6e-8, pa000003 at 1.2e-7 along x: 1 joins 2 and 2 joins 3,
+    // though 1 and 3 are 1.2e-7 apart: one cluster of three (FreeCAD's analysis groups them
+    // so, c036128aa0), its cause their largest distance, 1.2e-7 as doubles' differences:
+    // 1.2e-7 − 0 is 1.2e-7 exactly. A fourth point, pa000004, 2e-7 past pa000003 (3.2e-7),
+    // joins none.
+    let text = document(&[sketch(
+        "s0000001",
+        &[
+            point("pa000001", 0.0, 0.0),
+            point("pa000002", 6e-8, 0.0),
+            point("pa000003", 1.2e-7, 0.0),
+            point("pa000004", 3.2e-7, 0.0),
+            point("pz000001", -5.0, 5.0),
+            point("pz000002", 0.0, 5.0),
+            point("pz000003", 5.0, 5.0),
+            point("pz000004", 5.0, -5.0),
+        ],
+        &[
+            line("na000001", "pa000001", "pz000001", false),
+            line("na000002", "pa000002", "pz000002", false),
+            line("na000003", "pa000003", "pz000003", false),
+            line("na000004", "pa000004", "pz000004", false),
+        ],
+        &[],
+        "",
+    )]);
+    let checked = opened(&text).check();
+    assert_eq!(
+        said(&checked),
+        [(
+            WarningCode::EndsNotJoined,
+            "s0000001".to_owned(),
+            strings(&[
+                "pa000001", "pa000002", "pa000003", "na000001", "na000002", "na000003"
+            ]),
+            Some(at_most("1.2e-7")),
+        )]
+    );
+    assert_eq!(
+        checked.warnings.listed()[0].message(),
+        "3 points that end curves are at one place but aren't one point, so the profile is \
+         open there"
+    );
+}
+
+/// FreeCAD's `CreateThreeLinesWithCommonPoint` (TestSketcherSolver.py): three lines, the
+/// first two ending and the third starting at (−55.600571, −9.387639); `shared`, at one
+/// point, pa000002; otherwise each at its own point there, pa000002, pa000004, pa000005.
+fn three_lines(shared: bool) -> String {
+    let (b, c) = if shared {
+        ("pa000002", "pa000002")
+    } else {
+        ("pa000004", "pa000005")
+    };
+    let mut points = vec![
+        point("pa000001", -55.965607, -9.864289),
+        point("pa000002", -55.600571, -9.387639),
+        point("pa000003", -55.735817, -9.067246),
+        point("pa000006", -55.058266, -9.677831),
+    ];
+    if !shared {
+        points.push(point("pa000004", -55.600571, -9.387639));
+        points.push(point("pa000005", -55.600571, -9.387639));
+    }
+    document(&[sketch(
+        "s0000001",
+        &points,
+        &[
+            line("na000001", "pa000001", "pa000002", false),
+            line("na000002", "pa000003", b, false),
+            line("na000003", c, "pa000006", false),
+        ],
+        &[],
+        "",
+    )])
+}
+
+#[test]
+fn freecads_three_lines_with_coincidences_warn_of_nothing_and_without_them_once() {
+    // testThreeLinesWithCoincidences_1 and _2: the three ends made coincident, FreeCAD finds
+    // no missing coincidence (detectMissingPointOnPointConstraints 0); here, one point the
+    // three curves share: no warning.
+    let checked = opened(&three_lines(true)).check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    assert!(checked.warnings.is_empty(), "{:?}", said(&checked));
+    // Without the coincidences FreeCAD 1.1.3 finds 2 missing (k − 1 for k = 3); here the
+    // three points at one place are one cluster: one warning naming them, then the three
+    // curves.
+    let checked = opened(&three_lines(false)).check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    assert_eq!(
+        said(&checked),
+        [(
+            WarningCode::EndsNotJoined,
+            "s0000001".to_owned(),
+            strings(&[
+                "pa000002", "pa000004", "pa000005", "na000001", "na000002", "na000003"
+            ]),
+            Some(at_most("0")),
+        )]
+    );
+}
+
+#[test]
+fn freecads_single_missing_coincidence_is_one_warning() {
+    // TestSketchValidateCoincidents.testSingleMissingCoincidentCase: a rectangle drawn from
+    // (−47.680691, 18.824165000000004) down, across, and up to (51.132679, 18.824165), then
+    // back along y = 18.824165 to (−47.680691, 18.824165), one ulp of 2^-48 short of where
+    // it started (FreeCAD's coincidence of the third line's end and the fourth's start is a
+    // point they share here, pa000004). FreeCAD 1.1.3 finds 1 missing coincidence, the
+    // points 3.552713678800501e-15 apart.
+    assert_eq!(18.824165000000004_f64 - 18.824165, 2f64.powi(-48));
+    assert_eq!(2f64.powi(-48), 3.552713678800501e-15);
+    let horizontal =
+        |k: &str, l: &str| format!(r#"{{"id": "{k}", "type": "horizontal", "line": "{l}"}}"#);
+    let vertical =
+        |k: &str, l: &str| format!(r#"{{"id": "{k}", "type": "vertical", "line": "{l}"}}"#);
+    let text = document(&[sketch(
+        "s0000001",
+        &[
+            point("pa000001", -47.680691, 18.824165000000004),
+            point("pa000002", -47.680691, -27.346279),
+            point("pa000003", 51.132679, -27.346279),
+            point("pa000004", 51.132679, 18.824165),
+            point("pa000005", -47.680691, 18.824165),
+        ],
+        &[
+            line("na000001", "pa000001", "pa000002", false),
+            line("na000002", "pa000002", "pa000003", false),
+            line("na000003", "pa000003", "pa000004", false),
+            line("na000004", "pa000004", "pa000005", false),
+        ],
+        &[],
+        &[
+            vertical("k0000001", "na000001"),
+            vertical("k0000002", "na000003"),
+            horizontal("k0000003", "na000002"),
+            horizontal("k0000004", "na000004"),
+        ]
+        .join(", "),
+    )]);
+    let checked = opened(&text).check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    assert_eq!(
+        said(&checked),
+        [(
+            WarningCode::EndsNotJoined,
+            "s0000001".to_owned(),
+            strings(&["pa000001", "pa000005", "na000001", "na000004"]),
+            Some(apart("3.552713678800501e-15")),
+        )]
+    );
+}
+
+#[test]
+fn warnings_are_in_timeline_order_then_by_code_then_by_cluster() {
+    // Sketch s0000001: two clusters of two points (a: pa000001 near pa000004, b: pa000002
+    // near pa000003; by their least IDs, b (2) comes after a (1)), drawn with b's at the
     // lesser x, and two redundant horizontals; then a box with no fingerprint; then sketch
-    // s0000003 with one pair.
+    // s0000003 with one cluster.
     let first = sketch(
         "s0000001",
         &[
@@ -633,20 +916,19 @@ fn warnings_are_in_timeline_order_then_by_code_then_by_points() {
     });
     let checked = f.check();
     assert!(checked.problems.is_empty(), "{:?}", checked.problems);
-    let strings = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
     assert_eq!(
         said(&checked),
         [
             (
                 WarningCode::EndsNotJoined,
                 "s0000001".to_owned(),
-                strings(&["na000001", "na000003"]),
+                strings(&["pa000001", "pa000004", "na000001", "na000003"]),
                 Some(apart("6e-8")),
             ),
             (
                 WarningCode::EndsNotJoined,
                 "s0000001".to_owned(),
-                strings(&["na000001", "na000002"]),
+                strings(&["pa000002", "pa000003", "na000001", "na000002"]),
                 Some(apart("3e-8")),
             ),
             (
@@ -668,7 +950,7 @@ fn warnings_are_in_timeline_order_then_by_code_then_by_points() {
             (
                 WarningCode::EndsNotJoined,
                 "s0000003".to_owned(),
-                strings(&["na000001", "na000002"]),
+                strings(&["pa000002", "pa000003", "na000001", "na000002"]),
                 Some(apart("2e-8")),
             ),
         ]
@@ -682,4 +964,131 @@ fn a_document_the_gate_refuses_has_its_problems_and_no_warnings() {
     let checked = opened(&text).check();
     assert_eq!(checked.problems.total(), 1, "{:?}", checked.problems);
     assert!(checked.warnings.is_empty());
+}
+
+/// The port review's sketch: line na000001 from (−5, 0) to (5, 0), its ends held by
+/// distances from the origin (k0000004 to k0000007), and point pa000003 at (0, 0), held at
+/// the line's midpoint (k0000001), at y 0 (k0000002), and on the line (k0000003). The
+/// midpoint's own equation along y repeats the other two; its equation along the line
+/// doesn't.
+fn midpoint_held_twice() -> String {
+    let constraints = [
+        r#"{"id": "k0000001", "type": "midpoint", "point": "pa000003", "line": "na000001"}"#,
+        r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "pa000003", "value": 0, "driving": true}"#,
+        r#"{"id": "k0000003", "type": "on", "point": "pa000003", "curve": "na000001"}"#,
+        r#"{"id": "k0000004", "type": "distance_x", "a": "origin", "b": "pa000001", "value": -5, "driving": true}"#,
+        r#"{"id": "k0000005", "type": "distance_y", "a": "origin", "b": "pa000001", "value": 0, "driving": true}"#,
+        r#"{"id": "k0000006", "type": "distance_x", "a": "origin", "b": "pa000002", "value": 5, "driving": true}"#,
+        r#"{"id": "k0000007", "type": "distance_y", "a": "origin", "b": "pa000002", "value": 0, "driving": true}"#,
+    ];
+    sketch(
+        "s0000001",
+        &[
+            point("pa000001", -5.0, 0.0),
+            point("pa000002", 5.0, 0.0),
+            point("pa000003", 0.0, 0.0),
+        ],
+        &[line("na000001", "pa000001", "pa000002", false)],
+        &[],
+        &constraints.join(", "),
+    )
+}
+
+#[test]
+fn freecads_partially_redundant_midpoint_is_warned_of_without_advice_to_remove_it() {
+    // FreeCAD 1.1.3, the same sketch (its constraints in the same order): solve() 0,
+    // RedundantConstraints [], PartiallyRedundantConstraints [1] (the midpoint), fully
+    // constrained. The fake solver answers as PlaneGCS does (silico-sketch's document tests
+    // solve it through the worker): the midpoint, tag 1, partially redundant; nothing
+    // redundant; no freedom left. One warning: the partial one, naming the midpoint.
+    let f = opened(&document(&[midpoint_held_twice()]));
+    f.sketches.answer(|system| {
+        let mut solved = FakeSketches::as_sent(system);
+        solved.partially_redundant = vec![Tag(1)];
+        solved.dofs = 0;
+        solved.free = Vec::new();
+        Ok(solved)
+    });
+    let checked = f.check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    let [warning] = checked.warnings.listed() else {
+        panic!("{:?}", said(&checked));
+    };
+    assert_eq!(warning.code(), WarningCode::ConstraintsRedundant);
+    assert_eq!(warning.elements(), ["k0000001"]);
+    assert_eq!(
+        warning.message(),
+        "a constraint of the sketch is partly redundant: only part of what it fixes is \
+         repeated by its other constraints, and that part agrees with them"
+    );
+    assert!(
+        !warning.suggestion().unwrap().contains("remove the"),
+        "{warning}"
+    );
+    assert_eq!(checked.warnings.total(), 1);
+}
+
+#[test]
+fn a_feature_a_transactions_edits_reached_isnt_warned_of_for_its_fingerprint_its_commit_writes() {
+    // k7f2qx3m, saved with no fingerprint, warns. In a transaction, box m0000002 is added:
+    // format is refused there, and the commit writes its fingerprint (decision 28), so it
+    // doesn't warn, now or after; k7f2qx3m, which no edit reached, warns until format.
+    let f = opened(&document(&[block("k7f2qx3m", 0)]));
+    let only_k7 = [(
+        WarningCode::FingerprintMissing,
+        "k7f2qx3m".to_owned(),
+        vec![],
+        None,
+    )];
+    assert_eq!(said(&f.check()), only_k7);
+    answer(f.sessions.begin(&s1())).result.unwrap();
+    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let added: Node = silico_core::document::json::read(block("m0000002", 10).as_bytes()).unwrap();
+    answer(f.sessions.add_feature(&s1(), revision, added))
+        .result
+        .unwrap();
+    let checked = f.check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    assert_eq!(said(&checked), only_k7);
+    // The published model, the file as saved, hasn't m0000002.
+    let published = answer(f.sessions.check(&s1(), CheckModel::Published));
+    assert_eq!(said(&published.result.unwrap()), only_k7);
+    let committed = answer(f.sessions.commit(&s1())).result.unwrap();
+    assert_eq!(committed.refingerprinted, [id("m0000002")]);
+    assert_eq!(said(&f.check()), only_k7);
+    answer(f.sessions.format(&s1(), None, true)).result.unwrap();
+    assert!(f.check().warnings.is_empty());
+}
+
+#[test]
+fn a_feature_whose_solid_couldnt_be_measured_isnt_warned_of_for_its_fingerprint() {
+    // The kernel refuses every Summarize: the box built, but couldn't be measured (a
+    // problem), so a save has no fingerprint to store: no warning.
+    let f = opened(&document(&[block("k7f2qx3m", 0)]));
+    f.kernel.refuse(|op| {
+        matches!(op, Op::Summarize { .. })
+            .then(|| Error::new(ErrorCode::KernelFailed, "Summarize failed"))
+    });
+    let checked = answer(f.sessions.check(&s1(), CheckModel::Current { fresh: true }))
+        .result
+        .unwrap();
+    assert_eq!(checked.problems.total(), 1, "{:?}", checked.problems);
+    assert_eq!(checked.problems.errors()[0].feature(), Some("k7f2qx3m"));
+    assert!(checked.warnings.is_empty(), "{:?}", said(&checked));
+}
+
+#[test]
+fn fingerprint_missing_on_the_wire_names_its_parameter() {
+    let checked = opened(&document(&[block("k7f2qx3m", 0)])).check();
+    let [warning] = checked.warnings.listed() else {
+        panic!("{:?}", said(&checked));
+    };
+    assert_eq!(
+        write(&warning.to_wire(), Layout::Canonical).unwrap(),
+        "{\"code\": \"fingerprint_missing\", \"message\": \"k7f2qx3m built, but its file \
+         stores no fingerprint, so a change in what it builds isn't caught as drift\", \
+         \"feature\": \"k7f2qx3m\", \"elements\": [], \"elements_total\": 0, \"parameter\": \
+         \"fingerprint\", \"cause\": null, \"suggestion\": \"format the document to store \
+         it\", \"candidates\": []}"
+    );
 }
