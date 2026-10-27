@@ -2394,4 +2394,32 @@ mod tests {
         assert_eq!(seen, [("entry", first.clone())]);
         assert!(first.is_file() && !second.exists() && !later.exists());
     }
+
+    #[test]
+    fn a_directorys_names_are_listed_in_order_of_name_whatever_order_they_were_made_in() {
+        // Sixty-four names, `00` to `3f`, made last first, so a file system that lists in
+        // the order names were made (or the reverse, or by a hash of each, as APFS and ext4
+        // do) lists them otherwise than sorted: checked first, so the test can fail. Listed
+        // by `at::names`, they're in order of name, written out by hand.
+        let scratch = Scratch::new("names-sorted");
+        let sorted: Vec<String> = (0..64).map(|i| format!("{i:02x}")).collect();
+        for name in sorted.iter().rev() {
+            std::fs::write(scratch.0.join(name), b"").unwrap();
+        }
+        let raw: Vec<String> = std::fs::read_dir(&scratch.0)
+            .unwrap()
+            .map(|item| item.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(raw.len(), 64);
+        assert_ne!(
+            raw, sorted,
+            "the file system lists in order of name already"
+        );
+        let (names, unread) = at::names(opened_at(&scratch.0));
+        assert!(unread.is_none(), "{unread:?}");
+        let names: Vec<&str> = names.iter().map(|name| name.to_str().unwrap()).collect();
+        assert_eq!(names[..4], ["00", "01", "02", "03"]);
+        assert_eq!(names[60..], ["3c", "3d", "3e", "3f"]);
+        assert_eq!(names, sorted);
+    }
 }
