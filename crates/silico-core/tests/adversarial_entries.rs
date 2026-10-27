@@ -773,6 +773,80 @@ fn a_direction_that_isnt_one_is_refused_naming_facing_direction() {
     }
 }
 
+#[test]
+fn on_the_wire_a_zero_direction_is_the_readers_and_hides_the_commands_own_refusals_until_the_shape_is_right()
+ {
+    // docs/design/m4.4-describe.md, *On the wire*: a zero direction is among the reader's
+    // refusals of a request's shape, beside every other (a kind of solid, in the command's
+    // words); a limit past 1,000 is the command's; and "a request refused for its shape
+    // isn't run, so the command's own reasons come once the shape is right". So a request
+    // wrong in all three is refused for the kind and the direction, in the shape's order,
+    // and not for the limit; with the direction mended, for the kind alone; with the kind
+    // mended too, the command runs and refuses the limit, in the words of M4.1's example
+    // (docs/design/m4.1-command-api.md, `elements`' refusal of 5000). The Rust `Query`, which
+    // has no reader, gives the zero direction beside the limit at once: tests/entries.rs's
+    // a_query_that_cant_mean_anything_is_refused_with_every_reason.
+    use silico_core::command::wire::elements::QueryRequest;
+    let request = |kind: &str, direction: &str| {
+        format!(
+            r#"{{"session": "s1", "model": "current", "feature": null, "kind": "{kind}", "type": null, "stable": null, "facing": {{"direction": {direction}, "within": 1}}, "measures": [], "order": null, "limit": 5000}}"#
+        )
+    };
+    let read = |text: &str| {
+        QueryRequest::read(&silico_core::document::json::read(text.as_bytes()).unwrap())
+    };
+    let said = |refused: &silico_core::command::Problems| -> Vec<(String, String)> {
+        refused
+            .errors()
+            .iter()
+            .map(|e| {
+                (
+                    e.parameter().unwrap_or("").to_owned(),
+                    e.message().to_owned(),
+                )
+            })
+            .collect()
+    };
+    let refused = read(&request("solid", "[0, 0, 0]")).unwrap_err();
+    assert_eq!(
+        said(&refused),
+        [
+            (
+                "kind".to_owned(),
+                "kind must be face, edge, or vertex, got solid".to_owned()
+            ),
+            (
+                "facing.direction".to_owned(),
+                "facing.direction must be a direction, got [0, 0, 0]".to_owned()
+            ),
+        ]
+    );
+    assert_eq!(refused.total(), 2);
+    assert!(
+        refused
+            .errors()
+            .iter()
+            .all(|e| e.code() == ErrorCode::InvalidInput)
+    );
+    // The direction mended: the kind is still the shape's, so the limit is still unsaid.
+    let refused = read(&request("solid", "[0, 0, 1]")).unwrap_err();
+    assert_eq!(
+        codes(&refused),
+        [(ErrorCode::InvalidInput, Some("kind".to_owned()))]
+    );
+    // The shape right: the command runs, and refuses the limit.
+    let request = read(&request("face", "[0, 0, 1]")).unwrap();
+    let refused = query(&model_of(BOX), &request.query).unwrap_err();
+    assert_eq!(
+        said(&refused),
+        [(
+            "limit".to_owned(),
+            "limit must be from 1 to 1000, got 5000".to_owned()
+        )]
+    );
+    assert_eq!(refused.errors()[0].code(), ErrorCode::InvalidInput);
+}
+
 // ---------------------------------------------------------------------------------------
 // `query`: ties at 1,000 and 1,001
 
