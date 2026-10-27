@@ -922,8 +922,8 @@ fn text_outline_and_check_answer_as_the_design_gives_them() {
     assert_eq!(text, example("outline/result"));
     holds(&schema_of("outline", "result"), &text, "outline");
 
-    // A box with nothing wrong: no problems, no warnings.
-    let f = opened(BOX);
+    // A box with nothing wrong, saved with its fingerprint: no problems, no warnings.
+    let f = opened(&saved_box());
     let request = CheckRequest::read(&parsed(&example("check/request"))).unwrap();
     assert_eq!(request.model, CheckModel::Current { fresh: false });
     let checked = answer(
@@ -1091,9 +1091,18 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
     }
 }
 
+/// [`BOX`] as `format` saves it, with its fingerprint: a document saved through Silico, which
+/// a check finds nothing to warn of (one without would warn, `fingerprint_missing`).
+fn saved_box() -> String {
+    let f = opened(BOX);
+    let formatted = answer(f.sessions.format(&s1(), None, true)).result.unwrap();
+    assert_eq!(formatted.refingerprinted, [id("k7f2qx3m")]);
+    std::fs::read_to_string(f.path()).unwrap()
+}
+
 #[test]
 fn a_published_check_answers_at_once_from_the_older_revision_while_the_current_rebuilds() {
-    let f = opened(BOX);
+    let f = opened(&saved_box());
     // Revision 1's model, built and published.
     assert!(
         answer(

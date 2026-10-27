@@ -2,7 +2,7 @@
 //! against committed files (tests/contract/), and changing it means changing them.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use silico_core::{Error, ErrorCode};
+use silico_core::{Error, ErrorCode, Warning, WarningCode};
 
 fn contract(name: &str) -> String {
     let path = format!("{}/tests/contract/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -53,6 +53,72 @@ fn error_codes_are_stable() {
             serde_json::Value::String(code.as_str().to_owned())
         );
     }
+}
+
+#[test]
+fn warning_codes_are_stable() {
+    // Decision 17: the warning codes are a list of their own, kept as the error codes are.
+    let expected: Vec<String> = contract("warning-codes.txt")
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let actual: Vec<String> = WarningCode::ALL
+        .iter()
+        .map(|c| c.as_str().to_owned())
+        .collect();
+    assert_eq!(actual, expected);
+    for code in WarningCode::ALL {
+        assert_eq!(
+            serde_json::to_value(code).unwrap(),
+            serde_json::Value::String(code.as_str().to_owned())
+        );
+    }
+    // No code is both a warning's and an error's: an agent tells them apart by code alone.
+    for warning in WarningCode::ALL {
+        assert!(
+            ErrorCode::ALL
+                .iter()
+                .all(|e| e.as_str() != warning.as_str()),
+            "{warning}"
+        );
+    }
+}
+
+#[test]
+fn a_warning_is_the_error_contracts_shape() {
+    let warning = Warning::new(WarningCode::EndsNotJoined, "fillet failed")
+        .with_feature("Fillet1")
+        .with_elements(["Edge3", "Edge5"])
+        .with_parameter("radius")
+        .with_cause("StdFail_NotDone: BRepFilletAPI_MakeFillet")
+        .with_suggestion("reduce the radius below 5 mm");
+    // error-full.json's error, but its candidates: its shape is pinned against the file
+    // above, so the warning's is that, with its own code.
+    let error = Error::new(ErrorCode::KernelFailed, "fillet failed")
+        .with_feature("Fillet1")
+        .with_elements(["Edge3", "Edge5"])
+        .with_parameter("radius")
+        .with_cause("StdFail_NotDone: BRepFilletAPI_MakeFillet")
+        .with_suggestion("reduce the radius below 5 mm");
+    assert_eq!(
+        serde_json::to_string_pretty(&warning).unwrap(),
+        serde_json::to_string_pretty(&error).unwrap().replacen(
+            "\"kernel_failed\"",
+            "\"ends_not_joined\"",
+            1
+        )
+    );
+    assert_eq!(
+        warning.to_string(),
+        "ends_not_joined: fillet failed (feature Fillet1, elements Edge3, Edge5, parameter \
+         radius): StdFail_NotDone: BRepFilletAPI_MakeFillet. Suggestion: reduce the radius \
+         below 5 mm."
+    );
+    let warning = warning.with_elements_total(7);
+    assert_eq!(warning.elements_total(), 7);
+    assert_eq!(warning.elements(), ["Edge3", "Edge5"]);
+    assert_eq!(warning.with_elements_total(1).elements_total(), 2);
 }
 
 #[test]

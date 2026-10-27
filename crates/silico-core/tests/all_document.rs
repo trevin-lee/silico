@@ -80,6 +80,8 @@ mod cache_clear;
 mod cache_workspace;
 #[path = "call.rs"]
 mod call;
+#[path = "check_warnings.rs"]
+mod check_warnings;
 #[path = "command.rs"]
 mod command;
 #[path = "document.rs"]

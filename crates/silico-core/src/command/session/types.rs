@@ -19,6 +19,7 @@ use crate::document;
 use crate::document::json::Plain;
 use crate::document::{Feature, FeatureId};
 use crate::recompute::{Model, StepCount};
+use crate::warnings::Warnings;
 use crate::{Error, ErrorCode};
 
 /// A session's ID as a request's schema gives it, the IDs [`SessionId::parse`] reads: `s`
@@ -550,23 +551,32 @@ pub struct OutlineAnswer {
 }
 
 /// What `check` answers: the document's problems, and its warnings, which never fail
-/// anything, and of which there are none yet (the first, M3's two curve ends at one place
-/// that aren't one point, comes with its code).
+/// anything (docs/design/m4.1-command-api.md, *Warnings*, decision 17;
+/// [`crate::warnings`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckAnswer {
     pub problems: Problems,
-    /// In the error contract's shape, as the wire writes them. Decision 17 gives warnings
-    /// codes of their own: this type changes with the first warning code, when warnings
-    /// are made.
-    pub warnings: Problems,
+    /// In the error contract's shape, as the wire writes them, each with a warning code of
+    /// its own: none for a document the gate refused, which has no model to find them in.
+    pub warnings: Warnings,
 }
 
 impl CheckAnswer {
-    /// The answer of a check that found `problems`, and no warnings (none are made yet).
-    pub(super) fn of(problems: Problems) -> Self {
+    /// The answer of a check of `model`: its problems, as `problems` gives them, and its
+    /// warnings.
+    pub(super) fn of(problems: Problems, model: &Model) -> Self {
         CheckAnswer {
             problems,
-            warnings: Problems::none(),
+            warnings: crate::warnings::of(model),
+        }
+    }
+
+    /// The answer of a check of a document the gate refused: its problems, and no warnings,
+    /// since there's no model to find them in.
+    pub(super) fn refused(problems: Problems) -> Self {
+        CheckAnswer {
+            problems,
+            warnings: Warnings::none(),
         }
     }
 }

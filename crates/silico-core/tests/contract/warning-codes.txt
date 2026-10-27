@@ -1,0 +1,5 @@
+# Every warning code and its string form, in declaration order. Agents match on these
+# strings, so a code is never renamed or removed; new codes are appended.
+ends_not_joined
+constraints_redundant
+fingerprint_missing

@@ -681,7 +681,8 @@ impl<P: Clients + 'static> Sessions<P> {
     }
 
     /// `session`'s document's problems ([`super::check`]) from the model `model` names
-    /// (decision 33), and its warnings (none yet): a `check` request's `model` and `fresh`,
+    /// (decision 33), and its warnings ([`crate::warnings`]: none for a document the gate
+    /// refused, which has no model to find them in): a `check` request's `model` and `fresh`,
     /// as the wire reads them (`CheckRequest::model`).
     ///
     /// The current revision's: the gate's problems, if it refused the document, or, from the
@@ -729,10 +730,10 @@ impl<P: Clients + 'static> Sessions<P> {
                 ModelChoice::Published,
                 move |read| {
                     let _span = tracing::info_span!("check").entered();
-                    Ok(CheckAnswer::of(super::check_except(
+                    Ok(CheckAnswer::of(
+                        super::check_except(read.model(), read.reached()),
                         read.model(),
-                        read.reached(),
-                    )))
+                    ))
                 },
             ),
         }
@@ -777,12 +778,12 @@ impl<P: Clients + 'static> Sessions<P> {
                     *model = Some(current.read);
                     let fresh = reads == recompute::Reads::Nothing;
                     let _span = tracing::info_span!("check", fresh).entered();
-                    Ok(CheckAnswer::of(super::check_except(
+                    Ok(CheckAnswer::of(
+                        super::check_except(&current.model, current.reached.get()),
                         &current.model,
-                        current.reached.get(),
-                    )))
+                    ))
                 }
-                Err(Unbuilt::Gated(problems)) => Ok(CheckAnswer::of(problems)),
+                Err(Unbuilt::Gated(problems)) => Ok(CheckAnswer::refused(problems)),
                 Err(Unbuilt::Unavailable(problems)) => Err(problems),
             },
         )

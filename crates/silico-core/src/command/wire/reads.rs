@@ -137,7 +137,7 @@ impl ToWire for CheckAnswer {
     /// The problems, the first 100 and how many, and the warnings, likewise.
     fn to_wire(&self) -> Json<'_> {
         let (problems, problems_total) = problems(&self.problems);
-        let (warnings, warnings_total) = super::problems(&self.warnings);
+        let (warnings, warnings_total) = super::warnings(&self.warnings);
         Json::object([
             ("problems", problems),
             ("problems_total", problems_total),

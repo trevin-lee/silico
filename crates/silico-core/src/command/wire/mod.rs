@@ -51,7 +51,8 @@ use crate::document::write::{self, Out, text};
 use crate::document::{
     Angle, Coordinate, Feature, FeatureId, Length, Measure, NumberError, PROBLEMS_LISTED, Position,
 };
-use crate::{Error, ErrorCode};
+use crate::warnings::Warnings;
+use crate::{Error, ErrorCode, Warning};
 
 pub use crate::document::write::{Layout, TooLong};
 
@@ -369,23 +370,88 @@ impl ToWire for Error {
 
 /// `error` in the error contract's shape, `suggestion` its suggestion.
 fn error_with<'a>(error: &'a Error, suggestion: Json<'a>) -> Json<'a> {
-    Json::object([
-        ("code", Json::str(error.code().as_str())),
-        ("message", Json::str(error.message())),
-        ("feature", Json::or_null(error.feature(), Json::str)),
-        (
-            "elements",
-            Json::array(error.elements().iter().map(|e| Json::str(e))),
+    Said {
+        code: error.code().as_str(),
+        message: error.message(),
+        feature: error.feature(),
+        elements: error.elements(),
+        elements_total: error.elements_total(),
+        parameter: error.parameter(),
+        cause: error.cause(),
+        suggestion,
+        candidates: error.candidates(),
+    }
+    .to_wire()
+}
+
+impl ToWire for Warning {
+    /// The error contract's shape, as an error's, its code a warning's (decision 17).
+    fn to_wire(&self) -> Json<'_> {
+        Said {
+            code: self.code().as_str(),
+            message: self.message(),
+            feature: self.feature(),
+            elements: self.elements(),
+            elements_total: self.elements_total(),
+            parameter: self.parameter(),
+            cause: self.cause(),
+            suggestion: Json::or_null(self.suggestion(), Json::str),
+            candidates: self.candidates(),
+        }
+        .to_wire()
+    }
+}
+
+/// What an error or a warning says, field for field, as the error contract writes it.
+struct Said<'a> {
+    code: &'static str,
+    message: &'a str,
+    feature: Option<&'a str>,
+    elements: &'a [String],
+    elements_total: u64,
+    parameter: Option<&'a str>,
+    cause: Option<&'a str>,
+    suggestion: Json<'a>,
+    candidates: &'a [String],
+}
+
+impl<'a> Said<'a> {
+    /// The error contract's shape (`tests/contract/error-full.json`), in its order.
+    fn to_wire(self) -> Json<'a> {
+        Json::object([
+            ("code", Json::str(self.code)),
+            ("message", Json::str(self.message)),
+            ("feature", Json::or_null(self.feature, Json::str)),
+            (
+                "elements",
+                Json::array(self.elements.iter().map(|e| Json::str(e))),
+            ),
+            ("elements_total", Json::whole(self.elements_total)),
+            ("parameter", Json::or_null(self.parameter, Json::str)),
+            ("cause", Json::or_null(self.cause, Json::str)),
+            ("suggestion", self.suggestion),
+            (
+                "candidates",
+                Json::array(self.candidates.iter().map(|c| Json::str(c))),
+            ),
+        ])
+    }
+}
+
+/// A list of warnings as `check`'s result writes them: the first [`PROBLEMS_LISTED`], in the
+/// error contract's shape, and how many there are, listed or not (`warnings` and
+/// `warnings_total`).
+pub fn warnings(warnings: &Warnings) -> (Json<'_>, Json<'_>) {
+    (
+        Json::array(
+            warnings
+                .listed()
+                .iter()
+                .take(PROBLEMS_LISTED)
+                .map(ToWire::to_wire),
         ),
-        ("elements_total", Json::whole(error.elements_total())),
-        ("parameter", Json::or_null(error.parameter(), Json::str)),
-        ("cause", Json::or_null(error.cause(), Json::str)),
-        ("suggestion", suggestion),
-        (
-            "candidates",
-            Json::array(error.candidates().iter().map(|c| Json::str(c))),
-        ),
-    ])
+        Json::whole(warnings.total()),
+    )
 }
 
 /// A list of problems as a result or the envelope writes them: the first
