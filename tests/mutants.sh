@@ -57,10 +57,14 @@ sketch_wall_clock=(
 # intervals), each bounded by its wall clock (10 s and 30 s, under the worker's 60 s timeout): what
 # they alone test is OCCT's, that the measure finishes and gives its known values; Silico's
 # measure path, which they run, is tested by every other measure test. Named with their
-# modules, as all_geometry's tests are.
+# modules, as all_geometry's tests are. And the 300 mm sphere and torus exported at 0.01,
+# 22 s of meshing unloaded and minutes on a starved shard: what they alone test is that the
+# export holds a sphere's seam and a large torus to the tolerance at the finest one; the
+# rule itself, at every other scale and tolerance, the round-primitives test holds.
 kernel_wall_clock=(
   adversarial_revolution_measures::a_bspline_meridian_of_many_spans_turned_measures_as_pappus
   adversarial_measure_refine_u::a_rough_bspline_face_of_a_thousand_spans_trimmed_to_a_triangle_measures_in_time
+  adversarial_export::the_largest_sphere_and_torus_at_the_finest_tolerance_are_exported_within_it
 )
 # The render worker's scale tests, left out: each holds GiBs (.config/nextest.toml's render
 # group), which every shard at once would. Their mutants are in silico-render, where its

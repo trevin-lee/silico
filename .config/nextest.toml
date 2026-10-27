@@ -41,6 +41,12 @@ filter = 'package(silico-core) & test(/_promptly$|size_or_memory_limits|opens_ex
 test-group = 'document-heavy'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
+# The 300 mm sphere and torus exported at 0.01 (silico-kernel adversarial_export): 22 s of
+# meshing unloaded, each request held to 10 minutes of its own.
+[[profile.default.overrides]]
+filter = 'package(silico-kernel) & test(=adversarial_export::the_largest_sphere_and_torus_at_the_finest_tolerance_are_exported_within_it)'
+slow-timeout = { period = "60s", terminate-after = 10 }
+
 # The fake kernel compared with the real one over 2,000 generated primitives: a minute
 # alone, longer on a loaded machine.
 [[profile.default.overrides]]
