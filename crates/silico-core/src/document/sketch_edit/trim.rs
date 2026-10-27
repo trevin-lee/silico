@@ -90,7 +90,36 @@ pub fn trim(
         return Err(no_member(curve, kind, "curve"));
     };
     let cuts = cuts(sketch, curve, &geo);
-    let picked = geo.along(geo.project(pick));
+    let picked = match &geo {
+        // A round's pick is taken at its own angle, however far out (a projection's
+        // distance can overflow); its centre is at none.
+        Geo::Arc { center, .. } | Geo::Circle { center, .. } if pick == *center => {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                format!(
+                    "the pick is at {} {curve}'s centre, on no part of it",
+                    kind.noun()
+                ),
+            )
+            .with_elements([curve.to_string()])
+            .with_parameter("pick")
+            .with_suggestion("give a position on the part of the curve to trim away"));
+        }
+        Geo::Arc { .. } | Geo::Circle { .. } => geo.along(pick),
+        Geo::Line { .. } => geo.along(geo.project(pick)),
+    };
+    if !picked.is_finite() {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "the pick is too far from {} {curve} to place on it",
+                kind.noun()
+            ),
+        )
+        .with_elements([curve.to_string()])
+        .with_parameter("pick")
+        .with_suggestion("give a position on the part of the curve to trim away"));
+    }
     let Some(layout) = Layout::of(&geo, &cuts, picked) else {
         // Removed whole: a curve `remove` never refuses.
         new_ids(
@@ -116,15 +145,9 @@ pub fn trim(
     // takes over.
     let mut joins: Vec<Join> = Vec::new();
     for (cut, side) in layout.cuts() {
-        let shared = cut.end.as_ref().filter(|end| {
-            sketch.constraints.iter().any(|c| match &c.form {
-                Form::On { point, curve: on } => point.element() == Some(end) && *on == curve_ref,
-                Form::TangentOn { a, at, b, .. } => {
-                    a.element() == Some(&cut.cutter) && at.element() == Some(end) && *b == curve_ref
-                }
-                _ => false,
-            })
-        });
+        let shared = cut.end.as_ref().filter(|_| cut.held);
+        // A cutter's tangency joins one end only: a cutter drawn crossing twice holds the
+        // other with an on.
         let tangent = sketch
             .constraints
             .iter()
@@ -135,7 +158,9 @@ pub fn trim(
                 }
                 _ => false,
             })
-            .filter(|_| shared.is_none())
+            .filter(|c| {
+                shared.is_none() && !joins.iter().any(|j| j.tangent.as_ref() == Some(&c.id))
+            })
             .map(|c| c.id.clone());
         joins.push(Join {
             cut: cut.clone(),
@@ -688,6 +713,17 @@ struct Cut {
     along: f64,
     cutter: ElementId,
     end: Option<ElementId>,
+    /// Whether a constraint holds that end on the curve (an `on`, or the cutter's
+    /// `tangent_on`), so the new end shares it (decision 5).
+    held: bool,
+}
+
+impl Cut {
+    /// How the trim ranks the cuts at one place: a held end, which the new end shares,
+    /// before any other.
+    fn rank(&self) -> bool {
+        !self.held
+    }
 }
 
 /// Which side of the pick a cut is on, along the curve: the piece before it ends there; the
@@ -711,7 +747,23 @@ struct Join {
 /// contacts, and ends on it, at most one of each cutter within 1e-7 mm (its end kept, which
 /// may be shared), none within 1e-7 mm of the curve's own ends.
 fn cuts(sketch: &Sketch, curve: &ElementId, geo: &Geo) -> Vec<Cut> {
-    let own_ends = geo.ends();
+    // The curve's own ends, as stored and on its carrier (an arc's end the solve left off its
+    // circle is at its angle there too).
+    let own_ends: Vec<[f64; 2]> = geo
+        .ends()
+        .into_iter()
+        .flat_map(|end| [end, geo.project(end)])
+        .collect();
+    let curve_ref = Reference::Element(curve.clone());
+    let held = |cutter: &ElementId, end: &ElementId| {
+        sketch.constraints.iter().any(|c| match &c.form {
+            Form::On { point, curve } => point.element() == Some(end) && *curve == curve_ref,
+            Form::TangentOn { a, at, b, .. } => {
+                a.element() == Some(cutter) && at.element() == Some(end) && *b == curve_ref
+            }
+            _ => false,
+        })
+    };
     let mut cuts: Vec<Cut> = Vec::new();
     let others = super::curves(sketch);
     for (_, cutter, _) in others.iter().filter(|(_, id, _)| *id != curve) {
@@ -725,11 +777,12 @@ fn cuts(sketch: &Sketch, curve: &ElementId, geo: &Geo) -> Vec<Cut> {
                 continue;
             };
             let at = geo.project(xy);
-            if distance(at, xy) <= LENGTH_TOLERANCE && geo.spans(at) {
+            if geo.off(xy) <= LENGTH_TOLERANCE && geo.spans(at) {
                 found.push(Cut {
                     at,
                     along: geo.along(at),
                     cutter: (*cutter).clone(),
+                    held: held(cutter, &end),
                     end: Some(end),
                 });
             }
@@ -745,6 +798,7 @@ fn cuts(sketch: &Sketch, curve: &ElementId, geo: &Geo) -> Vec<Cut> {
                         along: geo.along(at),
                         cutter: (*cutter).clone(),
                         end: None,
+                        held: false,
                     });
                 }
             }
@@ -948,6 +1002,17 @@ impl Geo {
         }
     }
 
+    /// How far `point` is from the carrier: from the line through a line's ends, from a
+    /// round's circle (a round's centre is a radius away).
+    fn off(&self, point: [f64; 2]) -> f64 {
+        match self {
+            Geo::Line { from, to } => distance(project_on_line(*from, *to, point), point),
+            Geo::Arc { center, radius, .. } | Geo::Circle { center, radius } => {
+                (distance(*center, point) - radius).abs()
+            }
+        }
+    }
+
     /// How far along the curve a point on its carrier is: a line's fraction from `from`;
     /// a round's angle, an arc's from its start angle, in [start, start + a turn), a
     /// circle's in [0, a turn).
@@ -997,22 +1062,39 @@ enum Layout {
 impl Layout {
     fn of(geo: &Geo, cuts: &[Cut], picked: f64) -> Option<Layout> {
         if let Geo::Circle { .. } = geo {
+            // A cut at the pick is behind it: the part removed runs counter-clockwise from
+            // the pick, as FreeCAD's (1.1.3, a circle picked at its cut).
             let behind = |c: &Cut| (picked - c.along).rem_euclid(TAU);
-            let ahead = |c: &Cut| (c.along - picked).rem_euclid(TAU);
+            let ahead = |c: &Cut| match (c.along - picked).rem_euclid(TAU) {
+                0.0 => TAU,
+                ahead => ahead,
+            };
             let nearest = |key: &dyn Fn(&Cut) -> f64| {
                 cuts.iter()
                     .min_by(|a, b| key(a).partial_cmp(&key(b)).unwrap_or(Ordering::Equal))
                     .cloned()
             };
-            let (before, after) = (nearest(&behind)?, nearest(&ahead)?);
+            let (before, after) = (
+                best_at(cuts, &nearest(&behind)?),
+                best_at(cuts, &nearest(&ahead)?),
+            );
             // A circle with fewer than two distinct cuts goes whole (`testTrimCircleEnd`).
             if distance(before.at, after.at) <= LENGTH_TOLERANCE {
                 return None;
             }
             return Some(Layout::Closed { before, after });
         }
-        let before = cuts.iter().rev().find(|c| c.along <= picked).cloned();
-        let after = cuts.iter().find(|c| c.along > picked).cloned();
+        // A cut at the pick is none, as FreeCAD's (1.1.3: picked at a line's cut, the trim
+        // runs on to the next either side).
+        let before = cuts
+            .iter()
+            .rev()
+            .find(|c| c.along < picked)
+            .map(|c| best_at(cuts, c));
+        let after = cuts
+            .iter()
+            .find(|c| c.along > picked)
+            .map(|c| best_at(cuts, c));
         match (&before, &after) {
             (None, None) => None,
             (Some(b), Some(a)) if distance(b.at, a.at) <= LENGTH_TOLERANCE => None,
@@ -1056,6 +1138,22 @@ impl Layout {
     fn keeps_end(&self) -> bool {
         matches!(self, Layout::Open { after: Some(_), .. })
     }
+}
+
+/// Of the cuts within 1e-7 mm of `cut`, the nearest nearest-ranked ([`Cut::rank`]): `cut`
+/// itself, unless one there is a held end and it isn't.
+fn best_at(cuts: &[Cut], cut: &Cut) -> Cut {
+    cuts.iter()
+        .filter(|c| distance(c.at, cut.at) <= LENGTH_TOLERANCE)
+        .min_by(|a, b| {
+            a.rank().cmp(&b.rank()).then_with(|| {
+                distance(a.at, cut.at)
+                    .partial_cmp(&distance(b.at, cut.at))
+                    .unwrap_or(Ordering::Equal)
+            })
+        })
+        .unwrap_or(cut)
+        .clone()
 }
 
 /// Which piece a point of the trimmed curve's carrier lands on.

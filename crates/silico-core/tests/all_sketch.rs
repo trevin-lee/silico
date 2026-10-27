@@ -32,6 +32,8 @@ mod adversarial_sketch_features;
 mod adversarial_sketch_solve;
 #[path = "adversarial_sketch_split.rs"]
 mod adversarial_sketch_split;
+#[path = "adversarial_sketch_trim.rs"]
+mod adversarial_sketch_trim;
 #[path = "adversarial_stored_coordinates.rs"]
 mod adversarial_stored_coordinates;
 #[path = "sketch.rs"]

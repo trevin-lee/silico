@@ -1102,3 +1102,61 @@ fn a_member_that_isnt_a_curve_a_pick_not_finite_and_bad_ids_are_refused() {
     );
     assert_eq!(sketch, sketch_of(&before));
 }
+
+#[test]
+fn a_pick_exactly_at_a_lines_cut_trims_on_to_the_next_either_side_as_freecad_does() {
+    // FreeCAD 1.1.3 (break-it's probe): cutters at 8 and 24 on a from 0 to 32; picked at 8,
+    // the cut there is none, so 0 to 24 goes; picked at 24, 8 to 32 does.
+    let (mut points, d) = upright('d', 8.0);
+    let (more, e) = upright('e', 24.0);
+    points.extend(more);
+    let before = a_line(&points, &[d, e], "", "");
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [8.0, 0.0],
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(at(&sketch, "n0000000"), (24.0, 0.0, false));
+    assert_eq!(
+        ends(&sketch, "a0000000"),
+        ("n0000000".to_owned(), "p0000004".to_owned())
+    );
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000000", "e0000000"));
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [24.0, 0.0],
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(at(&sketch, "n0000000"), (8.0, 0.0, false));
+    assert_eq!(
+        ends(&sketch, "a0000000"),
+        ("p0000000".to_owned(), "n0000000".to_owned())
+    );
+}
+
+#[test]
+fn a_pick_at_a_rounds_centre_is_refused_naming_the_pick() {
+    // FreeCAD 1.1.3 throws there; a centre is on no part of the circle.
+    let before = doc(
+        &point("z0000000", 1.0, 2.0),
+        "",
+        &circle("c0000000", "z0000000", 3.0),
+        "",
+        "",
+    );
+    let error = trim(sketch_of(&before), &id("c0000000"), [1.0, 2.0], &[]).unwrap_err();
+    assert_eq!(
+        said(&error),
+        (
+            "the pick is at circle c0000000's centre, on no part of it",
+            Some("pick"),
+            vec!["c0000000"]
+        )
+    );
+}
