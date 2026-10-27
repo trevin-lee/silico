@@ -491,6 +491,10 @@ fn a_refused_angles_suggestion_says_how_to_write_it() {
             "9223372036.854775808",
             "an angle is at most 9223372036.854775807 degrees either way",
         ),
+        (
+            "-9223372036.854775808",
+            "an angle is at most 9223372036.854775807 degrees either way",
+        ),
         ("-0", "write 0"),
     ] {
         let error = read_error(&angle(value));
@@ -654,7 +658,7 @@ fn ranges_hold_exactly_at_their_edges() {
         ("angle", "360.000000001", false),
         ("angle", "-360.000000001", false),
         ("angle", "9223372036.854775807", false),
-        ("angle", "-9223372036.854775808", false),
+        ("angle", "-9223372036.854775807", false),
     ] {
         assert_eq!(dimension(form, value), ok, "{form} {value}");
     }
@@ -1365,10 +1369,12 @@ mod constructed {
         .prop_filter_map("finite", Coordinate::new)
     }
 
+    /// Any length or angle a document holds, in nanometres or nanodegrees: at most i64::MAX
+    /// either way (i64::MIN, which only code can make, the reader refuses).
     fn i64_edge() -> impl Strategy<Value = i64> {
         prop_oneof![
-            any::<i64>(),
-            prop::sample::select(vec![i64::MIN, i64::MIN + 1, -1, 0, 1, i64::MAX]),
+            any::<i64>().prop_filter("at most i64::MAX either way", |&n| n != i64::MIN),
+            prop::sample::select(vec![-i64::MAX, -1, 0, 1, i64::MAX]),
         ]
     }
 
