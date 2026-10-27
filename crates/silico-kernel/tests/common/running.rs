@@ -1,6 +1,7 @@
 //! A worker that says when it has a request, for tests that must act on a request only once
 //! it's running: one superseded before then is dropped unrun, and never reaches a worker.
 
+use crate::wait::WAIT;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -32,7 +33,7 @@ pub fn submit_running<T: Send + 'static>(
 ) -> Pending<T> {
     let _ = std::fs::remove_file(marker);
     let pending = span.in_scope(|| pool.submit(pool.generation(), request));
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + WAIT;
     while !marker.exists() {
         assert!(
             Instant::now() < deadline,

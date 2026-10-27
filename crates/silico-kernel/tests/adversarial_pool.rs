@@ -15,7 +15,10 @@ mod launches;
 mod pool;
 #[path = "common/process.rs"]
 mod process;
+#[path = "common/wait.rs"]
+mod wait;
 
+use crate::wait::WAIT;
 use std::collections::BTreeSet;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
@@ -745,7 +748,7 @@ fn dropping_pools_leaks_no_threads() {
     for _ in 0..20 {
         drop(pool(TEST_WORKER, 1));
     }
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + WAIT;
     while threads() > before && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -773,7 +776,7 @@ fn replacing_workers_leaks_no_threads_descriptors_or_processes() {
     }
     let pids = wait_full(&pool, 1, &BTreeSet::new());
     // The old workers' reader threads end when their sockets close; give them a moment.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + WAIT;
     while (open_fds() > fds || threads() > threads_before) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -823,7 +826,7 @@ fn not_allowed(
     pids: &[u32],
     allowed: impl Fn(&Descriptor, Option<&String>) -> bool,
 ) -> Vec<Descriptor> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + WAIT;
     let open = loop {
         let open = sockets_and_pipes(pids);
         let listed = pids
@@ -906,7 +909,7 @@ fn start_within(exe: &Path, size: usize) -> KernelPool {
     std::thread::spawn(move || {
         let _ = tx.send(KernelPool::start_workers(&exe, size));
     });
-    match rx.recv_timeout(Duration::from_secs(10)) {
+    match rx.recv_timeout(WAIT) {
         Ok(pool) => pool.unwrap(),
         Err(_) => panic!("starting a pool of {size} workers hung"),
     }
@@ -929,7 +932,7 @@ fn running_workers_hold_only_their_own_descriptors() {
     for round in 0..40 {
         let pool = start_within(Path::new(WORKER), size);
         let pids = pool.pids();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + WAIT;
         loop {
             let extra = not_allowed(round, &pids, |o, socket| {
                 o.fd == STDERR_FD
@@ -986,7 +989,7 @@ fn running_workers_close_what_the_app_left_open() {
     }
     let pool = start_within(Path::new(WORKER), 2);
     let pids = pool.pids();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + WAIT;
     loop {
         let kept: Vec<_> = sockets_and_pipes(&pids)
             .into_iter()
@@ -2248,7 +2251,7 @@ fn drop_within(pool: KernelPool, within: Duration, fifo: &Path) -> bool {
     if !in_time {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let feeder = feed_fifo(fifo.to_owned(), std::sync::Arc::clone(&stop));
-        let _ = dropped.recv_timeout(Duration::from_secs(30));
+        let _ = dropped.recv_timeout(WAIT);
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         feeder.join().unwrap();
     }
@@ -2758,7 +2761,7 @@ fn a_clients_submits_racing_its_pools_drop_leave_no_worker_or_thread_behind() {
         });
         drop(client);
         // `ps` can list a thread an instant after it's joined.
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + WAIT;
         while threads() > before && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
