@@ -485,7 +485,7 @@ fn serve_without_a_kernel_worker_doesnt_start_and_says_where_it_looked() {
     assert_eq!(code, Some(2), "{stderr}");
     assert_eq!(stdout, "", "no handshake");
     let said = format!(
-        "silico serve: there's no kernel worker, so nothing can be built: worker_unavailable: no kernel worker in {}: Silico looks for silico-kernel-worker beside its own executable, {}",
+        "silico serve: there's no kernel worker it can use, so nothing can be built: worker_unavailable: no kernel worker in {}: Silico looks for silico-kernel-worker beside its own executable, {}",
         bin.display(),
         bin.join("silico").display()
     );
@@ -510,7 +510,7 @@ fn serve_with_a_kernel_worker_variable_naming_nothing_doesnt_start() {
     assert_eq!(stdout, "", "no handshake");
     assert!(
         stderr.starts_with(
-            "silico serve: there's no kernel worker, so nothing can be built: worker_unavailable: SILICO_KERNEL_WORKER names \"/nowhere\", which isn't a file"
+            "silico serve: there's no kernel worker it can use, so nothing can be built: worker_unavailable: SILICO_KERNEL_WORKER names \"/nowhere\", which isn't a file"
         ),
         "{stderr}"
     );
@@ -608,4 +608,28 @@ fn serve_with_only_a_kernel_worker_warns_of_each_missing_one_and_serves() {
     );
     drop(stdin);
     assert_eq!(exited(child).code(), Some(0));
+}
+
+#[test]
+fn serve_with_a_kernel_worker_it_cant_read_doesnt_start() {
+    // A worker there that can't be read is no worker it can use: refused as one missing.
+    let root = tempfile::tempdir().unwrap();
+    let bin = install(root.path(), &[]);
+    let worker = bin.join("silico-kernel-worker");
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_BIN_EXE_silico")).with_file_name("silico-kernel-worker"),
+        &worker,
+    )
+    .unwrap();
+    std::fs::set_permissions(&worker, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+    let workspace = root.path().join("models");
+    std::fs::create_dir(&workspace).unwrap();
+    let (code, stdout, stderr) = refused_start(serve_command(&bin.join("silico"), &workspace));
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(stdout, "", "no handshake");
+    let said = format!(
+        "silico serve: there's no kernel worker it can use, so nothing can be built: worker_unavailable: couldn't read the kernel worker {}",
+        worker.display()
+    );
+    assert!(stderr.starts_with(&said), "{said}\nin {stderr}");
 }

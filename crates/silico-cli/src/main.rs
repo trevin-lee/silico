@@ -335,7 +335,7 @@ fn serve(workspace: Option<&Path>) -> Ended {
     // and the rest work: each is said here, and the server runs.
     let pool = KernelPool::start();
     if let Some(why) = pool.refused() {
-        say!("silico serve: there's no kernel worker, so nothing can be built: {why}");
+        say!("silico serve: there's no kernel worker it can use, so nothing can be built: {why}");
         return Ended::Failed;
     }
     if let Err(e) = silico_core::sketch::worker_path() {
