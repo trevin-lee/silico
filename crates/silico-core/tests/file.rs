@@ -439,7 +439,7 @@ fn devices_entry() {
     );
     // Said only past every check, so the run outside can tell it from the early return; on
     // stderr, since on stdout it would split libtest's own "test devices_entry ... ok".
-    eprintln!("devices checked");
+    let _ = std::io::Write::write_all(&mut std::io::stderr(), b"devices checked\n");
 }
 
 #[cfg(target_os = "linux")]
