@@ -36,7 +36,10 @@
 //!   measured, none for a sketch, which holds none, and none for a feature an open
 //!   transaction's edits reached, whose commit writes it (decision 28); but once a feature
 //!   carried from a commit that couldn't write its record has built, outside a transaction,
-//!   where `format` writes it.
+//!   where `format` writes it. A published check of a model older than the session's
+//!   document says what the file stores: none for a feature whose fingerprint a save since
+//!   stored (one that wrote a sketch's solve, so didn't publish), and still one for a
+//!   feature the file stores none for.
 //! - The first 100 are listed and all counted; the order is by timeline, then code
 //!   (`ends_not_joined`, `constraints_redundant`, `fingerprint_missing`), then, for ends, by
 //!   cluster, by its least point ID.
@@ -1551,6 +1554,115 @@ fn a_feature_a_transaction_added_isnt_warned_of_in_a_published_check_after_a_com
     // publish it.
     assert_eq!(said(&published_check(&f, transactions)), only_k7);
     assert_eq!(said(&f.check()), only_k7);
+}
+
+/// Sketch s0000002 on xy, line na000001 from pa000001 at (0, 0) to pb000001 at (10, 0),
+/// for a solver that moves pa000001 ([`moving_pa000001`]).
+fn drawn() -> String {
+    sketch(
+        "s0000002",
+        &[point("pa000001", 0.0, 0.0), point("pb000001", 10.0, 0.0)],
+        &[line("na000001", "pa000001", "pb000001", false)],
+        &[],
+        "",
+    )
+}
+
+/// The fake solver answers every sketch with pa000001's x 0.25: values 0 to 5 are the
+/// origin's and the axes' ends, and 6 is pa000001's x. So a save of [`drawn`] writes its
+/// solve, and doesn't publish its own model (the saved document's rebuild solves from it).
+fn moving_pa000001(f: &Fixture) {
+    f.sketches.answer(|system| {
+        let mut solved = FakeSketches::as_sent(system);
+        solved.values[6] = 0.25;
+        Ok(solved)
+    });
+}
+
+#[test]
+fn a_feature_format_fingerprinted_isnt_warned_of_in_a_published_check_after_a_format_that_doesnt_publish()
+ {
+    // Found by #189's architecture review (L3): k7f2qx3m, saved with no fingerprint, beside
+    // a sketch whose solve moves pa000001 to (0.25, 0). A check publishes the opened
+    // revision's model, warning of k7f2qx3m. format writes its fingerprint and the sketch's
+    // solve, so it doesn't publish its own model: the published model is still the opened
+    // revision's, whose document stores no fingerprint for k7f2qx3m. No transaction is open
+    // or was, but the file stores k7f2qx3m's fingerprint now, so the published check, which
+    // says what the file stores, doesn't warn of it, as the current check doesn't.
+    let f = opened(&document(&[block("k7f2qx3m", 0), drawn()]));
+    moving_pa000001(&f);
+    let opened_at = f.sessions.status(&s1()).session.unwrap().revision;
+    let only_k7 = [(
+        WarningCode::FingerprintMissing,
+        "k7f2qx3m".to_owned(),
+        vec![],
+        None,
+    )];
+    let checked = f.check();
+    // The sketch solves away from what its file holds: drift (M3.4), a problem.
+    assert_eq!(checked.problems.total(), 1, "{:?}", checked.problems);
+    assert_eq!(checked.problems.errors()[0].code(), ErrorCode::Drift);
+    assert_eq!(checked.problems.errors()[0].feature(), Some("s0000002"));
+    assert_eq!(said(&checked), only_k7);
+    assert_eq!(said(&published_check(&f, opened_at)), only_k7);
+    let formatted = answer(f.sessions.format(&s1(), None, true)).result.unwrap();
+    assert!(formatted.written, "{formatted:?}");
+    assert_eq!(formatted.resolved, [id("s0000002")]);
+    assert_eq!(formatted.refingerprinted, [id("k7f2qx3m")]);
+    let session = f.sessions.status(&s1()).session.unwrap();
+    assert_ne!(session.revision, opened_at);
+    // Before any current check, which would wait for the formatted revision's model and
+    // publish it.
+    let published = published_check(&f, opened_at);
+    assert!(published.warnings.is_empty(), "{:?}", said(&published));
+    // The published model's own problems, as before: what's spared is only the warning.
+    assert_eq!(published.problems, checked.problems);
+    let checked = f.check();
+    assert!(
+        checked.problems.is_empty() && checked.warnings.is_empty(),
+        "{:?} {:?}",
+        checked.problems,
+        said(&checked)
+    );
+    assert!(published_check(&f, session.revision).warnings.is_empty());
+}
+
+#[test]
+fn a_carried_feature_an_edits_commit_fingerprinted_isnt_warned_of_in_a_published_check_but_one_still_missing_is()
+ {
+    // Found by #189's architecture review (L3), for an edit's commit: m0000002 is carried
+    // and built ([`carried_and_built`]), and the published model, the fresh check's, warns
+    // of it and of k7f2qx3m. Outside a transaction, sketch s0000002 is added, whose solve
+    // moves pa000001: its commit reaches the sketch and what's carried (decision 28), so it
+    // writes the sketch's solve and m0000002's fingerprint, and doesn't publish its own
+    // model. The published model is still the fresh check's. The file stores m0000002's
+    // fingerprint now, so the published check spares it; k7f2qx3m, which the edit didn't
+    // reach, still has none in the file, and is warned of, as the current check says.
+    let (f, [k7, m2]) = carried_and_built();
+    let before = f.sessions.status(&s1()).session.unwrap().revision;
+    assert_eq!(said(&published_check(&f, before)), [k7.clone(), m2]);
+    moving_pa000001(&f);
+    let added: Node = silico_core::document::json::read(drawn().as_bytes()).unwrap();
+    let added = answer(f.sessions.add_feature(&s1(), before, added))
+        .result
+        .unwrap();
+    let committed = added.commit.unwrap();
+    assert!(committed.written, "{committed:?}");
+    assert_eq!(committed.resolved, [id("s0000002")]);
+    assert_eq!(committed.refingerprinted, [id("m0000002")]);
+    let session = f.sessions.status(&s1()).session.unwrap();
+    assert!(!session.transaction);
+    assert_ne!(session.revision, before);
+    // Before any current check, which would publish the edit's revision's model.
+    assert_eq!(
+        said(&published_check(&f, before)),
+        std::slice::from_ref(&k7)
+    );
+    assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
+    assert_eq!(
+        said(&published_check(&f, session.revision)),
+        std::slice::from_ref(&k7)
+    );
 }
 
 #[test]

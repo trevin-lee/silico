@@ -48,6 +48,9 @@
 //!   fingerprint, and `format` is refused there. Outside a transaction a feature carried
 //!   from a save that couldn't write its record (it failed, or the kernel faulted) and has
 //!   built since is warned of: nothing writes it until the next save, and `format` can.
+//!   Judged by what the file stores: a model older than its session's document (the newest
+//!   published, after a save that wrote a sketch's solve and so didn't publish) doesn't warn
+//!   of a feature that document stores a fingerprint for now.
 //!
 //! **Order:** by timeline (the document's features, in order), then by code, in
 //! [`WarningCode`]'s order (`ends_not_joined`, `constraints_redundant`,
@@ -127,9 +130,10 @@ impl Warnings {
 }
 
 /// `model`'s warnings, in order (the module's *Order*): none of a missing fingerprint for a
-/// feature in `committing`, the features an open transaction's edits reached, whose commit
-/// writes their fingerprints (decision 28).
-pub fn of(model: &Model, committing: &BTreeSet<FeatureId>) -> Warnings {
+/// feature in `spared`: the features an open transaction's edits reached, whose commit
+/// writes their fingerprints (decision 28), and, for a model older than its session's
+/// document, those that document stores a fingerprint for now.
+pub fn of(model: &Model, spared: &BTreeSet<FeatureId>) -> Warnings {
     let _span = tracing::info_span!("warnings").entered();
     let mut warnings = Warnings::none();
     // The model's features are its document's, in order.
@@ -139,7 +143,7 @@ pub fn of(model: &Model, committing: &BTreeSet<FeatureId>) -> Warnings {
                 ends_not_joined(&feature.id, sketch, solution, &mut warnings);
                 constraints_redundant(&feature.id, solution, &mut warnings);
             }
-            (_, FeatureOutcome::Built { built, .. }) if !committing.contains(&feature.id) => {
+            (_, FeatureOutcome::Built { built, .. }) if !spared.contains(&feature.id) => {
                 fingerprint_missing(feature, built, &mut warnings);
             }
             _ => {}

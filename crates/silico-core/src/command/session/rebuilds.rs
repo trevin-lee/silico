@@ -593,8 +593,9 @@ impl<C: Kernel + 'static> Session<C> {
     /// revision's document (the model's revision says it's an older one's; the gate's problems
     /// are `check`'s); with none, the gate's (or the reader's) problems for a document it
     /// refused, starting nothing. With the model, the session as a check of it finds it
-    /// ([`Checking`]): the session's revision and whether a transaction is open, as the lock
-    /// that gave `revision` held them, before the model was taken (never newer).
+    /// ([`Checking`]): the session's revision, its document, and whether a transaction is
+    /// open, as the lock that gave `revision` held them, before the model was taken (never
+    /// newer).
     pub(super) fn published_now(
         self: &Arc<Self>,
     ) -> (Option<SessionInfo>, Result<(Published, Checking), Unbuilt>) {
@@ -626,7 +627,7 @@ impl<C: Kernel + 'static> Session<C> {
                 .ok_or_else(|| Unbuilt::Gated(refused.problems())),
         };
         let read = read.map(|published| {
-            let checking = Checking::of(open, revision, published.revision);
+            let checking = Checking::of(open, revision, &gated, published.revision);
             (published, checking)
         });
         (Some(info), read)
