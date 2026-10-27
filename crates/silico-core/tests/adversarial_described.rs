@@ -614,6 +614,43 @@ fn a_solids_batches_are_sent_four_at_a_time_and_joined_in_order() {
     );
 }
 
+#[test]
+fn a_solids_batches_share_its_bytes_with_each_other_and_the_model() {
+    // From M4's review: each batch's request held a copy of the solid's bytes, so four in
+    // flight for each of 64 recompute jobs held 256 copies. A request now shares them:
+    // the nine batches of 256 fused boxes name one allocation, the model's own.
+    let engine = Recompute::new(FakeKernel::new(8).unwrap());
+    let model = match engine.start(checked(&fused_tree(8))).wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(model))) => model,
+        Ok(other) => panic!("not published: {other:?}"),
+        Err(_) => panic!("the recompute didn't finish in {WAIT:?}"),
+    };
+    let (_, tree) = built(&model, "t8000000");
+    let held: std::collections::BTreeSet<usize> = engine
+        .kernel()
+        .asked()
+        .iter()
+        .filter(|call| describes_the_tree(&call.op))
+        .map(|call| match &call.op {
+            Op::Describe { shape, .. } => shape.brep().as_bytes().as_ptr() as usize,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    let batches = engine
+        .kernel()
+        .asked()
+        .iter()
+        .filter(|call| describes_the_tree(&call.op))
+        .count();
+    assert_eq!(batches, 9);
+    assert_eq!(
+        held,
+        [tree.shape.brep().as_bytes().as_ptr() as usize].into(),
+        "{batches} batches held {} allocations",
+        held.len()
+    );
+}
+
 // ---------------------------------------------------------------------------------------
 // Superseded and cancelled while a solid is half described.
 

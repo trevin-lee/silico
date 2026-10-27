@@ -566,7 +566,7 @@ fn highlighted(model: &Model, bodies: &[Body], highlight: &[String]) -> Result<V
             continue;
         };
         // A solid the lookup finds is one of the bodies that built, which are drawn.
-        match places.get(feature) {
+        match places.get(feature, |place| bodies.get(place).map(|b| b.id)) {
             Some(body) => lit.push(Lit {
                 body,
                 kind: element.kind,
