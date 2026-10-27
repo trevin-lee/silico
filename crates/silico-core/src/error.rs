@@ -267,6 +267,55 @@ impl<C> Fields<C> {
     }
 }
 
+impl<C: Copy> Fields<C> {
+    /// What it says, every field of it the error contract writes.
+    fn said(&self) -> Said<'_, C> {
+        let Fields {
+            code,
+            message,
+            feature,
+            elements,
+            elements_total,
+            parameter,
+            cause,
+            suggestion,
+            candidates,
+            // What it was worded from, never written out.
+            worker: _,
+            advice: _,
+        } = self;
+        Said {
+            code: *code,
+            message,
+            feature: feature.as_deref(),
+            elements,
+            elements_total: *elements_total,
+            parameter: parameter.as_deref(),
+            cause: cause.as_deref(),
+            suggestion: suggestion.as_deref(),
+            candidates,
+        }
+    }
+}
+
+/// What an error or a warning says, every field the error contract writes
+/// (`tests/contract/error-full.json`), borrowed: built from the error's fields taken whole,
+/// and taken whole by each writer of the contract (the command API's, `check --json`'s), so
+/// a field added to an error is a field each of them must write, or it doesn't compile.
+#[derive(Debug, Clone, Copy)]
+pub struct Said<'a, C> {
+    pub code: C,
+    pub message: &'a str,
+    pub feature: Option<&'a str>,
+    pub elements: &'a [String],
+    /// How many elements are at fault, never fewer than `elements` names.
+    pub elements_total: u64,
+    pub parameter: Option<&'a str>,
+    pub cause: Option<&'a str>,
+    pub suggestion: Option<&'a str>,
+    pub candidates: &'a [String],
+}
+
 /// A kernel worker's failure, as data, and the operation it was for, from which the core
 /// worded an error.
 #[derive(Debug, Clone)]
@@ -439,6 +488,11 @@ impl Error {
 
     pub fn candidates(&self) -> &[String] {
         &self.0.candidates
+    }
+
+    /// What it says, every field the error contract writes.
+    pub fn said(&self) -> Said<'_, ErrorCode> {
+        self.0.said()
     }
 
     /// Logs the error at info, `what` before its message (`the step failed`), with its
@@ -620,6 +674,12 @@ impl Warning {
 
     pub fn suggestion(&self) -> Option<&str> {
         self.0.suggestion.as_deref()
+    }
+
+    /// What it says, every field the error contract writes (its candidates none: nothing's
+    /// broken for it to have meant).
+    pub fn said(&self) -> Said<'_, WarningCode> {
+        self.0.said()
     }
 }
 
