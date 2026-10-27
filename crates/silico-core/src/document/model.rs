@@ -52,22 +52,17 @@ impl Document {
 
     /// The feature whose ID is `id`; or, refused naming `feature`, why there's no one such
     /// feature: none has it, or (in a document the gate refused) more than one does.
+    ///
+    /// It scans the whole timeline, so it's for a document that may hold an ID twice (one
+    /// the gate hasn't passed, or refused). A holder of a [`Checked`](super::Checked) or a
+    /// [`Model`](crate::recompute::Model) finds a feature by their index instead
+    /// (`Checked::feature`, `Model::feature`), in logarithmic time.
     pub fn feature(&self, id: &FeatureId) -> Result<&Feature, crate::Error> {
-        let refused = |message: String, suggestion: &str| {
-            crate::Error::new(crate::ErrorCode::InvalidInput, message)
-                .with_parameter("feature")
-                .with_suggestion(suggestion)
-        };
         let mut found = self.features.iter().filter(|f| &f.id == id);
-        let first = found.next().ok_or_else(|| {
-            refused(
-                format!("the document has no feature {id}"),
-                "name a feature by its ID, as the document's outline lists them",
-            )
-        })?;
+        let first = found.next().ok_or_else(|| no_feature(id))?;
         match found.count() {
             0 => Ok(first),
-            more => Err(refused(
+            more => Err(feature_refused(
                 format!("{} features in the document have the ID {id}", more + 1),
                 "give each feature an ID of its own: the gate refuses an ID used twice",
             )),
@@ -155,10 +150,79 @@ impl JsonSchema for Units {
     }
 }
 
+/// The refusal of a request whose `feature` names no feature of the document.
+pub(crate) fn no_feature(id: &FeatureId) -> crate::Error {
+    feature_refused(
+        format!("the document has no feature {id}"),
+        "name a feature by its ID, as the document's outline lists them",
+    )
+}
+
+/// A request's `feature` refused: `message`, with `suggestion`.
+fn feature_refused(message: String, suggestion: &str) -> crate::Error {
+    crate::Error::new(crate::ErrorCode::InvalidInput, message)
+        .with_parameter("feature")
+        .with_suggestion(suggestion)
+}
+
 /// A feature's ID: 8 characters of Crockford's base32 in lower case, unique within the
 /// document. Other features refer to it by this.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+///
+/// Compared, ordered, and hashed as its text, exactly as derived; written out by hand only
+/// so a test can count every comparison of two IDs (`document::compared`, in test
+/// builds), wherever it's made.
+#[derive(Debug, Clone)]
 pub struct FeatureId(String);
+
+impl PartialEq for FeatureId {
+    fn eq(&self, other: &Self) -> bool {
+        #[cfg(test)]
+        count_comparison();
+        self.0 == other.0
+    }
+}
+
+impl Eq for FeatureId {}
+
+impl PartialOrd for FeatureId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for FeatureId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        #[cfg(test)]
+        count_comparison();
+        self.0.cmp(&other.0)
+    }
+}
+
+/// As its text hashes, so equal IDs hash alike.
+impl std::hash::Hash for FeatureId {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times two IDs have been compared on this thread.
+    static COMPARED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn count_comparison() {
+    COMPARED.with(|compared| compared.set(compared.get() + 1));
+}
+
+/// How many times two IDs have been compared on this thread so far, for equality or order,
+/// by anything (an index's search, a scan, a map's): a test's measure of a read's work
+/// that no clock moves, and that a scan put back can't get past.
+#[cfg(test)]
+pub(crate) fn compared() -> u64 {
+    COMPARED.with(std::cell::Cell::get)
+}
 
 /// The characters of an ID: Crockford's base32, lower case (no `i`, `l`, `o`, or `u`).
 pub const ID_ALPHABET: &str = "0123456789abcdefghjkmnpqrstvwxyz";
@@ -930,3 +994,28 @@ pub const FEATURE_TYPES: [&str; 15] = [
     "box", "cylinder", "sphere", "cone", "torus", "fuse", "cut", "common", "sketch", "fillet",
     "chamfer", "pad", "pocket", "revolve", "groove",
 ];
+
+#[cfg(test)]
+mod feature_id_tests {
+    use super::FeatureId;
+    use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+
+    /// What `value` hashes to under one fixed hasher.
+    fn hashed(value: &impl std::hash::Hash) -> u64 {
+        BuildHasherDefault::<DefaultHasher>::default().hash_one(value)
+    }
+
+    #[test]
+    fn an_id_hashes_compares_and_orders_as_its_text_does() {
+        // Exactly as derived: an ID is its text, so it hashes as the text does (two
+        // different IDs hash apart as their texts do), and compares and orders as it does.
+        let (a, b) = ("a0000001", "b0000002");
+        let (id_a, id_b) = (FeatureId(a.to_owned()), FeatureId(b.to_owned()));
+        assert_eq!(hashed(&id_a), hashed(&a.to_owned()));
+        assert_eq!(hashed(&id_b), hashed(&b.to_owned()));
+        assert_ne!(hashed(&id_a), hashed(&id_b));
+        assert_eq!(id_a.cmp(&id_b), a.cmp(b));
+        assert_eq!(id_b.partial_cmp(&id_a), Some(b.cmp(a)));
+        assert!(id_a == FeatureId(a.to_owned()) && id_a != id_b);
+    }
+}

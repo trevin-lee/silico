@@ -34,8 +34,7 @@ fn solved_axis<'a>(
     feature: &FeatureId,
     solution: &SketchSolution,
 ) -> Result<SolvedAxis<'a>, Error> {
-    let features = &document.document().features;
-    let found = document.document().feature(feature)?;
+    let found = document.feature(feature)?;
     let (Some(axis), Some(sketch)) = (found.operation.axis(), found.operation.sketch()) else {
         return Err(Error::new(
             ErrorCode::InvalidInput,
@@ -61,9 +60,9 @@ fn solved_axis<'a>(
         Axis::Line(line) => line,
     };
     // The gate has checked that the sketch is one, and the axis a line of it.
-    let line = features
-        .iter()
-        .find(|f| &f.id == sketch)
+    let line = document
+        .feature(sketch)
+        .ok()
         .and_then(|f| match &f.operation {
             Operation::Sketch(drawn) => drawn.lines.iter().find(|l| &l.id == line_id),
             _ => None,
@@ -348,11 +347,7 @@ pub fn check_axis(
             ));
         }
     }
-    let found = document
-        .document()
-        .features
-        .iter()
-        .find(|f| &f.id == feature);
+    let found = document.feature(feature).ok();
     let degrees = match found.and_then(|f| f.operation.extent()) {
         Some(crate::document::Extent::Turn(
             crate::document::TurnExtent::OneSide { angle, .. }
@@ -800,5 +795,155 @@ fn pieces(n: u32) -> String {
         2 => "two".to_owned(),
         3 => "three".to_owned(),
         n => n.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{compared, looked_up};
+
+    /// A document of `n` sketches on xz, `s0000000` on, each followed by its revolve,
+    /// `r0000000` on: the square from (1, 0) to (2, 1), turned a whole turn about the
+    /// construction line na000000 from (0, 0) to (0, 1).
+    fn revolves(n: usize) -> Checked {
+        let point = |id: &str, x: u32, y: u32| {
+            format!(r#"{{"id": "{id}", "x": {x}, "y": {y}, "construction": false}}"#)
+        };
+        let line = |id: &str, from: &str, to: &str, construction: bool| {
+            format!(
+                r#"{{"id": "{id}", "from": "{from}", "to": "{to}", "construction": {construction}}}"#
+            )
+        };
+        let points = [
+            point("pa000000", 0, 0),
+            point("pb000000", 0, 1),
+            point("pc000000", 1, 0),
+            point("pd000000", 2, 0),
+            point("pe000000", 2, 1),
+            point("pf000000", 1, 1),
+        ]
+        .join(", ");
+        let lines = [
+            line("na000000", "pa000000", "pb000000", true),
+            line("nb000000", "pc000000", "pd000000", false),
+            line("nc000000", "pd000000", "pe000000", false),
+            line("nd000000", "pe000000", "pf000000", false),
+            line("ne000000", "pf000000", "pc000000", false),
+        ]
+        .join(", ");
+        let features: Vec<String> = (0..n)
+            .flat_map(|i| {
+                [
+                    format!(
+                        r#"{{"id": "s{i:07}", "type": "sketch", "v": 1, "name": "Profile", "plane": "xz", "points": [{points}], "lines": [{lines}], "circles": [], "arcs": [], "constraints": []}}"#
+                    ),
+                    format!(
+                        r#"{{"id": "r{i:07}", "type": "revolve", "v": 1, "name": "Turned", "sketch": "s{i:07}", "axis": "na000000", "extent": {{"type": "one_side", "angle": 360, "reversed": false}}}}"#
+                    ),
+                ]
+            })
+            .collect();
+        let text = format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{}]}}"#,
+            features.join(", ")
+        );
+        Checked::new(crate::document::read(text.as_bytes()).unwrap()).unwrap()
+    }
+
+    /// This thread's comparisons of IDs and lookups in indexes made by `run`.
+    fn counting<T>(run: impl FnOnce() -> T) -> (T, u64, u64) {
+        let (compared_before, looked_up_before) = (compared(), looked_up());
+        let made = run();
+        (
+            made,
+            compared() - compared_before,
+            looked_up() - looked_up_before,
+        )
+    }
+
+    #[test]
+    fn solving_profiling_and_checking_the_axes_of_n_revolves_compares_n_log_n_ids() {
+        // Each of these finds the features it's given by the document's index, once each
+        // feature it reads: `sketch::solve` its sketch, `profile::profile` its sketch,
+        // `check_axis` its revolve (for the axis), its sketch (for the axis's line), and its
+        // revolve again (for its angle), `check_axis_length` the first two. Of N = 1,000
+        // features (500 sketches, 500 revolves), a lookup is a binary search of 1,000 IDs:
+        // ⌈log₂ 1,000⌉ + 1 = 11 comparisons each, and at least 1. Nothing else they do
+        // compares two features' IDs. So for the 500: 500 lookups and at most 5,500
+        // comparisons solving, the same profiling, 1,500 and 16,500 checking the axes, and
+        // 1,000 and 11,000 checking their lengths. A scan put back in any of them compares
+        // far more: `Document::feature` every ID, 1,000 a lookup, 500,000 for the 500; a
+        // scan to the sketch or the revolve, its place + 1, 2i + 1 or 2i + 2 for the i-th,
+        // about 250,000 for the 500.
+        let pairs = 500;
+        let document = revolves(pairs);
+        let n = document.document().features.len();
+        assert_eq!(n, 2 * pairs);
+        let each = u64::from(n.next_power_of_two().trailing_zeros()) + 1;
+        assert_eq!(each, 11);
+        let mut solver = crate::fake::FakeSketches::new();
+        let ids = |prefix: char| -> Vec<FeatureId> {
+            (0..pairs)
+                .map(|i| FeatureId::new(&format!("{prefix}{i:07}")).unwrap())
+                .collect()
+        };
+        let (sketches, turned) = (ids('s'), ids('r'));
+        let within = |what: &str, compared: u64, looked_up: u64, lookups: u64| {
+            assert!(
+                (lookups..=lookups * each).contains(&compared),
+                "{what}: {compared} comparisons, not from {lookups} to {}",
+                lookups * each
+            );
+            assert_eq!(looked_up, lookups, "{what}");
+        };
+        let pairs = pairs as u64;
+
+        let (solutions, compared, looked_up) = counting(|| {
+            sketches
+                .iter()
+                .map(|sketch| crate::sketch::solve(&document, sketch, &mut solver).unwrap())
+                .collect::<Vec<_>>()
+        });
+        within("solving", compared, looked_up, pairs);
+
+        let (profiles, compared, looked_up) = counting(|| {
+            sketches
+                .iter()
+                .zip(&solutions)
+                .map(|(sketch, solution)| {
+                    crate::profile::profile(&document, sketch, solution).unwrap()
+                })
+                .collect::<Vec<_>>()
+        });
+        within("profiling", compared, looked_up, pairs);
+        assert!(profiles.iter().all(|p| p.regions.len() == 1));
+
+        let (axes, compared, looked_up) = counting(|| {
+            turned
+                .iter()
+                .zip(solutions.iter().zip(&profiles))
+                .map(|(revolve, (solution, profile))| {
+                    check_axis(&document, revolve, solution, profile).unwrap()
+                })
+                .collect::<Vec<_>>()
+        });
+        within("checking the axes", compared, looked_up, 3 * pairs);
+        // About (0, 0), along +y: the line na000000.
+        for axis in &axes {
+            assert_eq!(axis.origin, [0.0, 0.0]);
+            assert_eq!(axis.direction, [0.0, 1.0]);
+            assert_eq!(axis.line.as_ref().map(|l| l.as_str()), Some("na000000"));
+        }
+
+        let (lengths, compared, looked_up) = counting(|| {
+            turned
+                .iter()
+                .zip(&solutions)
+                .map(|(revolve, solution)| check_axis_length(&document, revolve, solution))
+                .collect::<Vec<_>>()
+        });
+        within("checking the axes' lengths", compared, looked_up, 2 * pairs);
+        assert!(lengths.iter().all(Result::is_ok));
     }
 }

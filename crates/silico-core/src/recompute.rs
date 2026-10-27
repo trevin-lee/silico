@@ -57,8 +57,8 @@ use sha2::{Digest, Sha256};
 
 use crate::cache::Cache;
 use crate::document::{
-    Checked, Document, ElementId, ElementName, FeatureId, Fingerprint, Made, Operation,
-    SweepFeature,
+    Checked, Document, ElementId, ElementName, Feature, FeatureId, FeatureIndex, Fingerprint, Made,
+    Operation, SweepFeature,
 };
 use crate::elements::Entry;
 use crate::kernel::{
@@ -277,10 +277,18 @@ pub struct Model {
     /// The document it was built from.
     source: Arc<Checked>,
     generation: Generation,
+    /// What became of each feature: its document's features, in its order, one for one.
+    /// So a feature's place in the document is its place here, found by the document's
+    /// index ([`Model::place`]); and [`drifted`](Self::drifted) and
+    /// [`saved_as`](Self::saved_as) pair the two lists in order. [`rebound`](Self::rebound)
+    /// keeps it: its new document has the same features, in the same order.
     features: Vec<(FeatureId, FeatureOutcome)>,
     bodies: Vec<FeatureId>,
     /// Built features whose solids couldn't be measured, in timeline order: why.
     unmeasured: Vec<(FeatureId, Error)>,
+    /// Each feature's place in `unmeasured`, by ID: derived from it, whose IDs nothing
+    /// changes once it's built.
+    unmeasured_index: Arc<FeatureIndex>,
     /// How each feature's solid's elements are named, in timeline order: none for one that
     /// didn't build, or a sketch, which makes no solid.
     naming: Vec<Option<FeatureNaming>>,
@@ -297,6 +305,14 @@ pub struct Model {
     entries: Vec<OnceLock<Result<Arc<[Entry]>, Error>>>,
     /// The engine's maps named so far.
     known: NamedMaps,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many features [`Model::element_map`]'s reads have visited on this thread (one
+    /// for a read of a feature named already): a test's measure of a read's walk down what
+    /// a feature's made from.
+    static WALKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Element maps named so far, by naming key: shared by the engine and the models it
@@ -316,7 +332,8 @@ struct FeatureNaming {
 }
 
 /// Models are equal when they're of the same document, built in the same generation, and
-/// every feature came to the same: names are a function of those.
+/// every feature came to the same: names are a function of those, and the index of the
+/// unmeasured solids is derived from them.
 impl PartialEq for Model {
     fn eq(&self, other: &Self) -> bool {
         self.source == other.source
@@ -341,8 +358,7 @@ impl Model {
     /// What became of the feature `id`, if the document has it.
     pub fn outcome(&self, id: &FeatureId) -> Option<&FeatureOutcome> {
         self.features
-            .iter()
-            .find(|(feature, _)| feature == id)
+            .get(self.place(id)?)
             .map(|(_, outcome)| outcome)
     }
 
@@ -414,13 +430,28 @@ impl Model {
     /// it's published; asked before then, this names the feature's now, on the caller's
     /// thread, with those of the features it's made from (and no others).
     pub fn element_map(&self, id: &FeatureId) -> Option<&ElementMap> {
-        let i = self.index(id)?;
-        // Those it's made from, all the way down, in timeline order, so each is named after
-        // those it's made from. An explicit stack: a timeline can be thousands deep.
+        let i = self.place(id)?;
+        // Named already (the model's named, or this one read before): its map, or none, is
+        // settled, so it's read as it is, with nothing walked or allocated. A visit to its own
+        // feature only, as the walk below would make it.
+        if let Some(map) = self.maps.get(i)?.get() {
+            #[cfg(test)]
+            WALKED.with(|walked| walked.set(walked.get() + 1));
+            return map.as_deref();
+        }
+        // Those it's made from not named yet, all the way down, in timeline order, so each
+        // is named after those it's made from. Not past one named already (its map, or
+        // none, is settled, so it needs nothing it's made from): once the model's named,
+        // a read visits its own feature only, however deep the timeline. An explicit stack:
+        // a timeline can be thousands deep.
         let mut needed = std::collections::BTreeSet::new();
         let mut stack = vec![i];
         while let Some(j) = stack.pop() {
-            if needed.insert(j)
+            #[cfg(test)]
+            WALKED.with(|walked| walked.set(walked.get() + 1));
+            let named = self.maps.get(j).is_some_and(|slot| slot.get().is_some());
+            if !named
+                && needed.insert(j)
                 && let Some(Some(naming)) = self.naming.get(j)
             {
                 stack.extend(naming.uses.iter().copied());
@@ -454,7 +485,7 @@ impl Model {
     /// the model. A fault if they couldn't be named, or don't fit an entry.
     pub fn entries(&self, id: &FeatureId) -> Option<Result<&[Entry], &Error>> {
         let description = self.description(id)?;
-        let slot = self.entries.get(self.index(id)?)?;
+        let slot = self.entries.get(self.place(id)?)?;
         let built = slot.get_or_init(|| match self.element_map(id) {
             Some(map) => crate::elements::entries(map, id, description).map(Arc::from),
             None => Err(crate::elements::fault(
@@ -469,7 +500,7 @@ impl Model {
     /// already, without naming them, so a caller that mustn't wait (the UI's thread)
     /// never does.
     pub fn named_element_map(&self, id: &FeatureId) -> Option<&ElementMap> {
-        self.maps.get(self.index(id)?)?.get()?.as_deref()
+        self.maps.get(self.place(id)?)?.get()?.as_deref()
     }
 
     /// Names every feature's elements not yet named, in timeline order, while `go_on` says
@@ -483,8 +514,22 @@ impl Model {
         }
     }
 
-    fn index(&self, id: &FeatureId) -> Option<usize> {
-        self.features.iter().position(|(feature, _)| feature == id)
+    /// The place of the feature `id` in the timeline, if the document has it, here as in
+    /// the document (`features`): found by the document's index, in logarithmic time, so a
+    /// read that looks up each feature isn't quadratic.
+    fn place(&self, id: &FeatureId) -> Option<usize> {
+        self.source.place(id)
+    }
+
+    /// The feature `id` as its document holds it, found by the document's index.
+    pub(crate) fn feature(&self, id: &FeatureId) -> Option<&Feature> {
+        self.source.feature(id).ok()
+    }
+
+    /// What the feature `id` is now, as [`Name::parse`](crate::naming::Name::parse) asks
+    /// it of each feature a name mentions: none if the document has no such feature.
+    pub(crate) fn maker(&self, id: &FeatureId) -> Option<Maker> {
+        self.feature(id).map(|f| Maker::of(&f.operation))
     }
 
     /// The `j`th feature's element names, those it's made from named already: from the maps
@@ -577,8 +622,7 @@ impl Model {
     /// [`drift`](Self::drift) says it.
     pub fn unmeasured(&self, id: &FeatureId) -> Option<&Error> {
         self.unmeasured
-            .iter()
-            .find(|(unmeasured, _)| unmeasured == id)
+            .get(self.unmeasured_index.get(id)?)
             .map(|(_, error)| error)
     }
 
@@ -1985,11 +2029,6 @@ impl Plan {
     /// (one that didn't solve is missing).
     fn of(document: &Checked, swept: &BTreeMap<FeatureId, Swept>) -> Plan {
         let features = &document.document().features;
-        let index: BTreeMap<&FeatureId, usize> = features
-            .iter()
-            .enumerate()
-            .map(|(i, feature)| (&feature.id, i))
-            .collect();
         let mut plan = Plan {
             steps: BTreeMap::new(),
             order: Vec::new(),
@@ -2035,7 +2074,7 @@ impl Plan {
                     // The gate has checked that both are earlier features, so both are
                     // planned.
                     if let [(_, base), (_, tool)] = feature.operation.inputs().as_slice() {
-                        let input = |id: &FeatureId| index.get(id).copied();
+                        let input = |id: &FeatureId| document.place(id);
                         if let (Some(b), Some(t)) = (input(base), input(tool)) {
                             uses = vec![b, t];
                             let key = |i: usize| plan.features.get(i).and_then(Planned::key);
@@ -2050,12 +2089,12 @@ impl Plan {
                 Made::Sketch => None,
                 Made::Fillet { radius } => {
                     let dressing = Dressing::Fillet { radius };
-                    (own, uses) = plan.dress(&index, feature, dressing);
+                    (own, uses) = plan.dress(document, feature, dressing);
                     Some(Naming::Operation(OpCode::Fillet))
                 }
                 Made::Chamfer { distance } => {
                     let dressing = Dressing::Chamfer { distance };
-                    (own, uses) = plan.dress(&index, feature, dressing);
+                    (own, uses) = plan.dress(document, feature, dressing);
                     Some(Naming::Operation(OpCode::Chamfer))
                 }
                 Made::Sweep(kind) => {
@@ -2063,12 +2102,12 @@ impl Plan {
                         .operation
                         .inputs()
                         .iter()
-                        .filter_map(|(_, base)| index.get(*base).copied())
+                        .filter_map(|(_, base)| document.place(base))
                         .collect();
                     sweeps = feature
                         .operation
                         .sketch()
-                        .and_then(|sketch| index.get(sketch).copied());
+                        .and_then(|sketch| document.place(sketch));
                     let planned = plan.sweep(document, feature, kind, &uses, swept);
                     match planned {
                         SweepPlan::Steps(steps, naming) => {
@@ -2348,7 +2387,7 @@ impl Plan {
     /// its steps, and the features it uses.
     fn dress(
         &mut self,
-        index: &BTreeMap<&FeatureId, usize>,
+        document: &Checked,
         feature: &crate::document::Feature,
         dressing: Dressing,
     ) -> (Vec<Key>, Vec<usize>) {
@@ -2357,7 +2396,7 @@ impl Plan {
             .operation
             .inputs()
             .first()
-            .and_then(|(_, base)| index.get(*base).copied())
+            .and_then(|(_, base)| document.place(base))
         else {
             return (Vec::new(), Vec::new());
         };
@@ -2390,6 +2429,21 @@ impl Plan {
             },
         );
         (vec![key], vec![b])
+    }
+
+    /// Each step's progress label, by key: the ID and type of the first feature it's
+    /// planned for (`4kq2m7vd pad`), its type found by `document`'s index, one lookup a
+    /// step, so labelling a long timeline isn't quadratic.
+    fn labels(&self, document: &Checked) -> BTreeMap<Key, String> {
+        self.first_feature
+            .iter()
+            .map(|(key, id)| {
+                let kind = document
+                    .feature(id)
+                    .map_or("", |feature| feature.operation.type_name());
+                (*key, format!("{id} {kind}"))
+            })
+            .collect()
     }
 
     fn add(&mut self, step: Step, feature: &FeatureId) -> Key {
@@ -2778,18 +2832,7 @@ impl<K: Kernel + 'static> Engine<K> {
             .iter()
             .filter(|key| schedule.done.contains_key(key) || doomed.contains(key))
             .count();
-        let labels = plan
-            .first_feature
-            .iter()
-            .map(|(key, id)| {
-                let kind = document
-                    .document()
-                    .feature(id)
-                    .map_or("", |feature| feature.operation.type_name());
-                (*key, format!("{id} {kind}"))
-            })
-            .collect();
-        progress.planned(plan.order.len(), settled, labels);
+        progress.planned(plan.order.len(), settled, plan.labels(document));
         let schedule = Mutex::new(schedule);
         let changed = Condvar::new();
         let threads = to_run.min(MOST_AT_ONCE);
@@ -3717,16 +3760,18 @@ fn model(
             | FeatureOutcome::Blocked { .. }
             | FeatureOutcome::Sketch(_) => None,
         })
-        .collect();
+        .collect::<Vec<_>>();
     let naming = naming(plan, &features, done);
     let maps = (0..features.len()).map(|_| OnceLock::new()).collect();
     let entries = (0..features.len()).map(|_| OnceLock::new()).collect();
+    let unmeasured_index = Arc::new(FeatureIndex::new(unmeasured.iter().map(|(id, _)| id)));
     Model {
         source: Arc::clone(source),
         generation,
         features,
         bodies,
         unmeasured,
+        unmeasured_index,
         naming,
         maps,
         entries,
@@ -4018,6 +4063,304 @@ mod tests {
         match run.wait_timeout(Duration::from_secs(60)) {
             Ok(Ok(RunOutcome::Published(model))) => model,
             _ => panic!("not published"),
+        }
+    }
+
+    /// A document of `n` boxes, `b0000000` on: each its own body, 1 mm high, or 2 mm
+    /// where `tall` says.
+    fn boxes(n: usize, tall: impl Fn(usize) -> bool) -> Checked {
+        boxes_with(n, |i| format!("b{i:07}"), tall)
+    }
+
+    /// [`boxes`], the box at place i given the ID `id(i)`.
+    fn boxes_with(n: usize, id: impl Fn(usize) -> String, tall: impl Fn(usize) -> bool) -> Checked {
+        let features: Vec<String> = (0..n)
+            .map(|i| {
+                let height = if tall(i) { 2 } else { 1 };
+                let id = id(i);
+                format!(
+                    r#"{{"id": "{id}", "type": "box", "v": 1, "name": "Block", "position": [{i}, 0, 0], "length": 1, "width": 1, "height": {height}}}"#
+                )
+            })
+            .collect();
+        let text = format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{}]}}"#,
+            features.join(", ")
+        );
+        Checked::new(crate::document::read(text.as_bytes()).unwrap()).unwrap()
+    }
+
+    /// This thread's comparisons of IDs and lookups in indexes so far.
+    fn counted() -> (u64, u64) {
+        (crate::document::compared(), crate::document::looked_up())
+    }
+
+    /// ⌈log₂ n⌉, for n ≥ 1.
+    fn ceil_log2(n: usize) -> u64 {
+        u64::from(n.next_power_of_two().trailing_zeros())
+    }
+
+    #[test]
+    fn reading_every_feature_by_id_compares_n_log_n_ids_not_n_squared() {
+        // #182's review: each lookup by ID scanned the timeline from its start, so a read
+        // that looks up each feature compared N(N + 1) / 2 IDs (20,000 features, 1.45 s).
+        // Counted, not timed, and counted where two IDs are compared (`FeatureId`'s `eq`
+        // and `cmp`), so a scan put back is counted as the search is.
+        //
+        // Each feature is read 9 ways, which look it up by ID 11 times: `outcome`,
+        // `feature`, `records`, `fingerprint`, `description` (the last three through its
+        // outcome), `named_element_map`, `element_map`, and `unmeasured` once each, and
+        // `entries` three times (its `description`'s outcome, its slot's place, and its
+        // `element_map`, the slot built here, the first time it's read). All but
+        // `unmeasured`'s search the document's index of N IDs: a binary search halves
+        // what's left with each comparison, so ⌈log₂ N⌉ comparisons leave one ID and one
+        // more decides it, ⌈log₂ N⌉ + 1 each. `unmeasured`'s searches the index of the
+        // unmeasured solids, of which there are none, and compares nothing. The maps are
+        // named before the reads are counted (naming is no lookup's work, and the
+        // background's naming would race the count), and nothing else read compares two
+        // IDs. So exactly 11 N lookups, and at most 10 N (⌈log₂ N⌉ + 1) comparisons, at
+        // least 10 N: for N = 1,000, 110,000; for N = 4,000, 520,000. With `outcome`'s
+        // and `place`'s scans put back, 9 of the lookups (all but `feature`'s and
+        // `unmeasured`'s) compare the feature's place + 1 IDs, 9 N(N + 1) / 2 in all, and
+        // `feature`'s searches 11 N: 4,515,500 for N = 1,000.
+        for n in [1000usize, 4000] {
+            let document = Arc::new(boxes(n, |_| false));
+            let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap());
+            let model = published(engine.start(Arc::clone(&document)));
+            assert_eq!(model.features().len(), n);
+            assert_eq!(model.bodies().len(), n);
+            model.name_all(|| true);
+            let (compared, looked_up) = counted();
+            for (place, (id, outcome)) in model.features().iter().enumerate() {
+                // The feature at its place, as the scan found it.
+                assert!(std::ptr::eq(model.outcome(id).unwrap(), outcome), "{place}");
+                assert!(std::ptr::eq(
+                    model.feature(id).unwrap(),
+                    &model.document().features[place]
+                ));
+                assert!(model.records(id), "{place}");
+                assert!(model.fingerprint(id).is_some(), "{place}");
+                assert!(model.description(id).is_some(), "{place}");
+                assert!(model.named_element_map(id).is_some(), "{place}");
+                assert!(model.element_map(id).is_some(), "{place}");
+                assert!(matches!(model.entries(id), Some(Ok(_))), "{place}");
+                assert!(model.unmeasured(id).is_none(), "{place}");
+            }
+            let (compared, looked_up) = (counted().0 - compared, counted().1 - looked_up);
+            let log2 = ceil_log2(n);
+            let n = n as u64;
+            assert!(
+                (10 * n..=10 * n * (log2 + 1)).contains(&compared),
+                "{n} features: {compared} comparisons, not from 10 N to 10 N (⌈log₂ N⌉ + 1) = {}",
+                10 * n * (log2 + 1)
+            );
+            assert_eq!(looked_up, 11 * n, "{n} features");
+            // An ID the document hasn't: none, in as few.
+            let missing = FeatureId::new("zzzzzzzz").unwrap();
+            let (before, _) = counted();
+            assert!(model.outcome(&missing).is_none());
+            assert!(model.feature(&missing).is_none());
+            assert!(counted().0 - before <= 2 * (log2 + 1));
+        }
+    }
+
+    #[test]
+    fn each_unmeasured_solid_is_found_by_id_in_log_u_comparisons() {
+        // Every third of 1,000 boxes (`b0000000`, `b0000003`, ...) can't be measured: 334
+        // unmeasured, each said for its own feature, and no other. A lookup is a binary
+        // search of their index, so at most ⌈log₂ 334⌉ + 1 = 10 comparisons whether it's
+        // there or not, and at least 1: from 1,000 to 10,000 for the 1,000, one lookup
+        // each. A scan compared about 280,000 (each of the 666 measured ones all 334, each
+        // unmeasured one up to its place: 666 · 334 + 334 · 335 / 2 = 278,389).
+        let n = 1000;
+        let tall = |i: usize| i.is_multiple_of(3);
+        let document = Arc::new(boxes(n, tall));
+        let kernel = crate::fake::FakeKernel::new(2).unwrap();
+        kernel.refuse(|op| match op {
+            silico_protocol::Op::Summarize { shape } => crate::fake::FakeKernel::describe(shape)
+                .filter(|made| made.contains("box(1, 1, 2)"))
+                .map(|_| Error::new(ErrorCode::KernelFailed, "Summarize failed")),
+            _ => None,
+        });
+        let model = published(Recompute::new(kernel).start(document));
+        let (compared, looked_up) = counted();
+        let said: Vec<Option<Error>> = model
+            .features()
+            .iter()
+            .map(|(id, _)| model.unmeasured(id).cloned())
+            .collect();
+        let (compared, looked_up) = (counted().0 - compared, counted().1 - looked_up);
+        for (i, ((id, outcome), said)) in model.features().iter().zip(&said).enumerate() {
+            assert!(matches!(outcome, FeatureOutcome::Built { .. }), "{id}");
+            match said {
+                Some(error) => {
+                    assert!(tall(i), "{id}: {error:?}");
+                    assert_eq!(error.code(), ErrorCode::KernelFailed, "{id}");
+                    assert_eq!(error.feature(), Some(id.as_str()));
+                }
+                None => assert!(!tall(i), "{id}"),
+            }
+        }
+        assert!(
+            (n as u64..=10 * n as u64).contains(&compared),
+            "{compared} comparisons"
+        );
+        assert_eq!(looked_up, n as u64);
+    }
+
+    /// A box (`b0000000`) and `n` fillets, `f0000001` on, each of the one before, of one
+    /// of the box's edges.
+    fn fillets(n: usize) -> Checked {
+        let mut features = vec![
+            r#"{"id": "b0000000", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}"#.to_owned(),
+        ];
+        for i in 1..=n {
+            let base = if i == 1 {
+                "b0000000".to_owned()
+            } else {
+                format!("f{:07}", i - 1)
+            };
+            features.push(format!(
+                r#"{{"id": "f{i:07}", "type": "fillet", "v": 1, "name": "Round", "base": "{base}", "edges": ["b0000000.box.Edge{}"], "radius": 1}}"#,
+                i % 12 + 1
+            ));
+        }
+        let text = format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{}]}}"#,
+            features.join(", ")
+        );
+        Checked::new(crate::document::read(text.as_bytes()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn reading_a_named_chains_maps_walks_one_feature_a_read_not_the_chain() {
+        // #187's architecture review: `element_map` walked down every feature a feature is
+        // made from, on every read, named or not, so on a chain of fillets each read cost
+        // its depth. It goes no further than a feature named already, whose map needs
+        // nothing it's made from. Once every map is named, a read finds its own feature
+        // named and returns its map: one feature visited a read (`WALKED`, counted as each
+        // is popped, or as the read returns early). A box and 500 fillets, each of the one
+        // before: 501 reads, 501 visits.
+        // The full walk visited each feature's depth + 1, 1 + 2 + ... + 501 = 125,751.
+        let n = 500;
+        let model = published(
+            Recompute::new(crate::fake::FakeKernel::new(2).unwrap()).start(Arc::new(fillets(n))),
+        );
+        assert_eq!(model.features().len(), n + 1);
+        assert!(model.errors().next().is_none());
+        // The last fillet is made from every feature before it: reading its map names them
+        // all, if the background hasn't yet.
+        let (last, _) = model.features().last().unwrap();
+        assert!(model.element_map(last).is_some());
+        assert!(model.maps.iter().all(|slot| slot.get().is_some()));
+        let walked = || WALKED.with(std::cell::Cell::get);
+        let before = walked();
+        let maps: Vec<&ElementMap> = model
+            .features()
+            .iter()
+            .map(|(id, _)| model.element_map(id).unwrap())
+            .collect();
+        assert_eq!(walked() - before, n as u64 + 1);
+        // Each the map named for it.
+        for ((id, _), map) in model.features().iter().zip(maps) {
+            assert!(std::ptr::eq(map, model.named_element_map(id).unwrap()));
+        }
+    }
+
+    #[test]
+    fn labelling_each_step_finds_its_feature_in_log_n_comparisons() {
+        // Recompute's progress labels: each step's is its first feature's ID and type, the
+        // type found by the document's index, one lookup a step. N boxes, each a 1 mm cube
+        // at x = its place: one Make step for them all (one box, one key), and a Translate
+        // step for each but the first, at the origin, which isn't moved: N steps, N
+        // lookups, from N to N (⌈log₂ N⌉ + 1) comparisons, 11,000 for N = 1,000. The
+        // document's scan (`Document::feature`, as the labels found their features before)
+        // compares every ID each, N²: 1,000,000.
+        let n = 1000;
+        let document = boxes(n, |_| false);
+        let plan = Plan::of(&document, &BTreeMap::new());
+        assert_eq!(plan.first_feature.len(), n);
+        let (compared, looked_up) = counted();
+        let labels = plan.labels(&document);
+        let (compared, looked_up) = (counted().0 - compared, counted().1 - looked_up);
+        let most = n as u64 * (ceil_log2(n) + 1);
+        assert!(
+            (n as u64..=most).contains(&compared),
+            "{compared} comparisons, past {most}"
+        );
+        assert_eq!(looked_up, n as u64);
+        assert_eq!(labels.len(), n);
+        for (key, id) in &plan.first_feature {
+            assert_eq!(labels[key], format!("{id} box"));
+        }
+    }
+
+    #[test]
+    fn parsing_a_name_of_each_feature_finds_its_maker_in_log_n_comparisons() {
+        // `lookup` and `elements` read a name with `Model::maker` saying what each feature
+        // it mentions is: found by the document's index. A name of each of N boxes
+        // (`b0000000.box.Face1`, ...) mentions one feature: N lookups, from N to
+        // N (⌈log₂ N⌉ + 1) comparisons, 11,000 for N = 1,000. A scan from the start
+        // compares each feature's place + 1: N(N + 1) / 2, 500,500. A feature the document
+        // hasn't is one lookup too, of at most ⌈log₂ N⌉ + 1 comparisons (11), and refused;
+        // a scan compares all N.
+        let n = 1000;
+        let model = published(
+            Recompute::new(crate::fake::FakeKernel::new(2).unwrap())
+                .start(Arc::new(boxes(n, |_| false))),
+        );
+        let texts: Vec<String> = (0..n)
+            .map(|i| format!("b{i:07}.box.Face{}", i % 6 + 1))
+            .collect();
+        let makers = |id: &FeatureId| model.maker(id);
+        let (compared, looked_up) = counted();
+        let names: Vec<crate::naming::Name> = texts
+            .iter()
+            .map(|text| crate::naming::Name::parse(text, &makers).unwrap())
+            .collect();
+        let (compared, looked_up) = (counted().0 - compared, counted().1 - looked_up);
+        let most = n as u64 * (ceil_log2(n) + 1);
+        assert!(
+            (n as u64..=most).contains(&compared),
+            "{compared} comparisons, past {most}"
+        );
+        assert_eq!(looked_up, n as u64);
+        for (name, text) in names.iter().zip(&texts) {
+            assert_eq!(name.to_string(), *text);
+        }
+        let (compared, looked_up) = counted();
+        assert!(crate::naming::Name::parse("zzzzzzzz.box.Face1", &makers).is_err());
+        let (compared, looked_up) = (counted().0 - compared, counted().1 - looked_up);
+        assert!(
+            (1..=ceil_log2(n) + 1).contains(&compared),
+            "{compared} comparisons"
+        );
+        assert_eq!(looked_up, 1);
+    }
+
+    #[test]
+    fn a_rebound_model_finds_each_feature_where_it_did() {
+        // A model rebound to its saved document finds its features by the new document's
+        // index: the same IDs in the same order, so each at its place, as before. The IDs
+        // descend through the timeline, so a model or a save that sorted its features by ID
+        // would put each elsewhere.
+        let document = Arc::new(boxes_with(40, |i| format!("b{:07}", 39 - i), |_| false));
+        let ids: Vec<&FeatureId> = document.document().features.iter().map(|f| &f.id).collect();
+        assert!(ids.windows(2).all(|pair| pair[0] > pair[1]));
+        let model = published(
+            Recompute::new(crate::fake::FakeKernel::new(2).unwrap()).start(Arc::clone(&document)),
+        );
+        let saved = Arc::new(Checked::new(model.saved()).unwrap());
+        assert_ne!(saved.document(), document.document());
+        let rebound = model.rebound(Arc::clone(&saved));
+        for (place, (id, outcome)) in rebound.features().iter().enumerate() {
+            assert!(std::ptr::eq(rebound.outcome(id).unwrap(), outcome), "{id}");
+            assert_eq!(rebound.outcome(id), model.outcome(id), "{id}");
+            assert!(std::ptr::eq(
+                rebound.feature(id).unwrap(),
+                &saved.document().features[place]
+            ));
+            assert_eq!(rebound.element_map(id), model.element_map(id), "{id}");
         }
     }
 

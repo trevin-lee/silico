@@ -11,7 +11,7 @@ use super::{ModelChoice, Problems, ReadCommand, Revision, Running, SessionId, Se
 use crate::document::{Angle, FeatureId, Length, Measure};
 pub use crate::elements::{Alias, AxisToken, ElementType, Entry, EntryAxis};
 use crate::kernel::{Clients, ElementKind, ShapeSummary};
-use crate::naming::{Maker, Name};
+use crate::naming::Name;
 use crate::recompute::{Built, FeatureOutcome, Model};
 use crate::{Error, ErrorCode};
 
@@ -376,14 +376,7 @@ fn cursor_name(
         ));
         return None;
     }
-    let makers = |id: &FeatureId| {
-        model
-            .document()
-            .features
-            .iter()
-            .find(|f| f.id == *id)
-            .map(|f| Maker::of(&f.operation))
-    };
+    let makers = |id: &FeatureId| model.maker(id);
     match Name::parse(&cursor.name, &makers) {
         Ok(name) => Some(name),
         Err(error) => {

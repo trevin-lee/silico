@@ -19,7 +19,7 @@ use silico_protocol::{
 
 use super::lookup::{Kinds, Lookup};
 use super::{ModelChoice, Problems, ReadCommand, Running, SessionId, Sessions};
-use crate::document::{Angle, FeatureId, Length, Position};
+use crate::document::{Angle, FeatureId, FeatureIndex, Length, Position};
 use crate::file::{self, Output};
 use crate::kernel::{Clients, ElementKind, Kernel, KernelRequest};
 use crate::meshes::{MeshCache, mesh_level};
@@ -556,6 +556,9 @@ fn highlighted(model: &Model, bodies: &[Body], highlight: &[String]) -> Result<V
         return Ok(Vec::new());
     }
     let mut lookup = Lookup::new(model, None, HIGHLIGHTED);
+    // Each body's place by its feature's ID, built once a render: a lookup a highlight in
+    // logarithmic time, not a scan of the bodies (a model can have many thousands).
+    let places = FeatureIndex::new(bodies.iter().map(|b| b.id));
     let mut lit = Vec::new();
     for (i, text) in highlight.iter().enumerate() {
         // Which element only: a body is drawn, and its faces lit, though its measure failed.
@@ -563,7 +566,7 @@ fn highlighted(model: &Model, bodies: &[Body], highlight: &[String]) -> Result<V
             continue;
         };
         // A solid the lookup finds is one of the bodies that built, which are drawn.
-        match bodies.iter().position(|b| b.id == feature) {
+        match places.get(feature) {
             Some(body) => lit.push(Lit {
                 body,
                 kind: element.kind,
