@@ -77,7 +77,7 @@ crates/silico-core/src/pool.rs | Shared::supersede | delete ! | #125
 crates/silico-core/src/pool.rs | Shared::next | replace && with || | #125
 crates/silico-core/src/pool.rs | Shared::next | replace && with || | #125
 crates/silico-core/src/command/session/types.rs | Revision::number | replace Revision::number -> u64 with 1 | #127
-crates/silico-core/src/cache.rs | open_to_read | replace | with ^ | #129
+crates/silico-core/src/cache/at.rs | open_to_read | replace | with ^ | #129
 crates/silico-core/src/file.rs | in_place | replace > with >= | #129
 crates/silico-protocol/src/profile.rs | side_of_line | replace > with >= | #129
 crates/silico-core/src/document/quantity.rs | parse_wide | replace < with <= | #129

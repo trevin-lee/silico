@@ -20,7 +20,7 @@ test-threads = 15
 # own thread's CPU time, so load doesn't fail them; they and the reader's memory-heavy tests
 # (named here: renaming one means renaming it here) run one at a time, with room for a
 # loaded machine's wall time. The cache's read of a file of exactly the largest entry
-# (1 GiB, in silico-core's src/cache.rs) is one of the `_promptly` tests on purpose, so it
+# (1 GiB, in silico-core's src/cache/mod.rs) is one of the `_promptly` tests on purpose, so it
 # never runs beside the others: keep the name.
 [test-groups]
 document-heavy = { max-threads = 1 }
