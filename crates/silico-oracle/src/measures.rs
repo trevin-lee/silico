@@ -403,7 +403,7 @@ pub fn answers<K: Kernel>(
                     vertex: Some(name), ..
                 })) => match resolve(model, bodies, name.as_str()).map_err(at)?.element {
                     Element::Vertex { point } => Some(point),
-                    other => return Err(at(format!("its vertex {name} is {other:?}"))),
+                    other => return Err(at(format!("its vertex {} is {other:?}", name.as_str()))),
                 },
                 _ => None,
             };

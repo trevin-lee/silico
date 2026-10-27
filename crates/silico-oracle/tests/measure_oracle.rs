@@ -12,7 +12,7 @@ use std::path::Path;
 
 use silico_core::command::measure::{AngleAnswer, DistanceAnswer};
 use silico_core::command::rebuild;
-use silico_core::document::{Angle, FeatureId, Length};
+use silico_core::document::{Angle, ElementName, FeatureId, Length};
 use silico_core::pool::KernelPool;
 use silico_core::recompute::Recompute;
 use silico_core::{Error, ErrorCode};
@@ -476,7 +476,7 @@ fn every_expected_value_is_checked() {
     );
     at.vertex_at = Some([5.0, 0.0, 5.0]);
     if let Ok(Answer::Angle(a)) = &mut at.answer {
-        a.vertex = Some("hex00001.pad.Vertex(G shx00001.sketch.Vertex.p0000002)".into());
+        a.vertex = ElementName::new("hex00001.pad.Vertex(G shx00001.sketch.Vertex.p0000002)");
     }
     assert!(against_expected(&angle_case(120.0, Some([5.0, 0.0, 5.0])), &at).is_empty());
     assert_eq!(

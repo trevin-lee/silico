@@ -16,8 +16,8 @@ use silico_core::ErrorCode;
 use silico_core::command::measure::{angle, distance};
 use silico_core::command::wire::measure::PairRequest;
 use silico_core::command::{ModelChoice, ReadCommand};
-use silico_core::document::Length;
 use silico_core::document::json::read;
+use silico_core::document::{ElementName, Length};
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::Op;
 use silico_core::recompute::Recompute;
@@ -997,7 +997,7 @@ fn the_vertex_two_edges_meet_at_is_named_by_its_own_name_though_unstable() {
         );
         assert_eq!(
             answer.vertex,
-            Some(entry.name.to_string().into()),
+            Some(ElementName::from(&*entry.name)),
             "{names:?}"
         );
         assert_eq!(answer.angle, Angle::from_ndeg(135_000_000_000), "{names:?}");

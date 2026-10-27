@@ -8,10 +8,10 @@
 
 use super::session::{kept_fault, retried};
 use super::{ModelChoice, Problems, ReadCommand, Revision, Running, SessionId, Sessions};
-use crate::document::{Angle, FeatureId, Length, Measure};
+use crate::document::{Angle, ElementName, FeatureId, Length, Measure};
 pub use crate::elements::{Alias, AxisToken, ElementType, Entry, EntryAxis};
 use crate::kernel::{Clients, ElementKind, ShapeSummary};
-use crate::naming::{ElementName, Name};
+use crate::naming::Name;
 use crate::recompute::{Built, FeatureOutcome, Model};
 use crate::{Error, ErrorCode};
 use silico_protocol::vec3::cross;
@@ -285,7 +285,8 @@ pub fn list(
                     ErrorCode::InvalidInput,
                     format!(
                         "the cursor names {} of {}, which this listing doesn't hold",
-                        cursor.name, cursor.feature
+                        cursor.name.as_str(),
+                        cursor.feature
                     ),
                 )
                 .with_parameter("after")

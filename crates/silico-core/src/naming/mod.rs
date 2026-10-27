@@ -9,11 +9,9 @@
 //! by [`ElementMap::primitive`], [`ElementMap::operation`], or kept through a move.
 
 mod build;
-mod element_name;
 pub mod freecad;
 mod parse;
 
-pub use element_name::ElementName;
 pub use parse::{Maker, NameError};
 
 use std::collections::{BTreeMap, BTreeSet};

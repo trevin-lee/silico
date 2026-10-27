@@ -18,7 +18,7 @@ use silico_core::command::elements::{
     Cursor, ENTRIES_AT_MOST, ElementType, Facing, MeasureName, Order, Quantity, Query, Range,
     entries, list, query,
 };
-use silico_core::document::{Angle, Length, Measure};
+use silico_core::document::{Angle, ElementName, Length, Measure};
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::ElementKind;
 use silico_core::recompute::Recompute;
@@ -95,7 +95,7 @@ fn pages_follow_on_from_their_cursor_and_together_list_every_entry_once() {
                 assert_eq!(next.revision, Revision::OPENED);
                 assert_eq!(
                     (next.feature.clone(), next.name.clone()),
-                    (last.feature.clone(), last.name.to_string().into())
+                    (last.feature.clone(), ElementName::from(&*last.name))
                 );
                 after = Some(next);
             }
@@ -144,7 +144,7 @@ fn a_cursor_of_another_revision_is_a_conflict_said_with_every_other_reason() {
     assert!(list(&model, later, None, Some(&fresh), 1).is_ok());
     // A cursor that names no entry of the listing is refused, naming after.
     let mut lost = fresh.clone();
-    lost.name = "k7f2qx3m.box.Face99".into();
+    lost.name = ElementName::as_sent("k7f2qx3m.box.Face99");
     let refused = list(&model, later, None, Some(&lost), 1).unwrap_err();
     assert_eq!(
         codes(&refused),

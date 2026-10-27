@@ -16,14 +16,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, PoisonError};
 
 use super::{Problems, Running, SessionCommand, SessionId, Sessions};
-use crate::document::{FeatureId, Length, Measure};
+use crate::document::{ElementName, FeatureId, Length, Measure};
 use crate::export::{
     Object, PrintableMesh, UNHOLDABLE_ADVICE, face_names, holds_in_3mf, printable, three_mf,
     unholdable, within_triangles,
 };
 use crate::file::{self, Output};
 use crate::kernel::{Clients, Kernel, KernelRequest};
-use crate::naming::ElementName;
 use crate::pool::Outcome;
 use crate::recompute::Model;
 use crate::{Error, ErrorCode};

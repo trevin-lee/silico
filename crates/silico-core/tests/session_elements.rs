@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use silico_core::ErrorCode;
 use silico_core::command::elements::{Cursor, MeasureName, Order, Query};
 use silico_core::command::{ModelChoice, ModelRead, Revision};
-use silico_core::document::FeatureId;
+use silico_core::document::{ElementName, FeatureId};
 use silico_core::kernel::{BooleanOp, ElementKind, Op};
 
 const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
@@ -191,7 +191,7 @@ fn a_model_that_holds_a_fault_gives_no_cursor_and_refuses_one_as_a_conflict() {
     let cursor = Cursor {
         revision: Revision::OPENED,
         feature: last.feature.clone(),
-        name: last.name.to_string().into(),
+        name: ElementName::from(&*last.name),
     };
     fault.store(false, Ordering::SeqCst);
     // The published model is still the faulted one: a conflict, naming after.

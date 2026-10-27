@@ -12,12 +12,12 @@
 use super::elements::summarized;
 use super::lookup::{Kinds, Lookup};
 use super::{ModelChoice, Problems, ReadCommand, Running, SessionId, Sessions};
-use crate::document::{Angle, FeatureId, Fingerprint, Length, Measure};
+use crate::document::{Angle, ElementName, FeatureId, Fingerprint, Length, Measure};
 use crate::kernel::{
     Clients, EdgeCurve, EdgeDescription, ElementKind, ElementRef, FaceDescription, Kernel,
     KernelRequest, ShapeData, Surface,
 };
-use crate::naming::{ElementMap, ElementName};
+use crate::naming::ElementMap;
 use crate::pool::Outcome;
 use crate::recompute::Model;
 use crate::{Error, ErrorCode};
@@ -716,7 +716,7 @@ pub fn angle(
                     index,
                 })
             })
-            .map(|name| name.to_string());
+            .map(|name| ElementName::from(&*name));
         // A valid solid's edges sharing an end share its named vertex: one not found is a
         // bug, said, never a quiet change to the angle between the lines.
         let Some(vertex) = vertex else {
@@ -734,7 +734,7 @@ pub fn angle(
         let degrees = libm::atan2(norm(cross(u, w)), dot(u, w)).to_degrees();
         return Ok(AngleAnswer {
             angle: rounded(Angle::rounded(degrees))?,
-            vertex: Some(ElementName::from(vertex)),
+            vertex: Some(vertex),
         });
     }
     Ok(AngleAnswer {

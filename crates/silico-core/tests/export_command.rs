@@ -15,7 +15,7 @@ use super::export_report::{tetra, unasked};
 
 use silico_core::command::export::{Export, ExportFormat, ExportOn, Exported, export};
 use silico_core::command::{self, Problems};
-use silico_core::document::{FeatureId, Length, Measure};
+use silico_core::document::{ElementName, FeatureId, Length, Measure};
 use silico_core::export::{Object, printable, three_mf};
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::Op;
@@ -677,7 +677,11 @@ fn faces_bounding_no_material_are_left_out_and_named_by_the_features_element_map
     asked.features = Some(vec![id("k7f2qx3m")]);
     let done = bench.export(&asked).unwrap();
     assert_eq!(
-        done.objects[0].left_out,
+        done.objects[0]
+            .left_out
+            .iter()
+            .map(ElementName::as_str)
+            .collect::<Vec<_>>(),
         [
             face_name(&bench, "k7f2qx3m", 5),
             face_name(&bench, "k7f2qx3m", 6)
@@ -1132,7 +1136,11 @@ fn a_step_exports_faces_left_out_are_named_by_the_features_element_map() {
         .export(&step_request(&dir.0.join("out.step"), Some(&["k7f2qx3m"])))
         .unwrap();
     assert_eq!(
-        done.objects[0].left_out,
+        done.objects[0]
+            .left_out
+            .iter()
+            .map(ElementName::as_str)
+            .collect::<Vec<_>>(),
         [
             face_name(&bench, "k7f2qx3m", 5),
             face_name(&bench, "k7f2qx3m", 6)

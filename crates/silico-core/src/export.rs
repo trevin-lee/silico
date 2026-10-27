@@ -37,7 +37,8 @@ use std::collections::BTreeMap;
 use silico_protocol::vec3::{cross, dot, sub};
 use silico_protocol::{ElementRef, ExportMesh, FACES_NAMED};
 
-use crate::naming::{ElementMap, ElementName};
+use crate::document::ElementName;
+use crate::naming::ElementMap;
 use crate::{Error, ErrorCode};
 
 /// A solid's mesh, ready to print: closed, manifold, oriented outward, no triangle with two
@@ -100,10 +101,7 @@ pub(crate) fn face_names(
         .with_suggestion(crate::worker::SILICO_BUG));
     }
     let namer = FaceNamer { names };
-    Ok(faces
-        .iter()
-        .map(|&f| ElementName::from(namer.name(f)))
-        .collect())
+    Ok(faces.iter().map(|&f| namer.element_name(f)).collect())
 }
 
 /// Names faces in a refusal as the feature's element map names them (or as FreeCAD numbers
@@ -115,10 +113,17 @@ struct FaceNamer<'a> {
 
 impl FaceNamer<'_> {
     fn name(&self, face: u32) -> String {
+        self.element_name(face).as_str().to_owned()
+    }
+
+    /// Face `face`'s name as the feature's element map gives it, or as FreeCAD numbers it
+    /// without one.
+    fn element_name(&self, face: u32) -> ElementName {
         let element = ElementRef::face(face);
-        self.names
-            .and_then(|map| map.name(element))
-            .map_or_else(|| element.to_string(), |name| name.to_string())
+        self.names.and_then(|map| map.name(element)).map_or_else(
+            || ElementName::numbered(element),
+            |name| ElementName::from(&*name),
+        )
     }
 
     /// `message` as an error of `code`, naming `faces` (each once, in order).
@@ -176,7 +181,7 @@ pub fn printable(
     let left_out: Vec<ElementName> = mesh
         .unoriented_faces
         .iter()
-        .map(|&f| ElementName::from(namer.name(f)))
+        .map(|&f| namer.element_name(f))
         .collect();
     let listed = || {
         left_out
@@ -656,7 +661,7 @@ fn checked(
         left_out: mesh
             .unoriented_faces
             .iter()
-            .map(|&f| ElementName::from(faces.name(f)))
+            .map(|&f| faces.element_name(f))
             .collect(),
     })
 }

@@ -24,7 +24,7 @@ use silico_core::command::wire::schema::SchemaRequest;
 use silico_core::command::wire::{Layout, ToWire, write};
 use silico_core::command::{Problems, Revision};
 use silico_core::document::json::{Node, read};
-use silico_core::document::{Angle, Length, Measure};
+use silico_core::document::{Angle, ElementName, Length, Measure};
 use silico_core::kernel::ElementKind;
 
 fn parsed(text: &str) -> Node {
@@ -956,7 +956,7 @@ fn a_cursor_passed_back_as_the_result_wrote_it_is_read_to_itself() {
         let cursor = Cursor {
             revision: top,
             feature: silico_core::document::FeatureId::new("k7f2qx3m").unwrap(),
-            name: name.clone().into(),
+            name: ElementName::as_sent(name.as_str()),
         };
         for layout in [Layout::Canonical, Layout::OneLine] {
             let next = write(&cursor.to_wire(), layout).unwrap();
