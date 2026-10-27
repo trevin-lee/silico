@@ -2,7 +2,7 @@
 //! measured.
 
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -155,28 +155,16 @@ pub const BREP_CONVERT_ENV: &str = "SILICO_BREP_CONVERT";
 const CONVERT_DEADLINE: Duration = Duration::from_secs(60);
 
 /// The text B-rep at `path` as Silico's B-rep, through `silico-brep-convert` (from the
-/// kernel crate, the only one that reads B-reps): beside this executable (or its `deps/`
-/// directory's parent, for tests), or where [`BREP_CONVERT_ENV`] says.
+/// kernel crate, the only one that reads B-reps): beside this executable, its links resolved
+/// (or its `deps/` directory's parent, for tests), or where [`BREP_CONVERT_ENV`] says, as
+/// the core finds its workers (`silico_core::worker::worker_path`).
 fn converted(path: &Path) -> Result<ShapeData, Error> {
-    let tool = match std::env::var_os(BREP_CONVERT_ENV) {
-        Some(tool) => PathBuf::from(tool),
-        None => {
-            let exe = std::env::current_exe().map_err(|e| {
-                Error::new(ErrorCode::Internal, "can't find the running executable")
-                    .with_cause(e.to_string())
-            })?;
-            let dir = exe.parent().unwrap_or(Path::new("."));
-            let dir = if dir.file_name().is_some_and(|n| n == "deps") {
-                dir.parent().unwrap_or(dir)
-            } else {
-                dir
-            };
-            dir.join(format!(
-                "silico-brep-convert{}",
-                std::env::consts::EXE_SUFFIX
-            ))
-        }
-    };
+    let tool = silico_core::worker::worker_path(
+        BREP_CONVERT_ENV,
+        "silico-brep-convert",
+        "B-rep converter",
+        "cargo build -p silico-kernel --bin silico-brep-convert",
+    )?;
     let text = std::fs::read(path).map_err(|e| {
         Error::new(
             ErrorCode::InvalidInput,
