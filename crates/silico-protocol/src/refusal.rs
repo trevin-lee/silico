@@ -159,6 +159,10 @@ pub enum Refusal {
     /// no CPU adapter (Mesa's lavapipe, its compiled-in paths gone, or none built in).
     /// `cause` names what it looked for and what it found.
     NoAdapter { cause: String },
+    /// A reply the worker made but couldn't send: `bytes` encoded, past the `most` a frame
+    /// may carry ([`crate::MAX_FRAME_LEN`]). Sent in the reply's place, so the worker goes
+    /// on, rather than ending as if it had crashed.
+    ReplyTooLarge { bytes: u64, most: u64 },
 }
 
 /// What OCCT gave back nothing of.
@@ -312,7 +316,8 @@ impl Refusal {
             | Refusal::SweepFlat { .. }
             | Refusal::RoundingPastTolerance { .. }
             | Refusal::TooManyTriangles { .. }
-            | Refusal::ElementMissing { .. } => FailureKind::InvalidInput,
+            | Refusal::ElementMissing { .. }
+            | Refusal::ReplyTooLarge { .. } => FailureKind::InvalidInput,
             Refusal::ResultInvalid { .. } | Refusal::DescriptionImpossible { .. } => {
                 FailureKind::InvalidResult
             }
@@ -699,6 +704,17 @@ impl Refusal {
                 ),
                 Some(
                     "export with a coarser tolerance, which makes fewer, or fewer parts at once"
+                        .to_owned(),
+                ),
+            ),
+            Refusal::ReplyTooLarge { bytes, most } => (
+                format!(
+                    "the worker's reply would be {bytes} bytes, more than the {most} a reply may \
+                     carry"
+                ),
+                Some(
+                    "ask for less at once: a coarser tolerance, fewer elements or features, or a \
+                     smaller part"
                         .to_owned(),
                 ),
             ),
@@ -1090,6 +1106,10 @@ mod tests {
             Refusal::NoAdapter {
                 cause: "no CPU adapter; found [\"Apple M4 Pro\"]".to_owned(),
             },
+            Refusal::ReplyTooLarge {
+                bytes: 536_870_913,
+                most: 536_870_912,
+            },
         ]
     }
 
@@ -1214,6 +1234,7 @@ mod tests {
             KernelFailed,      // DistanceNotDone (new with M4.5)
             InvalidInput,      // ElementMissing (new with M4.5)
             Unavailable,       // NoAdapter
+            InvalidInput,      // ReplyTooLarge (new with the M4 review: was a crash)
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), kinds.len());
@@ -1267,6 +1288,7 @@ mod tests {
             None,               // DistanceNotDone
             Some("second"),     // ElementMissing
             None,               // NoAdapter
+            None,               // ReplyTooLarge
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), parameters.len());

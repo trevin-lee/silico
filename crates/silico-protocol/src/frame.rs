@@ -85,13 +85,23 @@ pub fn write_message<W: Write + ?Sized, T: Serialize>(
     writer: &mut W,
     message: &T,
 ) -> Result<(), FrameError> {
+    write_message_within(writer, message, MAX_FRAME_LEN)
+}
+
+/// As [`write_message`], refusing a payload past `max` bytes ([`FrameError::TooLarge`])
+/// before writing anything: for a test of what's past [`MAX_FRAME_LEN`] without as many bytes.
+pub fn write_message_within<W: Write + ?Sized, T: Serialize>(
+    writer: &mut W,
+    message: &T,
+    max: u32,
+) -> Result<(), FrameError> {
     let payload = postcard::to_allocvec(message).map_err(FrameError::Encode)?;
     let len = u32::try_from(payload.len())
         .ok()
-        .filter(|len| *len <= MAX_FRAME_LEN)
+        .filter(|len| *len <= max)
         .ok_or(FrameError::TooLarge {
             len: payload.len() as u64,
-            max: MAX_FRAME_LEN,
+            max,
         })?;
     writer
         .write_all(&len.to_le_bytes())

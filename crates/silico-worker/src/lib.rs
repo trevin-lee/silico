@@ -22,8 +22,8 @@ use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 
 use silico_protocol::{
-    Failure, FrameError, FrameReader, Generation, Op, REQUEST_DONE, Refusal, Reply, Request,
-    RequestId, Response, WORKER_FD, WORKER_FD_ENV, write_message, write_started,
+    Failure, FrameError, FrameReader, Generation, MAX_FRAME_LEN, Op, REQUEST_DONE, Refusal, Reply,
+    Request, RequestId, Response, WORKER_FD, WORKER_FD_ENV, write_message_within, write_started,
 };
 
 #[cfg(feature = "test_ops")]
@@ -228,16 +228,52 @@ where
             let mut log = std::io::stderr().lock();
             let _ = writeln!(log, "{{\"{REQUEST_DONE}\":{}}}", request.trace.0);
         }
-        write_message(
+        reply(
             &mut writer,
-            &Response {
-                id: request.id,
-                generation: request.generation,
-                result,
-            },
+            request.id,
+            request.generation,
+            result,
+            MAX_FRAME_LEN,
         )?;
     }
     Ok(())
+}
+
+/// Writes the reply `result` to the request `id` of `generation`; or, if it's past the `most`
+/// bytes a frame carries, a failure in its place saying so ([`Refusal::ReplyTooLarge`]), so
+/// the request is refused and the worker goes on, rather than ending as if it had crashed
+/// and being started again for no fault of its own.
+fn reply(
+    writer: &mut dyn Write,
+    id: RequestId,
+    generation: Generation,
+    result: Result<Reply, Failure>,
+    most: u32,
+) -> Result<(), FrameError> {
+    let response = Response {
+        id,
+        generation,
+        result,
+    };
+    match write_message_within(writer, &response, most) {
+        Err(FrameError::TooLarge { len, max }) => {
+            // Past the request's last log line, so it's the core that logs the refusal.
+            let refusal = Refusal::ReplyTooLarge {
+                bytes: len,
+                most: u64::from(max),
+            };
+            write_message_within(
+                writer,
+                &Response {
+                    id,
+                    generation,
+                    result: Err(Failure::new(refusal)),
+                },
+                most,
+            )
+        }
+        written => written,
+    }
 }
 
 /// The traps as a worker starts: switched off and checked off for [`Traps::Checked`] (or why
@@ -363,13 +399,80 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use silico_protocol::{
-        DebugOp, Failure, FrameReader, Generation, Op, Refusal, Reply, Request, RequestId,
+        Blob, DebugOp, Failure, FrameReader, Generation, Op, Refusal, Reply, Request, RequestId,
         Response, TraceId, write_message,
     };
 
     use super::{
         Platform, REFUSAL_LINE_ROOM, Traps, serve, traps_at_start, within_line, worker_filter,
     };
+
+    #[test]
+    fn a_reply_past_what_a_frame_carries_is_refused_in_its_place_and_the_worker_goes_on() {
+        let refused = |bytes, most| Response {
+            id: RequestId(3),
+            generation: Generation(2),
+            result: Err(Failure::new(Refusal::ReplyTooLarge { bytes, most })),
+        };
+        // A response's size encoded: its frame less the frame's 4-byte length.
+        let encoded = |response: &Response| {
+            let mut frame = Vec::new();
+            write_message(&mut frame, response).unwrap();
+            frame.len() - 4
+        };
+        // The refusal's own size is the frame's limit here: an echo of more than that can't
+        // be sent, and the refusal in its place can.
+        let most = encoded(&refused(1 << 20, 1 << 20));
+        let echo = |n: usize| {
+            Ok(Reply::Echo {
+                data: Blob::inline(vec![7; n]),
+            })
+        };
+        let echoed = |n: usize| {
+            encoded(&Response {
+                id: RequestId(3),
+                generation: Generation(2),
+                result: echo(n),
+            })
+        };
+        let past = (0..).find(|&n| echoed(n) > most).unwrap();
+        let mut written = Vec::new();
+        super::reply(
+            &mut written,
+            RequestId(3),
+            Generation(2),
+            echo(past),
+            u32::try_from(most).unwrap(),
+        )
+        .unwrap();
+        let mut frames = FrameReader::new(&written[..]);
+        let sent = frames.read_message::<Response>().unwrap().unwrap();
+        assert_eq!(
+            sent,
+            refused(echoed(past) as u64, most as u64),
+            "the refusal names the reply's size and the limit"
+        );
+        assert_eq!(
+            frames.read_frame().unwrap(),
+            None,
+            "one frame, nothing after"
+        );
+        // One byte less: the echo itself, as it was.
+        let mut written = Vec::new();
+        super::reply(
+            &mut written,
+            RequestId(3),
+            Generation(2),
+            echo(past - 1),
+            u32::try_from(most).unwrap(),
+        )
+        .unwrap();
+        let sent = FrameReader::new(&written[..])
+            .read_message::<Response>()
+            .unwrap()
+            .unwrap();
+        assert_eq!(sent.result, echo(past - 1));
+    }
 
     /// What a test's subscriber writes.
     #[derive(Clone, Default)]
