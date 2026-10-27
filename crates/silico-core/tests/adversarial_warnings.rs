@@ -779,20 +779,10 @@ fn few() -> impl Strategy<Value = Vec<(usize, usize, bool, usize, bool)>> {
 }
 
 /// Both ends of each of many lines, each at one of 60 centres of its side's grid, nudged
-/// as `few`'s are: enough clusters, often, to pass the hundred listed.
-fn many() -> impl Strategy<
-    Value = Vec<(
-        (usize, usize, bool, usize, bool),
-        (usize, usize, bool, usize, bool),
-    )>,
-> {
-    let end = (
-        0usize..60,
-        0usize..OFFSETS.len(),
-        any::<bool>(),
-        0usize..OFFSETS.len(),
-        any::<bool>(),
-    );
+/// along x as `few`'s are along both axes: enough clusters (more than 100 in most cases,
+/// by a simulation of this draw) to pass the hundred listed.
+fn many() -> impl Strategy<Value = Vec<((usize, usize, bool), (usize, usize, bool))>> {
+    let end = (0usize..60, 0usize..OFFSETS.len(), any::<bool>());
     prop::collection::vec((end.clone(), end), 200..=250)
 }
 
@@ -835,10 +825,10 @@ proptest! {
         for (i, (a, b)) in lines_ends.iter().enumerate() {
             let curve = format!("na{i:06}");
             let mut ids = Vec::new();
-            for (side, &(c, ox, sx, oy, sy)) in [a, b].into_iter().enumerate() {
+            for (side, &(c, ox, sx)) in [a, b].into_iter().enumerate() {
                 let (cx, cy) = grid(side, c);
                 let id = format!("p{}{i:06}", ["a", "b"][side]);
-                all.push((id.clone(), (cx + offset(ox, sx), cy + offset(oy, sy)), curve.clone()));
+                all.push((id.clone(), (cx + offset(ox, sx), cy), curve.clone()));
                 ids.push(id);
             }
             lines.push((curve, ids[0].clone(), ids[1].clone()));
