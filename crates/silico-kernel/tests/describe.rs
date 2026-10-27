@@ -495,3 +495,68 @@ fn a_solid_of_more_than_a_batch_is_described_whole_each_element_once() {
     assert_eq!(through, describe_whole(&read).unwrap());
     assert_eq!(distinct(&through), 1020);
 }
+
+#[test]
+fn a_solid_of_a_batch_or_fewer_is_described_all_at_once_as_its_batches_describe_it() {
+    // A 10 × 20 × 30 box (6 faces, 12 edges, 8 vertices: 26) through a worker: one
+    // `DescribeAll` gives the counts and the description its three batches give, to the bit.
+    let shape = make(&Primitive::Box {
+        dx: 10.0,
+        dy: 20.0,
+        dz: 30.0,
+    })
+    .unwrap();
+    let data = silico_core::kernel::ShapeData::checked(
+        silico_core::kernel::Blob::inline(silico_kernel::to_brep(&shape).unwrap()),
+        true,
+    );
+    let mut worker = silico_core::kernel::KernelWorker::start_worker(std::path::Path::new(env!(
+        "CARGO_BIN_EXE_silico-kernel-worker"
+    )))
+    .unwrap();
+    let all = worker
+        .run(silico_core::kernel::KernelRequest::describe_all(&data))
+        .unwrap();
+    assert_eq!((all.faces, all.edges, all.vertices), (6, 12, 8));
+    assert_eq!(all.description, worker.describe(&data).unwrap());
+}
+
+#[test]
+fn a_solid_of_more_than_a_batch_is_refused_all_at_once_before_any_is_described() {
+    // The 340-gon prism: by hand 342 + 1,020 + 680 = 2,042 elements, past the 1,000 one
+    // request describes. Refused as invalid input, naming the shape and the count, and the
+    // worker goes on: its batches still describe it.
+    let corners = 340;
+    let points = (0..corners)
+        .map(|i| {
+            let t = std::f64::consts::TAU * f64::from(i) / f64::from(corners);
+            [10.0 * libm::cos(t), 10.0 * libm::sin(t), 0.0]
+        })
+        .collect();
+    let built = silico_kernel::extrude(&silico_kernel::Profile { points }, 1.0, None).unwrap();
+    let data = silico_core::kernel::ShapeData::checked(
+        silico_core::kernel::Blob::inline(silico_kernel::to_brep(&built.shape).unwrap()),
+        true,
+    );
+    let mut worker = silico_core::kernel::KernelWorker::start_worker(std::path::Path::new(env!(
+        "CARGO_BIN_EXE_silico-kernel-worker"
+    )))
+    .unwrap();
+    let refused = worker
+        .run(silico_core::kernel::KernelRequest::describe_all(&data))
+        .unwrap_err();
+    assert_eq!(refused.code(), silico_core::ErrorCode::InvalidInput);
+    assert_eq!(refused.parameter(), Some("shape"));
+    assert!(
+        refused
+            .message()
+            .contains("the shape has 2042 faces, edges, and vertices, more than the 1000"),
+        "{}",
+        refused.message()
+    );
+    let d = worker.describe(&data).unwrap();
+    assert_eq!(
+        (d.faces.len(), d.edges.len(), d.vertices.len()),
+        (342, 1020, 680)
+    );
+}

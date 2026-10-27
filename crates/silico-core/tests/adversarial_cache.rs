@@ -1113,7 +1113,8 @@ fn a_kept_description_refusal_this_core_wouldnt_keep_is_described_again() {
             .iter()
             .filter(|call| call.op.name() == "Describe")
             .count();
-        assert_eq!(describes, 3, "{refusal:?}");
+        // The block (26 elements) described again in one request.
+        assert_eq!(describes, 1, "{refusal:?}");
         assert_eq!(
             again.description(&FeatureId::new("k7f2qx3m").unwrap()),
             block.description(),
@@ -1287,7 +1288,8 @@ fn a_kept_description_no_worker_could_send_is_described_again_its_summary_kept()
         .iter()
         .filter(|call| call.op.name() == "Describe")
         .count();
-    assert_eq!(describes, 3);
+    // The block (26 elements) described again in one request.
+    assert_eq!(describes, 1);
     assert!(again.drift().is_empty(), "{:?}", again.drift());
     let (_, remeasured) = built(&again, "k7f2qx3m");
     assert_eq!(remeasured.summary(), block.summary());

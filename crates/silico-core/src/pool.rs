@@ -34,7 +34,7 @@ use std::ops::Bound;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::ExitStatus;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
@@ -126,6 +126,8 @@ impl<T> Outcome<T> {
 #[must_use = "a request's outcome is only had by waiting for it"]
 pub struct Pending<T> {
     name: &'static str,
+    /// Set when its caller gives it up ([`Pending::cancel`]); the queued request holds it too.
+    cancelled: Arc<AtomicBool>,
     /// What ran it, for the error if it stops first: `kernel pool`, `fake kernel`.
     kernel: &'static str,
     /// Whether a client of the kernel submitted it ([`Clients::client`]), not the kernel's
@@ -146,10 +148,24 @@ impl<T> Pending<T> {
     ) -> Self {
         Self {
             name,
+            cancelled: Arc::new(AtomicBool::new(false)),
             kernel,
             client: client != ClientId::KERNEL,
             outcome,
         }
+    }
+
+    /// What the queued request holds to know it was given up.
+    pub(crate) fn cancelled(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancelled)
+    }
+
+    /// Gives the request up: one still waiting for a worker is dropped without running, and
+    /// one already running runs on, its result dropped. For a caller that no longer wants
+    /// what it asked for (a description whose other batch failed), so a worker isn't spent on
+    /// it; its generation, and every other request of it, go on as they were.
+    pub fn cancel(self) {
+        self.cancelled.store(true, Ordering::Release);
     }
 
     /// The outcome of the request once its kernel has stopped before running it.
@@ -205,6 +221,9 @@ fn stopped(kernel: &str, name: &str, client: bool) -> Error {
 pub(crate) trait ClientTask {
     fn client(&self) -> ClientId;
     fn generation(&self) -> Generation;
+    /// Whether its caller gave it up ([`Pending::cancel`]) before it ran: it's dropped
+    /// without running when its turn comes.
+    fn cancelled(&self) -> bool;
 }
 
 /// A kernel's clients ([`Clients`]) and their requests waiting, kept by the pool and the
@@ -284,24 +303,42 @@ impl<T: ClientTask + ?Sized> ClientQueues<T> {
         self.queued
     }
 
+    /// How many of the requests waiting their callers gave up: each to be dropped unrun
+    /// when its turn comes ([`next`](Self::next)).
+    #[cfg(feature = "fake")]
+    pub(crate) fn cancelled_waiting(&self) -> usize {
+        self.queues
+            .values()
+            .flatten()
+            .filter(|task| task.cancelled())
+            .count()
+    }
+
     /// The next request to take: the first waiting of the next client after the one whose
     /// request was taken last, round the clients in order, so each client's turn comes.
     pub(crate) fn next(&mut self) -> Option<Box<T>> {
-        let after = self.turn.map_or(Bound::Unbounded, Bound::Excluded);
-        let client = self
-            .queues
-            .range((after, Bound::Unbounded))
-            .next()
-            .or_else(|| self.queues.first_key_value())
-            .map(|(&client, _)| client)?;
-        let queue = self.queues.get_mut(&client)?;
-        let task = queue.pop_front()?;
-        if queue.is_empty() {
-            self.queues.remove(&client);
+        loop {
+            let after = self.turn.map_or(Bound::Unbounded, Bound::Excluded);
+            let client = self
+                .queues
+                .range((after, Bound::Unbounded))
+                .next()
+                .or_else(|| self.queues.first_key_value())
+                .map(|(&client, _)| client)?;
+            let queue = self.queues.get_mut(&client)?;
+            let task = queue.pop_front()?;
+            if queue.is_empty() {
+                self.queues.remove(&client);
+            }
+            self.queued -= 1;
+            // Given up by its caller: dropped unrun, nobody waiting for it, and the client's
+            // turn not taken.
+            if task.cancelled() {
+                continue;
+            }
+            self.turn = Some(client);
+            return Some(task);
         }
-        self.queued -= 1;
-        self.turn = Some(client);
-        Some(task)
     }
 
     /// Every request waiting, taken from the queues, client by client.
@@ -866,6 +903,7 @@ impl Shared {
         let task = Box::new(Submitted {
             client,
             generation,
+            cancelled: pending.cancelled(),
             request,
             reply,
             span: tracing::Span::current(),
@@ -1028,6 +1066,8 @@ trait Task: ClientTask + Send {
 struct Submitted<T> {
     client: ClientId,
     generation: Generation,
+    /// Its caller's [`Pending::cancel`].
+    cancelled: Arc<AtomicBool>,
     request: KernelRequest<T>,
     reply: SyncSender<Outcome<T>>,
     /// The span current where the request was submitted.
@@ -1042,6 +1082,10 @@ impl<T> ClientTask for Submitted<T> {
     fn generation(&self) -> Generation {
         self.generation
     }
+
+    fn cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
 }
 
 impl<T: Send + 'static> Task for Submitted<T> {
@@ -1055,6 +1099,7 @@ impl<T: Send + 'static> Task for Submitted<T> {
         let Submitted {
             client,
             generation,
+            cancelled: _,
             request,
             reply,
             span,
@@ -1557,6 +1602,52 @@ mod tests {
         fn generation(&self) -> Generation {
             self.1
         }
+
+        fn cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    /// A request of `.0`'s, numbered `.1`, its caller having given it up if `.2`.
+    struct Given(ClientId, u32, bool);
+
+    impl ClientTask for Given {
+        fn client(&self) -> ClientId {
+            self.0
+        }
+
+        fn generation(&self) -> Generation {
+            Generation(0)
+        }
+
+        fn cancelled(&self) -> bool {
+            self.2
+        }
+    }
+
+    #[test]
+    fn a_request_given_up_is_dropped_unrun_and_the_turn_is_the_next_clients() {
+        // Client 1 queues 0, 1 (given up), and 2; client 2 queues 0, and then 1 (given up),
+        // its last. Taken in turn: 1's 0, 2's 0, then 1's 1 is passed over for 1's 2, and 2's
+        // 1, the last waiting, is dropped too: nothing more, and nothing counted waiting.
+        let mut queues = ClientQueues::new();
+        let (one, two) = (queues.add_client(), queues.add_client());
+        for task in [
+            Given(one, 0, false),
+            Given(one, 1, true),
+            Given(one, 2, false),
+            Given(two, 0, false),
+            Given(two, 1, true),
+        ] {
+            queues.push(Box::new(task));
+        }
+        assert_eq!(queues.queued(), 5);
+        let taken: Vec<(u64, u32)> = std::iter::from_fn(|| queues.next())
+            .map(|task| (task.0.number(), task.1))
+            .collect();
+        assert_eq!(taken, [(1, 0), (2, 0), (1, 2)]);
+        assert_eq!(queues.queued(), 0);
+        assert!(queues.next().is_none());
     }
 
     /// Bookkeeping with three clients beside the kernel's own, and `counts[i]` requests

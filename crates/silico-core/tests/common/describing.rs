@@ -18,8 +18,8 @@ pub fn asked_of(kernel: &FakeKernel, picks: impl Fn(&Op) -> bool) -> usize {
 
 /// How many requests `picks` a kernel has started once it has started `n` of them, and a
 /// little longer, failing after ten seconds: `n`, unless it started more. A description
-/// that fails leaves its other batches in flight to run, unwaited, so they may start after
-/// the model is published.
+/// that fails cancels its other batches in flight, but one a worker had already taken runs
+/// on, unwaited, so it may start after the model is published.
 pub fn settled(kernel: &FakeKernel, picks: impl Fn(&Op) -> bool, n: usize) -> usize {
     let deadline = Instant::now() + Duration::from_secs(10);
     while asked_of(kernel, &picks) < n {

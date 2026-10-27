@@ -55,6 +55,10 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             .map_err(failure)?;
             described(first, total, description)
         }
+        Op::DescribeAll { shape } => {
+            let shape = shape_of(&shape)?;
+            describe_all(&shape)
+        }
         Op::Distance {
             shape,
             first,
@@ -220,22 +224,74 @@ fn check_finite(summary: &ShapeSummary) -> Result<(), Failure> {
     measures_finite(summary.volume, summary.area, summary.center, summary.bounds)
 }
 
+/// Every face, edge, and vertex of `shape` described ([`Op::DescribeAll`]): counted first
+/// (a description of none of a kind counts it), and refused as invalid input, before any is
+/// described, past [`DESCRIBE_BATCH`](silico_protocol::DESCRIBE_BATCH) in all, so no request
+/// describes more than a batch does; then each kind described from its first, and the whole
+/// checked as a batch is ([`check_description`]).
+fn describe_all(shape: &crate::Shape) -> Result<Reply, Failure> {
+    use silico_protocol::{DESCRIBE_BATCH, ElementKind};
+    let total = |kind| {
+        crate::describe(shape, kind, 1, 0)
+            .map(|(total, _)| total)
+            .map_err(failure)
+    };
+    let (faces, edges, vertices) = (
+        total(ElementKind::Face)?,
+        total(ElementKind::Edge)?,
+        total(ElementKind::Vertex)?,
+    );
+    let all = u64::from(faces) + u64::from(edges) + u64::from(vertices);
+    if all > u64::from(DESCRIBE_BATCH) {
+        return Err(Failure::new(Refusal::InvalidParameter {
+            parameter: "shape".to_owned(),
+            message: format!(
+                "the shape has {all} faces, edges, and vertices, more than the {DESCRIBE_BATCH} \
+                 one request describes: ask a batch of each kind at a time"
+            ),
+        }));
+    }
+    let of = |kind, count| {
+        crate::describe(shape, kind, 1, count)
+            .map(|(_, description)| description)
+            .map_err(failure)
+    };
+    let description = Description {
+        faces: of(ElementKind::Face, faces)?.faces,
+        edges: of(ElementKind::Edge, edges)?.edges,
+        vertices: of(ElementKind::Vertex, vertices)?.vertices,
+    };
+    check_description(1, &description)?;
+    Ok(Reply::DescribedAll {
+        faces,
+        edges,
+        vertices,
+        description,
+    })
+}
+
 /// A batch of a description, its first numbered `first`, as the worker sends it: refused,
 /// naming the value by the kernel's number for its element, if one isn't finite, or is out
 /// of what any element has (the core's own check, `Description::validate`, which the
 /// worker runs too, so a description the core would refuse is refused as data, a fact
 /// about the shape, not a worker's fault).
 fn described(first: u32, total: u32, description: Description) -> Result<Reply, Failure> {
+    check_description(first, &description)?;
+    Ok(Reply::Described { total, description })
+}
+
+/// A description, its first of each kind numbered `first`, refused if a value isn't finite
+/// or is out of what any element has ([`described`]).
+fn check_description(first: u32, description: &Description) -> Result<(), Failure> {
     if let Some((quantity, value)) = description.non_finite(first) {
         return Err(Failure::new(Refusal::NotFinite {
             quantity: quantity.to_string(),
             value,
         }));
     }
-    match description.validate(first) {
-        Err(problem) => Err(Failure::new(Refusal::DescriptionImpossible { problem })),
-        Ok(()) => Ok(Reply::Described { total, description }),
-    }
+    description
+        .validate(first)
+        .map_err(|problem| Failure::new(Refusal::DescriptionImpossible { problem }))
 }
 
 /// A distance OCCT found, refused if its value or a point of its witness isn't finite.

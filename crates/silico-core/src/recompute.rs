@@ -62,11 +62,11 @@ use crate::document::{
 };
 use crate::elements::Entry;
 use crate::kernel::{
-    BooleanOp, BuiltData, DESCRIBE_BATCH, FaceRegions, Generation, History, Kernel, KernelRequest,
-    Primitive, ShapeData, ShapeSummary, SweepKind,
+    BooleanOp, BuiltData, DESCRIBE_BATCH, DescribedBatch, ElementKind, FaceRegions, Generation,
+    History, Kernel, KernelRequest, Primitive, ShapeData, ShapeSummary, SweepKind,
 };
 use crate::naming::{ElementMap, Maker, NAMING_SCHEME, OpCode};
-use crate::pool::Outcome;
+use crate::pool::{Outcome, Pending};
 use crate::profile::Profile;
 use crate::references::EdgeNames;
 use crate::sketch::{SketchSolution, SketchSolver, SketchWorker, SolveStopper};
@@ -120,11 +120,12 @@ pub struct Built {
 pub(crate) enum Described {
     /// Described whole: each of its faces, edges, and vertices, in the kernel's numbering.
     Whole(Description),
-    /// Refused for the shape's values (`kept`): it would be refused again, so it isn't
-    /// asked again in the session, nor, if it lasts (`cache::lasting`), from the cache.
+    /// Refused for the shape's values, or hung ([`kept_undescribed`]): it would be again, so
+    /// it isn't asked again in the session, nor, if it lasts (`cache::lasting`: a refusal
+    /// for invalid input or an invalid result, never a hang), from the cache.
     Refused(Error),
-    /// A worker's failure (a crash, a hang, a reply no shape has): asked again by the next
-    /// recompute.
+    /// Any other failure of a worker (a crash, a reply no shape has): asked again by the
+    /// next recompute.
     Failed(Error),
 }
 
@@ -2702,6 +2703,17 @@ fn kept(error: &Error) -> bool {
     )
 }
 
+/// Whether a solid's description that couldn't be had is kept for the session, beside its
+/// summary, and not asked again until something changes its step (a fresh rebuild asks
+/// again): refused for its values, as [`kept`] judges, or hung. A describe that hangs would
+/// hang again on the same solid, and each rebuild asking it again would hold a worker for
+/// the kernel's timeout (a viewport reading every rebuild would ask it every time). Not on
+/// disk: a hang isn't a fact about the shape (`cache::lasting`), so the next session asks
+/// once again. A crash, or a reply no shape has, is asked again, as before.
+fn kept_undescribed(error: &Error) -> bool {
+    kept(error) || error.code() == ErrorCode::WorkerTimeout
+}
+
 /// A job a recompute's threads run: making a step, or measuring a feature's solid.
 #[derive(Debug, Clone, Copy)]
 enum Job {
@@ -3605,23 +3617,53 @@ impl<K: Kernel + 'static> Engine<K> {
         let described = match self.describe(&built.shape, &summary, generation) {
             Outcome::Superseded => return Outcome::Superseded,
             Outcome::Done(Ok(description)) => Described::Whole(description),
-            Outcome::Done(Err(error)) if kept(&error) => Described::Refused(error),
+            Outcome::Done(Err(error)) if kept_undescribed(&error) => Described::Refused(error),
             Outcome::Done(Err(error)) => Described::Failed(error),
         };
         Outcome::Done(Ok(built.with_described(described)))
     }
 
-    /// Each of `shape`'s faces, edges, and vertices described, for `generation`: batches of
-    /// at most [`DESCRIBE_BATCH`](crate::kernel::DESCRIBE_BATCH) planned from `summary`'s
-    /// counts, [`DESCRIBE_AT_ONCE`] of them in flight at a time (each carries the shape),
-    /// joined in order. Each batch's total is checked against the summary's count, and the
-    /// whole against the summary, before it's taken.
+    /// Each of `shape`'s faces, edges, and vertices described, for `generation`: in one
+    /// request if `summary` counts at most [`DESCRIBE_BATCH`](crate::kernel::DESCRIBE_BATCH)
+    /// of them in all ([`KernelRequest::describe_all`]), else in batches of at most that many
+    /// planned from its counts, [`DESCRIBE_AT_ONCE`] of them in flight at a time (each carries
+    /// the shape), joined in order. Each batch's total is checked against the summary's count, and the
+    /// whole against the summary, before it's taken. A batch that fails gives the
+    /// description up: the batches still in flight are cancelled ([`Pending::cancel`]), so no
+    /// worker is spent on what won't be used.
     fn describe(
         &self,
         shape: &ShapeData,
         summary: &ShapeSummary,
         generation: Generation,
     ) -> Outcome<Description> {
+        let all = u64::from(summary.faces) + u64::from(summary.edges) + u64::from(summary.vertices);
+        if all <= u64::from(DESCRIBE_BATCH) {
+            let all = match self
+                .kernel
+                .submit(generation, KernelRequest::describe_all(shape))
+                .wait()
+            {
+                Outcome::Done(Ok(all)) => all,
+                Outcome::Done(Err(error)) => return Outcome::Done(Err(error)),
+                Outcome::Superseded => return Outcome::Superseded,
+            };
+            let totals = [
+                (ElementKind::Face, all.faces),
+                (ElementKind::Edge, all.edges),
+                (ElementKind::Vertex, all.vertices),
+            ];
+            if let Some(fault) = totals
+                .into_iter()
+                .find_map(|(kind, total)| crate::kernel::total_fault(summary, kind, total))
+            {
+                return Outcome::Done(Err(fault));
+            }
+            return match crate::kernel::description_fault(summary, &all.description) {
+                None => Outcome::Done(Ok(all.description)),
+                Some(fault) => Outcome::Done(Err(crate::kernel::description_error(fault))),
+            };
+        }
         let mut planned = silico_protocol::batches(summary.faces, summary.edges, summary.vertices);
         let mut description = Description {
             faces: Vec::new(),
@@ -3633,13 +3675,20 @@ impl<K: Kernel + 'static> Engine<K> {
             .any(|&n| n > DESCRIBE_BATCH);
         let at_once = if large { DESCRIBE_AT_ONCE } else { 1 };
         let mut in_flight = VecDeque::new();
+        // The description given up: every batch still in flight cancelled.
+        let given_up = |in_flight: VecDeque<(ElementKind, Pending<DescribedBatch>)>, error| {
+            for (_, pending) in in_flight {
+                pending.cancel();
+            }
+            Outcome::Done(Err(error))
+        };
         loop {
             while in_flight.len() < at_once
                 && let Some((kind, first, count)) = planned.next()
             {
                 let request = match KernelRequest::describe(shape, kind, first, count) {
                     Ok(request) => request,
-                    Err(error) => return Outcome::Done(Err(error)),
+                    Err(error) => return given_up(in_flight, error),
                 };
                 in_flight.push_back((kind, self.kernel.submit(generation, request)));
             }
@@ -3649,13 +3698,14 @@ impl<K: Kernel + 'static> Engine<K> {
             match pending.wait() {
                 Outcome::Done(Ok(batch)) => {
                     if let Some(fault) = crate::kernel::total_fault(summary, kind, batch.total) {
-                        return Outcome::Done(Err(fault));
+                        return given_up(in_flight, fault);
                     }
                     description.faces.extend(batch.description.faces);
                     description.edges.extend(batch.description.edges);
                     description.vertices.extend(batch.description.vertices);
                 }
-                Outcome::Done(Err(error)) => return Outcome::Done(Err(error)),
+                Outcome::Done(Err(error)) => return given_up(in_flight, error),
+                // The generation's other requests are superseded with it.
                 Outcome::Superseded => return Outcome::Superseded,
             }
         }

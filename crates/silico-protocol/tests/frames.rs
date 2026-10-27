@@ -253,6 +253,9 @@ fn every_op() -> Vec<Op> {
             first: 1001,
             count: u32::MAX,
         },
+        Op::DescribeAll {
+            shape: ShapeData::checked(Blob::inline(vec![8, 9, 10]), false),
+        },
         Op::ExportMesh {
             shape: ShapeData::checked(Blob::inline(vec![8]), true),
             tolerance: 0.1,
@@ -391,9 +394,10 @@ fn every_op() -> Vec<Op> {
             Op::Classify { .. } => 45,
             Op::PointDistance { .. } => 46,
             Op::ExportStep(_) => 47,
+            Op::DescribeAll { .. } => 48,
         })
         .collect();
-    assert_eq!(indices, (0..48).collect(), "an operation has no case");
+    assert_eq!(indices, (0..49).collect(), "an operation has no case");
     ops
 }
 
@@ -554,6 +558,16 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             solutions: u32::MAX,
         })),
         // Every kind of surface and curve, at extremes a frame must carry exactly.
+        Ok(Reply::DescribedAll {
+            faces: 0,
+            edges: u32::MAX,
+            vertices: 1,
+            description: Description {
+                faces: Vec::new(),
+                edges: Vec::new(),
+                vertices: vec![[f64::MIN_POSITIVE, -0.0, 1e300]],
+            },
+        }),
         Ok(Reply::Described {
             total: u32::MAX,
             description: Description {
@@ -737,6 +751,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::Classified { .. }) => 21,
             Ok(Reply::MeshAt(_)) => 22,
             Ok(Reply::StepFile(_)) => 23,
+            Ok(Reply::DescribedAll { .. }) => 24,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
@@ -750,7 +765,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         .collect();
     assert_eq!(
         indices,
-        (0..24).collect(),
+        (0..25).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -1156,6 +1171,8 @@ fn every_op_has_its_own_name() {
             "Prism",
             "PrismThroughAll",
             "Revolution",
+            "Describe",
+            // DescribeAll, a describe of every element at once, named as a batch is.
             "Describe",
             "ExportMesh",
             "Distance",

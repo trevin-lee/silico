@@ -580,6 +580,65 @@ impl KernelRequest<DescribedBatch> {
     }
 }
 
+/// Every face, edge, and vertex of a shape described ([`KernelRequest::describe_all`]), and how
+/// many of each it has.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DescribedAll {
+    pub faces: u32,
+    pub edges: u32,
+    pub vertices: u32,
+    pub description: Description,
+}
+
+impl KernelRequest<DescribedAll> {
+    /// Every face, edge, and vertex of `shape` described, for a shape with at most
+    /// [`DESCRIBE_BATCH`] of them in all: one request where [`describe`](KernelRequest::describe)
+    /// would take a batch of each kind ([`Op::DescribeAll`]). The reply is checked as a
+    /// batch is ([`batch_problem`]): its values in range, and each kind's list as long as the
+    /// count it gives.
+    pub fn describe_all(shape: &ShapeData) -> Self {
+        let op = Op::DescribeAll {
+            shape: shape.clone(),
+        };
+        Self::new(op, move |name, reply| match reply {
+            Reply::DescribedAll {
+                faces,
+                edges,
+                vertices,
+                description,
+            } => match all_problem([faces, edges, vertices], &description) {
+                None => Ok(DescribedAll {
+                    faces,
+                    edges,
+                    vertices,
+                    description,
+                }),
+                Some(problem) => Err(description_error(problem)),
+            },
+            other => Err(unexpected(name, &other)),
+        })
+    }
+}
+
+/// What's wrong with a reply to [`Op::DescribeAll`] of `counts` faces, edges, and vertices,
+/// if anything: a value out of range ([`Description::validate`]), or a kind's list not as
+/// long as its count.
+fn all_problem(counts: [u32; 3], description: &Description) -> Option<String> {
+    if let Err(problem) = description.validate(1) {
+        return Some(problem);
+    }
+    let lengths = [
+        description.faces.len(),
+        description.edges.len(),
+        description.vertices.len(),
+    ];
+    ["faces", "edges", "vertices"]
+        .into_iter()
+        .zip(counts.into_iter().zip(lengths))
+        .find(|(_, (count, length))| *length as u64 != u64::from(*count))
+        .map(|(kind, (count, length))| format!("it describes {length} {kind}, not {count}"))
+}
+
 impl KernelRequest<Distance> {
     /// The least distance between `first`, an element of `shape`, and `second`, one of
     /// `other` (or of `shape` too, if there's no other), as bounded, with a pair of points

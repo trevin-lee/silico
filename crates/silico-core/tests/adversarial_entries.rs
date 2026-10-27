@@ -69,6 +69,21 @@ fn line(n: u32) -> EdgeDescription {
 fn forged_box(faces: Vec<FaceDescription>, edges: Option<Vec<EdgeDescription>>) -> Arc<Model> {
     let engine = Recompute::new(FakeKernel::new(2).unwrap());
     engine.kernel().answer_instead(move |op| match op {
+        // Every element at once: the faces and edges given, the rest the fake's.
+        Op::DescribeAll { shape } => {
+            let fake = FakeKernel::described(shape)?;
+            let edges = edges.clone().unwrap_or(fake.edges);
+            Some(Reply::DescribedAll {
+                faces: faces.len() as u32,
+                edges: edges.len() as u32,
+                vertices: fake.vertices.len() as u32,
+                description: Description {
+                    faces: faces.clone(),
+                    edges,
+                    vertices: fake.vertices,
+                },
+            })
+        }
         Op::Describe {
             kind: ElementKind::Face,
             first,
@@ -568,7 +583,7 @@ fn a_solid_not_described_is_refused_naming_it_and_its_neighbour_still_lists() {
     // refused, naming it and why; the first box still lists, and a query of it still runs.
     let engine = Recompute::new(FakeKernel::new(2).unwrap());
     engine.kernel().refuse(|op| match op {
-        Op::Describe { shape, .. }
+        Op::Describe { shape, .. } | Op::DescribeAll { shape }
             if FakeKernel::describe(shape).is_some_and(|d| d.contains("5, 0, 0")) =>
         {
             Some(silico_core::Error::new(
@@ -606,7 +621,7 @@ fn every_body_not_described_is_said_not_only_the_first() {
     // order, two in all.
     let engine = Recompute::new(FakeKernel::new(2).unwrap());
     engine.kernel().refuse(|op| {
-        matches!(op, Op::Describe { .. })
+        matches!(op, Op::Describe { .. } | Op::DescribeAll { .. })
             .then(|| silico_core::Error::new(ErrorCode::KernelFailed, "no describing today"))
     });
     let model = published(&engine, checked(TWO_BODIES));

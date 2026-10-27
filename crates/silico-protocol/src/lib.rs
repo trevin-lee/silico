@@ -298,6 +298,13 @@ pub enum Op {
         element: ElementRef,
         point: [f64; 3],
     },
+    /// The geometry and measures of every face, edge, and vertex of `shape`, of a shape that
+    /// has at most [`DESCRIBE_BATCH`] of them in all: one request where [`Op::Describe`] would
+    /// take three, a batch of each kind (docs/design/m4.4-describe.md). Named `Describe`, as
+    /// it is one, so its refusals read, and are kept, as a batch's. Refused as invalid input,
+    /// before anything is described, for a shape of more elements than a batch. Replies with
+    /// [`Reply::DescribedAll`].
+    DescribeAll { shape: ShapeData },
 }
 
 impl Op {
@@ -328,6 +335,7 @@ impl Op {
             Op::MakeFaces(_) => "MakeFaces",
             Op::Prism { .. } => "Prism",
             Op::PrismThroughAll { .. } => "PrismThroughAll",
+            Op::DescribeAll { .. } => "Describe",
             Op::Revolution { .. } => "Revolution",
             Op::Echo { .. } => "Echo",
             Op::Debug(op) => op.name(),
@@ -510,6 +518,14 @@ pub enum Reply {
     /// A display mesh, and the deflection it was meshed at ([`Op::Tessellate`] with
     /// `at_least_the_floor`).
     MeshAt(MeshAt),
+    /// Every element of a shape ([`Op::DescribeAll`]): how many faces, edges, and vertices it
+    /// has, and each described, from the first of each kind.
+    DescribedAll {
+        faces: u32,
+        edges: u32,
+        vertices: u32,
+        description: Description,
+    },
 }
 
 impl Reply {
@@ -528,6 +544,7 @@ impl Reply {
             Reply::Rendered { .. } => "Rendered",
             Reply::Classified { .. } => "Classified",
             Reply::MeshAt { .. } => "MeshAt",
+            Reply::DescribedAll { .. } => "DescribedAll",
             Reply::Solved(_) => "Solved",
             Reply::DragStarted { .. } => "DragStarted",
             Reply::Moved(_) => "Moved",
