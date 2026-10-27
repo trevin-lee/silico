@@ -7,8 +7,9 @@
 use super::bracket::*;
 use super::model::published;
 
-use silico_core::document::chain::{Rewired, insert, move_feature, remove};
-use silico_core::document::{Checked, Document, FeatureId, read, validate};
+use silico_core::Error;
+use silico_core::document::chain::{self, Inserted, Moved, Removed, Rewired};
+use silico_core::document::{Checked, Document, Feature, FeatureId, read, validate};
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::recompute::Recompute;
 
@@ -25,7 +26,7 @@ fn document(features: &[&str]) -> Document {
 }
 
 /// A feature as the document reads it, from its JSON.
-fn feature(json: &str) -> silico_core::document::Feature {
+fn feature(json: &str) -> Feature {
     document(&[json]).features.remove(0)
 }
 
@@ -33,6 +34,31 @@ fn feature(json: &str) -> silico_core::document::Feature {
 fn on(json: &str, base: &str) -> String {
     let at = json.find(r#""base": ""#).unwrap() + r#""base": ""#.len();
     format!("{}{base}{}", &json[..at], &json[at + 8..])
+}
+
+/// `document` through the gate: the edits take only a document it took.
+fn gated(document: &Document) -> Checked {
+    Checked::new(document.clone()).unwrap_or_else(|e| panic!("{e:?}"))
+}
+
+fn insert(
+    document: &Document,
+    feature: Feature,
+    before: Option<&FeatureId>,
+) -> Result<Inserted, Error> {
+    chain::insert(&gated(document), feature, before)
+}
+
+fn remove(document: &Document, id: &FeatureId) -> Result<Removed, Error> {
+    chain::remove(&gated(document), id)
+}
+
+fn move_feature(
+    document: &Document,
+    id: &FeatureId,
+    before: Option<&FeatureId>,
+) -> Result<Moved, Error> {
+    chain::move_feature(&gated(document), id, before)
 }
 
 fn bracket() -> Document {
@@ -491,4 +517,896 @@ fn a_stored_names_makers_are_every_feature_it_writes_once_each_in_order() {
     .unwrap();
     let makers: Vec<&str> = name.features().iter().map(|id| id.as_str()).collect();
     assert_eq!(makers, ["p0000001", "s0000001"]);
+}
+
+// ---------------------------------------------------------------------------------------
+// Break-it: hostile documents and arguments. Expected values from the design's rules (the
+// M5.0 design, section 7 and A9), the gate, the fake kernel's rebuild, and a model of the
+// chain written apart from `document::chain`: every body's chain is its `base` links, so
+// after an edit each chain is its members in their new timeline order, each built on the
+// one before it, and a boolean's tool is the last of its tool's chain.
+
+mod hostile {
+    use super::*;
+
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::time::{Duration, Instant};
+
+    use proptest::prelude::*;
+    use silico_core::ErrorCode;
+    use silico_core::document::Operation;
+    use silico_core::recompute::FeatureOutcome;
+
+    fn config(cases: u32) -> ProptestConfig {
+        ProptestConfig {
+            cases,
+            failure_persistence: None,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0xc4a1_7ed1),
+            ..ProptestConfig::default()
+        }
+    }
+
+    const FUSE: &str = r#"{"id": "j0000001", "type": "fuse", "v": 1, "name": "Fuse", "base": "b0000001", "tool": "t0000001"}"#;
+    /// A fillet of the fused solid's edge that came from the tool: an edge of t0000001's, as
+    /// the fuse kept it, which the fake builds.
+    const ROUND_TOOL_EDGE: &str = r#"{"id": "r0000001", "type": "fillet", "v": 1, "name": "Round", "base": "j0000001", "edges": ["t0000001.box.Edge1"], "radius": 0.5}"#;
+
+    /// Every feature's outcome in `document`'s rebuild on the fake: its errors' messages,
+    /// or the feature it's blocked on; none for one built.
+    fn rebuilt(document: &Document) -> BTreeMap<String, Vec<String>> {
+        let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new());
+        let model = published(&engine, Checked::new(document.clone()).unwrap());
+        document
+            .features
+            .iter()
+            .map(|f| {
+                let outcome = model.outcome(&f.id).unwrap();
+                let said = match outcome {
+                    FeatureOutcome::Blocked { on } => vec![format!("blocked on {on}")],
+                    other => other
+                        .errors()
+                        .iter()
+                        .map(|e| e.message().to_owned())
+                        .collect(),
+                };
+                (f.id.to_string(), said)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_fuse_fixture_builds_its_fillet_of_the_tools_edge() {
+        // The two tests below rest on this: as written, every feature builds.
+        let fused = document(&[BLOCK, TOOL, FUSE, ROUND_TOOL_EDGE]);
+        validate(&fused).unwrap();
+        assert!(
+            rebuilt(&fused).values().all(Vec::is_empty),
+            "{:?}",
+            rebuilt(&fused)
+        );
+    }
+
+    // A break-it finding: the move was taken and the gate passed it, and the fillet, which
+    // names an edge of the fuse's tool, then built on the block alone, where that edge isn't
+    // (reference_broken at the rebuild). The lineage rule (pending Trevin, extending the
+    // design's "names its elements"; section 12, item 2b) refuses it from the text: r0000001
+    // names t0000001's elements, and its base would no longer be built from t0000001.
+    #[test]
+    fn a_fuse_moved_past_a_fillet_naming_its_tools_edge_is_refused_naming_both() {
+        let fused = document(&[BLOCK, TOOL, FUSE, ROUND_TOOL_EDGE]);
+        let error = move_feature(&fused, &id("j0000001"), None).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::InvalidInput);
+        assert_eq!(error.feature(), Some("j0000001"));
+        assert_eq!(error.parameter(), Some("before"));
+        assert_eq!(
+            error.message(),
+            "r0000001 names elements of t0000001, which its base would no longer be built from once j0000001 moves there"
+        );
+        assert_eq!(
+            error.suggestion(),
+            Some("move j0000001 elsewhere, or remove r0000001 first")
+        );
+    }
+
+    // As above, for a removal: without j0000001, r0000001 would build on b0000001 alone.
+    #[test]
+    fn a_fuse_removed_under_a_fillet_naming_its_tools_edge_is_refused_naming_both() {
+        let fused = document(&[BLOCK, TOOL, FUSE, ROUND_TOOL_EDGE]);
+        let error = remove(&fused, &id("j0000001")).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::InvalidInput);
+        assert_eq!(error.feature(), Some("j0000001"));
+        assert_eq!(error.parameter(), Some("feature"));
+        assert_eq!(
+            error.message(),
+            "r0000001 names elements of t0000001, which its base would no longer be built from without j0000001"
+        );
+        assert_eq!(error.suggestion(), Some("remove r0000001 first"));
+    }
+
+    #[test]
+    fn the_fillet_removed_first_the_fuse_can_be_removed_and_leaves_both_solids() {
+        let fused = document(&[BLOCK, TOOL, FUSE, ROUND_TOOL_EDGE]);
+        let removed = remove(&fused, &id("r0000001")).unwrap();
+        assert_eq!(removed.rewired, []);
+        is_written(&removed.document, &document(&[BLOCK, TOOL, FUSE]));
+        let removed = remove(&removed.document, &id("j0000001")).unwrap();
+        assert_eq!(removed.rewired, []);
+        is_written(&removed.document, &document(&[BLOCK, TOOL]));
+    }
+
+    // Was a panic (index out of bounds in `join`'s walk down from the consumer) when the
+    // edits took any `Document`: a feature whose base is itself is its own consumer, and
+    // moved from the end, the walk started past the end of the timeline. The edits take a
+    // `Checked` document now, and the gate refuses this one, so it can't reach them.
+    #[test]
+    fn a_pad_on_itself_is_refused_by_the_gate_so_no_edit_takes_it() {
+        let alone = r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "One", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#;
+        let itself = r#"{"id": "p0000002", "type": "pad", "v": 1, "name": "More", "base": "p0000002", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#;
+        let unchecked = document(&[S0000001, alone, itself]);
+        let invalid = Checked::new(unchecked).unwrap_err();
+        assert!(
+            invalid
+                .errors()
+                .iter()
+                .any(|e| e.feature() == Some("p0000002") && e.parameter() == Some("base")),
+            "{invalid:?}"
+        );
+    }
+
+    #[test]
+    fn a_fuse_of_one_solid_with_itself_inserted_is_refused_as_the_gate_words_it() {
+        // h0000001 as both base and tool: the gate's words are "tool h0000001 is base too: a
+        // fuse takes two different solids". The insert must not word it as two consumers
+        // (h0000002 twice) and advise "h0000002's or h0000002's result".
+        let fuse = r#"{"id": "j0000001", "type": "fuse", "v": 1, "name": "Both", "base": "h0000001", "tool": "h0000001"}"#;
+        let error = insert(&bracket(), feature(fuse), Some(&id("h0000002"))).unwrap_err();
+        assert_eq!(error.feature(), Some("j0000001"));
+        // Was (a break-it finding): "j0000001 would be consumed twice: its base h0000001's
+        // solid is consumed by h0000002, and its tool h0000001's by h0000002", advising
+        // "use h0000002's or h0000002's result": neither said base and tool are one solid.
+        assert_eq!(error.parameter(), Some("feature.tool"));
+        assert_eq!(
+            error.message(),
+            "tool h0000001 is base too: a fuse takes two different solids"
+        );
+        assert_eq!(error.suggestion(), Some("give the fuse a different tool"));
+    }
+
+    /// `n` boxes, `b0000000` to `b{n-1}` in hexadecimal, nothing consuming any.
+    fn boxes(n: usize) -> Document {
+        let features: Vec<String> = (0..n)
+            .map(|i| {
+                format!(
+                    r#"{{"id": "b{i:07x}", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}}"#
+                )
+            })
+            .collect();
+        document(&features.iter().map(String::as_str).collect::<Vec<_>>())
+    }
+
+    /// How long `f` takes, and its result.
+    fn timed<T>(f: impl FnOnce() -> T) -> (Duration, T) {
+        let start = Instant::now();
+        let value = f();
+        (start.elapsed(), value)
+    }
+
+    // Was (a break-it finding): every edit found each feature of the result in the document
+    // before it by a scan (`rewired`), so its time grew with the square of the timeline:
+    // 20,000 boxes (2.4 MB) took 1.7 s in a debug build against the gate's 70 ms, and a
+    // document at the 16 MB limit (130,000 boxes) took over a minute to lose one. The edits
+    // index the document once now, as the gate does.
+    #[test]
+    fn removing_or_moving_one_of_40000_boxes_takes_about_as_long_as_the_gate() {
+        let document = boxes(40_000);
+        let (gate, checked) = timed(|| validate(&document));
+        checked.unwrap();
+        let bound = gate * 20 + Duration::from_millis(500);
+        let last = id("b0009c3f");
+        let document = gated(&document);
+        let (removing, removed) = timed(|| chain::remove(&document, &last));
+        assert_eq!(removed.unwrap().index, 39_999);
+        let (moving, moved) =
+            timed(|| chain::move_feature(&document, &last, Some(&id("b0000000"))));
+        assert_eq!(moved.unwrap().to, 0);
+        assert!(
+            removing <= bound && moving <= bound,
+            "remove {removing:?}, move {moving:?}, the gate {gate:?}"
+        );
+    }
+
+    /// A box, then `n` pockets each on the one before (`h0000001` on the box), of `s0000002`.
+    fn pocket_chain(n: usize) -> Document {
+        let mut features = vec![BLOCK.to_owned(), S0000002.to_owned()];
+        for i in 1..=n {
+            let base = if i == 1 {
+                "b0000001".to_owned()
+            } else {
+                format!("h{:07x}", i - 1)
+            };
+            features.push(format!(
+                r#"{{"id": "h{i:07x}", "type": "pocket", "v": 1, "name": "H", "base": "{base}", "sketch": "s0000002", "extent": {{"type": "through_all", "reversed": true}}}}"#
+            ));
+        }
+        document(&features.iter().map(String::as_str).collect::<Vec<_>>())
+    }
+
+    // Was (a break-it finding): a move walked the chain it joins finding each next member's
+    // consumer by a scan of the timeline, and checked each member against those found by
+    // another scan, so a move along a long chain was quadratic too (the walk, then
+    // `rewired`).
+    #[test]
+    fn moving_the_first_of_10000_pockets_to_the_chains_end_takes_about_as_long_as_the_gate() {
+        let document = pocket_chain(10_000);
+        let (gate, checked) = timed(|| validate(&document));
+        checked.unwrap();
+        let bound = gate * 20 + Duration::from_millis(500);
+        let document = gated(&document);
+        let (moving, moved) = timed(|| chain::move_feature(&document, &id("h0000001"), None));
+        let moved = moved.unwrap();
+        // The chain b, h2, ..., h10000, h1: two bases rewired.
+        assert_eq!(
+            moved.rewired,
+            [
+                rewired("h0000002", "base", Some("h0000001"), Some("b0000001")),
+                rewired("h0000001", "base", Some("b0000001"), Some("h0002710")),
+            ]
+        );
+        validate(&moved.document).unwrap();
+        assert!(moving <= bound, "move {moving:?}, the gate {gate:?}");
+    }
+
+    // Was (a break-it finding): the refusal listed every earlier solid nothing consumes as a
+    // candidate, all 20,000 of them (a 200 KB error), where a broken reference lists five;
+    // and each candidate was found by a scan of the timeline for its consumer, so the
+    // refusal was quadratic.
+    #[test]
+    fn a_roots_removal_refused_among_20000_unconsumed_boxes_lists_the_first_five_candidates() {
+        let mut features: Vec<String> = (0..20_000)
+            .map(|i| {
+                format!(
+                    r#"{{"id": "a{i:07x}", "type": "box", "v": 1, "name": "A", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}}"#
+                )
+            })
+            .collect();
+        features.push(BLOCK.to_owned());
+        features.push(S0000002.to_owned());
+        features.push(H0000001.replace("p0000001", "b0000001"));
+        let document = document(&features.iter().map(String::as_str).collect::<Vec<_>>());
+        let (gate, checked) = timed(|| validate(&document));
+        checked.unwrap();
+        let document = gated(&document);
+        let (refusing, error) = timed(|| chain::remove(&document, &id("b0000001")));
+        let error = error.unwrap_err();
+        assert_eq!(error.feature(), Some("b0000001"));
+        assert_eq!(
+            error.candidates(),
+            ["a0000000", "a0000001", "a0000002", "a0000003", "a0000004"]
+        );
+        assert!(
+            refusing <= gate * 20 + Duration::from_millis(500),
+            "refused in {refusing:?}, the gate {gate:?}"
+        );
+    }
+
+    #[test]
+    fn an_insert_before_its_own_input_is_left_to_the_gate_which_refuses_it() {
+        // A chamfer on h0000001 placed before p0000001: the chain rewires h0000002 to it,
+        // and the gate refuses the result, naming the chamfer's base as coming after it.
+        let inserted = insert(&bracket(), feature(CHAMFER), Some(&id("p0000001"))).unwrap();
+        let invalid = validate(&inserted.document).unwrap_err();
+        assert!(
+            invalid
+                .errors()
+                .iter()
+                .any(|e| e.feature() == Some("c0000002")
+                    && e.parameter() == Some("base")
+                    && e.message().contains("comes after this feature")),
+            "{invalid:?}"
+        );
+    }
+
+    #[test]
+    fn an_insert_under_an_id_the_document_has_is_refused_by_the_gate() {
+        // A pocket given h0000002's ID, on h0000001 before h0000002: the gate refuses the
+        // result for the ID twice; the original is untouched.
+        let pocket = r#"{"id": "h0000002", "type": "pocket", "v": 1, "name": "Again", "base": "h0000001", "sketch": "s0000003", "extent": {"type": "through_all", "reversed": true}}"#;
+        let original = bracket();
+        let inserted = insert(&original, feature(pocket), Some(&id("h0000002")));
+        if let Ok(inserted) = inserted {
+            let invalid = validate(&inserted.document).unwrap_err();
+            assert!(
+                invalid.errors().iter().any(|e| e.parameter() == Some("id")),
+                "{invalid:?}"
+            );
+        }
+        assert!(original.canonically_eq(&bracket()));
+    }
+
+    #[test]
+    fn a_stored_names_makers_are_each_feature_it_writes_once_through_every_kind_of_source() {
+        use silico_core::naming::{Maker, Name};
+        // Upper, lower, derived, and nested names, each feature as first written, once.
+        let fixtures = document(&[
+            r#"{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "A", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#,
+            r#"{"id": "bbbbbbbb", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#,
+            r#"{"id": "cccccccc", "type": "cut", "v": 1, "name": "C", "base": "aaaaaaaa", "tool": "bbbbbbbb"}"#,
+            r#"{"id": "ffffffff", "type": "fillet", "v": 1, "name": "F", "base": "cccccccc", "edges": ["aaaaaaaa.box.Edge1"], "radius": 1}"#,
+        ]);
+        let maker = |id: &FeatureId| {
+            fixtures
+                .features
+                .iter()
+                .find(|f| f.id == *id)
+                .map(|f| Maker::of(&f.operation))
+        };
+        for (text, expected) in [
+            ("aaaaaaaa.box.Edge1", &["aaaaaaaa"][..]),
+            (
+                "cccccccc.cut.Edge(G aaaaaaaa.box.Face6, G2/3 bbbbbbbb.box.Face1)",
+                &["cccccccc", "aaaaaaaa", "bbbbbbbb"],
+            ),
+            (
+                "ffffffff.fillet.Vertex(U2/3 aaaaaaaa.box.Face6, aaaaaaaa.box.Edge1)",
+                &["ffffffff", "aaaaaaaa"],
+            ),
+            (
+                "ffffffff.fillet.Edge(U cccccccc.cut.Edge(G bbbbbbbb.box.Face6))",
+                &["ffffffff", "cccccccc", "bbbbbbbb"],
+            ),
+            (
+                "ffffffff.fillet.Face(L aaaaaaaa.box.Edge1, aaaaaaaa.box.Edge2)",
+                &["ffffffff", "aaaaaaaa"],
+            ),
+            (
+                "ffffffff.fillet.Face(G cccccccc.cut.Edge(G aaaaaaaa.box.Face6, G2/3 bbbbbbbb.box.Face1))",
+                &["ffffffff", "cccccccc", "aaaaaaaa", "bbbbbbbb"],
+            ),
+        ] {
+            let name = Name::parse(text, &maker).unwrap_or_else(|e| panic!("{text}: {e:?}"));
+            let makers: Vec<&str> = name.features().iter().map(|id| id.as_str()).collect();
+            assert_eq!(makers, expected, "{text}");
+        }
+    }
+
+    // ---------------------------------------------------------------------------------
+    // The chain model, and random documents the gate takes.
+
+    /// A feature's `base`: none (a primitive's, a sketch's), optional (a pad's, a
+    /// revolve's), or needed.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum BaseRule {
+        Without,
+        Optional,
+        Needed,
+    }
+
+    fn rule(operation: &Operation) -> BaseRule {
+        match operation {
+            Operation::Pad { .. } | Operation::Revolve { .. } => BaseRule::Optional,
+            Operation::Fuse { .. }
+            | Operation::Cut { .. }
+            | Operation::Common { .. }
+            | Operation::Fillet { .. }
+            | Operation::Chamfer { .. }
+            | Operation::Pocket { .. }
+            | Operation::Groove { .. } => BaseRule::Needed,
+            _ => BaseRule::Without,
+        }
+    }
+
+    fn base_of(f: &Feature) -> Option<String> {
+        f.operation
+            .inputs()
+            .into_iter()
+            .find(|(field, _)| *field == "base")
+            .map(|(_, b)| b.to_string())
+    }
+
+    fn tool_of(f: &Feature) -> Option<String> {
+        f.operation
+            .inputs()
+            .into_iter()
+            .find(|(field, _)| *field == "tool")
+            .map(|(_, t)| t.to_string())
+    }
+
+    /// The features a feature's stored names name, read off the text: each name's first
+    /// word (the generator's names are a box's own edges).
+    fn named(f: &Feature) -> Vec<String> {
+        f.operation
+            .edges()
+            .iter()
+            .map(|e| e.as_str().split('.').next().unwrap().to_owned())
+            .collect()
+    }
+
+    /// `f` with its `base` and `tool` as given, where given: `Some(None)` leaves a pad
+    /// without a base.
+    fn with_inputs(f: &Feature, base: Option<Option<&str>>, tool: Option<&str>) -> Feature {
+        let mut f = f.clone();
+        if let Some(to) = base {
+            match &mut f.operation {
+                Operation::Pad { base, .. } | Operation::Revolve { base, .. } => {
+                    *base = to.map(id);
+                }
+                Operation::Fuse { base, .. }
+                | Operation::Cut { base, .. }
+                | Operation::Common { base, .. }
+                | Operation::Fillet { base, .. }
+                | Operation::Chamfer { base, .. }
+                | Operation::Pocket { base, .. }
+                | Operation::Groove { base, .. } => *base = id(to.unwrap()),
+                _ => {}
+            }
+        }
+        if let Some(to) = tool
+            && let Operation::Fuse { tool, .. }
+            | Operation::Cut { tool, .. }
+            | Operation::Common { tool, .. } = &mut f.operation
+        {
+            *tool = id(to);
+        }
+        f
+    }
+
+    /// Each feature's chain, by `base` links: the ID of its root.
+    fn roots(document: &Document) -> BTreeMap<String, String> {
+        let by_id: BTreeMap<String, &Feature> = document
+            .features
+            .iter()
+            .map(|f| (f.id.to_string(), f))
+            .collect();
+        let mut roots = BTreeMap::new();
+        for f in &document.features {
+            let mut at = f.id.to_string();
+            let mut seen = 0;
+            while let Some(base) = by_id.get(&at).and_then(|f| base_of(f)) {
+                at = base;
+                seen += 1;
+                assert!(seen <= document.features.len(), "a cycle");
+            }
+            roots.insert(f.id.to_string(), at);
+        }
+        roots
+    }
+
+    /// The document after `order` (the original's IDs, in the new order, `gone` left out),
+    /// each chain of `chains` (by its features' roots in the original) linked in that order,
+    /// and each boolean's tool the last of its tool's chain; or none where a chain's first
+    /// needs a base, a later one takes none, or the moved feature `made_tool` would become a
+    /// tool it wasn't.
+    fn relinked(
+        original: &Document,
+        order: &[String],
+        made_tool: Option<&str>,
+    ) -> Option<Document> {
+        let roots = roots(original);
+        let by_id: BTreeMap<String, &Feature> = original
+            .features
+            .iter()
+            .map(|f| (f.id.to_string(), f))
+            .collect();
+        let mut chains: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for id in order {
+            if by_id[id].operation.makes_solid() {
+                chains.entry(roots[id].as_str()).or_default().push(id);
+            }
+        }
+        let mut bases: BTreeMap<&str, Option<&str>> = BTreeMap::new();
+        for members in chains.values() {
+            for (i, &m) in members.iter().enumerate() {
+                match (i, rule(&by_id[m].operation)) {
+                    (0, BaseRule::Needed) => return None,
+                    (0, _) => {
+                        bases.insert(m, None);
+                    }
+                    (_, BaseRule::Without) => return None,
+                    (_, _) => {
+                        bases.insert(m, Some(members[i - 1]));
+                    }
+                }
+            }
+        }
+        let mut features = Vec::new();
+        for id in order {
+            let f = by_id[id];
+            let base = match rule(&f.operation) {
+                BaseRule::Without => None,
+                _ => Some(bases[id.as_str()]),
+            };
+            let tool = match tool_of(f) {
+                Some(old) => {
+                    let last = *chains.get(roots[&old].as_str())?.last()?;
+                    if Some(last) == made_tool && old != last {
+                        return None;
+                    }
+                    Some(last)
+                }
+                None => None,
+            };
+            features.push(with_inputs(f, base, tool));
+        }
+        let mut document = original.clone();
+        document.features = features;
+        validate(&document).ok()?;
+        lineage_kept(original, &document).then_some(document)
+    }
+
+    /// Every feature `id` is built from in `document`: itself, its inputs, and the sketches
+    /// they sweep, up every link.
+    fn built_from(document: &Document, id: &str) -> BTreeSet<String> {
+        let mut found = BTreeSet::new();
+        let mut todo = vec![id.to_owned()];
+        while let Some(at) = todo.pop() {
+            if found.insert(at.clone())
+                && let Some(f) = document.features.iter().find(|f| f.id.as_str() == at)
+            {
+                todo.extend(f.operation.uses().map(|u| u.to_string()));
+            }
+        }
+        found
+    }
+
+    /// The lineage rule (pending Trevin): each feature of `edited` whose base in `original`
+    /// was built from a feature whose elements it names has a base built from it still.
+    fn lineage_kept(original: &Document, edited: &Document) -> bool {
+        edited.features.iter().all(|f| {
+            let Some(base) = base_of(f) else {
+                return true;
+            };
+            let was = original
+                .features
+                .iter()
+                .find(|o| o.id == f.id)
+                .and_then(base_of)
+                .map(|b| built_from(original, &b))
+                .unwrap_or_default();
+            let now = built_from(edited, &base);
+            named(f)
+                .iter()
+                .filter(|m| **m != f.id.as_str())
+                .all(|m| now.contains(m) || !was.contains(m))
+        })
+    }
+
+    /// What the design says a move of `id` before `before` gives: the document, or a
+    /// refusal (none); unchanged where it stays.
+    fn move_model(original: &Document, id: &str, before: Option<&str>) -> Option<(Document, bool)> {
+        let ids: Vec<String> = original.features.iter().map(|f| f.id.to_string()).collect();
+        let from = ids.iter().position(|i| i == id).unwrap();
+        let target = before.map_or(ids.len(), |b| ids.iter().position(|i| i == b).unwrap());
+        if target == from || target == from + 1 {
+            return Some((original.clone(), false));
+        }
+        let mut order = ids.clone();
+        let moving = order.remove(from);
+        let to = if target > from { target - 1 } else { target };
+        order.insert(to, moving);
+        relinked(original, &order, Some(id)).map(|d| (d, true))
+    }
+
+    /// What A9 says removing `id` gives, or a refusal.
+    fn remove_model(original: &Document, id: &str) -> Option<Document> {
+        if original.features.iter().any(|f| {
+            f.operation.sketch().is_some_and(|s| s.as_str() == id)
+                || named(f).iter().any(|n| n == id)
+        }) {
+            return None;
+        }
+        let order: Vec<String> = original
+            .features
+            .iter()
+            .map(|f| f.id.to_string())
+            .filter(|i| i != id)
+            .collect();
+        relinked(original, &order, None)
+    }
+
+    /// A document the gate takes, made from `choices`: boxes, pads (alone or on a body),
+    /// pockets, fillets of a box's edge, booleans of two bodies, and a second sketch.
+    fn generated(choices: &[(u8, u8, u8)]) -> Document {
+        let mut texts = vec![S0000001.to_owned()];
+        let mut sketches = vec!["s0000001"];
+        let mut tips: Vec<String> = Vec::new();
+        let mut boxes: Vec<String> = Vec::new();
+        for (n, &(kind, a, b)) in choices.iter().enumerate() {
+            let pick = |list: &Vec<String>, k: u8| list[k as usize % list.len()].clone();
+            let sketch = sketches[b as usize % sketches.len()];
+            let mut kind = kind % 8;
+            if (matches!(kind, 2..=4) && tips.is_empty())
+                || (kind == 4 && boxes.is_empty())
+                || (kind == 5 && tips.len() < 2)
+                || (kind == 6 && sketches.len() == 2)
+            {
+                kind = 0;
+            }
+            let id = |prefix: char| format!("{prefix}{n:07}");
+            let text = match kind {
+                0 | 7 => {
+                    let id = id('b');
+                    tips.push(id.clone());
+                    boxes.push(id.clone());
+                    format!(
+                        r#"{{"id": "{id}", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}}"#
+                    )
+                }
+                1 => {
+                    let id = id('p');
+                    tips.push(id.clone());
+                    format!(
+                        r#"{{"id": "{id}", "type": "pad", "v": 1, "name": "P", "sketch": "{sketch}", "extent": {{"type": "one_side", "length": 5, "reversed": false}}}}"#
+                    )
+                }
+                2..=4 => {
+                    let base = pick(&tips, a);
+                    let (prefix, rest) = match kind {
+                        2 => (
+                            'p',
+                            format!(
+                                r#""type": "pad", "v": 1, "name": "P", "base": "{base}", "sketch": "{sketch}", "extent": {{"type": "one_side", "length": 5, "reversed": false}}"#
+                            ),
+                        ),
+                        3 => (
+                            'h',
+                            format!(
+                                r#""type": "pocket", "v": 1, "name": "H", "base": "{base}", "sketch": "{sketch}", "extent": {{"type": "through_all", "reversed": true}}"#
+                            ),
+                        ),
+                        _ => {
+                            let named = pick(&boxes, b);
+                            (
+                                'r',
+                                format!(
+                                    r#""type": "fillet", "v": 1, "name": "R", "base": "{base}", "edges": ["{named}.box.Edge1"], "radius": 0.5"#
+                                ),
+                            )
+                        }
+                    };
+                    let id = id(prefix);
+                    tips.retain(|t| *t != base);
+                    tips.push(id.clone());
+                    format!(r#"{{"id": "{id}", {rest}}}"#)
+                }
+                5 => {
+                    let base = pick(&tips, a);
+                    let others: Vec<String> =
+                        tips.iter().filter(|t| **t != base).cloned().collect();
+                    let tool = pick(&others, b);
+                    let op = ["fuse", "cut", "common"][(a / 7) as usize % 3];
+                    let id = id('j');
+                    tips.retain(|t| *t != base && *t != tool);
+                    tips.push(id.clone());
+                    format!(
+                        r#"{{"id": "{id}", "type": "{op}", "v": 1, "name": "J", "base": "{base}", "tool": "{tool}"}}"#
+                    )
+                }
+                _ => {
+                    sketches.push("s0000002");
+                    S0000002.to_owned()
+                }
+            };
+            texts.push(text);
+        }
+        let document = document(&texts.iter().map(String::as_str).collect::<Vec<_>>());
+        validate(&document).unwrap_or_else(|e| panic!("the generator: {e:?}"));
+        document
+    }
+
+    fn choices() -> impl Strategy<Value = Vec<(u8, u8, u8)>> {
+        proptest::collection::vec((any::<u8>(), any::<u8>(), any::<u8>()), 1..9)
+    }
+
+    proptest! {
+        #![proptest_config(config(1500))]
+
+        /// Every move of every feature before every place (and to the end), against the
+        /// model: refused where it refuses, else the model's document; each result through
+        /// the gate; each refusal structured; each move undone by the move back.
+        #[test]
+        fn every_move_is_the_models_and_the_move_back_undoes_it(choices in choices()) {
+            let original = generated(&choices);
+            let all: Vec<String> = original.features.iter().map(|f| f.id.to_string()).collect();
+            for f in &all {
+                for before in all.iter().map(Some).chain([None]) {
+                    let got = move_feature(&original, &id(f), before.map(|b| id(b)).as_ref());
+                    let want = move_model(&original, f, before.map(String::as_str));
+                    let at = format!("{f} before {before:?} in {all:?}");
+                    match (got, want) {
+                        (Err(error), None) => {
+                            prop_assert_eq!(error.code(), ErrorCode::InvalidInput, "{}", at);
+                            prop_assert!(error.feature().is_some(), "{}: {}", at, error);
+                            prop_assert!(error.suggestion().is_some(), "{}: {}", at, error);
+                        }
+                        (Ok(moved), Some((expected, changed))) => {
+                            prop_assert!(validate(&moved.document).is_ok(), "{}", at);
+                            prop_assert!(
+                                moved.document.canonically_eq(&expected),
+                                "{}: got {:?}, the model {:?}",
+                                at,
+                                moved.document.features.iter().map(|f| (f.id.to_string(), base_of(f), tool_of(f))).collect::<Vec<_>>(),
+                                expected.features.iter().map(|f| (f.id.to_string(), base_of(f), tool_of(f))).collect::<Vec<_>>()
+                            );
+                            prop_assert_eq!(moved.changed, changed, "{}", at);
+                            prop_assert_eq!(moved.document.features[moved.to].id.as_str(), f.as_str(), "{}", at);
+                            let from = all.iter().position(|i| i == f).unwrap();
+                            let back = all.get(from + 1).map(|b| id(b));
+                            // The move back, where the model takes it (a move never makes a
+                            // feature a tool, so a tool chain's end moved in can't move back).
+                            if changed && move_model(&moved.document, f, back.as_ref().map(FeatureId::as_str)).is_some() {
+                                let undone = move_feature(&moved.document, &id(f), back.as_ref());
+                                prop_assert!(
+                                    undone.as_ref().is_ok_and(|u| u.document.canonically_eq(&original)),
+                                    "{}: moved back, {:?}",
+                                    at,
+                                    undone.map(|u| u.document.features.iter().map(|f| (f.id.to_string(), base_of(f), tool_of(f))).collect::<Vec<_>>()).map_err(|e| e.to_string())
+                                );
+                            }
+                        }
+                        (Ok(moved), None) => prop_assert!(
+                            false,
+                            "{}: taken, the model refuses: {:?}, the gate {:?}",
+                            at,
+                            moved.document.features.iter().map(|f| (f.id.to_string(), base_of(f), tool_of(f))).collect::<Vec<_>>(),
+                            validate(&moved.document).err()
+                        ),
+                        (Err(error), Some(_)) => prop_assert!(false, "{}: refused, the model takes it: {}", at, error),
+                    }
+                }
+            }
+        }
+
+        /// Every removal against A9's model, and each undone, where the feature had inputs,
+        /// by adding it back before the feature that followed it.
+        #[test]
+        fn every_removal_is_the_models_and_adding_it_back_undoes_it(choices in choices()) {
+            let original = generated(&choices);
+            for (index, f) in original.features.iter().enumerate() {
+                let got = remove(&original, &f.id);
+                let want = remove_model(&original, f.id.as_str());
+                let at = format!("{} in {:?}", f.id, ids(&original));
+                match (got, want) {
+                    (Err(error), None) => {
+                        prop_assert_eq!(error.feature(), Some(f.id.as_str()), "{}", at);
+                        prop_assert!(error.suggestion().is_some(), "{}", at);
+                    }
+                    (Ok(removed), Some(expected)) => {
+                        prop_assert!(removed.document.canonically_eq(&expected), "{}", at);
+                        prop_assert_eq!(removed.index, index, "{}", at);
+                        prop_assert!(removed.feature.canonically_eq(f), "{}", at);
+                        if !f.operation.inputs().is_empty() {
+                            let next = original.features.get(index + 1).map(|n| n.id.clone());
+                            let back = insert(&removed.document, removed.feature.clone(), next.as_ref());
+                            prop_assert!(
+                                back.as_ref().is_ok_and(|b| b.document.canonically_eq(&original) && b.index == index),
+                                "{}: added back, {:?}",
+                                at,
+                                back.map(|b| ids(&b.document).join(",")).map_err(|e| e.to_string())
+                            );
+                        }
+                    }
+                    (Ok(removed), None) => prop_assert!(false, "{}: taken, the model refuses: {:?}", at, removed.rewired),
+                    (Err(error), Some(_)) => prop_assert!(false, "{}: refused, the model takes it: {}", at, error),
+                }
+            }
+        }
+
+        /// A pocket of `s0000001` inserted on every solid before every place: where its
+        /// base's consumer comes at or after the place, that consumer is rewired to it and
+        /// nothing else changes; else refused. Either way, a result the gate takes is undone
+        /// by removing the pocket.
+        #[test]
+        fn every_insert_rewires_only_its_bases_consumer_and_its_removal_undoes_it(choices in choices()) {
+            let original = generated(&choices);
+            let all: Vec<String> = original.features.iter().map(|f| f.id.to_string()).collect();
+            for base in original.features.iter().filter(|f| f.operation.makes_solid()) {
+                for (place, before) in all.iter().map(Some).chain([None]).enumerate() {
+                    let pocket = feature(&format!(
+                        r#"{{"id": "hzzzzzzz", "type": "pocket", "v": 1, "name": "New", "base": "{}", "sketch": "s0000001", "extent": {{"type": "through_all", "reversed": true}}}}"#,
+                        base.id
+                    ));
+                    let got = insert(&original, pocket.clone(), before.map(|b| id(b)).as_ref());
+                    let consumer = original.features.iter().position(|f| {
+                        f.operation.inputs().iter().any(|(_, i)| *i == &base.id)
+                    });
+                    let at = format!("on {} before {before:?} in {all:?}", base.id);
+                    match (got, consumer) {
+                        (Err(error), Some(c)) if c < place => {
+                            prop_assert_eq!(error.parameter(), Some("before"), "{}", at);
+                        }
+                        (Err(error), _) => prop_assert!(false, "{}: refused: {}", at, error),
+                        (Ok(_), Some(c)) if c < place => prop_assert!(false, "{}: taken past its base's consumer", at),
+                        (Ok(inserted), consumer) => {
+                            prop_assert_eq!(inserted.index, place, "{}", at);
+                            let expected_rewired: Vec<Rewired> = consumer
+                                .map(|c| {
+                                    let user = &original.features[c];
+                                    let field = if base_of(user).as_deref() == Some(base.id.as_str()) { "base" } else { "tool" };
+                                    Rewired { feature: user.id.clone(), field, from: Some(base.id.clone()), to: Some(id("hzzzzzzz")) }
+                                })
+                                .into_iter()
+                                .collect();
+                            prop_assert_eq!(&inserted.rewired, &expected_rewired, "{}", at);
+                            if validate(&inserted.document).is_ok() {
+                                let undone = remove(&inserted.document, &id("hzzzzzzz"));
+                                prop_assert!(
+                                    undone.as_ref().is_ok_and(|u| u.document.canonically_eq(&original)),
+                                    "{}: removed again, {:?}",
+                                    at,
+                                    undone.map(|u| u.rewired).map_err(|e| e.to_string())
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Documents of references to anything, themselves, later features, nothing, and IDs
+    // twice: the gate refuses most, and no edit of one it takes may panic or hang.
+
+    fn unchecked(choices: &[(u8, u8, u8, u8)]) -> Document {
+        const IDS: [&str; 6] = [
+            "a0000000", "a0000001", "a0000002", "a0000003", "a0000004", "zzzzzzzz",
+        ];
+        let texts: Vec<String> = choices
+            .iter()
+            .enumerate()
+            .map(|(n, &(kind, a, b, c))| {
+                let own = IDS[(c as usize) % 5].to_owned();
+                let own = if c >= 200 { own } else { format!("a{n:07}") };
+                let base = IDS[a as usize % IDS.len()];
+                let tool = IDS[b as usize % IDS.len()];
+                match kind % 7 {
+                    0 => format!(r#"{{"id": "{own}", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}}"#),
+                    1 => format!(r#"{{"id": "{own}", "type": "pad", "v": 1, "name": "P", "sketch": "{tool}", "extent": {{"type": "one_side", "length": 5, "reversed": false}}}}"#),
+                    2 => format!(r#"{{"id": "{own}", "type": "pad", "v": 1, "name": "P", "base": "{base}", "sketch": "{tool}", "extent": {{"type": "one_side", "length": 5, "reversed": false}}}}"#),
+                    3 => format!(r#"{{"id": "{own}", "type": "pocket", "v": 1, "name": "H", "base": "{base}", "sketch": "{tool}", "extent": {{"type": "through_all", "reversed": true}}}}"#),
+                    4 => format!(r#"{{"id": "{own}", "type": "fillet", "v": 1, "name": "R", "base": "{base}", "edges": ["{tool}.box.Edge1"], "radius": 0.5}}"#),
+                    5 => format!(r#"{{"id": "{own}", "type": "cut", "v": 1, "name": "J", "base": "{base}", "tool": "{tool}"}}"#),
+                    _ => S0000002.replace("s0000002", &own),
+                }
+            })
+            .collect();
+        document(&texts.iter().map(String::as_str).collect::<Vec<_>>())
+    }
+
+    proptest! {
+        #![proptest_config(config(1500))]
+
+        #[test]
+        fn no_edit_of_a_generated_document_the_gate_takes_panics_or_hangs(
+            choices in proptest::collection::vec((any::<u8>(), any::<u8>(), any::<u8>(), any::<u8>()), 1..8)
+        ) {
+            let Ok(document) = Checked::new(unchecked(&choices)) else {
+                return Ok(());
+            };
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let result = std::panic::catch_unwind(|| {
+                    let features = &document.document().features;
+                    let mut all: Vec<FeatureId> = features.iter().map(|f| f.id.clone()).collect();
+                    all.push(id("zzzzzzzz"));
+                    for f in &all {
+                        let _ = chain::remove(&document, f);
+                        for before in all.iter().map(Some).chain([None]) {
+                            let _ = chain::move_feature(&document, f, before);
+                            if let Some(source) = features.iter().find(|x| x.id == *f) {
+                                let _ = chain::insert(&document, source.clone(), before);
+                            }
+                        }
+                    }
+                });
+                let _ = sender.send(result.map_err(|e| {
+                    e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_owned())).unwrap_or_default()
+                }));
+            });
+            let outcome = receiver.recv_timeout(Duration::from_secs(20));
+            prop_assert!(outcome.is_ok(), "hung on {:?}", choices);
+            let _ = worker.join();
+            prop_assert!(outcome.unwrap().is_ok(), "panicked on {:?}", choices);
+        }
+    }
 }

@@ -5,12 +5,17 @@
 //! is a function of the text: chains by `base` links, consumers by the gate's one-consumer
 //! rule, the makers of a stored element name by parsing it.
 //!
-//! Pure functions over a document the gate took: each gives the edited document, which the
-//! caller puts through the gate ([`validate`](super::validate)), or why the edit is refused,
-//! naming both features where a child would lose its parent. No command runs them yet.
+//! Pure functions over a document the gate took ([`Checked`]): each gives the edited
+//! document, which the caller puts through the gate ([`validate`](super::validate)), or why
+//! the edit is refused, naming both features where a child would lose its parent. No command
+//! runs them yet. Each costs about what the gate does: the document indexed once, by ID and
+//! by consumer, never searched feature by feature.
 
-use super::{Document, Feature, FeatureId, Operation};
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::{Checked, Document, Feature, FeatureId, Operation};
 use crate::naming::{Maker, Name};
+use crate::references::CANDIDATES;
 use crate::{Error, ErrorCode};
 
 /// A feature whose `base` or `tool` an edit changed: `from` what it named before the edit,
@@ -58,15 +63,18 @@ pub struct Moved {
 /// that a feature consumed already is consumed by it instead: that consumer's field now
 /// names it, listed in [`Inserted::rewired`]. Refused where that consumer comes before the
 /// place asked for, where both of a boolean's inputs had consumers (it would be consumed
-/// twice), and where `before` names no feature.
+/// twice), where its base and tool are one solid (as the gate words it), and where `before`
+/// names no feature.
 pub fn insert(
-    document: &Document,
+    checked: &Checked,
     feature: Feature,
     before: Option<&FeatureId>,
 ) -> Result<Inserted, Error> {
-    let index = match before {
+    let document = checked.document();
+    let index = Index::of(document);
+    let place = match before {
         None => document.features.len(),
-        Some(target) => place(document, target).ok_or_else(|| {
+        Some(target) => index.place(target).ok_or_else(|| {
             Error::new(
                 ErrorCode::InvalidInput,
                 format!("the document has no feature {target} to add this one before"),
@@ -75,15 +83,28 @@ pub fn insert(
             .with_suggestion("name a feature by its ID, or give null to add at the end")
         })?,
     };
-    let consumed: Vec<(&'static str, FeatureId, usize, &'static str)> = feature
-        .operation
-        .inputs()
-        .into_iter()
-        .filter_map(|(field, input)| {
-            consumer(document, input).map(|(at, by)| (field, input.clone(), at, by))
+    let inputs = feature.operation.inputs();
+    if let [(_, base), (field, tool)] = inputs.as_slice()
+        && base == tool
+    {
+        let what = feature.operation.type_name();
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!("{field} {tool} is base too: a {what} takes two different solids"),
+        )
+        .with_feature(feature.id.as_str())
+        .with_parameter("feature.tool")
+        .with_suggestion(format!("give the {what} a different {field}")));
+    }
+    let consumed: Vec<(FeatureId, usize, &'static str)> = inputs
+        .iter()
+        .filter_map(|(_, input)| {
+            index
+                .consumer(input)
+                .map(|(at, by)| ((*input).clone(), at, by))
         })
         .collect();
-    if let [(_, base, base_at, _), (_, tool, tool_at, _)] = consumed.as_slice() {
+    if let [(base, base_at, _), (tool, tool_at, _)] = consumed.as_slice() {
         let (base_by, tool_by) = (
             &document.features[*base_at].id,
             &document.features[*tool_at].id,
@@ -102,9 +123,9 @@ pub fn insert(
         )));
     }
     let mut edited = document.clone();
-    for (_, input, at, field) in &consumed {
+    for (input, at, field) in &consumed {
         let by = &document.features[*at].id;
-        if *at < index {
+        if *at < place {
             return Err(Error::new(
                 ErrorCode::InvalidInput,
                 format!(
@@ -121,11 +142,11 @@ pub fn insert(
             Some(feature.id.clone()),
         );
     }
-    edited.features.insert(index, feature);
+    edited.features.insert(place, feature);
     let rewired = rewired(document, &edited);
     Ok(Inserted {
         document: edited,
-        index,
+        index: place,
         rewired,
     })
 }
@@ -135,11 +156,15 @@ pub fn insert(
 /// what it named, listed in [`Removed::rewired`], or none for a pad's or revolve's base,
 /// which then begins the body. Refused, naming both features, where nothing can stand in:
 /// a chain's root under a feature that needs a base (or as a boolean's tool), a feature
-/// whose sketch it is, and a feature that stores names of its elements.
-pub fn remove(document: &Document, id: &FeatureId) -> Result<Removed, Error> {
-    let index = place(document, id).ok_or_else(|| no_feature(id, "feature"))?;
-    let removed = &document.features[index];
-    if let Some((child, why)) = children(document, id).next() {
+/// whose sketch it is, a feature that stores names of its elements, and (pending Trevin,
+/// extending the design's "names its elements") a feature whose stored names' makers its
+/// base would no longer be built from.
+pub fn remove(checked: &Checked, id: &FeatureId) -> Result<Removed, Error> {
+    let document = checked.document();
+    let index = Index::of(document);
+    let at = index.place(id).ok_or_else(|| no_feature(id, "feature"))?;
+    let removed = &document.features[at];
+    if let Some((child, why)) = children(document, &index, id).next() {
         return Err(Error::new(
             ErrorCode::InvalidInput,
             format!(
@@ -160,15 +185,27 @@ pub fn remove(document: &Document, id: &FeatureId) -> Result<Removed, Error> {
         }));
     }
     let mut edited = document.clone();
-    if let Some((at, field)) = consumer(document, id) {
-        stand_in(document, &mut edited, removed, at, field, "remove")?;
+    if let Some((c, field)) = index.consumer(id) {
+        stand_in(document, &index, &mut edited, removed, c, field, "remove")?;
     }
-    edited.features.remove(index);
+    edited.features.remove(at);
+    if let Some((feature, maker)) = lineage_broken(document, &edited) {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "{feature} names elements of {maker}, which its base would no longer be built from without {}",
+                removed.id
+            ),
+        )
+        .with_feature(removed.id.as_str())
+        .with_parameter("feature")
+        .with_suggestion(format!("remove {feature} first")));
+    }
     let rewired = rewired(document, &edited);
     Ok(Removed {
         document: edited,
         feature: removed.clone(),
-        index,
+        index: at,
         rewired,
     })
 }
@@ -182,18 +219,28 @@ pub fn remove(document: &Document, id: &FeatureId) -> Result<Removed, Error> {
 ///
 /// Refused, naming both features: a move that puts it before its sketch, its tool, or a
 /// feature whose elements it names; after a feature that uses it as its sketch or names its
-/// elements; one that leaves a chain's root's consumer without a base; one off a tool's
-/// chain past the boolean that consumes it; and one that would give a primitive a base or
-/// leave a feature that needs one without.
+/// elements; one that leaves a chain's root's consumer without a base; one that would make
+/// it the end of a chain a boolean consumes as its tool; one that would give a primitive a
+/// base or leave a feature that needs one without; and (pending Trevin, extending the
+/// design's "names its elements") one after which a feature's base is no longer built from
+/// a maker of the names it stores (SolidWorks refuses a reorder that puts a child before
+/// what its references come from: docs/ux/solidworks.md, §5, *Editing upstream*).
+///
+/// A move within a chain a boolean consumes as its tool can't always be undone by moving
+/// back: the move that would make the feature that boolean's tool again is refused.
 pub fn move_feature(
-    document: &Document,
+    checked: &Checked,
     id: &FeatureId,
     before: Option<&FeatureId>,
 ) -> Result<Moved, Error> {
-    let from = place(document, id).ok_or_else(|| no_feature(id, "feature"))?;
+    let document = checked.document();
+    let index = Index::of(document);
+    let from = index.place(id).ok_or_else(|| no_feature(id, "feature"))?;
     let target = match before {
         None => document.features.len(),
-        Some(target) => place(document, target).ok_or_else(|| no_feature(target, "before"))?,
+        Some(target) => index
+            .place(target)
+            .ok_or_else(|| no_feature(target, "before"))?,
     };
     if target == from || target == from + 1 {
         return Ok(Moved {
@@ -209,7 +256,7 @@ pub fn move_feature(
     // others stand.
     let at = |i: usize| if i > from { i - 1 } else { i };
     let place_to = at(target);
-    let others = |other: &FeatureId| place(document, other).map(at);
+    let others = |other: &FeatureId| index.place(other).map(at);
 
     // The parents it would come before, and the children it would come after.
     if let Some(sketch) = moving.operation.sketch()
@@ -226,15 +273,14 @@ pub fn move_feature(
     {
         return Err(come_before(moving, tool, "which it uses as its tool"));
     }
-    for named in makers_named(document, moving) {
+    for named in makers_named(&index, moving) {
         if named != id && others(named).is_some_and(|p| p >= place_to) {
             return Err(come_before(moving, named, "whose elements it names"));
         }
     }
-    if let Some(child) =
-        children(document, id).find(|(child, _)| others(&child.id).is_some_and(|p| p < place_to))
+    if let Some((child, why)) = children(document, &index, id)
+        .find(|(child, _)| others(&child.id).is_some_and(|p| p < place_to))
     {
-        let (child, why) = child;
         return Err(Error::new(
             ErrorCode::InvalidInput,
             format!(
@@ -253,14 +299,14 @@ pub fn move_feature(
     }
 
     let base = base_of(&moving.operation);
-    let consumer_of = consumer(document, id);
+    let consumer = index.consumer(id);
     // Left between its base and its consumer: only its place changes.
     let after_base = base.and_then(others).is_none_or(|p| p < place_to);
-    let by_consumer = consumer_of.is_none_or(|(c, _)| place_to <= at(c));
+    let by_consumer = consumer.is_none_or(|(c, _)| place_to <= at(c));
     let stays = after_base && by_consumer;
     let mut edited = document.clone();
-    if !stays && let Some((c, field)) = consumer_of {
-        stand_in(document, &mut edited, moving, c, field, "move")?;
+    if !stays && let Some((c, field)) = consumer {
+        stand_in(document, &index, &mut edited, moving, c, field, "move")?;
     }
     let mut moved = edited.features.remove(from);
     if !stays {
@@ -268,11 +314,26 @@ pub fn move_feature(
             &mut edited,
             &mut moved,
             base,
-            consumer_of.map(|(c, f)| (at(c), f)),
+            consumer.map(|(c, f)| (at(c), f)),
             place_to,
         )?;
     }
     edited.features.insert(place_to, moved);
+    if let Some((feature, maker)) = lineage_broken(document, &edited) {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "{feature} names elements of {maker}, which its base would no longer be built from once {} moves there",
+                moving.id
+            ),
+        )
+        .with_feature(moving.id.as_str())
+        .with_parameter("before")
+        .with_suggestion(format!(
+            "move {} elsewhere, or remove {feature} first",
+            moving.id
+        )));
+    }
     let rewired = rewired(document, &edited);
     Ok(Moved {
         document: edited,
@@ -296,45 +357,59 @@ fn join(
     consumed: Option<(usize, &'static str)>,
     place_to: usize,
 ) -> Result<(), Error> {
-    let mut members: Vec<usize> = Vec::new();
-    // Up the chain from its old base.
-    let mut up = base.and_then(|b| place(edited, b));
-    while let Some(i) = up {
-        if members.contains(&i) {
-            break;
+    // The chain's members and its end's consumer, read before anything's written.
+    let (previous, next, tool_end, root) = {
+        let index = Index::of(edited);
+        let mut members: BTreeSet<usize> = BTreeSet::new();
+        // Up the chain from its old base.
+        let mut up = base.and_then(|b| index.place(b));
+        while let Some(i) = up.filter(|i| members.insert(*i)) {
+            up = edited
+                .features
+                .get(i)
+                .and_then(|f| base_of(&f.operation))
+                .and_then(|b| index.place(b));
         }
-        members.push(i);
-        up = base_of(&edited.features[i].operation).and_then(|b| place(edited, b));
-    }
-    // Down the chain from its old consumer, where it named it as its base: each next member
-    // the feature whose base the last is.
-    let mut down = consumed
-        .filter(|(_, field)| *field == "base")
-        .map(|(c, _)| c);
-    while let Some(i) = down {
-        if members.contains(&i) {
-            break;
-        }
-        members.push(i);
-        down = consumer(edited, &edited.features[i].id)
-            .filter(|(_, field)| *field == "base")
+        // Down the chain from its old consumer, where it named it as its base: each next
+        // member the feature whose base the last is.
+        let mut down = consumed
+            .filter(|(c, field)| *field == "base" && *c < edited.features.len())
             .map(|(c, _)| c);
-    }
-    members.sort_unstable();
-    let previous = members.iter().rev().find(|&&m| m < place_to).copied();
-    let next = members.iter().find(|&&m| m >= place_to).copied();
+        while let Some(i) = down.filter(|i| members.insert(*i)) {
+            down = edited
+                .features
+                .get(i)
+                .and_then(|f| index.consumer(&f.id))
+                .filter(|(_, field)| *field == "base")
+                .map(|(c, _)| c);
+        }
+        let previous = members.range(..place_to).next_back().copied();
+        let next = members.range(place_to..).next().copied();
+        // The chain's end, if a boolean consumes it as its tool: a move to its end would
+        // make the moved feature that tool.
+        let tool_end = members.last().and_then(|&last| {
+            let end = edited.features.get(last)?;
+            match index.consumer(&end.id) {
+                Some((boolean, "tool")) => {
+                    Some((edited.features.get(boolean)?.id.clone(), end.id.clone()))
+                }
+                _ => None,
+            }
+        });
+        let root = members
+            .first()
+            .and_then(|&m| edited.features.get(m))
+            .map(|f| f.id.clone());
+        (previous, next, tool_end, root)
+    };
 
-    // The chain's end, if a boolean consumes it as its tool: a move to its end would make
-    // the moved feature that tool.
     if next.is_none()
-        && let Some(&last) = members.last()
-        && let Some((boolean, "tool")) = consumer(edited, &edited.features[last].id)
+        && let Some((boolean, end)) = tool_end
     {
-        let (boolean, end) = (&edited.features[boolean].id, &edited.features[last].id);
         return Err(Error::new(
             ErrorCode::InvalidInput,
             format!(
-                "{} would leave the chain {end} ends, which {boolean} consumes as its tool: a move never makes a feature another's tool",
+                "{} would follow {end}, the end of the chain {boolean} consumes as its tool: a move never makes a feature another's tool",
                 moved.id
             ),
         )
@@ -347,16 +422,16 @@ fn join(
     }
 
     let wants_base = has_base_field(&moved.operation);
-    match previous {
-        Some(p) => {
-            let previous = edited.features[p].id.clone();
+    match previous.and_then(|p| edited.features.get(p)) {
+        Some(previous) => {
             if !wants_base {
                 return Err(Error::new(
                     ErrorCode::InvalidInput,
                     format!(
-                        "{}, a {}, takes no base, and the place asked for comes after {previous} in its chain",
+                        "{}, a {}, takes no base, and the place asked for comes after {} in its chain",
                         moved.id,
-                        moved.operation.type_name()
+                        moved.operation.type_name(),
+                        previous.id
                     ),
                 )
                 .with_feature(moved.id.as_str())
@@ -366,16 +441,14 @@ fn join(
                     moved.id
                 )));
             }
+            let previous = previous.id.clone();
             set_input(&mut moved.operation, "base", Some(previous));
         }
         None if base_optional(&moved.operation) => {
             set_input(&mut moved.operation, "base", None);
         }
         None if wants_base => {
-            let root = members
-                .first()
-                .map(|&m| edited.features[m].id.to_string())
-                .unwrap_or_default();
+            let root = root.map(|r| r.to_string()).unwrap_or_default();
             return Err(Error::new(
                 ErrorCode::InvalidInput,
                 format!(
@@ -390,8 +463,7 @@ fn join(
         }
         None => {}
     }
-    if let Some(n) = next {
-        let next_feature = &mut edited.features[n];
+    if let Some(next_feature) = next.and_then(|n| edited.features.get_mut(n)) {
         if !has_base_field(&next_feature.operation) {
             return Err(Error::new(
                 ErrorCode::InvalidInput,
@@ -412,36 +484,39 @@ fn join(
 }
 
 /// The consumer `at` of `removed` (by `field`) given `removed`'s base in its place, in
-/// `edited`: refused where it has none and the consumer needs one there.
+/// `edited`: refused where it has none and the consumer needs one there, with up to
+/// [`CANDIDATES`] earlier solids nothing consumes, which could be its base instead.
 fn stand_in(
     document: &Document,
+    index: &Index,
     edited: &mut Document,
     removed: &Feature,
     at: usize,
     field: &'static str,
     verb: &str,
 ) -> Result<(), Error> {
-    let user = &document.features[at];
+    let Some(user) = document.features.get(at) else {
+        return Ok(());
+    };
+    let Some(target) = edited.features.get_mut(at) else {
+        return Ok(());
+    };
     match base_of(&removed.operation) {
         Some(base) => {
-            set_input(
-                &mut edited.features[at].operation,
-                field,
-                Some(base.clone()),
-            );
+            set_input(&mut target.operation, field, Some(base.clone()));
             Ok(())
         }
         None if field == "base" && base_optional(&user.operation) => {
-            set_input(&mut edited.features[at].operation, field, None);
+            set_input(&mut target.operation, field, None);
             Ok(())
         }
         None => {
-            // Earlier features nothing consumes, which could be its base instead.
-            let candidates: Vec<&FeatureId> = document.features[..at]
+            let candidates: Vec<&str> = document.features[..at]
                 .iter()
                 .filter(|f| f.id != removed.id && f.operation.makes_solid())
-                .filter(|f| consumer(document, &f.id).is_none())
-                .map(|f| &f.id)
+                .filter(|f| index.consumer(&f.id).is_none())
+                .take(CANDIDATES)
+                .map(|f| f.id.as_str())
                 .collect();
             let what = if field == "tool" {
                 format!(
@@ -477,9 +552,105 @@ fn stand_in(
                 .with_feature(removed.id.as_str())
                 .with_parameter("feature")
                 .with_suggestion(suggestion)
-                .with_candidates(candidates.iter().map(|c| c.as_str())))
+                .with_candidates(candidates))
         }
     }
+}
+
+/// The first feature of `edited`, in its timeline order, one of whose stored names has a
+/// maker its base is no longer built from, though its base in `before` was; with that
+/// maker. Pending Trevin: it extends the design's "names its elements" to what a feature's
+/// base is built from, so an edit that would break a reference the text can see is refused
+/// rather than left to fail at the rebuild.
+fn lineage_broken(before: &Document, edited: &Document) -> Option<(FeatureId, FeatureId)> {
+    let (old, new) = (Index::of(before), Index::of(edited));
+    edited.features.iter().find_map(|feature| {
+        let base = base_of(&feature.operation)?;
+        let makers: Vec<&FeatureId> = makers_named(&new, feature)
+            .into_iter()
+            .filter(|m| **m != feature.id)
+            .collect();
+        if makers.is_empty() {
+            return None;
+        }
+        let now = built_from(edited, &new, base, &makers);
+        let missing = makers.iter().find(|m| !now.contains(**m))?;
+        let then = before
+            .features
+            .get(old.place(&feature.id)?)
+            .and_then(|f| base_of(&f.operation))
+            .map(|b| built_from(before, &old, b, &makers))?;
+        then.contains(*missing)
+            .then(|| (feature.id.clone(), (*missing).clone()))
+    })
+}
+
+/// Which of `wanted` the feature `start` is built from: itself, its inputs, and the sketches
+/// they sweep, up every link, stopping once every one is found.
+fn built_from(
+    document: &Document,
+    index: &Index,
+    start: &FeatureId,
+    wanted: &[&FeatureId],
+) -> BTreeSet<FeatureId> {
+    let mut found = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![start.clone()];
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        if wanted.contains(&&id) {
+            found.insert(id.clone());
+            if found.len() == wanted.len() {
+                break;
+            }
+        }
+        if let Some(feature) = index.place(&id).and_then(|p| document.features.get(p)) {
+            stack.extend(feature.operation.uses().cloned());
+        }
+    }
+    found
+}
+
+/// Why a feature can't do without another: it's its sketch, or it stores names of its
+/// elements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Child {
+    Sketch,
+    Names,
+}
+
+impl Child {
+    /// Why, as "{child} {why}" says it of `parent`.
+    fn why(self, parent: &FeatureId) -> String {
+        match self {
+            Child::Sketch => format!("uses {parent} as its sketch"),
+            Child::Names => format!("names {parent}'s elements"),
+        }
+    }
+}
+
+/// The features that can't do without `id` where they are: those whose sketch it is, and
+/// those storing a name one of whose makers it is, in timeline order, each with why.
+fn children<'a>(
+    document: &'a Document,
+    index: &'a Index,
+    id: &'a FeatureId,
+) -> impl Iterator<Item = (&'a Feature, Child)> + 'a {
+    document
+        .features
+        .iter()
+        .filter(move |f| f.id != *id)
+        .filter_map(move |f| {
+            if f.operation.sketch() == Some(id) {
+                Some((f, Child::Sketch))
+            } else if makers_named(index, f).contains(&id) {
+                Some((f, Child::Names))
+            } else {
+                None
+            }
+        })
 }
 
 /// The refusal of a move that puts `moving` before `parent`.
@@ -505,60 +676,16 @@ fn no_feature(id: &FeatureId, parameter: &str) -> Error {
     .with_suggestion("name a feature by its ID")
 }
 
-/// Why a feature can't do without another: it's its sketch, or it stores names of its
-/// elements.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Child {
-    Sketch,
-    Names,
-}
-
-impl Child {
-    /// Why, as "{child} {why}" says it of `parent`.
-    fn why(self, parent: &FeatureId) -> String {
-        match self {
-            Child::Sketch => format!("uses {parent} as its sketch"),
-            Child::Names => format!("names {parent}'s elements"),
-        }
-    }
-}
-
-/// The features that can't do without `id` where they are: those whose sketch it is, and
-/// those storing a name one of whose makers it is, in timeline order, each with why.
-fn children<'a>(
-    document: &'a Document,
-    id: &'a FeatureId,
-) -> impl Iterator<Item = (&'a Feature, Child)> + 'a {
-    document
-        .features
-        .iter()
-        .filter(move |f| f.id != *id)
-        .filter_map(move |f| {
-            if f.operation.sketch() == Some(id) {
-                Some((f, Child::Sketch))
-            } else if makers_named(document, f).contains(&id) {
-                Some((f, Child::Names))
-            } else {
-                None
-            }
-        })
-}
-
-/// Every feature the element names `feature` stores name as a maker, in the order they're
-/// written; a name that doesn't parse names none (the gate refuses it on its own).
-fn makers_named<'a>(document: &'a Document, feature: &'a Feature) -> Vec<&'a FeatureId> {
-    let maker = |id: &FeatureId| {
-        document
-            .features
-            .iter()
-            .find(|f| f.id == *id)
-            .map(|f| Maker::of(&f.operation))
-    };
-    let mut found: Vec<&FeatureId> = Vec::new();
+/// Every feature the element names `feature` stores name as a maker, as the document holds
+/// its ID, in the order they're written; a name that doesn't parse names none (the gate
+/// refuses it on its own).
+fn makers_named<'a>(index: &Index<'a>, feature: &Feature) -> Vec<&'a FeatureId> {
+    let maker = |id: &FeatureId| index.feature(id).map(|f| Maker::of(&f.operation));
+    let mut found: Vec<&'a FeatureId> = Vec::new();
     for edge in feature.operation.edges() {
         if let Ok(name) = Name::parse(edge.as_str(), &maker) {
             for id in name.features() {
-                if let Some(held) = document.features.iter().find(|f| f.id == *id)
+                if let Some(held) = index.feature(id)
                     && !found.contains(&&held.id)
                 {
                     found.push(&held.id);
@@ -569,19 +696,43 @@ fn makers_named<'a>(document: &'a Document, feature: &'a Feature) -> Vec<&'a Fea
     found
 }
 
-fn place(document: &Document, id: &FeatureId) -> Option<usize> {
-    document.features.iter().position(|f| f.id == *id)
+/// A document's features by ID, and each solid's consumer, read once: each lookup a search
+/// of a sorted map, so an edit costs about what the gate does.
+struct Index<'a> {
+    features: &'a [Feature],
+    places: BTreeMap<&'a FeatureId, usize>,
+    consumers: BTreeMap<&'a FeatureId, (usize, &'static str)>,
 }
 
-/// The feature that consumes `id`'s solid, by its place and the field naming it, if one does.
-fn consumer(document: &Document, id: &FeatureId) -> Option<(usize, &'static str)> {
-    document.features.iter().enumerate().find_map(|(at, f)| {
-        f.operation
-            .inputs()
-            .into_iter()
-            .find(|(_, input)| *input == id)
-            .map(|(field, _)| (at, field))
-    })
+impl<'a> Index<'a> {
+    fn of(document: &'a Document) -> Self {
+        let mut places = BTreeMap::new();
+        let mut consumers = BTreeMap::new();
+        for (at, feature) in document.features.iter().enumerate() {
+            places.entry(&feature.id).or_insert(at);
+            for (field, input) in feature.operation.inputs() {
+                consumers.entry(input).or_insert((at, field));
+            }
+        }
+        Index {
+            features: &document.features,
+            places,
+            consumers,
+        }
+    }
+
+    fn place(&self, id: &FeatureId) -> Option<usize> {
+        self.places.get(id).copied()
+    }
+
+    fn feature(&self, id: &FeatureId) -> Option<&'a Feature> {
+        self.features.get(self.place(id)?)
+    }
+
+    /// The feature that consumes `id`'s solid, by its place and the field naming it.
+    fn consumer(&self, id: &FeatureId) -> Option<(usize, &'static str)> {
+        self.consumers.get(id).copied()
+    }
 }
 
 fn base_of(operation: &Operation) -> Option<&FeatureId> {
@@ -661,12 +812,13 @@ fn set_input(operation: &mut Operation, field: &str, to: Option<FeatureId>) {
 /// timeline order: what an edit rewired. A feature `before` hasn't (one inserted) is its
 /// own as given, not rewired.
 fn rewired(before: &Document, after: &Document) -> Vec<Rewired> {
+    let old = Index::of(before);
     let mut changed = Vec::new();
     for feature in &after.features {
-        let Some(old) = before.features.iter().find(|f| f.id == feature.id) else {
+        let Some(previous) = old.feature(&feature.id) else {
             continue;
         };
-        let old_fields = input_fields(&old.operation);
+        let old_fields = input_fields(&previous.operation);
         for (field, to) in input_fields(&feature.operation) {
             let from = old_fields
                 .iter()
