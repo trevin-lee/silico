@@ -238,6 +238,7 @@ fn past_64_calls_waiting_a_call_is_refused_at_once_but_status_and_cancel_still_a
         c.send_call(id, "check", CHECK);
     }
     running(&c.kernel, 1);
+    until_running(&mut c, "check");
     let refused = c.call(200, "check", CHECK);
     assert_eq!(refused["isError"], true);
     assert_eq!(refused["structuredContent"], past_the_bound());
@@ -357,6 +358,10 @@ fn a_cancel_read_before_a_command_was_sent_never_stops_it_however_far_behind_the
     let hold = c.kernel.hold(is_box);
     c.send_call(10, "check", CHECK);
     running(&c.kernel, 1);
+    // The held op may be the session's own rebuild, begun before the check started: the
+    // check is the command running only once status says so (the Linux gate: a cancel read
+    // before then found no check running, and stopped nothing).
+    until_running(&mut c, "check");
     // A backlog: the client reads nothing, and pings' replies wait to be written.
     c.stall_output();
     for id in 20..25 {
@@ -442,4 +447,21 @@ fn a_slot_free_call_never_holds_serve_while_the_output_is_busy() {
         .map(|_| c.message()["id"].as_u64().unwrap())
         .collect();
     assert_eq!(ids[..2], [2, 3]);
+}
+
+/// Asks s1's status until `command` is the one running in it: no other call may be in a
+/// state to answer meanwhile (each status's reply is read past whatever comes before it).
+fn until_running(c: &mut Client, command: &str) {
+    let deadline = std::time::Instant::now() + crate::client::HANG;
+    for id in 900.. {
+        let status = c.envelope(id, "status", r#"{"session": "s1"}"#);
+        if status["result"]["running"] == command {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{command} never ran: {status}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
