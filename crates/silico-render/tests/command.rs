@@ -63,7 +63,9 @@ fn a_render_to_a_file_is_a_png_of_the_size_asked_and_the_result_says_its_bytes()
     )
     .unwrap();
     let path = done.result.path.clone().unwrap();
-    assert_eq!(path, std::fs::canonicalize(dir.join("view.png")).unwrap());
+    // As the request gave it, not through its links (on macOS, the temporary directory's
+    // /var is a link to /private/var).
+    assert_eq!(path, dir.join("view.png"));
     let bytes = std::fs::read(&path).unwrap();
     assert_eq!(bytes, done.png);
     assert_eq!(done.result.png_bytes, bytes.len() as u64);

@@ -314,6 +314,12 @@ fn every_example_holds_to_its_tools_schemas() {
                     let page = json!({"elements": [value], "matched": 1, "tied": null});
                     holds(&tool(&sent, "query")["outputSchema"], &ran(page), &what);
                 }
+                // A warning, as `check` lists it.
+                "warning" => {
+                    let checked = json!({"problems": [], "problems_total": 0,
+                        "warnings": [value], "warnings_total": 1});
+                    holds(&tool(&sent, "check")["outputSchema"], &ran(checked), &what);
+                }
                 _ => {
                     let tool = tool(&sent, &command);
                     if stem.starts_with("request") || REQUESTS.contains(&what.as_str()) {
@@ -332,8 +338,9 @@ fn every_example_holds_to_its_tools_schemas() {
         }
     }
     // Every file in the contract's examples, counted by hand: 89 on M4.9's branch,
-    // export's 8 (#182), cache_clear's 2 (#183), and STEP export's 4 (#186).
-    assert_eq!(seen, 103);
+    // export's 8 (#182), cache_clear's 2 (#183), STEP export's 4 (#186), and check's
+    // warning (#189).
+    assert_eq!(seen, 104);
 }
 
 #[test]
