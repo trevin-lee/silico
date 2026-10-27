@@ -1403,6 +1403,32 @@ fn a_carried_feature_isnt_warned_of_in_a_published_check_once_a_transaction_begi
 }
 
 #[test]
+fn a_carried_feature_isnt_warned_of_in_a_published_check_of_an_older_model_while_a_transaction_is_open()
+ {
+    // Found by the review (round 5, L1): after begin, box m0000003 is added, and a published
+    // check reads right away, never waiting: its model is the one rebuilt before begin,
+    // older than the session's revision, and its own revision no transaction's. One is open
+    // now, so the commit writes the carried feature's record and format is refused: the
+    // check spares m0000002 as the current one does.
+    let (f, [k7, _]) = carried_and_built();
+    let before = f.sessions.status(&s1()).session.unwrap().revision;
+    answer(f.sessions.begin(&s1())).result.unwrap();
+    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let added: Node = silico_core::document::json::read(block("m0000003", 20).as_bytes()).unwrap();
+    answer(f.sessions.add_feature(&s1(), revision, added))
+        .result
+        .unwrap();
+    let session = f.sessions.status(&s1()).session.unwrap();
+    assert!(session.transaction);
+    assert_ne!(session.revision, before);
+    assert_eq!(
+        said(&published_check(&f, before)),
+        std::slice::from_ref(&k7)
+    );
+    assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
+}
+
+#[test]
 fn a_carried_feature_is_warned_of_in_a_published_check_after_a_commit_that_writes_nothing() {
     // Found by the review (A3-1): in a transaction, box m0000003 is added and checked, then
     // removed and checked, so the published model is the transaction's; its commit writes
