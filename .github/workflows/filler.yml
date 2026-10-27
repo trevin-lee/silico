@@ -4,11 +4,13 @@
 # one short job looks at the runners, starts at most one filler run, and exits.
 #
 # It starts nothing while a job that a filler runner could take is queued (a real run's
-# shards, or a filler run's, asking for mutants, mutants-pr, or filler), or a real mutants
-# run waits to start; a queued gate or control job takes other runners, so it doesn't stop
-# filler. A filler run going doesn't stop another: each takes what's free when it starts
-# (2026-10-27: one at a time, a run of one shard kept the rest idle). Free runners aren't
-# idle CPU: the VM is saturated by about six shards. So it fills only when more than a fifth of the VM's CPUs are idle (over 15
+# shards, or a filler run's, asking for mutants, mutants-pr, or filler), while a real
+# mutants run has work waiting, or while a mutants run or a sweep is starting (no shard or
+# sweep job yet); a queued gate or control job takes other runners, so it doesn't stop
+# filler. A filler mutants run going doesn't stop another: each takes what's free when it
+# starts (2026-10-27: one at a time, a run of one shard kept the rest idle); but a filler
+# sweep and filler mutants never run together. Free runners aren't idle CPU: the VM is
+# saturated by about six shards. So it fills only when more than a fifth of the VM's CPUs are idle (over 15
 # seconds; this job runs on the VM), with as many shards as the idle CPUs feed at a
 # filler shard's share (a quarter of the VM) and the free runners labelled filler
 # (silico-9 to -12) hold. Filler shards run only there, at the idle scheduling class on
@@ -118,10 +120,10 @@ jobs:
           # Runs of this workflow are decisions like this one, and the clock's (filler-clock.yml)
           # only start them: neither is work, nor waits for a runner work could use.
           active=$(awk -F '\t' '$2 != "filler.yml" && $2 != "filler-clock.yml"' <<<"$active")
-          # A real mutants run not yet started: its plan cancels filler, and its shards will
-          # want the runners filler would take.
+          # A real mutants run with work waiting (GitHub calls a run with any job queued
+          # queued): its shards want the runners filler would take.
           if awk -F '\t' '$3 == "queued" && $2 == "mutants.yml" && $4 !~ /^filler / { found = 1 } END { exit !found }' <<<"$active"; then
-            skip "a mutants run is queued, waiting to start"
+            skip "a real mutants run has work waiting"
           fi
           # A bench measures times, and a night's sweep holds cases to deadlines: no filler
           # beside them, even on idle CPU (caches, memory bandwidth, SMT siblings).
@@ -132,13 +134,32 @@ jobs:
           # The unfinished jobs of every run going: their status, runner, and labels. A run in
           # progress can still have jobs waiting for runners, which come first if a filler
           # runner could take them (silico-9 to -12 carry mutants, mutants-pr, and filler).
-          jobs=$(awk -F '\t' '{ print $1 }' <<<"$active" | while read -r run; do
-            gh api "repos/$GH_REPO/actions/runs/$run/jobs?per_page=100" \
-              --jq '.jobs[] | select(.status != "completed") | [.status, (.runner_name // ""), (.labels | join(","))] | @tsv'
+          # A mutants run or an oracle sweep with no shard or sweep job yet is starting (its
+          # plan, or its yield, still going): a real one's plan has cancelled filler and its
+          # shards will want filler's runners; a filler one's shards don't show yet as busy
+          # or queued. Either way, wait for it: marked "starting".
+          jobs=$(awk -F '\t' 'NF { print $1, $2 }' <<<"$active" | while read -r run workflow; do
+            [ -n "$run" ] || continue
+            gh api "repos/$GH_REPO/actions/runs/$run/jobs?per_page=100" --jq "
+              (.jobs[] | select(.status != \"completed\")
+                | [.status, (.runner_name // \"\"), (.labels // [] | join(\",\"))] | @tsv),
+              (if (\"$workflow\" == \"mutants.yml\" or \"$workflow\" == \"oracle-sweep.yml\")
+                  and ([.jobs[].name | select(startswith(\"shard\") or startswith(\"sweep\"))] | length) == 0
+                then \"starting\\t\\t\" else empty end)"
           done)
+          if awk -F '\t' '$1 == "starting" { found = 1 } END { exit !found }' <<<"$jobs"; then
+            skip "a mutants run or a sweep is starting"
+          fi
           if awk -F '\t' '$1 != "" && $1 != "in_progress" && $3 ~ /(^|,)(mutants|mutants-pr|filler)(,|$)/ { found = 1 } END { exit !found }' <<<"$jobs"; then
             skip "a job a filler runner could take is queued, waiting for a runner"
           fi
+          # A filler sweep and filler mutants never run together: at the idle weight each
+          # runner gets an equal share, and a sweep holds cases to its own deadline (60 s a
+          # conversion), which a starved case would miss, a false alarm.
+          if awk -F '\t' '$2 == "oracle-sweep.yml" && $4 ~ /^filler / { found = 1 } END { exit !found }' <<<"$active"; then
+            skip "a filler sweep is going"
+          fi
+          filler_mutants=$(awk -F '\t' '$2 == "mutants.yml" && $4 ~ /^filler /' <<<"$active" | wc -l)
           # The runners labelled filler that are running a job, of any run.
           busy=$(awk -F '\t' '$1 == "in_progress" && $2 ~ /^pve-silico-(9|1[0-2])-/' <<<"$jobs" | wc -l)
           # The CPUs idle now, over 15 seconds (this job runs on the VM; the load average lags
@@ -188,7 +209,7 @@ jobs:
           recent=$(gh run list --workflow oracle-sweep.yml --branch "$BRANCH" --limit 100 --json displayTitle,createdAt \
             --jq "[.[] | select((.displayTitle | startswith(\"filler \"))
                     and now - (.createdAt | fromdateiso8601) < $oracle_every)] | length")
-          if [ "$recent" -eq 0 ]; then
+          if [ "$recent" -eq 0 ] && [ "$filler_mutants" -eq 0 ]; then
             start oracle-sweep.yml -f filler=true
             exit 0
           fi
