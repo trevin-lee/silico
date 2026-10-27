@@ -76,6 +76,12 @@ const KERNEL: &str = "kernel pool";
 /// result kept on disk is taken as its.
 const UNOPENED: &str = "unopened kernel pool";
 
+/// How long a pool that found its worker late waits for a worker started from it to answer
+/// before taking it ([`Shared::open_again`]): a worker answers an echo as soon as it's up,
+/// so this bounds only a file at the worker's path that runs and never answers, which every
+/// request waits on in turn while the pool isn't open.
+const OPEN_CHECK: Duration = Duration::from_secs(10);
+
 /// The most workers a pool may have: far more than any machine's cores, and few enough
 /// that a size from a setting can't make the pool try to start without end.
 pub const MAX_WORKERS: usize = 1024;
@@ -930,7 +936,7 @@ impl Shared {
                 silico_protocol::Op::Echo {
                     data: silico_protocol::Blob::inline(Vec::new()),
                 },
-                crate::kernel::DEFAULT_TIMEOUT,
+                OPEN_CHECK,
             );
             worker.shut_down();
             answered.map(|_| executable)
@@ -1050,6 +1056,12 @@ impl Shared {
             }
             state = lock(&self.state);
             if state.stopping {
+                return pending;
+            }
+            // Superseded while the pool opened (its client moved on): not queued.
+            if state.clients.superseded(client, generation) {
+                drop(state);
+                task.supersede();
                 return pending;
             }
         }
