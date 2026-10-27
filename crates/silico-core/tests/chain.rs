@@ -290,6 +290,38 @@ fn removing_a_pads_root_lets_the_pad_after_it_begin_the_body() {
     is_written(&removed.document, &document(&[S0000001, alone]));
 }
 
+// A review finding: every maker the tests' names had was its chain's root, so a lineage
+// that left out its last feature (the root) went unnoticed. Here the fillet names the second
+// pad, which, moved before the first, still holds what the fillet's base is built from.
+#[test]
+fn a_pad_moved_before_the_pad_it_was_on_keeps_the_fillet_naming_it_in_its_lineage() {
+    let first = r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "One", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#;
+    let second = r#"{"id": "p0000002", "type": "pad", "v": 1, "name": "Two", "base": "p0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": true}}"#;
+    let fillet = r#"{"id": "r0000001", "type": "fillet", "v": 1, "name": "R", "base": "p0000002", "edges": ["p0000002.pad.Edge(G s0000001.sketch.Vertex.pa000004)"], "radius": 0.5}"#;
+    let original = document(&[S0000001, first, second, fillet]);
+    let moved = move_feature(&original, &id("p0000002"), Some(&id("p0000001"))).unwrap();
+    // The chain p2, p1, r: the fillet on p1, which is built on p2.
+    assert_eq!(
+        moved.rewired,
+        [
+            rewired("p0000002", "base", Some("p0000001"), None),
+            rewired("p0000001", "base", None, Some("p0000002")),
+            rewired("r0000001", "base", Some("p0000002"), Some("p0000001")),
+        ]
+    );
+    let second_alone = r#"{"id": "p0000002", "type": "pad", "v": 1, "name": "Two", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": true}}"#;
+    let first_on_second = r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "One", "base": "p0000002", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#;
+    is_written(
+        &moved.document,
+        &document(&[
+            S0000001,
+            second_alone,
+            first_on_second,
+            &on(fillet, "p0000001"),
+        ]),
+    );
+}
+
 #[test]
 fn removing_a_revolves_root_lets_the_revolve_begin_the_body() {
     // A revolve's base is optional, as a pad's is.
@@ -730,6 +762,30 @@ mod hostile {
         );
     }
 
+    // The rule is a name's: a name one of whose makers was never in the fillet's lineage
+    // (here p0000002, a pad of its own) was broken before the edit, and the edit is no
+    // reason to refuse, though it takes another of its makers (s0000001, swept by the
+    // pocket) out of the lineage. Found by the generated documents: a pocket inserted and
+    // then removed was refused.
+    #[test]
+    fn a_name_broken_before_the_edit_refuses_nothing() {
+        let pocket = r#"{"id": "h0000001", "type": "pocket", "v": 1, "name": "H", "base": "b0000001", "sketch": "s0000001", "extent": {"type": "through_all", "reversed": true}}"#;
+        let fuse = r#"{"id": "j0000001", "type": "fuse", "v": 1, "name": "Fuse", "base": "h0000001", "tool": "t0000001"}"#;
+        let pad = r#"{"id": "p0000002", "type": "pad", "v": 1, "name": "Apart", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#;
+        let fillet = r#"{"id": "r0000001", "type": "fillet", "v": 1, "name": "Round", "base": "j0000001", "edges": ["p0000002.pad.Edge(G s0000001.sketch.Vertex.pa000004)"], "radius": 0.5}"#;
+        let document = document(&[S0000001, BLOCK, pocket, TOOL, fuse, pad, fillet]);
+        let removed = remove(&document, &id("h0000001")).unwrap();
+        assert_eq!(
+            removed.rewired,
+            [rewired(
+                "j0000001",
+                "base",
+                Some("h0000001"),
+                Some("b0000001")
+            )]
+        );
+    }
+
     // A review finding: no test had a maker only a nested source names decide a refusal.
     #[test]
     fn a_maker_named_only_inside_a_source_keeps_its_removal_refused() {
@@ -1063,14 +1119,25 @@ mod hostile {
             .map(|(_, t)| t.to_string())
     }
 
-    /// The features a feature's stored names name, read off the text: each name's first
-    /// word (the generator's names are a box's own edges).
-    fn named(f: &Feature) -> Vec<String> {
+    /// For each of a feature's stored names, the features of `document` it names, read off
+    /// the text: every word of it that is one of their IDs.
+    fn names(f: &Feature, document: &Document) -> Vec<Vec<String>> {
         f.operation
             .edges()
             .iter()
-            .map(|e| e.as_str().split('.').next().unwrap().to_owned())
+            .map(|edge| {
+                edge.as_str()
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .filter(|word| document.features.iter().any(|g| g.id.as_str() == *word))
+                    .map(str::to_owned)
+                    .collect()
+            })
             .collect()
+    }
+
+    /// Every feature of `document` a feature's stored names name.
+    fn named(f: &Feature, document: &Document) -> Vec<String> {
+        names(f, document).concat()
     }
 
     /// `f` with its `base` and `tool` as given, where given: `Some(None)` leaves a pad
@@ -1200,8 +1267,9 @@ mod hostile {
         found
     }
 
-    /// The lineage rule (pending Trevin): each feature of `edited` whose base in `original`
-    /// was built from a feature whose elements it names has a base built from it still.
+    /// The lineage rule (pending Trevin): each stored name in `edited` whose makers its
+    /// feature's base in `original` was built from, every one, has a base built from them
+    /// still.
     fn lineage_kept(original: &Document, edited: &Document) -> bool {
         edited.features.iter().all(|f| {
             let Some(base) = base_of(f) else {
@@ -1215,10 +1283,10 @@ mod hostile {
                 .map(|b| built_from(original, &b))
                 .unwrap_or_default();
             let now = built_from(edited, &base);
-            named(f)
-                .iter()
-                .filter(|m| **m != f.id.as_str())
-                .all(|m| now.contains(m) || !was.contains(m))
+            names(f, edited).iter().all(|makers| {
+                let makers: Vec<&String> = makers.iter().filter(|m| **m != f.id.as_str()).collect();
+                !makers.iter().all(|m| was.contains(*m)) || makers.iter().all(|m| now.contains(*m))
+            })
         })
     }
 
@@ -1242,7 +1310,7 @@ mod hostile {
     fn remove_model(original: &Document, id: &str) -> Option<Document> {
         if original.features.iter().any(|f| {
             f.operation.sketch().is_some_and(|s| s.as_str() == id)
-                || named(f).iter().any(|n| n == id)
+                || named(f, original).iter().any(|n| n == id)
         }) {
             return None;
         }
@@ -1256,19 +1324,21 @@ mod hostile {
     }
 
     /// A document the gate takes, made from `choices`: boxes, pads and revolves (alone or on
-    /// a body), pockets, grooves, fillets and chamfers of one to three boxes' edges, booleans
-    /// of two bodies, and a second sketch.
+    /// a body), pockets, grooves, fillets and chamfers of one to three edges of boxes and of
+    /// pads (on a body or not), booleans of two bodies, and a second sketch.
     fn generated(choices: &[(u8, u8, u8)]) -> Document {
         let mut texts = vec![S0000001.to_owned()];
         let mut sketches = vec!["s0000001"];
         let mut tips: Vec<String> = Vec::new();
-        let mut boxes: Vec<String> = Vec::new();
+        // Edges a fillet or chamfer can name: each box's, and each pad of s0000001's, whose
+        // maker isn't its chain's root where the pad has a base.
+        let mut nameable: Vec<String> = Vec::new();
         for (n, &(kind, a, b)) in choices.iter().enumerate() {
             let pick = |list: &Vec<String>, k: u8| list[k as usize % list.len()].clone();
             let sketch = sketches[b as usize % sketches.len()];
             let mut kind = kind % 11;
             if (matches!(kind, 2..=4 | 9 | 10) && tips.is_empty())
-                || (matches!(kind, 4 | 10) && boxes.is_empty())
+                || (matches!(kind, 4 | 10) && nameable.is_empty())
                 || (kind == 5 && tips.len() < 2)
                 || (kind == 6 && sketches.len() == 2)
             {
@@ -1281,10 +1351,7 @@ mod hostile {
             let edges = || {
                 let mut named: Vec<String> = Vec::new();
                 for k in 0..=(b / 86) as usize {
-                    let one = format!(
-                        r#""{}.box.Edge1""#,
-                        boxes[(b as usize + 5 * k) % boxes.len()]
-                    );
+                    let one = format!(r#""{}""#, nameable[(b as usize + 5 * k) % nameable.len()]);
                     if !named.contains(&one) {
                         named.push(one);
                     }
@@ -1303,7 +1370,7 @@ mod hostile {
                 0 | 7 => {
                     let id = id('b');
                     tips.push(id.clone());
-                    boxes.push(id.clone());
+                    nameable.push(format!("{id}.box.Edge1"));
                     format!(
                         r#"{{"id": "{id}", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}}"#
                     )
@@ -1311,6 +1378,9 @@ mod hostile {
                 1 => {
                     let id = id('p');
                     tips.push(id.clone());
+                    if sketch == "s0000001" {
+                        nameable.push(format!("{id}.pad.Edge(G s0000001.sketch.Vertex.pa000004)"));
+                    }
                     format!(
                         r#"{{"id": "{id}", "type": "pad", "v": 1, "name": "P", "sketch": "{sketch}", "extent": {{"type": "one_side", "length": 5, "reversed": false}}}}"#
                     )
@@ -1360,6 +1430,9 @@ mod hostile {
                     let id = id(prefix);
                     tips.retain(|t| *t != base);
                     tips.push(id.clone());
+                    if kind == 2 && sketch == "s0000001" {
+                        nameable.push(format!("{id}.pad.Edge(G s0000001.sketch.Vertex.pa000004)"));
+                    }
                     format!(r#"{{"id": "{id}", {rest}}}"#)
                 }
                 5 => {

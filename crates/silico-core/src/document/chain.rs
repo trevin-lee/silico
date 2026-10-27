@@ -557,12 +557,13 @@ fn stand_in(
     }
 }
 
-/// The first feature of `edited`, in its timeline order, one of whose stored names has a
-/// maker its base is no longer built from, though its base in `before` was; with that
-/// maker. Pending Trevin: it extends the design's "names its elements" to what a feature's
-/// base is built from, so an edit that would break a reference the text can see is refused
-/// rather than left to fail at the rebuild. A maker outside the base's lineage before the
-/// edit is the rebuild's to report, and never hides one the edit takes out.
+/// The first feature of `edited`, in its timeline order, with a stored name whose makers
+/// were all in what its base was built from in `before`, one of which its base is no longer
+/// built from; with that maker. Pending Trevin: it extends the design's "names its
+/// elements" to what a feature's base is built from, so an edit that would break a
+/// reference the text can see is refused rather than left to fail at the rebuild. A name
+/// one of whose makers was outside the base's lineage before the edit was broken already:
+/// it's the rebuild's to report, whatever the edit does to its other makers.
 fn lineage_broken(before: &Document, edited: &Document) -> Option<(FeatureId, FeatureId)> {
     let (old, new) = (Lineage::of(before), Lineage::of(edited));
     edited.features.iter().find_map(|feature| {
@@ -570,14 +571,20 @@ fn lineage_broken(before: &Document, edited: &Document) -> Option<(FeatureId, Fe
         let was = old
             .index
             .feature(&feature.id)
-            .and_then(|f| base_of(&f.operation));
-        makers_named(&new.index, feature)
-            .into_iter()
-            .filter(|maker| **maker != feature.id)
-            .find(|maker| {
-                !new.built_from(base, maker) && was.is_some_and(|was| old.built_from(was, maker))
-            })
-            .map(|maker| (feature.id.clone(), maker.clone()))
+            .and_then(|f| base_of(&f.operation))?;
+        feature.operation.edges().iter().find_map(|edge| {
+            let makers: Vec<&FeatureId> = name_makers(&new.index, edge.as_str())
+                .into_iter()
+                .filter(|maker| **maker != feature.id)
+                .collect();
+            if !makers.iter().all(|maker| old.built_from(was, maker)) {
+                return None;
+            }
+            makers
+                .into_iter()
+                .find(|maker| !new.built_from(base, maker))
+                .map(|maker| (feature.id.clone(), maker.clone()))
+        })
     })
 }
 
@@ -730,21 +737,29 @@ fn no_feature(id: &FeatureId, parameter: &str) -> Error {
 /// its ID, in the order they're written; a name that doesn't parse names none (the gate
 /// refuses it on its own).
 fn makers_named<'a>(index: &Index<'a>, feature: &Feature) -> Vec<&'a FeatureId> {
-    let maker = |id: &FeatureId| index.feature(id).map(|f| Maker::of(&f.operation));
     let mut found: Vec<&'a FeatureId> = Vec::new();
     let mut seen: BTreeSet<&'a FeatureId> = BTreeSet::new();
     for edge in feature.operation.edges() {
-        if let Ok(name) = Name::parse(edge.as_str(), &maker) {
-            for id in name.features() {
-                if let Some(held) = index.feature(id)
-                    && seen.insert(&held.id)
-                {
-                    found.push(&held.id);
-                }
+        for maker in name_makers(index, edge.as_str()) {
+            if seen.insert(maker) {
+                found.push(maker);
             }
         }
     }
     found
+}
+
+/// Every feature the element name `text` names as a maker, as the document holds its ID,
+/// each once, in the order written; none if it doesn't parse.
+fn name_makers<'a>(index: &Index<'a>, text: &str) -> Vec<&'a FeatureId> {
+    let maker = |id: &FeatureId| index.feature(id).map(|f| Maker::of(&f.operation));
+    let Ok(name) = Name::parse(text, &maker) else {
+        return Vec::new();
+    };
+    name.features()
+        .into_iter()
+        .filter_map(|id| index.feature(id).map(|held| &held.id))
+        .collect()
 }
 
 /// A document's features by ID, and each solid's consumer, read once: each lookup a search
