@@ -222,7 +222,7 @@ fn a_scan_removes_partials_an_hour_old_and_keeps_a_writers_and_what_it_doesnt_kn
 
 #[test]
 fn a_stale_partial_waits_through_a_rebuild_of_hits_and_a_clear_for_the_next_puts_scan() {
-    // The note's scans are "on put, never on get" (*When it scans*): a rebuild every step of
+    // The note's scans are "on put, never on get" (*When it runs*): a rebuild every step of
     // which is a hit, as an open or a check of an unchanged document is, puts nothing, so it
     // scans nothing and leaves a killed write's partial where it is. Nor does `cache_clear`
     // remove one (docs/design/m4.1-command-api.md, decision 25 as built: "a stale one is the

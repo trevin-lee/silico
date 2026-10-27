@@ -361,7 +361,9 @@ fn slot_free_answers_queued_when_stdins_end_is_read_are_written_and_the_call_in_
     // cancelled, so the rebuild it waits on stopped, its hold still held. Only that end
     // cancels it.
     assert!(c.kernel.wait_idle(HANG), "stdin's end was never read");
-    // And serve waits for the replies queued, the client still not reading.
+    // Not ended yet, the client still not reading. (Its teardown alone can take this long:
+    // that serve waits for the replies queued is the timed tests' to show, such as
+    // `replies_queued_while_the_client_isnt_reading_as_the_input_ends_are_all_written`.)
     assert!(
         !c.has_ended(),
         "serve ended with replies queued and unwritten"
@@ -390,7 +392,7 @@ fn slot_free_answers_queued_when_stdins_end_is_read_are_written_and_the_call_in_
     assert_eq!(refused[..3], [Some(false); 3], "{written:?}");
     assert!(refused[3].is_some(), "{written:?}");
     assert_eq!(refused[4], Some(true), "{written:?}");
-    // And the transaction the check's session held, rolled back.
+    // And the document as it was: no edit was ever committed, so nothing was written.
     assert_eq!(c.read_file("part.silico"), BOX);
     drop(hold);
 }
