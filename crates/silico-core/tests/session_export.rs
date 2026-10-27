@@ -3,6 +3,7 @@
 //! tetrahedron built by hand (export_report.rs). The command's own steps are
 //! export_command.rs's.
 
+use super::model::WAIT;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -136,7 +137,7 @@ fn an_export_cancelled_once_meshed_answers_cancelled_and_writes_no_file() {
     std::fs::create_dir(&out).unwrap();
     let hold = kernel.hold(|op| matches!(op, Op::ExportMesh { .. }));
     let running = sessions.export(&s, request(out.join("part.3mf")));
-    assert!(kernel.wait_running(1, Duration::from_secs(60)));
+    assert!(kernel.wait_running(1, WAIT));
     assert!(running.stopper().cancel());
     hold.release();
     let refused = answer(running).result.unwrap_err();
@@ -146,7 +147,7 @@ fn an_export_cancelled_once_meshed_answers_cancelled_and_writes_no_file() {
         "{refused:?}"
     );
     // The read's own client is dropped once the export returns, retiring it.
-    assert!(kernel.wait_idle(Duration::from_secs(60)));
+    assert!(kernel.wait_idle(WAIT));
     sessions.close(&s).wait();
     assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
     // Meshed, and answered: the settle, not the kernel, kept the file from being written.
@@ -185,9 +186,9 @@ fn a_step_export_cancelled_while_it_writes_stops_and_answers_cancelled_writing_n
             features: None,
         },
     );
-    assert!(f.kernel.wait_running(1, Duration::from_secs(60)));
+    assert!(f.kernel.wait_running(1, WAIT));
     assert!(running.stopper().cancel());
-    let refused = match running.wait_timeout(Duration::from_secs(10)) {
+    let refused = match running.wait_timeout(WAIT) {
         Ok(response) => response.result.unwrap_err(),
         Err(_) => panic!("the export went on writing past its cancel"),
     };
@@ -249,7 +250,7 @@ fn two_sessions_exporting_at_once_mesh_one_at_a_time() {
     let second = f
         .sessions
         .export(&s[1], request(f.dir.path().join("b.3mf")));
-    assert!(f.kernel.wait_running(1, Duration::from_secs(60)));
+    assert!(f.kernel.wait_running(1, WAIT));
     // Long enough for the other session's mesh to be asked and start, were it let.
     assert!(!f.kernel.wait_running(2, Duration::from_millis(500)));
     assert_eq!(asked_meshes(&f.kernel), 1);
@@ -271,14 +272,14 @@ fn an_export_waiting_its_turn_to_mesh_stops_at_once_when_cancelled() {
     let first = f
         .sessions
         .export(&s[0], request(f.dir.path().join("a.3mf")));
-    assert!(f.kernel.wait_running(1, Duration::from_secs(60)));
+    assert!(f.kernel.wait_running(1, WAIT));
     let second = f
         .sessions
         .export(&s[1], request(f.dir.path().join("b.3mf")));
     // Waiting its turn, or about to: a cancel stops it wherever it is.
     assert!(!f.kernel.wait_running(2, Duration::from_millis(200)));
     assert!(second.stopper().cancel());
-    let refused = match second.wait_timeout(Duration::from_secs(10)) {
+    let refused = match second.wait_timeout(WAIT) {
         Ok(response) => response.result.unwrap_err(),
         Err(_) => panic!("the export went on waiting its turn past its cancel"),
     };
@@ -305,7 +306,7 @@ fn an_export_waiting_its_turn_to_mesh_stops_at_once_when_cancelled() {
 /// Waits until `session`'s logs say its export waits for another export's mesh, so what a
 /// test does next finds it waiting (the process's subscriber keeping session logs).
 fn waiting_its_turn<K: Clients + 'static>(sessions: &Sessions<K>, session: &SessionId) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + WAIT;
     loop {
         let query = crate::logged::query(LogLevel::Info, None, None, 1000);
         let logs = sessions.read_logs(session, &query).result.unwrap();
@@ -364,8 +365,8 @@ fn an_export_waiting_its_turn_to_mesh_when_its_session_closes_answers_closed_not
     let hold = kernel.hold(|op| matches!(op, Op::ExportMesh { .. }));
     let first = sessions.export(&s[0], request(dir.path().join("a.3mf")));
     // The first session's mesh asked, and held: its export holds the turn.
-    assert!(kernel.wait_running(1, Duration::from_secs(60)));
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    assert!(kernel.wait_running(1, WAIT));
+    let deadline = std::time::Instant::now() + WAIT;
     while asked_meshes(&kernel) == 0 && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }

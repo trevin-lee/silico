@@ -6,6 +6,7 @@
 //! is ever reported as a step that wasn't run.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::model::WAIT;
 use super::sweeps;
 
 use std::sync::Arc;
@@ -21,7 +22,7 @@ fn engine() -> Recompute<FakeKernel> {
 
 fn published(engine: &Recompute<FakeKernel>, features: &[&str]) -> Arc<Model> {
     let document = checked_document(features);
-    match engine.start(document).wait_timeout(Duration::from_secs(60)) {
+    match engine.start(document).wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("not published: {other:?}"),
         Err(_) => panic!("the recompute didn't finish"),
@@ -217,9 +218,9 @@ fn cached(dir: &std::path::Path, word: &[u8], without: Option<&[u8]>) -> bool {
         .any(|bytes| has(&bytes, word) && without.is_none_or(|w| !has(&bytes, w)))
 }
 
-/// Waits up to 30 s for `ready`.
+/// Waits up to [`WAIT`] for `ready`.
 fn wait_for(what: &str, ready: impl Fn() -> bool) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + WAIT;
     while !ready() {
         assert!(std::time::Instant::now() < deadline, "{what}");
         std::thread::sleep(Duration::from_millis(2));
@@ -273,7 +274,7 @@ fn a_verdict_that_lands_mid_recompute_stops_what_hasnt_started() {
             && cached(&dir.join("cache"), b"\ntranslate ", Some(b"\ncut "))
     });
     drop(second);
-    let Ok(Ok(RunOutcome::Published(model))) = run.wait_timeout(Duration::from_secs(60)) else {
+    let Ok(Ok(RunOutcome::Published(model))) = run.wait_timeout(WAIT) else {
         panic!("not published");
     };
     assert!(matches!(

@@ -1045,7 +1045,7 @@ fn a_solid_made_is_measured_at_once_while_what_uses_it_runs() {
             .count()
     };
     let until = |what: &str, done: &dyn Fn() -> bool| {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + WAIT;
         while !done() {
             assert!(std::time::Instant::now() < deadline, "{what}");
             std::thread::sleep(Duration::from_millis(5));

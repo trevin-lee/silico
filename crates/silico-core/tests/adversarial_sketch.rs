@@ -8,6 +8,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::fixture;
+use super::model::WAIT;
 
 use super::within;
 
@@ -900,7 +901,7 @@ fn rebuilt(text: &str) -> (std::sync::Arc<silico_core::recompute::Model>, Vec<St
     use silico_core::recompute::{Recompute, RunOutcome};
     let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new());
     let checked = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
-    let model = match engine.start(checked).wait_timeout(Duration::from_secs(20)) {
+    let model = match engine.start(checked).wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("{other:?}"),
         Err(_) => panic!("the recompute didn't finish"),

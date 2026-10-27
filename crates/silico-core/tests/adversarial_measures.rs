@@ -5,6 +5,7 @@
 //! snapshot agreeing), and a published read held in the kernel while the session goes on.
 //! The fake places each element at (n, 0, 0), n its number, so its distances are by hand.
 
+use super::model::WAIT;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -575,15 +576,15 @@ fn a_published_distance_held_in_the_kernel_holds_up_nothing_else_of_the_session(
         let listed = f
             .sessions
             .elements(&s, model, None, None, 10)
-            .wait_timeout(Duration::from_secs(5));
+            .wait_timeout(WAIT);
         assert!(listed.is_ok_and(|r| r.result.is_ok()), "{model:?}");
     }
-    let closed = f.sessions.close(&s).wait_timeout(Duration::from_secs(5));
+    let closed = f.sessions.close(&s).wait_timeout(WAIT);
     assert!(closed.is_ok_and(|r| r.result.is_ok()));
     // Closing it retired the read's kernel client (design §2: a read's client ends when
     // its session closes; from the measure council's architecture review), so the read
     // answers, without its hold being released, that the session closed.
-    let response = held.wait_timeout(Duration::from_secs(10)).ok().unwrap();
+    let response = held.wait_timeout(WAIT).ok().unwrap();
     let refused = response.result.unwrap_err();
     assert_eq!(
         refused.errors()[0].message(),
@@ -695,16 +696,11 @@ fn a_published_read_that_asks_the_kernel_after_its_session_closes_says_it_closed
     assert!(
         f.sessions
             .close(&s)
-            .wait_timeout(Duration::from_secs(5))
+            .wait_timeout(WAIT)
             .is_ok_and(|r| r.result.is_ok())
     );
     go.send(()).unwrap();
-    let refused = read
-        .wait_timeout(Duration::from_secs(10))
-        .ok()
-        .unwrap()
-        .result
-        .unwrap_err();
+    let refused = read.wait_timeout(WAIT).ok().unwrap().result.unwrap_err();
     assert_eq!(
         refused.errors()[0].message(),
         "the session closed before the kernel measured the distance"
@@ -737,7 +733,7 @@ fn a_held_read_released_before_its_session_closes_answers_its_distance() {
         assert!(
             f.sessions
                 .elements(&s, model, None, None, 10)
-                .wait_timeout(Duration::from_secs(5))
+                .wait_timeout(WAIT)
                 .is_ok_and(|r| r.result.is_ok())
         );
     }
@@ -746,7 +742,7 @@ fn a_held_read_released_before_its_session_closes_answers_its_distance() {
         Err(running) => running,
     };
     hold.release();
-    let response = held.wait_timeout(Duration::from_secs(10)).ok().unwrap();
+    let response = held.wait_timeout(WAIT).ok().unwrap();
     assert_eq!(response.result.unwrap().distance, mm(1));
 }
 
@@ -771,7 +767,7 @@ fn dropping_the_sessions_stops_a_current_read_held_in_the_kernel() {
         pair("k7f2qx3m.box.Face5", "k7f2qx3m.box.Face6"),
         None,
     );
-    assert!(f.kernel.wait_running(1, Duration::from_secs(10)));
+    assert!(f.kernel.wait_running(1, WAIT));
     let started = Instant::now();
     drop(f.sessions);
     assert!(
@@ -779,12 +775,7 @@ fn dropping_the_sessions_stops_a_current_read_held_in_the_kernel() {
         "{:?}",
         started.elapsed()
     );
-    let refused = reading
-        .wait_timeout(Duration::from_secs(5))
-        .ok()
-        .unwrap()
-        .result
-        .unwrap_err();
+    let refused = reading.wait_timeout(WAIT).ok().unwrap().result.unwrap_err();
     assert_eq!(
         refused.errors()[0].message(),
         "the session closed before the kernel measured the distance"
