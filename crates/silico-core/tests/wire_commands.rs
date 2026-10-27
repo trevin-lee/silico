@@ -349,7 +349,7 @@ fn the_word_lists_in_the_snapshots_are_the_commands_own() {
 #[test]
 fn the_examples_are_the_designs_own_text() {
     // Each section's blocks, in order, each file the block and a newline.
-    let sections: [(&str, &str, &str, &[&str]); 10] = [
+    let sections: [(&str, &str, &str, &[&str]); 11] = [
         (
             "### Element entries",
             "### Warnings",
