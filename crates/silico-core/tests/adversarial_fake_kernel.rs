@@ -610,12 +610,50 @@ fn a_caller_that_stops_waiting_does_not_wedge_the_kernel() {
     for n in 1..=1000u32 {
         drop(kernel.submit(Generation(0), echo(n)));
     }
+    assert_eq!(kernel.cancelled_waiting(), 1000);
     hold.release();
     run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
     assert_eq!(kernel.asked().len(), 1002);
     let ran: Vec<&str> = kernel.calls().iter().map(|call| call.op.name()).collect();
     assert_eq!(ran, ["Echo", "MakeBox"]);
     assert_eq!(kernel.cancelled_waiting(), 0);
+}
+
+#[test]
+fn the_fake_describes_at_once_at_most_a_batch_of_elements_counting_every_kind() {
+    // Found by mutation testing: nothing held that a shape's vertices count toward the
+    // bound on one DescribeAll. A box is 6 faces, 12 edges, and 8 vertices, and a fuse of
+    // the fake holds both its inputs': 38 boxes are 988 elements, described at once, and 39
+    // are 1,014, past the 1,000 one request describes, refused as a worker refuses them.
+    let kernel = FakeKernel::new(1).unwrap();
+    let a_box = run(&kernel, KernelRequest::make(block(1.0, 1.0, 1.0)).unwrap());
+    let mut fused = a_box.clone();
+    for _ in 1..38 {
+        fused = run(
+            &kernel,
+            KernelRequest::boolean(BooleanOp::Fuse, &fused, &a_box),
+        )
+        .shape;
+    }
+    let whole = run(&kernel, KernelRequest::describe_all(&fused));
+    assert_eq!(
+        (whole.faces.len(), whole.edges.len(), whole.vertices.len()),
+        (228, 456, 304)
+    );
+    let past = run(
+        &kernel,
+        KernelRequest::boolean(BooleanOp::Fuse, &fused, &a_box),
+    )
+    .shape;
+    let outcome = within(
+        kernel.submit(kernel.generation(), KernelRequest::describe_all(&past)),
+        "a description of 1,014 elements at once",
+    );
+    let Outcome::Done(Err(error)) = outcome else {
+        panic!("{outcome:?}")
+    };
+    assert_eq!(error.code(), ErrorCode::Internal);
+    assert!(error.to_string().contains("not 1014"), "{error}");
 }
 
 #[test]

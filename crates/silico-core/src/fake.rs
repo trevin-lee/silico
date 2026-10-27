@@ -1072,12 +1072,6 @@ fn point_distance(
     }))
 }
 
-/// The fake's description of a shape whose counts are `counts`: its `kind`'s elements from
-/// `first`, `count` of them or as many as there are, each standing for its number `n` alone
-/// (a face of type other, area 1, centred at (n, 0, 0); an edge of type other from (n, 0,
-/// 0) to (n, 1, 0), 1 long; a vertex at (n, 0, 0)), and the kind's total. Enough for a
-/// test of what's done with a description; a real worker's geometry is tested on a real
-/// worker.
 /// Every element of a shape of `counts` described ([`Op::DescribeAll`]), each as
 /// [`described`] describes it; refused past a batch in all, as a worker refuses it: as its
 /// fault (`internal`).
@@ -1110,6 +1104,12 @@ fn described_all_any_size(counts: &ElementCounts) -> Result<Reply, Error> {
     }))
 }
 
+/// The fake's description of a shape whose counts are `counts`: its `kind`'s elements from
+/// `first`, `count` of them or as many as there are, each standing for its number `n` alone
+/// (a face of type other, area 1, centred at (n, 0, 0); an edge of type other from (n, 0,
+/// 0) to (n, 1, 0), 1 long; a vertex at (n, 0, 0)), and the kind's total. Enough for a
+/// test of what's done with a description; a real worker's geometry is tested on a real
+/// worker.
 fn described(
     counts: &ElementCounts,
     kind: ElementKind,
