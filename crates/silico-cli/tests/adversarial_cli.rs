@@ -299,8 +299,9 @@ fn a_fifo_with_no_writer_is_refused_not_waited_on() {
         let out = finish(child, run::DEADLINE);
         assert!(
             out.status.is_some(),
-            "silico {c} on a FIFO hung for {:?}",
-            run::DEADLINE
+            "silico {c} on a FIFO hung for {:?}: {}",
+            run::DEADLINE,
+            out.stderr
         );
         assert_eq!(out.code(), Some(2), "{c}: {}", out.stderr);
     }
@@ -347,7 +348,7 @@ fn reading_stops_at_the_most_a_document_may_be() {
     let out = finish(child, run::DEADLINE);
     drop(held);
     let written = writer.join().unwrap();
-    assert!(out.status.is_some(), "hung");
+    assert!(out.status.is_some(), "hung: {}", out.stderr);
     // Nothing read before it's refused: what was written is at most a chunk and a pipe's
     // buffer, which the test's own read end (never read) holds. (Found by the review: a
     // bound of the 64 MiB a document may be passed a silico that read that much first.)
