@@ -4,18 +4,18 @@
 # one short job looks at the runners, starts at most one filler run, and exits.
 #
 # It starts nothing while a job that a filler runner could take is queued (a real run's
-# shards, or a filler run's, asking for mutants, mutants-pr, or filler), while a real
-# mutants run has work waiting, or while a mutants run or a sweep is starting (no shard or
-# sweep job yet); a queued gate or control job takes other runners, so it doesn't stop
-# filler. A filler mutants run going doesn't stop another: each takes what's free when it
-# starts (2026-10-27: one at a time, a run of one shard kept the rest idle); but a filler
-# sweep and filler mutants never run together. Free runners aren't idle CPU: the VM is
-# saturated by about six shards. So it fills only when more than a fifth of the VM's CPUs are idle (over 15
-# seconds; this job runs on the VM), with as many shards as the idle CPUs feed at a
-# filler shard's share (a quarter of the VM) and the free runners labelled filler
-# (silico-9 to -12) hold. Filler shards run only there, at the idle scheduling class on
-# runners whose cgroups are at the idle CPU weight (mutants.yml), so they hold no runner a
-# gate could use and take no CPU a gate wants.
+# shards, or a filler run's, asking for mutants, mutants-pr, or filler), while a real mutants
+# run has work waiting, or while a mutants run or a sweep is starting (no shard or sweep job
+# yet); a queued gate or control job takes other runners, so it doesn't stop filler. A filler
+# mutants run going doesn't stop another: each takes what's free when it starts (2026-10-27:
+# one at a time, a run of one shard kept the rest idle); but a filler sweep and filler mutants
+# never run together. Free runners aren't idle CPU: the VM is saturated by about six shards.
+# So it fills only when more than a fifth of the VM's CPUs are idle (over 15 seconds; this job
+# runs on the VM), with as many shards as the idle CPUs feed at a filler shard's share (a
+# quarter of the VM) and the free runners labelled filler (silico-9 to -12) hold. Filler
+# shards run only there, at the idle scheduling class on runners whose cgroups are at the idle
+# CPU weight (mutants.yml), so they hold no runner a gate could use and take no CPU a gate
+# wants.
 # In order:
 #   a. Main's new commits: mutants in what main changed in its source since the commit the
 #      last filler `a` run tested (or since main's parent, at first).
@@ -209,7 +209,12 @@ jobs:
           recent=$(gh run list --workflow oracle-sweep.yml --branch "$BRANCH" --limit 100 --json displayTitle,createdAt \
             --jq "[.[] | select((.displayTitle | startswith(\"filler \"))
                     and now - (.createdAt | fromdateiso8601) < $oracle_every)] | length")
-          if [ "$recent" -eq 0 ] && [ "$filler_mutants" -eq 0 ]; then
+          # Due while filler mutants go: wait for them to end, so the sweep comes next, rather
+          # than start more, which overlap and would keep it from ever coming.
+          if [ "$recent" -eq 0 ]; then
+            if [ "$filler_mutants" -gt 0 ]; then
+              skip "the oracle sweep is due, waiting for filler mutants to end"
+            fi
             start oracle-sweep.yml -f filler=true
             exit 0
           fi
