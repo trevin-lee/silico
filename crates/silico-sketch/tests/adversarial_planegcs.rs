@@ -8,6 +8,7 @@
 
 use super::generate;
 use super::systems;
+use super::wait::WAIT;
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -711,11 +712,7 @@ fn a_sketch_workers_errors_dont_call_it_the_kernel_worker() {
     // worker started as a sketch worker is now named as one.
     let mut w = Worker::spawn_as(Path::new(TEST_WORKER), WorkerKind::Sketch).unwrap();
     let err = w
-        .call(
-            Generation(1),
-            Op::Debug(DebugOp::Segfault),
-            Duration::from_secs(30),
-        )
+        .call(Generation(1), Op::Debug(DebugOp::Segfault), WAIT)
         .unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
     assert!(!err.message().contains("kernel"), "{err}");

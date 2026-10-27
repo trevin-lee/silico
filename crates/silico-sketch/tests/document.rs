@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::systems;
+use super::wait::WAIT;
 
 use super::fixture;
 
@@ -1159,7 +1160,7 @@ fn a_distrusted_sketch_worker_is_stopped_and_the_next_solve_starts_another() {
     let first = w.pid();
     assert!(systems::process_exists(first));
     w.distrust();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + WAIT;
     while systems::process_exists(first) {
         assert!(
             std::time::Instant::now() < deadline,
@@ -1192,7 +1193,7 @@ fn a_sketch_worker_killed_while_idle_is_started_again_for_the_next_solve() {
         let stat = String::from_utf8_lossy(&out.stdout).trim().to_owned();
         stat.is_empty() || stat.starts_with('Z')
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + WAIT;
     while !dead() {
         assert!(
             std::time::Instant::now() < deadline,

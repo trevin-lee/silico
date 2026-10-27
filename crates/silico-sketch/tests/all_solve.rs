@@ -15,6 +15,8 @@ mod generate;
 mod saves;
 #[path = "common/systems.rs"]
 mod systems;
+#[path = "common/wait.rs"]
+mod wait;
 
 #[path = "adversarial_decision5_bridge.rs"]
 mod adversarial_decision5_bridge;
