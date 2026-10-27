@@ -188,7 +188,7 @@ FreeCAD avoids this problem by storing each feature's B-rep in the file and load
 ## Performance
 
 - Recompute runs in the background, is cancellable, and discards superseded results. The viewport never waits on it.
-- Independent DAG branches recompute in parallel across the worker pool. Tessellation is parallel too.
+- Independent DAG branches recompute in parallel across the worker pool. Display and render tessellation is parallel too; export meshes are taken one at a time in a process, in the order they're asked for, since one at a fine tolerance can take gigabytes (docs/ports/mesh-export.md).
 - The GPU handles rendering, ID-buffer picking, and instancing for large assemblies. Geometry modeling stays on the CPU, in OCCT.
 - The per-feature cache makes edits recompute only what changed downstream.
 
