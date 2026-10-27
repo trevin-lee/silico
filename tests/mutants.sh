@@ -37,8 +37,10 @@ echo "mutants: testing $commit"
 # many elements is written once and stays within its size bound (silico-core's
 # naming/build.rs, MOST_WEIGHT, which names_that_would_double_... tests too). The recompute
 # tests that held to a wall clock (a chain of four hundred booleans, five thousand
-# independent features) now scale it with the CPU share the process gets
-# (tests/common/share.rs, #207), so they run here.
+# independent features) now add to it what load costs their work (tests/common/share.rs,
+# #207), so they run here; on a loaded shard that allowance grows with the measured
+# slowdown, so a recompute.rs survivor that only waits between steps is rechecked unloaded
+# before it's a finding.
 core_wall_clock=(
   a_name_reported_for_many_elements_is_written_once_promptly
 )
