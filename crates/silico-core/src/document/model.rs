@@ -994,3 +994,28 @@ pub const FEATURE_TYPES: [&str; 15] = [
     "box", "cylinder", "sphere", "cone", "torus", "fuse", "cut", "common", "sketch", "fillet",
     "chamfer", "pad", "pocket", "revolve", "groove",
 ];
+
+#[cfg(test)]
+mod feature_id_tests {
+    use super::FeatureId;
+    use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+
+    /// What `value` hashes to under one fixed hasher.
+    fn hashed(value: &impl std::hash::Hash) -> u64 {
+        BuildHasherDefault::<DefaultHasher>::default().hash_one(value)
+    }
+
+    #[test]
+    fn an_id_hashes_compares_and_orders_as_its_text_does() {
+        // Exactly as derived: an ID is its text, so it hashes as the text does (two
+        // different IDs hash apart as their texts do), and compares and orders as it does.
+        let (a, b) = ("a0000001", "b0000002");
+        let (id_a, id_b) = (FeatureId(a.to_owned()), FeatureId(b.to_owned()));
+        assert_eq!(hashed(&id_a), hashed(&a.to_owned()));
+        assert_eq!(hashed(&id_b), hashed(&b.to_owned()));
+        assert_ne!(hashed(&id_a), hashed(&id_b));
+        assert_eq!(id_a.cmp(&id_b), a.cmp(b));
+        assert_eq!(id_b.partial_cmp(&id_a), Some(b.cmp(a)));
+        assert!(id_a == FeatureId(a.to_owned()) && id_a != id_b);
+    }
+}
