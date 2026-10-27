@@ -1212,7 +1212,7 @@ proptest! {
         nm in prop_oneof![
             any::<i64>(),
             -10_000_000i64..10_000_000,
-            prop::sample::select(vec![i64::MIN, i64::MAX, 0, 1, -1, 10, 999_999, 1_000_000]),
+            prop::sample::select(vec![i64::MIN, -i64::MAX, i64::MAX, 0, 1, -1, 10, 999_999, 1_000_000]),
         ],
         moved in -30i32..30,
         zeros in 0usize..4,

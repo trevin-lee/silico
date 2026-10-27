@@ -778,7 +778,8 @@ fn edge_i64() -> impl Strategy<Value = i64> {
 
 /// The value of a plain decimal in units of 10^-`decimals`, computed by padding the text
 /// (independent of `parse_number`'s digit-by-digit accumulation), or `None` when the
-/// text has a non-zero digit past the resolution or the value doesn't fit an i64.
+/// text has a non-zero digit past the resolution or the value is past what a document
+/// holds: at most i64::MAX either way, so i64::MIN, which an i64 holds, is past it.
 fn reference_value(negative: bool, whole: &str, fraction: &str, decimals: usize) -> Option<i64> {
     let (kept, dropped) = if fraction.len() > decimals {
         fraction.split_at(decimals)
@@ -798,11 +799,30 @@ fn reference_value(negative: bool, whole: &str, fraction: &str, decimals: usize)
     if digits.is_empty() {
         return Some(0);
     }
-    signed.parse::<i64>().ok()
+    signed.parse::<i64>().ok().filter(|&v| v != i64::MIN)
+}
+
+/// Strategy: a plain decimal's parts, digits biased toward 0 and 9, and now and then a
+/// length's or an angle's bound (i64::MAX nm or ndeg) or one past it, either way.
+fn decimal_parts() -> impl Strategy<Value = (bool, String, String)> {
+    let edges = prop::sample::select(vec![
+        ("9223372036854", "775807"),
+        ("9223372036854", "775808"),
+        ("9223372036", "854775807"),
+        ("9223372036", "854775808"),
+    ])
+    .prop_flat_map(|(whole, fraction)| {
+        (
+            any::<bool>(),
+            Just(whole.to_owned()),
+            Just(fraction.to_owned()),
+        )
+    });
+    prop_oneof![9 => random_decimal_parts(), 1 => edges]
 }
 
 /// Strategy: a plain decimal's parts, digits biased toward 0 and 9.
-fn decimal_parts() -> impl Strategy<Value = (bool, String, String)> {
+fn random_decimal_parts() -> impl Strategy<Value = (bool, String, String)> {
     let digit = prop_oneof![3 => Just('0'), 3 => Just('9'), 4 => prop::char::range('0', '9')];
     let whole = prop_oneof![
         Just("0".to_owned()),

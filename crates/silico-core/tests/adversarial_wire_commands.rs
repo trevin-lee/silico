@@ -663,13 +663,17 @@ fn a_length_and_an_angle_bound_are_read_to_their_places_and_range() {
         "minor_radius",
     ] {
         assert_eq!(bound(measure, "9223372036854.775807"), length(i64::MAX));
+        assert_eq!(bound(measure, "-9223372036854.775807"), length(-i64::MAX));
         assert_eq!(bound(measure, "1e-6"), length(1));
-        let (message, suggestion) = bound(measure, "9223372036854.775808").unwrap_err();
-        assert!(message.ends_with("which is too large"), "{message}");
-        assert_eq!(
-            suggestion,
-            "a length is at most 9223372036854.775807 mm either way"
-        );
+        // One nanometre past the bound, either way.
+        for past in ["9223372036854.775808", "-9223372036854.775808"] {
+            let (message, suggestion) = bound(measure, past).unwrap_err();
+            assert!(message.ends_with("which is too large"), "{message}");
+            assert_eq!(
+                suggestion,
+                "a length is at most 9223372036854.775807 mm either way"
+            );
+        }
         let (_, suggestion) = bound(measure, "1e-7").unwrap_err();
         assert_eq!(
             suggestion,
@@ -679,6 +683,10 @@ fn a_length_and_an_angle_bound_are_read_to_their_places_and_range() {
         assert!(bound(measure, "0.000000001").is_err());
     }
     assert_eq!(bound("half_angle", "9223372036.854775807"), angle(i64::MAX));
+    assert_eq!(
+        bound("half_angle", "-9223372036.854775807"),
+        angle(-i64::MAX)
+    );
     assert_eq!(bound("half_angle", "1e-9"), angle(1));
     assert_eq!(bound("half_angle", "-90"), angle(-90_000_000_000));
     let (_, suggestion) = bound("half_angle", "1e-10").unwrap_err();
@@ -870,6 +878,11 @@ fn within_is_read_as_any_angle_and_the_command_holds_it_from_0_to_180() {
         "9223372036.854775807",
         "-9223372036.854775807",
     ] {
+        // Read (an angle the reader holds), then held to 0 to 180° by the command.
+        assert!(
+            QueryRequest::read(&parsed(&facing("[0, 0, 1]", past))).is_ok(),
+            "{past}"
+        );
         assert_eq!(run(past), Err(vec!["facing.within".to_owned()]), "{past}");
     }
     // Past an angle's range (at most 9223372036.854775807 either way) or places, or -0: the

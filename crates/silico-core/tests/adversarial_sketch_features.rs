@@ -44,9 +44,11 @@ fn with(feature: &str) -> String {
 
 #[test]
 fn length_past_i64_nanometres_is_refused_by_the_reader_naming_the_field() {
-    // i64::MAX nm is 9223372036854.775807 mm; one nm more doesn't fit.
+    // i64::MAX nm is 9223372036854.775807 mm, the most a length is either way; one nm more
+    // doesn't fit.
     for text in [
         "9223372036854.775808",
+        "-9223372036854.775808",
         "-9223372036854.775809",
         "1e400",
         "1e13",
