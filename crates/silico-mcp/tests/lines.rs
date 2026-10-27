@@ -334,3 +334,63 @@ fn calls_that_wait_on_nothing_sent_just_before_stdins_end_are_answered_in_order(
         c.ended();
     }
 }
+
+#[test]
+fn slot_free_answers_queued_when_stdins_end_is_read_are_written_and_the_call_in_flight_never() {
+    // The note (*A client that goes away*): on stdin's end "the replies queued" are still
+    // written, and every call in flight is cancelled, so never answered. `status`, `cancel`,
+    // `read_logs`, `version`, and `schema` take no slot: each is answered on serve's thread
+    // as it's read, its reply queued for the replies' thread. Here each is read and queued
+    // behind a pong the client isn't reading, stdin's end is read after them, and only then
+    // is the output let go: the order is the protocol's, never the clock's.
+    let (mut c, hold) = mid_call();
+    c.stall_output();
+    c.send(r#"{"jsonrpc": "2.0", "id": 10, "method": "ping"}"#);
+    c.wait_stalled();
+    c.send_call(11, "version", "{}");
+    c.send_call(12, "status", r#"{"session": "s1"}"#);
+    c.send_call(13, "schema", r#"{"of": "close"}"#);
+    c.send_call(
+        14,
+        "read_logs",
+        r#"{"session": "s1", "level": "error", "feature": null, "after": null, "limit": 10}"#,
+    );
+    c.send_call(15, "cancel", r#"{"session": "s9", "command": "check"}"#);
+    c.close_input();
+    // Stdin's end was read, after every line before it: the check in flight (4) was
+    // cancelled, so the rebuild it waits on stopped, its hold still held. Only that end
+    // cancels it.
+    assert!(c.kernel.wait_idle(HANG), "stdin's end was never read");
+    // And serve waits for the replies queued, the client still not reading.
+    assert!(
+        !c.has_ended(),
+        "serve ended with replies queued and unwritten"
+    );
+    c.release_output();
+    assert_eq!(c.ended(), Ended::Input);
+    // Every one written before serve returned, once, in the order read; the check never.
+    let mut written = Vec::new();
+    while let Some(line) = c.line_within(std::time::Duration::ZERO) {
+        written.push(serde_json::from_str::<Value>(&line).unwrap());
+    }
+    let ids: Vec<u64> = written.iter().map(|m| m["id"].as_u64().unwrap()).collect();
+    assert_eq!(ids, [10, 11, 12, 13, 14, 15], "{written:?}");
+    assert_eq!(
+        written[0],
+        json!({"jsonrpc": "2.0", "id": 10, "result": {}})
+    );
+    // Each a tool's answer (a refusal is one too, never dropped): `version`, `status`, and
+    // `schema` answered as asked, and the cancel of a session that isn't open refused.
+    // `read_logs` is answered either way: refused here, where the process's tracing keeps
+    // no session's events.
+    let refused: Vec<Option<bool>> = written[1..]
+        .iter()
+        .map(|m| m["result"]["isError"].as_bool())
+        .collect();
+    assert_eq!(refused[..3], [Some(false); 3], "{written:?}");
+    assert!(refused[3].is_some(), "{written:?}");
+    assert_eq!(refused[4], Some(true), "{written:?}");
+    // And the transaction the check's session held, rolled back.
+    assert_eq!(c.read_file("part.silico"), BOX);
+    drop(hold);
+}
