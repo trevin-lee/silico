@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# How many threads a real mutants shard takes (.github/workflows/mutants.yml): the CPUs idle
-# as it starts, beyond a reserve for one gate, between LEAST and MOST, but never so many that
-# the shards' claims could pass 28 (two short of the VM) once every runner a shard could still
-# start on has taken 2. A shard's runner is at the idle CPU weight, so a gate always wins the
-# CPU from it; the reserve leaves room for a gate that arrives later anyway, and LEAST is what
-# a shard took before (a tenth of the VM), or 2 where that would pass the bound. A shard keeps
-# its count to the end. The bound is exact, and costs a long run on a quiet VM speed (about 16
-# to 20 threads, not #221's 32, 2026-10-27): filler, at the idle weight, takes the CPU it
-# leaves (Main, 2026-10-28). Past 28, the shards' tests held to a wall clock time out under
-# load, and one that does counts its mutant as caught.
+# How many threads a real mutants shard takes (.github/workflows/mutants.yml): the CPUs idle as
+# it starts, beyond a reserve for one gate, between LEAST and MOST, but never so many that the
+# shards' claims could pass 28 (two short of the VM) once every runner a shard could still start
+# on has taken 2. A shard's runner is at the idle CPU weight, so a gate always wins the CPU from
+# it; the reserve leaves room for a gate that arrives later anyway, and LEAST is what a shard
+# took before (a tenth of the VM), or 2 where that would pass the bound. A shard keeps its count
+# to the end. The bound is exact, and costs a long run on a quiet VM speed (in practice the
+# first shard takes 3 or 4, by the idle CPUs, and every later one 2: 16 threads for a long run
+# alone, not #221's 32, 2026-10-27): filler, at the idle weight, takes the CPU it leaves (Main,
+# 2026-10-28). Exact while every claim is this rule's: a shard run at its caller's fallback (no
+# claim) or a claim its runner leaked can pass it by a few threads, until the shard ends or the
+# claim ages out. Past 28, the shards' tests held to a wall clock time out under load, and one
+# that does counts its mutant as caught.
 #
 # Idle is read as the filler reads it (.github/workflows/filler.yml): /proc/stat over a few
 # seconds, idle and iowait time as a share of every CPU's; and what filler's own runners used
@@ -21,6 +24,8 @@
 # Usage: bash .github/shard-threads.sh LEAST MOST   (prints the count and how it was chosen,
 #                                                    the count alone on the first line)
 #        bash .github/shard-threads.sh release      (at the job's end, `if: always()`)
+#        SILICO_SHARD_IDLE=N to assume N idle CPUs instead of sampling them (for trying the
+#        rule by hand with claims faked under a scratch HOME, as it was tried on the VM).
 set -euo pipefail
 
 claims=$HOME/.cache/silico/shard-threads
@@ -51,8 +56,8 @@ cpu() { awk '/^cpu / { print $2 + $3 + $4 + $5 + $6 + $7 + $8 + $9, $5 + $6 }' /
 # The CPU time, in microseconds, the runners only filler uses (silico-22, -23) have taken: their
 # services' cgroups. Filler is background work a shard's whole run outlasts (an hour for
 # mutants, two for a sweep, cut off for any real run that starts), and holds no claim, so what
-# it uses counts as spare, not as busy: else a long run's queued shards, starting beside it,
-# would take LEAST for hours.
+# it uses counts as spare, not as busy (#249): it decides only whether the first shard takes 3
+# or 4 now that the bound sets the rest.
 filler() {
   # Neither there (another VM, a runner renamed): nothing, not a failed pipeline.
   { cat /sys/fs/cgroup/system.slice/system-ci\\x2drunner.slice/ci-runner@silico-2[23].service/cpu.stat \

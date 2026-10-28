@@ -197,22 +197,21 @@ jobs:
           # A filler run is cut off after an hour: in random order (cargo-mutants shuffles each
           # shard's share after sharding), so each turn at a slice reaches different mutants.
           if [ -n "$FILLER" ]; then args+=(--shuffle); fi
-          # A tenth of the machine each (3 threads of 30), or 2 where that would pass 28 in all:
-          # a long run's seven shards and the merge lane's can run at once (below), all at the
-          # idle weight, and .github/shard-threads.sh keeps their claims within 28. At 2
+          # 2 threads each, 3 or 4 for the first while CPUs sit idle, so that 28 in all is never
+          # passed: a long run's seven shards and the merge lane's can run at once (below), all
+          # at the idle weight, and .github/shard-threads.sh keeps their claims within 28. At 2
           # threads a shard (twelve runners), the VM sat 27% idle over a day (2026-10-25,
           # ~/.cache/silico-review/ci-ext4/idle-day-after-3.tsv) while shards queued for a
-          # runner: the runners were the limit, not the CPU. A shard takes only CPU nothing
-          # else wants: its runner's cgroup is at the idle weight (CPUWeight=idle on silico-5
-          # to -12, -15 to -17, -20 to -23, set with systemctl set-property from 2026-10-26),
-          # so between runners a gate always wins. Nice and the idle scheduling class rank
-          # threads only within their own cgroup; between runner services only the cgroups'
-          # weights count, so nice 19 alone let two gates fail tests held to a wall clock
-          # beside full shards on 2026-10-25. Nice 19 (below) still orders a shard's own
-          # threads. (On a full machine a gate can still fail a test held to a wall clock:
-          # tests/mutants.sh lists them.) Retry a failed test here, since one that fails only
-          # under load would fail the baseline or count a mutant as caught; a mutant that
-          # breaks a test fails it every time.
+          # runner: the runners were the limit, not the CPU. A shard takes only CPU nothing else
+          # wants: its runner's cgroup is at the idle weight (CPUWeight=idle on silico-5 to -12,
+          # -15 to -17, -20 to -23, set with systemctl set-property from 2026-10-26), so between
+          # runners a gate always wins. Nice and the idle scheduling class rank threads only
+          # within their own cgroup; between runner services only the cgroups' weights count, so
+          # nice 19 alone let two gates fail tests held to a wall clock beside full shards on
+          # 2026-10-25. Nice 19 (below) still orders a shard's own threads. (On a full machine a
+          # gate can still fail a test held to a wall clock: tests/mutants.sh lists them.) Retry
+          # a failed test here, since one that fails only under load would fail the baseline or
+          # count a mutant as caught; a mutant that breaks a test fails it every time.
           #
           # A filler shard runs at the idle scheduling class, for the CPU and for I/O, on a
           # runner at the idle weight (as a real shard's is), so it can't slow a gate; a real
@@ -225,16 +224,14 @@ jobs:
           # package cache's lock, which every other build on the VM shares, for minutes. And so
           # a target directory of its own (below): dependencies' fingerprints hold their
           # source's absolute path in the Cargo home, so sharing target-mutants/ with real
-          # shards would make each switch between them rebuild everything. A tenth of the
-          # machine each (3 threads of 30), a long run's shard or another's, up to a fifth while
-          # CPUs sit idle, and 2 where more could take the shards past 28 in all
-          # (.github/shard-threads.sh: those idle as it starts, beyond a quarter kept for a
-          # gate, within 28 once every mutants runner that could still start a shard has 2: an
-          # exact bound, 2026-10-28). At a fixed 4 threads a long shard (34 in all), the VM
-          # reached a load of 103 on 30 threads beside three gates, and a shard's baseline
-          # missed a wall clock (2026-10-27, run 40486344701); a test killed at nextest's limit
-          # would count its mutant as caught. At a fixed 3, a long run's backlog left the VM a
-          # third idle once the merge lane emptied (2026-10-27,
+          # shards would make each switch between them rebuild everything. 2 threads a shard, a
+          # long run's or another's, 3 or 4 for the first while CPUs sit idle
+          # (.github/shard-threads.sh: within 28 in all once every mutants runner that could
+          # still start a shard has 2, an exact bound, 2026-10-28). At a fixed 4 threads a long
+          # shard (34 in all), the VM reached a load of 103 on 30 threads beside three gates,
+          # and a shard's baseline missed a wall clock (2026-10-27, run 40486344701); a test
+          # killed at nextest's limit would count its mutant as caught. At a fixed 3, a long
+          # run's backlog left the VM a third idle once the merge lane emptied (2026-10-27,
           # ~/.cache/silico-review/ci-ext4/idle-after-210.tsv). A gate's own CPU pressure (its
           # runner's cgroup cpu.pressure) over ~10% avg60 is the sign to cut MOST back.
           running=10
