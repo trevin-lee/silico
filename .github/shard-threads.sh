@@ -8,7 +8,8 @@
 # idle behind seven 3-thread shards).
 #
 # Idle is read as the filler reads it (.github/workflows/filler.yml): /proc/stat over a few
-# seconds, idle and iowait time as a share of every CPU's. A moment's idle overstates what's
+# seconds, idle and iowait time as a share of every CPU's; and what filler's own runners used
+# meanwhile counts as idle too (below). A moment's idle overstates what's
 # spare (each mutant's rebuild is mostly serial, its tests use every thread), so each shard
 # holds a claim for its count, a file named for its runner, until its job ends (`release`),
 # and a shard takes no more than the CPUs no claim and no gate's reserve holds (23 of 30),
@@ -42,10 +43,26 @@ cpus=$(nproc)
 reserve=$((cpus / 4))
 
 cpu() { awk '/^cpu / { print $2 + $3 + $4 + $5 + $6 + $7 + $8 + $9, $5 + $6 }' /proc/stat; }
+# The CPU time, in microseconds, the runners only filler uses (silico-22, -23) have taken: their
+# services' cgroups. Filler is background work a shard's whole run outlasts (an hour for
+# mutants, two for a sweep, cut off for any real run that starts), and holds no claim, so what
+# it uses counts as spare, not as busy: else a long run's queued shards, starting beside it,
+# would take LEAST for hours.
+filler() {
+  # Neither there (another VM, a runner renamed): nothing, not a failed pipeline.
+  { cat /sys/fs/cgroup/system.slice/system-ci\\x2drunner.slice/ci-runner@silico-2[23].service/cpu.stat \
+    2>/dev/null || true; } | awk '/^usage_usec / { sum += $2 } END { print sum + 0 }'
+}
 read -r total0 idle0 < <(cpu)
+filler0=$(filler)
 sleep 5
 read -r total1 idle1 < <(cpu)
-idle=$((cpus * (idle1 - idle0) / (total1 - total0 > 0 ? total1 - total0 : 1)))
+filler1=$(filler)
+ticks=$((total1 - total0 > 0 ? total1 - total0 : 1))
+# /proc/stat counts every CPU's time in ticks (USER_HZ, 100 a second), cgroups in microseconds.
+hz=$(getconf CLK_TCK)
+fillers=$((cpus * (filler1 - filler0) * hz / 1000000 / ticks))
+idle=$((cpus * (idle1 - idle0) / ticks + fillers))
 
 rm -f "$claim"
 find "$claims" -name 'claim.*' -mmin +1440 -delete
@@ -57,4 +74,4 @@ threads=$((spare < least ? least : spare > most ? most : spare))
 echo "$threads" >"$claim"
 
 echo "$threads"
-echo "$threads threads: $idle of $cpus CPUs idle, $reserve kept for a gate, $claimed held by other shards (between $least and $most)"
+echo "$threads threads: $idle of $cpus CPUs idle ($fillers of them filler's), $reserve kept for a gate, $claimed held by other shards (between $least and $most)"
