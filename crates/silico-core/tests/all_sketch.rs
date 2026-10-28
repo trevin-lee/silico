@@ -60,6 +60,8 @@ mod sketch;
 mod sketch_edit;
 #[path = "sketch_extend.rs"]
 mod sketch_extend;
+#[path = "sketch_extend_to.rs"]
+mod sketch_extend_to;
 #[path = "sketch_features.rs"]
 mod sketch_features;
 #[path = "sketch_features_gate.rs"]

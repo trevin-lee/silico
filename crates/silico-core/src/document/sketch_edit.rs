@@ -16,6 +16,7 @@ use crate::{Error, ErrorCode};
 mod split;
 mod trim;
 pub use split::{Split, split};
+pub(crate) use trim::{Geo, crossings, end_ids};
 pub use trim::{Trim, trim};
 
 /// A sketch edited, and what changed (docs/design/m5.0-app.md, section 7, *The sketch
