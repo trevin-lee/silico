@@ -1,4 +1,4 @@
-//! A warm start of a pool whose worker fails at once starts each slot at most once: its
+//! A warm start of a pool whose worker fails at once starts no more slots than asked: its
 //! slots' starts counted by the span each slot's thread opens as it starts. Alone in its
 //! process (nextest runs each test in its own): it installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -25,11 +25,11 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for SlotStarts {
 }
 
 #[test]
-fn a_warm_start_of_a_worker_that_fails_at_once_starts_each_slot_at_most_once() {
+fn a_warm_start_of_a_worker_that_fails_at_once_starts_no_more_slots_than_asked() {
     // From #263's robustness review: a worker deleted after the pool opened fails each
     // start at once, and its slot is put back unstarted while the warm start goes on;
     // counted only against the pool's size, a warm start of eight started thousands of
-    // slots. Its starts are counted once: each of the eight at most once, none started.
+    // slots. Its starts are counted once: at most eight a call, none started.
     let starts = SlotStarts::default();
     tracing::subscriber::set_global_default(tracing_subscriber::registry().with(starts.clone()))
         .unwrap();

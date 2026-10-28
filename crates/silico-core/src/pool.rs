@@ -556,17 +556,18 @@ impl KernelPool {
 
     /// Starts slots until `n` are started (at most its size), each starting its worker on a
     /// thread of its own, as a request would start it, and waits until each has started its
-    /// worker's process or failed to: an app's warm start (M5.0's decision 10), run off its UI thread, so its first
-    /// rebuild needn't wait for a process and OCCT's libraries. A request that comes while
-    /// they start waits for them, not for more: a slot starting is free to take it. A
-    /// worker that can't be started leaves its slot to start on demand. Called again, it
-    /// starts none more. How many workers it started: none for a pool not opened, or
-    /// stopping.
+    /// worker's process or failed to (the worker may still be loading OCCT's libraries):
+    /// an app's warm start (M5.0's decision 10), run off its UI thread, so its first rebuild
+    /// needn't start a worker. A request that comes once a slot is started waits for it,
+    /// not for more: a slot starting is free to take it. A worker that can't be started
+    /// leaves its slot to start on demand. Called again, it starts none more. How many
+    /// workers it started: none for a pool not opened, or stopping.
     pub fn warm(&self, n: usize) -> usize {
         let _span = tracing::info_span!("kernel_pool_warm", n).entered();
         let (ready_tx, ready) = mpsc::channel();
         // How many to start, counted once: a slot this call starts that fails at once is put
-        // back as unstarted, and isn't started again by this call.
+        // back as unstarted, so a count of what's started would let this call start again
+        // and again; at most this many starts, however they end.
         let budget = {
             let state = lock(&self.shared.state);
             n.min(self.size()).saturating_sub(state.started)

@@ -5,7 +5,7 @@
 //!
 //! - `cold`: the workers start on demand, as the rebuild needs them;
 //! - `warm`: `KernelPool::warm(1)` and `SketchSolvers::warm(1)` first (as `Sessions::warm`
-//!   makes them), which return once both workers are up, then the rebuild (the app's
+//!   makes them), which return once both workers' processes have started, then the rebuild (the app's
 //!   case: they start while the person opens a file);
 //! - `warm-now`: the rebuild at once after the warm start, while the workers start, which
 //!   waits for them rather than starting more.
@@ -77,7 +77,7 @@ fn first_rebuild(document: &Arc<Checked>, mode: Mode) -> Result<Duration, Box<dy
     };
     match mode {
         Mode::Cold => rebuild(),
-        // The warm start returns once both workers are up.
+        // The warm start returns once both workers' processes have started.
         Mode::Warm => {
             warm();
             rebuild()
