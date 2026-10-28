@@ -354,7 +354,7 @@ impl ToWire for ModelRead {
     /// Its revision, whether it was the current or the published, and the kernel fault its
     /// rebuild met, if it met one, kept as the revision's outcome (decision 32): its
     /// suggestion the worker's own, if it has one, then how a session's client tries it
-    /// again, `check` with `fresh` (`kept_suggestion`, the design's section 6).
+    /// again, `check` with `fresh` (`fault_suggestion`, the design's section 6).
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("revision", self.revision.to_wire()),
@@ -362,7 +362,13 @@ impl ToWire for ModelRead {
             (
                 "fault",
                 Json::or_null(self.fault.as_ref(), |fault| {
-                    error_with(fault, Json::string(super::session::kept_suggestion(fault)))
+                    error_with(
+                        fault,
+                        Json::string(super::session::fault_suggestion(
+                            fault,
+                            super::session::TryAgainBy::CheckWithFresh,
+                        )),
+                    )
                 }),
             ),
         ])

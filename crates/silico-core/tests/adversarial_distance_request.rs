@@ -4,7 +4,7 @@
 //! the ends of the element numbers. Real solids are measured on a worker in silico-kernel's
 //! tests/adversarial_distance.rs. Every expected value is by hand.
 
-use std::time::Duration;
+use super::model::WAIT;
 
 use silico_core::ErrorCode;
 use silico_core::fake::FakeKernel;
@@ -20,11 +20,11 @@ fn run<T: Send + 'static>(
 ) -> Result<T, silico_core::Error> {
     match kernel
         .submit(kernel.generation(), request)
-        .wait_timeout(Duration::from_secs(5))
+        .wait_timeout(WAIT)
     {
         Ok(Outcome::Done(result)) => result,
         Ok(Outcome::Superseded) => panic!("superseded"),
-        Err(_) => panic!("no outcome within 5 s (the fake hung)"),
+        Err(_) => panic!("no outcome within {WAIT:?} (the fake hung)"),
     }
 }
 

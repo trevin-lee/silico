@@ -8,6 +8,8 @@
 
 #[path = "../../silico-core/tests/common/test_programs.rs"]
 mod test_programs;
+#[path = "common/wait.rs"]
+mod wait;
 
 // Shared by the files below, each loaded once.
 #[path = "common/launches.rs"]

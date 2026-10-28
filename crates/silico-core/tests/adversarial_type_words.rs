@@ -5,9 +5,9 @@
 //! gate's and the rebuild's words for them.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::model::WAIT;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::Duration;
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
@@ -43,7 +43,7 @@ fn id(text: &str) -> FeatureId {
 
 fn published(engine: &Recompute<FakeKernel>, text: &str) -> Arc<Model> {
     let document = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
-    match engine.start(document).wait_timeout(Duration::from_secs(60)) {
+    match engine.start(document).wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("not published: {other:?}"),
         Err(_) => panic!("the recompute didn't finish in a minute"),

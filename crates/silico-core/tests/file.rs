@@ -3,6 +3,10 @@
 //! conflict, says to read it again.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/model.rs"]
+mod model;
+
+use model::WAIT;
 use silico_core::ErrorCode;
 
 /// `bytes` saved over `file`, which held `before` ([`silico_core::file::save_over`]): why
@@ -177,7 +181,7 @@ fn a_save_over_a_file_swapped_for_a_pipe_is_refused_not_waited_on() {
         let _ = tx.send(save(&f, b"", b"x"));
     });
     let error = rx
-        .recv_timeout(std::time::Duration::from_secs(5))
+        .recv_timeout(WAIT)
         .expect("save waited on a pipe")
         .unwrap_err();
     assert_eq!(error.code(), ErrorCode::IoFailed);

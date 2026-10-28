@@ -13,6 +13,7 @@ use super::cache;
 use super::cache_format;
 use super::example;
 use super::model;
+use super::model::WAIT;
 use super::sweeps;
 
 use std::os::unix::fs::PermissionsExt;
@@ -109,7 +110,7 @@ fn entry_replaced_by_a_fifo_is_a_miss_not_a_hang() {
     assert!(made.success());
     let second = session(&dir.0);
     let run = second.start(checked(EXAMPLE));
-    let outcome = run.wait_timeout(Duration::from_secs(5));
+    let outcome = run.wait_timeout(WAIT);
     let hung = outcome.is_err();
     // Free a recompute blocked opening the FIFO, whatever happened, and close it, giving its
     // read end of file. Opened for reading and writing, a FIFO pairs with a reader or a
@@ -123,11 +124,11 @@ fn entry_replaced_by_a_fifo_is_a_miss_not_a_hang() {
             .open(&path),
     );
     if let Err(run) = outcome {
-        let _ = run.wait_timeout(Duration::from_secs(5));
+        let _ = run.wait_timeout(WAIT);
     }
     assert!(
         !hung,
-        "a FIFO in place of an entry hung the recompute (still waiting after 5 s)"
+        "a FIFO in place of an entry hung the recompute (still waiting after {WAIT:?})"
     );
 }
 
@@ -330,7 +331,7 @@ fn a_cache_directory_removed_while_a_step_runs_is_made_again() {
     let run = engine.start(checked(EXAMPLE));
     // Wait until the box, the pin, and its move are written, and no write is under way (the
     // cut, held, runs while its input's entry is written); the cut is held.
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + WAIT;
     loop {
         let all = subdirectory_files(&dir.0);
         let partial = |p: &PathBuf| p.to_string_lossy().contains(".partial-");
@@ -340,10 +341,10 @@ fn a_cache_directory_removed_while_a_step_runs_is_made_again() {
         assert!(std::time::Instant::now() < deadline, "{all:?}");
         std::thread::yield_now();
     }
-    assert!(engine.kernel().wait_running(1, Duration::from_secs(10)));
+    assert!(engine.kernel().wait_running(1, WAIT));
     std::fs::remove_dir_all(&dir.0).unwrap();
     hold.release();
-    let model = match run.wait_timeout(Duration::from_secs(10)) {
+    let model = match run.wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         _ => panic!("not published"),
     };
@@ -924,7 +925,7 @@ fn an_entry_written_by_a_superseded_recompute_is_sound() {
     let first = engine.start(checked(EXAMPLE));
     // Once the held Cut has started, so the steps before it have been written (waiting for
     // any request to run let the second start supersede the first before it wrote anything).
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + WAIT;
     while !engine.kernel().calls().iter().any(|c| c.op.name() == "Cut") {
         assert!(
             std::time::Instant::now() < deadline,
@@ -935,10 +936,10 @@ fn an_entry_written_by_a_superseded_recompute_is_sound() {
     let second = engine.start(example_with_pin("3"));
     hold.release();
     assert!(matches!(
-        first.wait_timeout(Duration::from_secs(10)),
+        first.wait_timeout(WAIT),
         Ok(Ok(RunOutcome::Superseded))
     ));
-    let model = match second.wait_timeout(Duration::from_secs(10)) {
+    let model = match second.wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         _ => panic!("not published"),
     };

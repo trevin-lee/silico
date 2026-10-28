@@ -15,8 +15,8 @@ use silico_protocol::{Mesh, RenderScene};
 use silico_render::bench::front_of_a_box;
 
 use crate::common::{
-    TEST_WORKER, WORKER, client, crashing, drawn, ended, eventually, failed, hanging,
-    process_exists, scratch, signal, small, state, wait_within, zombie,
+    CANCEL_KILLS, TEST_WORKER, WAIT, WORKER, client, crashing, drawn, ended, eventually, failed,
+    hanging, process_exists, scratch, signal, small, state, wait_within, zombie,
 };
 
 // ---- Dropping the client ----
@@ -37,7 +37,7 @@ fn dropping_the_client_with_renders_queued_behind_a_hung_one_returns_promptly() 
         },
     );
     let tickets: Vec<RenderTicket> = (0..4).map(|_| c.render(hanging())).collect();
-    assert!(eventually(Duration::from_secs(10), || c.pid().is_some()));
+    assert!(eventually(WAIT, || c.pid().is_some()));
     let pid = c.pid().unwrap();
     std::thread::sleep(Duration::from_millis(200));
     let start = Instant::now();
@@ -51,7 +51,7 @@ fn dropping_the_client_with_renders_queued_behind_a_hung_one_returns_promptly() 
         );
     }
     assert!(
-        eventually(Duration::from_secs(5), || !process_exists(pid)),
+        eventually(WAIT, || !process_exists(pid)),
         "pid {pid} still runs after the client was dropped"
     );
     assert!(
@@ -107,7 +107,7 @@ fn dropping_the_client_with_only_a_warm_worker_stops_it_at_once() {
         start.elapsed()
     );
     assert!(
-        eventually(Duration::from_secs(5), || !process_exists(pid)),
+        eventually(WAIT, || !process_exists(pid)),
         "pid {pid} still runs"
     );
 }
@@ -122,7 +122,7 @@ fn a_worker_killed_while_idle_is_replaced_and_the_next_render_draws() {
     signal(pid, "-KILL");
     // Ended, every thread: before that the client can't reap it, and finds it still there.
     assert!(
-        eventually(Duration::from_secs(5), || ended(pid)),
+        eventually(WAIT, || ended(pid)),
         "the killed worker {pid} hasn't ended: ps says {:?}",
         state(pid)
     );
@@ -144,8 +144,8 @@ fn a_worker_stopped_with_sigstop_while_idle_times_out_and_is_killed() {
     let pid = c.pid().unwrap();
     signal(pid, "-STOP");
     let start = Instant::now();
-    let outcome = wait_within(c.render(small()), Duration::from_secs(10))
-        .expect("a render on a stopped worker never answered");
+    let outcome =
+        wait_within(c.render(small()), WAIT).expect("a render on a stopped worker never answered");
     let e = failed(outcome);
     assert_eq!(e.code(), ErrorCode::WorkerTimeout, "{e:?}");
     assert!(
@@ -154,7 +154,7 @@ fn a_worker_stopped_with_sigstop_while_idle_times_out_and_is_killed() {
         start.elapsed()
     );
     assert!(
-        eventually(Duration::from_secs(5), || !process_exists(pid)),
+        eventually(WAIT, || !process_exists(pid)),
         "the stopped worker {pid} was left"
     );
     drawn(c.render(small()).wait());
@@ -185,7 +185,7 @@ fn a_render_cancelled_at_once_is_cancelled_or_drawn_never_failed() {
             std::thread::sleep(Duration::from_micros(i * 500));
         }
         t.cancel();
-        match wait_within(t, Duration::from_secs(30)).expect("no outcome") {
+        match wait_within(t, WAIT).expect("no outcome") {
             RenderOutcome::Cancelled | RenderOutcome::Done(Ok(_)) => {}
             RenderOutcome::Done(Err(e)) => panic!("cancel {i} failed the render: {e:?}"),
         }
@@ -302,9 +302,9 @@ fn an_executable_removed_after_the_start_fails_each_render_until_its_back() {
     )
     .unwrap();
     drawn(c.render(small()).wait());
-    assert!(eventually(Duration::from_secs(5), || c.pid().is_none()));
+    assert!(eventually(WAIT, || c.pid().is_none()));
     std::fs::remove_file(&link).unwrap();
-    let e = failed(wait_within(c.render(small()), Duration::from_secs(10)).expect("no outcome"));
+    let e = failed(wait_within(c.render(small()), WAIT).expect("no outcome"));
     assert_eq!(e.code(), ErrorCode::WorkerUnavailable, "{e:?}");
     assert!(e.suggestion().is_some(), "{e:?}");
     std::os::unix::fs::symlink(WORKER, &link).unwrap();
@@ -327,10 +327,10 @@ fn an_executable_swapped_for_another_build_after_the_start_is_refused_with_advic
     )
     .unwrap();
     drawn(c.render(small()).wait());
-    assert!(eventually(Duration::from_secs(5), || c.pid().is_none()));
+    assert!(eventually(WAIT, || c.pid().is_none()));
     std::fs::remove_file(&link).unwrap();
     std::os::unix::fs::symlink(TEST_WORKER, &link).unwrap();
-    match wait_within(c.render(small()), Duration::from_secs(30)).expect("no outcome") {
+    match wait_within(c.render(small()), WAIT).expect("no outcome") {
         // Refused as another build, with what to do.
         RenderOutcome::Done(Err(e)) => {
             assert!(e.suggestion().is_some(), "{e:?}");
@@ -376,7 +376,7 @@ fn settings_of_no_time_and_all_the_time_neither_panic_nor_hang() {
             ..RenderSettings::default()
         },
     );
-    let e = failed(wait_within(c.render(small()), Duration::from_secs(10)).expect("no outcome"));
+    let e = failed(wait_within(c.render(small()), WAIT).expect("no outcome"));
     assert_eq!(e.code(), ErrorCode::WorkerTimeout, "{e:?}");
 }
 
@@ -435,7 +435,7 @@ fn a_render_waited_on_in_one_thread_is_cancelled_from_another() {
     let ticket = c.render(hanging());
     let cancel = ticket.canceller();
     let waiting = std::thread::spawn(move || ticket.wait());
-    assert!(eventually(Duration::from_secs(10), || c.pid().is_some()));
+    assert!(eventually(WAIT, || c.pid().is_some()));
     std::thread::sleep(Duration::from_millis(200));
     let pid = c.pid().unwrap();
     let start = Instant::now();
@@ -447,7 +447,7 @@ fn a_render_waited_on_in_one_thread_is_cancelled_from_another() {
         start.elapsed()
     );
     assert!(
-        eventually(Duration::from_secs(5), || !process_exists(pid)),
+        eventually(CANCEL_KILLS, || !process_exists(pid)),
         "the cancelled render's worker {pid} still runs"
     );
     // Cancelling again, after the answer, does nothing.
@@ -470,7 +470,7 @@ fn a_ticket_polled_or_waited_on_for_a_while_comes_back_until_it_answers() {
         };
     }
     ticket.cancel();
-    let outcome = wait_within(ticket, Duration::from_secs(5)).expect("no outcome");
+    let outcome = wait_within(ticket, CANCEL_KILLS).expect("no outcome");
     assert!(matches!(outcome, RenderOutcome::Cancelled), "{outcome:?}");
     // A drawn one, taken by polling.
     let mut ticket = c.render(small());
@@ -478,7 +478,7 @@ fn a_ticket_polled_or_waited_on_for_a_while_comes_back_until_it_answers() {
     let outcome = loop {
         match ticket.try_take() {
             Ok(outcome) => break outcome,
-            Err(t) if start.elapsed() < Duration::from_secs(30) => ticket = t,
+            Err(t) if start.elapsed() < WAIT => ticket = t,
             Err(_) => panic!("a small render never answered"),
         }
         std::thread::sleep(Duration::from_millis(5));
@@ -627,8 +627,7 @@ fn a_worker_that_exits_at_once_fails_each_render_promptly_and_says_what_to_do() 
     .unwrap();
     for _ in 0..3 {
         let start = Instant::now();
-        let e =
-            failed(wait_within(c.render(small()), Duration::from_secs(20)).expect("no outcome"));
+        let e = failed(wait_within(c.render(small()), WAIT).expect("no outcome"));
         assert!(
             matches!(
                 e.code(),
@@ -665,7 +664,7 @@ fn a_worker_that_never_says_it_started_times_out_and_is_killed() {
     )
     .unwrap();
     let start = Instant::now();
-    let e = failed(wait_within(c.render(small()), Duration::from_secs(20)).expect("no outcome"));
+    let e = failed(wait_within(c.render(small()), WAIT).expect("no outcome"));
     assert!(
         matches!(
             e.code(),
@@ -684,7 +683,7 @@ fn a_worker_that_never_says_it_started_times_out_and_is_killed() {
         .parse()
         .unwrap();
     assert!(
-        eventually(Duration::from_secs(5), || !process_exists(pid)),
+        eventually(WAIT, || !process_exists(pid)),
         "the silent worker {pid} was left running"
     );
     drop(c);
@@ -705,11 +704,11 @@ fn a_queued_render_cancelled_answers_cancelled_at_once_not_when_its_turn_comes()
     );
     let running = c.render(hanging());
     let queued = c.render(small());
-    assert!(eventually(Duration::from_secs(10), || c.pid().is_some()));
+    assert!(eventually(WAIT, || c.pid().is_some()));
     std::thread::sleep(Duration::from_millis(200));
     queued.cancel();
     let start = Instant::now();
-    let outcome = wait_within(queued, Duration::from_secs(10)).expect("no outcome");
+    let outcome = wait_within(queued, WAIT).expect("no outcome");
     assert!(matches!(outcome, RenderOutcome::Cancelled), "{outcome:?}");
     assert!(
         start.elapsed() < Duration::from_millis(2500),

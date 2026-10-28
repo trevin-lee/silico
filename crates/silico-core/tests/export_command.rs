@@ -7,6 +7,7 @@
 //! export of them silico-cli's.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::model::WAIT;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -994,11 +995,7 @@ fn an_exports_meshes_are_asked_of_the_kernel_one_at_a_time() {
         let path = path.clone();
         std::thread::spawn(move || bench.export(&request(&path)))
     };
-    assert!(
-        bench
-            .kernel
-            .wait_running(1, std::time::Duration::from_secs(60))
-    );
+    assert!(bench.kernel.wait_running(1, WAIT));
     // Long enough for a mesh asked ahead to start on the kernel's other thread.
     assert!(
         !bench
@@ -1068,11 +1065,7 @@ fn a_mesh_superseded_by_the_sessions_close_is_the_sessions_not_the_solids() {
         let path = path.clone();
         std::thread::spawn(move || bench.export(&request(&path)))
     };
-    assert!(
-        bench
-            .kernel
-            .wait_running(1, std::time::Duration::from_secs(60))
-    );
+    assert!(bench.kernel.wait_running(1, WAIT));
     use silico_core::kernel::Kernel;
     let next = silico_protocol::Generation(bench.kernel.generation().0 + 1);
     bench.kernel.advance(next);
@@ -1662,7 +1655,7 @@ fn an_export_waiting_its_turn_to_mesh_is_served_before_the_export_ahead_takes_an
             )
         })
     };
-    assert!(a.kernel.wait_running(1, std::time::Duration::from_secs(60)));
+    assert!(a.kernel.wait_running(1, WAIT));
     assert_eq!(a.asked_meshes(), 1);
     // B's wait looks whether it was stopped, with the turns locked, before it waits: once
     // it has looked, it's in the line before A's first mesh can give the turn back.
@@ -1689,9 +1682,7 @@ fn an_export_waiting_its_turn_to_mesh_is_served_before_the_export_ahead_takes_an
             )
         })
     };
-    looks
-        .recv_timeout(std::time::Duration::from_secs(60))
-        .unwrap();
+    looks.recv_timeout(WAIT).unwrap();
     assert_eq!(a.asked_meshes(), 1);
     hold.release();
     first.join().unwrap().unwrap();

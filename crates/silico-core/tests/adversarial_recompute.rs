@@ -162,7 +162,7 @@ fn a_panic_under_one_step_ends_the_recompute_with_an_error_not_a_hang() {
         boxed("aaaaaaaa", [0.0; 3], [1.0, 1.0, 1.0]),
         sphere("bbbbbbbb", [0.0; 3], 1.0),
     ]));
-    match run.wait_timeout(Duration::from_secs(5)) {
+    match run.wait_timeout(WAIT) {
         Ok(Err(error)) => {
             assert_eq!(error.code(), ErrorCode::Internal, "{error}");
             // Which feature's step, and the panic's own words.
@@ -180,11 +180,7 @@ fn a_panic_with_a_formatted_message_is_named_with_it() {
     let run = engine.start(document(&[
         r#"{"id": "cccccccc", "type": "cylinder", "v": 1, "name": "C", "position": [0, 0, 0], "radius": 1, "height": 1}"#.to_owned(),
     ]));
-    let error = run
-        .wait_timeout(Duration::from_secs(5))
-        .ok()
-        .expect("hung")
-        .unwrap_err();
+    let error = run.wait_timeout(WAIT).ok().expect("hung").unwrap_err();
     assert_eq!(error.code(), ErrorCode::Internal);
     assert_eq!(error.feature(), Some("cccccccc"));
     assert_eq!(error.cause(), Some("bug number 2 under a recompute step"));

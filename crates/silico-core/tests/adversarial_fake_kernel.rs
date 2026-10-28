@@ -6,6 +6,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::echo::{echo, echoed};
+use super::model::WAIT;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,16 +22,14 @@ use silico_core::kernel::{
 };
 use silico_core::pool::{Outcome, Pending};
 
-const WAIT: Duration = Duration::from_secs(10);
-
 fn block(dx: f64, dy: f64, dz: f64) -> Primitive {
     Primitive::Box { dx, dy, dz }
 }
 
 fn within<T: std::fmt::Debug>(pending: Pending<T>, what: &str) -> Outcome<T> {
-    match pending.wait_timeout(Duration::from_secs(5)) {
+    match pending.wait_timeout(WAIT) {
         Ok(outcome) => outcome,
-        Err(_) => panic!("{what}: no outcome within 5 s (the fake hung)"),
+        Err(_) => panic!("{what}: no outcome within {WAIT:?} (the fake hung)"),
     }
 }
 
@@ -605,7 +604,7 @@ fn a_caller_that_stops_waiting_does_not_wedge_the_kernel() {
     let echo = |n: u32| KernelRequest::echo(Blob::inline(n.to_le_bytes().to_vec()));
     let hold = kernel.hold(|op| matches!(op, Op::Echo { .. }));
     let started = kernel.submit(Generation(0), echo(0));
-    assert!(kernel.wait_running(1, Duration::from_secs(10)));
+    assert!(kernel.wait_running(1, WAIT));
     drop(started);
     for n in 1..=1000u32 {
         drop(kernel.submit(Generation(0), echo(n)));

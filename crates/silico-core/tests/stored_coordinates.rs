@@ -8,6 +8,7 @@
 
 use super::commands;
 use super::fixture;
+use super::model::WAIT;
 
 use std::time::Duration;
 
@@ -33,10 +34,7 @@ fn checked(text: &str) -> Checked {
 }
 
 fn model(engine: &Recompute<FakeKernel>, text: &str) -> std::sync::Arc<Model> {
-    match engine
-        .start(checked(text))
-        .wait_timeout(Duration::from_secs(20))
-    {
+    match engine.start(checked(text)).wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("{other:?}"),
         Err(_) => panic!("the recompute didn't finish"),
@@ -135,17 +133,17 @@ fn a_recompute_superseded_mid_solve_stops_its_solve_and_the_newer_one_solves() {
     let engine = engine(&sketches);
     sketches.hold();
     let older = engine.start(checked(&sketch("10", HORIZONTAL)));
-    assert!(sketches.wait_held(Duration::from_secs(10)));
+    assert!(sketches.wait_held(WAIT));
     let newer = engine.start(checked(&sketch("11", HORIZONTAL)));
     // The older one's solve is stopped at once, not waited for.
-    match older.wait_timeout(Duration::from_secs(10)) {
+    match older.wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Superseded)) => {}
         Ok(other) => panic!("{other:?}"),
         Err(_) => panic!("the superseded recompute waited out its solve"),
     }
     assert_eq!(sketches.stops(), 1);
     sketches.release();
-    match newer.wait_timeout(Duration::from_secs(10)) {
+    match newer.wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => assert!(matches!(
             model.outcome(&feature()),
             Some(FeatureOutcome::Sketch(_))
@@ -165,9 +163,9 @@ fn a_cancel_mid_solve_stops_the_solve() {
     let engine = engine(&sketches);
     sketches.hold();
     let run = engine.start(checked(&sketch("10", HORIZONTAL)));
-    assert!(sketches.wait_held(Duration::from_secs(10)));
+    assert!(sketches.wait_held(WAIT));
     engine.cancel();
-    match run.wait_timeout(Duration::from_secs(10)) {
+    match run.wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Superseded)) => {}
         Ok(other) => panic!("{other:?}"),
         Err(_) => panic!("the cancelled recompute waited out its solve"),
@@ -449,10 +447,10 @@ fn a_superseded_solve_runs_its_grace_before_its_stopped() {
     let engine = engine(&sketches);
     sketches.hold();
     let older = engine.start(checked(&sketch("10", HORIZONTAL)));
-    assert!(sketches.wait_held(Duration::from_secs(10)));
+    assert!(sketches.wait_held(WAIT));
     let newer = engine.start(checked(&sketch("11", HORIZONTAL)));
     assert!(matches!(
-        older.wait_timeout(Duration::from_secs(10)),
+        older.wait_timeout(WAIT),
         Ok(Ok(RunOutcome::Superseded))
     ));
     let waits = sketches.stop_waits();
@@ -467,7 +465,7 @@ fn a_superseded_solve_runs_its_grace_before_its_stopped() {
     );
     sketches.release();
     assert!(matches!(
-        newer.wait_timeout(Duration::from_secs(10)),
+        newer.wait_timeout(WAIT),
         Ok(Ok(RunOutcome::Published(_)))
     ));
 }
@@ -601,14 +599,14 @@ fn a_late_stop_of_a_finished_solve_spares_the_next_solve() {
     };
     let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(gated.clone());
     let older = engine.start(checked(&sketch("10", HORIZONTAL)));
-    entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    entered_rx.recv_timeout(WAIT).unwrap();
     let newer = engine.start(checked(&sketch("11", HORIZONTAL))); // within the grace
     go_tx.send(()).unwrap();
     assert!(matches!(
-        older.wait_timeout(Duration::from_secs(10)),
+        older.wait_timeout(WAIT),
         Ok(Ok(RunOutcome::Superseded))
     ));
-    match newer.wait_timeout(Duration::from_secs(10)) {
+    match newer.wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(m))) => assert!(matches!(
             m.outcome(&feature()),
             Some(FeatureOutcome::Sketch(_))
@@ -628,7 +626,7 @@ fn a_dropped_engine_stops_its_solve_before_the_drop_returns() {
     let engine = engine(&sketches);
     sketches.hold();
     let run = engine.start(checked(&sketch("10", HORIZONTAL)));
-    assert!(sketches.wait_held(Duration::from_secs(10)));
+    assert!(sketches.wait_held(WAIT));
     drop(engine);
     // Synchronously: the grace's stop would come later, on a timer thread. (Not timed
     // from the solve's start: on a loaded machine the drop itself can come 10 ms after.)
@@ -639,7 +637,7 @@ fn a_dropped_engine_stops_its_solve_before_the_drop_returns() {
         "stopped by the time the drop returned"
     );
     assert!(matches!(
-        run.wait_timeout(Duration::from_secs(10)),
+        run.wait_timeout(WAIT),
         Ok(Ok(RunOutcome::Superseded))
     ));
 }
@@ -653,13 +651,13 @@ fn a_cancelled_solve_runs_its_grace_before_its_stopped() {
     let engine = engine(&sketches);
     sketches.hold();
     let run = engine.start(checked(&sketch("10", HORIZONTAL)));
-    assert!(sketches.wait_held(Duration::from_secs(10)));
+    assert!(sketches.wait_held(WAIT));
     engine.cancel();
     assert!(matches!(
-        run.wait_timeout(Duration::from_secs(10)),
+        run.wait_timeout(WAIT),
         Ok(Ok(RunOutcome::Superseded))
     ));
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + WAIT;
     while sketches.stop_waits().is_empty() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }

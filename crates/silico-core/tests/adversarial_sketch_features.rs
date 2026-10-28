@@ -7,6 +7,7 @@
 //! refusal's effect on what's stored. Expected values are from the design's text.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::model::WAIT;
 use super::sweeps;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -815,7 +816,7 @@ fn checking_an_axis_twice_gives_the_same_answer_and_leaves_the_solution_alone() 
 // Recompute and format: what a sweep it can't build leaves behind.
 
 fn published(engine: &Recompute<FakeKernel>, document: Checked) -> std::sync::Arc<Model> {
-    match engine.start(document).wait_timeout(Duration::from_secs(60)) {
+    match engine.start(document).wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("not published: {other:?}"),
         Err(_) => panic!("the recompute didn't finish"),

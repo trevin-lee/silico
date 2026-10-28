@@ -1420,7 +1420,7 @@ pub(crate) enum Reached {
 
 /// What a worker's crash or timeout advises, as data: the error's suggestion is worded from
 /// it ([`Error::with_advice`], [`Advice::words`]), and a client that words it its own way (a
-/// session's kept fault, `command::session`'s `kept_suggestion`) reads what it says, never
+/// session's kept fault and the CLI's, `command::fault_suggestion`) reads what it says, never
 /// its words.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Advice {
@@ -1934,8 +1934,9 @@ mod tests {
 
     #[test]
     fn a_crash_and_a_timeout_say_their_advice_as_data_beside_its_words() {
-        // What a session words its own way (`kept_suggestion`) it reads from the advice as
-        // data, so each real end of a worker sets it, with the words the suggestion gives.
+        // What a session and the CLI word their own way (`command::fault_suggestion`) they read
+        // from the advice as data, so each real end of a worker sets it, with the words the
+        // suggestion gives.
         use super::Advice;
         use std::time::Duration;
         let echo = || silico_protocol::Op::Echo {

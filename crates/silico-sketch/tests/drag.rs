@@ -6,9 +6,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::systems;
+use super::wait::WAIT;
 
 use std::path::Path;
-use std::time::Duration;
 
 use silico_core::ErrorCode;
 use silico_core::worker::{Worker, WorkerKind};
@@ -21,7 +21,6 @@ use silico_sketch::worker::State;
 use systems::Builder;
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
-const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The solver stops when its step is under 1e-10: a point lands within this of where it
 /// should.
@@ -513,7 +512,7 @@ fn worker() -> Worker {
 }
 
 fn call(w: &mut Worker, op: Op) -> Result<Reply, silico_core::Error> {
-    w.call(Generation(1), op, TIMEOUT)
+    w.call(Generation(1), op, WAIT)
 }
 
 fn moved_there(w: &mut Worker, to: [f64; 2]) -> Moved {

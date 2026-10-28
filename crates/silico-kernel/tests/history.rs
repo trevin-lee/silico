@@ -5,9 +5,9 @@
 
 use super::imports;
 use super::oracle;
+use crate::wait::WAIT;
 
 use std::path::Path;
-use std::time::Duration;
 
 use silico_core::ErrorCode;
 use silico_core::kernel::{KernelWorker, Primitive};
@@ -288,7 +288,7 @@ fn a_history_that_names_what_the_result_doesnt_have_is_refused() {
     w.call(
         Generation(0),
         Op::Debug(DebugOp::Misbehave(Misbehavior::BadHistory)),
-        Duration::from_secs(30),
+        WAIT,
     )
     .unwrap();
     let mut k = KernelWorker::from_worker(w);
@@ -388,7 +388,7 @@ fn a_history_for_the_wrong_number_of_inputs_is_refused() {
     w.call(
         Generation(0),
         Op::Debug(DebugOp::Misbehave(Misbehavior::HistoryForNoInputs)),
-        Duration::from_secs(30),
+        WAIT,
     )
     .unwrap();
     let mut k = KernelWorker::from_worker(w);
