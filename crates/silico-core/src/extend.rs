@@ -60,8 +60,9 @@ pub enum End {
 
 /// How far the end moves: a line's along it, an arc's around its circle. Positive
 /// lengthens, negative shortens. Or where it goes: `To` a point within 1e-7 mm of the
-/// curve's carrier (a line's line, an arc's circle), placed there exactly, as
-/// [`next_crossing`] gives one.
+/// curve's carrier (a line's line, an arc's circle, as [`next_crossing`] measures it), as it
+/// gives one: a line's one move goes there exactly (its constraints winning, as for a
+/// length), an arc's end is put there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum By {
     Length(Length),
@@ -152,17 +153,26 @@ pub fn extend(
 /// the other curve, a tangent contact within 1e-7 mm, or an end of the other curve within
 /// 1e-7 mm of the carrier, where its stored point is the answer, so the extended end lands
 /// on it exactly. Past the end means farther than 1e-7 mm from it (and, for an arc, from its
-/// other end). The nearest wins, a line's by distance, an arc's by angle; of curves met at
-/// one place, the least ID. Found from the stored coordinates in closed form, with the libm
-/// shim's math, as trim finds its cuts. Refused as [`extend`] refuses a member that isn't a
-/// line or an arc.
+/// other end), and within the sketch's reach. A curve the extension runs along to the point
+/// (within 1e-7 mm of it halfway there) isn't met there: a collinear neighbour, or a round
+/// the curve runs into nearly tangent. The nearest wins, a line's by distance, an arc's by
+/// angle; at the same distance, the least ID. Found from the stored coordinates in closed
+/// form, with the libm shim's math, as trim finds its cuts. Refused as [`extend`] refuses a
+/// member that isn't a line or an arc, and an arc whose ends are at one angle from its
+/// centre, which has no circle to go around.
 pub fn next_crossing(
     sketch: &Sketch,
     curve: &ElementId,
     end: End,
 ) -> Result<Option<Crossing>, Error> {
     let _span = tracing::info_span!("sketch_next_crossing", curve = curve.as_str()).entered();
-    let geo = Geo::of(sketch, curve).ok_or_else(|| not_extendable(sketch, curve))?;
+    let Some(geo) = Geo::of(sketch, curve) else {
+        return Err(if sketch.arcs.iter().any(|a| &a.id == curve) {
+            no_sweep(curve)
+        } else {
+            not_extendable(sketch, curve)
+        });
+    };
     // The end that moves, and the other.
     let (moving, fixed) = match (&geo, end) {
         (Geo::Line { from, to }, End::Start)
@@ -185,9 +195,9 @@ pub fn next_crossing(
         ) => (*to, *from),
         (Geo::Circle { .. }, _) => return Err(not_extendable(sketch, curve)),
     };
-    // How far past the end a point on the carrier is: a line's distance, an arc's angle;
-    // none if it isn't past it.
-    let ahead = |xy: [f64; 2]| -> Option<f64> {
+    // How far past the end a point on the carrier is (a line's distance, an arc's angle),
+    // and the place halfway there; none if it isn't past it.
+    let ahead = |xy: [f64; 2]| -> Option<(f64, [f64; 2])> {
         if distance(xy, moving) <= FLOOR || distance(xy, fixed) <= FLOOR {
             return None;
         }
@@ -197,20 +207,32 @@ pub fn next_crossing(
                     [moving[0] - fixed[0], moving[1] - fixed[1]],
                     [xy[0] - moving[0], xy[1] - moving[1]],
                 );
-                (d[0] * e[0] + d[1] * e[1] > 0.0).then(|| distance(xy, moving))
+                let halfway = [(moving[0] + xy[0]) / 2.0, (moving[1] + xy[1]) / 2.0];
+                (d[0] * e[0] + d[1] * e[1] > 0.0).then(|| (distance(xy, moving), halfway))
             }
             Geo::Arc {
                 center,
+                radius,
                 start_angle,
                 end_angle,
                 ..
             } => {
                 let angle = libm::atan2(xy[1] - center[1], xy[0] - center[0]);
-                let on = match end {
-                    End::Start => (start_angle - angle).rem_euclid(TAU),
-                    End::End => (angle - end_angle).rem_euclid(TAU),
+                let (on, half) = match end {
+                    End::Start => {
+                        let on = (start_angle - angle).rem_euclid(TAU);
+                        (on, start_angle - on / 2.0)
+                    }
+                    End::End => {
+                        let on = (angle - end_angle).rem_euclid(TAU);
+                        (on, end_angle + on / 2.0)
+                    }
                 };
-                (on > 0.0 && on < TAU - (end_angle - start_angle)).then_some(on)
+                let halfway = [
+                    center[0] + radius * libm::cos(half),
+                    center[1] + radius * libm::sin(half),
+                ];
+                (on > 0.0 && on < TAU - (end_angle - start_angle)).then_some((on, halfway))
             }
             Geo::Circle { .. } => None,
         }
@@ -240,9 +262,18 @@ pub fn next_crossing(
             }
         }
         for xy in found {
-            let Some(far) = ahead(xy).filter(|_| xy.iter().all(|v| v.is_finite())) else {
+            if !xy.iter().all(|v| silico_protocol::within_reach(*v)) {
+                continue;
+            }
+            let Some((far, halfway)) = ahead(xy) else {
                 continue;
             };
+            // A curve the extension runs along to the point (within 1e-7 mm of it halfway
+            // there, on it) isn't met there: a collinear neighbour, or a round the curve
+            // runs into nearly tangent, whose contact is a few microns on.
+            if other.off(halfway) <= FLOOR && other.spans(other.project(halfway)) {
+                continue;
+            }
             let nearer = nearest.as_ref().is_none_or(|(best, best_id, _)| {
                 far.total_cmp(best).then_with(|| id.cmp(best_id)).is_lt()
             });
@@ -313,12 +344,17 @@ fn extend_line(
         }
         LineTo::At(target) => {
             let said = to_point(target);
-            let foot = project_on_line(q, p, target);
-            let off = distance(foot, target);
+            if let Err(invalid) = check_drag_target(target) {
+                return Err(past_reach(curve, "line", &said, &invalid.message));
+            }
+            // Measured as `next_crossing` measures it (trim's carrier), so a point it gives
+            // is taken.
+            let off = Geo::of(sketch, curve).map_or(f64::NAN, |geo| geo.off(target));
             if off.is_nan() || off > FLOOR {
                 return Err(off_carrier(curve, "line", &said, off));
             }
-            if target.map(f64::to_bits) == p.map(f64::to_bits) {
+            // By value: a zero of either sign is the same place.
+            if target[0] == p[0] && target[1] == p[1] {
                 return Err(nothing_there(curve));
             }
             let longer = libm::hypot(target[0] - q[0], target[1] - q[1]);
@@ -336,15 +372,7 @@ fn extend_line(
         }
     };
     if let Err(invalid) = check_drag_target(target) {
-        return Err(refused(
-            format!(
-                "extending line {curve} {said} would take its end past the sketch's reach: {}",
-                invalid.message
-            ),
-            "by",
-            "extend it by less",
-        )
-        .with_elements([curve.to_string()]));
+        return Err(past_reach(curve, "line", &said, &invalid.message));
     }
     let translation = Translation::new(sketch)?;
     let Some(geometry) = translation.point_geometry(moving) else {
@@ -526,11 +554,20 @@ fn extend_arc(
         }
         ArcTo::At(target) => {
             let said = to_point(target);
-            let off = (libm::hypot(target[0] - c[0], target[1] - c[1]) - radius).abs();
+            if !target.iter().all(|v| silico_protocol::within_reach(*v)) {
+                return Err(past_reach(curve, "arc", &said, ""));
+            }
+            // Its circle as `next_crossing` measures it (trim's carrier, from the arc's
+            // points), so a point it gives is taken.
+            let Some(geo @ Geo::Arc { radius, .. }) = Geo::of(sketch, curve) else {
+                return Err(no_sweep(curve));
+            };
+            let off = geo.off(target);
             if off.is_nan() || off > FLOOR {
                 return Err(off_carrier(curve, "circle", &said, off));
             }
-            if target.map(f64::to_bits) == p.map(f64::to_bits) {
+            // By value: a zero of either sign is the same place.
+            if target[0] == p[0] && target[1] == p[1] {
                 return Err(nothing_there(curve));
             }
             let swept = match end {
@@ -583,16 +620,7 @@ fn extend_arc(
     let coordinate = |v: f64| {
         Coordinate::new(v)
             .filter(|_| silico_protocol::within_reach(v))
-            .ok_or_else(|| {
-                refused(
-                    format!(
-                        "extending arc {curve} {said} would take its end past the sketch's reach"
-                    ),
-                    "by",
-                    "extend it by less",
-                )
-                .with_elements([curve.to_string()])
-            })
+            .ok_or_else(|| past_reach(curve, "arc", &said, ""))
     };
     let (x, y) = (coordinate(turned[0])?, coordinate(turned[1])?);
     let mut edited = sketch.clone();
@@ -734,6 +762,35 @@ fn too_short(curve: &ElementId, noun: &str, size: f64, suggestion: &str) -> Erro
     .with_elements([curve.to_string()])
 }
 
+/// Refuses a move `said` that takes the end past the sketch's reach, `why` the reach's own
+/// words, if any.
+fn past_reach(curve: &ElementId, noun: &str, said: &str, why: &str) -> Error {
+    let why = if why.is_empty() {
+        String::new()
+    } else {
+        format!(": {why}")
+    };
+    refused(
+        format!("extending {noun} {curve} {said} would take its end past the sketch's reach{why}"),
+        "by",
+        "extend it by less",
+    )
+    .with_elements([curve.to_string()])
+}
+
+/// Refuses an arc whose ends are at one angle from its centre: it sweeps nothing, so it has
+/// no circle to go around (the solve's translation refuses it too).
+fn no_sweep(curve: &ElementId) -> Error {
+    refused(
+        format!(
+            "arc {curve}'s start and end are at one angle from its centre, so it has no circle to extend around"
+        ),
+        "curve",
+        "move one of its ends around its centre",
+    )
+    .with_elements([curve.to_string()])
+}
+
 fn nothing_there(curve: &ElementId) -> Error {
     refused(
         format!("extending {curve} to where its end is changes nothing"),
@@ -759,11 +816,4 @@ fn off_carrier(curve: &ElementId, carrier: &str, said: &str, off: f64) -> Error 
 /// "to (x, y)", as a point is said in the messages.
 fn to_point(xy: [f64; 2]) -> String {
     format!("to ({}, {})", xy[0], xy[1])
-}
-
-/// The foot of `point`'s perpendicular on the line through `from` and `to`.
-fn project_on_line(from: [f64; 2], to: [f64; 2], point: [f64; 2]) -> [f64; 2] {
-    let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
-    let t = ((point[0] - from[0]) * dx + (point[1] - from[1]) * dy) / (dx * dx + dy * dy);
-    [from[0] + t * dx, from[1] + t * dy]
 }

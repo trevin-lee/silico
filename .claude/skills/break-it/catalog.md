@@ -56,6 +56,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A pick exactly at one of a closed curve's cuts: the nearest cut behind and the nearest ahead are that one cut, 0 away each, so "fewer than two distinct cuts" removes the whole circle (FreeCAD 1.1.3 keeps the arc behind it); pick each cut's exact coordinates
 - Two cuts at one place, one an end held on the curve and one another cutter's crossing, ordered by cutter ID: "share the held end" holds from one side and not the mirror's; draw the T both ways and pick either side
 - Arcs whose end the gate takes off their circle (the solve's to mend): a "cut at the end" tested by distance to the stored end misses a cut at the end's angle 2e-7 inward, and the piece left has no sweep; test ends in the curve's parameter too
+- A finder and its consumer that each decide "on the carrier within the tolerance" their own way (a next crossing measured off an arc's circle from its start by √(dx² + dy²), then checked from the moving end by `hypot`; a line projected from one end, then from the other): points the finder offers 1e-7 off are refused an ulp past it, and an arc whose end isn't on its start's circle (the gate leaves that to the solve) has every offer refused; feed every answer to its consumer in a proptest biased to the tolerance
+- Near-tangent contacts reported at the perpendicular's foot: a line that joins an arc at a shared point within g of tangent has its foot √(2rg) from the joint (4.5 µm at g = 1e-12, r = 10), so "the next curve past the end" is the curve it already joins, microns on
+- Collinear neighbours as crossings: a line chained straight into another (a shared end) is offered the other's far end, an overlap no edit can take
 
 ## Sketch solver
 

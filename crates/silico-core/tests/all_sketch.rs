@@ -40,6 +40,8 @@ mod adversarial_sketch;
 mod adversarial_sketch_edit;
 #[path = "adversarial_sketch_extend.rs"]
 mod adversarial_sketch_extend;
+#[path = "adversarial_sketch_extend_to.rs"]
+mod adversarial_sketch_extend_to;
 #[path = "adversarial_sketch_features.rs"]
 mod adversarial_sketch_features;
 #[path = "adversarial_sketch_solve.rs"]
