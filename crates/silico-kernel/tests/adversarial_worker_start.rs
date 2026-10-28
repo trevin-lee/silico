@@ -437,12 +437,16 @@ fn a_worker_made_unrunnable_under_a_pool_is_unavailable_and_runs_again_once_fixe
     assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     // Fixed: the next request runs, at once (a request starts a worker whatever the wait).
     chmod(&exe, 0o755);
-    let lateness = crate::lateness::Lateness::start();
+    // A worker's start is work: its wall time over how much slower than a quiet machine this
+    // one ran it (`Share`), which load doesn't move.
+    let share = crate::share::Share::start();
     let started = Instant::now();
     let ok = pool_echo(&pool);
     assert!(ok.is_ok(), "after the fix: {:?}", ok.err());
+    let (wall, slowdown) = (started.elapsed(), share.finish().slowdown);
     assert!(
-        started.elapsed() < crate::lateness::allowance(Duration::from_secs(20), lateness.most())
+        wall.div_f64(slowdown) < Duration::from_secs(20),
+        "{wall:?}, the machine {slowdown:.2} times slower than a quiet one"
     );
 }
 

@@ -1060,11 +1060,16 @@ fn a_longer_stop_after_lets_superseded_work_run_on() {
 fn a_crashed_worker_is_replaced_at_once_not_at_the_idle_check() {
     let pool = pool(TEST_WORKER, 1);
     let before = pool.pids();
+    let lateness = Lateness::start();
     let err =
         done(pool.submit(Generation(1), KernelRequest::debug(DebugOp::Segfault))).unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
-    // The idle check comes after a second: the replacement must be there well before.
-    let deadline = Instant::now() + Duration::from_millis(500);
+    // The idle check comes a second after the crash is delivered: the replacement must be
+    // there well before, at 500 ms and as late as this machine wakes threads on top, but
+    // never by 900 ms, which a replacement at the idle check can't beat.
+    let delivered = Instant::now();
+    let deadline = delivered
+        + allowance(Duration::from_millis(500), lateness.most()).min(Duration::from_millis(900));
     loop {
         let pids = pool.pids();
         if pids.len() == 1 && pids != before {
@@ -1072,7 +1077,8 @@ fn a_crashed_worker_is_replaced_at_once_not_at_the_idle_check() {
         }
         assert!(
             Instant::now() < deadline,
-            "not replaced within 500 ms: {pids:?}"
+            "not replaced by {:?}: {pids:?}",
+            deadline - delivered
         );
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -1298,7 +1304,12 @@ fn dropping_the_pool_stops_at_once_and_ends_every_request() {
     // returns within `WAIT`.
     let pool = pool(TEST_WORKER, 2);
     let pending: Vec<_> = (0..6)
-        .map(|_| pool.submit(Generation(1), sleep(UNREACHED.as_millis() as u64)))
+        .map(|_| {
+            pool.submit(
+                Generation(1),
+                sleep(UNREACHED.as_millis() as u64).with_timeout(UNREACHED),
+            )
+        })
         .collect();
     std::thread::sleep(Duration::from_millis(200));
     let held = pool.pids();

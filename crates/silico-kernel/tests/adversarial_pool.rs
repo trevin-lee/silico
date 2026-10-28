@@ -1265,8 +1265,20 @@ fn requests_whose_callers_stopped_waiting_dont_jam_the_pool() {
         .map(|_| pool.submit(Generation(1), sleep(4_000)))
         .collect();
     pool.advance(Generation(2));
+    // Dropped by the advance itself, before any slot looks at them: all but the two running,
+    // superseded already.
+    let (superseded, waiting): (Vec<_>, Vec<_>) = unwaited
+        .into_iter()
+        .map(|p| p.try_take())
+        .partition(|taken| matches!(taken, Ok(Outcome::Superseded)));
+    assert!(
+        superseded.len() >= 38,
+        "{} of 40 superseded by the advance, {} not",
+        superseded.len(),
+        waiting.len()
+    );
     done(pool.submit(Generation(2), echo(&[5]))).unwrap();
-    drop(unwaited);
+    drop(waiting);
 }
 
 #[test]
@@ -2046,7 +2058,12 @@ fn dropping_an_on_demand_pool_while_its_slots_start_stops_at_once() {
     for attempt in 0..40u32 {
         let pool = on_demand(TEST_WORKER, 8);
         let pending: Vec<_> = (0..8)
-            .map(|_| pool.submit(Generation(1), sleep(SLEEP.as_millis() as u64)))
+            .map(|_| {
+                pool.submit(
+                    Generation(1),
+                    sleep(SLEEP.as_millis() as u64).with_timeout(UNREACHED),
+                )
+            })
             .collect();
         spin(Duration::from_micros(u64::from(attempt) * 250));
         promptly(&format!("attempt {attempt}: the drop"), move || drop(pool));
@@ -2687,7 +2704,10 @@ fn dropping_a_client_mid_request_stops_its_work_and_no_others() {
     let (pool, log) = logged_pool("drop-client", 2);
     let first = pool.pids();
     let (a, b) = (pool.client(), pool.client());
-    let long = a.submit(Generation(0), sleep(UNREACHED.as_millis() as u64));
+    let long = a.submit(
+        Generation(0),
+        sleep(UNREACHED.as_millis() as u64).with_timeout(UNREACHED),
+    );
     let other = b.submit(Generation(0), sleep(1_000));
     let queued = a.submit(Generation(0), echo(&[1]));
     std::thread::sleep(Duration::from_millis(200));

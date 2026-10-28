@@ -8,6 +8,8 @@
 
 #[path = "../../silico-core/tests/common/lateness.rs"]
 mod lateness;
+#[path = "../../silico-core/tests/common/share.rs"]
+mod share;
 #[path = "../../silico-core/tests/common/test_programs.rs"]
 mod test_programs;
 #[path = "common/wait.rs"]

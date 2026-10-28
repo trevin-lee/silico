@@ -424,8 +424,8 @@ fn a_worker_that_closes_its_socket_mid_request_and_lingers_fails_within_its_time
         ),
     );
     let graces = Graces::record();
-    // As late as this machine wakes threads, on top: still well short of a fixed 2 s grace
-    // on a quiet machine.
+    // A second, and as late as this machine wakes threads on top, but never the fixed 2 s
+    // grace: load makes a call that waits it slower, never faster.
     let lateness = Lateness::start();
     let (err, took) = within(WAIT, move || {
         let mut w = Worker::spawn(&exe).unwrap();
@@ -450,7 +450,7 @@ fn a_worker_that_closes_its_socket_mid_request_and_lingers_fails_within_its_time
     // its replies, or its log, would take at least that. This one is a bound on time, with
     // 1.7 s of room: telling 300 ms from 2 s needs one.
     assert!(
-        took < allowance(Duration::from_secs(2), lateness.most()),
+        took < allowance(Duration::from_secs(1), lateness.most()).min(Duration::from_secs(2)),
         "a call allowed 300 ms took {took:?}: {err}"
     );
 }
@@ -473,8 +473,8 @@ fn a_worker_whose_child_holds_its_pipes_fails_within_its_timeout() {
         ),
     );
     let graces = Graces::record();
-    // As late as this machine wakes threads, on top: still well short of a fixed 2 s grace
-    // on a quiet machine.
+    // A second, and as late as this machine wakes threads on top, but never the fixed 2 s
+    // grace: load makes a call that waits it slower, never faster.
     let lateness = Lateness::start();
     let (err, took) = within(WAIT, move || {
         let mut w = Worker::spawn(&exe).unwrap();
@@ -498,7 +498,7 @@ fn a_worker_whose_child_holds_its_pipes_fails_within_its_timeout() {
     // its replies, or its log, would take at least that. This one is a bound on time, with
     // 1.7 s of room: telling 300 ms from 2 s needs one.
     assert!(
-        took < allowance(Duration::from_secs(2), lateness.most()),
+        took < allowance(Duration::from_secs(1), lateness.most()).min(Duration::from_secs(2)),
         "a call allowed 300 ms took {took:?}: {err}"
     );
 }
@@ -1096,9 +1096,13 @@ fn later_child_entry() {
     // and long before it would end.
     pool.set_stop_after(Duration::from_secs(2));
     let submitted = Instant::now();
-    // A sleep no test reaches: one the stopper left would have no outcome within the wait
-    // `outcome` allows.
-    let long = client.submit(Generation(1), sleep(UNREACHED.as_millis() as u64));
+    // A sleep and a timeout no test reaches: one the stopper left would have no outcome
+    // within the wait `outcome` allows (the default timeout, a minute, would end it as
+    // superseded just inside it).
+    let long = client.submit(
+        Generation(1),
+        sleep(UNREACHED.as_millis() as u64).with_timeout(UNREACHED),
+    );
     std::thread::sleep(Duration::from_millis(300));
     client.advance(Generation(2));
     assert!(matches!(outcome(long), Outcome::Superseded));
