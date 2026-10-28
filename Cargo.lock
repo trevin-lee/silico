@@ -5267,6 +5267,7 @@ dependencies = [
 name = "silico-sketch"
 version = "0.0.0"
 dependencies = [
+ "cpu-time",
  "cxx",
  "cxx-build",
  "libm",
