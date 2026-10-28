@@ -145,9 +145,9 @@ fn an_arcs_extended_end_takes_a_free_neighbour_with_it_as_freecads_arc_first_sol
 
 #[test]
 fn a_lines_end_an_arc_starts_at_pins_only_that_end_as_freecads_line_extend_does() {
-    // FreeCAD 1.1.3 (probed for #262's review, the start held by distances): a horizontal line from
-    // the origin, where its start is held, to (10, 0), where an arc about (10, 10) starts and
-    // runs a quarter turn to (20, 10); the line's end on by 5. FreeCAD's `extend` drags the
+    // FreeCAD 1.1.3 (probed for #262's review): a horizontal line from the origin, where
+    // distances hold its start, to (10, 0), where an arc about (10, 10) starts and runs a
+    // quarter turn to (20, 10); the line's end on by 5. FreeCAD's `extend` drags the
     // line's end (`moveGeometry` on the line, so `initMove` pins that end alone): the end
     // reaches (15, 0) and the arc's centre goes where the solve takes it, (10.039692,
     // 9.216921), its end to (20.480038, 9.962213). Pinning the centre too, as a drag of the
