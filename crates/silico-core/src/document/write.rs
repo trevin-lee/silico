@@ -40,6 +40,82 @@ pub fn fits(document: &Document, limit: usize) -> bool {
     writer.put(&tree(document), 0).is_ok() && writer.push("\n").is_ok()
 }
 
+/// The document's canonical text in parts, so a state of it can be kept a feature at a
+/// time (`super::undo`): `head`, the text before the features' array, and each feature's
+/// text as the document places it (indented, with neither the line break before it nor
+/// the comma after it), which [`assemble`] puts back together as [`write`] writes them.
+pub(crate) struct Parts {
+    pub(crate) head: String,
+    pub(crate) features: Vec<String>,
+}
+
+/// The depth the canonical form writes a document's features at: inside its object, and
+/// inside the `features` array.
+const FEATURE_DEPTH: usize = 2;
+
+/// What the document's text ends with after the features' array opens and its features
+/// end: none (`[]`), or the array's last line break, its closing bracket at its depth, and
+/// the document's.
+const EMPTY_TAIL: &str = "[]\n}\n";
+const TAIL: &str = "\n  ]\n}\n";
+
+/// `document`'s canonical text in [`Parts`], if the whole is at most `limit` bytes.
+pub(crate) fn parts(document: &Document, limit: usize) -> Result<Parts, TooLong> {
+    let empty = Out::Object(match tree(document) {
+        Out::Object(members) => members
+            .into_iter()
+            .map(|(key, value)| {
+                if key == "features" {
+                    (key, Out::Array(Vec::new()))
+                } else {
+                    (key, value)
+                }
+            })
+            .collect(),
+        _ => Vec::new(),
+    });
+    let mut writer = Writer::new(limit, true);
+    writer.put(&empty, 0)?;
+    writer.push("\n")?;
+    let head = match writer.out.strip_suffix(EMPTY_TAIL) {
+        Some(head) => head.to_owned(),
+        None => writer.out,
+    };
+    let mut total = head.len();
+    let mut features = Vec::with_capacity(document.features.len());
+    for each in &document.features {
+        let mut writer = Writer::new(limit.saturating_sub(total), true);
+        writer.pad(FEATURE_DEPTH)?;
+        writer.put(&self::feature(each), FEATURE_DEPTH)?;
+        total += writer.out.len() + 2;
+        features.push(writer.out);
+    }
+    if total > limit {
+        return Err(TooLong);
+    }
+    Ok(Parts { head, features })
+}
+
+/// The canonical text of a document whose [`Parts`] are `head` and `features`, as
+/// [`write`] writes it.
+pub(crate) fn assemble<'a>(head: &str, features: impl ExactSizeIterator<Item = &'a str>) -> String {
+    let n = features.len();
+    let mut out = String::from(head);
+    if n == 0 {
+        out.push_str(EMPTY_TAIL);
+        return out;
+    }
+    out.push_str("[\n");
+    for (i, text) in features.enumerate() {
+        if i > 0 {
+            out.push_str(",\n");
+        }
+        out.push_str(text);
+    }
+    out.push_str(TAIL);
+    out
+}
+
 /// `feature`'s canonical text, as a document's canonical form writes it but not indented,
 /// with no newline after it (a value, not a file), if it's at most `limit` bytes.
 pub fn feature_text(feature: &Feature, limit: usize) -> Result<String, TooLong> {
