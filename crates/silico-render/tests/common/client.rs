@@ -19,6 +19,22 @@ pub const WAIT: Duration = Duration::from_secs(60);
 /// fails at [`WAIT`] rather than passing, however loaded the machine. Ten times `WAIT`.
 pub const UNREACHED: Duration = Duration::from_secs(600);
 
+/// Kills the worker `pid` if the test is failing when this is dropped: a test that fails
+/// while a render it hung is current would otherwise drop its client waiting for that
+/// render's time ([`UNREACHED`]), and hang until nextest stops it. Made after the client,
+/// so dropped before it.
+pub struct KillsOnPanic(pub u32);
+
+impl Drop for KillsOnPanic {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &self.0.to_string()])
+                .status();
+        }
+    }
+}
+
 /// `f`'s result, if it returns within [`WAIT`]: for something that should be prompt and
 /// would, wrong, block for a render's time ([`UNREACHED`]), which a test must fail at, not
 /// wait out. Run on a thread of its own, left blocked if it never returns.

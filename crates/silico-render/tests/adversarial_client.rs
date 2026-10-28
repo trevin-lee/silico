@@ -15,8 +15,8 @@ use silico_protocol::{Mesh, RenderScene};
 use silico_render::bench::front_of_a_box;
 
 use crate::common::{
-    TEST_WORKER, UNREACHED, WAIT, WORKER, client, crashing, drawn, ended, eventually, failed,
-    hanging, process_exists, promptly, scratch, signal, small, state, wait_within, zombie,
+    KillsOnPanic, TEST_WORKER, UNREACHED, WAIT, WORKER, client, crashing, drawn, ended, eventually,
+    failed, hanging, process_exists, promptly, scratch, signal, small, state, wait_within, zombie,
 };
 use crate::lateness::{Lateness, allowance};
 
@@ -42,13 +42,14 @@ fn dropping_the_client_with_renders_queued_behind_a_hung_one_returns_promptly() 
     let pid = c.pid().unwrap();
     std::thread::sleep(Duration::from_millis(200));
     promptly("dropping the client", move || drop(c));
-    // Every ticket has its outcome now, whatever it is: the drop answers them all before it
-    // returns.
+    // Every ticket is answered cancelled now: the drop cancels the running one and those
+    // queued, and answers them all before it returns.
     for t in tickets {
-        assert!(
-            t.try_take().is_ok(),
-            "a ticket still waits after the client was dropped"
-        );
+        match t.try_take() {
+            Ok(RenderOutcome::Cancelled) => {}
+            Ok(other) => panic!("a ticket after the client was dropped: {other:?}"),
+            Err(_) => panic!("a ticket still waits after the client was dropped"),
+        }
     }
     assert!(
         eventually(WAIT, || !process_exists(pid)),
@@ -436,6 +437,7 @@ fn a_render_waited_on_in_one_thread_is_cancelled_from_another() {
     assert!(eventually(WAIT, || c.pid().is_some()));
     std::thread::sleep(Duration::from_millis(200));
     let pid = c.pid().unwrap();
+    let _kills = KillsOnPanic(pid);
     cancel.clone().cancel();
     let outcome = promptly("the cancelled render's wait", move || {
         waiting.join().unwrap()
@@ -461,6 +463,8 @@ fn a_ticket_polled_or_waited_on_for_a_while_comes_back_until_it_answers() {
         },
     );
     let mut ticket = c.render(hanging());
+    assert!(eventually(WAIT, || c.pid().is_some()));
+    let _kills = KillsOnPanic(c.pid().unwrap());
     for _ in 0..3 {
         ticket = match ticket.try_take() {
             Err(t) => t,
@@ -705,6 +709,7 @@ fn a_queued_render_cancelled_answers_cancelled_at_once_not_when_its_turn_comes()
     let running = c.render(hanging());
     let queued = c.render(small());
     assert!(eventually(WAIT, || c.pid().is_some()));
+    let _kills = KillsOnPanic(c.pid().unwrap());
     std::thread::sleep(Duration::from_millis(200));
     queued.cancel();
     let outcome = wait_within(queued, WAIT).expect("the cancelled render never answered");

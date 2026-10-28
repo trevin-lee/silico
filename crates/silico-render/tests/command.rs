@@ -129,6 +129,7 @@ fn a_render_through_a_session_cancelled_while_it_runs_answers_cancelled_and_stop
         std::thread::sleep(Duration::from_millis(20));
     }
     let pid = client.pid().expect("the render never started");
+    let _kills = crate::common::KillsOnPanic(pid);
     std::thread::sleep(Duration::from_millis(200));
     assert!(running.cancel());
     let answer = crate::common::promptly("the cancelled render's answer", move || running.wait());

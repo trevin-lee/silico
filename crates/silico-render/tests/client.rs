@@ -11,8 +11,8 @@ use silico_render::bench::front_of_a_box;
 use silico_render::test_scenes;
 
 use crate::common::{
-    TEST_WORKER, UNREACHED, WAIT, WORKER, at, client, crashing, drawn, eventually, failed, hanging,
-    process_exists, small, wait_within,
+    KillsOnPanic, TEST_WORKER, UNREACHED, WAIT, WORKER, at, client, crashing, drawn, eventually,
+    failed, hanging, process_exists, small, wait_within,
 };
 use crate::lateness::{Lateness, allowance};
 
@@ -256,12 +256,13 @@ fn a_worker_that_crashes_is_a_crash_and_the_next_render_works() {
 
 #[test]
 fn renders_queued_each_have_their_own_time_from_when_theyre_sent() {
-    // The first hangs for its 2 s; the second, queued behind it, waits those 2 s but still
-    // has its own 2 s once it's sent, and draws.
+    // The first hangs for its 5 s; the second, queued behind it, waits those 5 s but still
+    // has its own 5 s once it's sent, and draws: timed from when it was queued, it would have
+    // none left. 5 s, not less: a small render on a fresh worker takes that, loaded.
     let c = client(
         TEST_WORKER,
         RenderSettings {
-            timeout: Duration::from_secs(2),
+            timeout: Duration::from_secs(5),
             ..RenderSettings::default()
         },
     );
@@ -287,6 +288,7 @@ fn a_render_cancelled_while_queued_is_never_sent_and_one_running_is_stopped() {
     // The running one, hung (its time one no test reaches), stops when cancelled: nothing
     // else answers it within `WAIT`.
     assert!(eventually(WAIT, || c.pid().is_some()));
+    let _kills = KillsOnPanic(c.pid().unwrap());
     std::thread::sleep(Duration::from_millis(200));
     running.cancel();
     let outcome = wait_within(running, WAIT).expect("the cancelled render never answered");
