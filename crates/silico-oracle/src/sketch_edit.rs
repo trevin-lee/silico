@@ -167,7 +167,7 @@ pub fn dump(case: &EditCase, dir: &Path) -> Result<std::path::PathBuf, String> {
     };
     let sketch = case.sketch()?;
     let silico = match silico_edit(sketch, &case.edit).map_err(at)? {
-        Err(refusal) => serde_json::json!({ "refused": refusal }),
+        Err(refusal) => serde_json::json!({ "refused": refusal.text }),
         Ok(edited) => {
             let mut changed = feature.clone();
             changed.operation = Operation::Sketch(edited.sketch.clone());
@@ -211,11 +211,53 @@ pub fn dump(case: &EditCase, dir: &Path) -> Result<std::path::PathBuf, String> {
     Ok(path)
 }
 
+/// A refusal of Silico's edit, as its error gives it: what the excusals check against the
+/// note's rule (code, the elements it names, the request's field), and its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    pub code: String,
+    pub message: String,
+    pub elements: Vec<String>,
+    pub parameter: Option<String>,
+    pub text: String,
+}
+
+impl Refusal {
+    pub fn of(e: &silico_core::Error) -> Refusal {
+        Refusal {
+            code: e.code().as_str().to_owned(),
+            message: e.message().to_owned(),
+            elements: e.elements().to_vec(),
+            parameter: e.parameter().map(str::to_owned),
+            text: e.to_string(),
+        }
+    }
+}
+
+/// A refusal written by hand (tests): no code, elements, or field, so it matches no rule.
+impl From<&str> for Refusal {
+    fn from(text: &str) -> Refusal {
+        Refusal {
+            code: String::new(),
+            message: text.to_owned(),
+            elements: Vec::new(),
+            parameter: None,
+            text: text.to_owned(),
+        }
+    }
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
 /// What Silico made of a case.
 #[derive(Debug, Clone)]
 pub enum SilicoSide {
     /// The edit refused, as its error says.
-    Refused(String),
+    Refused(Refusal),
     /// The edit's result, which the validation gate refused.
     Gated(Vec<String>),
     /// The edit's result, through the gate, and its solve.
@@ -250,20 +292,29 @@ const MOST_IDS: usize = 64;
 
 /// `edit` applied to `sketch` by Silico's `sketch_edit`, or its refusal. A split or trim is
 /// given as many fresh IDs as it asks for, as its own tests give them.
-pub fn silico_edit(sketch: &Sketch, edit: &Edit) -> Result<Result<Edited, String>, String> {
+pub fn silico_edit(sketch: &Sketch, edit: &Edit) -> Result<Result<Edited, Refusal>, String> {
     let ids = |list: &[String]| {
         list.iter()
             .map(|s| element_id(s))
             .collect::<Result<Vec<_>, _>>()
     };
-    let refused = |e: silico_core::Error| e.to_string();
+    let refused = |e: silico_core::Error| Refusal::of(&e);
     Ok(match edit {
+        // A removal's first problem, which the rules check; its text gives them all.
         Edit::Remove { members } => sketch_edit::remove(sketch, &ids(members)?).map_err(|r| {
-            r.errors
+            let text = r
+                .errors
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
-                .join("; ")
+                .join("; ");
+            match r.errors.first() {
+                Some(first) => Refusal {
+                    text,
+                    ..Refusal::of(first)
+                },
+                None => Refusal::from(text.as_str()),
+            }
         }),
         Edit::Unjoin { point, curve } => {
             let new = fresh(sketch, 1);
@@ -454,6 +505,37 @@ pub enum Plan {
     Refuses(String),
 }
 
+/// How far inside an arc's sweep, in radians, FreeCAD is given a pick that was outside it.
+const INSIDE: f64 = 1e-6;
+
+/// For an arc `curve` picked at `pick` outside its sweep: the point Silico takes it at, its
+/// end nearer in angle, moved [`INSIDE`] into the sweep; none for a pick inside, or another
+/// curve.
+fn inside_sweep(sketch: &Sketch, curve: &str, pick: [f64; 2]) -> Option<[f64; 2]> {
+    let arc = sketch.arcs.iter().find(|a| a.id.as_str() == curve)?;
+    let shape = Shape::of(sketch);
+    let at = |id: &ElementId| shape.points.get(id.as_str()).copied();
+    let center = at(&arc.center)?;
+    let [r, from, to] = arc_from_points(center, at(&arc.start)?, at(&arc.end)?)?;
+    let mut angle = libm::atan2(pick[1] - center[1], pick[0] - center[0]);
+    while angle < from {
+        angle += TAU;
+    }
+    if angle <= to || pick == center {
+        return None;
+    }
+    // As Silico's trim places it: the end nearer in angle.
+    let placed = if from + TAU - angle < angle - to {
+        from + INSIDE
+    } else {
+        to - INSIDE
+    };
+    Some([
+        center[0] + r * libm::cos(placed),
+        center[1] + r * libm::sin(placed),
+    ])
+}
+
 /// The name a FreeCAD constraint carries for Silico's constraint `id`.
 fn fc_name(id: &str) -> String {
     format!("s_{id}")
@@ -585,7 +667,16 @@ pub fn plan(sketch: &Sketch, model: &FreecadSketch, edit: &Edit) -> Plan {
         Edit::Trim { curve, pick } => match index(curve) {
             Some(g) => FreecadEdit::Trim {
                 geometry: as_i32(g),
-                pick: *pick,
+                pick: match inside_sweep(sketch, curve, *pick) {
+                    // An arc's pick outside its sweep: Silico places it at the end nearer in
+                    // angle, as its projection is, where 1.1.3 removes a middle piece
+                    // (:219); FreeCAD is given it there, a hair inside the sweep.
+                    Some(inside) => {
+                        modulo.push(219);
+                        inside
+                    }
+                    None => *pick,
+                },
             },
             None => return Plan::Refuses(format!("FreeCAD has no geometry {curve}")),
         },
@@ -758,10 +849,13 @@ pub struct FcConstraint {
 #[serde(rename_all = "snake_case")]
 pub enum Theirs {
     Edited(Box<FreecadEdited>),
-    /// Its edit raised, as it says.
+    /// Its edit (FreeCAD's own call) raised, as it says.
     Failed(String),
     /// It crashed or hung.
     Lost(String),
+    /// The harness's own code around FreeCAD's edit raised: a bug of the oracle's, never
+    /// FreeCAD's refusal.
+    Harness(String),
 }
 
 /// How a case came out: what differs (empty when the two agree modulo the note), what the
@@ -809,14 +903,19 @@ pub const KNOWN: &[Known] = &[
     },
     Known {
         case: "merge_holds_own_point_on_line",
-        difference: "Silico refused (its edit refused: invalid_input: merging them would make constraint k0000005 hold p0000004, a point of n0000003, on n0000003 itself (elements k0000005, p0000004, n0000003, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD made the edit (1 line, 1 point, 2 constraints, solve 0 with 3 degrees of freedom)",
-        why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, as the gate refuses that form), and FreeCAD's coincidence makes it, its solve finding nothing worse; whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
+        difference: "both refused, but Silico's refusal isn't one the note gives (its edit refused: invalid_input: merging them would make constraint k0000005 hold p0000004, a point of n0000003, on n0000003 itself (elements k0000005, p0000004, n0000003, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD's: FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:53): solve -2 with conflicting [], redundant [1], malformed []",
+        why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, the gate's rule, :31, applied to the edit's result up front, :34), which isn't among the note's merge refusals (:270-273); FreeCAD 1.1.3 makes the merge, its solve finding the `on` redundant, which main's Coincident command (emulated) rolls back. Whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
     },
     // `sketch-edit-sweep --seed 32 --count 500`'s case 490.
     Known {
         case: "edit_32_490",
-        difference: "Silico refused (its edit refused: invalid_input: merging them would make constraint k0000028 hold p0000027, a point of n0000005, on n0000005 itself (elements k0000028, p0000027, n0000005, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD made the edit (1 circle, 7 line, 2 point, 14 constraints, solve 0 with 14 degrees of freedom)",
-        why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, as the gate refuses that form), and FreeCAD's coincidence makes it, its solve finding nothing worse; whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
+        difference: "both refused, but Silico's refusal isn't one the note gives (its edit refused: invalid_input: merging them would make constraint k0000028 hold p0000027, a point of n0000005, on n0000005 itself (elements k0000028, p0000027, n0000005, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD's: FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:53): solve -2 with conflicting [], redundant [12], malformed []",
+        why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, the gate's rule, :31, applied to the edit's result up front, :34), which isn't among the note's merge refusals (:270-273); FreeCAD 1.1.3 makes the merge, its solve finding the `on` redundant, which main's Coincident command (emulated) rolls back. Whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
+    },
+    Known {
+        case: "split_construction_circle",
+        difference: "Silico's c0000002 is construction, FreeCAD's isn't; Silico's w0000002 is construction, FreeCAD's isn't",
+        why: "a note gap: FreeCAD 1.1.3's split of a circle drops its construction (its first split's arc isn't construction; an arc's or a line's split keeps it), where Silico's pieces keep it as every piece does (:149, :174, 23ecf94ab6); the note doesn't say 1.1.3's circle split drops it",
     },
     Known {
         case: "merge_two_locked_ends",
@@ -1047,6 +1146,21 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
             ));
         }
     }
+    if let Some(Theirs::Harness(why)) = theirs {
+        v.how.push(format!(
+            "the harness's FreeCAD side failed, not FreeCAD's edit: {why}"
+        ));
+        return finish(v);
+    }
+    // A result the gate refuses is Silico's bug, whatever FreeCAD does: every edit's result
+    // has to pass it (:34, :151).
+    if let SilicoSide::Gated(why) = &p.silico {
+        v.how.push(format!(
+            "Silico's edit made a sketch the gate refuses, where every edit's result has to pass it ({NOTE}:34, :151): {}",
+            why.join("; ")
+        ));
+        return finish(v);
+    }
     // FreeCAD's refusal, if it refused: its edit raised, it crashed, its plan refuses, or
     // (a merge) its Coincident command would refuse what the edit made.
     let fc_refusal: Option<String> = match (theirs, &p.plan) {
@@ -1054,38 +1168,37 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
         (Some(Theirs::Failed(why)), _) => Some(format!("its edit raised: {why}")),
         (Some(Theirs::Lost(why)), _) => Some(format!("it crashed or hung: {why}")),
         (Some(Theirs::Edited(fc)), _) => merge_refusal(p, fc),
-        (None, Plan::Run { .. }) => Some("FreeCAD gave no outcome".to_owned()),
+        (Some(Theirs::Harness(_)), _) | (None, Plan::Run { .. }) => {
+            Some("FreeCAD gave no outcome".to_owned())
+        }
     };
     let silico_refusal: Option<String> = match &p.silico {
         SilicoSide::Refused(why) => Some(format!("its edit refused: {why}")),
-        SilicoSide::Gated(why) => Some(format!(
-            "the gate refused its edit's result: {}",
-            why.join("; ")
-        )),
+        SilicoSide::Gated(_) => None,
         SilicoSide::Edited(s) => match (&p.edit, &s.ours.outcome) {
-            // A merge's solve settles it: a conflict refuses the edit (:274).
-            (Edit::Merge { .. }, Err(e)) => {
-                v.modulo.push(274);
-                Some(format!("its merge's solve refused: {e}"))
-            }
+            // A merge's solve settles it (:274).
+            (Edit::Merge { .. }, Err(e)) => Some(format!("its merge's solve refused: {e}")),
             _ => None,
         },
     };
     match (silico_refusal, fc_refusal) {
-        (Some(ours), Some(_)) => {
-            v.refused = true;
-            if let SilicoSide::Gated(_) = &p.silico {
-                v.excused
-                    .push(format!("both refused, but Silico by the gate: {ours}"));
+        // Two refusals agree only where Silico's is one the note gives, for its reason.
+        (Some(ours), Some(theirs_why)) => match rule(p) {
+            Some(r) => {
+                v.refused = true;
+                v.modulo.extend(r.lines());
             }
-        }
+            None => v.how.push(format!(
+                "both refused, but Silico's refusal isn't one the note gives ({ours}); FreeCAD's: {theirs_why}"
+            )),
+        },
         (Some(ours), None) => {
             let Some(Theirs::Edited(fc)) = theirs else {
                 v.how
                     .push(format!("Silico refused ({ours}); FreeCAD gave nothing"));
-                return v;
+                return finish(v);
             };
-            match excuse_refusal(p, fc) {
+            match rule(p).and_then(|r| excused(p, &r, fc)) {
                 Some(excuse) => v.excused.push(excuse),
                 None => v.how.push(format!(
                     "Silico refused ({ours}); FreeCAD made the edit ({})",
@@ -1100,24 +1213,438 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
         }
         (None, None) => {
             if let (SilicoSide::Edited(s), Some(Theirs::Edited(fc))) = (&p.silico, theirs) {
-                match skipped(p) {
-                    Some(excuse) => v.excused.push(excuse),
-                    None => {
-                        let geometry = merge_apart(p).is_none();
-                        if let Some(why) = merge_apart(p) {
-                            v.excused.push(why);
-                            v.modulo.push(268);
-                        }
-                        v.how.extend(compare_edited(p, s, fc, geometry));
-                    }
+                if let Some(why) = contact_band(p) {
+                    v.excused.push(why);
+                    v.modulo.push(452);
+                    return finish(v);
                 }
+                let merged = merged_apart(p);
+                if merged.is_some() {
+                    v.excused.push(format!(
+                        "points merged from apart: Silico places them, FreeCAD's coincidences are solved ({NOTE}:268); the merged point, and what each solve moves, aren't compared by place"
+                    ));
+                    v.modulo.push(268);
+                }
+                v.how.extend(compare_edited(p, s, fc, merged.as_ref()));
             }
         }
     }
+    finish(v)
+}
+
+fn finish(mut v: Verdict) -> Verdict {
     v.modulo.sort_unstable();
     v.modulo.dedup();
     v.modulo.retain(|l| *l != 0);
     v
+}
+
+/// A refusal of Silico's that the note gives: which rule, with what it names.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Rule {
+    /// Splitting a point: the gate's kinds (:151).
+    SplitNotCurve,
+    /// A circle split at one position (decision 3, :449).
+    SplitCircleAtOne,
+    /// A split position farther than 1e-7 mm off the curve (decision 4, :450), by how far.
+    SplitOffCurve(f64),
+    /// A split position at, past, or within 1e-7 mm of an end (:151).
+    SplitAtEnd,
+    /// Trimming a point (:306).
+    TrimPoint,
+    /// A trim picked at a round's centre (:220).
+    TrimAtCentre,
+    /// A trim leaving a constraint no piece can take (decision 2, :215, :448).
+    NoPieceTakes(String),
+    /// Unjoining a point no other curve shares (decision 9, :237).
+    UnjoinUnshared,
+    /// A merge naming a point twice (:270).
+    MergeNamedTwice,
+    /// A merge after which a curve uses one point twice (:271).
+    MergeCollapses,
+    /// A merge after which a constraint names one point twice (:272).
+    MergeNamesTwice(String),
+    /// A merge leaving an edge tangent at a now-shared end (decision 8, :273).
+    MergeEdgeTangent(String),
+    /// A merge whose solve conflicts (:274).
+    MergeSolveConflicts,
+    /// A merge from apart whose solve's result Silico can't take (:275-277).
+    MergeSolveUnbuildable,
+    /// Removing a point curves still use (decision 7, :108).
+    RemovePointInUse,
+}
+
+impl Rule {
+    /// The note's lines it cites.
+    pub fn lines(&self) -> Vec<u32> {
+        match self {
+            Rule::SplitNotCurve | Rule::SplitAtEnd => vec![151],
+            Rule::SplitCircleAtOne => vec![449],
+            Rule::SplitOffCurve(_) => vec![450],
+            Rule::TrimPoint => vec![306],
+            Rule::TrimAtCentre => vec![220],
+            Rule::NoPieceTakes(_) => vec![215, 448],
+            Rule::UnjoinUnshared => vec![237],
+            Rule::MergeNamedTwice => vec![270],
+            Rule::MergeCollapses => vec![271],
+            Rule::MergeNamesTwice(_) => vec![272],
+            Rule::MergeEdgeTangent(_) => vec![273],
+            Rule::MergeSolveConflicts => vec![274],
+            Rule::MergeSolveUnbuildable => vec![275, 276, 277],
+            Rule::RemovePointInUse => vec![108],
+        }
+    }
+}
+
+/// The rule Silico's refusal of `p` is, if it's one the note gives: checked against the
+/// refusal itself (its code, the elements it names, the request's field) and against the
+/// sketch (what it names is so), never inferred from the case alone.
+pub fn rule(p: &Prepared) -> Option<Rule> {
+    let shape = Shape::of(&p.sketch);
+    let r = match &p.silico {
+        SilicoSide::Refused(r) => r,
+        SilicoSide::Edited(s) => {
+            let Err(e) = &s.ours.outcome else {
+                return None;
+            };
+            if !matches!(p.edit, Edit::Merge { .. }) {
+                return None;
+            }
+            return match e.code() {
+                silico_core::ErrorCode::OverConstrained | silico_core::ErrorCode::SolveFailed => {
+                    Some(Rule::MergeSolveConflicts)
+                }
+                silico_core::ErrorCode::InvalidResult if merged_apart(p).is_some() => {
+                    Some(Rule::MergeSolveUnbuildable)
+                }
+                _ => None,
+            };
+        }
+        SilicoSide::Gated(_) => return None,
+    };
+    if r.code != "invalid_input" {
+        return None;
+    }
+    let field = r.parameter.as_deref().unwrap_or_default();
+    let names = |want: &[&str]| {
+        r.elements
+            .iter()
+            .map(String::as_str)
+            .eq(want.iter().copied())
+    };
+    let index =
+        |prefix: &str| -> Option<usize> { field.strip_prefix(prefix).and_then(|n| n.parse().ok()) };
+    let kind = |id: &str| shape.members.get(id).map(|m| m.kind);
+    match &p.edit {
+        Edit::Split { curve, at } => {
+            if field == "curve" && names(&[curve]) && kind(curve) == Some("point") {
+                return Some(Rule::SplitNotCurve);
+            }
+            if field == "at" && names(&[curve]) && kind(curve) == Some("circle") && at.len() != 2 {
+                return Some(Rule::SplitCircleAtOne);
+            }
+            let position = *at.get(index("at.")?)?;
+            if names(&[curve]) && r.message.contains("farther than 1e-7 mm") {
+                let off = off_curve(&shape, curve, position)?;
+                return (off > LENGTH_TOLERANCE).then_some(Rule::SplitOffCurve(off));
+            }
+            match &r.elements[..] {
+                [c, end] if c == curve && near_end(&shape, curve, end, position) => {
+                    Some(Rule::SplitAtEnd)
+                }
+                _ => None,
+            }
+        }
+        Edit::Trim { curve, pick } => {
+            if field == "curve" && names(&[curve]) && kind(curve) == Some("point") {
+                return Some(Rule::TrimPoint);
+            }
+            if field != "pick" {
+                return None;
+            }
+            let member = shape.members.get(curve)?;
+            if names(&[curve]) && matches!(member.kind, "arc" | "circle") {
+                let center = shape.points.get(member.at.get(&3)?)?;
+                return (pick == center).then_some(Rule::TrimAtCentre);
+            }
+            let [constraint, c] = &r.elements[..] else {
+                return None;
+            };
+            if c != curve {
+                return None;
+            }
+            let curve_ref = Reference::Element(element_id(curve).ok()?);
+            let form = &p
+                .sketch
+                .constraints
+                .iter()
+                .find(|k| k.id.as_str() == constraint)?
+                .form;
+            let cannot = match form {
+                Form::Symmetric { about, .. } => *about == curve_ref && member.kind == "line",
+                Form::Tangent { a, b, .. } => {
+                    matches!(member.kind, "arc" | "circle") && (*a == curve_ref || *b == curve_ref)
+                }
+                _ => false,
+            };
+            cannot.then(|| Rule::NoPieceTakes(constraint.clone()))
+        }
+        Edit::Unjoin { point, curve } => (field == "point"
+            && names(&[point, curve])
+            && shape.users(point).len() < 2
+            && shape.users(point).contains(&curve))
+        .then_some(Rule::UnjoinUnshared),
+        Edit::Merge { points } => {
+            if let Some(n) = index("points.") {
+                return (points[..n.min(points.len())].contains(points.get(n)?)
+                    && names(&[points.get(n)?.as_str()]))
+                .then_some(Rule::MergeNamedTwice);
+            }
+            if field != "points" {
+                return None;
+            }
+            let merged: BTreeSet<&str> = points.iter().map(String::as_str).collect();
+            let constraint = |id: &str| p.sketch.constraints.iter().find(|k| k.id.as_str() == id);
+            // A curve using two of the merged points, named last.
+            if let Some(last) = r.elements.last()
+                && let Some(member) = shape.members.get(last)
+                && member.kind != "point"
+                && member
+                    .at
+                    .values()
+                    .filter(|q| merged.contains(q.as_str()))
+                    .count()
+                    >= 2
+            {
+                return Some(Rule::MergeCollapses);
+            }
+            match &r.elements[..] {
+                [id, _kept] => {
+                    let form = &constraint(id)?.form;
+                    let named = point_references(form)
+                        .into_iter()
+                        .filter(|reference| {
+                            reference
+                                .element()
+                                .is_some_and(|e| merged.contains(e.as_str()))
+                        })
+                        .count();
+                    (named >= 2).then(|| Rule::MergeNamesTwice(id.clone()))
+                }
+                [id, a, b] => {
+                    let ends_at = |c: &str| {
+                        shape.members.get(c).is_some_and(|m| {
+                            m.kind != "point"
+                                && [1, 2]
+                                    .iter()
+                                    .filter_map(|pos| m.at.get(pos))
+                                    .any(|q| merged.contains(q.as_str()))
+                        })
+                    };
+                    let is_tangent = matches!(
+                        &constraint(id)?.form,
+                        Form::Tangent { a: x, b: y, .. }
+                            if x.element().is_some_and(|x| x.as_str() == a)
+                                && y.element().is_some_and(|y| y.as_str() == b)
+                    );
+                    (is_tangent && ends_at(a) && ends_at(b))
+                        .then(|| Rule::MergeEdgeTangent(id.clone()))
+                }
+                _ => None,
+            }
+        }
+        Edit::Remove { members } => {
+            let n = index("members.")?;
+            let point = members.get(n)?;
+            let keeping = shape.users(point).into_iter().any(|c| !members.contains(c));
+            (r.elements.first() == Some(point) && keeping).then_some(Rule::RemovePointInUse)
+        }
+    }
+}
+
+/// The points a constraint names.
+fn point_references(form: &Form) -> Vec<&Reference> {
+    match form {
+        Form::HorizontalPoints { a, b }
+        | Form::VerticalPoints { a, b }
+        | Form::Distance { a, b, .. }
+        | Form::DistanceX { a, b, .. }
+        | Form::DistanceY { a, b, .. } => vec![a, b],
+        Form::Symmetric { a, b, about } => vec![a, b, about],
+        Form::PointLineDistance { point, .. }
+        | Form::On { point, .. }
+        | Form::Midpoint { point, .. } => vec![point],
+        Form::TangentOn { at, .. } | Form::TangentAt { at, .. } => vec![at],
+        _ => Vec::new(),
+    }
+}
+
+/// Whether `position` is at, past, or within 1e-7 mm of `curve`'s end `end`, along it.
+fn near_end(shape: &Shape, curve: &str, end: &str, position: [f64; 2]) -> bool {
+    let Some(member) = shape.members.get(curve) else {
+        return false;
+    };
+    let at = |pos: i32| {
+        member
+            .at
+            .get(&pos)
+            .and_then(|id| shape.points.get(id))
+            .copied()
+    };
+    let is_start = member.at.get(&1).is_some_and(|s| s == end);
+    let is_end = member.at.get(&2).is_some_and(|s| s == end);
+    if !(is_start || is_end) {
+        return false;
+    }
+    match member.kind {
+        "line" => {
+            let (Some(a), Some(b)) = (at(1), at(2)) else {
+                return false;
+            };
+            let length = libm::hypot(b[0] - a[0], b[1] - a[1]);
+            let t = ((position[0] - a[0]) * (b[0] - a[0]) + (position[1] - a[1]) * (b[1] - a[1]))
+                / length;
+            if is_start {
+                t <= LENGTH_TOLERANCE
+            } else {
+                t >= length - LENGTH_TOLERANCE
+            }
+        }
+        "arc" => {
+            let (Some(c), Some(s), Some(e)) = (at(3), at(1), at(2)) else {
+                return false;
+            };
+            let Some([r, from, to]) = arc_from_points(c, s, e) else {
+                return false;
+            };
+            let mut angle = libm::atan2(position[1] - c[1], position[0] - c[0]);
+            while angle < from {
+                angle += TAU;
+            }
+            // Past the sweep is past an end; within it, by arc length from that end.
+            angle > to
+                || (is_start && r * (angle - from) <= LENGTH_TOLERANCE)
+                || (is_end && r * (to - angle) <= LENGTH_TOLERANCE)
+        }
+        _ => false,
+    }
+}
+
+/// Why Silico's refusal by `rule` of an edit FreeCAD made is the note's, if FreeCAD's side
+/// is what the note says it is.
+fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
+    match rule {
+        Rule::SplitCircleAtOne => Some(format!(
+            "a circle split at one position: Silico refuses it (decision 3, {NOTE}:449), FreeCAD makes one arc whose ends aren't joined (:120)"
+        )),
+        Rule::SplitOffCurve(off) => Some(format!(
+            "a split position {off:e} mm off the curve: Silico refuses it (decision 4, {NOTE}:450), FreeCAD splits at its projection (:115)"
+        )),
+        Rule::SplitAtEnd => {
+            let shortest = fc
+                .edited
+                .iter()
+                .filter_map(curve_length)
+                .fold(f64::INFINITY, f64::min);
+            (shortest <= LENGTH_TOLERANCE).then(|| {
+                format!(
+                    "a split within 1e-7 mm of an end: Silico refuses it ({NOTE}:151), FreeCAD 1.1.3 makes a piece {shortest:e} mm long (:117)"
+                )
+            })
+        }
+        Rule::TrimPoint => Some(format!(
+            "a trim of a point: Silico refuses it ({NOTE}:306), FreeCAD 1.1.3 deletes it (:157)"
+        )),
+        Rule::NoPieceTakes(id) => {
+            let dropped = !fc.constraints.iter().any(|c| c.name == fc_name(id));
+            dropped.then(|| {
+                format!(
+                    "constraint {id} no piece can take: Silico refuses the trim (decision 2, {NOTE}:215, :448), FreeCAD drops it"
+                )
+            })
+        }
+        Rule::UnjoinUnshared => {
+            let sent = match &p.plan {
+                Plan::Run { job, .. } => job.constraints.len(),
+                Plan::Refuses(_) => return None,
+            };
+            (fc.constraints.len() == sent).then(|| {
+                format!(
+                    "unjoining a point no other curve shares: Silico refuses it ({NOTE}:237), FreeCAD's vertex Delete does nothing (main; 1.1.3 raises, :232)"
+                )
+            })
+        }
+        Rule::MergeEdgeTangent(id) => Some(format!(
+            "merging leaves edge tangent {id} at a shared end: Silico refuses it (decision 8, {NOTE}:273), where FreeCAD's Coincident command puts an end tangency in its place (:55, 180d722a53)"
+        )),
+        Rule::MergeSolveUnbuildable => Some(format!(
+            "points merged from apart, whose solve Silico refuses as a result it can't take ({NOTE}:275-277), where FreeCAD's coincidences solve"
+        )),
+        _ => None,
+    }
+}
+
+/// For a trim, a curve whose gap from the trimmed one, as a tangency, is in decision 6's
+/// band: Silico counts a contact within 1e-7 mm as a cut, FreeCAD 1.1.3's intersector one
+/// within 1e-12 (:452), so the two trim at different cuts and only their outcomes compare.
+fn contact_band(p: &Prepared) -> Option<String> {
+    let Edit::Trim { curve, .. } = &p.edit else {
+        return None;
+    };
+    let shape = Shape::of(&p.sketch);
+    let at = |m: &Member, pos: i32| m.at.get(&pos).and_then(|id| shape.points.get(id)).copied();
+    let geometry = |id: &str| -> Option<Geometry2> {
+        let m = shape.members.get(id)?;
+        match m.kind {
+            "line" => Some(Geometry2::Line(at(m, 1)?, at(m, 2)?)),
+            "arc" | "circle" => Some(Geometry2::Round(at(m, 3)?, *shape.radii.get(id)?)),
+            _ => None,
+        }
+    };
+    let trimmed = geometry(curve)?;
+    shape.members.keys().filter(|id| *id != curve).find_map(|other| {
+        let gap = match (trimmed, geometry(other)?) {
+            (Geometry2::Line(a, b), Geometry2::Round(c, r))
+            | (Geometry2::Round(c, r), Geometry2::Line(a, b)) => {
+                let (ux, uy) = (b[0] - a[0], b[1] - a[1]);
+                let off = (ux * (c[1] - a[1]) - uy * (c[0] - a[0])).abs() / libm::hypot(ux, uy);
+                (off - r).abs()
+            }
+            (Geometry2::Round(c, r), Geometry2::Round(d, q)) => {
+                let apart = libm::hypot(d[0] - c[0], d[1] - c[1]);
+                ((apart - (r + q)).abs()).min((apart - (r - q).abs()).abs())
+            }
+            (Geometry2::Line(..), Geometry2::Line(..)) => return None,
+        };
+        (gap > 1e-12 && gap <= LENGTH_TOLERANCE).then(|| {
+            format!(
+                "{other} is {gap:e} mm from tangent to {curve}: Silico's trim counts that contact as a cut, FreeCAD 1.1.3's doesn't (decision 6, {NOTE}:452); only the outcomes compared"
+            )
+        })
+    })
+}
+
+#[derive(Clone, Copy)]
+enum Geometry2 {
+    Line([f64; 2], [f64; 2]),
+    Round([f64; 2], f64),
+}
+
+/// For a merge of points apart (farther than the comparison's tolerance): the point they
+/// become. Silico places it at the first named point's coordinates; FreeCAD's coincidences
+/// are solved (:268).
+fn merged_apart(p: &Prepared) -> Option<BTreeSet<String>> {
+    let Edit::Merge { points } = &p.edit else {
+        return None;
+    };
+    let shape = Shape::of(&p.sketch);
+    let kept_id = points.first()?;
+    let kept = shape.points.get(kept_id)?;
+    points[1..]
+        .iter()
+        .filter_map(|q| shape.points.get(q))
+        .any(|q| libm::hypot(q[0] - kept[0], q[1] - kept[1]) > sketch::TOLERANCE)
+        .then(|| BTreeSet::from([kept_id.clone()]))
 }
 
 /// A line of what FreeCAD made: its curves and constraints, counted.
@@ -1170,157 +1697,6 @@ fn merge_refusal(p: &Prepared, fc: &FreecadEdited) -> Option<String> {
         ));
     }
     None
-}
-
-/// Why Silico's refusal of an edit FreeCAD made is the note's, if it is.
-fn excuse_refusal(p: &Prepared, fc: &FreecadEdited) -> Option<String> {
-    let shape = Shape::of(&p.sketch);
-    match &p.edit {
-        Edit::Split { curve, at } => {
-            let member = shape.members.get(curve)?;
-            if member.kind == "circle" && at.len() == 1 {
-                return Some(format!(
-                    "a circle split at one position: Silico refuses it (decision 3, {NOTE}:449), FreeCAD makes one arc whose ends aren't joined (:120)"
-                ));
-            }
-            for position in at {
-                let off = off_curve(&shape, curve, *position)?;
-                if off > LENGTH_TOLERANCE {
-                    return Some(format!(
-                        "a split position {off:e} mm off the curve: Silico refuses it (decision 4, {NOTE}:450), FreeCAD splits at its projection (:115)"
-                    ));
-                }
-            }
-            let shortest = fc
-                .edited
-                .iter()
-                .filter_map(curve_length)
-                .fold(f64::INFINITY, f64::min);
-            (shortest <= LENGTH_TOLERANCE).then(|| {
-                format!(
-                    "a split within 1e-7 mm of an end: Silico refuses it ({NOTE}:151), FreeCAD 1.1.3 makes a piece {shortest:e} mm long (:117)"
-                )
-            })
-        }
-        Edit::Trim { curve, .. } => {
-            let member = shape.members.get(curve)?;
-            if member.kind == "point" {
-                return Some(format!(
-                    "a trim of a point: Silico refuses it ({NOTE}:306), FreeCAD 1.1.3 deletes it (:157)"
-                ));
-            }
-            // Decision 2: a constraint no piece can take, which FreeCAD drops.
-            let round = matches!(member.kind, "arc" | "circle");
-            let names: BTreeSet<&str> = fc.constraints.iter().map(|c| c.name.as_str()).collect();
-            let curve_ref = Reference::Element(element_id(curve).ok()?);
-            p.sketch.constraints.iter().find_map(|c| {
-                let cannot = match &c.form {
-                    Form::Symmetric { about, .. } => *about == curve_ref,
-                    Form::Tangent { a, b, .. } => round && (*a == curve_ref || *b == curve_ref),
-                    _ => false,
-                };
-                (cannot && !names.contains(fc_name(c.id.as_str()).as_str())).then(|| {
-                    format!(
-                        "constraint {} no piece can take: Silico refuses the trim (decision 2, {NOTE}:215, :448), FreeCAD drops it",
-                        c.id
-                    )
-                })
-            })
-        }
-        Edit::Unjoin { point, .. } => {
-            let sent = match &p.plan {
-                Plan::Run { job, .. } => job.constraints.len(),
-                Plan::Refuses(_) => return None,
-            };
-            (shape.users(point).len() < 2 && fc.constraints.len() == sent).then(|| {
-                format!(
-                    "unjoining point {point}, which no other curve shares: Silico refuses it ({NOTE}:237), FreeCAD 1.1.3's vertex Delete raises, main's does nothing (:232)"
-                )
-            })
-        }
-        Edit::Merge { points } => {
-            // Points merged from apart, whose placed point Silico's solve refuses as a result
-            // it can't take (a side flipped, a line shortened to nothing) where FreeCAD's
-            // coincidences solve (:275-277).
-            if let SilicoSide::Edited(s) = &p.silico
-                && let Err(e) = &s.ours.outcome
-                && e.code() == silico_core::ErrorCode::InvalidResult
-                && merge_apart(p).is_some()
-            {
-                return Some(format!(
-                    "points merged from apart, whose solve Silico refuses ({}): the note gives it ({NOTE}:275-277), where FreeCAD's coincidences solve",
-                    e.message()
-                ));
-            }
-            // An edge tangent between two curves that would then share an end (:273).
-            let kept = points.first()?;
-            let merged: BTreeSet<&str> = points.iter().map(String::as_str).collect();
-            let ends_at = |curve: &str| {
-                shape.members.get(curve).is_some_and(|m| {
-                    m.kind != "point"
-                        && [1, 2]
-                            .iter()
-                            .filter_map(|pos| m.at.get(pos))
-                            .any(|p| merged.contains(p.as_str()))
-                })
-            };
-            p.sketch.constraints.iter().find_map(|c| match &c.form {
-                Form::Tangent { a, b, .. }
-                    if a.element().is_some_and(|a| ends_at(a.as_str()))
-                        && b.element().is_some_and(|b| ends_at(b.as_str())) =>
-                {
-                    Some(format!(
-                        "merging into {kept} leaves edge tangent {} at a shared end: Silico refuses it (decision 8, {NOTE}:273), FreeCAD's App keeps both",
-                        c.id
-                    ))
-                }
-                _ => None,
-            })
-        }
-        Edit::Remove { .. } => None,
-    }
-}
-
-/// Whether the note says the two can't be compared past their outcomes: an arc's pick
-/// outside its sweep, which Silico places at the nearer end and FreeCAD 1.1.3 doesn't
-/// (:219).
-fn skipped(p: &Prepared) -> Option<String> {
-    let Edit::Trim { curve, pick } = &p.edit else {
-        return None;
-    };
-    let arc = p.sketch.arcs.iter().find(|a| a.id.as_str() == curve)?;
-    let shape = Shape::of(&p.sketch);
-    let at = |id: &ElementId| shape.points.get(id.as_str()).copied();
-    let center = at(&arc.center)?;
-    let [_, from, to] = arc_from_points(center, at(&arc.start)?, at(&arc.end)?)?;
-    let mut angle = libm::atan2(pick[1] - center[1], pick[0] - center[0]);
-    while angle < from {
-        angle += TAU;
-    }
-    (angle > to).then(|| {
-        format!(
-            "a pick outside arc {curve}'s sweep: Silico trims at the nearer end, FreeCAD 1.1.3 otherwise ({NOTE}:219); only the outcomes compared"
-        )
-    })
-}
-
-/// For a merge of points apart: Silico places the kept point, FreeCAD's coincidences are
-/// solved (:268), so where the points end up isn't compared.
-fn merge_apart(p: &Prepared) -> Option<String> {
-    let Edit::Merge { points } = &p.edit else {
-        return None;
-    };
-    let shape = Shape::of(&p.sketch);
-    let kept = shape.points.get(points.first()?)?;
-    points[1..]
-        .iter()
-        .filter_map(|q| shape.points.get(q))
-        .any(|q| q != kept)
-        .then(|| {
-            format!(
-                "points merged from apart: Silico places them, FreeCAD's coincidences are solved ({NOTE}:268); where the points end up isn't compared"
-            )
-        })
 }
 
 /// How far `position` is from `curve` of `shape` (a line extended, a round's circle).
@@ -1588,7 +1964,7 @@ fn compare_edited(
     p: &Prepared,
     s: &SilicoEdited,
     fc: &FreecadEdited,
-    geometry: bool,
+    merged: Option<&BTreeSet<String>>,
 ) -> Vec<String> {
     let mut how = Vec::new();
     let before = Shape::of(&p.sketch);
@@ -1744,8 +2120,26 @@ fn compare_edited(
             ));
         }
     }
-    // Where the edit put things, before either solve.
-    if geometry {
+    // Where the edit put things, before either solve: every point but a merge's from
+    // apart, which Silico places and FreeCAD's coincidences pull (:268). FreeCAD solves as
+    // it adds a constraint, so a merge's FreeCAD side before the solve is the sketch as it
+    // was: its points where the case drew them.
+    let exempt = |point: &str| merged.is_some_and(|m| m.contains(point));
+    if merged.is_some() {
+        for (id, ours) in &after.points {
+            if exempt(id) {
+                continue;
+            }
+            if let Some(drawn) = before.points.get(id)
+                && ((ours[0] - drawn[0]).abs() > sketch::TOLERANCE
+                    || (ours[1] - drawn[1]).abs() > sketch::TOLERANCE)
+            {
+                how.push(format!(
+                    "after the edit, before the solve, Silico's point {id} is at {ours:?}, where FreeCAD's merge starts it from {drawn:?}"
+                ));
+            }
+        }
+    } else {
         for (i, g) in fc.edited.iter().enumerate() {
             let gi = i32::try_from(i).unwrap_or(i32::MAX);
             for (pos, at) in &g.points {
@@ -1753,6 +2147,9 @@ fn compare_edited(
                     continue;
                 };
                 let point = fc_name_place(gi, pos, false);
+                if exempt(&point) {
+                    continue;
+                }
                 if let Some(ours) = after.points.get(&point)
                     && ((ours[0] - at[0]).abs() > sketch::TOLERANCE
                         || (ours[1] - at[1]).abs() > sketch::TOLERANCE)
@@ -1905,6 +2302,53 @@ fn compare_edited(
         radii,
         values,
     };
-    how.extend(sketch::compare_outcomes(model, &s.ours, &theirs, geometry));
+    how.extend(sketch::compare_outcomes(
+        model,
+        &s.ours,
+        &theirs,
+        merged.is_none(),
+    ));
+    // A merge from apart: after the solve, every point neither solve moved, but the merged
+    // one (:268); what the solves move from different starts isn't compared by place.
+    if let (Some(merged), Ok(solution), 0) = (merged, &s.ours.outcome, fc.after.code) {
+        let near = |a: [f64; 2], b: [f64; 2]| {
+            (a[0] - b[0]).abs() <= sketch::TOLERANCE && (a[1] - b[1]).abs() <= sketch::TOLERANCE
+        };
+        // Each point's places in FreeCAD's result, where the case drew the point and where
+        // FreeCAD's solves left it.
+        // Where the case drew it, and where FreeCAD left it.
+        type Places = Vec<([f64; 2], [f64; 2])>;
+        let mut places: BTreeMap<String, Places> = BTreeMap::new();
+        for (i, solved) in fc.geometry.iter().enumerate() {
+            let gi = i32::try_from(i).unwrap_or(i32::MAX);
+            for (pos, at) in &solved.points {
+                let Ok(n) = pos.parse::<i32>() else {
+                    continue;
+                };
+                let id = fc_name_place(gi, n, false);
+                if let Some(was) = before.points.get(&id) {
+                    places.entry(id).or_default().push((*was, *at));
+                }
+            }
+        }
+        for (id, [x, y]) in &solution.points {
+            let ours = [x.mm(), y.mm()];
+            let Some(start) = after.points.get(id.as_str()) else {
+                continue;
+            };
+            let Some(theirs) = places.get(id.as_str()) else {
+                continue;
+            };
+            let moved = !near(ours, *start) || theirs.iter().any(|(was, at)| !near(*was, *at));
+            if merged.contains(id.as_str()) || moved {
+                continue;
+            }
+            if let Some((_, at)) = theirs.iter().find(|(_, at)| !near(ours, *at)) {
+                how.push(format!(
+                    "after the solve, Silico's point {id}, which neither solve moved, is at {ours:?}, FreeCAD's at {at:?}"
+                ));
+            }
+        }
+    }
     how
 }

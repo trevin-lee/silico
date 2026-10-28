@@ -532,11 +532,24 @@ def foot(line, p):
     return a + u * t
 
 
+class EditRefused(Exception):
+    """FreeCAD's own edit call raised: its refusal. Anything else that raises is the harness's."""
+
+
+def edit_call(call, *args):
+    """Calls FreeCAD's edit `call`; what it raises is FreeCAD's refusal."""
+    try:
+        return call(*args)
+    except Exception as e:
+        raise EditRefused(str(e) or type(e).__name__)
+
+
 def edit_delete(s, e, applied):
     gone = [i for i, c in enumerate(s.Constraints) if c.Name in set(e["constraints"])]
-    drop(s, gone)
+    if gone:
+        edit_call(s.delConstraints, sorted(set(gone)))
     if e["geometries"]:
-        s.delGeometries(sorted(e["geometries"]))
+        edit_call(s.delGeometries, sorted(e["geometries"]))
     # 1.1.3 moves an endpoint-to-edge Tangent on a deleted end onto its neighbour as a
     # malformed Coincident(point, edge) (sketch-edit.md:92); Silico removes the tangency
     # with its curve (:96).
@@ -566,7 +579,7 @@ def edit_unjoin(s, e, applied):
     lengths = [captured(s, i) for i, c in enumerate(s.Constraints)
                if c.Type in ("Distance", "DistanceX", "DistanceY") and c.First == g
                and c.FirstPos == 0 and c.Second == GEO_UNDEF]
-    s.delConstraintOnPoint(g, pos)
+    edit_call(s.delConstraintOnPoint, g, pos)
     for cap in lengths:
         if not named(s, cap["name"]):
             put_back(s, cap)
@@ -576,7 +589,19 @@ def edit_unjoin(s, e, applied):
 def edit_merge(s, e, applied):
     import Sketcher
 
-    s.addConstraint([Sketcher.Constraint("Coincident", *c) for c in e["coincidences"]])
+    for g1, p1, g2, p2 in e["coincidences"]:
+        # The Coincident command's substitution (substituteConstraintCombinationsCoincident,
+        # Gui/CommandConstraints.cpp, from 180d722a53; sketch-edit.md:55): two ends joined
+        # whose curves have an edge Tangent get an end-to-end Tangent in its place.
+        tangents = [i for i, c in enumerate(s.Constraints)
+                    if c.Type == "Tangent" and c.Third == GEO_UNDEF and c.FirstPos == 0
+                    and c.SecondPos == 0 and sorted([c.First, c.Second]) == sorted([g1, g2])]
+        if tangents and p1 in (1, 2) and p2 in (1, 2):
+            edit_call(s.delConstraint, tangents[0])
+            edit_call(s.addConstraint, Sketcher.Constraint("Tangent", g1, p1, g2, p2))
+            applied.append(55)
+        else:
+            edit_call(s.addConstraint, Sketcher.Constraint("Coincident", g1, p1, g2, p2))
 
 
 def edit_split(s, e, applied):
@@ -587,12 +612,12 @@ def edit_split(s, e, applied):
     kind = curve_kind(s.Geometry[g])
     if kind not in ("line", "arc", "circle"):
         # 1.1.3 segfaults splitting a point (sketch-edit.md:114): what it does is the case's.
-        s.split(g, at[0])
+        edit_call(s.split, g, at[0])
         return
     if kind == "circle" and len(at) != 2:
         # A circle split at one position: 1.1.3's one arc, whose ends aren't joined (:120),
         # which Silico refuses (decision 3, :449).
-        s.split(g, at[0])
+        edit_call(s.split, g, at[0])
         return
     original = s.Geometry[g].copy()
     keep = gid(s, g)
@@ -626,7 +651,7 @@ def edit_split(s, e, applied):
             held.append((i, "onto"))
     caps = [(captured(s, i), rule) for i, rule in held]
     drop(s, [i for i, _ in held])
-    s.split(g, at[0])
+    edit_call(s.split, g, at[0])
     if kind == "circle":
         first = index_of(s, keep)
         arc = s.Geometry[first]
@@ -645,7 +670,7 @@ def edit_split(s, e, applied):
             for i, geometry_id in enumerate(ids):
                 s.setGeometryId(i, geometry_id)
             applied.append(120)
-        s.split(first, at[1])
+        edit_call(s.split, first, at[1])
     g = index_of(s, keep)
     new = [gid(s, i) for i in range(len(s.Geometry)) if gid(s, i) not in ids_before]
     if len(new) != 1 or g is None:
@@ -782,7 +807,7 @@ def edit_trim(s, e, applied):
               for (a, pa), (b, pb) in [refs_of(c)]}
     about = [captured(s, i) for i, c in enumerate(s.Constraints)
              if c.Type == "Symmetric" and len(refs_of(c)) == 3 and refs_of(c)[2] == [g, 0]]
-    s.trim(g, V(e["pick"][0], e["pick"][1], 0))
+    edit_call(s.trim, g, V(e["pick"][0], e["pick"][1], 0))
     g = index_of(s, keep)
     if g is None:
         return
@@ -830,6 +855,17 @@ def edit_trim(s, e, applied):
             if not named(s, cap["name"]) and all(index_of(s, r) is not None for r, _ in cap["refs"]):
                 put_back(s, cap)
                 applied.append(217)
+
+
+def sketch_edit_outcome(doc, job):
+    """A sketch-edit case's outcome: "edited", FreeCAD's edit refusing ("failed"), or the
+    harness's own code failing around it ("harness"), never taken for FreeCAD's refusal."""
+    try:
+        return json.dumps({"edited": sketch_edit(doc, job)}, allow_nan=False)
+    except EditRefused as e:
+        return json.dumps({"failed": str(e)})
+    except Exception as e:
+        return json.dumps({"harness": "%s: %s" % (type(e).__name__, e)})
 
 
 SKETCH_EDITS = {
@@ -919,7 +955,7 @@ for case in cases:
         if "measure" in case:
             outcome = json.dumps({"measured": measure_pair(doc, case["measure"])}, allow_nan=False)
         elif "sketch_edit" in case:
-            outcome = json.dumps({"edited": sketch_edit(doc, case["sketch_edit"])}, allow_nan=False)
+            outcome = sketch_edit_outcome(doc, case["sketch_edit"])
         else:
             outcome = json.dumps({"built": measure(build(doc, case["shape"]))}, allow_nan=False)
     except Exception as e:
