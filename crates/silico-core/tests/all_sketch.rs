@@ -20,6 +20,8 @@ mod within;
 
 #[path = "adversarial_decision5_parts.rs"]
 mod adversarial_decision5_parts;
+#[path = "adversarial_drag_session.rs"]
+mod adversarial_drag_session;
 #[path = "adversarial_load_path.rs"]
 mod adversarial_load_path;
 #[path = "adversarial_redundant_resolve.rs"]

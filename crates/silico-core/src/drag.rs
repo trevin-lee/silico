@@ -55,6 +55,9 @@ pub enum MoveOutcome {
     Solved { to: [f64; 2], moved: Moved },
     /// Replaced by a newer move before it was sent: never solved.
     Dropped,
+    /// Refused by the worker (its solution out of reach, say), which keeps the drag: the
+    /// client keeps its last frame, and the drag goes on.
+    Refused(Error),
     /// Stopped while it solved, by the drag's end with no cursor.
     Cancelled,
     /// The worker failed solving it (past its time, a crash): the drag has ended.
@@ -104,8 +107,10 @@ struct State {
     waiting: Option<(u64, [f64; 2])>,
     /// The move solving, and how to stop it.
     running: Option<(u64, Option<SolveStopper>)>,
-    /// Each move's outcome, by number, until its ticket takes it.
+    /// Each move's outcome, by number, until its ticket is dropped.
     outcomes: BTreeMap<u64, MoveOutcome>,
+    /// Tickets dropped before their outcome came: it isn't kept.
+    abandoned: std::collections::BTreeSet<u64>,
     /// The newest move that reached its cursor: the cursor's bits and the values.
     last: Option<([u64; 2], Vec<f64>)>,
     /// The end asked for: with a cursor, or none.
@@ -154,6 +159,7 @@ pub fn begin(solvers: &SketchSolvers, begin: DragBegin) -> Result<Begun, Error> 
     let thread = std::thread::Builder::new()
         .name("silico-drag".to_owned())
         .spawn(move || {
+            let _guard = Unwinding(&running);
             let solver = drag(&running, solver, &begin);
             back.give_back(solver);
         })
@@ -181,9 +187,9 @@ impl DragSession {
         let id = state.next;
         state.next += 1;
         if let Some(closed) = state.closed.clone() {
-            state.outcomes.insert(id, MoveOutcome::Closed(closed));
+            settle(&mut state, id, MoveOutcome::Closed(closed));
         } else if let Some((replaced, _)) = state.waiting.replace((id, to)) {
-            state.outcomes.insert(replaced, MoveOutcome::Dropped);
+            settle(&mut state, replaced, MoveOutcome::Dropped);
         }
         drop(state);
         self.shared.changed.notify_all();
@@ -257,12 +263,12 @@ impl Drop for DragSession {
 }
 
 impl MoveTicket {
-    /// Waits for the move's outcome.
+    /// Waits for the move's outcome: as often as it's asked, the same.
     pub fn wait(&self) -> MoveOutcome {
         let mut state = lock(&self.shared.state);
         loop {
-            if let Some(outcome) = state.outcomes.remove(&self.id) {
-                return outcome;
+            if let Some(outcome) = state.outcomes.get(&self.id) {
+                return outcome.clone();
             }
             state = self
                 .shared
@@ -274,7 +280,56 @@ impl MoveTicket {
 
     /// The move's outcome, if it has one yet.
     pub fn try_take(&self) -> Option<MoveOutcome> {
-        lock(&self.shared.state).outcomes.remove(&self.id)
+        lock(&self.shared.state).outcomes.get(&self.id).cloned()
+    }
+}
+
+impl Drop for MoveTicket {
+    /// The outcome goes with its ticket, so a client that sends a move per event and drops
+    /// the tickets keeps none.
+    fn drop(&mut self) {
+        let mut state = lock(&self.shared.state);
+        if state.outcomes.remove(&self.id).is_none() {
+            state.abandoned.insert(self.id);
+        }
+    }
+}
+
+/// `outcome` kept for move `id`'s ticket, unless the ticket was dropped first.
+fn settle(state: &mut State, id: u64, outcome: MoveOutcome) {
+    if !state.abandoned.remove(&id) {
+        state.outcomes.insert(id, outcome);
+    }
+}
+
+/// The drag's thread unwinding from a panic (a solver's, under a request): every move and
+/// the end answered, so no client waits forever, and the drag closed. Its solver is lost
+/// with the panic; the pool starts another.
+struct Unwinding<'a>(&'a Shared);
+
+impl Drop for Unwinding<'_> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let mut state = lock(&self.0.state);
+        let why = Error::new(
+            ErrorCode::Internal,
+            "the drag's thread panicked under its solver",
+        )
+        .with_suggestion(crate::worker::SILICO_BUG);
+        if let Some((id, _)) = state.running.take() {
+            settle(&mut state, id, MoveOutcome::Failed(why.clone()));
+        }
+        if let Some((id, _)) = state.waiting.take() {
+            settle(&mut state, id, MoveOutcome::Dropped);
+        }
+        if state.ended.is_none() {
+            state.ended = Some(Err(why.clone()));
+        }
+        state.closed = Some(no_drag("its thread panicked").with_cause(why.message().to_owned()));
+        drop(state);
+        self.0.changed.notify_all();
     }
 }
 
@@ -295,7 +350,7 @@ fn drag(
         }
         if let Some(to) = state.end {
             if let Some((dropped, _)) = state.waiting.take() {
-                state.outcomes.insert(dropped, MoveOutcome::Dropped);
+                settle(&mut state, dropped, MoveOutcome::Dropped);
             }
             let last = state.last.clone();
             drop(state);
@@ -310,7 +365,7 @@ fn drag(
         let Some((id, to)) = state.waiting.take() else {
             continue;
         };
-        let stopper = match solver.stopper() {
+        let stopper = match solver.session_stopper() {
             Ok(stopper) => stopper,
             Err(error) => {
                 state
@@ -328,6 +383,20 @@ fn drag(
             let _span = tracing::debug_span!("drag_move").entered();
             solver.drag_move(to, DRAG_MOVE_TIMEOUT)
         };
+        // A frame of values that can't be the sketch's is the worker's fault, as a solve's
+        // is (`Translation::check_reply`).
+        let solved = solved.and_then(|moved| match &moved.values {
+            Some(values) if moved.status == SolveStatus::Success => {
+                match checked(&begin.system, values, "frame") {
+                    Ok(()) => Ok(moved),
+                    Err(error) => {
+                        solver.distrust();
+                        Err(error)
+                    }
+                }
+            }
+            _ => Ok(moved),
+        });
         let mut state = lock(&shared.state);
         state.running = None;
         match solved {
@@ -335,7 +404,13 @@ fn drag(
                 if let (SolveStatus::Success, Some(values)) = (moved.status, &moved.values) {
                     state.last = Some((to.map(f64::to_bits), values.clone()));
                 }
-                state.outcomes.insert(id, MoveOutcome::Solved { to, moved });
+                settle(&mut state, id, MoveOutcome::Solved { to, moved });
+                drop(state);
+                shared.changed.notify_all();
+            }
+            // Refused by the worker, which keeps its drag: the drag goes on.
+            Err(error) if !error.code().is_kernel_fault() && !state.cancelling => {
+                settle(&mut state, id, MoveOutcome::Refused(error));
                 drop(state);
                 shared.changed.notify_all();
             }
@@ -346,7 +421,7 @@ fn drag(
                 } else {
                     MoveOutcome::Failed(error.clone())
                 };
-                state.outcomes.insert(id, outcome);
+                settle(&mut state, id, outcome);
                 close(&mut state, error);
                 drop(state);
                 shared.changed.notify_all();
@@ -361,7 +436,7 @@ fn drag(
 /// ended first.
 fn close(state: &mut State, why: Error) {
     if let Some((dropped, _)) = state.waiting.take() {
-        state.outcomes.insert(dropped, MoveOutcome::Dropped);
+        settle(state, dropped, MoveOutcome::Dropped);
     }
     let closed = no_drag("its worker failed").with_cause(why.message().to_owned());
     state.ended = Some(match (state.cancelling, state.end) {
@@ -375,7 +450,10 @@ fn close(state: &mut State, why: Error) {
 }
 
 /// The end's work on the solver: with a cursor, the sketch moved there from the begin
-/// state and solved as a whole, or the begin state kept; with none, nothing kept.
+/// state and solved as a whole, or the begin state kept; with none, nothing kept. A move the
+/// worker refuses keeps the begin state. A worker that ended took the drag's session with
+/// it: a frame in hand is still solved whole, on another worker, since the closing solve
+/// carries the whole sketch.
 fn ending(
     solver: &mut dyn SketchSolver,
     begin: &DragBegin,
@@ -388,7 +466,7 @@ fn ending(
     };
     let Some(to) = to else {
         // The worker's session ends with it; a failure to end it changes nothing kept.
-        let _ = solver.stopper().and_then(|_| solver.drag_end());
+        let _ = solver.session_stopper().and_then(|_| solver.drag_end());
         return Ok(kept_begin);
     };
     // The values at the final cursor, from the begin state: the newest solved move's, if it
@@ -396,16 +474,25 @@ fn ending(
     let values = match last {
         Some((bits, values)) if bits == to.map(f64::to_bits) => Some(values),
         _ => {
-            solver.stopper()?;
-            let moved = solver.drag_move(to, DRAG_MOVE_TIMEOUT)?;
-            match (moved.status, moved.values) {
-                (SolveStatus::Success, Some(values)) => Some(values),
-                _ => None,
+            solver.session_stopper()?;
+            match solver.drag_move(to, DRAG_MOVE_TIMEOUT) {
+                Ok(moved) => match (moved.status, moved.values) {
+                    (SolveStatus::Success, Some(values)) => {
+                        if let Err(error) = checked(&begin.system, &values, "frame") {
+                            solver.distrust();
+                            return Err(error);
+                        }
+                        Some(values)
+                    }
+                    _ => None,
+                },
+                Err(error) if !error.code().is_kernel_fault() => None,
+                Err(error) => return Err(error),
             }
         }
     };
-    solver.stopper()?;
-    solver.drag_end()?;
+    // The worker's session ends; one already gone (its worker ended) needs no end.
+    let _ = solver.session_stopper().and_then(|_| solver.drag_end());
     let Some(values) = values else {
         return Ok(kept_begin);
     };
@@ -414,9 +501,13 @@ fn ending(
         ..begin.system.clone()
     };
     solver.stopper()?;
-    let solved = solver.solve(system)?;
+    let solved = solver.solve(system.clone())?;
     match solved.status {
-        SolveStatus::Success | SolveStatus::SolvedExceptRedundant if !solved.values.is_empty() => {
+        SolveStatus::Success | SolveStatus::SolvedExceptRedundant => {
+            if let Err(error) = checked(&system, &solved.values, "solve") {
+                solver.distrust();
+                return Err(error);
+            }
             Ok(Ended {
                 kept: Kept::Cursor,
                 solved: Some(solved),
@@ -424,6 +515,41 @@ fn ending(
         }
         _ => Ok(kept_begin),
     }
+}
+
+/// Refuses `values` as the worker's `what` of `system` unless they could be: as many as it
+/// has, its fixed ones as sent, bit for bit, and every one within reach (as a solve's are
+/// checked, `Translation::check_reply`).
+fn checked(system: &SketchSystem, values: &[f64], what: &str) -> Result<(), Error> {
+    let bad = |problem: String| {
+        Err(Error::new(
+            ErrorCode::ProtocolError,
+            format!("the sketch worker's drag {what} {problem}"),
+        )
+        .with_suggestion("begin the drag again: its worker is started again"))
+    };
+    if values.len() != system.values.len() {
+        return bad(format!(
+            "has {} values for {} sent",
+            values.len(),
+            system.values.len()
+        ));
+    }
+    for (i, (sent, got)) in system.values.iter().zip(values).enumerate() {
+        let unknown = u32::try_from(i).is_ok_and(|i| {
+            system
+                .unknowns
+                .binary_search(&silico_protocol::Value(i))
+                .is_ok()
+        });
+        if !unknown && sent.to_bits() != got.to_bits() {
+            return bad(format!("moves value {i}, which is fixed"));
+        }
+        if !silico_protocol::within_reach(*got) {
+            return bad(format!("has value {i} out of reach"));
+        }
+    }
+    Ok(())
 }
 
 /// A drag that's no longer open, and `why`.

@@ -114,6 +114,14 @@ pub trait SketchSolver: Send {
         Ok(None)
     }
 
+    /// Readies the solver for a request of a drag under way, and gives a handle that stops
+    /// it, as [`stopper`](Self::stopper) does, but never starts a worker: one that ended
+    /// took the drag's session with it, so the request fails as a crash. Every solver that
+    /// starts again in `stopper` must override it.
+    fn session_stopper(&mut self) -> Result<Option<SolveStopper>, Error> {
+        self.stopper()
+    }
+
     /// Starts a drag (M3.7's session in the sketch worker), each request begun as a solve
     /// is, with [`stopper`](Self::stopper): the sketch diagnosed once and its point pinned.
     /// A solver that can't drag refuses.
@@ -304,6 +312,27 @@ impl SketchSolver for SketchWorker {
             Reply::Solved(solved) => Ok(solved),
             other => Err(self.wrong_reply("Solve", &other)),
         }
+    }
+
+    fn session_stopper(&mut self) -> Result<Option<SolveStopper>, Error> {
+        if self.stopped.load(std::sync::atomic::Ordering::SeqCst)
+            || self.worker.is_stopped()
+            || self.worker.has_exited()
+        {
+            return Err(Error::new(
+                ErrorCode::WorkerCrashed,
+                "the sketch worker ended during the drag, and its session with it",
+            )
+            .with_suggestion("begin the drag again: the next begin starts another worker"));
+        }
+        let killer = self.worker.killer();
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.stopped = std::sync::Arc::clone(&stopped);
+        self.begun = true;
+        Ok(Some(SolveStopper::new(move || {
+            stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+            killer.kill();
+        })))
     }
 
     fn drag_begin(&mut self, begin: DragBegin) -> Result<DragStarted, Error> {
