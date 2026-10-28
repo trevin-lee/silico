@@ -604,6 +604,163 @@ fn a_line_whose_end_is_shared_by_a_closed_loop_drags_once_and_gates() {
     assert!(gate(&before, &edited.sketch).is_empty());
 }
 
+/// The line's refusal as too short or flipped, word for word, with `size` its length.
+fn line_too_short(size: f64, suggestion: &str) -> (String, Option<String>) {
+    (
+        format!(
+            "extending line a0000000 that far would leave it {size} mm long or flipped: a line must be longer than 1e-7 mm and keep its direction"
+        ),
+        Some(suggestion.to_string()),
+    )
+}
+
+#[test]
+fn a_lines_drag_that_leaves_it_at_the_floor_running_its_way_is_refused_with_its_length() {
+    // From (2, 3) to (10, 3), the end dragged to 2 + 2⁻²⁵ (exact in binary): 2⁻²⁵ mm long,
+    // under the 1e-7 floor, though it runs the way it did. Refused with that length, the
+    // suggestion following the increment's sign: lengthened by 5, the constraints pulled
+    // it back; shortened by 5, it's shortened too far.
+    let tiny = 2f64.powi(-25);
+    for (by, suggestion) in [
+        (
+            5.0,
+            "change the constraints that pull its end back, or extend it by less",
+        ),
+        (-5.0, "shorten it by less"),
+    ] {
+        let before = a_line_from([2.0, 3.0], [10.0, 3.0]);
+        let mut fake = FakeSketches::new();
+        fake.answer_moves(move |begin, _| Ok(frame_at(begin, [2.0 + tiny, 3.0])));
+        let e = refused(
+            extend(
+                sketch_of(&before),
+                &id("a0000000"),
+                End::End,
+                By::Length(Length::rounded(by).unwrap()),
+                &mut fake,
+            ),
+            "by",
+            "a0000000",
+        );
+        assert_eq!(
+            (e.message().to_string(), e.suggestion().map(str::to_string)),
+            line_too_short(tiny, suggestion),
+            "by {by}"
+        );
+    }
+}
+
+#[test]
+fn a_lines_drag_that_turns_it_a_right_angle_is_refused_as_not_running_its_way() {
+    // From (2, 3) to (10, 3), lengthened by 5, the end dragged to (2, 8): 5 mm long, at
+    // right angles to how it ran (its direction's dot product exactly 0), so not its way.
+    let before = a_line_from([2.0, 3.0], [10.0, 3.0]);
+    let mut fake = FakeSketches::new();
+    fake.answer_moves(|begin, _| Ok(frame_at(begin, [2.0, 8.0])));
+    let e = refused(
+        extend(
+            sketch_of(&before),
+            &id("a0000000"),
+            End::End,
+            By::Length(Length::rounded(5.0).unwrap()),
+            &mut fake,
+        ),
+        "by",
+        "a0000000",
+    );
+    assert_eq!(
+        (e.message().to_string(), e.suggestion().map(str::to_string)),
+        line_too_short(
+            5.0,
+            "change the constraints that pull its end back, or extend it by less"
+        )
+    );
+}
+
+#[test]
+fn a_vertical_line_extends_along_itself() {
+    // From (3, 0) to (3, 10), its end on by 5 to (3, 15): its x unchanged, so the
+    // direction's x part is 0 before and after, and it still runs its way.
+    let before = a_line_from([3.0, 0.0], [3.0, 10.0]);
+    let mut fake = FakeSketches::new();
+    fake.answer_moves(|begin, _| Ok(frame_at(begin, [3.0, 15.0])));
+    let edited = extend(
+        sketch_of(&before),
+        &id("a0000000"),
+        End::End,
+        By::Length(Length::rounded(5.0).unwrap()),
+        &mut fake,
+    )
+    .unwrap();
+    assert_eq!(at(&edited.sketch, "p0000001"), [3.0, 15.0]);
+    assert_eq!(edited.modified, [id("p0000001")]);
+}
+
+/// The size an arc's refusal as too short gives, its words checked around it.
+#[track_caller]
+fn arc_too_short(e: &Error) -> f64 {
+    let size = e
+        .message()
+        .strip_prefix("extending arc r0000000 that far would leave it ")
+        .and_then(|rest| {
+            rest.strip_suffix(
+                " mm long or flipped: an arc must be longer than 1e-7 mm and keep its direction",
+            )
+        })
+        .unwrap_or_else(|| panic!("{e}"));
+    assert_eq!(e.suggestion(), Some("shorten it by less"), "{e}");
+    size.parse().unwrap()
+}
+
+#[test]
+fn an_arc_shortened_to_under_the_floor_long_is_refused_with_its_length() {
+    // About (5, 5), radius 2, a quarter turn from (7, 5) to (5, 7), shortened by
+    // 89.999999°: 1e-6° left, 2 × 1e-6 × π/180 = 3.490658503988659e-8 mm long, under the
+    // floor. Refused with that length (to the rounding of the sweep, 1e-8 of it).
+    let before = an_arc_at([5.0, 5.0], [7.0, 5.0], [5.0, 7.0]);
+    let e = refused(
+        extend(
+            sketch_of(&before),
+            &id("r0000000"),
+            End::End,
+            By::Angle(Angle::rounded(-89.999_999).unwrap()),
+            &mut FakeSketches::new(),
+        ),
+        "by",
+        "r0000000",
+    );
+    let size = arc_too_short(&e);
+    assert!(
+        (size - 3.490_658_503_988_659e-8).abs() <= 1e-6 * 3.5e-8,
+        "{e}"
+    );
+}
+
+#[test]
+fn an_arc_longer_than_the_floor_with_its_ends_within_it_is_refused_with_its_length() {
+    // About (0, 0), radius 1e-6, a quarter turn from (1e-6, 0) to (0, 1e-6), shortened by
+    // 84.26926°: 5.73074° left, 0.10002028 rad, so 1.0002028157573983e-7 mm long, just
+    // over the floor, but its ends 2 × 1e-6 × sin(0.05001014) = 9.9978595e-8 mm apart,
+    // under it. Refused by the ends, with the arc's length.
+    let before = an_arc_at([0.0, 0.0], [1e-6, 0.0], [0.0, 1e-6]);
+    let e = refused(
+        extend(
+            sketch_of(&before),
+            &id("r0000000"),
+            End::End,
+            By::Angle(Angle::rounded(-84.269_26).unwrap()),
+            &mut FakeSketches::new(),
+        ),
+        "by",
+        "r0000000",
+    );
+    let size = arc_too_short(&e);
+    assert!(
+        (size - 1.000_202_815_757_398_3e-7).abs() <= 1e-9 * 1e-7,
+        "{e}"
+    );
+}
+
 fn config(cases: u32) -> ProptestConfig {
     ProptestConfig {
         cases,
