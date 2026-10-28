@@ -24,10 +24,13 @@ const OTHER_BUILD: &str = env!("CARGO_BIN_EXE_silico-sketch-test-worker");
 const FEATURE: &str = "k7f2qx3m";
 
 /// How soon a stopped, superseded, cancelled, or dropped solve of the impossible chain must
-/// end, or a solve queued behind it start: well short of the chain solved to its end (74 s
-/// on a quiet M4 Pro, longer on anything slower or loaded, which only widens the gap), so a
-/// solve that ran on fails, and room for a loaded machine's stop.
-const STOPPED_BY: Duration = Duration::from_secs(40);
+/// end, or a solve queued behind it start: well short of the chain solved to its end (63 s
+/// the fastest seen, on an M4 Pro with a stopper that stopped nothing; nothing but the stop
+/// ends it sooner, the worker's own limit being 300 s), with more than twice that room, so
+/// a solve that ran on fails; and still ample for a loaded machine's stop, a kill, a reap,
+/// and a worker started. The recompute tests answer `Superseded` however the solve ended,
+/// so this bound alone tells a stop there from a solve that ran on.
+const STOPPED_BY: Duration = Duration::from_secs(30);
 
 fn document(points: &[String], arcs: &[String], constraints: &[String]) -> String {
     format!(
@@ -328,13 +331,16 @@ fn a_solve_stopped_mid_run_fails_at_once_and_the_next_solve_starts_a_worker() {
     let pid = w.pid();
     let doc = checked(&impossible_chain(512, 2560.0));
     let started = Instant::now();
-    let running = std::thread::spawn(move || {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let e = solve(&doc, &feature(), &mut w).unwrap_err();
-        (e, w)
+        let _ = tx.send((e, w));
     });
     std::thread::sleep(Duration::from_millis(500));
     stopper.stop();
-    let (e, mut w) = running.join().unwrap();
+    let (e, mut w) = rx
+        .recv_timeout(STOPPED_BY)
+        .unwrap_or_else(|_| panic!("the stopped solve ran on past {STOPPED_BY:?}"));
     assert!(
         started.elapsed() < STOPPED_BY,
         "the stopped solve ran on: {:?}",
@@ -506,9 +512,10 @@ fn a_stop_landing_between_a_solves_two_requests_stops_the_second_too() {
     let stopper = w.stopper().unwrap().unwrap();
     solve(&checked(&small()), &feature(), &mut w).unwrap();
     stopper.stop();
+    let chain = checked(&impossible_chain(512, 2560.0));
     let lateness = crate::lateness::Lateness::start();
     let started = Instant::now();
-    let e = solve(&checked(&impossible_chain(512, 2560.0)), &feature(), &mut w).unwrap_err();
+    let e = solve(&chain, &feature(), &mut w).unwrap_err();
     let took = started.elapsed();
     assert!(
         took < crate::lateness::allowance(Duration::from_millis(500), lateness.most())
