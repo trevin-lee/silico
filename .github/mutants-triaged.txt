@@ -190,3 +190,9 @@ crates/silico-core/src/cache/at.rs | open_dir_through_links | replace | with ^ |
 crates/silico-core/src/cache/at.rs | path_of | replace path_of -> rustix::io::Result<PathBuf> with Ok(Default::default()) | #212
 # The stub for systems that are neither macOS nor Linux, the same key: not compiled on Linux.
 crates/silico-core/src/cache/at.rs | path_of | replace path_of -> rustix::io::Result<PathBuf> with Ok(Default::default()) | #212
+# The drag client's end once the drag is closed: && to || sets an end the thread never
+# reads, since it closed and returned with no move running (#246).
+crates/silico-core/src/drag.rs | DragSession::finish | replace && with || | #246
+# A drag's worker-gone check: its own stopper's flag is set only as it kills the worker,
+# and a stopped worker is reaped, so the exit check finds both (#246).
+crates/silico-core/src/sketch.rs | <impl SketchSolver for SketchWorker>::session_stopper | replace || with && | #246

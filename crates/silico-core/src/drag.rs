@@ -685,3 +685,55 @@ fn no_drag(why: &str) -> Error {
         .with_cause("a drag ends at its end, when its worker fails, or when it's dropped")
         .with_suggestion("begin the drag again")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Begun, MoveOutcome, begin, lock};
+    use crate::fake::FakeSketches;
+    use crate::recompute::SketchSolvers;
+    use crate::sketch::SketchSolver;
+    use silico_protocol::{
+        Algorithm, DragBegin, Geometry, PointOf, PointValues, SketchGeometry, SketchSystem, Value,
+    };
+    use std::sync::Arc;
+
+    fn a_point() -> DragBegin {
+        DragBegin {
+            system: SketchSystem {
+                values: vec![4.0, 8.0],
+                unknowns: vec![Value(0), Value(1)],
+                geometry: vec![SketchGeometry::Point(PointValues {
+                    x: Value(0),
+                    y: Value(1),
+                })],
+                constraints: vec![],
+                algorithms: vec![Algorithm::DogLeg],
+            },
+            point: PointOf::Point(Geometry(0)),
+        }
+    }
+
+    #[test]
+    fn a_dropped_tickets_outcome_isnt_kept_whether_it_came_before_or_after() {
+        // A drag of many moves keeps none of them once their tickets go: one waited for and
+        // dropped, one dropped while it's waiting (so its outcome comes after), and one
+        // dropped unanswered at the end.
+        let solvers =
+            SketchSolvers::starting(|| Ok(Box::new(FakeSketches::new()) as Box<dyn SketchSolver>));
+        let Begun::Open { session, .. } = begin(&solvers, a_point()).unwrap() else {
+            panic!("conflicting")
+        };
+        let shared = Arc::clone(&session.shared);
+        let waited = session.move_to([1.0, 1.0]).unwrap();
+        assert!(matches!(waited.wait(), MoveOutcome::Solved { .. }));
+        drop(waited);
+        drop(session.move_to([2.0, 2.0]).unwrap());
+        let last = session.move_to([3.0, 3.0]).unwrap();
+        assert!(matches!(last.wait(), MoveOutcome::Solved { .. }));
+        session.end(None).unwrap();
+        drop(last);
+        let state = lock(&shared.state);
+        assert!(state.outcomes.is_empty(), "{:?}", state.outcomes.keys());
+        assert!(state.abandoned.is_empty(), "{:?}", state.abandoned);
+    }
+}
