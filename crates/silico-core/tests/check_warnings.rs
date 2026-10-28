@@ -1091,23 +1091,13 @@ fn freecads_three_lines_with_coincidences_warn_of_nothing_and_without_them_once(
     );
 }
 
-#[test]
-fn freecads_single_missing_coincidence_is_one_warning() {
-    // TestSketchValidateCoincidents.testSingleMissingCoincidentCase: a rectangle drawn from
-    // (−47.680691, 18.824165000000004) down, across, and up to (51.132679, 18.824165), then
-    // back along y = 18.824165 to (−47.680691, 18.824165), one ulp of 2^-48 short of where
-    // it started (FreeCAD's coincidence of the third line's end and the fourth's start is a
-    // point they share here, pa000004). FreeCAD 1.1.3 finds 1 missing coincidence, the
-    // points 3.552713678800501e-15 apart.
-    // 2^-48, a double's spacing between 16 and 32.
-    let ulp = 1.0 / 281_474_976_710_656.0_f64;
-    assert_eq!(18.824165000000004_f64 - 18.824165, ulp);
-    assert_eq!(ulp, 3.552713678800501e-15);
+/// testSingleMissingCoincidentCase's rectangle, closing one ulp short where it started.
+fn rectangle_short_of_closing() -> String {
     let horizontal =
         |k: &str, l: &str| format!(r#"{{"id": "{k}", "type": "horizontal", "line": "{l}"}}"#);
     let vertical =
         |k: &str, l: &str| format!(r#"{{"id": "{k}", "type": "vertical", "line": "{l}"}}"#);
-    let text = document(&[sketch(
+    document(&[sketch(
         "s0000001",
         &[
             point("pa000001", -47.680691, 18.824165000000004),
@@ -1130,7 +1120,22 @@ fn freecads_single_missing_coincidence_is_one_warning() {
             horizontal("k0000004", "na000004"),
         ]
         .join(", "),
-    )]);
+    )])
+}
+
+#[test]
+fn freecads_single_missing_coincidence_is_one_warning() {
+    // TestSketchValidateCoincidents.testSingleMissingCoincidentCase: a rectangle drawn from
+    // (−47.680691, 18.824165000000004) down, across, and up to (51.132679, 18.824165), then
+    // back along y = 18.824165 to (−47.680691, 18.824165), one ulp of 2^-48 short of where
+    // it started (FreeCAD's coincidence of the third line's end and the fourth's start is a
+    // point they share here, pa000004). FreeCAD 1.1.3 finds 1 missing coincidence, the
+    // points 3.552713678800501e-15 apart.
+    // 2^-48, a double's spacing between 16 and 32.
+    let ulp = 1.0 / 281_474_976_710_656.0_f64;
+    assert_eq!(18.824165000000004_f64 - 18.824165, ulp);
+    assert_eq!(ulp, 3.552713678800501e-15);
+    let text = rectangle_short_of_closing();
     let checked = opened(&text).check();
     assert!(checked.problems.is_empty(), "{:?}", checked.problems);
     assert_eq!(
@@ -1142,6 +1147,81 @@ fn freecads_single_missing_coincidence_is_one_warning() {
             Some(apart("3.552713678800501e-15")),
         )]
     );
+}
+
+/// `text`'s sketch with `points` merged by the sketch edit (`sketch_edit::merge`), as a save
+/// writes it.
+fn merged(text: &str, points: &[&str]) -> String {
+    use silico_core::document::{ElementId, Operation, read, sketch_edit};
+    let mut document = read(text.as_bytes()).unwrap();
+    let Operation::Sketch(sketch) = &document.features[0].operation else {
+        panic!("{:?}", document.features[0].operation)
+    };
+    let points: Vec<ElementId> = points.iter().map(|p| ElementId::new(p).unwrap()).collect();
+    let edited = sketch_edit::merge(sketch, &points).unwrap();
+    document.features[0].operation = Operation::Sketch(edited.sketch);
+    silico_core::document::write(&document).unwrap()
+}
+
+#[test]
+fn merging_each_cluster_freecad_finds_leaves_no_warning() {
+    // docs/ports/sketch-edit.md §9: the clusters of FreeCAD's cases above, merged, warn of
+    // nothing. The three ends, merged, are the sketch with the coincidences, word for word.
+    let three = merged(&three_lines(false), &["pa000002", "pa000004", "pa000005"]);
+    let shared = silico_core::document::write(
+        &silico_core::document::read(three_lines(true).as_bytes()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(three, shared);
+    let checked = opened(&three).check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    assert!(checked.warnings.is_empty(), "{:?}", said(&checked));
+    let rectangle = merged(&rectangle_short_of_closing(), &["pa000001", "pa000005"]);
+    let checked = opened(&rectangle).check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    assert!(checked.warnings.is_empty(), "{:?}", said(&checked));
+}
+
+#[test]
+fn ends_held_by_other_constraints_warn_and_merged_dont() {
+    // docs/ports/sketch-edit.md §9 (c036128aa0): ends 4e-8 apart carrying a
+    // horizontal_points to another point, an on to another line (nd000001, up x = 0), and a
+    // lock from the origin still warn (FreeCAD 1.1.3 counts them missing), and merged, keep
+    // every constraint and warn of nothing.
+    let text = document(&[sketch(
+        "s0000001",
+        &[
+            point("pa000001", -10.0, 0.0),
+            point("pa000002", 0.0, 0.0),
+            point("pa000003", 0.0, 4e-8),
+            point("pa000004", 10.0, 5.0),
+            point("pa000005", 0.0, 10.0),
+            point("pa000006", 0.0, -10.0),
+        ],
+        &[
+            line("na000001", "pa000001", "pa000002", false),
+            line("nb000001", "pa000003", "pa000004", false),
+            line("nd000001", "pa000005", "pa000006", false),
+        ],
+        &[],
+        r#"{"id": "k0000001", "type": "horizontal_points", "a": "pa000003", "b": "pa000001"}, {"id": "k0000002", "type": "distance_x", "a": "origin", "b": "pa000002", "value": 0, "driving": true}, {"id": "k0000003", "type": "distance_y", "a": "origin", "b": "pa000002", "value": 0, "driving": true}, {"id": "k0000004", "type": "on", "point": "pa000003", "curve": "nd000001"}"#,
+    )]);
+    let checked = opened(&text).check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    assert_eq!(
+        said(&checked),
+        [(
+            WarningCode::EndsNotJoined,
+            "s0000001".to_owned(),
+            strings(&["pa000002", "pa000003", "na000001", "nb000001"]),
+            Some(apart("4e-8")),
+        )]
+    );
+    let merged = merged(&text, &["pa000002", "pa000003"]);
+    assert_eq!(merged.matches(r#""id": "k000000"#).count(), 4, "{merged}");
+    let checked = opened(&merged).check();
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    assert!(checked.warnings.is_empty(), "{:?}", said(&checked));
 }
 
 #[test]
