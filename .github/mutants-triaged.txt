@@ -150,6 +150,11 @@ crates/silico-core/src/views.rs | depth_of_box | replace == with != | #181
 crates/silico-core/src/views.rs | sees | replace == with != | #181
 crates/silico-core/src/views.rs | sees | replace == with != | #181
 crates/silico-core/src/views.rs | sees | replace == with != | #181
+# meshing_depth's corners, as depth_of_box's: == to != swaps each axis's low and high, so
+# the eight corners come in another order, the same set (#244).
+crates/silico-core/src/views.rs | meshing_depth | replace == with != | #244
+crates/silico-core/src/views.rs | meshing_depth | replace == with != | #244
+crates/silico-core/src/views.rs | meshing_depth | replace == with != | #244
 # An absolute path joined to the workspace is itself.
 crates/silico-core/src/file.rs | output_target | replace match guard given.is_relative() with true | #181
 # Asking one more mesh ahead than the machine runs only widens the window: every mesh is

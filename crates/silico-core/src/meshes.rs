@@ -3,8 +3,12 @@
 //! share a mesh, and kept in memory, shared by the sessions of one kernel. An entry is keyed
 //! by the body's step and the deflection the kernel actually used; the first mesh that met
 //! a body's floor records it, so a later level under it maps to the floor's entry before
-//! any request is sent, and zooming in past the floor meshes once. A step's floor is kept
-//! while any of its meshes is.
+//! any request is sent, and zooming in past the floor meshes once. The floors are kept apart
+//! from the meshes, in their own list, least recently used dropped first past its count
+//! ([`MESH_FLOORS_KEPT`]): one number a step, so a step's floor outlives its meshes, and a
+//! body held at its floor is known to be held without meshing it again. A floor dropped
+//! from that list is learnt again by meshing once more, to the same answer: what the cache
+//! has seen changes only how long a read takes, never what it says.
 
 use std::collections::BTreeMap;
 use std::mem::size_of;
@@ -16,6 +20,11 @@ use crate::worker::lock;
 
 /// How much the cache keeps, by its meshes' size, before it drops the least recently used.
 pub const MESH_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// How many steps' floors the cache keeps, before it drops the least recently used: each a
+/// 32-byte step key, its floor, and when it was used, in two maps, about 5.5 MiB of data in
+/// all (some 7 to 9 MiB with the maps' nodes), beside the meshes' 256 MiB.
+pub const MESH_FLOORS_KEPT: usize = 1 << 16;
 
 /// The deflection a body is meshed at for a view whose pixel is `2 × half_pixel` mm: the
 /// largest power of two no coarser than `half_pixel`, taken exactly from its bits (its
@@ -56,7 +65,8 @@ fn mesh_bytes(mesh: &Mesh) -> u64 {
 }
 
 /// The meshes kept, by each body's step key `K` and the deflection used, least recently
-/// used dropped first past the bound.
+/// used dropped first past the bound; and the steps' floors, kept apart, least recently
+/// used dropped first past their count.
 pub struct MeshCache<K: Ord + Clone> {
     inner: Mutex<Inner<K>>,
 }
@@ -66,10 +76,13 @@ struct Inner<K> {
     entries: BTreeMap<(K, u64), Entry>,
     /// The same entries by when they were last used, oldest first.
     recency: BTreeMap<u64, (K, u64)>,
-    /// Each step's floor, once a mesh kept has met it, while any of its meshes is kept.
-    floors: BTreeMap<K, f64>,
+    /// Each step's floor, once a mesh has met it, and when it was last used.
+    floors: BTreeMap<K, (f64, u64)>,
+    /// The same floors by when they were last used, oldest first.
+    floor_recency: BTreeMap<u64, K>,
     bytes: u64,
     bound: u64,
+    floors_kept: usize,
     tick: u64,
 }
 
@@ -80,25 +93,37 @@ struct Entry {
 }
 
 impl<K: Ord + Clone> MeshCache<K> {
-    /// A cache that keeps up to `bound` bytes of meshes.
+    /// A cache that keeps up to `bound` bytes of meshes, and [`MESH_FLOORS_KEPT`] floors.
     pub fn new(bound: u64) -> Self {
+        Self::with_floors(bound, MESH_FLOORS_KEPT)
+    }
+
+    /// A cache that keeps up to `bound` bytes of meshes and `floors_kept` steps' floors.
+    pub fn with_floors(bound: u64, floors_kept: usize) -> Self {
         MeshCache {
             inner: Mutex::new(Inner {
                 entries: BTreeMap::new(),
                 recency: BTreeMap::new(),
                 floors: BTreeMap::new(),
+                floor_recency: BTreeMap::new(),
                 bytes: 0,
                 bound,
+                floors_kept,
                 tick: 0,
             }),
         }
     }
 
     /// The deflection to ask the step's mesh at for `level`: `level`, or the step's floor
-    /// if it's known and coarser (the kernel would mesh at it anyway).
+    /// if it's known and coarser (the kernel would mesh at it anyway). The floor, if known,
+    /// is now the most recently used.
     pub fn deflection_for(&self, key: &K, level: f64) -> f64 {
-        match lock(&self.inner).floors.get(key) {
-            Some(&floor) => level.max(floor),
+        let mut inner = lock(&self.inner);
+        match inner.floors.get(key).map(|&(floor, _)| floor) {
+            Some(floor) => {
+                inner.keep_floor(key, floor);
+                level.max(floor)
+            }
             None => level,
         }
     }
@@ -118,28 +143,32 @@ impl<K: Ord + Clone> MeshCache<K> {
     }
 
     /// Keeps the step's mesh, asked at `asked` and made at `made.deflection` (coarser only
-    /// at the floor, which is then recorded), and gives it back shared. The least recently
-    /// used are dropped until the cache is within its bound, each step's floor with its last
-    /// mesh; a mesh larger than the bound alone is given back but not kept, nor its floor.
+    /// at the floor, which is then recorded, or used again), and gives it back shared. The
+    /// least recently used meshes are dropped until the cache is within its bound; the
+    /// floors are kept apart, so a step's floor outlives its meshes. A mesh larger than the
+    /// bound alone is given back but not kept; its floor is.
     pub fn put(&self, key: &K, asked: f64, made: MeshAt) -> Arc<Mesh> {
         let used = made.deflection;
         let mesh = Arc::new(made.mesh);
         let bytes = mesh_bytes(&mesh);
         let mut inner = lock(&self.inner);
+        let at_floor = inner
+            .floors
+            .get(key)
+            .is_some_and(|&(floor, _)| floor == used);
+        if used > asked || at_floor {
+            inner.keep_floor(key, used);
+        }
         if bytes > inner.bound {
             return mesh;
         }
         let id = (key.clone(), used.to_bits());
-        // A mesh made at the step's floor, asked at it (`deflection_for` gave it), keeps the
-        // floor though the eviction below drops the step's other meshes.
-        let at_floor = inner.floors.get(key).is_some_and(|&floor| floor == used);
-        // Replaced, it's the step's still: its floor stays.
-        inner.remove(&id, false);
+        inner.remove(&id);
         while inner.bytes.saturating_add(bytes) > inner.bound {
             let Some((_, oldest)) = inner.recency.pop_first() else {
                 break;
             };
-            inner.remove(&oldest, true);
+            inner.remove(&oldest);
         }
         inner.tick += 1;
         let tick = inner.tick;
@@ -153,10 +182,21 @@ impl<K: Ord + Clone> MeshCache<K> {
             },
         );
         inner.bytes = inner.bytes.saturating_add(bytes);
-        if used > asked || at_floor {
-            inner.floors.insert(key.clone(), used);
-        }
         mesh
+    }
+
+    /// Drops the step's mesh at `deflection`, if it's kept: a mesh found not to be the
+    /// step's, so the next read asks the kernel again. Its step's floor goes too if it's
+    /// that deflection, since the reply that was refused is what reported it.
+    pub fn forget(&self, key: &K, deflection: f64) {
+        let mut inner = lock(&self.inner);
+        inner.remove(&(key.clone(), deflection.to_bits()));
+        if let Some(&(floor, tick)) = inner.floors.get(key)
+            && floor.to_bits() == deflection.to_bits()
+        {
+            inner.floors.remove(key);
+            inner.floor_recency.remove(&tick);
+        }
     }
 
     /// How many bytes of meshes are kept.
@@ -166,32 +206,36 @@ impl<K: Ord + Clone> MeshCache<K> {
 }
 
 impl<K: Ord + Clone> Inner<K> {
-    /// Drops the entry `id`, if it's kept, and if `prune`, its step's floor if it was the
-    /// step's last.
-    fn remove(&mut self, id: &(K, u64), prune: bool) {
+    /// Drops the entry `id`, if it's kept.
+    fn remove(&mut self, id: &(K, u64)) {
         let Some(old) = self.entries.remove(id) else {
             return;
         };
         self.recency.remove(&old.tick);
         self.bytes -= old.bytes;
-        if !prune {
-            return;
+    }
+
+    /// Records the step's floor, now the most recently used, the least recently used
+    /// dropped past the floors' count.
+    fn keep_floor(&mut self, key: &K, floor: f64) {
+        self.tick += 1;
+        let tick = self.tick;
+        if let Some((_, old)) = self.floors.insert(key.clone(), (floor, tick)) {
+            self.floor_recency.remove(&old);
         }
-        let step = &id.0;
-        let more = self
-            .entries
-            .range((step.clone(), 0)..=(step.clone(), u64::MAX))
-            .next()
-            .is_some();
-        if !more {
-            self.floors.remove(step);
+        self.floor_recency.insert(tick, key.clone());
+        while self.floors.len() > self.floors_kept {
+            let Some((_, oldest)) = self.floor_recency.pop_first() else {
+                break;
+            };
+            self.floors.remove(&oldest);
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MeshCache, mesh_bytes, mesh_level};
+    use super::{MESH_FLOORS_KEPT, MeshCache, mesh_bytes, mesh_level};
     use silico_protocol::{Mesh, MeshAt};
 
     /// 2^k, exactly, from its bits (a normal number's exponent, biased by 1023).
@@ -297,37 +341,43 @@ mod tests {
     }
 
     #[test]
-    fn a_steps_floor_goes_with_its_last_mesh() {
-        // Room for one mesh: step 1's floor mesh, then step 2's drops it, and its floor.
+    fn a_steps_floor_outlives_its_meshes() {
+        // Room for one mesh: step 1's floor mesh, then step 2's drops it, but not its floor:
+        // a level under the floor still asks at it (and meshes again, at it).
         let cache = MeshCache::new(mesh_bytes(&mesh(1)));
         cache.put(&1u32, 1.0 / 128.0, at(0.0173, mesh(1)));
         assert_eq!(cache.deflection_for(&1, 1.0 / 256.0), 0.0173);
-        // Put again at its floor, as asked: still the step's, its floor kept.
-        cache.put(&1, 0.0173, at(0.0173, mesh(1)));
-        assert_eq!(cache.deflection_for(&1, 1.0 / 256.0), 0.0173);
         cache.put(&2, 0.5, at(0.5, mesh(1)));
         assert!(cache.get(&1, 0.0173).is_none());
-        assert_eq!(cache.deflection_for(&1, 1.0 / 256.0), 1.0 / 256.0);
-        // A step with two meshes keeps its floor until both go.
-        let cache = MeshCache::new(2 * mesh_bytes(&mesh(1)));
-        cache.put(&1u32, 1.0 / 128.0, at(0.0173, mesh(1)));
-        cache.put(&1, 0.5, at(0.5, mesh(1)));
-        cache.put(&2, 0.5, at(0.5, mesh(1)));
-        assert!(
-            cache.get(&1, 0.0173).is_none(),
-            "the floor's mesh is the oldest"
-        );
+        assert_eq!(cache.deflection_for(&1, 1.0 / 256.0), 0.0173);
+        // Forgetting another step's mesh, or this step's at another deflection, keeps the
+        // floor; forgetting the mesh made at the floor drops it, the reply that said it.
+        cache.forget(&2, 0.5);
+        cache.forget(&1, 0.5);
         assert_eq!(cache.deflection_for(&1, 1e-9), 0.0173);
-        cache.put(&3, 0.5, at(0.5, mesh(1)));
+        cache.forget(&1, 0.0173);
         assert_eq!(cache.deflection_for(&1, 1e-9), 1e-9);
-        // Found by round 2: a step's floor mesh put again, asked at the floor, as the
-        // step's other mesh is dropped to fit it, keeps the floor.
-        let cache = MeshCache::new(mesh_bytes(&mesh(1)) + mesh_bytes(&mesh(2)));
+    }
+
+    #[test]
+    fn the_floors_kept_are_bounded_by_count_the_least_recently_used_dropped() {
+        // Room for two floors. Steps 1 and 2 meet theirs; step 1's is used again, so step 3's
+        // drops step 2's, which a level under it no longer finds: it asks the level itself.
+        let cache = MeshCache::with_floors(1 << 20, 2);
         cache.put(&1u32, 1.0 / 128.0, at(0.0173, mesh(1)));
-        cache.put(&1, 0.5, at(0.5, mesh(2)));
-        cache.put(&1, 0.0173, at(0.0173, mesh(3)));
-        assert!(cache.get(&1, 0.5).is_none(), "the coarser mesh kept");
+        cache.put(&2, 1.0 / 128.0, at(0.0291, mesh(1)));
         assert_eq!(cache.deflection_for(&1, 1e-9), 0.0173);
+        cache.put(&3, 1.0 / 128.0, at(0.0412, mesh(1)));
+        assert_eq!(cache.deflection_for(&2, 1e-9), 1e-9);
+        assert_eq!(cache.deflection_for(&1, 1e-9), 0.0173);
+        assert_eq!(cache.deflection_for(&3, 1e-9), 0.0412);
+        // Its mesh is still kept, at the floor: asked at the floor, it's found.
+        assert!(cache.get(&2, 0.0291).is_some());
+        // A cache that keeps no floors never maps a level.
+        let none = MeshCache::with_floors(1 << 20, 0);
+        none.put(&1u32, 1.0 / 128.0, at(0.0173, mesh(1)));
+        assert_eq!(none.deflection_for(&1, 1e-9), 1e-9);
+        assert_eq!(MESH_FLOORS_KEPT, 65_536);
     }
 
     #[test]
@@ -337,8 +387,24 @@ mod tests {
         assert_eq!(big.triangles.len(), 10);
         assert!(cache.get(&1, 1.0).is_none());
         assert_eq!(cache.bytes(), 0);
-        // Nor its floor.
+        // But its floor is: a fact of the step, one number.
         cache.put(&1, 0.5, at(1.0, mesh(10)));
-        assert_eq!(cache.deflection_for(&1, 0.5), 0.5);
+        assert_eq!(cache.deflection_for(&1, 0.5), 1.0);
+        assert_eq!(cache.bytes(), 0);
+    }
+
+    #[test]
+    fn a_forgotten_floor_leaves_no_trace_in_the_floors_recency() {
+        // Room for two floors. Step 1's floor is forgotten, then steps 2 and 1 meet theirs
+        // (1 the more recent); step 3's drops the least recently used, step 2's, not step
+        // 1's by a stale entry of its forgotten floor.
+        let cache = MeshCache::with_floors(1 << 20, 2);
+        cache.put(&1u32, 1.0 / 128.0, at(0.0173, mesh(1)));
+        cache.forget(&1, 0.0173);
+        cache.put(&2, 1.0 / 128.0, at(0.0291, mesh(1)));
+        cache.put(&1, 1.0 / 128.0, at(0.0173, mesh(1)));
+        cache.put(&3, 1.0 / 128.0, at(0.0412, mesh(1)));
+        assert_eq!(cache.deflection_for(&1, 1e-9), 0.0173);
+        assert_eq!(cache.deflection_for(&2, 1e-9), 1e-9);
     }
 }

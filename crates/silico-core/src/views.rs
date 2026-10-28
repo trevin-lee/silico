@@ -229,6 +229,43 @@ pub fn depth_of_box(camera: &Camera, [low, high]: [[f64; 3]; 2]) -> f64 {
     least.max(0.0)
 }
 
+/// The depth a body is meshed for (docs/design/m5.0-app.md, `meshes`): its box's nearest
+/// depth along the view (`depth_of_box`), or, for a box wholly behind the eye's plane, the
+/// distance from the eye to the box's nearest point. So a body just behind the camera has
+/// about the level it needs when a turn brings it into view, and one far behind a coarse
+/// one, where the depth along the view would give every such body the finest mesh there is
+/// (it's 0 for them). `render` culls those bodies, so it meets only `depth_of_box`'s case.
+pub fn meshing_depth(camera: &Camera, [low, high]: [[f64; 3]; 2]) -> f64 {
+    let Ok(frame) = camera.frame() else {
+        return 0.0;
+    };
+    let mut farthest = f64::NEG_INFINITY;
+    for i in 0..8 {
+        let corner = [
+            if i & 1 == 0 { low[0] } else { high[0] },
+            if i & 2 == 0 { low[1] } else { high[1] },
+            if i & 4 == 0 { low[2] } else { high[2] },
+        ];
+        let d = [
+            corner[0] - camera.eye[0],
+            corner[1] - camera.eye[1],
+            corner[2] - camera.eye[2],
+        ];
+        farthest = farthest.max(-dot(d, frame.back));
+    }
+    if farthest >= 0.0 {
+        return depth_of_box(camera, [low, high]);
+    }
+    // Wholly behind: the eye's distance to the box, from its nearest point.
+    let gap = |k: usize| {
+        (low[k] - camera.eye[k])
+            .max(0.0)
+            .max(camera.eye[k] - high[k])
+    };
+    let (x, y, z) = (gap(0), gap(1), gap(2));
+    libm::sqrt(x * x + y * y + z * z)
+}
+
 /// Whether `camera`'s view, `width` by `height` pixels, may see any of a tight box,
 /// `[low, high]`: false only when the whole box is outside the view (beside an orthographic
 /// view's sides, which don't clip along the view; or behind a perspective eye, or past one
@@ -295,10 +332,79 @@ pub fn sees(camera: &Camera, width: u32, height: u32, [low, high]: [[f64; 3]; 2]
 
 #[cfg(test)]
 mod tests {
-    use super::{NAMED_VIEWS, NamedView, cross, depth_of_box, dot, half_pixel_at, sees};
+    use super::{
+        NAMED_VIEWS, NamedView, cross, depth_of_box, dot, half_pixel_at, meshing_depth, sees,
+    };
     use silico_protocol::{Camera, Projection};
 
     const BLOCK: [[f64; 3]; 2] = [[0.0, 0.0, 0.0], [40.0, 20.0, 10.0]];
+
+    /// A camera at E = (10, 20, 30) looking along `forward` (unnormalized), `up` up, and a
+    /// box `[low, high]` given from E.
+    fn from_e(
+        forward: [f64; 3],
+        up: [f64; 3],
+        low: [f64; 3],
+        high: [f64; 3],
+    ) -> (Camera, [[f64; 3]; 2]) {
+        let e = [10.0, 20.0, 30.0];
+        let camera = Camera {
+            projection: Projection::Orthographic { view_height: 100.0 },
+            eye: e,
+            target: [e[0] + forward[0], e[1] + forward[1], e[2] + forward[2]],
+            up,
+        };
+        let at = |v: [f64; 3]| [e[0] + v[0], e[1] + v[1], e[2] + v[2]];
+        (camera, [at(low), at(high)])
+    }
+
+    #[test]
+    fn a_box_with_one_corner_ahead_of_the_eye_is_meshed_at_depth_0_whichever_its_axis() {
+        // Each view along a diagonal of two axes, so one corner alone (the one low or high
+        // on each) is ahead of the eye's plane, by 1/√2, and every other behind: the box
+        // reaches the eye's plane, so its depth is 0 (`depth_of_box`'s least, -8/√2, held
+        // at 0). Were that corner left out, the box would be wholly behind, and its depth the
+        // eye's distance to it, 1. Along (−1, 1, 0): the low-x, high-y corner (1, 2), others
+        // (5, 2), (1, −3), (5, −3) behind. Along (1, −1, 0): high x, low y. Along (1, 0, −1):
+        // high x, low z.
+        let cases = [
+            from_e(
+                [-1.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [1.0, -3.0, -1.0],
+                [5.0, 2.0, 1.0],
+            ),
+            from_e(
+                [1.0, -1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [-5.0, -2.0, -1.0],
+                [-1.0, 3.0, 1.0],
+            ),
+            from_e(
+                [1.0, 0.0, -1.0],
+                [0.0, 1.0, 0.0],
+                [-5.0, -1.0, -2.0],
+                [-1.0, 1.0, 3.0],
+            ),
+        ];
+        for (n, (camera, bounds)) in cases.iter().enumerate() {
+            assert_eq!(meshing_depth(camera, *bounds), 0.0, "case {n}");
+        }
+    }
+
+    #[test]
+    fn a_box_wholly_behind_the_eye_is_meshed_at_its_distance_from_the_eye() {
+        // Looking along −z from E, a box behind it, at x from 1 to 2, y from −6 to −3, z from
+        // 4 to 6 (from E): its nearest point is 1, 3, and 4 away along the axes, so √26 (no two
+        // alike, and none 2, where a square is a double).
+        let (camera, bounds) = from_e(
+            [0.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, -6.0, 4.0],
+            [2.0, -3.0, 6.0],
+        );
+        assert_eq!(meshing_depth(&camera, bounds), libm::sqrt(26.0));
+    }
 
     #[test]
     fn the_side_that_bounds_a_fit_is_the_one_whose_extent_over_its_pixels_is_larger() {
