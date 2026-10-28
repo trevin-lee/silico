@@ -15,7 +15,7 @@ use silico_protocol::{Mesh, RenderScene};
 use silico_render::bench::front_of_a_box;
 
 use crate::common::{
-    KillsOnPanic, TEST_WORKER, UNREACHED, WAIT, WORKER, client, crashing, drawn, ended, eventually,
+    LeakOnPanic, TEST_WORKER, UNREACHED, WAIT, WORKER, client, crashing, drawn, ended, eventually,
     failed, hanging, process_exists, promptly, scratch, signal, small, state, wait_within, zombie,
 };
 use crate::lateness::{Lateness, allowance};
@@ -424,20 +424,19 @@ fn large_by_triangles_exactly_at_the_bound_isnt_large() {
 #[test]
 fn a_render_waited_on_in_one_thread_is_cancelled_from_another() {
     // A render's time no test reaches: only the cancel can answer it, or end its worker.
-    let c = client(
+    let c = LeakOnPanic::new(client(
         TEST_WORKER,
         RenderSettings {
             timeout: UNREACHED,
             ..RenderSettings::default()
         },
-    );
+    ));
     let ticket = c.render(hanging());
     let cancel = ticket.canceller();
     let waiting = std::thread::spawn(move || ticket.wait());
     assert!(eventually(WAIT, || c.pid().is_some()));
     std::thread::sleep(Duration::from_millis(200));
     let pid = c.pid().unwrap();
-    let _kills = KillsOnPanic(pid);
     cancel.clone().cancel();
     let outcome = promptly("the cancelled render's wait", move || {
         waiting.join().unwrap()
@@ -455,16 +454,14 @@ fn a_render_waited_on_in_one_thread_is_cancelled_from_another() {
 #[test]
 fn a_ticket_polled_or_waited_on_for_a_while_comes_back_until_it_answers() {
     // A render's time no test reaches: only the cancel answers the hung one.
-    let c = client(
+    let c = LeakOnPanic::new(client(
         TEST_WORKER,
         RenderSettings {
             timeout: UNREACHED,
             ..RenderSettings::default()
         },
-    );
+    ));
     let mut ticket = c.render(hanging());
-    assert!(eventually(WAIT, || c.pid().is_some()));
-    let _kills = KillsOnPanic(c.pid().unwrap());
     for _ in 0..3 {
         ticket = match ticket.try_take() {
             Err(t) => t,
@@ -625,14 +622,16 @@ fn a_worker_that_exits_at_once_fails_each_render_promptly_and_says_what_to_do() 
     let exe = script(&dir, "exits", "exit 3");
     // A render's time no test reaches: a client that waited it out, not seeing the worker
     // gone, never answers within `WAIT`.
-    let c = RenderClient::start(
-        &exe,
-        RenderSettings {
-            timeout: UNREACHED,
-            ..RenderSettings::default()
-        },
-    )
-    .unwrap();
+    let c = LeakOnPanic::new(
+        RenderClient::start(
+            &exe,
+            RenderSettings {
+                timeout: UNREACHED,
+                ..RenderSettings::default()
+            },
+        )
+        .unwrap(),
+    );
     for _ in 0..3 {
         let e = failed(wait_within(c.render(small()), WAIT).expect("no outcome"));
         assert!(
@@ -699,17 +698,16 @@ fn a_queued_render_cancelled_answers_cancelled_at_once_not_when_its_turn_comes()
     // client's thread reaches it, after every render ahead of it, so one session's cancel
     // waits out another's render (a hung one's whole timeout, 30 s by default; here one no
     // test reaches, so a cancel that waited for it never answers within `WAIT`).
-    let c = client(
+    let c = LeakOnPanic::new(client(
         TEST_WORKER,
         RenderSettings {
             timeout: UNREACHED,
             ..RenderSettings::default()
         },
-    );
+    ));
     let running = c.render(hanging());
     let queued = c.render(small());
     assert!(eventually(WAIT, || c.pid().is_some()));
-    let _kills = KillsOnPanic(c.pid().unwrap());
     std::thread::sleep(Duration::from_millis(200));
     queued.cancel();
     let outcome = wait_within(queued, WAIT).expect("the cancelled render never answered");

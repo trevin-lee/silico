@@ -11,7 +11,7 @@ use silico_render::bench::front_of_a_box;
 use silico_render::test_scenes;
 
 use crate::common::{
-    KillsOnPanic, TEST_WORKER, UNREACHED, WAIT, WORKER, at, client, crashing, drawn, eventually,
+    LeakOnPanic, TEST_WORKER, UNREACHED, WAIT, WORKER, at, client, crashing, drawn, eventually,
     failed, hanging, process_exists, small, wait_within,
 };
 use crate::lateness::{Lateness, allowance};
@@ -274,13 +274,13 @@ fn renders_queued_each_have_their_own_time_from_when_theyre_sent() {
 
 #[test]
 fn a_render_cancelled_while_queued_is_never_sent_and_one_running_is_stopped() {
-    let c = client(
+    let c = LeakOnPanic::new(client(
         TEST_WORKER,
         RenderSettings {
             timeout: UNREACHED,
             ..RenderSettings::default()
         },
-    );
+    ));
     let running = c.render(hanging());
     let queued = c.render(front_of_a_box(8, 8));
     // The queued one, cancelled first, is dropped when its turn comes.
@@ -288,7 +288,6 @@ fn a_render_cancelled_while_queued_is_never_sent_and_one_running_is_stopped() {
     // The running one, hung (its time one no test reaches), stops when cancelled: nothing
     // else answers it within `WAIT`.
     assert!(eventually(WAIT, || c.pid().is_some()));
-    let _kills = KillsOnPanic(c.pid().unwrap());
     std::thread::sleep(Duration::from_millis(200));
     running.cancel();
     let outcome = wait_within(running, WAIT).expect("the cancelled render never answered");

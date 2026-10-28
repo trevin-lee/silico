@@ -92,7 +92,7 @@ fn a_render_through_a_session_cancelled_while_it_runs_answers_cancelled_and_stop
     std::fs::create_dir_all(&dir).unwrap();
     let secret = dir.join("secret");
     let kernel = Arc::new(FakeKernel::new(1).unwrap());
-    let client = Arc::new(
+    let client = crate::common::LeakOnPanic::new(Arc::new(
         RenderClient::start(
             std::path::Path::new(crate::common::TEST_WORKER),
             RenderSettings {
@@ -101,11 +101,13 @@ fn a_render_through_a_session_cancelled_while_it_runs_answers_cancelled_and_stop
             },
         )
         .unwrap(),
+    ));
+    let sessions = crate::common::LeakOnPanic::new(
+        Sessions::with_cache_opener(Arc::clone(&kernel), move |cache| {
+            Cache::with_secret(cache, &secret)
+        })
+        .rendering(Arc::clone(&client)),
     );
-    let sessions = Sessions::with_cache_opener(Arc::clone(&kernel), move |cache| {
-        Cache::with_secret(cache, &secret)
-    })
-    .rendering(Arc::clone(&client));
     let file = dir.join("example.silico");
     std::fs::write(&file, EXAMPLE).unwrap();
     let opened = sessions.open(&file, false).wait();
@@ -129,7 +131,6 @@ fn a_render_through_a_session_cancelled_while_it_runs_answers_cancelled_and_stop
         std::thread::sleep(Duration::from_millis(20));
     }
     let pid = client.pid().expect("the render never started");
-    let _kills = crate::common::KillsOnPanic(pid);
     std::thread::sleep(Duration::from_millis(200));
     assert!(running.cancel());
     let answer = crate::common::promptly("the cancelled render's answer", move || running.wait());

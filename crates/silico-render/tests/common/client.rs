@@ -19,18 +19,30 @@ pub const WAIT: Duration = Duration::from_secs(60);
 /// fails at [`WAIT`] rather than passing, however loaded the machine. Ten times `WAIT`.
 pub const UNREACHED: Duration = Duration::from_secs(600);
 
-/// Kills the worker `pid` if the test is failing when this is dropped: a test that fails
-/// while a render it hung is current would otherwise drop its client waiting for that
-/// render's time ([`UNREACHED`]), and hang until nextest stops it. Made after the client,
-/// so dropped before it.
-pub struct KillsOnPanic(pub u32);
+/// `T`, left undropped if the test is failing when this is dropped: a client, or the
+/// sessions over one, dropped while a render it hung is current waits for that render's
+/// time ([`UNREACHED`]), so a failing test would hang until nextest stopped it. Left, the
+/// test fails at once, and its process ends soon after.
+pub struct LeakOnPanic<T>(Option<T>);
 
-impl Drop for KillsOnPanic {
+impl<T> LeakOnPanic<T> {
+    pub fn new(value: T) -> Self {
+        Self(Some(value))
+    }
+}
+
+impl<T> std::ops::Deref for LeakOnPanic<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.0.as_ref().unwrap()
+    }
+}
+
+impl<T> Drop for LeakOnPanic<T> {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            let _ = std::process::Command::new("kill")
-                .args(["-KILL", &self.0.to_string()])
-                .status();
+            std::mem::forget(self.0.take());
         }
     }
 }
