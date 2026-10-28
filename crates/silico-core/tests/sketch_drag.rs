@@ -415,7 +415,7 @@ fn a_stop_refuses_the_begins_whole_solve_and_the_ends_as_cancelled() {
     fake.hold();
     let begun = {
         let (solvers, stop) = (solvers.clone(), stop.clone());
-        std::thread::spawn(move || {
+        on_a_thread(move || {
             begin_stoppable(
                 &solvers,
                 None,
@@ -430,7 +430,10 @@ fn a_stop_refuses_the_begins_whole_solve_and_the_ends_as_cancelled() {
     };
     assert!(fake.wait_held(std::time::Duration::from_secs(10)));
     stop.stop();
-    let e = begun.join().unwrap().expect("the begin went on");
+    let e = begun
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the stop didn't stop the begin")
+        .expect("the begin went on");
     assert_eq!(
         (e.code(), e.feature()),
         (ErrorCode::Cancelled, Some("s0000001"))
@@ -442,10 +445,13 @@ fn a_stop_refuses_the_begins_whole_solve_and_the_ends_as_cancelled() {
     drag.move_to([62.5, 7.0]).unwrap().wait().unwrap();
     let stop = drag.stop();
     fake.hold();
-    let ended = std::thread::spawn(move || drag.end(Some([62.5, 7.0])).err());
+    let ended = on_a_thread(move || drag.end(Some([62.5, 7.0])).err());
     assert!(fake.wait_held(std::time::Duration::from_secs(10)));
     stop.stop();
-    let e = ended.join().unwrap().expect("the end went on");
+    let e = ended
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the stop didn't stop the end")
+        .expect("the end went on");
     assert_eq!(
         (e.code(), e.feature()),
         (ErrorCode::Cancelled, Some("s0000001"))
@@ -697,4 +703,36 @@ fn a_stop_during_the_workers_begin_stops_its_diagnosis() {
         "the stop waited for the begin: {:?}",
         started.elapsed()
     );
+}
+
+/// `f` run on a thread of its own, its result sent when it's done: a test waits for it with
+/// a bound, so a stop that doesn't stop fails it rather than hanging it.
+fn on_a_thread<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> std::sync::mpsc::Receiver<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx
+}
+
+#[test]
+fn a_models_held_solve_is_its_sketchs_and_none_for_what_isnt_a_solved_sketch() {
+    // Held::of reads the model's sketch and its solve together: the profile's and the
+    // holes' each their own; a pad, or a feature the model hasn't, has none.
+    use silico_core::recompute::{FeatureOutcome, Recompute};
+    let engine = Recompute::new(silico_core::fake::FakeKernel::new(2).unwrap())
+        .with_sketches(FakeSketches::new());
+    let model = crate::model::published(&engine, document());
+    for f in ["s0000001", "s0000002"] {
+        let held = Held::of(&model, &feature(f)).expect("a sketch's solve");
+        assert_eq!(held.sketch, &sketch_of(&document(), f), "{f}");
+        let Some(FeatureOutcome::Sketch(solution)) = model.outcome(&feature(f)) else {
+            panic!("{f} unsolved")
+        };
+        assert!(std::ptr::eq(held.solution, solution.as_ref()), "{f}");
+    }
+    assert!(Held::of(&model, &feature("p0000001")).is_none());
+    assert!(Held::of(&model, &feature("s0000009")).is_none());
 }

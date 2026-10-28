@@ -201,3 +201,6 @@ crates/silico-core/src/drag.rs | DragSession::finish | replace && with || | #246
 # A drag's worker-gone check: its own stopper's flag is set only as it kills the worker,
 # and a stopped worker is reaped, so the exit check finds both (#246).
 crates/silico-core/src/sketch.rs | <impl SketchSolver for SketchWorker>::session_stopper | replace || with && | #246
+# A point's coordinates are always in one part: every constraint that reads a point reads
+# both, and the core makes both unknowns, so either free means both are (#262).
+crates/silico-core/src/drag/sketch.rs | reading | replace || with && | #262

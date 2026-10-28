@@ -16,7 +16,7 @@ use silico_core::drag::{
 use silico_core::fake::{DragCall, FakeKernel, FakeSketches};
 use silico_core::recompute::{Recompute, SketchSolvers};
 use silico_core::sketch::SketchSolver;
-use silico_core::{ErrorCode, command};
+use silico_core::{Error, ErrorCode, command};
 use silico_protocol::{
     Algorithm, DragBegin, Geometry, Moved, PointOf, PointValues, SketchGeometry, SketchSystem,
     SolveStatus, SolverConstraint, Value,
@@ -929,5 +929,28 @@ fn answered(ticket: &MoveTicket) -> MoveOutcome {
             "the move wasn't answered within {WAIT:?}"
         );
         std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn an_end_whose_whole_solve_the_worker_refuses_keeps_the_begin_and_one_it_fails_is_its_error() {
+    // The end's own solve of the sketch as a whole: refused for the sketch (invalid input),
+    // the begin state kept, saying why; failed (a crash), the end's error.
+    for (code, refused) in [
+        (ErrorCode::InvalidInput, true),
+        (ErrorCode::WorkerCrashed, false),
+    ] {
+        let (solvers, started) = pool();
+        let session = open(&solvers);
+        started.lock().unwrap()[0].answer(move |_| Err(Error::new(code, "the whole solve")));
+        let ended = session.end(Some([3.0, 3.0]));
+        if refused {
+            let ended = ended.unwrap();
+            assert_eq!((ended.kept, ended.solved), (Kept::Begin, None), "{code:?}");
+            let why = ended.why.unwrap();
+            assert_eq!((why.code(), why.message()), (code, "the whole solve"));
+        } else {
+            assert_eq!(ended.unwrap_err().code(), code);
+        }
     }
 }
