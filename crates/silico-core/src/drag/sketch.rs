@@ -11,18 +11,23 @@
 //! - **Frames by ID.** Each move answers the points of the part the drag moves, and the
 //!   radii of its circles and arcs that are free, by ID; every other point stays where it
 //!   began.
-//! - **The end, settled.** The end's whole-sketch solve is solved again as a load solves a
-//!   file (M3.4), so the sketch it leaves is one its own file gives back: no drift at the
-//!   next rebuild. The edit is a function of the begin state and the final cursor alone.
+//! - **The end, settled.** The move to the final cursor is solved as a whole as a load
+//!   solves a file (M3.4), so the sketch it leaves is one its own file gives back: no drift
+//!   at the next rebuild. The edit is a function of the begin state and the final cursor
+//!   alone.
+//! - **Stopped.** The whole-sketch solves, the begin's and the end's, run under the drag's
+//!   [`DragStop`], so a command's `cancel` stops them, as [`SketchDrag::cancel_move`] stops
+//!   a move.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use silico_protocol::{DragBegin, PointOf, PointValues, SolveStatus, Value};
 
 use super::{Begun, DragSession, Kept, MoveOutcome, MoveTicket, Notify};
 use crate::document::{Checked, ElementId, FeatureId, Operation, Sketch};
-use crate::recompute::SketchSolvers;
-use crate::sketch::{SketchSolution, SketchSolver, Translation};
+use crate::recompute::{FeatureOutcome, Model, SketchSolvers};
+use crate::sketch::{SketchSolution, SketchSolver, SolveStopper, Translation};
+use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
 /// A drag of a sketch's point, open.
@@ -37,14 +42,107 @@ pub struct SketchDrag {
     translation: Translation,
     /// Where the dragged point began: a release there is a click, and changes nothing.
     origin: [f64; 2],
+    /// Why the begin state is where the file draws the sketch, if its solve failed.
+    unsolved: Option<Error>,
+    stop: DragStop,
 }
 
-/// A drag begun: the drag, the sketch's degrees of freedom left, and the points of the
-/// part it moves, by ID (`moves`, a diagnostic).
+/// A drag begun: the drag, the sketch's degrees of freedom left, the points of the part it
+/// moves, by ID (`moves`, a diagnostic), and, if the sketch didn't solve and the drag began
+/// where its file draws it, why (open item 15).
 pub struct Opened {
     pub drag: SketchDrag,
     pub dofs: i32,
     pub moves: Vec<ElementId>,
+    pub unsolved: Option<Error>,
+}
+
+/// The model's solve of a sketch, held by the caller: a drag begins from it only if it
+/// solved the sketch the drag is of, as the revision holds it.
+#[derive(Clone, Copy)]
+pub struct Held<'a> {
+    /// The sketch it solved.
+    pub sketch: &'a Sketch,
+    pub solution: &'a SketchSolution,
+}
+
+impl<'a> Held<'a> {
+    /// `model`'s solve of sketch `feature`, if it solved it.
+    pub fn of(model: &'a Model, feature: &FeatureId) -> Option<Self> {
+        let sketch = model
+            .document()
+            .features
+            .iter()
+            .find(|f| &f.id == feature)
+            .and_then(|f| match &f.operation {
+                Operation::Sketch(sketch) => Some(sketch),
+                _ => None,
+            })?;
+        match model.outcome(feature)? {
+            FeatureOutcome::Sketch(solution) => Some(Held { sketch, solution }),
+            _ => None,
+        }
+    }
+}
+
+/// Stops the whole-sketch solve a drag's begin or end runs, from another thread (the
+/// command's `cancel`), by restarting its worker; that begin or end is then refused as
+/// `cancelled`, and one not yet solving when it's stopped is refused before it solves.
+/// Clones stop the same drag's.
+#[derive(Clone, Default)]
+pub struct DragStop(Arc<Mutex<Stopping>>);
+
+#[derive(Default)]
+struct Stopping {
+    stopped: bool,
+    stopper: Option<SolveStopper>,
+}
+
+impl DragStop {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Stops the whole solve running under it, if one is, and every one after.
+    pub fn stop(&self) {
+        let mut stopping = lock(&self.0);
+        stopping.stopped = true;
+        if let Some(stopper) = &stopping.stopper {
+            stopper.stop();
+        }
+    }
+
+    /// `solve` on `solver`, readied for it, stoppable by [`stop`](Self::stop).
+    fn run<T>(
+        &self,
+        solver: &mut dyn SketchSolver,
+        solve: impl FnOnce(&mut dyn SketchSolver) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let stopper = solver.stopper()?;
+        {
+            let mut stopping = lock(&self.0);
+            if stopping.stopped {
+                return Err(cancelled());
+            }
+            stopping.stopper = stopper;
+        }
+        let result = solve(solver);
+        let mut stopping = lock(&self.0);
+        stopping.stopper = None;
+        if stopping.stopped {
+            return Err(cancelled());
+        }
+        result
+    }
+}
+
+/// A drag's whole solve, stopped.
+fn cancelled() -> Error {
+    Error::new(
+        ErrorCode::Cancelled,
+        "the drag's solve of its sketch was stopped",
+    )
+    .with_suggestion("begin the drag again")
 }
 
 /// How a frame ended (the design's `frame`).
@@ -63,13 +161,15 @@ pub enum FrameKind {
 }
 
 /// A move's frame: the cursor, how it ended, and with `Solved`, every point of the part
-/// and each free radius, by ID; otherwise none, and the client keeps its last frame.
+/// and each free radius, by ID; otherwise none, and the client keeps its last frame. A move
+/// the worker refused is `Failed` with the worker's reason (a solution out of reach, say).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Frame {
     pub to: [f64; 2],
     pub kind: FrameKind,
     pub points: Vec<(ElementId, [f64; 2])>,
     pub radii: Vec<(ElementId, f64)>,
+    pub why: Option<Error>,
 }
 
 /// A move sent: its frame, when it has one.
@@ -96,21 +196,44 @@ struct Reading {
     radii: Vec<(ElementId, Value)>,
 }
 
-/// Begins a drag of `point` in sketch `feature` of `document`, on a solver taken from
-/// `solvers` and held until the drag ends, each change of its moves told to `notify`. The
-/// begin state is `held`, the model's solve of the sketch at this revision, if the caller
-/// has it; otherwise the sketch is solved on the drag's solver. Refused, as `invalid_input`:
-/// a feature the document hasn't, or one that isn't a sketch (naming `sketch`); a point the
-/// sketch hasn't, or a part with more unknowns than a drag takes (naming `point`). A sketch
-/// whose constraints conflict is `over_constrained`, naming them. A solver that failed is
-/// its error. Each names the sketch.
+/// Begins a drag, as [`begin_stoppable`] does, under a stop of its own
+/// ([`SketchDrag::stop`] gives it).
 pub fn begin(
     solvers: &SketchSolvers,
     notify: Option<Notify>,
     document: &Checked,
     feature: &FeatureId,
     point: &ElementId,
-    held: Option<&SketchSolution>,
+    held: Option<Held<'_>>,
+) -> Result<Opened, Error> {
+    begin_stoppable(
+        solvers,
+        notify,
+        document,
+        feature,
+        point,
+        held,
+        &DragStop::new(),
+    )
+}
+
+/// Begins a drag of `point` in sketch `feature` of `document`, on a solver taken from
+/// `solvers` and held until the drag ends, each change of its moves told to `notify`, its
+/// whole solves under `stop`. The begin state is `held`, the model's solve of the sketch,
+/// if it solved the sketch as `document` holds it; otherwise the sketch is solved on the
+/// drag's solver. Refused, as `invalid_input`: a feature the document hasn't, or one that
+/// isn't a sketch (naming `sketch`); a point the sketch hasn't, or a part with more
+/// unknowns than a drag takes (naming `point`). A sketch whose constraints conflict is
+/// `over_constrained`, naming them. A solve stopped is `cancelled`; a solver that failed is
+/// its error. Each names the sketch.
+pub fn begin_stoppable(
+    solvers: &SketchSolvers,
+    notify: Option<Notify>,
+    document: &Checked,
+    feature: &FeatureId,
+    point: &ElementId,
+    held: Option<Held<'_>>,
+    stop: &DragStop,
 ) -> Result<Opened, Error> {
     let named = |e: Error| e.with_feature(feature.as_str());
     let sketch = match document.feature(feature) {
@@ -139,11 +262,11 @@ pub fn begin(
             .with_suggestion("name one of the sketch's points"),
         ));
     }
-    let mut prepared: Option<(Translation, Reading, [f64; 2])> = None;
+    let mut prepared: Option<(Translation, Reading, [f64; 2], Option<Error>)> = None;
     let begun = super::begin_with(solvers, notify, |solver| {
-        let begin_state = match held {
-            Some(solution) => solution.written(sketch),
-            None => solved_or_drawn(document, feature, sketch, solver)?,
+        let (begin_state, unsolved) = match held.filter(|held| held.sketch == sketch) {
+            Some(held) => (held.solution.written(sketch), None),
+            None => solved_or_drawn(document, feature, sketch, solver, stop)?,
         };
         let translation = Translation::new(&begin_state)?;
         let geometry = translation.point_geometry(point).ok_or_else(|| {
@@ -172,11 +295,11 @@ pub fn begin(
                 })
             })
             .unwrap_or([f64::NAN; 2]);
-        prepared = Some((translation, reading, origin));
+        prepared = Some((translation, reading, origin, unsolved));
         Ok(begin)
     })
     .map_err(named)?;
-    let (translation, reading, origin) = prepared.ok_or_else(|| {
+    let (translation, reading, origin, unsolved) = prepared.ok_or_else(|| {
         Error::new(ErrorCode::Internal, "a drag began with no begin state")
             .with_suggestion(crate::worker::SILICO_BUG)
     })?;
@@ -212,25 +335,32 @@ pub fn begin(
             sketch: sketch.clone(),
             translation,
             origin,
+            unsolved: unsolved.clone(),
+            stop: stop.clone(),
         },
         dofs,
         moves,
+        unsolved,
     })
 }
 
-/// The sketch as solved on `solver`, as its file would hold it; or, where the solve fails
-/// for the sketch (not the solver), as its file draws it.
+/// The sketch as solved on `solver` under `stop`, as its file would hold it; or, where the
+/// solve fails for the sketch (not the solver, nor a stop), as its file draws it, and why.
 fn solved_or_drawn(
     document: &Checked,
     feature: &FeatureId,
     sketch: &Sketch,
     solver: &mut dyn SketchSolver,
-) -> Result<Sketch, Error> {
-    solver.stopper()?;
-    match crate::sketch::solve(document, feature, solver) {
-        Ok(solution) => Ok(solution.written(sketch)),
-        Err(error) if error.code().is_kernel_fault() => Err(error),
-        Err(_) => Ok(sketch.clone()),
+    stop: &DragStop,
+) -> Result<(Sketch, Option<Error>), Error> {
+    match stop.run(solver, |solver| {
+        crate::sketch::solve(document, feature, solver)
+    }) {
+        Ok(solution) => Ok((solution.written(sketch), None)),
+        Err(error) if error.code().is_kernel_fault() || error.code() == ErrorCode::Cancelled => {
+            Err(error)
+        }
+        Err(why) => Ok((sketch.clone(), Some(why))),
     }
 }
 
@@ -279,38 +409,57 @@ impl SketchDrag {
         self.session.closed()
     }
 
-    /// Ends the drag. With a cursor `to`, the sketch moved there from the begin state and
-    /// solved as a whole ([`DragSession::end`]), then settled as a load settles a solve
-    /// (M3.4): its points where that leaves them, as its file holds them. The begin state
-    /// is kept, and the sketch as its file held it, if the move or either solve fails for
-    /// the sketch (why, in [`SketchEnded::why`]); with no cursor, always; and with the
-    /// cursor where the dragged point began, a click, which moves nothing (a solve from
-    /// there could still move the sketch by its rounding). Refused: as
-    /// [`DragSession::end`] is; and a solver that failed settling (its error). Each names
-    /// the sketch.
+    /// The stop its whole solves run under: [`DragStop::stop`] stops the end's.
+    pub fn stop(&self) -> DragStop {
+        self.stop.clone()
+    }
+
+    /// Ends the drag. With a cursor `to`, the sketch moved there from the begin state
+    /// ([`DragSession::release`]), then solved as a whole as a load solves a file (M3.4):
+    /// its points where that leaves them, as its file holds them. The begin state is kept,
+    /// and the sketch as its file held it, if the move or the solve fails for the sketch
+    /// (why, in [`SketchEnded::why`]: for a sketch that didn't solve when the drag began,
+    /// that failure); with no cursor, always; and with the cursor where the dragged point
+    /// began, a click, which moves nothing (a solve from there could still move the sketch
+    /// by its rounding). Refused: as [`DragSession::release`] is; a solve stopped
+    /// (`cancelled`); and a solver that failed (its error). Each names the sketch.
     pub fn end(self, to: Option<[f64; 2]>) -> Result<SketchEnded, Error> {
+        let _span =
+            tracing::info_span!("drag_sketch_end", feature = self.feature.as_str()).entered();
         let named = |e: Error| e.with_feature(self.feature.as_str());
         let to = to.filter(|&to| to != self.origin);
-        let ended = self.session.end(to).map_err(named)?;
+        let ended = self.session.release(to).map_err(named)?;
         let kept_begin = |why: Option<Error>| SketchEnded {
             kept: Kept::Begin,
             sketch: self.sketch.clone(),
             changed: false,
-            why,
+            why: why.map(named),
         };
-        let solved = match (ended.kept, ended.solved) {
-            (Kept::Cursor, Some(solved)) => solved,
-            _ => return Ok(kept_begin(ended.why.map(named))),
+        // A sketch that didn't solve when the drag began fails as it did then: that's why.
+        let unsettled = |why: Error| kept_begin(Some(self.unsolved.clone().unwrap_or(why)));
+        let values = match (ended.kept, ended.values) {
+            (Kept::Cursor, Some(values)) => values,
+            _ => return Ok(kept_begin(ended.why)),
         };
-        // Solved again from where the closing solve left it, as a load is.
+        // Solved as a whole from where the move left it, then loaded until it settles.
         let mut closing = self.translation.clone();
-        closing.system.values = solved.values;
+        closing.system.values = values;
         let mut solver = self.solvers.take().map_err(named)?;
-        let answer = solver
-            .stopper()
-            .and_then(|_| closing.solve(solver.as_mut()));
+        let answer = self
+            .stop
+            .run(solver.as_mut(), |solver| closing.solve(solver));
         self.solvers.give_back(solver);
-        match answer.map_err(named)?.outcome {
+        let answer = match answer {
+            Ok(answer) => answer,
+            Err(error)
+                if error.code().is_kernel_fault() || error.code() == ErrorCode::Cancelled =>
+            {
+                return Err(named(error));
+            }
+            // Refused by the worker for the sketch's values, not failed: the begin kept.
+            Err(why) => return Ok(unsettled(why)),
+        };
+        match answer.outcome {
             Ok(solution) => {
                 let sketch = solution.written(&self.sketch);
                 let changed = sketch != self.sketch;
@@ -321,7 +470,7 @@ impl SketchDrag {
                     why: None,
                 })
             }
-            Err(why) => Ok(kept_begin(Some(named(why)))),
+            Err(why) => Ok(unsettled(why)),
         }
     }
 }
@@ -339,15 +488,15 @@ impl FrameTicket {
     }
 
     fn frame(&self, outcome: MoveOutcome) -> Result<Frame, Error> {
-        let kind = match outcome {
+        let (kind, why) = match outcome {
             MoveOutcome::Solved { moved, .. } => match (moved.status, moved.values) {
                 (SolveStatus::Success, Some(values)) => return Ok(self.solved(&values)),
-                (SolveStatus::SolvedInvalid, _) => FrameKind::Invalid,
-                _ => FrameKind::Failed,
+                (SolveStatus::SolvedInvalid, _) => (FrameKind::Invalid, None),
+                _ => (FrameKind::Failed, None),
             },
-            MoveOutcome::Refused(_) => FrameKind::Failed,
-            MoveOutcome::Dropped => FrameKind::Dropped,
-            MoveOutcome::Cancelled => FrameKind::Cancelled,
+            MoveOutcome::Refused(why) => (FrameKind::Failed, Some(why)),
+            MoveOutcome::Dropped => (FrameKind::Dropped, None),
+            MoveOutcome::Cancelled => (FrameKind::Cancelled, None),
             MoveOutcome::Failed(error) | MoveOutcome::Closed(error) => return Err(error),
         };
         Ok(Frame {
@@ -355,6 +504,7 @@ impl FrameTicket {
             kind,
             points: Vec::new(),
             radii: Vec::new(),
+            why,
         })
     }
 
@@ -376,6 +526,7 @@ impl FrameTicket {
                 .iter()
                 .map(|(id, r)| (id.clone(), at(*r)))
                 .collect(),
+            why: None,
         }
     }
 }

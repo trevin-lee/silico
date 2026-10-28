@@ -663,6 +663,7 @@ fn an_esc_after_the_worker_failed_keeps_the_begin_and_the_drop_after_it_is_quiet
         session.end(None).unwrap(),
         Ended {
             kept: Kept::Begin,
+            values: None,
             solved: None,
             why: None
         }

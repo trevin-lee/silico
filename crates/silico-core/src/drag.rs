@@ -88,11 +88,13 @@ pub enum Kept {
     Begin,
 }
 
-/// How a drag ended: the state kept; with the cursor's, the whole sketch's solve; and where
-/// a cursor was given but the begin state kept, why.
+/// How a drag ended: the state kept; with the cursor's, the values the move to it reached
+/// and, from [`DragSession::end`], the whole sketch's solve of them; and where a cursor was
+/// given but the begin state kept, why.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ended {
     pub kept: Kept,
+    pub values: Option<Vec<f64>>,
     pub solved: Option<Solved>,
     pub why: Option<Error>,
 }
@@ -141,6 +143,9 @@ struct State {
     last: Option<([u64; 2], Vec<f64>)>,
     /// The end asked for: with a cursor, or none.
     end: Option<Option<[f64; 2]>>,
+    /// Whether the end solves the sketch as a whole ([`DragSession::end`]), or leaves that
+    /// to its caller ([`DragSession::release`]).
+    whole: bool,
     /// Stopping the move solving: for an end with no cursor, or a cancel.
     cancelling: bool,
     /// Why the drag is no longer open, once it isn't.
@@ -299,24 +304,39 @@ impl DragSession {
     /// drag that had already ended (why, a failure's with the worker's own code); and a
     /// worker that failed the end's move or its solve, or answered what it can't be trusted
     /// for (its error).
-    pub fn end(mut self, to: Option<[f64; 2]>) -> Result<Ended, Error> {
+    pub fn end(self, to: Option<[f64; 2]>) -> Result<Ended, Error> {
         let _span = tracing::info_span!("drag_end", cursor = to.is_some()).entered();
+        self.close(to, true)
+    }
+
+    /// Ends the drag as [`end`](Self::end) does, but with a cursor, solves the sketch at it
+    /// no further than the move there: the values it reached are the caller's to solve as a
+    /// whole (the core's document drag, which settles them as a load, `drag::sketch`), with
+    /// a solver of its own, under a stopper of its own. So the end runs no whole solve of
+    /// its own, and nothing waits on one it can't stop.
+    pub fn release(self, to: Option<[f64; 2]>) -> Result<Ended, Error> {
+        let _span = tracing::info_span!("drag_release", cursor = to.is_some()).entered();
+        self.close(to, false)
+    }
+
+    fn close(mut self, to: Option<[f64; 2]>, whole: bool) -> Result<Ended, Error> {
         let refused = to.and_then(|to| check_drag_target(to).err());
         let to = if refused.is_some() { None } else { to };
-        let result = self.finish(to);
+        let result = self.finish(to, whole);
         match refused {
             Some(invalid) => Err(Error::new(ErrorCode::InvalidInput, invalid.message)
                 .with_parameter(invalid.parameter)
-                .with_suggestion("end the drag again: it ended with the sketch as it began")),
+                .with_suggestion("the drag ended with the sketch as it began: begin it again")),
             None => result,
         }
     }
 
     /// Asks the drag's thread to end with `to`, and waits for it.
-    fn finish(&mut self, to: Option<[f64; 2]>) -> Result<Ended, Error> {
+    fn finish(&mut self, to: Option<[f64; 2]>, whole: bool) -> Result<Ended, Error> {
         let mut state = lock(&self.shared.state);
         if state.end.is_none() && state.ended.is_none() && state.closed.is_none() {
             state.end = Some(to);
+            state.whole = whole;
             if to.is_none()
                 && let Some((_, Some(stopper))) = state.running.clone()
             {
@@ -340,6 +360,7 @@ impl DragSession {
             // is refused, saying why.
             (None, _, None) => Ok(Ended {
                 kept: Kept::Begin,
+                values: None,
                 solved: None,
                 why: None,
             }),
@@ -360,7 +381,7 @@ impl Drop for DragSession {
     /// A drag dropped open ends with nothing kept, as an end with no cursor.
     fn drop(&mut self) {
         if self.thread.is_some() {
-            let _ = self.finish(None);
+            let _ = self.finish(None, true);
         }
     }
 }
@@ -459,8 +480,9 @@ fn drag(
                 settle(&mut state, dropped, MoveOutcome::Dropped);
             }
             let last = state.last.clone();
+            let whole = state.whole;
             drop(state);
-            let ended = ending(solver.as_mut(), begin, &part, to, last);
+            let ended = ending(solver.as_mut(), begin, &part, to, last, whole);
             let mut state = lock(&shared.state);
             state.closed = Some(no_drag("it ended"));
             state.ended = Some(ended);
@@ -553,6 +575,7 @@ fn close(state: &mut State, why: &Error) {
         state.ended = Some(match end {
             None => Ok(Ended {
                 kept: Kept::Begin,
+                values: None,
                 solved: None,
                 why: None,
             }),
@@ -573,9 +596,11 @@ fn ending(
     part: &SketchSystem,
     to: Option<[f64; 2]>,
     last: Option<([u64; 2], Vec<f64>)>,
+    whole: bool,
 ) -> Result<Ended, Error> {
     let kept_begin = |why: Option<Error>| Ended {
         kept: Kept::Begin,
+        values: None,
         solved: None,
         why,
     };
@@ -618,8 +643,16 @@ fn ending(
         Ok(values) => values,
         Err(why) => return Ok(kept_begin(Some(why))),
     };
+    if !whole {
+        return Ok(Ended {
+            kept: Kept::Cursor,
+            values: Some(values),
+            solved: None,
+            why: None,
+        });
+    }
     let system = SketchSystem {
-        values,
+        values: values.clone(),
         ..begin.system.clone()
     };
     solver.stopper()?;
@@ -635,6 +668,7 @@ fn ending(
     match solved.status {
         SolveStatus::Success | SolveStatus::SolvedExceptRedundant => Ok(Ended {
             kept: Kept::Cursor,
+            values: Some(values),
             solved: Some(solved),
             why: None,
         }),

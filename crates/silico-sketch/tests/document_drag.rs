@@ -72,8 +72,13 @@ fn the_designs_drag_moves_the_bracket_legs_top_and_ends_on_a_sketch_its_file_giv
     let doc = document(PROFILE);
     let sketch = FeatureId::new("s0000001").unwrap();
     let solvers = solvers();
-    let Opened { drag, dofs, moves } =
-        begin(&solvers, None, &doc, &sketch, &id("pa000003"), None).unwrap();
+    let Opened {
+        drag,
+        dofs,
+        moves,
+        unsolved,
+    } = begin(&solvers, None, &doc, &sketch, &id("pa000003"), None).unwrap();
+    assert_eq!(unsolved, None);
     assert_eq!(dofs, 1);
     let profile = [
         ("pa000001", [0.0, 0.0]),

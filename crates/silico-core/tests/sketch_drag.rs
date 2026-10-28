@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use silico_core::document::{Checked, ElementId, FeatureId, Operation, Sketch, read};
 use silico_core::drag::Kept;
-use silico_core::drag::sketch::{Frame, FrameKind, Opened, begin};
+use silico_core::drag::sketch::{DragStop, Frame, FrameKind, Held, Opened, begin, begin_stoppable};
 use silico_core::fake::{DragCall, FakeSketches};
 use silico_core::recompute::SketchSolvers;
 use silico_core::sketch::{SketchSolver, solve};
@@ -92,7 +92,13 @@ fn profile_with(moved: (&str, [f64; 2])) -> Vec<(ElementId, [f64; 2])> {
 #[test]
 fn a_drag_of_a_sketch_point_moves_it_by_its_id_and_reads_every_point_of_its_part() {
     let (solvers, started) = pool();
-    let Opened { drag, dofs, moves } = opened(&solvers, "s0000001", "pa000003");
+    let Opened {
+        drag,
+        dofs,
+        moves,
+        unsolved,
+    } = opened(&solvers, "s0000001", "pa000003");
+    assert_eq!(unsolved, None);
     // The fake's degrees of freedom; every point of the profile is in the one part.
     assert_eq!(dofs, 1);
     let all: Vec<ElementId> = profile_with(("", [0.0; 2]))
@@ -117,6 +123,7 @@ fn a_drag_of_a_sketch_point_moves_it_by_its_id_and_reads_every_point_of_its_part
             kind: FrameKind::Solved,
             points: profile_with(("pa000003", want)),
             radii: vec![],
+            why: None,
         }
     );
     // The end at the same cursor takes that frame's values; the fake solves them where
@@ -170,7 +177,10 @@ fn a_held_solve_is_the_begin_state_and_none_is_solved_again() {
         &doc,
         &feature("s0000001"),
         &id("pa000003"),
-        Some(&held),
+        Some(Held {
+            sketch: &sketch_of(&doc, "s0000001"),
+            solution: &held,
+        }),
     )
     .unwrap();
     let fake = started.lock().unwrap()[0].clone();
@@ -327,6 +337,7 @@ fn a_frame_reads_the_free_radii_of_its_part_and_only_its_part() {
                 ),
             ],
             radii: vec![(id("cb000002"), 2.75)],
+            why: None,
         }
     );
 }
@@ -358,6 +369,7 @@ fn a_move_that_isnt_solved_answers_its_kind_with_no_values() {
                 kind,
                 points: vec![],
                 radii: vec![],
+                why: None,
             }
         );
     }
@@ -365,6 +377,11 @@ fn a_move_that_isnt_solved_answers_its_kind_with_no_values() {
     fake.answer_moves(|_, _| Err(Error::new(ErrorCode::InvalidInput, "out of reach")));
     let frame = drag.move_to([70.0, 7.0]).unwrap().wait().unwrap();
     assert_eq!(frame.kind, FrameKind::Failed);
+    let why = frame.why.unwrap();
+    assert_eq!(
+        (why.code(), why.message()),
+        (ErrorCode::InvalidInput, "out of reach")
+    );
     assert!(drag.is_open());
     // An end whose final move the worker refuses keeps the begin state, and says why: the
     // worker's refusal, naming the sketch.
@@ -376,5 +393,111 @@ fn a_move_that_isnt_solved_answers_its_kind_with_no_values() {
     assert_eq!(
         (why.code(), why.message(), why.feature()),
         (ErrorCode::InvalidInput, "out of reach", Some("s0000001"))
+    );
+}
+
+/// Solvers that are all `fake`.
+fn on(fake: &FakeSketches) -> SketchSolvers {
+    let fake = fake.clone();
+    SketchSolvers::starting(move || Ok(Box::new(fake.clone()) as Box<dyn SketchSolver>))
+}
+
+#[test]
+fn a_stop_refuses_the_begins_whole_solve_and_the_ends_as_cancelled() {
+    // The begin's solve held in the fake, and stopped: the begin is refused, `cancelled`,
+    // naming the sketch.
+    let fake = FakeSketches::new();
+    let solvers = on(&fake);
+    let stop = DragStop::new();
+    fake.hold();
+    let begun = {
+        let (solvers, stop) = (solvers.clone(), stop.clone());
+        std::thread::spawn(move || {
+            begin_stoppable(
+                &solvers,
+                None,
+                &document(),
+                &feature("s0000001"),
+                &id("pa000003"),
+                None,
+                &stop,
+            )
+            .err()
+        })
+    };
+    assert!(fake.wait_held(std::time::Duration::from_secs(10)));
+    stop.stop();
+    let e = begun.join().unwrap().expect("the begin went on");
+    assert_eq!(
+        (e.code(), e.feature()),
+        (ErrorCode::Cancelled, Some("s0000001"))
+    );
+    fake.release();
+    // The end's solve, held after a move to the final cursor (so the end needs no move of
+    // its own), and stopped through the drag's own stop: the end is refused, `cancelled`.
+    let Opened { drag, .. } = opened(&solvers, "s0000001", "pa000003");
+    drag.move_to([62.5, 7.0]).unwrap().wait().unwrap();
+    let stop = drag.stop();
+    fake.hold();
+    let ended = std::thread::spawn(move || drag.end(Some([62.5, 7.0])).err());
+    assert!(fake.wait_held(std::time::Duration::from_secs(10)));
+    stop.stop();
+    let e = ended.join().unwrap().expect("the end went on");
+    assert_eq!(
+        (e.code(), e.feature()),
+        (ErrorCode::Cancelled, Some("s0000001"))
+    );
+    fake.release();
+}
+
+#[test]
+fn a_sketch_that_didnt_solve_when_the_drag_began_says_so_when_it_keeps_the_begin_state() {
+    // Found by the port review: every solve fails, so the drag begins where the file draws
+    // it, and its release, solved as a whole, fails alike. Why is the begin's own failure,
+    // not advice to release nearer, which no cursor could follow.
+    let fake = FakeSketches::new();
+    fake.answer(|system| {
+        let mut solved = FakeSketches::as_sent(system);
+        solved.status = SolveStatus::Failed;
+        solved.algorithm = None;
+        Ok(solved)
+    });
+    let solvers = on(&fake);
+    let Opened { drag, unsolved, .. } = opened(&solvers, "s0000001", "pa000003");
+    let unsolved = unsolved.expect("the begin solved");
+    assert_eq!(unsolved.feature(), Some("s0000001"));
+    let ended = drag.end(Some([62.5, 7.0])).unwrap();
+    assert_eq!((ended.kept, ended.changed), (Kept::Begin, false));
+    assert_eq!(ended.why, Some(unsolved));
+}
+
+#[test]
+fn a_settle_the_worker_refuses_keeps_the_begin_state_saying_why() {
+    // Found by the robustness review: the begin's solve answers; the end's, the worker
+    // refuses (as it refuses values its own check won't take): the begin kept, the
+    // refusal its why, naming the sketch, never the end's error.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let fake = FakeSketches::new();
+    let solves = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&solves);
+    fake.answer(move |system| {
+        if count.fetch_add(1, Ordering::SeqCst) == 0 {
+            Ok(FakeSketches::as_sent(system))
+        } else {
+            Err(Error::new(ErrorCode::InvalidInput, "refused by its check"))
+        }
+    });
+    let solvers = on(&fake);
+    let Opened { drag, .. } = opened(&solvers, "s0000001", "pa000003");
+    let ended = drag.end(Some([62.5, 7.0])).unwrap();
+    assert_eq!((ended.kept, ended.changed), (Kept::Begin, false));
+    let why = ended.why.unwrap();
+    assert_eq!(
+        (why.code(), why.message(), why.feature()),
+        (
+            ErrorCode::InvalidInput,
+            "refused by its check",
+            Some("s0000001")
+        )
     );
 }

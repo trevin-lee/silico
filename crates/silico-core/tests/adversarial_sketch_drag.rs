@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use silico_core::document::{Checked, ElementId, FeatureId, Operation, Sketch, read};
 use silico_core::drag::Kept;
-use silico_core::drag::sketch::{FrameKind, Opened, begin};
+use silico_core::drag::sketch::{FrameKind, Held, Opened, begin};
 use silico_core::fake::{DragCall, FakeSketches};
 use silico_core::recompute::SketchSolvers;
 use silico_core::sketch::{SketchSolver, solve};
@@ -234,11 +234,15 @@ fn a_cancelled_move_answers_cancelled_and_the_end_keeps_the_file() {
 }
 
 #[test]
-fn a_held_solve_of_another_sketch_begins_where_the_file_draws_it() {
-    // The holes' solve, passed as the profile's: none of its points is the profile's, so
-    // the begin state is the file's own, every point where it's drawn.
+fn a_held_solve_of_another_sketch_isnt_the_begin_state_and_the_drag_solves_its_own() {
+    // The holes' solve, passed as the profile's: it solved another sketch, so it's not
+    // taken; the drag solves the profile on its own solver (the fake, where it's drawn).
     let doc = document();
     let holes = solve(&doc, &feature("s0000002"), &mut FakeSketches::new()).unwrap();
+    let holes_sketch = match &doc.feature(&feature("s0000002")).unwrap().operation {
+        Operation::Sketch(sketch) => sketch.clone(),
+        _ => panic!("not a sketch"),
+    };
     let fake = FakeSketches::new();
     let solvers = on(&fake);
     let Opened { drag, .. } = begin(
@@ -247,9 +251,13 @@ fn a_held_solve_of_another_sketch_begins_where_the_file_draws_it() {
         &doc,
         &feature("s0000001"),
         &id("pa000003"),
-        Some(&holes),
+        Some(Held {
+            sketch: &holes_sketch,
+            solution: &holes,
+        }),
     )
     .unwrap();
+    assert_eq!(fake.requests().len(), 1);
     let Some(DragCall::Begin(sent)) = fake.drag_calls().first().cloned() else {
         panic!("no begin")
     };
@@ -261,6 +269,62 @@ fn a_held_solve_of_another_sketch_begins_where_the_file_draws_it() {
     );
     let ended = drag.end(None).unwrap();
     assert_eq!(ended.sketch, profile());
+}
+
+#[test]
+fn a_held_solve_of_an_older_revision_of_the_sketch_isnt_the_begin_state() {
+    // Found by the architecture review: a model's solve of the profile as an earlier
+    // revision held it (its base 70 long, pa000003 solved to (70, 9)) was taken for this
+    // revision's, under this revision's constraints. It solved another sketch, so the drag
+    // solves this one itself, from the file's (60, 5).
+    let older_text = PROFILE.replace(
+        r#""line": "na000001", "value": 60"#,
+        r#""line": "na000001", "value": 70"#,
+    );
+    assert_ne!(older_text, PROFILE);
+    let older_doc = Checked::new(
+        read(
+            format!(
+                r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{older_text}]}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let older = match &older_doc.feature(&feature("s0000001")).unwrap().operation {
+        Operation::Sketch(sketch) => sketch.clone(),
+        _ => panic!("not a sketch"),
+    };
+    let mut held = solve(&older_doc, &feature("s0000001"), &mut FakeSketches::new()).unwrap();
+    held.points.insert(
+        id("pa000003"),
+        [
+            silico_core::document::Coordinate::new(70.0).unwrap(),
+            silico_core::document::Coordinate::new(9.0).unwrap(),
+        ],
+    );
+    let fake = FakeSketches::new();
+    let solvers = on(&fake);
+    let Opened { drag, .. } = begin(
+        &solvers,
+        None,
+        &document(),
+        &feature("s0000001"),
+        &id("pa000003"),
+        Some(Held {
+            sketch: &older,
+            solution: &held,
+        }),
+    )
+    .unwrap();
+    assert_eq!(fake.requests().len(), 1);
+    let Some(DragCall::Begin(sent)) = fake.drag_calls().first().cloned() else {
+        panic!("no begin")
+    };
+    // pa000003's values, 10 and 11: the file's, not the held solve's.
+    assert_eq!(&sent.system.values[10..12], &[60.0, 5.0]);
+    drop(drag);
 }
 
 #[test]

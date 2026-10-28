@@ -264,6 +264,7 @@ fn an_end_with_no_cursor_stops_the_move_solving_keeps_the_begin_and_frees_the_wo
         ended,
         Ended {
             kept: Kept::Begin,
+            values: None,
             solved: None,
             why: None
         }
@@ -771,6 +772,7 @@ fn a_cancelled_move_answers_cancelled_and_closes_the_drag_keeping_the_begin() {
         session.end(None).unwrap(),
         Ended {
             kept: Kept::Begin,
+            values: None,
             solved: None,
             why: None
         }
