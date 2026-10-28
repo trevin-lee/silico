@@ -511,7 +511,13 @@ fn session_of(seed: u64, solvers: &SketchSolvers, fake: &FakeSketches) -> Result
         ));
     }
     match (finish, ended, failed) {
-        (_, Some(Err(e)), true) => {
+        // Esc after a failure: nothing kept, as asked.
+        (Finish::Esc, Some(Ok(ended)), true) => {
+            if ended.kept != Kept::Begin || ended.solved.is_some() {
+                return Err(format!("{finish:?}: kept {ended:?} after a failure"));
+            }
+        }
+        (Finish::Cursor(_) | Finish::BadCursor, Some(Err(e)), true) => {
             if e.message() != "no drag is open: its worker failed"
                 && !matches!(finish, Finish::BadCursor)
             {
@@ -643,7 +649,7 @@ fn a_worker_that_cant_be_readied_for_the_ends_move_refuses_the_end_and_comes_bac
 }
 
 #[test]
-fn an_esc_after_the_worker_failed_is_refused_as_no_drag_and_the_drop_after_it_is_quiet() {
+fn an_esc_after_the_worker_failed_keeps_the_begin_and_the_drop_after_it_is_quiet() {
     let (solvers, started) = pool();
     let session = open(&solvers);
     let fake = started.lock().unwrap()[0].clone();
@@ -652,9 +658,14 @@ fn an_esc_after_the_worker_failed_is_refused_as_no_drag_and_the_drop_after_it_is
         session.move_to([1.0, 1.0]).unwrap().wait(),
         MoveOutcome::Failed(_)
     ));
-    let e = session.end(None).unwrap_err();
-    assert_eq!(e.message(), "no drag is open: its worker failed");
-    assert_eq!(e.cause(), Some("the fake crashed"));
+    // Esc asks for nothing kept, which the failure already gave: not an error.
+    assert_eq!(
+        session.end(None).unwrap(),
+        Ended {
+            kept: Kept::Begin,
+            solved: None
+        }
+    );
     // A second session, dropped after the same failure, without an end.
     let session = open(&solvers);
     assert!(matches!(
@@ -751,10 +762,15 @@ fn a_closing_solve_that_doesnt_solve_keeps_the_begin_state() {
         let (solvers, started) = pool();
         let session = open(&solvers);
         let fake = started.lock().unwrap()[0].clone();
+        // A solution has its algorithm, and a failure none, as a worker answers them.
         fake.answer(move |s| {
+            let sent = FakeSketches::as_sent(s);
             Ok(Solved {
                 status,
-                ..FakeSketches::as_sent(s)
+                algorithm: sent
+                    .algorithm
+                    .filter(|_| status == SolveStatus::SolvedInvalid),
+                ..sent
             })
         });
         let ended = session.end(Some([3.0, 3.0])).unwrap();
@@ -790,7 +806,7 @@ fn a_move_answered_with_fewer_values_than_the_sketch_has_is_not_a_solved_frame()
     let outcome = session.move_to([1.0, 1.0]).unwrap().wait();
     let ended = session.end(Some([1.0, 1.0]));
     // The frame is the worker's protocol error, which ends the drag, so the end that
-    // follows is refused as no drag open, saying why.
+    // follows is refused as no drag open, saying why, with the worker's code: a fault.
     match outcome {
         MoveOutcome::Failed(e) => {
             assert_eq!(e.code(), ErrorCode::ProtocolError, "{e}");
@@ -803,7 +819,7 @@ fn a_move_answered_with_fewer_values_than_the_sketch_has_is_not_a_solved_frame()
     }
     match ended {
         Err(e) => {
-            assert_eq!(e.code(), ErrorCode::InvalidInput, "{e}");
+            assert_eq!(e.code(), ErrorCode::ProtocolError, "{e}");
             assert_eq!(e.message(), "no drag is open: its worker failed");
             assert_eq!(
                 e.cause(),

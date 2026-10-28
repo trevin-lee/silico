@@ -2736,6 +2736,8 @@ struct SketchState {
     drag_conflicting: Vec<Tag>,
     /// How a move is answered, if not by [`FakeSketches::dragged`].
     move_answer: Option<MoveAnswer>,
+    /// The time each move was given, in order.
+    move_timeouts: Vec<Duration>,
     answer: Option<SketchAnswer>,
     held: bool,
     /// Solves waiting in a hold now.
@@ -2761,6 +2763,11 @@ impl FakeSketches {
     /// Every drag request it was sent, in order.
     pub fn drag_calls(&self) -> Vec<DragCall> {
         lock(&self.shared.state).drag_calls.clone()
+    }
+
+    /// The time each drag move was given, in order.
+    pub fn move_timeouts(&self) -> Vec<Duration> {
+        lock(&self.shared.state).move_timeouts.clone()
     }
 
     /// Finds `tags` in conflict at each drag's begin from now on, so it starts none.
@@ -2900,11 +2907,12 @@ impl SketchSolver for FakeSketches {
         })
     }
 
-    fn drag_move(&mut self, to: [f64; 2], _timeout: Duration) -> Result<Moved, Error> {
+    fn drag_move(&mut self, to: [f64; 2], timeout: Duration) -> Result<Moved, Error> {
         let mut state = lock(&self.shared.state);
         state.solves += 1;
         let solve = state.solves;
         state.drag_calls.push(DragCall::Move(to));
+        state.move_timeouts.push(timeout);
         let (mut state, stopped) = self.held_until(state, solve);
         if stopped {
             // Stopped as a worker is, its session with it.

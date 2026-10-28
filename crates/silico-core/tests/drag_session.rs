@@ -9,14 +9,16 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use silico_core::drag::{Begun, DragSession, Ended, Kept, MoveOutcome, begin};
+use silico_core::drag::{
+    Begun, DRAG_MOVE_TIMEOUT, DragSession, Ended, Kept, MoveOutcome, Notify, begin, begin_with,
+};
 use silico_core::fake::{DragCall, FakeKernel, FakeSketches};
 use silico_core::recompute::{Recompute, SketchSolvers};
 use silico_core::sketch::SketchSolver;
 use silico_core::{ErrorCode, command};
 use silico_protocol::{
     Algorithm, DragBegin, Geometry, Moved, PointOf, PointValues, SketchGeometry, SketchSystem,
-    SolveStatus, Value,
+    SolveStatus, SolverConstraint, Value,
 };
 
 use crate::fixture::{document, fields, point};
@@ -351,7 +353,7 @@ fn a_sketch_whose_constraints_conflict_starts_no_drag_and_gives_its_solver_back(
     let (solvers, started) = pool();
     let first = solvers_first(&solvers, &started);
     first.conflicting_drags(vec![silico_protocol::Tag(3), silico_protocol::Tag(7)]);
-    match begin(&solvers, two_points()).unwrap() {
+    match begin(&solvers, tagged(&[3, 7])).unwrap() {
         Begun::Conflicting(tags) => {
             assert_eq!(tags, [silico_protocol::Tag(3), silico_protocol::Tag(7)]);
         }
@@ -370,6 +372,20 @@ fn a_sketch_whose_constraints_conflict_starts_no_drag_and_gives_its_solver_back(
         // The helper's, the one that conflicted, and this one: all on the first fake.
         3
     );
+}
+
+/// [`two_points`] with the two points coincident once for each of `tags`.
+fn tagged(tags: &[u32]) -> DragBegin {
+    let mut begin = two_points();
+    begin.system.constraints = tags
+        .iter()
+        .map(|&t| SolverConstraint::Coincident {
+            tag: silico_protocol::Tag(t),
+            a: PointOf::Point(Geometry(0)),
+            b: PointOf::Point(Geometry(1)),
+        })
+        .collect();
+    begin
 }
 
 /// The pool's first fake, started by a drag begun and ended.
@@ -539,7 +555,7 @@ fn a_worker_that_sends_an_impossible_frame_or_solve_is_distrusted_not_reused() {
     assert_eq!(e.code(), ErrorCode::ProtocolError);
     assert_eq!(
         e.message(),
-        "the sketch worker's drag solve moves value 2, which is fixed"
+        "the sketch worker's solution moves value 2, which is fixed"
     );
     assert_eq!(distrusts.load(std::sync::atomic::Ordering::SeqCst), 3);
 }
@@ -558,4 +574,257 @@ fn a_begin_that_fails_its_check_is_refused_naming_it_and_sends_nothing() {
     assert_eq!(e.code(), ErrorCode::InvalidInput);
     assert_eq!(e.parameter(), Some("point"));
     assert!(started.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_frame_whose_values_dont_match_its_status_is_the_workers_fault() {
+    // A success with no values, and a failure with values: neither is a frame a worker
+    // gives, so each is a protocol error, the worker distrusted once each.
+    let (solvers, fake, distrusts) = counted();
+    for (status, values, message) in [
+        (
+            SolveStatus::Success,
+            None,
+            "the sketch worker's drag frame is a success with no values",
+        ),
+        (
+            SolveStatus::Failed,
+            Some(vec![4.0, 8.0, 1.0, 1.0]),
+            "the sketch worker's drag frame has values with the status Failed",
+        ),
+    ] {
+        fake.answer_moves(move |_, _| {
+            Ok(Moved {
+                status,
+                values: values.clone(),
+            })
+        });
+        let session = match begin(&solvers, two_points()).unwrap() {
+            Begun::Open { session, .. } => session,
+            Begun::Conflicting(tags) => panic!("{tags:?}"),
+        };
+        match session.move_to([1.0, 1.0]).unwrap().wait() {
+            MoveOutcome::Failed(e) => {
+                assert_eq!(e.code(), ErrorCode::ProtocolError);
+                assert_eq!(e.message(), message);
+            }
+            other => panic!("{status:?}: {other:?}"),
+        }
+    }
+    assert_eq!(distrusts.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_begin_listing_conflicts_it_wasnt_sent_or_out_of_order_is_the_workers_fault() {
+    // Tags 3 and 7 are sent. Tag 5 wasn't; 7 before 3 is out of order; 3 twice is a repeat.
+    let (solvers, fake, distrusts) = counted();
+    for (n, listed) in [vec![5], vec![7, 3], vec![3, 3]].into_iter().enumerate() {
+        fake.conflicting_drags(listed.iter().map(|&t| silico_protocol::Tag(t)).collect());
+        match begin(&solvers, tagged(&[3, 7])) {
+            Err(e) => {
+                assert_eq!(e.code(), ErrorCode::ProtocolError, "{listed:?}");
+                assert_eq!(
+                    e.message(),
+                    "the sketch worker's drag begin lists conflicting tags it wasn't sent, or out of order"
+                );
+            }
+            Ok(_) => panic!("{listed:?}: began"),
+        }
+        assert_eq!(distrusts.load(std::sync::atomic::Ordering::SeqCst), n + 1);
+    }
+    // Both, in order: the conflict the begin reports.
+    fake.conflicting_drags(vec![silico_protocol::Tag(3), silico_protocol::Tag(7)]);
+    assert!(matches!(
+        begin(&solvers, tagged(&[3, 7])).unwrap(),
+        Begun::Conflicting(_)
+    ));
+    assert_eq!(distrusts.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
+#[test]
+fn a_begin_state_prepared_on_the_drags_solver_takes_no_second_worker() {
+    // `prepare` solves on the solver the drag then holds: the fake it ran on is the one the
+    // drag begins on, and no other is started.
+    let (solvers, started) = pool();
+    let first = solvers_first(&solvers, &started);
+    let session = match begin_with(&solvers, None, |solver| {
+        solver.solve(two_points().system)?;
+        Ok(two_points())
+    })
+    .unwrap()
+    {
+        Begun::Open { session, .. } => session,
+        Begun::Conflicting(tags) => panic!("{tags:?}"),
+    };
+    assert_eq!(first.requests().len(), 1);
+    assert!(matches!(
+        session.move_to([1.0, 1.0]).unwrap().wait(),
+        MoveOutcome::Solved { .. }
+    ));
+    session.end(None).unwrap();
+    assert_eq!(started.lock().unwrap().len(), 1);
+    // A `prepare` that fails is refused with its error, the solver given back.
+    let e = match begin_with(&solvers, None, |_| {
+        Err(silico_core::Error::new(
+            ErrorCode::Conflict,
+            "no such sketch",
+        ))
+    }) {
+        Err(e) => e,
+        Ok(_) => panic!("began"),
+    };
+    assert_eq!(e.code(), ErrorCode::Conflict);
+    // A begin state it makes that fails its check: refused naming it, nothing begun.
+    let begins = |fake: &FakeSketches| {
+        fake.drag_calls()
+            .iter()
+            .filter(|c| matches!(c, DragCall::Begin(_)))
+            .count()
+    };
+    let before = begins(&first);
+    let e = match begin_with(&solvers, None, |_| {
+        let mut bad = two_points();
+        bad.point = PointOf::Point(Geometry(5));
+        Ok(bad)
+    }) {
+        Err(e) => e,
+        Ok(_) => panic!("began"),
+    };
+    assert_eq!(e.parameter(), Some("point"));
+    assert_eq!(begins(&first), before);
+    open(&solvers).end(None).unwrap();
+    assert_eq!(started.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn the_notifier_is_told_of_each_outcome_and_of_the_end() {
+    // Told with no lock held: the notifier reads a ticket's outcome as it's told, which
+    // takes the drag's lock, and would deadlock under it.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (solvers, started) = pool();
+    let told = Arc::new(AtomicUsize::new(0));
+    let slot: Arc<Mutex<Option<silico_core::drag::MoveTicket>>> = Arc::new(Mutex::new(None));
+    let (counter, read) = (Arc::clone(&told), Arc::clone(&slot));
+    let notify: Notify = Arc::new(move || {
+        if let Some(ticket) = read.lock().unwrap().as_ref() {
+            let _ = ticket.try_take();
+        }
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    let session = match begin_with(&solvers, Some(notify), |_| Ok(two_points())).unwrap() {
+        Begun::Open { session, .. } => session,
+        Begun::Conflicting(tags) => panic!("{tags:?}"),
+    };
+    let fake = started.lock().unwrap()[0].clone();
+    assert_eq!(told.load(Ordering::SeqCst), 0);
+    let ticket = session.move_to([1.0, 1.0]).unwrap();
+    *slot.lock().unwrap() = Some(ticket);
+    // The move sent, and its outcome: each told.
+    let (waited, seen) = (Arc::clone(&told), Arc::clone(&slot));
+    assert!(within(move || {
+        while waited.load(Ordering::SeqCst) < 2
+            || seen.lock().unwrap().as_ref().unwrap().try_take().is_none()
+        {
+            std::thread::yield_now();
+        }
+    }));
+    assert!(matches!(
+        slot.lock().unwrap().as_ref().unwrap().try_take(),
+        Some(MoveOutcome::Solved { .. })
+    ));
+    assert_eq!(told.load(Ordering::SeqCst), 2);
+    session.end(None).unwrap();
+    // The end asked for, the end's result, and the thread's return: three more.
+    assert_eq!(told.load(Ordering::SeqCst), 5);
+    assert_eq!(fake.drag_calls().last(), Some(&DragCall::End));
+}
+
+#[test]
+fn a_cancelled_move_answers_cancelled_and_closes_the_drag_keeping_the_begin() {
+    let (solvers, started) = pool();
+    let session = open(&solvers);
+    let fake = started.lock().unwrap()[0].clone();
+    // Nothing solving: nothing to cancel, and the drag stays open.
+    assert!(!session.cancel_move());
+    assert!(session.is_open());
+    assert!(session.closed().is_none());
+    fake.hold();
+    let moving = session.move_to([1.0, 1.0]).unwrap();
+    assert!(fake.wait_held(WAIT));
+    assert!(session.cancel_move());
+    assert_eq!(moving.wait(), MoveOutcome::Cancelled);
+    assert_eq!(fake.stops(), 1);
+    fake.release();
+    assert!(!session.is_open());
+    assert_eq!(
+        session.closed().map(|e| e.message().to_owned()),
+        Some("no drag is open: its move was stopped".to_owned())
+    );
+    match session.move_to([2.0, 2.0]).unwrap().wait() {
+        MoveOutcome::Closed(e) => assert_eq!(e.message(), "no drag is open: its move was stopped"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        session.end(None).unwrap(),
+        Ended {
+            kept: Kept::Begin,
+            solved: None
+        }
+    );
+    // A cursor after a cancel is refused: the drag ended before it.
+    let session = open(&solvers);
+    fake.hold();
+    let moving = session.move_to([1.0, 1.0]).unwrap();
+    assert!(fake.wait_held(WAIT));
+    assert!(session.cancel_move());
+    assert_eq!(moving.wait(), MoveOutcome::Cancelled);
+    fake.release();
+    let e = session.end(Some([1.0, 1.0])).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::InvalidInput);
+    assert_eq!(e.message(), "no drag is open: its move was stopped");
+    assert_eq!(started.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn an_open_drag_says_so_until_its_worker_fails() {
+    let (solvers, started) = pool();
+    let session = open(&solvers);
+    let fake = started.lock().unwrap()[0].clone();
+    assert!(session.is_open());
+    fake.answer_moves(|_, _| {
+        Err(silico_core::Error::new(
+            ErrorCode::WorkerCrashed,
+            "the fake crashed",
+        ))
+    });
+    assert!(matches!(
+        session.move_to([1.0, 1.0]).unwrap().wait(),
+        MoveOutcome::Failed(_)
+    ));
+    assert!(!session.is_open());
+    let closed = session.closed().unwrap();
+    assert_eq!(closed.code(), ErrorCode::WorkerCrashed);
+    assert_eq!(closed.message(), "no drag is open: its worker failed");
+    assert_eq!(closed.cause(), Some("the fake crashed"));
+}
+
+#[test]
+fn each_move_and_the_ends_own_move_is_given_ten_seconds() {
+    let (solvers, started) = pool();
+    let session = open(&solvers);
+    let fake = started.lock().unwrap()[0].clone();
+    session.move_to([1.0, 1.0]).unwrap().wait();
+    session.end(Some([2.0, 2.0])).unwrap();
+    assert_eq!(DRAG_MOVE_TIMEOUT, Duration::from_secs(10));
+    assert_eq!(fake.move_timeouts(), [Duration::from_secs(10); 2]);
+}
+
+/// Whether `f` returns within [`WAIT`].
+fn within(f: impl FnOnce() + Send + 'static) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        f();
+        let _ = tx.send(());
+    });
+    rx.recv_timeout(WAIT).is_ok()
 }

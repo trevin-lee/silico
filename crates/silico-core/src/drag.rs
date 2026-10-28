@@ -4,11 +4,14 @@
 //!
 //! - **One worker.** A drag takes a sketch solver from the solvers a session's engines share
 //!   ([`SketchSolvers`]) and holds it for as long as the drag lasts, apart from every
-//!   recompute: its moves all go to the worker that began it (a sketch worker holds one
-//!   session), and no recompute's supersession stops that worker, since none has it lent.
+//!   recompute: its begin state is solved on it ([`begin_with`]), its moves all go to it (a
+//!   sketch worker holds one session), and no recompute's supersession stops it, since none
+//!   has it lent.
 //! - **The newest cursor.** Its moves are solved one at a time, on a thread of the drag's
 //!   own, under [`DRAG_MOVE_TIMEOUT`] each; a move sent while one solves waits, and a newer
-//!   one replaces it, the replaced one answering [`MoveOutcome::Dropped`], never solved.
+//!   one replaces it, the replaced one answering [`MoveOutcome::Dropped`], never solved. Each
+//!   change of a move's outcome, or of the drag, is told to the drag's notifier, so a client
+//!   needn't wait on a ticket to learn of it.
 //! - **The end from the begin state.** [`DragSession::end`] with a cursor moves the sketch
 //!   from the begin state to the final cursor (the newest solved move's values, if its
 //!   cursor has the same bits, or else one move more), and then solves it as a whole. So
@@ -18,28 +21,35 @@
 //!   restarting its worker.
 //!
 //! A drag ends at its end, when its worker fails (a move past its time, a crash: the
-//! worker restarts, and the session with it), or when the session is dropped; a move after
-//! that is refused, and the client begins again.
+//! worker restarts, and the session with it), when its move is cancelled, or when the
+//! session is dropped; a move after that is refused, and the client begins again. Every
+//! reply the worker gives is checked as a solve's is: one that can't be the sketch's is the
+//! worker's protocol error, and the worker is stopped.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use silico_protocol::{
-    DragBegin, Moved, SketchSystem, SolveStatus, Solved, Tag, check_drag_target,
+    DragBegin, Moved, SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value,
+    check_drag_target,
 };
 
 use crate::recompute::SketchSolvers;
-use crate::sketch::{SketchSolver, SolveStopper};
+use crate::sketch::{DragStarted, SketchSolver, SolveStopper, check_solved};
 use crate::worker::{lock, thread_error};
 use crate::{Error, ErrorCode};
 
 /// How long a drag's move may take (docs/design/m5.0-app.md, its limits): ten times the
 /// most `MAX_DRAG_UNKNOWNS` was sized for (0.76 s at 256 unknowns, loaded, M3.7). A move past
-/// it is hung, and ends the drag. A whole-sketch solve, the begin's and the end's, runs
-/// under the solver's own time, as any solve does.
+/// it is hung, and ends the drag; so is a drag's end in the worker, which solves nothing. A
+/// whole-sketch solve, the begin's and the end's, runs under the solver's own time, as any
+/// solve does.
 pub const DRAG_MOVE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Told of each change of a drag's moves or state, with no lock held: the caller's waker.
+pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
 /// A drag begun: open, or not started for the constraints in conflict, by tag.
 pub enum Begun {
@@ -56,11 +66,12 @@ pub enum MoveOutcome {
     /// Replaced by a newer move before it was sent: never solved.
     Dropped,
     /// Refused by the worker (its solution out of reach, say), which keeps the drag: the
-    /// client keeps its last frame, and the drag goes on.
+    /// client keeps its last frame, and the drag goes on (the design's `failed` frame).
     Refused(Error),
-    /// Stopped while it solved, by the drag's end with no cursor.
+    /// Stopped while it solved: by the drag's end with no cursor, or a cancel.
     Cancelled,
-    /// The worker failed solving it (past its time, a crash): the drag has ended.
+    /// The worker failed solving it (past its time, a crash, a reply it can't be trusted
+    /// for): the drag has ended.
     Failed(Error),
     /// The drag had ended before the move could run.
     Closed(Error),
@@ -97,6 +108,17 @@ pub struct MoveTicket {
 struct Shared {
     state: Mutex<State>,
     changed: Condvar,
+    notify: Option<Notify>,
+}
+
+impl Shared {
+    /// Wakes the waiters and tells the notifier: called with no lock held.
+    fn changed(&self) {
+        self.changed.notify_all();
+        if let Some(notify) = &self.notify {
+            notify();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -110,37 +132,45 @@ struct State {
     /// Each move's outcome, by number, until its ticket is dropped.
     outcomes: BTreeMap<u64, MoveOutcome>,
     /// Tickets dropped before their outcome came: it isn't kept.
-    abandoned: std::collections::BTreeSet<u64>,
+    abandoned: BTreeSet<u64>,
     /// The newest move that reached its cursor: the cursor's bits and the values.
     last: Option<([u64; 2], Vec<f64>)>,
     /// The end asked for: with a cursor, or none.
     end: Option<Option<[f64; 2]>>,
-    /// Stopping the move solving, for an end with no cursor.
+    /// Stopping the move solving: for an end with no cursor, or a cancel.
     cancelling: bool,
     /// Why the drag is no longer open, once it isn't.
     closed: Option<Error>,
     /// The end's result, once it's run.
     ended: Option<Result<Ended, Error>>,
+    /// Whether the drag's thread has returned.
+    done: bool,
 }
 
-/// Begins a drag: `begin` checked (its part within `MAX_DRAG_UNKNOWNS`, as the worker
-/// checks it), a solver taken from `solvers` and held, and the drag begun on it, the sketch
-/// diagnosed once. A sketch whose constraints conflict starts no drag, its solver given back.
-/// Refused: a `begin` that fails its check (naming its parameter), and a solver that
-/// couldn't be had or failed (its error).
+/// Begins a drag of `begin`: as [`begin_with`], its begin state given.
 pub fn begin(solvers: &SketchSolvers, begin: DragBegin) -> Result<Begun, Error> {
+    // Checked before a solver is taken: nothing is sent for a begin that can't run.
+    checked_begin(&begin)?;
+    begin_with(solvers, None, |_| Ok(begin))
+}
+
+/// Begins a drag: a solver taken from `solvers` and held; the begin state made by `prepare`
+/// on it (the core's solve of the revision's sketch, where the model doesn't hold it: so
+/// the drag never takes a second worker, nor waits on a rebuild), checked (its part within
+/// `MAX_DRAG_UNKNOWNS`, as the worker checks it); and the drag begun on it, the sketch
+/// diagnosed once. Each change of its moves or state is told to `notify`. A sketch whose
+/// constraints conflict starts no drag, its solver given back. Refused: a begin that fails
+/// its check (naming its parameter); `prepare`'s error; and a solver that couldn't be had
+/// or failed, or answered what it can't be trusted for (its error).
+pub fn begin_with(
+    solvers: &SketchSolvers,
+    notify: Option<Notify>,
+    prepare: impl FnOnce(&mut dyn SketchSolver) -> Result<DragBegin, Error>,
+) -> Result<Begun, Error> {
     let _span = tracing::info_span!("drag_begin").entered();
-    if let Err(invalid) = begin.check() {
-        return Err(Error::new(ErrorCode::InvalidInput, invalid.message)
-            .with_parameter(invalid.parameter)
-            .with_suggestion("change the value the message names"));
-    }
     let mut solver = solvers.take()?;
-    let started = solver
-        .stopper()
-        .and_then(|_| solver.drag_begin(begin.clone()));
-    let started = match started {
-        Ok(started) => started,
+    let (begin, started) = match prepared(solver.as_mut(), prepare) {
+        Ok(prepared) => prepared,
         Err(error) => {
             solvers.give_back(solver);
             return Err(error);
@@ -153,6 +183,7 @@ pub fn begin(solvers: &SketchSolvers, begin: DragBegin) -> Result<Begun, Error> 
     let shared = Arc::new(Shared {
         state: Mutex::new(State::default()),
         changed: Condvar::new(),
+        notify,
     });
     let running = Arc::clone(&shared);
     let back = solvers.clone();
@@ -162,6 +193,8 @@ pub fn begin(solvers: &SketchSolvers, begin: DragBegin) -> Result<Begun, Error> 
             let _guard = Unwinding(&running);
             let solver = drag(&running, solver, &begin);
             back.give_back(solver);
+            lock(&running.state).done = true;
+            running.changed();
         })
         .map_err(|e| thread_error("drag", &e))?;
     Ok(Begun::Open {
@@ -170,6 +203,32 @@ pub fn begin(solvers: &SketchSolvers, begin: DragBegin) -> Result<Begun, Error> 
             thread: Some(thread),
         },
         dofs: started.dofs,
+    })
+}
+
+/// The begin state made on `solver`, checked, and the drag begun on it.
+fn prepared(
+    solver: &mut dyn SketchSolver,
+    prepare: impl FnOnce(&mut dyn SketchSolver) -> Result<DragBegin, Error>,
+) -> Result<(DragBegin, DragStarted), Error> {
+    // `prepare` readies the solver for what it sends, as any solve's caller does.
+    let begin = prepare(solver)?;
+    checked_begin(&begin)?;
+    solver.stopper()?;
+    let started = solver.drag_begin(begin.clone())?;
+    if let Err(error) = checked_tags(&begin.system, &started.conflicting) {
+        solver.distrust();
+        return Err(error);
+    }
+    Ok((begin, started))
+}
+
+/// `begin`'s own check, as the worker makes it: refused naming its parameter.
+fn checked_begin(begin: &DragBegin) -> Result<(), Error> {
+    begin.check().map_err(|invalid| {
+        Error::new(ErrorCode::InvalidInput, invalid.message)
+            .with_parameter(invalid.parameter)
+            .with_suggestion("change the value the message names")
     })
 }
 
@@ -192,20 +251,49 @@ impl DragSession {
             settle(&mut state, replaced, MoveOutcome::Dropped);
         }
         drop(state);
-        self.shared.changed.notify_all();
+        self.shared.changed();
         Ok(MoveTicket {
             shared: Arc::clone(&self.shared),
             id,
         })
     }
 
+    /// Stops the move solving now, if one is, by restarting its worker (`cancel` of a
+    /// `drag_move`): it answers [`MoveOutcome::Cancelled`], and the drag ends, as its worker's
+    /// session does. Doesn't wait. Whether a move was solving.
+    pub fn cancel_move(&self) -> bool {
+        let mut state = lock(&self.shared.state);
+        match state.running.clone() {
+            Some((_, Some(stopper))) => {
+                state.cancelling = true;
+                drop(state);
+                stopper.stop();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the drag is still open: no end, no failure, no cancel yet.
+    pub fn is_open(&self) -> bool {
+        let state = lock(&self.shared.state);
+        state.closed.is_none() && state.end.is_none()
+    }
+
+    /// Why the drag is no longer open, if it isn't.
+    pub fn closed(&self) -> Option<Error> {
+        lock(&self.shared.state).closed.clone()
+    }
+
     /// Ends the drag. With a cursor `to`: the sketch moved from the begin state to `to` (the
     /// newest solved move's values, if its cursor is `to`'s bits, or one move more) and solved
     /// as a whole; the begin state kept if either fails. With none: nothing kept, a move
-    /// solving now stopped by restarting the worker. A move waiting is dropped either way.
-    /// Refused: a cursor that isn't finite or is out of reach (the drag ended with nothing
-    /// kept); a drag that had already ended (why); and a worker that failed the end's move,
-    /// its end, or its solve (its error).
+    /// solving now stopped by restarting the worker, and a drag its worker's failure already
+    /// ended answered alike. A move waiting is dropped either way. Refused: a cursor that
+    /// isn't finite or is out of reach (the drag ended with nothing kept); a cursor for a
+    /// drag that had already ended (why, a failure's with the worker's own code); and a
+    /// worker that failed the end's move or its solve, or answered what it can't be trusted
+    /// for (its error).
     pub fn end(mut self, to: Option<[f64; 2]>) -> Result<Ended, Error> {
         let _span = tracing::info_span!("drag_end", cursor = to.is_some()).entered();
         let refused = to.and_then(|to| check_drag_target(to).err());
@@ -222,7 +310,7 @@ impl DragSession {
     /// Asks the drag's thread to end with `to`, and waits for it.
     fn finish(&mut self, to: Option<[f64; 2]>) -> Result<Ended, Error> {
         let mut state = lock(&self.shared.state);
-        if state.end.is_none() && state.ended.is_none() {
+        if state.end.is_none() && state.ended.is_none() && state.closed.is_none() {
             state.end = Some(to);
             if to.is_none()
                 && let Some((_, Some(stopper))) = state.running.clone()
@@ -231,22 +319,31 @@ impl DragSession {
                 stopper.stop();
             }
         }
-        self.shared.changed.notify_all();
-        while state.ended.is_none() {
+        drop(state);
+        self.shared.changed();
+        let mut state = lock(&self.shared.state);
+        while state.ended.is_none() && !state.done {
             state = self
                 .shared
                 .changed
                 .wait(state)
                 .unwrap_or_else(PoisonError::into_inner);
         }
-        let ended = state
-            .ended
-            .clone()
-            .unwrap_or_else(|| Err(no_drag("its thread ended")));
+        let ended = match (state.ended.clone(), &state.closed, to) {
+            (Some(ended), _, _) => ended,
+            // Ended by a failure before this end: nothing to keep, as Esc asks; a cursor
+            // is refused, saying why.
+            (None, _, None) => Ok(Ended {
+                kept: Kept::Begin,
+                solved: None,
+            }),
+            (None, Some(closed), Some(_)) => Err(closed.clone()),
+            (None, None, Some(_)) => Err(no_drag("its thread ended")),
+        };
         drop(state);
         if let Some(thread) = self.thread.take() {
-            // The thread has set its end, so it's ending: it gives its solver back, and
-            // returns. A thread that panicked has nothing more to say.
+            // The thread has set its end, or closed the drag, so it's returning. A thread
+            // that panicked has nothing more to say.
             let _ = thread.join();
         }
         ended
@@ -327,9 +424,10 @@ impl Drop for Unwinding<'_> {
         if state.ended.is_none() {
             state.ended = Some(Err(why.clone()));
         }
-        state.closed = Some(no_drag("its thread panicked").with_cause(why.message().to_owned()));
+        state.closed = Some(why);
+        state.done = true;
         drop(state);
-        self.0.changed.notify_all();
+        self.0.changed();
     }
 }
 
@@ -340,6 +438,8 @@ fn drag(
     mut solver: Box<dyn SketchSolver>,
     begin: &DragBegin,
 ) -> Box<dyn SketchSolver> {
+    // Each frame holds every value outside the part where the drag began.
+    let part = begin.part();
     loop {
         let mut state = lock(&shared.state);
         while state.waiting.is_none() && state.end.is_none() {
@@ -354,12 +454,12 @@ fn drag(
             }
             let last = state.last.clone();
             drop(state);
-            let ended = ending(solver.as_mut(), begin, to, last);
+            let ended = ending(solver.as_mut(), begin, &part, to, last);
             let mut state = lock(&shared.state);
             state.closed = Some(no_drag("it ended"));
             state.ended = Some(ended);
             drop(state);
-            shared.changed.notify_all();
+            shared.changed();
             return solver;
         }
         let Some((id, to)) = state.waiting.take() else {
@@ -368,12 +468,10 @@ fn drag(
         let stopper = match solver.session_stopper() {
             Ok(stopper) => stopper,
             Err(error) => {
-                state
-                    .outcomes
-                    .insert(id, MoveOutcome::Failed(error.clone()));
-                close(&mut state, error);
+                settle(&mut state, id, MoveOutcome::Failed(error.clone()));
+                close(&mut state, &error);
                 drop(state);
-                shared.changed.notify_all();
+                shared.changed();
                 return solver;
             }
         };
@@ -383,19 +481,13 @@ fn drag(
             let _span = tracing::debug_span!("drag_move").entered();
             solver.drag_move(to, DRAG_MOVE_TIMEOUT)
         };
-        // A frame of values that can't be the sketch's is the worker's fault, as a solve's
-        // is (`Translation::check_reply`).
-        let solved = solved.and_then(|moved| match &moved.values {
-            Some(values) if moved.status == SolveStatus::Success => {
-                match checked(&begin.system, values, "frame") {
-                    Ok(()) => Ok(moved),
-                    Err(error) => {
-                        solver.distrust();
-                        Err(error)
-                    }
-                }
+        // A frame that can't be the sketch's is the worker's fault, as a solve's is.
+        let solved = solved.and_then(|moved| match checked_frame(&part, &moved) {
+            Ok(()) => Ok(moved),
+            Err(error) => {
+                solver.distrust();
+                Err(error)
             }
-            _ => Ok(moved),
         });
         let mut state = lock(&shared.state);
         state.running = None;
@@ -406,13 +498,13 @@ fn drag(
                 }
                 settle(&mut state, id, MoveOutcome::Solved { to, moved });
                 drop(state);
-                shared.changed.notify_all();
+                shared.changed();
             }
             // Refused by the worker, which keeps its drag: the drag goes on.
             Err(error) if !error.code().is_kernel_fault() && !state.cancelling => {
                 settle(&mut state, id, MoveOutcome::Refused(error));
                 drop(state);
-                shared.changed.notify_all();
+                shared.changed();
             }
             Err(error) => {
                 // The worker failed or was stopped: its session went with it.
@@ -422,30 +514,39 @@ fn drag(
                     MoveOutcome::Failed(error.clone())
                 };
                 settle(&mut state, id, outcome);
-                close(&mut state, error);
+                close(&mut state, &error);
                 drop(state);
-                shared.changed.notify_all();
+                shared.changed();
                 return solver;
             }
         }
     }
 }
 
-/// The drag no longer open, for `why`: a move waiting dropped, and an end asked for (or
-/// one to come) answered: with no cursor, nothing kept; with one, refused, as the drag
-/// ended first.
-fn close(state: &mut State, why: Error) {
+/// The drag no longer open, for `why`: a move waiting dropped, and an end already asked
+/// for answered (with no cursor, or by a cancel, nothing kept; with one, refused, as the
+/// drag ended first). A failure is said with the worker's own code, so it's a fault, not the
+/// client's; a cancel as no drag being open.
+fn close(state: &mut State, why: &Error) {
     if let Some((dropped, _)) = state.waiting.take() {
         settle(state, dropped, MoveOutcome::Dropped);
     }
-    let closed = no_drag("its worker failed").with_cause(why.message().to_owned());
-    state.ended = Some(match (state.cancelling, state.end) {
-        (true, _) | (false, Some(None)) => Ok(Ended {
-            kept: Kept::Begin,
-            solved: None,
-        }),
-        _ => Err(closed.clone()),
-    });
+    let closed = if state.cancelling {
+        no_drag("its move was stopped")
+    } else {
+        Error::new(why.code(), "no drag is open: its worker failed")
+            .with_cause(why.message().to_owned())
+            .with_suggestion("begin the drag again: the next begin starts another worker")
+    };
+    if let Some(end) = state.end {
+        state.ended = Some(match (state.cancelling, end) {
+            (true, _) | (false, None) => Ok(Ended {
+                kept: Kept::Begin,
+                solved: None,
+            }),
+            (false, Some(_)) => Err(closed.clone()),
+        });
+    }
     state.closed = Some(closed);
 }
 
@@ -457,6 +558,7 @@ fn close(state: &mut State, why: Error) {
 fn ending(
     solver: &mut dyn SketchSolver,
     begin: &DragBegin,
+    part: &SketchSystem,
     to: Option<[f64; 2]>,
     last: Option<([u64; 2], Vec<f64>)>,
 ) -> Result<Ended, Error> {
@@ -476,16 +578,16 @@ fn ending(
         _ => {
             solver.session_stopper()?;
             match solver.drag_move(to, DRAG_MOVE_TIMEOUT) {
-                Ok(moved) => match (moved.status, moved.values) {
-                    (SolveStatus::Success, Some(values)) => {
-                        if let Err(error) = checked(&begin.system, &values, "frame") {
-                            solver.distrust();
-                            return Err(error);
-                        }
-                        Some(values)
+                Ok(moved) => {
+                    if let Err(error) = checked_frame(part, &moved) {
+                        solver.distrust();
+                        return Err(error);
                     }
-                    _ => None,
-                },
+                    match (moved.status, moved.values) {
+                        (SolveStatus::Success, Some(values)) => Some(values),
+                        _ => None,
+                    }
+                }
                 Err(error) if !error.code().is_kernel_fault() => None,
                 Err(error) => return Err(error),
             }
@@ -502,52 +604,71 @@ fn ending(
     };
     solver.stopper()?;
     let solved = solver.solve(system.clone())?;
+    if let Err(error) = check_solved(&system, &solved) {
+        solver.distrust();
+        return Err(error);
+    }
     match solved.status {
-        SolveStatus::Success | SolveStatus::SolvedExceptRedundant => {
-            if let Err(error) = checked(&system, &solved.values, "solve") {
-                solver.distrust();
-                return Err(error);
-            }
-            Ok(Ended {
-                kept: Kept::Cursor,
-                solved: Some(solved),
-            })
-        }
+        SolveStatus::Success | SolveStatus::SolvedExceptRedundant => Ok(Ended {
+            kept: Kept::Cursor,
+            solved: Some(solved),
+        }),
         _ => Ok(kept_begin),
     }
 }
 
-/// Refuses `values` as the worker's `what` of `system` unless they could be: as many as it
-/// has, its fixed ones as sent, bit for bit, and every one within reach (as a solve's are
-/// checked, `Translation::check_reply`).
-fn checked(system: &SketchSystem, values: &[f64], what: &str) -> Result<(), Error> {
+/// Refuses a frame unless it could be `part`'s: values exactly with a `Success`, as many as
+/// it has, its fixed ones (every value outside the part too) as sent, bit for bit, and
+/// every one within reach.
+fn checked_frame(part: &SketchSystem, moved: &Moved) -> Result<(), Error> {
     let bad = |problem: String| {
         Err(Error::new(
             ErrorCode::ProtocolError,
-            format!("the sketch worker's drag {what} {problem}"),
+            format!("the sketch worker's drag frame {problem}"),
         )
         .with_suggestion("begin the drag again: its worker is started again"))
     };
-    if values.len() != system.values.len() {
+    let values = match (moved.status, &moved.values) {
+        (SolveStatus::Success, Some(values)) => values,
+        (SolveStatus::Success, None) => return bad("is a success with no values".to_owned()),
+        (status, Some(_)) => return bad(format!("has values with the status {status:?}")),
+        (_, None) => return Ok(()),
+    };
+    if values.len() != part.values.len() {
         return bad(format!(
             "has {} values for {} sent",
             values.len(),
-            system.values.len()
+            part.values.len()
         ));
     }
-    for (i, (sent, got)) in system.values.iter().zip(values).enumerate() {
-        let unknown = u32::try_from(i).is_ok_and(|i| {
-            system
-                .unknowns
-                .binary_search(&silico_protocol::Value(i))
-                .is_ok()
-        });
+    for (i, (sent, got)) in part.values.iter().zip(values).enumerate() {
+        let unknown =
+            u32::try_from(i).is_ok_and(|i| part.unknowns.binary_search(&Value(i)).is_ok());
         if !unknown && sent.to_bits() != got.to_bits() {
             return bad(format!("moves value {i}, which is fixed"));
         }
         if !silico_protocol::within_reach(*got) {
             return bad(format!("has value {i} out of reach"));
         }
+    }
+    Ok(())
+}
+
+/// Refuses a begin's constraints in conflict unless they're tags `system` was sent, in
+/// increasing order, each once.
+fn checked_tags(system: &SketchSystem, conflicting: &[Tag]) -> Result<(), Error> {
+    let sent: BTreeSet<Tag> = system
+        .constraints
+        .iter()
+        .filter_map(SolverConstraint::tag)
+        .collect();
+    if conflicting.windows(2).any(|w| w[0] >= w[1]) || conflicting.iter().any(|t| !sent.contains(t))
+    {
+        return Err(Error::new(
+            ErrorCode::ProtocolError,
+            "the sketch worker's drag begin lists conflicting tags it wasn't sent, or out of order",
+        )
+        .with_suggestion("begin the drag again: its worker is started again"));
     }
     Ok(())
 }

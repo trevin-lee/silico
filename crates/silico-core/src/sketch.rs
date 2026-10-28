@@ -357,7 +357,8 @@ impl SketchSolver for SketchWorker {
 
     fn drag_end(&mut self) -> Result<(), Error> {
         self.usable()?;
-        match self.call(Op::DragEnd, self.timeout)? {
+        // A drag's end does no solving: past a move's limit, the worker is hung.
+        match self.call(Op::DragEnd, crate::drag::DRAG_MOVE_TIMEOUT)? {
             Reply::Done => Ok(()),
             other => Err(self.wrong_reply("DragEnd", &other)),
         }
@@ -429,6 +430,76 @@ impl SketchWorker {
             format!("the sketch worker replied to {name} with {}", reply.kind()),
         )
     }
+}
+
+/// Refuses `solved` unless it could be the solution of `sent`: as many values, its fixed
+/// ones as sent, every value within reach (one that can't be built may not be), lists of
+/// tags sent and unknowns, in order, a residual for each tag sent, and an algorithm exactly
+/// where a solution is given ([`Translation::check_reply`]'s, and a drag's closing solve's).
+/// A worker that answers otherwise can't be trusted.
+pub(crate) fn check_solved(sent: &SketchSystem, solved: &Solved) -> Result<(), Error> {
+    let bad = |what: String| {
+        Err(Error::new(
+            ErrorCode::ProtocolError,
+            format!("the sketch worker's solution {what}"),
+        ))
+    };
+    if solved.values.len() != sent.values.len() {
+        return bad(format!(
+            "has {} values for {} sent",
+            solved.values.len(),
+            sent.values.len()
+        ));
+    }
+    for (i, (a, b)) in sent.values.iter().zip(&solved.values).enumerate() {
+        let unknown = sent.unknowns.binary_search(&Value(i as u32)).is_ok();
+        if !unknown && a.to_bits() != b.to_bits() {
+            return bad(format!("moves value {i}, which is fixed"));
+        }
+        // A solution that can't be built may be out of reach: it's named, not used.
+        if solved.status != SolveStatus::SolvedInvalid && !silico_protocol::within_reach(*b) {
+            return bad(format!("has value {i} out of reach"));
+        }
+    }
+    let mut tags: Vec<Tag> = sent
+        .constraints
+        .iter()
+        .filter_map(SolverConstraint::tag)
+        .collect();
+    tags.sort_unstable();
+    for (name, list) in [
+        ("conflicting", &solved.conflicting),
+        ("redundant", &solved.redundant),
+        ("partially redundant", &solved.partially_redundant),
+    ] {
+        if list.windows(2).any(|w| w[0] >= w[1]) || list.iter().any(|t| !tags.contains(t)) {
+            return bad(format!("lists {name} tags it wasn't sent, or out of order"));
+        }
+    }
+    if solved.free.windows(2).any(|w| w[0] >= w[1])
+        || solved
+            .free
+            .iter()
+            .any(|v| sent.unknowns.binary_search(v).is_err())
+    {
+        return bad("lists free values that aren't unknowns, or out of order".to_owned());
+    }
+    if solved
+        .residuals
+        .iter()
+        .map(|(t, _)| *t)
+        .ne(tags.iter().copied())
+    {
+        return bad("has residuals for other tags than were sent".to_owned());
+    }
+    let solution = matches!(
+        solved.status,
+        SolveStatus::Success | SolveStatus::SolvedExceptRedundant | SolveStatus::SolvedInvalid
+    );
+    if solution != solved.algorithm.is_some_and(|a| ALGORITHMS.contains(&a)) {
+        return bad(format!("is {:?} by {:?}", solved.status, solved.algorithm));
+    }
+    Ok(())
 }
 
 /// What a solved sketch is: where everything is, and what the solve found.
@@ -1629,81 +1700,12 @@ impl Translation {
         Ok(written(&self.sketch, &points, &radii, &references))
     }
 
-    /// The tags sent, in increasing order.
-    fn tags(&self) -> Vec<Tag> {
-        let mut tags: Vec<Tag> = self
-            .system
-            .constraints
-            .iter()
-            .filter_map(SolverConstraint::tag)
-            .collect();
-        tags.sort_unstable();
-        tags
-    }
-
     /// That `solved` answers what was sent: as many values, the fixed ones as sent and all
     /// within reach, lists of tags sent and unknowns, a residual for each tag sent, and an
     /// algorithm exactly where a solution is given. A worker that answers otherwise can't
     /// be trusted.
     pub fn check_reply(&self, solved: &Solved) -> Result<(), Error> {
-        let bad = |what: String| {
-            Err(Error::new(
-                ErrorCode::ProtocolError,
-                format!("the sketch worker's solution {what}"),
-            ))
-        };
-        let sent = &self.system;
-        if solved.values.len() != sent.values.len() {
-            return bad(format!(
-                "has {} values for {} sent",
-                solved.values.len(),
-                sent.values.len()
-            ));
-        }
-        for (i, (a, b)) in sent.values.iter().zip(&solved.values).enumerate() {
-            let unknown = sent.unknowns.binary_search(&Value(i as u32)).is_ok();
-            if !unknown && a.to_bits() != b.to_bits() {
-                return bad(format!("moves value {i}, which is fixed"));
-            }
-            // A solution that can't be built may be out of reach: it's named, not used.
-            if solved.status != SolveStatus::SolvedInvalid && !silico_protocol::within_reach(*b) {
-                return bad(format!("has value {i} out of reach"));
-            }
-        }
-        let tags = self.tags();
-        for (name, list) in [
-            ("conflicting", &solved.conflicting),
-            ("redundant", &solved.redundant),
-            ("partially redundant", &solved.partially_redundant),
-        ] {
-            if list.windows(2).any(|w| w[0] >= w[1]) || list.iter().any(|t| !tags.contains(t)) {
-                return bad(format!("lists {name} tags it wasn't sent, or out of order"));
-            }
-        }
-        if solved.free.windows(2).any(|w| w[0] >= w[1])
-            || solved
-                .free
-                .iter()
-                .any(|v| sent.unknowns.binary_search(v).is_err())
-        {
-            return bad("lists free values that aren't unknowns, or out of order".to_owned());
-        }
-        if solved
-            .residuals
-            .iter()
-            .map(|(t, _)| *t)
-            .ne(tags.iter().copied())
-        {
-            return bad("has residuals for other tags than were sent".to_owned());
-        }
-        let solution = matches!(
-            solved.status,
-            SolveStatus::Success | SolveStatus::SolvedExceptRedundant | SolveStatus::SolvedInvalid
-        );
-        if solution != solved.algorithm.is_some_and(|a| ALGORITHMS.contains(&a)) {
-            return bad(format!("is {:?} by {:?}", solved.status, solved.algorithm));
-        }
-        Ok(())
+        check_solved(&self.system, solved)
     }
 
     /// The ID of the constraint the solver reports as `tag`, if one is.
