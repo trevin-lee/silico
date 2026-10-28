@@ -27,7 +27,7 @@ use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::{Generation, Kernel, Op, Primitive};
 use silico_core::meshes::{MESH_CACHE_BYTES, MeshCache, mesh_level};
 use silico_core::recompute::{FeatureOutcome, Key, Model, Recompute};
-use silico_core::views::{NamedView, depth_of_box, half_pixel_at};
+use silico_core::views::{NamedView, half_pixel_at, meshing_depth};
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{BooleanOp, Camera, Mesh, MeshAt, Projection, Reply};
 
@@ -555,8 +555,9 @@ fn a_perspective_view_gives_each_body_its_own_level_and_meshes_those_behind_and_
     // depth · tan 45° / 1,000. Four 10 mm cubes:
     // - aaaaaaaa at y 0: depth 100, half pixel 0.1, level 2⁻⁴;
     // - bbbbbbbb at y 50: depth 150, half pixel 0.15, level 2⁻³;
-    // - cccccccc at y −300 (behind the eye): depth under 0, taken as 0, so at its floor,
-    //   1e-4 · √300 = 0.00173205, level 2⁻¹⁰, serving [0, 2⁻⁹);
+    // - cccccccc at y −300 (wholly behind the eye): meshed for its distance from the eye,
+    //   which is within its x and z, to its near face at y −290: 190, half pixel 0.19,
+    //   level 2⁻³ (Main's ruling, where the depth along the view, 0, gave the floor);
     // - dddddddd at x 10,000 (far outside the view): depth 100, level 2⁻⁴, never culled.
     let bench = Bench::of(&boxes(&[
         ("aaaaaaaa", [-5.0, 0.0, -5.0], [10.0; 3]),
@@ -573,7 +574,6 @@ fn a_perspective_view_gives_each_body_its_own_level_and_meshes_those_behind_and_
         up: [0.0, 0.0, 1.0],
     };
     let read = bench.read(&of(camera, 1000, 1000)).unwrap();
-    let floor = 300f64.sqrt() * 1e-4;
     let got: Vec<(String, f64, f64, [f64; 2])> = read
         .bodies
         .iter()
@@ -584,12 +584,7 @@ fn a_perspective_view_gives_each_body_its_own_level_and_meshes_those_behind_and_
         [
             ("aaaaaaaa".to_owned(), 0.0625, 0.0625, [0.0625, 0.125]),
             ("bbbbbbbb".to_owned(), 0.125, 0.125, [0.125, 0.25]),
-            (
-                "cccccccc".to_owned(),
-                f64::MIN_POSITIVE,
-                floor,
-                [0.0, 0.001953125]
-            ),
+            ("cccccccc".to_owned(), 0.125, 0.125, [0.125, 0.25]),
             ("dddddddd".to_owned(), 0.0625, 0.0625, [0.0625, 0.125]),
         ]
     );
@@ -598,7 +593,7 @@ fn a_perspective_view_gives_each_body_its_own_level_and_meshes_those_behind_and_
         let h = half_pixel_at(
             &read.camera.camera(),
             1000,
-            depth_of_box(&read.camera.camera(), b.bounds.unwrap()),
+            meshing_depth(&read.camera.camera(), b.bounds.unwrap()),
         )
         .unwrap();
         assert!(b.serves[0] <= h && h < b.serves[1], "{}: {h}", b.feature);
@@ -708,7 +703,12 @@ fn holds_to_the_ladder(read: &MeshesRead, height: u32) -> Result<(), TestCaseErr
     let floor = 2144f64.sqrt() * 1e-4;
     let camera = read.camera.camera();
     let body = &read.bodies[0];
-    let h = half_pixel_at(&camera, height, depth_of_box(&camera, body.bounds.unwrap())).unwrap();
+    let h = half_pixel_at(
+        &camera,
+        height,
+        meshing_depth(&camera, body.bounds.unwrap()),
+    )
+    .unwrap();
     let level = mesh_level(h).unwrap();
     prop_assert_eq!(body.level, level, "half pixel {}", h);
     prop_assert!(
@@ -948,7 +948,11 @@ fn a_face_the_kernel_couldnt_mesh_on_a_valid_shape_is_named_with_no_triangles() 
     mesh.valid = Some(true);
     let bench = meshing_to(mesh, Arc::new(AtomicBool::new(true)));
     let read = bench.read(&of(front(80.0), 1000, 1000)).unwrap();
-    let counts: Vec<u32> = read.bodies[0].faces.iter().map(|f| f.count).collect();
+    let counts: Vec<u32> = read.bodies[0]
+        .faces
+        .iter()
+        .map(|f| f.count.unwrap())
+        .collect();
     assert_eq!(counts, [1, 1, 1, 1, 0, 1, 1, 1, 1]);
     let map = bench.model.element_map(&id("m3tq8v0z")).unwrap();
     let fifth = map

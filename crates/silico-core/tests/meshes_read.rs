@@ -155,7 +155,7 @@ fn every_body_is_meshed_at_its_views_level_each_face_and_edge_named_by_the_eleme
             let name = map.name(ElementRef { kind, index }).unwrap();
             assert_eq!(element.name, name);
             assert_eq!(element.stable, !map.is_unstable(&name));
-            assert_eq!(element.count, count);
+            assert_eq!(element.count, Some(count));
         }
     }
     assert_eq!(bench.meshed(), [0.03125]);
@@ -233,6 +233,11 @@ fn features_named_are_read_in_timeline_order_a_consumed_solid_numbered_none() {
             ("m3tq8v0z".to_owned(), Some(1))
         ]
     );
+    // Its own box, the block's: (0, 0, 0) to (40, 20, 10).
+    assert_eq!(
+        read.bodies[0].bounds,
+        Some([[0.0, 0.0, 0.0], [40.0, 20.0, 10.0]])
+    );
     // A box's faces on the fake: 6, named as the box's map names them.
     assert_eq!(read.bodies[0].faces.len(), 6);
     assert_eq!(
@@ -240,6 +245,27 @@ fn features_named_are_read_in_timeline_order_a_consumed_solid_numbered_none() {
         "k7f2qx3m.box.Face1"
     );
     assert!(read.bodies[0].faces.iter().all(|f| f.stable));
+}
+
+#[test]
+fn a_consumed_solid_in_a_perspective_view_is_meshed_for_its_own_nearest_depth() {
+    // From (20, −100, 5) along +y, 40° high over 1,000 pixels: the block's near face at
+    // y = 0 is 100 deep, a half pixel of 100 · tan 20° / 1000 = 0.036397, so 2⁻⁵.
+    let bench = Bench::of(EXAMPLE);
+    let camera = Camera {
+        projection: Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        ..front(80.0)
+    };
+    let read = bench
+        .read(&Meshes {
+            features: Some(vec![id("k7f2qx3m")]),
+            ..of(camera, 1000, 1000)
+        })
+        .unwrap();
+    assert_eq!(read.bodies[0].body, None);
+    assert_eq!(read.bodies[0].level, 0.03125);
 }
 
 #[test]
@@ -302,7 +328,16 @@ fn a_mesh_the_client_holds_is_named_but_not_given() {
     let body = &read.bodies[0];
     assert!(body.held);
     assert!(body.mesh.is_none());
+    // Named, without their counts, which came with the geometry.
     assert_eq!((body.faces.len(), body.edges.len()), (9, 15));
+    assert!(
+        body.faces
+            .iter()
+            .chain(&body.edges)
+            .all(|e| e.count.is_none())
+    );
+    // Answered without the kernel: the client holds the mesh, kept or not.
+    assert!(bench.meshed().is_empty());
     // Held at another deflection, it's given.
     let read = bench
         .read(&Meshes {
@@ -350,4 +385,75 @@ fn a_named_view_fits_every_body_as_renders_does() {
     .unwrap();
     assert_eq!(read.camera, rendered.result.camera);
     assert_eq!(bench.meshed().len(), 1);
+}
+
+#[test]
+fn a_body_wholly_behind_the_eye_is_meshed_for_its_distance_as_one_in_front_at_that_depth() {
+    // The eye at the origin looking along +y, 40° high, over 1,000 pixels: at depth d a half
+    // pixel is d · tan 20° / 1000. A 2 mm cube 100 mm in front, its near face at y = 100
+    // (depth 100), and one behind, its near face at y = −100 (100 mm from the eye, the eye
+    // within its x and z): each 100 · 0.36397 / 1000 = 0.036397, so 2⁻⁵. One 1,000 mm
+    // behind: 0.36397, so 2⁻² (0.25), coarser.
+    let cube = |id: &str, y: f64| {
+        format!(
+            r#"{{"id": "{id}", "type": "box", "v": 1, "name": "Cube", "position": [-1, {y}, -1], "length": 2, "width": 2, "height": 2}}"#
+        )
+    };
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}, {}, {}]}}"#,
+        cube("f0000001", 100.0),
+        cube("b0000001", -102.0),
+        cube("b0000002", -1002.0)
+    );
+    let bench = Bench::of(&text);
+    let camera = Camera {
+        projection: Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        eye: [0.0, 0.0, 0.0],
+        target: [0.0, 10.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    };
+    let read = bench.read(&of(camera, 1000, 1000)).unwrap();
+    let levels: Vec<(String, f64)> = read
+        .bodies
+        .iter()
+        .map(|b| (b.feature.to_string(), b.level))
+        .collect();
+    assert_eq!(
+        levels,
+        [
+            ("f0000001".to_owned(), 0.03125),
+            ("b0000001".to_owned(), 0.03125),
+            ("b0000002".to_owned(), 0.25),
+        ]
+    );
+    // Each meshed at its level: above its floor (2√3 · 1e-4).
+    assert!(read.bodies.iter().all(|b| b.deflection == b.level));
+}
+
+#[test]
+fn a_held_view_reads_again_with_no_mesh_made_though_the_cache_keeps_none() {
+    // The architecture review's case: a cache that keeps nothing (bound 0), as one past its
+    // bound by other sessions' meshes is. The first read meshes; three more, the mesh held,
+    // ask the kernel nothing.
+    let bench = Bench {
+        meshes: MeshCache::new(0),
+        ..Bench::of(EXAMPLE)
+    };
+    let first = bench.read(&of(front(80.0), 1000, 1000)).unwrap();
+    let body = &first.bodies[0];
+    let held = Meshes {
+        held: vec![Held {
+            key: body.key,
+            deflection: body.deflection,
+        }],
+        ..of(front(80.0), 1000, 1000)
+    };
+    for _ in 0..3 {
+        let again = bench.read(&held).unwrap();
+        assert!(again.bodies[0].held && again.bodies[0].mesh.is_none());
+        assert_eq!(again.bodies[0].serves, body.serves);
+    }
+    assert_eq!(bench.meshed(), [0.03125]);
 }

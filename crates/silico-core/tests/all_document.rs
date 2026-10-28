@@ -102,6 +102,8 @@ mod mass_properties;
 mod measures;
 #[path = "meshes_read.rs"]
 mod meshes_read;
+#[path = "meshes_read_worker_faults.rs"]
+mod meshes_read_worker_faults;
 #[path = "reach.rs"]
 mod reach;
 #[path = "refused_from_a_partial_cache.rs"]

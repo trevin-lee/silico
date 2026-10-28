@@ -18,7 +18,9 @@ use silico_protocol::{Camera, Mesh};
 
 use super::Problems;
 use super::elements::built;
-use super::render::{AnsweredCamera, Body, asked_view, bodies, camera_for, eye_outside, meshed};
+use super::render::{
+    AnsweredCamera, Body, asked_view, bodies, camera_for, eye_outside, level_of, meshed,
+};
 use crate::document::FeatureId;
 use crate::kernel::{ElementKind, ElementRef, Kernel};
 use crate::meshes::{MeshCache, mesh_level};
@@ -89,12 +91,13 @@ pub struct MeshedBody {
 }
 
 /// A mesh face or edge: its element map's own name for it, whether that name is stable,
-/// and how many of the mesh's triangles (a face) or edge points (an edge) are its.
+/// and how many of the mesh's triangles (a face) or edge points (an edge) are its, given
+/// with the geometry (none for a mesh the client holds, which has them).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeshElement {
     pub name: Arc<Name>,
     pub stable: bool,
-    pub count: u32,
+    pub count: Option<u32>,
 }
 
 /// What a mesh read runs on: the read's kernel client and the meshes kept beside the
@@ -142,71 +145,94 @@ pub fn meshes<K: Kernel>(
     let solids: Vec<Body> = chosen.iter().map(|(solid, _)| solid.clone()).collect();
     // An eye inside any body is refused, as render refuses it, asked for or not.
     eye_outside(&camera, &all, on.kernel, session_closed)?;
-    let kept: Vec<&Body> = solids.iter().collect();
-    let made = meshed(
-        &camera,
-        request.height,
-        &kept,
-        on.kernel,
-        on.meshes,
-        session_closed,
-    )?;
     let held: BTreeSet<(Key, u64)> = request
         .held
         .iter()
         .map(|h| (h.key, h.deflection.to_bits()))
         .collect();
+    // A body the client holds at the deflection it would be meshed at is answered without
+    // the kernel, whether or not the shared cache still keeps its mesh: a held view of an
+    // unchanged model never meshes again.
+    let planned: Vec<(f64, f64)> = solids
+        .iter()
+        .map(|solid| {
+            let level = level_of(&camera, request.height, solid);
+            (level, on.meshes.deflection_for(&solid.key, level))
+        })
+        .collect();
+    let to_mesh: Vec<&Body> = solids
+        .iter()
+        .zip(&planned)
+        .filter(|(solid, (_, deflection))| !held.contains(&(solid.key, deflection.to_bits())))
+        .map(|(solid, _)| solid)
+        .collect();
+    let mut made = meshed(
+        &camera,
+        request.height,
+        &to_mesh,
+        on.kernel,
+        on.meshes,
+        session_closed,
+    )?
+    .into_iter();
     let bodies = solids
         .iter()
         .zip(&chosen)
-        .zip(made)
-        .map(|((solid, (_, number)), made)| {
-            // A mesh of another number of elements than the solid's is the worker's: it's
-            // dropped from the cache (render may have kept it), so the next read asks again.
-            if let Some(summary) = solid.built.summary() {
-                let (faces, edges) = (
-                    made.mesh.face_triangles.len(),
-                    made.mesh.edge_point_counts.len(),
-                );
-                if (faces, edges) != (summary.faces as usize, summary.edges as usize) {
-                    on.meshes.forget(&solid.key, made.deflection);
-                    return Err(inconsistent(
-                        solid.id,
-                        format!(
-                            "a mesh of {faces} faces and {edges} edges, for a solid of {} and {}",
-                            summary.faces, summary.edges
-                        ),
-                    ));
-                }
-            }
+        .zip(planned)
+        .map(|((solid, (_, number)), (level, deflection))| {
             let map = model
                 .element_map(solid.id)
                 .ok_or_else(|| unnamed(solid.id))?;
-            let faces = named(map, ElementKind::Face, &made.mesh.face_triangles, solid.id)?;
+            let (level, deflection, mesh) = if held.contains(&(solid.key, deflection.to_bits())) {
+                (level, deflection, None)
+            } else {
+                let Some(made) = made.next() else {
+                    return Err(Problems::from(
+                        Error::new(
+                            ErrorCode::Internal,
+                            format!("{} was asked to be meshed, and no mesh came", solid.id),
+                        )
+                        .with_feature(solid.id.as_str())
+                        .with_suggestion(SILICO_BUG),
+                    ));
+                };
+                consistent(solid, map, &made.mesh, on.meshes, made.deflection)?;
+                (made.level, made.deflection, Some(made.mesh))
+            };
+            // Held at the deflection the kernel used (a floor it didn't know before): the
+            // client has it too.
+            let is_held = held.contains(&(solid.key, deflection.to_bits()));
+            let mesh = mesh.filter(|_| !is_held);
+            // Each element's count comes with the geometry only, so a held body's answer is
+            // the same whether its mesh was kept or made again.
+            let faces = named(
+                map,
+                ElementKind::Face,
+                mesh.as_deref().map(|m| m.face_triangles.as_slice()),
+                solid.id,
+            )?;
             let edges = named(
                 map,
                 ElementKind::Edge,
-                &made.mesh.edge_point_counts,
+                mesh.as_deref().map(|m| m.edge_point_counts.as_slice()),
                 solid.id,
             )?;
             // At its floor when the kernel used more than was asked: a function of the read
             // and the solid alone, never of what the shared cache has seen.
-            let at_floor = made.deflection > made.level;
-            let serves = match (at_floor, mesh_level(made.deflection)) {
+            let serves = match (deflection > level, mesh_level(deflection)) {
                 (true, Some(floor_level)) => [0.0, 2.0 * floor_level],
-                _ => [made.level, 2.0 * made.level],
+                _ => [level, 2.0 * level],
             };
-            let is_held = held.contains(&(solid.key, made.deflection.to_bits()));
             Ok(MeshedBody {
                 feature: solid.id.clone(),
                 body: *number,
                 key: solid.key,
-                level: made.level,
-                deflection: made.deflection,
+                level,
+                deflection,
                 bounds: solid.bounds,
                 serves,
                 held: is_held,
-                mesh: (!is_held).then_some(made.mesh),
+                mesh,
                 faces,
                 edges,
             })
@@ -311,33 +337,37 @@ fn chosen<'m>(
 fn named(
     map: &ElementMap,
     kind: ElementKind,
-    counts: &[u32],
+    counts: Option<&[u32]>,
     feature: &FeatureId,
 ) -> Result<Vec<MeshElement>, Problems> {
-    // A mesh of another number of elements than the solid's is the worker's (`meshed`
-    // refuses one against the solid's summary; this is the unmeasured solid's check).
-    if counts.len() != map.count(kind) {
-        return Err(inconsistent(
-            feature,
-            format!(
-                "a mesh of {} {kind:?}s, for a solid of {}",
-                counts.len(),
-                map.count(kind)
-            ),
+    let total = map.count(kind);
+    // `consistent` has checked the mesh against the solid already: a map that names another
+    // number than its own solid holds is the core's.
+    if let Some(counts) = counts
+        && counts.len() != total
+    {
+        return Err(Problems::from(
+            Error::new(
+                ErrorCode::Internal,
+                format!(
+                    "{feature}'s element map names {total} {kind:?}s, and its mesh, checked, {}",
+                    counts.len()
+                ),
+            )
+            .with_feature(feature.as_str())
+            .with_suggestion(SILICO_BUG),
         ));
     }
-    counts
-        .iter()
-        // The map numbers elements from 1, in the mesh's (OCCT's) order.
-        .zip(1u32..)
-        .map(|(&count, index)| {
+    // The map numbers elements from 1, in the mesh's (OCCT's) order.
+    (1u32..)
+        .take(total)
+        .enumerate()
+        .map(|(place, index)| {
             let Some(name) = map.name(ElementRef { kind, index }) else {
                 return Err(Problems::from(
                     Error::new(
                         ErrorCode::Internal,
-                        format!(
-                            "{feature}'s element map names fewer {kind:?}s than its mesh holds"
-                        ),
+                        format!("{feature}'s element map has no name for its {kind:?} {index}"),
                     )
                     .with_feature(feature.as_str())
                     .with_suggestion(SILICO_BUG),
@@ -346,10 +376,37 @@ fn named(
             Ok(MeshElement {
                 stable: !map.is_unstable(&name),
                 name,
-                count,
+                count: counts.map(|counts| counts[place]),
             })
         })
         .collect()
+}
+
+/// Refuses `mesh` if its faces or edges don't number `solid`'s, as the worker's: by its
+/// summary, or, for a solid never measured, its element map. It's dropped from the shared
+/// cache (render may have kept it) either way, so the next read asks again.
+fn consistent(
+    solid: &Body,
+    map: &ElementMap,
+    mesh: &Mesh,
+    cache: &MeshCache<Key>,
+    deflection: f64,
+) -> Result<(), Problems> {
+    let (want_faces, want_edges) = match solid.built.summary() {
+        Some(summary) => (summary.faces as usize, summary.edges as usize),
+        None => (map.count(ElementKind::Face), map.count(ElementKind::Edge)),
+    };
+    let (faces, edges) = (mesh.face_triangles.len(), mesh.edge_point_counts.len());
+    if (faces, edges) == (want_faces, want_edges) {
+        return Ok(());
+    }
+    cache.forget(&solid.key, deflection);
+    Err(inconsistent(
+        solid.id,
+        format!(
+            "a mesh of {faces} faces and {edges} edges, for a solid of {want_faces} and {want_edges}"
+        ),
+    ))
 }
 
 /// A worker's mesh that isn't its solid's, as the kernel client refuses an inconsistent one.

@@ -229,6 +229,43 @@ pub fn depth_of_box(camera: &Camera, [low, high]: [[f64; 3]; 2]) -> f64 {
     least.max(0.0)
 }
 
+/// The depth a body is meshed for (docs/design/m5.0-app.md, `meshes`): its box's nearest
+/// depth along the view (`depth_of_box`), or, for a box wholly behind the eye's plane, the
+/// distance from the eye to the box's nearest point. So a body just behind the camera has
+/// about the level it needs when a turn brings it into view, and one far behind a coarse
+/// one, where the depth along the view would give every such body the finest mesh there is
+/// (it's 0 for them). `render` culls those bodies, so it meets only `depth_of_box`'s case.
+pub fn meshing_depth(camera: &Camera, [low, high]: [[f64; 3]; 2]) -> f64 {
+    let Ok(frame) = camera.frame() else {
+        return 0.0;
+    };
+    let mut farthest = f64::NEG_INFINITY;
+    for i in 0..8 {
+        let corner = [
+            if i & 1 == 0 { low[0] } else { high[0] },
+            if i & 2 == 0 { low[1] } else { high[1] },
+            if i & 4 == 0 { low[2] } else { high[2] },
+        ];
+        let d = [
+            corner[0] - camera.eye[0],
+            corner[1] - camera.eye[1],
+            corner[2] - camera.eye[2],
+        ];
+        farthest = farthest.max(-dot(d, frame.back));
+    }
+    if farthest >= 0.0 {
+        return depth_of_box(camera, [low, high]);
+    }
+    // Wholly behind: the eye's distance to the box, from its nearest point.
+    let gap = |k: usize| {
+        (low[k] - camera.eye[k])
+            .max(0.0)
+            .max(camera.eye[k] - high[k])
+    };
+    let (x, y, z) = (gap(0), gap(1), gap(2));
+    libm::sqrt(x * x + y * y + z * z)
+}
+
 /// Whether `camera`'s view, `width` by `height` pixels, may see any of a tight box,
 /// `[low, high]`: false only when the whole box is outside the view (beside an orthographic
 /// view's sides, which don't clip along the view; or behind a perspective eye, or past one

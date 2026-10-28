@@ -26,7 +26,7 @@ use crate::meshes::{MeshCache, mesh_level};
 use crate::pool::Pending;
 use crate::recompute::{Built, FeatureOutcome, Key, Model};
 use crate::render::{RenderClient, RenderOutcome, RenderTicket};
-use crate::views::{NamedView, depth_of_box, half_pixel_at, sees};
+use crate::views::{NamedView, half_pixel_at, meshing_depth, sees};
 use crate::worker::SILICO_BUG;
 use crate::{Error, ErrorCode};
 
@@ -751,6 +751,20 @@ pub(crate) fn eye_outside<K: Kernel>(
     Ok(())
 }
 
+/// The level `body` is meshed at for `camera`'s view, `height` pixels high: half a pixel at
+/// its nearest depth along the view (its box's; a point's pixel scales with its depth, not
+/// its distance), its power of two; for a box wholly behind the eye, which only `meshes`
+/// meshes, at its distance from the eye (`meshing_depth`); at no depth (a box reaching the
+/// eye's plane, or none), the finest there is, which meshes at the floor.
+pub(crate) fn level_of(camera: &Camera, height: u32, body: &Body) -> f64 {
+    let depth = body
+        .bounds
+        .map_or(0.0, |bounds| meshing_depth(camera, bounds));
+    half_pixel_at(camera, height, depth)
+        .and_then(mesh_level)
+        .unwrap_or(f64::MIN_POSITIVE)
+}
+
 /// A body's display mesh, the level its view asked for (`mesh_level` of its half pixel, or
 /// the finest there is at no depth), and the deflection the kernel used, the level or the
 /// body's floor.
@@ -781,15 +795,7 @@ pub(crate) fn meshed<K: Kernel>(
             .with_suggestion(SILICO_BUG),
         ));
     }
-    // Half a pixel at the body's nearest depth along the view (its box's; a point's pixel
-    // scales with its depth, not its distance), its power of two; at no depth (a box reaching
-    // the eye's plane, or none), the finest there is, which meshes at the floor.
-    let level = |b: &Body| {
-        let depth = b.bounds.map_or(0.0, |bounds| depth_of_box(camera, bounds));
-        half_pixel_at(camera, height, depth)
-            .and_then(mesh_level)
-            .unwrap_or(f64::MIN_POSITIVE)
-    };
+    let level = |b: &Body| level_of(camera, height, b);
     enum Got {
         Kept(std::sync::Arc<Mesh>),
         Asked(Pending<MeshAt>),

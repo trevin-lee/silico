@@ -67,7 +67,7 @@ fn a_boxs_front_view_mesh_holds_its_six_faces_two_triangles_each_named_as_the_el
     let faces: Vec<(String, bool, u32)> = body
         .faces
         .iter()
-        .map(|f| (f.name.to_string(), f.stable, f.count))
+        .map(|f| (f.name.to_string(), f.stable, f.count.unwrap()))
         .collect();
     let want: Vec<(String, bool, u32)> = (1..=6)
         .map(|i| (format!("b0000001.box.Face{i}"), true, 2))
@@ -99,7 +99,7 @@ fn a_boxs_front_view_mesh_holds_its_six_faces_two_triangles_each_named_as_the_el
     let edges: Vec<(String, bool, u32)> = body
         .edges
         .iter()
-        .map(|e| (e.name.to_string(), e.stable, e.count))
+        .map(|e| (e.name.to_string(), e.stable, e.count.unwrap()))
         .collect();
     let want: Vec<(String, bool, u32)> = (1..=12)
         .map(|i| (format!("b0000001.box.Edge{i}"), true, 2))
