@@ -80,7 +80,28 @@ fn every_case_agrees_with_freecad_modulo_the_note_or_is_a_reported_difference() 
     let differ: Vec<String> = differ.iter().map(ToString::to_string).collect();
     assert!(differ.is_empty(), "{differ:#?}");
     assert!(stale.is_empty(), "{stale:#?}");
-    assert_eq!(shown.len(), KNOWN.len(), "{shown:#?}");
+    // Every known difference of the case file shows (the sweep's are known by their names).
+    let of_the_file = KNOWN
+        .iter()
+        .filter(|k| all.iter().any(|c| c.name == k.case))
+        .count();
+    assert_eq!(shown.len(), of_the_file, "{shown:#?}");
+}
+
+#[test]
+fn the_sweeps_known_case_still_differs_as_known() {
+    // `sketch-edit-sweep --seed 32 --count 500`'s case 490: a merge Silico refuses, pending
+    // decision 13b (#222), that FreeCAD makes.
+    let mut cases = silico_oracle::generate::sketch_edit_cases(32, 500).unwrap();
+    let case = cases.swap_remove(490);
+    assert_eq!(case.name, "edit_32_490");
+    let verdicts = sketch_edit::run(&[case]).unwrap();
+    let (differ, shown, stale) = without_known(verdicts, KNOWN);
+    assert!(
+        differ.is_empty() && stale.is_empty(),
+        "{differ:?} {stale:?}"
+    );
+    assert_eq!(shown.len(), 1);
 }
 
 #[test]

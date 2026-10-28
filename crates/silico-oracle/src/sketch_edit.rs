@@ -799,12 +799,24 @@ pub struct Known {
     pub why: &'static str,
 }
 
-/// The case file's differences the note doesn't explain, each reported with its judgment.
+/// The case file's differences the note doesn't explain, each reported with its judgment;
+/// and the sweep's, by the name a seed gives them, where one is pending a decision.
 pub const KNOWN: &[Known] = &[
     Known {
         case: "remove_line_with_midpoint",
         difference: "FreeCAD has Symmetric(p0000001, p0000002, p0000009) (from k0000010), Silico hasn't; degrees of freedom 10 against FreeCAD's 8",
         why: "FreeCAD's midpoint is a Symmetric of the line's two ends, which the sides keep, so it survives the line's deletion; Silico's midpoint names the line and goes with it; the note doesn't say (its split turns a midpoint into a symmetric of the outer ends, :140)",
+    },
+    Known {
+        case: "merge_holds_own_point_on_line",
+        difference: "Silico refused (its edit refused: invalid_input: merging them would make constraint k0000005 hold p0000004, a point of n0000003, on n0000003 itself (elements k0000005, p0000004, n0000003, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD made the edit (1 line, 1 point, 2 constraints, solve 0 with 3 degrees of freedom)",
+        why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, as the gate refuses that form), and FreeCAD's coincidence makes it, its solve finding nothing worse; whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
+    },
+    // `sketch-edit-sweep --seed 32 --count 500`'s case 490.
+    Known {
+        case: "edit_32_490",
+        difference: "Silico refused (its edit refused: invalid_input: merging them would make constraint k0000028 hold p0000027, a point of n0000005, on n0000005 itself (elements k0000028, p0000027, n0000005, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD made the edit (1 circle, 7 line, 2 point, 14 constraints, solve 0 with 14 degrees of freedom)",
+        why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, as the gate refuses that form), and FreeCAD's coincidence makes it, its solve finding nothing worse; whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
     },
     Known {
         case: "merge_two_locked_ends",

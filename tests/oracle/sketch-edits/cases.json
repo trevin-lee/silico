@@ -1125,5 +1125,18 @@
         ]
       }
     }
+  },
+  {
+    "name": "merge_holds_own_point_on_line",
+    "note": "The sweep's edit_32_490 in small: merging the line's end into a point held on it, 6 mm away, would make the on hold the line's own point on it. Silico's merge refuses that (the own-curve refusal, pending decision 13b of docs/design/m5.0-app.md, #222); FreeCAD's coincidence makes it.",
+    "sketch": "point_on_line",
+    "edit": {
+      "merge": {
+        "points": [
+          "p0000004",
+          "p0000002"
+        ]
+      }
+    }
   }
 ]
