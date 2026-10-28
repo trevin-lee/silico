@@ -197,9 +197,9 @@ jobs:
           # A filler run is cut off after an hour: in random order (cargo-mutants shuffles each
           # shard's share after sharding), so each turn at a slice reaches different mutants.
           if [ -n "$FILLER" ]; then args+=(--shuffle); fi
-          # A tenth of the machine each (3 threads of 30), at least: a long run's seven shards
-          # and the merge lane's can run at once (below), all at the idle weight, and
-          # .github/shard-threads.sh keeps their claims to 28 (2 a shard past 23). At 2
+          # A tenth of the machine each (3 threads of 30), or 2 where that would pass 28 in all:
+          # a long run's seven shards and the merge lane's can run at once (below), all at the
+          # idle weight, and .github/shard-threads.sh keeps their claims within 28. At 2
           # threads a shard (twelve runners), the VM sat 27% idle over a day (2026-10-25,
           # ~/.cache/silico-review/ci-ext4/idle-day-after-3.tsv) while shards queued for a
           # runner: the runners were the limit, not the CPU. A shard takes only CPU nothing
@@ -217,24 +217,24 @@ jobs:
           # A filler shard runs at the idle scheduling class, for the CPU and for I/O, on a
           # runner at the idle weight (as a real shard's is), so it can't slow a gate; a real
           # run's plan cancels the filler going (cancel-filler.sh), and the filler starts
-          # nothing while a real run starts or has a job waiting that a free runner of its
-          # lane could take (filler.yml), but beside a real run's shards already running it
-          # can share the CPU. A quarter of the machine each: up to six run at once (the
-          # runners labelled filler), as many as the idle CPUs feed when the filler starts
-          # them. It has a Cargo home of its own (the toolchains stay on PATH): starved of
-          # CPU, it could hold the package cache's lock, which every other build on the VM
-          # shares, for minutes. And so a target directory of its own (below): dependencies'
-          # fingerprints hold their source's absolute path in the Cargo home, so sharing
-          # target-mutants/ with real shards would make each switch between them rebuild
-          # everything. At least a tenth of the machine each (3 threads of 30), a long run's
-          # shard or another's, and up to a fifth while CPUs sit idle
+          # nothing while a real run starts or has a job waiting that a free runner of its lane
+          # could take (filler.yml), but beside a real run's shards already running it can share
+          # the CPU. A quarter of the machine each: up to six run at once (the runners labelled
+          # filler), as many as the idle CPUs feed when the filler starts them. It has a Cargo
+          # home of its own (the toolchains stay on PATH): starved of CPU, it could hold the
+          # package cache's lock, which every other build on the VM shares, for minutes. And so
+          # a target directory of its own (below): dependencies' fingerprints hold their
+          # source's absolute path in the Cargo home, so sharing target-mutants/ with real
+          # shards would make each switch between them rebuild everything. A tenth of the
+          # machine each (3 threads of 30), a long run's shard or another's, up to a fifth while
+          # CPUs sit idle, and 2 where more could take the shards past 28 in all
           # (.github/shard-threads.sh: those idle as it starts, beyond a quarter kept for a
-          # gate and what other shards hold: 38 in all at most, with every mutants runner
-          # busy). At a fixed 4 threads a long shard (34 in all), the VM reached a load of 103
-          # on 30 threads beside three gates, and a shard's baseline missed a wall clock
-          # (2026-10-27, run 40486344701); a test killed at nextest's limit would count its
-          # mutant as caught. At a fixed 3, a long run's backlog left the VM a third idle once
-          # the merge lane emptied (2026-10-27,
+          # gate, within 28 once every mutants runner that could still start a shard has 2: an
+          # exact bound, 2026-10-28). At a fixed 4 threads a long shard (34 in all), the VM
+          # reached a load of 103 on 30 threads beside three gates, and a shard's baseline
+          # missed a wall clock (2026-10-27, run 40486344701); a test killed at nextest's limit
+          # would count its mutant as caught. At a fixed 3, a long run's backlog left the VM a
+          # third idle once the merge lane emptied (2026-10-27,
           # ~/.cache/silico-review/ci-ext4/idle-after-210.tsv). A gate's own CPU pressure (its
           # runner's cgroup cpu.pressure) over ~10% avg60 is the sign to cut MOST back.
           running=10

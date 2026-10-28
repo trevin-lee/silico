@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
 # How many threads a real mutants shard takes (.github/workflows/mutants.yml): the CPUs idle
-# as it starts, beyond a reserve for one gate and what the other shards running hold, between
-# LEAST and MOST. A shard's runner is at the idle CPU weight, so a gate always wins the CPU
-# from it; the reserve leaves room for a gate that arrives later anyway, and LEAST is what a
-# shard took before (a tenth of the VM). A shard keeps its count to the end, so on a quiet VM
-# a long run's backlog takes the CPU that would otherwise sit idle (2026-10-27: 27 to 51%
-# idle behind seven 3-thread shards).
+# as it starts, beyond a reserve for one gate, between LEAST and MOST, but never so many that
+# the shards' claims could pass 28 (two short of the VM) once every runner a shard could still
+# start on has taken 2. A shard's runner is at the idle CPU weight, so a gate always wins the
+# CPU from it; the reserve leaves room for a gate that arrives later anyway, and LEAST is what
+# a shard took before (a tenth of the VM), or 2 where that would pass the bound. A shard keeps
+# its count to the end. The bound is exact, and costs a long run on a quiet VM speed (about 16
+# to 20 threads, not #221's 32, 2026-10-27): filler, at the idle weight, takes the CPU it
+# leaves (Main, 2026-10-28). Past 28, the shards' tests held to a wall clock time out under
+# load, and one that does counts its mutant as caught.
 #
 # Idle is read as the filler reads it (.github/workflows/filler.yml): /proc/stat over a few
 # seconds, idle and iowait time as a share of every CPU's; and what filler's own runners used
-# meanwhile counts as idle too (below). A moment's idle overstates what's spare (each mutant's
-# rebuild is mostly serial, its tests use every thread), so each shard holds a claim for its
-# count, a file named for its runner instance, until its job ends (`release`), and a shard
-# takes no more than the CPUs no claim and no gate's reserve holds (23 of 30), whatever their
-# phases, and at least LEAST while claims are short of those 23, 2 once they reach them, and
-# none past 28 (below). Shards take turns under a lock, so a long run's seven starting
-# together see each other's claims. A runner instance runs one job at a time, so a claim its
-# job left (a runner that died) is replaced by that instance's next shard; claims older than a
-# shard's longest job (a day) are deleted.
+# meanwhile counts as idle too (below). Each shard holds a claim for its count, a file named
+# for its runner instance, until its job ends (`release`). Shards take turns under a lock, so
+# a long run's seven starting together see each other's claims. A runner instance runs one job
+# at a time, so a claim its job left (a runner that died) is replaced by that instance's next
+# shard; claims older than a shard's longest job (a day) are deleted.
 #
 # Usage: bash .github/shard-threads.sh LEAST MOST   (prints the count and how it was chosen,
 #                                                    the count alone on the first line)
@@ -75,57 +74,37 @@ sample() {
   idle=$((cpus * (idle1 - idle0) / ticks + fillers))
 }
 
-# Past the budget, a shard takes 2 threads, not LEAST; and none starts that would take the
-# claims past the ceiling, two CPUs short of the VM: it waits for a claim to go, polling, up to
-# a bound, then runs at 2 all the same, saying so. Thirteen merge-lane runners (2026-10-28) at
-# LEAST each would claim 39 threads, against the 24 to 28 the shards' tests held to a wall clock
-# were measured at; one of those timed out counts its mutant as caught, which no run shows.
-budget=$((cpus - reserve))
+# No shard's choice may take the claims past the ceiling, two CPUs short of the VM, counting 2
+# for every runner a real shard could still start on: thirteen of them (silico-5 to -12, -15 to
+# -17, -20, -21, as /etc/ci-runner/labels gives `mutants` and `mutants-pr`; .github/workflows/
+# filler.yml lists the same lanes). So the total never passes 28, whatever starts later, and no
+# shard waits. On a quiet VM a long run takes less than it could (its first shards about 4, the
+# rest 2: about 16 to 20 threads, not #221's 32); filler, at the idle weight on silico-5 to -12,
+# -22 and -23, takes what's left. The shards' tests held to a wall clock were measured at 24 to
+# 28 threads (2026-10-27); past that, one timed out counts its mutant as caught, which no run
+# shows (Main, 2026-10-28: an exact bound over long runs' speed).
 ceiling=$((cpus - 2))
-crowded=2
-wait=${SILICO_SHARD_WAIT:-1200}
-poll=${SILICO_SHARD_POLL:-30}
-began=$(date +%s)
-deadline=$((began + wait))
-waited=0
-idle=-
-fillers=-
-while :; do
-  rm -f "$claim"
-  find "$claims" -name 'claim.*' -mmin +1440 -delete
-  claimed=$(find "$claims" -name 'claim.*' -exec cat {} + | awk '{ sum += $1 } END { print sum + 0 }')
-  if [ "$claimed" -lt "$budget" ]; then
-    # Only this choice reads the idle CPUs: a shard waiting holds the lock for no 5 s sample.
-    sample
-    unheld=$((budget - claimed))
-    spare=$((idle - reserve < unheld ? idle - reserve : unheld))
-    threads=$((spare < least ? least : spare > most ? most : spare))
-    why="between $least and $most"
-    break
-  fi
-  if [ $((claimed + crowded)) -le "$ceiling" ]; then
-    threads=$crowded
-    why="$claimed claimed reach the budget of $budget: $crowded"
-    break
-  fi
-  if [ "$(date +%s)" -ge "$deadline" ]; then
-    threads=$crowded
-    why="past the ceiling of $ceiling: $crowded all the same"
-    break
-  fi
-  # Give the lock back while waiting, so shards ending can release their claims. Said on stderr
-  # once, so the job's log shows why its shard hasn't started (stdout is the caller's).
-  if [ "$waited" -eq 0 ]; then
-    echo "shard-threads: $claimed threads claimed, past the ceiling of $ceiling with 2 more: waiting up to ${wait}s for a claim to go" >&2
-  fi
-  flock -u 9
-  sleep "$poll"
-  flock 9
-  waited=$(($(date +%s) - began))
-done
+runners=13
+floor=2
+# Tests only: the idle CPUs to assume instead of sampling them.
+if [ -n "${SILICO_SHARD_IDLE:-}" ]; then
+  sample() { idle=$SILICO_SHARD_IDLE; fillers=0; }
+fi
+sample
+rm -f "$claim"
+find "$claims" -name 'claim.*' -mmin +1440 -delete
+claimed=$(find "$claims" -name 'claim.*' -exec cat {} + | awk '{ sum += $1 } END { print sum + 0 }')
+claiming=$(find "$claims" -name 'claim.*' | wc -l)
+# The runners that could still start a shard after this one, each kept 2.
+later=$((runners - 1 - claiming > 0 ? runners - 1 - claiming : 0))
+allowed=$((ceiling - claimed - floor * later))
+spare=$((idle - reserve))
+threads=$((spare < most ? spare : most))
+threads=$((threads < allowed ? threads : allowed))
+threads=$((threads < least ? least : threads))
+threads=$((threads > allowed ? allowed : threads))
+threads=$((threads < floor ? floor : threads))
 echo "$threads" >"$claim"
 
 echo "$threads"
-if [ "$waited" -gt 0 ]; then why="$why, after waiting ${waited}s for claims to go"; fi
-if [ "$idle" = - ]; then seen="idle not read"; else seen="$idle of $cpus CPUs idle ($fillers of them filler's)"; fi
-echo "$threads threads: $seen, $reserve kept for a gate, $claimed held by other shards ($why)"
+echo "$threads threads: $idle of $cpus CPUs idle ($fillers of them filler's), $reserve kept for a gate, $claimed held by $claiming other shards, $allowed allowed with 2 kept for each of $later more (between $floor and $most)"
