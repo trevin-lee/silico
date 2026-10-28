@@ -3381,14 +3381,24 @@ mod tests {
         // The guard `Worker::spawn` holds until a worker is set up: an early return must not
         // leave the process running.
         let child = std::process::Command::new("sleep")
-            .arg("30")
+            .arg("600")
             .spawn()
             .unwrap();
         let pid = child.id().to_string();
-        // Killed, not only waited for: `sleep` would end on its own after 30 s.
-        let start = std::time::Instant::now();
-        drop(KillOnDrop(Some(child)));
-        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        // Killed, not only waited for: `sleep` would end on its own only after 600 s, so a
+        // guard that waited for it doesn't return within the minute the tests allow for
+        // anything expected, however loaded the machine.
+        let (done, dropped) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(KillOnDrop(Some(child)));
+            let _ = done.send(());
+        });
+        assert!(
+            dropped
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .is_ok(),
+            "the guard's drop didn't return in 60 s"
+        );
         // Gone and reaped: `kill -0` finds no such process.
         let found = std::process::Command::new("kill")
             .args(["-0", &pid])

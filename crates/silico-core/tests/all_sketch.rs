@@ -9,8 +9,12 @@
 mod commands;
 #[path = "common/sketch.rs"]
 mod fixture;
+#[path = "common/lateness.rs"]
+mod lateness;
 #[path = "common/model.rs"]
 mod model;
+#[path = "common/share.rs"]
+mod share;
 #[path = "common/stand_in.rs"]
 mod stand_in;
 #[path = "common/sweeps.rs"]
