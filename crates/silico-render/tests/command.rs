@@ -81,8 +81,9 @@ fn a_render_to_a_file_is_a_png_of_the_size_asked_and_the_result_says_its_bytes()
 #[test]
 fn a_render_through_a_session_cancelled_while_it_runs_answers_cancelled_and_stops_its_worker() {
     // The test worker hangs on a 1 x 7 scene (test_scenes::HANGS). Through the session, the
-    // read's cancel reaches the render: it answers cancelled at once, its worker killed, and
-    // the next render through the session draws.
+    // read's cancel reaches the render: it answers cancelled, its worker killed, and the next
+    // render through the session draws. A render's time here is one no test reaches, so only
+    // the cancel can answer it, or end its worker, within `WAIT`.
     use silico_core::cache::Cache;
     use silico_core::command::{ModelChoice, Sessions};
     use std::time::{Duration, Instant};
@@ -94,7 +95,10 @@ fn a_render_through_a_session_cancelled_while_it_runs_answers_cancelled_and_stop
     let client = Arc::new(
         RenderClient::start(
             std::path::Path::new(crate::common::TEST_WORKER),
-            RenderSettings::default(),
+            RenderSettings {
+                timeout: crate::common::UNREACHED,
+                ..RenderSettings::default()
+            },
         )
         .unwrap(),
     );
@@ -126,23 +130,16 @@ fn a_render_through_a_session_cancelled_while_it_runs_answers_cancelled_and_stop
     }
     let pid = client.pid().expect("the render never started");
     std::thread::sleep(Duration::from_millis(200));
-    let start = Instant::now();
     assert!(running.cancel());
-    let answer = running.wait();
+    let answer = crate::common::promptly("the cancelled render's answer", move || running.wait());
     let problems = answer.result.unwrap_err();
     assert_eq!(
         problems.errors()[0].code(),
         silico_core::ErrorCode::Cancelled
     );
-    assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        start.elapsed()
-    );
-    assert!(crate::common::eventually(
-        crate::common::CANCEL_KILLS,
-        || { !crate::common::process_exists(pid) }
-    ));
+    assert!(crate::common::eventually(WAIT, || {
+        !crate::common::process_exists(pid)
+    }));
     let drawn = sessions
         .render(&s, ModelChoice::Current, hangs((40, 30)))
         .wait();

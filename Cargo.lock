@@ -5246,6 +5246,7 @@ dependencies = [
 name = "silico-render"
 version = "0.0.0"
 dependencies = [
+ "cpu-time",
  "glam",
  "libm",
  "macaw",
