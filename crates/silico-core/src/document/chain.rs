@@ -373,7 +373,7 @@ fn join(
         // Down the chain from its old consumer, where it named it as its base: each next
         // member the feature whose base the last is.
         let mut down = consumed
-            .filter(|(c, field)| *field == "base" && *c < edited.features.len())
+            .filter(|(_, field)| *field == "base")
             .map(|(c, _)| c);
         while let Some(i) = down.filter(|i| members.insert(*i)) {
             down = edited
@@ -447,7 +447,9 @@ fn join(
         None if base_optional(&moved.operation) => {
             set_input(&mut moved.operation, "base", None);
         }
-        None if wants_base => {
+        // A feature with no base field never comes here: with no base and no consumer, a move
+        // leaves it where it stands in its chain.
+        None => {
             let root = root.map(|r| r.to_string()).unwrap_or_default();
             return Err(Error::new(
                 ErrorCode::InvalidInput,
@@ -461,7 +463,6 @@ fn join(
             .with_parameter("before")
             .with_suggestion(format!("move {} after {root}", moved.id)));
         }
-        None => {}
     }
     if let Some(next_feature) = next.and_then(|n| edited.features.get_mut(n)) {
         if !has_base_field(&next_feature.operation) {
@@ -608,7 +609,7 @@ impl<'a> Lineage<'a> {
         let index = Index::of(document);
         let features = &document.features;
         let mut spans: Vec<Option<(usize, usize)>> = vec![None; features.len()];
-        let mut walked = 0;
+        let mut walked: usize = 0;
         for (root, feature) in features.iter().enumerate() {
             if index.consumer(&feature.id).is_some() {
                 continue;
@@ -620,7 +621,8 @@ impl<'a> Lineage<'a> {
                     continue;
                 };
                 match (leaving, *span) {
-                    (true, Some((start, _))) => *span = Some((start, walked.max(start + 1) - 1)),
+                    // Entered at `start`, so `walked` is past it.
+                    (true, Some((start, _))) => *span = Some((start, walked.saturating_sub(1))),
                     (false, None) => {
                         *span = Some((walked, walked));
                         walked += 1;

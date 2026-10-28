@@ -10,6 +10,7 @@
 # apart only by how many there are: a key missed more times than it's listed here is new,
 # and all its misses are listed. Add a mutant with the PR that argues it; remove its line
 # when a test kills it or its code goes.
+crates/silico-core/src/document/chain.rs | move_feature | replace > with >= | #241
 crates/silico-core/src/document/validate.rs | bytes_key | replace | with ^ | #84
 crates/silico-core/src/document/validate.rs | validate | replace > with >= | #84
 crates/silico-core/src/document/validate.rs | validate | replace > with >= | #84
