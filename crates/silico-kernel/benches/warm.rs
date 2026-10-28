@@ -55,9 +55,13 @@ fn first_rebuild(document: &Arc<Checked>, mode: Mode) -> Result<Duration, Box<dy
     let pool = KernelPool::start_on_demand(Path::new(WORKER), 1)?;
     let solvers = SketchSolvers::workers();
     let engine = Recompute::new(pool.client()).with_solvers(solvers.clone());
+    // The two at once, as `Sessions::warm` makes them: the kernel's on a thread of its own,
+    // the sketch solvers' here.
     let warm = || {
-        pool.warm(1);
-        solvers.warm(1);
+        std::thread::scope(|scope| {
+            scope.spawn(|| pool.warm(1));
+            solvers.warm(1);
+        });
     };
     let rebuild = || -> Result<Duration, Box<dyn Error>> {
         let started = Instant::now();
