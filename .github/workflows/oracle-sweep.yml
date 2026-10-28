@@ -10,9 +10,10 @@
 # report. A scheduled night cancels filler first. Started by hand with `sketch_edits: true`,
 # it runs the sketch-edit sweep instead (`pixi run oracle-sketch-edit-sweep`: 500 generated
 # sketches, each edited by Silico and by FreeCAD, docs/ports/sketch-edit.md's *The oracle*),
-# from the same seed, and nothing else.
+# from the same seed, and nothing else. A run started by hand can name its `seed`, to repeat
+# a sweep (either one) at it; the run's title names the seed it used.
 name: oracle-sweep
-run-name: "${{ inputs.filler && 'filler ' || '' }}oracle ${{ inputs.sketch_edits && 'sketch-edit ' || '' }}sweep, seed ${{ github.run_number }}"
+run-name: "${{ inputs.filler && 'filler ' || '' }}oracle ${{ inputs.sketch_edits && 'sketch-edit ' || '' }}sweep, seed ${{ inputs.seed || github.run_number }}"
 
 on:
   schedule:
@@ -27,6 +28,10 @@ on:
         description: "Run the sketch-edit sweep (pixi run oracle-sketch-edit-sweep) instead of the sweep and the corpus"
         type: boolean
         default: false
+      seed:
+        description: "The sweep's seed, to run one again (empty: the run number, as a night's)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -69,9 +74,11 @@ jobs:
         # starved case isn't reported as a failure. (Silico's own conversion keeps its 60 s.)
         env:
           SILICO_ORACLE_CASE_DEADLINE: ${{ inputs.filler && '1800' || '' }}
+          # Through the environment, so the input is never read as the script's text.
+          SEED: ${{ inputs.seed || github.run_number }}
         run: |
-          echo "seed ${{ github.run_number }}"
-          pixi run oracle-sweep -- --seed ${{ github.run_number }}
+          echo "seed $SEED"
+          pixi run oracle-sweep -- --seed "$SEED"
       - name: Corpus
         id: corpus
         if: ${{ !cancelled() && !inputs.sketch_edits }}
@@ -82,9 +89,11 @@ jobs:
         if: ${{ inputs.sketch_edits }}
         env:
           SILICO_ORACLE_CASE_DEADLINE: ${{ inputs.filler && '1800' || '' }}
+          # Through the environment, so the input is never read as the script's text.
+          SEED: ${{ inputs.seed || github.run_number }}
         run: |
-          echo "seed ${{ github.run_number }}"
-          pixi run oracle-sketch-edit-sweep -- --seed ${{ github.run_number }}
+          echo "seed $SEED"
+          pixi run oracle-sketch-edit-sweep -- --seed "$SEED"
 
   report:
     needs: sweep
@@ -108,5 +117,5 @@ jobs:
           CORPUS: ${{ needs.sweep.outputs.corpus }}
           WORKFLOW: ${{ github.workflow }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          SEED: ${{ github.run_number }}
+          SEED: ${{ inputs.seed || github.run_number }}
         run: bash .github/nightly-report.sh
