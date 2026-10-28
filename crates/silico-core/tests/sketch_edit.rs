@@ -660,3 +660,82 @@ fn an_edit_leaves_the_sketch_it_was_given_as_it_was() {
     let _ = unjoin(&sketch, &id("p0000001"), &id("b0000000"), id("p0000009")).unwrap();
     assert_eq!(&sketch, sketch_of(&before));
 }
+
+// ---- the mutants run's: curves that don't end at the kept point
+
+/// Lines a from p0 to p1 and b from p9 (touching p1) to p2, and `more` beside them.
+fn touching_with(
+    points: &[String],
+    lines: &[String],
+    circles: &str,
+    arcs: &str,
+    constraints: &str,
+) -> Document {
+    let all = std::iter::once(POINTS.to_owned())
+        .chain(std::iter::once(point("p0000009", 10.0, 0.00000004)))
+        .chain(points.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let lines = [
+        line("a0000000", "p0000000", "p0000001"),
+        line("b0000000", "p0000009", "p0000002"),
+    ]
+    .into_iter()
+    .chain(lines.iter().cloned())
+    .collect::<Vec<_>>()
+    .join(", ");
+    doc(&all, &lines, circles, arcs, constraints)
+}
+
+#[test]
+fn an_edge_tangent_of_a_curve_ending_at_the_merged_point_with_one_that_doesnt_is_made() {
+    // The mutants run's (line 350's arcs, 344's lines): a, which ends at the kept p1,
+    // tangent to an arc r far off, about q1, from t1 (20, -10) to t2 (10, -20), which
+    // doesn't end there: merged, a and r share no end, so the tangent stays an edge one.
+    let before = touching_with(
+        &[
+            point("t0000001", 20.0, -10.0),
+            point("t0000002", 10.0, -20.0),
+        ],
+        &[],
+        "",
+        &crate::fixture::arc("r0000000", "q0000001", "t0000001", "t0000002"),
+        r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "r0000000", "side": "right"}"#,
+    );
+    let edited = merge(sketch_of(&before), &ids(&["p0000001", "p0000009"])).unwrap();
+    gated(&before, &edited);
+    assert_eq!(edited.modified, ids(&["b0000000"]));
+    assert_eq!(edited.removed, ids(&["p0000009"]));
+    // The other way round: an arc r starting at p9, merged into the kept p1, tangent to
+    // a line d far off, from q0 (10, 10) to t1 (20, 10), which doesn't end there.
+    let before = touching_with(
+        &[
+            point("t0000001", 20.0, 10.0),
+            point("t0000002", 20.0, -10.0),
+        ],
+        &[line("d0000000", "q0000000", "t0000001")],
+        "",
+        &crate::fixture::arc("r0000000", "q0000001", "p0000009", "t0000002"),
+        r#"{"id": "k0000000", "type": "tangent", "a": "d0000000", "b": "r0000000", "side": "right"}"#,
+    );
+    let edited = merge(sketch_of(&before), &ids(&["p0000001", "p0000009"])).unwrap();
+    gated(&before, &edited);
+    assert_eq!(edited.modified, ids(&["b0000000", "r0000000"]));
+}
+
+#[test]
+fn an_edge_tangent_beside_an_on_of_another_point_on_its_curve_is_made() {
+    // The mutants run's (line 487): a tangent to the circle c about q0 of radius 10, and a
+    // lone point s held on c, at (20, 10), no end of a: merged, nothing holds an end of one
+    // on the other, so the tangent stays an edge one.
+    let before = touching_with(
+        &[point("s0000000", 20.0, 10.0)],
+        &[],
+        &crate::fixture::circle("c0000000", "q0000000", 10.0),
+        "",
+        r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "c0000000", "side": "left"}, {"id": "k0000001", "type": "on", "point": "s0000000", "curve": "c0000000"}"#,
+    );
+    let edited = merge(sketch_of(&before), &ids(&["p0000001", "p0000009"])).unwrap();
+    gated(&before, &edited);
+    assert_eq!(edited.modified, ids(&["b0000000"]));
+}
