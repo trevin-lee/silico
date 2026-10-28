@@ -6,6 +6,8 @@
 //! each test needs a process of its own, as nextest runs each in (`pixi run test`).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "../../silico-core/tests/common/lateness.rs"]
+mod lateness;
 #[path = "../../silico-core/tests/common/test_programs.rs"]
 mod test_programs;
 #[path = "common/wait.rs"]

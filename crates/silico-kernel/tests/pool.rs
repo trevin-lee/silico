@@ -37,6 +37,7 @@ use silico_core::pool::{KernelPool, Outcome, Pending, PoolClient, STOP_AFTER};
 use silico_protocol::{
     DebugOp, Failure, Generation, Misbehavior, Op, Refusal, Reply, RequestId, Response,
 };
+use wait::{UNREACHED, promptly};
 
 /// One of the mixed requests the concurrency test sends, for both the pool and the
 /// reference worker.
@@ -1253,6 +1254,9 @@ fn a_crash_fails_its_request_once_and_the_pool_goes_on() {
 #[test]
 fn a_hung_request_times_out_and_the_pool_goes_on() {
     let pool = pool(TEST_WORKER, 1);
+    // Its 300 ms, then a kill: 10 s on a quiet machine with room to spare, and the wakes on
+    // the way as late as this machine runs them.
+    let lateness = Lateness::start();
     let start = Instant::now();
     let err = done(pool.submit(
         Generation(1),
@@ -1261,7 +1265,7 @@ fn a_hung_request_times_out_and_the_pool_goes_on() {
     .unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerTimeout, "{err}");
     assert!(
-        start.elapsed() < Duration::from_secs(10),
+        start.elapsed() < allowance(Duration::from_secs(10), lateness.most()),
         "{:?}",
         start.elapsed()
     );
@@ -1289,22 +1293,17 @@ fn a_worker_whose_replies_cant_be_trusted_is_replaced() {
 
 #[test]
 fn dropping_the_pool_stops_at_once_and_ends_every_request() {
-    // Requests running (30 s sleeps) and waiting end without a result as soon as the pool
-    // is dropped, and its workers are gone.
+    // Requests running (sleeps no test reaches) and waiting end without a result as soon as
+    // the pool is dropped, and its workers are gone: a drop that waited for them never
+    // returns within `WAIT`.
     let pool = pool(TEST_WORKER, 2);
     let pending: Vec<_> = (0..6)
-        .map(|_| pool.submit(Generation(1), sleep(30_000)))
+        .map(|_| pool.submit(Generation(1), sleep(UNREACHED.as_millis() as u64)))
         .collect();
     std::thread::sleep(Duration::from_millis(200));
     let held = pool.pids();
-    let start = Instant::now();
-    drop(pool);
+    promptly("dropping the pool", move || drop(pool));
     assert_reaped(&held, "after the drop");
-    assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        start.elapsed()
-    );
     for p in pending {
         let err = done(p).unwrap_err();
         assert_eq!(err.code(), ErrorCode::Internal, "{err}");

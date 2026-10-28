@@ -226,10 +226,11 @@ fn a_stalled_sink_has_every_line_given_or_counted_and_in_order() {
     );
     let mut worker = Worker::spawn(&exe).unwrap();
     sink.wait_entered();
+    let lateness = crate::lateness::Lateness::start();
     let asked = Instant::now();
     let err = worker.call(Generation(1), echo(), WAIT).unwrap_err();
     assert!(
-        asked.elapsed() < Duration::from_secs(8),
+        asked.elapsed() < crate::lateness::allowance(Duration::from_secs(8), lateness.most()),
         "the crash took {:?} to report",
         asked.elapsed()
     );
@@ -335,10 +336,11 @@ fn a_stalled_sink_still_has_the_crash_report_wait_for_a_log_held_open() {
     );
     let mut worker = Worker::spawn(&exe).unwrap();
     sink.wait_entered();
+    let lateness = crate::lateness::Lateness::start();
     let asked = Instant::now();
     let err = worker.call(Generation(1), echo(), WAIT).unwrap_err();
     assert!(
-        asked.elapsed() < Duration::from_secs(8),
+        asked.elapsed() < crate::lateness::allowance(Duration::from_secs(8), lateness.most()),
         "{:?}",
         asked.elapsed()
     );
@@ -418,10 +420,11 @@ fn a_log_sink_that_blocks_outright_never_holds_up_a_kernel_worker() {
         .collect();
     let mut doomed =
         Worker::spawn(&script("worker-logs-doomed", &format!("{lines}exit 3"))).unwrap();
+    let lateness = crate::lateness::Lateness::start();
     let asked = Instant::now();
     let err = doomed.call(Generation(1), echo(), WAIT).unwrap_err();
     assert!(
-        asked.elapsed() < Duration::from_millis(1500),
+        asked.elapsed() < crate::lateness::allowance(Duration::from_millis(1500), lateness.most()),
         "the crash took {:?} to report",
         asked.elapsed()
     );

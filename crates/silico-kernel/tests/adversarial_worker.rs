@@ -10,6 +10,8 @@
 //! assume one test per process (nextest, which `pixi run test` uses).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "../../silico-core/tests/common/lateness.rs"]
+mod lateness;
 #[path = "common/pool.rs"]
 mod pool;
 #[path = "common/process.rs"]
@@ -19,7 +21,8 @@ mod scripts;
 #[path = "common/wait.rs"]
 mod wait;
 
-use crate::wait::WAIT;
+use crate::wait::{UNREACHED, WAIT};
+use lateness::{Lateness, allowance};
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -213,6 +216,7 @@ fn a_flood_of_empty_frames_before_the_reply_still_gets_the_reply() {
 
 #[test]
 fn a_reply_cut_short_by_an_exit_is_a_crash_naming_the_exit() {
+    let lateness = Lateness::start();
     let (result, took, _) = echo_through("partial-then-exit", WAIT);
     let err = result.unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
@@ -222,15 +226,22 @@ fn a_reply_cut_short_by_an_exit_is_a_crash_naming_the_exit() {
         "{err}"
     );
     assert!(err.suggestion().is_some(), "{err}");
-    assert!(took < Duration::from_secs(5), "{took:?}");
+    assert!(
+        took < allowance(Duration::from_secs(5), lateness.most()),
+        "{took:?}"
+    );
 }
 
 #[test]
 fn a_reply_cut_short_by_a_worker_that_then_hangs_times_out() {
+    let lateness = Lateness::start();
     let (result, took, _) = echo_through("partial-then-hang", Duration::from_millis(500));
     let err = result.unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerTimeout, "{err}");
-    assert!(took < Duration::from_secs(3), "{took:?}");
+    assert!(
+        took < allowance(Duration::from_secs(3), lateness.most()),
+        "{took:?}"
+    );
 }
 
 #[test]
@@ -266,10 +277,14 @@ fn a_reply_longer_than_the_maximum_is_refused_without_waiting_for_it() {
 
 #[test]
 fn a_reply_promising_the_maximum_then_ending_is_a_crash() {
+    let lateness = Lateness::start();
     let (result, took, _) = echo_through("max-then-exit", WAIT);
     let err = result.unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
-    assert!(took < Duration::from_secs(5), "{took:?}");
+    assert!(
+        took < allowance(Duration::from_secs(5), lateness.most()),
+        "{took:?}"
+    );
 }
 
 #[test]
@@ -409,6 +424,9 @@ fn a_worker_that_closes_its_socket_mid_request_and_lingers_fails_within_its_time
         ),
     );
     let graces = Graces::record();
+    // As late as this machine wakes threads, on top: still well short of a fixed 2 s grace
+    // on a quiet machine.
+    let lateness = Lateness::start();
     let (err, took) = within(WAIT, move || {
         let mut w = Worker::spawn(&exe).unwrap();
         wait_for(&started);
@@ -432,7 +450,7 @@ fn a_worker_that_closes_its_socket_mid_request_and_lingers_fails_within_its_time
     // its replies, or its log, would take at least that. This one is a bound on time, with
     // 1.7 s of room: telling 300 ms from 2 s needs one.
     assert!(
-        took < Duration::from_secs(2),
+        took < allowance(Duration::from_secs(2), lateness.most()),
         "a call allowed 300 ms took {took:?}: {err}"
     );
 }
@@ -455,6 +473,9 @@ fn a_worker_whose_child_holds_its_pipes_fails_within_its_timeout() {
         ),
     );
     let graces = Graces::record();
+    // As late as this machine wakes threads, on top: still well short of a fixed 2 s grace
+    // on a quiet machine.
+    let lateness = Lateness::start();
     let (err, took) = within(WAIT, move || {
         let mut w = Worker::spawn(&exe).unwrap();
         wait_for(&started);
@@ -477,7 +498,7 @@ fn a_worker_whose_child_holds_its_pipes_fails_within_its_timeout() {
     // its replies, or its log, would take at least that. This one is a bound on time, with
     // 1.7 s of room: telling 300 ms from 2 s needs one.
     assert!(
-        took < Duration::from_secs(2),
+        took < allowance(Duration::from_secs(2), lateness.most()),
         "a call allowed 300 ms took {took:?}: {err}"
     );
 }
@@ -1075,17 +1096,16 @@ fn later_child_entry() {
     // and long before it would end.
     pool.set_stop_after(Duration::from_secs(2));
     let submitted = Instant::now();
-    let long = client.submit(Generation(1), sleep(60_000));
+    // A sleep no test reaches: one the stopper left would have no outcome within the wait
+    // `outcome` allows.
+    let long = client.submit(Generation(1), sleep(UNREACHED.as_millis() as u64));
     std::thread::sleep(Duration::from_millis(300));
     client.advance(Generation(2));
     assert!(matches!(outcome(long), Outcome::Superseded));
     // The stopper stops it no sooner than 2 s after it started (after it was submitted);
     // a request superseded while still queued would end well before.
     let took = submitted.elapsed();
-    assert!(
-        took >= Duration::from_secs(2) && took < Duration::from_secs(20),
-        "{took:?}"
-    );
+    assert!(took >= Duration::from_secs(2), "{took:?}");
     // Dropping it stops every worker it started.
     drop(client);
     drop(pool);

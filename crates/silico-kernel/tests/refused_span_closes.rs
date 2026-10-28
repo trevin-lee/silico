@@ -87,7 +87,8 @@ fn a_request_refused_before_it_was_sent_lets_its_span_go() {
             &pool,
             &edit,
             &marker,
-            KernelRequest::debug(DebugOp::Sleep { millis: 30_000 }),
+            // A sleep no test reaches: one left to finish has no outcome within the wait.
+            KernelRequest::debug(DebugOp::Sleep { millis: 600_000 }),
         );
         pool.advance(Generation(2));
         let outcome = pending
@@ -98,11 +99,6 @@ fn a_request_refused_before_it_was_sent_lets_its_span_go() {
         assert!(
             sent.elapsed() >= stop_after,
             "superseded before it was sent: never stopped"
-        );
-        // And it was stopped, not left to finish its sleep.
-        assert!(
-            sent.elapsed() < Duration::from_secs(10),
-            "it ran to the end: never stopped"
         );
     }
     wait_closed(&closed, "hung_edit");
