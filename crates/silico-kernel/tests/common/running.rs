@@ -1,6 +1,7 @@
 //! A worker that says when it has a request, for tests that must act on a request only once
 //! it's running: one superseded before then is dropped unrun, and never reaches a worker.
 
+use crate::wait::WAIT;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -11,12 +12,14 @@ use super::scripts;
 
 /// A worker that says it started (its first frame, empty, as a worker's is), then, given a
 /// request, notes it by writing `marker`, then sleeps without replying until it's killed: so
-/// a test knows its request is running, on a worker that had started.
+/// a test knows its request is running, on a worker that had started. It sleeps 600 s, past
+/// [`WAIT`](crate::wait::WAIT), so a test waiting for the pool to stop it can't be satisfied
+/// by the worker ending on its own.
 pub fn marking_worker(marker: &Path) -> PathBuf {
     scripts::script(
         "marks-its-request",
         &format!(
-            "printf '\\0\\0\\0\\0' >&3\nhead -c 1 <&3 >/dev/null\n: > '{}'\nexec sleep 30",
+            "printf '\\0\\0\\0\\0' >&3\nhead -c 1 <&3 >/dev/null\n: > '{}'\nexec sleep 600",
             marker.display()
         ),
     )
@@ -32,7 +35,7 @@ pub fn submit_running<T: Send + 'static>(
 ) -> Pending<T> {
     let _ = std::fs::remove_file(marker);
     let pending = span.in_scope(|| pool.submit(pool.generation(), request));
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + WAIT;
     while !marker.exists() {
         assert!(
             Instant::now() < deadline,

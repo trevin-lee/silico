@@ -6,6 +6,7 @@
 //! a request's run.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use crate::wait::WAIT;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -59,7 +60,7 @@ fn a_slot_whose_thread_ends_unexpectedly_is_started_again() {
     // The first request's slot panics starting its worker: the request ends (unanswered).
     assert!(
         pool.submit(Generation(1), echo(1))
-            .wait_timeout(Duration::from_secs(10))
+            .wait_timeout(WAIT)
             .is_ok(),
         "the first request never ended"
     );
@@ -67,7 +68,7 @@ fn a_slot_whose_thread_ends_unexpectedly_is_started_again() {
     // The next starts the slot again, and is answered.
     let second = pool
         .submit(Generation(1), echo(2))
-        .wait_timeout(Duration::from_secs(10))
+        .wait_timeout(WAIT)
         .unwrap_or_else(|_| panic!("the next request waited: no slot took it"))
         .done()
         .expect("superseded")

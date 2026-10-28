@@ -148,6 +148,7 @@ FreeCAD has no "delete a point that curves end at". In Silico such a point *is* 
 - **Splitting at a point the sketch already has** (a point held `on` the curve): the pieces share that point, and its `on` constraint is removed, since the gate refuses a curve's own point `on` it. A `tangent_on` whose `at` is that point becomes a `tangent_at` (the table's last row).
 - **The start-side piece keeps the curve's ID** (`82610ca8fa`): from `from` for a line, counter-clockwise from `start` for an arc. The other piece gets a new ID. Both keep `construction`, and so does the new point.
 - **A circle can't split as FreeCAD splits it,** since an arc whose start and end are one point is refused (decision 3).
+- **An edge `tangent` with a curve that ends at the split point** (that end held on the curve, by an `on` or a `tangent_on`) would leave two curves sharing an end with an edge tangency, which the gate refuses: the split is refused, naming it, as a merge refuses one (decision 10; docs/design/m5.0-app.md's open item 13 recommends converting it to a `tangent_at` in both).
 - **Refusals, as data naming the curve:** a point (the gate's kinds); a split position at, beyond, or within 1e-7 mm of an end (`82633fb5df`'s rule restored, with the gate's size floor); a position farther than 1e-7 mm off the curve (decision 4).
 
 ## 4. Trim

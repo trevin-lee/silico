@@ -6,6 +6,7 @@
 //! `response_text` writes them (call adds nothing and drops nothing), the reader's refusals
 //! as written here by hand, and lengths in nanometres worked out by hand.
 
+use crate::model::WAIT;
 use std::path::PathBuf;
 
 use silico_core::command::render::Render;
@@ -1088,9 +1089,7 @@ fn a_read_of_the_published_model_reaches_its_typed_method_as_one() {
         assert!(f.kernel.wait_running(1, HANG));
     }
     let t = &typed.sessions;
-    let promptly = |calling: Calling, what: &str| match calling
-        .wait_timeout(std::time::Duration::from_secs(10))
-    {
+    let promptly = |calling: Calling, what: &str| match calling.wait_timeout(WAIT) {
         Ok(answer) => answer,
         Err(_) => panic!("{what} waited on the held rebuild: read the current model"),
     };

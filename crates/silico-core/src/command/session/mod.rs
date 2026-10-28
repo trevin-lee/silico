@@ -110,7 +110,8 @@ use clearing::{partly_cleared_problems, shown_cache_directory};
 use edits::{as_committed, not_given_back};
 use holding::Holding;
 use rebuilds::{Newest, Rebuilds, Unbuilt, published_answer};
-pub(super) use rebuilds::{kept_fault, kept_suggestion, retried};
+pub use rebuilds::{TryAgainBy, fault_suggestion};
+pub(super) use rebuilds::{kept_fault, retried};
 use registry::{
     Book, CacheOpener, Opening, Registry, Release, Started, claim, reclaim, serve, start,
 };

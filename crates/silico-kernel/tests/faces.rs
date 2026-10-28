@@ -7,10 +7,10 @@
 
 use super::close;
 use super::imports;
+use crate::wait::WAIT;
 
 use std::f64::consts::{FRAC_PI_2, PI};
 use std::path::Path;
-use std::time::Duration;
 
 use close::assert_close;
 use silico_core::ErrorCode;
@@ -482,7 +482,7 @@ fn faces_through_the_worker_match_in_process_and_refusals_never_reach_it() {
 fn the_worker_refuses_bad_regions_itself_and_goes_on() {
     // Sent straight to the worker, past the core's checks.
     let mut w = Worker::spawn(Path::new(WORKER)).unwrap();
-    let timeout = Duration::from_secs(30);
+    let timeout = WAIT;
     let rect = || rectangle(0.0, 0.0, 4.0, 3.0);
     let mut open = rect();
     open[3] = line([0.0, 3.0], [0.0, 1e-9]);
@@ -569,7 +569,7 @@ fn a_faces_history_that_doesnt_fit_the_regions_is_refused() {
     w.call(
         Generation(0),
         Op::Debug(DebugOp::Misbehave(Misbehavior::BadHistory)),
-        Duration::from_secs(30),
+        WAIT,
     )
     .unwrap();
     let mut k = KernelWorker::from_worker(w);

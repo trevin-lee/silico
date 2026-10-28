@@ -10,10 +10,10 @@ use super::facts;
 use super::imports;
 use super::kernel;
 use super::oracle;
+use crate::wait::WAIT;
 
 use std::f64::consts::PI;
 use std::path::Path;
-use std::time::Duration;
 
 use chamfer_sizes::{angled, equal, two};
 use close::assert_close;
@@ -28,7 +28,6 @@ use silico_kernel::{
 use silico_protocol::{Generation, Op, Reply};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
-const TIMEOUT: Duration = Duration::from_secs(30);
 
 fn box_10_20_30() -> Shape {
     make_box(10.0, 20.0, 30.0).unwrap()
@@ -1073,7 +1072,7 @@ fn the_worker_refuses_what_the_core_would_and_goes_on() {
                 dy: 20.0,
                 dz: 30.0,
             }),
-            TIMEOUT,
+            WAIT,
         )
         .unwrap()
     else {
@@ -1088,7 +1087,7 @@ fn the_worker_refuses_what_the_core_would_and_goes_on() {
                 size,
                 flip: false,
             },
-            TIMEOUT,
+            WAIT,
         )
     };
     // An edge listed twice is at fault; one the shape doesn't have isn't one of its

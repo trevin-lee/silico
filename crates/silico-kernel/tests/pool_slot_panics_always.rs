@@ -7,6 +7,7 @@
 //! subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use crate::wait::WAIT;
 use std::cell::Cell;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -59,10 +60,7 @@ fn a_slot_that_panics_at_every_start_starts_once_per_request_and_not_on_its_own(
         .map(|i| pool.submit(Generation(1), echo(i)))
         .collect();
     for (i, p) in pending.into_iter().enumerate() {
-        assert!(
-            p.wait_timeout(Duration::from_secs(10)).is_ok(),
-            "request {i} never ended"
-        );
+        assert!(p.wait_timeout(WAIT).is_ok(), "request {i} never ended");
     }
     assert_eq!(PANICS.load(Ordering::SeqCst), 8, "one start per request");
     // With none waiting, no worker is started again.
@@ -76,7 +74,7 @@ fn a_slot_that_panics_at_every_start_starts_once_per_request_and_not_on_its_own(
     // The next request starts it once more.
     assert!(
         pool.submit(Generation(1), echo(9))
-            .wait_timeout(Duration::from_secs(10))
+            .wait_timeout(WAIT)
             .is_ok()
     );
     std::thread::sleep(Duration::from_millis(500));

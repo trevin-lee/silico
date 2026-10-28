@@ -7,12 +7,12 @@ use super::imports;
 use super::kernel;
 use super::numbers;
 use super::oracle;
+use crate::wait::WAIT;
 
 use kernel::kernel;
 use numbers::relative_error;
 use std::f64::consts::PI;
 use std::path::Path;
-use std::time::Duration;
 
 use silico_core::ErrorCode;
 use silico_core::kernel::KernelWorker;
@@ -22,7 +22,6 @@ use silico_protocol::{
 };
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
-const TIMEOUT: Duration = Duration::from_secs(30);
 
 #[test]
 fn box_fillet_analytic() {
@@ -89,7 +88,7 @@ fn fillet_through_worker(
             dy: 20.0,
             dz: 30.0,
         }),
-        TIMEOUT,
+        WAIT,
     )? {
         Reply::Shape(shape) => shape,
         other => panic!("MakeBox replied {other:?}"),
@@ -101,12 +100,12 @@ fn fillet_through_worker(
             edges: edges.to_vec(),
             radius,
         },
-        TIMEOUT,
+        WAIT,
     )? {
         Reply::Built(built) => built.shape,
         other => panic!("Fillet replied {other:?}"),
     };
-    match w.call(Generation(1), Op::Summarize { shape: rounded }, TIMEOUT)? {
+    match w.call(Generation(1), Op::Summarize { shape: rounded }, WAIT)? {
         Reply::Summary(summary) => Ok(summary),
         other => panic!("Summarize replied {other:?}"),
     }
@@ -324,7 +323,7 @@ fn a_filleted_shape_crosses_the_boundary_intact() {
                 dy: 20.0,
                 dz: 30.0,
             }),
-            TIMEOUT,
+            WAIT,
         )
         .unwrap()
     {
@@ -339,7 +338,7 @@ fn a_filleted_shape_crosses_the_boundary_intact() {
                 edges: vec![1],
                 radius: 2.0,
             },
-            TIMEOUT,
+            WAIT,
         )
         .unwrap()
     {
@@ -355,7 +354,7 @@ fn a_filleted_shape_crosses_the_boundary_intact() {
             Op::Summarize {
                 shape: rounded.clone(),
             },
-            TIMEOUT,
+            WAIT,
         )
         .unwrap()
     {
@@ -579,7 +578,7 @@ fn fillet_brep(w: &mut Worker, edges: &[u32], radius: f64) -> ShapeData {
                 dy: 20.0,
                 dz: 30.0,
             }),
-            TIMEOUT,
+            WAIT,
         )
         .unwrap()
     {
@@ -594,7 +593,7 @@ fn fillet_brep(w: &mut Worker, edges: &[u32], radius: f64) -> ShapeData {
                 edges: edges.to_vec(),
                 radius,
             },
-            TIMEOUT,
+            WAIT,
         )
         .unwrap()
     {
@@ -624,7 +623,7 @@ fn a_mesh_through_the_worker_matches_one_made_here() {
                 deflection: 0.05,
                 at_least_the_floor: false,
             },
-            TIMEOUT,
+            WAIT,
         )
         .unwrap()
     {
@@ -655,7 +654,7 @@ fn a_mesh_through_the_worker_matches_one_made_here() {
                     deflection,
                     at_least_the_floor: false,
                 },
-                TIMEOUT,
+                WAIT,
             )
             .unwrap_err();
         assert_eq!(err.code(), ErrorCode::InvalidInput, "{deflection}: {err}");
@@ -819,7 +818,7 @@ fn a_refusal_that_doesnt_fit_the_request_stops_the_worker() {
     w.call(
         Generation(0),
         Op::Debug(DebugOp::Misbehave(Misbehavior::ForgedRefusal)),
-        TIMEOUT,
+        WAIT,
     )
     .unwrap();
     let mut k = KernelWorker::from_worker(w);

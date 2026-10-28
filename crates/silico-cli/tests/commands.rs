@@ -1197,7 +1197,7 @@ fn fmt_refused_a_save_past_the_limit_still_says_the_kernel_fault_its_rebuild_met
         "{said}"
     );
     assert!(
-        lines[1].ends_with("run `silico fmt` again to retry it."),
+        lines[1].ends_with("run `silico fmt` to try it again."),
         "{said}"
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
@@ -1292,7 +1292,7 @@ const SKETCH_AND_BOX: &str = r#"{
 fn no_sketch_worker(command: &str) -> String {
     format!(
         "worker_unavailable: SILICO_SKETCH_WORKER names \"/nowhere\", which isn't a file. \
-         Suggestion: {}; run `silico {command}` again to retry it.",
+         Suggestion: {}; then run `silico {command}` to try it again.",
         NO_SKETCH_WORKER_ADVICE
     )
 }
@@ -1366,7 +1366,7 @@ fn a_kernel_fault_is_said_in_the_clis_words_by_check_and_check_json() {
     assert_eq!(line["error"]["code"], "worker_unavailable", "{line}");
     assert_eq!(
         line["error"]["suggestion"],
-        format!("{NO_SKETCH_WORKER_ADVICE}; run `silico check` again to retry it"),
+        format!("{NO_SKETCH_WORKER_ADVICE}; then run `silico check` to try it again"),
         "{line}"
     );
 }
@@ -1757,40 +1757,52 @@ fn worker_that_ends(scratch: &Scratch, name: &str, end: &str) -> PathBuf {
 }
 
 #[test]
-fn a_crash_the_requests_values_caused_says_to_change_them_and_not_to_run_check_again() {
-    // docs/cli.md (`check`): a kernel fault's suggestion is the worker's own, then to run
-    // `silico check` again to retry it; but after a crash the request's values caused, whose
-    // suggestion says the same request would crash the worker again, the worker's own
-    // alone. The words are the design's (docs/design/m4.1-command-api.md, section 6, *As
-    // built (M4.3)*): "change the operation's values: these crashed the kernel, and the
-    // same request would crash it again", and "the kernel worker was stopped from outside,
-    // stopped responding, or was gone before the request reached it, not by these values"
-    // after "try the request again". A kill, which may have been for the memory, is "once
-    // more"; a worker that exits on its own is its install. Each of those is worth running
-    // again, so each keeps the CLI's line.
-    const RETRY: &str = "; run `silico check` again to retry it";
+fn each_crash_says_the_designs_words_once_and_a_values_crash_only_to_change_them() {
+    // The design's section 6 (docs/design/m4.1-command-api.md), as docs/cli.md's rows point
+    // to it: the CLI words a fault as a session does, trying again by running its command
+    // ("run `silico check` to try it again"), said once. A worker stopped from outside: "run
+    // `silico check` to try it again: the kernel worker was stopped from outside, stopped
+    // responding, or was gone before the request reached it, not by these values". A crash on
+    // the request's values: the worker's advice alone, "change the operation's values: these
+    // crashed the kernel, and the same request would crash it again". Any other advice of the
+    // worker's own (its install, for one that exits), it, then "; then run `silico check` to
+    // try it again". A kill, which may have been for the memory, is "once more".
     let scratch = Scratch::new("crash-advice");
     let file = scratch.0.join("part.silico");
     std::fs::write(&file, EXAMPLE).unwrap();
     let values = "change the operation's values: these crashed the kernel, and the same request \
                   would crash it again";
-    let outside = "try the request again: the kernel worker was stopped from outside, stopped \
-                   responding, or was gone before the request reached it, not by these values";
-    let terminated = format!("{outside}{RETRY}");
-    // Each worker's end, and its suggestion: the whole of it, or how it starts, and whether
-    // the CLI's line follows.
+    let outside = |command: &str| {
+        format!(
+            "run `silico {command}` to try it again: the kernel worker was stopped from outside, \
+             stopped responding, or was gone before the request reached it, not by these values"
+        )
+    };
+    let terminated = outside("check");
+    // Each worker's end, and its suggestion: how it starts and ends (the whole of it where
+    // the two are the same).
     let cases = [
-        ("segfault", "kill -SEGV $$", values, false),
-        ("terminated", "kill -TERM $$", terminated.as_str(), true),
+        ("segfault", "kill -SEGV $$", values, values),
+        (
+            "terminated",
+            "kill -TERM $$",
+            terminated.as_str(),
+            terminated.as_str(),
+        ),
         (
             "killed",
             "kill -KILL $$",
-            "try the request once more: ",
-            true,
+            "run `silico check` to try it once more: the kernel worker was killed",
+            "the request needs too much memory: simplify it",
         ),
-        ("exited", "exit 1", "check Silico's install: ", true),
+        (
+            "exited",
+            "exit 1",
+            "check Silico's install: ",
+            "; then run `silico check` to try it again",
+        ),
     ];
-    for (name, end, opening, retried) in cases {
+    for (name, end, opening, ending) in cases {
         let kernel = worker_that_ends(&scratch, name, end);
         let out = silico_on_kernel(&scratch, &["check", "--json"], &file, &kernel);
         assert_eq!(out.status.code(), Some(2), "{name}: {}", stderr(&out));
@@ -1800,32 +1812,33 @@ fn a_crash_the_requests_values_caused_says_to_change_them_and_not_to_run_check_a
         assert_eq!(line["error"]["code"], "worker_crashed", "{name}: {line}");
         let suggestion = line["error"]["suggestion"].as_str().unwrap();
         assert!(suggestion.starts_with(opening), "{name}: {suggestion:?}");
-        assert_eq!(
-            suggestion.ends_with(RETRY),
-            retried,
-            "{name}: {suggestion:?}"
-        );
-        if !retried || opening.ends_with(RETRY) {
-            // Whole: the values' crash says no more than the design's words; another
-            // given in full, the design's words and the CLI's line.
+        assert!(suggestion.ends_with(ending), "{name}: {suggestion:?}");
+        if opening == ending {
             assert_eq!(suggestion, opening, "{name}");
         }
+        // How to try again, said once, or not at all after the values' crash; never the
+        // more time no option gives.
+        let tries = usize::from(name != "segfault");
+        assert_eq!(
+            suggestion.matches("to try it").count(),
+            tries,
+            "{name}: {suggestion:?}"
+        );
+        assert!(!suggestion.contains("more time"), "{name}: {suggestion:?}");
         // Without --json, the same suggestion, said once.
         let out = silico_on_kernel(&scratch, &["check"], &file, &kernel);
         assert_eq!(out.status.code(), Some(2), "{name}: {}", stderr(&out));
         let said = stderr(&out);
         assert_eq!(said.matches(suggestion).count(), 1, "{name}: {said}");
-        if name == "segfault" {
-            assert!(!said.contains("again to retry it"), "{said}");
-        }
+        assert_eq!(said.matches("to try it").count(), tries, "{name}: {said}");
     }
-    // fmt and export say a kernel fault as check does (docs/cli.md, their rows): after the
-    // values' crash, the worker's own suggestion alone; after any other, then the CLI's line.
+    // fmt and export word a kernel fault as check does, each naming itself (docs/cli.md,
+    // their rows).
     let exe = Path::new(env!("CARGO_BIN_EXE_silico"));
     let out = scratch.0.join("part.3mf");
-    for (name, end, retried) in [
-        ("segfault", "kill -SEGV $$", false),
-        ("terminated", "kill -TERM $$", true),
+    for (name, end) in [
+        ("segfault", "kill -SEGV $$"),
+        ("terminated", "kill -TERM $$"),
     ] {
         let kernel = worker_that_ends(&scratch, name, end);
         for (command, args) in [
@@ -1846,15 +1859,20 @@ fn a_crash_the_requests_values_caused_says_to_change_them_and_not_to_run_check_a
             let ran = run::output(cmd);
             let said = stderr(&ran);
             assert_eq!(ran.status.code(), Some(2), "{command} {name}: {said}");
+            let expected = if name == "segfault" {
+                values.to_owned()
+            } else {
+                outside(command)
+            };
             assert_eq!(
-                said.matches(values).count(),
-                usize::from(!retried),
+                said.matches(&expected).count(),
+                1,
                 "{command} {name}: {said}"
             );
-            let line = format!("run `silico {command}` again to retry it");
-            assert_eq!(said.contains(&line), retried, "{command} {name}: {said}");
-            assert!(
-                !said.contains("again to retry it") || retried,
+            let tries = usize::from(name != "segfault");
+            assert_eq!(
+                said.matches("to try it").count(),
+                tries,
                 "{command} {name}: {said}"
             );
         }

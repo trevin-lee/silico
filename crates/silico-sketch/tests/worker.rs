@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::systems;
+use super::wait::WAIT;
 
 use std::path::Path;
 use std::process::Command;
@@ -20,7 +21,6 @@ use systems::{process_exists, rectangle_40_by_20};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
 const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-test-worker");
-const TIMEOUT: Duration = Duration::from_secs(30);
 
 fn worker() -> Worker {
     Worker::spawn_as(Path::new(WORKER), WorkerKind::Sketch).unwrap()
@@ -31,7 +31,7 @@ fn test_worker() -> Worker {
 }
 
 fn solve(w: &mut Worker, system: SketchSystem) -> Solved {
-    match w.call(Generation(1), Op::Solve(system), TIMEOUT).unwrap() {
+    match w.call(Generation(1), Op::Solve(system), WAIT).unwrap() {
         Reply::Solved(solved) => solved,
         other => panic!("Solve replied {other:?}"),
     }
@@ -39,7 +39,7 @@ fn solve(w: &mut Worker, system: SketchSystem) -> Solved {
 
 fn echo(w: &mut Worker) -> bool {
     matches!(
-        w.call(Generation(1), Op::Echo { data: Blob::inline(vec![7]) }, TIMEOUT),
+        w.call(Generation(1), Op::Echo { data: Blob::inline(vec![7]) }, WAIT),
         Ok(Reply::Echo { data }) if data.as_bytes() == [7]
     )
 }
@@ -64,9 +64,7 @@ fn a_system_that_fails_its_check_is_invalid_input_and_the_worker_lives_on() {
     let mut system = rectangle_40_by_20().b.system(Algorithm::DogLeg);
     system.values[3] = f64::NAN;
     let mut w = worker();
-    let err = w
-        .call(Generation(1), Op::Solve(system), TIMEOUT)
-        .unwrap_err();
+    let err = w.call(Generation(1), Op::Solve(system), WAIT).unwrap_err();
     assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
     assert_eq!(err.parameter(), Some("values"), "{err}");
     assert!(err.message().contains("value 3"), "{err}");
@@ -101,7 +99,7 @@ fn a_kernel_operation_or_a_render_is_refused_as_another_workers() {
             "Render",
         ),
     ] {
-        let err = w.call(Generation(1), op, TIMEOUT).unwrap_err();
+        let err = w.call(Generation(1), op, WAIT).unwrap_err();
         assert_eq!(err.code(), ErrorCode::Internal, "{err}");
         assert_eq!(
             err.message(),
@@ -127,7 +125,7 @@ fn traps_stay_on_here() -> bool {
 #[test]
 fn fp_traps_switched_on_by_a_request_fail_it() {
     let mut w = test_worker();
-    let result = w.call(Generation(1), Op::Debug(DebugOp::EnableFpTraps), TIMEOUT);
+    let result = w.call(Generation(1), Op::Debug(DebugOp::EnableFpTraps), WAIT);
     if traps_stay_on_here() {
         let err = result.unwrap_err();
         assert_eq!(err.code(), ErrorCode::Internal, "{err}");
@@ -178,7 +176,7 @@ fn production_worker_refuses_debug_ops() {
         Op::Debug(DebugOp::ThrowBadAlloc),
     ] {
         let name = op.name();
-        let err = w.call(Generation(1), op, TIMEOUT).unwrap_err();
+        let err = w.call(Generation(1), op, WAIT).unwrap_err();
         assert_eq!(err.code(), ErrorCode::Internal, "{name}: {err}");
         assert!(
             err.cause().unwrap().contains("test operation"),
@@ -195,7 +193,7 @@ fn std_bad_alloc_in_the_bridge_is_the_cores_resource_exhausted_and_the_worker_li
     // solver out of memory takes.
     let mut w = test_worker();
     let err = w
-        .call(Generation(1), Op::Debug(DebugOp::ThrowBadAlloc), TIMEOUT)
+        .call(Generation(1), Op::Debug(DebugOp::ThrowBadAlloc), WAIT)
         .unwrap_err();
     assert_eq!(
         (err.code(), err.message(), err.cause(), err.suggestion()),
@@ -214,7 +212,7 @@ fn assert_crashed(op: Op, signal: &str) {
     let mut w = test_worker();
     let pid = w.pid();
     assert!(process_exists(pid), "worker {pid} isn't running");
-    let err = w.call(Generation(1), op, TIMEOUT).unwrap_err();
+    let err = w.call(Generation(1), op, WAIT).unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
     assert!(err.cause().unwrap().contains(signal), "{err}");
     assert!(w.is_stopped());
@@ -257,7 +255,7 @@ fn garbage_reply_is_error() {
     let mut w = test_worker();
     let pid = w.pid();
     let err = w
-        .call(Generation(1), Op::Debug(DebugOp::Garbage), TIMEOUT)
+        .call(Generation(1), Op::Debug(DebugOp::Garbage), WAIT)
         .unwrap_err();
     assert_eq!(err.code(), ErrorCode::ProtocolError, "{err}");
     assert!(!process_exists(pid), "worker {pid} still exists");
@@ -273,7 +271,7 @@ fn a_reply_out_of_turn_is_a_protocol_error() {
             .call(
                 Generation(1),
                 Op::Debug(DebugOp::ReplyOutOfTurn(out_of_turn)),
-                TIMEOUT,
+                WAIT,
             )
             .unwrap_err();
         assert_eq!(err.code(), ErrorCode::ProtocolError, "{err}");
