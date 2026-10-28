@@ -81,6 +81,8 @@ pub(crate) fn parts(document: &Document, limit: usize) -> Result<Parts, TooLong>
         Some(head) => head.to_owned(),
         None => writer.out,
     };
+    // The head, each feature with the line break or comma and line break before it, and
+    // the array's and the document's close: what `assemble` writes.
     let mut total = head.len();
     let mut features = Vec::with_capacity(document.features.len());
     for each in &document.features {
@@ -90,6 +92,11 @@ pub(crate) fn parts(document: &Document, limit: usize) -> Result<Parts, TooLong>
         total += writer.out.len() + 2;
         features.push(writer.out);
     }
+    total += if features.is_empty() {
+        EMPTY_TAIL.len()
+    } else {
+        TAIL.len()
+    };
     if total > limit {
         return Err(TooLong);
     }

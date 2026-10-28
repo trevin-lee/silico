@@ -173,6 +173,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Names in exported text formats whose writer wraps long strings (OCCT's STEP writer breaks a string past 72 columns at a space, else a `\`, else a `_`, else anywhere, and its reader decodes `\X2\` runs and `''` pairs before it drops the line ends): 40 `ü` or 100 `'` read back otherwise in FreeCAD; read every exported name back through a real consumer, not the writer's bytes
 - Apostrophes before `,` or `)` in a STEP string (`'Bracket ''A'', left'`): OCCT's lexer ends a string at an apostrophe followed by either, so the name is cut short or the entity misread, from FreeCAD's own export too
 - Writers quadratic in a string's length (OCCT's STEP writer copies the rest of a long string at each 72-column wrap): a 4 MiB name takes 36 s, an 8 MiB one runs past the worker's 60 s
+- A size limit summed from parts that leave a separator or closing out (each feature's `[\n` or `,\n`, not the `\n  ]\n}\n` after the last): a whole 1 to 7 bytes past the limit passes; build a document exactly 1 and 7 bytes past it
 
 ## Command line
 
@@ -204,6 +205,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - JSON-RPC frames refused for a member given twice (two `params`, two `jsonrpc`): answered with a null ID though the one `id` was readable, so the client waits on its request forever
 - IDs, progress tokens, and cancels' `requestId`s that are valid JSON strings but no Unicode (`"\ud800"`): a decoder that refuses them calls the string "neither a string nor a number"
 - Every JSON-RPC refusal path (params, `_meta`, a progress token, not just the tool's name) checked for a suggestion, not only a message and a parameter
+- A targeted request checked after a generic emptiness test (an `undo` or `redo` `to` a revision, on a side with nothing left): the session's own revision, or one the bound dropped, is answered "nothing to undo", never naming `to`; send each `to` at the stack's two ends
 
 ## Kernel worker and IPC
 

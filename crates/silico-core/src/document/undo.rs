@@ -179,8 +179,9 @@ impl<K: Copy + Ord, R: Clone> UndoStack<K, R> {
         });
         self.at += 1;
         let mut pushed = Pushed { dropped: 0 };
-        // The oldest after `begin`, while it isn't the state before this edit.
-        while self.bytes > self.bound && self.at >= 2 {
+        // The oldest after `begin`, while it isn't the state before this edit (`begin`'s at 0,
+        // the oldest after it at 1, the one before this edit at `at - 1`).
+        while self.bytes > self.bound && self.at >= 3 {
             let dropped = self.states.remove(1);
             self.release(&dropped.text);
             self.at -= 1;
@@ -194,11 +195,8 @@ impl<K: Copy + Ord, R: Clone> UndoStack<K, R> {
     /// The state before the session's, or with `to`, the state at that revision; the
     /// session's state now held for redo, at `revision`, a new one.
     pub fn undo(&mut self, to: Option<K>, revision: K) -> Result<Restored<K, R>, Refusal<K>> {
-        let lowest = self.lowest();
-        if self.at <= lowest {
-            return Err(Refusal::NothingToUndo);
-        }
         let target = match to {
+            None if self.at <= self.lowest() => return Err(Refusal::NothingToUndo),
             None => self.at - 1,
             Some(to) => match self.find(to) {
                 Some(found) if found < self.at => found,
@@ -211,10 +209,8 @@ impl<K: Copy + Ord, R: Clone> UndoStack<K, R> {
 
     /// The state after the session's, or with `to`, the state at that revision.
     pub fn redo(&mut self, to: Option<K>, revision: K) -> Result<Restored<K, R>, Refusal<K>> {
-        if self.at + 1 >= self.states.len() {
-            return Err(Refusal::NothingToRedo);
-        }
         let target = match to {
+            None if self.at + 1 >= self.states.len() => return Err(Refusal::NothingToRedo),
             None => self.at + 1,
             Some(to) => match self.find(to) {
                 Some(found) if found > self.at => found,
