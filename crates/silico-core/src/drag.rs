@@ -88,11 +88,13 @@ pub enum Kept {
     Begin,
 }
 
-/// How a drag ended: the state kept, and with the cursor's, the whole sketch's solve.
+/// How a drag ended: the state kept; with the cursor's, the whole sketch's solve; and where
+/// a cursor was given but the begin state kept, why.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ended {
     pub kept: Kept,
     pub solved: Option<Solved>,
+    pub why: Option<Error>,
 }
 
 /// A drag open on its own sketch solver.
@@ -339,6 +341,7 @@ impl DragSession {
             (None, _, None) => Ok(Ended {
                 kept: Kept::Begin,
                 solved: None,
+                why: None,
             }),
             (None, Some(closed), Some(_)) => Err(closed.clone()),
             (None, None, Some(_)) => Err(no_drag("its thread ended")),
@@ -486,7 +489,7 @@ fn drag(
         };
         // A frame that can't be the sketch's is the worker's fault, as a solve's is.
         let solved = solved.and_then(|moved| match checked_frame(&part, &moved) {
-            Ok(()) => Ok(moved),
+            Ok(()) => Ok(startable(&begin.system, moved)),
             Err(error) => {
                 solver.distrust();
                 Err(error)
@@ -551,6 +554,7 @@ fn close(state: &mut State, why: &Error) {
             None => Ok(Ended {
                 kept: Kept::Begin,
                 solved: None,
+                why: None,
             }),
             Some(_) => Err(closed.clone()),
         });
@@ -559,10 +563,10 @@ fn close(state: &mut State, why: &Error) {
 }
 
 /// The end's work on the solver: with a cursor, the sketch moved there from the begin
-/// state and solved as a whole, or the begin state kept; with none, nothing kept. A move the
-/// worker refuses keeps the begin state. A worker that ended took the drag's session with
-/// it: a frame in hand is still solved whole, on another worker, since the closing solve
-/// carries the whole sketch.
+/// state and solved as a whole, or the begin state kept, saying why; with none, nothing
+/// kept. A move or a whole solve the worker refuses, rather than fails, keeps the begin
+/// state. A worker that ended took the drag's session with it: a frame in hand is still
+/// solved whole, on another worker, since the closing solve carries the whole sketch.
 fn ending(
     solver: &mut dyn SketchSolver,
     begin: &DragBegin,
@@ -570,19 +574,20 @@ fn ending(
     to: Option<[f64; 2]>,
     last: Option<([u64; 2], Vec<f64>)>,
 ) -> Result<Ended, Error> {
-    let kept_begin = Ended {
+    let kept_begin = |why: Option<Error>| Ended {
         kept: Kept::Begin,
         solved: None,
+        why,
     };
     let Some(to) = to else {
         // The worker's session ends with it; a failure to end it changes nothing kept.
         let _ = solver.session_stopper().and_then(|_| solver.drag_end());
-        return Ok(kept_begin);
+        return Ok(kept_begin(None));
     };
     // The values at the final cursor, from the begin state: the newest solved move's, if it
     // was this cursor, or one move more.
     let values = match last {
-        Some((bits, values)) if bits == to.map(f64::to_bits) => Some(values),
+        Some((bits, values)) if bits == to.map(f64::to_bits) => Ok(values),
         _ => {
             solver.session_stopper()?;
             match solver.drag_move(to, DRAG_MOVE_TIMEOUT) {
@@ -591,27 +596,38 @@ fn ending(
                         solver.distrust();
                         return Err(error);
                     }
+                    let moved = startable(&begin.system, moved);
                     match (moved.status, moved.values) {
-                        (SolveStatus::Success, Some(values)) => Some(values),
-                        _ => None,
+                        (SolveStatus::Success, Some(values)) => Ok(values),
+                        (SolveStatus::SolvedInvalid, _) => Err(unbuildable_at_cursor()),
+                        _ => Err(Error::new(
+                            ErrorCode::SolveFailed,
+                            "the solver didn't reach the drag's final cursor from where the drag began",
+                        )
+                        .with_suggestion("release the drag nearer where it began")),
                     }
                 }
-                Err(error) if !error.code().is_kernel_fault() => None,
+                Err(error) if !error.code().is_kernel_fault() => Err(error),
                 Err(error) => return Err(error),
             }
         }
     };
     // The worker's session ends; one already gone (its worker ended) needs no end.
     let _ = solver.session_stopper().and_then(|_| solver.drag_end());
-    let Some(values) = values else {
-        return Ok(kept_begin);
+    let values = match values {
+        Ok(values) => values,
+        Err(why) => return Ok(kept_begin(Some(why))),
     };
     let system = SketchSystem {
         values,
         ..begin.system.clone()
     };
     solver.stopper()?;
-    let solved = solver.solve(system.clone())?;
+    let solved = match solver.solve(system.clone()) {
+        Ok(solved) => solved,
+        Err(error) if !error.code().is_kernel_fault() => return Ok(kept_begin(Some(error))),
+        Err(error) => return Err(error),
+    };
     if let Err(error) = check_solved(&system, &solved) {
         solver.distrust();
         return Err(error);
@@ -620,9 +636,50 @@ fn ending(
         SolveStatus::Success | SolveStatus::SolvedExceptRedundant => Ok(Ended {
             kept: Kept::Cursor,
             solved: Some(solved),
+            why: None,
         }),
-        _ => Ok(kept_begin),
+        SolveStatus::SolvedInvalid => Ok(kept_begin(Some(unbuildable_at_cursor()))),
+        _ => Ok(kept_begin(Some(
+            Error::new(
+                ErrorCode::SolveFailed,
+                "the sketch didn't solve as a whole at the drag's final cursor",
+            )
+            .with_suggestion("release the drag nearer where it began"),
+        ))),
     }
+}
+
+/// `moved`, but a `Success` whose values the next solve couldn't start from (its system's
+/// own check refuses them: a point held on a circle drawn at that circle's centre, say,
+/// which a radius just above 0 leaves the worker taking) as `SolvedInvalid`, its values
+/// withheld, as M3.7 withholds a frame whose geometry can't be built.
+fn startable(system: &SketchSystem, moved: Moved) -> Moved {
+    match (moved.status, &moved.values) {
+        (SolveStatus::Success, Some(values))
+            if SketchSystem {
+                values: values.clone(),
+                ..system.clone()
+            }
+            .check()
+            .is_err() =>
+        {
+            Moved {
+                status: SolveStatus::SolvedInvalid,
+                values: None,
+            }
+        }
+        _ => moved,
+    }
+}
+
+/// The final cursor solved to geometry that can't be built: the worker withholds such a
+/// frame's values, so what can't be is said, not named.
+fn unbuildable_at_cursor() -> Error {
+    Error::new(
+        ErrorCode::InvalidResult,
+        "at the drag's final cursor the sketch solves to geometry that can't be built: a line of no length, a circle or arc of no radius, or a point held on a circle drawn at its centre",
+    )
+    .with_suggestion("release the drag where the geometry it moves keeps its size")
 }
 
 /// Refuses a frame unless it could be `part`'s: values exactly with a `Success`, as many as

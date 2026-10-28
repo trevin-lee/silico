@@ -366,14 +366,15 @@ fn a_move_that_isnt_solved_answers_its_kind_with_no_values() {
     let frame = drag.move_to([70.0, 7.0]).unwrap().wait().unwrap();
     assert_eq!(frame.kind, FrameKind::Failed);
     assert!(drag.is_open());
-    // An end whose final move fails keeps the begin state, and says why.
+    // An end whose final move the worker refuses keeps the begin state, and says why: the
+    // worker's refusal, naming the sketch.
     let ended = drag.end(Some([70.0, 7.0])).unwrap();
     assert_eq!(ended.kept, Kept::Begin);
     assert!(!ended.changed);
     assert_eq!(ended.sketch, sketch_of(&document(), "s0000001"));
     let why = ended.why.unwrap();
     assert_eq!(
-        (why.code(), why.feature()),
-        (ErrorCode::SolveFailed, Some("s0000001"))
+        (why.code(), why.message(), why.feature()),
+        (ErrorCode::InvalidInput, "out of reach", Some("s0000001"))
     );
 }

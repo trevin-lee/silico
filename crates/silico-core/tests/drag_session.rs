@@ -264,7 +264,8 @@ fn an_end_with_no_cursor_stops_the_move_solving_keeps_the_begin_and_frees_the_wo
         ended,
         Ended {
             kept: Kept::Begin,
-            solved: None
+            solved: None,
+            why: None
         }
     );
     assert_eq!(moving.wait(), MoveOutcome::Cancelled);
@@ -292,12 +293,14 @@ fn a_final_move_that_doesnt_reach_the_cursor_keeps_the_begin_state() {
         })
     });
     let ended = session.end(Some([9.0, 9.0])).unwrap();
+    assert_eq!((ended.kept, ended.solved), (Kept::Begin, None));
+    let why = ended.why.unwrap();
     assert_eq!(
-        ended,
-        Ended {
-            kept: Kept::Begin,
-            solved: None
-        }
+        (why.code(), why.message()),
+        (
+            ErrorCode::SolveFailed,
+            "the solver didn't reach the drag's final cursor from where the drag began"
+        )
     );
     // No closing solve, and the worker's drag ended.
     assert!(fake.requests().is_empty());
@@ -768,7 +771,8 @@ fn a_cancelled_move_answers_cancelled_and_closes_the_drag_keeping_the_begin() {
         session.end(None).unwrap(),
         Ended {
             kept: Kept::Begin,
-            solved: None
+            solved: None,
+            why: None
         }
     );
     // A cursor after a cancel is refused: the drag ended before it.

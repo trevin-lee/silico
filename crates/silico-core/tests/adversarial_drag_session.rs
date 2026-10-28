@@ -663,7 +663,8 @@ fn an_esc_after_the_worker_failed_keeps_the_begin_and_the_drop_after_it_is_quiet
         session.end(None).unwrap(),
         Ended {
             kept: Kept::Begin,
-            solved: None
+            solved: None,
+            why: None
         }
     );
     // A second session, dropped after the same failure, without an end.
@@ -738,12 +739,14 @@ fn an_end_at_a_cursor_whose_newest_move_failed_moves_again_and_keeps_the_begin()
     session.move_to([5.0, 5.0]).unwrap().wait();
     session.move_to([6.0, 6.0]).unwrap().wait();
     let ended = session.end(Some([6.0, 6.0])).unwrap();
+    assert_eq!((ended.kept, ended.solved), (Kept::Begin, None));
+    let why = ended.why.unwrap();
     assert_eq!(
-        ended,
-        Ended {
-            kept: Kept::Begin,
-            solved: None
-        }
+        (why.code(), why.message()),
+        (
+            ErrorCode::SolveFailed,
+            "the solver didn't reach the drag's final cursor from where the drag began"
+        )
     );
     assert_eq!(
         moves_of(&fake.drag_calls()),
@@ -775,13 +778,24 @@ fn a_closing_solve_that_doesnt_solve_keeps_the_begin_state() {
         });
         let ended = session.end(Some([3.0, 3.0])).unwrap();
         assert_eq!(
-            ended,
-            Ended {
-                kept: Kept::Begin,
-                solved: None
-            },
+            (ended.kept, &ended.solved),
+            (Kept::Begin, &None),
             "{status:?}"
         );
+        // Why: geometry that can't be built, or no solve at all.
+        let why = ended.why.unwrap();
+        let (code, message) = if status == SolveStatus::SolvedInvalid {
+            (
+                ErrorCode::InvalidResult,
+                "at the drag's final cursor the sketch solves to geometry that can't be built: a line of no length, a circle or arc of no radius, or a point held on a circle drawn at its centre",
+            )
+        } else {
+            (
+                ErrorCode::SolveFailed,
+                "the sketch didn't solve as a whole at the drag's final cursor",
+            )
+        };
+        assert_eq!((why.code(), why.message()), (code, message), "{status:?}");
     }
 }
 

@@ -35,6 +35,8 @@ pub struct SketchDrag {
     sketch: Sketch,
     /// The begin state's translation: an end's solve is read by it.
     translation: Translation,
+    /// Where the dragged point began: a release there is a click, and changes nothing.
+    origin: [f64; 2],
 }
 
 /// A drag begun: the drag, the sketch's degrees of freedom left, and the points of the
@@ -137,7 +139,7 @@ pub fn begin(
             .with_suggestion("name one of the sketch's points"),
         ));
     }
-    let mut prepared: Option<(Translation, Reading)> = None;
+    let mut prepared: Option<(Translation, Reading, [f64; 2])> = None;
     let begun = super::begin_with(solvers, notify, |solver| {
         let begin_state = match held {
             Some(solution) => solution.written(sketch),
@@ -156,11 +158,25 @@ pub fn begin(
             point: PointOf::Point(geometry),
         };
         let reading = reading(&translation, &begin);
-        prepared = Some((translation, reading));
+        let origin = begin
+            .system
+            .point_values(begin.point)
+            .map(|p| {
+                [p.x, p.y].map(|v| {
+                    translation
+                        .system
+                        .values
+                        .get(v.0 as usize)
+                        .copied()
+                        .unwrap_or(f64::NAN)
+                })
+            })
+            .unwrap_or([f64::NAN; 2]);
+        prepared = Some((translation, reading, origin));
         Ok(begin)
     })
     .map_err(named)?;
-    let (translation, reading) = prepared.ok_or_else(|| {
+    let (translation, reading, origin) = prepared.ok_or_else(|| {
         Error::new(ErrorCode::Internal, "a drag began with no begin state")
             .with_suggestion(crate::worker::SILICO_BUG)
     })?;
@@ -195,6 +211,7 @@ pub fn begin(
             feature: feature.clone(),
             sketch: sketch.clone(),
             translation,
+            origin,
         },
         dofs,
         moves,
@@ -266,11 +283,14 @@ impl SketchDrag {
     /// solved as a whole ([`DragSession::end`]), then settled as a load settles a solve
     /// (M3.4): its points where that leaves them, as its file holds them. The begin state
     /// is kept, and the sketch as its file held it, if the move or either solve fails for
-    /// the sketch (why, in [`SketchEnded::why`]); with no cursor, always. Refused: as
+    /// the sketch (why, in [`SketchEnded::why`]); with no cursor, always; and with the
+    /// cursor where the dragged point began, a click, which moves nothing (a solve from
+    /// there could still move the sketch by its rounding). Refused: as
     /// [`DragSession::end`] is; and a solver that failed settling (its error). Each names
     /// the sketch.
     pub fn end(self, to: Option<[f64; 2]>) -> Result<SketchEnded, Error> {
         let named = |e: Error| e.with_feature(self.feature.as_str());
+        let to = to.filter(|&to| to != self.origin);
         let ended = self.session.end(to).map_err(named)?;
         let kept_begin = |why: Option<Error>| SketchEnded {
             kept: Kept::Begin,
@@ -280,18 +300,7 @@ impl SketchDrag {
         };
         let solved = match (ended.kept, ended.solved) {
             (Kept::Cursor, Some(solved)) => solved,
-            _ => {
-                let why = to.map(|_| {
-                    named(
-                        Error::new(
-                            ErrorCode::SolveFailed,
-                            "the sketch couldn't be moved to the drag's final cursor and solved there",
-                        )
-                        .with_suggestion("drag it again, nearer where it began"),
-                    )
-                });
-                return Ok(kept_begin(why));
-            }
+            _ => return Ok(kept_begin(ended.why.map(named))),
         };
         // Solved again from where the closing solve left it, as a load is.
         let mut closing = self.translation.clone();

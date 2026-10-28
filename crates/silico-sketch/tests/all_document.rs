@@ -19,6 +19,8 @@ mod systems;
 #[path = "common/wait.rs"]
 mod wait;
 
+#[path = "adversarial_document_drag.rs"]
+mod adversarial_document_drag;
 #[path = "adversarial_drag.rs"]
 mod adversarial_drag;
 #[path = "adversarial_drag_session.rs"]
