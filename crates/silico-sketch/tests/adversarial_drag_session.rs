@@ -205,9 +205,42 @@ fn a_worker_killed_between_moves_fails_the_next_move_as_a_crash_and_the_next_dra
     assert!(near(at(&ended.solved.unwrap().values, end), [3.0, 8.0]));
     assert!(after.is_err(), "{after:?}");
     match failed {
-        MoveOutcome::Failed(e) => assert_eq!(e.code(), ErrorCode::WorkerCrashed, "{e}"),
+        MoveOutcome::Failed(e) => {
+            assert_eq!(e.code(), ErrorCode::WorkerCrashed, "{e}");
+            // Found before the move is sent, by the session's own check: not the move's
+            // crash on a worker that's gone, nor a new worker with no drag.
+            assert_eq!(
+                e.message(),
+                "the sketch worker ended during the drag, and its session with it"
+            );
+        }
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn a_move_after_the_workers_drag_ended_is_refused_as_no_drag() {
+    // The worker's drag ends at its end, so a move after it is the worker's refusal, as no
+    // drag is under way; a solver that only said it ended would have moved it.
+    let (begin_, _) = fixed_length_line();
+    let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    worker.stopper().unwrap();
+    worker.drag_begin(begin_).unwrap();
+    worker.session_stopper().unwrap();
+    worker
+        .drag_move([5.0, 30.0], silico_core::drag::DRAG_MOVE_TIMEOUT)
+        .unwrap();
+    worker.session_stopper().unwrap();
+    worker.drag_end().unwrap();
+    worker.session_stopper().unwrap();
+    let e = worker
+        .drag_move([6.0, 30.0], silico_core::drag::DRAG_MOVE_TIMEOUT)
+        .unwrap_err();
+    assert_eq!(e.code(), ErrorCode::InvalidInput, "{e}");
+    assert_eq!(
+        e.message(),
+        "DragMove needs a drag under way, and there's none"
+    );
 }
 
 #[test]

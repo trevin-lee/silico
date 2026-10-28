@@ -208,6 +208,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - JSON-RPC frames refused for a member given twice (two `params`, two `jsonrpc`): answered with a null ID though the one `id` was readable, so the client waits on its request forever
 - IDs, progress tokens, and cancels' `requestId`s that are valid JSON strings but no Unicode (`"\ud800"`): a decoder that refuses them calls the string "neither a string nor a number"
 - Every JSON-RPC refusal path (params, `_meta`, a progress token, not just the tool's name) checked for a suggestion, not only a message and a parameter
+- Lists checked for repeats by scanning the entries before each (`list[..i].contains(x)`): 200,000 distinct IDs (2 MB of a 64 MiB request) take minutes; time a long list of distinct members, not only of repeats
+- Helpers shared between commands that word an error with one command's name ("the session closed before the render finished", "render it there"): reach each shared failure path from the other command and read its words
 
 ## Kernel worker and IPC
 
@@ -308,6 +310,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A walk up a missing path that spends the links' budget (40) on each directory too: past ~40 missing directories below an outside one, whether that one exists decides "outside" against "can't be reached", an oracle for what exists outside the workspace
 - Paths to make ending in `/` or `/.`: `Path::file_name` skips both, so `brand/.` makes a file `brand`, which `open(2)` of the same path never would
 - Paths quoted whole in errors: `../` and a megabyte of `./` is a path under a request's limit whose "outside the workspace" refusal is a megabyte
+- A worker's reply kept in a shared cache before the code that reads it checks it (a mesh of more faces than the solid's element map): one bad reply refuses every later read from the cache, the kernel well again; forge it once with `answer_instead`, then read again with the kernel well
+- Answers that report what the cache knows (a floor recorded, an entry kept) rather than what the request asks: a value exactly at a boundary the cache learns later (a floor that's exactly a power of two, met at its own level) answers one request two ways by another session's history; read on a fresh cache, then after other reads
 
 ## Rendering
 
@@ -320,3 +324,4 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A body far deeper along a named view than across it (a 1 x 500,000 x 1 rod seen end-on): a view fitted to its extent across is under the renderer's least zoom for the scene's reach, and a check meant for given cameras answers the core's own view as Silico's bug
 - A body built but never measured (its summary refused or failed): code that culls, fits, or checks the eye by the body's box leaves it out of every view, so a camera on it draws nothing as Ok and an eye inside it is taken
 - A value the command normalizes, passed back as answered (a camera's up already of unit length and perpendicular): renormalizing in f64 isn't a fixed point, so the answer changes in its last bits every round trip
+- Worker meshes of fewer faces or edges than the solid (counts the model already holds in its summary): answered Ok, named short, with nothing saying the rest are missing

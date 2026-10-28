@@ -66,6 +66,8 @@ mod adversarial_fingerprint;
 mod adversarial_mass_properties;
 #[path = "adversarial_measures.rs"]
 mod adversarial_measures;
+#[path = "adversarial_meshes_read.rs"]
+mod adversarial_meshes_read;
 #[path = "adversarial_read_logs.rs"]
 mod adversarial_read_logs;
 #[path = "adversarial_references.rs"]
@@ -100,6 +102,10 @@ mod fingerprint;
 mod mass_properties;
 #[path = "measures.rs"]
 mod measures;
+#[path = "meshes_read.rs"]
+mod meshes_read;
+#[path = "meshes_read_worker_faults.rs"]
+mod meshes_read_worker_faults;
 #[path = "reach.rs"]
 mod reach;
 #[path = "refused_from_a_partial_cache.rs"]

@@ -34,6 +34,9 @@ pub struct Edited {
 /// A curve's points another curve uses stay, with every constraint on them, so the curves
 /// that meet there stay joined (shared points, where FreeCAD re-points coincidences); a
 /// `tangent_at` naming a removed curve goes with it, never onto a neighbour (`9ce5756011`).
+/// A removed line's `midpoint` becomes a `symmetric` of its ends about the point while the
+/// point and both ends stay, as FreeCAD's is stored (a `Symmetric` of the line's ends, which
+/// the line's delete leaves on the ends its neighbours keep), and as split makes it.
 pub fn remove(sketch: &Sketch, members: &[ElementId]) -> Result<Edited, Refused> {
     let kinds = kinds_of(sketch);
     let named: BTreeSet<&ElementId> = members
@@ -102,9 +105,28 @@ pub fn remove(sketch: &Sketch, members: &[ElementId]) -> Result<Edited, Refused>
     edited.lines.retain(|c| !gone.contains(&c.id));
     edited.circles.retain(|c| !gone.contains(&c.id));
     edited.arcs.retain(|c| !gone.contains(&c.id));
+    // A removed line's midpoint, its ends' symmetry about the point while they all stay.
+    let mut modified = BTreeSet::new();
+    for constraint in &mut edited.constraints {
+        if let Form::Midpoint { point, line } = &constraint.form
+            && let Some(removed) = line.element().filter(|l| gone.contains(*l))
+            && !gone.contains(&constraint.id)
+            && point.element().is_some_and(|p| !gone.contains(p))
+            && let Some(l) = sketch.lines.iter().find(|l| l.id == *removed)
+            && !gone.contains(&l.from)
+            && !gone.contains(&l.to)
+        {
+            constraint.form = Form::Symmetric {
+                a: Reference::Element(l.from.clone()),
+                b: Reference::Element(l.to.clone()),
+                about: point.clone(),
+            };
+            modified.insert(constraint.id.clone());
+        }
+    }
     // Every constraint naming anything gone, in any reference (a symmetric's `about` line
     // too: FreeCAD `0016d6f2f8`).
-    for constraint in &sketch.constraints {
+    for constraint in &edited.constraints {
         if constraint
             .form
             .references()
@@ -118,7 +140,7 @@ pub fn remove(sketch: &Sketch, members: &[ElementId]) -> Result<Edited, Refused>
     Ok(Edited {
         sketch: edited,
         added: Vec::new(),
-        modified: Vec::new(),
+        modified: ordered(&kinds, modified),
         removed: ordered(&kinds, gone),
     })
 }
