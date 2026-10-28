@@ -457,3 +457,113 @@ fn a_held_view_reads_again_with_no_mesh_made_though_the_cache_keeps_none() {
     }
     assert_eq!(bench.meshed(), [0.03125]);
 }
+
+#[test]
+fn a_view_held_at_the_floor_reads_again_with_no_mesh_made_though_the_cache_keeps_none() {
+    // The architecture review's floor case: 0.001 mm over 1,000 pixels asks 2⁻²¹, under
+    // the floor (0.0046303), with a cache that keeps nothing, so no floor is known to it.
+    // The client holds the floor's mesh, a deflection no level is: three re-reads ask the
+    // kernel nothing, and answer as the first.
+    let bench = Bench {
+        meshes: MeshCache::new(0),
+        ..Bench::of(EXAMPLE)
+    };
+    let first = bench.read(&of(front(0.001), 1000, 1000)).unwrap();
+    let body = &first.bodies[0];
+    assert!(body.deflection > body.level);
+    let held = Meshes {
+        held: vec![Held {
+            key: body.key,
+            deflection: body.deflection,
+        }],
+        ..of(front(0.001), 1000, 1000)
+    };
+    for _ in 0..3 {
+        let again = bench.read(&held).unwrap();
+        let b = &again.bodies[0];
+        assert!(b.held && b.mesh.is_none());
+        assert_eq!(
+            (b.level, b.deflection, b.serves),
+            (body.level, body.deflection, body.serves)
+        );
+    }
+    assert_eq!(bench.meshed().len(), 1);
+    // A held deflection coarser than the level that's a power of two isn't a floor: a
+    // zoomed-out mesh, which the view needs finer.
+    let coarse = bench
+        .read(&Meshes {
+            held: vec![Held {
+                key: body.key,
+                deflection: 0.25,
+            }],
+            ..of(front(80.0), 1000, 1000)
+        })
+        .unwrap();
+    assert!(!coarse.bodies[0].held && coarse.bodies[0].mesh.is_some());
+}
+
+#[test]
+fn a_body_behind_and_aside_the_eye_is_meshed_for_its_distance_not_its_depth() {
+    // The tests review's: the eye at the origin along +y, 40°, 1,000 px; a 2 mm cube at
+    // x 200..202, y −102..−100. Its nearest point, (200, −100, 0), is √50000 = 223.607 from
+    // the eye: a half pixel of 223.607 · tan 20° / 1000 = 0.081386, so 2⁻⁴. Its depth
+    // behind, 100, would give 2⁻⁵.
+    let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "b0000001", "type": "box", "v": 1, "name": "Cube", "position": [200, -102, -1], "length": 2, "width": 2, "height": 2}]}"#;
+    let bench = Bench::of(text);
+    let camera = Camera {
+        projection: Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        eye: [0.0, 0.0, 0.0],
+        target: [0.0, 10.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    };
+    let read = bench.read(&of(camera, 1000, 1000)).unwrap();
+    assert_eq!(read.bodies[0].level, 0.0625);
+}
+
+#[test]
+fn a_floor_of_a_power_of_two_held_on_a_cache_keeping_nothing_is_meshed_again_and_answered_held() {
+    // A 225 by 300 by 500 box: its diagonal is 625, its floor exactly 0.0625, a power of
+    // two, which the read can't tell from a level. On a cache that keeps nothing, a view
+    // asking 2⁻⁵ (a half pixel of 0.05) is meshed at the floor; held at it, the next read
+    // meshes again (the floor isn't known), and answers held, with no geometry and no counts,
+    // as a kept mesh would be answered.
+    let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "b0000001", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 225, "width": 300, "height": 500}]}"#;
+    let bench = Bench {
+        meshes: MeshCache::new(0),
+        ..Bench::of(text)
+    };
+    let camera = Camera {
+        projection: Projection::Orthographic { view_height: 100.0 },
+        eye: [112.5, -1000.0, 250.0],
+        target: [112.5, 150.0, 250.0],
+        up: [0.0, 0.0, 1.0],
+    };
+    let first = bench.read(&of(camera.clone(), 1000, 1000)).unwrap();
+    let body = &first.bodies[0];
+    assert_eq!((body.level, body.deflection), (0.03125, 0.0625));
+    assert_eq!(body.serves, [0.0, 0.125]);
+    let again = bench
+        .read(&Meshes {
+            held: vec![Held {
+                key: body.key,
+                deflection: 0.0625,
+            }],
+            ..of(camera, 1000, 1000)
+        })
+        .unwrap();
+    let held = &again.bodies[0];
+    assert!(held.held && held.mesh.is_none());
+    assert!(
+        held.faces
+            .iter()
+            .chain(&held.edges)
+            .all(|e| e.count.is_none())
+    );
+    assert_eq!(
+        (held.level, held.deflection, held.serves),
+        (0.03125, 0.0625, [0.0, 0.125])
+    );
+    assert_eq!(bench.meshed(), [0.03125, 0.03125]);
+}

@@ -152,12 +152,41 @@ pub fn meshes<K: Kernel>(
         .collect();
     // A body the client holds at the deflection it would be meshed at is answered without
     // the kernel, whether or not the shared cache still keeps its mesh: a held view of an
-    // unchanged model never meshes again.
+    // unchanged model never meshes again, but at a floor that's a power of two, which the
+    // read can't tell from a level once the cache has dropped it.
+    // A held deflection that isn't a power of two can only be its step's floor (levels are
+    // powers of two, and a floor is its key's), so a body held at it, at a level under it,
+    // is held though the cache has dropped its floor. A floor is 1e-4 of the kernel's box's
+    // diagonal, a box about the tight one, so it's within [the tight box's floor, twice
+    // it): a held deflection outside that, or not finite, isn't one.
+    let held_floor = |solid: &Body, level: f64| {
+        let [low, high] = solid.bounds?;
+        let diagonal = libm::sqrt(
+            (0..3)
+                .map(|k| (high[k] - low[k]) * (high[k] - low[k]))
+                .sum::<f64>(),
+        );
+        let least = silico_protocol::mesh_floor(diagonal);
+        request.held.iter().find_map(|h| {
+            let floor = h.deflection;
+            (h.key == solid.key
+                && floor.is_finite()
+                && floor >= level
+                && floor >= least
+                && floor < 2.0 * least
+                && mesh_level(floor) != Some(floor))
+            .then_some(floor)
+        })
+    };
     let planned: Vec<(f64, f64)> = solids
         .iter()
         .map(|solid| {
             let level = level_of(&camera, request.height, solid);
-            (level, on.meshes.deflection_for(&solid.key, level))
+            let deflection = on.meshes.deflection_for(&solid.key, level);
+            match held_floor(solid, level) {
+                Some(floor) if deflection == level => (level, floor),
+                _ => (level, deflection),
+            }
         })
         .collect();
     let to_mesh: Vec<&Body> = solids
