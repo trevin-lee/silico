@@ -620,3 +620,50 @@ fn a_frame_that_cant_be_built_is_refused_naming_the_neighbour_it_collapses() {
         "{e}"
     );
 }
+
+/// A solver whose one move is left unmade for a conflict it doesn't name: a worker that
+/// can't be trusted. Counts its distrusts.
+struct NamesNoConflict {
+    distrusted: usize,
+}
+
+impl silico_core::sketch::SketchSolver for NamesNoConflict {
+    fn solve(
+        &mut self,
+        system: silico_protocol::SketchSystem,
+    ) -> Result<silico_protocol::Solved, Error> {
+        Ok(FakeSketches::as_sent(&system))
+    }
+
+    fn distrust(&mut self) {
+        self.distrusted += 1;
+    }
+
+    fn move_once(
+        &mut self,
+        _: silico_protocol::DragBegin,
+        _: [f64; 2],
+    ) -> Result<silico_core::sketch::MovedOnce, Error> {
+        Ok(silico_core::sketch::MovedOnce::Conflicting(vec![]))
+    }
+}
+
+#[test]
+fn a_move_left_unmade_for_no_conflict_is_the_workers_fault() {
+    let before = a_line("");
+    let mut solver = NamesNoConflict { distrusted: 0 };
+    let e = extend(
+        sketch_of(&before),
+        &id("a0000000"),
+        End::End,
+        mm(5.0),
+        &mut solver,
+    )
+    .unwrap_err();
+    assert_eq!(e.code(), ErrorCode::ProtocolError);
+    assert_eq!(
+        e.message(),
+        "the sketch worker's one move was left unmade for constraints in conflict, naming none"
+    );
+    assert_eq!(solver.distrusted, 1);
+}
