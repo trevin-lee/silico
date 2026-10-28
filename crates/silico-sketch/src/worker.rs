@@ -29,7 +29,7 @@ impl State {
         self.drag.is_some()
     }
 
-    /// The production operations: a solve, a drag's begin, moves, and end, and the echo
+    /// The production operations: a solve, a drag's begin, moves, and end, one move, and the echo
     /// every worker answers. Anything else is another worker's (or a test operation).
     ///
     /// A begin ends any drag under way, and starts one unless constraints conflict; a solve
@@ -67,6 +67,18 @@ impl State {
                         Err(failure)
                     }
                 }
+            }
+            Op::MoveOnce { begin, to } => {
+                self.drag = None;
+                let start = Drag::begin_once(&begin)?;
+                let moved = match start.drag {
+                    Some(mut drag) => Some(drag.move_to(to)?),
+                    None => None,
+                };
+                Ok(Reply::MovedOnce {
+                    conflicting: start.conflicting,
+                    moved,
+                })
             }
             Op::DragEnd => match self.drag.take() {
                 Some(_) => Ok(Reply::Done),

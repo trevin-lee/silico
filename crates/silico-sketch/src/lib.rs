@@ -356,6 +356,19 @@ impl Drag {
     /// constraints conflict, pins its point where it is.
     pub fn begin(begin: &DragBegin) -> Result<DragStart, Failure> {
         begin.check().map_err(invalid)?;
+        Self::start(begin)
+    }
+
+    /// Checks `begin` as one move ([`DragBegin::check_move`]: a solve's limits, not the
+    /// drag's), and starts it as [`Drag::begin`] does, for that move alone.
+    pub fn begin_once(begin: &DragBegin) -> Result<DragStart, Failure> {
+        begin.check_move().map_err(invalid)?;
+        Self::start(begin)
+    }
+
+    /// Builds and diagnoses `begin`'s sketch, checked, and, unless constraints conflict,
+    /// pins its point where it is.
+    fn start(begin: &DragBegin) -> Result<DragStart, Failure> {
         prepare_eigen();
         // The whole sketch's diagnosis, as FreeCAD's: a conflict anywhere refuses the drag.
         let whole = ffi::diagnose(&encode(&begin.system)).map_err(bridge_threw)?;

@@ -4,9 +4,10 @@
 //! its inputs alone, the sketch as stored and the increment, as a drag's end is (`drag`):
 //! a drag the app shows while the person picks the increment is only its preview.
 //!
-//! - **A line's end** moves by a `Length` along the line, through the sketch worker's drag,
-//!   as FreeCAD's `extend` moves it (`moveGeometry`): the drag begins from the sketch as
-//!   stored, moves once to the target, and ends, so its constraints win (a line with a
+//! - **A line's end** moves by a `Length` along the line, through one move of the sketch
+//!   worker's drag, as FreeCAD's `extend` moves it (`moveGeometry`): begun from the sketch
+//!   as stored, moved once to the target, and ended, in one request held to a solve's
+//!   limits and time, not a drag's (an extend isn't a drag), so its constraints win (a line with a
 //!   length slides rather than grows, 1.1.3), and every curve sharing the end follows. The
 //!   frame's values are the edited sketch's coordinates, which the edit's solve then
 //!   settles, as a drag's end does.
@@ -33,7 +34,7 @@ use silico_protocol::{DragBegin, PointOf, SolveStatus, check_drag_target};
 
 use crate::document::sketch_edit::Edited;
 use crate::document::{Angle, Coordinate, ElementId, Length, Sketch};
-use crate::drag::{DRAG_MOVE_TIMEOUT, checked_frame, checked_tags};
+use crate::drag::{checked_frame, checked_tags};
 use crate::sketch::{SketchSolver, Translation};
 use crate::{Error, ErrorCode};
 
@@ -156,31 +157,30 @@ fn extend_line(
         system: translation.system.clone(),
         point: PointOf::Point(geometry),
     };
-    if let Err(invalid) = begin.check() {
+    // One move, held to a solve's limits, not a drag's: an extend isn't a drag.
+    if let Err(invalid) = begin.check_move() {
         return Err(refused(
             format!(
-                "line {curve}'s end {moving} can't be dragged: {}",
+                "line {curve}'s end {moving} can't be moved: {}",
                 invalid.message
             ),
             "curve",
-            "extend a line in a smaller part of the sketch",
+            "check the sketch with the gate first",
         )
         .with_elements([curve.to_string(), moving.to_string()]));
     }
     solver.stopper()?;
-    let started = solver.drag_begin(begin.clone())?;
-    if let Err(error) = checked_tags(&begin.system, &started.conflicting) {
+    let once = solver.move_once(begin.clone(), target)?;
+    if let Err(error) = checked_tags(&begin.system, &once.conflicting) {
         solver.distrust();
         return Err(error);
     }
-    if !started.conflicting.is_empty() {
-        let ids: Vec<String> = started
+    if !once.conflicting.is_empty() {
+        let ids: Vec<String> = once
             .conflicting
             .iter()
             .filter_map(|&t| translation.constraint_id(t).map(|id| id.to_string()))
             .collect();
-        // The worker's session ends with the drag; one that can't end changes nothing.
-        let _ = solver.session_stopper().and_then(|_| solver.drag_end());
         return Err(Error::new(
             ErrorCode::OverConstrained,
             format!("the sketch's constraints conflict, so line {curve} can't be extended"),
@@ -188,11 +188,14 @@ fn extend_line(
         .with_elements(ids)
         .with_suggestion("remove or change one of the constraints named"));
     }
-    solver.session_stopper()?;
-    let moved = solver.drag_move(target, DRAG_MOVE_TIMEOUT);
-    // The worker's drag ends whatever the move did; one gone with its worker needs no end.
-    let _ = solver.session_stopper().and_then(|_| solver.drag_end());
-    let moved = moved?;
+    let Some(moved) = once.moved else {
+        solver.distrust();
+        return Err(Error::new(
+            ErrorCode::ProtocolError,
+            "the sketch worker's one move found no conflict and moved nothing",
+        )
+        .with_suggestion("extend it again: its worker is started again"));
+    };
     if let Err(error) = checked_frame(&begin.part(), &moved) {
         solver.distrust();
         return Err(error);

@@ -192,6 +192,29 @@ fn every_op() -> Vec<Op> {
             to: [-1e6, 3.000_000_000_000_000_4],
         },
         Op::DragEnd,
+        // One move, its target at the reach's edge and a coordinate an ulp from 3.
+        Op::MoveOnce {
+            begin: DragBegin {
+                system: SketchSystem {
+                    values: vec![-0.5, 2.0, 7.25, 2.0],
+                    unknowns: vec![Value(2), Value(3)],
+                    geometry: vec![SketchGeometry::Line {
+                        start: PointValues {
+                            x: Value(0),
+                            y: Value(1),
+                        },
+                        end: PointValues {
+                            x: Value(2),
+                            y: Value(3),
+                        },
+                    }],
+                    constraints: vec![],
+                    algorithms: vec![Algorithm::DogLeg],
+                },
+                point: PointOf::End(Geometry(0)),
+            },
+            to: [1e6, 3.000_000_000_000_000_4],
+        },
         Op::MakeFaces(FaceRegions {
             plane: SketchPlane::Xz,
             regions: vec![
@@ -395,9 +418,10 @@ fn every_op() -> Vec<Op> {
             Op::PointDistance { .. } => 46,
             Op::ExportStep(_) => 47,
             Op::DescribeAll { .. } => 48,
+            Op::MoveOnce { .. } => 49,
         })
         .collect();
-    assert_eq!(indices, (0..49).collect(), "an operation has no case");
+    assert_eq!(indices, (0..50).collect(), "an operation has no case");
     ops
 }
 
@@ -550,6 +574,17 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             status: SolveStatus::Failed,
             values: None,
         })),
+        Ok(Reply::MovedOnce {
+            conflicting: vec![Tag(2), Tag(u32::MAX)],
+            moved: None,
+        }),
+        Ok(Reply::MovedOnce {
+            conflicting: vec![],
+            moved: Some(Moved {
+                status: SolveStatus::Success,
+                values: Some(vec![-0.0, 5e-324, -1e6]),
+            }),
+        }),
         // A distance at extremes a frame must carry exactly: -0, subnormal, and the largest.
         Ok(Reply::Distance(Distance {
             distance: 5e-324,
@@ -747,6 +782,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::MeshAt(_)) => 22,
             Ok(Reply::StepFile(_)) => 23,
             Ok(Reply::DescribedAll(_)) => 24,
+            Ok(Reply::MovedOnce { .. }) => 25,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
@@ -760,7 +796,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         .collect();
     assert_eq!(
         indices,
-        (0..25).collect(),
+        (0..26).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -1190,6 +1226,7 @@ fn every_op_has_its_own_name() {
             "DragBegin",
             "DragMove",
             "DragEnd",
+            "MoveOnce",
             "MakeFaces",
             "Prism",
             "PrismThroughAll",

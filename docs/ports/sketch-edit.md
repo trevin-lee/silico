@@ -282,10 +282,9 @@ That is deliberately not Validate's 1e-4 box. Ends 1e-7 to 1e-4 mm apart, which 
 - Refuse a result of size 1e-7 mm or less, or a flip.
 - Express an arc's increment as an angle (`Angle`, exact) and a line's as a `Length`.
 
-**Built** (`silico_core::extend`, a core function with no command yet; docs/design/m5.0-app.md, open item 12, pending Trevin). Its result is a function of the sketch as stored and the increment alone: the drag begins from the stored sketch, moves once to FreeCAD's target (the other end, along the line, plus the new length), and ends. The frame's values are the edited sketch's coordinates, and the edit's solve settles them, as a drag's end does. Every point the drag moved is `modified`. The 1.1.3 probe above is its real-worker test: (5,0)–(15,0). Beyond the recommendations, it also refuses:
+**Built** (`silico_core::extend`, a core function with no command yet; docs/design/m5.0-app.md, open item 12, pending Trevin). Its result is a function of the sketch as stored and the increment alone: the drag begins from the stored sketch, moves once to FreeCAD's target (the other end, along the line, plus the new length), and ends, all in one request to the sketch worker (`MoveOnce`). An extend isn't a drag, so it's held to a solve's limits and time, as FreeCAD's `extend` has no cap of its own, not to `MAX_DRAG_UNKNOWNS`, which bounds each of a drag's many moves for the cursor's sake (a chain of 282 unknowns extends; its real-worker test). The frame's values are the edited sketch's coordinates, and the edit's solve settles them, as a drag's end does. Every point the drag moved is `modified`. The 1.1.3 probe above is its real-worker test: (5,0)–(15,0). Beyond the recommendations, it also refuses:
 - an increment of 0, since it changes nothing;
 - a frame that isn't a success, as an invalid result, where FreeCAD returns its solver's status;
-- a line in a part of more than `MAX_DRAG_UNKNOWNS` unknowns, which the drag can't take (FreeCAD has no such limit; the cap was sized for a drag's moves, each under 0.76 s at 256 unknowns, and an extend makes one move under `DRAG_MOVE_TIMEOUT`, so a larger cap for it, sized to that time, is a decision for Trevin);
 - a drag that leaves the line 1e-7 mm or less, or flipped;
 - an arc swept a whole turn or more.
 

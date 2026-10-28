@@ -214,6 +214,12 @@ pub enum Op {
     /// Ends the drag; the core then solves the sketch where the last move left it, as a
     /// normal solve. Replies with [`Reply::Done`].
     DragEnd,
+    /// One move of a sketch's point, as a drag's begin, one move to `to`, and its end, in one
+    /// request, ending any drag under way: a sketch edit's (an extend's), not an interactive
+    /// drag, so it's held to a solve's limits ([`DragBegin::check_move`]), not the drag's
+    /// [`MAX_DRAG_UNKNOWNS`], and runs under a solve's time. Replies with
+    /// [`Reply::MovedOnce`].
+    MoveOnce { begin: DragBegin, to: [f64; 2] },
     /// A face for each of a profile's regions, on the sketch's plane, each curve an edge
     /// and each point a vertex shared by the curves that meet there: one face, or a
     /// compound of them in the regions' order. Replies with [`Reply::Built`], whose history
@@ -335,6 +341,7 @@ impl Op {
             Op::DragBegin(_) => "DragBegin",
             Op::DragMove { .. } => "DragMove",
             Op::DragEnd => "DragEnd",
+            Op::MoveOnce { .. } => "MoveOnce",
             Op::MakeFaces(_) => "MakeFaces",
             Op::Prism { .. } => "Prism",
             Op::PrismThroughAll { .. } => "PrismThroughAll",
@@ -493,6 +500,13 @@ pub enum Reply {
     },
     /// Where a drag's move left the sketch ([`Op::DragMove`]).
     Moved(Moved),
+    /// What one move found ([`Op::MoveOnce`]): the constraints in conflict, by tag, in
+    /// increasing order, as a drag's begin finds them; and, unless there are any, where the
+    /// move left the sketch.
+    MovedOnce {
+        conflicting: Vec<Tag>,
+        moved: Option<Moved>,
+    },
     /// A batch of a shape's elements ([`Op::Describe`]): how many of the kind asked for the
     /// shape has, and those asked for, in the description's list for that kind (its others
     /// empty).
@@ -546,6 +560,7 @@ impl Reply {
             Reply::Solved(_) => "Solved",
             Reply::DragStarted { .. } => "DragStarted",
             Reply::Moved(_) => "Moved",
+            Reply::MovedOnce { .. } => "MovedOnce",
             Reply::Echo { .. } => "Echo",
             Reply::Done => "Done",
         }

@@ -142,3 +142,71 @@ fn an_arcs_extended_end_takes_a_free_neighbour_with_it_as_freecads_arc_first_sol
         close(p("q0000000"), far);
     }
 }
+
+#[test]
+fn a_line_in_a_part_past_a_drags_unknowns_extends_as_one_solve_does() {
+    // 140 lines end to end along x, p0 at 0 to p140 at 1,400, each held 10 mm long: one
+    // part of 141 free points, 282 unknowns, past the 256 a drag takes. An extend isn't a
+    // drag: the last line's end on by 5 reaches (1405, 0), the chain sliding along, and
+    // every line is 10 mm after the edit's solve.
+    let n = 140;
+    let points: Vec<String> = (0..=n)
+        .map(|i| point(&format!("p{i:07}"), 10.0 * i as f64, 0.0))
+        .collect();
+    let lines: Vec<String> = (0..n)
+        .map(|i| {
+            line(
+                &format!("a{i:07}"),
+                &format!("p{i:07}"),
+                &format!("p{:07}", i + 1),
+            )
+        })
+        .collect();
+    let lengths: Vec<String> = (0..n)
+        .map(|i| {
+            format!(
+                r#"{{"id": "k{i:07}", "type": "length", "line": "a{i:07}", "value": 10, "driving": true}}"#
+            )
+        })
+        .collect();
+    let text = document(&fields(
+        &points.join(", "),
+        &lines.join(", "),
+        "",
+        "",
+        &lengths.join(", "),
+    ));
+    let before = read(text.as_bytes()).unwrap();
+    let Operation::Sketch(sketch) = &before.features[0].operation else {
+        panic!("not a sketch")
+    };
+    assert_eq!(Translation::new(sketch).unwrap().system.unknowns.len(), 282);
+    let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    let last = format!("a{:07}", n - 1);
+    let edited = extend(
+        sketch,
+        &ElementId::new(&last).unwrap(),
+        End::End,
+        By::Length(Length::rounded(5.0).unwrap()),
+        &mut worker,
+    )
+    .unwrap();
+    let end = format!("p{n:07}");
+    close(at(&edited.sketch, &end), [1405.0, 0.0]);
+    let solution = Translation::new(&edited.sketch)
+        .unwrap()
+        .solve(&mut worker)
+        .unwrap()
+        .outcome
+        .unwrap();
+    for i in 0..n {
+        let p = |j: usize| {
+            solution
+                .point(&ElementId::new(&format!("p{j:07}")).unwrap())
+                .unwrap()
+        };
+        let (a, b) = (p(i), p(i + 1));
+        let length = libm::hypot(b[0] - a[0], b[1] - a[1]);
+        assert!((length - 10.0).abs() <= CLOSE, "line {i}: {length}");
+    }
+}

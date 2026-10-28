@@ -155,7 +155,8 @@ fn a_lines_end_is_dragged_once_from_the_stored_sketch_to_the_new_length() {
     assert_eq!(calls.len(), 3, "{calls:?}");
     assert!(matches!(calls[0], DragCall::Begin(_)));
     assert_eq!(calls[1..], [DragCall::Move([15.0, 0.0]), DragCall::End]);
-    assert_eq!(fake.move_timeouts(), [Duration::from_secs(10)]);
+    // One move under the solver's own time, not a drag's: an extend isn't a drag.
+    assert_eq!(fake.move_timeouts(), [Duration::MAX]);
     // No whole-sketch solve: the edit's solve, after it, is the command's.
     assert!(fake.requests().is_empty());
 }
@@ -366,7 +367,8 @@ fn a_sketch_whose_constraints_conflict_is_refused_naming_them() {
     .unwrap_err();
     assert_eq!(e.code(), ErrorCode::OverConstrained);
     assert_eq!(e.elements(), ["k0000000"]);
-    assert_eq!(fake.drag_calls().last(), Some(&DragCall::End));
+    // The begin found the conflict, so no move was made, and no drag was left to end.
+    assert!(matches!(fake.drag_calls()[..], [DragCall::Begin(_)]));
     // A tag it wasn't sent: the worker's fault.
     let mut fake = FakeSketches::new();
     fake.conflicting_drags(vec![Tag(9)]);

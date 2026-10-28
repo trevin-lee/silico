@@ -144,6 +144,35 @@ pub trait SketchSolver: Send {
     fn drag_end(&mut self) -> Result<(), Error> {
         Err(no_drags())
     }
+
+    /// One move of `begin`'s point to `to`, begun as a solve is, with
+    /// [`stopper`](Self::stopper): a sketch edit's (an extend's), held to a solve's limits
+    /// and its time, not a drag's (`Op::MoveOnce`). By default, a drag's begin, one move,
+    /// and its end, the move under no time but the solver's own.
+    fn move_once(&mut self, begin: DragBegin, to: [f64; 2]) -> Result<MovedOnce, Error> {
+        let started = self.drag_begin(begin)?;
+        if !started.conflicting.is_empty() {
+            return Ok(MovedOnce {
+                conflicting: started.conflicting,
+                moved: None,
+            });
+        }
+        let moved = self.drag_move(to, Duration::MAX);
+        // The drag ends whatever the move did; a solver gone with it needs no end.
+        let _ = self.drag_end();
+        Ok(MovedOnce {
+            conflicting: Vec::new(),
+            moved: Some(moved?),
+        })
+    }
+}
+
+/// What one move found: the constraints in conflict, by tag (none, or no move was made),
+/// and, unless there are any, where the move left the sketch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MovedOnce {
+    pub conflicting: Vec<Tag>,
+    pub moved: Option<silico_protocol::Moved>,
 }
 
 /// A drag's start, as the worker found it: the degrees of freedom left, and the
@@ -352,6 +381,15 @@ impl SketchSolver for SketchWorker {
         match self.call(Op::DragMove { to }, timeout)? {
             Reply::Moved(moved) => Ok(moved),
             other => Err(self.wrong_reply("DragMove", &other)),
+        }
+    }
+
+    fn move_once(&mut self, begin: DragBegin, to: [f64; 2]) -> Result<MovedOnce, Error> {
+        self.usable()?;
+        // A solve's time, as it's a sketch edit's one move, not a drag's.
+        match self.call(Op::MoveOnce { begin, to }, self.timeout)? {
+            Reply::MovedOnce { conflicting, moved } => Ok(MovedOnce { conflicting, moved }),
+            other => Err(self.wrong_reply("MoveOnce", &other)),
         }
     }
 
