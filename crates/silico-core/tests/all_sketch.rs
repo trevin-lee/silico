@@ -7,6 +7,8 @@
 // Shared by the files below, each loaded once.
 #[path = "common/command.rs"]
 mod commands;
+#[path = "common/example.rs"]
+mod example;
 #[path = "common/sketch.rs"]
 mod fixture;
 #[path = "common/lateness.rs"]
@@ -56,3 +58,5 @@ mod sketch_gate;
 mod sketch_solve;
 #[path = "stored_coordinates.rs"]
 mod stored_coordinates;
+#[path = "undo.rs"]
+mod undo;
