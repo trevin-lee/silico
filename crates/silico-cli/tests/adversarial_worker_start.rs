@@ -6,6 +6,8 @@
 
 #[path = "common/run.rs"]
 mod run;
+#[path = "../../silico-core/tests/common/share.rs"]
+mod share;
 
 use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
@@ -142,14 +144,24 @@ fn every_unusable_worker_variable_is_unavailable_exit_2() {
             ("a file named with a trailing slash", trailing_slash.clone()),
             ("closes its socket and lingers", lingers.clone()),
         ] {
+            // The run's cost: its wall time over how much slower than a quiet machine this one
+            // ran it (`Share`), which load doesn't move, held to 20 s; and its wall time never
+            // the kernel's 60 s request timeout, which a check that waited on a lingering
+            // worker takes, and load only lengthens.
+            let share = share::Share::start();
             let started = std::time::Instant::now();
             let (status, stdout) = check_json(&dir, text, &[(variable, value.as_os_str())]);
+            let (wall, slowdown) = (started.elapsed(), share.finish().slowdown);
             let case = format!("{variable} {what}");
             if status != Some(2) || !stdout.contains("worker_unavailable") {
                 wrong.push(format!("{case}: exit {status:?}: {stdout}"));
             }
-            if started.elapsed() > std::time::Duration::from_secs(20) {
-                wrong.push(format!("{case}: took {:?}", started.elapsed()));
+            if wall.div_f64(slowdown) > std::time::Duration::from_secs(20)
+                || wall >= std::time::Duration::from_secs(50)
+            {
+                wrong.push(format!(
+                    "{case}: took {wall:?}, the machine {slowdown:.2} times slower than a quiet one"
+                ));
             }
         }
     }
