@@ -40,15 +40,6 @@ pub fn fits(document: &Document, limit: usize) -> bool {
     writer.put(&tree(document), 0).is_ok() && writer.push("\n").is_ok()
 }
 
-/// The document's canonical text in parts, so a state of it can be kept a feature at a
-/// time (`super::undo`): `head`, the text before the features' array, and each feature's
-/// text as the document places it (indented, with neither the line break before it nor
-/// the comma after it), which [`assemble`] puts back together as [`write`] writes them.
-pub(crate) struct Parts {
-    pub(crate) head: String,
-    pub(crate) features: Vec<String>,
-}
-
 /// The depth the canonical form writes a document's features at: inside its object, and
 /// inside the `features` array.
 const FEATURE_DEPTH: usize = 2;
@@ -59,31 +50,37 @@ const FEATURE_DEPTH: usize = 2;
 const EMPTY_TAIL: &str = "[]\n}\n";
 const TAIL: &str = "\n  ]\n}\n";
 
-/// `document`'s canonical text in [`Parts`], if the whole is at most `limit` bytes.
-pub(crate) fn parts(document: &Document, limit: usize) -> Result<Parts, TooLong> {
-    let empty = Out::Object(match tree(document) {
-        Out::Object(members) => members
-            .into_iter()
-            .map(|(key, value)| {
-                if key == "features" {
-                    (key, Out::Array(Vec::new()))
-                } else {
-                    (key, value)
-                }
-            })
-            .collect(),
-        _ => Vec::new(),
-    });
-    let mut writer = Writer::new(limit, true);
-    writer.put(&empty, 0)?;
-    writer.push("\n")?;
-    let head = match writer.out.strip_suffix(EMPTY_TAIL) {
-        Some(head) => head.to_owned(),
-        None => writer.out,
-    };
+/// The canonical form's text before a document's features' array: the same for every
+/// document, whose header holds no value that varies (its format version, units, and
+/// naming scheme), so written once.
+pub(crate) fn head() -> &'static str {
+    static HEAD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HEAD.get_or_init(|| {
+        let empty = Document {
+            silico: FormatVersion,
+            units: Units,
+            naming: NamingScheme,
+            features: Vec::new(),
+        };
+        let mut writer = Writer::new(usize::MAX, true);
+        // Unbounded, it can't run out.
+        let _ = writer.put(&tree(&empty), 0);
+        let _ = writer.push("\n");
+        match writer.out.strip_suffix(EMPTY_TAIL) {
+            Some(head) => head.to_owned(),
+            None => writer.out,
+        }
+    })
+}
+
+/// Each of `document`'s features' texts as its canonical form places them (indented, with
+/// neither the line break before it nor the comma after it), so a state of it can be kept
+/// a feature at a time (`super::undo`), if the whole text, which [`assemble`] puts back
+/// together from them as [`write`] writes it, is at most `limit` bytes.
+pub(crate) fn placed(document: &Document, limit: usize) -> Result<Vec<String>, TooLong> {
     // The head, each feature with the line break or comma and line break before it, and
     // the array's and the document's close: what `assemble` writes.
-    let mut total = head.len();
+    let mut total = head().len();
     let mut features = Vec::with_capacity(document.features.len());
     for each in &document.features {
         let mut writer = Writer::new(limit.saturating_sub(total), true);
@@ -100,14 +97,14 @@ pub(crate) fn parts(document: &Document, limit: usize) -> Result<Parts, TooLong>
     if total > limit {
         return Err(TooLong);
     }
-    Ok(Parts { head, features })
+    Ok(features)
 }
 
-/// The canonical text of a document whose [`Parts`] are `head` and `features`, as
-/// [`write`] writes it.
-pub(crate) fn assemble<'a>(head: &str, features: impl ExactSizeIterator<Item = &'a str>) -> String {
+/// The canonical text of a document whose features [`placed`] gives, as [`write`] writes
+/// it.
+pub(crate) fn assemble<'a>(features: impl ExactSizeIterator<Item = &'a str>) -> String {
     let n = features.len();
-    let mut out = String::from(head);
+    let mut out = String::from(head());
     if n == 0 {
         out.push_str(EMPTY_TAIL);
         return out;

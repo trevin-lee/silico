@@ -10,11 +10,38 @@ use super::example::EXAMPLE;
 use super::model::{checked, id, published};
 
 use silico_core::document::undo::{
-    CHUNK_BYTES, ENTRY_BYTES, LIST_BYTES, Pushed, Refusal, UNDO_BYTES, UndoStack, WHOLE_BYTES,
+    After, CHUNK_BYTES, ENTRY_BYTES, LIST_BYTES, Prepared, Pushed, Refusal, UNDO_BYTES, UndoStack,
+    WHOLE_BYTES,
 };
 use silico_core::document::{Document, read, write};
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::recompute::Recompute;
+use std::sync::Arc;
+
+/// A stack begun on `bytes`.
+fn begun(bytes: &[u8], revision: u64, bound: usize) -> UndoStack<u64> {
+    UndoStack::new(Arc::new(bytes.to_vec()), revision, bound)
+}
+
+/// An edit's state as the command layer gives it: `document`'s features if `text` is its
+/// canonical form, the text whole if not, or if there's no document.
+fn after(text: &[u8], document: Option<&Document>) -> After {
+    match document.and_then(|d| Prepared::of(d).ok()) {
+        Some(prepared) if prepared.text().as_bytes() == text => After::Canonical(prepared),
+        _ => After::Whole(Arc::new(text.to_vec())),
+    }
+}
+
+/// An edit of `text`, as [`after`] gives its state.
+trait EditText {
+    fn edit_text(&mut self, text: &[u8], document: Option<&Document>, revision: u64) -> Pushed;
+}
+
+impl EditText for UndoStack<u64> {
+    fn edit_text(&mut self, text: &[u8], document: Option<&Document>, revision: u64) -> Pushed {
+        self.edit(after(text, document), revision)
+    }
+}
 
 /// `text` with `from` put to `to`, once, read and written in canonical form: an edit's
 /// text, as a typed edit writes it.
@@ -63,10 +90,10 @@ fn run() -> Vec<(String, Option<Document>)> {
 
 /// A stack over `run()`'s states, each edit pushed at its revision with its text's index
 /// as what the edits reached.
-fn pushed(states: &[(String, Option<Document>)], bound: usize) -> UndoStack<u64, usize> {
-    let mut stack = UndoStack::new(states[0].0.as_bytes(), 10, 0, bound);
+fn pushed(states: &[(String, Option<Document>)], bound: usize) -> UndoStack<u64> {
+    let mut stack = begun(states[0].0.as_bytes(), 10, bound);
     for (i, (text, document)) in states.iter().enumerate().skip(1) {
-        let pushed = stack.edit(text.as_bytes(), document.as_ref(), 10 + i as u64, i);
+        let pushed = stack.edit_text(text.as_bytes(), document.as_ref(), 10 + i as u64);
         assert_eq!(pushed, Pushed { dropped: 0 });
     }
     stack
@@ -89,14 +116,13 @@ fn a_run_of_edits_undone_one_by_one_gives_back_each_earlier_state_byte_for_byte(
         let restored = stack.undo(None, revision).unwrap();
         let (text, _) = &states[back];
         assert_eq!(restored.restored, 10 + back as u64);
-        assert_eq!(String::from_utf8(restored.text.clone()).unwrap(), *text);
-        assert_eq!(restored.reached, back);
+        assert_eq!(String::from_utf8(restored.text.to_vec()).unwrap(), *text);
         assert_eq!((restored.undo, restored.redo), (back, 4 - back));
         // Rebuilt from the text restored, the model the state had. (Its element maps, and
         // that the rebuild runs no kernel step, its steps in the cache, are the command's
         // to show, which holds the session's cache.)
         assert_eq!(
-            fingerprints(&String::from_utf8(restored.text).unwrap()),
+            fingerprints(std::str::from_utf8(&restored.text).unwrap()),
             live[back],
             "state {back}"
         );
@@ -108,11 +134,10 @@ fn a_run_of_edits_undone_one_by_one_gives_back_each_earlier_state_byte_for_byte(
         let restored = stack.redo(None, revision).unwrap();
         assert_eq!(restored.restored, 10 + forward as u64);
         assert_eq!(
-            String::from_utf8(restored.text).unwrap(),
+            String::from_utf8(restored.text.to_vec()).unwrap(),
             *text,
             "state {forward}"
         );
-        assert_eq!(restored.reached, forward);
         assert_eq!((restored.undo, restored.redo), (forward, 4 - forward));
     }
     assert_eq!(stack.redo(None, 24), Err(Refusal::NothingToRedo));
@@ -125,7 +150,7 @@ fn an_edit_after_an_undo_drops_what_was_undone() {
     stack.undo(Some(12), 15).unwrap();
     assert_eq!((stack.undo_left(), stack.redo_left()), (2, 2));
     let (other, document) = edited(&states[2].0, r#""height": 12"#, r#""height": 13"#);
-    stack.edit(other.as_bytes(), Some(&document), 16, 9);
+    stack.edit_text(other.as_bytes(), Some(&document), 16);
     assert_eq!((stack.undo_left(), stack.redo_left()), (3, 0));
     assert_eq!(stack.redo(None, 17), Err(Refusal::NothingToRedo));
     // The undone revisions are no state of the stack's now.
@@ -133,7 +158,7 @@ fn an_edit_after_an_undo_drops_what_was_undone() {
         stack.undo(Some(13), 17),
         Err(Refusal::NotHeld {
             to: 13,
-            held: (10, 16)
+            held: vec![10, 11, 12, 15, 16]
         })
     );
     // Undone, the edit gives back the state it was made from: revision 12's, restored at
@@ -144,7 +169,7 @@ fn an_edit_after_an_undo_drops_what_was_undone() {
         (12, states[2].0.as_bytes())
     );
     let redone = stack.redo(Some(16), 18).unwrap();
-    assert_eq!(redone.text, other.as_bytes());
+    assert_eq!(redone.text.as_slice(), other.as_bytes());
     assert_eq!(stack.undo(Some(15), 19).unwrap().restored, 12);
 }
 
@@ -158,7 +183,7 @@ fn to_reaches_a_revision_the_stack_holds_and_refuses_any_other() {
         stack.undo(Some(9), 15),
         Err(Refusal::NotHeld {
             to: 9,
-            held: (10, 14)
+            held: vec![10, 11, 12, 13, 14]
         })
     );
     let restored = stack.undo(Some(11), 15).unwrap();
@@ -166,7 +191,7 @@ fn to_reaches_a_revision_the_stack_holds_and_refuses_any_other() {
         (restored.restored, restored.undo, restored.redo),
         (11, 1, 3)
     );
-    assert_eq!(restored.text, states[1].0.as_bytes());
+    assert_eq!(restored.text.as_slice(), states[1].0.as_bytes());
     // A redo to an earlier one, or to the state the session is at (made at 11, restored at
     // 15), is too.
     assert_eq!(stack.redo(Some(10), 16), Err(Refusal::WrongSide { to: 10 }));
@@ -177,10 +202,10 @@ fn to_reaches_a_revision_the_stack_holds_and_refuses_any_other() {
         (restored.restored, restored.undo, restored.redo),
         (13, 3, 1)
     );
-    assert_eq!(restored.text, states[3].0.as_bytes());
+    assert_eq!(restored.text.as_slice(), states[3].0.as_bytes());
     // Back to `begin`'s state: its bytes, as the file held them.
     let restored = stack.undo(Some(10), 17).unwrap();
-    assert_eq!(restored.text, EXAMPLE.as_bytes());
+    assert_eq!(restored.text.as_slice(), EXAMPLE.as_bytes());
 }
 
 // ---------------------------------------------------------------------------------------
@@ -231,21 +256,21 @@ fn the_bound_counts_each_state_s_list_and_each_chunk_once_by_hand() {
     let chunk = |n: usize, longer: usize| n * l + longer + CHUNK_BYTES;
     let (begin, _) = boxes(&[]);
     let f = begin.len();
-    let mut stack = UndoStack::new(begin.as_bytes(), 1u64, (), UNDO_BYTES);
+    let mut stack = begun(begin.as_bytes(), 1u64, UNDO_BYTES);
     assert_eq!(stack.bytes(), f);
     // Box 0 longer: the state before (begin's) was counted already.
     let (one, d1) = boxes(&[0]);
-    stack.edit(one.as_bytes(), Some(&d1), 2, ());
+    stack.edit_text(one.as_bytes(), Some(&d1), 2);
     assert_eq!(stack.bytes(), f);
     // Box 100 longer: the state before, the first after begin's, is charged in full.
     let (two, d2) = boxes(&[0, 100]);
-    stack.edit(two.as_bytes(), Some(&d2), 3, ());
+    stack.edit_text(two.as_bytes(), Some(&d2), 3);
     let first = list + chunk(64, 1) + chunk(64, 0) + chunk(2, 0);
     assert_eq!(stack.bytes(), f + first);
     // Box 129 longer: the state before shares its first and last chunks with the first's,
     // so it adds its list and its middle chunk.
     let (three, d3) = boxes(&[0, 100, 129]);
-    stack.edit(three.as_bytes(), Some(&d3), 4, ());
+    stack.edit_text(three.as_bytes(), Some(&d3), 4);
     let second = list + chunk(64, 1);
     assert_eq!(stack.bytes(), f + first + second);
     // Undone: the session's state is the second's (no longer counted), and the third is
@@ -255,15 +280,15 @@ fn the_bound_counts_each_state_s_list_and_each_chunk_once_by_hand() {
     assert_eq!(stack.bytes(), f + first + list + chunk(64, 1) + chunk(2, 1));
     // An edit drops the redo state, and holds the second again.
     let (other, d4) = boxes(&[0, 1, 100]);
-    stack.edit(other.as_bytes(), Some(&d4), 6, ());
+    stack.edit_text(other.as_bytes(), Some(&d4), 6);
     assert_eq!(stack.bytes(), f + first + second);
     // A text held whole, not the canonical form: its bytes and a list's, once it's held.
     let spaced = other.replacen("\"v\": 1", "\"v\":  1", 1);
     let d5 = read(spaced.as_bytes()).unwrap();
-    stack.edit(spaced.as_bytes(), Some(&d5), 7, ());
+    stack.edit_text(spaced.as_bytes(), Some(&d5), 7);
     let fourth = list + chunk(64, 2);
     assert_eq!(stack.bytes(), f + first + second + fourth);
-    stack.edit(other.as_bytes(), Some(&d4), 8, ());
+    stack.edit_text(other.as_bytes(), Some(&d4), 8);
     assert_eq!(
         stack.bytes(),
         f + first + second + fourth + spaced.len() + WHOLE_BYTES
@@ -282,7 +307,7 @@ fn past_the_bound_the_oldest_state_after_begin_is_dropped_and_counted() {
     let first = list + (64 * l + 1 + CHUNK_BYTES) + (64 * l + CHUNK_BYTES) + (2 * l + CHUNK_BYTES);
     // Room for begin, the first state, and two steps; not a third.
     let bound = f + first + 2 * step;
-    let mut stack = UndoStack::new(begin.as_bytes(), 1u64, (), bound);
+    let mut stack = begun(begin.as_bytes(), 1u64, bound);
     let length = |k: usize| {
         let text = begin.replacen(
             r#""id": "b0000000", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 10"#,
@@ -294,7 +319,7 @@ fn past_the_bound_the_oldest_state_after_begin_is_dropped_and_counted() {
     };
     for k in 1..=4 {
         let (text, document) = length(k);
-        let pushed = stack.edit(text.as_bytes(), Some(&document), 1 + k as u64, ());
+        let pushed = stack.edit_text(text.as_bytes(), Some(&document), 1 + k as u64);
         assert_eq!(pushed, Pushed { dropped: 0 }, "edit {k}");
     }
     assert_eq!(stack.bytes(), f + first + 2 * step);
@@ -303,7 +328,7 @@ fn past_the_bound_the_oldest_state_after_begin_is_dropped_and_counted() {
     // reaches neither it nor begin's, two edits out of its reach.
     let (text, document) = length(5);
     assert_eq!(
-        stack.edit(text.as_bytes(), Some(&document), 6, ()),
+        stack.edit_text(text.as_bytes(), Some(&document), 6),
         Pushed { dropped: 2 }
     );
     assert_eq!(stack.dropped(), 2);
@@ -316,7 +341,7 @@ fn past_the_bound_the_oldest_state_after_begin_is_dropped_and_counted() {
     // A sixth drops one more.
     let (text, document) = length(6);
     assert_eq!(
-        stack.edit(text.as_bytes(), Some(&document), 7, ()),
+        stack.edit_text(text.as_bytes(), Some(&document), 7),
         Pushed { dropped: 1 }
     );
     assert_eq!(stack.dropped(), 3);
@@ -327,14 +352,14 @@ fn past_the_bound_the_oldest_state_after_begin_is_dropped_and_counted() {
         stack.undo(Some(2), 8),
         Err(Refusal::NotHeld {
             to: 2,
-            held: (4, 7)
+            held: vec![4, 5, 6, 7]
         })
     );
     assert_eq!(
         stack.undo(Some(1), 8),
         Err(Refusal::NotHeld {
             to: 1,
-            held: (4, 7)
+            held: vec![4, 5, 6, 7]
         })
     );
     // Undo stops at the oldest kept, revision 4's state.
@@ -351,7 +376,7 @@ fn past_the_bound_the_oldest_state_after_begin_is_dropped_and_counted() {
         stack.undo(Some(2), revision),
         Err(Refusal::NotHeld {
             to: 2,
-            held: (4, 10)
+            held: vec![4, 5, 6, 7, 8, 9, 10]
         })
     );
 }
@@ -421,12 +446,12 @@ fn a_document_of_no_features_is_held_as_a_list_of_no_chunks_and_restored() {
     let f = begin.len();
     let (none, d0) = of(&[]);
     let (one, d1) = of(&tens(1));
-    let mut stack = UndoStack::new(begin.as_bytes(), 1u64, 0usize, UNDO_BYTES);
-    stack.edit(none.as_bytes(), Some(&d0), 2, 1);
-    stack.edit(one.as_bytes(), Some(&d1), 3, 2);
+    let mut stack = begun(begin.as_bytes(), 1u64, UNDO_BYTES);
+    stack.edit_text(none.as_bytes(), Some(&d0), 2);
+    stack.edit_text(one.as_bytes(), Some(&d1), 3);
     // The empty state is held now: a list of no chunks.
     assert_eq!(stack.bytes(), f + list_of(0));
-    stack.edit(none.as_bytes(), Some(&d0), 4, 3);
+    stack.edit_text(none.as_bytes(), Some(&d0), 4);
     assert_eq!(
         stack.bytes(),
         f + list_of(0) + list_of(1) + chunk_of(&tens(1))
@@ -434,10 +459,10 @@ fn a_document_of_no_features_is_held_as_a_list_of_no_chunks_and_restored() {
     for (want, text) in [(3, &one), (2, &none), (1, &begin)] {
         let back = stack.undo(None, 10 + want).unwrap();
         assert_eq!(back.restored, want);
-        assert_eq!(String::from_utf8(back.text).unwrap(), **text);
+        assert_eq!(String::from_utf8(back.text.to_vec()).unwrap(), **text);
     }
     let redone = stack.redo(Some(4), 20).unwrap();
-    assert_eq!(redone.text, none.as_bytes());
+    assert_eq!(redone.text.as_slice(), none.as_bytes());
     assert_eq!((redone.undo, redone.redo), (3, 0));
 }
 
@@ -449,17 +474,17 @@ fn chunks_at_64_65_128_and_129_features_are_shared_where_they_hold_the_same_text
     let sizes = [63u32, 64, 65, 128, 129];
     let (begin, _) = of(&tens(sizes[0]));
     let f = begin.len();
-    let mut stack = UndoStack::new(begin.as_bytes(), 0u64, 0usize, UNDO_BYTES);
+    let mut stack = begun(begin.as_bytes(), 0u64, UNDO_BYTES);
     let mut texts = vec![begin.clone()];
     for (i, &n) in sizes.iter().enumerate().skip(1) {
         let (text, document) = of(&tens(n));
-        stack.edit(text.as_bytes(), Some(&document), i as u64, i);
+        stack.edit_text(text.as_bytes(), Some(&document), i as u64);
         texts.push(text);
     }
     let mut last = tens(129);
     last[128].1 = 1000;
     let (changed, d5) = of(&last);
-    stack.edit(changed.as_bytes(), Some(&d5), 5, 5);
+    stack.edit_text(changed.as_bytes(), Some(&d5), 5);
     texts.push(changed);
     let a = chunk_of(&tens(64));
     let b = chunk_of(&[(64, 10)]);
@@ -473,13 +498,17 @@ fn chunks_at_64_65_128_and_129_features_are_shared_where_they_hold_the_same_text
     let e = chunk_of(&[(128, 1000)]);
     for back in (0..5).rev() {
         let restored = stack.undo(None, 10 + back).unwrap();
-        assert_eq!(restored.text, texts[back as usize].as_bytes(), "{back}");
+        assert_eq!(
+            restored.text.as_slice(),
+            texts[back as usize].as_bytes(),
+            "{back}"
+        );
     }
     assert_eq!(stack.bytes(), held + list_of(3) + e);
     for forward in 1..6u64 {
         let restored = stack.redo(None, 20 + forward).unwrap();
         assert_eq!(
-            restored.text,
+            restored.text.as_slice(),
             texts[forward as usize].as_bytes(),
             "{forward}"
         );
@@ -491,24 +520,27 @@ fn chunks_at_64_65_128_and_129_features_are_shared_where_they_hold_the_same_text
 fn a_box_inserted_at_the_top_shifts_every_chunk_and_shares_none() {
     let (begin, _) = of(&tens(130));
     let f = begin.len();
-    let mut stack = UndoStack::new(begin.as_bytes(), 0u64, (), UNDO_BYTES);
+    let mut stack = begun(begin.as_bytes(), 0u64, UNDO_BYTES);
     let mut first = tens(130);
     first[0].1 = 11;
     let (one, d1) = of(&first);
-    stack.edit(one.as_bytes(), Some(&d1), 1, ());
+    stack.edit_text(one.as_bytes(), Some(&d1), 1);
     let mut second = first.clone();
     second.insert(0, (999, 10));
     let (two, d2) = of(&second);
-    stack.edit(two.as_bytes(), Some(&d2), 2, ());
+    stack.edit_text(two.as_bytes(), Some(&d2), 2);
     let mut third = second.clone();
     third[0].1 = 12;
     let (three, d3) = of(&third);
-    stack.edit(three.as_bytes(), Some(&d3), 3, ());
+    stack.edit_text(three.as_bytes(), Some(&d3), 3);
     let whole = |boxes: &[(u32, u32)]| {
         list_of(3) + chunk_of(&boxes[..64]) + chunk_of(&boxes[64..128]) + chunk_of(&boxes[128..])
     };
     assert_eq!(stack.bytes(), f + whole(&first) + whole(&second));
-    assert_eq!(stack.undo(Some(1), 4).unwrap().text, one.as_bytes());
+    assert_eq!(
+        stack.undo(Some(1), 4).unwrap().text.as_slice(),
+        one.as_bytes()
+    );
 }
 
 #[test]
@@ -518,18 +550,21 @@ fn a_text_whose_document_isnt_the_one_passed_is_held_whole_and_restored_as_given
     let mut lengths = tens(3);
     lengths[1].1 = 77;
     let (one, d1) = of(&lengths);
-    let mut stack = UndoStack::new(begin.as_bytes(), 0u64, (), UNDO_BYTES);
+    let mut stack = begun(begin.as_bytes(), 0u64, UNDO_BYTES);
     // `one`'s text with begin's document: a caller's mistake; the text is what's held.
-    stack.edit(one.as_bytes(), Some(&d0), 1, ());
-    stack.edit(begin.as_bytes(), Some(&d1), 2, ());
+    stack.edit_text(one.as_bytes(), Some(&d0), 1);
+    stack.edit_text(begin.as_bytes(), Some(&d1), 2);
     assert_eq!(stack.bytes(), f + one.len() + WHOLE_BYTES);
-    stack.edit(one.as_bytes(), None, 3, ());
+    stack.edit_text(one.as_bytes(), None, 3);
     assert_eq!(
         stack.bytes(),
         f + one.len() + WHOLE_BYTES + begin.len() + WHOLE_BYTES
     );
-    assert_eq!(stack.undo(None, 4).unwrap().text, begin.as_bytes());
-    assert_eq!(stack.undo(None, 5).unwrap().text, one.as_bytes());
+    assert_eq!(
+        stack.undo(None, 4).unwrap().text.as_slice(),
+        begin.as_bytes()
+    );
+    assert_eq!(stack.undo(None, 5).unwrap().text.as_slice(), one.as_bytes());
 }
 
 #[test]
@@ -550,9 +585,9 @@ fn bytes_no_document_reads_as_are_restored_as_given() {
         canonical.as_bytes().to_vec(),
     ];
     // Begin's bytes empty, as a file of nothing is.
-    let mut stack = UndoStack::new(b"", 0u64, 0usize, UNDO_BYTES);
+    let mut stack = begun(b"", 0u64, UNDO_BYTES);
     for (i, text) in texts.iter().enumerate() {
-        stack.edit(text, Some(&document), 1 + i as u64, i);
+        stack.edit_text(text, Some(&document), 1 + i as u64);
     }
     let whole: usize = texts[..texts.len() - 1]
         .iter()
@@ -561,10 +596,9 @@ fn bytes_no_document_reads_as_are_restored_as_given() {
     assert_eq!(stack.bytes(), whole);
     for back in (0..texts.len() - 1).rev() {
         let restored = stack.undo(None, 100 + back as u64).unwrap();
-        assert_eq!(restored.text, texts[back], "{back}");
-        assert_eq!(restored.reached, back);
+        assert_eq!(restored.text.as_slice(), texts[back], "{back}");
     }
-    assert_eq!(stack.undo(None, 200).unwrap().text, b"");
+    assert_eq!(stack.undo(None, 200).unwrap().text.as_slice(), b"");
 }
 
 #[test]
@@ -587,16 +621,16 @@ fn a_sketch_s_lines_over_several_lines_are_held_in_chunks() {
     );
     let (begin, _) = of(&tens(1));
     let f = begin.len();
-    let mut stack = UndoStack::new(begin.as_bytes(), 0u64, (), UNDO_BYTES);
-    stack.edit(one.as_bytes(), Some(&d1), 1, ());
-    stack.edit(two.as_bytes(), Some(&d2), 2, ());
+    let mut stack = begun(begin.as_bytes(), 0u64, UNDO_BYTES);
+    stack.edit_text(one.as_bytes(), Some(&d1), 1);
+    stack.edit_text(two.as_bytes(), Some(&d2), 2);
     // One feature, in one chunk: its text is the document's but its head, the "[\n"
     // before it, and the "\n  ]\n}\n" after.
     assert!(one.starts_with(HEAD));
     let feature = one.len() - HEAD.len() - 2 - 7;
     assert_eq!(stack.bytes(), f + list_of(1) + feature + CHUNK_BYTES);
-    assert_eq!(stack.undo(None, 3).unwrap().text, one.as_bytes());
-    assert_eq!(stack.redo(None, 4).unwrap().text, two.as_bytes());
+    assert_eq!(stack.undo(None, 3).unwrap().text.as_slice(), one.as_bytes());
+    assert_eq!(stack.redo(None, 4).unwrap().text.as_slice(), two.as_bytes());
 }
 
 #[test]
@@ -606,12 +640,12 @@ fn a_bound_one_state_passes_still_keeps_the_state_before_the_edit() {
     // second.
     let (begin, _) = of(&tens(2));
     let mut lengths = tens(2);
-    let mut stack = UndoStack::new(begin.as_bytes(), 0u64, 0usize, 0);
+    let mut stack = begun(begin.as_bytes(), 0u64, 0);
     let mut texts = vec![begin.clone()];
     for k in 1..=3u32 {
         lengths[0].1 = 10 + k;
         let (text, document) = of(&lengths);
-        stack.edit(text.as_bytes(), Some(&document), u64::from(k), k as usize);
+        stack.edit_text(text.as_bytes(), Some(&document), u64::from(k));
         texts.push(text);
     }
     // Was (a break-it finding): past the bound, `edit` dropped the state at index 1 while `at >= 2`, which at
@@ -621,7 +655,7 @@ fn a_bound_one_state_passes_still_keeps_the_state_before_the_edit() {
     // largest file fit), so low.
     assert_eq!(stack.undo_left(), 1);
     let back = stack.undo(None, 10).unwrap();
-    assert_eq!(back.text, texts[2].as_bytes());
+    assert_eq!(back.text.as_slice(), texts[2].as_bytes());
 }
 
 #[test]
@@ -629,11 +663,11 @@ fn a_bound_of_nothing_never_panics_and_keeps_begin_s_and_the_state_before_each_e
     let (begin, _) = of(&tens(2));
     let f = begin.len();
     let mut lengths = tens(2);
-    let mut stack = UndoStack::new(begin.as_bytes(), 0u64, (), 0);
+    let mut stack = begun(begin.as_bytes(), 0u64, 0);
     for k in 1..=50u32 {
         lengths[1].1 = 10 + k;
         let (text, document) = of(&lengths);
-        stack.edit(text.as_bytes(), Some(&document), u64::from(k), ());
+        stack.edit_text(text.as_bytes(), Some(&document), u64::from(k));
         // Begin's bytes are counted and never dropped, nor the state before the edit: the
         // first edit holds begin's alone, the second the first's too (nothing droppable
         // yet), and from the third the bound drops all but the one before the edit: two
@@ -661,7 +695,7 @@ fn a_to_with_nothing_to_undo_or_redo_is_still_named() {
     // Section 7: "A `to` on the wrong side, or the session's own revision, is refused,
     // naming `to`." A fresh stack, begun at revision 12.
     let (begin, _) = of(&tens(1));
-    let mut stack = UndoStack::new(begin.as_bytes(), 12u64, (), UNDO_BYTES);
+    let mut stack = begun(begin.as_bytes(), 12u64, UNDO_BYTES);
     // Was (a break-it finding): `undo` and `redo` checked for an empty side before `to`, so an undo or redo
     // to the session's own revision (a dialog Cancel that made no edit, or an agent's
     // stale `to`) is NothingToUndo / NothingToRedo, not naming `to`; the same holds for a
@@ -683,10 +717,10 @@ fn ten_thousand_undos_and_redos_leave_the_count_and_the_texts_as_they_were() {
     for i in 0..5_000u64 {
         revision += 1;
         let back = stack.undo(Some(10 + i % 4), revision).unwrap();
-        assert_eq!(back.text, states[(i % 4) as usize].0.as_bytes());
+        assert_eq!(back.text.as_slice(), states[(i % 4) as usize].0.as_bytes());
         revision += 1;
         let forward = stack.redo(Some(14), revision).unwrap();
-        assert_eq!(forward.text, states[4].0.as_bytes());
+        assert_eq!(forward.text.as_slice(), states[4].0.as_bytes());
         assert_eq!(stack.bytes(), high, "{i}");
     }
     stack.undo(Some(10), revision + 1).unwrap();
@@ -727,16 +761,108 @@ fn a_document_past_the_limit_is_held_whole_and_one_at_it_in_chunks() {
         // The reader refuses one past the limit, as the writer does, and takes one at it.
         assert_eq!(read(text.as_bytes()).is_ok(), !whole, "{len}");
         assert_eq!(write(&document).is_ok(), !whole, "{len}");
-        let mut stack = UndoStack::new(begin.as_bytes(), 0u64, (), UNDO_BYTES);
-        stack.edit(text.as_bytes(), Some(&document), 1, ());
-        stack.edit(small.as_bytes(), None, 2, ());
+        let mut stack = begun(begin.as_bytes(), 0u64, UNDO_BYTES);
+        stack.edit_text(text.as_bytes(), Some(&document), 1);
+        stack.edit_text(small.as_bytes(), None, 2);
         let held = if whole {
             text.len() + WHOLE_BYTES
         } else {
             list_of(1) + (text.len() - HEAD.len() - 2 - 7) + CHUNK_BYTES
         };
         assert_eq!(stack.bytes(), f + held, "{len}");
-        assert_eq!(stack.undo(None, 3).unwrap().text, text.as_bytes(), "{len}");
+        assert_eq!(
+            stack.undo(None, 3).unwrap().text.as_slice(),
+            text.as_bytes(),
+            "{len}"
+        );
+    }
+}
+
+#[test]
+fn an_undo_that_holds_more_past_the_bound_drops_the_oldest_and_says_so() {
+    // Section 6: the bound holds through `undo` and `redo` too. Four edits of box 0's
+    // length (each its list and its first chunk), then a box put at the top, which shifts
+    // every chunk, so the state undone from shares none: held for redo, it passes the
+    // bound, and the oldest after begin's go until it's under.
+    let with = |length: u32| {
+        let mut boxes = tens(130);
+        boxes[0].1 = length;
+        boxes
+    };
+    let full = |boxes: &[(u32, u32)]| {
+        list_of(boxes.chunks(64).count()) + boxes.chunks(64).map(chunk_of).sum::<usize>()
+    };
+    let (begin, _) = of(&tens(130));
+    let f = begin.len();
+    let first = full(&with(101));
+    let step = list_of(3) + chunk_of(&with(101)[..64]);
+    let mut stack = begun(begin.as_bytes(), 0, f + first + 3 * step);
+    for k in 1..=4u32 {
+        let (text, document) = of(&with(100 + k));
+        assert_eq!(
+            stack.edit_text(text.as_bytes(), Some(&document), u64::from(k)),
+            Pushed { dropped: 0 }
+        );
+    }
+    let mut top = with(104);
+    top.insert(0, (999, 10));
+    let (shifted, document) = of(&top);
+    assert_eq!(
+        stack.edit_text(shifted.as_bytes(), Some(&document), 5),
+        Pushed { dropped: 0 }
+    );
+    assert_eq!(stack.bytes(), f + first + 3 * step);
+    // Undone: the shifted state held (all its chunks), the fourth released (its list and
+    // first chunk): over by the shifted state less a step. The first state after begin's
+    // goes (the second's first chunk and list stay, its others the third's now), then the
+    // second: the third alone, in full, and the shifted state.
+    let restored = stack.undo(None, 6).unwrap();
+    assert_eq!(restored.text.as_slice(), of(&with(104)).0.as_bytes());
+    assert_eq!((restored.dropped, restored.undo, restored.redo), (3, 1, 1));
+    assert_eq!(stack.dropped(), 3);
+    assert_eq!(stack.bytes(), f + first + full(&top));
+    // Redone, the shifted state is the session's again, the third and fourth held.
+    let redone = stack.redo(None, 7).unwrap();
+    assert_eq!(redone.text.as_slice(), shifted.as_bytes());
+    assert_eq!((redone.dropped, redone.undo, redone.redo), (0, 2, 0));
+    assert_eq!(stack.bytes(), f + first + step);
+}
+
+#[test]
+fn not_held_names_every_revision_the_stack_holds_gaps_and_all() {
+    // From the architecture review: begin at 12, edits at 13 and 14, an undo at 15 (13's
+    // state), and an edit at 16, which drops 14's: 14 lies between revisions the stack
+    // holds, and the refusal says which those are, not a range that seems to hold it.
+    let states = run();
+    let mut stack = begun(states[0].0.as_bytes(), 12, UNDO_BYTES);
+    stack.edit_text(states[1].0.as_bytes(), states[1].1.as_ref(), 13);
+    stack.edit_text(states[2].0.as_bytes(), states[2].1.as_ref(), 14);
+    stack.undo(None, 15).unwrap();
+    stack.edit_text(states[3].0.as_bytes(), states[3].1.as_ref(), 16);
+    assert_eq!(
+        stack.undo(Some(14), 17),
+        Err(Refusal::NotHeld {
+            to: 14,
+            held: vec![12, 13, 15, 16]
+        })
+    );
+}
+
+#[test]
+fn a_prepared_document_s_text_is_its_canonical_text() {
+    // What the command layer takes as an edit's text, from the features it hands the
+    // stack: `write`'s, byte for byte, for features on one line and none at all.
+    let example = read(EXAMPLE.as_bytes()).unwrap();
+    let (none, empty) = of(&[]);
+    let (many, boxes) = of(&tens(130));
+    for (document, text) in [
+        (&example, EXAMPLE),
+        (&empty, none.as_str()),
+        (&boxes, many.as_str()),
+    ] {
+        let prepared = Prepared::of(document).unwrap();
+        assert_eq!(prepared.text(), write(document).unwrap());
+        assert_eq!(prepared.text(), text);
     }
 }
 
@@ -783,7 +909,6 @@ struct Held {
     /// Each chunk's ID in the model's table, or `None` held whole.
     chunks: Option<Vec<usize>>,
     revisions: Vec<u64>,
-    reached: usize,
 }
 
 struct Model {
@@ -828,7 +953,6 @@ impl Model {
         boxes: Vec<(u32, u32)>,
         chunked: bool,
         revision: u64,
-        reached: usize,
     ) -> usize {
         self.states.truncate(self.at + 1);
         let chunks = chunked.then(|| {
@@ -851,12 +975,15 @@ impl Model {
             boxes,
             chunks,
             revisions: vec![revision],
-            reached,
         });
         self.at += 1;
-        let mut dropped = 0;
         // The oldest after `begin`'s, never the state before the edit.
-        while self.bytes() > self.bound && self.at >= 3 {
+        self.drop_past_bound(3)
+    }
+
+    fn drop_past_bound(&mut self, least: usize) -> usize {
+        let mut dropped = 0;
+        while self.bytes() > self.bound && self.at >= least {
             self.states.remove(1);
             self.at -= 1;
             let more = if self.dropped == 0 { 2 } else { 1 };
@@ -874,33 +1001,26 @@ impl Model {
     }
 
     fn not_held(&self, to: u64) -> Refusal<u64> {
-        let oldest = self.states[self.lowest()].revisions[0];
-        let newest = self
-            .states
+        let held: std::collections::BTreeSet<u64> = self.states[self.lowest()..]
             .iter()
             .flat_map(|s| s.revisions.iter().copied())
-            .max()
-            .unwrap();
+            .collect();
         Refusal::NotHeld {
             to,
-            held: (oldest, newest),
+            held: held.into_iter().collect(),
         }
     }
 
     fn restore(&mut self, target: usize, revision: u64) -> (u64, String, usize, usize, usize) {
         self.at = target;
-        let state = &mut self.states[target];
-        state.revisions.push(revision);
+        // Past the bound, the oldest after `begin`'s, never the session's.
+        let dropped = self.drop_past_bound(2);
+        let at = self.at;
+        self.states[at].revisions.push(revision);
         let undo = self.at - self.lowest();
         let redo = self.states.len() - self.at - 1;
-        let state = &self.states[target];
-        (
-            state.revisions[0],
-            state.text.clone(),
-            state.reached,
-            undo,
-            redo,
-        )
+        let state = &self.states[at];
+        (state.revisions[0], state.text.clone(), undo, redo, dropped)
     }
 
     fn undo(
@@ -952,9 +1072,9 @@ proptest! {
         let begin_document = read(begin.as_bytes()).unwrap();
         let f = begin.len();
         let bound = if bound_steps == 7 { UNDO_BYTES } else { f + bound_steps * (f / 2 + 64) };
-        let mut stack = UndoStack::new(begin.as_bytes(), 0u64, 0usize, bound);
+        let mut stack = begun(begin.as_bytes(), 0u64, bound);
         let mut model = Model {
-            states: vec![Held { text: begin.clone(), boxes: begin_boxes.clone(), chunks: None, revisions: vec![0], reached: 0 }],
+            states: vec![Held { text: begin.clone(), boxes: begin_boxes.clone(), chunks: None, revisions: vec![0] }],
             table: Vec::new(),
             at: 0,
             dropped: 0,
@@ -964,7 +1084,6 @@ proptest! {
         let mut revision = 0u64;
         for (i, step) in steps.into_iter().enumerate() {
             revision += 1;
-            let reached = i + 1;
             let mut boxes = model.states[model.at].boxes.clone();
             let pick = |sel: u16| u64::from(sel) % (revision + 3);
             let edit: Option<(String, Option<Document>, bool)> = match step {
@@ -1008,20 +1127,20 @@ proptest! {
                 Step::Untyped => Some((text_of(&boxes), None, false)),
                 Step::Undo(to) => {
                     let to = to.map(pick);
-                    let got = stack.undo(to, revision).map(|r| (r.restored, String::from_utf8(r.text).unwrap(), r.reached, r.undo, r.redo));
+                    let got = stack.undo(to, revision).map(|r| (r.restored, String::from_utf8(r.text.to_vec()).unwrap(), r.undo, r.redo, r.dropped));
                     prop_assert_eq!(got, model.undo(to, revision), "undo {:?} at {}", to, i);
                     None
                 }
                 Step::Redo(to) => {
                     let to = to.map(pick);
-                    let got = stack.redo(to, revision).map(|r| (r.restored, String::from_utf8(r.text).unwrap(), r.reached, r.undo, r.redo));
+                    let got = stack.redo(to, revision).map(|r| (r.restored, String::from_utf8(r.text.to_vec()).unwrap(), r.undo, r.redo, r.dropped));
                     prop_assert_eq!(got, model.redo(to, revision), "redo {:?} at {}", to, i);
                     None
                 }
             };
             if let Some((text, document, chunked)) = edit {
-                let pushed = stack.edit(text.as_bytes(), document.as_ref(), revision, reached);
-                let dropped = model.edit(text, boxes, chunked, revision, reached);
+                let pushed = stack.edit_text(text.as_bytes(), document.as_ref(), revision);
+                let dropped = model.edit(text, boxes, chunked, revision);
                 prop_assert_eq!(pushed, Pushed { dropped }, "edit at {}", i);
             }
             prop_assert_eq!(stack.bytes(), model.bytes(), "bytes at {}", i);
