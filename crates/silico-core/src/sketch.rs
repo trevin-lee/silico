@@ -1723,13 +1723,13 @@ impl Translation {
     /// within reach, lists of tags sent and unknowns, a residual for each tag sent, and an
     /// algorithm exactly where a solution is given. A worker that answers otherwise can't
     /// be trusted.
-    /// Point `id`'s own geometry, which a drag of it names.
-    pub(crate) fn point_geometry(&self, id: &ElementId) -> Option<Geometry> {
-        self.point_geometry.get(id).copied()
-    }
-
     pub fn check_reply(&self, solved: &Solved) -> Result<(), Error> {
         check_solved(&self.system, solved)
+    }
+
+    /// Point `id`'s own geometry, which a drag of it pins, if the sketch has the point.
+    pub(crate) fn point_geometry(&self, id: &ElementId) -> Option<Geometry> {
+        self.point_geometry.get(id).copied()
     }
 
     /// The ID of the constraint the solver reports as `tag`, if one is.
