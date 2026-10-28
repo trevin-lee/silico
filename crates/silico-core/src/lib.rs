@@ -21,6 +21,7 @@ pub mod drag;
 pub mod elements;
 mod error;
 pub mod export;
+pub mod extend;
 #[cfg(feature = "fake")]
 pub mod fake;
 pub mod file;

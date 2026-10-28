@@ -1,0 +1,357 @@
+//! Extending a sketch's line or arc at one end (docs/ports/sketch-edit.md, §7, decision 11;
+//! docs/design/m5.0-app.md, open item 12, pending Trevin): a core function, with no command
+//! yet, as the other sketch edits are (`document::sketch_edit`). Its result is a function of
+//! its inputs alone, the sketch as stored and the increment, as a drag's end is (`drag`):
+//! a drag the app shows while the person picks the increment is only its preview.
+//!
+//! - **A line's end** moves by a `Length` along the line, through the sketch worker's drag,
+//!   as FreeCAD's `extend` moves it (`moveGeometry`): the drag begins from the sketch as
+//!   stored, moves once to the target, and ends, so its constraints win (a line with a
+//!   length slides rather than grows, 1.1.3), and every curve sharing the end follows. The
+//!   frame's values are the edited sketch's coordinates, which the edit's solve then
+//!   settles, as a drag's end does.
+//! - **An arc's end** moves by an `Angle`, written: its point turned about the centre
+//!   (the start back, the end on, so a positive angle lengthens the arc either way, as
+//!   FreeCAD's `setRange(start − increment, end)` and `(start, end + increment)` do). The
+//!   edit's solve then settles the rest, as FreeCAD's `solve()` after it does.
+//!
+//! Refused, as the port note recommends: a member that isn't a line or an arc, the wrong
+//! kind of increment for it, an increment of nothing, and a result whose line or arc is
+//! 1e-7 mm or less, flipped, or a whole turn or more. A line's end the drag can't move (its
+//! constraints hold it, or the drag's frame isn't a success) is refused too, where FreeCAD
+//! returns its solver's failure.
+
+use std::collections::BTreeSet;
+use std::f64::consts::TAU;
+
+use silico_protocol::{DragBegin, PointOf, SolveStatus, check_drag_target};
+
+use crate::document::sketch_edit::Edited;
+use crate::document::{Angle, Coordinate, ElementId, Length, Sketch};
+use crate::drag::{DRAG_MOVE_TIMEOUT, checked_frame, checked_tags};
+use crate::sketch::{SketchSolver, Translation};
+use crate::{Error, ErrorCode};
+
+/// The gate's floor for a size: at most this is none (`LENGTH_TOLERANCE`, in millimetres).
+const FLOOR: f64 = silico_protocol::LENGTH_TOLERANCE;
+
+/// Which end of the curve moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum End {
+    Start,
+    End,
+}
+
+/// How far the end moves: a line's along it, an arc's around its circle. Positive
+/// lengthens, negative shortens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum By {
+    Length(Length),
+    Angle(Angle),
+}
+
+/// Extends `curve`'s `end` of `sketch` (a gated sketch, as stored) by `by`, a line's
+/// through `solver`'s drag. The edit's points moved are `modified`; nothing is added or
+/// removed. Refused, naming the parameter: see the module's notes.
+pub fn extend(
+    sketch: &Sketch,
+    curve: &ElementId,
+    end: End,
+    by: By,
+    solver: &mut dyn SketchSolver,
+) -> Result<Edited, Error> {
+    let _span = tracing::info_span!("sketch_extend", curve = curve.as_str()).entered();
+    if let Some(line) = sketch.lines.iter().find(|l| &l.id == curve) {
+        let By::Length(by) = by else {
+            return Err(refused(
+                format!("line {curve} extends by a length, not an angle"),
+                "by",
+                "give the increment in millimetres",
+            )
+            .with_elements([curve.to_string()]));
+        };
+        let (moving, other) = match end {
+            End::Start => (&line.from, &line.to),
+            End::End => (&line.to, &line.from),
+        };
+        return extend_line(sketch, curve, moving, other, by, solver);
+    }
+    if let Some(arc) = sketch.arcs.iter().find(|a| &a.id == curve) {
+        let By::Angle(by) = by else {
+            return Err(refused(
+                format!("arc {curve} extends by an angle, not a length"),
+                "by",
+                "give the increment in degrees",
+            )
+            .with_elements([curve.to_string()]));
+        };
+        return extend_arc(sketch, curve, &arc.center, &arc.start, &arc.end, end, by);
+    }
+    let what = sketch
+        .elements()
+        .find(|(id, _)| *id == curve)
+        .map(|(_, kind)| kind.noun());
+    Err(match what {
+        Some(noun) => refused(
+            format!("{noun} {curve} can't be extended: only a line or an arc can"),
+            "curve",
+            "name a line or an arc",
+        )
+        .with_elements([curve.to_string()]),
+        None => refused(
+            format!("the sketch has no member {curve}"),
+            "curve",
+            "name a line or an arc of this sketch by its ID",
+        ),
+    })
+}
+
+/// A line's `moving` end, `other` its other, moved `by` along it through the drag.
+fn extend_line(
+    sketch: &Sketch,
+    curve: &ElementId,
+    moving: &ElementId,
+    other: &ElementId,
+    by: Length,
+    solver: &mut dyn SketchSolver,
+) -> Result<Edited, Error> {
+    let (p, q) = (point(sketch, moving)?, point(sketch, other)?);
+    let length = libm::hypot(p[0] - q[0], p[1] - q[1]);
+    let longer = length + by.mm();
+    if by.nm() == 0 {
+        return Err(nothing(curve));
+    }
+    if longer <= FLOOR {
+        return Err(too_short(curve, "line", longer, "by"));
+    }
+    // FreeCAD's target: from the other end, along the line, the new length (`extend`).
+    let scale = longer / length;
+    let target = [q[0] + (p[0] - q[0]) * scale, q[1] + (p[1] - q[1]) * scale];
+    if let Err(invalid) = check_drag_target(target) {
+        return Err(refused(
+            format!(
+                "extending line {curve} by {by} mm would take its end past the sketch's reach: {}",
+                invalid.message
+            ),
+            "by",
+            "extend it by less",
+        )
+        .with_elements([curve.to_string()]));
+    }
+    let translation = Translation::new(sketch)?;
+    let Some(geometry) = translation.point_geometry(moving) else {
+        return Err(Error::new(
+            ErrorCode::Internal,
+            format!("the sketch's translation has no geometry for point {moving}"),
+        )
+        .with_suggestion(crate::worker::SILICO_BUG));
+    };
+    let begin = DragBegin {
+        system: translation.system.clone(),
+        point: PointOf::Point(geometry),
+    };
+    if let Err(invalid) = begin.check() {
+        return Err(refused(
+            format!(
+                "line {curve}'s end {moving} can't be dragged: {}",
+                invalid.message
+            ),
+            "curve",
+            "extend a line in a smaller part of the sketch",
+        )
+        .with_elements([curve.to_string(), moving.to_string()]));
+    }
+    solver.stopper()?;
+    let started = solver.drag_begin(begin.clone())?;
+    if let Err(error) = checked_tags(&begin.system, &started.conflicting) {
+        solver.distrust();
+        return Err(error);
+    }
+    if !started.conflicting.is_empty() {
+        let ids: Vec<String> = started
+            .conflicting
+            .iter()
+            .filter_map(|&t| translation.constraint_id(t).map(|id| id.to_string()))
+            .collect();
+        // The worker's session ends with the drag; one that can't end changes nothing.
+        let _ = solver.session_stopper().and_then(|_| solver.drag_end());
+        return Err(Error::new(
+            ErrorCode::OverConstrained,
+            format!("the sketch's constraints conflict, so line {curve} can't be extended"),
+        )
+        .with_elements(ids)
+        .with_suggestion("remove or change one of the constraints named"));
+    }
+    solver.session_stopper()?;
+    let moved = solver.drag_move(target, DRAG_MOVE_TIMEOUT);
+    // The worker's drag ends whatever the move did; one gone with its worker needs no end.
+    let _ = solver.session_stopper().and_then(|_| solver.drag_end());
+    let moved = moved?;
+    if let Err(error) = checked_frame(&begin.part(), &moved) {
+        solver.distrust();
+        return Err(error);
+    }
+    let values = match (moved.status, moved.values) {
+        (SolveStatus::Success, Some(values)) => values,
+        (status, _) => {
+            return Err(Error::new(
+                ErrorCode::InvalidResult,
+                format!("line {curve}'s end {moving} can't move by {by} mm: the drag's solve ended {status:?}"),
+            )
+            .with_elements([curve.to_string(), moving.to_string()])
+            .with_parameter("by")
+            .with_suggestion("remove or change the constraints that hold the line's end"));
+        }
+    };
+    let edited = translation.stored(&values)?;
+    // The line the drag left: longer than the floor, and running the way it did.
+    let (p1, q1) = (point(&edited, moving)?, point(&edited, other)?);
+    let now = libm::hypot(p1[0] - q1[0], p1[1] - q1[1]);
+    let same_way = (p1[0] - q1[0]) * (p[0] - q[0]) + (p1[1] - q1[1]) * (p[1] - q[1]) > 0.0;
+    if now <= FLOOR || !same_way {
+        return Err(too_short(curve, "line", now, "by"));
+    }
+    Ok(Edited {
+        modified: moved_points(sketch, &edited),
+        sketch: edited,
+        added: Vec::new(),
+        removed: Vec::new(),
+    })
+}
+
+/// An arc's `end` turned `by` about its centre: its start back, its end on.
+fn extend_arc(
+    sketch: &Sketch,
+    curve: &ElementId,
+    center: &ElementId,
+    start: &ElementId,
+    end_point: &ElementId,
+    end: End,
+    by: Angle,
+) -> Result<Edited, Error> {
+    if by.ndeg() == 0 {
+        return Err(nothing(curve));
+    }
+    let (c, s, e) = (
+        point(sketch, center)?,
+        point(sketch, start)?,
+        point(sketch, end_point)?,
+    );
+    let angle_of = |p: [f64; 2]| libm::atan2(p[1] - c[1], p[0] - c[0]);
+    let sweep = (angle_of(e) - angle_of(s)).rem_euclid(TAU);
+    let turn = by.degrees().to_radians();
+    let swept = sweep + turn;
+    let (moving, p, about) = match end {
+        End::Start => (start, s, -turn),
+        End::End => (end_point, e, turn),
+    };
+    let radius = libm::hypot(p[0] - c[0], p[1] - c[1]);
+    if swept <= 0.0 || radius * swept <= FLOOR {
+        return Err(too_short(curve, "arc", radius * swept.max(0.0), "by"));
+    }
+    if swept >= TAU {
+        return Err(refused(
+            format!(
+                "extending arc {curve} by {by}° would sweep it {}°, a whole turn or more",
+                swept.to_degrees()
+            ),
+            "by",
+            "extend it by less, or draw a circle",
+        )
+        .with_elements([curve.to_string()]));
+    }
+    let (sin, cos) = (libm::sin(about), libm::cos(about));
+    let (dx, dy) = (p[0] - c[0], p[1] - c[1]);
+    let turned = [c[0] + dx * cos - dy * sin, c[1] + dx * sin + dy * cos];
+    // Its ends apart by more than the floor, as the gate has them.
+    let other = if moving == start { e } else { s };
+    if libm::hypot(turned[0] - other[0], turned[1] - other[1]) <= FLOOR {
+        return Err(too_short(curve, "arc", 0.0, "by"));
+    }
+    let coordinate = |v: f64| {
+        Coordinate::new(v)
+            .filter(|_| silico_protocol::within_reach(v))
+            .ok_or_else(|| {
+                refused(
+                    format!(
+                        "extending arc {curve} by {by}° would take its end past the sketch's reach"
+                    ),
+                    "by",
+                    "extend it by less",
+                )
+                .with_elements([curve.to_string()])
+            })
+    };
+    let (x, y) = (coordinate(turned[0])?, coordinate(turned[1])?);
+    let mut edited = sketch.clone();
+    for p in &mut edited.points {
+        if &p.id == moving {
+            (p.x, p.y) = (x, y);
+        }
+    }
+    Ok(Edited {
+        modified: moved_points(sketch, &edited),
+        sketch: edited,
+        added: Vec::new(),
+        removed: Vec::new(),
+    })
+}
+
+/// Point `id`'s place, in millimetres.
+fn point(sketch: &Sketch, id: &ElementId) -> Result<[f64; 2], Error> {
+    sketch
+        .points
+        .iter()
+        .find(|p| &p.id == id)
+        .map(|p| [p.x.mm(), p.y.mm()])
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("the sketch's curve names point {id}, which it hasn't"),
+            )
+            .with_suggestion("check the sketch with the gate first")
+        })
+}
+
+/// The points `edited` has elsewhere than `sketch`, bit for bit, by ID.
+fn moved_points(sketch: &Sketch, edited: &Sketch) -> Vec<ElementId> {
+    let before: BTreeSet<(&ElementId, u64, u64)> = sketch
+        .points
+        .iter()
+        .map(|p| (&p.id, p.x.mm().to_bits(), p.y.mm().to_bits()))
+        .collect();
+    let mut moved: Vec<ElementId> = edited
+        .points
+        .iter()
+        .filter(|p| !before.contains(&(&p.id, p.x.mm().to_bits(), p.y.mm().to_bits())))
+        .map(|p| p.id.clone())
+        .collect();
+    moved.sort();
+    moved
+}
+
+fn refused(message: String, parameter: &str, suggestion: &str) -> Error {
+    Error::new(ErrorCode::InvalidInput, message)
+        .with_parameter(parameter)
+        .with_suggestion(suggestion)
+}
+
+fn nothing(curve: &ElementId) -> Error {
+    refused(
+        format!("extending {curve} by 0 changes nothing"),
+        "by",
+        "give an increment other than 0",
+    )
+    .with_elements([curve.to_string()])
+}
+
+fn too_short(curve: &ElementId, noun: &str, size: f64, parameter: &str) -> Error {
+    refused(
+        format!(
+            "extending {noun} {curve} that far would leave it {size} mm long or flipped: a {noun} must be longer than 1e-7 mm and keep its direction"
+        ),
+        parameter,
+        "shorten it by less",
+    )
+    .with_elements([curve.to_string()])
+}

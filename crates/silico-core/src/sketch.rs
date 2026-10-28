@@ -1695,7 +1695,7 @@ impl Translation {
 
     /// The sketch as its file holds it once `values` are written back, as a save writes a
     /// solution ([`SketchSolution::written`]): what a load starts from.
-    fn stored(&self, values: &[f64]) -> Result<Sketch, Error> {
+    pub(crate) fn stored(&self, values: &[f64]) -> Result<Sketch, Error> {
         let (points, radii, references) = self.placed(values)?;
         Ok(written(&self.sketch, &points, &radii, &references))
     }
@@ -1704,6 +1704,11 @@ impl Translation {
     /// within reach, lists of tags sent and unknowns, a residual for each tag sent, and an
     /// algorithm exactly where a solution is given. A worker that answers otherwise can't
     /// be trusted.
+    /// Point `id`'s own geometry, which a drag of it names.
+    pub(crate) fn point_geometry(&self, id: &ElementId) -> Option<Geometry> {
+        self.point_geometry.get(id).copied()
+    }
+
     pub fn check_reply(&self, solved: &Solved) -> Result<(), Error> {
         check_solved(&self.system, solved)
     }

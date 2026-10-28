@@ -282,6 +282,15 @@ That is deliberately not Validate's 1e-4 box. Ends 1e-7 to 1e-4 mm apart, which 
 - Refuse a result of size 1e-7 mm or less, or a flip.
 - Express an arc's increment as an angle (`Angle`, exact) and a line's as a `Length`.
 
+**Built** (`silico_core::extend`, a core function with no command yet; docs/design/m5.0-app.md, open item 12, pending Trevin). Its result is a function of the sketch as stored and the increment alone: the drag begins from the stored sketch, moves once to FreeCAD's target (the other end, along the line, plus the new length), and ends. The frame's values are the edited sketch's coordinates, and the edit's solve settles them, as a drag's end does. Every point the drag moved is `modified`. The 1.1.3 probe above is its real-worker test: (5,0)–(15,0). Beyond the recommendations, it also refuses:
+- an increment of 0, since it changes nothing;
+- a frame that isn't a success, as an invalid result, where FreeCAD returns its solver's status;
+- a line in a part of more than `MAX_DRAG_UNKNOWNS` unknowns, which the drag can't take;
+- a drag that leaves the line 1e-7 mm or less, or flipped;
+- an arc swept a whole turn or more.
+
+A line's increment is whole nanometres, so the shortest line an extend leaves is 1e-6 mm.
+
 ## 8. Bug fixes from FreeCAD's history
 
 The fixes that set a rule the port must carry, newest first within each operation. Fixes to FreeCAD's joint-repair layer, index renumbering, external geometry, or ellipses and B-splines are listed only where they imply a Silico test. Every hash was checked against the clone.

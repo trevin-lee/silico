@@ -46,6 +46,8 @@ mod drag_session;
 mod sketch;
 #[path = "sketch_edit.rs"]
 mod sketch_edit;
+#[path = "sketch_extend.rs"]
+mod sketch_extend;
 #[path = "sketch_features.rs"]
 mod sketch_features;
 #[path = "sketch_features_gate.rs"]

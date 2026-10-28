@@ -31,5 +31,7 @@ mod adversarial_stored_coordinates;
 mod document;
 #[path = "drag.rs"]
 mod drag;
+#[path = "extend.rs"]
+mod extend;
 #[path = "worker.rs"]
 mod worker;
