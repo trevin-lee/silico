@@ -370,7 +370,7 @@ impl Drag {
         // The session holds only the part the pins move; the rest stays where it is.
         let part = begin.part();
         let pins: Vec<ffi::Pin> = begin
-            .pins()
+            .shared_pins()
             .into_iter()
             .map(|(p, scale)| {
                 let (position, geometry) = point(p);
