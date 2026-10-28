@@ -223,7 +223,18 @@ fn a_cancelled_move_answers_cancelled_and_the_end_keeps_the_file() {
     let ticket = drag.move_to([62.5, 7.0]).unwrap();
     assert!(fake.wait_held(Duration::from_secs(30)));
     assert!(drag.cancel_move());
-    let frame = ticket.wait().unwrap();
+    // Within a bound: a move a cancel didn't stop stays held, and would wait forever.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let frame = loop {
+        if let Some(frame) = ticket.try_take() {
+            break frame.unwrap();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the cancelled move wasn't answered"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    };
     assert_eq!(frame.kind, FrameKind::Cancelled);
     assert!(frame.points.is_empty() && frame.radii.is_empty());
     fake.release();

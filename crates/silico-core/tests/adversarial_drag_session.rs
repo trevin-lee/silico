@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use silico_core::drag::{Begun, DragSession, Ended, Kept, MoveOutcome, MoveTicket, begin};
+use silico_core::drag::{
+    Begun, DragSession, Ended, Kept, MoveOutcome, MoveTicket, Notify, begin, begin_with,
+};
 use silico_core::fake::{DragCall, FakeSketches};
 use silico_core::recompute::SketchSolvers;
 use silico_core::sketch::{DragStarted, SketchSolver, SolveStopper};
@@ -903,4 +905,87 @@ fn a_closing_solve_that_moves_a_fixed_value_or_answers_too_few_is_refused() {
             Ok(ended) => panic!("{what}: {ended:?}"),
         }
     }
+}
+
+// --- A move that ends the drag gives its solver back before it's told ----------------------
+
+/// A drag of `two_points` on `solvers` whose notifier, the first time the drag's own thread
+/// tells it of a change, begins a second drag on the same solvers: what a client woken by
+/// that change could do at once. The second drag, once begun.
+fn open_watched(solvers: &SketchSolvers) -> (DragSession, Arc<Mutex<Option<Begun>>>) {
+    let second: Arc<Mutex<Option<Begun>>> = Arc::default();
+    let (pool, slot) = (solvers.clone(), Arc::clone(&second));
+    let notify: Notify = Arc::new(move || {
+        if std::thread::current().name() != Some("silico-drag") {
+            return;
+        }
+        let mut slot = slot.lock().unwrap();
+        if slot.is_none() {
+            *slot = Some(begin(&pool, two_points()).unwrap());
+        }
+    });
+    match begin_with(solvers, Some(notify), |_| Ok(two_points())).unwrap() {
+        Begun::Open { session, .. } => (session, second),
+        Begun::Conflicting(tags) => panic!("{tags:?}"),
+    }
+}
+
+/// The second drag, begun when the first's move ended it, took the first's solver: one
+/// worker started in all. Then both end.
+fn assert_second_took_the_first_solver(
+    started: &Arc<Mutex<Vec<FakeSketches>>>,
+    session: DragSession,
+    second: &Arc<Mutex<Option<Begun>>>,
+) {
+    let Some(Begun::Open { session: next, .. }) = second.lock().unwrap().take() else {
+        panic!("no second drag was begun")
+    };
+    assert_eq!(started.lock().unwrap().len(), 1);
+    next.end(None).unwrap();
+    drop(session);
+}
+
+#[test]
+fn a_move_whose_worker_cant_be_readied_gives_its_solver_back_before_its_failure_is_told() {
+    // Found flaky on main (merge-lane run 40720334912): the drag told of the failed move,
+    // then gave its solver back, so a drag begun at once found none idle and started
+    // another worker. Here the second drag is begun as the failure is told.
+    let script = Arc::new(Mutex::new(Script {
+        fail_stopper_at: Some(2),
+        ..Script::default()
+    }));
+    let (solvers, started) = scripted_pool(&script);
+    let (session, second) = open_watched(&solvers);
+    match session.move_to([1.0, 1.0]).unwrap().wait() {
+        MoveOutcome::Failed(e) => assert_eq!(e.code(), ErrorCode::WorkerUnavailable),
+        other => panic!("{other:?}"),
+    }
+    assert_second_took_the_first_solver(&started, session, &second);
+}
+
+#[test]
+fn a_move_whose_worker_fails_gives_its_solver_back_before_its_failure_is_told() {
+    let (solvers, started) = pool();
+    let (session, second) = open_watched(&solvers);
+    started.lock().unwrap()[0]
+        .answer_moves(|_, _| Err(Error::new(ErrorCode::WorkerCrashed, "the fake crashed")));
+    match session.move_to([1.0, 1.0]).unwrap().wait() {
+        MoveOutcome::Failed(e) => assert_eq!(e.code(), ErrorCode::WorkerCrashed),
+        other => panic!("{other:?}"),
+    }
+    assert_second_took_the_first_solver(&started, session, &second);
+}
+
+#[test]
+fn a_cancelled_move_gives_its_solver_back_before_it_is_told() {
+    let (solvers, started) = pool();
+    let (session, second) = open_watched(&solvers);
+    let fake = started.lock().unwrap()[0].clone();
+    fake.hold();
+    let moving = session.move_to([1.0, 1.0]).unwrap();
+    assert!(fake.wait_held(WAIT));
+    assert!(session.cancel_move());
+    assert_eq!(moving.wait(), MoveOutcome::Cancelled);
+    fake.release();
+    assert_second_took_the_first_solver(&started, session, &second);
 }

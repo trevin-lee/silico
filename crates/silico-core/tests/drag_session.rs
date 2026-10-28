@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use silico_core::drag::{
-    Begun, DRAG_MOVE_TIMEOUT, DragSession, Ended, Kept, MoveOutcome, Notify, begin, begin_with,
+    Begun, DRAG_MOVE_TIMEOUT, DragSession, Ended, Kept, MoveOutcome, MoveTicket, Notify, begin,
+    begin_with,
 };
 use silico_core::fake::{DragCall, FakeKernel, FakeSketches};
 use silico_core::recompute::{Recompute, SketchSolvers};
@@ -756,7 +757,7 @@ fn a_cancelled_move_answers_cancelled_and_closes_the_drag_keeping_the_begin() {
     let moving = session.move_to([1.0, 1.0]).unwrap();
     assert!(fake.wait_held(WAIT));
     assert!(session.cancel_move());
-    assert_eq!(moving.wait(), MoveOutcome::Cancelled);
+    assert_eq!(answered(&moving), MoveOutcome::Cancelled);
     assert_eq!(fake.stops(), 1);
     fake.release();
     assert!(!session.is_open());
@@ -783,7 +784,7 @@ fn a_cancelled_move_answers_cancelled_and_closes_the_drag_keeping_the_begin() {
     let moving = session.move_to([1.0, 1.0]).unwrap();
     assert!(fake.wait_held(WAIT));
     assert!(session.cancel_move());
-    assert_eq!(moving.wait(), MoveOutcome::Cancelled);
+    assert_eq!(answered(&moving), MoveOutcome::Cancelled);
     fake.release();
     let e = session.end(Some([1.0, 1.0])).unwrap_err();
     assert_eq!(e.code(), ErrorCode::InvalidInput);
@@ -913,4 +914,20 @@ fn a_cursor_end_asked_for_while_a_cancelled_move_answers_is_refused_as_after_it(
     assert_eq!(e.message(), "no drag is open: its move was stopped");
     assert_eq!(moving.wait(), MoveOutcome::Cancelled);
     assert!(fake.requests().is_empty());
+}
+
+/// `ticket`'s outcome, within [`WAIT`]: a move held in the fake that a cancel didn't stop
+/// would wait forever, so it fails the test instead.
+fn answered(ticket: &MoveTicket) -> MoveOutcome {
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        if let Some(outcome) = ticket.try_take() {
+            return outcome;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the move wasn't answered within {WAIT:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }

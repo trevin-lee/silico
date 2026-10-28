@@ -200,8 +200,9 @@ pub fn begin_with(
         .name("silico-drag".to_owned())
         .spawn(move || {
             let _guard = Unwinding(&running);
-            let solver = drag(&running, solver, &begin);
-            back.give_back(solver);
+            if let Some(solver) = drag(&running, solver, &begin, &back) {
+                back.give_back(solver);
+            }
             lock(&running.state).done = true;
             running.changed();
         })
@@ -460,12 +461,17 @@ impl Drop for Unwinding<'_> {
 }
 
 /// The drag's thread: each newest move solved in turn, until the end is asked for or the
-/// worker fails; then the end's work, and its result set. Gives back the solver.
+/// worker fails; then the end's work, and its result set. Returns the solver for the thread
+/// to give back once its end has been asked for (the end joins the thread, so its caller
+/// finds it back); a move that ends the drag (its worker failed, or it was cancelled) gives
+/// it back to `back` itself, before that move's outcome is told, so a client woken by the
+/// outcome finds it back too, and a drag begun then starts no other worker.
 fn drag(
     shared: &Shared,
     mut solver: Box<dyn SketchSolver>,
     begin: &DragBegin,
-) -> Box<dyn SketchSolver> {
+    back: &SketchSolvers,
+) -> Option<Box<dyn SketchSolver>> {
     // Each frame holds every value outside the part where the drag began.
     let part = begin.part();
     loop {
@@ -489,7 +495,7 @@ fn drag(
             state.ended = Some(ended);
             drop(state);
             shared.changed();
-            return solver;
+            return Some(solver);
         }
         let Some((id, to)) = state.waiting.take() else {
             continue;
@@ -497,11 +503,14 @@ fn drag(
         let stopper = match solver.session_stopper() {
             Ok(stopper) => stopper,
             Err(error) => {
+                drop(state);
+                back.give_back(solver);
+                let mut state = lock(&shared.state);
                 settle(&mut state, id, MoveOutcome::Failed(error.clone()));
                 close(&mut state, &error);
                 drop(state);
                 shared.changed();
-                return solver;
+                return None;
             }
         };
         state.running = Some((id, stopper));
@@ -520,39 +529,44 @@ fn drag(
         });
         let mut state = lock(&shared.state);
         state.running = None;
-        match solved {
-            // Cancelled as it answered: the worker is stopped all the same, its session with
-            // it, so the drag ends as the cancel said.
-            _ if state.cancelling => {
-                settle(&mut state, id, MoveOutcome::Cancelled);
-                close(&mut state, &no_drag("its move was stopped"));
-                drop(state);
-                shared.changed();
-                return solver;
+        // A move that ends the drag gives its solver back before its outcome is told. With
+        // the move no longer running, no cancel can come between.
+        let ends =
+            state.cancelling || matches!(&solved, Err(error) if error.code().is_kernel_fault());
+        if ends {
+            drop(state);
+            back.give_back(solver);
+            state = lock(&shared.state);
+            match solved {
+                // Cancelled as it answered: the worker is stopped all the same, its session
+                // with it, so the drag ends as the cancel said.
+                _ if state.cancelling => {
+                    settle(&mut state, id, MoveOutcome::Cancelled);
+                    close(&mut state, &no_drag("its move was stopped"));
+                }
+                // The worker failed: its session went with it.
+                Err(error) => {
+                    settle(&mut state, id, MoveOutcome::Failed(error.clone()));
+                    close(&mut state, &error);
+                }
+                Ok(_) => {}
             }
+            drop(state);
+            shared.changed();
+            return None;
+        }
+        match solved {
             Ok(moved) => {
                 if let (SolveStatus::Success, Some(values)) = (moved.status, &moved.values) {
                     state.last = Some((to.map(f64::to_bits), values.clone()));
                 }
                 settle(&mut state, id, MoveOutcome::Solved { to, moved });
-                drop(state);
-                shared.changed();
             }
             // Refused by the worker, which keeps its drag: the drag goes on.
-            Err(error) if !error.code().is_kernel_fault() => {
-                settle(&mut state, id, MoveOutcome::Refused(error));
-                drop(state);
-                shared.changed();
-            }
-            Err(error) => {
-                // The worker failed: its session went with it.
-                settle(&mut state, id, MoveOutcome::Failed(error.clone()));
-                close(&mut state, &error);
-                drop(state);
-                shared.changed();
-                return solver;
-            }
+            Err(error) => settle(&mut state, id, MoveOutcome::Refused(error)),
         }
+        drop(state);
+        shared.changed();
     }
 }
 
