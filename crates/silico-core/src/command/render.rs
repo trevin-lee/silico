@@ -311,12 +311,18 @@ pub fn render<K: Kernel>(
             .filter_map(|b| b.built.summary())
             .map(|s| (s.faces, s.edges)),
     )?;
-    eye_outside(&camera, &bodies, on.kernel)?;
-    let meshes: Vec<std::sync::Arc<Mesh>> =
-        meshed(&camera, request.height, &kept, on.kernel, on.meshes)?
-            .into_iter()
-            .map(|m| m.mesh)
-            .collect();
+    eye_outside(&camera, &bodies, on.kernel, session_closed)?;
+    let meshes: Vec<std::sync::Arc<Mesh>> = meshed(
+        &camera,
+        request.height,
+        &kept,
+        on.kernel,
+        on.meshes,
+        session_closed,
+    )?
+    .into_iter()
+    .map(|m| m.mesh)
+    .collect();
     // Again by the meshes: a body unmeasured wasn't counted before.
     within_caps(meshes.iter().map(|m| {
         (
@@ -708,6 +714,7 @@ pub(crate) fn eye_outside<K: Kernel>(
     camera: &Camera,
     bodies: &[Body],
     kernel: &K,
+    closed: fn() -> Error,
 ) -> Result<(), Problems> {
     if !matches!(camera.projection, Projection::Perspective { .. }) {
         return Ok(());
@@ -727,7 +734,7 @@ pub(crate) fn eye_outside<K: Kernel>(
         .collect();
     for (body, pending) in asked {
         // On its boundary counts as inside (the design: an eye on a face is refused too).
-        if super::done(pending.wait(), session_closed).map_err(|p| naming_the_body(p, body.id))?
+        if super::done(pending.wait(), closed).map_err(|p| naming_the_body(p, body.id))?
             != PointPlace::Outside
         {
             return Err(Problems::from(
@@ -763,6 +770,7 @@ pub(crate) fn meshed<K: Kernel>(
     kept: &[&Body],
     kernel: &K,
     cache: &MeshCache<Key>,
+    closed: fn() -> Error,
 ) -> Result<Vec<Meshed>, Problems> {
     if camera.frame().is_err() {
         return Err(Problems::from(
@@ -810,8 +818,8 @@ pub(crate) fn meshed<K: Kernel>(
                 deflection: asked,
             }),
             Got::Asked(pending) => {
-                let made = super::done(pending.wait(), session_closed)
-                    .map_err(|p| naming_the_body(p, b.id))?;
+                let made =
+                    super::done(pending.wait(), closed).map_err(|p| naming_the_body(p, b.id))?;
                 let deflection = made.deflection;
                 Ok(Meshed {
                     mesh: cache.put(&b.key, asked, made),
