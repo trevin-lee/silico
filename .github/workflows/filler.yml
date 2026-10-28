@@ -3,19 +3,21 @@
 # stays as a backstop), and whenever a mutants run or an oracle sweep someone started ends,
 # one short job looks at the runners, starts at most one filler run, and exits.
 #
-# It starts nothing while a job that a filler runner could take is queued (a real run's
-# shards, or a filler run's, asking for mutants, mutants-pr, or filler), while a real mutants
-# run has work waiting, or while a mutants run or a sweep is starting (no shard or sweep job
-# yet); a queued gate or control job takes other runners, so it doesn't stop filler. A filler
-# mutants run going doesn't stop another: each takes what's free when it starts (2026-10-27:
-# one at a time, a run of one shard kept the rest idle); but a filler sweep and filler mutants
-# never run together. Free runners aren't idle CPU: the VM is saturated by about six shards.
-# So it fills only when more than a fifth of the VM's CPUs are idle (over 15 seconds; this job
-# runs on the VM), with as many shards as the idle CPUs feed at a filler shard's share (a
-# quarter of the VM) and the free runners labelled filler (silico-9 to -12) hold. Filler
-# shards run only there, at the idle scheduling class on runners whose cgroups are at the idle
-# CPU weight (mutants.yml), so they hold no runner a gate could use and take no CPU a gate
-# wants.
+# It starts nothing while a job asking for mutants, mutants-pr, or filler (a real run's
+# shards, or a filler run's) is queued and could start: a runner of its lane is free, or
+# between jobs. One queued behind a lane whose every runner is busy (a long run's shards
+# waiting on its own) doesn't stop it: that CPU would sit idle meanwhile, and a real job that
+# starts cancels filler as before. Nor does it start while a mutants run or a sweep is
+# starting (no shard or sweep job yet); a queued gate or control job takes other runners, so
+# it doesn't stop filler. A filler mutants run going doesn't stop another: each takes what's
+# free when it starts (2026-10-27: one at a time, a run of one shard kept the rest idle); but
+# a filler sweep and filler mutants never run together. Free runners aren't idle CPU: the VM
+# is saturated by about six shards. So it fills only when more than a fifth of the VM's CPUs
+# are idle (over 15 seconds; this job runs on the VM), with as many shards as the idle CPUs
+# feed at a filler shard's share (a quarter of the VM) and the free runners labelled filler
+# (silico-9 to -12) hold. Filler shards run only there, at the idle scheduling class on
+# runners whose cgroups are at the idle CPU weight (mutants.yml), so they hold no runner a
+# gate could use and take no CPU a gate wants.
 # In order:
 #   a. Main's new commits: mutants in what main changed in its source since the commit the
 #      last filler `a` run tested (or since main's parent, at first).
@@ -120,11 +122,6 @@ jobs:
           # Runs of this workflow are decisions like this one, and the clock's (filler-clock.yml)
           # only start them: neither is work, nor waits for a runner work could use.
           active=$(awk -F '\t' '$2 != "filler.yml" && $2 != "filler-clock.yml"' <<<"$active")
-          # A real mutants run with work waiting (GitHub calls a run with any job queued
-          # queued): its shards want the runners filler would take.
-          if awk -F '\t' '$3 == "queued" && $2 == "mutants.yml" && $4 !~ /^filler / { found = 1 } END { exit !found }' <<<"$active"; then
-            skip "a real mutants run has work waiting"
-          fi
           # A bench measures times, and a night's sweep holds cases to deadlines: no filler
           # beside them, even on idle CPU (caches, memory bandwidth, SMT siblings).
           if awk -F '\t' '$2 == "bench.yml" || ($2 == "oracle-sweep.yml" && $4 !~ /^filler /) { found = 1 } END { exit !found }' <<<"$active"; then
@@ -150,9 +147,39 @@ jobs:
           if awk -F '\t' '$1 == "starting" { found = 1 } END { exit !found }' <<<"$jobs"; then
             skip "a mutants run or a sweep is starting"
           fi
-          if awk -F '\t' '$1 != "" && $1 != "in_progress" && $3 ~ /(^|,)(mutants|mutants-pr|filler)(,|$)/ { found = 1 } END { exit !found }' <<<"$jobs"; then
-            skip "a job a filler runner could take is queued, waiting for a runner"
-          fi
+          # A job waiting for a runner of the mutants lanes (a real run's or a filler run's)
+          # comes first only if it could start: a runner it asks for is free, or between jobs
+          # (each takes one job, then registers again). One whose every runner is busy, a
+          # long run's shards queued behind its own, waits whatever filler does, so filler
+          # fills the idle CPU meanwhile, and a real job that starts still cancels it
+          # (cancel-filler.sh). The runners each label is on, as /etc/ci-runner/labels gives
+          # them on the VM (this token can't list runners): mutants, the long lane; mutants-pr,
+          # the merge lane; filler, filler's own.
+          lane_mutants='9 10 11 12 15 16 17'
+          lane_mutants_pr='9 10 11 12 15 16 17 20 21'
+          lane_filler='9 10 11 12'
+          # Runners running a job now, of any run going, by number (pve-silico-N-...).
+          running=" $(awk -F '\t' '$1 == "in_progress" { if (match($2, /^pve-silico-[0-9]+-/)) { n = substr($2, 12, RLENGTH - 12); print n } }' <<<"$jobs" | tr '\n' ' ')"
+          free_for() {
+            local label=$1 lane n
+            case $label in
+              mutants) lane=$lane_mutants ;;
+              mutants-pr) lane=$lane_mutants_pr ;;
+              filler) lane=$lane_filler ;;
+              *) return 1 ;;
+            esac
+            for n in $lane; do
+              case $running in *" $n "*) ;; *) return 0 ;; esac
+            done
+            return 1
+          }
+          # Each queued job's labels (by awk: `read` would merge the empty runner field
+          # into the next, a tab being whitespace to it).
+          for label in $(awk -F '\t' '$1 != "" && $1 != "in_progress" && $1 != "starting" { n = split($3, l, ","); for (i = 1; i <= n; i++) print l[i] }' <<<"$jobs" | sort -u); do
+            if free_for "$label"; then
+              skip "a job asking for $label is queued, and a runner of that lane is free"
+            fi
+          done
           # A filler sweep and filler mutants never run together: at the idle weight each
           # runner gets an equal share, and a sweep holds cases to its own deadline (60 s a
           # conversion), which a starved case would miss, a false alarm.
