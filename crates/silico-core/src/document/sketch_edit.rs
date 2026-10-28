@@ -486,6 +486,24 @@ fn own_curve(sketch: &Sketch, edit: &str, parameter: &str, instead: &str) -> Res
                 );
             }
             Form::Tangent { a, b, .. } => {
+                // Curves that share an end: where they meet, a tangency is a tangent_at
+                // (a split at the end of a curve held tangent on it, as a merge refuses).
+                let shared = match (a.element(), b.element()) {
+                    (Some(a), Some(b)) => ends
+                        .get(a)
+                        .zip(ends.get(b))
+                        .and_then(|(of_a, of_b)| of_a.iter().find(|p| of_b.contains(p))),
+                    _ => None,
+                };
+                if let Some(point) = shared {
+                    return refuse(
+                        id,
+                        format!(
+                            "an edge tangency of {a} and {b}, which would then share an end, {point}: where curves meet, a tangency is a tangent_at"
+                        ),
+                        vec![a.to_string(), b.to_string(), point.to_string()],
+                    );
+                }
                 // An end of one held on the other: the gate takes that as a tangent_on.
                 for on in &sketch.constraints {
                     if let Form::On { point, curve } = &on.form

@@ -941,6 +941,42 @@ fn a_circles_two_positions_within_1e_7_mm_or_three_are_refused() {
 }
 
 #[test]
+fn an_edge_tangent_with_a_curve_ending_at_the_split_point_is_refused_naming_it() {
+    // As the split property found (seed 20261021, the mutants run's): arc c about z0
+    // (10, 10) starts at s0 (10, 0), held tangent on a there (k1) and edge tangent to a too
+    // (k0, c's centre left of a). Split at s0, the pieces share it, so c and the start-side
+    // piece, which holds the contact, share an end: there an edge tangency is a tangent_at,
+    // as the merge refuses (open item 13 of docs/design/m5.0-app.md).
+    let points = r#"{"id": "s0000000", "x": 10, "y": 0, "construction": false}, {"id": "z0000000", "x": 10, "y": 10, "construction": false}, {"id": "z0000001", "x": 20, "y": 10, "construction": false}"#;
+    let before = a_line(
+        points,
+        "",
+        "",
+        &arc("c0000000", "z0000000", "s0000000", "z0000001"),
+        r#"{"id": "k0000000", "type": "tangent", "a": "c0000000", "b": "a0000000", "side": "left"}, {"id": "k0000001", "type": "tangent_on", "a": "c0000000", "at": "s0000000", "b": "a0000000", "direction": "same"}"#,
+    );
+    let error = split(
+        sketch_of(&before),
+        &id("a0000000"),
+        &[[10.0, 0.0]],
+        &ids(&["b1000000", "j0000000"]),
+    )
+    .unwrap_err();
+    assert_eq!(
+        said(&error),
+        (
+            "the split would make constraint k0000000 an edge tangency of c0000000 and a0000000, which would then share an end, s0000000: where curves meet, a tangency is a tangent_at",
+            Some("at.0"),
+            vec!["k0000000", "c0000000", "a0000000", "s0000000"]
+        )
+    );
+    assert_eq!(
+        error.suggestion(),
+        Some("remove the constraint first, or split elsewhere")
+    );
+}
+
+#[test]
 fn a_constraint_the_shared_point_would_make_a_pieces_own_is_refused_naming_it() {
     // s0 at (10, 0) held on a, and measured from a by a reference distance of 0: split
     // there, s0 is the pieces' end, and the distance would hold a piece's own point.
