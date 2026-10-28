@@ -6,18 +6,21 @@
 # It starts nothing while a job asking for mutants, mutants-pr, or filler (a real run's
 # shards, or a filler run's) is queued and could start: a runner of its lane is free, or
 # between jobs. One queued behind a lane whose every runner is busy (a long run's shards
-# waiting on its own) doesn't stop it: that CPU would sit idle meanwhile, and a real job that
-# starts cancels filler as before. Nor does it start while a mutants run or a sweep is
-# starting (no shard or sweep job yet); a queued gate or control job takes other runners, so
-# it doesn't stop filler. A filler mutants run going doesn't stop another: each takes what's
-# free when it starts (2026-10-27: one at a time, a run of one shard kept the rest idle); but
-# a filler sweep and filler mutants never run together. Free runners aren't idle CPU: the VM
-# is saturated by about six shards. So it fills only when more than a fifth of the VM's CPUs
-# are idle (over 15 seconds; this job runs on the VM), with as many shards as the idle CPUs
-# feed at a filler shard's share (a quarter of the VM) and the free runners labelled filler
-# (silico-9 to -12, -22 and -23) hold. Filler shards run only there, at the idle scheduling class on
-# runners whose cgroups are at the idle CPU weight (mutants.yml), so they hold no runner a
-# gate could use and take no CPU a gate wants.
+# waiting on its own) doesn't stop it: that CPU would sit idle meanwhile, on the runners only
+# filler uses (silico-22, -23), and a real run starting cancels filler as before (its plan,
+# cancel-filler.sh); a queued shard of a run already going doesn't, so the shards it starts
+# count filler's CPU as spare when they choose their threads (.github/shard-threads.sh). Nor
+# does it start while a mutants run or a sweep is starting (no shard or sweep job yet); a
+# queued gate or control job takes other runners, so it doesn't stop filler. A filler mutants
+# run going doesn't stop another: each takes what's free when it starts (2026-10-27: one at a
+# time, a run of one shard kept the rest idle); but a filler sweep and filler mutants never
+# run together. Free runners aren't idle CPU: the VM is saturated by about six shards. So it
+# fills only when more than a fifth of the VM's CPUs are idle (over 15 seconds; this job runs
+# on the VM), with as many shards as the idle CPUs feed at a filler shard's share (a quarter
+# of the VM) and the free runners labelled filler (silico-9 to -12, -22 and -23) hold. Filler
+# shards run only there, at the idle scheduling class on runners whose cgroups are at the idle
+# CPU weight (mutants.yml), so they hold no runner a gate could use and take no CPU a gate
+# wants.
 # In order:
 #   a. Main's new commits: mutants in what main changed in its source since the commit the
 #      last filler `a` run tested (or since main's parent, at first).
@@ -89,7 +92,8 @@ jobs:
           slice_kib=24
           oracle_every=$((4 * 3600))
 
-          # Not `say`, which on macOS speaks: a line of this pasted into a Mac's shell read it aloud.
+          # Not `say`, which on macOS speaks: a line of this pasted into a Mac's shell read it
+          # aloud.
           report() { echo "$1"; echo "$1" >>"$GITHUB_STEP_SUMMARY"; }
           skip() { report "Nothing started: $1."; exit 0; }
           start() {
@@ -152,12 +156,12 @@ jobs:
           fi
           # A job waiting for a runner of the mutants lanes (a real run's or a filler run's)
           # comes first only if it could start: a runner it asks for is free, or between jobs
-          # (each takes one job, then registers again). One whose every runner is busy, a
-          # long run's shards queued behind its own, waits whatever filler does, so filler
-          # fills the idle CPU meanwhile on silico-22 and -23, which no lane uses, and a real
-          # job that starts still cancels it (cancel-filler.sh). The runners each label is on, as /etc/ci-runner/labels gives
-          # them on the VM (this token can't list runners): mutants, the long lane; mutants-pr,
-          # the merge lane; filler, filler's own.
+          # (each takes one job, then registers again). One whose every runner is busy, a long
+          # run's shards queued behind its own, waits whatever filler does, so filler fills the
+          # idle CPU meanwhile on silico-22 and -23, which no lane uses; a real run starting
+          # still cancels it (its plan, cancel-filler.sh). The runners each label is on, as
+          # /etc/ci-runner/labels gives them on the VM (this token can't list runners): mutants,
+          # the long lane; mutants-pr, the merge lane; filler, filler's own.
           lane_mutants='9 10 11 12 15 16 17'
           lane_mutants_pr='9 10 11 12 15 16 17 20 21'
           lane_filler='9 10 11 12 22 23'
