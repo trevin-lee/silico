@@ -554,6 +554,37 @@ impl KernelPool {
         Ok(pool)
     }
 
+    /// Starts up to `n` of the slots not yet started, each starting its worker now, on a
+    /// thread of its own, as a request would start it: an app's warm start (M5.0's
+    /// decision 10), so its first rebuild needn't wait for a process and OCCT's libraries.
+    /// Doesn't wait for them. A request that comes while they start waits for them, not for
+    /// more: a slot starting is free to take it. A worker that can't be started leaves its
+    /// slot to start on demand. How many slots it started: none for a pool not opened, or
+    /// stopping, or with every slot started.
+    pub fn warm(&self, n: usize) -> usize {
+        let mut started = 0;
+        while started < n {
+            let slot = {
+                let mut state = lock(&self.shared.state);
+                if state.stopping {
+                    break;
+                }
+                let Some(slot) = state.unstarted.pop() else {
+                    break;
+                };
+                state.started += 1;
+                slot
+            };
+            if let Err(e) = start_slot(&self.shared, slot, SlotStart::Warm) {
+                tracing::warn!("couldn't start a kernel pool slot ahead of its requests: {e}");
+                break;
+            }
+            started += 1;
+        }
+        tracing::debug!(started, "warmed the kernel pool");
+        started
+    }
+
     /// How many slots the pool has: the most workers it holds at once (on demand, fewer
     /// until requests need them: see [`pids`](Self::pids)).
     pub fn size(&self) -> usize {
@@ -740,7 +771,27 @@ fn grow(shared: &Arc<Shared>) {
         state.started += 1;
         slot
     };
-    match spawn_slot(shared, slot, SlotStart::OnDemand) {
+    if let Err(e) = start_slot(shared, slot, SlotStart::OnDemand) {
+        // The system is short of threads: the slots started take the requests in turn,
+        // or, if there are none, the requests fail with it.
+        let mut state = lock(&shared.state);
+        let none = state.started == 0;
+        let waiting: Vec<Box<dyn Task>> = if none {
+            state.clients.take_all()
+        } else {
+            Vec::new()
+        };
+        drop(state);
+        for task in waiting {
+            task.fail(e.clone());
+        }
+    }
+}
+
+/// Starts slot `slot`, counted started, its thread listed to be joined. If its thread
+/// can't be started, the slot is left to start later, as itself, and that's the error.
+fn start_slot(shared: &Arc<Shared>, slot: usize, start: SlotStart) -> Result<(), Error> {
+    match spawn_slot(shared, slot, start) {
         Ok(thread) => {
             // Listed under the state lock, and only while the pool isn't stopping: the
             // pool's drop sets `stopping` under that lock before it joins the threads
@@ -754,24 +805,13 @@ fn grow(shared: &Arc<Shared>) {
             } else {
                 lock(&shared.threads).push(thread);
             }
+            Ok(())
         }
         Err(e) => {
-            // The system is short of threads: the slots started take the requests in turn,
-            // or, if there are none, the requests fail with it. The slot is left to start
-            // later, as itself.
             let mut state = lock(&shared.state);
             state.started -= 1;
             state.unstarted.push(slot);
-            let none = state.started == 0;
-            let waiting: Vec<Box<dyn Task>> = if none {
-                state.clients.take_all()
-            } else {
-                Vec::new()
-            };
-            drop(state);
-            for task in waiting {
-                task.fail(e.clone());
-            }
+            Err(e)
         }
     }
 }
@@ -1381,6 +1421,9 @@ enum Starts {
 enum SlotStart {
     Now(mpsc::Sender<Result<(), Error>>),
     OnDemand,
+    /// Started ahead of any request ([`KernelPool::warm`]): its worker starts now, and
+    /// if it can't, the slot ends, left to start again on demand.
+    Warm,
 }
 
 /// One slot of the pool: starts its worker (or, on demand, leaves it to its first
@@ -1415,6 +1458,12 @@ fn serve(slot: usize, shared: &Arc<Shared>, start: SlotStart) {
         // Its first request starts it (`live_worker`, below); idle, a slot with no worker
         // and no failure to retry after starts none (`Keeper::tend`).
         SlotStart::OnDemand => {}
+        SlotStart::Warm => {
+            if let Err(e) = keeper.live_worker() {
+                tracing::warn!("a kernel worker started ahead of its requests failed: {e}");
+                return;
+            }
+        }
     }
     loop {
         let task = match shared.next() {

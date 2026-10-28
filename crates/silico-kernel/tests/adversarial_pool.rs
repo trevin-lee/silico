@@ -1843,6 +1843,51 @@ fn requests_one_after_another_on_demand_start_one_worker_and_one_slot() {
 }
 
 #[test]
+fn a_warm_start_starts_the_workers_it_says_and_a_request_after_takes_one_of_them() {
+    // Warmed, two slots of four start their workers ahead of any request; a request then
+    // runs on one of them, starting no slot or worker more.
+    let pool = on_demand(TEST_WORKER, 4);
+    assert_eq!(pool.warm(2), 2);
+    let warmed = wait_full(&pool, 2, &BTreeSet::new());
+    let before = threads();
+    done(pool.submit(Generation(1), sleep(0))).unwrap();
+    assert_eq!(pool.pids(), warmed);
+    assert_eq!(threads(), before);
+}
+
+#[test]
+fn a_request_while_a_warm_start_runs_waits_for_it_rather_than_starting_another() {
+    // The request comes as the warmed slot starts its worker: the slot, started and free,
+    // takes it once its worker is up, and the pool doesn't grow.
+    for _ in 0..20 {
+        let pool = on_demand(TEST_WORKER, 4);
+        assert_eq!(pool.warm(1), 1);
+        done(pool.submit(Generation(1), sleep(0))).unwrap();
+        let pids = wait_full(&pool, 1, &BTreeSet::new());
+        assert_eq!(pids.len(), 1, "{pids:?}");
+    }
+}
+
+#[test]
+fn a_warm_start_starts_only_the_slots_not_yet_started() {
+    let pool = on_demand(TEST_WORKER, 2);
+    assert_eq!(pool.warm(5), 2);
+    assert_eq!(pool.warm(1), 0);
+    wait_full(&pool, 2, &BTreeSet::new());
+    // A request first starts one slot on demand; a warm start then starts the other.
+    let pool = on_demand(TEST_WORKER, 2);
+    done(pool.submit(Generation(1), sleep(0))).unwrap();
+    assert_eq!(pool.warm(2), 1);
+    wait_full(&pool, 2, &BTreeSet::new());
+    // A pool that refuses every request has no slot to start.
+    let refusing = KernelPool::refusing(silico_core::Error::new(
+        ErrorCode::WorkerCrashed,
+        "no kernel worker",
+    ));
+    assert_eq!(refusing.warm(1), 0);
+}
+
+#[test]
 fn a_request_after_one_that_crashed_its_worker_waits_for_the_slot_not_a_new_one() {
     // Requests one after another, every other one crashing its worker: the slot replaces it
     // (a new process) after the crash is reported, free, so the next request, submitted the
