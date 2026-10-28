@@ -178,16 +178,38 @@ pub fn trim(
                 shared.is_none() && !joins.iter().any(|j| j.tangent.as_ref() == Some(&c.id))
             })
             .map(|c| c.id.clone());
+        // A cutter's perpendicular goes with the first of its cuts.
+        let perpendicular = sketch
+            .constraints
+            .iter()
+            .find(|c| match &c.form {
+                Form::Perpendicular { a, b } => {
+                    (*a == curve_ref && b.element() == Some(&cut.cutter))
+                        || (*b == curve_ref && a.element() == Some(&cut.cutter))
+                }
+                _ => false,
+            })
+            .filter(|c| {
+                !joins
+                    .iter()
+                    .any(|j| j.perpendicular.as_ref() == Some(&c.id))
+            })
+            .map(|c| c.id.clone());
         joins.push(Join {
             cut: cut.clone(),
             side,
             shared: shared.cloned(),
             tangent,
+            perpendicular,
         });
     }
-    // A line's direction constraints and edge tangencies, copied to its second piece.
-    let taken_over: BTreeSet<&ElementId> =
-        joins.iter().filter_map(|j| j.tangent.as_ref()).collect();
+    // A line's direction constraints and edge tangencies, copied to its second piece, but
+    // those a cut takes.
+    let taken_over: BTreeSet<&ElementId> = joins
+        .iter()
+        .flat_map(|j| [j.tangent.as_ref(), j.perpendicular.as_ref()])
+        .flatten()
+        .collect();
     let mut copies: Vec<&SketchConstraint> = if kind == ElementKind::Line && layout.two_pieces() {
         sketch
             .constraints
@@ -262,6 +284,24 @@ pub fn trim(
     for constraint in &sketch.constraints {
         let id = &constraint.id;
         let form = &constraint.form;
+        // A cutter's perpendicular: on the piece at its cut alone.
+        if let Some(join) = joins.iter().find(|j| j.perpendicular.as_ref() == Some(id)) {
+            let piece = piece_at(join.side, &curve_ref, second.as_ref());
+            let mut form = form.clone();
+            for reference in super::references_mut(&mut form) {
+                if *reference == curve_ref {
+                    *reference = piece.clone();
+                }
+            }
+            if form != constraint.form {
+                modified.insert(id.clone());
+            }
+            constraints.push(SketchConstraint {
+                id: id.clone(),
+                form,
+            });
+            continue;
+        }
         // A join's: the on or tangent_on holding the shared end, and the cutter's tangency.
         if let Some(join) = joins
             .iter()
@@ -618,7 +658,7 @@ fn carry(
         Form::Tangent { a, b, side } if !is_line && (a == curve || b == curve) => {
             let other = if a == curve { b } else { a };
             let piece = match contact(sketch, placing.geo, other, *side) {
-                Some(xy) => placing.holding(xy),
+                Some(xy) => placing.touching(xy),
                 None => Some(curve.clone()),
             };
             let Some(piece) = piece else {
@@ -769,6 +809,9 @@ struct Join {
     side: Side,
     shared: Option<ElementId>,
     tangent: Option<ElementId>,
+    /// The line's perpendicular with the cutter, which goes to this cut's piece alone, as
+    /// FreeCAD's end-to-edge perpendicular at the cut (`transformPreexistingConstraintForTrim`).
+    perpendicular: Option<ElementId>,
 }
 
 /// Every cut on `curve` (`geo`), in order along it: each other curve's crossings, tangent
@@ -1193,6 +1236,25 @@ struct Placing<'a> {
 }
 
 impl Placing<'_> {
+    /// The piece whose span holds `xy`'s projection, as [`holding`](Self::holding), but none
+    /// past the curve's ends: a contact there touches no piece (decision 2).
+    fn touching(&self, xy: [f64; 2]) -> Option<Reference> {
+        if self.past(self.geo.along(self.geo.project(xy))) {
+            None
+        } else {
+            self.holding(xy)
+        }
+    }
+
+    /// Whether a place `along` the carrier is past the curve's ends.
+    fn past(&self, along: f64) -> bool {
+        match (self.layout, self.geo) {
+            (Layout::Closed { .. }, _) | (_, Geo::Circle { .. }) => false,
+            (_, Geo::Line { .. }) => !(0.0..=1.0).contains(&along),
+            (_, Geo::Arc { end_angle, .. }) => along > *end_angle,
+        }
+    }
+
     /// The piece whose span holds `xy`'s projection, or past the curve's ends the piece
     /// that keeps the nearer end (a line's projection clamps to its ends, as FreeCAD's
     /// `closestParameter` does); none on the part removed, or past an end trimmed away.
@@ -1206,12 +1268,7 @@ impl Placing<'_> {
                 kept.then(|| self.first.clone())
             }
             Layout::Open { before, after } => {
-                let past = match self.geo {
-                    Geo::Line { .. } => !(0.0..=1.0).contains(&along),
-                    Geo::Arc { end_angle, .. } => along > *end_angle,
-                    Geo::Circle { .. } => false,
-                };
-                if past {
+                if self.past(along) {
                     let ends = self.geo.ends();
                     let nearer_start = match &ends[..] {
                         [start, end] => distance(xy, *start) <= distance(xy, *end),

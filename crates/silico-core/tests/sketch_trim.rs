@@ -1921,3 +1921,113 @@ fn an_arc_not_starting_at_0_picked_outside_its_sweep_goes_to_the_nearer_end() {
         ["z0000000", "r0000000", "n0000000"]
     );
 }
+
+#[test]
+fn an_arcs_edge_tangency_touching_its_circle_past_its_ends_is_refused() {
+    // Decision 2: the upper half of radius 25 about the origin, cut at (−15, 20) and picked
+    // at (−20, 15), so it keeps the part from its start (25, 0). t touches the circle at
+    // (15, −20) (tangent direction (0.8, 0.6), from (7, −26) to (23, −14)): below the arc,
+    // past its ends, nearer its start. No piece touches t, so the trim is refused, as when
+    // the contact is on the part removed (FreeCAD drops the tangency).
+    let before = doc(
+        &[
+            point("z0000000", 0.0, 0.0),
+            point("r0000000", 25.0, 0.0),
+            point("r0000001", -25.0, 0.0),
+            point("e0000001", -15.0, 0.0),
+            point("e0000002", -15.0, 30.0),
+            point("t0000001", 7.0, -26.0),
+            point("t0000002", 23.0, -14.0),
+        ]
+        .join(", "),
+        &[
+            line("e0000000", "e0000001", "e0000002"),
+            line("t0000000", "t0000001", "t0000002"),
+        ]
+        .join(", "),
+        "",
+        &arc("a0000000", "z0000000", "r0000000", "r0000001"),
+        r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "t0000000", "side": "right"}"#,
+    );
+    let error = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [-20.0, 15.0],
+        &ids(&["n0000000", "k0000008"]),
+    )
+    .unwrap_err();
+    assert_eq!(
+        said(&error),
+        (
+            "trimming arc a0000000 there would leave constraint k0000000, an edge tangency with t0000000, on no piece of it",
+            Some("pick"),
+            vec!["k0000000", "a0000000"]
+        )
+    );
+    assert_eq!(error.cause(), Some("no piece of the arc touches t0000000"));
+}
+
+#[test]
+fn a_lines_perpendicular_with_a_cutter_goes_to_the_piece_at_that_cut_alone() {
+    // FreeCAD's trim turns a perpendicular with the cutter into one at the cut, on the piece
+    // whose end it is (`transformPreexistingConstraintForTrim`; 1.1.3 keeps a single one):
+    // never copied, so with the line horizontal no second piece holds the cutter upright
+    // twice. Cutters at 8 and 24, picked at 16: perpendicular with d, at the first cut, stays
+    // on the first piece; with e, at the second, it goes to the second. The horizontal is
+    // copied, then the new ends' ons.
+    for (cutter, piece, modified) in [
+        ("d0000000", "a0000000", vec!["a0000000"]),
+        ("e0000000", "b1000000", vec!["a0000000", "k0000000"]),
+    ] {
+        let (mut points, d) = upright('d', 8.0);
+        let (more, e) = upright('e', 24.0);
+        points.extend(more);
+        let before = a_line(
+            &points,
+            &[d, e],
+            "",
+            &format!(
+                r#"{{"id": "k0000000", "type": "perpendicular", "a": "a0000000", "b": "{cutter}"}}, {{"id": "k0000001", "type": "horizontal", "line": "a0000000"}}"#
+            ),
+        );
+        let done = trim(
+            sketch_of(&before),
+            &id("a0000000"),
+            [16.0, 0.0],
+            &ids(&[
+                "n0000000", "n0000001", "b1000000", "k0000002", "k0000003", "k0000004",
+            ]),
+        )
+        .unwrap();
+        let sketch = gated(&before, &done);
+        assert_eq!(
+            form(&sketch, "k0000000"),
+            &Form::Perpendicular {
+                a: element(piece),
+                b: element(cutter)
+            },
+            "{cutter}"
+        );
+        assert_eq!(
+            form(&sketch, "k0000002"),
+            &Form::Horizontal {
+                line: element("b1000000")
+            }
+        );
+        assert_eq!(form(&sketch, "k0000003"), &on("n0000000", "d0000000"));
+        assert_eq!(form(&sketch, "k0000004"), &on("n0000001", "e0000000"));
+        let perpendiculars = sketch
+            .constraints
+            .iter()
+            .filter(|c| matches!(c.form, Form::Perpendicular { .. }))
+            .count();
+        assert_eq!(perpendiculars, 1, "{cutter}");
+        assert_eq!(
+            done.edited.added,
+            ids(&[
+                "n0000000", "n0000001", "b1000000", "k0000002", "k0000003", "k0000004"
+            ])
+        );
+        assert_eq!(done.edited.modified, ids(&modified), "{cutter}");
+    }
+}
