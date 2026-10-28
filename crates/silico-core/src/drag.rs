@@ -156,6 +156,67 @@ struct State {
     done: bool,
 }
 
+/// Stops the whole-sketch work a drag's begin or end runs (its solves, and the begin's
+/// diagnosis in the worker), from another thread (the
+/// command's `cancel`), by restarting its worker; that begin or end is then refused as
+/// `cancelled`, and one not yet solving when it's stopped is refused before it solves.
+/// Clones stop the same drag's.
+#[derive(Clone, Default)]
+pub struct DragStop(Arc<Mutex<Stopping>>);
+
+#[derive(Default)]
+struct Stopping {
+    stopped: bool,
+    stopper: Option<SolveStopper>,
+}
+
+impl DragStop {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Stops the whole solve running under it, if one is, and every one after.
+    pub fn stop(&self) {
+        let mut stopping = lock(&self.0);
+        stopping.stopped = true;
+        if let Some(stopper) = &stopping.stopper {
+            stopper.stop();
+        }
+    }
+
+    /// `solve` on `solver`, readied for it, stoppable by [`stop`](Self::stop).
+    fn run<T>(
+        &self,
+        solver: &mut dyn SketchSolver,
+        solve: impl FnOnce(&mut dyn SketchSolver) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let stopper = solver.stopper()?;
+        {
+            let mut stopping = lock(&self.0);
+            if stopping.stopped {
+                return Err(cancelled());
+            }
+            stopping.stopper = stopper;
+        }
+        let result = solve(solver);
+        let mut stopping = lock(&self.0);
+        stopping.stopper = None;
+        if stopping.stopped {
+            return Err(cancelled());
+        }
+        result
+    }
+}
+
+/// A drag's whole solve, stopped.
+pub(crate) fn cancelled() -> Error {
+    Error::new(
+        ErrorCode::Cancelled,
+        "the drag's solve of its sketch was stopped",
+    )
+    .with_suggestion("begin the drag again")
+}
+
 /// Begins a drag of `begin`: as [`begin_with`], its begin state given.
 pub fn begin(solvers: &SketchSolvers, begin: DragBegin) -> Result<Begun, Error> {
     // Checked before a solver is taken: nothing is sent for a begin that can't run.
@@ -176,9 +237,21 @@ pub fn begin_with(
     notify: Option<Notify>,
     prepare: impl FnOnce(&mut dyn SketchSolver) -> Result<DragBegin, Error>,
 ) -> Result<Begun, Error> {
+    begin_under(solvers, notify, &DragStop::new(), prepare)
+}
+
+/// Begins a drag as [`begin_with`] does, the worker's begin (its diagnosis of the whole
+/// sketch) under `stop`, as `prepare` runs its solves: a stop refuses the begin as
+/// `cancelled`.
+pub fn begin_under(
+    solvers: &SketchSolvers,
+    notify: Option<Notify>,
+    stop: &DragStop,
+    prepare: impl FnOnce(&mut dyn SketchSolver) -> Result<DragBegin, Error>,
+) -> Result<Begun, Error> {
     let _span = tracing::info_span!("drag_begin").entered();
     let mut solver = solvers.take()?;
-    let (begin, started) = match prepared(solver.as_mut(), prepare) {
+    let (begin, started) = match prepared(solver.as_mut(), prepare, stop) {
         Ok(prepared) => prepared,
         Err(error) => {
             solvers.give_back(solver);
@@ -220,12 +293,12 @@ pub fn begin_with(
 fn prepared(
     solver: &mut dyn SketchSolver,
     prepare: impl FnOnce(&mut dyn SketchSolver) -> Result<DragBegin, Error>,
+    stop: &DragStop,
 ) -> Result<(DragBegin, DragStarted), Error> {
     // `prepare` readies the solver for what it sends, as any solve's caller does.
     let begin = prepare(solver)?;
     checked_begin(&begin)?;
-    solver.stopper()?;
-    let started = solver.drag_begin(begin.clone())?;
+    let started = stop.run(solver, |solver| solver.drag_begin(begin.clone()))?;
     if let Err(error) = checked_tags(&begin.system, &started.conflicting) {
         solver.distrust();
         return Err(error);

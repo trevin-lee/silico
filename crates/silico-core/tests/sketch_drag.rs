@@ -606,3 +606,95 @@ fn a_frames_radii_are_in_the_order_of_their_ids_arcs_and_circles_together() {
     assert_eq!(frame.kind, FrameKind::Solved);
     assert_eq!(frame.radii, [(id("ag000001"), 5.0), (id("cg000001"), 5.0)]);
 }
+
+/// A solver whose drag begin (the worker's diagnosis of the whole sketch) runs until its
+/// stopper is called, or ten seconds, and is then stopped, as a restarted worker's is.
+struct SlowBegin {
+    inner: FakeSketches,
+    stopped: Arc<(Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl SketchSolver for SlowBegin {
+    fn solve(
+        &mut self,
+        system: silico_protocol::SketchSystem,
+    ) -> Result<silico_protocol::Solved, Error> {
+        self.inner.solve(system)
+    }
+
+    fn stopper(&mut self) -> Result<Option<silico_core::sketch::SolveStopper>, Error> {
+        let stopped = Arc::clone(&self.stopped);
+        Ok(Some(silico_core::sketch::SolveStopper::new(move || {
+            *stopped.0.lock().unwrap() = true;
+            stopped.1.notify_all();
+        })))
+    }
+
+    fn drag_begin(
+        &mut self,
+        begin: silico_protocol::DragBegin,
+    ) -> Result<silico_core::sketch::DragStarted, Error> {
+        let mut stopped = self.stopped.0.lock().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !*stopped && std::time::Instant::now() < deadline {
+            stopped = self
+                .stopped
+                .1
+                .wait_timeout(stopped, std::time::Duration::from_millis(50))
+                .unwrap()
+                .0;
+        }
+        if *stopped {
+            return Err(Error::new(ErrorCode::WorkerCrashed, "stopped mid-begin"));
+        }
+        drop(stopped);
+        self.inner.drag_begin(begin)
+    }
+}
+
+#[test]
+fn a_stop_during_the_workers_begin_stops_its_diagnosis() {
+    // Found by the robustness review of the race fix: the worker's begin, its diagnosis of
+    // the whole sketch, ran outside the drag's stop, so a stop waited for it (up to the
+    // solver's time). Here the begin runs until stopped: a stop a moment in refuses the
+    // begin, `cancelled`, at once, not after the ten seconds.
+    let doc = document();
+    let held = solve(&doc, &feature("s0000001"), &mut FakeSketches::new()).unwrap();
+    let solvers = SketchSolvers::starting(|| {
+        Ok(Box::new(SlowBegin {
+            inner: FakeSketches::new(),
+            stopped: Arc::default(),
+        }) as Box<dyn SketchSolver>)
+    });
+    let stop = DragStop::new();
+    let started = std::time::Instant::now();
+    let begun = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let doc = document();
+            let sketch = sketch_of(&doc, "s0000001");
+            begin_stoppable(
+                &solvers,
+                None,
+                &doc,
+                &feature("s0000001"),
+                &id("pa000003"),
+                Some(Held {
+                    sketch: &sketch,
+                    solution: &held,
+                }),
+                &stop,
+            )
+            .err()
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    stop.stop();
+    let e = begun.join().unwrap().expect("the begin went on");
+    assert_eq!(e.code(), ErrorCode::Cancelled);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "the stop waited for the begin: {:?}",
+        started.elapsed()
+    );
+}

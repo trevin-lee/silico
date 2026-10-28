@@ -19,14 +19,15 @@
 //!   [`DragStop`], so a command's `cancel` stops them, as [`SketchDrag::cancel_move`] stops
 //!   a move.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use silico_protocol::{DragBegin, PointOf, PointValues, SolveStatus, Value};
 
-use super::{Begun, DragSession, Kept, MoveOutcome, MoveTicket, Notify};
+pub use super::DragStop;
+use super::{Begun, DragSession, Kept, MoveOutcome, MoveTicket, Notify, cancelled};
 use crate::document::{Checked, ElementId, FeatureId, Operation, Sketch};
 use crate::recompute::{FeatureOutcome, Model, SketchSolvers};
-use crate::sketch::{SketchSolution, SketchSolver, SolveStopper, Translation};
+use crate::sketch::{SketchSolution, SketchSolver, Translation};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
@@ -83,66 +84,6 @@ impl<'a> Held<'a> {
             _ => None,
         }
     }
-}
-
-/// Stops the whole-sketch solve a drag's begin or end runs, from another thread (the
-/// command's `cancel`), by restarting its worker; that begin or end is then refused as
-/// `cancelled`, and one not yet solving when it's stopped is refused before it solves.
-/// Clones stop the same drag's.
-#[derive(Clone, Default)]
-pub struct DragStop(Arc<Mutex<Stopping>>);
-
-#[derive(Default)]
-struct Stopping {
-    stopped: bool,
-    stopper: Option<SolveStopper>,
-}
-
-impl DragStop {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Stops the whole solve running under it, if one is, and every one after.
-    pub fn stop(&self) {
-        let mut stopping = lock(&self.0);
-        stopping.stopped = true;
-        if let Some(stopper) = &stopping.stopper {
-            stopper.stop();
-        }
-    }
-
-    /// `solve` on `solver`, readied for it, stoppable by [`stop`](Self::stop).
-    fn run<T>(
-        &self,
-        solver: &mut dyn SketchSolver,
-        solve: impl FnOnce(&mut dyn SketchSolver) -> Result<T, Error>,
-    ) -> Result<T, Error> {
-        let stopper = solver.stopper()?;
-        {
-            let mut stopping = lock(&self.0);
-            if stopping.stopped {
-                return Err(cancelled());
-            }
-            stopping.stopper = stopper;
-        }
-        let result = solve(solver);
-        let mut stopping = lock(&self.0);
-        stopping.stopper = None;
-        if stopping.stopped {
-            return Err(cancelled());
-        }
-        result
-    }
-}
-
-/// A drag's whole solve, stopped.
-fn cancelled() -> Error {
-    Error::new(
-        ErrorCode::Cancelled,
-        "the drag's solve of its sketch was stopped",
-    )
-    .with_suggestion("begin the drag again")
 }
 
 /// How a frame ended (the design's `frame`).
@@ -263,7 +204,7 @@ pub fn begin_stoppable(
         ));
     }
     let mut prepared: Option<(Translation, Reading, [f64; 2], Option<Error>)> = None;
-    let begun = super::begin_with(solvers, notify, |solver| {
+    let begun = super::begin_under(solvers, notify, stop, |solver| {
         let (begin_state, unsolved) = match held.filter(|held| held.sketch == sketch) {
             Some(held) => (held.solution.written(sketch), None),
             None => solved_or_drawn(document, feature, sketch, solver, stop)?,
