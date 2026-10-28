@@ -21,11 +21,20 @@ pub const WAIT: Duration = Duration::from_secs(60);
 /// never returns.
 pub fn promptly<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let thread = std::thread::spawn(move || {
         let _ = tx.send(f());
     });
-    rx.recv_timeout(WAIT)
-        .unwrap_or_else(|_| panic!("{what} didn't return in {WAIT:?}"))
+    match rx.recv_timeout(WAIT) {
+        Ok(out) => out,
+        // `f` panicked: its panic, not a timeout.
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match thread.join() {
+            Err(panic) => std::panic::resume_unwind(panic),
+            Ok(()) => panic!("{what} ended without a result"),
+        },
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!("{what} didn't return in {WAIT:?}")
+        }
+    }
 }
 
 pub fn checked(text: &str) -> Checked {
