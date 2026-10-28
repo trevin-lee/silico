@@ -7,7 +7,9 @@
 //! [`generate`] makes random valid ones. Sketches ([`sketch`]) and sketch features
 //! ([`features`]: pad, pocket, revolve, groove) have cases of their own there, as Silico
 //! documents, and so do measures ([`measures`]: the core's `distance` and `angle` against
-//! FreeCAD's Measure, pairs of elements of a document's solids).
+//! FreeCAD's Measure, pairs of elements of a document's solids), and so do sketch edits
+//! ([`sketch_edit`]: a sketch and one edit, through Silico's `sketch_edit` and FreeCAD's
+//! Sketcher, compared modulo what docs/ports/sketch-edit.md says Silico does otherwise).
 
 pub mod case;
 pub mod compare;
@@ -18,6 +20,7 @@ pub mod generate;
 pub mod measures;
 pub mod silico;
 pub mod sketch;
+pub mod sketch_edit;
 
 pub use case::{Case, Chamfer, Shape, load};
 pub use compare::{Measured, Outcome, Tolerance, differences};
