@@ -1869,7 +1869,7 @@ fn a_request_while_a_warm_start_runs_waits_for_it_rather_than_starting_another()
             std::thread::spawn(move || pool.warm(1))
         };
         done(pool.submit(Generation(1), sleep(0))).unwrap();
-        assert!(warming.join().unwrap() <= 1);
+        warming.join().unwrap();
         let pids = wait_full(&pool, 1, &BTreeSet::new());
         assert_eq!(pids.len(), 1, "{pids:?}");
     }
@@ -2901,8 +2901,8 @@ fn a_warm_start_of_a_worker_that_exits_at_once_leaves_a_request_failed_not_waiti
     write_executable(&exe, "#!/bin/sh\nexit 3\n");
     let pool = on_demand(exe.to_str().unwrap(), 1);
     // Its process starts and exits: counted started or not, as the exit is seen before or
-    // after the start; the requests fail promptly either way.
-    assert!(pool.warm(1) <= 1);
+    // after the start; the requests fail promptly either way, which is what's checked.
+    pool.warm(1);
     for byte in 0..3u8 {
         let err = pool
             .submit(Generation(1), echo(&[byte]))

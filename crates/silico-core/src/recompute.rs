@@ -5312,7 +5312,7 @@ mod tests {
     }
 
     #[test]
-    fn a_solve_while_a_warm_start_runs_waits_for_the_warmed_solver_and_starts_no_other() {
+    fn a_solve_while_a_warm_start_runs_takes_the_warmed_solver_and_starts_no_other() {
         use std::sync::atomic::Ordering;
         let (solvers, starts, gate) = counted_starts(|_| fake());
         // The warm start, on a thread of its own as an app runs it, held mid-start; a take
@@ -5352,6 +5352,18 @@ mod tests {
         taken(&solvers).unwrap();
         taken(&solvers).unwrap();
         assert_eq!(starts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_warm_start_starts_at_most_as_many_solvers_as_the_machine_has_cores() {
+        // From the tests review: asked for three more than there are cores, it starts one
+        // a core, and says so.
+        use std::sync::atomic::Ordering;
+        let cores = std::thread::available_parallelism().map_or(1, usize::from);
+        let (solvers, starts, gate) = counted_starts(|_| fake());
+        open(&gate);
+        assert_eq!(solvers.warm(cores + 3), cores);
+        assert_eq!(starts.load(Ordering::SeqCst), cores);
     }
 
     #[test]
