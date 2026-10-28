@@ -9,15 +9,15 @@
 #
 # Idle is read as the filler reads it (.github/workflows/filler.yml): /proc/stat over a few
 # seconds, idle and iowait time as a share of every CPU's; and what filler's own runners used
-# meanwhile counts as idle too (below). A moment's idle overstates what's
-# spare (each mutant's rebuild is mostly serial, its tests use every thread), so each shard
-# holds a claim for its count, a file named for its runner, until its job ends (`release`),
-# and a shard takes no more than the CPUs no claim and no gate's reserve holds (23 of 30),
-# whatever their phases, and LEAST once those are held: at most 32 threads for a long run's
-# seven shards, 38 with the merge lane's two, starting in turn on an idle VM (27 before).
-# Shards take turns under a lock, so a long run's seven starting together see each other's
-# claims. A runner runs one job at a time, so a claim its job left (a runner that died) is
-# replaced by its next shard; claims older than a shard's longest job (a day) are deleted.
+# meanwhile counts as idle too (below). A moment's idle overstates what's spare (each mutant's
+# rebuild is mostly serial, its tests use every thread), so each shard holds a claim for its
+# count, a file named for its runner instance, until its job ends (`release`), and a shard
+# takes no more than the CPUs no claim and no gate's reserve holds (23 of 30), whatever their
+# phases, and LEAST once those are held: at most 32 threads for a long run's seven shards, 38
+# with the merge lane's two, starting in turn on an idle VM (27 before). Shards take turns
+# under a lock, so a long run's seven starting together see each other's claims. A runner
+# instance runs one job at a time, so a claim its job left (a runner that died) is replaced by
+# that instance's next shard; claims older than a shard's longest job (a day) are deleted.
 #
 # Usage: bash .github/shard-threads.sh LEAST MOST   (prints the count and how it was chosen,
 #                                                    the count alone on the first line)
@@ -26,7 +26,11 @@ set -euo pipefail
 
 claims=$HOME/.cache/silico/shard-threads
 mkdir -p "$claims"
-claim=$claims/claim.$RUNNER_NAME
+# By instance (pve-silico-9), not by registration (pve-silico-9-1793152973): each job's runner
+# registers again under a new suffix, so only the instance's name is the same for its next shard.
+instance=$RUNNER_NAME
+if [[ $RUNNER_NAME =~ ^(.*)-[0-9]+$ ]]; then instance=${BASH_REMATCH[1]}; fi
+claim=$claims/claim.$instance
 
 # Under the lock even to release, so a shard choosing never reads a claim half gone.
 exec 9>"$claims/lock"
