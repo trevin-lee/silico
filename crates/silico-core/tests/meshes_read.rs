@@ -523,15 +523,14 @@ fn a_body_behind_and_aside_the_eye_is_meshed_for_its_distance_not_its_depth() {
 }
 
 #[test]
-fn a_floor_of_a_power_of_two_held_on_a_cache_keeping_nothing_is_meshed_again_and_answered_held() {
-    // A 225 by 300 by 500 box: its diagonal is 625, its floor exactly 0.0625, a power of
-    // two, which the read can't tell from a level. On a cache that keeps nothing, a view
-    // asking 2⁻⁵ (a half pixel of 0.05) is meshed at the floor; held at it, the next read
-    // meshes again (the floor isn't known), and answers held, with no geometry and no counts,
-    // as a kept mesh would be answered.
+fn a_floor_dropped_from_the_caches_floors_is_meshed_again_and_answered_alike() {
+    // A 225 by 300 by 500 box: its diagonal is 625, its floor 0.0625. On a cache that keeps
+    // no meshes and no floors, a view asking 2⁻⁵ (a half pixel of 0.05) is meshed at the
+    // floor; held at it, the next read can't know the floor, so it meshes again, and
+    // answers held, with no geometry and no counts, as a cache that knew the floor would.
     let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "b0000001", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 225, "width": 300, "height": 500}]}"#;
     let bench = Bench {
-        meshes: MeshCache::new(0),
+        meshes: MeshCache::with_floors(0, 0),
         ..Bench::of(text)
     };
     let camera = Camera {
@@ -550,7 +549,7 @@ fn a_floor_of_a_power_of_two_held_on_a_cache_keeping_nothing_is_meshed_again_and
                 key: body.key,
                 deflection: 0.0625,
             }],
-            ..of(camera, 1000, 1000)
+            ..of(camera.clone(), 1000, 1000)
         })
         .unwrap();
     let held = &again.bodies[0];
@@ -566,4 +565,57 @@ fn a_floor_of_a_power_of_two_held_on_a_cache_keeping_nothing_is_meshed_again_and
         (0.03125, 0.0625, [0.0, 0.125])
     );
     assert_eq!(bench.meshed(), [0.03125, 0.03125]);
+    // A cache that keeps its floors (though no meshes) answers alike, meshing once.
+    let kept = Bench {
+        meshes: MeshCache::new(0),
+        ..Bench::of(text)
+    };
+    kept.read(&of(camera.clone(), 1000, 1000)).unwrap();
+    let again_kept = kept
+        .read(&Meshes {
+            held: vec![Held {
+                key: body.key,
+                deflection: 0.0625,
+            }],
+            ..of(camera, 1000, 1000)
+        })
+        .unwrap();
+    let b = &again_kept.bodies[0];
+    assert!(b.held && b.mesh.is_none());
+    assert_eq!(
+        (b.level, b.deflection, b.serves),
+        (held.level, held.deflection, held.serves)
+    );
+    assert_eq!(kept.meshed(), [0.03125]);
+}
+
+#[test]
+fn a_forged_floor_is_answered_alike_whatever_the_cache_keeps() {
+    // The tests review's: a held 0.006 for the cut, no floor of it (its floor is 0.0046303),
+    // at a view asking 2⁻²¹. A cache that knows the floor, one that keeps no meshes, and one
+    // that keeps no floors either answer alike: not held, the mesh at the floor given.
+    let answer = |meshes: MeshCache<Key>| {
+        let bench = Bench {
+            meshes,
+            ..Bench::of(EXAMPLE)
+        };
+        bench.read(&of(front(0.001), 1000, 1000)).unwrap();
+        let read = bench
+            .read(&Meshes {
+                held: vec![Held {
+                    key: bench.key("m3tq8v0z"),
+                    deflection: 0.006,
+                }],
+                ..of(front(0.001), 1000, 1000)
+            })
+            .unwrap();
+        let b = &read.bodies[0];
+        (b.held, b.deflection, b.mesh.is_some())
+    };
+    let known = answer(MeshCache::new(MESH_CACHE_BYTES));
+    assert!(!known.0);
+    assert!(known.2);
+    assert!((known.1 - 0.0046303).abs() < 1e-7, "{}", known.1);
+    assert_eq!(answer(MeshCache::new(0)), known);
+    assert_eq!(answer(MeshCache::with_floors(0, 0)), known);
 }
