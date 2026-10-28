@@ -32,10 +32,14 @@ use silico_core::kernel::KernelWorker;
 use silico_protocol::{ShapeData, ShapeSummary};
 
 /// `shape` summarized through `k`, and how long that took.
+/// `shape` summarized, and what it cost: its wall time over how much slower than a quiet
+/// machine this one ran it (`Share`), which load doesn't move.
 fn timed(k: &mut KernelWorker, shape: &ShapeData) -> (ShapeSummary, Duration) {
+    let share = crate::share::Share::start();
     let start = Instant::now();
     let s = k.summarize(shape).unwrap();
-    (s, start.elapsed())
+    let wall = start.elapsed();
+    (s, wall.div_f64(share.finish().slowdown))
 }
 
 fn centre_cases(what: &str, got: [f64; 3], want: [f64; 3]) -> Vec<(String, f64, f64)> {

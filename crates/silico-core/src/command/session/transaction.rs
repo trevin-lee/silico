@@ -5,6 +5,7 @@
 //!
 //! The order its locks are taken in is on [`Session`].
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -279,12 +280,16 @@ impl Reached {
     /// later reload, `format` or edit's commit leaves older until its own model is published.
     /// Then what's spared is only what was carried from an earlier save (the edits came back
     /// to `begin`'s document, so they reach nothing), whose warning is missed for that while.
-    /// A rollback restores the model `begin` kept.
-    pub(crate) fn committing(&self, checking: Checking) -> &BTreeSet<FeatureId> {
+    /// A rollback restores the model `begin` kept. A `format` or an edit's commit that wrote
+    /// a sketch's solve, and so didn't publish, leaves an older model too: what it stored,
+    /// the session's document stores now. So for an older model, [`Checking::spared`] asks
+    /// this only when the session's document doesn't read: one that does says what the file
+    /// stores, and the miss above isn't made.
+    fn committing(&self, checking: &Checking) -> &BTreeSet<FeatureId> {
         static NONE: BTreeSet<FeatureId> = BTreeSet::new();
-        let spared = match checking {
+        let spared = match *checking {
             Checking::Latest { open } => open,
-            Checking::Older { open } => open || self.of_transaction(),
+            Checking::Older { open, .. } => open || self.of_transaction(),
         };
         if spared { self.get() } else { &NONE }
     }
@@ -300,26 +305,70 @@ impl Reached {
 }
 
 /// The session as a check of a model finds it, taken under its lock with its revision: what
-/// decides which missing fingerprints the check leaves to a commit
-/// ([`Reached::committing`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Checking {
+/// decides which missing fingerprints the check doesn't warn of ([`spared`](Self::spared)).
+#[derive(Clone)]
+pub(super) enum Checking {
     /// The model is of the session's revision; `open`, whether a transaction is open.
     Latest { open: bool },
     /// The model is an older revision's, the newest published; `open`, whether a
-    /// transaction is open in the session now.
-    Older { open: bool },
+    /// transaction is open in the session now, and `now`, the session's document now, as
+    /// the reader and the gate found it.
+    Older { open: bool, now: Arc<Gated> },
 }
 
 impl Checking {
-    /// A check of the model of revision `model`, in a session at revision `now`, a
-    /// transaction open in it or not (`open`), both as one lock held them.
-    pub(crate) fn of(open: bool, now: Revision, model: Revision) -> Self {
+    /// A check of the model of revision `model`, in a session at revision `now`, whose
+    /// document is `gated`, a transaction open in it or not (`open`), all as one lock held
+    /// them.
+    pub(super) fn of(open: bool, now: Revision, gated: &Arc<Gated>, model: Revision) -> Self {
         if model == now {
             Checking::Latest { open }
         } else {
-            Checking::Older { open }
+            Checking::Older {
+                open,
+                now: Arc::clone(gated),
+            }
         }
+    }
+
+    /// The features whose missing fingerprint a check of the model, whose revision's edits
+    /// reached `reached`, doesn't warn of ([`crate::warnings`]): those a commit writes
+    /// ([`Reached::committing`]); but, for an older model whose session's document reads,
+    /// those an open transaction's commit would write and those the document stores a
+    /// fingerprint for now (#189's L3). The warning says what the
+    /// file stores, so a fingerprint a save stored since the model's revision isn't
+    /// missing, though the model's own document holds none: one stored by `format`, or by
+    /// an edit's commit, that wrote a sketch's solve and so didn't publish its model (the
+    /// saved document's rebuild solves from what it wrote), leaving this one the newest
+    /// published until the saved revision's is. Only spared, never added: a fingerprint the
+    /// model's document stores and the session's no longer does is warned of once the
+    /// session's revision's model is published, as everything else of that revision is. A
+    /// model of the session's revision has the session's document, which stores what it
+    /// does.
+    pub(super) fn spared<'a>(&'a self, reached: &'a Reached) -> Cow<'a, BTreeSet<FeatureId>> {
+        let committing = reached.committing(self);
+        let Checking::Older { open, now } = self else {
+            return Cow::Borrowed(committing);
+        };
+        let Ok(now) = now.document() else {
+            return Cow::Borrowed(committing);
+        };
+        // What the file stores now decides, beside what an open transaction's commit will
+        // write: not whether the model's revision was a transaction's, which stands in for
+        // the file only when it doesn't read. After a commit that wrote nothing and a reload,
+        // a feature carried with no fingerprint is missing one, and said so.
+        let mut spared = if *open {
+            reached.get().clone()
+        } else {
+            BTreeSet::new()
+        };
+        spared.extend(
+            now.features
+                .iter()
+                .filter(|feature| feature.fingerprint.is_some())
+                .map(|feature| feature.id.clone()),
+        );
+        Cow::Owned(spared)
     }
 }
 
@@ -696,7 +745,7 @@ impl<C: Kernel + 'static> Session<C> {
             // reached at both is what was carried, with every feature that uses it. Whether a
             // transaction is open differs (it was then, it isn't now): for a model of the
             // session's revision, as this one is from now on, a check asks the session that
-            // as it checks, never the revision (`Reached::committing`).
+            // as it checks, never the revision (`Checking::spared`).
             if let Some(published) = &mut rebuilds.published
                 && published.revision == revision
             {

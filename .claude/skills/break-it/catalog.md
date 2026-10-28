@@ -44,6 +44,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Checks that predict FreeCAD's joining of ends from the sketch's points: FreeCAD joins its edges' vertices, and a line's end vertex is `start + dir · length` (GC_MakeSegment's trimmed line), ulps from the `to` point, so within a few ulps of 1e-7 the verdict flips both ways (5 in 600 random lines drawn within 5e-12 of it); build each in FreeCAD and count `Shape.Vertexes`
 - k ends at one place reported a pair at a time: k(k − 1)/2 warnings where FreeCAD's missing-coincidence analysis (`SketchAnalysis::getMissingCoincidences`) gives k − 1, crowding later features' out of the first hundred
 - A hub where hundreds of curves meet, near another point: a report about the two points that names every curve at each puts all of them in `elements`, where the contract lists the first hundred and counts the rest
+- Sketch edits that re-point references (a merge of points; split and trim later) refusing only the gate rules they thought of: a re-pointed `on`, `midpoint`, `point_line_distance`, or `symmetric` lands on its curve's own point, a `tangent_on`'s `at` becomes an end of its `b`, an `on` lands on a tangent curve's end; build random gated sketches, edit them, and gate every `Ok`
 
 ## Sketch solver
 

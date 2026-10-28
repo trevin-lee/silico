@@ -785,7 +785,7 @@ pub(crate) const MAX_ARCHIVE: u64 = u32::MAX as u64;
 /// ([`silico_protocol::MAX_EXPORT_TRIANGLES`]); otherwise the kernel's refusal of a mesh
 /// that large, naming the tolerance, as [`three_mf`] refuses its objects.
 pub(crate) fn within_triangles(triangles: u64) -> Result<(), Error> {
-    silico_protocol::check_export_triangles(triangles, silico_protocol::MAX_EXPORT_TRIANGLES)
+    silico_protocol::check_export_triangles(triangles, silico_protocol::MAX_EXPORT_TRIANGLES, false)
         .map_err(|refusal| {
             crate::worker::failure_error("ExportMesh", silico_protocol::Failure::new(refusal))
         })
@@ -1038,7 +1038,15 @@ mod tests {
             (e.code(), e.parameter()),
             (ErrorCode::InvalidInput, Some("tolerance"))
         );
-        assert!(e.message().contains("10000001"), "{e:?}");
+        // The export's own wording (the design's limits table), not the unraised mesh's.
+        assert_eq!(
+            (e.message(), e.suggestion()),
+            (
+                "an export's mesh has 10000001 triangles, more than the 10000000 an export may \
+                 have",
+                Some("export with a coarser tolerance, which makes fewer, or fewer parts at once")
+            )
+        );
     }
 
     #[test]

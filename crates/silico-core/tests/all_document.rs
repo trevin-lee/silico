@@ -36,6 +36,8 @@ mod model;
 mod references;
 #[path = "common/session.rs"]
 mod sessions;
+#[path = "common/share.rs"]
+mod share;
 #[path = "common/sweeps.rs"]
 mod sweeps;
 #[path = "common/within.rs"]
