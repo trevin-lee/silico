@@ -1,7 +1,8 @@
 //! A transaction's undo stack (`document::undo`: the M5.0 design's section 3, A2, section
 //! 6's bound, and section 7's `undo` and `redo`; pending Trevin, decision 2): a run of
-//! edits undone one by one gives back each earlier state's text, byte for byte, and its
-//! fingerprints on the fake kernel; redo gives back the later ones; an edit after an undo
+//! edits undone one by one gives back each earlier state's text, byte for byte (its
+//! fingerprints, rebuilt from it, the ones it had: the same text's, which the command's
+//! tests compare with a model rebuilt from the cache); redo gives back the later ones; an edit after an undo
 //! drops them; `to` reaches a revision the stack holds and refuses any other; and the
 //! bound counts what the states hold, worked out by hand, dropping the oldest past it.
 
@@ -72,7 +73,7 @@ fn pushed(states: &[(String, Option<Document>)], bound: usize) -> UndoStack<u64,
 }
 
 #[test]
-fn a_run_of_edits_undone_one_by_one_gives_back_each_earlier_state_and_its_fingerprints() {
+fn a_run_of_edits_undone_one_by_one_gives_back_each_earlier_state_byte_for_byte() {
     let states = run();
     // Each state's fingerprints as its model had them while it was the session's, before
     // anything is undone: the box's length and the pin's radius change them, so a restore
