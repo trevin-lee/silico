@@ -8,6 +8,7 @@
 use super::systems;
 use super::wait::WAIT;
 
+use std::f64::consts::{FRAC_PI_2, PI};
 use std::path::Path;
 
 use silico_core::ErrorCode;
@@ -242,6 +243,100 @@ fn an_arc_of_fixed_radius_follows_its_end_by_the_weight_of_its_centres_pin() {
             [c[0] + 5.0 * u[0], c[1] + 5.0 * u[1]],
             &format!("end, cursor {cursor:?}"),
         );
+    }
+}
+
+#[test]
+fn a_sketch_point_an_arc_ends_at_pins_the_arcs_centre_as_the_arcs_end_does() {
+    // The core drags a sketch's point (M3.2's D2), whose values the arc's end shares, not
+    // the arc's end: the fixed-radius quarter arc, dragged by such a point, lands where its
+    // end dragged does (the case above, δ = (d - 5) / (1 + 1e-4)). Were the centre not
+    // pinned, it would follow freely, δ = d - 5, and the end would reach the cursor.
+    let (mut system, _, center, end) = quarter_arc(true);
+    system.geometry.push(SketchGeometry::Point(end));
+    let point = Geometry(system.geometry.len() as u32 - 1);
+    let mut drag = begin(system, PointOf::Point(point));
+    for cursor in [[1.0, 17.0], [-11.0, -7.0], [4.0, 6.0]] {
+        let values = moved(&mut drag, cursor);
+        let (dx, dy) = (cursor[0] - 1.0, cursor[1] - 2.0);
+        let d = libm::hypot(dx, dy);
+        let u = [dx / d, dy / d];
+        let delta = (d - 5.0) / (1.0 + 1e-4);
+        let c = [1.0 + delta * u[0], 2.0 + delta * u[1]];
+        assert_near(
+            at(&values, center),
+            c,
+            &format!("centre, cursor {cursor:?}"),
+        );
+        assert_near(
+            at(&values, end),
+            [c[0] + 5.0 * u[0], c[1] + 5.0 * u[1]],
+            &format!("end, cursor {cursor:?}"),
+        );
+    }
+}
+
+#[test]
+fn a_point_two_arcs_end_at_pins_both_their_centres() {
+    // P at (0, 0) is the start of an arc about (-5, 0) and the end of one about (5, 0),
+    // each of radius 5 held, mirror images in x = 0. Dragged to (0, d), P stays on x = 0,
+    // at (0, y); each centre goes to the point 5 from P nearest where it started, s - 5 from
+    // there, s = √(25 + y²); and y makes (y - d)² + 2 · 1e-4 · (s - 5)² least, the two
+    // centres' pins each weighted 0.01² (found here by Newton's method). With one centre
+    // pinned, the weight would be 1e-4, and P would land about half as far short: 5.5e-4
+    // mm nearer the cursor at d = 10, 4.3e-5 at d = 3. A centre is held along its circle
+    // about P by its 1e-4-weighted pin alone, so the solver stops with it less close than
+    // P: within 1e-8, still far finer than those.
+    let mut b = Builder::default();
+    let p = b.point_values(0.0, 0.0);
+    let arc = |b: &mut Builder, center: (f64, f64), start, end, angles: [f64; 2]| {
+        let center = b.point_values(center.0, center.1);
+        let radius = b.unknown(5.0);
+        let start_angle = b.unknown(angles[0]);
+        let end_angle = b.unknown(angles[1]);
+        let arc = b.add(SketchGeometry::Arc {
+            center,
+            radius,
+            start_angle,
+            end_angle,
+            start,
+            end,
+        });
+        b.constraints.push(SolverConstraint::ArcRules { arc });
+        let five = b.fixed(5.0);
+        b.constrain(|tag| SolverConstraint::Radius {
+            tag,
+            circle: arc,
+            value: five,
+        });
+        center
+    };
+    let left_end = b.point_values(-5.0, 5.0);
+    let left = arc(&mut b, (-5.0, 0.0), p, left_end, [0.0, FRAC_PI_2]);
+    let right_start = b.point_values(5.0, 5.0);
+    let right = arc(&mut b, (5.0, 0.0), right_start, p, [FRAC_PI_2, PI]);
+    let point = b.add(SketchGeometry::Point(p));
+    let mut drag = begin(b.system(Algorithm::DogLeg), PointOf::Point(point));
+    for d in [10.0, -8.0, 3.0] {
+        let mut y: f64 = d;
+        for _ in 0..50 {
+            let s = libm::hypot(5.0, y);
+            let f = (y - d) + 2e-4 * (s - 5.0) * y / s;
+            let df = 1.0 + 2e-4 * ((y / s).powi(2) + (s - 5.0) * 25.0 / s.powi(3));
+            y -= f / df;
+        }
+        let s = libm::hypot(5.0, y);
+        let values = moved(&mut drag, [0.0, d]);
+        assert_near(at(&values, p), [0.0, y], &format!("P, cursor (0, {d})"));
+        let rise = y - 5.0 * y / s;
+        for (centre, want) in [(left, [-25.0 / s, rise]), (right, [25.0 / s, rise])] {
+            let got = at(&values, centre);
+            let off = libm::hypot(got[0] - want[0], got[1] - want[1]);
+            assert!(
+                off <= 1e-8,
+                "centre, cursor (0, {d}): got {got:?}, want {want:?} ({off:e} off)"
+            );
+        }
     }
 }
 

@@ -547,16 +547,29 @@ impl DragBegin {
     }
 
     /// The points the drag pins, with their weights, as FreeCAD's `Sketch::initMove` pins
-    /// one point: the point itself, held to the cursor; and for an arc's start or end, the
-    /// arc's centre too, where it starts, a hundred times more weakly, so the end moves
-    /// before the centre does (`4d7a9435c1`).
+    /// one point: the point itself, held to the cursor; and for each arc whose start or end
+    /// is that point, by its values, the arc's centre too, where it starts, a hundred times
+    /// more weakly, so the end moves before the centre does (`4d7a9435c1`). By its values, so
+    /// a sketch point that arcs share as an end (the core's, M3.2's D2) pins their centres as
+    /// an arc's own end does: each centre once, in the order of the arcs' geometry, however
+    /// many arcs share it, and never the dragged point itself.
     pub fn pins(&self) -> Vec<(PointOf, f64)> {
         let mut pins = vec![(self.point, 1.0)];
-        if let (Some(SketchGeometry::Arc { .. }), PointOf::Start(g) | PointOf::End(g)) = (
-            self.system.geometry.get(self.point.geometry().0 as usize),
-            self.point,
-        ) {
-            pins.push((PointOf::Center(g), 0.01));
+        let Some(dragged) = self.system.point_values(self.point) else {
+            return pins;
+        };
+        let mut centres = vec![dragged];
+        for (i, g) in self.system.geometry.iter().enumerate() {
+            if let SketchGeometry::Arc {
+                center, start, end, ..
+            } = *g
+                && (start == dragged || end == dragged)
+                && !centres.contains(&center)
+                && let Ok(i) = u32::try_from(i)
+            {
+                centres.push(center);
+                pins.push((PointOf::Center(Geometry(i)), 0.01));
+            }
         }
         pins
     }
@@ -2773,6 +2786,83 @@ mod tests {
         assert_eq!(
             s.unbuildable(&values),
             [Geometry(0), Geometry(1), Geometry(2)]
+        );
+    }
+
+    #[test]
+    fn a_drag_pins_the_centre_of_every_arc_its_point_ends_once_each() {
+        // P at values 0 and 1, shared as arc A's start and arc B's end, the core's way
+        // (one point, its values in every curve that uses it). C, a third arc about A's
+        // centre, also starts at P: that centre is pinned once. D, about B's centre, runs
+        // from A's end, and a line from A's end to P pins nothing.
+        let p = |x: u32, y: u32| PointValues {
+            x: Value(x),
+            y: Value(y),
+        };
+        let shared = p(0, 1);
+        let arc = |center, start, end| SketchGeometry::Arc {
+            center,
+            radius: Value(2),
+            start_angle: Value(3),
+            end_angle: Value(4),
+            start,
+            end,
+        };
+        let system = SketchSystem {
+            values: vec![0.0; 13],
+            unknowns: (0..13).map(Value).collect(),
+            geometry: vec![
+                SketchGeometry::Point(shared),
+                arc(p(5, 6), shared, p(7, 8)),
+                SketchGeometry::Line {
+                    start: p(7, 8),
+                    end: shared,
+                },
+                arc(p(9, 10), p(11, 12), shared),
+                arc(p(5, 6), shared, p(11, 12)),
+                arc(p(9, 10), p(7, 8), p(11, 12)),
+            ],
+            constraints: vec![],
+            algorithms: vec![Algorithm::DogLeg],
+        };
+        let pins = |point| {
+            DragBegin {
+                system: system.clone(),
+                point,
+            }
+            .pins()
+        };
+        assert_eq!(
+            pins(PointOf::Point(Geometry(0))),
+            [
+                (PointOf::Point(Geometry(0)), 1.0),
+                (PointOf::Center(Geometry(1)), 0.01),
+                (PointOf::Center(Geometry(3)), 0.01),
+            ]
+        );
+        // An arc's own end, by its geometry, pins the same centres.
+        assert_eq!(
+            pins(PointOf::End(Geometry(3))),
+            [
+                (PointOf::End(Geometry(3)), 1.0),
+                (PointOf::Center(Geometry(1)), 0.01),
+                (PointOf::Center(Geometry(3)), 0.01),
+            ]
+        );
+        // A centre dragged pins nothing else.
+        assert_eq!(
+            pins(PointOf::Center(Geometry(1))),
+            [(PointOf::Center(Geometry(1)), 1.0)]
+        );
+        // D's start is A's end (and the line's start): both arcs' centres, A's first, as
+        // the geometry orders them.
+        assert_eq!(
+            pins(PointOf::Start(Geometry(5))),
+            [
+                (PointOf::Start(Geometry(5)), 1.0),
+                (PointOf::Center(Geometry(1)), 0.01),
+                (PointOf::Center(Geometry(5)), 0.01),
+            ]
         );
     }
 }
