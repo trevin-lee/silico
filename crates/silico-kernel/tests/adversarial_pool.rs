@@ -1857,28 +1857,32 @@ fn a_warm_start_starts_the_workers_it_says_and_a_request_after_takes_one_of_them
 }
 
 #[test]
-fn a_request_while_a_warm_start_runs_waits_for_it_rather_than_starting_another() {
-    // The request comes as a warm start of one, on a thread of its own, starts its slot:
-    // the slot, started and free, takes it once its worker is up, and the pool doesn't
-    // grow. (Had the request come first, its own slot counts, and the warm start starts
-    // none.)
-    for _ in 0..20 {
-        let pool = std::sync::Arc::new(on_demand(TEST_WORKER, 4));
-        let warming = {
-            let pool = std::sync::Arc::clone(&pool);
-            std::thread::spawn(move || pool.warm(1))
-        };
+fn a_request_while_a_warmed_worker_starts_waits_for_it_rather_than_starting_another() {
+    // From the tests review: the order fixed. A worker that takes half a second to start
+    // (a script that waits, then becomes the test worker). A warm start of one returns once
+    // its process is started; a request then comes while the worker is still starting: the
+    // slot, started and free, takes it once its worker is up, and the pool doesn't grow.
+    // (Were a warming slot not counted free, the request would start a second.)
+    let dir = scratch_dir("warm-slow");
+    let exe = dir.join("worker");
+    write_executable(
+        &exe,
+        &format!("#!/bin/sh\nsleep 0.5\nexec '{TEST_WORKER}' \"$@\"\n"),
+    );
+    for _ in 0..3 {
+        let pool = on_demand(exe.to_str().unwrap(), 4);
+        assert_eq!(pool.warm(1), 1);
+        let warmed = pool.pids();
+        assert_eq!(warmed.len(), 1, "{warmed:?}");
         done(pool.submit(Generation(1), sleep(0))).unwrap();
-        warming.join().unwrap();
-        let pids = wait_full(&pool, 1, &BTreeSet::new());
-        assert_eq!(pids.len(), 1, "{pids:?}");
+        assert_eq!(pool.pids(), warmed);
     }
 }
 
 #[test]
 fn sessions_warm_their_pool_and_their_sketch_solvers_and_a_second_warm_starts_none() {
     // The app's call: both halves at once, each up when it returns; called again, none
-    // more. The sketch solvers are the sessions' own, which every session's rebuild takes.
+    // more.
     use silico_core::sketch::SketchSolver;
     use std::sync::atomic::{AtomicUsize, Ordering};
     let pool = std::sync::Arc::new(on_demand(TEST_WORKER, 4));
@@ -1892,11 +1896,12 @@ fn sessions_warm_their_pool_and_their_sketch_solvers_and_a_second_warm_starts_no
             Ok(Box::new(silico_core::fake::FakeSketches::new()) as Box<dyn SketchSolver>)
         },
     );
-    assert_eq!(sessions.warm(1, 1), (1, 1));
-    assert_eq!(pool.pids().len(), 1);
+    // Counts that differ, so neither half can take the other's.
+    assert_eq!(sessions.warm(2, 1), (2, 1));
+    assert_eq!(pool.pids().len(), 2);
     assert_eq!(starts.load(Ordering::SeqCst), 1);
-    assert_eq!(sessions.warm(1, 1), (0, 0));
-    assert_eq!(pool.pids().len(), 1);
+    assert_eq!(sessions.warm(2, 1), (0, 0));
+    assert_eq!(pool.pids().len(), 2);
     assert_eq!(starts.load(Ordering::SeqCst), 1);
 }
 
