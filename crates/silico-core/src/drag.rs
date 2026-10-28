@@ -544,12 +544,13 @@ fn close(state: &mut State, why: &Error) {
             .with_suggestion("begin the drag again: the next begin starts another worker")
     };
     if let Some(end) = state.end {
-        state.ended = Some(match (state.cancelling, end) {
-            (true, _) | (false, None) => Ok(Ended {
+        // By the end asked for alone, so it answers alike however the cancel raced it.
+        state.ended = Some(match end {
+            None => Ok(Ended {
                 kept: Kept::Begin,
                 solved: None,
             }),
-            (false, Some(_)) => Err(closed.clone()),
+            Some(_) => Err(closed.clone()),
         });
     }
     state.closed = Some(closed);

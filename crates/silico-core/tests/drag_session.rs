@@ -864,3 +864,47 @@ fn a_cancel_landing_as_the_move_answers_still_cancels_it_and_stops_only_the_drag
     assert!(fake.requests().is_empty());
     assert_eq!(fake.stop_waits().len(), 1);
 }
+
+#[test]
+fn a_cursor_end_asked_for_while_a_cancelled_move_answers_is_refused_as_after_it() {
+    // The end with a cursor is recorded (the notifier says so) before the cancelled move
+    // comes back: refused, as it is once the move has answered, not kept as the begin.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (solvers, started) = pool();
+    let told = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&told);
+    let notify: Notify = Arc::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    let session = match begin_with(&solvers, Some(notify), |_| Ok(two_points())).unwrap() {
+        Begun::Open { session, .. } => session,
+        Begun::Conflicting(tags) => panic!("{tags:?}"),
+    };
+    let fake = started.lock().unwrap()[0].clone();
+    let (answering_tx, answering) = std::sync::mpsc::channel::<()>();
+    let (go, go_rx) = std::sync::mpsc::channel::<()>();
+    let (go_rx, answering_tx) = (Mutex::new(go_rx), Mutex::new(answering_tx));
+    fake.answer_moves(move |begin, to| {
+        answering_tx.lock().unwrap().send(()).unwrap();
+        go_rx.lock().unwrap().recv().unwrap();
+        Ok(FakeSketches::dragged(begin, to))
+    });
+    let moving = session.move_to([1.0, 1.0]).unwrap();
+    answering.recv_timeout(WAIT).unwrap();
+    assert!(session.cancel_move());
+    let before = told.load(Ordering::SeqCst);
+    let ending = std::thread::spawn(move || session.end(Some([1.0, 1.0])));
+    // The end recorded: `finish` tells the notifier once it has.
+    let seen = Arc::clone(&told);
+    assert!(within(move || {
+        while seen.load(Ordering::SeqCst) == before {
+            std::thread::yield_now();
+        }
+    }));
+    go.send(()).unwrap();
+    let e = ending.join().unwrap().unwrap_err();
+    assert_eq!(e.code(), ErrorCode::InvalidInput);
+    assert_eq!(e.message(), "no drag is open: its move was stopped");
+    assert_eq!(moving.wait(), MoveOutcome::Cancelled);
+    assert!(fake.requests().is_empty());
+}
