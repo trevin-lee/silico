@@ -172,28 +172,13 @@ fn extend_a_line_onto_its_neighbours_far_end_names_the_neighbour() {
         &mut worker,
     );
     still_works(&mut worker);
-    match got {
-        Ok(edited) => {
-            let refusals = gate(&before, &edited.sketch);
-            assert!(
-                refusals
-                    .iter()
-                    .any(|(_, elements)| elements.iter().any(|e| e == "b0000000")),
-                "{refusals:?}"
-            );
-        }
-        Err(e) => {
-            // BREAKS: the worker withholds the frame as `SolvedInvalid`,
-            // and the edit says "the drag's solve ended SolvedInvalid", naming a0 and p1,
-            // with "remove or change the constraints that hold the line's end": there are
-            // none; b0, which would collapse, goes unnamed.
-            assert!(
-                e.elements().iter().any(|e| e == "b0000000"),
-                "{e}: suggestion {:?}",
-                e.suggestion()
-            );
-        }
-    }
+    // Refused, never a result the gate refuses: the worker withholds the frame as one that
+    // can't be built, and the edit names b0, which would collapse, by the end at its target.
+    let e = got.unwrap_err();
+    assert_eq!(e.code(), ErrorCode::InvalidResult, "{e}");
+    assert_eq!(e.parameter(), Some("by"), "{e}");
+    assert!(e.elements().iter().any(|x| x == "b0000000"), "{e}");
+    assert_eq!(e.elements()[..2], ["a0000000", "p0000001"], "{e}");
 }
 
 #[test]
@@ -255,14 +240,10 @@ fn extend_a_line_with_a_reference_length_lists_the_dimension_re_measured() {
         Form::Length { value, .. } => *value,
         other => panic!("{other:?}"),
     };
-    if value != Length::rounded(10.0).unwrap() {
-        assert_eq!(
-            edited.modified,
-            // By kind, as `Edited` lists them: the point, then the constraint.
-            [id("p0000001"), id("k0000000")],
-            "k0 now {value}"
-        );
-    }
+    // Re-measured at 15, as the dragged line now is, and listed, by kind as `Edited` lists
+    // them: the point, then the constraint.
+    assert!((value.mm() - 15.0).abs() <= CLOSE, "k0 now {value}");
+    assert_eq!(edited.modified, [id("p0000001"), id("k0000000")]);
 }
 
 #[test]
@@ -304,4 +285,66 @@ fn extend_through_fresh_workers_is_bit_for_bit_the_same() {
     close(at(&one.sketch, "p0000002"), [13.0, 5.0]);
     close(at(&one.sketch, "p0000000"), [0.0, 0.0]);
     close(at(&one.sketch, "p0000003"), [0.0, 5.0]);
+    // The two points moved, by ID.
+    assert_eq!(one.modified, [id("p0000001"), id("p0000002")]);
+}
+
+#[test]
+fn extend_a_line_whose_neighbour_follows_past_the_reach_names_by_and_the_line() {
+    // p2 held 600,000 mm right of p1: a0 on by 200,000 puts p1 at (500,000, 0), within reach,
+    // and p2 at (1,100,000, 0), past it. The worker refuses the frame; the edit says so as
+    // its own, naming the line, its end, and `by`, the increment to change.
+    let before = doc(
+        &[
+            point("p0000000", 0.0, 0.0),
+            point("p0000001", 300_000.0, 0.0),
+            point("p0000002", 900_000.0, 0.0),
+        ],
+        &[line("a0000000", "p0000000", "p0000001")],
+        "",
+        r#"{"id": "k0000000", "type": "distance_x", "a": "p0000001", "b": "p0000002", "value": 600000, "driving": true}, {"id": "k0000001", "type": "distance_y", "a": "p0000001", "b": "p0000002", "value": 0, "driving": true}"#,
+    );
+    assert!(gate(&before, sketch_of(&before)).is_empty());
+    let mut worker = worker();
+    let e = extend(
+        sketch_of(&before),
+        &id("a0000000"),
+        End::End,
+        mm(200_000.0),
+        &mut worker,
+    )
+    .unwrap_err();
+    still_works(&mut worker);
+    assert_eq!(e.code(), ErrorCode::KernelFailed, "{e}");
+    assert_eq!(e.parameter(), Some("by"), "{e}");
+    assert_eq!(e.elements(), ["a0000000", "p0000001"], "{e}");
+    assert_eq!(
+        e.suggestion(),
+        Some("extend it by less, or change what moves with its end")
+    );
+}
+
+#[test]
+fn extend_a_line_whose_constraints_conflict_is_refused_naming_them() {
+    // p1 at x = 10 and at x = 12 from the origin: the worker's begin finds both in conflict,
+    // and the move isn't made.
+    let before = doc(
+        &[point("p0000000", 0.0, 0.0), point("p0000001", 10.0, 0.0)],
+        &[line("a0000000", "p0000000", "p0000001")],
+        "",
+        r#"{"id": "k0000000", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 10, "driving": true}, {"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 12, "driving": true}"#,
+    );
+    assert!(gate(&before, sketch_of(&before)).is_empty());
+    let mut worker = worker();
+    let e = extend(
+        sketch_of(&before),
+        &id("a0000000"),
+        End::End,
+        mm(5.0),
+        &mut worker,
+    )
+    .unwrap_err();
+    assert_eq!(e.code(), ErrorCode::OverConstrained, "{e}");
+    assert_eq!(e.elements(), ["k0000000", "k0000001"]);
+    still_works(&mut worker);
 }

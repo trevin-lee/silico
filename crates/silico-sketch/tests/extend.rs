@@ -60,8 +60,8 @@ fn a_horizontal_line_with_its_length_slides_when_extended_as_freecads_drag_moves
     .unwrap();
     close(at(&edited.sketch, "p0000000"), [5.0, 0.0]);
     close(at(&edited.sketch, "p0000001"), [15.0, 0.0]);
-    let mut ids: Vec<&str> = edited.modified.iter().map(ElementId::as_str).collect();
-    ids.sort_unstable();
+    // Both ends moved, by ID.
+    let ids: Vec<&str> = edited.modified.iter().map(ElementId::as_str).collect();
     assert_eq!(ids, ["p0000000", "p0000001"]);
     // The gate takes it, and the edit's solve leaves it where the drag did.
     let mut after = before.clone();

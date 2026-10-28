@@ -27,15 +27,15 @@
 //! the gate names. Every member the edit changes in place is `modified`: the points it
 //! moves, a circle whose radius the drag changes, and a reference dimension it re-measures.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::TAU;
 
 use silico_protocol::{DragBegin, PointOf, SolveStatus, check_drag_target};
 
 use crate::document::sketch_edit::Edited;
-use crate::document::{Angle, Coordinate, ElementId, Length, Sketch};
+use crate::document::{Angle, Coordinate, ElementId, Length, Sketch, SketchConstraint};
 use crate::drag::{checked_frame, checked_tags};
-use crate::sketch::{SketchSolver, Translation};
+use crate::sketch::{MovedOnce, SketchSolver, Translation};
 use crate::{Error, ErrorCode};
 
 /// The gate's floor for a size: at most this is none (`LENGTH_TOLERANCE`, in millimetres).
@@ -170,31 +170,45 @@ fn extend_line(
         .with_elements([curve.to_string(), moving.to_string()]));
     }
     solver.stopper()?;
-    let once = solver.move_once(begin.clone(), target)?;
-    if let Err(error) = checked_tags(&begin.system, &once.conflicting) {
-        solver.distrust();
-        return Err(error);
-    }
-    if !once.conflicting.is_empty() {
-        let ids: Vec<String> = once
-            .conflicting
-            .iter()
-            .filter_map(|&t| translation.constraint_id(t).map(|id| id.to_string()))
-            .collect();
-        return Err(Error::new(
-            ErrorCode::OverConstrained,
-            format!("the sketch's constraints conflict, so line {curve} can't be extended"),
-        )
-        .with_elements(ids)
-        .with_suggestion("remove or change one of the constraints named"));
-    }
-    let Some(moved) = once.moved else {
-        solver.distrust();
-        return Err(Error::new(
-            ErrorCode::ProtocolError,
-            "the sketch worker's one move found no conflict and moved nothing",
-        )
-        .with_suggestion("extend it again: its worker is started again"));
+    // The worker's own refusal of the move (a frame out of reach, past its time, a crash),
+    // said as this edit's: naming the line, its end, and the increment to change.
+    let once = solver.move_once(begin.clone(), target).map_err(|error| {
+        let reach = error.code() == ErrorCode::KernelFailed;
+        let error = error
+            .with_elements([curve.to_string(), moving.to_string()])
+            .with_parameter("by");
+        if reach {
+            error.with_suggestion("extend it by less, or change what moves with its end")
+        } else {
+            error
+        }
+    })?;
+    let moved = match once {
+        MovedOnce::Moved(moved) => moved,
+        MovedOnce::Conflicting(tags) => {
+            if let Err(error) = checked_tags(&begin.system, &tags) {
+                solver.distrust();
+                return Err(error);
+            }
+            if tags.is_empty() {
+                solver.distrust();
+                return Err(Error::new(
+                    ErrorCode::ProtocolError,
+                    "the sketch worker's one move was left unmade for constraints in conflict, naming none",
+                )
+                .with_suggestion("extend it again: its worker is started again"));
+            }
+            let ids: Vec<String> = tags
+                .iter()
+                .filter_map(|&t| translation.constraint_id(t).map(|id| id.to_string()))
+                .collect();
+            return Err(Error::new(
+                ErrorCode::OverConstrained,
+                format!("the sketch's constraints conflict, so line {curve} can't be extended"),
+            )
+            .with_elements(ids)
+            .with_suggestion("remove or change one of the constraints named"));
+        }
     };
     if let Err(error) = checked_frame(&begin.part(), &moved) {
         solver.distrust();
@@ -212,12 +226,15 @@ fn extend_line(
                 .and_then(|()| crate::document::sketch_problems(&placed).into_iter().next())
             {
                 Some(problem) => {
-                    elements.extend(problem.elements().iter().cloned());
+                    for e in problem.elements() {
+                        if !elements.contains(e) {
+                            elements.push(e.clone());
+                        }
+                    }
                     format!(": at the target, {}", problem.message())
                 }
                 None => String::new(),
             };
-            elements.dedup();
             return Err(Error::new(
                 ErrorCode::InvalidResult,
                 format!("line {curve}'s end {moving} can't move by {by} mm: the drag reaches geometry that can't be built{why}"),
@@ -411,10 +428,12 @@ fn changed(sketch: &Sketch, edited: &Sketch) -> Vec<ElementId> {
         .map(|c| c.id.clone())
         .collect();
     grown.sort();
+    let before: BTreeMap<&ElementId, &SketchConstraint> =
+        sketch.constraints.iter().map(|c| (&c.id, c)).collect();
     let mut rewritten: Vec<ElementId> = edited
         .constraints
         .iter()
-        .filter(|c| !sketch.constraints.iter().any(|b| b == *c))
+        .filter(|c| before.get(&c.id) != Some(c))
         .map(|c| c.id.clone())
         .collect();
     rewritten.sort();

@@ -349,6 +349,10 @@ fn a_worker_that_fails_the_move_fails_the_edit_with_its_error() {
     .unwrap_err();
     assert_eq!(e.code(), ErrorCode::WorkerCrashed);
     assert_eq!(e.message(), "the fake crashed");
+    // Named as the edit's, the increment its parameter; and the drag ended all the same.
+    assert_eq!(e.elements(), ["a0000000", "p0000001"]);
+    assert_eq!(e.parameter(), Some("by"));
+    assert_eq!(fake.drag_calls().last(), Some(&DragCall::End));
 }
 
 #[test]
@@ -566,4 +570,53 @@ fn the_wrong_increment_another_kind_of_member_and_nothing_are_refused() {
         ("the sketch has no member q0000000", Some("curve"), vec![])
     );
     assert!(fake.drag_calls().is_empty());
+}
+
+#[test]
+fn a_frame_that_cant_be_built_is_refused_naming_the_neighbour_it_collapses() {
+    // a0 (0, 0)–(10, 0) and b0 (10, 0)–(12, 0) share p1; a0 on by 2 takes p1 to (12, 0), onto
+    // p2. The worker withholds the frame as unbuildable; the edit names a0, its end p1, and,
+    // from the end at its target, what the gate names: b0, no longer than nothing, and its
+    // points.
+    let before = doc(
+        &[
+            point("p0000000", 0.0, 0.0),
+            point("p0000001", 10.0, 0.0),
+            point("p0000002", 12.0, 0.0),
+        ],
+        &[
+            line("a0000000", "p0000000", "p0000001"),
+            line("b0000000", "p0000001", "p0000002"),
+        ],
+        "",
+        "",
+        "",
+    );
+    let mut fake = FakeSketches::new();
+    fake.answer_moves(|_, _| {
+        Ok(Moved {
+            status: SolveStatus::SolvedInvalid,
+            values: None,
+        })
+    });
+    let e = extend(
+        sketch_of(&before),
+        &id("a0000000"),
+        End::End,
+        mm(2.0),
+        &mut fake,
+    )
+    .unwrap_err();
+    assert_eq!(e.code(), ErrorCode::InvalidResult);
+    assert_eq!(e.parameter(), Some("by"));
+    assert_eq!(
+        e.elements(),
+        ["a0000000", "p0000001", "p0000002", "b0000000"]
+    );
+    assert!(
+        e.message().starts_with(
+            "line a0000000's end p0000001 can't move by 2 mm: the drag reaches geometry that can't be built: at the target, line b0000000 is 0 mm long"
+        ),
+        "{e}"
+    );
 }

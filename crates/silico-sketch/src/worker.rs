@@ -3,7 +3,7 @@
 //! carries the whole sketch. A drag is the one state it keeps ([`State`]): begun with the
 //! whole sketch, then moved by the cursor alone, until it ends.
 
-use silico_protocol::{Failure, Op, Refusal, Reply};
+use silico_protocol::{Failure, MovedOnce, Op, Refusal, Reply};
 
 use crate::Drag;
 
@@ -71,14 +71,10 @@ impl State {
             Op::MoveOnce { begin, to } => {
                 self.drag = None;
                 let start = Drag::begin_once(&begin)?;
-                let moved = match start.drag {
-                    Some(mut drag) => Some(drag.move_to(to)?),
-                    None => None,
-                };
-                Ok(Reply::MovedOnce {
-                    conflicting: start.conflicting,
-                    moved,
-                })
+                Ok(Reply::MovedOnce(match start.drag {
+                    Some(mut drag) => MovedOnce::Moved(drag.move_to(to)?),
+                    None => MovedOnce::Conflicting(start.conflicting),
+                }))
             }
             Op::DragEnd => match self.drag.take() {
                 Some(_) => Ok(Reply::Done),

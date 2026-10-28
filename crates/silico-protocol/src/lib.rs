@@ -353,6 +353,16 @@ impl Op {
     }
 }
 
+/// What one move found ([`Op::MoveOnce`]): the constraints in conflict, which leave it
+/// unmade, as a drag's begin refuses them; or where the move left the sketch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MovedOnce {
+    /// The constraints in conflict, by tag, in increasing order.
+    Conflicting(Vec<Tag>),
+    /// Where the move left the sketch, as a drag's move reports it.
+    Moved(Moved),
+}
+
 /// Which boolean [`Op::Boolean`] performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BooleanOp {
@@ -500,13 +510,8 @@ pub enum Reply {
     },
     /// Where a drag's move left the sketch ([`Op::DragMove`]).
     Moved(Moved),
-    /// What one move found ([`Op::MoveOnce`]): the constraints in conflict, by tag, in
-    /// increasing order, as a drag's begin finds them; and, unless there are any, where the
-    /// move left the sketch.
-    MovedOnce {
-        conflicting: Vec<Tag>,
-        moved: Option<Moved>,
-    },
+    /// What one move found ([`Op::MoveOnce`]).
+    MovedOnce(MovedOnce),
     /// A batch of a shape's elements ([`Op::Describe`]): how many of the kind asked for the
     /// shape has, and those asked for, in the description's list for that kind (its others
     /// empty).
@@ -560,7 +565,7 @@ impl Reply {
             Reply::Solved(_) => "Solved",
             Reply::DragStarted { .. } => "DragStarted",
             Reply::Moved(_) => "Moved",
-            Reply::MovedOnce { .. } => "MovedOnce",
+            Reply::MovedOnce(_) => "MovedOnce",
             Reply::Echo { .. } => "Echo",
             Reply::Done => "Done",
         }

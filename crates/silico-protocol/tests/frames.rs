@@ -4,7 +4,7 @@
 
 use proptest::prelude::*;
 use silico_protocol::{
-    Algorithm, DragBegin, Geometry, MeshAt, Moved, PointOf, PointPlace, PointValues,
+    Algorithm, DragBegin, Geometry, MeshAt, Moved, MovedOnce, PointOf, PointPlace, PointValues,
     SketchGeometry, SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value,
 };
 use silico_protocol::{
@@ -574,17 +574,14 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             status: SolveStatus::Failed,
             values: None,
         })),
-        Ok(Reply::MovedOnce {
-            conflicting: vec![Tag(2), Tag(u32::MAX)],
-            moved: None,
-        }),
-        Ok(Reply::MovedOnce {
-            conflicting: vec![],
-            moved: Some(Moved {
-                status: SolveStatus::Success,
-                values: Some(vec![-0.0, 5e-324, -1e6]),
-            }),
-        }),
+        Ok(Reply::MovedOnce(MovedOnce::Conflicting(vec![
+            Tag(2),
+            Tag(u32::MAX),
+        ]))),
+        Ok(Reply::MovedOnce(MovedOnce::Moved(Moved {
+            status: SolveStatus::Success,
+            values: Some(vec![-0.0, 5e-324, -1e6]),
+        }))),
         // A distance at extremes a frame must carry exactly: -0, subnormal, and the largest.
         Ok(Reply::Distance(Distance {
             distance: 5e-324,
@@ -782,7 +779,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::MeshAt(_)) => 22,
             Ok(Reply::StepFile(_)) => 23,
             Ok(Reply::DescribedAll(_)) => 24,
-            Ok(Reply::MovedOnce { .. }) => 25,
+            Ok(Reply::MovedOnce(_)) => 25,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
