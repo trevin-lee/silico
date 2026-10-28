@@ -32,6 +32,8 @@ mod adversarial_sketch_features;
 mod adversarial_sketch_solve;
 #[path = "adversarial_stored_coordinates.rs"]
 mod adversarial_stored_coordinates;
+#[path = "drag_session.rs"]
+mod drag_session;
 #[path = "sketch.rs"]
 mod sketch;
 #[path = "sketch_features.rs"]

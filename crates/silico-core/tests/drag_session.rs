@@ -1,0 +1,394 @@
+//! `silico_core::drag` on the fake sketch solver (ARCHITECTURE.md, *Sketches solve in the
+//! sketch worker*; docs/design/m5.0-app.md, the drag commands, decision 9): a drag's moves
+//! reach the one worker that began it while other sessions' rebuilds run, a replaced move
+//! is never solved, and the end is a function of the begin state and the final cursor alone,
+//! however many moves were dropped. Expected values are by hand: the fake answers a move
+//! from the begin state alone, the dragged point at the cursor nudged by a thousandth of
+//! where it began, and solves a sketch where it's sent.
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use silico_core::drag::{Begun, DragSession, Ended, Kept, MoveOutcome, begin};
+use silico_core::fake::{DragCall, FakeKernel, FakeSketches};
+use silico_core::recompute::{Recompute, SketchSolvers};
+use silico_core::sketch::SketchSolver;
+use silico_core::{ErrorCode, command};
+use silico_protocol::{
+    Algorithm, DragBegin, Geometry, Moved, PointOf, PointValues, SketchGeometry, SketchSystem,
+    SolveStatus, Value,
+};
+
+use crate::fixture::{document, fields, point};
+
+/// How long a test waits for something it expects.
+const WAIT: Duration = Duration::from_secs(10);
+
+/// Solvers that start fakes, and every fake started, in order.
+fn pool() -> (SketchSolvers, Arc<Mutex<Vec<FakeSketches>>>) {
+    let started: Arc<Mutex<Vec<FakeSketches>>> = Arc::default();
+    let list = Arc::clone(&started);
+    let solvers = SketchSolvers::starting(move || {
+        let fake = FakeSketches::new();
+        list.lock().unwrap().push(fake.clone());
+        Ok(Box::new(fake) as Box<dyn SketchSolver>)
+    });
+    (solvers, started)
+}
+
+/// A lone point at (4, 8), free, and a fixed point at (1, 1): the drag's sketch.
+fn two_points() -> DragBegin {
+    DragBegin {
+        system: SketchSystem {
+            values: vec![4.0, 8.0, 1.0, 1.0],
+            unknowns: vec![Value(0), Value(1)],
+            geometry: vec![
+                SketchGeometry::Point(PointValues {
+                    x: Value(0),
+                    y: Value(1),
+                }),
+                SketchGeometry::Point(PointValues {
+                    x: Value(2),
+                    y: Value(3),
+                }),
+            ],
+            constraints: vec![],
+            algorithms: vec![Algorithm::DogLeg],
+        },
+        point: PointOf::Point(Geometry(0)),
+    }
+}
+
+fn open(solvers: &SketchSolvers) -> DragSession {
+    match begin(solvers, two_points()).unwrap() {
+        Begun::Open { session, dofs } => {
+            assert_eq!(dofs, 1);
+            session
+        }
+        Begun::Conflicting(tags) => panic!("{tags:?}"),
+    }
+}
+
+/// The fake's values for the begin state dragged to `to`: (4, 8) moved to `to` plus a
+/// thousandth of (4, 8); the fixed point where it began.
+fn dragged_to(to: [f64; 2]) -> Vec<f64> {
+    vec![to[0] + 4.0 / 1000.0, to[1] + 8.0 / 1000.0, 1.0, 1.0]
+}
+
+fn bits(values: &[f64]) -> Vec<u64> {
+    values.iter().map(|v| v.to_bits()).collect()
+}
+
+fn moves_of(calls: &[DragCall]) -> Vec<[f64; 2]> {
+    calls
+        .iter()
+        .filter_map(|c| match c {
+            DragCall::Move(to) => Some(*to),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_drags_moves_all_reach_the_worker_that_began_it_while_other_sessions_rebuild() {
+    // The drag takes the pool's first fake and holds it; engines on the same pool, rebuilding
+    // a sketch over and over meanwhile (other sessions'), start fakes of their own. Every move,
+    // and the end's closing solve, went to the drag's fake, and nothing of the rebuilds did;
+    // no rebuild's supersession stopped it.
+    let (solvers, started) = pool();
+    let session = open(&solvers);
+    let text = document(&fields(&point("p0000001", 1.0, 2.0), "", "", "", ""));
+    let rebuilds: Vec<_> = (0..3)
+        .map(|_| {
+            let solvers = solvers.clone();
+            let text = text.clone();
+            std::thread::spawn(move || {
+                let kernel = Arc::new(FakeKernel::new(1).unwrap());
+                let engine = Recompute::new(kernel).with_solvers(solvers);
+                for _ in 0..20 {
+                    command::rebuild(&engine, command::gate(text.as_bytes()).unwrap())
+                        .unwrap()
+                        .unwrap();
+                }
+            })
+        })
+        .collect();
+    let path: Vec<[f64; 2]> = (0..50)
+        .map(|i| [f64::from(i), 0.5 * f64::from(i)])
+        .collect();
+    for to in &path {
+        match session.move_to(*to).unwrap().wait() {
+            MoveOutcome::Solved { to: got, moved } => {
+                assert_eq!(got, *to);
+                assert_eq!(moved.values.unwrap(), dragged_to(*to));
+            }
+            other => panic!("{to:?}: {other:?}"),
+        }
+    }
+    for rebuild in rebuilds {
+        rebuild.join().unwrap();
+    }
+    let ended = session.end(Some([49.0, 24.5])).unwrap();
+    assert_eq!(ended.kept, Kept::Cursor);
+    let fakes = started.lock().unwrap().clone();
+    let drag = &fakes[0];
+    let calls = drag.drag_calls();
+    assert!(matches!(calls.first(), Some(DragCall::Begin(_))));
+    assert_eq!(calls.last(), Some(&DragCall::End));
+    assert_eq!(moves_of(&calls), path);
+    // Its one solve is the end's, of the sketch at the final cursor.
+    let solves = drag.requests();
+    assert_eq!(solves.len(), 1);
+    assert_eq!(bits(&solves[0].values), bits(&dragged_to([49.0, 24.5])));
+    assert_eq!(drag.stops(), 0);
+    // The rebuilds ran on other fakes, which saw no drag.
+    assert!(fakes.len() > 1);
+    for other in &fakes[1..] {
+        assert!(other.drag_calls().is_empty());
+        assert!(!other.requests().is_empty());
+    }
+}
+
+#[test]
+fn a_move_replaced_while_one_solves_is_dropped_and_never_solved() {
+    // The first move held solving; a second and a third sent meanwhile: the third replaces
+    // the second, which answers dropped. Released, the third is solved: the worker saw the
+    // first and the third alone.
+    let (solvers, started) = pool();
+    let session = open(&solvers);
+    let fake = started.lock().unwrap()[0].clone();
+    fake.hold();
+    let first = session.move_to([1.0, 1.0]).unwrap();
+    assert!(fake.wait_held(WAIT));
+    let second = session.move_to([2.0, 2.0]).unwrap();
+    let third = session.move_to([3.0, 3.0]).unwrap();
+    assert_eq!(second.wait(), MoveOutcome::Dropped);
+    fake.release();
+    assert!(matches!(
+        first.wait(),
+        MoveOutcome::Solved { to: [1.0, 1.0], .. }
+    ));
+    assert!(matches!(
+        third.wait(),
+        MoveOutcome::Solved { to: [3.0, 3.0], .. }
+    ));
+    assert_eq!(moves_of(&fake.drag_calls()), [[1.0, 1.0], [3.0, 3.0]]);
+    session.end(None).unwrap();
+}
+
+/// The end of a drag along `path` to `end`, the worker held while `held` of the moves are
+/// sent and released after each of `releases`'s moves: what it kept, and the closing solve
+/// sent.
+fn ended_after(path: &[[f64; 2]], held: &[usize], end: [f64; 2]) -> (Ended, Vec<Vec<u64>>) {
+    let (solvers, started) = pool();
+    let session = open(&solvers);
+    let fake = started.lock().unwrap()[0].clone();
+    let mut tickets = Vec::new();
+    for (i, to) in path.iter().enumerate() {
+        if held.contains(&i) {
+            fake.hold();
+        }
+        tickets.push(session.move_to(*to).unwrap());
+        if !held.contains(&i) {
+            fake.release();
+        }
+    }
+    fake.release();
+    let ended = session.end(Some(end)).unwrap();
+    for ticket in &tickets {
+        assert!(!matches!(
+            ticket.wait(),
+            MoveOutcome::Failed(_) | MoveOutcome::Closed(_)
+        ));
+    }
+    let solves = fake.requests().iter().map(|s| bits(&s.values)).collect();
+    (ended, solves)
+}
+
+#[test]
+fn the_same_begin_path_and_end_give_the_same_sketch_however_many_moves_were_dropped() {
+    // A path of twenty cursors and an end, the worker held for none of the moves, for every
+    // other one, for runs of them, and with no moves at all: the same closing solve, of the
+    // begin state at the final cursor, and the same sketch kept, bit for bit.
+    let path: Vec<[f64; 2]> = (0..20)
+        .map(|i| [f64::from(i) * 0.25, 7.0 - f64::from(i)])
+        .collect();
+    let end = [12.5, -3.75];
+    let want = dragged_to(end);
+    let every_other: Vec<usize> = (0..20).step_by(2).collect();
+    let runs: Vec<usize> = (3..9).chain(12..19).collect();
+    for (held, path) in [
+        (&[][..], &path[..]),
+        (&every_other[..], &path[..]),
+        (&runs[..], &path[..]),
+        (&[][..], &[][..]),
+    ] {
+        let (ended, solves) = ended_after(path, held, end);
+        assert_eq!(ended.kept, Kept::Cursor, "{held:?}");
+        assert_eq!(bits(&ended.solved.unwrap().values), bits(&want), "{held:?}");
+        assert_eq!(solves, [bits(&want)], "{held:?}");
+    }
+}
+
+#[test]
+fn an_end_at_the_newest_solved_moves_cursor_moves_no_more_and_another_moves_once() {
+    let (solvers, started) = pool();
+    let session = open(&solvers);
+    let fake = started.lock().unwrap()[0].clone();
+    session.move_to([5.0, 5.0]).unwrap().wait();
+    session.end(Some([5.0, 5.0])).unwrap();
+    assert_eq!(moves_of(&fake.drag_calls()), [[5.0, 5.0]]);
+    let session = open(&solvers);
+    session.move_to([5.0, 5.0]).unwrap().wait();
+    // One bit away: another cursor, moved to once more.
+    let next = [f64::from_bits(5.0f64.to_bits() + 1), 5.0];
+    session.end(Some(next)).unwrap();
+    assert_eq!(moves_of(&fake.drag_calls()), [[5.0, 5.0], [5.0, 5.0], next]);
+}
+
+#[test]
+fn an_end_with_no_cursor_stops_the_move_solving_keeps_the_begin_and_frees_the_worker() {
+    // Esc: the held move is stopped (as restarting its worker stops it), answers cancelled,
+    // and nothing is kept; the next drag takes the same fake again.
+    let (solvers, started) = pool();
+    let session = open(&solvers);
+    let fake = started.lock().unwrap()[0].clone();
+    fake.hold();
+    let moving = session.move_to([1.0, 1.0]).unwrap();
+    assert!(fake.wait_held(WAIT));
+    let waiting = session.move_to([2.0, 2.0]).unwrap();
+    let ended = session.end(None).unwrap();
+    assert_eq!(
+        ended,
+        Ended {
+            kept: Kept::Begin,
+            solved: None
+        }
+    );
+    assert_eq!(moving.wait(), MoveOutcome::Cancelled);
+    assert_eq!(waiting.wait(), MoveOutcome::Dropped);
+    assert_eq!(fake.stops(), 1);
+    fake.release();
+    let again = open(&solvers);
+    assert!(matches!(
+        again.move_to([3.0, 3.0]).unwrap().wait(),
+        MoveOutcome::Solved { .. }
+    ));
+    again.end(None).unwrap();
+    assert_eq!(started.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_final_move_that_doesnt_reach_the_cursor_keeps_the_begin_state() {
+    let (solvers, started) = pool();
+    let session = open(&solvers);
+    let fake = started.lock().unwrap()[0].clone();
+    fake.answer_moves(|_, _| {
+        Ok(Moved {
+            status: SolveStatus::Failed,
+            values: None,
+        })
+    });
+    let ended = session.end(Some([9.0, 9.0])).unwrap();
+    assert_eq!(
+        ended,
+        Ended {
+            kept: Kept::Begin,
+            solved: None
+        }
+    );
+    // No closing solve, and the worker's drag ended.
+    assert!(fake.requests().is_empty());
+    assert_eq!(fake.drag_calls().last(), Some(&DragCall::End));
+}
+
+#[test]
+fn a_move_the_worker_fails_ends_the_drag_and_later_moves_and_its_end_are_refused() {
+    let (solvers, started) = pool();
+    let session = open(&solvers);
+    let fake = started.lock().unwrap()[0].clone();
+    fake.answer_moves(|_, _| {
+        Err(silico_core::Error::new(
+            ErrorCode::WorkerTimeout,
+            "the fake move took too long",
+        ))
+    });
+    match session.move_to([1.0, 1.0]).unwrap().wait() {
+        MoveOutcome::Failed(e) => assert_eq!(e.code(), ErrorCode::WorkerTimeout),
+        other => panic!("{other:?}"),
+    }
+    match session.move_to([2.0, 2.0]).unwrap().wait() {
+        MoveOutcome::Closed(e) => {
+            assert_eq!(e.message(), "no drag is open: its worker failed");
+            assert_eq!(e.cause(), Some("the fake move took too long"));
+        }
+        other => panic!("{other:?}"),
+    }
+    let e = session.end(Some([2.0, 2.0])).unwrap_err();
+    assert_eq!(e.message(), "no drag is open: its worker failed");
+}
+
+#[test]
+fn a_cursor_out_of_reach_is_refused_naming_to_and_the_drag_goes_on() {
+    let (solvers, _) = pool();
+    let session = open(&solvers);
+    for bad in [[f64::NAN, 0.0], [0.0, f64::INFINITY], [2e6, 0.0]] {
+        let e = session.move_to(bad).err().unwrap();
+        assert_eq!(e.parameter(), Some("to"), "{bad:?}");
+    }
+    assert!(matches!(
+        session.move_to([1.0, 2.0]).unwrap().wait(),
+        MoveOutcome::Solved { .. }
+    ));
+    let e = session.end(Some([f64::NAN, 0.0])).unwrap_err();
+    assert_eq!(e.parameter(), Some("to"));
+}
+
+#[test]
+fn a_sketch_whose_constraints_conflict_starts_no_drag_and_gives_its_solver_back() {
+    // The fake started for a drag that conflicts is given back: the next drag, the
+    // conflict gone, takes it again, and no other is started.
+    let (solvers, started) = pool();
+    let first = solvers_first(&solvers, &started);
+    first.conflicting_drags(vec![silico_protocol::Tag(3), silico_protocol::Tag(7)]);
+    match begin(&solvers, two_points()).unwrap() {
+        Begun::Conflicting(tags) => {
+            assert_eq!(tags, [silico_protocol::Tag(3), silico_protocol::Tag(7)]);
+        }
+        Begun::Open { .. } => panic!("began"),
+    }
+    first.conflicting_drags(vec![]);
+    let session = open(&solvers);
+    session.end(None).unwrap();
+    assert_eq!(started.lock().unwrap().len(), 1);
+    assert_eq!(
+        first
+            .drag_calls()
+            .iter()
+            .filter(|c| matches!(c, DragCall::Begin(_)))
+            .count(),
+        // The helper's, the one that conflicted, and this one: all on the first fake.
+        3
+    );
+}
+
+/// The pool's first fake, started by a drag begun and ended.
+fn solvers_first(solvers: &SketchSolvers, started: &Arc<Mutex<Vec<FakeSketches>>>) -> FakeSketches {
+    open(solvers).end(None).unwrap();
+    started.lock().unwrap()[0].clone()
+}
+
+#[test]
+fn a_dropped_drag_ends_with_nothing_kept_and_gives_its_worker_back() {
+    let (solvers, started) = pool();
+    {
+        let session = open(&solvers);
+        session.move_to([1.0, 1.0]).unwrap().wait();
+    }
+    let fake = started.lock().unwrap()[0].clone();
+    assert_eq!(fake.drag_calls().last(), Some(&DragCall::End));
+    assert!(fake.requests().is_empty());
+    let again = open(&solvers);
+    again.end(None).unwrap();
+    assert_eq!(started.lock().unwrap().len(), 1);
+}

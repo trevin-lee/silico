@@ -9,9 +9,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use silico_protocol::{
-    Algorithm, Generation, Geometry, Op, Part, Parts, PointOf, PointValues, Reply, SketchGeometry,
-    SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value, arc_from_points, no_distance,
-    squared_distance,
+    Algorithm, DragBegin, Generation, Geometry, Op, Part, Parts, PointOf, PointValues, Reply,
+    SketchGeometry, SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value,
+    arc_from_points, no_distance, squared_distance,
 };
 
 use crate::document::{
@@ -113,6 +113,46 @@ pub trait SketchSolver: Send {
     fn stopper(&mut self) -> Result<Option<SolveStopper>, Error> {
         Ok(None)
     }
+
+    /// Starts a drag (M3.7's session in the sketch worker), each request begun as a solve
+    /// is, with [`stopper`](Self::stopper): the sketch diagnosed once and its point pinned.
+    /// A solver that can't drag refuses.
+    fn drag_begin(&mut self, begin: DragBegin) -> Result<DragStarted, Error> {
+        let _ = begin;
+        Err(no_drags())
+    }
+
+    /// Moves the drag's cursor to `to`, solved from where the drag began, under `timeout`.
+    fn drag_move(
+        &mut self,
+        to: [f64; 2],
+        timeout: Duration,
+    ) -> Result<silico_protocol::Moved, Error> {
+        let _ = (to, timeout);
+        Err(no_drags())
+    }
+
+    /// Ends the drag.
+    fn drag_end(&mut self) -> Result<(), Error> {
+        Err(no_drags())
+    }
+}
+
+/// A drag's start, as the worker found it: the degrees of freedom left, and the
+/// constraints in conflict, by tag (none, or no drag was started).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DragStarted {
+    pub dofs: i32,
+    pub conflicting: Vec<Tag>,
+}
+
+/// A solver that can't drag refusing a drag's request.
+fn no_drags() -> Error {
+    Error::new(
+        ErrorCode::Internal,
+        "this sketch solver can't drag a sketch",
+    )
+    .with_suggestion(crate::worker::SILICO_BUG)
 }
 
 /// Stops a solve from another thread ([`SketchSolver::stopper`]).
@@ -259,6 +299,45 @@ impl SketchSolver for SketchWorker {
     }
 
     fn solve(&mut self, system: SketchSystem) -> Result<Solved, Error> {
+        self.usable()?;
+        match self.call(Op::Solve(system), self.timeout)? {
+            Reply::Solved(solved) => Ok(solved),
+            other => Err(self.wrong_reply("Solve", &other)),
+        }
+    }
+
+    fn drag_begin(&mut self, begin: DragBegin) -> Result<DragStarted, Error> {
+        self.usable()?;
+        match self.call(Op::DragBegin(begin), self.timeout)? {
+            Reply::DragStarted { dofs, conflicting } => Ok(DragStarted { dofs, conflicting }),
+            other => Err(self.wrong_reply("DragBegin", &other)),
+        }
+    }
+
+    fn drag_move(
+        &mut self,
+        to: [f64; 2],
+        timeout: Duration,
+    ) -> Result<silico_protocol::Moved, Error> {
+        self.usable()?;
+        match self.call(Op::DragMove { to }, timeout)? {
+            Reply::Moved(moved) => Ok(moved),
+            other => Err(self.wrong_reply("DragMove", &other)),
+        }
+    }
+
+    fn drag_end(&mut self) -> Result<(), Error> {
+        self.usable()?;
+        match self.call(Op::DragEnd, self.timeout)? {
+            Reply::Done => Ok(()),
+            other => Err(self.wrong_reply("DragEnd", &other)),
+        }
+    }
+}
+
+impl SketchWorker {
+    /// Whether a request may run now: a solve's, or a drag's, each begun as a solve is.
+    fn usable(&mut self) -> Result<(), Error> {
         // A solve that was stopped stays stopped: its later requests (a re-diagnosis from
         // its solution) aren't run on a new worker (council, robustness, round 2: one ran
         // 125 s after its recompute was superseded, and the newer waited for it).
@@ -305,18 +384,21 @@ impl SketchSolver for SketchWorker {
         } else {
             self.ready()?;
         }
-        let op = Op::Solve(system);
-        let name = op.name();
-        match self.worker.call(Generation(0), op, self.timeout)? {
-            Reply::Solved(solved) => Ok(solved),
-            other => {
-                self.worker.shut_down();
-                Err(Error::new(
-                    ErrorCode::ProtocolError,
-                    format!("the sketch worker replied to {name} with {}", other.kind()),
-                ))
-            }
-        }
+        Ok(())
+    }
+
+    /// `op` run on the worker, under `timeout`.
+    fn call(&mut self, op: Op, timeout: Duration) -> Result<Reply, Error> {
+        self.worker.call(Generation(0), op, timeout)
+    }
+
+    /// A reply of the wrong kind: the worker can't be trusted, and is stopped.
+    fn wrong_reply(&mut self, name: &str, reply: &Reply) -> Error {
+        self.worker.shut_down();
+        Error::new(
+            ErrorCode::ProtocolError,
+            format!("the sketch worker replied to {name} with {}", reply.kind()),
+        )
     }
 }
 
