@@ -85,7 +85,7 @@ fn frame_at(begin: &DragBegin, xy: [f64; 2]) -> Moved {
 
 /// A fake whose one move puts the dragged point exactly where it was sent.
 fn exact() -> FakeSketches {
-    let mut fake = FakeSketches::new();
+    let fake = FakeSketches::new();
     fake.answer_moves(|begin, to| Ok(frame_at(begin, to)));
     fake
 }
