@@ -392,4 +392,19 @@ mod tests {
         assert_eq!(cache.deflection_for(&1, 0.5), 1.0);
         assert_eq!(cache.bytes(), 0);
     }
+
+    #[test]
+    fn a_forgotten_floor_leaves_no_trace_in_the_floors_recency() {
+        // Room for two floors. Step 1's floor is forgotten, then steps 2 and 1 meet theirs
+        // (1 the more recent); step 3's drops the least recently used, step 2's, not step
+        // 1's by a stale entry of its forgotten floor.
+        let cache = MeshCache::with_floors(1 << 20, 2);
+        cache.put(&1u32, 1.0 / 128.0, at(0.0173, mesh(1)));
+        cache.forget(&1, 0.0173);
+        cache.put(&2, 1.0 / 128.0, at(0.0291, mesh(1)));
+        cache.put(&1, 1.0 / 128.0, at(0.0173, mesh(1)));
+        cache.put(&3, 1.0 / 128.0, at(0.0412, mesh(1)));
+        assert_eq!(cache.deflection_for(&1, 1e-9), 0.0173);
+        assert_eq!(cache.deflection_for(&2, 1e-9), 1e-9);
+    }
 }
