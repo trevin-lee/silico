@@ -89,13 +89,14 @@ jobs:
           slice_kib=24
           oracle_every=$((4 * 3600))
 
-          say() { echo "$1"; echo "$1" >>"$GITHUB_STEP_SUMMARY"; }
-          skip() { say "Nothing started: $1."; exit 0; }
+          # Not `say`, which on macOS speaks: a line of this pasted into a Mac's shell read it aloud.
+          report() { echo "$1"; echo "$1" >>"$GITHUB_STEP_SUMMARY"; }
+          skip() { report "Nothing started: $1."; exit 0; }
           start() {
             local workflow=$1
             shift
-            say "Starting $workflow $*"
-            if [ "$DRY" = true ]; then say "(dry: not started)"; return; fi
+            report "Starting $workflow $*"
+            if [ "$DRY" = true ]; then report "(dry: not started)"; return; fi
             gh workflow run "$workflow" --ref "$BRANCH" "$@"
           }
 
@@ -108,10 +109,10 @@ jobs:
             --jq '[.[] | select(.status != "completed")] | length') || clock=1
           if [ "$clock" -eq 0 ]; then
             if [ "$DRY" = true ]; then
-              say "The clock isn't running (dry: not started)"
+              report "The clock isn't running (dry: not started)"
             else
-              gh workflow run filler-clock.yml --ref main && say "The clock wasn't running: started it" ||
-                say "The clock isn't running and couldn't be started (disabled?)"
+              gh workflow run filler-clock.yml --ref main && report "The clock wasn't running: started it" ||
+                report "The clock isn't running and couldn't be started (disabled?)"
             fi
           fi
 
@@ -209,7 +210,7 @@ jobs:
           if [ "$shards" -lt 1 ]; then
             skip "no room: $busy of $pool filler runners busy, $idle of $cpus CPUs idle"
           fi
-          say "Room for $shards shards: $busy of $pool filler runners busy, $idle of $cpus CPUs idle"
+          report "Room for $shards shards: $busy of $pool filler runners busy, $idle of $cpus CPUs idle"
 
           # The latest filler run on this branch whose title matches $1, captured as x. Every
           # run started counts, going or finished (cut off or cancelled too): so two filler
@@ -231,7 +232,7 @@ jobs:
               start mutants.yml -f ref="$head" -f base="$base" -f shards="$shards" -f filler=a
               exit 0
             fi
-            say "Main's source is unchanged since ${base:0:12}"
+            report "Main's source is unchanged since ${base:0:12}"
           fi
 
           # c. The oracle sweep, if no filler sweep started in the last four hours.
@@ -269,5 +270,5 @@ jobs:
           if [ -n "$previous" ] && [ $((10#$previous + 1)) -lt "${#slices[@]}" ]; then
             k=$((10#$previous + 1))
           fi
-          say "Slice $k, of 0 to $((${#slices[@]} - 1))"
+          report "Slice $k, of 0 to $((${#slices[@]} - 1))"
           start mutants.yml -f ref="$head" -f files="${slices[$k]}" -f shards="$shards" -f filler="b$k"
