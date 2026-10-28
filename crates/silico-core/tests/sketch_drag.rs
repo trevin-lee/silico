@@ -533,3 +533,76 @@ fn a_stop_before_the_begin_returns_refuses_the_begin_rather_than_leaving_the_dra
         (ErrorCode::Cancelled, Some("s0000001"))
     );
 }
+
+#[test]
+fn the_begin_state_is_the_sketchs_solve_not_where_its_file_draws_it() {
+    // Found by the tests review: every fake solved where it was sent, so the solve and the
+    // drawing were one. Here the solve raises the leg's top to y = 6 (pa000003's and
+    // pa000004's y, values 11 and 13): the drag begins there, not at the drawn 5.
+    let fake = FakeSketches::new();
+    fake.answer(|system| {
+        let mut solved = FakeSketches::as_sent(system);
+        solved.values[11] = 6.0;
+        solved.values[13] = 6.0;
+        Ok(solved)
+    });
+    let solvers = on(&fake);
+    let Opened { drag, .. } = opened(&solvers, "s0000001", "pa000003");
+    let Some(DragCall::Begin(sent)) = fake.drag_calls().first().cloned() else {
+        panic!("no begin")
+    };
+    assert_eq!(&sent.system.values[10..14], &[60.0, 6.0, 5.0, 6.0]);
+    drop(drag);
+}
+
+#[test]
+fn a_replaced_move_is_a_dropped_frame_and_a_polled_ticket_answers_its_frame() {
+    // From the tests review: the first move held in the fake, the second replaced by the
+    // third before it's sent: the second answers `Dropped`, with its cursor and no values;
+    // a poll of the first answers nothing while it's held, and its frame once released.
+    let (solvers, started) = pool();
+    let Opened { drag, .. } = opened(&solvers, "s0000001", "pa000003");
+    let fake = started.lock().unwrap()[0].clone();
+    fake.hold();
+    let first = drag.move_to([61.0, 6.0]).unwrap();
+    assert!(fake.wait_held(std::time::Duration::from_secs(10)));
+    assert!(first.try_take().is_none());
+    let second = drag.move_to([62.0, 6.0]).unwrap();
+    let third = drag.move_to([63.0, 6.0]).unwrap();
+    assert_eq!(
+        second.wait().unwrap(),
+        Frame {
+            to: [62.0, 6.0],
+            kind: FrameKind::Dropped,
+            points: vec![],
+            radii: vec![],
+            why: None,
+        }
+    );
+    fake.release();
+    assert_eq!(third.wait().unwrap().kind, FrameKind::Solved);
+    let took = first.try_take().unwrap().unwrap();
+    assert_eq!((took.to, took.kind), ([61.0, 6.0], FrameKind::Solved));
+}
+
+#[test]
+fn a_frames_radii_are_in_the_order_of_their_ids_arcs_and_circles_together() {
+    // An arc, ag000001, about pg000001 from pg000002 (5, 0) to pg000003 (0, 5), and a
+    // circle, cg000001, about the same centre, radius 5, with pg000002 held on it: one
+    // part, both radii free. By ID, the arc's first, though circles are translated first.
+    let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [{"id": "s0000007", "type": "sketch", "v": 1, "name": "Rounds", "plane": "xy", "points": [{"id": "pg000001", "x": 0, "y": 0, "construction": false}, {"id": "pg000002", "x": 5, "y": 0, "construction": false}, {"id": "pg000003", "x": 0, "y": 5, "construction": false}], "lines": [], "circles": [{"id": "cg000001", "center": "pg000001", "radius": 5, "construction": false}], "arcs": [{"id": "ag000001", "center": "pg000001", "start": "pg000002", "end": "pg000003", "construction": false}], "constraints": [{"id": "kg000001", "type": "on", "point": "pg000002", "curve": "cg000001"}]}]}"#;
+    let doc = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
+    let (solvers, _) = pool();
+    let Opened { drag, .. } = begin(
+        &solvers,
+        None,
+        &doc,
+        &feature("s0000007"),
+        &id("pg000003"),
+        None,
+    )
+    .unwrap();
+    let frame = drag.move_to([1.0, 6.0]).unwrap().wait().unwrap();
+    assert_eq!(frame.kind, FrameKind::Solved);
+    assert_eq!(frame.radii, [(id("ag000001"), 5.0), (id("cg000001"), 5.0)]);
+}
