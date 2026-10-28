@@ -235,7 +235,7 @@ fn a_refusal_is_excused_only_where_the_note_gives_it() {
     // The same refusal of a position on the line, (2.05, 3.05), far from its ends: nothing in
     // the note gives it, so it's a difference.
     let refused = Prepared {
-        silico: SilicoSide::Refused("refused by hand".to_owned()),
+        silico: SilicoSide::Refused("refused by hand".into()),
         ..prepared[1].clone()
     };
     let v = verdict(&refused, theirs[1].as_ref());
@@ -247,12 +247,12 @@ fn a_refusal_is_excused_only_where_the_note_gives_it() {
         ),
         "{v}"
     );
-    // A pick at 315 degrees, outside the arc's 0 to 270: the note says the two trim
-    // otherwise (:219), so only the outcomes are compared.
+    // A pick at 315 degrees, outside the arc's 0 to 270: Silico places it at the nearer end
+    // (:219), and FreeCAD is given it there, so the results compare in full.
     let v = verdict(&prepared[2], theirs[2].as_ref());
     agrees(&v);
-    assert_eq!(v.excused.len(), 1, "{v:?}");
-    assert!(v.excused[0].contains(":219"), "{v:?}");
+    assert!(v.excused.is_empty(), "{v:?}");
+    assert!(v.modulo.contains(&219), "{v:?}");
 }
 
 #[test]
@@ -444,4 +444,157 @@ fn a_generated_sweep_is_the_same_for_a_seed_and_every_sketch_is_drawn_as_it_solv
         let p = prepare(case, &mut worker).unwrap();
         assert!(p.problems.is_empty(), "{}: {:?}", case.name, p.problems);
     }
+}
+
+// ---- The port review's proofs (#251), each a way a difference was read as agreement ----
+
+#[test]
+fn a_result_the_gate_refuses_is_a_difference_whatever_freecad_does() {
+    // Every edit's result has to pass the gate (:34, :151): a gated result is Silico's bug,
+    // even where FreeCAD refuses too (it fails in OCCT, or throws).
+    let (_, prepared, theirs) = both(&[
+        "split_line_at_end",
+        "split_level_line_within_1e-8_of_start",
+        "split_line_beyond_end",
+        "trim_at_centre",
+    ]);
+    for (p, fc) in prepared.iter().zip(&theirs) {
+        let gated = Prepared {
+            silico: SilicoSide::Gated(vec!["a line of length 0 (the gate)".to_owned()]),
+            ..p.clone()
+        };
+        let v = verdict(&gated, fc.as_ref());
+        assert!(
+            v.how.iter().any(|h| h.contains("the gate refuses")),
+            "{}: {v:?}",
+            p.name
+        );
+        assert!(!v.refused, "{v:?}");
+    }
+}
+
+#[test]
+fn a_refusal_for_another_reason_than_the_notes_is_a_difference() {
+    // The note excuses these refusals for a reason (decision 2's constraint, decision 8's
+    // tangent): a refusal for any other is a difference, however FreeCAD ends.
+    // Every excusal path, and every refusal both sides make.
+    let (_, prepared, theirs) = both(&[
+        "trim_symmetric_about_line_into_two",
+        "trim_arc_tangent_no_piece_touches",
+        "merge_leaves_edge_tangent",
+        "split_line_at_end",
+        "split_line_at_freecads_position",
+        "split_circle_at_one_position",
+        "split_level_line_within_1e-8_of_start",
+        "split_line_beyond_end",
+        "split_point",
+        "trim_point",
+        "trim_at_centre",
+        "unjoin_unshared_point",
+        "remove_point_curves_use",
+        "merge_line_ends",
+        "merge_named_twice",
+        "merge_collapses_through_chain",
+        "merge_with_constraint_between",
+    ]);
+    for (p, fc) in prepared.iter().zip(&theirs) {
+        let wrong = Prepared {
+            silico: SilicoSide::Refused("internal: an unrelated bug's refusal".into()),
+            ..p.clone()
+        };
+        let v = verdict(&wrong, fc.as_ref());
+        assert!(!v.how.is_empty(), "{}: {v:?}", p.name);
+        assert!(v.excused.is_empty(), "{}: {v:?}", p.name);
+    }
+}
+
+#[test]
+fn a_merge_from_apart_still_compares_the_points_it_doesnt_merge() {
+    // merge_apart, Silico's result with p0000001 (the first line's start, which the merge
+    // doesn't touch) moved 1 mm: reported.
+    let (cases, prepared, theirs) = both(&["merge_apart"]);
+    let p = changed(&cases[0], &prepared[0], |s| {
+        let pt = s
+            .points
+            .iter_mut()
+            .find(|p| p.id == id("p0000001"))
+            .unwrap();
+        pt.x = silico_core::document::Coordinate::new(-1.0).unwrap();
+    });
+    let v = verdict(&p, theirs[0].as_ref());
+    assert!(v.how.iter().any(|h| h.contains("p0000001")), "{v:?}");
+}
+
+#[test]
+fn a_pick_outside_the_sweep_compares_the_result() {
+    // trim_arc_pick_outside_sweep, Silico's result with its arcs made construction: FreeCAD
+    // is given the pick where Silico places it (:219), so the results compare, and this
+    // shows.
+    let (cases, prepared, theirs) = both(&["trim_arc_pick_outside_sweep"]);
+    let p = changed(&cases[0], &prepared[0], |s| {
+        for a in &mut s.arcs {
+            a.construction = true;
+        }
+    });
+    let v = verdict(&p, theirs[0].as_ref());
+    assert!(v.how.iter().any(|h| h.contains("construction")), "{v:?}");
+}
+
+#[test]
+fn a_refusal_naming_another_constraint_than_the_one_no_piece_takes_is_a_difference() {
+    // trim_symmetric_about_line_into_two: Silico's refusal as the rule's in all but the
+    // constraint it names (k0000012 is the symmetric; k0000099 is none of the sketch's).
+    let (_, prepared, theirs) = both(&["trim_symmetric_about_line_into_two"]);
+    let SilicoSide::Refused(right) = &prepared[0].silico else {
+        panic!("{:?}", prepared[0].silico);
+    };
+    assert_eq!(right.elements[0], "k0000012");
+    agrees(&verdict(&prepared[0], theirs[0].as_ref()));
+    let mut wrong = right.clone();
+    wrong.elements[0] = "k0000099".to_owned();
+    let v = verdict(
+        &Prepared {
+            silico: SilicoSide::Refused(wrong),
+            ..prepared[0].clone()
+        },
+        theirs[0].as_ref(),
+    );
+    assert!(v.excused.is_empty() && v.how.len() == 1, "{v:?}");
+}
+
+#[test]
+fn a_merge_not_from_apart_reports_a_point_it_doesnt_merge_moved() {
+    // merge_touching_ends, Silico's result with p0000001 (the first line's start) moved:
+    // the points merged are at one place, so every point is compared.
+    let (cases, prepared, theirs) = both(&["merge_touching_ends"]);
+    let p = changed(&cases[0], &prepared[0], |s| {
+        let pt = s
+            .points
+            .iter_mut()
+            .find(|p| p.id == id("p0000001"))
+            .unwrap();
+        pt.x = silico_core::document::Coordinate::new(-1.0).unwrap();
+    });
+    let v = verdict(&p, theirs[0].as_ref());
+    assert!(v.excused.is_empty(), "{v:?}");
+    assert!(
+        v.how.iter().any(|h| h.starts_with(
+            "after the edit, before the solve, Silico's point p0000001 is at [-1.0, 0.0]"
+        )),
+        "{v:?}"
+    );
+}
+
+#[test]
+fn the_harnesss_own_failure_is_never_freecads_refusal() {
+    let (_, prepared, _) = both(&["split_line_at_end"]);
+    let v = verdict(
+        &prepared[0],
+        Some(&Theirs::Harness("KeyError: 'geometry'".to_owned())),
+    );
+    assert!(!v.refused, "{v:?}");
+    assert_eq!(
+        v.how,
+        ["the harness's FreeCAD side failed, not FreeCAD's edit: KeyError: 'geometry'"]
+    );
 }
