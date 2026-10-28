@@ -259,14 +259,15 @@ impl DragSession {
     }
 
     /// Stops the move solving now, if one is, by restarting its worker (`cancel` of a
-    /// `drag_move`): it answers [`MoveOutcome::Cancelled`], and the drag ends, as its worker's
-    /// session does. Doesn't wait. Whether a move was solving.
+    /// `drag_move`): it answers [`MoveOutcome::Cancelled`], whatever the worker answers, and
+    /// the drag ends, as its worker's session does. Doesn't wait. Whether a move was solving.
     pub fn cancel_move(&self) -> bool {
         let mut state = lock(&self.shared.state);
         match state.running.clone() {
             Some((_, Some(stopper))) => {
                 state.cancelling = true;
-                drop(state);
+                // Under the lock, so the worker is still the drag's: its thread gives it back
+                // only once it has the lock again.
                 stopper.stop();
                 true
             }
@@ -492,6 +493,15 @@ fn drag(
         let mut state = lock(&shared.state);
         state.running = None;
         match solved {
+            // Cancelled as it answered: the worker is stopped all the same, its session with
+            // it, so the drag ends as the cancel said.
+            _ if state.cancelling => {
+                settle(&mut state, id, MoveOutcome::Cancelled);
+                close(&mut state, &no_drag("its move was stopped"));
+                drop(state);
+                shared.changed();
+                return solver;
+            }
             Ok(moved) => {
                 if let (SolveStatus::Success, Some(values)) = (moved.status, &moved.values) {
                     state.last = Some((to.map(f64::to_bits), values.clone()));
@@ -501,19 +511,14 @@ fn drag(
                 shared.changed();
             }
             // Refused by the worker, which keeps its drag: the drag goes on.
-            Err(error) if !error.code().is_kernel_fault() && !state.cancelling => {
+            Err(error) if !error.code().is_kernel_fault() => {
                 settle(&mut state, id, MoveOutcome::Refused(error));
                 drop(state);
                 shared.changed();
             }
             Err(error) => {
-                // The worker failed or was stopped: its session went with it.
-                let outcome = if state.cancelling {
-                    MoveOutcome::Cancelled
-                } else {
-                    MoveOutcome::Failed(error.clone())
-                };
-                settle(&mut state, id, outcome);
+                // The worker failed: its session went with it.
+                settle(&mut state, id, MoveOutcome::Failed(error.clone()));
                 close(&mut state, &error);
                 drop(state);
                 shared.changed();

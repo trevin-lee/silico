@@ -828,3 +828,39 @@ fn within(f: impl FnOnce() + Send + 'static) -> bool {
     });
     rx.recv_timeout(WAIT).is_ok()
 }
+
+#[test]
+fn a_cancel_landing_as_the_move_answers_still_cancels_it_and_stops_only_the_drags_worker() {
+    // The fake's move has its answer (a success) but the drag hasn't taken it when the
+    // cancel lands: the move answers cancelled all the same, the drag ends, and the one stop
+    // is the drag's worker's, made while the drag still held it.
+    let (solvers, started) = pool();
+    let session = open(&solvers);
+    let fake = started.lock().unwrap()[0].clone();
+    let (answering_tx, answering) = std::sync::mpsc::channel::<()>();
+    let (go, go_rx) = std::sync::mpsc::channel::<()>();
+    let go_rx = Mutex::new(go_rx);
+    let answering_tx = Mutex::new(answering_tx);
+    fake.answer_moves(move |begin, to| {
+        answering_tx.lock().unwrap().send(()).unwrap();
+        go_rx.lock().unwrap().recv().unwrap();
+        Ok(FakeSketches::dragged(begin, to))
+    });
+    let moving = session.move_to([1.0, 1.0]).unwrap();
+    answering.recv_timeout(WAIT).unwrap();
+    assert!(session.cancel_move());
+    // The stop is made by the time the cancel returns, before the drag has the answer.
+    assert_eq!(fake.stop_waits().len(), 1);
+    go.send(()).unwrap();
+    assert_eq!(moving.wait(), MoveOutcome::Cancelled);
+    assert!(!session.is_open());
+    assert_eq!(
+        session.closed().map(|e| e.message().to_owned()),
+        Some("no drag is open: its move was stopped".to_owned())
+    );
+    let e = session.end(Some([1.0, 1.0])).unwrap_err();
+    assert_eq!(e.message(), "no drag is open: its move was stopped");
+    // No closing solve, and no more stops.
+    assert!(fake.requests().is_empty());
+    assert_eq!(fake.stop_waits().len(), 1);
+}
