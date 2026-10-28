@@ -2832,3 +2832,90 @@ fn a_clients_submits_racing_its_pools_drop_leave_no_worker_or_thread_behind() {
     }
     wait_no_children("after the pools and their clients");
 }
+
+// break-it (warm start): warm starts racing each other and requests, of workers that can't
+// start or whose binary changed after the pool opened.
+
+#[test]
+fn warm_starts_from_many_threads_at_once_start_each_slot_once_and_no_more() {
+    let pool = std::sync::Arc::new(on_demand(TEST_WORKER, 4));
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            let pool = std::sync::Arc::clone(&pool);
+            std::thread::spawn(move || pool.warm(usize::MAX))
+        })
+        .collect();
+    let started: usize = threads.into_iter().map(|t| t.join().unwrap()).sum();
+    assert_eq!(started, 4, "eight warm starts at once of a pool of four");
+    let warmed = wait_full(&pool, 4, &BTreeSet::new());
+    // Eight requests at once run on the four: no slot or worker more.
+    let pending: Vec<_> = (0..8u8)
+        .map(|i| pool.submit(Generation(1), echo(&[i])))
+        .collect();
+    for (i, p) in pending.into_iter().enumerate() {
+        assert_eq!(
+            done(p).unwrap(),
+            Blob::inline(vec![u8::try_from(i).unwrap()])
+        );
+    }
+    assert_eq!(pool.pids(), warmed);
+    assert_eq!(pool.warm(usize::MAX), 0);
+}
+
+#[test]
+fn a_warm_start_of_a_worker_that_exits_at_once_leaves_a_request_failed_not_waiting() {
+    let dir = scratch_dir("warm-exits");
+    let exe = dir.join("worker");
+    write_executable(&exe, "#!/bin/sh\nexit 3\n");
+    let pool = on_demand(exe.to_str().unwrap(), 1);
+    assert_eq!(pool.warm(1), 1);
+    for byte in 0..3u8 {
+        let err = pool
+            .submit(Generation(1), echo(&[byte]))
+            .wait_timeout(WAIT)
+            .unwrap_or_else(|_| panic!("request {byte} waited on a warm start that can't start"))
+            .done()
+            .expect("superseded")
+            .unwrap_err();
+        assert!(
+            matches!(
+                err.code(),
+                ErrorCode::WorkerCrashed | ErrorCode::WorkerUnavailable
+            ),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn a_warm_start_after_the_workers_binary_changed_leaves_each_request_failed_promptly() {
+    let dir = scratch_dir("warm-changed");
+    let exe = dir.join("worker");
+    std::fs::copy(TEST_WORKER, &exe).unwrap();
+    let pool = on_demand(exe.to_str().unwrap(), 1);
+    // Another build put in its place after the pool opened: the warm start's worker isn't
+    // taken, and each request fails at once rather than waiting on it.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&exe)
+        .unwrap()
+        .write_all(b"\0")
+        .unwrap();
+    assert_eq!(pool.warm(1), 1);
+    let err = pool
+        .submit(Generation(1), echo(&[1]))
+        .wait_timeout(WAIT)
+        .unwrap_or_else(|_| panic!("the request waited on a warm start that can't start"))
+        .done()
+        .expect("superseded")
+        .unwrap_err();
+    assert!(!err.to_string().is_empty());
+    // And the next, as promptly: no worker of the changed binary is ever taken.
+    pool.submit(Generation(1), echo(&[2]))
+        .wait_timeout(WAIT)
+        .unwrap_or_else(|_| panic!("the second request waited"))
+        .done()
+        .expect("superseded")
+        .unwrap_err();
+    assert!(pool.pids().is_empty(), "{:?}", pool.pids());
+}

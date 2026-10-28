@@ -1125,15 +1125,18 @@ impl SketchSolvers {
         }))
     }
 
-    /// Starts solvers, on a thread of their own, until `n` are idle or starting: an app's
-    /// warm start (M5.0's decision 10), so its first rebuild needn't wait for a sketch
-    /// worker to start. Doesn't wait for them. A solve that comes while they start waits
-    /// for one, rather than starting another. A start that fails isn't kept, and the next
-    /// solve starts one, as without a warm start. How many it's starting.
+    /// Starts solvers, on a thread of their own, until `n` are idle or starting (at most
+    /// [`MAX_WORKERS`](crate::pool::MAX_WORKERS), as a pool's workers are): an app's warm
+    /// start (M5.0's decision 10), so its first rebuild needn't wait for a sketch worker to
+    /// start. Doesn't wait for them. A solve that comes while they start waits for one,
+    /// rather than starting another. A start that fails ends the warm start, none more
+    /// tried, and the next solve starts one, as without a warm start. How many it's
+    /// starting.
     pub fn warm(&self, n: usize) -> usize {
+        let n = n.min(crate::pool::MAX_WORKERS);
         let wanted = {
             let mut idle = lock(&self.0.idle);
-            let wanted = n.saturating_sub(idle.solvers.len() + idle.warming);
+            let wanted = n.saturating_sub(idle.solvers.len().saturating_add(idle.warming));
             idle.warming += wanted;
             wanted
         };
@@ -1155,9 +1158,15 @@ impl SketchSolvers {
                     warming.left -= 1;
                     match started {
                         Ok(solver) => idle.solvers.push(solver),
-                        Err(e) => tracing::warn!(
-                            "a sketch solver started ahead of its solves failed: {e}"
-                        ),
+                        Err(e) => {
+                            tracing::warn!(
+                                "a sketch solver started ahead of its solves failed: {e}"
+                            );
+                            // The rest would fail alike: they're counted off, and a solve
+                            // waiting starts its own.
+                            idle.warming -= warming.left;
+                            warming.left = 0;
+                        }
                     }
                     drop(idle);
                     shared.warmed.notify_all();

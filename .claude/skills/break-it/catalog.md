@@ -255,6 +255,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A refusal from a worker that keeps its session (a drag's frame solved out of reach) taken by the client as the worker failing: send one refused frame, then a good one; the client mustn't end what the worker still holds
 - A worker killed while idle mid-session (a drag): a client that readies (restarts) its worker before each request sends the next to a fresh worker with no session, and the crash comes back as the worker's "no session" `invalid_input`
 - A session's replies (a drag's frames, its closing solve) passed up unchecked where one-shot replies are checked: forge a frame or solution of the wrong length, a fixed value moved, NaN, a value out of reach
+- A resource counted taken (a slot "started", so free) before the thread or process that backs it exists, by a path other than the one that grows on demand: a request queued in between starts nothing, and if the start then fails the count is put back without growing again or failing the waiters; run it with threads exhausted (`pool_slot_spawn_fails`) and sweep the request across the start with a spin lead
 
 ## Recompute and scheduling
 
@@ -266,6 +267,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A superseded recompute that ends after the newer one: both keep their results by key, the last wins, and the older one's copy (its measure superseded, so unmeasured) overwrites the newer's measured or refused one; hold the older one's requests, start the newer, and loop a few hundred rounds, since which keeps last is a race
 - A measure made of several requests (a summary, then batches of a description): refuse, crash, supersede, or cancel at a later batch after the earlier ones came back; nothing partial may be published, kept in memory, or written, and the retry starts from the first request
 - Features alike in every value but their IDs (two identical boxes each pocketed alike, or a refused feature deleted and re-added under a new ID): the deduplicated step, or the refusal kept by its key, carries the first feature's words, so the second is told another feature and base failed
+- A count of work "on its way" that callers wait on (`warming`), set from a caller's unbounded argument: `usize::MAX` with starts that fail keeps every waiter waiting for ever, and the count plus what's idle overflows on the next call
 
 ## Oracles and comparisons
 

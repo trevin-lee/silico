@@ -577,6 +577,9 @@ impl KernelPool {
             };
             if let Err(e) = start_slot(&self.shared, slot, SlotStart::Warm) {
                 tracing::warn!("couldn't start a kernel pool slot ahead of its requests: {e}");
+                // A request that came while the slot counted started found it free, and
+                // started none: it's failed, as `grow`'s would be, if none is started now.
+                unstartable(&self.shared, &e);
                 break;
             }
             started += 1;
@@ -772,19 +775,22 @@ fn grow(shared: &Arc<Shared>) {
         slot
     };
     if let Err(e) = start_slot(shared, slot, SlotStart::OnDemand) {
-        // The system is short of threads: the slots started take the requests in turn,
-        // or, if there are none, the requests fail with it.
-        let mut state = lock(&shared.state);
-        let none = state.started == 0;
-        let waiting: Vec<Box<dyn Task>> = if none {
-            state.clients.take_all()
-        } else {
-            Vec::new()
-        };
-        drop(state);
-        for task in waiting {
-            task.fail(e.clone());
-        }
+        unstartable(shared, &e);
+    }
+}
+
+/// A slot's thread couldn't be started (the system is short of threads): the slots started
+/// take the requests in turn, or, if there are none, the requests waiting fail with `e`.
+fn unstartable(shared: &Shared, e: &Error) {
+    let mut state = lock(&shared.state);
+    let waiting: Vec<Box<dyn Task>> = if state.started == 0 {
+        state.clients.take_all()
+    } else {
+        Vec::new()
+    };
+    drop(state);
+    for task in waiting {
+        task.fail(e.clone());
     }
 }
 

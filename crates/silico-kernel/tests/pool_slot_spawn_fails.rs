@@ -218,3 +218,90 @@ fn a_slot_whose_thread_cant_start_leaves_its_requests_to_the_slots_started_or_fa
     assert_eq!(answer, Blob::inline(vec![3]));
     assert_eq!(idle.pids().len(), 1);
 }
+
+// break-it (warm start): `KernelPool::warm` takes a slot not yet started, counts it started
+// (and so free to take a request), and only then tries its thread. A request queued in that
+// moment finds a slot free and starts none (`grow`); if the warm start's thread then can't
+// be had, `start_slot` puts the slot back, but nothing grows the pool again nor fails the
+// request, as `grow`'s own failure does: with no slot started, the request waits for a
+// slot no one will start, until some later request's `grow` happens to start one.
+#[test]
+fn a_request_that_comes_as_a_warm_start_finds_no_thread_is_failed_or_served_not_left_waiting() {
+    // Found by break-it, fixed (the warm start's failure now fails the requests waiting
+    // when no slot is started, as `grow`'s does): the request waited for ever: the warm start took the pool's one slot, the
+    // request (seeing it free) started none, and the warm start's failure to get a thread
+    // gave the slot back without growing the pool or failing the request (pool.rs, `warm`'s
+    // `start_slot` error path, against `grow`'s).
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier, mpsc};
+
+    const TRIALS: u64 = 400;
+    let pool = Arc::new(pool(1));
+    let barrier = Arc::new(Barrier::new(2));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = mpsc::channel();
+    // Started before the threads run out: it submits as the test's own thread warms.
+    let submitter = {
+        let (pool, barrier, stop) = (Arc::clone(&pool), Arc::clone(&barrier), Arc::clone(&stop));
+        std::thread::spawn(move || {
+            for trial in 0..TRIALS {
+                barrier.wait();
+                if stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                // A lead of 0 to 20 µs for the warm start, so that in some trials the
+                // request comes between its taking the slot and its thread failing.
+                let until = Instant::now() + Duration::from_nanos((trial % 41) * 500);
+                while Instant::now() < until {
+                    std::hint::spin_loop();
+                }
+                if tx.send(pool.submit(Generation(1), echo(9))).is_err() {
+                    return;
+                }
+            }
+        })
+    };
+
+    let no_threads = NoThreads::new();
+    assert!(
+        std::thread::Builder::new().spawn(|| {}).is_err(),
+        "a thread still starts"
+    );
+    let mut stuck = None;
+    let mut warmed_any = 0;
+    for trial in 0..TRIALS {
+        barrier.wait();
+        warmed_any += pool.warm(1);
+        let pending = rx.recv().unwrap();
+        match pending.wait_timeout(Duration::from_secs(2)) {
+            Ok(outcome) => {
+                let err = outcome
+                    .done()
+                    .expect("superseded")
+                    .expect_err("answered with no thread to run it");
+                assert_eq!(err.code(), ErrorCode::ResourceExhausted, "{err}");
+            }
+            Err(pending) => {
+                stuck = Some((trial, pending));
+                break;
+            }
+        }
+    }
+    if stuck.is_some() {
+        stop.store(true, Ordering::SeqCst);
+        barrier.wait();
+    }
+    submitter.join().unwrap();
+    // Threads to be had again: the stuck request still waits, since nothing starts a slot
+    // for it.
+    drop(no_threads);
+    assert_eq!(warmed_any, 0, "a warm start got a thread");
+    if let Some((trial, pending)) = stuck {
+        let still = pending.wait_timeout(Duration::from_secs(2)).is_err();
+        panic!(
+            "trial {trial}: a request that came as a warm start failed to get its thread \
+             waited 2 s and was neither failed nor served (still waiting with threads back: \
+             {still})"
+        );
+    }
+}
