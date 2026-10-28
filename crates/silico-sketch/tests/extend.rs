@@ -144,6 +144,54 @@ fn an_arcs_extended_end_takes_a_free_neighbour_with_it_as_freecads_arc_first_sol
 }
 
 #[test]
+fn a_lines_end_an_arc_starts_at_pins_only_that_end_as_freecads_line_extend_does() {
+    // FreeCAD 1.1.3 (probed for #262's review, the start held by distances): a horizontal line from
+    // the origin, where its start is held, to (10, 0), where an arc about (10, 10) starts and
+    // runs a quarter turn to (20, 10); the line's end on by 5. FreeCAD's `extend` drags the
+    // line's end (`moveGeometry` on the line, so `initMove` pins that end alone): the end
+    // reaches (15, 0) and the arc's centre goes where the solve takes it, (10.039692,
+    // 9.216921), its end to (20.480038, 9.962213). Pinning the centre too, as a drag of the
+    // arc's start does, would hold it near (10, 10).
+    let text = document(&fields(
+        &[
+            point("p0000000", 0.0, 0.0),
+            point("p0000001", 10.0, 0.0),
+            point("z0000000", 10.0, 10.0),
+            point("e0000000", 20.0, 10.0),
+        ]
+        .join(", "),
+        &line("a0000000", "p0000000", "p0000001"),
+        "",
+        &super::fixture::arc("r0000000", "z0000000", "p0000001", "e0000000"),
+        r#"{"id": "k0000000", "type": "horizontal", "line": "a0000000"}, {"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000000", "value": 0, "driving": true}, {"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000000", "value": 0, "driving": true}"#,
+    ));
+    let before = read(text.as_bytes()).unwrap();
+    let Operation::Sketch(sketch) = &before.features[0].operation else {
+        panic!("not a sketch")
+    };
+    let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    let edited = extend(
+        sketch,
+        &ElementId::new("a0000000").unwrap(),
+        End::End,
+        By::Length(Length::rounded(5.0).unwrap()),
+        &mut worker,
+    )
+    .unwrap();
+    // FreeCAD prints six places, so these hold to its last one.
+    let near = |got: [f64; 2], want: [f64; 2]| {
+        assert!(
+            (got[0] - want[0]).abs() <= 1e-6 && (got[1] - want[1]).abs() <= 1e-6,
+            "{got:?} against {want:?}"
+        );
+    };
+    near(at(&edited.sketch, "p0000000"), [0.0, 0.0]);
+    near(at(&edited.sketch, "p0000001"), [15.0, 0.0]);
+    near(at(&edited.sketch, "z0000000"), [10.039692, 9.216921]);
+    near(at(&edited.sketch, "e0000000"), [20.480038, 9.962213]);
+}
+
+#[test]
 fn a_line_in_a_part_past_a_drags_unknowns_extends_as_one_solve_does() {
     // 140 lines end to end along x, p0 at 0 to p140 at 1,400, each held 10 mm long: one
     // part of 141 free points, 282 unknowns, past the 256 a drag takes. An extend isn't a
