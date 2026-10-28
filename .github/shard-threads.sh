@@ -44,8 +44,8 @@ reserve=$((cpus / 4))
 
 cpu() { awk '/^cpu / { print $2 + $3 + $4 + $5 + $6 + $7 + $8 + $9, $5 + $6 }' /proc/stat; }
 # The CPU time, in microseconds, the runners only filler uses (silico-22, -23) have taken: their
-# services' cgroups. Filler is background work a shard's whole run outlasts (an hour at most, cut
-# off for any real run that starts), and holds no claim, so what it uses counts as spare, not as
+# services' cgroups. Filler is background work a shard's whole run outlasts (an hour for mutants,
+# two for a sweep, cut off for any real run that starts), and holds no claim, so what it uses counts as spare, not as
 # busy: else a long run's queued shards, starting beside it, would take LEAST for hours.
 filler() {
   # Neither there (another VM, a runner renamed): nothing, not a failed pipeline.
@@ -60,7 +60,8 @@ filler1=$(filler)
 ticks=$((total1 - total0 > 0 ? total1 - total0 : 1))
 # /proc/stat counts every CPU's time in ticks (USER_HZ, 100 a second), cgroups in microseconds.
 hz=$(getconf CLK_TCK)
-idle=$((cpus * (idle1 - idle0) / ticks + cpus * (filler1 - filler0) * hz / 1000000 / ticks))
+fillers=$((cpus * (filler1 - filler0) * hz / 1000000 / ticks))
+idle=$((cpus * (idle1 - idle0) / ticks + fillers))
 
 rm -f "$claim"
 find "$claims" -name 'claim.*' -mmin +1440 -delete
@@ -72,4 +73,4 @@ threads=$((spare < least ? least : spare > most ? most : spare))
 echo "$threads" >"$claim"
 
 echo "$threads"
-echo "$threads threads: $idle of $cpus CPUs idle, $reserve kept for a gate, $claimed held by other shards (between $least and $most)"
+echo "$threads threads: $idle of $cpus CPUs idle ($fillers of them filler's), $reserve kept for a gate, $claimed held by other shards (between $least and $most)"
