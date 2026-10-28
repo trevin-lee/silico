@@ -447,8 +447,10 @@ fn join(
         None if base_optional(&moved.operation) => {
             set_input(&mut moved.operation, "base", None);
         }
-        // A feature with no base field never comes here: with no base and no consumer, a move
-        // leaves it where it stands in its chain.
+        // A feature with no base field never comes here: with no consumer, a move leaves it
+        // where it stands; its consumer a boolean's tool, a pocket, fillet, or chamfer, the
+        // stand-in refuses; a pad or revolve, that consumer is a member before the place,
+        // and the case above refuses it, as taking no base.
         None => {
             let root = root.map(|r| r.to_string()).unwrap_or_default();
             return Err(Error::new(
