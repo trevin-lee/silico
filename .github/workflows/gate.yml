@@ -42,10 +42,22 @@ jobs:
         # Set here because a nextest profile can't say "a quarter of the CPUs" (it takes a
         # number), and Cargo has no CI-only config; CMake (OCCT, on a cache miss) takes the
         # same share. Kernel pool tests sized by the CPU count, and the linker, still burst.
+        # With more gates than four at once, less: an even share of all but two CPUs
+        # (.github/gate-threads.sh, a claim held to the job's end).
         run: |
           share=$(( $(nproc) / 4 > 2 ? $(nproc) / 4 : 2 ))
+          # The quarter if it can't choose: a fault here shouldn't fail a gate.
+          if threads=$(bash .github/gate-threads.sh); then
+            share=${threads%%$'\n'*}
+            echo "${threads#*$'\n'}"
+          else
+            echo "$share threads: .github/gate-threads.sh failed"
+          fi
           export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share CMAKE_BUILD_PARALLEL_LEVEL=$share
           pixi run gate
+      - name: Release the gate's thread claim
+        if: ${{ always() }}
+        run: bash .github/gate-threads.sh release
       - name: Remove the test scratch
         if: ${{ always() }}
         run: bash .github/scratch.sh end
