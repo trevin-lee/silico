@@ -15,7 +15,7 @@
 # is saturated by about six shards. So it fills only when more than a fifth of the VM's CPUs
 # are idle (over 15 seconds; this job runs on the VM), with as many shards as the idle CPUs
 # feed at a filler shard's share (a quarter of the VM) and the free runners labelled filler
-# (silico-9 to -12) hold. Filler shards run only there, at the idle scheduling class on
+# (silico-9 to -12, -22 and -23) hold. Filler shards run only there, at the idle scheduling class on
 # runners whose cgroups are at the idle CPU weight (mutants.yml), so they hold no runner a
 # gate could use and take no CPU a gate wants.
 # In order:
@@ -80,8 +80,10 @@ jobs:
         run: |
           set -euo pipefail
           . .github/gh.sh
-          # Runners labelled filler (silico-9 to -12), the only ones filler shards run on.
-          pool=4
+          # Runners labelled filler, the only ones filler shards and sweeps run on: silico-9 to
+          # -12, which the mutants lanes share, and -22 and -23, filler's alone (2026-10-28,
+          # Main), so filler can fill the idle CPU while a long run holds 9 to 12.
+          pool=6
           # A slice's source: about 80 mutants, at the workspace's 3.4 a KiB (2026-10-23).
           # A run cut off at its hour has tested a random part of its slice.
           slice_kib=24
@@ -151,13 +153,13 @@ jobs:
           # comes first only if it could start: a runner it asks for is free, or between jobs
           # (each takes one job, then registers again). One whose every runner is busy, a
           # long run's shards queued behind its own, waits whatever filler does, so filler
-          # fills the idle CPU meanwhile, and a real job that starts still cancels it
-          # (cancel-filler.sh). The runners each label is on, as /etc/ci-runner/labels gives
+          # fills the idle CPU meanwhile on silico-22 and -23, which no lane uses, and a real
+          # job that starts still cancels it (cancel-filler.sh). The runners each label is on, as /etc/ci-runner/labels gives
           # them on the VM (this token can't list runners): mutants, the long lane; mutants-pr,
           # the merge lane; filler, filler's own.
           lane_mutants='9 10 11 12 15 16 17'
           lane_mutants_pr='9 10 11 12 15 16 17 20 21'
-          lane_filler='9 10 11 12'
+          lane_filler='9 10 11 12 22 23'
           # Runners running a job now, of any run going, by number (pve-silico-N-...).
           running=" $(awk -F '\t' '$1 == "in_progress" { if (match($2, /^pve-silico-[0-9]+-/)) { n = substr($2, 12, RLENGTH - 12); print n } }' <<<"$jobs" | tr '\n' ' ')"
           free_for() {
@@ -188,7 +190,7 @@ jobs:
           fi
           filler_mutants=$(awk -F '\t' '$2 == "mutants.yml" && $4 ~ /^filler /' <<<"$active" | wc -l)
           # The runners labelled filler that are running a job, of any run.
-          busy=$(awk -F '\t' '$1 == "in_progress" && $2 ~ /^pve-silico-(9|1[0-2])-/' <<<"$jobs" | wc -l)
+          busy=$(awk -F '\t' '$1 == "in_progress" && $2 ~ /^pve-silico-(9|1[0-2]|2[23])-/' <<<"$jobs" | wc -l)
           # The CPUs idle now, over 15 seconds (this job runs on the VM; the load average lags
           # minutes behind a run that just ended): idle and I/O wait over all time spent.
           cpu() { awk '/^cpu / { print $2 + $3 + $4 + $5 + $6 + $7 + $8 + $9, $5 + $6 }' /proc/stat; }
@@ -201,7 +203,7 @@ jobs:
             skip "$idle of $cpus CPUs are idle, a fifth or less"
           fi
           # A filler shard's share of the VM, as mutants.yml gives it: a quarter, at least 2.
-          share=$((cpus / pool > 2 ? cpus / pool : 2))
+          share=$((cpus / 4 > 2 ? cpus / 4 : 2))
           shards=$((pool - busy))
           if [ $((idle / share)) -lt "$shards" ]; then shards=$((idle / share)); fi
           if [ "$shards" -lt 1 ]; then

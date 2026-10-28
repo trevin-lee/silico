@@ -121,8 +121,8 @@ jobs:
 
   shard:
     needs: plan
-    # A filler run's shards only on the runners labelled filler (silico-9 to -12), which
-    # take no gates: so filler never holds a runner a gate could use. A long run (`long`: a
+    # A filler run's shards only on the runners labelled filler (silico-9 to -12, -22, and
+    # -23), which take no gates: so filler never holds a runner a gate could use. A long run (`long`: a
     # milestone's, hours long) asks for `mutants`, which only silico-9 to -12 and -15 to -17
     # have; any other run (one that gates a merge) asks for `mutants-pr`, which those have and
     # silico-20 and -21 have alone: so a run that gates a merge never waits for a long one to
@@ -213,9 +213,11 @@ jobs:
           # A filler shard runs at the idle scheduling class, for the CPU and for I/O, on a
           # runner at the idle weight (as a real shard's is), so it can't slow a gate; a real
           # run's plan cancels the filler going (cancel-filler.sh), and the filler starts
-          # nothing while a real run starts or has work waiting (filler.yml), but beside a
-          # real run's shards already running it can share the CPU. Four can run at once
-          # (the runners labelled filler), so it takes a quarter of the machine. It has a Cargo
+          # nothing while a real run starts or has a job waiting that a free runner of its
+          # lane could take (filler.yml), but beside a real run's shards already running it
+          # can share the CPU. A quarter of the machine each: up to six run at once (the
+          # runners labelled filler), as many as the idle CPUs feed when the filler starts
+          # them. It has a Cargo
           # home of its own (the toolchains stay on PATH): starved of CPU, it could hold the
           # package cache's lock, which every other build on the VM shares, for minutes. And so
           # a target directory of its own (below): dependencies' fingerprints hold their source's
