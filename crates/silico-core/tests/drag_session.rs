@@ -392,3 +392,170 @@ fn a_dropped_drag_ends_with_nothing_kept_and_gives_its_worker_back() {
     again.end(None).unwrap();
     assert_eq!(started.lock().unwrap().len(), 1);
 }
+
+// ---- the tests review's
+
+/// A fake that counts the times it's distrusted (a worker that sent a reply it can't be
+/// trusted for is stopped, not given back to be used again).
+struct Counting {
+    fake: FakeSketches,
+    distrusts: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl SketchSolver for Counting {
+    fn solve(
+        &mut self,
+        system: SketchSystem,
+    ) -> Result<silico_protocol::Solved, silico_core::Error> {
+        self.fake.solve(system)
+    }
+    fn distrust(&mut self) {
+        self.distrusts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn stopper(&mut self) -> Result<Option<silico_core::sketch::SolveStopper>, silico_core::Error> {
+        self.fake.stopper()
+    }
+    fn drag_begin(
+        &mut self,
+        begin: DragBegin,
+    ) -> Result<silico_core::sketch::DragStarted, silico_core::Error> {
+        self.fake.drag_begin(begin)
+    }
+    fn drag_move(&mut self, to: [f64; 2], timeout: Duration) -> Result<Moved, silico_core::Error> {
+        self.fake.drag_move(to, timeout)
+    }
+    fn drag_end(&mut self) -> Result<(), silico_core::Error> {
+        self.fake.drag_end()
+    }
+}
+
+/// Solvers of one counting fake: the fake, and how many times it's been distrusted.
+fn counted() -> (
+    SketchSolvers,
+    FakeSketches,
+    Arc<std::sync::atomic::AtomicUsize>,
+) {
+    let fake = FakeSketches::new();
+    let distrusts: Arc<std::sync::atomic::AtomicUsize> = Arc::default();
+    let solvers = SketchSolvers::starting({
+        let fake = fake.clone();
+        let distrusts = Arc::clone(&distrusts);
+        move || {
+            Ok(Box::new(Counting {
+                fake: fake.clone(),
+                distrusts: Arc::clone(&distrusts),
+            }) as Box<dyn SketchSolver>)
+        }
+    });
+    (solvers, fake, distrusts)
+}
+
+#[test]
+fn an_end_at_a_cursor_differing_from_the_newest_moves_in_y_alone_moves_once_more() {
+    // Moved to (5, 5), ended at (5, 6): the newest move's cursor isn't the end's, so the end
+    // moves again, and the sketch is the begin state at (5, 6), not at (5, 5).
+    let (solvers, started) = pool();
+    let session = open(&solvers);
+    let fake = started.lock().unwrap()[0].clone();
+    session.move_to([5.0, 5.0]).unwrap().wait();
+    let ended = session.end(Some([5.0, 6.0])).unwrap();
+    assert_eq!(moves_of(&fake.drag_calls()), [[5.0, 5.0], [5.0, 6.0]]);
+    assert_eq!(
+        bits(&ended.solved.unwrap().values),
+        bits(&dragged_to([5.0, 6.0]))
+    );
+}
+
+#[test]
+fn a_closing_solve_that_drops_redundant_equations_keeps_the_cursor() {
+    // A sketch with a redundant constraint solves `SolvedExceptRedundant`: the drag is kept.
+    let (solvers, started) = pool();
+    let session = open(&solvers);
+    let fake = started.lock().unwrap()[0].clone();
+    fake.answer(|system| {
+        Ok(silico_protocol::Solved {
+            status: SolveStatus::SolvedExceptRedundant,
+            ..FakeSketches::as_sent(system)
+        })
+    });
+    let ended = session.end(Some([2.0, 3.0])).unwrap();
+    assert_eq!(ended.kept, Kept::Cursor);
+    assert_eq!(
+        bits(&ended.solved.unwrap().values),
+        bits(&dragged_to([2.0, 3.0]))
+    );
+}
+
+#[test]
+fn a_worker_that_sends_an_impossible_frame_or_solve_is_distrusted_not_reused() {
+    // A frame moving a fixed value, the end's own move's frame of too few values, and a
+    // closing solve moving a fixed value: each the worker's protocol error, and the worker
+    // distrusted (stopped), once each.
+    let moved_fixed = |_: &DragBegin, _: [f64; 2]| {
+        Ok(Moved {
+            status: SolveStatus::Success,
+            values: Some(vec![1.0, 1.0, 50.0, 1.0]),
+        })
+    };
+    let (solvers, fake, distrusts) = counted();
+    fake.answer_moves(moved_fixed);
+    let session = match begin(&solvers, two_points()).unwrap() {
+        Begun::Open { session, .. } => session,
+        Begun::Conflicting(tags) => panic!("{tags:?}"),
+    };
+    match session.move_to([1.0, 1.0]).unwrap().wait() {
+        MoveOutcome::Failed(e) => assert_eq!(e.code(), ErrorCode::ProtocolError),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(distrusts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    drop(session);
+    // The end's own move.
+    fake.answer_moves(|_, _| {
+        Ok(Moved {
+            status: SolveStatus::Success,
+            values: Some(vec![1.0]),
+        })
+    });
+    let session = match begin(&solvers, two_points()).unwrap() {
+        Begun::Open { session, .. } => session,
+        Begun::Conflicting(tags) => panic!("{tags:?}"),
+    };
+    let e = session.end(Some([1.0, 1.0])).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::ProtocolError);
+    assert_eq!(distrusts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    // The closing solve.
+    fake.answer_moves(|begin, to| Ok(FakeSketches::dragged(begin, to)));
+    fake.answer(|system| {
+        let mut solved = FakeSketches::as_sent(system);
+        solved.values[2] = 50.0;
+        Ok(solved)
+    });
+    let session = match begin(&solvers, two_points()).unwrap() {
+        Begun::Open { session, .. } => session,
+        Begun::Conflicting(tags) => panic!("{tags:?}"),
+    };
+    let e = session.end(Some([1.0, 1.0])).unwrap_err();
+    assert_eq!(e.code(), ErrorCode::ProtocolError);
+    assert_eq!(
+        e.message(),
+        "the sketch worker's drag solve moves value 2, which is fixed"
+    );
+    assert_eq!(distrusts.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
+#[test]
+fn a_begin_that_fails_its_check_is_refused_naming_it_and_sends_nothing() {
+    // The drag's point names a geometry the sketch hasn't: refused, as the worker would,
+    // before any solver is taken.
+    let (solvers, started) = pool();
+    let mut bad = two_points();
+    bad.point = PointOf::Point(Geometry(5));
+    let e = match begin(&solvers, bad) {
+        Err(e) => e,
+        Ok(_) => panic!("began"),
+    };
+    assert_eq!(e.code(), ErrorCode::InvalidInput);
+    assert_eq!(e.parameter(), Some("point"));
+    assert!(started.lock().unwrap().is_empty());
+}
