@@ -1301,6 +1301,192 @@
         {"id": "k0000005", "type": "on", "point": "p0000004", "curve": "n0000003"}
       ],
       "note": "A line (0, 0) to (10, 0), and a point on it at x 4, held by an on."
+    },
+    {
+      "id": "s0000053",
+      "type": "sketch",
+      "v": 1,
+      "name": "trim_circle_two_cutters_held",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 1, "y": 2, "construction": false},
+        {"id": "p0000002", "x": 0.07294901687515798, "y": 4.853169548885461, "construction": false},
+        {"id": "p0000003", "x": 0.17294901687515798, "y": 4.953169548885461, "construction": false},
+        {"id": "p0000005", "x": -0.027050983124842692, "y": -0.9531695488854605, "construction": false},
+        {"id": "p0000006", "x": 0.17294901687515732, "y": -0.7531695488854605, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000004", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000007", "from": "p0000005", "to": "p0000006", "construction": false}
+      ],
+      "circles": [
+        {"id": "c0000008", "center": "p0000001", "radius": 3, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000009", "type": "on", "point": "p0000002", "curve": "c0000008"}
+      ],
+      "note": "testTrimCircleMid with the first cutter's start held on the circle by an on."
+    },
+    {
+      "id": "s0000054",
+      "type": "sketch",
+      "v": 1,
+      "name": "trim_arc_one_cutter_held",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": -1.897777478867205, "y": 2.7764571353075618, "construction": false},
+        {"id": "p0000002", "x": -1.797777478867205, "y": 2.876457135307562, "construction": false},
+        {"id": "p0000004", "x": 1, "y": 2, "construction": false},
+        {"id": "p0000005", "x": 2.5000000000000004, "y": 4.598076211353316, "construction": false},
+        {"id": "p0000006", "x": 1, "y": -1, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [
+        {"id": "a0000007", "center": "p0000004", "start": "p0000005", "end": "p0000006", "construction": false}
+      ],
+      "constraints": [
+        {"id": "k0000008", "type": "on", "point": "p0000001", "curve": "a0000007"}
+      ],
+      "note": "testTrimArcOfCircleEnd with the cutter's start held on the arc by an on."
+    },
+    {
+      "id": "s0000055",
+      "type": "sketch",
+      "v": 1,
+      "name": "trim_arc_two_cutters_held",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": -0.6339171050450803, "y": 4.516011703836273, "construction": false},
+        {"id": "p0000002", "x": -0.5339171050450803, "y": 4.616011703836272, "construction": false},
+        {"id": "p0000004", "x": -1.773019572565104, "y": 0.53802850078136, "construction": false},
+        {"id": "p0000005", "x": -1.5730195725651037, "y": 0.73802850078136, "construction": false},
+        {"id": "p0000007", "x": 1, "y": 2, "construction": false},
+        {"id": "p0000008", "x": 2.5000000000000004, "y": 4.598076211353316, "construction": false},
+        {"id": "p0000009", "x": 1, "y": -1, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000006", "from": "p0000004", "to": "p0000005", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [
+        {"id": "a0000010", "center": "p0000007", "start": "p0000008", "end": "p0000009", "construction": false}
+      ],
+      "constraints": [
+        {"id": "k0000011", "type": "on", "point": "p0000001", "curve": "a0000010"}
+      ],
+      "note": "testTrimArcOfCircleMid with the first cutter's start held on the arc by an on."
+    },
+    {
+      "id": "s0000056",
+      "type": "sketch",
+      "v": 1,
+      "name": "conflicting_coincident",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": true},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": true},
+        {"id": "p0000003", "x": 20, "y": 0, "construction": true},
+        {"id": "p0000004", "x": 30, "y": 0, "construction": true}
+      ],
+      "lines": [
+        {"id": "n0000005", "from": "p0000001", "to": "p0000002", "construction": true},
+        {"id": "n0000006", "from": "p0000003", "to": "p0000004", "construction": true}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000007", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 10, "driving": true},
+        {"id": "k0000008", "type": "distance_x", "a": "origin", "b": "p0000003", "value": 20, "driving": true}
+      ],
+      "note": "TestCoincidentCommandGui's sketch: construction lines (0, 0)-(10, 0) and (20, 0)-(30, 0), the first's end 10 from the origin across, the second's start 20."
+    },
+    {
+      "id": "s0000057",
+      "type": "sketch",
+      "v": 1,
+      "name": "circle_crossed_twice",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000003", "x": -8, "y": 3, "construction": false},
+        {"id": "p0000004", "x": 4, "y": 3, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000005", "from": "p0000003", "to": "p0000004", "construction": false}
+      ],
+      "circles": [
+        {"id": "c0000002", "center": "p0000001", "radius": 5, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [],
+      "note": "07cf5b10d7: a circle about the origin, radius 5, and a line from (-8, 3) crossing it at (-4, 3) and ending on it at (4, 3)."
+    },
+    {
+      "id": "s0000058",
+      "type": "sketch",
+      "v": 1,
+      "name": "overlapping_lines",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false},
+        {"id": "p0000004", "x": 6, "y": 0, "construction": false},
+        {"id": "p0000005", "x": 14, "y": 0, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000006", "from": "p0000004", "to": "p0000005", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "3cbe309330: a line (0, 0) to (10, 0) and a line (6, 0) to (14, 0) along it, overlapping from 6 to 10."
+    },
+    {
+      "id": "s0000059",
+      "type": "sketch",
+      "v": 1,
+      "name": "tangent_gap_1e-10",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000003", "x": -8, "y": 5.0000000001, "construction": false},
+        {"id": "p0000004", "x": 8, "y": 5.0000000001, "construction": false},
+        {"id": "p0000006", "x": 3, "y": -8, "construction": false},
+        {"id": "p0000007", "x": 3, "y": 8, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000005", "from": "p0000003", "to": "p0000004", "construction": false},
+        {"id": "n0000008", "from": "p0000006", "to": "p0000007", "construction": false}
+      ],
+      "circles": [
+        {"id": "c0000002", "center": "p0000001", "radius": 5, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [],
+      "note": "Decision 6's band: a circle about the origin, radius 5, a line 1e-10 mm above its top, and an upright line crossing it at x 3."
+    },
+    {
+      "id": "s0000060",
+      "type": "sketch",
+      "v": 1,
+      "name": "construction_circle",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": true}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "c0000002", "center": "p0000001", "radius": 5, "construction": true}
+      ],
+      "arcs": [],
+      "constraints": [],
+      "note": "A construction circle about the origin, radius 5."
     }
   ]
 }

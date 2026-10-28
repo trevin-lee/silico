@@ -33,7 +33,7 @@
   },
   {
     "name": "split_line_at_end",
-    "note": "A split at the line's end: FreeCAD 1.1.3 fails in OCCT (U1 == U2), Silico refuses it (82633fb5df's rule).",
+    "note": "A split at the line's end: Silico refuses it (82633fb5df's rule); FreeCAD 1.1.3 splits at the position's projection, a hair inside the end, and makes a piece 6.28e-16 mm long.",
     "sketch": "freecad_line",
     "edit": {
       "split": {
@@ -1135,6 +1135,123 @@
         "points": [
           "p0000004",
           "p0000002"
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_circle_mid_held",
+    "note": "testTrimCircleMid, held: one arc, one end the held cutter's start, the other a new point on the crossing cutter.",
+    "sketch": "trim_circle_two_cutters_held",
+    "edit": {
+      "trim": {
+        "curve": "c0000008",
+        "pick": [
+          -2.0,
+          2.0000000000000004
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_arc_end_held",
+    "note": "testTrimArcOfCircleEnd, held: the arc shortened to the cutter's start, which is its new end.",
+    "sketch": "trim_arc_one_cutter_held",
+    "edit": {
+      "trim": {
+        "curve": "a0000007",
+        "pick": [
+          0.37626492754672203,
+          4.934442802201417
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_arc_mid_held",
+    "note": "testTrimArcOfCircleMid, held: two arcs sharing the centre, the first's end the held cutter's start, the second's start a new point on the crossing cutter.",
+    "sketch": "trim_arc_two_cutters_held",
+    "edit": {
+      "trim": {
+        "curve": "a0000010",
+        "pick": [
+          -1.897777478867205,
+          2.7764571353075618
+        ]
+      }
+    }
+  },
+  {
+    "name": "merge_conflicting_coincident",
+    "note": "test_conflicting_coincident_selection_is_rejected: the merge's solve conflicts, so Silico refuses it (:274), as FreeCAD's command rolls it back.",
+    "sketch": "conflicting_coincident",
+    "edit": {
+      "merge": {
+        "points": [
+          "p0000002",
+          "p0000003"
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_circle_crossed_twice",
+    "note": "07cf5b10d7: the arc between the line's two meetings with the circle removed; each new end is a point on the line, at its own crossing (the line's end only drawn there).",
+    "sketch": "circle_crossed_twice",
+    "edit": {
+      "trim": {
+        "curve": "c0000002",
+        "pick": [
+          0,
+          5
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_overlap_end",
+    "note": "3cbe309330: the overlap's end at x 6 cuts: the line trimmed to (6, 0)-(10, 0), its new start a point on the other line.",
+    "sketch": "overlapping_lines",
+    "edit": {
+      "trim": {
+        "curve": "n0000003",
+        "pick": [
+          3,
+          0
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_circle_line_1e-10_off",
+    "note": "A line 1e-10 mm off tangent: Silico counts the contact as a cut (within 1e-7 mm), FreeCAD 1.1.3's intersector doesn't (it cuts at 1e-12, not 1e-10); decision 6.",
+    "sketch": "tangent_gap_1e-10",
+    "edit": {
+      "trim": {
+        "curve": "c0000002",
+        "pick": [
+          -2.499999999999999,
+          4.330127018922194
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_construction_circle",
+    "note": "A construction circle split at 0 and 90 degrees: both arcs are construction, as every piece keeps it.",
+    "sketch": "construction_circle",
+    "edit": {
+      "split": {
+        "curve": "c0000002",
+        "at": [
+          [
+            5,
+            0
+          ],
+          [
+            0,
+            5
+          ]
         ]
       }
     }
