@@ -250,3 +250,37 @@ fn a_mesh_of_the_right_faces_and_wrong_edges_is_refused_and_forgotten() {
         .unwrap_or_else(|p| panic!("the kernel well, still refused: {p:?}"));
     assert_eq!(again.bodies[0].edges.len(), 15);
 }
+
+/// A refused mesh's coarse deflection isn't kept as the step's floor: a faulty worker's
+/// mesh of 10 faces for the cut's 9, said to be made at 0.5 for a view asking 2⁻⁵, is
+/// refused, and the next read, the kernel well, meshes at 2⁻⁵, not at 0.5 (the architecture
+/// review's low).
+#[test]
+fn a_refused_meshs_coarse_deflection_isnt_kept_as_the_floor() {
+    let wrong = Arc::new(AtomicBool::new(true));
+    let flag = Arc::clone(&wrong);
+    let bench = Bench::with(EXAMPLE, move |k| {
+        k.answer_instead(move |op| match op {
+            Op::Tessellate { .. } if flag.load(Ordering::SeqCst) => Some(Reply::MeshAt(MeshAt {
+                mesh: faces_and_edges(10, 15),
+                deflection: 0.5,
+            })),
+            _ => None,
+        });
+    });
+    let e = bench
+        .read(&of(front(80.0), 1000, 1000))
+        .map(|_| ())
+        .unwrap_err()
+        .errors()[0]
+        .clone();
+    assert_eq!(e.code(), ErrorCode::ProtocolError, "{e:?}");
+    wrong.store(false, Ordering::SeqCst);
+    let again = bench
+        .read(&of(front(80.0), 1000, 1000))
+        .unwrap_or_else(|p| panic!("the kernel well, still refused: {p:?}"));
+    assert_eq!(
+        (again.bodies[0].level, again.bodies[0].deflection),
+        (0.03125, 0.03125)
+    );
+}

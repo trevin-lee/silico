@@ -22,7 +22,8 @@ use crate::worker::lock;
 pub const MESH_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// How many steps' floors the cache keeps, before it drops the least recently used: each a
-/// step key and a number, about 1.5 MiB in all.
+/// 32-byte step key, its floor, and when it was used, in two maps, about 5.5 MiB of data in
+/// all (some 7 to 9 MiB with the maps' nodes), beside the meshes' 256 MiB.
 pub const MESH_FLOORS_KEPT: usize = 1 << 16;
 
 /// The deflection a body is meshed at for a view whose pixel is `2 × half_pixel` mm: the
@@ -185,10 +186,17 @@ impl<K: Ord + Clone> MeshCache<K> {
     }
 
     /// Drops the step's mesh at `deflection`, if it's kept: a mesh found not to be the
-    /// step's, so the next read asks the kernel again. Its floor, a fact of the step the
-    /// kernel reported, stays.
+    /// step's, so the next read asks the kernel again. Its step's floor goes too if it's
+    /// that deflection, since the reply that was refused is what reported it.
     pub fn forget(&self, key: &K, deflection: f64) {
-        lock(&self.inner).remove(&(key.clone(), deflection.to_bits()));
+        let mut inner = lock(&self.inner);
+        inner.remove(&(key.clone(), deflection.to_bits()));
+        if let Some(&(floor, tick)) = inner.floors.get(key)
+            && floor.to_bits() == deflection.to_bits()
+        {
+            inner.floors.remove(key);
+            inner.floor_recency.remove(&tick);
+        }
     }
 
     /// How many bytes of meshes are kept.
@@ -342,9 +350,13 @@ mod tests {
         cache.put(&2, 0.5, at(0.5, mesh(1)));
         assert!(cache.get(&1, 0.0173).is_none());
         assert_eq!(cache.deflection_for(&1, 1.0 / 256.0), 0.0173);
-        // Forgetting a mesh keeps its step's floor too: the kernel said it.
+        // Forgetting another step's mesh, or this step's at another deflection, keeps the
+        // floor; forgetting the mesh made at the floor drops it, the reply that said it.
         cache.forget(&2, 0.5);
+        cache.forget(&1, 0.5);
         assert_eq!(cache.deflection_for(&1, 1e-9), 0.0173);
+        cache.forget(&1, 0.0173);
+        assert_eq!(cache.deflection_for(&1, 1e-9), 1e-9);
     }
 
     #[test]
