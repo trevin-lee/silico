@@ -88,12 +88,15 @@ poll=${SILICO_SHARD_POLL:-30}
 began=$(date +%s)
 deadline=$((began + wait))
 waited=0
+idle=-
+fillers=-
 while :; do
-  sample
   rm -f "$claim"
   find "$claims" -name 'claim.*' -mmin +1440 -delete
   claimed=$(find "$claims" -name 'claim.*' -exec cat {} + | awk '{ sum += $1 } END { print sum + 0 }')
   if [ "$claimed" -lt "$budget" ]; then
+    # Only this choice reads the idle CPUs: a shard waiting holds the lock for no 5 s sample.
+    sample
     unheld=$((budget - claimed))
     spare=$((idle - reserve < unheld ? idle - reserve : unheld))
     threads=$((spare < least ? least : spare > most ? most : spare))
@@ -110,7 +113,11 @@ while :; do
     why="past the ceiling of $ceiling: $crowded all the same"
     break
   fi
-  # Give the lock back while waiting, so shards ending can release their claims.
+  # Give the lock back while waiting, so shards ending can release their claims. Said on stderr
+  # once, so the job's log shows why its shard hasn't started (stdout is the caller's).
+  if [ "$waited" -eq 0 ]; then
+    echo "shard-threads: $claimed threads claimed, past the ceiling of $ceiling with 2 more: waiting up to ${wait}s for a claim to go" >&2
+  fi
   flock -u 9
   sleep "$poll"
   flock 9
@@ -120,4 +127,5 @@ echo "$threads" >"$claim"
 
 echo "$threads"
 if [ "$waited" -gt 0 ]; then why="$why, after waiting ${waited}s for claims to go"; fi
-echo "$threads threads: $idle of $cpus CPUs idle ($fillers of them filler's), $reserve kept for a gate, $claimed held by other shards ($why)"
+if [ "$idle" = - ]; then seen="idle not read"; else seen="$idle of $cpus CPUs idle ($fillers of them filler's)"; fi
+echo "$threads threads: $seen, $reserve kept for a gate, $claimed held by other shards ($why)"
