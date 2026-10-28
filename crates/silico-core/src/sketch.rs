@@ -1708,6 +1708,28 @@ impl Translation {
         check_solved(&self.system, solved)
     }
 
+    /// Point `id`'s own geometry, which a drag of it pins, if the sketch has the point.
+    pub(crate) fn point_geometry(&self, id: &ElementId) -> Option<Geometry> {
+        self.point_geometry.get(id).copied()
+    }
+
+    /// Each point's values, by ID.
+    pub(crate) fn point_values(&self) -> impl Iterator<Item = (&ElementId, PointValues)> {
+        self.points.iter().map(|(id, &v)| (id, v))
+    }
+
+    /// Each circle's and arc's radius, by ID.
+    pub(crate) fn radius_values(&self) -> Vec<(&ElementId, Value)> {
+        let mut radii: Vec<(&ElementId, Value)> = self
+            .circles
+            .iter()
+            .map(|(id, c)| (id, c.radius))
+            .chain(self.arcs.iter().map(|(id, a)| (id, a.round.radius)))
+            .collect();
+        radii.sort_by(|a, b| a.0.cmp(b.0));
+        radii
+    }
+
     /// The ID of the constraint the solver reports as `tag`, if one is.
     pub fn constraint_id(&self, tag: Tag) -> Option<&ElementId> {
         self.constraint_tagged(tag).map(|c| &c.id)

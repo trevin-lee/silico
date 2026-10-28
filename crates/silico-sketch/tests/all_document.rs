@@ -29,6 +29,8 @@ mod adversarial_load_path;
 mod adversarial_stored_coordinates;
 #[path = "document.rs"]
 mod document;
+#[path = "document_drag.rs"]
+mod document_drag;
 #[path = "drag.rs"]
 mod drag;
 #[path = "worker.rs"]

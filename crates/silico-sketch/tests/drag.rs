@@ -322,7 +322,7 @@ fn a_point_two_arcs_end_at_pins_both_their_centres() {
         for _ in 0..50 {
             let s = libm::hypot(5.0, y);
             let f = (y - d) + 2e-4 * (s - 5.0) * y / s;
-            let df = 1.0 + 2e-4 * ((y / s).powi(2) + (s - 5.0) * 25.0 / s.powi(3));
+            let df = 1.0 + 2e-4 * ((y / s) * (y / s) + (s - 5.0) * 25.0 / (s * s * s));
             y -= f / df;
         }
         let s = libm::hypot(5.0, y);

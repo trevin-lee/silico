@@ -44,6 +44,8 @@ mod adversarial_stored_coordinates;
 mod drag_session;
 #[path = "sketch.rs"]
 mod sketch;
+#[path = "sketch_drag.rs"]
+mod sketch_drag;
 #[path = "sketch_edit.rs"]
 mod sketch_edit;
 #[path = "sketch_features.rs"]

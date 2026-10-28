@@ -26,6 +26,8 @@
 //! reply the worker gives is checked as a solve's is: one that can't be the sketch's is the
 //! worker's protocol error, and the worker is stopped.
 
+pub mod sketch;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
