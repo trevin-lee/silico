@@ -44,9 +44,10 @@ reserve=$((cpus / 4))
 
 cpu() { awk '/^cpu / { print $2 + $3 + $4 + $5 + $6 + $7 + $8 + $9, $5 + $6 }' /proc/stat; }
 # The CPU time, in microseconds, the runners only filler uses (silico-22, -23) have taken: their
-# services' cgroups. Filler is background work a shard's whole run outlasts (an hour for mutants,
-# two for a sweep, cut off for any real run that starts), and holds no claim, so what it uses counts as spare, not as
-# busy: else a long run's queued shards, starting beside it, would take LEAST for hours.
+# services' cgroups. Filler is background work a shard's whole run outlasts (an hour for
+# mutants, two for a sweep, cut off for any real run that starts), and holds no claim, so what
+# it uses counts as spare, not as busy: else a long run's queued shards, starting beside it,
+# would take LEAST for hours.
 filler() {
   # Neither there (another VM, a runner renamed): nothing, not a failed pipeline.
   { cat /sys/fs/cgroup/system.slice/system-ci\\x2drunner.slice/ci-runner@silico-2[23].service/cpu.stat \
