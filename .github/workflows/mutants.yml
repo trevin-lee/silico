@@ -43,7 +43,7 @@ on:
         description: "Number of shards to share the work (1 to 16; up to nine run at once, one a runner: seven for a long run)"
         default: "2"
       long:
-        description: "Empty (the default) for a run that gates a merge: its shards take any of the thirteen runners labelled mutants-pr. Set (true) for a long one, a milestone's or a whole crate's, hours long: its shards take only the seven labelled mutants, so a run that gates a merge never waits behind it, on silico-20 and -21"
+        description: "Empty (the default) for a run that gates a merge: its shards take any of the thirteen runners labelled mutants-pr. Set (true) for a long one, a milestone's or a whole crate's, hours long: its shards take only the seven labelled mutants, so a run that gates a merge never waits behind it, on silico-5 to -8, -20, and -21"
         default: ""
       filler:
         description: "Empty for a real run. Set only by the filler (filler.yml): a, the commits main gained since its last such run, or b<k>, the k-th slice of the source; such a run yields to real ones, stops after an hour, tests its mutants in random order, and fails only on misses not in .github/mutants-triaged.txt"
@@ -138,18 +138,19 @@ jobs:
       # (silico-9 to -12 and -15 to -17, through /etc/ci-runner/labels on the runner VM); for
       # any other, `mutants-pr` (those and silico-5 to -8, -20, -21). silico-1 to -4 carry
       # only `gate`, so gates always have four runners however many shards are queued: four at
-      # once, since past four a quarter of the VM each oversubscribes it (2026-10-28: six gates
-      # held 15-27% of their time stalled; silico-5 to -8 were gates until then, and took
-      # mutants too until 2026-10-26). silico-5 to -12 (also `filler`) and -15 to -17
-      # carry `mutants`, not `pve`, so no gate (nor a job from a branch older than these
-      # labels, which asks for pve) runs there and grows a gate's build; mutants ask for
-      # `mutants`, not `pve`, to reach them. A run's shards spread over every free mutants
-      # runner, so one long run can hold the pool for hours. The bench and the oracle sweep,
-      # which hold work to a clock, have a runner of their own at a gate's CPU weight
-      # (silico-18, labelled `sweep`). The plan and summary take seconds and run on the
-      # runners labelled control (silico-13, -14), so they never queue behind shards. The
-      # runners share one VM, and free runners don't keep its CPU free: see the shard's
-      # share below.
+      # once, since past four a quarter of the VM each oversubscribes it (2026-10-28: six
+      # gates held 15-27% of their time stalled; silico-5 to -8 were gates until then, and
+      # took mutants too until 2026-10-26). silico-9 to -12 (also `filler`) and -15 to -17
+      # carry `mutants` (the long lane; taken off while merge-lane runs back up, by the label
+      # files on the VM), silico-5 to -8 (also `filler`), -20, and -21 `mutants-pr`, none
+      # `pve`, so no gate (nor a job from a branch older than these labels, which asks for
+      # pve) runs there and grows a gate's build; mutants ask for theirs, not `pve`. A run's
+      # shards spread over every free mutants runner, so one long run can hold the pool for
+      # hours. The bench and the oracle sweep, which hold work to a clock, have a runner of
+      # their own at a gate's CPU weight (silico-18, labelled `sweep`). The plan and summary
+      # take seconds and run on the runners labelled control (silico-13, -14), so they never
+      # queue behind shards. The runners share one VM, and free runners don't keep its CPU
+      # free: see the shard's share below.
       max-parallel: 9
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
@@ -196,14 +197,15 @@ jobs:
           # A filler run is cut off after an hour: in random order (cargo-mutants shuffles each
           # shard's share after sharding), so each turn at a slice reaches different mutants.
           if [ -n "$FILLER" ]; then args+=(--shuffle); fi
-          # A tenth of the machine each (3 threads of 30): a long run's seven shards and two more
-          # on silico-20 and -21 can run at once (below), all at the idle weight. At 2 threads a shard (twelve
-          # runners), the VM sat 27% idle over a day (2026-10-25,
+          # A tenth of the machine each (3 threads of 30), at least: a long run's seven shards
+          # and the merge lane's can run at once (below), all at the idle weight, and
+          # .github/shard-threads.sh keeps their claims to 28 (2 a shard past 23). At 2
+          # threads a shard (twelve runners), the VM sat 27% idle over a day (2026-10-25,
           # ~/.cache/silico-review/ci-ext4/idle-day-after-3.tsv) while shards queued for a
           # runner: the runners were the limit, not the CPU. A shard takes only CPU nothing
           # else wants: its runner's cgroup is at the idle weight (CPUWeight=idle on silico-5
-          # to -12, -15 to -17, -20 to -23, set with systemctl set-property from 2026-10-26), so
-          # between runners a gate always wins. Nice and the idle scheduling class rank
+          # to -12, -15 to -17, -20 to -23, set with systemctl set-property from 2026-10-26),
+          # so between runners a gate always wins. Nice and the idle scheduling class rank
           # threads only within their own cgroup; between runner services only the cgroups'
           # weights count, so nice 19 alone let two gates fail tests held to a wall clock
           # beside full shards on 2026-10-25. Nice 19 (below) still orders a shard's own

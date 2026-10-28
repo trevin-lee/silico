@@ -13,11 +13,11 @@
 # rebuild is mostly serial, its tests use every thread), so each shard holds a claim for its
 # count, a file named for its runner instance, until its job ends (`release`), and a shard
 # takes no more than the CPUs no claim and no gate's reserve holds (23 of 30), whatever their
-# phases, and LEAST once those are held: at most 32 threads for a long run's seven shards, 38
-# with the merge lane's two, starting in turn on an idle VM (27 before). Shards take turns
-# under a lock, so a long run's seven starting together see each other's claims. A runner
-# instance runs one job at a time, so a claim its job left (a runner that died) is replaced by
-# that instance's next shard; claims older than a shard's longest job (a day) are deleted.
+# phases, and at least LEAST while claims are short of those 23, 2 once they reach them, and
+# none past 28 (below). Shards take turns under a lock, so a long run's seven starting
+# together see each other's claims. A runner instance runs one job at a time, so a claim its
+# job left (a runner that died) is replaced by that instance's next shard; claims older than a
+# shard's longest job (a day) are deleted.
 #
 # Usage: bash .github/shard-threads.sh LEAST MOST   (prints the count and how it was chosen,
 #                                                    the count alone on the first line)
@@ -29,7 +29,9 @@ mkdir -p "$claims"
 # By instance (pve-silico-9), not by registration (pve-silico-9-1793152973): each job's runner
 # registers again under a new suffix, so only the instance's name is the same for its next shard.
 instance=$RUNNER_NAME
-if [[ $RUNNER_NAME =~ ^(.*)-[0-9]+$ ]]; then instance=${BASH_REMATCH[1]}; fi
+# The suffix is the registration's epoch time (/usr/local/libexec/ci-runner), nine digits or more:
+# a name without one (pve-silico-10) stays whole.
+if [[ $RUNNER_NAME =~ ^(.*)-[0-9]{9,}$ ]]; then instance=${BASH_REMATCH[1]}; fi
 claim=$claims/claim.$instance
 
 # Under the lock even to release, so a shard choosing never reads a claim half gone.
@@ -57,25 +59,65 @@ filler() {
   { cat /sys/fs/cgroup/system.slice/system-ci\\x2drunner.slice/ci-runner@silico-2[23].service/cpu.stat \
     2>/dev/null || true; } | awk '/^usage_usec / { sum += $2 } END { print sum + 0 }'
 }
-read -r total0 idle0 < <(cpu)
-filler0=$(filler)
-sleep 5
-read -r total1 idle1 < <(cpu)
-filler1=$(filler)
-ticks=$((total1 - total0 > 0 ? total1 - total0 : 1))
-# /proc/stat counts every CPU's time in ticks (USER_HZ, 100 a second), cgroups in microseconds.
-hz=$(getconf CLK_TCK)
-fillers=$((cpus * (filler1 - filler0) * hz / 1000000 / ticks))
-idle=$((cpus * (idle1 - idle0) / ticks + fillers))
+# The CPUs idle over the next 5 s, filler's counted as idle (above): `idle`, `fillers`.
+sample() {
+  local total0 idle0 total1 idle1 filler0 filler1 ticks hz
+  read -r total0 idle0 < <(cpu)
+  filler0=$(filler)
+  sleep 5
+  read -r total1 idle1 < <(cpu)
+  filler1=$(filler)
+  ticks=$((total1 - total0 > 0 ? total1 - total0 : 1))
+  # /proc/stat counts every CPU's time in ticks (USER_HZ, 100 a second), cgroups in
+  # microseconds.
+  hz=$(getconf CLK_TCK)
+  fillers=$((cpus * (filler1 - filler0) * hz / 1000000 / ticks))
+  idle=$((cpus * (idle1 - idle0) / ticks + fillers))
+}
 
-rm -f "$claim"
-find "$claims" -name 'claim.*' -mmin +1440 -delete
-claimed=$(find "$claims" -name 'claim.*' -exec cat {} + | awk '{ sum += $1 } END { print sum + 0 }')
-
-unheld=$((cpus - reserve - claimed))
-spare=$((idle - reserve < unheld ? idle - reserve : unheld))
-threads=$((spare < least ? least : spare > most ? most : spare))
+# Past the budget, a shard takes 2 threads, not LEAST; and none starts that would take the
+# claims past the ceiling, two CPUs short of the VM: it waits for a claim to go, polling, up to
+# a bound, then runs at 2 all the same, saying so. Thirteen merge-lane runners (2026-10-28) at
+# LEAST each would claim 39 threads, against the 24 to 28 the shards' tests held to a wall clock
+# were measured at; one of those timed out counts its mutant as caught, which no run shows.
+budget=$((cpus - reserve))
+ceiling=$((cpus - 2))
+crowded=2
+wait=${SILICO_SHARD_WAIT:-1200}
+poll=${SILICO_SHARD_POLL:-30}
+began=$(date +%s)
+deadline=$((began + wait))
+waited=0
+while :; do
+  sample
+  rm -f "$claim"
+  find "$claims" -name 'claim.*' -mmin +1440 -delete
+  claimed=$(find "$claims" -name 'claim.*' -exec cat {} + | awk '{ sum += $1 } END { print sum + 0 }')
+  if [ "$claimed" -lt "$budget" ]; then
+    unheld=$((budget - claimed))
+    spare=$((idle - reserve < unheld ? idle - reserve : unheld))
+    threads=$((spare < least ? least : spare > most ? most : spare))
+    why="between $least and $most"
+    break
+  fi
+  if [ $((claimed + crowded)) -le "$ceiling" ]; then
+    threads=$crowded
+    why="$claimed claimed reach the budget of $budget: $crowded"
+    break
+  fi
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    threads=$crowded
+    why="past the ceiling of $ceiling: $crowded all the same"
+    break
+  fi
+  # Give the lock back while waiting, so shards ending can release their claims.
+  flock -u 9
+  sleep "$poll"
+  flock 9
+  waited=$(($(date +%s) - began))
+done
 echo "$threads" >"$claim"
 
 echo "$threads"
-echo "$threads threads: $idle of $cpus CPUs idle ($fillers of them filler's), $reserve kept for a gate, $claimed held by other shards (between $least and $most)"
+if [ "$waited" -gt 0 ]; then why="$why, after waiting ${waited}s for claims to go"; fi
+echo "$threads threads: $idle of $cpus CPUs idle ($fillers of them filler's), $reserve kept for a gate, $claimed held by other shards ($why)"

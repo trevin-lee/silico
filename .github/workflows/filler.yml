@@ -138,7 +138,8 @@ jobs:
 
           # The unfinished jobs of every run going: their status, runner, and labels. A run in
           # progress can still have jobs waiting for runners, which come first if a filler
-          # runner could take them (silico-9 to -12 carry mutants, mutants-pr, and filler).
+          # runner could take them (silico-5 to -12 carry mutants-pr and filler, 9 to 12 mutants
+          # too).
           # A mutants run or an oracle sweep with no shard or sweep job yet is starting (its
           # plan, or its yield, still going): a real one's plan has cancelled filler and its
           # shards will want filler's runners; a filler one's shards don't show yet as busy
