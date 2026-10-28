@@ -9,9 +9,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use silico_protocol::{
-    Algorithm, Generation, Geometry, Op, Part, Parts, PointOf, PointValues, Reply, SketchGeometry,
-    SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value, arc_from_points, no_distance,
-    squared_distance,
+    Algorithm, DragBegin, Generation, Geometry, Op, Part, Parts, PointOf, PointValues, Reply,
+    SketchGeometry, SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value,
+    arc_from_points, no_distance, squared_distance,
 };
 
 use crate::document::{
@@ -113,6 +113,54 @@ pub trait SketchSolver: Send {
     fn stopper(&mut self) -> Result<Option<SolveStopper>, Error> {
         Ok(None)
     }
+
+    /// Readies the solver for a request of a drag under way, and gives a handle that stops
+    /// it, as [`stopper`](Self::stopper) does, but never starts a worker: one that ended
+    /// took the drag's session with it, so the request fails as a crash. Every solver that
+    /// starts again in `stopper` must override it.
+    fn session_stopper(&mut self) -> Result<Option<SolveStopper>, Error> {
+        self.stopper()
+    }
+
+    /// Starts a drag (M3.7's session in the sketch worker), each request begun as a solve
+    /// is, with [`stopper`](Self::stopper): the sketch diagnosed once and its point pinned.
+    /// A solver that can't drag refuses.
+    fn drag_begin(&mut self, begin: DragBegin) -> Result<DragStarted, Error> {
+        let _ = begin;
+        Err(no_drags())
+    }
+
+    /// Moves the drag's cursor to `to`, solved from where the drag began, under `timeout`.
+    fn drag_move(
+        &mut self,
+        to: [f64; 2],
+        timeout: Duration,
+    ) -> Result<silico_protocol::Moved, Error> {
+        let _ = (to, timeout);
+        Err(no_drags())
+    }
+
+    /// Ends the drag.
+    fn drag_end(&mut self) -> Result<(), Error> {
+        Err(no_drags())
+    }
+}
+
+/// A drag's start, as the worker found it: the degrees of freedom left, and the
+/// constraints in conflict, by tag (none, or no drag was started).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DragStarted {
+    pub dofs: i32,
+    pub conflicting: Vec<Tag>,
+}
+
+/// A solver that can't drag refusing a drag's request.
+fn no_drags() -> Error {
+    Error::new(
+        ErrorCode::Internal,
+        "this sketch solver can't drag a sketch",
+    )
+    .with_suggestion(crate::worker::SILICO_BUG)
 }
 
 /// Stops a solve from another thread ([`SketchSolver::stopper`]).
@@ -259,6 +307,67 @@ impl SketchSolver for SketchWorker {
     }
 
     fn solve(&mut self, system: SketchSystem) -> Result<Solved, Error> {
+        self.usable()?;
+        match self.call(Op::Solve(system), self.timeout)? {
+            Reply::Solved(solved) => Ok(solved),
+            other => Err(self.wrong_reply("Solve", &other)),
+        }
+    }
+
+    fn session_stopper(&mut self) -> Result<Option<SolveStopper>, Error> {
+        if self.stopped.load(std::sync::atomic::Ordering::SeqCst)
+            || self.worker.is_stopped()
+            || self.worker.has_exited()
+        {
+            return Err(Error::new(
+                ErrorCode::WorkerCrashed,
+                "the sketch worker ended during the drag, and its session with it",
+            )
+            .with_suggestion("begin the drag again: the next begin starts another worker"));
+        }
+        let killer = self.worker.killer();
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.stopped = std::sync::Arc::clone(&stopped);
+        self.begun = true;
+        Ok(Some(SolveStopper::new(move || {
+            stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+            killer.kill();
+        })))
+    }
+
+    fn drag_begin(&mut self, begin: DragBegin) -> Result<DragStarted, Error> {
+        self.usable()?;
+        match self.call(Op::DragBegin(begin), self.timeout)? {
+            Reply::DragStarted { dofs, conflicting } => Ok(DragStarted { dofs, conflicting }),
+            other => Err(self.wrong_reply("DragBegin", &other)),
+        }
+    }
+
+    fn drag_move(
+        &mut self,
+        to: [f64; 2],
+        timeout: Duration,
+    ) -> Result<silico_protocol::Moved, Error> {
+        self.usable()?;
+        match self.call(Op::DragMove { to }, timeout)? {
+            Reply::Moved(moved) => Ok(moved),
+            other => Err(self.wrong_reply("DragMove", &other)),
+        }
+    }
+
+    fn drag_end(&mut self) -> Result<(), Error> {
+        self.usable()?;
+        // A drag's end does no solving: past a move's limit, the worker is hung.
+        match self.call(Op::DragEnd, crate::drag::DRAG_MOVE_TIMEOUT)? {
+            Reply::Done => Ok(()),
+            other => Err(self.wrong_reply("DragEnd", &other)),
+        }
+    }
+}
+
+impl SketchWorker {
+    /// Whether a request may run now: a solve's, or a drag's, each begun as a solve is.
+    fn usable(&mut self) -> Result<(), Error> {
         // A solve that was stopped stays stopped: its later requests (a re-diagnosis from
         // its solution) aren't run on a new worker (council, robustness, round 2: one ran
         // 125 s after its recompute was superseded, and the newer waited for it).
@@ -305,19 +414,92 @@ impl SketchSolver for SketchWorker {
         } else {
             self.ready()?;
         }
-        let op = Op::Solve(system);
-        let name = op.name();
-        match self.worker.call(Generation(0), op, self.timeout)? {
-            Reply::Solved(solved) => Ok(solved),
-            other => {
-                self.worker.shut_down();
-                Err(Error::new(
-                    ErrorCode::ProtocolError,
-                    format!("the sketch worker replied to {name} with {}", other.kind()),
-                ))
-            }
+        Ok(())
+    }
+
+    /// `op` run on the worker, under `timeout`.
+    fn call(&mut self, op: Op, timeout: Duration) -> Result<Reply, Error> {
+        self.worker.call(Generation(0), op, timeout)
+    }
+
+    /// A reply of the wrong kind: the worker can't be trusted, and is stopped.
+    fn wrong_reply(&mut self, name: &str, reply: &Reply) -> Error {
+        self.worker.shut_down();
+        Error::new(
+            ErrorCode::ProtocolError,
+            format!("the sketch worker replied to {name} with {}", reply.kind()),
+        )
+    }
+}
+
+/// Refuses `solved` unless it could be the solution of `sent`: as many values, its fixed
+/// ones as sent, every value within reach (one that can't be built may not be), lists of
+/// tags sent and unknowns, in order, a residual for each tag sent, and an algorithm exactly
+/// where a solution is given ([`Translation::check_reply`]'s, and a drag's closing solve's).
+/// A worker that answers otherwise can't be trusted.
+pub(crate) fn check_solved(sent: &SketchSystem, solved: &Solved) -> Result<(), Error> {
+    let bad = |what: String| {
+        Err(Error::new(
+            ErrorCode::ProtocolError,
+            format!("the sketch worker's solution {what}"),
+        ))
+    };
+    if solved.values.len() != sent.values.len() {
+        return bad(format!(
+            "has {} values for {} sent",
+            solved.values.len(),
+            sent.values.len()
+        ));
+    }
+    for (i, (a, b)) in sent.values.iter().zip(&solved.values).enumerate() {
+        let unknown = sent.unknowns.binary_search(&Value(i as u32)).is_ok();
+        if !unknown && a.to_bits() != b.to_bits() {
+            return bad(format!("moves value {i}, which is fixed"));
+        }
+        // A solution that can't be built may be out of reach: it's named, not used.
+        if solved.status != SolveStatus::SolvedInvalid && !silico_protocol::within_reach(*b) {
+            return bad(format!("has value {i} out of reach"));
         }
     }
+    let mut tags: Vec<Tag> = sent
+        .constraints
+        .iter()
+        .filter_map(SolverConstraint::tag)
+        .collect();
+    tags.sort_unstable();
+    for (name, list) in [
+        ("conflicting", &solved.conflicting),
+        ("redundant", &solved.redundant),
+        ("partially redundant", &solved.partially_redundant),
+    ] {
+        if list.windows(2).any(|w| w[0] >= w[1]) || list.iter().any(|t| !tags.contains(t)) {
+            return bad(format!("lists {name} tags it wasn't sent, or out of order"));
+        }
+    }
+    if solved.free.windows(2).any(|w| w[0] >= w[1])
+        || solved
+            .free
+            .iter()
+            .any(|v| sent.unknowns.binary_search(v).is_err())
+    {
+        return bad("lists free values that aren't unknowns, or out of order".to_owned());
+    }
+    if solved
+        .residuals
+        .iter()
+        .map(|(t, _)| *t)
+        .ne(tags.iter().copied())
+    {
+        return bad("has residuals for other tags than were sent".to_owned());
+    }
+    let solution = matches!(
+        solved.status,
+        SolveStatus::Success | SolveStatus::SolvedExceptRedundant | SolveStatus::SolvedInvalid
+    );
+    if solution != solved.algorithm.is_some_and(|a| ALGORITHMS.contains(&a)) {
+        return bad(format!("is {:?} by {:?}", solved.status, solved.algorithm));
+    }
+    Ok(())
 }
 
 /// What a solved sketch is: where everything is, and what the solve found.
@@ -1518,81 +1700,12 @@ impl Translation {
         Ok(written(&self.sketch, &points, &radii, &references))
     }
 
-    /// The tags sent, in increasing order.
-    fn tags(&self) -> Vec<Tag> {
-        let mut tags: Vec<Tag> = self
-            .system
-            .constraints
-            .iter()
-            .filter_map(SolverConstraint::tag)
-            .collect();
-        tags.sort_unstable();
-        tags
-    }
-
     /// That `solved` answers what was sent: as many values, the fixed ones as sent and all
     /// within reach, lists of tags sent and unknowns, a residual for each tag sent, and an
     /// algorithm exactly where a solution is given. A worker that answers otherwise can't
     /// be trusted.
     pub fn check_reply(&self, solved: &Solved) -> Result<(), Error> {
-        let bad = |what: String| {
-            Err(Error::new(
-                ErrorCode::ProtocolError,
-                format!("the sketch worker's solution {what}"),
-            ))
-        };
-        let sent = &self.system;
-        if solved.values.len() != sent.values.len() {
-            return bad(format!(
-                "has {} values for {} sent",
-                solved.values.len(),
-                sent.values.len()
-            ));
-        }
-        for (i, (a, b)) in sent.values.iter().zip(&solved.values).enumerate() {
-            let unknown = sent.unknowns.binary_search(&Value(i as u32)).is_ok();
-            if !unknown && a.to_bits() != b.to_bits() {
-                return bad(format!("moves value {i}, which is fixed"));
-            }
-            // A solution that can't be built may be out of reach: it's named, not used.
-            if solved.status != SolveStatus::SolvedInvalid && !silico_protocol::within_reach(*b) {
-                return bad(format!("has value {i} out of reach"));
-            }
-        }
-        let tags = self.tags();
-        for (name, list) in [
-            ("conflicting", &solved.conflicting),
-            ("redundant", &solved.redundant),
-            ("partially redundant", &solved.partially_redundant),
-        ] {
-            if list.windows(2).any(|w| w[0] >= w[1]) || list.iter().any(|t| !tags.contains(t)) {
-                return bad(format!("lists {name} tags it wasn't sent, or out of order"));
-            }
-        }
-        if solved.free.windows(2).any(|w| w[0] >= w[1])
-            || solved
-                .free
-                .iter()
-                .any(|v| sent.unknowns.binary_search(v).is_err())
-        {
-            return bad("lists free values that aren't unknowns, or out of order".to_owned());
-        }
-        if solved
-            .residuals
-            .iter()
-            .map(|(t, _)| *t)
-            .ne(tags.iter().copied())
-        {
-            return bad("has residuals for other tags than were sent".to_owned());
-        }
-        let solution = matches!(
-            solved.status,
-            SolveStatus::Success | SolveStatus::SolvedExceptRedundant | SolveStatus::SolvedInvalid
-        );
-        if solution != solved.algorithm.is_some_and(|a| ALGORITHMS.contains(&a)) {
-            return bad(format!("is {:?} by {:?}", solved.status, solved.algorithm));
-        }
-        Ok(())
+        check_solved(&self.system, solved)
     }
 
     /// The ID of the constraint the solver reports as `tag`, if one is.

@@ -206,6 +206,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - IDs, progress tokens, and cancels' `requestId`s that are valid JSON strings but no Unicode (`"\ud800"`): a decoder that refuses them calls the string "neither a string nor a number"
 - Every JSON-RPC refusal path (params, `_meta`, a progress token, not just the tool's name) checked for a suggestion, not only a message and a parameter
 - A targeted request checked after a generic emptiness test (an `undo` or `redo` `to` a revision, on a side with nothing left): the session's own revision, or one the bound dropped, is answered "nothing to undo", never naming `to`; send each `to` at the stack's two ends
+- Lists checked for repeats by scanning the entries before each (`list[..i].contains(x)`): 200,000 distinct IDs (2 MB of a 64 MiB request) take minutes; time a long list of distinct members, not only of repeats
+- Helpers shared between commands that word an error with one command's name ("the session closed before the render finished", "render it there"): reach each shared failure path from the other command and read its words
 
 ## Kernel worker and IPC
 
@@ -245,11 +247,15 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A list from a worker or OCCT deduplicated with `Vec::contains`: 200,000 distinct entries, 2.4 MB of a 512 MiB frame, are 2·10^10 comparisons; time it, and give exactly one more than its words name ("and 1 more pair", not "pairs"), and none at all
 - Process-wide statics in OCCT's writers (`static Standard_Integer id` for each STEP NEXT_ASSEMBLY_USAGE_OCCURRENCE): a determinism test of one-part files never reaches them; compare an assembly's bytes in a fresh worker and in one that wrote an assembly before
 - Checks that count entities written against the topology (STEP face surfaces against `TopExp::MapShapes` faces): a face two solids of a compound share is written once a solid, so an exact count refuses a whole file as missing faces
+- A refusal from a worker that keeps its session (a drag's frame solved out of reach) taken by the client as the worker failing: send one refused frame, then a good one; the client mustn't end what the worker still holds
+- A worker killed while idle mid-session (a drag): a client that readies (restarts) its worker before each request sends the next to a fresh worker with no session, and the crash comes back as the worker's "no session" `invalid_input`
+- A session's replies (a drag's frames, its closing solve) passed up unchecked where one-shot replies are checked: forge a frame or solution of the wrong length, a fixed value moved, NaN, a value out of reach
 
 ## Recompute and scheduling
 
 - Generation counters at their end (a kernel already at `u64::MAX`): a `+ 1` panics (or wraps to 0 in release, so every request is superseded), and a `saturating_add` leaves the generation where it was, so a cancel cancels nothing
 - A panic under one of several threads that count themselves running under a shared condvar (a kernel bug in `submit`, say): the others wait for it forever, the scope never joins, and the handling for a dead thread is never reached; wrap a test kernel that panics on one op
+- A panic on a session's own thread (a drag's, under a solver call): every handle waiting on its condvar for an outcome (a move's ticket, the end, the drop) waits forever; and a handle whose `wait(&self)` takes the outcome out blocks forever on a second wait
 - A naive sequential evaluator as the oracle: random timelines with value-based refusals (kept and not kept), several edits in a row, comparing every feature's outcome, the bodies, which keys are equal, and exactly which steps each edit ran
 - Results taken from the cache or memory without their inputs' (an entry lost, a subdirectory that's a link): a step that reads more than its inputs (a fillet naming its base's elements from the whole lineage) runs before they're rebuilt
 - A superseded recompute that ends after the newer one: both keep their results by key, the last wins, and the older one's copy (its measure superseded, so unmeasured) overwrites the newer's measured or refused one; hold the older one's requests, start the newer, and loop a few hundred rounds, since which keeps last is a race
@@ -302,6 +308,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A walk up a missing path that spends the links' budget (40) on each directory too: past ~40 missing directories below an outside one, whether that one exists decides "outside" against "can't be reached", an oracle for what exists outside the workspace
 - Paths to make ending in `/` or `/.`: `Path::file_name` skips both, so `brand/.` makes a file `brand`, which `open(2)` of the same path never would
 - Paths quoted whole in errors: `../` and a megabyte of `./` is a path under a request's limit whose "outside the workspace" refusal is a megabyte
+- A worker's reply kept in a shared cache before the code that reads it checks it (a mesh of more faces than the solid's element map): one bad reply refuses every later read from the cache, the kernel well again; forge it once with `answer_instead`, then read again with the kernel well
+- Answers that report what the cache knows (a floor recorded, an entry kept) rather than what the request asks: a value exactly at a boundary the cache learns later (a floor that's exactly a power of two, met at its own level) answers one request two ways by another session's history; read on a fresh cache, then after other reads
 
 ## Rendering
 
@@ -314,3 +322,4 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A body far deeper along a named view than across it (a 1 x 500,000 x 1 rod seen end-on): a view fitted to its extent across is under the renderer's least zoom for the scene's reach, and a check meant for given cameras answers the core's own view as Silico's bug
 - A body built but never measured (its summary refused or failed): code that culls, fits, or checks the eye by the body's box leaves it out of every view, so a camera on it draws nothing as Ok and an eye inside it is taken
 - A value the command normalizes, passed back as answered (a camera's up already of unit length and perpendicular): renormalizing in f64 isn't a fixed point, so the answer changes in its last bits every round trip
+- Worker meshes of fewer faces or edges than the solid (counts the model already holds in its summary): answered Ok, named short, with nothing saying the rest are missing

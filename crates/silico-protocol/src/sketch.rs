@@ -1154,7 +1154,7 @@ impl SketchSystem {
     }
 
     /// The values of the point `p` names, if its geometry has it.
-    fn point_values(&self, p: PointOf) -> Option<PointValues> {
+    pub fn point_values(&self, p: PointOf) -> Option<PointValues> {
         match (self.geometry.get(p.geometry().0 as usize)?, p) {
             (SketchGeometry::Point(v), PointOf::Point(_)) => Some(*v),
             (
