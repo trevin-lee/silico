@@ -74,6 +74,12 @@ fn pushed(states: &[(String, Option<Document>)], bound: usize) -> UndoStack<u64,
 #[test]
 fn a_run_of_edits_undone_one_by_one_gives_back_each_earlier_state_and_its_fingerprints() {
     let states = run();
+    // Each state's fingerprints as its model had them while it was the session's, before
+    // anything is undone: the box's length and the pin's radius change them, so a restore
+    // of a neighbouring state has others.
+    let live: Vec<_> = states.iter().map(|(text, _)| fingerprints(text)).collect();
+    assert_ne!(live[0], live[1]);
+    assert_ne!(live[1], live[2]);
     let mut stack = pushed(&states, UNDO_BYTES);
     assert_eq!((stack.undo_left(), stack.redo_left()), (4, 0));
     let mut revision = 14;
@@ -85,9 +91,12 @@ fn a_run_of_edits_undone_one_by_one_gives_back_each_earlier_state_and_its_finger
         assert_eq!(String::from_utf8(restored.text.clone()).unwrap(), *text);
         assert_eq!(restored.reached, back);
         assert_eq!((restored.undo, restored.redo), (back, 4 - back));
+        // Rebuilt from the text restored, the model the state had. (Its element maps, and
+        // that the rebuild runs no kernel step, its steps in the cache, are the command's
+        // to show, which holds the session's cache.)
         assert_eq!(
             fingerprints(&String::from_utf8(restored.text).unwrap()),
-            fingerprints(text),
+            live[back],
             "state {back}"
         );
     }
@@ -624,13 +633,25 @@ fn a_bound_of_nothing_never_panics_and_keeps_begin_s_and_the_state_before_each_e
         lengths[1].1 = 10 + k;
         let (text, document) = of(&lengths);
         stack.edit(text.as_bytes(), Some(&document), u64::from(k), ());
-        // Begin's bytes are counted and never dropped, nor the state before the edit: at
-        // most those two to undo to (both, before the bound's first drop).
-        assert!(stack.bytes() >= f, "{k}");
-        assert!(stack.undo_left() <= 2, "{k}");
+        // Begin's bytes are counted and never dropped, nor the state before the edit: the
+        // first edit holds begin's alone, the second the first's too (nothing droppable
+        // yet), and from the third the bound drops all but the one before the edit: two
+        // edits out of reach at the third, one more at each after.
+        let mut before = tens(2);
+        before[1].1 = 10 + k - 1;
+        let (bytes, undo, dropped) = match k {
+            1 => (f, 1, 0),
+            2 => (f + list_of(1) + chunk_of(&before), 2, 0),
+            _ => (f + list_of(1) + chunk_of(&before), 1, k as usize - 1),
+        };
+        assert_eq!(
+            (stack.bytes(), stack.undo_left(), stack.dropped()),
+            (bytes, undo, dropped),
+            "{k}"
+        );
         assert_eq!(stack.redo_left(), 0);
     }
-    assert!(stack.dropped() >= 48);
+    assert_eq!(stack.dropped(), 49);
     assert_eq!(stack.redo(None, 99), Err(Refusal::NothingToRedo));
 }
 
@@ -671,39 +692,59 @@ fn ten_thousand_undos_and_redos_leave_the_count_and_the_texts_as_they_were() {
     assert_eq!(stack.bytes(), low);
 }
 
-#[test]
-fn a_document_a_few_bytes_past_the_limit_is_held_whole() {
-    // `write::parts` promises its parts only "if the whole is at most `limit` bytes", but
-    // counts each feature's "[\n" or ",\n" and not the "\n  ]\n}\n" after the last: a
-    // document 1 to 7 bytes past the limit is split anyway. Here one box whose note makes
-    // its canonical text 7 bytes past MAX_DOCUMENT_LEN.
-    use silico_core::document::json::MAX_DOCUMENT_LEN;
+/// A document of one box whose note makes its canonical text exactly `len` bytes, and the
+/// document it is.
+fn padded_to(len: usize) -> (String, Document) {
     let (small, mut document) = of(&tens(1));
     let prefix = line(0, 10);
     let short = small.replacen(&prefix, &prefix.replacen('}', r#", "note": ""}"#, 1), 1);
-    let pad = MAX_DOCUMENT_LEN + 7 - short.len();
-    let note = "n".repeat(pad);
+    let note = "n".repeat(len - short.len());
     let text = short.replacen(r#""note": """#, &format!(r#""note": "{note}""#), 1);
-    assert_eq!(text.len(), MAX_DOCUMENT_LEN + 7);
+    assert_eq!(text.len(), len);
     document.features[0].note = Some(note);
-    // The reader refuses it, as it would any document past the limit.
-    assert!(read(text.as_bytes()).is_err());
-    assert!(write(&document).is_err());
+    (text, document)
+}
+
+#[test]
+fn a_document_past_the_limit_is_held_whole_and_one_at_it_in_chunks() {
+    use silico_core::document::json::MAX_DOCUMENT_LEN;
+    // Was (a break-it finding): `write::parts` counted each feature's "[\n" or ",\n" and
+    // not the "\n  ]\n}\n" after the last, so a document 1 to 7 bytes past the limit was
+    // split anyway, and held in chunks rather than whole. The text it gave back was the
+    // same, so it cost only the bound's count. One byte past, and seven, are held whole;
+    // one at the limit in chunks: its list and its one chunk, the box's text and
+    // `CHUNK_BYTES` (the text less the head, "[\n", and the close).
     let (begin, _) = of(&tens(2));
     let f = begin.len();
-    let mut stack = UndoStack::new(begin.as_bytes(), 0u64, (), UNDO_BYTES);
-    stack.edit(text.as_bytes(), Some(&document), 1, ());
-    stack.edit(small.as_bytes(), None, 2, ());
-    // Was (a break-it finding): it was held in chunks (its list, its one chunk) rather than whole: `parts`
-    // takes a document 7 bytes past its limit. The text it gives back is the same, so it
-    // costs only the bound's count; low.
-    assert_eq!(stack.bytes(), f + text.len() + WHOLE_BYTES);
-    assert_eq!(stack.undo(None, 3).unwrap().text, text.as_bytes());
+    let (small, _) = of(&tens(1));
+    for (len, whole) in [
+        (MAX_DOCUMENT_LEN + 7, true),
+        (MAX_DOCUMENT_LEN + 1, true),
+        (MAX_DOCUMENT_LEN, false),
+    ] {
+        let (text, document) = padded_to(len);
+        // The reader refuses one past the limit, as the writer does, and takes one at it.
+        assert_eq!(read(text.as_bytes()).is_ok(), !whole, "{len}");
+        assert_eq!(write(&document).is_ok(), !whole, "{len}");
+        let mut stack = UndoStack::new(begin.as_bytes(), 0u64, (), UNDO_BYTES);
+        stack.edit(text.as_bytes(), Some(&document), 1, ());
+        stack.edit(small.as_bytes(), None, 2, ());
+        let held = if whole {
+            text.len() + WHOLE_BYTES
+        } else {
+            list_of(1) + (text.len() - HEAD.len() - 2 - 7) + CHUNK_BYTES
+        };
+        assert_eq!(stack.bytes(), f + held, "{len}");
+        assert_eq!(stack.undo(None, 3).unwrap().text, text.as_bytes(), "{len}");
+    }
 }
 
 // ---------------------------------------------------------------------------------------
 // A model of the stack: what each state holds counted from scratch, against the stack's
-// running count, over random runs of edits, undos, and redos.
+// running count, over random runs of edits, undos, and redos. What it checks on its own is
+// the count (each chunk by its texts, from scratch at every step, not the stack's running
+// total or its pointers) and the texts (written by hand, held whole); its rules for undo,
+// redo, `to`, and drops are the stack's, copied, so those rest on the tests by hand above.
 
 #[derive(Debug, Clone)]
 enum Step {
