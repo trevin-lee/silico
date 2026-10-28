@@ -14,6 +14,8 @@ use silico_protocol::{
     arc_from_points, no_distance, squared_distance,
 };
 
+pub use silico_protocol::MovedOnce;
+
 use crate::document::{
     Angle as DocumentAngle, Checked, Coordinate, Direction, ElementId, FeatureId, Form, Length,
     LineSide, MemberPaths, Operation, Reference, Sketch, SketchConstraint, TangentSide,
@@ -142,6 +144,14 @@ pub trait SketchSolver: Send {
 
     /// Ends the drag.
     fn drag_end(&mut self) -> Result<(), Error> {
+        Err(no_drags())
+    }
+
+    /// One move of `begin`'s point to `to`, begun as a solve is, with
+    /// [`stopper`](Self::stopper): a sketch edit's (an extend's), held to a solve's limits
+    /// and its time, not a drag's (`Op::MoveOnce`). A solver that can't refuses.
+    fn move_once(&mut self, begin: DragBegin, to: [f64; 2]) -> Result<MovedOnce, Error> {
+        let _ = (begin, to);
         Err(no_drags())
     }
 }
@@ -352,6 +362,15 @@ impl SketchSolver for SketchWorker {
         match self.call(Op::DragMove { to }, timeout)? {
             Reply::Moved(moved) => Ok(moved),
             other => Err(self.wrong_reply("DragMove", &other)),
+        }
+    }
+
+    fn move_once(&mut self, begin: DragBegin, to: [f64; 2]) -> Result<MovedOnce, Error> {
+        self.usable()?;
+        // A solve's time, as it's a sketch edit's one move, not a drag's.
+        match self.call(Op::MoveOnce { begin, to }, self.timeout)? {
+            Reply::MovedOnce(once) => Ok(once),
+            other => Err(self.wrong_reply("MoveOnce", &other)),
         }
     }
 
@@ -1695,7 +1714,7 @@ impl Translation {
 
     /// The sketch as its file holds it once `values` are written back, as a save writes a
     /// solution ([`SketchSolution::written`]): what a load starts from.
-    fn stored(&self, values: &[f64]) -> Result<Sketch, Error> {
+    pub(crate) fn stored(&self, values: &[f64]) -> Result<Sketch, Error> {
         let (points, radii, references) = self.placed(values)?;
         Ok(written(&self.sketch, &points, &radii, &references))
     }
@@ -1706,6 +1725,11 @@ impl Translation {
     /// be trusted.
     pub fn check_reply(&self, solved: &Solved) -> Result<(), Error> {
         check_solved(&self.system, solved)
+    }
+
+    /// Point `id`'s own geometry, which a drag of it pins, if the sketch has the point.
+    pub(crate) fn point_geometry(&self, id: &ElementId) -> Option<Geometry> {
+        self.point_geometry.get(id).copied()
     }
 
     /// The ID of the constraint the solver reports as `tag`, if one is.

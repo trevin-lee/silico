@@ -160,14 +160,19 @@ fn a_sketch_solve_or_drag_or_a_render_is_refused_as_another_workers() {
         constraints: vec![],
         algorithms: vec![silico_protocol::Algorithm::DogLeg],
     };
+    let begin = silico_protocol::DragBegin {
+        system: system.clone(),
+        point: silico_protocol::PointOf::Point(silico_protocol::Geometry(0)),
+    };
     for (op, name) in [
-        (Op::Solve(system.clone()), "Solve"),
+        (Op::Solve(system), "Solve"),
+        (Op::DragBegin(begin.clone()), "DragBegin"),
         (
-            Op::DragBegin(silico_protocol::DragBegin {
-                system,
-                point: silico_protocol::PointOf::Point(silico_protocol::Geometry(0)),
-            }),
-            "DragBegin",
+            Op::MoveOnce {
+                begin,
+                to: [1.0, 2.0],
+            },
+            "MoveOnce",
         ),
         (Op::DragMove { to: [1.0, 2.0] }, "DragMove"),
         (Op::DragEnd, "DragEnd"),

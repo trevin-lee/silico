@@ -38,6 +38,8 @@ mod adversarial_redundant_resolve;
 mod adversarial_sketch;
 #[path = "adversarial_sketch_edit.rs"]
 mod adversarial_sketch_edit;
+#[path = "adversarial_sketch_extend.rs"]
+mod adversarial_sketch_extend;
 #[path = "adversarial_sketch_features.rs"]
 mod adversarial_sketch_features;
 #[path = "adversarial_sketch_solve.rs"]
@@ -54,6 +56,8 @@ mod drag_session;
 mod sketch;
 #[path = "sketch_edit.rs"]
 mod sketch_edit;
+#[path = "sketch_extend.rs"]
+mod sketch_extend;
 #[path = "sketch_features.rs"]
 mod sketch_features;
 #[path = "sketch_features_gate.rs"]
