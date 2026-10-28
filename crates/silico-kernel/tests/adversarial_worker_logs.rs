@@ -226,12 +226,15 @@ fn a_stalled_sink_has_every_line_given_or_counted_and_in_order() {
     );
     let mut worker = Worker::spawn(&exe).unwrap();
     sink.wait_entered();
+    // Reading the burst's lines is work: the wall time over how much slower than a quiet
+    // machine this one ran it (`Share`), which load doesn't move.
+    let share = crate::share::Share::start();
     let asked = Instant::now();
     let err = worker.call(Generation(1), echo(), WAIT).unwrap_err();
+    let (wall, slowdown) = (asked.elapsed(), share.finish().slowdown);
     assert!(
-        asked.elapsed() < Duration::from_secs(8),
-        "the crash took {:?} to report",
-        asked.elapsed()
+        wall.div_f64(slowdown) < Duration::from_secs(8),
+        "the crash took {wall:?} to report, the machine {slowdown:.2} times slower than a quiet one"
     );
     assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     let cause = err.cause().unwrap_or_default();
@@ -335,10 +338,11 @@ fn a_stalled_sink_still_has_the_crash_report_wait_for_a_log_held_open() {
     );
     let mut worker = Worker::spawn(&exe).unwrap();
     sink.wait_entered();
+    let lateness = crate::lateness::Lateness::start();
     let asked = Instant::now();
     let err = worker.call(Generation(1), echo(), WAIT).unwrap_err();
     assert!(
-        asked.elapsed() < Duration::from_secs(8),
+        asked.elapsed() < crate::lateness::allowance(Duration::from_secs(8), lateness.most()),
         "{:?}",
         asked.elapsed()
     );
@@ -418,10 +422,15 @@ fn a_log_sink_that_blocks_outright_never_holds_up_a_kernel_worker() {
         .collect();
     let mut doomed =
         Worker::spawn(&script("worker-logs-doomed", &format!("{lines}exit 3"))).unwrap();
+    let lateness = crate::lateness::Lateness::start();
     let asked = Instant::now();
     let err = doomed.call(Generation(1), echo(), WAIT).unwrap_err();
     assert!(
-        asked.elapsed() < Duration::from_millis(1500),
+        // Never the whole 2 s exit grace, which a report held up by the sink takes: load makes
+        // that slower, never faster.
+        asked.elapsed()
+            < crate::lateness::allowance(Duration::from_millis(1500), lateness.most())
+                .min(Duration::from_secs(2)),
         "the crash took {:?} to report",
         asked.elapsed()
     );

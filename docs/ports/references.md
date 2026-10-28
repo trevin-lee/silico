@@ -51,7 +51,7 @@ ARCHITECTURE.md forbids a reference silently re-pointing, so three of FreeCAD's 
 | `80045d0e88`, `19e382d5b0` | The dialog's guess for missing edges; it dropped the good edges | No guesses: candidates only |
 | `837f6fa788` | The geometric re-point logged at debug level, not as a warning | No geometric re-point |
 | `dbd2bade1e`, `d45ff368a7` | Vertex-only and widening-tolerance geometric searches | No geometric re-point; candidates later |
-| `26c895c30d` | Relink to a new base only on a unique geometric match | No relinking: a removed base is the gate's error (M2.2) |
+| `26c895c30d` | Relink to a new base only on a unique geometric match | Rerouted by remove and move (A9, docs/ports/chain.md); a name that passed through the removed feature is found on the new base; refused where the removed feature made the element |
 | `0a3677b9eb` | Element maps with more than two children silently corrupted on load | Maps aren't stored; names are rebuilt from history |
 | `e9ea3d0d25` | A map version change forces every reference through the geometric search | A change to the naming grammar is the format's change, made with the maintainer |
 

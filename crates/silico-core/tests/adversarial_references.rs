@@ -23,6 +23,7 @@ use silico_core::{Error, ErrorCode};
 
 use super::model;
 use super::references;
+use super::share::Share;
 use super::within;
 
 use model::{checked, described, id, made, published};
@@ -910,10 +911,13 @@ fn fillet_with_many_broken_names_says_each_without_running_away() {
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
     let text = document(&[&fillet("f0000001", "m3tq8v0z", &refs, "0.5")]);
     let document = checked(&text);
+    // A recompute, its work handed from thread to thread: its wall time over how much slower
+    // than a quiet machine this one ran it (`Share`), which load doesn't move.
+    let share = Share::start();
     let start = Instant::now();
     let engine = engine();
     let model = published(&engine, document);
-    let spent = start.elapsed();
+    let spent = start.elapsed().div_f64(share.finish().slowdown);
     // The first hundred listed, each in place, and how many there are, as the gate lists
     // its problems and counts them (found by the review: 500,000 errors from an 11 MB
     // document, 231 MB of JSON; and by the rebase's review: a summary error counted as one).

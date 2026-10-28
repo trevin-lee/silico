@@ -532,8 +532,7 @@ impl DragBegin {
     /// must be, and the part of the sketch its pins hold ([`DragBegin::pins`],
     /// [`SketchSystem::part`]) has at most [`MAX_DRAG_UNKNOWNS`] unknowns.
     pub fn check(&self) -> Result<(), InvalidParameter> {
-        self.system.check()?;
-        self.system.check_point(self.point, "point", "the drag")?;
+        self.check_move()?;
         let n = self.part().unknowns.len();
         if n > MAX_DRAG_UNKNOWNS {
             return Err(invalid(
@@ -544,6 +543,15 @@ impl DragBegin {
             ));
         }
         Ok(())
+    }
+
+    /// Whether the worker can make one move of this ([`crate::Op::MoveOnce`]): the system
+    /// passes [`SketchSystem::check`], a solve's limits, and the point is one its geometry
+    /// has. A single move isn't held to [`MAX_DRAG_UNKNOWNS`], which bounds each of a drag's
+    /// many moves for the cursor's sake.
+    pub fn check_move(&self) -> Result<(), InvalidParameter> {
+        self.system.check()?;
+        self.system.check_point(self.point, "point", "the drag")
     }
 
     /// The points the drag pins, with their weights, as FreeCAD's `Sketch::initMove` pins
@@ -1154,7 +1162,7 @@ impl SketchSystem {
     }
 
     /// The values of the point `p` names, if its geometry has it.
-    fn point_values(&self, p: PointOf) -> Option<PointValues> {
+    pub fn point_values(&self, p: PointOf) -> Option<PointValues> {
         match (self.geometry.get(p.geometry().0 as usize)?, p) {
             (SketchGeometry::Point(v), PointOf::Point(_)) => Some(*v),
             (

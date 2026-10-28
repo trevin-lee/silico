@@ -2215,7 +2215,8 @@ fn tessellated(
 /// the tolerance less what rounding to 32 bits can move the shape's vertices, as far out as
 /// its bounding box reaches ([`export_deflection`]): a tolerance whose rounding there would
 /// take more than half of it is refused ([`Refusal::RoundingPastTolerance`]), as is a mesh
-/// of more than [`MAX_EXPORT_TRIANGLES`] triangles ([`Refusal::TooManyTriangles`]). It leaves
+/// of more than [`MAX_EXPORT_TRIANGLES`] triangles ([`Refusal::TooManyTriangles`], said as
+/// the unraised mesh's with `force_face_deflection`, which isn't the export's). It leaves
 /// the shape as it was. Reports each face's triangles and where its nodes lie on the shape's
 /// edges and vertices, for the core to join and check (docs/ports/mesh-export.md).
 pub fn export_mesh(
@@ -2260,6 +2261,7 @@ fn export_mesh_within(
     check_export_triangles(
         raw.face_triangles().iter().map(|&n| u64::from(n)).sum(),
         limit,
+        force_face_deflection,
     )
     .map_err(KernelError::new)?;
     let triples = |values: &[f64]| -> Vec<[f64; 3]> {

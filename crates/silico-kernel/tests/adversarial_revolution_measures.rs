@@ -1260,9 +1260,12 @@ fn a_bspline_meridian_of_many_spans_turned_measures_as_pappus() {
         let cap = w.cap();
         for angle in [TAU, silico_protocol::radians(1.0)] {
             let shape = k.revolution(&cap, BELOW_CHORD, 0.0, angle).unwrap().shape;
+            // Its wall time over how much slower than a quiet machine this one ran it
+            // (`Share`), which load doesn't move.
+            let share = crate::share::Share::start();
             let started = std::time::Instant::now();
             let s = k.summarize(&shape).unwrap();
-            let took = started.elapsed();
+            let took = started.elapsed().div_f64(share.finish().slowdown);
             assert!(s.valid, "{n}");
             assert!(took.as_secs_f64() < 10.0, "{n}: {took:?}");
             cases.push((

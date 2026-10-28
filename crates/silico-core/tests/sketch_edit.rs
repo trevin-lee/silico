@@ -189,6 +189,59 @@ fn a_symmetry_about_a_point_another_curve_still_uses_stays() {
 }
 
 #[test]
+fn a_removed_lines_midpoint_becomes_its_ends_symmetry_while_they_stay() {
+    // FreeCAD stores a midpoint as a Symmetric of the line's ends about the point, so its
+    // line's delete leaves it while neighbours keep the ends (the sketch-edit oracle,
+    // remove_line_with_midpoint, 1.1.3). a runs p0 to p1, b p1 to p3, c p3 to p4; the lone
+    // p2 at (20, 0) is b's midpoint. Removing b leaves p1 to a and p3 to c: p2 is still
+    // midway between them, as a symmetric of p1 and p3 about p2, its ID kept.
+    let lines = [
+        line("a0000000", "p0000000", "p0000001"),
+        line("b0000000", "p0000001", "p0000003"),
+        line("c0000000", "p0000003", "p0000004"),
+    ]
+    .join(", ");
+    let midpoint =
+        r#"{"id": "k0000000", "type": "midpoint", "point": "p0000002", "line": "b0000000"}"#;
+    let before = doc(POINTS, &lines, "", "", midpoint);
+    let edited = remove(sketch_of(&before), &ids(&["b0000000"])).unwrap();
+    let after = gated(&before, &edited);
+    assert_eq!(edited.removed, ids(&["b0000000"]));
+    assert_eq!(edited.modified, ids(&["k0000000"]));
+    assert!(text(&after).contains(
+        r#"{"id": "k0000000", "type": "symmetric", "a": "p0000001", "b": "p0000003", "about": "p0000002"}"#
+    ));
+    // Without c, p3 goes with b, and the midpoint with it: no symmetric of an end gone.
+    let lines = [
+        line("a0000000", "p0000000", "p0000001"),
+        line("b0000000", "p0000001", "p0000003"),
+    ]
+    .join(", ");
+    let before = doc(POINTS, &lines, "", "", midpoint);
+    let edited = remove(sketch_of(&before), &ids(&["b0000000"])).unwrap();
+    gated(&before, &edited);
+    assert_eq!(edited.removed, ids(&["p0000003", "b0000000", "k0000000"]));
+    assert!(edited.modified.is_empty());
+    // With the point named too, it goes, and the midpoint with it.
+    let before = doc(
+        POINTS,
+        &[
+            line("a0000000", "p0000000", "p0000001"),
+            line("b0000000", "p0000001", "p0000003"),
+            line("c0000000", "p0000003", "p0000004"),
+        ]
+        .join(", "),
+        "",
+        "",
+        midpoint,
+    );
+    let edited = remove(sketch_of(&before), &ids(&["b0000000", "p0000002"])).unwrap();
+    gated(&before, &edited);
+    assert_eq!(edited.removed, ids(&["p0000002", "b0000000", "k0000000"]));
+    assert!(edited.modified.is_empty());
+}
+
+#[test]
 fn removing_one_of_two_lines_removes_their_angle_and_a_symmetry_about_it() {
     let lines = [
         line("a0000000", "p0000000", "p0000001"),

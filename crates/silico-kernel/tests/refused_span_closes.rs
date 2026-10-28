@@ -87,7 +87,11 @@ fn a_request_refused_before_it_was_sent_lets_its_span_go() {
             &pool,
             &edit,
             &marker,
-            KernelRequest::debug(DebugOp::Sleep { millis: 30_000 }),
+            // A timeout no test reaches (the worker sleeps 600 s whatever it's asked): one left
+            // to run has no outcome within the wait, where the default minute would end it as
+            // superseded just inside it.
+            KernelRequest::debug(DebugOp::Sleep { millis: 600_000 })
+                .with_timeout(Duration::from_secs(600)),
         );
         pool.advance(Generation(2));
         let outcome = pending
@@ -98,11 +102,6 @@ fn a_request_refused_before_it_was_sent_lets_its_span_go() {
         assert!(
             sent.elapsed() >= stop_after,
             "superseded before it was sent: never stopped"
-        );
-        // And it was stopped, not left to finish its sleep.
-        assert!(
-            sent.elapsed() < Duration::from_secs(10),
-            "it ran to the end: never stopped"
         );
     }
     wait_closed(&closed, "hung_edit");

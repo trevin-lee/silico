@@ -10,6 +10,7 @@
 # apart only by how many there are: a key missed more times than it's listed here is new,
 # and all its misses are listed. Add a mutant with the PR that argues it; remove its line
 # when a test kills it or its code goes.
+crates/silico-core/src/document/chain.rs | move_feature | replace > with >= | #241
 crates/silico-core/src/document/validate.rs | bytes_key | replace | with ^ | #84
 crates/silico-core/src/document/validate.rs | validate | replace > with >= | #84
 crates/silico-core/src/document/validate.rs | validate | replace > with >= | #84
@@ -150,6 +151,11 @@ crates/silico-core/src/views.rs | depth_of_box | replace == with != | #181
 crates/silico-core/src/views.rs | sees | replace == with != | #181
 crates/silico-core/src/views.rs | sees | replace == with != | #181
 crates/silico-core/src/views.rs | sees | replace == with != | #181
+# meshing_depth's corners, as depth_of_box's: == to != swaps each axis's low and high, so
+# the eight corners come in another order, the same set (#244).
+crates/silico-core/src/views.rs | meshing_depth | replace == with != | #244
+crates/silico-core/src/views.rs | meshing_depth | replace == with != | #244
+crates/silico-core/src/views.rs | meshing_depth | replace == with != | #244
 # An absolute path joined to the workspace is itself.
 crates/silico-core/src/file.rs | output_target | replace match guard given.is_relative() with true | #181
 # Asking one more mesh ahead than the machine runs only widens the window: every mesh is
@@ -190,3 +196,16 @@ crates/silico-core/src/cache/at.rs | open_dir_through_links | replace | with ^ |
 crates/silico-core/src/cache/at.rs | path_of | replace path_of -> rustix::io::Result<PathBuf> with Ok(Default::default()) | #212
 # The stub for systems that are neither macOS nor Linux, the same key: not compiled on Linux.
 crates/silico-core/src/cache/at.rs | path_of | replace path_of -> rustix::io::Result<PathBuf> with Ok(Default::default()) | #212
+# The drag client's end once the drag is closed: && to || sets an end the thread never
+# reads, since it closed and returned with no move running (#246).
+crates/silico-core/src/drag.rs | DragSession::finish | replace && with || | #246
+# A drag's worker-gone check: its own stopper's flag is set only as it kills the worker,
+# and a stopped worker is reaped, so the exit check finds both (#246).
+crates/silico-core/src/sketch.rs | <impl SketchSolver for SketchWorker>::session_stopper | replace || with && | #246
+# Extend's floors: a zero increment is refused before a line's sign is read; an arc
+# under the floor long has its ends within it too, so the ends' check refuses it alike;
+# and its ends within the floor at half a turn needs a radius the gate refuses (#259).
+crates/silico-core/src/extend.rs | extend_line | replace < with <= | #259
+crates/silico-core/src/extend.rs | extend_arc | replace || with && | #259
+crates/silico-core/src/extend.rs | extend_arc | replace * with + | #259
+crates/silico-core/src/extend.rs | extend_arc | replace > with >= | #259

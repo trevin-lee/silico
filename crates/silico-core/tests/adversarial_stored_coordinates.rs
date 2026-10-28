@@ -764,6 +764,9 @@ fn a_sketch_at_the_limit_with_everything_moved_reports_drift_and_saves_promptly(
     });
     let engine = engine(&sketches);
     let text = at_the_limit();
+    // A recompute and a format, handed from thread to thread: their wall time over how much
+    // slower than a quiet machine this one ran them (`Share`), which load doesn't move.
+    let share = super::share::Share::start();
     let start = Instant::now();
     let model = published(&engine, &text);
     let errors = model.drift();
@@ -782,12 +785,9 @@ fn a_sketch_at_the_limit_with_everything_moved_reports_drift_and_saves_promptly(
     // The message names a few, not all ten thousand.
     assert!(e.message().len() < 1000, "{} bytes", e.message().len());
     let saved = command::format(&model).unwrap();
+    let spent = start.elapsed().div_f64(share.finish().slowdown);
     assert_eq!(saved.resolved, [feature()]);
-    assert!(
-        start.elapsed() < Duration::from_secs(10),
-        "{:?}",
-        start.elapsed()
-    );
+    assert!(spent < Duration::from_secs(10), "{spent:?}");
     holds_as_saved(&saved.text);
 }
 

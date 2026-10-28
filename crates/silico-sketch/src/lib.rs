@@ -356,6 +356,20 @@ impl Drag {
     /// constraints conflict, pins its point where it is.
     pub fn begin(begin: &DragBegin) -> Result<DragStart, Failure> {
         begin.check().map_err(invalid)?;
+        Self::start(begin, begin.pins())
+    }
+
+    /// Checks `begin` as one move ([`DragBegin::check_move`]: a solve's limits, not the
+    /// drag's), and starts it as [`Drag::begin`] does, for that move alone, its pins
+    /// FreeCAD's `initMove`'s ([`DragBegin::pins`]), as FreeCAD's `extend` drags a line.
+    pub fn begin_once(begin: &DragBegin) -> Result<DragStart, Failure> {
+        begin.check_move().map_err(invalid)?;
+        Self::start(begin, begin.pins())
+    }
+
+    /// Builds and diagnoses `begin`'s sketch, checked, and, unless constraints conflict,
+    /// holds `pins` where they are.
+    fn start(begin: &DragBegin, pins: Vec<(PointOf, f64)>) -> Result<DragStart, Failure> {
         prepare_eigen();
         // The whole sketch's diagnosis, as FreeCAD's: a conflict anywhere refuses the drag.
         let whole = ffi::diagnose(&encode(&begin.system)).map_err(bridge_threw)?;
@@ -369,8 +383,7 @@ impl Drag {
         }
         // The session holds only the part the pins move; the rest stays where it is.
         let part = begin.part();
-        let pins: Vec<ffi::Pin> = begin
-            .pins()
+        let pins: Vec<ffi::Pin> = pins
             .into_iter()
             .map(|(p, scale)| {
                 let (position, geometry) = point(p);
