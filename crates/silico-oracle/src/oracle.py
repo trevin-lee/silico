@@ -550,19 +550,19 @@ def edit_delete(s, e, applied):
 def edit_unjoin(s, e, applied):
     g, pos = e["geometry"], e["position"]
     # An end-to-end tangency between the curve and another at the point: Silico removes it,
-    # since they no longer meet (sketch-edit.md:235); the vertex Delete keeps it, and with
+    # since they no longer meet (sketch-edit.md:237); the vertex Delete keeps it, and with
     # it the joint, which FreeCAD unjoins by deleting the tangency.
     ends = [i for i, c in enumerate(s.Constraints)
             if c.Type in ("Tangent", "Perpendicular") and c.FirstPos != 0 and c.SecondPos != 0
             and ((c.First == g and c.FirstPos == pos) or (c.Second == g and c.SecondPos == pos))]
     if ends:
         drop(s, ends)
-        applied.append(235)
+        applied.append(237)
     joined = any(c.Type == "Coincident" and [g, pos] in refs_of(c) for c in s.Constraints)
     if ends and not joined:
         return
     # The vertex Delete drops the curve's own length (0358ff7ce2), which Silico keeps
-    # (sketch-edit.md:229, 236): put back.
+    # (sketch-edit.md:231, 238): put back.
     lengths = [captured(s, i) for i, c in enumerate(s.Constraints)
                if c.Type in ("Distance", "DistanceX", "DistanceY") and c.First == g
                and c.FirstPos == 0 and c.Second == GEO_UNDEF]
@@ -570,7 +570,7 @@ def edit_unjoin(s, e, applied):
     for cap in lengths:
         if not named(s, cap["name"]):
             put_back(s, cap)
-            applied.append(236)
+            applied.append(238)
 
 
 def edit_merge(s, e, applied):
@@ -591,7 +591,7 @@ def edit_split(s, e, applied):
         return
     if kind == "circle" and len(at) != 2:
         # A circle split at one position: 1.1.3's one arc, whose ends aren't joined (:120),
-        # which Silico refuses (decision 3, :444).
+        # which Silico refuses (decision 3, :449).
         s.split(g, at[0])
         return
     original = s.Geometry[g].copy()
@@ -601,8 +601,9 @@ def edit_split(s, e, applied):
     # and put back after as the note has it: an angle, on which 1.1.3 segfaults (:134); an
     # `on` or point-to-line distance, which it drops (:138); a symmetric about the curve,
     # which it drops (:141); and a tangency at the curve's end, which it makes a Coincident
-    # (:121, :142); and a circle's or arc's edge tangency, which 1.1.3 drops (c823a6b270,
-    # :326).
+    # (:121, :142); a circle's or arc's edge tangency, which 1.1.3 drops (c823a6b270,
+    # :331); and a tangent_on onto the curve, which 1.1.3 puts on both of a line's pieces
+    # and drops from a round's (:143).
     held = []
     for i, c in enumerate(s.Constraints):
         refs = refs_of(c)
@@ -621,11 +622,30 @@ def edit_split(s, e, applied):
         elif (c.Type == "Tangent" and kind in ("arc", "circle") and len(refs) == 2
               and all(r[1] == 0 for r in refs)):
             held.append((i, "round_tangent"))
+        elif c.Type == "Tangent" and len(refs) == 2 and refs[1] == [g, 0] and refs[0][1] != 0:
+            held.append((i, "onto"))
     caps = [(captured(s, i), rule) for i, rule in held]
     drop(s, [i for i, _ in held])
     s.split(g, at[0])
     if kind == "circle":
-        s.split(index_of(s, keep), at[1])
+        first = index_of(s, keep)
+        arc = s.Geometry[first]
+        if arc.LastParameter - arc.FirstParameter < math.pi:
+            # 1.1.3's split of a circle can leave an arc whose two parameters are one, not a
+            # full turn apart (at 293.8 degrees, for one: OCCT folds the turn's end back onto
+            # its start), and its second split then fails ("U1 == U2"). The arc of a full turn
+            # the note has it make (:120) in its place; setting the geometry gives every
+            # piece a new ID, so each gets its own back.
+            ids = [gid(s, i) for i in range(len(s.Geometry))]
+            turn = Part.ArcOfCircle(Part.Circle(arc.Center, V(0, 0, 1), arc.Radius),
+                                    arc.FirstParameter, arc.FirstParameter + 2 * math.pi)
+            geometry = list(s.Geometry)
+            geometry[first] = turn
+            s.Geometry = geometry
+            for i, geometry_id in enumerate(ids):
+                s.setGeometryId(i, geometry_id)
+            applied.append(120)
+        s.split(first, at[1])
     g = index_of(s, keep)
     new = [gid(s, i) for i in range(len(s.Geometry)) if gid(s, i) not in ids_before]
     if len(new) != 1 or g is None:
@@ -649,19 +669,19 @@ def edit_split(s, e, applied):
         span = lambda t: g if t <= ts else (piece if t <= last else g)
     if kind == "circle":
         # A circle splits at two positions into two arcs that meet at both (decision 3,
-        # sketch-edit.md:444); 1.1.3's first split leaves an arc whose ends aren't joined
+        # sketch-edit.md:449); 1.1.3's first split leaves an arc whose ends aren't joined
         # (:120).
         s.addConstraint(Sketcher.Constraint("Coincident", g, 1, piece, 2))
-        applied.append(444)
+        applied.append(449)
     if kind == "line":
         # Line pieces held collinear by an end-to-end Tangent at the split point, as main
-        # since 6d06b61c7e; 1.1.3 joins them with a Coincident (decision 1, :125-126, :442).
+        # since 6d06b61c7e; 1.1.3 joins them with a Coincident (decision 1, :125-126, :447).
         joint = [i for i, c in enumerate(s.Constraints) if c.Type == "Coincident"
                  and sorted(map(tuple, refs_of(c))) == sorted([(g, 2), (piece, 1)])]
         if joint:
             drop(s, joint)
             s.addConstraint(Sketcher.Constraint("Tangent", g, 2, piece, 1))
-            applied.append(442)
+            applied.append(447)
         # Direction constraints on the start-side piece only, which 1.1.3 copies to both
         # (decision 1, :132-133).
         on_g = {(c.Type, tuple(map(tuple, [r for r in refs_of(c) if r != [g, 0]])))
@@ -674,7 +694,7 @@ def edit_split(s, e, applied):
             drop(s, copies)
             applied.append(132)
     # An edge tangency, which 1.1.3 copies to both pieces, to the piece whose span holds the
-    # contact, else the start-side one (decision 2, :139, :443).
+    # contact, else the start-side one (decision 2, :139, :448).
     both = []
     for i, c in enumerate(s.Constraints):
         refs = refs_of(c)
@@ -721,13 +741,19 @@ def edit_split(s, e, applied):
             applied.append(141)
         elif rule == "round_tangent":
             # To the piece whose span holds the contact, else the start-side one (decision
-            # 2, :139, :443).
+            # 2, :139, :448).
             other = [r for r in refs if r[0] != g][0][0]
             point = contact(original, s.Geometry[other]) if other >= 0 else None
             holder = span(param(point)) if point is not None else g
             refs = [[holder, 0] if r == [g, 0] else r for r in refs]
             put_back(s, cap, refs)
-            applied.append(326)
+            applied.append(331)
+        elif rule == "onto":
+            # To the piece holding its point, as main's findPieceContainingPoint (:143).
+            point = s.getPoint(refs[0][0], refs[0][1])
+            refs[1] = [which(point), 0]
+            put_back(s, cap, refs)
+            applied.append(143)
         elif rule == "end":
             # The outer ends: the curve's start stays the start-side piece's, its end is now
             # the other piece's.
@@ -746,7 +772,7 @@ def edit_trim(s, e, applied):
     kind = curve_kind(geo)
     ends = [s.getPoint(g, pos) for pos in (1, 2)] if kind in ("line", "arc") else []
     # Cutter ends held on the curve, by a PointOnObject or an endpoint-to-edge Tangent: the
-    # only ones Silico's pieces share (decision 5, :207, :446).
+    # only ones Silico's pieces share (decision 5, :208, :451).
     held = set()
     for c in s.Constraints:
         if c.Type in ("PointOnObject", "Tangent") and c.FirstPos in (1, 2) and c.Second == g and c.SecondPos == 0:
@@ -763,7 +789,7 @@ def edit_trim(s, e, applied):
     pieces = {keep} | {gid(s, i) for i in range(len(s.Geometry)) if gid(s, i) not in ids_before}
     # A new end at a cut joined to the cutter's end by 1.1.3's 5e-5 mm test, where no
     # constraint held that end on the curve: Silico gives the piece a new point on the
-    # cutter instead (decision 5, :207, :446).
+    # cutter instead (decision 5, :208, :451).
     swap = []
     for i, c in enumerate(s.Constraints):
         if c.Type != "Coincident":
@@ -783,13 +809,27 @@ def edit_trim(s, e, applied):
         drop(s, [i for i, *_ in swap])
         for _, pg, pp, og in swap:
             s.addConstraint(Sketcher.Constraint("PointOnObject", pg, pp, og))
-        applied.append(446)
-    # A line only shortened keeps a symmetric about it, which 1.1.3 drops (:215).
+        applied.append(451)
+    # A cutter's perpendicular, which 1.1.3 makes an end-to-edge perpendicular at its cut
+    # (:180): Silico's is the perpendicular between the directions and the new end's on
+    # the cutter, which together are FreeCAD's (:216).
+    ends = [(i, refs_of(c)) for i, c in enumerate(s.Constraints)
+            if c.Type == "Perpendicular" and len(refs_of(c)) == 2
+            and refs_of(c)[0][1] != 0 and refs_of(c)[1][1] == 0
+            and gid(s, refs_of(c)[0][0]) in pieces]
+    if ends:
+        caps = [captured(s, i) for i, _ in ends]
+        drop(s, [i for i, _ in ends])
+        for cap, (_, ((pg, pp), (og, _))) in zip(caps, ends):
+            put_back(s, cap, [[index_of(s, cap["refs"][0][0]), 0], [index_of(s, cap["refs"][1][0]), 0]])
+            s.addConstraint(Sketcher.Constraint("PointOnObject", index_of(s, cap["refs"][0][0]), pp, index_of(s, cap["refs"][1][0])))
+        applied.append(216)
+    # A line only shortened keeps a symmetric about it, which 1.1.3 drops (:217).
     if len(pieces) == 1 and kind == "line":
         for cap in about:
             if not named(s, cap["name"]) and all(index_of(s, r) is not None for r, _ in cap["refs"]):
                 put_back(s, cap)
-                applied.append(215)
+                applied.append(217)
 
 
 SKETCH_EDITS = {
