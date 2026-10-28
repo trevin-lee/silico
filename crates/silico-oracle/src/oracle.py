@@ -497,7 +497,7 @@ def named(s, name):
 
 
 def round_parameter(geo, point, first):
-    """The angle of `point` about round `geo`'s centre, in [first, first + 2π)."""
+    """The angle of `point` about round `geo`'s centre, in [first, first + 2 pi)."""
     a = math.atan2(point.y - geo.Center.y, point.x - geo.Center.x)
     while a < first:
         a += 2 * math.pi

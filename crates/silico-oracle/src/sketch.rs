@@ -453,7 +453,7 @@ pub struct FreecadSolved {
     pub values: Vec<f64>,
 }
 
-const SCRIPT: &str = r#"
+pub(crate) const SCRIPT: &str = r#"
 import json, math, os
 import FreeCAD as App, Part, Sketcher
 

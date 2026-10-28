@@ -427,4 +427,18 @@ mod tests {
             );
         }
     }
+
+    /// FreeCAD reads the scripts it's given in the locale's encoding, ASCII on CI (a hook
+    /// that runs `oracle.py` failed on a "π" in a comment): every script the oracle hands it
+    /// is ASCII.
+    #[test]
+    fn the_scripts_freecad_runs_are_ascii() {
+        for (name, text) in [
+            ("oracle.py", super::ORACLE),
+            ("the sketch oracle's script", crate::sketch::SCRIPT),
+        ] {
+            let first = text.char_indices().find(|(_, c)| !c.is_ascii());
+            assert_eq!(first, None, "{name} isn't ASCII");
+        }
+    }
 }
