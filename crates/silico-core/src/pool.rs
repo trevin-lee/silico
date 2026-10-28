@@ -554,19 +554,22 @@ impl KernelPool {
         Ok(pool)
     }
 
-    /// Starts up to `n` of the slots not yet started, each starting its worker now, on a
-    /// thread of its own, as a request would start it: an app's warm start (M5.0's
-    /// decision 10), so its first rebuild needn't wait for a process and OCCT's libraries.
-    /// Doesn't wait for them. A request that comes while they start waits for them, not for
-    /// more: a slot starting is free to take it. A worker that can't be started leaves its
-    /// slot to start on demand. How many slots it started: none for a pool not opened, or
-    /// stopping, or with every slot started.
+    /// Starts slots until `n` are started (at most its size), each starting its worker on a
+    /// thread of its own, as a request would start it, and waits until each has started or
+    /// failed: an app's warm start (M5.0's decision 10), run off its UI thread, so its first
+    /// rebuild needn't wait for a process and OCCT's libraries. A request that comes while
+    /// they start waits for them, not for more: a slot starting is free to take it. A
+    /// worker that can't be started leaves its slot to start on demand. Called again, it
+    /// starts none more. How many workers it started: none for a pool not opened, or
+    /// stopping.
     pub fn warm(&self, n: usize) -> usize {
-        let mut started = 0;
-        while started < n {
+        let _span = tracing::info_span!("kernel_pool_warm", n).entered();
+        let (ready_tx, ready) = mpsc::channel();
+        let mut starting = 0;
+        loop {
             let slot = {
                 let mut state = lock(&self.shared.state);
-                if state.stopping {
+                if state.stopping || state.started >= n {
                     break;
                 }
                 let Some(slot) = state.unstarted.pop() else {
@@ -575,14 +578,26 @@ impl KernelPool {
                 state.started += 1;
                 slot
             };
-            if let Err(e) = start_slot(&self.shared, slot, SlotStart::Warm) {
+            if let Err(e) = start_slot(&self.shared, slot, SlotStart::Now(ready_tx.clone())) {
                 tracing::warn!("couldn't start a kernel pool slot ahead of its requests: {e}");
                 // A request that came while the slot counted started found it free, and
                 // started none: it's failed, as `grow`'s would be, if none is started now.
                 unstartable(&self.shared, &e);
                 break;
             }
-            started += 1;
+            starting += 1;
+        }
+        drop(ready_tx);
+        let mut started = 0;
+        for _ in 0..starting {
+            match ready.recv() {
+                Ok(Ok(())) => started += 1,
+                Ok(Err(e)) => {
+                    tracing::warn!("a kernel worker started ahead of its requests failed: {e}");
+                }
+                // A slot's thread that ended unready: nothing more will come.
+                Err(_) => break,
+            }
         }
         tracing::debug!(started, "warmed the kernel pool");
         started
@@ -679,6 +694,10 @@ impl Clients for KernelPool {
 
     fn client(&self) -> PoolClient {
         KernelPool::client(self)
+    }
+
+    fn warm(&self, n: usize) -> usize {
+        KernelPool::warm(self, n)
     }
 }
 
@@ -1425,11 +1444,10 @@ enum Starts {
 /// When one slot starts its worker: now, saying through the sender whether it could; or
 /// with its first request.
 enum SlotStart {
+    /// Its worker started now, and whether it did told: the pool's start, or its warm start
+    /// ([`KernelPool::warm`]); if it can't, the slot ends, left to start again on demand.
     Now(mpsc::Sender<Result<(), Error>>),
     OnDemand,
-    /// Started ahead of any request ([`KernelPool::warm`]): its worker starts now, and
-    /// if it can't, the slot ends, left to start again on demand.
-    Warm,
 }
 
 /// One slot of the pool: starts its worker (or, on demand, leaves it to its first
@@ -1464,12 +1482,6 @@ fn serve(slot: usize, shared: &Arc<Shared>, start: SlotStart) {
         // Its first request starts it (`live_worker`, below); idle, a slot with no worker
         // and no failure to retry after starts none (`Keeper::tend`).
         SlotStart::OnDemand => {}
-        SlotStart::Warm => {
-            if let Err(e) = keeper.live_worker() {
-                tracing::warn!("a kernel worker started ahead of its requests failed: {e}");
-                return;
-            }
-        }
     }
     loop {
         let task = match shared.next() {

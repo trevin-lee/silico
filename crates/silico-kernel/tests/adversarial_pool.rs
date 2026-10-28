@@ -1844,11 +1844,12 @@ fn requests_one_after_another_on_demand_start_one_worker_and_one_slot() {
 
 #[test]
 fn a_warm_start_starts_the_workers_it_says_and_a_request_after_takes_one_of_them() {
-    // Warmed, two slots of four start their workers ahead of any request; a request then
-    // runs on one of them, starting no slot or worker more.
+    // Warmed, two slots of four start their workers ahead of any request, up once the warm
+    // start returns; a request then runs on one of them, starting no slot or worker more.
     let pool = on_demand(TEST_WORKER, 4);
     assert_eq!(pool.warm(2), 2);
-    let warmed = wait_full(&pool, 2, &BTreeSet::new());
+    let warmed = pool.pids();
+    assert_eq!(warmed.len(), 2, "{warmed:?}");
     let before = threads();
     done(pool.submit(Generation(1), sleep(0))).unwrap();
     assert_eq!(pool.pids(), warmed);
@@ -1857,15 +1858,46 @@ fn a_warm_start_starts_the_workers_it_says_and_a_request_after_takes_one_of_them
 
 #[test]
 fn a_request_while_a_warm_start_runs_waits_for_it_rather_than_starting_another() {
-    // The request comes as the warmed slot starts its worker: the slot, started and free,
-    // takes it once its worker is up, and the pool doesn't grow.
+    // The request comes as a warm start of one, on a thread of its own, starts its slot:
+    // the slot, started and free, takes it once its worker is up, and the pool doesn't
+    // grow. (Had the request come first, its own slot counts, and the warm start starts
+    // none.)
     for _ in 0..20 {
-        let pool = on_demand(TEST_WORKER, 4);
-        assert_eq!(pool.warm(1), 1);
+        let pool = std::sync::Arc::new(on_demand(TEST_WORKER, 4));
+        let warming = {
+            let pool = std::sync::Arc::clone(&pool);
+            std::thread::spawn(move || pool.warm(1))
+        };
         done(pool.submit(Generation(1), sleep(0))).unwrap();
+        assert!(warming.join().unwrap() <= 1);
         let pids = wait_full(&pool, 1, &BTreeSet::new());
         assert_eq!(pids.len(), 1, "{pids:?}");
     }
+}
+
+#[test]
+fn sessions_warm_their_pool_and_their_sketch_solvers_and_a_second_warm_starts_none() {
+    // The app's call: both halves at once, each up when it returns; called again, none
+    // more. The sketch solvers are the sessions' own, which every session's rebuild takes.
+    use silico_core::sketch::SketchSolver;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let pool = std::sync::Arc::new(on_demand(TEST_WORKER, 4));
+    let starts = std::sync::Arc::new(AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&starts);
+    let sessions = silico_core::command::Sessions::with_stand_ins(
+        std::sync::Arc::clone(&pool),
+        |dir: &std::path::Path| silico_core::cache::Cache::unsealed(dir),
+        move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(silico_core::fake::FakeSketches::new()) as Box<dyn SketchSolver>)
+        },
+    );
+    assert_eq!(sessions.warm(1, 1), (1, 1));
+    assert_eq!(pool.pids().len(), 1);
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    assert_eq!(sessions.warm(1, 1), (0, 0));
+    assert_eq!(pool.pids().len(), 1);
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -2868,7 +2900,9 @@ fn a_warm_start_of_a_worker_that_exits_at_once_leaves_a_request_failed_not_waiti
     let exe = dir.join("worker");
     write_executable(&exe, "#!/bin/sh\nexit 3\n");
     let pool = on_demand(exe.to_str().unwrap(), 1);
-    assert_eq!(pool.warm(1), 1);
+    // Its process starts and exits: counted started or not, as the exit is seen before or
+    // after the start; the requests fail promptly either way.
+    assert!(pool.warm(1) <= 1);
     for byte in 0..3u8 {
         let err = pool
             .submit(Generation(1), echo(&[byte]))
@@ -2901,7 +2935,8 @@ fn a_warm_start_after_the_workers_binary_changed_leaves_each_request_failed_prom
         .unwrap()
         .write_all(b"\0")
         .unwrap();
-    assert_eq!(pool.warm(1), 1);
+    // The changed binary's worker isn't taken: none warmed.
+    assert_eq!(pool.warm(1), 0);
     let err = pool
         .submit(Generation(1), echo(&[1]))
         .wait_timeout(WAIT)

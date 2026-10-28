@@ -1125,61 +1125,51 @@ impl SketchSolvers {
         }))
     }
 
-    /// Starts solvers, on a thread of their own, until `n` are idle or starting (at most
-    /// [`MAX_WORKERS`](crate::pool::MAX_WORKERS), as a pool's workers are): an app's warm
-    /// start (M5.0's decision 10), so its first rebuild needn't wait for a sketch worker to
-    /// start. Doesn't wait for them. A solve that comes while they start waits for one,
-    /// rather than starting another. A start that fails ends the warm start, none more
-    /// tried, and the next solve starts one, as without a warm start. How many it's
-    /// starting.
+    /// Starts solvers, here, until `n` are idle or starting (at most as many as the machine
+    /// has cores, as a kernel pool's workers are), and waits until each has started or
+    /// failed: an app's warm start (M5.0's decision 10), run off its UI thread, so its first
+    /// rebuild needn't wait for a sketch worker to start. A solve that comes while they
+    /// start waits for one, rather than starting another. A start that fails ends the warm
+    /// start, none more tried, and the next solve starts one, as without a warm start.
+    /// Called again with as many idle, it starts none more. How many it started.
     pub fn warm(&self, n: usize) -> usize {
-        let n = n.min(crate::pool::MAX_WORKERS);
+        let _span = tracing::info_span!("sketch_solvers_warm", n).entered();
+        let cores = std::thread::available_parallelism().map_or(1, usize::from);
+        let n = n.min(cores.min(crate::pool::MAX_WORKERS));
         let wanted = {
             let mut idle = lock(&self.0.idle);
             let wanted = n.saturating_sub(idle.solvers.len().saturating_add(idle.warming));
             idle.warming += wanted;
             wanted
         };
-        if wanted == 0 {
-            return 0;
-        }
-        let shared = Arc::clone(&self.0);
-        let spawned = std::thread::Builder::new()
-            .name("silico-warm-sketch".to_owned())
-            .spawn(move || {
-                let mut warming = Warming {
-                    shared: &shared,
-                    left: wanted,
-                };
-                while warming.left > 0 {
-                    let started = (*lock(&shared.start))();
-                    let mut idle = lock(&shared.idle);
-                    idle.warming -= 1;
-                    warming.left -= 1;
-                    match started {
-                        Ok(solver) => idle.solvers.push(solver),
-                        Err(e) => {
-                            tracing::warn!(
-                                "a sketch solver started ahead of its solves failed: {e}"
-                            );
-                            // The rest would fail alike: they're counted off, and a solve
-                            // waiting starts its own.
-                            idle.warming -= warming.left;
-                            warming.left = 0;
-                        }
-                    }
-                    drop(idle);
-                    shared.warmed.notify_all();
+        let mut warming = Warming {
+            shared: &self.0,
+            left: wanted,
+        };
+        let mut started = 0;
+        while warming.left > 0 {
+            let result = (*lock(&self.0.start))();
+            let mut idle = lock(&self.0.idle);
+            idle.warming -= 1;
+            warming.left -= 1;
+            match result {
+                Ok(solver) => {
+                    idle.solvers.push(solver);
+                    started += 1;
                 }
-            });
-        if let Err(e) = spawned {
-            tracing::warn!("couldn't start sketch solvers ahead of their solves: {e}");
-            lock(&self.0.idle).warming -= wanted;
+                Err(e) => {
+                    tracing::warn!("a sketch solver started ahead of its solves failed: {e}");
+                    // The rest would fail alike: they're counted off, and a solve waiting
+                    // starts its own.
+                    idle.warming -= warming.left;
+                    warming.left = 0;
+                }
+            }
+            drop(idle);
             self.0.warmed.notify_all();
-            return 0;
         }
-        tracing::debug!(wanted, "warming sketch solvers");
-        wanted
+        tracing::debug!(started, "warmed the sketch solvers");
+        started
     }
 
     /// An idle solver, or, with none idle, one a warm start is starting, or one started
@@ -5325,15 +5315,23 @@ mod tests {
     fn a_solve_while_a_warm_start_runs_waits_for_the_warmed_solver_and_starts_no_other() {
         use std::sync::atomic::Ordering;
         let (solvers, starts, gate) = counted_starts(|_| fake());
-        assert_eq!(solvers.warm(1), 1);
-        // The warm start is held mid-start; a take now waits for it, rather than starting
-        // its own (which the shut gate would hold too, and count).
+        // The warm start, on a thread of its own as an app runs it, held mid-start; a take
+        // now waits for it, rather than starting its own (which the shut gate would hold
+        // too, and count).
+        let warmed = {
+            let solvers = solvers.clone();
+            std::thread::spawn(move || solvers.warm(1))
+        };
+        while starts.load(Ordering::SeqCst) == 0 {
+            std::thread::sleep(Duration::from_millis(2));
+        }
         let waiting = {
             let solvers = solvers.clone();
             std::thread::spawn(move || solvers.take().is_ok())
         };
         std::thread::sleep(Duration::from_millis(50));
         open(&gate);
+        assert_eq!(warmed.join().unwrap(), 1);
         assert!(waiting.join().unwrap());
         assert_eq!(starts.load(Ordering::SeqCst), 1);
     }
@@ -5344,7 +5342,7 @@ mod tests {
         let (solvers, starts, gate) = counted_starts(|_| fake());
         open(&gate);
         solvers.give_back(fake().unwrap());
-        // One idle: one more makes two.
+        // One idle: one more makes two (on a machine of two cores or more).
         assert_eq!(solvers.warm(2), 1);
         // Two idle or starting: none more for two, nor for one.
         assert_eq!(solvers.warm(2), 0);
@@ -5369,8 +5367,10 @@ mod tests {
                 }
                 fake()
             });
-            assert_eq!(solvers.warm(1), 1);
             open(&gate);
+            // Started none: failed, or its panic its caller's.
+            let warmed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| solvers.warm(1)));
+            assert_eq!(warmed.ok(), (!panics).then_some(0), "panics: {panics}");
             taken(&solvers).unwrap();
             assert_eq!(starts.load(Ordering::SeqCst), 2, "panics: {panics}");
         }

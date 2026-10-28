@@ -4,8 +4,9 @@
 //! ways:
 //!
 //! - `cold`: the workers start on demand, as the rebuild needs them;
-//! - `warm`: `KernelPool::warm(1)` and `SketchSolvers::warm(1)` first, then the rebuild once
-//!   both workers are up (the app's case: they start while the person opens a file);
+//! - `warm`: `KernelPool::warm(1)` and `SketchSolvers::warm(1)` first (as `Sessions::warm`
+//!   makes them), which return once both workers are up, then the rebuild (the app's
+//!   case: they start while the person opens a file);
 //! - `warm-now`: the rebuild at once after the warm start, while the workers start, which
 //!   waits for them rather than starting more.
 //!
@@ -49,35 +50,39 @@ impl Mode {
 
 /// One first rebuild in `mode`: its time, from the rebuild's start to its model.
 fn first_rebuild(document: &Arc<Checked>, mode: Mode) -> Result<Duration, Box<dyn Error>> {
+    // As `Sessions` holds them: a pool, its rebuilds each a client of it, and solvers every
+    // rebuild shares; warmed as `Sessions::warm` warms them.
     let pool = KernelPool::start_on_demand(Path::new(WORKER), 1)?;
     let solvers = SketchSolvers::workers();
-    if mode != Mode::Cold {
+    let engine = Recompute::new(pool.client()).with_solvers(solvers.clone());
+    let warm = || {
         pool.warm(1);
         solvers.warm(1);
-    }
-    if mode == Mode::Warm {
-        // Both workers up: the pool's started, and the sketch worker's start, which takes
-        // less, given as long again.
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while pool.pids().is_empty() {
-            if Instant::now() > deadline {
-                return Err("the warmed kernel worker didn't start".into());
+    };
+    let rebuild = || -> Result<Duration, Box<dyn Error>> {
+        let started = Instant::now();
+        match engine.start(Arc::clone(document)).wait()? {
+            RunOutcome::Published(model) => {
+                if model.error_count() > 0 {
+                    return Err(format!("the bracket failed: {:?}", model.errors().next()).into());
+                }
             }
-            std::thread::sleep(Duration::from_millis(5));
+            RunOutcome::Superseded => return Err("superseded".into()),
         }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    let engine = Recompute::new(pool).with_solvers(solvers);
-    let started = Instant::now();
-    match engine.start(Arc::clone(document)).wait()? {
-        RunOutcome::Published(model) => {
-            if model.error_count() > 0 {
-                return Err(format!("the bracket failed: {:?}", model.errors().next()).into());
-            }
+        Ok(started.elapsed())
+    };
+    match mode {
+        Mode::Cold => rebuild(),
+        // The warm start returns once both workers are up.
+        Mode::Warm => {
+            warm();
+            rebuild()
         }
-        RunOutcome::Superseded => return Err("superseded".into()),
+        Mode::WarmNow => std::thread::scope(|scope| {
+            scope.spawn(warm);
+            rebuild()
+        }),
     }
-    Ok(started.elapsed())
 }
 
 fn ms(d: Duration) -> f64 {

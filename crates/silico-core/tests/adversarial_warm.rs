@@ -4,8 +4,10 @@
 //! expected count is the number of solvers asked for, worked by hand: the warmed ones, and
 //! one more for each take that found none idle and none warming.
 //!
-//! Some tests leave a warm start's thread running (blocked, or starting without end) when
-//! they finish; they rely on a process of their own, as nextest runs each test in.
+//! A warm start waits until its solvers have started; the tests that hold one run it on a
+//! thread of its own ([`warming`]), as an app runs it off its UI thread. Some leave that
+//! thread blocked when they finish; they rely on a process of their own, as nextest runs
+//! each test in.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
@@ -94,6 +96,17 @@ fn begun(solvers: &SketchSolvers, within: Duration) -> Option<Result<DragSession
     rx.recv_timeout(within).ok()
 }
 
+/// `solvers.warm(n)` on a thread of its own, as an app runs it: how many it started, once
+/// it has.
+fn warming(solvers: &SketchSolvers, n: usize) -> mpsc::Receiver<usize> {
+    let solvers = solvers.clone();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(solvers.warm(n));
+    });
+    rx
+}
+
 fn wait_for(what: &str, done: impl Fn() -> bool) {
     let started = Instant::now();
     while !done() {
@@ -115,7 +128,14 @@ fn a_warm_start_of_usize_max_whose_starts_fail_never_lets_a_solve_start_its_own(
         std::thread::sleep(Duration::from_millis(1));
         Err(Error::new(ErrorCode::WorkerUnavailable, "no sketch worker"))
     });
-    assert_eq!(solvers.warm(usize::MAX), silico_core::pool::MAX_WORKERS);
+    // Its first start fails, and ends it: none started, at once.
+    assert_eq!(
+        warming(&solvers, usize::MAX)
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the warm start went on failing"),
+        0
+    );
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
     let err = begun(&solvers, Duration::from_secs(5))
         .unwrap_or_else(|| {
             panic!(
@@ -151,11 +171,12 @@ fn a_warm_start_after_a_huge_one_and_a_solver_given_back_counts_without_overflow
         .expect("the drag's begin waited")
         .unwrap();
     assert_eq!(starts.load(Ordering::SeqCst), 1);
-    assert_eq!(solvers.warm(usize::MAX), silico_core::pool::MAX_WORKERS);
+    // As many as the machine has cores, held at its third.
+    let _held = warming(&solvers, usize::MAX);
     wait_for("the warm start's third start never came", || {
         starts.load(Ordering::SeqCst) >= 4
     });
-    // Given back: idle three, warming usize::MAX - 2.
+    // Given back: idle three, and the rest warming.
     drag.end(None).unwrap();
     let warmed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| solvers.warm(1)));
     assert_eq!(
@@ -173,15 +194,15 @@ fn warm_starts_from_many_threads_at_once_start_exactly_the_number_asked_for() {
         held.wait();
         fake()
     });
-    let threads: Vec<_> = (0..8)
-        .map(|_| {
-            let solvers = solvers.clone();
-            std::thread::spawn(move || solvers.warm(3))
-        })
-        .collect();
-    let started: usize = threads.into_iter().map(|t| t.join().unwrap()).sum();
-    assert_eq!(started, 3, "eight warm starts of three at once");
+    let threads: Vec<_> = (0..8).map(|_| warming(&solvers, 3)).collect();
+    // One start under way (the starts take turns), and none more until it ends.
+    wait_for("no warm start began", || starts.load(Ordering::SeqCst) == 1);
     gate.open();
+    let started: usize = threads
+        .into_iter()
+        .map(|t| t.recv_timeout(WAIT).expect("a warm start waited"))
+        .sum();
+    assert_eq!(started, 3, "eight warm starts of three at once");
     // Three drags take the three warmed; a fourth starts one of its own.
     let drags: Vec<DragSession> = (0..3)
         .map(|_| begun(&solvers, WAIT).expect("a begin waited").unwrap())
@@ -201,7 +222,10 @@ fn many_solves_that_come_while_a_warm_start_is_held_each_get_a_solver_and_none_m
         held.wait();
         fake()
     });
-    assert_eq!(solvers.warm(2), 2);
+    let warmed = warming(&solvers, 2);
+    wait_for("the warm start never began", || {
+        starts.load(Ordering::SeqCst) == 1
+    });
     let (tx, rx) = mpsc::channel();
     for _ in 0..8 {
         let (solvers, tx) = (solvers.clone(), tx.clone());
@@ -222,6 +246,7 @@ fn many_solves_that_come_while_a_warm_start_is_held_each_get_a_solver_and_none_m
     }
     // Each holds its solver: the warm start's two, and six started for the rest.
     assert_eq!(starts.load(Ordering::SeqCst), 8);
+    assert_eq!(warmed.recv_timeout(WAIT).expect("the warm start waited"), 2);
 }
 
 #[test]
@@ -236,7 +261,10 @@ fn a_solver_given_back_while_a_solve_waits_on_a_warm_start_is_taken_at_once() {
         fake()
     });
     let first = begun(&solvers, WAIT).expect("a begin waited").unwrap();
-    assert_eq!(solvers.warm(1), 1);
+    let warmed = warming(&solvers, 1);
+    wait_for("the warm start never began", || {
+        starts.load(Ordering::SeqCst) == 2
+    });
     // This one waits on the warm start, held; the first drag's end gives its solver back,
     // and it takes that one without the warm start's.
     let solvers2 = solvers.clone();
@@ -255,29 +283,30 @@ fn a_solver_given_back_while_a_solve_waits_on_a_warm_start_is_taken_at_once() {
     // The drag's start, and the warm start's, held: none of the begin's own.
     assert_eq!(starts.load(Ordering::SeqCst), 2);
     gate.open();
+    assert_eq!(warmed.recv_timeout(WAIT).expect("the warm start waited"), 1);
 }
 
 #[test]
 fn a_warm_start_whose_starter_panics_partway_leaves_the_rest_to_the_solves_and_warms_again() {
-    // The warm start's second start panics: its third is never tried, and counted off as
-    // the thread unwinds. Three begins: the warm start's first, then two started their own
-    // (numbers 2 and 3). The starter's lock, poisoned, is had again.
+    // The warm start's second start panics, and the warm start with it (its caller's to
+    // catch): its third is never tried, and counted off as it unwinds. Three begins: the
+    // warm start's first, then two started their own (numbers 2 and 3). The starter's
+    // lock, poisoned, is had again.
     let (solvers, starts) = counted(|n| {
         if n == 1 {
             panic!("the warm start's second start panicked");
         }
         fake()
     });
-    assert_eq!(solvers.warm(3), 3);
+    let warmed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| solvers.warm(3)));
+    assert!(warmed.is_err(), "the starter's panic");
     let sessions: Vec<DragSession> = (0..3)
         .map(|_| begun(&solvers, WAIT).expect("a begin waited").unwrap())
         .collect();
     assert_eq!(starts.load(Ordering::SeqCst), 4);
     // None idle and none warming: a warm start of one starts one.
     assert_eq!(solvers.warm(1), 1);
-    wait_for("the warm start never started", || {
-        starts.load(Ordering::SeqCst) == 5
-    });
+    assert_eq!(starts.load(Ordering::SeqCst), 5);
     // And a begin takes it, starting none.
     let fourth = begun(&solvers, WAIT).expect("a begin waited").unwrap();
     assert_eq!(starts.load(Ordering::SeqCst), 5);
@@ -287,8 +316,8 @@ fn a_warm_start_whose_starter_panics_partway_leaves_the_rest_to_the_solves_and_w
 
 #[test]
 fn every_handle_dropped_mid_warm_start_frees_the_solvers_once_it_ends() {
-    // The starter holds a token: once the warm start's thread ends, nothing holds the
-    // solvers, so their starter, and its token, are dropped.
+    // The starter holds a token: once the warm start ends, nothing holds the solvers, so
+    // their starter, and its token, are dropped.
     struct Token(mpsc::Sender<()>);
     impl Drop for Token {
         fn drop(&mut self) {
@@ -304,13 +333,14 @@ fn every_handle_dropped_mid_warm_start_frees_the_solvers_once_it_ends() {
         held.wait();
         fake()
     });
-    assert_eq!(solvers.warm(2), 2);
+    let warmed = warming(&solvers, 2);
     drop(solvers);
     assert!(
         dropped.recv_timeout(Duration::from_millis(100)).is_err(),
         "dropped while the warm start ran"
     );
     gate.open();
+    assert_eq!(warmed.recv_timeout(WAIT).expect("the warm start waited"), 2);
     dropped
         .recv_timeout(WAIT)
         .expect("the solvers were never freed after the warm start ended");
