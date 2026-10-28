@@ -245,11 +245,15 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A list from a worker or OCCT deduplicated with `Vec::contains`: 200,000 distinct entries, 2.4 MB of a 512 MiB frame, are 2·10^10 comparisons; time it, and give exactly one more than its words name ("and 1 more pair", not "pairs"), and none at all
 - Process-wide statics in OCCT's writers (`static Standard_Integer id` for each STEP NEXT_ASSEMBLY_USAGE_OCCURRENCE): a determinism test of one-part files never reaches them; compare an assembly's bytes in a fresh worker and in one that wrote an assembly before
 - Checks that count entities written against the topology (STEP face surfaces against `TopExp::MapShapes` faces): a face two solids of a compound share is written once a solid, so an exact count refuses a whole file as missing faces
+- A refusal from a worker that keeps its session (a drag's frame solved out of reach) taken by the client as the worker failing: send one refused frame, then a good one; the client mustn't end what the worker still holds
+- A worker killed while idle mid-session (a drag): a client that readies (restarts) its worker before each request sends the next to a fresh worker with no session, and the crash comes back as the worker's "no session" `invalid_input`
+- A session's replies (a drag's frames, its closing solve) passed up unchecked where one-shot replies are checked: forge a frame or solution of the wrong length, a fixed value moved, NaN, a value out of reach
 
 ## Recompute and scheduling
 
 - Generation counters at their end (a kernel already at `u64::MAX`): a `+ 1` panics (or wraps to 0 in release, so every request is superseded), and a `saturating_add` leaves the generation where it was, so a cancel cancels nothing
 - A panic under one of several threads that count themselves running under a shared condvar (a kernel bug in `submit`, say): the others wait for it forever, the scope never joins, and the handling for a dead thread is never reached; wrap a test kernel that panics on one op
+- A panic on a session's own thread (a drag's, under a solver call): every handle waiting on its condvar for an outcome (a move's ticket, the end, the drop) waits forever; and a handle whose `wait(&self)` takes the outcome out blocks forever on a second wait
 - A naive sequential evaluator as the oracle: random timelines with value-based refusals (kept and not kept), several edits in a row, comparing every feature's outcome, the bodies, which keys are equal, and exactly which steps each edit ran
 - Results taken from the cache or memory without their inputs' (an entry lost, a subdirectory that's a link): a step that reads more than its inputs (a fillet naming its base's elements from the whole lineage) runs before they're rebuilt
 - A superseded recompute that ends after the newer one: both keep their results by key, the last wins, and the older one's copy (its measure superseded, so unmeasured) overwrites the newer's measured or refused one; hold the older one's requests, start the newer, and loop a few hundred rounds, since which keeps last is a race

@@ -24,6 +24,8 @@ mod within;
 
 #[path = "adversarial_decision5_parts.rs"]
 mod adversarial_decision5_parts;
+#[path = "adversarial_drag_session.rs"]
+mod adversarial_drag_session;
 #[path = "adversarial_load_path.rs"]
 mod adversarial_load_path;
 #[path = "adversarial_redundant_resolve.rs"]
@@ -38,6 +40,8 @@ mod adversarial_sketch_features;
 mod adversarial_sketch_solve;
 #[path = "adversarial_stored_coordinates.rs"]
 mod adversarial_stored_coordinates;
+#[path = "drag_session.rs"]
+mod drag_session;
 #[path = "sketch.rs"]
 mod sketch;
 #[path = "sketch_edit.rs"]

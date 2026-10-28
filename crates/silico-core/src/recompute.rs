@@ -1121,7 +1121,7 @@ impl SketchSolvers {
     /// An idle solver, or, with none idle, one started now. The idle list is looked at
     /// again once the start is this one's: a solver given back while another engine's start
     /// ran is taken, not one more started.
-    fn take(&self) -> Result<Box<dyn SketchSolver>, Error> {
+    pub(crate) fn take(&self) -> Result<Box<dyn SketchSolver>, Error> {
         if let Some(solver) = lock(&self.0.idle).pop() {
             return Ok(solver);
         }
@@ -1137,7 +1137,7 @@ impl SketchSolvers {
     }
 
     /// `solver`, idle again.
-    fn give_back(&self, solver: Box<dyn SketchSolver>) {
+    pub(crate) fn give_back(&self, solver: Box<dyn SketchSolver>) {
         lock(&self.0.idle).push(solver);
     }
 }
