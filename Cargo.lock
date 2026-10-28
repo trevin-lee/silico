@@ -5140,6 +5140,7 @@ dependencies = [
 name = "silico-cli"
 version = "0.0.0"
 dependencies = [
+ "cpu-time",
  "jsonschema",
  "libc",
  "libm",
