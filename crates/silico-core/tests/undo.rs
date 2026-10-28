@@ -23,8 +23,10 @@ fn begun(bytes: &[u8], revision: u64, bound: usize) -> UndoStack<u64> {
     UndoStack::new(Arc::new(bytes.to_vec()), revision, bound)
 }
 
-/// An edit's state as the command layer gives it: `document`'s features if `text` is its
-/// canonical form, the text whole if not, or if there's no document.
+/// An edit's state, as these tests choose it: `document`'s features if `text` is its
+/// canonical form, the text whole if not, or if there's no document. The stack keeps what
+/// it's given (see `a_canonical_state_is_restored_as_its_features_write_it`); choosing is
+/// the command layer's, whose own code the session's tests check.
 fn after(text: &[u8], document: Option<&Document>) -> After {
     match document.and_then(|d| Prepared::of(d).ok()) {
         Some(prepared) if prepared.text().as_bytes() == text => After::Canonical(prepared),
@@ -544,7 +546,7 @@ fn a_box_inserted_at_the_top_shifts_every_chunk_and_shares_none() {
 }
 
 #[test]
-fn a_text_whose_document_isnt_the_one_passed_is_held_whole_and_restored_as_given() {
+fn a_whole_text_whose_document_isnt_the_one_passed_is_held_and_restored_as_given() {
     let (begin, d0) = of(&tens(3));
     let f = begin.len();
     let mut lengths = tens(3);
@@ -568,7 +570,7 @@ fn a_text_whose_document_isnt_the_one_passed_is_held_whole_and_restored_as_given
 }
 
 #[test]
-fn bytes_no_document_reads_as_are_restored_as_given() {
+fn whole_bytes_no_document_reads_as_are_held_and_restored_as_given() {
     let (canonical, document) = of(&tens(2));
     let bom = format!("\u{feff}{canonical}");
     let crlf = canonical.replace('\n', "\r\n");
@@ -864,6 +866,119 @@ fn a_prepared_document_s_text_is_its_canonical_text() {
         assert_eq!(prepared.text(), write(document).unwrap());
         assert_eq!(prepared.text(), text);
     }
+}
+
+#[test]
+fn a_canonical_state_is_restored_as_its_features_write_it() {
+    // The stack keeps an edit's state as it's given: a `Canonical` one is restored as its
+    // features write it, whatever bytes the session held, so the caller must give it only
+    // for a text that is that document's canonical form (and a text that isn't, whole).
+    let states = run();
+    let (spaced, document) = (&states[4].0, states[4].1.as_ref().unwrap());
+    let prepared = Prepared::of(document).unwrap();
+    assert_ne!(prepared.text(), *spaced);
+    let mut stack = begun(states[0].0.as_bytes(), 1, UNDO_BYTES);
+    stack.edit(After::Canonical(prepared.clone()), 2);
+    stack.edit(After::Whole(Arc::new(spaced.clone().into_bytes())), 3);
+    assert_eq!(
+        stack.undo(None, 4).unwrap().text.as_slice(),
+        prepared.text().as_bytes()
+    );
+    assert_eq!(
+        stack.redo(None, 5).unwrap().text.as_slice(),
+        spaced.as_bytes()
+    );
+}
+
+/// 130 boxes of length 10 but box 0's, `length`.
+fn longer(length: u32) -> Vec<(u32, u32)> {
+    let mut boxes = tens(130);
+    boxes[0].1 = length;
+    boxes
+}
+
+/// What a state of `boxes` holds when it shares no chunk: its list and every chunk.
+fn full(boxes: &[(u32, u32)]) -> usize {
+    list_of(boxes.chunks(64).count()) + boxes.chunks(64).map(chunk_of).sum::<usize>()
+}
+
+/// A stack of 130 boxes, and what its states count for: begin's bytes, the first state's,
+/// a step's (an edit of box 0's length), and the shifted state's.
+struct Shifted {
+    stack: UndoStack<u64>,
+    f: usize,
+    first: usize,
+    step: usize,
+    top: usize,
+}
+
+/// A stack of 130 boxes bounded at begin's bytes, the first state's, and three steps: four
+/// edits of box 0's length (101 to 104, revisions 1 to 4), then a box put at the top
+/// (revision 5), which shifts every chunk: at the bound exactly.
+fn shifted() -> Shifted {
+    let (begin, _) = of(&tens(130));
+    let f = begin.len();
+    let first = full(&longer(101));
+    let step = list_of(3) + chunk_of(&longer(101)[..64]);
+    let mut stack = begun(begin.as_bytes(), 0, f + first + 3 * step);
+    for k in 1..=4u32 {
+        let (text, document) = of(&longer(100 + k));
+        stack.edit_text(text.as_bytes(), Some(&document), u64::from(k));
+    }
+    let mut top = longer(104);
+    top.insert(0, (999, 10));
+    let (text, document) = of(&top);
+    stack.edit_text(text.as_bytes(), Some(&document), 5);
+    assert_eq!(stack.bytes(), f + first + 3 * step);
+    Shifted {
+        stack,
+        f,
+        first,
+        step,
+        top: full(&top),
+    }
+}
+
+#[test]
+fn an_undo_to_the_oldest_state_after_begin_s_drops_nothing_however_far_past_the_bound() {
+    // Undone to revision 1's state, the first after begin's, while the shifted state is
+    // held: over the bound, but the only state the bound could drop is the session's own,
+    // which it never drops.
+    let Shifted {
+        mut stack,
+        f,
+        first,
+        step,
+        top,
+    } = shifted();
+    let restored = stack.undo(Some(1), 6).unwrap();
+    assert_eq!(restored.text.as_slice(), of(&longer(101)).0.as_bytes());
+    assert_eq!((restored.dropped, restored.undo, restored.redo), (0, 1, 4));
+    // The second state now holds the middle and last chunks the first did, in full; the
+    // third and fourth a step each; the shifted state all its own.
+    assert_eq!(stack.bytes(), f + first + 2 * step + top);
+    assert!(stack.bytes() > f + first + 3 * step);
+}
+
+#[test]
+fn an_undo_to_the_second_state_after_begin_s_drops_the_first_alone() {
+    // Undone to revision 2's state while the shifted state is held: over the bound, the
+    // first after begin's goes (two edits out of undo's reach), and then the session's
+    // state is the oldest after begin's, which the bound never drops, over it still.
+    let Shifted {
+        mut stack,
+        f,
+        first,
+        step,
+        top,
+    } = shifted();
+    let restored = stack.undo(Some(2), 6).unwrap();
+    assert_eq!(restored.text.as_slice(), of(&longer(102)).0.as_bytes());
+    assert_eq!((restored.dropped, restored.undo, restored.redo), (2, 0, 3));
+    assert_eq!(stack.dropped(), 2);
+    // The third state now holds the middle and last chunks in full; the fourth a step; the
+    // shifted state all its own.
+    assert_eq!(stack.bytes(), f + first + step + top);
 }
 
 // ---------------------------------------------------------------------------------------
