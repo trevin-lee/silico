@@ -25,6 +25,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Fixed decimals presented as a relative precision (a volume to 6 decimals, "precise to a relative 1e-9"): the smallest solid the gate admits (a 1 µm cube, 1e-9 mm³) reads as 0 mm³, and everything under 500 mm³ is held to less than promised; push the gate's smallest values through every rounded output
 - Directions a request gives that are valid but tiny or huge (1e-160, 1e-200, 1e200, `f64::MAX`), used without scaling: their squares underflow to subnormals (an angle off by thousandths of a degree) or to 0, or overflow to infinity, so a direction is refused as zero or answered wrong; scale by the largest component first
 
+- A point rotated about a centre far from the origin (5e5 mm) on a radius just above the floor (1.0000001e-7): the rounded coordinates move the radius by an ulp of the coordinate, a thousandth of the radius, below the floor; and turns of a few nanodegrees that leave the point the same bit for bit, taken as an edit that changed something
+
 ## Sketch geometry
 
 - Zero-length lines, zero-radius circles, arcs with 0° or 360° sweep
@@ -72,6 +74,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A save's answer against its load's, whole: solve, write through the file, read, solve again, and compare Ok-ness, bits, and the redundant constraints named; an answer's outcome depends on where it was diagnosed, not only its values (a solution Ok from the drawing that PlaneGCS calls conflicting from itself), and a "solve again from the solution" that starts from the solver's values rather than what a load derives from the file (an arc's radius and angles from its points) isn't a load
 - Redundancies that agree held by an angle at micrometre scale: the solver's absolute convergence on lengths (1e-10) is a relative 1e-8 on a 1.6 µm side, past a scale-free angle tolerance
 - Tolerances taken over parts that the dropped row itself joins: a redundant row bridging two rigid, linearly held points far apart gets the bridged box's extent though PlaneGCS solved each apart exactly (5 nm kept at 10 m, refused at 1 mm); and per-part windows each recomputed over every constraint (512 parts × 9,000 rows: 0.4 s a read in release, 13× one part's)
+
+- A drag whose frame moves more than points (a circle's radius through an `on`, a reference dimension measured again): a list of what changed built by comparing points alone misses them; and a drag of a point its constraints hold completely, which PlaneGCS answers with Success and nothing moved (FreeCAD's extend reports success too)
 
 ## Features
 

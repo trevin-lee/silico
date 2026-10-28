@@ -202,3 +202,10 @@ crates/silico-core/src/drag.rs | DragSession::finish | replace && with || | #246
 # A drag's worker-gone check: its own stopper's flag is set only as it kills the worker,
 # and a stopped worker is reaped, so the exit check finds both (#246).
 crates/silico-core/src/sketch.rs | <impl SketchSolver for SketchWorker>::session_stopper | replace || with && | #246
+# Extend's floors: a zero increment is refused before a line's sign is read; an arc
+# under the floor long has its ends within it too, so the ends' check refuses it alike;
+# and its ends within the floor at half a turn needs a radius the gate refuses (#259).
+crates/silico-core/src/extend.rs | extend_line | replace < with <= | #259
+crates/silico-core/src/extend.rs | extend_arc | replace || with && | #259
+crates/silico-core/src/extend.rs | extend_arc | replace * with + | #259
+crates/silico-core/src/extend.rs | extend_arc | replace > with >= | #259
