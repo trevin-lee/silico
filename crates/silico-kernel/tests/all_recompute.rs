@@ -11,6 +11,8 @@
 mod cached;
 #[path = "../../silico-core/tests/common/example.rs"]
 mod example;
+#[path = "../../silico-core/tests/common/lateness.rs"]
+mod lateness;
 #[path = "common/measuring.rs"]
 mod measuring;
 #[path = "../../silico-core/tests/common/model.rs"]

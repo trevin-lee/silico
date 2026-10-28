@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::echo::{echo, echoed};
-use super::model::WAIT;
+use super::model::{WAIT, promptly};
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -563,12 +563,9 @@ fn a_storm_of_submits_advances_and_holds_never_hangs_and_never_delivers_stale_re
         // Done: no thread is left holding a request.
         assert!(!kernel.wait_running(1, Duration::ZERO));
         let kernel = Arc::try_unwrap(kernel).ok().unwrap();
-        let started = Instant::now();
-        drop(kernel);
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "seed {seed}: drop hung"
-        );
+        promptly(&format!("seed {seed}: the kernel's drop"), move || {
+            drop(kernel)
+        });
     }
 }
 
@@ -580,9 +577,8 @@ fn dropping_the_kernel_with_requests_held_from_many_threads_ends_them_all() {
         .map(|n| kernel.submit(Generation(0), KernelRequest::echo(Blob::inline(vec![n]))))
         .collect();
     assert!(kernel.wait_running(4, WAIT));
-    let started = Instant::now();
-    drop(kernel);
-    assert!(started.elapsed() < Duration::from_secs(5));
+    // Held until the drop ends them: a drop that waited for them never returns.
+    promptly("the kernel's drop", move || drop(kernel));
     for pending in pendings {
         let Outcome::Done(Err(error)) = within(pending, "after drop") else {
             panic!("a request ended by the drop had an outcome other than the stop's error")

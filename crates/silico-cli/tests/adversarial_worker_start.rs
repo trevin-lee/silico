@@ -6,6 +6,8 @@
 
 #[path = "common/run.rs"]
 mod run;
+#[path = "../../silico-core/tests/common/share.rs"]
+mod share;
 
 use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
@@ -142,14 +144,27 @@ fn every_unusable_worker_variable_is_unavailable_exit_2() {
             ("a file named with a trailing slash", trailing_slash.clone()),
             ("closes its socket and lingers", lingers.clone()),
         ] {
+            // 20 s, and room for what load stretches, the processes' starts (some 3 s of work
+            // each slowdown over a quiet machine, `Share`), but not the fixed waits a broken
+            // check would add, which load doesn't stretch; never 50 s, so a run that waits
+            // 50 to 60 s is named here (past 60 s, the run's own deadline stops it, as one
+            // waiting out the kernel's 60 s request timeout on a lingering worker would be).
+            let share = share::Share::start();
             let started = std::time::Instant::now();
             let (status, stdout) = check_json(&dir, text, &[(variable, value.as_os_str())]);
+            let (wall, slowdown) = (started.elapsed(), share.finish().slowdown);
             let case = format!("{variable} {what}");
             if status != Some(2) || !stdout.contains("worker_unavailable") {
                 wrong.push(format!("{case}: exit {status:?}: {stdout}"));
             }
-            if started.elapsed() > std::time::Duration::from_secs(20) {
-                wrong.push(format!("{case}: took {:?}", started.elapsed()));
+            let bound = (std::time::Duration::from_secs(20)
+                + std::time::Duration::from_secs(3).mul_f64(slowdown - 1.0))
+            .min(std::time::Duration::from_secs(50));
+            if wall >= bound {
+                wrong.push(format!(
+                    "{case}: took {wall:?}, past {bound:?}, the machine {slowdown:.2} times slower \
+                     than a quiet one"
+                ));
             }
         }
     }

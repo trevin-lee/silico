@@ -19,8 +19,11 @@ warn_kib=$((8 * 1024 * 1024))
 
 # Removes scratch, made writable first: a test can leave a directory it made read-only
 # behind (cache_bound's read-only cache), whose entries rm can't unlink.
+# Read and search back too, not only write: a test killed mid-way can leave a directory it made
+# unreadable (a cache's, d-wx-wx-wx, 2026-10-28), which rm can't list and chmod -R can't enter,
+# failing a job whose work had passed (the milestone mutants run's shard 0, after 13 hours).
 remove() {
-  chmod -R u+w "$@" 2>/dev/null || true
+  chmod -R u+rwX "$@" 2>/dev/null || true
   rm -rf "$@"
 }
 

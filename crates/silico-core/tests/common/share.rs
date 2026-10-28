@@ -4,6 +4,8 @@
 //! loaded machine slows that work twice over: a thread computes slower when it gets less of a
 //! CPU, and each thread woken to go on waits for one. A probe that only computes misses the
 //! waits, and one that only sleeps misses both.
+// Shared with the render tests, which read only the slowdown.
+#![allow(dead_code)]
 
 use std::hint::black_box;
 use std::sync::Arc;

@@ -8,8 +8,12 @@
 mod fixture;
 #[path = "common/generate.rs"]
 mod generate;
+#[path = "../../silico-core/tests/common/lateness.rs"]
+mod lateness;
 #[path = "common/saves.rs"]
 mod saves;
+#[path = "../../silico-core/tests/common/share.rs"]
+mod share;
 #[path = "common/systems.rs"]
 mod systems;
 #[path = "common/wait.rs"]

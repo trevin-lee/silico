@@ -461,6 +461,9 @@ fn a_thousand_corner_profile_extrudes_and_revolves_in_reasonable_time() {
         .collect();
     let p = profile(&points);
     let (area, moment) = area_and_moment(&points);
+    // Its wall time over how much slower than a quiet machine this one ran it (`Share`),
+    // which load doesn't move.
+    let share = crate::share::Share::start();
     let start = Instant::now();
     let (b, s) = sound("prism", extrude(&p, 1.0, None));
     assert_volume("prism", s.volume, area, 1e-9);
@@ -468,10 +471,10 @@ fn a_thousand_corner_profile_extrudes_and_revolves_in_reasonable_time() {
     assert_eq!(b.history.inputs[0].edges.len(), n as usize);
     let (_, s) = sound("torus", revolve(&p, &axis([0.0; 3], Y), 360.0));
     assert_volume("torus", s.volume, TAU * moment, 1e-9);
+    let (wall, slowdown) = (start.elapsed(), share.finish().slowdown);
     assert!(
-        start.elapsed() < Duration::from_secs(60),
-        "{:?}",
-        start.elapsed()
+        wall.div_f64(slowdown) < Duration::from_secs(60),
+        "{wall:?}, the machine {slowdown:.2} times slower than a quiet one"
     );
 }
 

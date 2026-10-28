@@ -544,8 +544,13 @@ fn a_hundred_type_words_of_garbage_around_a_name_are_refused_promptly() {
     // every place, so the reader must still stop at the first that isn't a kind.
     let text = format!("aaaaaaaa.{}Edge1", "chamfer.".repeat(100_000));
     let any = |_: &FeatureId| Some(Maker::By(OpCode::Chamfer));
-    let started = std::time::Instant::now();
+    // Its CPU, in this thread, which load doesn't change.
+    let started = cpu_time::ThreadTime::now();
     let error = Name::parse(&text, &any).unwrap_err();
-    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "{:?} of CPU",
+        started.elapsed()
+    );
     assert_eq!(error.column, 18, "{error}");
 }
