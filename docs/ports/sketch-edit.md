@@ -289,7 +289,7 @@ That is deliberately not Validate's 1e-4 box. Ends 1e-7 to 1e-4 mm apart, which 
 - a drag that leaves the line 1e-7 mm or less, or flipped;
 - an arc swept a whole turn or more.
 
-A line's increment is whole nanometres, so the shortest line an extend leaves is 1e-6 mm.
+Each result is checked by the gate before it's returned: a neighbour the move collapses, or an arc's radius that rounding far from the origin takes to the floor, is refused as the edit's, naming what the gate names. `modified` lists the points moved, then a circle whose radius the drag changed, then a reference dimension it re-measured. A line's end its constraints hold where it is, and an arc's end a turn too small to move, are refused as changing nothing, where FreeCAD reports success.
 
 ## 8. Bug fixes from FreeCAD's history
 

@@ -19,7 +19,11 @@
 //! kind of increment for it, an increment of nothing, and a result whose line or arc is
 //! 1e-7 mm or less, flipped, or a whole turn or more. A line's end the drag can't move (its
 //! constraints hold it, or the drag's frame isn't a success) is refused too, where FreeCAD
-//! returns its solver's failure.
+//! returns its solver's failure, or its success with nothing moved; so is an arc's end a
+//! turn too small to move. Any result the gate would refuse (a neighbour the move
+//! collapses, a radius rounding leaves at the floor) is refused as the edit's, naming what
+//! the gate names. Every member the edit changes in place is `modified`: the points it
+//! moves, a circle whose radius the drag changes, and a reference dimension it re-measures.
 
 use std::collections::BTreeSet;
 use std::f64::consts::TAU;
@@ -122,11 +126,12 @@ fn extend_line(
         return Err(nothing(curve));
     }
     if longer <= FLOOR {
-        return Err(too_short(curve, "line", longer, "by"));
+        return Err(too_short(curve, "line", longer, true));
     }
-    // FreeCAD's target: from the other end, along the line, the new length (`extend`).
-    let scale = longer / length;
-    let target = [q[0] + (p[0] - q[0]) * scale, q[1] + (p[1] - q[1]) * scale];
+    // FreeCAD's target, the new length along the line from the other end (`extend`),
+    // worked from the end itself, so an increment the line's numbers hold lands exactly.
+    let along = by.mm() / length;
+    let target = [p[0] + (p[0] - q[0]) * along, p[1] + (p[1] - q[1]) * along];
     if let Err(invalid) = check_drag_target(target) {
         return Err(refused(
             format!(
@@ -193,6 +198,30 @@ fn extend_line(
     }
     let values = match (moved.status, moved.values) {
         (SolveStatus::Success, Some(values)) => values,
+        (SolveStatus::SolvedInvalid, _) => {
+            // The worker withholds a frame it can't build: what the gate names of the end
+            // put at the target says which curve that is (a neighbour collapsed).
+            let mut elements = vec![curve.to_string(), moving.to_string()];
+            let mut placed = sketch.clone();
+            let why = match place(&mut placed, moving, target)
+                .ok()
+                .and_then(|()| crate::document::sketch_problems(&placed).into_iter().next())
+            {
+                Some(problem) => {
+                    elements.extend(problem.elements().iter().cloned());
+                    format!(": at the target, {}", problem.message())
+                }
+                None => String::new(),
+            };
+            elements.dedup();
+            return Err(Error::new(
+                ErrorCode::InvalidResult,
+                format!("line {curve}'s end {moving} can't move by {by} mm: the drag reaches geometry that can't be built{why}"),
+            )
+            .with_elements(elements)
+            .with_parameter("by")
+            .with_suggestion("extend it by less, or change what moves with its end"));
+        }
         (status, _) => {
             return Err(Error::new(
                 ErrorCode::InvalidResult,
@@ -209,10 +238,21 @@ fn extend_line(
     let now = libm::hypot(p1[0] - q1[0], p1[1] - q1[1]);
     let same_way = (p1[0] - q1[0]) * (p[0] - q[0]) + (p1[1] - q1[1]) * (p[1] - q[1]) > 0.0;
     if now <= FLOOR || !same_way {
-        return Err(too_short(curve, "line", now, "by"));
+        return Err(too_short(curve, "line", now, by.nm() < 0));
     }
+    let modified = changed(sketch, &edited);
+    if !modified.iter().any(|id| id == moving) {
+        return Err(Error::new(
+            ErrorCode::InvalidResult,
+            format!("line {curve}'s end {moving} can't move by {by} mm: its constraints hold it where it is"),
+        )
+        .with_elements([curve.to_string(), moving.to_string()])
+        .with_parameter("by")
+        .with_suggestion("remove or change the constraints that hold the line's end"));
+    }
+    gated(&edited, curve)?;
     Ok(Edited {
-        modified: moved_points(sketch, &edited),
+        modified,
         sketch: edited,
         added: Vec::new(),
         removed: Vec::new(),
@@ -247,26 +287,46 @@ fn extend_arc(
     };
     let radius = libm::hypot(p[0] - c[0], p[1] - c[1]);
     if swept <= 0.0 || radius * swept <= FLOOR {
-        return Err(too_short(curve, "arc", radius * swept.max(0.0), "by"));
+        return Err(too_short(curve, "arc", radius * swept.max(0.0), true));
     }
-    if swept >= TAU {
-        return Err(refused(
+    let whole_turn = || {
+        refused(
             format!(
-                "extending arc {curve} by {by}° would sweep it {}°, a whole turn or more",
+                "extending arc {curve} by {by}° would sweep it {}°, a whole turn or more, or its ends within 1e-7 mm",
                 swept.to_degrees()
             ),
             "by",
             "extend it by less, or draw a circle",
         )
-        .with_elements([curve.to_string()]));
+        .with_elements([curve.to_string()])
+    };
+    if swept >= TAU {
+        return Err(whole_turn());
     }
     let (sin, cos) = (libm::sin(about), libm::cos(about));
     let (dx, dy) = (p[0] - c[0], p[1] - c[1]);
     let turned = [c[0] + dx * cos - dy * sin, c[1] + dx * sin + dy * cos];
-    // Its ends apart by more than the floor, as the gate has them.
+    // Its ends apart by more than the floor, as the gate has them: near a whole turn, or
+    // nearly nothing.
     let other = if moving == start { e } else { s };
     if libm::hypot(turned[0] - other[0], turned[1] - other[1]) <= FLOOR {
-        return Err(too_short(curve, "arc", 0.0, "by"));
+        return Err(if swept > std::f64::consts::PI {
+            whole_turn()
+        } else {
+            too_short(curve, "arc", radius * swept, true)
+        });
+    }
+    // Its radius, as rounding leaves the turned point, above the floor too.
+    let left = libm::hypot(turned[0] - c[0], turned[1] - c[1]);
+    if left <= FLOOR {
+        return Err(refused(
+            format!(
+                "extending arc {curve} by {by}° would leave its turned end {left} mm from its centre, as rounding there takes it: an arc's radius is above 1e-7 mm"
+            ),
+            "by",
+            "extend it by another angle, or draw the arc larger",
+        )
+        .with_elements([curve.to_string()]));
     }
     let coordinate = |v: f64| {
         Coordinate::new(v)
@@ -289,8 +349,14 @@ fn extend_arc(
             (p.x, p.y) = (x, y);
         }
     }
+    let modified = changed(sketch, &edited);
+    // A turn too small to move the point, bit for bit, changes nothing.
+    if modified.is_empty() {
+        return Err(nothing(curve));
+    }
+    gated(&edited, curve)?;
     Ok(Edited {
-        modified: moved_points(sketch, &edited),
+        modified,
         sketch: edited,
         added: Vec::new(),
         removed: Vec::new(),
@@ -313,21 +379,78 @@ fn point(sketch: &Sketch, id: &ElementId) -> Result<[f64; 2], Error> {
         })
 }
 
-/// The points `edited` has elsewhere than `sketch`, bit for bit, by ID.
-fn moved_points(sketch: &Sketch, edited: &Sketch) -> Vec<ElementId> {
-    let before: BTreeSet<(&ElementId, u64, u64)> = sketch
+/// The members `edited` changes in place, in the format's order: the points it moves, bit
+/// for bit, then the circles whose radius it changes, then the constraints it rewrites (a
+/// reference dimension re-measured), each by ID.
+fn changed(sketch: &Sketch, edited: &Sketch) -> Vec<ElementId> {
+    let points: BTreeSet<(&ElementId, u64, u64)> = sketch
         .points
         .iter()
         .map(|p| (&p.id, p.x.mm().to_bits(), p.y.mm().to_bits()))
         .collect();
+    let radii: BTreeSet<(&ElementId, u64)> = sketch
+        .circles
+        .iter()
+        .map(|c| (&c.id, c.radius.mm().to_bits()))
+        .collect();
     let mut moved: Vec<ElementId> = edited
         .points
         .iter()
-        .filter(|p| !before.contains(&(&p.id, p.x.mm().to_bits(), p.y.mm().to_bits())))
+        .filter(|p| !points.contains(&(&p.id, p.x.mm().to_bits(), p.y.mm().to_bits())))
         .map(|p| p.id.clone())
         .collect();
     moved.sort();
-    moved
+    let mut grown: Vec<ElementId> = edited
+        .circles
+        .iter()
+        .filter(|c| !radii.contains(&(&c.id, c.radius.mm().to_bits())))
+        .map(|c| c.id.clone())
+        .collect();
+    grown.sort();
+    let mut rewritten: Vec<ElementId> = edited
+        .constraints
+        .iter()
+        .filter(|c| !sketch.constraints.iter().any(|b| b == *c))
+        .map(|c| c.id.clone())
+        .collect();
+    rewritten.sort();
+    moved.into_iter().chain(grown).chain(rewritten).collect()
+}
+
+/// Point `id` of `sketch` put at `xy`.
+fn place(sketch: &mut Sketch, id: &ElementId, xy: [f64; 2]) -> Result<(), ()> {
+    let (Some(x), Some(y)) = (Coordinate::new(xy[0]), Coordinate::new(xy[1])) else {
+        return Err(());
+    };
+    for p in &mut sketch.points {
+        if &p.id == id {
+            (p.x, p.y) = (x, y);
+        }
+    }
+    Ok(())
+}
+
+/// Refuses an edited sketch the gate would: as the edit's refusal, naming what the gate
+/// names, with the curve extended.
+fn gated(edited: &Sketch, curve: &ElementId) -> Result<(), Error> {
+    let Some(problem) = crate::document::sketch_problems(edited).into_iter().next() else {
+        return Ok(());
+    };
+    let mut elements = vec![curve.to_string()];
+    for e in problem.elements() {
+        if !elements.contains(e) {
+            elements.push(e.clone());
+        }
+    }
+    Err(refused(
+        format!(
+            "extending {curve} there would leave a sketch the gate refuses: {}",
+            problem.message()
+        ),
+        "by",
+        "extend it by less, or change what moves with its end",
+    )
+    .with_elements(elements))
 }
 
 fn refused(message: String, parameter: &str, suggestion: &str) -> Error {
@@ -345,13 +468,18 @@ fn nothing(curve: &ElementId) -> Error {
     .with_elements([curve.to_string()])
 }
 
-fn too_short(curve: &ElementId, noun: &str, size: f64, parameter: &str) -> Error {
+fn too_short(curve: &ElementId, noun: &str, size: f64, shortening: bool) -> Error {
+    let article = if noun == "arc" { "an" } else { "a" };
     refused(
         format!(
-            "extending {noun} {curve} that far would leave it {size} mm long or flipped: a {noun} must be longer than 1e-7 mm and keep its direction"
+            "extending {noun} {curve} that far would leave it {size} mm long or flipped: {article} {noun} must be longer than 1e-7 mm and keep its direction"
         ),
-        parameter,
-        "shorten it by less",
+        "by",
+        if shortening {
+            "shorten it by less"
+        } else {
+            "change the constraints that pull its end back, or extend it by less"
+        },
     )
     .with_elements([curve.to_string()])
 }
