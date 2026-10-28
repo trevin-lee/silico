@@ -325,6 +325,12 @@ pub fn begin_stoppable(
             ));
         }
     };
+    // A stop that came after the begin's solve (or with no solve to stop) is the begin's
+    // still: the drag isn't left open for every release to be cancelled.
+    if lock(&stop.0).stopped {
+        let _ = session.end(None);
+        return Err(named(cancelled()));
+    }
     let moves = reading.points.iter().map(|(id, _)| id.clone()).collect();
     Ok(Opened {
         drag: SketchDrag {

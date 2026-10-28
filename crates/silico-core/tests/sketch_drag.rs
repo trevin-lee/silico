@@ -132,6 +132,9 @@ fn a_drag_of_a_sketch_point_moves_it_by_its_id_and_reads_every_point_of_its_part
     let ended = drag.end(Some([62.5, 7.0])).unwrap();
     assert_eq!(ended.kept, Kept::Cursor);
     assert!(ended.changed);
+    // Solves: the begin's, then the end's one whole solve and the load that settles it,
+    // and none more (the drag's own release solves nothing whole).
+    assert_eq!(fake.requests().len(), 3, "{:?}", fake.requests());
     assert_eq!(ended.why, None);
     let mut expected = sketch_of(&document(), "s0000001");
     for p in &mut expected.points {
@@ -499,5 +502,34 @@ fn a_settle_the_worker_refuses_keeps_the_begin_state_saying_why() {
             "refused by its check",
             Some("s0000001")
         )
+    );
+}
+
+#[test]
+fn a_stop_before_the_begin_returns_refuses_the_begin_rather_than_leaving_the_drag_open() {
+    // A stop given before the begin (from a held solve, so nothing is solved to stop):
+    // the begin is refused, `cancelled`, not opened for every release to be cancelled.
+    let doc = document();
+    let held = solve(&doc, &feature("s0000001"), &mut FakeSketches::new()).unwrap();
+    let (solvers, _) = pool();
+    let stop = DragStop::new();
+    stop.stop();
+    let Err(e) = begin_stoppable(
+        &solvers,
+        None,
+        &doc,
+        &feature("s0000001"),
+        &id("pa000003"),
+        Some(Held {
+            sketch: &sketch_of(&doc, "s0000001"),
+            solution: &held,
+        }),
+        &stop,
+    ) else {
+        panic!("began")
+    };
+    assert_eq!(
+        (e.code(), e.feature()),
+        (ErrorCode::Cancelled, Some("s0000001"))
     );
 }

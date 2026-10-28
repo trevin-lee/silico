@@ -313,7 +313,8 @@ impl DragSession {
     /// no further than the move there: the values it reached are the caller's to solve as a
     /// whole (the core's document drag, which settles them as a load, `drag::sketch`), with
     /// a solver of its own, under a stopper of its own. So the end runs no whole solve of
-    /// its own, and nothing waits on one it can't stop.
+    /// its own: only a move to the cursor, if the newest frame wasn't of it, which its
+    /// time ([`DRAG_MOVE_TIMEOUT`]) bounds.
     pub fn release(self, to: Option<[f64; 2]>) -> Result<Ended, Error> {
         let _span = tracing::info_span!("drag_release", cursor = to.is_some()).entered();
         self.close(to, false)
