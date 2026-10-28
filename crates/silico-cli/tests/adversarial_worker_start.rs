@@ -146,7 +146,7 @@ fn every_unusable_worker_variable_is_unavailable_exit_2() {
         ] {
             // 20 s, and room for what load stretches, the processes' starts (some 3 s of work
             // each slowdown over a quiet machine, `Share`), but not the fixed waits a broken
-            // check would add, which load doesn't shorten; never 50 s, so a run that waits
+            // check would add, which load doesn't stretch; never 50 s, so a run that waits
             // 50 to 60 s is named here (past 60 s, the run's own deadline stops it, as one
             // waiting out the kernel's 60 s request timeout on a lingering worker would be).
             let share = share::Share::start();
