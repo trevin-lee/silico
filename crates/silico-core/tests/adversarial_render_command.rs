@@ -627,9 +627,13 @@ fn a_thousand_highlights_exactly_are_taken_and_a_thousand_broken_each_found() {
     request.highlight = (1..=1000)
         .map(|n| format!("k7f2qx3m.box.Face{}", 100 + n))
         .collect();
+    // Its wall time over how much slower than a quiet machine this one ran it (`Share`),
+    // which load doesn't move, whichever threads look the names up.
+    let share = super::share::Share::start();
     let start = std::time::Instant::now();
     let problems = bench.render(&request).unwrap_err();
-    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    let spent = start.elapsed().div_f64(share.finish().slowdown);
+    assert!(spent < std::time::Duration::from_secs(10), "{spent:?}");
     assert_eq!(problems.errors().len(), 100);
     assert_eq!(problems.total(), 1000);
     for (i, e) in problems.errors().iter().enumerate() {

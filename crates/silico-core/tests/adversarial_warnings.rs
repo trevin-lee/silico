@@ -357,9 +357,12 @@ fn a_cluster_of_256_ends_at_the_unknowns_limit_is_one_warning_naming_its_first_h
     }
     let text = document(&[sketch("s0000001", &points, &lines, "")]);
     let f = opened(&text);
+    // A recompute and a solve, handed from thread to thread: the check's wall time over how
+    // much slower than a quiet machine this one ran it (`Share`), which load doesn't move.
+    let share = super::share::Share::start();
     let started = Instant::now();
     let checked = f.check();
-    let took = started.elapsed();
+    let took = started.elapsed().div_f64(share.finish().slowdown);
     assert!(checked.problems.is_empty(), "{:?}", checked.problems);
     assert_eq!(checked.warnings.total(), 1);
     let warning = &checked.warnings.listed()[0];

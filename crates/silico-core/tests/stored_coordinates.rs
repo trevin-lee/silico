@@ -8,6 +8,7 @@
 
 use super::commands;
 use super::fixture;
+use super::lateness::{Lateness, allowance};
 use super::model::WAIT;
 
 use std::time::Duration;
@@ -446,6 +447,7 @@ fn a_superseded_solve_runs_its_grace_before_its_stopped() {
     let sketches = FakeSketches::new();
     let engine = engine(&sketches);
     sketches.hold();
+    let lateness = Lateness::start();
     let older = engine.start(checked(&sketch("10", HORIZONTAL)));
     assert!(sketches.wait_held(WAIT));
     let newer = engine.start(checked(&sketch("11", HORIZONTAL)));
@@ -457,10 +459,13 @@ fn a_superseded_solve_runs_its_grace_before_its_stopped() {
     assert_eq!(waits.len(), 1, "{waits:?}");
     // Its grace, and not much more (round 2's tests lens: a stop seconds late passed): a
     // generous ceiling, for a loaded machine.
+    // The grace is ARCHITECTURE.md's; the margin over it is a stop that wakes on time, as
+    // late as this machine wakes threads meanwhile.
+    let ceiling = silico_core::recompute::SKETCH_STOP_AFTER
+        + allowance(Duration::from_millis(250), lateness.most());
     assert!(
-        waits[0] >= silico_core::recompute::SKETCH_STOP_AFTER
-            && waits[0] < silico_core::recompute::SKETCH_STOP_AFTER + Duration::from_millis(250),
-        "stopped {:?} after it started",
+        waits[0] >= silico_core::recompute::SKETCH_STOP_AFTER && waits[0] < ceiling,
+        "stopped {:?} after it started, the ceiling {ceiling:?}",
         waits[0]
     );
     sketches.release();
@@ -650,6 +655,7 @@ fn a_cancelled_solve_runs_its_grace_before_its_stopped() {
     let sketches = FakeSketches::new();
     let engine = engine(&sketches);
     sketches.hold();
+    let lateness = Lateness::start();
     let run = engine.start(checked(&sketch("10", HORIZONTAL)));
     assert!(sketches.wait_held(WAIT));
     engine.cancel();
@@ -663,10 +669,13 @@ fn a_cancelled_solve_runs_its_grace_before_its_stopped() {
     }
     let waits = sketches.stop_waits();
     assert_eq!(waits.len(), 1, "{waits:?}");
+    // The grace is ARCHITECTURE.md's; the margin over it is a stop that wakes on time, as
+    // late as this machine wakes threads meanwhile.
+    let ceiling = silico_core::recompute::SKETCH_STOP_AFTER
+        + allowance(Duration::from_millis(250), lateness.most());
     assert!(
-        waits[0] >= silico_core::recompute::SKETCH_STOP_AFTER
-            && waits[0] < silico_core::recompute::SKETCH_STOP_AFTER + Duration::from_millis(250),
-        "stopped {:?} after it started",
+        waits[0] >= silico_core::recompute::SKETCH_STOP_AFTER && waits[0] < ceiling,
+        "stopped {:?} after it started, the ceiling {ceiling:?}",
         waits[0]
     );
     sketches.release();

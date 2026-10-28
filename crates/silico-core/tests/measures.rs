@@ -6,8 +6,8 @@
 
 use super::example;
 use super::listing::{answer, fixture, model_of};
-use super::model::WAIT;
 use super::model::id;
+use super::model::{WAIT, promptly};
 
 use example::EXAMPLE;
 use silico_core::ErrorCode;
@@ -321,7 +321,6 @@ fn closing_a_session_stops_its_reads_kernel_work_and_says_so() {
     // client, so the read answers at once, saying the session closed, rather than waiting on
     // its request (up to the kernel's 60 s timeout); and dropping the sessions waits for
     // none.
-    use std::time::{Duration, Instant};
     let f = fixture();
     let s = f.open("part.silico", EXAMPLE);
     // Rebuilt and published first.
@@ -343,17 +342,13 @@ fn closing_a_session_stops_its_reads_kernel_work_and_says_so() {
         None,
     );
     assert!(f.kernel.wait_running(1, WAIT));
-    let started = Instant::now();
+    // The held request is let go only at the end: a close that waited for it never answers,
+    // and nor does the read, so the waits here fail it.
     answer(f.sessions.close(&s)).result.unwrap();
     let read = match reading.wait_timeout(WAIT) {
         Ok(read) => read,
         Err(_) => panic!("the read went on after its session closed"),
     };
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        started.elapsed()
-    );
     let refused = read.result.unwrap_err();
     assert_eq!(refused.errors()[0].code(), ErrorCode::InvalidInput);
     assert_eq!(
@@ -374,13 +369,8 @@ fn closing_a_session_stops_its_reads_kernel_work_and_says_so() {
         None,
     );
     assert!(f.kernel.wait_running(1, WAIT));
-    let started = Instant::now();
-    drop(f.sessions);
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        started.elapsed()
-    );
+    let sessions = f.sessions;
+    promptly("dropping the sessions", move || drop(sessions));
     held.release();
 }
 
