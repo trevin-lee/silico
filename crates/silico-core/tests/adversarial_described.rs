@@ -430,6 +430,15 @@ fn describes_the_tree(op: &Op) -> bool {
     matches!(op, Op::Describe { shape, .. } if FakeKernel::counts(shape).is_some_and(|c| c.edges == 3072))
 }
 
+/// How many requests describing the tree `kernel` was asked, whether or not they started.
+fn asked_of_tree(kernel: &FakeKernel) -> usize {
+    kernel
+        .asked()
+        .iter()
+        .filter(|call| describes_the_tree(&call.op))
+        .count()
+}
+
 #[test]
 fn a_small_solid_is_described_in_one_request() {
     // The block has 6 faces, 12 edges, and 8 vertices, 26 in all: one `DescribeAll`, where
@@ -586,6 +595,8 @@ fn a_solids_batches_are_sent_four_at_a_time_and_joined_in_order() {
     let hold = engine.kernel().hold(describes_the_tree);
     let run = engine.start(checked(&fused_tree(8)));
     assert_eq!(settled(engine.kernel(), describes_the_tree, 4), 4);
+    // Asked, not only started: a fifth no thread had taken yet is still one too many.
+    assert_eq!(asked_of_tree(engine.kernel()), 4);
     hold.release();
     let model = match run.wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
@@ -766,28 +777,63 @@ fn a_recompute_cancelled_mid_describe_publishes_nothing_and_the_next_describes_w
 fn a_batch_that_fails_cancels_the_batches_still_waiting_and_none_after_is_asked() {
     // 256 boxes fused (1,536 faces, 3,072 edges, 2,048 vertices: nine batches, four in
     // flight at once: both of faces, then the first two of edges), on a kernel of one
-    // thread, its first batch, of faces, refused, its second held. The batches of edges
-    // still waiting are cancelled, so they never start, and the five planned after are never
-    // asked. Which of two orders comes is the scheduler's: the fake's thread takes the
-    // second batch, held, before the core drops it, and the two of edges wait cancelled
-    // until it's released; or the core drops all three first, and the thread passes over
-    // them, nothing held. Either way, the model is published, the tree's refusal beside its
-    // summary. A core that didn't cancel would leave the thread held, the edges waiting
-    // uncancelled, and the run unfinished.
+    // thread, its first batch, of faces, refused, and every other batch of it held. Once the
+    // refusal is back, the core drops the three still in flight, one by one, which cancels
+    // them, and asks none of the five planned after. The thread may take one of the three
+    // before the core has dropped it, and be held there: the scheduler's timing. Then, the
+    // queue first in first out, the three are all dropped once those after it wait
+    // cancelled, those before it passed over; and only then is it released, so it alone
+    // runs. If the thread takes none, it passes over all three, and the run goes on. Either
+    // way, the model is published, the tree's refusal beside its summary. A core that waited
+    // for the batches in flight, or didn't cancel them, would leave the one taken held and
+    // the run unfinished; one that asked on would ask more than four.
     let engine = Recompute::new(FakeKernel::new(1).unwrap());
-    let face_batch = |op: &Op, from: u32| {
+    let first_faces = |op: &Op| {
         describes_the_tree(op)
-            && matches!(op, Op::Describe { kind: ElementKind::Face, first, .. } if *first == from)
+            && matches!(
+                op,
+                Op::Describe {
+                    kind: ElementKind::Face,
+                    first: 1,
+                    ..
+                }
+            )
     };
     engine.kernel().refuse(move |op| {
-        face_batch(op, 1)
-            .then(|| silico_core::Error::new(ErrorCode::KernelFailed, "no faces today"))
+        first_faces(op).then(|| silico_core::Error::new(ErrorCode::KernelFailed, "no faces today"))
     });
-    let hold = engine.kernel().hold(move |op| face_batch(op, 1001));
+    let hold = engine
+        .kernel()
+        .hold(move |op| describes_the_tree(op) && !first_faces(op));
+    let of_tree = |calls: Vec<silico_core::fake::Call>| -> Vec<(ElementKind, u32)> {
+        calls
+            .into_iter()
+            .filter_map(|call| match call.op {
+                Op::Describe { kind, first, .. } if describes_the_tree(&call.op) => {
+                    Some((kind, first))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let in_flight = [
+        (ElementKind::Face, 1001),
+        (ElementKind::Edge, 1),
+        (ElementKind::Edge, 1001),
+    ];
+    // The batch the thread took after the refused one, held, once the core has dropped all
+    // three: those after it in the queue wait cancelled.
+    let all_dropped = || {
+        let ran = of_tree(engine.kernel().calls());
+        let at = in_flight
+            .iter()
+            .position(|batch| Some(batch) == ran.get(1))?;
+        (engine.kernel().cancelled_waiting() == in_flight.len() - 1 - at).then_some(())
+    };
     let mut run = engine.start(checked(&fused_tree(8)));
     let deadline = Instant::now() + WAIT;
     let outcome = loop {
-        if engine.kernel().cancelled_waiting() >= 2 {
+        if all_dropped().is_some() {
             hold.release();
             break run.wait_timeout(WAIT);
         }
@@ -797,7 +843,8 @@ fn a_batch_that_fails_cancels_the_batches_still_waiting_and_none_after_is_asked(
         }
         assert!(
             Instant::now() < deadline,
-            "the waiting batches weren't cancelled: {} of 2",
+            "the batches in flight weren't cancelled: {:?} ran, {} waiting cancelled",
+            of_tree(engine.kernel().calls()),
             engine.kernel().cancelled_waiting()
         );
     };
@@ -810,35 +857,9 @@ fn a_batch_that_fails_cancels_the_batches_still_waiting_and_none_after_is_asked(
     let tree = assert_refused_beside_its_summary(&model, "t8000000", ErrorCode::KernelFailed);
     assert_eq!(tree.why_undescribed().unwrap().message(), "no faces today");
     assert!(engine.kernel().wait_idle(WAIT));
-    let of_tree = |calls: Vec<silico_core::fake::Call>| -> Vec<(ElementKind, u32)> {
-        calls
-            .into_iter()
-            .filter_map(|call| match call.op {
-                Op::Describe { kind, first, .. } if describes_the_tree(&call.op) => {
-                    Some((kind, first))
-                }
-                _ => None,
-            })
-            .collect()
-    };
-    assert_eq!(
-        of_tree(engine.kernel().asked()),
-        [
-            (ElementKind::Face, 1),
-            (ElementKind::Face, 1001),
-            (ElementKind::Edge, 1),
-            (ElementKind::Edge, 1001),
-        ]
-    );
-    let ran = of_tree(engine.kernel().calls());
-    assert!(
-        ran == [(ElementKind::Face, 1), (ElementKind::Face, 1001)]
-            || ran == [(ElementKind::Face, 1)],
-        "a cancelled batch ran: {ran:?}"
-    );
     // The thread passes over a cancelled batch only when it next looks for work, which can
-    // come after the run is published and nothing is running (`wait_idle` returns then):
-    // each is dropped unrun in its own time, which a loaded machine delays.
+    // come after nothing is running (`wait_idle` returns then): each is dropped unrun in its
+    // own time, which a loaded machine delays.
     let deadline = Instant::now() + WAIT;
     while engine.kernel().cancelled_waiting() > 0 {
         assert!(
@@ -848,6 +869,17 @@ fn a_batch_that_fails_cancels_the_batches_still_waiting_and_none_after_is_asked(
         );
         std::thread::sleep(Duration::from_millis(5));
     }
+    assert_eq!(
+        of_tree(engine.kernel().asked()),
+        [&[(ElementKind::Face, 1)][..], &in_flight].concat()
+    );
+    let ran = of_tree(engine.kernel().calls());
+    assert!(
+        ran.first() == Some(&(ElementKind::Face, 1))
+            && ran.len() <= 2
+            && ran.get(1).is_none_or(|taken| in_flight.contains(taken)),
+        "a cancelled batch ran: {ran:?}"
+    );
 }
 
 #[test]
