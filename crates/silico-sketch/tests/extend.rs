@@ -86,3 +86,59 @@ fn a_horizontal_line_with_its_length_slides_when_extended_as_freecads_drag_moves
         [15.0, 0.0],
     );
 }
+
+#[test]
+fn an_arcs_extended_end_takes_a_free_neighbour_with_it_as_freecads_arc_first_solve_does() {
+    // FreeCAD 1.1.3 (the port review's probe9): an arc about (0, 0), radius 10, from 0° to
+    // 90°, and a line from its end to (−10, 10); the end on by 30°, then solved. With the
+    // arc listed first, its end lands at (10 cos 120°, 10 sin 120°) = (−5, 5√3), the radius
+    // stays 10, and the free line follows, its far end where it was. Made horizontal, the
+    // line's far end goes to (−10, 5√3). (Listed after the line, FreeCAD undoes most of the
+    // turn: Silico writes the point, so it's the arc-first result whatever the order.)
+    let h = 5.0 * 3f64.sqrt();
+    for (constraint, far) in [
+        ("", [-10.0, 10.0]),
+        (
+            r#"{"id": "k0000000", "type": "horizontal", "line": "b0000000"}"#,
+            [-10.0, h],
+        ),
+    ] {
+        let text = document(&fields(
+            &[
+                point("z0000000", 0.0, 0.0),
+                point("s0000000", 10.0, 0.0),
+                point("e0000000", 0.0, 10.0),
+                point("q0000000", -10.0, 10.0),
+            ]
+            .join(", "),
+            &line("b0000000", "e0000000", "q0000000"),
+            "",
+            &super::fixture::arc("r0000000", "z0000000", "s0000000", "e0000000"),
+            constraint,
+        ));
+        let before = read(text.as_bytes()).unwrap();
+        let Operation::Sketch(sketch) = &before.features[0].operation else {
+            panic!("not a sketch")
+        };
+        let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+        let edited = extend(
+            sketch,
+            &ElementId::new("r0000000").unwrap(),
+            End::End,
+            By::Angle(silico_core::document::Angle::rounded(30.0).unwrap()),
+            &mut worker,
+        )
+        .unwrap();
+        let solution = Translation::new(&edited.sketch)
+            .unwrap()
+            .solve(&mut worker)
+            .unwrap()
+            .outcome
+            .unwrap();
+        let p = |name: &str| solution.point(&ElementId::new(name).unwrap()).unwrap();
+        close(p("e0000000"), [-5.0, h]);
+        close(p("z0000000"), [0.0, 0.0]);
+        close(p("s0000000"), [10.0, 0.0]);
+        close(p("q0000000"), far);
+    }
+}

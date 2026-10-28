@@ -272,12 +272,12 @@ That is deliberately not Validate's 1e-4 box. Ends 1e-7 to 1e-4 mm apart, which 
 **What FreeCAD does** (`extend`, `SketchObjectOperations.cpp:503-549`): lines and arcs only.
 - **Lines.** A line's chosen end moves by `increment` along the line, through the solver's drag, so constraints win: a line with a length of 10, extended by 5, slides instead of growing *(1.1.3)*.
 - **Arcs.** An arc's start or end angle moves by `increment` **radians**, written straight into the geometry, then solved.
-- **Unchecked:** a negative increment may shrink past the other end and flip a line *(1.1.3: −15 on a 10 mm line)*, or invert an arc.
+- **Unchecked:** a negative increment may shrink past the other end and flip a line *(1.1.3: −15 on a 10 mm line)*, or invert an arc. An arc also wraps past a whole turn, its range trimmed periodically by OCCT: a 90° arc's end on by 300° gives a 30° arc, and by −120° a 330° one *(1.1.3)*.
 - **Other kinds and the `mid` position.** 1.1 refused these. Main returns success and does nothing (`d8cf415e4f`, `a502762119`, 2026), a regression by reading.
-- The Gui extends to the cursor and then adds an auto-constraint (`on`) at the moved end. The App layer never looks for the next curve. FreeCAD has no App test of extend.
+- The Gui extends to the cursor and then adds the auto-constraints the cursor suggests at the moved end (`createAutoConstraints`, `DrawSketchHandlerExtend.h`: a coincidence, a point on a curve, a tangency, as the snap finds). The App layer never looks for the next curve. FreeCAD has no App test of extend.
 
 **What Silico does differently.** Moving an end is moving its point. Every curve that shares it follows, as FreeCAD's drag pulls a coincident neighbour. The order matters: dragging the end to its target and letting the solve follow gives FreeCAD's result, but writing the end there and then solving doesn't *(1.1.3: a 10 mm horizontal line with its length, extended by 5: (5,0)–(15,0) by the drag, (3.5706,0)–(13.5706,0) by write-then-solve)*. Recommended (decision 11):
-- A line's end goes through the sketch worker's drag session (M3.7's begin, move, end), as FreeCAD's `moveGeometry` does; an arc's range is written and the sketch solved, as FreeCAD does.
+- A line's end goes through the sketch worker's drag session (M3.7's begin, move, end), as FreeCAD's `moveGeometry` does; an arc's range is written and the sketch solved, as FreeCAD does. FreeCAD's arc result depends on the order its geometry was added: with the arc listed first, its end lands at the turned angle and a joined free line follows; listed after the line, the solve undoes most of the turn and moves the centre *(1.1.3: an arc of radius 10 from 0° to 90°, a line from its end to (−10, 10), the end on by 30°: (−5, 8.660254) arc first, (−0.0396, 9.9909) line first)*. Silico writes the point, so it takes the arc-first result whatever the order. (FreeCAD's arc branch also edits the geometry in place without marking the sketch for a solve, so a joined line stays where it was until an explicit `solve()` *(1.1.3)*: an upstream bug Silico doesn't carry.)
 - Refuse anything but a line or an arc, at anything but its two ends, as 1.1 did.
 - Refuse a result of size 1e-7 mm or less, or a flip.
 - Express an arc's increment as an angle (`Angle`, exact) and a line's as a `Length`.
@@ -285,7 +285,7 @@ That is deliberately not Validate's 1e-4 box. Ends 1e-7 to 1e-4 mm apart, which 
 **Built** (`silico_core::extend`, a core function with no command yet; docs/design/m5.0-app.md, open item 12, pending Trevin). Its result is a function of the sketch as stored and the increment alone: the drag begins from the stored sketch, moves once to FreeCAD's target (the other end, along the line, plus the new length), and ends. The frame's values are the edited sketch's coordinates, and the edit's solve settles them, as a drag's end does. Every point the drag moved is `modified`. The 1.1.3 probe above is its real-worker test: (5,0)–(15,0). Beyond the recommendations, it also refuses:
 - an increment of 0, since it changes nothing;
 - a frame that isn't a success, as an invalid result, where FreeCAD returns its solver's status;
-- a line in a part of more than `MAX_DRAG_UNKNOWNS` unknowns, which the drag can't take;
+- a line in a part of more than `MAX_DRAG_UNKNOWNS` unknowns, which the drag can't take (FreeCAD has no such limit; the cap was sized for a drag's moves, each under 0.76 s at 256 unknowns, and an extend makes one move under `DRAG_MOVE_TIMEOUT`, so a larger cap for it, sized to that time, is a decision for Trevin);
 - a drag that leaves the line 1e-7 mm or less, or flipped;
 - an arc swept a whole turn or more.
 

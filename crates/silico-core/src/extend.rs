@@ -13,7 +13,8 @@
 //! - **An arc's end** moves by an `Angle`, written: its point turned about the centre
 //!   (the start back, the end on, so a positive angle lengthens the arc either way, as
 //!   FreeCAD's `setRange(start − increment, end)` and `(start, end + increment)` do). The
-//!   edit's solve then settles the rest, as FreeCAD's `solve()` after it does.
+//!   edit's solve then settles the rest, as FreeCAD's `solve()` after it does with the arc
+//!   listed before its neighbours (FreeCAD's result hangs on that order; Silico's doesn't).
 //!
 //! Refused, as the port note recommends: a member that isn't a line or an arc, the wrong
 //! kind of increment for it, an increment of nothing, and a result whose line or arc is
