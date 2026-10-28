@@ -937,8 +937,21 @@ fn assert_second_took_the_first_solver(
     session: DragSession,
     second: &Arc<Mutex<Option<Begun>>>,
 ) {
-    let Some(Begun::Open { session: next, .. }) = second.lock().unwrap().take() else {
-        panic!("no second drag was begun")
+    // The notifier runs on the drag's thread after the outcome is told, so the test may
+    // wake first: it waits for the second drag, within the tests' one WAIT.
+    let deadline = std::time::Instant::now() + WAIT;
+    let begun = loop {
+        if let Some(begun) = second.lock().unwrap().take() {
+            break begun;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no second drag was begun"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    let Begun::Open { session: next, .. } = begun else {
+        panic!("the second drag conflicted")
     };
     assert_eq!(started.lock().unwrap().len(), 1);
     next.end(None).unwrap();
