@@ -620,7 +620,7 @@ fn a_lines_drag_that_leaves_it_at_the_floor_running_its_way_is_refused_with_its_
     // under the 1e-7 floor, though it runs the way it did. Refused with that length, the
     // suggestion following the increment's sign: lengthened by 5, the constraints pulled
     // it back; shortened by 5, it's shortened too far.
-    let tiny = 2f64.powi(-25);
+    let tiny = 1.0 / 33_554_432.0; // 2⁻²⁵, exactly
     for (by, suggestion) in [
         (
             5.0,
