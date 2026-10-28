@@ -17,7 +17,10 @@
 //! - `drag`: a drag session through the worker, begun once (timed apart), then a move per
 //!   frame;
 //! - `solve-here` and `drag-here`: the same, called in this process, so the difference is
-//!   what the worker's IPC costs.
+//!   what the worker's IPC costs;
+//! - `drag-core`: the drag through the core's client (`silico_core::drag`, M5) on a worker
+//!   of its own, each frame from `move_to` to its outcome, so the difference from `drag` is
+//!   what the client's thread and queue cost.
 //!
 //! A mode stops early, after at least 30 frames, once it has taken a minute: a full solve
 //! at the largest sizes takes seconds a frame. The table says how many frames each ran.
@@ -408,6 +411,44 @@ fn drag_through(w: &mut Worker, case: &Case, path: &[[f64; 2]]) -> Result<Frames
     Ok(frames)
 }
 
+fn drag_core(case: &Case, path: &[[f64; 2]]) -> Result<Frames> {
+    use silico_core::drag::{Begun, MoveOutcome};
+    use silico_core::recompute::SketchSolvers;
+    use silico_core::sketch::{SketchSolver, SketchWorker};
+    let solvers = SketchSolvers::starting(|| {
+        SketchWorker::start_worker(Path::new(WORKER))
+            .map(|w| Box::new(w.with_timeout(TIMEOUT)) as Box<dyn SketchSolver>)
+    });
+    let start = Instant::now();
+    let begun = silico_core::drag::begin(
+        &solvers,
+        DragBegin {
+            system: case.system.clone(),
+            point: case.point,
+        },
+    )?;
+    let began = start.elapsed();
+    let Begun::Open { session, .. } = begun else {
+        return Err("the core's drag found constraints in conflict".into());
+    };
+    let mut frames = Frames::new(Some(began));
+    let started = Instant::now();
+    for &to in path {
+        let start = Instant::now();
+        let outcome = session.move_to(to)?.wait();
+        let took = start.elapsed();
+        let solved = match outcome {
+            MoveOutcome::Solved { moved, .. } => moved.status == SolveStatus::Success,
+            other => return Err(format!("the core's move answered {other:?}").into()),
+        };
+        if !frames.record(took, solved, started) {
+            break;
+        }
+    }
+    session.end(None)?;
+    Ok(frames)
+}
+
 fn drag_here(case: &Case, path: &[[f64; 2]]) -> Result<Frames> {
     let start = Instant::now();
     let begun = Drag::begin(&DragBegin {
@@ -506,6 +547,7 @@ fn main() -> Result<()> {
         modes.push(("solve-here", solve_here(case, &path)?));
         if refused.is_none() {
             modes.push(("drag-here", drag_here(case, &path)?));
+            modes.push(("drag-core", drag_core(case, &path)?));
         }
         let unknowns = case.system.unknowns.len();
         let constraints = case.system.constraints.len();

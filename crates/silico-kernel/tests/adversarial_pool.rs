@@ -9,16 +9,22 @@
 //! `pool.rs` they assume one test per process (nextest, which `pixi run test` uses).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "../../silico-core/tests/common/lateness.rs"]
+mod lateness;
 #[path = "common/launches.rs"]
 mod launches;
 #[path = "common/pool.rs"]
 mod pool;
 #[path = "common/process.rs"]
 mod process;
+#[path = "../../silico-core/tests/common/share.rs"]
+mod share;
 #[path = "common/wait.rs"]
 mod wait;
 
-use crate::wait::WAIT;
+use crate::wait::{UNREACHED, WAIT, promptly};
+use lateness::{Lateness, allowance};
+use share::Share;
 use std::collections::BTreeSet;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
@@ -642,6 +648,9 @@ fn a_stopped_worker_times_out_and_is_replaced_and_reaped() {
     let pool = pool(TEST_WORKER, 1);
     let pid = pool.pids()[0];
     signal("STOP", pid);
+    // Its 300 ms, then a kill and a reap: 5 s on a quiet machine, and the wakes on the way
+    // as late as this machine runs them.
+    let lateness = Lateness::start();
     let start = Instant::now();
     let err = done(pool.submit(
         Generation(1),
@@ -650,7 +659,7 @@ fn a_stopped_worker_times_out_and_is_replaced_and_reaped() {
     .unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerTimeout, "{err}");
     assert!(
-        start.elapsed() < Duration::from_secs(5),
+        start.elapsed() < allowance(Duration::from_secs(5), lateness.most()),
         "{:?}",
         start.elapsed()
     );
@@ -668,17 +677,12 @@ fn dropping_a_pool_whose_worker_is_stopped_is_quick() {
         signal("STOP", pid);
     }
     let pending: Vec<_> = (0..4)
-        .map(|_| pool.submit(Generation(1), echo(&[1])))
+        // Each its time no test reaches: a drop that waited for them to time out never returns.
+        .map(|_| pool.submit(Generation(1), echo(&[1]).with_timeout(UNREACHED)))
         .collect();
     std::thread::sleep(Duration::from_millis(100));
-    let start = Instant::now();
-    drop(pool);
+    promptly("dropping the pool", move || drop(pool));
     assert_reaped(&pids, "after the drop");
-    assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        start.elapsed()
-    );
     for p in pending {
         assert_eq!(done(p).unwrap_err().code(), ErrorCode::Internal);
     }
@@ -1029,7 +1033,8 @@ fn a_killer_ends_a_call_at_once_and_is_harmless_after_the_worker_is_gone() {
             Duration::from_secs(60),
         )
         .unwrap();
-    let start = Instant::now();
+    // A sleep no test reaches, and a call allowed `WAIT`: a kill that didn't end the call
+    // would end it as a timeout, not the crash asserted below.
     let err = std::thread::scope(|scope| {
         scope.spawn(|| {
             std::thread::sleep(Duration::from_millis(150));
@@ -1038,18 +1043,15 @@ fn a_killer_ends_a_call_at_once_and_is_harmless_after_the_worker_is_gone() {
         worker
             .call(
                 Generation(0),
-                Op::Debug(DebugOp::Sleep { millis: 20_000 }),
-                Duration::from_secs(60),
+                Op::Debug(DebugOp::Sleep {
+                    millis: UNREACHED.as_millis() as u64,
+                }),
+                WAIT,
             )
             .unwrap_err()
     });
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
     assert!(err.cause().unwrap().contains("SIGKILL"), "{err}");
-    assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        start.elapsed()
-    );
     assert!(worker.is_stopped());
     // Killed and reaped: the killer, used again, signals nothing, and the worker has exited.
     killer.kill();
@@ -1190,6 +1192,9 @@ fn every_worker_crashing_at_once_leaves_a_full_pool_every_time() {
 #[test]
 fn twenty_thousand_small_requests_all_come_back_right() {
     let pool = pool(WORKER, 4);
+    // Their wall time over how much slower than a quiet machine this one ran them (`Share`),
+    // which load doesn't move.
+    let share = Share::start();
     let start = Instant::now();
     let pending: Vec<_> = (0..20_000u32)
         .map(|i| (i, pool.submit(Generation(1), echo(&i.to_le_bytes()))))
@@ -1201,10 +1206,11 @@ fn twenty_thousand_small_requests_all_come_back_right() {
             "{i}"
         );
     }
+    let wall = start.elapsed();
+    let slowdown = share.finish().slowdown;
     assert!(
-        start.elapsed() < Duration::from_secs(30),
-        "{:?}",
-        start.elapsed()
+        wall.div_f64(slowdown) < Duration::from_secs(30),
+        "{wall:?}, the machine {slowdown:.2} times slower than a quiet one"
     );
 }
 
@@ -1236,6 +1242,7 @@ fn requests_whose_callers_stopped_waiting_dont_jam_the_pool() {
     let unwaited: Vec<_> = (0..40)
         .map(|_| pool.submit(Generation(1), sleep(10)))
         .collect();
+    let lateness = Lateness::start();
     let start = Instant::now();
     assert_eq!(
         done(pool.submit(Generation(1), echo(&[4]))).unwrap(),
@@ -1243,28 +1250,35 @@ fn requests_whose_callers_stopped_waiting_dont_jam_the_pool() {
     );
     // 40 × 10 ms on two workers: a jammed pool would never answer, and one that stalls on
     // each abandoned request would take seconds. (Bounds are against what they rule out, not
-    // how fast a loaded machine is.)
+    // how fast a loaded machine is, and allow for how late it wakes threads.)
     assert!(
-        start.elapsed() < Duration::from_secs(10),
+        start.elapsed() < allowance(Duration::from_secs(10), lateness.most()),
         "{:?}",
         start.elapsed()
     );
     drop(unwaited);
     // And `advance` drops what's still queued, their `Pending`s kept so only it can: a
-    // request after it waits at most for the two sleeps already running, where the queue
-    // would take 40 × 500 ms on two workers, 10 s.
+    // request after it waits at most for the two sleeps already running (stopped once they've
+    // run the stop-after), where the queue would take 40 × 4 s on two workers, 80 s, past
+    // the wait `done` allows.
     let unwaited: Vec<_> = (0..40)
-        .map(|_| pool.submit(Generation(1), sleep(500)))
+        .map(|_| pool.submit(Generation(1), sleep(4_000)))
         .collect();
     pool.advance(Generation(2));
-    let start = Instant::now();
-    done(pool.submit(Generation(2), echo(&[5]))).unwrap();
+    // Dropped by the advance itself, before any slot looks at them: all but the two running,
+    // superseded already.
+    let (superseded, waiting): (Vec<_>, Vec<_>) = unwaited
+        .into_iter()
+        .map(|p| p.try_take())
+        .partition(|taken| matches!(taken, Ok(Outcome::Superseded)));
     assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        start.elapsed()
+        superseded.len() >= 38,
+        "{} of 40 superseded by the advance, {} not",
+        superseded.len(),
+        waiting.len()
     );
-    drop(unwaited);
+    done(pool.submit(Generation(2), echo(&[5]))).unwrap();
+    drop(waiting);
 }
 
 #[test]
@@ -2039,20 +2053,20 @@ fn dropping_an_on_demand_pool_while_its_slots_start_stops_at_once() {
     // still kill every worker at once (a worker started after the drop listed the killers
     // is never given its request), end every request without a result, and leave no
     // process behind.
-    const SLEEP: Duration = Duration::from_secs(30);
+    // A sleep no test reaches: a drop that waited for one never returns within `WAIT`.
+    const SLEEP: Duration = UNREACHED;
     for attempt in 0..40u32 {
         let pool = on_demand(TEST_WORKER, 8);
         let pending: Vec<_> = (0..8)
-            .map(|_| pool.submit(Generation(1), sleep(SLEEP.as_millis() as u64)))
+            .map(|_| {
+                pool.submit(
+                    Generation(1),
+                    sleep(SLEEP.as_millis() as u64).with_timeout(UNREACHED),
+                )
+            })
             .collect();
         spin(Duration::from_micros(u64::from(attempt) * 250));
-        let start = Instant::now();
-        drop(pool);
-        let took = start.elapsed();
-        assert!(
-            took < Duration::from_secs(10),
-            "attempt {attempt}: the drop took {took:?}"
-        );
+        promptly(&format!("attempt {attempt}: the drop"), move || drop(pool));
         for p in pending {
             let err = done(p).unwrap_err();
             assert_eq!(err.code(), ErrorCode::Internal, "attempt {attempt}: {err}");
@@ -2681,19 +2695,22 @@ fn a_clients_own_advance_stops_its_running_request_and_no_others() {
 
 #[test]
 fn dropping_a_client_mid_request_stops_its_work_and_no_others() {
-    // On a pool of two, `a`'s 30 s sleep and `b`'s 1 s sleep run at once, and a second sleep
-    // of `a`'s waits. `a` is dropped: its waiting sleep is superseded at once, and its
-    // running one stopped once it has run the stop-after (well before its 30 s), its worker
-    // replaced (a third launch). `b`'s sleep runs to its end on its worker, which the pool
+    // On a pool of two, `a`'s sleep (one no test reaches) and `b`'s 1 s sleep run at once,
+    // and a second sleep of `a`'s waits. `a` is dropped: its waiting sleep is superseded at
+    // once, and its running one stopped once it has run the stop-after (a sleep left to run
+    // has no outcome within the wait `outcome` allows), its worker replaced (a third
+    // launch). `b`'s sleep runs to its end on its worker, which the pool
     // still holds.
     let (pool, log) = logged_pool("drop-client", 2);
     let first = pool.pids();
     let (a, b) = (pool.client(), pool.client());
-    let long = a.submit(Generation(0), sleep(30_000));
+    let long = a.submit(
+        Generation(0),
+        sleep(UNREACHED.as_millis() as u64).with_timeout(UNREACHED),
+    );
     let other = b.submit(Generation(0), sleep(1_000));
     let queued = a.submit(Generation(0), echo(&[1]));
     std::thread::sleep(Duration::from_millis(200));
-    let start = Instant::now();
     drop(a);
     assert!(
         matches!(queued.try_take(), Ok(Outcome::Superseded)),
@@ -2701,11 +2718,6 @@ fn dropping_a_client_mid_request_stops_its_work_and_no_others() {
     );
     let stopped = outcome(long);
     assert!(matches!(stopped, Outcome::Superseded), "{stopped:?}");
-    assert!(
-        start.elapsed() < Duration::from_secs(10),
-        "a's sleep ran on {:?} after a was dropped",
-        start.elapsed()
-    );
     let ran = outcome(other);
     assert!(matches!(ran, Outcome::Done(Ok(()))), "{ran:?}");
     wait_launches(&log, 3);

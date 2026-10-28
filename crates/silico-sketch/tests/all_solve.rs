@@ -11,6 +11,8 @@ mod test_programs;
 mod fixture;
 #[path = "common/generate.rs"]
 mod generate;
+#[path = "../../silico-core/tests/common/lateness.rs"]
+mod lateness;
 #[path = "common/saves.rs"]
 mod saves;
 #[path = "common/systems.rs"]

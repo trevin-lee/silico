@@ -8,8 +8,12 @@
 mod fixture;
 #[path = "common/generate.rs"]
 mod generate;
+#[path = "../../silico-core/tests/common/lateness.rs"]
+mod lateness;
 #[path = "common/saves.rs"]
 mod saves;
+#[path = "../../silico-core/tests/common/share.rs"]
+mod share;
 #[path = "common/systems.rs"]
 mod systems;
 #[path = "common/wait.rs"]
@@ -17,6 +21,8 @@ mod wait;
 
 #[path = "adversarial_drag.rs"]
 mod adversarial_drag;
+#[path = "adversarial_drag_session.rs"]
+mod adversarial_drag_session;
 #[path = "adversarial_load_path.rs"]
 mod adversarial_load_path;
 #[path = "adversarial_stored_coordinates.rs"]

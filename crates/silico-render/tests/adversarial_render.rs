@@ -22,8 +22,11 @@ use silico_protocol::{
 use silico_render::bench::{box_mesh, front_of_a_box};
 use silico_render::render::{AMBIENT, BACKGROUND, BODY};
 
+use crate::common::WAIT;
+use crate::share::Share;
+
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-render-worker");
-/// The core's render limit.
+/// The core's render limit (`RENDER_TIMEOUT`): what the scale tests bound a draw's cost by.
 const LIMIT: Duration = Duration::from_secs(30);
 
 const FRONT_FACE: PixelId = [1, 3];
@@ -68,8 +71,9 @@ fn decode(png: &[u8]) -> Image {
 
 type Drawn = (Image, Option<Vec<PixelId>>);
 
+/// `scene` drawn by `w`, or its refusal, allowed `WAIT`: no caller claims a time by it.
 fn call(w: &mut Worker, scene: &RenderScene) -> Result<Drawn, Error> {
-    match w.call(Generation(1), Op::Render(Box::new(scene.clone())), LIMIT)? {
+    match w.call(Generation(1), Op::Render(Box::new(scene.clone())), WAIT)? {
         Reply::Rendered { png, ids } => Ok((decode(&png), ids)),
         other => panic!("Render replied {other:?}"),
     }
@@ -575,12 +579,42 @@ fn tiles(n: u32) -> Mesh {
     mesh
 }
 
-/// Draws `scene` once to make the context, then times a second draw.
-fn timed(w: &mut Worker, scene: &RenderScene) -> (Duration, Result<Drawn, Error>) {
+/// What a draw cost: its wall time over how much slower than a quiet machine this one ran
+/// meanwhile (`Share`), which load doesn't move; with the two it's taken from, for a
+/// failure to say.
+#[derive(Clone, Copy)]
+struct Cost {
+    cost: Duration,
+    wall: Duration,
+    slowdown: f64,
+}
+
+impl std::fmt::Display for Cost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:?}: {:?} of wall time, the machine {:.2} times slower than a quiet one",
+            self.cost, self.wall, self.slowdown
+        )
+    }
+}
+
+/// Draws `scene` once to make the context, then draws it again: what the second draw cost
+/// ([`Cost`]), for a bound load doesn't move, and its result. The draw may take up to
+/// `WAIT` of wall time: the bound is on its cost, which a loaded machine stretches.
+fn timed(w: &mut Worker, scene: &RenderScene) -> (Cost, Result<Drawn, Error>) {
     still_draws(w);
+    let share = Share::start();
     let start = Instant::now();
     let result = call(w, scene);
-    (start.elapsed(), result)
+    let wall = start.elapsed();
+    let slowdown = share.finish().slowdown;
+    let cost = Cost {
+        cost: wall.div_f64(slowdown),
+        wall,
+        slowdown,
+    };
+    (cost, result)
 }
 
 #[test]
@@ -599,9 +633,9 @@ fn the_most_edges_a_scene_may_have_draw_within_the_limit_and_one_more_is_refused
     }
     let mut scene = with_mesh(400, 300, mesh);
     scene.bodies[0].highlight_edges = (0..12 + n).collect();
-    let (took, result) = timed(&mut w, &scene);
-    let (_, ids) = result.unwrap_or_else(|e| panic!("{took:?}: {e:?}"));
-    assert!(took < LIMIT, "{took:?}");
+    let (cost, result) = timed(&mut w, &scene);
+    let (_, ids) = result.unwrap_or_else(|e| panic!("{cost}: {e:?}"));
+    assert!(cost.cost < LIMIT, "{cost}");
     let ids = ids.unwrap();
     assert!(
         ids.iter().any(|id| id[1] > EDGE_BIT | 12),
@@ -634,12 +668,11 @@ fn ten_thousand_highlighted_faces_draw_within_half_the_limit() {
     let n = 10_000;
     let mut scene = with_mesh(400, 300, tiles(n));
     scene.bodies[0].highlight_faces = (0..6 + n).collect();
-    let (took, result) = timed(&mut w, &scene);
-    let (_, ids) = result.unwrap_or_else(|e| panic!("{took:?}: {e:?}"));
-    // Half the limit, as the 3,000 bodies' test (below) holds: the same cost a draw under
-    // load. Half still fails a cost several times larger, and is what an agent's 30 s can
-    // count on.
-    assert!(took < LIMIT / 2, "{took:?}");
+    let (cost, result) = timed(&mut w, &scene);
+    let (_, ids) = result.unwrap_or_else(|e| panic!("{cost}: {e:?}"));
+    // Half the limit, as the 3,000 bodies' test (below) holds. Half still fails a cost
+    // several times larger, and is what an agent's 30 s can count on.
+    assert!(cost.cost < LIMIT / 2, "{cost}");
     let ids = ids.unwrap();
     // A tile's face, or (the tiles are under a pixel high) its edge.
     assert!(
@@ -657,9 +690,9 @@ fn the_most_faces_a_scene_may_have_draw_within_the_limit_and_one_more_is_refused
     let n = u32::try_from(MAX_RENDER_FACES).unwrap() - 6;
     let mut scene = with_mesh(400, 300, tiles(n));
     scene.bodies[0].highlight_faces = (0..1000).collect();
-    let (took, result) = timed(&mut w, &scene);
-    result.unwrap_or_else(|e| panic!("{took:?}: {e:?}"));
-    assert!(took < LIMIT, "{took:?}");
+    let (cost, result) = timed(&mut w, &scene);
+    result.unwrap_or_else(|e| panic!("{cost}: {e:?}"));
+    assert!(cost.cost < LIMIT, "{cost}");
     scene.bodies.push(body(2, tiles(1)));
     scene.bodies[1].mesh.face_triangles.truncate(1);
     let keep = scene.bodies[1].mesh.face_triangles[0] as usize;
@@ -745,9 +778,9 @@ fn a_part_of_ctc_size_at_4096_square_with_highlights_draws_within_the_limit() {
         height: 4096,
         ids: true,
     };
-    let (took, result) = timed(&mut w, &scene);
-    let (image, ids) = result.unwrap_or_else(|e| panic!("{took:?}: {e:?}"));
-    assert!(took < LIMIT, "{took:?}");
+    let (cost, result) = timed(&mut w, &scene);
+    let (image, ids) = result.unwrap_or_else(|e| panic!("{cost}: {e:?}"));
+    assert!(cost.cost < LIMIT, "{cost}");
     assert_eq!((image.width, image.height), (4096, 4096));
     // The centre, by hand: x 0 is Face1001's left side, and the face 0.34 mm (3.1 pixels)
     // wide; column 2049's centre is 0.165 mm right of it.
@@ -1386,7 +1419,7 @@ fn hostile_scenes(wide: bool) {
                 Op::Echo {
                     data: silico_protocol::Blob::inline(vec![7]),
                 },
-                LIMIT,
+                WAIT,
             );
             if echo.is_err() {
                 *w.borrow_mut() = worker();
@@ -1534,13 +1567,13 @@ fn three_thousand_bodies_draw_within_half_the_limit_each_with_its_number() {
         bodies,
         ..front_of_a_box(400, 300)
     };
-    let (took, result) = timed(&mut w, &scene);
-    let (_, ids) = result.unwrap_or_else(|e| panic!("{took:?}: {e:?}"));
+    let (cost, result) = timed(&mut w, &scene);
+    let (_, ids) = result.unwrap_or_else(|e| panic!("{cost}: {e:?}"));
     // Half the limit: a tenth (3 s) held unloaded, but loaded gate runners took 3.37 s,
-    // 3.56 s, and 3.99 s (main at b896ede5, #164, #159). Half still fails a cost several
-    // times larger (one size timed can't tell how it grows), and is what an agent's 30 s can
-    // count on.
-    assert!(took < LIMIT / 2, "{took:?}");
+    // 3.56 s, and 3.99 s of wall time (main at b896ede5, #164, #159), before the cost was
+    // taken over the machine's slowdown. Half still fails a cost several times larger (one
+    // size timed can't tell how it grows), and is what an agent's 30 s can count on.
+    assert!(cost.cost < LIMIT / 2, "{cost}");
     // By hand: body k + 1's front face is x 0.4i to 0.4i + 0.3, z 0.2j to 0.2j + 0.15, about
     // the view's centre at (21, 7): the last row's first, j = 29 and i = 0 (body 2901), at
     // z 5.8 to 5.95; its front face's centre is (0.15, 5.875), 2 by 1 pixels, so its face's

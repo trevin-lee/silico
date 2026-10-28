@@ -129,11 +129,13 @@ fn step() -> impl Strategy<Value = Step> {
     ]
 }
 
-/// The cache as a list, least recently used first: what the design says it keeps.
+/// The cache as two lists, least recently used first: what the design says it keeps, the
+/// meshes and, apart from them, the steps' floors, up to `floors_kept` of them.
 #[derive(Default)]
 struct Model {
     kept: Vec<(u8, u64, usize)>,
     floors: Vec<(u8, f64)>,
+    floors_kept: usize,
 }
 
 impl Model {
@@ -141,29 +143,34 @@ impl Model {
         self.kept.iter().map(|&(_, _, t)| size(t)).sum()
     }
 
-    /// A mesh too large is never kept, nor its floor; one kept replaces its own entry
-    /// (the step's floor staying), then the oldest go until it fits, each step's floor with
-    /// its last mesh; a mesh kept made coarser than asked records its step's floor.
+    /// A mesh made coarser than asked records its step's floor, and one made at the floor
+    /// it knows uses it again, the oldest floors going past their count; whether or not the
+    /// mesh is kept: one too large never is. One kept replaces its own entry, then the
+    /// oldest meshes go until it fits; the floors outlive them.
     fn put(&mut self, bound: u64, key: u8, asked: f64, used: f64, triangles: usize) {
-        if size(triangles) > bound {
-            return;
-        }
         let at_floor = self
             .floors
             .iter()
             .any(|&(k, f)| k == key && f.to_bits() == used.to_bits());
+        if used > asked || at_floor {
+            self.keep_floor(key, used);
+        }
+        if size(triangles) > bound {
+            return;
+        }
         self.kept
             .retain(|&(k, d, _)| (k, d) != (key, used.to_bits()));
         while self.bytes() + size(triangles) > bound && !self.kept.is_empty() {
-            let (gone, _, _) = self.kept.remove(0);
-            if !self.kept.iter().any(|&(k, _, _)| k == gone) {
-                self.floors.retain(|&(k, _)| k != gone);
-            }
+            self.kept.remove(0);
         }
         self.kept.push((key, used.to_bits(), triangles));
-        if used > asked || at_floor {
-            self.floors.retain(|&(k, _)| k != key);
-            self.floors.push((key, used));
+    }
+
+    fn keep_floor(&mut self, key: u8, floor: f64) {
+        self.floors.retain(|&(k, _)| k != key);
+        self.floors.push((key, floor));
+        while self.floors.len() > self.floors_kept {
+            self.floors.remove(0);
         }
     }
 
@@ -177,10 +184,14 @@ impl Model {
         Some(entry.2)
     }
 
-    fn level(&self, key: u8, level: f64) -> f64 {
-        // The larger of the two (a NaN level, which the ladder never gives, the floor).
-        match self.floors.iter().find(|&&(k, _)| k == key) {
-            Some(&(_, floor)) => level.max(floor),
+    /// The larger of the level and the step's floor, if it's known (a NaN level, which
+    /// the ladder never gives, the floor), the floor now the most recently used.
+    fn level(&mut self, key: u8, level: f64) -> f64 {
+        match self.floors.iter().find(|&&(k, _)| k == key).copied() {
+            Some((_, floor)) => {
+                self.keep_floor(key, floor);
+                level.max(floor)
+            }
             None => level,
         }
     }
@@ -192,10 +203,11 @@ proptest! {
     #[test]
     fn the_cache_keeps_what_a_plain_lru_list_keeps(
         bound in prop_oneof![Just(0u64), Just(size(0)), Just(size(3) * 2), 0u64..2_000],
+        floors_kept in prop_oneof![Just(0usize), Just(1), Just(2), Just(1usize << 16)],
         steps in proptest::collection::vec(step(), 1..120),
     ) {
-        let cache = MeshCache::<u8>::new(bound);
-        let mut model = Model::default();
+        let cache = MeshCache::<u8>::with_floors(bound, floors_kept);
+        let mut model = Model { floors_kept, ..Model::default() };
         for (i, s) in steps.iter().enumerate() {
             match *s {
                 Step::Put { key, asked, used, triangles } => {

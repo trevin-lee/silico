@@ -5,6 +5,8 @@
 
 #[path = "common/imports.rs"]
 mod imports;
+#[path = "../../silico-core/tests/common/lateness.rs"]
+mod lateness;
 #[path = "common/numbers.rs"]
 mod numbers;
 #[path = "common/scripts.rs"]
@@ -13,6 +15,7 @@ mod scripts;
 mod wait;
 
 use crate::wait::WAIT;
+use lateness::{Lateness, allowance};
 use numbers::relative_error;
 use std::path::Path;
 use std::process::Command;
@@ -263,6 +266,9 @@ fn hang_times_out() {
     let mut w = test_worker();
     let pid = w.pid();
     assert!(process_exists(pid), "worker {pid} isn't running");
+    // Its 1 s, then a kill: 2 s on a quiet machine, and the wakes on the way as late as
+    // this machine runs them.
+    let lateness = Lateness::start();
     let start = Instant::now();
     let err = w
         .call(
@@ -272,7 +278,7 @@ fn hang_times_out() {
         )
         .unwrap_err();
     assert!(
-        start.elapsed() < Duration::from_secs(2),
+        start.elapsed() < allowance(Duration::from_secs(2), lateness.most()),
         "{:?}",
         start.elapsed()
     );
@@ -646,6 +652,7 @@ const HANG: Duration = Duration::from_secs(60);
 /// hasn't ended after [`HANG`].
 fn echo_32_mib_with_a_timeout(exe: std::path::PathBuf, what: &str) {
     let timeout = Duration::from_secs(5);
+    let lateness = Lateness::start();
     let (started, pid) = std::sync::mpsc::channel();
     let (done, result) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -665,7 +672,7 @@ fn echo_32_mib_with_a_timeout(exe: std::path::PathBuf, what: &str) {
     };
     assert_eq!(err.code(), ErrorCode::WorkerTimeout, "{what}: {err}");
     assert!(
-        elapsed >= timeout && elapsed < timeout * 2,
+        elapsed >= timeout && elapsed < allowance(timeout * 2, lateness.most()),
         "{what}: gave up after {elapsed:?}, with a timeout of {timeout:?}"
     );
 }
