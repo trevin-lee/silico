@@ -836,7 +836,18 @@ fn a_batch_that_fails_cancels_the_batches_still_waiting_and_none_after_is_asked(
             || ran == [(ElementKind::Face, 1)],
         "a cancelled batch ran: {ran:?}"
     );
-    assert_eq!(engine.kernel().cancelled_waiting(), 0);
+    // The thread passes over a cancelled batch only when it next looks for work, which can
+    // come after the run is published and nothing is running (`wait_idle` returns then):
+    // each is dropped unrun in its own time, which a loaded machine delays.
+    let deadline = Instant::now() + WAIT;
+    while engine.kernel().cancelled_waiting() > 0 {
+        assert!(
+            Instant::now() < deadline,
+            "{} cancelled batches never passed over",
+            engine.kernel().cancelled_waiting()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 #[test]
