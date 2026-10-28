@@ -357,3 +357,27 @@ fn esc_at_once_after_a_move_fifty_times_answers_each_and_leaves_a_worker_that_dr
     }
     session.end(None).unwrap();
 }
+
+#[test]
+fn a_move_once_ends_the_workers_drag_under_way() {
+    // One move is its own drag, begun and ended in the request: a drag under way before it
+    // is over, so a move after it is the worker's refusal, as no drag is under way.
+    let (begin_, _) = fixed_length_line();
+    let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    worker.stopper().unwrap();
+    worker.drag_begin(begin_.clone()).unwrap();
+    worker.stopper().unwrap();
+    assert!(matches!(
+        worker.move_once(begin_, [5.0, 30.0]).unwrap(),
+        silico_core::sketch::MovedOnce::Moved(_)
+    ));
+    worker.session_stopper().unwrap();
+    let e = worker
+        .drag_move([6.0, 30.0], silico_core::drag::DRAG_MOVE_TIMEOUT)
+        .unwrap_err();
+    assert_eq!(e.code(), ErrorCode::InvalidInput, "{e}");
+    assert_eq!(
+        e.message(),
+        "DragMove needs a drag under way, and there's none"
+    );
+}

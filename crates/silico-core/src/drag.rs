@@ -807,7 +807,7 @@ fn unbuildable_at_cursor() -> Error {
 /// Refuses a frame unless it could be `part`'s: values exactly with a `Success`, as many as
 /// it has, its fixed ones (every value outside the part too) as sent, bit for bit, and
 /// every one within reach.
-fn checked_frame(part: &SketchSystem, moved: &Moved) -> Result<(), Error> {
+pub(crate) fn checked_frame(part: &SketchSystem, moved: &Moved) -> Result<(), Error> {
     let bad = |problem: String| {
         Err(Error::new(
             ErrorCode::ProtocolError,
@@ -843,7 +843,7 @@ fn checked_frame(part: &SketchSystem, moved: &Moved) -> Result<(), Error> {
 
 /// Refuses a begin's constraints in conflict unless they're tags `system` was sent, in
 /// increasing order, each once.
-fn checked_tags(system: &SketchSystem, conflicting: &[Tag]) -> Result<(), Error> {
+pub(crate) fn checked_tags(system: &SketchSystem, conflicting: &[Tag]) -> Result<(), Error> {
     let sent: BTreeSet<Tag> = system
         .constraints
         .iter()

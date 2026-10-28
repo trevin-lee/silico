@@ -25,6 +25,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Fixed decimals presented as a relative precision (a volume to 6 decimals, "precise to a relative 1e-9"): the smallest solid the gate admits (a 1 µm cube, 1e-9 mm³) reads as 0 mm³, and everything under 500 mm³ is held to less than promised; push the gate's smallest values through every rounded output
 - Directions a request gives that are valid but tiny or huge (1e-160, 1e-200, 1e200, `f64::MAX`), used without scaling: their squares underflow to subnormals (an angle off by thousandths of a degree) or to 0, or overflow to infinity, so a direction is refused as zero or answered wrong; scale by the largest component first
 
+- A point rotated about a centre far from the origin (5e5 mm) on a radius just above the floor (1.0000001e-7): the rounded coordinates move the radius by an ulp of the coordinate, a thousandth of the radius, below the floor; and turns of a few nanodegrees that leave the point the same bit for bit, taken as an edit that changed something
+
 ## Sketch geometry
 
 - Zero-length lines, zero-radius circles, arcs with 0° or 360° sweep
@@ -74,6 +76,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Tolerances taken over parts that the dropped row itself joins: a redundant row bridging two rigid, linearly held points far apart gets the bridged box's extent though PlaneGCS solved each apart exactly (5 nm kept at 10 m, refused at 1 mm); and per-part windows each recomputed over every constraint (512 parts × 9,000 rows: 0.4 s a read in release, 13× one part's)
 - Drag frames that pass the worker's build check but not the next solve's system check (a free circle's centre dragged past its point-on-circle, or that point across the centre: radius 9e-16, the point exactly on the centre): the drag's end solves from the frame and is refused in the solver's indices; feed every Success frame to `SketchSystem::check`
 - A drag released exactly where it began (a click): the begin state meets every pin, but SQP still steps on float residuals (an arc ending at angle π, sin π ≠ 0) and the end rewrites coordinates by 1e-17; compare the end of a zero-length drag with the file, bit for bit
+
+- A drag whose frame moves more than points (a circle's radius through an `on`, a reference dimension measured again): a list of what changed built by comparing points alone misses them; and a drag of a point its constraints hold completely, which PlaneGCS answers with Success and nothing moved (FreeCAD's extend reports success too)
 
 ## Features
 
@@ -147,6 +151,11 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Elements a boolean keeps whole (a pin wholly inside a block: the void's rim is the pin's circle) under the boolean retyped (cut to common) or its operands swapped: a rule about which side an operation keeps that's applied only to modified elements lets the kept one keep its bare name in both solids, and a fillet of the void's concave rim silently rounds the pin's convex one; check where the fillet takes material
 - Examples an error message gives ("as `m3tq8v0z.cut.Edge1`"): feed each back through the same gate; an example in a form the gate refuses (an operation's element by its number) sends an agent from one refusal to another
 - Advice that names an element as a feature usually makes it (a sweep's start edge, `M`) given whatever the extent: a symmetric or reversed through pocket starts outside its base and keeps no start edge; follow the advice on every extent
+- Timeline edits that keep every feature in its own chain but take a boolean from between a tool's features and a later feature naming the tool's elements (a fuse moved past, or removed under, a fillet of the tool's edge): the name says only the tool, so a "names its elements" rule lets it through, and the rebuild breaks the reference
+- Timeline edits checked one way and not the other: move a tool chain's last feature back up its chain, then try to move it back; the inverse of an allowed move can be refused
+- Edits whose results are diffed against the document before by a scan per feature (what each rewired, each feature's consumer, each candidate's consumer): quadratic in the timeline; time one edit of a document at the size limit against the gate's time for it
+- Refusals that list every candidate (every earlier solid nothing consumes): 20,000 boxes give a 20,000-entry error where others list five or the first hundred
+- Functions over a document that take `&Document`, not the gate's `Checked`: a feature that is its own base is its own consumer, and a walk down the chain from it starts past the end of the timeline without it
 
 ## Files
 
@@ -175,6 +184,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Names in exported text formats whose writer wraps long strings (OCCT's STEP writer breaks a string past 72 columns at a space, else a `\`, else a `_`, else anywhere, and its reader decodes `\X2\` runs and `''` pairs before it drops the line ends): 40 `ü` or 100 `'` read back otherwise in FreeCAD; read every exported name back through a real consumer, not the writer's bytes
 - Apostrophes before `,` or `)` in a STEP string (`'Bracket ''A'', left'`): OCCT's lexer ends a string at an apostrophe followed by either, so the name is cut short or the entity misread, from FreeCAD's own export too
 - Writers quadratic in a string's length (OCCT's STEP writer copies the rest of a long string at each 72-column wrap): a 4 MiB name takes 36 s, an 8 MiB one runs past the worker's 60 s
+- A size limit summed from parts that leave a separator or closing out (each feature's `[\n` or `,\n`, not the `\n  ]\n}\n` after the last): a whole 1 to 7 bytes past the limit passes; build a document exactly 1 and 7 bytes past it
 
 ## Command line
 
@@ -206,6 +216,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - JSON-RPC frames refused for a member given twice (two `params`, two `jsonrpc`): answered with a null ID though the one `id` was readable, so the client waits on its request forever
 - IDs, progress tokens, and cancels' `requestId`s that are valid JSON strings but no Unicode (`"\ud800"`): a decoder that refuses them calls the string "neither a string nor a number"
 - Every JSON-RPC refusal path (params, `_meta`, a progress token, not just the tool's name) checked for a suggestion, not only a message and a parameter
+- A targeted request checked after a generic emptiness test (an `undo` or `redo` `to` a revision, on a side with nothing left): the session's own revision, or one the bound dropped, is answered "nothing to undo", never naming `to`; send each `to` at the stack's two ends
 - Lists checked for repeats by scanning the entries before each (`list[..i].contains(x)`): 200,000 distinct IDs (2 MB of a 64 MiB request) take minutes; time a long list of distinct members, not only of repeats
 - Helpers shared between commands that word an error with one command's name ("the session closed before the render finished", "render it there"): reach each shared failure path from the other command and read its words
 

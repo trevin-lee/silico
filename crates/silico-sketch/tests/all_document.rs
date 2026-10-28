@@ -25,6 +25,8 @@ mod adversarial_document_drag;
 mod adversarial_drag;
 #[path = "adversarial_drag_session.rs"]
 mod adversarial_drag_session;
+#[path = "adversarial_extend.rs"]
+mod adversarial_extend;
 #[path = "adversarial_load_path.rs"]
 mod adversarial_load_path;
 #[path = "adversarial_stored_coordinates.rs"]
@@ -35,5 +37,7 @@ mod document;
 mod document_drag;
 #[path = "drag.rs"]
 mod drag;
+#[path = "extend.rs"]
+mod extend;
 #[path = "worker.rs"]
 mod worker;

@@ -5,8 +5,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 // Shared by the files below, each loaded once.
+#[path = "common/bracket.rs"]
+mod bracket;
 #[path = "common/command.rs"]
 mod commands;
+#[path = "common/example.rs"]
+mod example;
 #[path = "common/sketch.rs"]
 mod fixture;
 #[path = "common/lateness.rs"]
@@ -36,12 +40,16 @@ mod adversarial_sketch;
 mod adversarial_sketch_drag;
 #[path = "adversarial_sketch_edit.rs"]
 mod adversarial_sketch_edit;
+#[path = "adversarial_sketch_extend.rs"]
+mod adversarial_sketch_extend;
 #[path = "adversarial_sketch_features.rs"]
 mod adversarial_sketch_features;
 #[path = "adversarial_sketch_solve.rs"]
 mod adversarial_sketch_solve;
 #[path = "adversarial_stored_coordinates.rs"]
 mod adversarial_stored_coordinates;
+#[path = "chain.rs"]
+mod chain;
 #[path = "drag_session.rs"]
 mod drag_session;
 #[path = "sketch.rs"]
@@ -50,6 +58,8 @@ mod sketch;
 mod sketch_drag;
 #[path = "sketch_edit.rs"]
 mod sketch_edit;
+#[path = "sketch_extend.rs"]
+mod sketch_extend;
 #[path = "sketch_features.rs"]
 mod sketch_features;
 #[path = "sketch_features_gate.rs"]
@@ -60,3 +70,5 @@ mod sketch_gate;
 mod sketch_solve;
 #[path = "stored_coordinates.rs"]
 mod stored_coordinates;
+#[path = "undo.rs"]
+mod undo;

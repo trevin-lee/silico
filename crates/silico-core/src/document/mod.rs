@@ -3,6 +3,7 @@
 //! Reading checks each value on its own; whether features fit together, and the kernel can
 //! make each, is the validation gate's ([`validate`]).
 
+pub mod chain;
 mod decode;
 mod fingerprint;
 mod index;
@@ -13,6 +14,7 @@ mod reach;
 mod sketch;
 pub mod sketch_edit;
 mod sketch_gate;
+pub mod undo;
 mod validate;
 pub(crate) mod write;
 
