@@ -25,6 +25,8 @@ mod adversarial_document_drag;
 mod adversarial_drag;
 #[path = "adversarial_drag_session.rs"]
 mod adversarial_drag_session;
+#[path = "adversarial_edge_drag.rs"]
+mod adversarial_edge_drag;
 #[path = "adversarial_extend.rs"]
 mod adversarial_extend;
 #[path = "adversarial_load_path.rs"]

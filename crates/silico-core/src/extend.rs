@@ -408,10 +408,7 @@ fn extend_line(
         )
         .with_suggestion(crate::worker::SILICO_BUG));
     };
-    let begin = DragBegin {
-        system: translation.system.clone(),
-        point: PointOf::Point(geometry),
-    };
+    let begin = DragBegin::point(translation.system.clone(), PointOf::Point(geometry));
     // One move, held to a solve's limits, not a drag's: an extend isn't a drag.
     if let Err(invalid) = begin.check_move() {
         return Err(refused(

@@ -223,3 +223,6 @@ crates/silico-core/src/recompute.rs | <impl Drop for Warming<'_>>::drop | replac
 # A point's coordinates are always in one part: every constraint that reads a point reads
 # both, and the core makes both unknowns, so either free means both are (#262).
 crates/silico-core/src/drag/sketch.rs | reading | replace || with && | #262
+crates/silico-core/src/command/session/edits.rs | Session<C>::hold | replace > with < | #273
+crates/silico-core/src/command/session/edits.rs | Session<C>::hold | replace > with == | #273
+crates/silico-core/src/command/session/edits.rs | Session<C>::hold | replace > with >= | #273

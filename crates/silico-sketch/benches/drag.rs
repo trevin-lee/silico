@@ -385,7 +385,7 @@ fn solve_here(case: &Case, path: &[[f64; 2]]) -> Result<Frames> {
 fn drag_through(w: &mut Worker, case: &Case, path: &[[f64; 2]]) -> Result<Frames> {
     let begin = Op::DragBegin(DragBegin {
         system: case.system.clone(),
-        point: case.point,
+        dragged: silico_protocol::Dragged::Point(case.point),
     });
     let start = Instant::now();
     let reply = w.call(Generation(1), begin, TIMEOUT)?;
@@ -424,7 +424,7 @@ fn drag_core(case: &Case, path: &[[f64; 2]]) -> Result<Frames> {
         &solvers,
         DragBegin {
             system: case.system.clone(),
-            point: case.point,
+            dragged: silico_protocol::Dragged::Point(case.point),
         },
     )?;
     let began = start.elapsed();
@@ -453,7 +453,7 @@ fn drag_here(case: &Case, path: &[[f64; 2]]) -> Result<Frames> {
     let start = Instant::now();
     let begun = Drag::begin(&DragBegin {
         system: case.system.clone(),
-        point: case.point,
+        dragged: silico_protocol::Dragged::Point(case.point),
     })
     .map_err(failed)?;
     let began = start.elapsed();
@@ -536,7 +536,7 @@ fn main() -> Result<()> {
         // full solve is timed.
         let refused = silico_protocol::DragBegin {
             system: case.system.clone(),
-            point: case.point,
+            dragged: silico_protocol::Dragged::Point(case.point),
         }
         .check()
         .err();

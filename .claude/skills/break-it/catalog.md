@@ -88,6 +88,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A save's answer against its load's, whole: solve, write through the file, read, solve again, and compare Ok-ness, bits, and the redundant constraints named; an answer's outcome depends on where it was diagnosed, not only its values (a solution Ok from the drawing that PlaneGCS calls conflicting from itself), and a "solve again from the solution" that starts from the solver's values rather than what a load derives from the file (an arc's radius and angles from its points) isn't a load
 - Redundancies that agree held by an angle at micrometre scale: the solver's absolute convergence on lengths (1e-10) is a relative 1e-8 on a 1.6 µm side, past a scale-free angle tolerance
 - Tolerances taken over parts that the dropped row itself joins: a redundant row bridging two rigid, linearly held points far apart gets the bridged box's extent though PlaneGCS solved each apart exactly (5 nm kept at 10 m, refused at 1 mm); and per-part windows each recomputed over every constraint (512 parts × 9,000 rows: 0.4 s a read in release, 13× one part's)
+- Anchors a drag takes once and adds to every later cursor (an edge's press, its offset to the line's midpoint): unchecked at begin, a NaN or out-of-reach press opens a drag whose every move is refused naming `to`; and the shifted cursor checked against reach where only the result should be (a line whose ends' x are held, pressed 5e5 from its midpoint, moved straight up)
 - Drag frames that pass the worker's build check but not the next solve's system check (a free circle's centre dragged past its point-on-circle, or that point across the centre: radius 9e-16, the point exactly on the centre): the drag's end solves from the frame and is refused in the solver's indices; feed every Success frame to `SketchSystem::check`
 - A drag released exactly where it began (a click): the begin state meets every pin, but SQP still steps on float residuals (an arc ending at angle π, sin π ≠ 0) and the end rewrites coordinates by 1e-17; compare the end of a zero-length drag with the file, bit for bit
 
@@ -155,6 +156,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Two features with the same display name
 - Features that produce zero faces or an empty result
 - Long undo/redo sequences mixed with recomputes
+- State kept "the first time" inside a transaction (the first edit that mends text that didn't read, kept as its mend): undo back past it and edit otherwise, and the stale first state still decides what the new edits reach; compare the commit with the same edits made without the undone one
 - References by stale names after an upstream edit
 - Ambiguous (`~n`) names that the next feature keeps unchanged: a "duplicated" set filled only by one map's own collisions forgets them, so the pair is unmarked downstream; check `is_duplicated` one feature later
 - Element number 0 in a name (`k7f2qx3m.Face0`): a map that answers for any number of a kind resolves it, and a bound of `index <= count` lets it through; elements count from 1
@@ -170,6 +172,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Edits whose results are diffed against the document before by a scan per feature (what each rewired, each feature's consumer, each candidate's consumer): quadratic in the timeline; time one edit of a document at the size limit against the gate's time for it
 - Refusals that list every candidate (every earlier solid nothing consumes): 20,000 boxes give a 20,000-entry error where others list five or the first hundred
 - Per-feature views of a model (a timeline's health and counts) beside the document-wide `check`: compare them under an open transaction (drift `check` excepts), with a kernel fault on only a feature's measure, and for a feature blocked by both a fault and a real failure, in each operand order
+- A read answered of the session's newest document while an older published model is the one read (a published read after a change the gate refuses, or before the new revision's rebuild): the response's model block (its revision, its fault) can name a model the answer doesn't mark by, and `check` of the same published model counts other problems; read both models first and last after every edit, change on disk, undo, and rollback, and compare each answer's own revision and model with the response's
 - Functions over a document that take `&Document`, not the gate's `Checked`: a feature that is its own base is its own consumer, and a walk down the chain from it starts past the end of the timeline without it
 
 ## Files

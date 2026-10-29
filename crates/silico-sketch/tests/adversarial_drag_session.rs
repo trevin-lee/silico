@@ -60,7 +60,7 @@ fn ten_apart() -> (DragBegin, PointValues, PointValues) {
     (
         DragBegin {
             system: b.system(Algorithm::DogLeg),
-            point: PointOf::Point(first),
+            dragged: silico_protocol::Dragged::Point(PointOf::Point(first)),
         },
         p,
         q,
@@ -86,7 +86,7 @@ fn fixed_length_line() -> (DragBegin, PointValues) {
     (
         DragBegin {
             system: b.system(Algorithm::DogLeg),
-            point: PointOf::End(line),
+            dragged: silico_protocol::Dragged::Point(PointOf::End(line)),
         },
         end,
     )

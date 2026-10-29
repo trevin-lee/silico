@@ -78,7 +78,7 @@ fn at(sketch: &Sketch, name: &str) -> [f64; 2] {
 /// The begin state with the dragged point at `xy`, every other value as it began.
 fn frame_at(begin: &DragBegin, xy: [f64; 2]) -> Moved {
     let mut values = begin.system.values.clone();
-    match begin.system.geometry[begin.point.geometry().0 as usize] {
+    match begin.system.geometry[dragged_geometry(begin).0 as usize] {
         SketchGeometry::Point(PointValues { x, y }) => {
             (values[x.0 as usize], values[y.0 as usize]) = (xy[0], xy[1]);
         }
@@ -1007,5 +1007,13 @@ proptest! {
                 prop_assert!((got - wrapped).abs() <= 8.0 * ulp / r0 + 1e-12, "{} against {}", got, wrapped);
             }
         }
+    }
+}
+
+/// The geometry an extend's one move drags: its point's.
+fn dragged_geometry(begin: &silico_protocol::DragBegin) -> silico_protocol::Geometry {
+    match begin.dragged {
+        silico_protocol::Dragged::Point(point) => point.geometry(),
+        silico_protocol::Dragged::Edge { curve, .. } => curve,
     }
 }

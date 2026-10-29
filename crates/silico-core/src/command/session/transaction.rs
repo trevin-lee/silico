@@ -21,10 +21,12 @@ use super::{
 };
 use crate::command::edit::Candidate;
 use crate::document::json::MAX_INPUT_LEN;
+use crate::document::undo::{After, Pushed, UndoStack};
 use crate::document::{self, Document, FeatureId};
 use crate::file::{self, Workspace};
 use crate::kernel::Kernel;
 use crate::recompute::{self, Model};
+use crate::timeline::Excepted;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
@@ -48,8 +50,8 @@ pub(super) struct Held {
     /// The features edits reached before the last save whose records it couldn't write (a
     /// feature that failed): still reached, until a save writes them.
     pub(super) carried: Arc<BTreeSet<FeatureId>>,
-    /// The state `begin` kept, while a transaction is open.
-    pub(super) transaction: Option<Snapshot>,
+    /// The transaction open, if one is: what `begin` kept, and its undo stack.
+    pub(super) transaction: Option<Open>,
     /// Where the file's old text is, if this session's own save left the file part
     /// written and couldn't put it back: the next save says so, rather than take the file
     /// for one changed outside the session; until the file holds what the session last read
@@ -58,6 +60,23 @@ pub(super) struct Held {
     /// The newest revision a reload of the file gave (decision 2): an edit made against a
     /// revision before it is stale because the file changed, which its refusal says.
     pub(super) last_reload: Option<Revision>,
+}
+
+/// A transaction open in a session: what `begin` kept, and its undo stack (docs/design/
+/// m5.0-app.md, section 3's A2), every state its edits left, from the one `begin` saw, for
+/// `undo` and `redo`. Made by `begin` and ended whole ([`end_transaction`]), so the stack is
+/// there exactly while the transaction is.
+pub(super) struct Open {
+    pub(super) begun: Snapshot,
+    pub(super) undo: UndoStack<Revision>,
+}
+
+/// A transaction's mend ([`Snapshot::mend`]): the first state of its history that read as a
+/// document, `begin`'s text having not, and the revision that state was made at.
+#[derive(Clone)]
+pub(super) struct Mend {
+    revision: Revision,
+    gated: Arc<Gated>,
 }
 
 /// A session's state as `begin` kept it, which `rollback` restores (its models are kept with
@@ -73,10 +92,13 @@ pub(super) struct Snapshot {
     /// thread and outside every lock, so a long text's scan never keeps `status` or a
     /// published read waiting.
     quoted: Arc<OnceLock<document::QuotedIds>>,
-    /// If its text didn't read as a document, the first state the transaction's edits held
+    /// If its text didn't read as a document, the first state of the transaction's history
     /// that read as one: its mend, which the edits after it are compared with
-    /// ([`Reaching::reach`]). Not part of what `rollback` restores.
-    mend: Option<Arc<Gated>>,
+    /// ([`Reaching::reach`]). Kept through undo and redo (a redo restores it) and when the
+    /// stack's bound drops its state (it's still the history the edits standing came from),
+    /// but given up when an edit after an undo drops its state from the redo: then the next
+    /// state that reads is the mend. Not part of what `rollback` restores.
+    mend: Option<Mend>,
 }
 
 /// A state of the session's document a commit saves ([`Session::save_state`]): the path as
@@ -138,12 +160,15 @@ impl Held {
         gated: Arc<Gated>,
         carried: Arc<BTreeSet<FeatureId>>,
     ) {
-        if let Some(begun) = &mut self.transaction
+        if let Some(Open { begun, .. }) = &mut self.transaction
             && begun.mend.is_none()
             && begun.gated.document().is_err()
             && gated.document().is_ok()
         {
-            begun.mend = Some(Arc::clone(&gated));
+            begun.mend = Some(Mend {
+                revision,
+                gated: Arc::clone(&gated),
+            });
         }
         self.revision = revision;
         self.text = text;
@@ -169,8 +194,33 @@ impl Held {
         Reaching {
             gated: Arc::clone(&self.gated),
             carried: Arc::clone(&self.carried),
-            begun: self.transaction.clone(),
+            begun: self.transaction.as_ref().map(|open| open.begun.clone()),
         }
+    }
+
+    /// An edit's `candidate` held inside the transaction open, at `revision`, as the
+    /// transaction keeps it: pushed on its undo stack, which drops the redo states, by its
+    /// features' canonical texts, which its text was assembled from ([`After::Canonical`]),
+    /// so an undo writes it back byte for byte; and, if the push drops the mend's state, the
+    /// mend given up first, so the edit's state, if it reads, is the mend from now on
+    /// ([`Snapshot::mend`]). Then the session's document changed to it, as
+    /// [`change`](Self::change) changes it, carrying what was carried. What the push said.
+    pub(super) fn hold(&mut self, revision: Revision, candidate: Candidate) -> Option<Pushed> {
+        let (text, gated, prepared) = candidate.into_parts();
+        let after = After::Canonical(prepared);
+        let pushed = self.transaction.as_mut().map(|Open { begun, undo }| {
+            if begun
+                .mend
+                .as_ref()
+                .is_some_and(|mend| undo.redo_holds(mend.revision))
+            {
+                begun.mend = None;
+            }
+            undo.edit(after, revision)
+        });
+        let carried = Arc::clone(&self.carried);
+        self.change(revision, text, gated, carried);
+        pushed
     }
 }
 
@@ -213,7 +263,7 @@ impl Reaching {
                 .quoted
                 .get_or_init(|| document::QuotedIds::of(&begun.text))
         };
-        let mend = begun.mend.as_deref().map(Gated::document);
+        let mend = begun.mend.as_ref().map(|mend| mend.gated.document());
         let before = match (begun.gated.document(), mend) {
             (Ok(before), _) => document::Before::Read(before),
             (Err(_), Some(Ok(mend))) => document::Before::Mended {
@@ -311,9 +361,13 @@ pub(super) enum Checking {
     /// The model is of the session's revision; `open`, whether a transaction is open.
     Latest { open: bool },
     /// The model is an older revision's, the newest published; `open`, whether a
-    /// transaction is open in the session now, and `now`, the session's document now, as
-    /// the reader and the gate found it.
-    Older { open: bool, now: Arc<Gated> },
+    /// transaction is open in the session now, `now`, the session's document now, as the
+    /// reader and the gate found it, and `at`, the session's revision, whose document it is.
+    Older {
+        open: bool,
+        now: Arc<Gated>,
+        at: Revision,
+    },
 }
 
 impl Checking {
@@ -327,7 +381,30 @@ impl Checking {
             Checking::Older {
                 open,
                 now: Arc::clone(gated),
+                at: now,
             }
+        }
+    }
+
+    /// The session's revision and its document, as the reader and the gate found it, if the
+    /// model is an older revision's; none if it's of the session's revision, whose document
+    /// is the model's own.
+    pub(super) fn now(&self) -> Option<(Revision, &Gated)> {
+        match self {
+            Checking::Latest { .. } => None,
+            Checking::Older { now, at, .. } => Some((*at, now)),
+        }
+    }
+
+    /// What a check of the model, whose revision's edits reached `reached`, excepts, as
+    /// `check` excepts it and so `timeline` marks by it: the missing fingerprints it doesn't
+    /// warn of ([`spared`](Self::spared)), and the drift it doesn't say, of the features the
+    /// edits reached (decision 28: a commit writes their records anew). One place for both,
+    /// so a timeline's marks never disagree with the check of the same model.
+    pub(super) fn excepted(&self, reached: &Reached) -> Excepted {
+        Excepted {
+            spared: self.spared(reached).into_owned(),
+            drift: reached.get().clone(),
         }
     }
 
@@ -347,7 +424,7 @@ impl Checking {
     /// does.
     pub(super) fn spared<'a>(&'a self, reached: &'a Reached) -> Cow<'a, BTreeSet<FeatureId>> {
         let committing = reached.committing(self);
-        let Checking::Older { open, now } = self else {
+        let Checking::Older { open, now, .. } = self else {
             return Cow::Borrowed(committing);
         };
         let Ok(now) = now.document() else {
@@ -382,15 +459,15 @@ impl std::fmt::Debug for Reached {
     }
 }
 
-/// The transaction open in `held` ended, and the models its `begin` kept with `rebuilds`
-/// let go: what `begin` kept, if one was open. Every way a transaction ends (a commit, one
-/// that writes nothing, a rollback) goes through here, with both locks held, so the two
-/// halves of what `begin` kept are never apart.
+/// The transaction open in `held` ended, its undo stack emptied, and the models its `begin`
+/// kept with `rebuilds` let go: what `begin` kept, if one was open. Every way a transaction
+/// ends (a commit, one that writes nothing, a rollback) goes through here, with both locks
+/// held, so the two halves of what `begin` kept are never apart.
 fn end_transaction<C: Kernel + 'static>(
     held: &mut Held,
     rebuilds: &mut Rebuilds<C>,
 ) -> Option<(Snapshot, Kept)> {
-    let snapshot = held.transaction.take();
+    let snapshot = held.transaction.take().map(|open| open.begun);
     let kept = rebuilds.kept.take();
     snapshot.zip(kept)
 }
@@ -430,14 +507,18 @@ impl<C: Kernel + 'static> Session<C> {
             started: false,
         });
         drop(rebuilds);
-        held.transaction = Some(held.snapshot());
+        held.transaction = Some(Open {
+            begun: held.snapshot(),
+            undo: UndoStack::new(Arc::clone(&held.text), revision, self.undo_bytes),
+        });
         Ok(Begun { base: revision })
     }
 
     /// The transaction open, or the refusal of a command that needs one.
     fn transaction(&self, held: &Held) -> Result<Snapshot, Problems> {
         held.transaction
-            .clone()
+            .as_ref()
+            .map(|open| open.begun.clone())
             .ok_or_else(|| Problems::from(no_transaction(self.id)))
     }
 
@@ -572,12 +653,16 @@ impl<C: Kernel + 'static> Session<C> {
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
     ) -> Result<(Committed, Option<Arc<Gated>>), Problems> {
+        // Its features' texts are an undo stack's, and no transaction is open: let go now,
+        // not after its rebuild and save.
+        let (text, gated, prepared) = candidate.into_parts();
+        drop(prepared);
         let state = {
             let held = self.held.read();
             Saving {
                 path: held.path.clone(),
-                text: candidate.text,
-                gated: candidate.gated,
+                text,
+                gated,
                 revision: held.next()?,
                 carried: Arc::clone(&held.carried),
                 begun: held.snapshot(),
