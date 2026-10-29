@@ -402,8 +402,10 @@ fn no_tools_schema_gives_a_format() {
     let elements = &tool(&sent, "elements")["inputSchema"]["properties"]["limit"];
     assert_eq!(elements["maximum"], 1000, "{elements}");
     let render = tool(&sent, "render")["outputSchema"].to_string();
-    assert!(
-        render.contains(r#""height":{"description":"The image's height in pixels.","maximum":4096,"minimum":1,"type":"integer"}"#),
-        "{render}"
-    );
+    for side in ["width", "height"] {
+        let bounded = format!(
+            r#""{side}":{{"description":"The image's {side} in pixels.","maximum":4096,"minimum":1,"type":"integer"}}"#
+        );
+        assert!(render.contains(&bounded), "{side}: {render}");
+    }
 }

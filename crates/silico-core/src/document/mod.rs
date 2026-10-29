@@ -227,8 +227,8 @@ pub fn schema() -> Result<String, Error> {
 /// the command API's (`command::wire::snapshot_value`). With no `format` keyword anywhere:
 /// schemars names a Rust integer's or float's type in `format` (`uint64`, `uint32`,
 /// `double`), which JSON Schema doesn't define (its formats are all strings', and Silico's
-/// strings have none), so strict validators warn of each (Ajv, the MCP SDKs': about 394 a
-/// `tools/list`). Each bound is its field's own `range`.
+/// strings have none), so strict validators warn of each (Ajv, the MCP SDKs': one warning
+/// for each such field a `tools/list` names). Each bound is its field's own `range`.
 pub(crate) fn schema_value_of<T: schemars::JsonSchema>() -> serde_json::Value {
     let schema = SchemaSettings::draft2020_12()
         .with_transform(schemars::transform::RecursiveTransform(
