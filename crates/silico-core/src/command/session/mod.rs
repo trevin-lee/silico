@@ -1605,8 +1605,8 @@ fn status_in<P: Clients + 'static>(
         result: Ok(Status {
             features: held.gated.document().ok().map(|d| d.features.len()),
             gated,
-            transaction: held.transaction.as_ref().map(|begun| Begun {
-                base: begun.revision,
+            transaction: held.transaction.as_ref().map(|open| Begun {
+                base: open.begun.revision,
             }),
             running,
             reads,

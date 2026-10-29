@@ -96,7 +96,14 @@ impl Fixture {
 
     /// What the open transaction's undo stack counts.
     fn stack_bytes(&self) -> usize {
-        self.session().held.read().undo.as_ref().unwrap().bytes()
+        self.session()
+            .held
+            .read()
+            .transaction
+            .as_ref()
+            .unwrap()
+            .undo
+            .bytes()
     }
 
     /// The current revision's model, waited for.
@@ -468,7 +475,7 @@ fn past_its_bound_the_stack_drops_its_oldest_states_counted_by_hand_and_undo_sto
         f.set("k7f2qx3m", "length", &length.to_string());
         let stack = f.session();
         let held = stack.held.read();
-        let stack = held.undo.as_ref().unwrap();
+        let stack = &held.transaction.as_ref().unwrap().undo;
         counted.push((stack.bytes(), stack.dropped(), stack.undo_left()));
     }
     assert_eq!(
@@ -542,7 +549,7 @@ fn a_commit_or_a_rollback_empties_the_stack() {
     f.begin();
     f.set("k7f2qx3m", "length", "41");
     assert!(f.sessions.commit(&f.id).wait().result.unwrap().written);
-    assert!(f.session().held.read().undo.is_none());
+    assert!(f.session().held.read().transaction.is_none());
     assert_eq!(refusal(f.undo(None)).0, no_transaction("undo"));
     assert_eq!(refusal(f.redo(None)).0, no_transaction("redo"));
     // A new transaction's stack starts at its own `begin`: the committed edit isn't in it.
@@ -551,7 +558,7 @@ fn a_commit_or_a_rollback_empties_the_stack() {
     assert_eq!(said.1, "nothing to undo in session s1's transaction");
     f.set("k7f2qx3m", "length", "42");
     f.sessions.rollback(&f.id).wait().result.unwrap();
-    assert!(f.session().held.read().undo.is_none());
+    assert!(f.session().held.read().transaction.is_none());
     assert_eq!(refusal(f.undo(None)).0, no_transaction("undo"));
     assert_eq!(refusal(f.redo(None)).0, no_transaction("redo"));
     // A rollback restores `begin`'s text, the committed one, with the block's fingerprint:
@@ -744,4 +751,153 @@ fn a_transaction_begun_from_text_that_didnt_read_undoes_back_to_it_and_redoes_it
     );
     let committed = f.sessions.commit(&f.id).wait().result.unwrap();
     assert_eq!(committed.refingerprinted, [id("z0000001")]);
+}
+
+/// [`STORED`] with merge conflict markers around the lug's length: text that doesn't read.
+fn conflicted() -> String {
+    STORED.replace(
+        r#""length": 10, "width": 10"#,
+        "\n<<<<<<< ours\n\"length\": 10, \"width\": 10\n=======\n\"length\": 20, \"width\": 10\n>>>>>>> theirs\n",
+    )
+}
+
+/// A transaction begun on [`conflicted`], `edits` made in it, then committed: what the
+/// session's edits reached just before the commit, and the commit's `refingerprinted` and
+/// its problems' count.
+fn mended(edits: impl FnOnce(&Fixture)) -> (BTreeSet<FeatureId>, Vec<FeatureId>, u64) {
+    let f = opened(&conflicted());
+    f.begin();
+    edits(&f);
+    let reach = f.session().held.read().reach();
+    let committed = f.sessions.commit(&f.id).wait().result.unwrap();
+    (reach, committed.refingerprinted, committed.problems.total())
+}
+
+#[test]
+fn a_mend_undone_and_mended_otherwise_reaches_as_the_new_mend_straight_away_would() {
+    // Mended straight to [`longer`] (the lug 20 long, "theirs"): every ID is in the text and
+    // nothing has changed since the mend, so nothing is reached, nothing refingerprinted,
+    // and the block's, the lug's and the fuse's stored fingerprints are each drift (the lug
+    // and the fuse were measured 10 long). Mended first to [`STORED`] ("ours"), undone, then
+    // to `longer`: the same, since the undone mend isn't the transaction's history.
+    let replace = |f: &Fixture, text: String| {
+        let response = f.sessions.replace_text(&f.id, f.revision(), text).wait();
+        assert!(response.result.unwrap().changed);
+    };
+    let straight = mended(|f| replace(f, longer()));
+    assert_eq!(straight, (BTreeSet::new(), vec![], 3));
+    let through_an_undo = mended(|f| {
+        replace(f, STORED.to_owned());
+        f.undo(None).result.unwrap();
+        assert_eq!(f.text(), conflicted());
+        replace(f, longer());
+    });
+    assert_eq!(through_an_undo, (BTreeSet::new(), vec![], 3));
+    // Undone and redone, the mend is kept: an edit since then compares with it.
+    let redone = mended(|f| {
+        replace(f, STORED.to_owned());
+        f.undo(None).result.unwrap();
+        f.redo(None).result.unwrap();
+        replace(f, longer());
+    });
+    assert_eq!(
+        redone.0,
+        BTreeSet::from([id("b0000001"), id("f0000001")]),
+        "the lug, changed since the mend, and the fuse that uses it"
+    );
+    assert_eq!(redone.1, [id("b0000001"), id("f0000001")]);
+}
+
+#[test]
+fn what_was_carried_is_carried_through_undo_and_redo_and_written_by_the_commit() {
+    // A commit whose lug (20 long) failed carries the lug and the fuse: their records
+    // weren't written. In the next transaction the block is set 41 long, undone, and
+    // redone: what's carried stays, reached with what uses it, and the commit (the lug made
+    // now, read fresh) writes all three: the block 41 × 20 × 10 = 8200, area
+    // 2(820 + 410 + 200) = 2860; the lug 20 × 10 × 10 = 2000, area 1000; the fuse both,
+    // 10200, area 3860.
+    let f = opened(STORED);
+    let refusing = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let refuses = Arc::clone(&refusing);
+    f.kernel.refuse(move |op| {
+        (refuses.load(std::sync::atomic::Ordering::SeqCst)
+            && matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx > 15.0 && *dx < 25.0))
+        .then(|| Error::new(ErrorCode::KernelFailed, "the lug can't be made"))
+    });
+    f.begin();
+    f.edit(&longer());
+    f.sessions.commit(&f.id).wait().result.unwrap();
+    let carried = BTreeSet::from([id("b0000001"), id("f0000001")]);
+    let all = BTreeSet::from([id("b0000001"), id("f0000001"), id("k7f2qx3m")]);
+    assert_eq!(*f.session().held.read().carried, carried);
+    refusing.store(false, std::sync::atomic::Ordering::SeqCst);
+    f.begin();
+    f.set("k7f2qx3m", "length", "41");
+    assert_eq!(f.session().held.read().reach(), all);
+    f.undo(None).result.unwrap();
+    assert_eq!(*f.session().held.read().carried, carried);
+    assert_eq!(f.session().held.read().reach(), carried);
+    f.redo(None).result.unwrap();
+    assert_eq!(*f.session().held.read().carried, carried);
+    assert_eq!(f.session().held.read().reach(), all);
+    // Read fresh: the engine kept the lug's refusal.
+    f.sessions
+        .check(&f.id, CheckModel::Current { fresh: true })
+        .wait()
+        .result
+        .unwrap();
+    let committed = f.sessions.commit(&f.id).wait().result.unwrap();
+    assert_eq!(
+        committed.refingerprinted,
+        [id("k7f2qx3m"), id("b0000001"), id("f0000001")]
+    );
+    assert_eq!(
+        stored_fingerprints(&f.file()),
+        [
+            Some(millionths(8_200_000_000, 2860)),
+            Some(millionths(2_000_000_000, 1000)),
+            Some(millionths(10_200_000_000, 3860)),
+        ]
+    );
+    assert!(f.session().held.read().carried.is_empty());
+}
+
+#[test]
+fn an_undo_that_holds_more_than_it_releases_drops_past_the_bound_and_says_so() {
+    // Lengths 41 and 42 (174 each, as held), then a note of 300 letters on the block: that
+    // state, as held, is its list (24 + 8) and one chunk (16 and 138 + 300: the block's
+    // line with `, "note": ""` and the letters), 486. Its edit leaves 212 + 2 × 174 = 560.
+    // Undone, it's held and 42's is the session's: 212 + 174 + 486 = 872, past 800, so the
+    // oldest state after `begin`'s, 41's, is dropped: 698, and two edits out of reach.
+    let f = opened_bounded(BOX, 800);
+    f.begin();
+    f.set("k7f2qx3m", "length", "41");
+    f.set("k7f2qx3m", "length", "42");
+    let letters = "x".repeat(300);
+    f.set("k7f2qx3m", "note", &format!("\"{letters}\""));
+    assert_eq!(f.stack_bytes(), BOX_BYTES + 2 * BOX_STATE);
+    assert_eq!(stepped(f.undo(None)), (step(3, 0, 1, 2), Revision(5)));
+    assert_eq!(f.stack_bytes(), BOX_BYTES + 24 + 8 + 16 + 138 + 300);
+    assert_eq!(f.text(), box_text(42));
+    let (said, _, _) = refusal(f.undo(None));
+    assert_eq!(said.1, "nothing to undo in session s1's transaction");
+    // Redone, nothing more is dropped.
+    assert_eq!(stepped(f.redo(None)), (step(4, 1, 0, 0), Revision(6)));
+}
+
+#[test]
+fn a_stack_of_one_state_names_it_alone_and_no_transaction_comes_before_a_stale_revision() {
+    let f = opened(BOX);
+    // Outside a transaction, a revision that isn't the session's: no transaction is said.
+    let (said, _, _) = refusal(f.sessions.undo(&f.id, Revision(9), None).wait());
+    assert_eq!(said.1, "no transaction is open in session s1");
+    let (said, _, _) = refusal(f.sessions.redo(&f.id, Revision(9), None).wait());
+    assert_eq!(said.1, "no transaction is open in session s1");
+    f.begin();
+    let (said, candidates, _) = refusal(f.undo(Some(7)));
+    assert_eq!(
+        said.1,
+        "revision 7 isn't a state of session s1's undo stack, which holds revision 1"
+    );
+    assert_eq!(candidates, ["1"]);
 }

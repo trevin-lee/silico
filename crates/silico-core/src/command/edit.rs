@@ -31,11 +31,19 @@ use crate::{Error, ErrorCode};
 /// The state an accepted edit gives a session's document: its canonical text, that text as
 /// the reader and the gate find it, and its features' canonical texts, which the text was
 /// assembled from, written once: what a transaction's undo stack keeps of it
-/// (`document::undo`), made here, off every lock.
+/// (`document::undo`), made here, off every lock. Made only by [`candidate`], so its text is
+/// always the one its features' texts assemble.
 pub(super) struct Candidate {
-    pub(super) text: Arc<Vec<u8>>,
-    pub(super) gated: Arc<Gated>,
-    pub(super) prepared: Prepared,
+    text: Arc<Vec<u8>>,
+    gated: Arc<Gated>,
+    prepared: Prepared,
+}
+
+impl Candidate {
+    /// Its text, the gate's finding of it, and its features' canonical texts.
+    pub(super) fn into_parts(self) -> (Arc<Vec<u8>>, Arc<Gated>, Prepared) {
+        (self.text, self.gated, self.prepared)
+    }
 }
 
 /// `document`, edited, written in canonical form, and that text through the reader and the

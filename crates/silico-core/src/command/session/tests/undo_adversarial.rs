@@ -66,7 +66,7 @@ fn text_of(f: &Fixture) -> String {
 fn stack_of(f: &Fixture) -> (usize, usize, usize, usize) {
     let session = f.session();
     let held = session.held.read();
-    let stack = held.undo.as_ref().unwrap();
+    let stack = &held.transaction.as_ref().unwrap().undo;
     (
         stack.bytes(),
         stack.dropped(),

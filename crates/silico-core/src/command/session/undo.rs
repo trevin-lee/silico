@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use super::cancel::Ticket;
 use super::edits::{Stale, stale};
+use super::transaction::Open;
 use super::{Gated, Problems, Revision, Session, SessionId, Stepped};
 use crate::document::PROBLEMS_LISTED;
 use crate::document::undo::Refusal;
@@ -74,7 +75,7 @@ impl<C: Kernel + 'static> Session<C> {
             }
             let next = held.next()?;
             let mut held = held.changing(stop)?;
-            let Some(stack) = held.undo.as_mut() else {
+            let Some(Open { undo: stack, .. }) = held.transaction.as_mut() else {
                 return Err(Problems::from(no_transaction(self.id, way)));
             };
             let stepped = match way {

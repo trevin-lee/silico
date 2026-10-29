@@ -407,7 +407,6 @@ fn open<P: Clients + 'static>(
         revision: Revision::OPENED,
         carried: Arc::new(BTreeSet::new()),
         transaction: None,
-        undo: None,
         part_written: None,
         last_reload: None,
     };

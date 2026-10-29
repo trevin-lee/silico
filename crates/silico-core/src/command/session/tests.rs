@@ -47,7 +47,6 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
             revision: Revision::OPENED,
             carried: Arc::new(BTreeSet::new()),
             transaction: None,
-            undo: None,
             part_written: None,
             last_reload: None,
         }),

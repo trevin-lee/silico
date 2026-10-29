@@ -5,10 +5,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::cancel::Ticket;
+#[cfg(doc)]
+use super::transaction::Held;
 use super::{Committed, Gated, ModelRead, Problems, Revision, Session, SessionId, shown_path};
 use crate::command::edit::Candidate;
 use crate::document::Document;
-use crate::document::undo::After;
 use crate::kernel::Kernel;
 use crate::{Error, ErrorCode};
 
@@ -16,33 +17,22 @@ impl<C: Kernel + 'static> Session<C> {
     /// An accepted edit's `candidate` held as the session's document, at a new revision,
     /// carrying what was carried: how an edit inside a transaction is applied (the design's
     /// section 4), starting no rebuild (decision 13), and pushed on the transaction's undo
-    /// stack, which drops its redo states (M5.0's A3). The candidate's text is its document's
-    /// canonical form, assembled from the features' texts it carries (`edit::candidate`), so
-    /// the stack keeps it by those ([`After::Canonical`]), and an undo writes it back byte
-    /// for byte: kept as `Whole`, it would share no chunk, costing the stack a whole copy.
-    /// Only the stack's compare and copy of what changed runs under the lock. As the command
-    /// `stop` stops.
+    /// stack, which drops its redo states (M5.0's A3), as [`Held::hold`] keeps it. Only the
+    /// stack's compare and copy of what changed runs under the lock: the features' texts
+    /// were written as the candidate was made. As the command `stop` stops.
     pub(super) fn hold(&self, stop: &Ticket, candidate: Candidate) -> Result<Revision, Problems> {
-        let Candidate {
-            text,
-            gated,
-            prepared,
-        } = candidate;
         let held = self.held.read();
         let next = held.next()?;
         let mut held = held.changing(stop)?;
-        let carried = Arc::clone(&held.carried);
-        held.change(next, text, gated, carried);
-        if let Some(stack) = &mut held.undo {
-            let pushed = stack.edit(After::Canonical(prepared), next);
-            if pushed.dropped > 0 {
-                tracing::info!(
-                    session = %self.id,
-                    revision = next.number(),
-                    dropped = pushed.dropped,
-                    "the undo stack passed its bound: its oldest edits are out of undo's reach"
-                );
-            }
+        if let Some(pushed) = held.hold(next, candidate)
+            && pushed.dropped > 0
+        {
+            tracing::info!(
+                session = %self.id,
+                revision = next.number(),
+                dropped = pushed.dropped,
+                "the undo stack passed its bound: its oldest edits are out of undo's reach"
+            );
         }
         Ok(next)
     }
