@@ -100,14 +100,9 @@ fn an_on_added_onto_a_curve_an_existing_tangent_names_names_the_added_on() {
     // The sketch: na from pa (0, 0) to pb (10, 0); circle cd about pd (10, 5), radius 5, on
     // na's left, edge tangent to na (kt). The gate takes it: na and cd share no end. The
     // batch adds one `on`, kz, putting pb (na's end) on cd. The gate's rule "a curve ending
-    // on another is tangent where it ends" now refuses, but at the sketch's own tangent,
-    // `constraints.kt000001.b`, with only kt in its elements: the request never gave kt,
-    // and its own member kz is named only inside the message.
-    //
-    // BREAKS: the add promises each error at its field's path "which is the request's path
-    // for it too", but a refusal the batch's `on` causes is put on an untouched member of
-    // the sketch, and the `on` that caused it isn't among its elements; an agent filtering
-    // the errors by the members it sent finds none.
+    // on another is tangent where it ends" now refuses, at the later of the pair, the
+    // batch's `on`. (Broke, before the fix: at the sketch's own tangent,
+    // `constraints.kt000001.b`, with only kt in its elements, which the request never gave.)
     let before = doc(
         &[
             point("pa000000", 0.0, 0.0),
@@ -194,12 +189,9 @@ fn lengths_on_one_line(n: usize) -> Document {
 fn a_driving_length_past_the_values_limit_is_refused_at_the_constraints_the_request_adds() {
     // 9,990 lengths: 4 unknowns + 9,990 dimensions + 6 fixed = 10,000 values, exactly the
     // solver's limit (MAX_SKETCH_VALUES), and 9,990 constraints, under its 10,000. The gate
-    // takes it. One more driving length makes 10,001 values: refused, rightly.
-    //
-    // BREAKS: the refusal's parameter is `points`, a list the request left empty: the gate
-    // files every values count under `points`, though here only the batch's constraint
-    // pushed it past. The request's field is `constraints` (its new member's path,
-    // `constraints.kz000001`, best).
+    // takes it. One more driving length makes 10,001 values: refused, rightly, at the
+    // request's `constraints`, the list that added the value. (Broke, before the fix: at
+    // `points`, where the gate files every values count, a list the request left empty.)
     let before = lengths_on_one_line(9_990);
     validate(&before).unwrap();
     let batch = members(

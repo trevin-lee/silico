@@ -10,6 +10,7 @@ use crate::document::sketch::{
     ElementId, ElementKind, Sketch, SketchArc, SketchCircle, SketchConstraint, SketchLine,
     SketchPoint,
 };
+use crate::document::sketch_gate::size;
 use crate::document::{an_id_of_its_own, id_held, sketch_problems};
 use crate::{Error, ErrorCode};
 
@@ -70,7 +71,10 @@ impl Members {
 ///   field's ID path (`circles.cb000003.radius`), which is the request's path for it too: a
 ///   reference to no member (with candidates), a curve of 1e-7 mm or less, a curve's own
 ///   point constrained onto it, an edge `tangent` between curves sharing an end, a value out
-///   of range, and the sketch past what the solver takes.
+///   of range, and the sketch past what the solver takes. A limit the batch passes is
+///   refused at the last of the request's lists (points, lines, circles, arcs, constraints)
+///   whose members add to what's counted, where the gate names a list of its own for each
+///   limit (the values' at `points`, though a batch of driving dimensions passed it).
 ///
 /// The add doesn't solve: the edit's command solves the sketch once, after the gate, and a
 /// conflict that solve finds refuses the edit as data (M3.3), where FreeCAD keeps a
@@ -131,7 +135,11 @@ pub fn add(sketch: &Sketch, members: &Members) -> Result<Edited, Refused> {
     edited
         .constraints
         .extend(members.constraints.iter().cloned());
-    for problem in sketch_problems(&edited) {
+    let mut problems = sketch_problems(&edited);
+    if !problems.is_empty() {
+        limits_at_the_requests_lists(sketch, members, &edited, &mut problems);
+    }
+    for problem in problems {
         refused.push(|| problem);
     }
     if refused.total > 0 {
@@ -143,4 +151,75 @@ pub fn add(sketch: &Sketch, members: &Members) -> Result<Edited, Refused> {
         modified: Vec::new(),
         removed: Vec::new(),
     })
+}
+
+/// Each of the solver's limits ([`size`]) that `edited`, `sketch` with `members` added,
+/// passes, its refusal among `problems` (found by its list and its words, "the sketch has
+/// {n} {what}, ...") moved to the last of the request's lists whose members add to the
+/// count. The gate names one list for each limit, whichever list a file's sketch passed it
+/// with; an edit's request names what it added. A limit no list of the batch adds to (one
+/// the sketch passed already) keeps the gate's list.
+fn limits_at_the_requests_lists(
+    sketch: &Sketch,
+    members: &Members,
+    edited: &Sketch,
+    problems: &mut [Error],
+) {
+    // A sketch of only the batch's members of `kind`, and of none: what each kind adds to
+    // each count is the difference.
+    let only = |kind: Option<ElementKind>| {
+        let of = |k: ElementKind| kind == Some(k);
+        Sketch {
+            plane: sketch.plane,
+            points: if of(ElementKind::Point) {
+                members.points.clone()
+            } else {
+                Vec::new()
+            },
+            lines: if of(ElementKind::Line) {
+                members.lines.clone()
+            } else {
+                Vec::new()
+            },
+            circles: if of(ElementKind::Circle) {
+                members.circles.clone()
+            } else {
+                Vec::new()
+            },
+            arcs: if of(ElementKind::Arc) {
+                members.arcs.clone()
+            } else {
+                Vec::new()
+            },
+            constraints: if of(ElementKind::Constraint) {
+                members.constraints.clone()
+            } else {
+                Vec::new()
+            },
+        }
+    };
+    let none = size(&only(None));
+    let added: Vec<(ElementKind, _)> = ElementKind::ALL
+        .into_iter()
+        .map(|kind| (kind, size(&only(Some(kind)))))
+        .collect();
+    for (row, &(list, n, most, what)) in size(edited).iter().enumerate() {
+        if n <= most {
+            continue;
+        }
+        let Some((kind, _)) = added
+            .iter()
+            .rev()
+            .find(|(_, counts)| counts[row].1 > none[row].1)
+        else {
+            continue;
+        };
+        let words = format!("the sketch has {n} {what}, ");
+        for problem in problems
+            .iter_mut()
+            .filter(|p| p.parameter() == Some(list) && p.message().starts_with(&words))
+        {
+            *problem = problem.clone().with_parameter(kind.list());
+        }
+    }
 }

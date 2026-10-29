@@ -521,3 +521,64 @@ fn many_bad_ids_are_all_counted_and_the_first_hundred_listed() {
     assert_eq!(refused.errors[1].parameter(), Some("points.1.id"));
     assert_eq!(refused.errors[99].parameter(), Some("points.99.id"));
 }
+
+#[test]
+fn a_limit_the_batch_passes_is_refused_at_the_last_of_its_lists_that_added_to_it() {
+    // Line na from pa (0, 0) to pb (10, 0) with 9,989 driving lengths: 4 unknowns + 9,989
+    // dimensions + 6 fixed = 9,999 values, one under the solver's 10,000. The gate files the
+    // values count under `points`; an add names the last of the request's lists (points,
+    // lines, circles, arcs, constraints) whose members add values.
+    let lengths: Vec<String> = (0..9_989)
+        .map(|i| {
+            format!(
+                r#"{{"id": "k{i:07}", "type": "length", "line": "na000000", "value": 10, "driving": true}}"#
+            )
+        })
+        .collect();
+    let before = read(
+        document(&fields(
+            r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 10, "y": 0, "construction": false}"#,
+            LINE,
+            "",
+            "",
+            &lengths.join(", "),
+        ))
+        .as_bytes(),
+    )
+    .unwrap();
+    validate(&before).unwrap();
+    let point = r#"{"id": "pz000001", "x": 20, "y": 0, "construction": false}"#;
+    let length =
+        r#"{"id": "kz000001", "type": "length", "line": "na000000", "value": 10, "driving": true}"#;
+    let circle = |id: &str| {
+        format!(r#"{{"id": "{id}", "center": "pa000000", "radius": 3, "construction": false}}"#)
+    };
+    // A point (two values) and a length (one): 10,002, the constraints' the last list.
+    let both = refused(sketch_of(&before), &members(point, "", "", "", length));
+    assert_eq!(parameters(&both), ["constraints"]);
+    assert!(
+        both.errors[0]
+            .message()
+            .starts_with("the sketch has 10002 values,")
+    );
+    // A point alone: 10,001, at `points`.
+    let alone = refused(sketch_of(&before), &members(point, "", "", "", ""));
+    assert_eq!(parameters(&alone), ["points"]);
+    // A circle is one value: one is taken (10,000), two are refused at `circles`.
+    let one = add(
+        sketch_of(&before),
+        &members("", "", &circle("cz000001"), "", ""),
+    );
+    assert!(one.is_ok());
+    let two = refused(
+        sketch_of(&before),
+        &members(
+            "",
+            "",
+            &format!("{}, {}", circle("cz000001"), circle("cz000002")),
+            "",
+            "",
+        ),
+    );
+    assert_eq!(parameters(&two), ["circles"]);
+}
