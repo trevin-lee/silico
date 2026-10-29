@@ -1684,3 +1684,62 @@ fn a_fake_solid_is_meshed_a_triangle_a_face_with_the_kernels_floor_on_its_box() 
     assert_eq!(refused.code(), ErrorCode::InvalidInput, "{refused:?}");
     assert_eq!(refused.parameter(), Some("deflection"), "{refused:?}");
 }
+
+#[test]
+fn each_solid_the_fake_makes_lists_its_faces() {
+    // A box's one solid, all six faces. A prism of a 4 × 3 rectangle and a circle beside it,
+    // by the fake's numbering (side faces 1–5, edge i's face i; starts 6 and 7; ends 8 and
+    // 9): the rectangle's solid its four sides, its start, its end; the circle's its side,
+    // start, and end. A fuse of the two prisms, one solid of every face, as the fake's
+    // booleans meet; a cut of the box by them, the box's one solid.
+    let kernel = FakeKernel::new(1).unwrap();
+    let b = run(&kernel, KernelRequest::make(block(2.0, 3.0, 4.0)).unwrap());
+    let fused_with_box = |shape: &ShapeData| {
+        run(&kernel, KernelRequest::boolean(BooleanOp::Fuse, shape, &b))
+            .history
+            .topology
+            .solid_faces
+    };
+    let faces = run(
+        &kernel,
+        KernelRequest::make_faces(&regions(
+            SketchPlane::Xy,
+            vec![
+                (rectangle(4.0, 3.0), vec![]),
+                (vec![circle([10.0, 1.0], 1.0)], vec![]),
+            ],
+        ))
+        .unwrap(),
+    );
+    assert!(faces.history.topology.solid_faces.is_empty());
+    let prisms = run(
+        &kernel,
+        KernelRequest::prism(&faces.shape, [0.0; 3], [0.0, 0.0, 2.0]).unwrap(),
+    );
+    assert_eq!(
+        prisms.history.topology.solid_faces,
+        vec![vec![1, 2, 3, 4, 6, 8], vec![5, 7, 9]]
+    );
+    // Fused with the box (6 faces after the prisms' 9): one solid, 15 faces.
+    assert_eq!(
+        fused_with_box(&prisms.shape),
+        vec![(1..=15).collect::<Vec<u32>>()]
+    );
+    let cut = run(
+        &kernel,
+        KernelRequest::boolean(BooleanOp::Cut, &b, &prisms.shape),
+    );
+    assert_eq!(
+        cut.history.topology.solid_faces,
+        vec![(1..=15).collect::<Vec<u32>>()]
+    );
+    // A cut of the two prisms by the box: theirs, two solids as they were.
+    let cut = run(
+        &kernel,
+        KernelRequest::boolean(BooleanOp::Cut, &prisms.shape, &b),
+    );
+    assert_eq!(
+        cut.history.topology.solid_faces,
+        vec![vec![1, 2, 3, 4, 6, 8], vec![5, 7, 9]]
+    );
+}

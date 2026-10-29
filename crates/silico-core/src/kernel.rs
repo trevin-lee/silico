@@ -1964,6 +1964,7 @@ mod tests {
                         vec![5],
                         vec![6],
                     ],
+                    solid_faces: Vec::new(),
                 },
             },
         }
@@ -2113,6 +2114,7 @@ mod tests {
                         .collect(),
                     face_edges,
                     edge_vertices,
+                    solid_faces: vec![(1..=5).collect()],
                 },
             },
         }

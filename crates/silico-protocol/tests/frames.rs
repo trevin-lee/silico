@@ -478,6 +478,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
                     face_edges: vec![vec![1, 3], vec![2, 3]],
                     outer_edges: vec![vec![1, 3], vec![]],
                     edge_vertices: vec![vec![], vec![], vec![]],
+                    solid_faces: vec![vec![1, 2]],
                 },
             },
         })),

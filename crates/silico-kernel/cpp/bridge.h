@@ -371,8 +371,8 @@ std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &too
 
 // How many distinct faces, edges, vertices, and solids the shape has.
 Counts count_elements(const Shape &shape);
-// Each face's edges and outer wire's edges, and each edge's vertices, each in
-// TopExp::MapShapes order within the element, numbered as the shape numbers them.
+// Each face's edges and outer wire's edges, each edge's vertices, and each solid's faces,
+// each in TopExp::MapShapes order within the element, numbered as the shape numbers them.
 TopologyFacts topology(const Shape &shape);
 
 // Whether the faces of `result` that aren't in `input` (those an operation made or

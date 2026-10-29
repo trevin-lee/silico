@@ -173,7 +173,8 @@ mod ffi {
 
     /// How a shape's elements bound each other (`silico_protocol::Topology`), flattened: for
     /// each face in order, its edges (`face_edge_counts` of them) and its outer wire's;
-    /// for each edge, its vertices. Each element numbered from 1 as the shape numbers it
+    /// for each edge, its vertices; for each solid, its faces. Each element numbered from 1
+    /// as the shape numbers it
     /// (0 if it somehow isn't one of the shape's).
     struct TopologyFacts {
         face_edges: Vec<u32>,
@@ -182,6 +183,8 @@ mod ffi {
         outer_edge_counts: Vec<u32>,
         edge_vertices: Vec<u32>,
         edge_vertex_counts: Vec<u32>,
+        solid_faces: Vec<u32>,
+        solid_face_counts: Vec<u32>,
     }
 
     /// What kind of curve a [`FaceCurve`] is.
@@ -1878,10 +1881,15 @@ fn topology(facts: &ffi::TopologyFacts, counts: ElementCounts) -> Result<Topolog
     for list in &mut outer_edges {
         list.sort_unstable();
     }
+    let mut solid_faces = split(&facts.solid_faces, &facts.solid_face_counts)?;
+    for list in &mut solid_faces {
+        list.sort_unstable();
+    }
     let topology = Topology {
         face_edges: split(&facts.face_edges, &facts.face_edge_counts)?,
         outer_edges,
         edge_vertices: split(&facts.edge_vertices, &facts.edge_vertex_counts)?,
+        solid_faces,
     };
     topology.validate(counts).map_err(|why| {
         // The refusal says the topology is bad; the log says how, for the bug report.

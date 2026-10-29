@@ -1437,6 +1437,16 @@ impl SweepNumbers {
         }
         let circle = |j: u32| if self.whole { vec![j] } else { vec![j, v + j] };
         topology.edge_vertices.extend((1..=v).map(circle));
+        // Face k's solid: its edges' side faces, and its start and end faces (a whole turn's
+        // none).
+        let f = self.faces;
+        for (k, edges) in (1u32..).zip(&input.face_edges) {
+            let mut faces = edges.clone();
+            if !self.whole {
+                faces.extend([e + k, e + f + k]);
+            }
+            topology.solid_faces.push(sorted(faces));
+        }
         topology
     }
 }
@@ -1505,8 +1515,19 @@ fn boolean_counts(op: BooleanOp, a: ElementCounts, b: ElementCounts) -> ElementC
     }
 }
 
+/// Each solid's faces in a shape of `counts` whose faces are all one solid's, if it has one
+/// solid: every face. Otherwise none, or, for several, `several`.
+fn one_solid(counts: ElementCounts, several: Vec<Vec<u32>>) -> Vec<Vec<u32>> {
+    match counts.solids {
+        0 => Vec::new(),
+        1 => vec![(1..=counts.faces).collect()],
+        _ => several,
+    }
+}
+
 /// How OCCT's primitive's elements bound each other, as the kernel reports it: each face's
-/// edges in OCCT's order, its outer wire's (sorted), and each edge's vertices.
+/// edges in OCCT's order, its outer wire's (sorted), each edge's vertices, and its one
+/// solid's faces.
 fn primitive_topology(primitive: &Primitive) -> Topology {
     let lists = |lists: &[&[u32]]| lists.iter().map(|l| l.to_vec()).collect::<Vec<_>>();
     type Lists = &'static [&'static [u32]];
@@ -1563,10 +1584,12 @@ fn primitive_topology(primitive: &Primitive) -> Topology {
         }
         Primitive::Torus { .. } => (&[&[1, 2]], &[&[1, 2]], &[&[1], &[1]]),
     };
+    let face_count = u32::try_from(faces.len()).unwrap_or(u32::MAX);
     Topology {
         face_edges: lists(faces),
         outer_edges: lists(outer),
         edge_vertices: lists(vertices),
+        solid_faces: vec![(1..=face_count).collect()],
     }
 }
 
@@ -1582,6 +1605,7 @@ fn shifted(topology: &Topology, before: ElementCounts) -> Topology {
         face_edges: shift(&topology.face_edges, before.edges),
         outer_edges: shift(&topology.outer_edges, before.edges),
         edge_vertices: shift(&topology.edge_vertices, before.vertices),
+        solid_faces: shift(&topology.solid_faces, before.faces),
     }
 }
 
@@ -1914,13 +1938,18 @@ impl Symbolic {
                     }
                     _ => Default::default(),
                 },
-                Step::Boolean { base, tool, .. } => {
+                Step::Boolean { op, base, tool } => {
                     let ((mut topology, a), (tool, b)) = (of(*base), of(*tool));
+                    let counts = boolean_counts(*op, a, b);
+                    let several = std::mem::take(&mut topology.solid_faces);
                     let tool = shifted(&tool, a);
                     topology.face_edges.extend(tool.face_edges);
                     topology.outer_edges.extend(tool.outer_edges);
                     topology.edge_vertices.extend(tool.edge_vertices);
-                    (topology, sum(a, b))
+                    // One solid's faces all the faces, as if they met; a cut's or a common's
+                    // several solids its base's.
+                    topology.solid_faces = one_solid(counts, several);
+                    (topology, counts)
                 }
             };
             made.push(next);

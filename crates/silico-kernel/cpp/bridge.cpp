@@ -922,6 +922,11 @@ TopologyFacts topology(const Shape &shape) {
   for (int i = 1; i <= edges.Extent(); ++i) {
     facts.edge_vertex_counts.push_back(list(edges(i), TopAbs_VERTEX, vertices, facts.edge_vertices));
   }
+  ShapeMap solids;
+  TopExp::MapShapes(shape.shape, TopAbs_SOLID, solids);
+  for (int i = 1; i <= solids.Extent(); ++i) {
+    facts.solid_face_counts.push_back(list(solids(i), TopAbs_FACE, faces, facts.solid_faces));
+  }
   return facts;
 }
 

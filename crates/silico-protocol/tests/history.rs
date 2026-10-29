@@ -15,12 +15,14 @@ const RESULT: ElementCounts = ElementCounts {
 };
 
 /// A topology that fits `RESULT`: two faces sharing Edge2 (Face1 bounded by Edges 1 and
-/// 2, Face2 by 2 and 3, a hole of Edge3's in Face1), each edge between two vertices.
+/// 2, Face2 by 2 and 3, a hole of Edge3's in Face1), each edge between two vertices, the
+/// one solid bounded by both faces.
 fn topology() -> Topology {
     Topology {
         face_edges: vec![vec![2, 1, 3], vec![3, 2]],
         outer_edges: vec![vec![1, 2], vec![2, 3]],
         edge_vertices: vec![vec![1, 2], vec![2, 3], vec![4]],
+        solid_faces: vec![vec![1, 2]],
     }
 }
 
@@ -268,7 +270,7 @@ fn a_histories_topology_fits_its_result() {
     };
     assert_eq!(with(topology()).validate(1), Ok(()));
     type Damage = fn(&mut Topology);
-    let cases: [(Damage, &str); 10] = [
+    let cases: [(Damage, &str); 16] = [
         (
             |t| {
                 t.face_edges.pop();
@@ -312,6 +314,31 @@ fn a_histories_topology_fits_its_result() {
         (
             |t| t.outer_edges[1] = vec![1, 2],
             "Face2's outer edges name Edge1, which isn't one of its edges",
+        ),
+        // A list for each solid, of faces the result has, each once, in order.
+        (
+            |t| t.solid_faces.clear(),
+            "lists 0 solids' faces for a result of 1",
+        ),
+        (
+            |t| t.solid_faces.push(vec![1]),
+            "lists 2 solids' faces for a result of 1",
+        ),
+        (
+            |t| t.solid_faces[0].push(3),
+            "solids' faces for element 1 name 3",
+        ),
+        (
+            |t| t.solid_faces[0][0] = 0,
+            "solids' faces for element 1 name 0",
+        ),
+        (
+            |t| t.solid_faces[0] = vec![2, 2],
+            "solids' faces for element 1 repeat one",
+        ),
+        (
+            |t| t.solid_faces[0] = vec![2, 1],
+            "Solid1's faces aren't sorted",
         ),
     ];
     for (damage, says) in cases {

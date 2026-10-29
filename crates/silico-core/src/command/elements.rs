@@ -966,6 +966,7 @@ mod tests {
         }
     }
 
+    /// A history of one solid, every face its: `topology`'s own solid's faces aren't read.
     fn history(inputs: Vec<InputHistory>, faces: u32, edges: u32, topology: Topology) -> History {
         let history = History {
             inputs,
@@ -976,7 +977,10 @@ mod tests {
                 solids: 1,
             },
             ends: Default::default(),
-            topology,
+            topology: Topology {
+                solid_faces: vec![(1..=faces).collect()],
+                ..topology
+            },
         };
         let count = history.inputs.len();
         history.validate(count).unwrap();
@@ -1013,6 +1017,7 @@ mod tests {
                 face_edges: vec![vec![1, 2]],
                 outer_edges: vec![vec![1, 2]],
                 edge_vertices: vec![vec![]; 2],
+                solid_faces: Vec::new(),
             },
         );
         let cut = ElementMap::operation(id("aaaaaaaa"), OpCode::Cut, &[&block], &cut);
@@ -1045,6 +1050,7 @@ mod tests {
                 face_edges: vec![vec![]],
                 outer_edges: vec![vec![]],
                 edge_vertices: vec![],
+                solid_faces: Vec::new(),
             },
         );
         let fusion = id("rrrrrrrr");
