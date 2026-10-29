@@ -1271,7 +1271,10 @@ mod tests {
         let init = Path::new("/proc/1");
         assert!(
             std::fs::symlink_metadata(init.join("cwd"))
-                .unwrap()
+                .unwrap_or_else(|e| panic!(
+                    "/proc/1/cwd can't be seen ({e}: /proc mounted with hidepid?): this case \
+                     can't be tested"
+                ))
                 .file_type()
                 .is_symlink()
         );

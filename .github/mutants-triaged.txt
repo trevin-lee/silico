@@ -232,10 +232,6 @@ crates/silico-core/src/document/sketch_gate.rs | check | replace < with <= | #27
 # it binds: the same flags. With #129's line, one for each `|` in the call.
 crates/silico-core/src/cache/at.rs | open_to_read | replace | with ^ | #275
 crates/silico-core/src/cache/at.rs | open_to_read | replace | with ^ | #275
-# Only a directory of two names in one ancestor tells these apart (APFS's Unicode forms):
-# killed on macOS, not on CI's Linux file systems, where no two names are one directory.
-crates/silico-core/src/file.rs | Workspace::walk | replace || with && | #275
-crates/silico-core/src/file.rs | same_file | replace same_file -> bool with false | #275
 # Every fault passed in is a kernel fault, so a listed error with its code already set it.
 crates/silico-cli/src/main.rs | Refusal::with_fault | delete field failed from struct Refusal expression | #275
 # Every end sends an event that breaks serve's loop with the same reason; and an ignored

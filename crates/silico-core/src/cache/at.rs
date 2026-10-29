@@ -277,6 +277,17 @@ mod tests {
                     "{seconds} {nanos}"
                 );
             }
+            // A negative count, which macOS's signed field can hold (Linux's is unsigned): no
+            // time either, the epoch.
+            #[cfg(target_os = "macos")]
+            {
+                stat.st_mtime_nsec = -1;
+                assert_eq!(
+                    Meta::of(&stat).modified(),
+                    SystemTime::UNIX_EPOCH,
+                    "{seconds} -1"
+                );
+            }
         }
     }
 }
