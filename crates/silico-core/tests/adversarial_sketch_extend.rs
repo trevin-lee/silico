@@ -90,8 +90,6 @@ fn frame_at(begin: &DragBegin, xy: [f64; 2]) -> Moved {
     }
 }
 
-/// A refusal of the input: InvalidInput, naming `parameter` and `curve`.
-#[track_caller]
 /// An error's code, message, parameter, elements, and suggestion, to compare whole.
 fn said(error: &Error) -> (ErrorCode, &str, Option<&str>, Vec<&str>, Option<&str>) {
     (
@@ -103,6 +101,8 @@ fn said(error: &Error) -> (ErrorCode, &str, Option<&str>, Vec<&str>, Option<&str
     )
 }
 
+/// A refusal of the input: InvalidInput, naming `parameter` and `curve`.
+#[track_caller]
 fn refused(result: Result<Edited, Error>, parameter: &str, curve: &str) -> Error {
     let e = result.unwrap_err();
     assert_eq!(e.code(), ErrorCode::InvalidInput, "{e}");
