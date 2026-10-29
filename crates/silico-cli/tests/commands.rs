@@ -162,6 +162,22 @@ fn check_json_is_a_line_an_agent_reads() {
     assert_eq!(line["file"], file.display().to_string());
 }
 
+/// The warning of `feature`, a box that built, stored with no fingerprint, as a `check
+/// --json` line holds it (written out by hand).
+fn fingerprint_missing(feature: &str) -> serde_json::Value {
+    serde_json::json!({
+        "candidates": [],
+        "cause": null,
+        "code": "fingerprint_missing",
+        "elements": [],
+        "elements_total": 0,
+        "feature": feature,
+        "message": format!("{feature} built, but its file stores no fingerprint, so a change in what it builds isn't caught as drift"),
+        "parameter": "fingerprint",
+        "suggestion": "format the document to store it"
+    })
+}
+
 #[test]
 fn check_says_warnings_on_stderr_as_warnings_and_they_never_change_the_exit_code() {
     // The example, saved by hand with no fingerprint: one warning, exit 0.
@@ -176,15 +192,22 @@ fn check_says_warnings_on_stderr_as_warnings_and_they_never_change_the_exit_code
         file.display()
     );
     assert_eq!(stderr(&out), said);
-    // `--json`'s line is its contract's (check-line.json), with no warnings in it: they're
-    // said on stderr, as without it.
+    // `--json`'s line is its contract's (check-line.json), the warning in it, in the error
+    // contract's shape; and said on stderr, as without it.
     let out = silico(&scratch, &["check", "--json"], &file);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(stderr(&out), said);
     let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
         line,
-        serde_json::json!({"file": file.display().to_string(), "ok": true, "problems": [], "total": 0})
+        serde_json::json!({
+            "file": file.display().to_string(),
+            "ok": true,
+            "problems": [],
+            "total": 0,
+            "warnings": [fingerprint_missing("k7f2qx3m")],
+            "warnings_total": 1
+        })
     );
     // Formatted, its fingerprint stored: nothing to say.
     assert_eq!(silico(&scratch, &["fmt"], &file).status.code(), Some(0));
@@ -217,6 +240,56 @@ fn check_says_warnings_on_stderr_as_warnings_and_they_never_change_the_exit_code
             file.display()
         )),
         "{lines:?}"
+    );
+}
+
+#[test]
+fn check_jsons_fault_line_holds_the_problems_and_warnings_found_beside_the_fault() {
+    // A kernel fault (a sketch worker that can't be had) beside a problem (the block's
+    // volume edited by hand: drift) and a warning (a second box with no fingerprint): the
+    // line's `error` is the fault, its `problems` the drift, its `warnings` the warning, as
+    // stderr says them without `--json`.
+    let scratch = Scratch::new("fault-beside");
+    let file = scratch.file(EXAMPLE);
+    assert_eq!(silico(&scratch, &["fmt"], &file).status.code(), Some(0));
+    let text = std::fs::read_to_string(&file).unwrap();
+    let edited = text
+        .replacen(r#""volume": 8000,"#, r#""volume": 8001,"#, 1)
+        .replacen(
+            "}\n  ]",
+            "},\n    {\"id\": \"m0000002\", \"type\": \"box\", \"v\": 1, \"name\": \"Other\", \"position\": [50, 0, 0], \"length\": 1, \"width\": 1, \"height\": 1},\n    {\"id\": \"s0000001\", \"type\": \"sketch\", \"v\": 1, \"name\": \"S\", \"plane\": \"xy\", \"points\": [{\"id\": \"pa000000\", \"x\": 0, \"y\": 0, \"construction\": false}, {\"id\": \"pb000000\", \"x\": 10, \"y\": 0, \"construction\": false}], \"lines\": [{\"id\": \"na000000\", \"from\": \"pa000000\", \"to\": \"pb000000\", \"construction\": false}], \"circles\": [], \"arcs\": [], \"constraints\": []}\n  ]",
+            1,
+        );
+    assert_eq!(edited.matches("m0000002").count(), 1, "{text}");
+    std::fs::write(&file, &edited).unwrap();
+    let missing = scratch.0.join("no-sketch-worker");
+    let out = silico_with(&scratch, &["check", "--json"], &file, &missing);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(line["ok"], false);
+    assert_eq!(line["error"]["code"], "worker_unavailable", "{line}");
+    assert_eq!(line["total"], 1, "{line}");
+    let problems = line["problems"].as_array().unwrap();
+    assert_eq!(problems.len(), 1, "{line}");
+    assert_eq!(problems[0]["code"], "drift");
+    assert_eq!(problems[0]["feature"], "k7f2qx3m");
+    assert_eq!(line["warnings_total"], 1, "{line}");
+    let warnings = line["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{line}");
+    assert_eq!(warnings[0], fingerprint_missing("m0000002"));
+    // Keys sorted, as the contract holds them.
+    let keys: Vec<&String> = line.as_object().unwrap().keys().collect();
+    assert_eq!(
+        keys,
+        [
+            "error",
+            "file",
+            "ok",
+            "problems",
+            "total",
+            "warnings",
+            "warnings_total"
+        ]
     );
 }
 
@@ -654,13 +727,13 @@ fn check_jsons_lines_hold_their_keys_in_the_contracts_order_in_any_build() {
             r#""code":"invalid_input","elements":[],"elements_total":0,"feature":"k7f2qx3m","#,
             r#""message":"box length must be a length above 1e-7 mm and at most 1e6 mm (a "#,
             r#"kilometre), got 0","parameter":"length","suggestion":"give the box a valid "#,
-            r#"length"}],"total":1}"#,
+            r#"length"}],"total":1,"warnings":[],"warnings_total":0}"#,
             "\n",
             r#"{"error":{"candidates":[],"cause":null,"code":"io_failed","elements":[],"#,
             r#""elements_total":0,"feature":null,"message":"couldn't be read: No such file "#,
             r#"or directory (os error 2)","parameter":null,"suggestion":"check the file's "#,
             r#"name, and that it's a regular file this user may read"},"file":"missing.silico","#,
-            r#""ok":false}"#,
+            r#""ok":false,"problems":[],"total":0,"warnings":[],"warnings_total":0}"#,
             "\n",
         )
     );
@@ -1144,7 +1217,18 @@ fn a_kernel_fault_is_said_beside_the_documents_own_problems_and_is_exit_2() {
     assert_eq!(line["error"]["code"], "worker_unavailable", "{line}");
     // A worker that can't be had says nothing of the feature that asked for it.
     assert_eq!(line["error"]["feature"], serde_json::Value::Null, "{line}");
-    assert!(line.get("problems").is_none(), "{line}");
+    // The problem found beside it, as stderr says it without `--json`.
+    assert_eq!(line["total"], 1, "{line}");
+    assert_eq!(line["problems"][0]["code"], "invalid_input", "{line}");
+    assert_eq!(line["problems"][0]["feature"], "d0000001", "{line}");
+    assert!(
+        line["problems"][0]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("pad d0000001 sweeps sketch s0000001, which makes no profile"),
+        "{line}"
+    );
+    assert_eq!(line["warnings_total"], 0, "{line}");
     // fmt --check writes nothing, saying the problem and the fault, exit 2.
     let out = silico_on_kernel(&scratch, &["fmt", "--check"], &file, &nowhere);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
@@ -1502,7 +1586,14 @@ fn check_fresh_rebuilds_from_the_kernel_with_a_full_cache_and_leaves_it_full() {
         let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(
             line,
-            serde_json::json!({"file": file.display().to_string(), "ok": true, "problems": [], "total": 0})
+            serde_json::json!({
+                "file": file.display().to_string(),
+                "ok": true,
+                "problems": [],
+                "total": 0,
+                "warnings": [fingerprint_missing("k7f2qx3m")],
+                "warnings_total": 1
+            })
         );
     }
     // A document with problems is exit 1, fresh or not; a misspelt option is a usage error.
