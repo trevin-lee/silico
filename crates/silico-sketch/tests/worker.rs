@@ -105,6 +105,54 @@ fn a_row_of_fixed_values_alone_is_a_dependency_of_its_own_through_the_worker() {
 }
 
 #[test]
+fn an_arc_whose_rules_alone_depend_lists_no_dependency_and_still_solves() {
+    // Fable's Addendum 5, point 4: a dependency among an arc's rules alone (tag 0) names no
+    // constraint, so the worker drops the empty group patch 0002 keeps. An arc whose centre
+    // (0, 0), start (5, 0), and end (0, 5) are fixed values, only its radius and angles
+    // unknown, and no constraint on it. By hand, over (r, a1, a2) at r = 5, a1 = 0, a2 =
+    // π/2: the start's x row is (−cos a1, r sin a1, 0) = (−1, 0, 0), its y row (−sin a1,
+    // −r cos a1, 0) = (0, −5, 0), the end's x row (−cos a2, 0, r sin a2) = (0, 0, 5), and its
+    // y row (−sin a2, 0, −r cos a2) = (−1, 0, 0) (to cos(π/2)'s 6e-17): 4 rows of rank 3,
+    // the start's x and the end's y one dependency, all tag 0. So no dependency is listed,
+    // nothing is flagged, 0 left, nothing free, and the drawing, which meets every rule,
+    // solves.
+    let mut b = systems::Builder::default();
+    let center = silico_protocol::PointValues {
+        x: b.fixed(0.0),
+        y: b.fixed(0.0),
+    };
+    let radius = b.unknown(5.0);
+    let start_angle = b.unknown(0.0);
+    let end_angle = b.unknown(std::f64::consts::FRAC_PI_2);
+    let start = silico_protocol::PointValues {
+        x: b.fixed(5.0),
+        y: b.fixed(0.0),
+    };
+    let end = silico_protocol::PointValues {
+        x: b.fixed(0.0),
+        y: b.fixed(5.0),
+    };
+    let arc = b.add(silico_protocol::SketchGeometry::Arc {
+        center,
+        radius,
+        start_angle,
+        end_angle,
+        start,
+        end,
+    });
+    b.constraints
+        .push(silico_protocol::SolverConstraint::ArcRules { arc });
+    let solved = solve(&mut worker(), b.system(Algorithm::DogLeg));
+    assert!(solved.dependencies.is_empty(), "{solved:?}");
+    assert!(solved.conflicting.is_empty(), "{solved:?}");
+    assert!(solved.redundant.is_empty(), "{solved:?}");
+    assert!(solved.partially_redundant.is_empty(), "{solved:?}");
+    assert_eq!(solved.dofs, 0, "{solved:?}");
+    assert!(solved.free.is_empty(), "{solved:?}");
+    assert_eq!(solved.status, SolveStatus::Success, "{solved:?}");
+}
+
+#[test]
 fn a_system_that_fails_its_check_is_invalid_input_and_the_worker_lives_on() {
     let mut system = rectangle_40_by_20().b.system(Algorithm::DogLeg);
     system.values[3] = f64::NAN;

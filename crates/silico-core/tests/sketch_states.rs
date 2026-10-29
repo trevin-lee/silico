@@ -374,7 +374,6 @@ fn a_conflict_is_over_defined_its_dofs_as_given_and_a_constraint_listed_twice_re
         conflicting: vec![Tag(4), Tag(5)],
         redundant: vec![Tag(5)],
         partially_redundant: vec![Tag(3)],
-        dependencies: Vec::new(),
         ..FakeSketches::as_sent(system)
     });
     assert_eq!(got.state, SketchState::OverDefined);
@@ -404,13 +403,22 @@ fn decision_5s_disagreeing_redundancy_goes_into_the_conflicting_list_the_read_un
     // A distance_x of 10.5 between the line's ends, which the fake calls redundant (tag 5)
     // and leaves at 10 apart: a gap of 0.5 mm, past decision 5's 1e-8, so the read refuses
     // it as over_constrained, naming it. The diagnosis lists it conflicting, and redundant
-    // as PlaneGCS listed it; its state is conflicting. It reads both ends (over defined) and
-    // names points only, so the line, its ends fixed, is fully defined.
+    // as PlaneGCS listed it; its state is conflicting. By hand, at the drawing (p1 (0, 0),
+    // p2 (10, 0)), over (p1x, p1y, p2x, p2y): k1's row is (1, 0, 0, 0), k2's (0, 1, 0, 0),
+    // the horizontal's (0, −1, 0, 1), the length's (−1, 0, 1, 0), and the distance_x's
+    // (−1, 0, 1, 0), the length's alone: one dependency, {k4, k5}, as the fake says. The
+    // length, a driving dimension in it, reads redundant and over-defines (addendum 4),
+    // though the sketch is refused; the distance_x, conflicting, too. Both read both ends
+    // (over defined), and the length names the line, so the line is over defined as well.
+    // The real-PlaneGCS twin (silico-sketch's tests/sketch_states.rs,
+    // a_redundant_length_that_disagrees_past_decision_5_conflicts_as_data) reads the line
+    // over defined too.
     let sketch = ten_long(
         r#"{"id": "k0000005", "type": "distance_x", "a": "p0000001", "b": "p0000002", "value": 10.5, "driving": true}"#,
     );
     let (translation, answer, diagnosis, got) = solved_by(&sketch, |system| Solved {
         redundant: vec![Tag(5)],
+        dependencies: vec![vec![Tag(4), Tag(5)]],
         status: SolveStatus::SolvedExceptRedundant,
         ..FakeSketches::as_sent(system)
     });
@@ -425,8 +433,15 @@ fn decision_5s_disagreeing_redundancy_goes_into_the_conflicting_list_the_read_un
     assert_eq!(diagnosis.conflicting, ids(&["k0000005"]));
     assert_eq!(diagnosis.redundant, ids(&["k0000005"]));
     assert_eq!(
+        diagnosis.dependencies,
+        BTreeSet::from([ids(&["k0000004", "k0000005"])])
+    );
+    assert_eq!(
         diagnosis.points_depended_on,
-        BTreeMap::from([(id("k0000005"), ids(&["p0000001", "p0000002"]))])
+        BTreeMap::from([
+            (id("k0000004"), ids(&["p0000001", "p0000002"])),
+            (id("k0000005"), ids(&["p0000001", "p0000002"])),
+        ])
     );
     assert_eq!(got.state, SketchState::OverDefined);
     assert_eq!(got.solve_problem.as_ref(), Some(error));
@@ -436,7 +451,7 @@ fn decision_5s_disagreeing_redundancy_goes_into_the_conflicting_list_the_read_un
             ("k0000001", Unsolved),
             ("k0000002", Unsolved),
             ("k0000003", Unsolved),
-            ("k0000004", Unsolved),
+            ("k0000004", Redundant),
             ("k0000005", Conflicting),
         ])
     );
@@ -444,7 +459,7 @@ fn decision_5s_disagreeing_redundancy_goes_into_the_conflicting_list_the_read_un
         got.points,
         members(&[("p0000001", Over), ("p0000002", Over)])
     );
-    assert_eq!(got.lines, members(&[("n0000001", Fully)]));
+    assert_eq!(got.lines, members(&[("n0000001", Over)]));
 }
 
 #[test]

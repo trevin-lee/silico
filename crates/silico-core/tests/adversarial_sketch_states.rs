@@ -126,7 +126,6 @@ fn a_reply_naming_values_the_sketch_doesnt_have_free_changes_nothing_it_does_hav
         },
         Solved {
             partially_redundant: vec![Tag(9)],
-            dependencies: Vec::new(),
             status: SolveStatus::SolvedExceptRedundant,
             ..reply(Vec::new())
         },
@@ -387,10 +386,12 @@ fn the_states_dont_depend_on_the_order_the_sketch_holds_its_lists() {
     reversed.arcs.reverse();
     reversed.constraints.reverse();
     let translation = Translation::new(&sketch).unwrap();
+    // Its dependencies hold the flagged tags, each beside another (k0000005 with
+    // k0000001, k0000007 with k0000003), so the groups are read by ID too.
     let solved = Solved {
         redundant: vec![Tag(5)],
         partially_redundant: vec![Tag(7)],
-        dependencies: Vec::new(),
+        dependencies: vec![vec![Tag(1), Tag(5)], vec![Tag(3), Tag(7)]],
         free: vec![Value(14)],
         status: SolveStatus::SolvedExceptRedundant,
         ..FakeSketches::as_sent(&translation.system)
@@ -401,6 +402,13 @@ fn the_states_dont_depend_on_the_order_the_sketch_holds_its_lists() {
         .read_diagnosed(&solved)
         .unwrap();
     assert_eq!(again.diagnosis(), read.diagnosis());
+    assert_eq!(
+        read.diagnosis().dependencies,
+        BTreeSet::from([
+            BTreeSet::from([id("k0000001"), id("k0000005")]),
+            BTreeSet::from([id("k0000003"), id("k0000007")]),
+        ])
+    );
     assert_eq!(states(&reversed, &read), states(&sketch, &read));
 }
 
@@ -752,14 +760,16 @@ fn every_form(picked: &[usize]) -> Sketch {
 }
 
 #[test]
-fn every_form_flagged_alone_over_defines_exactly_when_it_carries_a_value() {
+fn every_form_alone_in_a_dependency_over_defines_exactly_when_it_carries_a_value() {
     // Each form alone on the drawing, which meets it exactly, in a dependency of its own (tag
     // 1), the fake listing it redundant, then partially redundant, then not at all (kept),
     // with nothing free and 0 left: solved, so a relation (13 forms) leaves the sketch fully
     // defined, every member fully defined, and a dimension (8) makes it over defined, with
     // some member over defined (each reads a point or names a curve), and reads redundant
-    // even where the solver kept it (addendum 4). Listed conflicting, any form is refused,
-    // over defined, and over-defines what it governs.
+    // even where the solver kept it or listed it partially redundant (addendum 4: a driving
+    // dimension in a dependency is redundant), where a relation listed partially redundant
+    // reads so. Listed conflicting, any form is refused, over defined, and over-defines what
+    // it governs.
     for (i, &(form, dimension)) in EVERY_FORM.iter().enumerate() {
         let sketch = every_form(&[i]);
         let translation = Translation::new(&sketch).unwrap();
@@ -770,6 +780,7 @@ fn every_form_flagged_alone_over_defines_exactly_when_it_carries_a_value() {
             (vec![], vec![], vec![Tag(1)]),
         ] {
             let listed_conflicting = !conflicting.is_empty();
+            let listed_partially = !partially_redundant.is_empty();
             let kept =
                 redundant.is_empty() && partially_redundant.is_empty() && !listed_conflicting;
             let solved = Solved {
@@ -819,6 +830,18 @@ fn every_form_flagged_alone_over_defines_exactly_when_it_carries_a_value() {
                     Redundant
                 } else {
                     ConstraintState::Satisfied
+                };
+                assert_eq!(
+                    got.constraints.values().collect::<Vec<_>>(),
+                    [&state],
+                    "{form}"
+                );
+            }
+            if listed_partially {
+                let state = if dimension {
+                    Redundant
+                } else {
+                    ConstraintState::PartiallyRedundant
                 };
                 assert_eq!(
                     got.constraints.values().collect::<Vec<_>>(),

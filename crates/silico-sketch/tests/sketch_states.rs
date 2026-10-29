@@ -890,17 +890,27 @@ fn an_arcs_ends_mirrored_about_the_y_axis_its_centre_placed_there_repeat_the_cen
     // perpendicular, and midpoint on the axis), its ends (5, 5) and (−5, 5) mirrored about
     // the y axis. By hand: two points of a circle mirrored about a line put the centre on
     // the line (the chord's perpendicular bisector), so the centre's x dimension and the
-    // symmetric's perpendicular row repeat each other: one of the two is flagged, and the
-    // sketch is over defined. 9 unknowns, rank 7 (the arc's 4 rules, the 2 dimensions, the
-    // symmetric's midpoint row): 2 left, the radius and the ends' turn.
+    // symmetric repeat each other. 9 unknowns, rank 7 (the arc's 4 rules, the 2 dimensions,
+    // the symmetric's midpoint row): 2 left, the radius and the ends' turn.
+    //
+    // The dependency, by hand, over (cx, cy, p2x, p2y, p3x, p3y, r, a1, a2) at the drawing
+    // (r = 5√2, a1 = 45°, a2 = 135°): the end rules' rows are R1 (−1, 0, 1, 0, 0, 0, −√½, 5,
+    // 0), R2 (0, −1, 0, 1, 0, 0, −√½, −5, 0), R3 (−1, 0, 0, 0, 1, 0, √½, 0, 5), and R4 (0,
+    // −1, 0, 0, 0, 1, −√½, 0, 5); R1 + R2 + R3 − R4 = (−2, 0, 1, 1, 1, −1, 0, 0, 0), which is
+    // −2 × the centre's x (k0000001, (1, 0, …)), plus 2 × the midpoint row ((0, 0, ½, 0, ½,
+    // 0, …)), plus a multiple of the perpendicular row (0, 0, 0, 1, 0, −1, …), the chord
+    // against the axis's fixed direction. So one dependency, of the arc's rules
+    // (tag 0, left out), the x dimension, and the symmetric's both rows; the centre's y
+    // (k0000002) has no part in it. The read lists {k0000001, the symmetric}.
     //
     // PlaneGCS flags the dimension, wholly redundant, in either tag order: one row against
     // the symmetric's two, its contest removing the constraint with fewer rows on a tie in
-    // popularity, order-independent (item 32's addendum, A). The flagged `distance_x` is a
-    // driving dimension, so under addendum 2 it still over-defines: the sketch over defined,
-    // and the centre, which it reads, over defined;
-    // the ends, free along the circle, under defined, as is the arc, which nothing flagged
-    // names.
+    // popularity, order-independent. Under addendum 4 that choice doesn't decide the states:
+    // the `distance_x` is a driving dimension in the dependency, so it reads redundant and
+    // over-defines whichever PlaneGCS dropped, the sketch over defined, and the centre,
+    // which it reads, over defined. The symmetric, a relation, kept, reads satisfied and
+    // over-defines nothing; the ends, free along the circle, under defined, as is the arc,
+    // which no over-defining constraint names.
     for symmetric in ["k0000000", "k0000003"] {
         let points = [
             point("p0000001", 0.0, 0.0),
@@ -913,8 +923,11 @@ fn an_arcs_ends_mirrored_about_the_y_axis_its_centre_placed_there_repeat_the_cen
         );
         let constraints = [FROM_AT_ORIGIN[0], FROM_AT_ORIGIN[1], mirrored.as_str()];
         let sketch = sketch_of(&points, &[], &[], &arcs, &constraints);
-        let (answer, _, got) = solved(&sketch);
+        let (answer, diagnosis, got) = solved(&sketch);
         assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+        let mut dependency = ["k0000001", symmetric];
+        dependency.sort_unstable();
+        expect_dependencies(&got, &diagnosis, &[&dependency]);
         expect(
             &got,
             Want {
@@ -1015,7 +1028,7 @@ fn solidworks_faq_a_redundant_relation_leaves_the_rectangle_fully_defined() {
     // perpendicular repeats what those two fix: its row's gradient, the dot product of the
     // top's direction (−40, 0) and the left's (0, −20), normalised, is a combination of the
     // horizontal's and the vertical's alone. 9 rows of rank 8 for 8 unknowns: 0 left, no
-    // value past the rank, every point and line fully defined. Of the one dependent group
+    // value past the rank, every point and line fully defined. Of the one dependency
     // {horizontal, vertical, perpendicular}, each in one group and one row, PlaneGCS removes
     // the latest tag (1.1.3 GCS.cpp's contest, rule 3): the perpendicular, redundant. A
     // perpendicular is a relation, so it over-defines nothing (addendum 4: no driving
@@ -1049,7 +1062,7 @@ fn solidworks_faq_a_redundant_angle_dimension_then_over_defines_the_rectangle() 
     // changing to something other than 90°, would conflict with the relations". By hand: the
     // angle's row, the turn from the bottom's direction to the right's, has a gradient that
     // combines the bottom's horizontal (c0d1e2f3) and the right's vertical (r2s3t4v5) alone,
-    // so it repeats them: 10 rows of rank 8, still 0 left, two dependent groups,
+    // so it repeats them: 10 rows of rank 8, still 0 left, two dependencies,
     // {top's horizontal, left's vertical, perpendicular} and {bottom's horizontal, right's
     // vertical, angle}, sharing nothing. Each constraint is in one group with one row, so
     // PlaneGCS removes the latest tag first, the angle, which settles its group, then the
@@ -1612,7 +1625,7 @@ fn an_arcs_ends_mirrored_about_a_line_its_centre_is_on_are_one_row_and_fully_def
 fn an_arcs_ends_mirrored_about_a_line_a_one_row_constraint_puts_its_centre_on_lose_the_holder() {
     // The centre put on the line by a `vertical_points` with the line's end: not one of the
     // two holds the translation recognises, so the symmetric's both rows are sent, 14
-    // equations for 13 unknowns, one repeating. Of the dependent group PlaneGCS removes the
+    // equations for 13 unknowns, one repeating. Of the dependency PlaneGCS removes the
     // constraint with fewer rows on a tie in popularity (1.1.3 GCS.cpp's contest): the
     // one-row holder, redundant. The dependency, by hand: the symmetric's midpoint row puts
     // the chord's middle on the line, whose x is its ends' (the vertical, k0000003, ties
