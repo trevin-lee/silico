@@ -1,8 +1,9 @@
 //! What each sketch edit does to a sketch's geometry and constraints (docs/ports/sketch-edit.md,
 //! whose rules are FreeCAD's behavior with Silico's shared points, M3.2's D2): pure
 //! functions from a sketch to the sketch edited, or the reasons it can't be, as errors
-//! naming its members. Each result is a sketch the validation gate then checks, and a
-//! solve then settles (the edit's command, M5.10, which this doesn't hold).
+//! naming its members. Each result is a sketch the validation gate then checks (a merge
+//! checks its own, refusing what the gate would), and a solve then settles (the edit's
+//! command, M5.10, which this doesn't hold).
 //!
 //! Here: removing members (the note's §2, decision 7), pulling a shared point apart (§5,
 //! decision 9), and merging points (§6, decision 10). Splitting and trimming follow.
@@ -275,12 +276,12 @@ pub fn unjoin(
 /// FreeCAD `cb2780e2fa`), a curve that would then use one point twice (a line's ends, an
 /// arc's centre and an end, or its two ends: `084379651a`, #20771), and a constraint that
 /// would then name one point twice (a `distance` or `horizontal_points` between merged
-/// points).
+/// points), and a merged sketch the gate refuses, naming the points and what it names.
 ///
 /// An edge `tangent` between two curves that then share an end becomes a `tangent_at` at
 /// that point, keeping its ID, as FreeCAD's coincident command substitutes one
-/// (`620188073e`; docs/design/m5.0-app.md, open item 13): its `direction` as the merged
-/// drawing shows it (sketch-edit decision 8), listed in `modified`.
+/// (`620188073e`; docs/design/m5.0-app.md, open item 13): its `direction` keeps the
+/// tangent's `side` (sketch-edit decision 8), listed in `modified`.
 ///
 /// A request with one bad pair is refused whole, where FreeCAD's coincident command skips
 /// that pair and makes the rest coincident (`CommandConstraints.cpp`, its multi-select): an
@@ -406,39 +407,24 @@ pub fn merge(sketch: &Sketch, points: &[ElementId]) -> Result<Edited, Error> {
     own_curve(&edited, "merging them", "points", "merge other points")?;
     modified.extend(repointed);
     edited.points.retain(|p| !others.contains(&p.id));
-    gated(&edited, points)?;
+    // A merge places points by ID: a curve it leaves with no size (its ends, or an arc's end
+    // and centre, drawn at one place), or a sketch its tangent_ats take past the solver's
+    // values, is the gate's to find.
+    if let Some(refusal) = super::refused_by_gate(
+        &edited,
+        "merging them",
+        points.iter().map(ToString::to_string).collect(),
+        "points",
+        "merge other points, or change what the merge would collapse",
+    ) {
+        return Err(refusal);
+    }
     Ok(Edited {
         sketch: edited,
         added: Vec::new(),
         modified: ordered(&kinds, modified),
         removed: ordered(&kinds, others.into_iter().cloned()),
     })
-}
-
-/// Refuses a merged sketch the gate would: as the merge's refusal, naming the points and
-/// what the gate names. The merge places points by ID, never by value, so a curve it leaves
-/// with no size (its ends, or an arc's end and centre, drawn at one place) or a sketch its
-/// `tangent_at`s take past the solver's values is the gate's to find.
-fn gated(edited: &Sketch, points: &[ElementId]) -> Result<(), Error> {
-    let Some(problem) = super::sketch_problems(edited).into_iter().next() else {
-        return Ok(());
-    };
-    let mut elements: Vec<String> = points.iter().map(ToString::to_string).collect();
-    for e in problem.elements() {
-        if !elements.contains(e) {
-            elements.push(e.clone());
-        }
-    }
-    Err(Error::new(
-        ErrorCode::InvalidInput,
-        format!(
-            "merging them would leave a sketch the gate refuses: {}",
-            problem.message()
-        ),
-    )
-    .with_elements(elements)
-    .with_parameter("points")
-    .with_suggestion("merge other points, or change what the merge would collapse"))
 }
 
 /// Each edge `tangent` of `sketch` between two curves that share one end, made a
