@@ -146,19 +146,17 @@ struct Sketch {
 
   // A point on a line (extended), a circle, or an arc's whole circle, as FreeCAD's
   // PointOnObject puts it (Sketch::addPointOnObjectConstraint).
-  void point_on(GCS::Point &p, uint32_t i, int tag) {
+  // Returns the index of the row it added, as PlaneGCS's addConstraint calls do.
+  int point_on(GCS::Point &p, uint32_t i, int tag) {
     if (i >= geometry.size()) bug("geometry " + std::to_string(i) + " out of range");
     Geo &g = geometry[i];
     switch (g.kind) {
       case GeometryKind::Line:
-        system.addConstraintPointOnLine(p, g.line, tag);
-        break;
+        return system.addConstraintPointOnLine(p, g.line, tag);
       case GeometryKind::Circle:
-        system.addConstraintPointOnCircle(p, g.circle, tag);
-        break;
+        return system.addConstraintPointOnCircle(p, g.circle, tag);
       case GeometryKind::Arc:
-        system.addConstraintPointOnArc(p, g.arc, tag);
-        break;
+        return system.addConstraintPointOnArc(p, g.arc, tag);
       default:
         bug("geometry " + std::to_string(i) + " isn't a curve");
     }
@@ -514,7 +512,9 @@ std::unique_ptr<DragSession> drag_begin(const SolveInput &input, rust::Slice<con
       GCS::Circle &c = s.sketch.round(pins[i].geometry);
       s.targets[2 * i] = *c.center.x;
       s.targets[2 * i + 1] = *c.center.y + *c.rad;
-      s.sketch.point_on(target, pins[i].geometry, GCS::DefaultTemporaryConstraint);
+      const int row =
+          s.sketch.point_on(target, pins[i].geometry, GCS::DefaultTemporaryConstraint);
+      if (pins[i].scale != 1.0) system.rescaleConstraint(row, pins[i].scale);
       continue;
     }
     GCS::Point &p = s.sketch.point_of(pins[i].position, pins[i].geometry);

@@ -595,7 +595,8 @@ impl DragBegin {
 
     /// A drag of `curve`'s edge in `system`, pressed where FreeCAD's App form presses it: a
     /// line at its midpoint (`moveGeometry` puts the midpoint at the cursor), a circle or an
-    /// arc at its centre (unused). Values not in `system` press at the origin.
+    /// arc at its centre (unused). Values not in `system` press at the origin. For tests and
+    /// the App form's moves; a client's drag gives its own press (`Dragged::Edge`).
     pub fn edge(system: SketchSystem, curve: Geometry) -> Self {
         let at = |v: Value| system.values.get(v.0 as usize).copied().unwrap_or(0.0);
         let press = match system.geometry.get(curve.0 as usize) {
@@ -623,8 +624,13 @@ impl DragBegin {
         self.check_move()?;
         let n = self.part().unknowns.len();
         if n > MAX_DRAG_UNKNOWNS {
+            // What the request named: the point dragged, or the curve whose edge is.
+            let parameter = match self.dragged {
+                Dragged::Point(_) => "point",
+                Dragged::Edge { .. } => "curve",
+            };
             return Err(invalid(
-                "point",
+                parameter,
                 format!(
                     "the part of the sketch the drag moves has {n} unknowns, and a drag takes at most {MAX_DRAG_UNKNOWNS} there: each move of a larger part takes too long"
                 ),

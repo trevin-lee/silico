@@ -277,6 +277,11 @@ fn line_edge_in_a_part_past_the_drag_limit_is_refused_but_moves_once() {
     };
     let text = format!("{failure:?}");
     assert!(text.contains("256") || text.contains("unknowns"), "{text}");
+    // Named as the request named it: the curve, not a point it never sent (the reviews).
+    let refused = DragBegin::edge(begin.system.clone(), lines[0])
+        .check()
+        .unwrap_err();
+    assert_eq!(refused.parameter, "curve");
     // As one move it's held to a solve's limits, not a drag's.
     let mut state = State::default();
     match state
@@ -422,11 +427,11 @@ proptest! {
                 prop_assert!(libm::hypot(v[0] - x, v[1] - y) <= 1e-3 * (d - r).abs() + tol,
                     "the centre moved: {:?}", v);
             }
-            // Far past the circle's own size (a radius of 1e-6 mm to 860 km, the shrunk case
-            // of a run), SQP from the begin state can fail where 1.1.3's succeeds: a
-            // numerical divergence the sketcher note records. Short of 1e10 times its
-            // radius, every move succeeds.
-            Ok(moved) => prop_assert!(d > 1e10 * r, "{:?}", moved),
+            // Far from the begin state, SQP can stop short, as 1.1.3's does: a radius of 404
+            // about (0, 48203) dragged to (0.49, 820609) is "Not able to move point" there
+            // too (the sketcher note's *Dragging*: a failed frame keeps the last good one).
+            // A move that's no success is a failed frame, never a wrong one.
+            Ok(moved) => prop_assert!(moved.values.is_none(), "{:?}", moved),
             // Refused only for a radius past reach.
             Err(f) => prop_assert!(d > 1e6 * (1.0 - 1e-9), "refused: {:?}", f),
         }
