@@ -851,7 +851,7 @@ pub enum Theirs {
     Edited(Box<FreecadEdited>),
     /// Its edit (FreeCAD's own call) raised, as it says.
     Failed(String),
-    /// It crashed or hung.
+    /// It crashed or hung: its own outcome, never its refusal.
     Lost(String),
     /// The harness's own code around FreeCAD's edit raised: a bug of the oracle's, never
     /// FreeCAD's refusal.
@@ -868,14 +868,16 @@ pub struct Verdict {
     pub modulo: Vec<u32>,
     /// Both sides refused it.
     pub refused: bool,
+    /// FreeCAD crashed where the note says it does (splitting a point, :115), and Silico
+    /// refused it by the note's rule: a crash is FreeCAD's own outcome, never its refusal.
+    pub crashed: bool,
 }
 
 impl std::fmt::Display for Verdict {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.case, self.how.join("; "))?;
         if !self.modulo.is_empty() {
-            let lines: Vec<String> = self.modulo.iter().map(|l| format!(":{l}")).collect();
-            write!(f, " (compared modulo {NOTE}{})", lines.join(", "))?;
+            write!(f, " (compared modulo {NOTE}{})", cited(&self.modulo))?;
         }
         Ok(())
     }
@@ -1158,12 +1160,13 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
         ));
         return finish(v);
     }
-    // FreeCAD's refusal, if it refused: its edit raised, it crashed, its plan refuses, or
-    // (a merge) its Coincident command would refuse what the edit made.
+    // FreeCAD's refusal, if it refused: its edit raised, its plan refuses, or (a merge) its
+    // Coincident command would refuse what the edit made. A crash or hang is none of these:
+    // it's its own outcome, compared on its own.
     let fc_refusal: Option<String> = match (theirs, &p.plan) {
+        (Some(Theirs::Lost(why)), _) => return lost(p, v, why),
         (_, Plan::Refuses(why)) => Some(why.clone()),
         (Some(Theirs::Failed(why)), _) => Some(format!("its edit raised: {why}")),
-        (Some(Theirs::Lost(why)), _) => Some(format!("it crashed or hung: {why}")),
         (Some(Theirs::Edited(fc)), _) => merge_refusal(p, fc),
         (Some(Theirs::Harness(_)), _) | (None, Plan::Run { .. }) => {
             Some("FreeCAD gave no outcome".to_owned())
@@ -1179,12 +1182,20 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
         },
     };
     match (silico_refusal, fc_refusal) {
-        // Two refusals agree only where Silico's is one the note gives, for its reason.
+        // Two refusals agree only where Silico's is one the note gives, for its reason, and
+        // the note doesn't pin FreeCAD's outcome as another than a refusal.
         (Some(ours), Some(theirs_why)) => match rule(p) {
-            Some(r) => {
-                v.refused = true;
-                v.modulo.extend(r.lines());
-            }
+            Some(r) => match r.pinned() {
+                Some(pinned) => v.how.push(format!(
+                    "both refused, but the note has FreeCAD {} ({NOTE}{}): Silico's refusal ({ours}); FreeCAD's: {theirs_why}",
+                    pinned.does(),
+                    cited(&r.lines())
+                )),
+                None => {
+                    v.refused = true;
+                    v.modulo.extend(r.lines());
+                }
+            },
             None => v.how.push(format!(
                 "both refused, but Silico's refusal isn't one the note gives ({ours}); FreeCAD's: {theirs_why}"
             )),
@@ -1210,10 +1221,10 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
         }
         (None, None) => {
             if let (SilicoSide::Edited(s), Some(Theirs::Edited(fc))) = (&p.silico, theirs) {
-                if let Some(why) = contact_band(p) {
-                    v.excused.push(why);
+                let band = contact_band(p);
+                if let Some(band) = &band {
+                    v.excused.extend(band.excuses());
                     v.modulo.push(476);
-                    return finish(v);
                 }
                 let merged = merged_apart(p);
                 if merged.is_some() {
@@ -1222,12 +1233,55 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
                     ));
                     v.modulo.push(270);
                 }
-                let how = compare_edited(p, s, fc, merged.as_ref(), &mut v.excused, &mut v.modulo);
+                let unsettled = Unsettled {
+                    merged: merged.as_ref(),
+                    band: band.as_ref(),
+                };
+                let how = compare_edited(p, s, fc, &unsettled, &mut v.excused, &mut v.modulo);
                 v.how.extend(how);
             }
         }
     }
     finish(v)
+}
+
+/// How `p` came out where FreeCAD crashed or hung on it (`why`): its own outcome, never its
+/// refusal. It agrees only where Silico refuses it by a rule whose edit the note says FreeCAD
+/// 1.1.3 crashes on (splitting a point, :115), and FreeCAD crashed, not hung; anything else
+/// is a difference.
+fn lost(p: &Prepared, mut v: Verdict, why: &str) -> Verdict {
+    let crashes = match &p.silico {
+        SilicoSide::Refused(_) => rule(p).filter(|r| r.pinned() == Some(Pinned::Crashes)),
+        _ => None,
+    };
+    match crashes {
+        Some(r) if why.starts_with("FreeCAD crashed") => {
+            v.crashed = true;
+            v.modulo.extend(r.lines());
+        }
+        _ => {
+            let silico = match &p.silico {
+                SilicoSide::Refused(r) => format!("Silico refused it ({r})"),
+                SilicoSide::Edited(s) => match (&p.edit, &s.ours.outcome) {
+                    (Edit::Merge { .. }, Err(e)) => {
+                        format!("Silico's merge's solve refused it ({e})")
+                    }
+                    _ => "Silico made the edit".to_owned(),
+                },
+                SilicoSide::Gated(_) => "Silico's result is gated".to_owned(),
+            };
+            v.how.push(format!(
+                "FreeCAD crashed or hung ({why}), its own outcome, never a refusal, which the note gives only for a split of a point ({NOTE}:115); {silico}"
+            ));
+        }
+    }
+    finish(v)
+}
+
+/// The note's `lines`, as a report cites them after [`NOTE`]: `:115, :153`.
+fn cited(lines: &[u32]) -> String {
+    let lines: Vec<String> = lines.iter().map(|l| format!(":{l}")).collect();
+    lines.join(", ")
 }
 
 fn finish(mut v: Verdict) -> Verdict {
@@ -1240,7 +1294,7 @@ fn finish(mut v: Verdict) -> Verdict {
 /// A refusal of Silico's that the note gives: which rule, with what it names.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Rule {
-    /// Splitting a point: the gate's kinds (:153).
+    /// Splitting a point: the gate's kinds (:153), where 1.1.3 segfaults (:115).
     SplitNotCurve,
     /// A circle split at one position (decision 3, :473).
     SplitCircleAtOne,
@@ -1280,7 +1334,8 @@ impl Rule {
     /// The note's lines it cites.
     pub fn lines(&self) -> Vec<u32> {
         match self {
-            Rule::SplitNotCurve | Rule::SplitAtEnd => vec![153],
+            Rule::SplitNotCurve => vec![115, 153],
+            Rule::SplitAtEnd => vec![153],
             Rule::SplitEdgeTangent(_) => vec![152],
             Rule::SplitCircleAtOne => vec![473],
             Rule::SplitOffCurve(_) => vec![474],
@@ -1295,6 +1350,40 @@ impl Rule {
             Rule::MergeSolveUnbuildable => vec![278, 279, 280],
             Rule::MergeGated(_) => vec![276],
             Rule::RemovePointInUse => vec![109],
+        }
+    }
+
+    /// What the note says FreeCAD 1.1.3 does with an edit Silico refuses by this rule, where
+    /// it says one thing other than a refusal: then nothing else of FreeCAD's agrees, a
+    /// refusal included. None where FreeCAD's refusal is the rule's counterpart, or the note
+    /// gives FreeCAD both a refusal and an edit (a split at or near an end, :117-118).
+    pub fn pinned(&self) -> Option<Pinned> {
+        match self {
+            Rule::SplitNotCurve => Some(Pinned::Crashes),
+            Rule::SplitCircleAtOne
+            | Rule::SplitOffCurve(_)
+            | Rule::SplitEdgeTangent(_)
+            | Rule::TrimPoint
+            | Rule::MergeSolveUnbuildable => Some(Pinned::Edits),
+            _ => None,
+        }
+    }
+}
+
+/// FreeCAD 1.1.3's outcome as the note pins it for a [`Rule`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pinned {
+    /// It crashes (and the harness sees a crash, never a hang or a refusal).
+    Crashes,
+    /// It makes the edit, and its result is what the note says, which the excusal checks.
+    Edits,
+}
+
+impl Pinned {
+    fn does(self) -> &'static str {
+        match self {
+            Pinned::Crashes => "crash",
+            Pinned::Edits => "make the edit",
         }
     }
 }
@@ -1570,13 +1659,17 @@ fn near_end(shape: &Shape, curve: &str, end: &str, position: [f64; 2]) -> bool {
 }
 
 /// Why Silico's refusal by `rule` of an edit FreeCAD made is the note's, if FreeCAD's side
-/// is what the note says it is.
+/// is what the note says it is: none where it isn't, which is then a difference.
 fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
+    let curve = match &p.edit {
+        Edit::Split { curve, .. } | Edit::Trim { curve, .. } => Some(curve.as_str()),
+        _ => None,
+    };
     match rule {
-        Rule::SplitCircleAtOne => Some(format!(
+        Rule::SplitCircleAtOne => circle_opened(p, fc, curve?).then(|| format!(
             "a circle split at one position: Silico refuses it (decision 3, {NOTE}:473), FreeCAD makes one arc whose ends aren't joined (:121)"
         )),
-        Rule::SplitOffCurve(off) => Some(format!(
+        Rule::SplitOffCurve(off) => split_at_projections(p, fc, curve?).then(|| format!(
             "a split position {off:e} mm off the curve: Silico refuses it (decision 4, {NOTE}:474), FreeCAD splits at its projection (:116)"
         )),
         Rule::SplitAtEnd => {
@@ -1591,10 +1684,10 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
                 )
             })
         }
-        Rule::SplitEdgeTangent(id) => Some(format!(
+        Rule::SplitEdgeTangent(id) => split_at_projections(p, fc, curve?).then(|| format!(
             "edge tangent {id} with a curve ending at the split point: Silico refuses the split ({NOTE}:152), where FreeCAD's split makes the pieces new ends and never shares the point"
         )),
-        Rule::TrimPoint => Some(format!(
+        Rule::TrimPoint => deleted_alone(p, fc, curve?).then(|| format!(
             "a trim of a point: Silico refuses it ({NOTE}:330), FreeCAD 1.1.3 deletes it (:159)"
         )),
         Rule::NoPieceTakes(id) => {
@@ -1630,17 +1723,162 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
                     )
                 })
         }
-        Rule::MergeSolveUnbuildable => Some(format!(
+        // FreeCAD's coincidences solve: its solve after the edit succeeds.
+        Rule::MergeSolveUnbuildable => (fc.after.code == 0).then(|| format!(
             "points merged from apart, whose solve Silico refuses as a result it can't take ({NOTE}:278-280), where FreeCAD's coincidences solve"
         )),
         _ => None,
     }
 }
 
-/// For a trim, a curve whose gap from the trimmed one, as a tangency, is in decision 6's
-/// band: Silico counts a contact within 1e-7 mm as a cut, FreeCAD 1.1.3's intersector one
-/// within 1e-12 (:476), so the two trim at different cuts and only their outcomes compare.
-fn contact_band(p: &Prepared) -> Option<String> {
+/// `member`'s FreeCAD geometry after the edit, before the solve, by the ID it had before.
+fn edited_geometry<'a>(
+    p: &Prepared,
+    fc: &'a FreecadEdited,
+    member: &str,
+) -> Option<&'a FcGeometry> {
+    let i = p.model.elements.iter().position(|e| e == member)?;
+    let id = fc.ids_before.get(i)?;
+    fc.edited.iter().find(|g| g.id == *id)
+}
+
+/// The geometry FreeCAD's edit made: what has an ID it hadn't before.
+fn made_geometry(fc: &FreecadEdited) -> Vec<&FcGeometry> {
+    fc.edited
+        .iter()
+        .filter(|g| !fc.ids_before.contains(&g.id))
+        .collect()
+}
+
+fn near(a: [f64; 2], b: [f64; 2]) -> bool {
+    (a[0] - b[0]).abs() <= sketch::TOLERANCE && (a[1] - b[1]).abs() <= sketch::TOLERANCE
+}
+
+/// Whether FreeCAD's split of circle `curve` at one position made what the note says
+/// (:121): one arc in the circle's place (its ID, centre and radius), nothing more, its
+/// start and end at one place and not joined.
+fn circle_opened(p: &Prepared, fc: &FreecadEdited, curve: &str) -> bool {
+    let shape = Shape::of(&p.sketch);
+    let (Some(arc), Some(centre), Some(radius)) = (
+        edited_geometry(p, fc, curve),
+        shape.point(curve, 3).and_then(|c| shape.points.get(c)),
+        shape.radii.get(curve),
+    ) else {
+        return false;
+    };
+    let at = |k: &str| arc.points.get(k).copied();
+    let (Some(start), Some(end), Some(c)) = (at("1"), at("2"), at("3")) else {
+        return false;
+    };
+    let Some(g) = fc
+        .geometry
+        .iter()
+        .position(|solved| solved.id == arc.id)
+        .and_then(|i| i32::try_from(i).ok())
+    else {
+        return false;
+    };
+    arc.kind == "arc"
+        && made_geometry(fc).is_empty()
+        && near(start, end)
+        && near(c, *centre)
+        && arc
+            .radius
+            .is_some_and(|r| (r - radius).abs() <= sketch::TOLERANCE)
+        && !Joins::of(fc).joined((g, 1), (g, 2))
+}
+
+/// Whether FreeCAD's split of `curve` made what the note says (:116): two pieces of its kind
+/// (a circle's arcs), the one keeping its ID and one new, which meet, an end of each, at each
+/// split position's projection onto the curve.
+fn split_at_projections(p: &Prepared, fc: &FreecadEdited, curve: &str) -> bool {
+    let Edit::Split { at, .. } = &p.edit else {
+        return false;
+    };
+    let shape = Shape::of(&p.sketch);
+    let Some(kind) = shape.members.get(curve).map(|m| match m.kind {
+        "circle" => "arc",
+        other => other,
+    }) else {
+        return false;
+    };
+    let (Some(kept), [made]) = (edited_geometry(p, fc, curve), &made_geometry(fc)[..]) else {
+        return false;
+    };
+    let ends = |g: &FcGeometry| -> Vec<[f64; 2]> {
+        ["1", "2"]
+            .iter()
+            .filter_map(|k| g.points.get(*k).copied())
+            .collect()
+    };
+    let meet = |q: [f64; 2]| {
+        ends(kept).iter().any(|e| near(*e, q)) && ends(made).iter().any(|e| near(*e, q))
+    };
+    kept.kind == kind
+        && made.kind == kind
+        && !at.is_empty()
+        && at
+            .iter()
+            .all(|position| projection(&shape, curve, *position).is_some_and(meet))
+}
+
+/// Whether FreeCAD's trim of the lone point `point` deleted it, as the note says 1.1.3 does
+/// (:159): it's gone, and every other geometry is kept, nothing made.
+fn deleted_alone(p: &Prepared, fc: &FreecadEdited, point: &str) -> bool {
+    let Some(i) = p.model.elements.iter().position(|e| e == point) else {
+        return false;
+    };
+    let Some(&gone) = fc.ids_before.get(i) else {
+        return false;
+    };
+    let left: BTreeSet<i64> = fc.edited.iter().map(|g| g.id).collect();
+    let kept: BTreeSet<i64> = fc
+        .ids_before
+        .iter()
+        .copied()
+        .filter(|id| *id != gone)
+        .collect();
+    left == kept
+}
+
+/// A trim's curves within decision 6's band of tangency to the trimmed one: Silico counts a
+/// contact within 1e-7 mm as a cut, FreeCAD 1.1.3's intersector one within 1e-12 (:476), so
+/// the two may cut the trimmed curve at different places.
+#[derive(Debug)]
+struct Band {
+    /// The trimmed curve.
+    trimmed: String,
+    /// Each curve in the band, and its gap from tangent, in mm.
+    near: BTreeMap<String, f64>,
+}
+
+impl Band {
+    /// The note's excuse for each curve in the band.
+    fn excuses(&self) -> Vec<String> {
+        self.near
+            .iter()
+            .map(|(other, gap)| {
+                format!(
+                    "{other} is {gap:e} mm from tangent to {}: Silico's trim counts that contact as a cut, FreeCAD 1.1.3's doesn't (decision 6, {NOTE}:476); the two curves, the trimmed one's pieces, their points, and what names them aren't compared",
+                    self.trimmed
+                )
+            })
+            .collect()
+    }
+}
+
+/// What an edit leaves unsettled, whose places or curves the comparison takes only where
+/// both sides settle them alike: points merged from apart (:270), and a trim's curves
+/// within decision 6's band (:476).
+#[derive(Clone, Copy)]
+struct Unsettled<'a> {
+    merged: Option<&'a BTreeSet<String>>,
+    band: Option<&'a Band>,
+}
+
+/// For a trim, the curves whose gap from the trimmed one, as a tangency, is in decision 6's
+/// band (:476), if any is.
+fn contact_band(p: &Prepared) -> Option<Band> {
     let Edit::Trim { curve, .. } = &p.edit else {
         return None;
     };
@@ -1655,25 +1893,30 @@ fn contact_band(p: &Prepared) -> Option<String> {
         }
     };
     let trimmed = geometry(curve)?;
-    shape.members.keys().filter(|id| *id != curve).find_map(|other| {
-        let gap = match (trimmed, geometry(other)?) {
-            (Geometry2::Line(a, b), Geometry2::Round(c, r))
-            | (Geometry2::Round(c, r), Geometry2::Line(a, b)) => {
-                let (ux, uy) = (b[0] - a[0], b[1] - a[1]);
-                let off = (ux * (c[1] - a[1]) - uy * (c[0] - a[0])).abs() / libm::hypot(ux, uy);
-                (off - r).abs()
-            }
-            (Geometry2::Round(c, r), Geometry2::Round(d, q)) => {
-                let apart = libm::hypot(d[0] - c[0], d[1] - c[1]);
-                ((apart - (r + q)).abs()).min((apart - (r - q).abs()).abs())
-            }
-            (Geometry2::Line(..), Geometry2::Line(..)) => return None,
-        };
-        (gap > 1e-12 && gap <= LENGTH_TOLERANCE).then(|| {
-            format!(
-                "{other} is {gap:e} mm from tangent to {curve}: Silico's trim counts that contact as a cut, FreeCAD 1.1.3's doesn't (decision 6, {NOTE}:476); only the outcomes compared"
-            )
+    let near: BTreeMap<String, f64> = shape
+        .members
+        .keys()
+        .filter(|id| *id != curve)
+        .filter_map(|other| {
+            let gap = match (trimmed, geometry(other)?) {
+                (Geometry2::Line(a, b), Geometry2::Round(c, r))
+                | (Geometry2::Round(c, r), Geometry2::Line(a, b)) => {
+                    let (ux, uy) = (b[0] - a[0], b[1] - a[1]);
+                    let off = (ux * (c[1] - a[1]) - uy * (c[0] - a[0])).abs() / libm::hypot(ux, uy);
+                    (off - r).abs()
+                }
+                (Geometry2::Round(c, r), Geometry2::Round(d, q)) => {
+                    let apart = libm::hypot(d[0] - c[0], d[1] - c[1]);
+                    ((apart - (r + q)).abs()).min((apart - (r - q).abs()).abs())
+                }
+                (Geometry2::Line(..), Geometry2::Line(..)) => return None,
+            };
+            (gap > 1e-12 && gap <= LENGTH_TOLERANCE).then(|| (other.clone(), gap))
         })
+        .collect();
+    (!near.is_empty()).then(|| Band {
+        trimmed: curve.clone(),
+        near,
     })
 }
 
@@ -1773,6 +2016,34 @@ fn off_curve(shape: &Shape, curve: &str, position: [f64; 2]) -> Option<f64> {
             let c = p(3)?;
             let r = *shape.radii.get(curve)?;
             Some((libm::hypot(position[0] - c[0], position[1] - c[1]) - r).abs())
+        }
+        _ => None,
+    }
+}
+
+/// `position`'s projection onto `curve` of `shape` (a line extended, a round's circle).
+fn projection(shape: &Shape, curve: &str, position: [f64; 2]) -> Option<[f64; 2]> {
+    let member = shape.members.get(curve)?;
+    let p = |pos: i32| {
+        member
+            .at
+            .get(&pos)
+            .and_then(|id| shape.points.get(id))
+            .copied()
+    };
+    match member.kind {
+        "line" => {
+            let (a, b) = (p(1)?, p(2)?);
+            let (ux, uy) = (b[0] - a[0], b[1] - a[1]);
+            let t = ((position[0] - a[0]) * ux + (position[1] - a[1]) * uy) / (ux * ux + uy * uy);
+            Some([a[0] + t * ux, a[1] + t * uy])
+        }
+        "arc" | "circle" => {
+            let c = p(3)?;
+            let r = *shape.radii.get(curve)?;
+            let (dx, dy) = (position[0] - c[0], position[1] - c[1]);
+            let d = libm::hypot(dx, dy);
+            (d > 0.0).then(|| [c[0] + r * dx / d, c[1] + r * dy / d])
         }
         _ => None,
     }
@@ -2011,16 +2282,39 @@ fn pairs(kind: &str, ints: &[i32]) -> Vec<[i32; 2]> {
     out
 }
 
-/// How Silico's edited sketch and FreeCAD's differ, both edited and solved; their solved
-/// geometry compared only if `geometry`.
+/// What a trim in decision 6's band leaves uncompared (:476): Silico's members (the trimmed
+/// curve, its pieces, and the curves in the band), FreeCAD's geometry for them by ID, and
+/// the points only they use. Empty for any other edit.
+#[derive(Default)]
+struct Touched {
+    members: BTreeSet<String>,
+    ids: BTreeSet<i64>,
+    points: BTreeSet<String>,
+}
+
+impl Touched {
+    /// Whether a reference to a curve's place `pos` (0 the curve itself) names what's
+    /// touched: a touched curve itself or at its end (`end`, a tangency's), or a point of one
+    /// that no untouched curve uses. `point` is the place's point as the edited sketch names
+    /// it, which a FreeCAD piece Silico hasn't leaves unnamed. An untouched curve's point is
+    /// compared, whatever else uses it.
+    fn names(&self, curve_touched: bool, pos: i32, end: bool, point: &str, after: &Shape) -> bool {
+        curve_touched
+            && (pos == 0 || end || self.points.contains(point) || !after.points.contains_key(point))
+    }
+}
+
+/// How Silico's edited sketch and FreeCAD's differ, both edited and solved, but for what
+/// `unsettled` leaves unsettled.
 fn compare_edited(
     p: &Prepared,
     s: &SilicoEdited,
     fc: &FreecadEdited,
-    merged: Option<&BTreeSet<String>>,
+    unsettled: &Unsettled<'_>,
     excused: &mut Vec<String>,
     modulo: &mut Vec<u32>,
 ) -> Vec<String> {
+    let Unsettled { merged, band } = *unsettled;
     let mut how = Vec::new();
     let before = Shape::of(&p.sketch);
     // A split construction circle: FreeCAD 1.1.3's pieces aren't construction, where every
@@ -2069,11 +2363,45 @@ fn compare_edited(
                 && !before.members.contains_key(id)
         })
         .collect();
+    // A trim in the band: the trimmed curve, its pieces on both sides, and the curves in the
+    // band, and the points only they use, aren't compared (:476).
+    let mut touched = Touched::default();
+    if let Some(band) = band {
+        touched.members = new_ours
+            .iter()
+            .chain(std::iter::once(&band.trimmed))
+            .chain(band.near.keys())
+            .cloned()
+            .collect();
+        touched.ids = new_fc.iter().copied().collect();
+        for (i, id) in fc.ids_before.iter().enumerate() {
+            if p.model
+                .elements
+                .get(i)
+                .is_some_and(|e| touched.members.contains(e))
+            {
+                touched.ids.insert(*id);
+            }
+        }
+        let used = |want: bool| -> BTreeSet<String> {
+            [&before, &after]
+                .iter()
+                .flat_map(|shape| shape.members.iter())
+                .filter(|(id, _)| touched.members.contains(*id) == want)
+                .flat_map(|(_, m)| m.at.values().cloned())
+                .collect()
+        };
+        let elsewhere = used(false);
+        touched.points = used(true)
+            .into_iter()
+            .filter(|point| !elsewhere.contains(point))
+            .collect();
+    }
     if new_fc.len() == new_ours.len() {
         for (id, ours) in new_fc.iter().zip(&new_ours) {
             by_id.insert(*id, ours.clone());
         }
-    } else {
+    } else if band.is_none() {
         how.push(format!(
             "Silico's edit made {} new curves ({}), FreeCAD's {}",
             new_ours.len(),
@@ -2089,10 +2417,32 @@ fn compare_edited(
     };
     let fc_name_place =
         |g: i32, pos: i32, end: bool| name_place(&after, &fc_member, &renamed, g, pos, end);
+    let fc_touched = |g: i32| {
+        usize::try_from(g)
+            .ok()
+            .and_then(|i| fc.geometry.get(i))
+            .is_some_and(|geo| touched.ids.contains(&geo.id))
+    };
+    // Whether a FreeCAD reference names what's touched.
+    let fc_touches = |&[g, pos]: &[i32; 2], end: bool| {
+        touched.names(
+            fc_touched(g),
+            pos,
+            end,
+            &fc_name_place(g, pos, false),
+            &after,
+        )
+    };
     // The elements: each of Silico's curves and lone points has FreeCAD geometry, of its
     // kind and construction, and FreeCAD has nothing more.
     let mut seen = BTreeSet::new();
     for (i, g) in fc.geometry.iter().enumerate() {
+        if touched.ids.contains(&g.id) {
+            if let Some(m) = by_id.get(&g.id) {
+                seen.insert(renamed.get(m).unwrap_or(m).clone());
+            }
+            continue;
+        }
         let Some(m) = by_id.get(&g.id) else {
             how.push(format!(
                 "FreeCAD has a {} ({:?}) that Silico hasn't",
@@ -2134,7 +2484,7 @@ fn compare_edited(
         }
     }
     for (m, member) in &after.members {
-        if !seen.contains(m) {
+        if !seen.contains(m) && !touched.members.contains(m) {
             how.push(format!(
                 "Silico has {} {m}, which FreeCAD hasn't",
                 member.kind
@@ -2158,7 +2508,14 @@ fn compare_edited(
         }
     };
     let mut groups_of: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for (n, group) in joins.groups().iter().enumerate() {
+    // The places on touched curves left out: an untouched curve's are compared, so a point
+    // it shares with a touched one is too.
+    let groups: Vec<Vec<(i32, i32)>> = joins
+        .groups()
+        .into_iter()
+        .map(|group| group.into_iter().filter(|&(g, _)| !fc_touched(g)).collect())
+        .collect();
+    for (n, group) in groups.iter().enumerate() {
         let points: BTreeSet<String> = group
             .iter()
             .map(|&(g, pos)| fc_name_place(g, pos, false))
@@ -2179,7 +2536,6 @@ fn compare_edited(
             }
         }
     }
-    let groups = joins.groups();
     for (point, list) in &groups_of {
         if list.len() > 1 && after.points.contains_key(point) {
             let split: Vec<String> = list
@@ -2218,6 +2574,9 @@ fn compare_edited(
     } else {
         for (i, g) in fc.edited.iter().enumerate() {
             let gi = i32::try_from(i).unwrap_or(i32::MAX);
+            if touched.ids.contains(&g.id) {
+                continue;
+            }
             for (pos, at) in &g.points {
                 let Ok(pos) = pos.parse::<i32>() else {
                     continue;
@@ -2257,17 +2616,35 @@ fn compare_edited(
     let none = BTreeMap::new();
     let ours_name =
         |g: i32, pos: i32, end: bool| name_place(&after, &ours_member, &none, g, pos, end);
+    let ours_touches = |&[g, pos]: &[i32; 2], end: bool| {
+        let curve = ours_member(g).is_some_and(|m| touched.members.contains(&m));
+        touched.names(curve, pos, end, &ours_name(g, pos, false), &after)
+    };
+    let ends = |kind: &str| matches!(kind, "Tangent" | "Perpendicular");
+    // Silico's constraints that name what's touched, by ID, and FreeCAD's, by index: neither
+    // compared.
+    let mut ours_touched: BTreeSet<String> = BTreeSet::new();
+    let mut theirs_touched: BTreeSet<usize> = BTreeSet::new();
     let mut ours_keys: BTreeMap<Key, Vec<usize>> = BTreeMap::new();
     for (i, c) in model.constraints.iter().enumerate() {
-        if c.id.is_none() {
+        let Some(id) = &c.id else {
+            continue;
+        };
+        let refs = pairs(c.kind, &c.ints);
+        if refs.iter().any(|r| ours_touches(r, ends(c.kind))) {
+            ours_touched.insert(id.clone());
             continue;
         }
-        let k = key(c.kind, &pairs(c.kind, &c.ints), c.driving, &ours_name);
+        let k = key(c.kind, &refs, c.driving, &ours_name);
         ours_keys.entry(k).or_default().push(i);
     }
     let mut theirs_keys: BTreeMap<Key, Vec<usize>> = BTreeMap::new();
     for (i, c) in fc.constraints.iter().enumerate() {
         if c.kind == "Coincident" {
+            continue;
+        }
+        if c.refs.iter().any(|r| fc_touches(r, ends(&c.kind))) {
+            theirs_touched.insert(i);
             continue;
         }
         let k = key(&c.kind, &c.refs, c.driving, &fc_name_place);
@@ -2330,7 +2707,10 @@ fn compare_edited(
             let Some(c) = i.checked_sub(1).and_then(|i| fc.constraints.get(i)) else {
                 continue;
             };
-            if c.kind != "Coincident" && !to_model.contains_key(&(i - 1)) {
+            if c.kind != "Coincident"
+                && !to_model.contains_key(&(i - 1))
+                && !theirs_touched.contains(&(i - 1))
+            {
                 let k = key(&c.kind, &c.refs, c.driving, &fc_name_place);
                 how.push(format!(
                     "FreeCAD finds its {k}, which Silico hasn't, {name}"
@@ -2378,9 +2758,27 @@ fn compare_edited(
         radii,
         values,
     };
+    // Silico's solve less what's touched: its touched constraints in no list, its touched
+    // points and radii not compared.
+    let mut ours = s.ours.clone();
+    for list in [
+        &mut ours.conflicting,
+        &mut ours.redundant,
+        &mut ours.partially_redundant,
+    ] {
+        list.retain(|id| !ours_touched.contains(id));
+    }
+    if let Ok(solution) = &mut ours.outcome {
+        solution
+            .points
+            .retain(|id, _| !touched.points.contains(id.as_str()));
+        solution
+            .radii
+            .retain(|id, _| !touched.members.contains(id.as_str()));
+    }
     how.extend(sketch::compare_outcomes(
         model,
-        &s.ours,
+        &ours,
         &theirs,
         merged.is_none(),
     ));
