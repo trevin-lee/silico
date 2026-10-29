@@ -229,3 +229,4 @@ crates/silico-core/src/drag/sketch.rs | reading | replace || with && | #262
 crates/silico-core/src/command/session/edits.rs | Session<C>::hold | replace > with < | #273
 crates/silico-core/src/command/session/edits.rs | Session<C>::hold | replace > with == | #273
 crates/silico-core/src/command/session/edits.rs | Session<C>::hold | replace > with >= | #273
+crates/silico-core/src/document/sketch_gate.rs | check | replace < with <= | #277
