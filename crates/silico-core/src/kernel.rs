@@ -12,11 +12,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use silico_protocol::{
-    Axis, Blob, BooleanOp, BuiltData, ChamferSize, Curve, DESCRIBE_BATCH, Description, Distance,
-    EdgeCurve, EdgeDescription, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
-    ExportMesh, FaceDescription, FaceRegions, FreecadMeasures, Generation, History, InputHistory,
-    Mesh, MeshAt, Op, Primitive, Profile, Region, Reported, ShapeData, ShapeSummary, SketchPlane,
-    Surface, SweepKind, Topology,
+    Axis, Blob, BooleanOp, BuiltData, ChamferSize, CopiesOp, Curve, DESCRIBE_BATCH, Description,
+    Distance, EdgeCurve, EdgeDescription, ElementCounts, ElementFate, ElementKind, ElementRef,
+    Ends, ExportMesh, FaceDescription, FaceRegions, FreecadMeasures, Generation, History,
+    InputHistory, MAX_COPIES, Mesh, MeshAt, Op, Placement, Primitive, Profile, Region, Reported,
+    ShapeData, ShapeSummary, SketchPlane, Surface, SweepKind, Topology,
 };
 use silico_protocol::{DebugOp, Failure, LENGTH_TOLERANCE, PointPlace, Reply};
 
@@ -470,6 +470,70 @@ impl KernelRequest<BuiltData> {
         };
         Self::new(op, read_built(2))
     }
+}
+
+impl KernelRequest<BuiltData> {
+    /// A copy of `tool` at each of `placements`, fused into `base` or cut from it in one
+    /// boolean, each copy a tool of its own (docs/ports/patterns.md, §7): the core works out
+    /// each placement from the document, and the worker places and combines exactly them.
+    /// The history has `base` as input 0 and copy k (at `placements[k - 1]`) as input k, each
+    /// copy's elements numbered as the tool's, so every copy's input has as many faces,
+    /// edges, and vertices as every other's; a reply that breaks that is the worker's fault.
+    /// Placements that can't be sent are refused, naming the one at fault.
+    pub fn copies(
+        op: CopiesOp,
+        base: &ShapeData,
+        tool: &ShapeData,
+        placements: &[Placement],
+    ) -> Result<Self, Error> {
+        if let Err(refused) = silico_protocol::check_copies(placements) {
+            return Err(Error::new(ErrorCode::InvalidInput, refused.message)
+                .with_parameter(refused.parameter)
+                .with_suggestion(
+                    "place each copy somewhere other than the tool, by finite values within a kilometre, and at most 999 of them",
+                ));
+        }
+        let op = Op::Copies {
+            base: base.clone(),
+            tool: tool.clone(),
+            op,
+            placements: placements.to_vec(),
+        };
+        let read = read_built(1 + placements.len());
+        Ok(Self::new(op, move |name, reply| {
+            let built = read(name, reply)?;
+            match copies_fault(&built.history) {
+                None => Ok(built),
+                Some(problem) => Err(Error::new(
+                    ErrorCode::ProtocolError,
+                    format!(
+                        "the kernel worker sent copies that aren't copies of one tool for {name}"
+                    ),
+                )
+                .with_cause(problem)
+                .with_suggestion("start a new kernel worker")),
+            }
+        }))
+    }
+}
+
+/// What's wrong with a copies request's history (already checked by `History::validate`),
+/// if anything: each copy (input 1 on) has the tool's elements, so as many faces, edges, and
+/// vertices as the first copy.
+fn copies_fault(history: &History) -> Option<String> {
+    let counts =
+        |input: &InputHistory| (input.faces.len(), input.edges.len(), input.vertices.len());
+    let mut copies = history.inputs.iter().enumerate().skip(1);
+    let (_, first) = copies.next()?;
+    let want = counts(first);
+    copies
+        .find(|(_, input)| counts(input) != want)
+        .map(|(k, input)| {
+            format!(
+                "copy {k} has {:?} faces, edges, and vertices, but copy 1 has {want:?}",
+                counts(input)
+            )
+        })
 }
 
 impl KernelRequest<ShapeSummary> {
@@ -1414,6 +1478,17 @@ impl KernelWorker {
         self.run(KernelRequest::revolution(faces, axis, start, angle)?)
     }
 
+    /// Copies of a tool fused into or cut from a base ([`KernelRequest::copies`]).
+    pub fn copies(
+        &mut self,
+        op: CopiesOp,
+        base: &ShapeData,
+        tool: &ShapeData,
+        placements: &[Placement],
+    ) -> Result<BuiltData, Error> {
+        self.run(KernelRequest::copies(op, base, tool, placements)?)
+    }
+
     /// A boolean ([`KernelRequest::boolean`]).
     pub fn boolean(
         &mut self,
@@ -2118,6 +2193,119 @@ mod tests {
                 },
             },
         }
+    }
+
+    /// Copies' history by hand: a base of one face kept, and `copies` copies of a tool of
+    /// two faces and an edge, each kept after the one before it, one solid of them all.
+    fn copies_built(copies: u32) -> BuiltData {
+        let kept = |n: u32| ElementFate {
+            kept: Some(n),
+            ..ElementFate::default()
+        };
+        let mut inputs = vec![InputHistory {
+            faces: vec![kept(1)],
+            edges: vec![],
+            vertices: vec![],
+        }];
+        for k in 0..copies {
+            inputs.push(InputHistory {
+                faces: vec![kept(2 + 2 * k), kept(3 + 2 * k)],
+                edges: vec![kept(1 + k)],
+                vertices: vec![],
+            });
+        }
+        let faces = 1 + 2 * copies;
+        BuiltData {
+            shape: ShapeData::checked(Blob::inline(vec![]), true),
+            history: History {
+                inputs,
+                result: ElementCounts {
+                    faces,
+                    edges: copies,
+                    vertices: 0,
+                    solids: 1,
+                },
+                ends: Ends::default(),
+                topology: Topology {
+                    face_edges: vec![vec![]; faces as usize],
+                    outer_edges: vec![vec![]; faces as usize],
+                    edge_vertices: vec![vec![]; copies as usize],
+                    solid_faces: vec![(1..=faces).collect()],
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn copies_whose_history_isnt_copies_of_one_tool_are_a_protocol_error_saying_why() {
+        let shape = ShapeData::checked(Blob::inline(vec![]), true);
+        let request = |n: usize| {
+            let moves: Vec<Placement> = (1..=n)
+                .map(|k| Placement::Translation {
+                    offset: [k as f64, 0.0, 0.0],
+                })
+                .collect();
+            KernelRequest::copies(CopiesOp::Fuse, &shape, &shape, &moves).unwrap()
+        };
+        // A history for the base and each copy, each copy the tool's elements: read.
+        let three = request(3);
+        assert_eq!(
+            (three.read)("FuseCopies", Reply::Built(copies_built(3))),
+            Ok(copies_built(3))
+        );
+        // A copy with an element fewer than the first.
+        let mut short = copies_built(3);
+        short.history.inputs[3].edges.clear();
+        let error = (request(3).read)("FuseCopies", Reply::Built(short)).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::ProtocolError);
+        assert_eq!(
+            error.cause(),
+            Some("copy 3 has (2, 0, 0) faces, edges, and vertices, but copy 1 has (2, 1, 0)")
+        );
+        assert_eq!(error.suggestion(), Some("start a new kernel worker"));
+        // A history for another number of copies than were placed.
+        let error = (request(2).read)("FuseCopies", Reply::Built(copies_built(3))).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::ProtocolError);
+        assert_eq!(
+            error.cause(),
+            Some("the history is for 4 input shapes, but the operation had 3")
+        );
+        // The wrong kind of reply, as any request.
+        assert_eq!(
+            (request(1).read)("FuseCopies", Reply::Done)
+                .unwrap_err()
+                .code(),
+            ErrorCode::ProtocolError
+        );
+    }
+
+    #[test]
+    fn copies_that_cant_be_sent_are_refused_naming_the_placement() {
+        let shape = ShapeData::checked(Blob::inline(vec![]), true);
+        let turn = |angle| Placement::Rotation {
+            axis: Axis {
+                origin: [0.0; 3],
+                direction: [0.0, 0.0, 1.0],
+            },
+            angle,
+        };
+        let Err(error) =
+            KernelRequest::copies(CopiesOp::Cut, &shape, &shape, &[turn(1.0), turn(0.0)])
+        else {
+            panic!("a turn of nothing was sent");
+        };
+        assert_eq!(error.code(), ErrorCode::InvalidInput);
+        assert_eq!(error.parameter(), Some("placements.1.angle"));
+        assert!(
+            error
+                .message()
+                .starts_with("placements.1: the turn's angle must be"),
+            "{error:?}"
+        );
+        let Err(error) = KernelRequest::copies(CopiesOp::Cut, &shape, &shape, &[]) else {
+            panic!("no copies were sent");
+        };
+        assert_eq!(error.parameter(), Some("placements"));
     }
 
     #[test]
