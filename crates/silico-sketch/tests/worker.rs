@@ -115,10 +115,13 @@ fn an_arc_whose_rules_alone_depend_lists_no_dependency_and_still_solves() {
     // y row (−sin a2, 0, −r cos a2) = (−1, 0, 0) (to cos(π/2)'s 6e-17): 4 rows of rank 3,
     // the start's x and the end's y one dependency, all tag 0. So no dependency is listed and
     // nothing is flagged: PlaneGCS's contest takes no tag-0 row (GCS.cpp,
-    // identifyConflictingRedundantConstraints), so all 4 rows count as kept, and with as
-    // many unknowns as the rank (3) and more kept rows than that its count is 3 − 4 = −1
-    // (System::diagnose's over-constrained case), the core's to read. Nothing is free, and
-    // the drawing, which meets every rule, solves.
+    // identifyConflictingRedundantConstraints). The count is paramsNum − constrNum, 3 − 4 =
+    // −1: identifyConflictingRedundantConstraints ends by setting nonredundantconstrNum =
+    // constrNum whatever it found (GCS.cpp:5689), constrNum the 4 rows, less one for each
+    // group the redundant solve satisfied, of which there are none, nothing having been
+    // skipped; and System::diagnose, with paramsNum (3) equal to the rank and that count (4)
+    // above it, sets dofs = paramsNum − nonredundantconstrNum (GCS.cpp:4945), the core's to
+    // read. Nothing is free, and the drawing, which meets every rule, solves.
     let mut b = systems::Builder::default();
     let center = silico_protocol::PointValues {
         x: b.fixed(0.0),
