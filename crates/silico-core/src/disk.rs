@@ -78,6 +78,10 @@ pub enum Found {
 /// How a watch reads its file: the session's own read, or a test's stand-in.
 pub type Reader = Arc<dyn Fn(&Path) -> Found + Send + Sync>;
 
+/// What a watch takes the time from: the system's monotonic clock, or a test's, to drive
+/// the interval without waiting it out.
+pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
+
 /// A session's file watched for changes on disk.
 pub struct DiskWatch {
     shared: Arc<Shared>,
@@ -94,6 +98,7 @@ struct Shared {
     path: PathBuf,
     interval: Duration,
     read: Reader,
+    now: Clock,
     notify: Option<Notify>,
     state: Mutex<State>,
 }
@@ -174,11 +179,25 @@ impl DiskWatch {
         notify: Option<Notify>,
         read: Reader,
     ) -> Self {
+        Self::clocked(path, held, interval, notify, read, Arc::new(Instant::now))
+    }
+
+    /// [`reading`](Self::reading), the time taken from `now` (a test's, to say when each
+    /// comparison is due without waiting for it).
+    pub fn clocked(
+        path: impl Into<PathBuf>,
+        held: Arc<Vec<u8>>,
+        interval: Duration,
+        notify: Option<Notify>,
+        read: Reader,
+        now: Clock,
+    ) -> Self {
         DiskWatch {
             shared: Arc::new(Shared {
                 path: path.into(),
                 interval,
                 read,
+                now,
                 notify,
                 state: Mutex::new(State {
                     held,
@@ -219,10 +238,11 @@ impl DiskWatch {
     /// running and the last ended at least the watch's interval ago. Never waits on the
     /// file.
     pub fn finding(&self) -> Option<Disk> {
+        let now = (self.shared.now)();
         let mut state = lock(&self.shared.state);
         let due = state
             .ended
-            .is_none_or(|ended| ended.elapsed() >= self.shared.interval);
+            .is_none_or(|ended| now.saturating_duration_since(ended) >= self.shared.interval);
         if !state.running && !state.saving && due {
             state.running = true;
             let counter = state.counter;
@@ -236,7 +256,7 @@ impl DiskWatch {
                 // finding standing.
                 tracing::warn!("couldn't start a disk comparison: {error}");
                 state.running = false;
-                state.ended = Some(Instant::now());
+                state.ended = Some(now);
             }
         }
         state.finding
@@ -275,9 +295,10 @@ struct Ended<'a>(&'a Shared);
 
 impl Drop for Ended<'_> {
     fn drop(&mut self) {
+        let now = (self.0.now)();
         let mut state = lock(&self.0.state);
         state.running = false;
-        state.ended = Some(Instant::now());
+        state.ended = Some(now);
     }
 }
 

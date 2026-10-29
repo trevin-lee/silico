@@ -67,6 +67,13 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
         command: Mutex::new(None),
         newest: Arc::default(),
         logs: crate::command::logs::LogBuffer::new(),
+        disk: DiskWatch::new(
+            "a.silico",
+            None,
+            Arc::new(BOX.as_bytes().to_vec()),
+            Duration::ZERO,
+            None,
+        ),
         gate: Gate::default(),
         settled: Gate::default(),
     });
@@ -776,7 +783,8 @@ fn opened_solving(text: &str, sketches: &crate::fake::FakeSketches) -> Fixture {
         Arc::clone(&kernel),
         move |cache| Cache::with_secret(cache, &secret),
         move || Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>),
-    );
+    )
+    .checking_disk_every(Duration::ZERO);
     let id = sessions.open(&path, false).wait().session.unwrap().id;
     Fixture {
         _dir: dir,
@@ -3950,4 +3958,100 @@ fn a_cancel_after_cache_clear_settles_comes_too_late_and_the_clear_answers_with_
     let cleared = clearing.wait().result.unwrap();
     assert_eq!(cleared.removed, 1);
     assert_eq!(entries(), 0);
+}
+
+// ---- The session's file on disk (`Sessions::disk`) ----
+
+/// `f`'s session's disk finding once it's `want`, within [`WAIT`].
+fn disk_reaches(f: &Fixture, want: Disk) {
+    let deadline = std::time::Instant::now() + WAIT;
+    while f.sessions.disk(&f.id).unwrap() != Some(want) {
+        assert!(std::time::Instant::now() < deadline, "never {want:?}");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn a_sessions_file_is_unchanged_as_it_opened_it_and_changed_or_gone_as_another_leaves_it() {
+    let f = opened(BOX);
+    disk_reaches(&f, Disk::Unchanged);
+    std::fs::write(&f.path, SPHERE).unwrap();
+    disk_reaches(&f, Disk::Changed);
+    std::fs::remove_file(&f.path).unwrap();
+    disk_reaches(&f, Disk::Gone);
+    std::fs::write(&f.path, BOX).unwrap();
+    disk_reaches(&f, Disk::Unchanged);
+}
+
+#[test]
+fn a_sessions_own_commit_is_what_its_file_is_compared_with_from_then_on() {
+    let f = opened(STORED);
+    disk_reaches(&f, Disk::Unchanged);
+    f.begin();
+    f.edit(&longer());
+    assert!(f.sessions.commit(&f.id).wait().result.unwrap().written);
+    let saved = f.file();
+    assert_ne!(saved, STORED);
+    // At once: what it wrote is what it holds.
+    assert_eq!(f.sessions.disk(&f.id).unwrap(), Some(Disk::Unchanged));
+    // The text it opened, written back by another, is a change; what it saved isn't.
+    std::fs::write(&f.path, STORED).unwrap();
+    disk_reaches(&f, Disk::Changed);
+    std::fs::write(&f.path, &saved).unwrap();
+    disk_reaches(&f, Disk::Unchanged);
+}
+
+#[test]
+fn a_reload_is_what_the_sessions_file_is_compared_with_from_then_on() {
+    let f = opened(BOX);
+    disk_reaches(&f, Disk::Unchanged);
+    std::fs::write(&f.path, SPHERE).unwrap();
+    disk_reaches(&f, Disk::Changed);
+    assert!(
+        f.sessions
+            .text(&f.id, None)
+            .wait()
+            .session
+            .unwrap()
+            .reloaded
+    );
+    // At once, though the comparisons before it found the file changed.
+    assert_eq!(f.sessions.disk(&f.id).unwrap(), Some(Disk::Unchanged));
+    std::fs::write(&f.path, BOX).unwrap();
+    disk_reaches(&f, Disk::Changed);
+    std::fs::write(&f.path, SPHERE).unwrap();
+    disk_reaches(&f, Disk::Unchanged);
+}
+
+#[test]
+fn a_save_that_fails_leaves_the_sessions_file_unknown_until_it_is_compared_again() {
+    let f = opened(STORED);
+    disk_reaches(&f, Disk::Unchanged);
+    let dir = f.path.parent().unwrap().to_owned();
+    f.begin();
+    f.edit(&longer());
+    let read_only = ReadOnly::of(&dir);
+    // Root writes in a read-only directory all the same: no save here fails.
+    let probe = dir.join("probe");
+    if std::fs::write(&probe, "").is_ok() {
+        let _ = std::fs::remove_file(&probe);
+        return;
+    }
+    assert!(f.sessions.commit(&f.id).wait().result.is_err());
+    assert_eq!(f.sessions.disk(&f.id).unwrap(), None);
+    // Nothing was written: the next comparison finds the file as the session opened it.
+    disk_reaches(&f, Disk::Unchanged);
+    drop(read_only);
+}
+
+#[test]
+fn the_disk_of_a_session_not_open_is_refused_naming_it() {
+    let f = opened(BOX);
+    let refused = f.sessions.disk(&SessionId(99)).unwrap_err();
+    assert_eq!(
+        (refused.code(), refused.parameter()),
+        (ErrorCode::InvalidInput, Some("session"))
+    );
+    f.sessions.close(&f.id).wait().result.unwrap();
+    assert!(f.sessions.disk(&f.id).is_err());
 }
