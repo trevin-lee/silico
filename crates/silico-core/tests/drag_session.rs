@@ -954,3 +954,35 @@ fn an_end_whose_whole_solve_the_worker_refuses_keeps_the_begin_and_one_it_fails_
         }
     }
 }
+
+#[test]
+fn the_fakes_edge_drag_moves_a_lines_ends_by_the_cursors_offset_from_its_press() {
+    // A free line from (0, 0) to (4, 0), pressed at (2, 0) and moved to (5, 4): each end
+    // moves by (3, 4), to (3, 4) and (7, 4), plus the fake's nudge of a thousandth of where
+    // it began (so a frame is never the begin state).
+    let begin = DragBegin {
+        system: SketchSystem {
+            values: vec![0.0, 0.0, 4.0, 0.0],
+            unknowns: (0..4).map(Value).collect(),
+            geometry: vec![SketchGeometry::Line {
+                start: PointValues {
+                    x: Value(0),
+                    y: Value(1),
+                },
+                end: PointValues {
+                    x: Value(2),
+                    y: Value(3),
+                },
+            }],
+            constraints: vec![],
+            algorithms: vec![Algorithm::DogLeg],
+        },
+        dragged: silico_protocol::Dragged::Edge {
+            curve: Geometry(0),
+            press: [2.0, 0.0],
+        },
+    };
+    let moved = FakeSketches::dragged(&begin, [5.0, 4.0]);
+    assert_eq!(moved.status, SolveStatus::Success);
+    assert_eq!(moved.values.unwrap(), [3.0, 4.0, 7.004, 4.0]);
+}

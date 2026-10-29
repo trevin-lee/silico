@@ -171,10 +171,9 @@ fn fully_held_circles_edge_moves_nothing() {
     let (system, circle) = circle_at((0.0, 0.0), 5.0, true, true);
     let mut drag = edge_drag(system, circle);
     let moved = drag.move_to([0.0, 8.0]).unwrap();
-    if moved.status == SolveStatus::Success {
-        let v = moved.values.unwrap();
-        assert_eq!(&v[..3], &[0.0, 0.0, 5.0]);
-    }
+    assert_eq!(moved.status, SolveStatus::Success);
+    let v = moved.values.unwrap();
+    assert_eq!(&v[..3], &[0.0, 0.0, 5.0]);
 }
 
 #[test]
