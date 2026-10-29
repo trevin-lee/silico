@@ -730,8 +730,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// published read is: naming `model`, or, for a document the gate refused, with the
     /// gate's problems. Its warnings leave out a missing fingerprint a commit writes: if a
     /// transaction is open as it's checked, or, for a model older than the session's
-    /// revision, if that model's revision was a transaction's
-    /// ([`Reached::committing`](transaction::Reached::committing)).
+    /// revision, if that model's revision was a transaction's; and, for an older model, one
+    /// the session's document stores now, which a save since stored
+    /// ([`Checking::spared`](transaction::Checking::spared)).
     ///
     /// Either way, a kernel fault (a worker that crashed or hung) isn't the document's: it's
     /// given once, beside them, in the response's `model` ([`ModelRead::fault`]), and kept as
@@ -756,7 +757,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     Ok(CheckAnswer::of(
                         super::check_except(read.model(), read.reached()),
                         read.model(),
-                        read.reached.committing(read.checking),
+                        &read.checking.spared(read.reached),
                     ))
                 },
             ),
@@ -806,7 +807,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     Ok(CheckAnswer::of(
                         super::check_except(&current.model, current.reached.get()),
                         &current.model,
-                        current.reached.committing(current.checking),
+                        &current.checking.spared(&current.reached),
                     ))
                 }
                 Err(Unbuilt::Gated(problems)) => Ok(CheckAnswer::refused(problems)),

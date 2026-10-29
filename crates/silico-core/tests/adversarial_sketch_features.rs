@@ -11,7 +11,7 @@ use super::model::WAIT;
 use super::sweeps;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use proptest::prelude::*;
 use silico_core::document::{
@@ -708,8 +708,10 @@ fn many_revolves(points: usize, axis: &str) -> (Document, usize) {
     (read(document(&refs).as_bytes()).unwrap(), n)
 }
 
+/// The gate's CPU time on `document`, in this thread, which load doesn't change; and how
+/// many problems it found.
 fn gate_time(document: &Document) -> (Duration, u64) {
-    let start = Instant::now();
+    let start = cpu_time::ThreadTime::now();
     let total = validate(document).map_or_else(|invalid| invalid.total(), |()| 0);
     (start.elapsed(), total)
 }
@@ -733,7 +735,7 @@ fn the_gate_on_many_revolves_about_a_missing_line_takes_about_as_long_as_about_x
     assert_eq!(missing_total, x_total + n as u64);
     assert!(
         missing_took < x_took * 4 + Duration::from_millis(500),
-        "{n} revolves on a 10,000-point sketch: {x_took:?} about x_axis, {missing_took:?} about a missing line"
+        "{n} revolves on a 10,000-point sketch: {x_took:?} of CPU about x_axis, {missing_took:?} about a missing line"
     );
 }
 

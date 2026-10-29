@@ -23,6 +23,15 @@ const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
 const OTHER_BUILD: &str = env!("CARGO_BIN_EXE_silico-sketch-test-worker");
 const FEATURE: &str = "k7f2qx3m";
 
+/// How soon a stopped, superseded, cancelled, or dropped solve of the impossible chain must
+/// end, or a solve queued behind it start: well short of the chain solved to its end (63 s
+/// the fastest seen, on an M4 Pro with a stopper that stopped nothing; nothing but the stop
+/// ends it sooner, the worker's own limit being 300 s), with more than twice that room, so
+/// a solve that ran on fails; and still ample for a loaded machine's stop, a kill, a reap,
+/// and a worker started. The recompute tests answer `Superseded` however the solve ended,
+/// so this bound alone tells a stop there from a solve that ran on.
+const STOPPED_BY: Duration = Duration::from_secs(30);
+
 fn document(points: &[String], arcs: &[String], constraints: &[String]) -> String {
     format!(
         "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{{\"id\": \"{FEATURE}\", \"type\": \"sketch\", \"v\": 1, \"name\": \"S\", \"plane\": \"xy\", \"points\": [{}], \"lines\": [], \"circles\": [], \"arcs\": [{}], \"constraints\": [{}]}}]}}",
@@ -322,15 +331,18 @@ fn a_solve_stopped_mid_run_fails_at_once_and_the_next_solve_starts_a_worker() {
     let pid = w.pid();
     let doc = checked(&impossible_chain(512, 2560.0));
     let started = Instant::now();
-    let running = std::thread::spawn(move || {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let e = solve(&doc, &feature(), &mut w).unwrap_err();
-        (e, w)
+        let _ = tx.send((e, w));
     });
     std::thread::sleep(Duration::from_millis(500));
     stopper.stop();
-    let (e, mut w) = running.join().unwrap();
+    let (e, mut w) = rx
+        .recv_timeout(STOPPED_BY)
+        .unwrap_or_else(|_| panic!("the stopped solve ran on past {STOPPED_BY:?}"));
     assert!(
-        started.elapsed() < Duration::from_secs(10),
+        started.elapsed() < STOPPED_BY,
         "the stopped solve ran on: {:?}",
         started.elapsed()
     );
@@ -379,12 +391,12 @@ fn a_recompute_superseded_during_a_long_solve_returns_at_once_and_the_newer_one_
     let older = engine.start(checked(&impossible_chain(512, 2560.0)));
     std::thread::sleep(Duration::from_millis(500));
     let newer = engine.start(checked(&small()));
-    match older.wait_timeout(Duration::from_secs(20)) {
+    match older.wait_timeout(STOPPED_BY) {
         Ok(Ok(RunOutcome::Superseded)) => {}
         Ok(other) => panic!("{other:?}"),
         Err(_) => panic!("the superseded recompute waited out its solve"),
     }
-    match newer.wait_timeout(Duration::from_secs(20)) {
+    match newer.wait_timeout(STOPPED_BY) {
         Ok(Ok(RunOutcome::Published(model))) => {
             assert!(matches!(
                 model.outcome(&feature()),
@@ -394,11 +406,7 @@ fn a_recompute_superseded_during_a_long_solve_returns_at_once_and_the_newer_one_
         Ok(other) => panic!("{other:?}"),
         Err(_) => panic!("the newer recompute waited behind the older one's solve"),
     }
-    assert!(
-        started.elapsed() < Duration::from_secs(20),
-        "{:?}",
-        started.elapsed()
-    );
+    assert!(started.elapsed() < STOPPED_BY, "{:?}", started.elapsed());
 }
 
 #[test]
@@ -408,12 +416,12 @@ fn a_recompute_dropped_during_a_long_solve_stops_it() {
     std::thread::sleep(Duration::from_millis(500));
     let started = Instant::now();
     drop(engine);
-    match run.wait_timeout(Duration::from_secs(20)) {
+    match run.wait_timeout(STOPPED_BY) {
         Ok(Ok(RunOutcome::Superseded)) => {}
         Ok(other) => panic!("{other:?}"),
         Err(_) => panic!("a dropped engine's solve ran on"),
     }
-    assert!(started.elapsed() < Duration::from_secs(20));
+    assert!(started.elapsed() < STOPPED_BY);
 }
 
 #[test]
@@ -422,15 +430,12 @@ fn a_recompute_cancelled_during_a_long_solve_returns_and_the_engine_solves_again
     let run = engine.start(checked(&impossible_chain(512, 2560.0)));
     std::thread::sleep(Duration::from_millis(500));
     engine.cancel();
-    match run.wait_timeout(Duration::from_secs(20)) {
+    match run.wait_timeout(STOPPED_BY) {
         Ok(Ok(RunOutcome::Superseded)) => {}
         Ok(other) => panic!("{other:?}"),
         Err(_) => panic!("the cancelled recompute waited out its solve"),
     }
-    match engine
-        .start(checked(&small()))
-        .wait_timeout(Duration::from_secs(20))
-    {
+    match engine.start(checked(&small())).wait_timeout(STOPPED_BY) {
         Ok(Ok(RunOutcome::Published(model))) => assert!(matches!(
             model.outcome(&feature()),
             Some(FeatureOutcome::Sketch(_))
@@ -474,7 +479,7 @@ fn a_second_supersede_on_one_engine_stops_the_solve_too() {
     let first = engine.start(checked(&impossible_chain(512, 2560.0)));
     std::thread::sleep(Duration::from_millis(500));
     let second = engine.start(checked(&impossible_chain(512, 2560.0)));
-    match first.wait_timeout(Duration::from_secs(20)) {
+    match first.wait_timeout(STOPPED_BY) {
         Ok(Ok(RunOutcome::Superseded)) => {}
         Ok(other) => panic!("{other:?}"),
         Err(_) => panic!("the first superseded recompute waited out its solve"),
@@ -482,7 +487,7 @@ fn a_second_supersede_on_one_engine_stops_the_solve_too() {
     std::thread::sleep(Duration::from_millis(500));
     let started = Instant::now();
     let third = engine.start(checked(&small()));
-    match second.wait_timeout(Duration::from_secs(20)) {
+    match second.wait_timeout(STOPPED_BY) {
         Ok(Ok(RunOutcome::Superseded)) => {}
         Ok(other) => panic!("{other:?}"),
         Err(_) => panic!(
@@ -490,7 +495,7 @@ fn a_second_supersede_on_one_engine_stops_the_solve_too() {
             started.elapsed()
         ),
     }
-    match third.wait_timeout(Duration::from_secs(20)) {
+    match third.wait_timeout(STOPPED_BY) {
         Ok(Ok(RunOutcome::Published(_))) => {}
         Ok(other) => panic!("{other:?}"),
         Err(_) => panic!("the newest recompute didn't publish"),
@@ -507,11 +512,14 @@ fn a_stop_landing_between_a_solves_two_requests_stops_the_second_too() {
     let stopper = w.stopper().unwrap().unwrap();
     solve(&checked(&small()), &feature(), &mut w).unwrap();
     stopper.stop();
+    let chain = checked(&impossible_chain(512, 2560.0));
+    let lateness = crate::lateness::Lateness::start();
     let started = Instant::now();
-    let e = solve(&checked(&impossible_chain(512, 2560.0)), &feature(), &mut w).unwrap_err();
+    let e = solve(&chain, &feature(), &mut w).unwrap_err();
     let took = started.elapsed();
     assert!(
-        took < Duration::from_millis(500),
+        took < crate::lateness::allowance(Duration::from_millis(500), lateness.most())
+            .min(STOPPED_BY),
         "a stopped solve's next request ran {took:?}"
     );
     assert_eq!(e.code(), ErrorCode::WorkerCrashed, "{e}");
@@ -546,7 +554,7 @@ fn a_worker_that_dies_after_its_solve_began_isnt_replaced_out_of_its_stoppers_re
     std::thread::sleep(Duration::from_millis(500));
     stopper.stop();
     let (result, mut w) = rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(STOPPED_BY)
         .expect("the solve ran on after its stop, on a worker its stopper can't reach");
     assert_eq!(result.unwrap_err().code(), ErrorCode::WorkerCrashed);
     // The next solve's start replaces the dead worker.

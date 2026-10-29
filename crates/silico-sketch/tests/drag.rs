@@ -688,3 +688,47 @@ fn a_bad_target_through_the_worker_is_invalid_input_and_the_drag_goes_on() {
     let values = moved_there(&mut w, [3.0, -22.0]).values.unwrap();
     assert_near(at(&values, end), [3.0, -12.0], "end");
 }
+
+#[test]
+fn the_cores_drag_client_drags_through_the_worker_and_ends_with_the_whole_sketch_solved() {
+    // M5's core client (`silico_core::drag`) on the sketch worker: a 10 mm line's end, its
+    // start fixed at (3, -2), moved toward (20, 5), then (5, 30), and ended toward (3, 20).
+    // Each frame lands on the circle of radius 10 about the start toward its cursor, and
+    // the end's closing solve keeps the end where the final move put it: (3, 8).
+    use silico_core::drag::{Begun, Kept, MoveOutcome};
+    use silico_core::recompute::SketchSolvers;
+    use silico_core::sketch::{SketchSolver, SketchWorker};
+    let solvers = SketchSolvers::starting(|| {
+        SketchWorker::start_worker(Path::new(WORKER)).map(|w| Box::new(w) as Box<dyn SketchSolver>)
+    });
+    let (system, line, end) = fixed_length_line();
+    let Begun::Open { session, dofs } = silico_core::drag::begin(
+        &solvers,
+        DragBegin {
+            system,
+            point: PointOf::End(line),
+        },
+    )
+    .unwrap() else {
+        panic!("conflicting")
+    };
+    assert_eq!(dofs, 1);
+    for cursor in [[20.0, 5.0], [5.0, 30.0]] {
+        let MoveOutcome::Solved { moved, .. } = session.move_to(cursor).unwrap().wait() else {
+            panic!("{cursor:?}")
+        };
+        let values = moved.values.unwrap();
+        let (dx, dy) = (cursor[0] - 3.0, cursor[1] + 2.0);
+        let d = libm::hypot(dx, dy);
+        assert_near(
+            at(&values, end),
+            [3.0 + 10.0 * dx / d, -2.0 + 10.0 * dy / d],
+            &format!("cursor {cursor:?}"),
+        );
+    }
+    let ended = session.end(Some([3.0, 20.0])).unwrap();
+    assert_eq!(ended.kept, Kept::Cursor);
+    let solved = ended.solved.unwrap();
+    assert_near(at(&solved.values, end), [3.0, 8.0], "the end");
+    assert_eq!(&solved.values[..2], &[3.0, -2.0]);
+}

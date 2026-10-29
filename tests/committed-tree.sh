@@ -16,11 +16,11 @@ checkout_id=$(printf '%s' "$root" | { sha256sum 2>/dev/null || shasum -a 256; } 
 tree=${XDG_CACHE_HOME:-$HOME/.cache}/silico/gate/$checkout_id
 mkdir -p "$(dirname "$tree")"
 
-# Removes trees, made writable first: a test killed before it cleans up can leave a
-# directory it made read-only (the CLI's fmt-in-a-read-only-directory test, in target/tmp),
-# whose entries rm can't unlink.
+# Removes trees, made readable and writable first: a test killed before it cleans up can leave
+# a directory it made read-only (the CLI's fmt-in-a-read-only-directory test, in target/tmp),
+# whose entries rm can't unlink, or unreadable (d-wx-wx-wx), which rm can't list.
 remove_tree() {
-  chmod -R u+w "$@" 2>/dev/null || true
+  chmod -R u+rwX "$@" 2>/dev/null || true
   rm -rf "$@"
 }
 

@@ -155,7 +155,8 @@ pub struct Read<'a, C> {
     pub(super) kernel: &'a ReadClient<C>,
     pub(super) reached: &'a Reached,
     /// The session as the read is answered: whether the model is its revision's, and
-    /// whether a transaction is open in it now ([`Reached::committing`]).
+    /// whether a transaction is open in it now, and, for an older model, its document now
+    /// ([`Checking::spared`]).
     pub(super) checking: Checking,
 }
 
@@ -597,13 +598,14 @@ pub struct CheckAnswer {
 
 impl CheckAnswer {
     /// The answer of a check of `model`: its problems, as `problems` gives them, and its
-    /// warnings, none of a missing fingerprint for a feature in `committing`, which an open
+    /// warnings, none of a missing fingerprint for a feature in `spared`: one an open
     /// transaction's edits reached (its commit writes one, and `format` is refused there:
-    /// decision 28; [`Reached::committing`]).
-    pub(super) fn of(problems: Problems, model: &Model, committing: &BTreeSet<FeatureId>) -> Self {
+    /// decision 28), or one the session's document stores a fingerprint for now
+    /// ([`Checking::spared`]).
+    pub(super) fn of(problems: Problems, model: &Model, spared: &BTreeSet<FeatureId>) -> Self {
         CheckAnswer {
             problems,
-            warnings: crate::warnings::of(model, committing),
+            warnings: crate::warnings::of(model, spared),
         }
     }
 
