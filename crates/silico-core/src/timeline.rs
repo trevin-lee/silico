@@ -15,7 +15,8 @@
 //!   Fusion's error is a feature that fails to compute;
 //! - **suppressed**: never yet: suppression comes with its schema change (M5.1, the
 //!   maintainer's);
-//! - **unknown**: a feature the model hasn't (its revision is older); one a kernel fault
+//! - **unknown**: a feature the model hasn't built (added or edited since its revision, or
+//!   using one that was); one a kernel fault
 //!   stopped, building or measuring it, or blocked only by kernel faults upstream, which say
 //!   nothing of the document (decision 32); every feature of a document with no model.
 
@@ -82,25 +83,41 @@ pub struct Excepted {
 }
 
 /// `document`'s features, each with the health `model` gave it, if there's a model, and
-/// the bodies it has that `document` has too; `excepted` as the session's check excepts
-/// (so a feature has a problem here exactly where that check has one on it). The features
-/// come from `document`, the session's at its revision; the model may be of an older one,
-/// and a feature it hasn't is `unknown`. A feature is marked by its ID, as the model built
-/// it: the command names the model to read.
+/// the bodies it has that `document` has too, unchanged; `excepted` as the session's check
+/// excepts (so a feature has a problem here exactly where that check has one on it). The
+/// features come from `document`, the session's at its revision; the model may be of an
+/// older one, and a feature it hasn't built is `unknown`: one it hasn't, one whose values
+/// changed since its document, and every feature that uses one of those (an edit's reach,
+/// [`net_reach`](crate::document::net_reach)).
 pub fn timeline(document: &Document, model: Option<&Model>, excepted: &Excepted) -> Timeline {
     let _span = tracing::info_span!("timeline").entered();
     let marks = model
         .map(|model| marks(model, excepted))
         .unwrap_or_default();
+    // What the model hasn't built: each feature that changed since its document (added, or
+    // its values other), and every feature that uses one, as an edit's reach is found.
+    let unbuilt = model
+        .map(|model| {
+            crate::document::net_reach(
+                crate::document::Before::Read(model.document()),
+                &BTreeSet::new(),
+                document,
+            )
+        })
+        .unwrap_or_default();
     let features = document
         .features
         .iter()
         .map(|feature| {
-            let mark = marks.get(&feature.id).copied().unwrap_or(Mark {
-                health: Health::Unknown,
-                problems: 0,
-                warnings: 0,
-            });
+            let mark = marks
+                .get(&feature.id)
+                .filter(|_| !unbuilt.contains(&feature.id))
+                .copied()
+                .unwrap_or(Mark {
+                    health: Health::Unknown,
+                    problems: 0,
+                    warnings: 0,
+                });
             Entry {
                 id: feature.id.clone(),
                 kind: feature.operation.type_name(),
@@ -120,7 +137,7 @@ pub fn timeline(document: &Document, model: Option<&Model>, excepted: &Excepted)
             .map(|m| {
                 m.bodies()
                     .iter()
-                    .filter(|b| present.contains(b))
+                    .filter(|b| present.contains(b) && !unbuilt.contains(*b))
                     .cloned()
                     .collect()
             })
@@ -192,12 +209,22 @@ fn marks(model: &Model, excepted: &Excepted) -> BTreeMap<FeatureId, Mark> {
                     warnings: warned,
                 }
             }
-            FeatureOutcome::Broken { total, .. } => {
-                roots.insert(id, Root::Document);
-                Mark {
-                    health: Health::Error,
-                    problems: total + drifts,
-                    warnings: warned,
+            // Counted as the check counts them: the listed errors but kernel faults (Silico's
+            // own bug naming a base's elements, say), and those unlisted. All faults: as
+            // unknown as a failure that's one.
+            FeatureOutcome::Broken { errors, total } => {
+                let faults = errors.iter().filter(|e| e.code().is_kernel_fault()).count();
+                let own = total.saturating_sub(u64::try_from(faults).unwrap_or(u64::MAX));
+                if own == 0 {
+                    roots.insert(id, Root::Fault);
+                    unknown
+                } else {
+                    roots.insert(id, Root::Document);
+                    Mark {
+                        health: Health::Error,
+                        problems: own + drifts,
+                        warnings: warned,
+                    }
                 }
             }
             // Blocked: an error if any failure upstream is the document's, whichever of

@@ -192,3 +192,35 @@ fn a_feature_the_models_revision_hasnt_and_a_document_with_no_model_are_unknown(
     }
     assert_eq!(features[3].inputs, [id("aaaaaaaa"), id("cccccccc")]);
 }
+
+#[test]
+fn a_feature_edited_since_the_models_revision_and_what_uses_it_are_unknown() {
+    // From #265's architecture review: the session's document a revision past the model's,
+    // the block bbbbbbbb made 3 long: it and the fillet of it (f0000002) are what the model
+    // hasn't built; the rest keep its marks, and bbbbbbbb, no longer as built, isn't a body.
+    let model = rebuilt(ErrorCode::KernelFailed);
+    let mut newer = model.document().clone();
+    for feature in &mut newer.features {
+        if feature.id.as_str() == "bbbbbbbb"
+            && let Operation::Box { length, .. } = &mut feature.operation
+        {
+            *length = silico_core::document::Length::rounded(3.0).unwrap();
+        }
+    }
+    let got = timeline(&newer, Some(&model), &Excepted::default());
+    let mark = |f: &str| {
+        let e = got.features.iter().find(|e| e.id == id(f)).unwrap();
+        (e.health, e.problems, e.warnings)
+    };
+    assert_eq!(mark("bbbbbbbb"), (Health::Unknown, 0, 0));
+    assert_eq!(mark("f0000002"), (Health::Unknown, 0, 0));
+    assert_eq!(mark("aaaaaaaa"), (Health::Healthy, 0, 0));
+    assert_eq!(mark("j0000001"), (Health::Error, 1, 0));
+    assert_eq!(mark("eeeeeeee"), (Health::Warning, 0, 1));
+    assert!(!got.bodies.contains(&id("bbbbbbbb")));
+    // A rename or a note isn't an edit the model would build otherwise.
+    let mut renamed = model.document().clone();
+    renamed.features[0].name = silico_core::document::Name::new("Other").unwrap();
+    let got = timeline(&renamed, Some(&model), &Excepted::default());
+    assert_eq!(got.features[0].health, Health::Healthy);
+}
