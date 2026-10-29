@@ -1,8 +1,11 @@
 # Security advisories (M5 decision 13c): `cargo deny check advisories` on main, daily, on a
 # runner labelled control (silico-13, -14), which runs only short jobs. The gate checks
 # bans, licences, and sources only, since advisories need the network and change without a
-# commit; this run catches a new one within a day and fails where it's seen. Accepted ones
-# are ignored by name, with their reason, in deny.toml.
+# commit; this run catches a new one within a day. A scheduled run that fails opens an
+# issue assigned to the repository's owner ("Nightly advisories failed"), or comments on
+# the one open; a green one closes it. Accepted advisories are ignored by name, with their
+# reason, in deny.toml. GitHub may drop a scheduled run (filler-clock.yml); the next day's
+# runs, or one started by hand, check the same database.
 #
 #   gh workflow run advisories.yml --ref main   (checks now)
 name: advisories
@@ -23,5 +26,53 @@ jobs:
       - uses: actions/checkout@v5
       - name: Toolchains
         run: bash .github/tools.sh
+      # Warnings too (an ignore that matches nothing, say), so the log shows them.
       - name: Advisories
         run: pixi run --quiet cargo deny check advisories
+
+  report:
+    needs: advisories
+    # Scheduled runs only: a run started by hand reports to whoever started it.
+    if: ${{ always() && github.event_name == 'schedule' }}
+    runs-on: [self-hosted, linux, x64, control]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github
+      - name: Report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          RESULT: ${{ needs.advisories.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          . .github/gh.sh
+          title="Nightly advisories failed"
+          # From the issue list itself, not the search index, which lags.
+          number=$(gh issue list --state open --limit 1000 --json number,title \
+            --jq ".[] | select(.title == \"$title\") | .number" | head -1)
+          case $RESULT in
+          success)
+            if [ -n "$number" ]; then
+              gh issue comment "$number" --body "Green again: $RUN_URL"
+              gh issue close "$number"
+            fi
+            ;;
+          skipped) ;;
+          *)
+            body="The daily \`cargo deny check advisories\` ended $RESULT: $RUN_URL
+
+          Ignore an accepted advisory by name, with its reason, in deny.toml, or replace the crate."
+            if [ -n "$number" ]; then
+              gh issue comment "$number" --body "$body"
+            else
+              gh issue create --title "$title" --assignee "$OWNER" --body "$body"
+            fi
+            ;;
+          esac

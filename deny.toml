@@ -22,7 +22,10 @@ deny = [
     # linking the renderer would load a GPU driver into its own process, so the core, the
     # MCP server, and the CLI never do (docs/design/m4.6-render.md).
     { crate = "re_renderer", wrappers = ["silico-render", "silico-app"], reason = "only the crates that draw: the render worker and the app" },
-    { crate = "wgpu", wrappers = ["silico-render", "re_renderer", "silico-app", "egui-wgpu"], reason = "only the crates that draw: the render worker and the app" },
+    # eframe depends on wgpu itself only for wasm32, and egui_kittest through its wgpu
+    # feature (the app's tests'); the graph takes every target and feature, so both are
+    # wgpu's direct parents in the app's tree, as egui-wgpu is.
+    { crate = "wgpu", wrappers = ["silico-render", "re_renderer", "silico-app", "egui-wgpu", "eframe", "egui_kittest"], reason = "only the crates that draw: the render worker and the app" },
 ]
 
 [licenses]
@@ -57,7 +60,7 @@ unknown-git = "deny"
 # that ignores it here with its reason, or replaces the crate.
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, not vulnerable; it comes in through the rerun crate (silico-view only)" },
-    { id = "RUSTSEC-2026-0370", reason = "unmaintained, reached only through eframe's Linux screen-reader bridge; not a vulnerability" },
-    { id = "RUSTSEC-2026-0371", reason = "unmaintained, reached only through eframe's Linux screen-reader bridge; not a vulnerability" },
-    { id = "RUSTSEC-2026-0372", reason = "unmaintained, reached only through eframe's Linux screen-reader bridge; not a vulnerability" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained (as a crate of its own), reached only through eframe's Linux screen-reader bridge (accesskit_unix); not a vulnerability" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained (as a crate of its own), reached only through eframe's Linux screen-reader bridge (accesskit_unix); not a vulnerability" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained (as a crate of its own), reached only through eframe's Linux screen-reader bridge (accesskit_unix); not a vulnerability" },
 ]
