@@ -899,20 +899,20 @@ pub const KNOWN: &[Known] = &[
     Known {
         case: "merge_holds_own_point_on_line",
         difference: "both refused, but Silico's refusal isn't one the note gives (its edit refused: invalid_input: merging them would make constraint k0000005 hold p0000004, a point of n0000003, on n0000003 itself (elements k0000005, p0000004, n0000003, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD's: FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:53): solve -2 with conflicting [], redundant [1], malformed []",
-        why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, the gate's rule, :31, applied to the edit's result up front, :34), which isn't among the note's merge refusals (:272-274); FreeCAD 1.1.3 makes the merge, its solve finding the `on` redundant, which main's Coincident command (emulated) rolls back. Whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
+        why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, the gate's rule, :31, applied to the edit's result up front, :34), which the note gives only generally, as the gate's (:31, :276); FreeCAD 1.1.3 makes the merge, its solve finding the `on` redundant, which main's Coincident command (emulated) rolls back. Whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
     },
     // `sketch-edit-sweep --seed 32 --count 500`'s case 490.
     Known {
         case: "edit_32_490",
         difference: "both refused, but Silico's refusal isn't one the note gives (its edit refused: invalid_input: merging them would make constraint k0000028 hold p0000027, a point of n0000005, on n0000005 itself (elements k0000028, p0000027, n0000005, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD's: FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:53): solve -2 with conflicting [], redundant [12], malformed []",
-        why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, the gate's rule, :31, applied to the edit's result up front, :34), which isn't among the note's merge refusals (:272-274); FreeCAD 1.1.3 makes the merge, its solve finding the `on` redundant, which main's Coincident command (emulated) rolls back. Whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
+        why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, the gate's rule, :31, applied to the edit's result up front, :34), which the note gives only generally, as the gate's (:31, :276); FreeCAD 1.1.3 makes the merge, its solve finding the `on` redundant, which main's Coincident command (emulated) rolls back. Whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
     },
     // `sketch-edit-sweep --seed 32 --count 500`'s case 413: a decision-13b merge, as case 490
     // is; first seen in sweep 40851790630, after #251's rebase.
     Known {
         case: "edit_32_413",
         difference: "both refused, but Silico's refusal isn't one the note gives (its edit refused: invalid_input: merging them would make constraint k0000022 hold p0000001, a point of n0000005, on n0000005 itself (elements k0000022, p0000001, n0000005, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD's: FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:53): solve -2 with conflicting [], redundant [13], malformed []",
-        why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, the gate's rule, :31, applied to the edit's result up front, :34), which isn't among the note's merge refusals (:272-274); FreeCAD 1.1.3 makes the merge, its solve finding the `on` redundant, which main's Coincident command (emulated) rolls back. Whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
+        why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, the gate's rule, :31, applied to the edit's result up front, :34), which the note gives only generally, as the gate's (:31, :276); FreeCAD 1.1.3 makes the merge, its solve finding the `on` redundant, which main's Coincident command (emulated) rolls back. Whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
     },
     Known {
         case: "merge_two_locked_ends",
@@ -1269,6 +1269,9 @@ pub enum Rule {
     MergeSolveConflicts,
     /// A merge from apart whose solve's result Silico can't take (:278-280).
     MergeSolveUnbuildable,
+    /// A merge whose sketch the gate refuses, its curve left 1e-7 mm or less where Silico
+    /// places the merged point (:276): the curve.
+    MergeGated(String),
     /// Removing a point curves still use (decision 7, :109).
     RemovePointInUse,
 }
@@ -1290,6 +1293,7 @@ impl Rule {
             Rule::MergeNamesTwice(_) => vec![274],
             Rule::MergeSolveConflicts => vec![277],
             Rule::MergeSolveUnbuildable => vec![278, 279, 280],
+            Rule::MergeGated(_) => vec![276],
             Rule::RemovePointInUse => vec![109],
         }
     }
@@ -1436,6 +1440,29 @@ pub fn rule(p: &Prepared) -> Option<Rule> {
             }
             let merged: BTreeSet<&str> = points.iter().map(String::as_str).collect();
             let constraint = |id: &str| p.sketch.constraints.iter().find(|k| k.id.as_str() == id);
+            // The merged sketch gated (:276), naming the request's points first and, last, a
+            // line its placement (every merged point at the first one's place) leaves 1e-7 mm
+            // or less.
+            if r.message.contains("would leave a sketch the gate refuses") {
+                let named_first = r.elements.len() > points.len()
+                    && r.elements[..points.len()].iter().eq(points.iter());
+                let placed = |id: &String| {
+                    let id = if merged.contains(id.as_str()) {
+                        &points[0]
+                    } else {
+                        id
+                    };
+                    shape.points.get(id).copied()
+                };
+                let collapsed = r.elements.last().and_then(|last| {
+                    let member = shape.members.get(last)?;
+                    (member.kind == "line").then_some(())?;
+                    let (a, b) = (placed(member.at.get(&1)?)?, placed(member.at.get(&2)?)?);
+                    (libm::hypot(b[0] - a[0], b[1] - a[1]) <= LENGTH_TOLERANCE)
+                        .then(|| last.clone())
+                });
+                return collapsed.filter(|_| named_first).map(Rule::MergeGated);
+            }
             // A curve using two of the merged points, named last.
             if let Some(last) = r.elements.last()
                 && let Some(member) = shape.members.get(last)
@@ -1588,6 +1615,20 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
                     "unjoining a point no other curve shares: Silico refuses it ({NOTE}:239), FreeCAD's vertex Delete does nothing (main; 1.1.3 raises, :234)"
                 )
             })
+        }
+        Rule::MergeGated(curve) => {
+            // FreeCAD's coincidences solve to a curve longer than 1e-7 mm, where Silico's
+            // placement collapses it.
+            let i = p.model.elements.iter().position(|e| e == curve)?;
+            let id = fc.ids_before.get(i)?;
+            let solved = fc.geometry.iter().find(|g| g.id == *id)?;
+            curve_length(solved)
+                .is_some_and(|l| l > LENGTH_TOLERANCE)
+                .then(|| {
+                    format!(
+                        "points merged from apart, whose placement leaves {curve} 1e-7 mm or less, a sketch the gate refuses: Silico refuses the merge ({NOTE}:276), where FreeCAD's coincidences solve to a curve with length"
+                    )
+                })
         }
         Rule::MergeSolveUnbuildable => Some(format!(
             "points merged from apart, whose solve Silico refuses as a result it can't take ({NOTE}:278-280), where FreeCAD's coincidences solve"

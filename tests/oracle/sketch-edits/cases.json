@@ -1077,6 +1077,19 @@
     }
   },
   {
+    "name": "merge_apart_onto_a_lines_other_end",
+    "note": "The lone point at the line's start merged with the line's end, the lone point named first: Silico places the merged point at (0, 0), the line left with no length, which the gate refuses, so the merge is refused (:276); FreeCAD's coincidence solves the two together, the line keeping a length.",
+    "sketch": "line_and_point_at_its_start",
+    "edit": {
+      "merge": {
+        "points": [
+          "p0000004",
+          "p0000002"
+        ]
+      }
+    }
+  },
+  {
     "name": "merge_closes_triangle",
     "note": "The missing corner's two points made one: a closed triangle.",
     "sketch": "three_lines_one_gap",

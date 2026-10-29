@@ -12,8 +12,9 @@ use silico_core::document::{Checked, ElementId, Operation, Sketch, read};
 use silico_core::sketch::{SketchWorker, Translation};
 use silico_oracle::sketch::freecad_sketch;
 use silico_oracle::sketch_edit::{
-    self, Edit, EditCase, FreecadEdit, KNOWN, Plan, Prepared, SilicoSide, Theirs, Verdict,
-    freecad_outcomes, plan, prepare, silico_side, verdict, without_known,
+    self, Edit, EditCase, FreecadEdit, FreecadEdited, KNOWN, Plan, Prepared, Refusal, Rule,
+    SilicoSide, Theirs, Verdict, freecad_outcomes, plan, prepare, rule, silico_side, verdict,
+    without_known,
 };
 
 const CASES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle");
@@ -705,6 +706,82 @@ fn a_refusal_for_another_reason_than_the_notes_is_a_difference() {
         let v = verdict(&wrong, fc.as_ref());
         assert!(!v.how.is_empty(), "{}: {v:?}", p.name);
         assert!(v.excused.is_empty(), "{}: {v:?}", p.name);
+    }
+}
+
+/// FreeCAD's result of `theirs` with `change` made to it.
+fn doctored(theirs: &Option<Theirs>, change: impl FnOnce(&mut FreecadEdited)) -> Theirs {
+    let Some(Theirs::Edited(fc)) = theirs else {
+        panic!("FreeCAD didn't make the edit: {theirs:?}");
+    };
+    let mut fc = fc.clone();
+    change(&mut fc);
+    Theirs::Edited(fc)
+}
+
+#[test]
+fn a_merge_the_gate_refuses_is_the_notes_where_its_placement_collapses_a_line() {
+    // merge_apart_onto_a_lines_other_end: p0000004, at the line's start, named first, so the
+    // line's end goes there and the line is 0 mm long: the gate refuses the merge (:276).
+    // FreeCAD's Coincident command rolls back its solve, so both refuse.
+    let (_, prepared, theirs) = both(&["merge_apart_onto_a_lines_other_end"]);
+    let p = &prepared[0];
+    assert!(
+        matches!(rule(p), Some(Rule::MergeGated(c)) if c == "n0000003"),
+        "{:?}",
+        p.silico
+    );
+    let v = verdict(p, theirs[0].as_ref());
+    agrees(&v);
+    assert!(v.refused && v.modulo == [276], "{v:?}");
+    let SilicoSide::Refused(r) = &p.silico else {
+        panic!("Silico made the merge: {:?}", p.silico);
+    };
+    // Named in another order, or naming a curve the placement doesn't collapse: not the rule.
+    for change in [
+        |r: &mut Refusal| r.elements.swap(0, 1),
+        |r: &mut Refusal| *r.elements.last_mut().unwrap() = "p0000001".to_owned(),
+    ] {
+        let mut r = r.clone();
+        change(&mut r);
+        let wrong = Prepared {
+            silico: SilicoSide::Refused(r),
+            ..p.clone()
+        };
+        assert!(rule(&wrong).is_none(), "{:?}", wrong.silico);
+    }
+    // The line's end named first, so the merged point stays at (10, 0) and the line keeps its
+    // length: the same refusal isn't the note's.
+    let mut r = r.clone();
+    r.elements.swap(0, 1);
+    let kept = Prepared {
+        edit: Edit::Merge {
+            points: vec!["p0000002".to_owned(), "p0000004".to_owned()],
+        },
+        silico: SilicoSide::Refused(r),
+        ..p.clone()
+    };
+    assert!(rule(&kept).is_none(), "{:?}", kept.silico);
+    // FreeCAD's coincidences solving, its line kept 5 mm long: Silico's refusal excused; its
+    // line also 0 mm long: a difference.
+    for (end, excused) in [([5.0, 0.0], true), ([0.0, 0.0], false)] {
+        let made = doctored(&theirs[0], |fc| {
+            fc.after.code = 0;
+            fc.after.redundant.clear();
+            let i = p
+                .model
+                .elements
+                .iter()
+                .position(|e| e == "n0000003")
+                .unwrap();
+            let id = fc.ids_before[i];
+            let line = fc.geometry.iter_mut().find(|g| g.id == id).unwrap();
+            *line.points.get_mut("1").unwrap() = [0.0, 0.0];
+            *line.points.get_mut("2").unwrap() = end;
+        });
+        let v = verdict(p, Some(&made));
+        assert_eq!(!v.excused.is_empty(), excused, "{end:?}: {v:?}");
+        assert_eq!(v.how.is_empty(), excused, "{end:?}: {v:?}");
     }
 }
 
