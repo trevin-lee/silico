@@ -180,6 +180,28 @@ fn a_free_line_and_its_ends_are_under_defined_two_degrees_a_point() {
 }
 
 #[test]
+fn a_lone_free_point_is_under_defined_two_degrees_not_empty() {
+    // Points and nothing else: no curve, no constraint, but not an empty sketch. One point,
+    // its 2 values free (FreeCAD 1.1.3: a lone point, DoF 2).
+    let sketch = sketch_of(&[point("p0000001", 3.0, 4.0)], &[], &[], &[], &[]);
+    let (answer, _, got) = solved(&sketch);
+    assert!(answer.outcome().is_ok());
+    expect(
+        &got,
+        Want {
+            problem: None,
+            state: SketchState::UnderDefined,
+            dofs: 2,
+            points: &[("p0000001", Under)],
+            lines: &[],
+            circles: &[],
+            arcs: &[],
+            constraints: &[],
+        },
+    );
+}
+
+#[test]
 fn a_line_from_the_origin_with_its_end_free_has_its_start_fully_defined_and_the_rest_under() {
     // `from` placed by x and y from the origin: its 2 values fixed; `to`'s 2 free, so the
     // line is under-defined, by `to`, and 2 degrees are left. FreeCAD would draw both ends
