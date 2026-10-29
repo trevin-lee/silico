@@ -138,13 +138,20 @@ mod ffi {
         values: Vec<f64>,
     }
 
-    /// A point a drag pins (never `None` or `Geometry`), its geometry, and the weight of its
-    /// pin's two rows (1, or less to let it give way first). The first pin is the dragged
-    /// point, held to the cursor; the rest are held where they start.
+    /// What a drag pins: a point (`Point`, `Start`, `End`, or `Center` of `geometry`), or,
+    /// `Geometry`, a target held on that circle or arc; the weight of its rows (1, or less to
+    /// let it give way first); and whether its target follows the cursor, at `(bx, by)` plus
+    /// the cursor's offset from `(fx, fy)` (silico_protocol::Follow), or is held where it
+    /// starts.
     struct Pin {
         position: Position,
         geometry: u32,
         scale: f64,
+        follows: bool,
+        bx: f64,
+        by: f64,
+        fx: f64,
+        fy: f64,
     }
 
     /// What a diagnosis found: the degrees of freedom, and the tags of the constraints in
@@ -353,9 +360,24 @@ pub struct DragStart {
 
 impl Drag {
     /// Checks `begin` ([`DragBegin::check`]), builds and diagnoses its sketch, and, unless
-    /// constraints conflict, pins its point where it is.
+    /// constraints conflict, pins its point where it is: a drag session's pins
+    /// ([`DragBegin::shared_pins`], every arc's centre at a point arcs share).
     pub fn begin(begin: &DragBegin) -> Result<DragStart, Failure> {
         begin.check().map_err(invalid)?;
+        Self::start(begin, begin.shared_pins())
+    }
+
+    /// Checks `begin` as one move ([`DragBegin::check_move`]: a solve's limits, not the
+    /// drag's), and starts it as [`Drag::begin`] does, for that move alone, its pins
+    /// FreeCAD's `initMove`'s ([`DragBegin::pins`]), as FreeCAD's `extend` drags a line.
+    pub fn begin_once(begin: &DragBegin) -> Result<DragStart, Failure> {
+        begin.check_move().map_err(invalid)?;
+        Self::start(begin, begin.pins())
+    }
+
+    /// Builds and diagnoses `begin`'s sketch, checked, and, unless constraints conflict,
+    /// holds `pins` where they are.
+    fn start(begin: &DragBegin, pins: Vec<silico_protocol::Pin>) -> Result<DragStart, Failure> {
         prepare_eigen();
         // The whole sketch's diagnosis, as FreeCAD's: a conflict anywhere refuses the drag.
         let whole = ffi::diagnose(&encode(&begin.system)).map_err(bridge_threw)?;
@@ -369,15 +391,25 @@ impl Drag {
         }
         // The session holds only the part the pins move; the rest stays where it is.
         let part = begin.part();
-        let pins: Vec<ffi::Pin> = begin
-            .pins()
+        let pins: Vec<ffi::Pin> = pins
             .into_iter()
-            .map(|(p, scale)| {
-                let (position, geometry) = point(p);
+            .map(|pin| {
+                let (position, geometry) = match pin.at {
+                    silico_protocol::PinAt::Point(p) => point(p),
+                    silico_protocol::PinAt::OnCurve(g) => (ffi::Position::Geometry, g.0),
+                };
+                let follow = pin.follows.unwrap_or(silico_protocol::Follow::CURSOR);
+                let [bx, by] = follow.base;
+                let [fx, fy] = follow.from;
                 ffi::Pin {
                     position,
                     geometry,
-                    scale,
+                    scale: pin.scale,
+                    follows: pin.follows.is_some(),
+                    bx,
+                    by,
+                    fx,
+                    fy,
                 }
             })
             .collect();

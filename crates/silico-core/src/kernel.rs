@@ -127,6 +127,14 @@ pub trait Clients: Send + Sync {
     /// A new client of the kernel, at generation 0. It may outlive the kernel: its requests
     /// then end as the kernel's do once it stops.
     fn client(&self) -> Self::Client;
+
+    /// Starts up to `n` workers ahead of any request, and waits until they've started or
+    /// failed (an app's warm start, [`KernelPool::warm`](crate::pool::KernelPool::warm)):
+    /// how many it started. A kernel with no workers to start starts none.
+    fn warm(&self, n: usize) -> usize {
+        let _ = n;
+        0
+    }
 }
 
 impl<K: Clients> Clients for Arc<K> {
@@ -134,6 +142,10 @@ impl<K: Clients> Clients for Arc<K> {
 
     fn client(&self) -> K::Client {
         (**self).client()
+    }
+
+    fn warm(&self, n: usize) -> usize {
+        (**self).warm(n)
     }
 }
 
@@ -580,6 +592,26 @@ impl KernelRequest<DescribedBatch> {
     }
 }
 
+impl KernelRequest<Description> {
+    /// Every face, edge, and vertex of `shape` described, for a shape with at most
+    /// [`DESCRIBE_BATCH`] of them in all: one request where [`describe`](KernelRequest::describe)
+    /// would take a batch of each kind ([`Op::DescribeAll`]). The reply's values are checked as
+    /// a batch's are ([`Description::validate`]); its counts against the shape's summary are
+    /// its caller's (`description_fault`).
+    pub fn describe_all(shape: &ShapeData) -> Self {
+        let op = Op::DescribeAll {
+            shape: shape.clone(),
+        };
+        Self::new(op, move |name, reply| match reply {
+            Reply::DescribedAll(description) => match description.validate(1) {
+                Ok(()) => Ok(description),
+                Err(problem) => Err(description_error(problem)),
+            },
+            other => Err(unexpected(name, &other)),
+        })
+    }
+}
+
 impl KernelRequest<Distance> {
     /// The least distance between `first`, an element of `shape`, and `second`, one of
     /// `other` (or of `shape` too, if there's no other), as bounded, with a pair of points
@@ -1009,15 +1041,17 @@ impl KernelRequest<silico_protocol::StepFile> {
                     Err(Error::new(
                         ErrorCode::ProtocolError,
                         format!(
-                            "the kernel worker sent the faces left out of {} parts, an element \
+                            "the STEP worker sent the faces left out of {} parts, an element \
                              numbered 0, or a part past the last, for a STEP export of {parts}",
                             file.left_out.len()
                         ),
                     )
-                    .with_suggestion("start a new kernel worker"))
+                    .with_suggestion(crate::worker::broken_worker(
+                        crate::worker::WorkerKind::Step,
+                    )))
                 }
                 Reply::StepFile(file) => Ok(*file),
-                other => Err(unexpected(name, &other)),
+                other => Err(unexpected_of(crate::worker::WorkerKind::Step, name, &other)),
             },
         ))
     }
@@ -1234,6 +1268,19 @@ fn unexpected(op: &str, reply: &Reply) -> Error {
     )
     .with_cause(format!("a {} reply", reply.kind()))
     .with_suggestion("start a new kernel worker")
+}
+
+/// The worker of `kind` answered `op` with the wrong kind of reply: a bug in that worker.
+fn unexpected_of(kind: crate::worker::WorkerKind, op: &str, reply: &Reply) -> Error {
+    Error::new(
+        ErrorCode::ProtocolError,
+        format!(
+            "the {} answered {op} with the wrong kind of reply",
+            kind.noun()
+        ),
+    )
+    .with_cause(format!("a {} reply", reply.kind()))
+    .with_suggestion(crate::worker::broken_worker(kind))
 }
 
 /// A kernel worker, and the operations it performs. Its typed methods are the one-worker
@@ -1696,6 +1743,47 @@ mod tests {
                 (ErrorCode::InvalidInput, Some(parameter))
             );
         }
+    }
+
+    #[test]
+    fn a_whole_description_whose_values_cant_be_trusted_is_a_protocol_error() {
+        // Checked as a whole description is, its elements numbered from 1: the second edge is
+        // the kernel's Edge2. Its counts are its caller's to check.
+        use silico_protocol::{EdgeCurve, EdgeDescription};
+        let line = EdgeDescription {
+            curve: EdgeCurve::Line,
+            length: 1.0,
+            start: [0.0; 3],
+            end: [1.0, 0.0, 0.0],
+            middle: [0.5, 0.0, 0.0],
+        };
+        let two = Description {
+            faces: Vec::new(),
+            edges: vec![line.clone(), line],
+            vertices: Vec::new(),
+        };
+        let shape = ShapeData::unchecked(Blob::inline(vec![1]));
+        let answer = |reply: Reply| KernelRequest::describe_all(&shape).answer(Ok(reply));
+        assert_eq!(answer(Reply::DescribedAll(two.clone())).unwrap(), two);
+        let mut short = two.clone();
+        short.edges[1].length = 0.0;
+        let mut lost = two.clone();
+        lost.edges[1].start[1] = f64::NAN;
+        for (description, cause) in [
+            (short, "the kernel's Edge2's length is 0"),
+            (lost, "the kernel's Edge2's start is NaN"),
+        ] {
+            let e = answer(Reply::DescribedAll(description)).unwrap_err();
+            assert_eq!(e.code(), ErrorCode::ProtocolError);
+            assert_eq!(e.cause(), Some(cause));
+        }
+        // A batch's reply to it is no answer.
+        let e = answer(Reply::Described {
+            total: 2,
+            description: two,
+        })
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::ProtocolError);
     }
 
     #[test]

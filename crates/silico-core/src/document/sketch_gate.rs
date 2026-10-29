@@ -467,15 +467,23 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         }
     }
 
-    // Every `on`, by its point and curve, for the tangent rule below.
-    let ons: Vec<(&Reference, &Reference, &ElementId)> = sketch
-        .constraints
-        .iter()
-        .filter_map(|c| match &c.form {
-            Form::On { point, curve } => Some((point, curve, &c.id)),
-            _ => None,
-        })
-        .collect();
+    // The tangent rule below ("a curve ending on another is tangent where it ends") judges
+    // pairs of an edge `tangent` and an `on`, and refuses each pair at whichever of the two
+    // comes later in the constraint list: a file's order (sorted by ID, as written), or an
+    // edit's, which appends what it adds, so the refusal names the member the edit gave.
+    // Every `on` of a point, by its curve and point, its places in the list in order.
+    let mut ons: BTreeMap<(&Reference, &ElementId), Vec<(usize, &ElementId)>> = BTreeMap::new();
+    for (i, c) in sketch.constraints.iter().enumerate() {
+        if let Form::On { point, curve } = &c.form
+            && let Some(point) = point.element()
+        {
+            ons.entry((curve, point)).or_default().push((i, &c.id));
+        }
+    }
+    // Each edge `tangent` the rule applies to, as it's passed, by the curve one of its
+    // curves (`ending`) would end on and that end: the first such tangent, and `ending`.
+    let mut tangents: BTreeMap<(&Reference, &ElementId), (&ElementId, &Reference)> =
+        BTreeMap::new();
 
     for ((i, constraint), named) in sketch
         .constraints
@@ -602,16 +610,37 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                         ),
                         format!("make it a tangent_at, at point {point}"),
                     ));
-                } else if let Some((point, ending, other, on)) =
-                    [(a, b), (b, a)].into_iter().find_map(|(x, y)| {
-                        let ends = x.element().map(|x| ends_of(sketch, x, lookup))?;
-                        ons.iter()
-                            .find(|(p, c, _)| {
-                                *c == y && p.element().is_some_and(|p| ends.contains(&p))
-                            })
-                            .map(|(p, _, id)| (*p, x, y, *id))
-                    })
-                {
+                } else if let Some((point, ending, other, on)) = {
+                    // Either curve may be the one ending on the other: each way round, the
+                    // tangent kept for an `on` after it, and the first `on` before it that
+                    // holds an end of x on y (one way round, then the other).
+                    let mut found = None;
+                    for (x, y) in [(a, b), (b, a)] {
+                        let Some(curve) = x.element() else {
+                            continue;
+                        };
+                        // A curve tangent to itself is refused above, naming it twice: no
+                        // pair to find.
+                        if y.element() == Some(curve) {
+                            continue;
+                        }
+                        let ends = ends_of(sketch, curve, lookup);
+                        for &end in &ends {
+                            tangents.entry((y, end)).or_insert((&constraint.id, x));
+                        }
+                        if found.is_none() {
+                            found = ends
+                                .into_iter()
+                                .filter_map(|end| {
+                                    let &(place, id) = ons.get(&(y, end))?.first()?;
+                                    (place < i).then_some((place, end, id))
+                                })
+                                .min_by_key(|&(place, ..)| place)
+                                .map(|(_, end, id)| (end, x, y, id));
+                        }
+                    }
+                    found
+                } {
                     // A curve that ends on another is tangent there or not at all: FreeCAD
                     // makes an `on` and an edge tangency one endpoint-to-edge tangency
                     // (3a656d8597), since the pair is redundant where it holds.
@@ -715,6 +744,22 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                             ));
                         }
                     }
+                }
+            }
+            // The tangent rule's pair, refused here when the `on` comes after the tangent.
+            Form::On { point, curve } => {
+                if let Some(end) = point.element()
+                    && let Some(&(tangent, ending)) = tangents.get(&(curve, end))
+                {
+                    add(refuse(
+                        &format!("{at}.point"),
+                        format!(
+                            "an on puts point {end}, where {ending} ends, on {curve}, which constraint {tangent} makes {ending} edge tangent to: a curve ending on another is tangent where it ends"
+                        ),
+                        format!(
+                            "make the two one tangent_on, with a {ending}, at {end}, and b {curve}"
+                        ),
+                    ));
                 }
             }
             _ => {}

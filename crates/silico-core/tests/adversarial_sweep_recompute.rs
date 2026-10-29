@@ -6,10 +6,10 @@
 //! sketch names where they don't belong.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::model::WAIT;
 use super::sweeps;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
@@ -22,7 +22,7 @@ fn engine() -> Recompute<FakeKernel> {
 
 fn published(engine: &Recompute<FakeKernel>, features: &[&str]) -> Arc<Model> {
     let document = checked_document(features);
-    match engine.start(document).wait_timeout(Duration::from_secs(60)) {
+    match engine.start(document).wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("not published: {other:?}"),
         Err(_) => panic!("the recompute didn't finish"),
@@ -299,7 +299,7 @@ fn a_storm_of_edits_to_a_swept_sketch_ends_where_a_fresh_engine_does() {
     for k in 0..30 {
         last = Some(engine.start(document(k)));
     }
-    let last = match last.unwrap().wait_timeout(Duration::from_secs(60)) {
+    let last = match last.unwrap().wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         other => panic!("{:?}", other.map(|r| r.map(|_| ())).ok()),
     };
@@ -740,7 +740,7 @@ fn a_solve_that_panics_fails_its_sketch_alike_whether_or_not_a_feature_sweeps_it
         let refs: Vec<&str> = features.iter().map(String::as_str).collect();
         let first = engine
             .start(checked_document(&refs))
-            .wait_timeout(Duration::from_secs(60))
+            .wait_timeout(WAIT)
             .unwrap_or_else(|_| panic!("swept {swept}: the recompute hung"));
         let first = match first {
             Ok(RunOutcome::Published(model)) => Ok((

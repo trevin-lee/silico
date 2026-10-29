@@ -311,9 +311,19 @@ fn pages_read_while_rebuilds_log_never_repeat_skip_or_reorder_an_event() {
     let sessions = Arc::new(sessions(refusing_fillets_with("no".to_owned(), None), &dir));
     let s1 = opened(&sessions, &dir, "part.silico", &rounded("f0000001"));
     let stop = Arc::new(AtomicBool::new(false));
+    // Set once the writer's last check has answered, every event it logged kept before; or
+    // as it panics, so the reader stops and the join below says why, never spinning on.
+    let done = Arc::new(AtomicBool::new(false));
+    struct Done(Arc<AtomicBool>);
+    impl Drop for Done {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
     let writer = {
-        let (sessions, stop) = (Arc::clone(&sessions), Arc::clone(&stop));
+        let (sessions, stop, done) = (Arc::clone(&sessions), Arc::clone(&stop), Arc::clone(&done));
         std::thread::spawn(move || {
+            let _done = Done(done);
             let mut n = 0;
             while !stop.load(Ordering::Relaxed) && n < 200 {
                 checked(&sessions, &s1, true);
@@ -321,12 +331,16 @@ fn pages_read_while_rebuilds_log_never_repeat_skip_or_reorder_an_event() {
             }
         })
     };
-    // Pages of 7, from the oldest, each from the last's cursor, until the writer stops and
-    // the last page is empty.
+    // Pages of 7, from the oldest, each from the last's cursor, until a page read after the
+    // writer was seen done is empty. Seen done before the read, not after: a reader that read
+    // an empty page and only then found the writer done stopped short of whatever the writer
+    // logged in between (on a loaded machine, as much as three checks' events: the mutants
+    // harvest of 2026-10-27 failed it so in 41 of the 270 runs that reached it).
     let mut seen: Vec<LogEvent> = Vec::new();
     let mut after = None;
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
+        let finished = done.load(Ordering::Acquire);
         let page = read(&sessions, &s1, &query(LogLevel::Trace, None, after, 7));
         assert_eq!(
             page.dropped, 0,
@@ -339,7 +353,7 @@ fn pages_read_while_rebuilds_log_never_repeat_skip_or_reorder_an_event() {
         after = Some(page.next);
         let empty = page.events.is_empty();
         seen.extend(page.events);
-        if empty && writer.is_finished() {
+        if empty && finished {
             break;
         }
         if Instant::now() > deadline {

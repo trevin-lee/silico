@@ -4,6 +4,7 @@
 //! lists. Alone in its process (nextest runs each test in its own), it sets the process's
 //! subscriber to a layer that records every event the core emits.
 
+use crate::wait::WAIT;
 use std::io::Write as _;
 use std::path::Path;
 use std::sync::Mutex;
@@ -135,7 +136,7 @@ fn a_fillet_refused_on_a_thousand_seams_comes_back_as_the_workers_info_line_unde
     assert_eq!(refused.elements_total(), 1024, "{}", refused.message());
     // Its own line for it comes through the core's log thread, maybe after the call
     // answers: wait for it, or for a line of the worker's that isn't one.
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + WAIT;
     let worker_lines = loop {
         let lines: Vec<Seen> = SEEN
             .lock()
@@ -251,7 +252,7 @@ fn read_logs_child_entry() {
         after: None,
         limit: 1000,
     };
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + WAIT;
     loop {
         let events = sessions.read_logs(&s1, &query).result.unwrap().events;
         if events

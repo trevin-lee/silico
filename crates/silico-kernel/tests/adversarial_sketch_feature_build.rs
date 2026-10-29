@@ -611,6 +611,9 @@ fn a_pocket_of_three_hundred_and_forty_one_holes_is_cut_in_reasonable_time() {
     let plate = box_at("bbbbbbbb", [0.0, 0.0, -2.0], 20.0, 20.0, 2.0);
     let all = r#"{"type": "through_all", "reversed": false}"#;
     let engine = engine();
+    // Its wall time over how much slower than a quiet machine this one ran it (`Share`),
+    // which load doesn't move.
+    let share = crate::share::Share::start();
     let started = std::time::Instant::now();
     let model = publish(
         &engine,
@@ -620,7 +623,7 @@ fn a_pocket_of_three_hundred_and_forty_one_holes_is_cut_in_reasonable_time() {
             &pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", all),
         ],
     );
-    let took = started.elapsed();
+    let took = started.elapsed().div_f64(share.finish().slowdown);
     assert_close(
         volume(&model, "qqqqqqqq"),
         800.0 - 341.0 * PI * 0.09 * 2.0,

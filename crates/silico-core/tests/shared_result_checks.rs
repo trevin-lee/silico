@@ -5,10 +5,10 @@
 //! proofs, then each path (fresh, warm in memory, the disk cache) for a sweep feature's
 //! no-op refusal: the same refusal, in the feature's own words, once.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+use super::model::WAIT;
 use super::sweeps;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use silico_core::cache::Cache;
 use silico_core::fake::{FakeKernel, FakeSketches};
@@ -21,7 +21,7 @@ fn engine() -> Recompute<FakeKernel> {
 
 fn published(engine: &Recompute<FakeKernel>, features: &[&str]) -> Arc<Model> {
     let document = checked_document(features);
-    match engine.start(document).wait_timeout(Duration::from_secs(60)) {
+    match engine.start(document).wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("not published: {other:?}"),
         Err(_) => panic!("the recompute didn't finish"),

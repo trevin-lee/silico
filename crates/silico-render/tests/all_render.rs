@@ -7,6 +7,10 @@ mod test_programs;
 
 #[path = "common/client.rs"]
 mod common;
+#[path = "../../silico-core/tests/common/lateness.rs"]
+mod lateness;
+#[path = "../../silico-core/tests/common/share.rs"]
+mod share;
 
 #[path = "adversarial_client.rs"]
 mod adversarial_client;

@@ -47,6 +47,10 @@ harness = false
 name = "pool"
 harness = false
 
+[[bench]]
+name = "warm"
+harness = false
+
 [dev-dependencies]
 command-fds.workspace = true
 cpu-time.workspace = true

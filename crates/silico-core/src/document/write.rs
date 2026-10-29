@@ -40,6 +40,86 @@ pub fn fits(document: &Document, limit: usize) -> bool {
     writer.put(&tree(document), 0).is_ok() && writer.push("\n").is_ok()
 }
 
+/// The depth the canonical form writes a document's features at: inside its object, and
+/// inside the `features` array.
+const FEATURE_DEPTH: usize = 2;
+
+/// What the document's text ends with after the features' array opens and its features
+/// end: none (`[]`), or the array's last line break, its closing bracket at its depth, and
+/// the document's.
+const EMPTY_TAIL: &str = "[]\n}\n";
+const TAIL: &str = "\n  ]\n}\n";
+
+/// The canonical form's text before a document's features' array: the same for every
+/// document, whose header holds no value that varies (its format version, units, and
+/// naming scheme), so written once.
+pub(crate) fn head() -> &'static str {
+    static HEAD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HEAD.get_or_init(|| {
+        let empty = Document {
+            silico: FormatVersion,
+            units: Units,
+            naming: NamingScheme,
+            features: Vec::new(),
+        };
+        let mut writer = Writer::new(usize::MAX, true);
+        // Unbounded, it can't run out.
+        let _ = writer.put(&tree(&empty), 0);
+        let _ = writer.push("\n");
+        match writer.out.strip_suffix(EMPTY_TAIL) {
+            Some(head) => head.to_owned(),
+            None => writer.out,
+        }
+    })
+}
+
+/// Each of `document`'s features' texts as its canonical form places them (indented, with
+/// neither the line break before it nor the comma after it), so a state of it can be kept
+/// a feature at a time (`super::undo`), if the whole text, which [`assemble`] puts back
+/// together from them as [`write`] writes it, is at most `limit` bytes.
+pub(crate) fn placed(document: &Document, limit: usize) -> Result<Vec<String>, TooLong> {
+    // The head, each feature with the line break or comma and line break before it, and
+    // the array's and the document's close: what `assemble` writes.
+    let mut total = head().len();
+    let mut features = Vec::with_capacity(document.features.len());
+    for each in &document.features {
+        let mut writer = Writer::new(limit.saturating_sub(total), true);
+        writer.pad(FEATURE_DEPTH)?;
+        writer.put(&self::feature(each), FEATURE_DEPTH)?;
+        total += writer.out.len() + 2;
+        features.push(writer.out);
+    }
+    total += if features.is_empty() {
+        EMPTY_TAIL.len()
+    } else {
+        TAIL.len()
+    };
+    if total > limit {
+        return Err(TooLong);
+    }
+    Ok(features)
+}
+
+/// The canonical text of a document whose features [`placed`] gives, as [`write`] writes
+/// it.
+pub(crate) fn assemble<'a>(features: impl ExactSizeIterator<Item = &'a str>) -> String {
+    let n = features.len();
+    let mut out = String::from(head());
+    if n == 0 {
+        out.push_str(EMPTY_TAIL);
+        return out;
+    }
+    out.push_str("[\n");
+    for (i, text) in features.enumerate() {
+        if i > 0 {
+            out.push_str(",\n");
+        }
+        out.push_str(text);
+    }
+    out.push_str(TAIL);
+    out
+}
+
 /// `feature`'s canonical text, as a document's canonical form writes it but not indented,
 /// with no newline after it (a value, not a file), if it's at most `limit` bytes.
 pub fn feature_text(feature: &Feature, limit: usize) -> Result<String, TooLong> {

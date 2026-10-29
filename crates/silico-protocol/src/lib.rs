@@ -22,6 +22,9 @@ mod render;
 mod sketch;
 mod step;
 mod sweep;
+pub mod vec3;
+
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -70,11 +73,11 @@ pub use render::{
     RenderAdapter, RenderBody, RenderScene,
 };
 pub use sketch::{
-    Algorithm, DragBegin, Geometry, MAX_DRAG_UNKNOWNS, MAX_JACOBIAN_ENTRIES,
+    Algorithm, DragBegin, Dragged, Follow, Geometry, MAX_DRAG_UNKNOWNS, MAX_JACOBIAN_ENTRIES,
     MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_GEOMETRY, MAX_SKETCH_UNKNOWNS, MAX_SKETCH_VALUES, MAX_TAG,
-    Moved, Part, Parts, PointOf, PointValues, SketchGeometry, SketchSystem, SolveStatus, Solved,
-    SolverConstraint, Tag, Value, arc_from_points, check_drag_target, no_distance,
-    squared_distance, unbuildable, within_reach,
+    Moved, Part, Parts, Pin, PinAt, PointOf, PointValues, SketchGeometry, SketchSystem,
+    SolveStatus, Solved, SolverConstraint, Tag, Value, arc_from_points, arc_from_points_or_unswept,
+    check_drag_target, no_distance, squared_distance, unbuildable, within_reach,
 };
 pub use step::{
     ExportStep, StepCount, StepFile, StepPart, StepUnwritten, is_step_encoded, step_decoded,
@@ -211,6 +214,12 @@ pub enum Op {
     /// Ends the drag; the core then solves the sketch where the last move left it, as a
     /// normal solve. Replies with [`Reply::Done`].
     DragEnd,
+    /// One move of a sketch's point, as a drag's begin, one move to `to`, and its end, in one
+    /// request, ending any drag under way: a sketch edit's (an extend's), not an interactive
+    /// drag, so it's held to a solve's limits ([`DragBegin::check_move`]), not the drag's
+    /// [`MAX_DRAG_UNKNOWNS`], and runs under a solve's time. Replies with
+    /// [`Reply::MovedOnce`].
+    MoveOnce { begin: DragBegin, to: [f64; 2] },
     /// A face for each of a profile's regions, on the sketch's plane, each curve an edge
     /// and each point a vertex shared by the curves that meet there: one face, or a
     /// compound of them in the regions' order. Replies with [`Reply::Built`], whose history
@@ -297,6 +306,14 @@ pub enum Op {
         element: ElementRef,
         point: [f64; 3],
     },
+    /// The geometry and measures of every face, edge, and vertex of `shape`, of a shape that
+    /// has at most [`DESCRIBE_BATCH`] of them in all: one request where [`Op::Describe`] would
+    /// take three, a batch of each kind (docs/design/m4.4-describe.md). Named `Describe`, as
+    /// it is one, so its refusals read, and are kept, as a batch's. A shape of more elements
+    /// than a batch is refused before anything is described, as the worker's fault
+    /// ([`Refusal::Internal`]): the core asks only of a shape its summary counts within one.
+    /// Replies with [`Reply::DescribedAll`].
+    DescribeAll { shape: ShapeData },
 }
 
 impl Op {
@@ -324,14 +341,26 @@ impl Op {
             Op::DragBegin(_) => "DragBegin",
             Op::DragMove { .. } => "DragMove",
             Op::DragEnd => "DragEnd",
+            Op::MoveOnce { .. } => "MoveOnce",
             Op::MakeFaces(_) => "MakeFaces",
             Op::Prism { .. } => "Prism",
             Op::PrismThroughAll { .. } => "PrismThroughAll",
+            Op::DescribeAll { .. } => "Describe",
             Op::Revolution { .. } => "Revolution",
             Op::Echo { .. } => "Echo",
             Op::Debug(op) => op.name(),
         }
     }
+}
+
+/// What one move found ([`Op::MoveOnce`]): the constraints in conflict, which leave it
+/// unmade, as a drag's begin refuses them; or where the move left the sketch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MovedOnce {
+    /// The constraints in conflict, by tag, in increasing order.
+    Conflicting(Vec<Tag>),
+    /// Where the move left the sketch, as a drag's move reports it.
+    Moved(Moved),
 }
 
 /// Which boolean [`Op::Boolean`] performs.
@@ -481,6 +510,8 @@ pub enum Reply {
     },
     /// Where a drag's move left the sketch ([`Op::DragMove`]).
     Moved(Moved),
+    /// What one move found ([`Op::MoveOnce`]).
+    MovedOnce(MovedOnce),
     /// A batch of a shape's elements ([`Op::Describe`]): how many of the kind asked for the
     /// shape has, and those asked for, in the description's list for that kind (its others
     /// empty).
@@ -509,6 +540,9 @@ pub enum Reply {
     /// A display mesh, and the deflection it was meshed at ([`Op::Tessellate`] with
     /// `at_least_the_floor`).
     MeshAt(MeshAt),
+    /// Every element of a shape ([`Op::DescribeAll`]), each described, from the first of each
+    /// kind: its lists' lengths are its counts.
+    DescribedAll(Description),
 }
 
 impl Reply {
@@ -527,9 +561,11 @@ impl Reply {
             Reply::Rendered { .. } => "Rendered",
             Reply::Classified { .. } => "Classified",
             Reply::MeshAt { .. } => "MeshAt",
+            Reply::DescribedAll(_) => "DescribedAll",
             Reply::Solved(_) => "Solved",
             Reply::DragStarted { .. } => "DragStarted",
             Reply::Moved(_) => "Moved",
+            Reply::MovedOnce(_) => "MovedOnce",
             Reply::Echo { .. } => "Echo",
             Reply::Done => "Done",
         }
@@ -845,14 +881,18 @@ pub struct BuiltData {
 /// Bytes carried by a message, such as a serialized shape. Sent inline in the frame for
 /// now; a shared-memory variant can be added for large payloads without changing any
 /// message that carries a `Blob`.
+///
+/// Its bytes are shared: a copy of a blob (of a request that names a shape, queued for a
+/// worker beside others naming the same one) is a count, not the bytes again. On the wire
+/// they're written as `serde_bytes` writes a `Vec<u8>`.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Blob {
-    Inline(#[serde(with = "serde_bytes")] Vec<u8>),
+    Inline(#[serde(with = "shared_bytes")] Arc<Vec<u8>>),
 }
 
 impl Blob {
     pub fn inline(bytes: Vec<u8>) -> Self {
-        Blob::Inline(bytes)
+        Blob::Inline(Arc::new(bytes))
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -861,11 +901,32 @@ impl Blob {
         }
     }
 
-    /// The bytes, taken.
+    /// The bytes, taken: without a copy when no other blob shares them.
     pub fn into_bytes(self) -> Vec<u8> {
         match self {
-            Blob::Inline(bytes) => bytes,
+            Blob::Inline(bytes) => Arc::unwrap_or_clone(bytes),
         }
+    }
+}
+
+/// A blob's shared bytes, written and read exactly as `serde_bytes` writes and reads a
+/// `Vec<u8>`.
+mod shared_bytes {
+    use std::sync::Arc;
+
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        bytes: &Arc<Vec<u8>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serde_bytes::serialize(bytes.as_slice(), serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Arc<Vec<u8>>, D::Error> {
+        serde_bytes::deserialize::<Vec<u8>, D>(deserializer).map(Arc::new)
     }
 }
 

@@ -697,7 +697,8 @@ impl Checked {
     /// index of the document's features: a model built from it, whose features are its
     /// features in order, finds its own by it too.
     pub(crate) fn place(&self, id: &FeatureId) -> Option<usize> {
-        self.index.get(id)
+        self.index
+            .get(id, |place| self.document.features.get(place).map(|f| &f.id))
     }
 }
 

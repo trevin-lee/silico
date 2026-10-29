@@ -799,7 +799,7 @@ fn the_largest_system_splits_into_parts_and_its_drag_part_quickly() {
     assert_eq!(part.constraints.len(), 10_000);
     let begin = DragBegin {
         system: s.clone(),
-        point: PointOf::Point(Geometry(3)),
+        dragged: silico_protocol::Dragged::Point(PointOf::Point(Geometry(3))),
     };
     let e = begin.check().unwrap_err();
     assert!(format!("{e:?}").contains("1024 unknowns"), "{e:?}");

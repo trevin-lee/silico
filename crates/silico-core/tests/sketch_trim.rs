@@ -1,0 +1,2875 @@
+//! Trimming a curve (docs/ports/sketch-edit.md, §4 and §9's tests; decisions 2, 5, 6, 8):
+//! the M5.0 design's worked example word for word, FreeCAD's trim tests, each ported as
+//! drawn and, where decision 5 departs from FreeCAD's 5e-5 mm join, with the cutter's end
+//! held, and Silico's own. Each result goes through the validation gate; each expected
+//! sketch and list is worked by hand.
+
+use silico_core::Error;
+use silico_core::document::sketch_edit::{Trim, trim};
+use silico_core::document::{
+    Direction, Document, ElementId, Form, Operation, Reference, Sketch, TangentSide, read, validate,
+};
+
+use crate::fixture::{arc, circle, circle_as, document, fields, line, point};
+
+fn id(text: &str) -> ElementId {
+    ElementId::new(text).unwrap()
+}
+
+fn ids(texts: &[&str]) -> Vec<ElementId> {
+    texts.iter().map(|t| id(t)).collect()
+}
+
+fn element(text: &str) -> Reference {
+    Reference::Element(id(text))
+}
+
+fn doc(points: &str, lines: &str, circles: &str, arcs: &str, constraints: &str) -> Document {
+    read(document(&fields(points, lines, circles, arcs, constraints)).as_bytes()).unwrap()
+}
+
+fn sketch_of(document: &Document) -> &Sketch {
+    match &document.features[0].operation {
+        Operation::Sketch(sketch) => sketch,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The trim's sketch in place of the document's, checked by the gate.
+#[track_caller]
+fn gated(document: &Document, trim: &Trim) -> Sketch {
+    let mut document = document.clone();
+    document.features[0].operation = Operation::Sketch(trim.edited.sketch.clone());
+    if let Err(invalid) = validate(&document) {
+        panic!("the gate refused the trim: {:?}", invalid.errors());
+    }
+    sketch_of(&document).clone()
+}
+
+#[track_caller]
+fn form<'a>(sketch: &'a Sketch, name: &str) -> &'a Form {
+    &sketch
+        .constraints
+        .iter()
+        .find(|c| c.id == id(name))
+        .unwrap_or_else(|| panic!("no constraint {name}"))
+        .form
+}
+
+fn has(sketch: &Sketch, name: &str) -> bool {
+    sketch.elements().any(|(e, _)| *e == id(name))
+}
+
+#[track_caller]
+fn ends(sketch: &Sketch, name: &str) -> (String, String) {
+    let line = sketch.lines.iter().find(|l| l.id == id(name)).unwrap();
+    (line.from.to_string(), line.to.to_string())
+}
+
+#[track_caller]
+fn arc_points(sketch: &Sketch, name: &str) -> [String; 3] {
+    let arc = sketch.arcs.iter().find(|a| a.id == id(name)).unwrap();
+    [
+        arc.center.to_string(),
+        arc.start.to_string(),
+        arc.end.to_string(),
+    ]
+}
+
+#[track_caller]
+fn at(sketch: &Sketch, name: &str) -> (f64, f64, bool) {
+    let p = sketch.points.iter().find(|p| p.id == id(name)).unwrap();
+    (p.x.mm(), p.y.mm(), p.construction)
+}
+
+#[track_caller]
+fn near(sketch: &Sketch, name: &str, expected: [f64; 2]) {
+    let (x, y, _) = at(sketch, name);
+    assert!(
+        (x - expected[0]).abs() < 1e-12 && (y - expected[1]).abs() < 1e-12,
+        "{name} at ({x}, {y}), not {expected:?}"
+    );
+}
+
+fn said(error: &Error) -> (&str, Option<&str>, Vec<&str>) {
+    (
+        error.message(),
+        error.parameter(),
+        error.elements().iter().map(String::as_str).collect(),
+    )
+}
+
+fn on(point: &str, curve: &str) -> Form {
+    Form::On {
+        point: element(point),
+        curve: element(curve),
+    }
+}
+
+// ---- the design's worked example
+
+/// The M5.0 design's `sketch_trim` example (the port note's §4 worked example, 1.1.3), as
+/// sketch members; `more` adds constraints.
+fn worked_example(more: &str) -> Document {
+    let points = [
+        point("pd000001", 0.0, 0.0),
+        point("pd000002", 10.0, 0.0),
+        point("pd000003", 3.0, -2.0),
+        point("pd000004", 3.0, 2.0),
+        point("pd000005", 7.0, 0.0),
+        point("pd000006", 7.0, 3.0),
+        point("pd000007", 5.0, 0.0),
+        point("pd000008", 9.0, 0.0),
+        point("pd00000a", 0.0, 5.0),
+        point("pd00000b", 0.0, 10.0),
+        point("pd00000c", 10.0, 10.0),
+        point("pd00000d", 0.0, -10.0),
+    ]
+    .join(", ");
+    let lines = [
+        line("nd000001", "pd000001", "pd000002"),
+        line("nd000002", "pd000003", "pd000004"),
+        line("nd000003", "pd000005", "pd000006"),
+        line("nd000004", "pd00000b", "pd00000c"),
+        line("nd000005", "pd000001", "pd00000a"),
+    ]
+    .join(", ");
+    let constraints = format!(
+        r#"{{"id": "kd000001", "type": "horizontal", "line": "nd000001"}}, {{"id": "kd000002", "type": "length", "line": "nd000001", "value": 10, "driving": true}}, {{"id": "kd000003", "type": "equal", "a": "nd000001", "b": "nd000004"}}, {{"id": "kd000004", "type": "on", "point": "pd000005", "curve": "nd000001"}}, {{"id": "kd000005", "type": "on", "point": "pd000007", "curve": "nd000001"}}, {{"id": "kd000006", "type": "on", "point": "pd000008", "curve": "nd000001"}}{more}"#
+    );
+    doc(&points, &lines, "", "", &constraints)
+}
+
+#[test]
+fn the_designs_worked_example_word_for_word() {
+    let before = worked_example("");
+    let done = trim(
+        sketch_of(&before),
+        &id("nd000001"),
+        [5.0, 0.0],
+        &ids(&["pd000009", "nd000006", "kd00000a", "kd00000b"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    // nd000001 ends at the new point (3, 0), on the cutter nd000002 (kd00000b).
+    assert_eq!(
+        ends(&sketch, "nd000001"),
+        ("pd000001".to_owned(), "pd000009".to_owned())
+    );
+    assert_eq!(at(&sketch, "pd000009"), (3.0, 0.0, false));
+    assert_eq!(form(&sketch, "kd00000b"), &on("pd000009", "nd000002"));
+    // nd000006 runs from the cutter's start, shared since kd000004 held it on the line.
+    assert_eq!(
+        ends(&sketch, "nd000006"),
+        ("pd000005".to_owned(), "pd000002".to_owned())
+    );
+    assert_eq!(
+        form(&sketch, "kd00000a"),
+        &Form::Horizontal {
+            line: element("nd000006")
+        }
+    );
+    assert_eq!(
+        form(&sketch, "kd000001"),
+        &Form::Horizontal {
+            line: element("nd000001")
+        }
+    );
+    match form(&sketch, "kd000002") {
+        Form::Distance {
+            a,
+            b,
+            value,
+            driving,
+        } => {
+            assert_eq!((a, b), (&element("pd000001"), &element("pd000002")));
+            assert_eq!((value.to_string(), *driving), ("10".to_owned(), true));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(form(&sketch, "kd000006"), &on("pd000008", "nd000006"));
+    for gone in ["kd000003", "kd000004", "kd000005"] {
+        assert!(!has(&sketch, gone), "{gone}");
+    }
+    // The neighbour keeps pd000001; the lone point pd000007 stays, now free.
+    assert_eq!(
+        ends(&sketch, "nd000005"),
+        ("pd000001".to_owned(), "pd00000a".to_owned())
+    );
+    assert!(has(&sketch, "pd000007"));
+    assert_eq!(done.pieces, ids(&["nd000001", "nd000006"]));
+    assert_eq!(
+        done.edited.added,
+        ids(&["pd000009", "nd000006", "kd00000a", "kd00000b"])
+    );
+    assert_eq!(
+        done.edited.modified,
+        ids(&["nd000001", "kd000002", "kd000006"])
+    );
+    assert_eq!(
+        done.edited.removed,
+        ids(&["kd000003", "kd000004", "kd000005"])
+    );
+}
+
+#[test]
+fn the_designs_symmetry_about_the_trimmed_line_is_refused_word_for_word() {
+    let before = worked_example(
+        r#", {"id": "kd000007", "type": "symmetric", "a": "pd00000b", "b": "pd00000d", "about": "nd000001"}"#,
+    );
+    let error = trim(
+        sketch_of(&before),
+        &id("nd000001"),
+        [5.0, 0.0],
+        &ids(&["pd000009", "nd000006", "kd00000a", "kd00000b"]),
+    )
+    .unwrap_err();
+    assert_eq!(
+        said(&error),
+        (
+            "trimming line nd000001 there would leave constraint kd000007, a symmetry about it, on no piece of it",
+            Some("pick"),
+            vec!["kd000007", "nd000001"]
+        )
+    );
+    assert_eq!(error.elements_total(), 2);
+    assert_eq!(
+        error.cause(),
+        Some("the trim's pieces are separate lines, and the symmetry is about the whole one")
+    );
+    assert_eq!(
+        error.suggestion(),
+        Some("remove the constraint first, or make the points symmetric about another line")
+    );
+}
+
+// ---- FreeCAD's: lines (SketcherTestHelpers' line, (1, 2) to (3, 4))
+
+/// The line from (1, 2) to (3, 4), `a0000000`, beside `points`, `lines`, `constraints`.
+fn freecads_line(points: &[String], lines: &[String], constraints: &str) -> Document {
+    let points = [point("p0000001", 1.0, 2.0), point("p0000002", 3.0, 4.0)]
+        .into_iter()
+        .chain(points.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let lines = std::iter::once(line("a0000000", "p0000001", "p0000002"))
+        .chain(lines.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(", ");
+    doc(&points, &lines, "", "", constraints)
+}
+
+/// The point at `t` of the way along (1, 2) to (3, 4).
+fn along_line(t: f64) -> [f64; 2] {
+    [1.0 + 2.0 * t, 2.0 + 2.0 * t]
+}
+
+#[test]
+fn freecads_trim_without_intersection_removes_the_line() {
+    // testTrimWithoutIntersection: no cut, the line goes, with its points.
+    let before = freecads_line(&[], &[], "");
+    let error = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [2.0, 3.1],
+        &ids(&["n0000000"]),
+    )
+    .unwrap_err();
+    assert_eq!(
+        said(&error),
+        ("the trim needs 0 new IDs, got 1", Some("ids"), vec![])
+    );
+    let done = trim(sketch_of(&before), &id("a0000000"), [2.0, 3.1], &[]).unwrap();
+    let sketch = gated(&before, &done);
+    assert!(sketch.lines.is_empty() && sketch.points.is_empty());
+    assert!(done.pieces.is_empty());
+    assert_eq!(
+        done.edited.removed,
+        ids(&["p0000001", "p0000002", "a0000000"])
+    );
+}
+
+/// testTrimLineSegmentEnd's cutter: from the line's middle, (2, 3), 0.1 on along it, to
+/// (2.1, 3.1), overlapping it there.
+fn cutter_at_the_middle() -> (Vec<String>, Vec<String>) {
+    let (start, end) = (along_line(0.5), [2.1, 3.1]);
+    (
+        vec![
+            point("c0000001", start[0], start[1]),
+            point("c0000002", end[0], end[1]),
+        ],
+        vec![line("e0000000", "c0000001", "c0000002")],
+    )
+}
+
+#[test]
+fn freecads_trim_of_a_line_end_shortens_it_to_the_cutter_as_drawn_or_held() {
+    // testTrimLineSegmentEnd, picked at 0.2: the cut is the cutter's start, (2, 3), and
+    // FreeCAD joins the new end to it (1 Coincident, through its 5e-5 mm test). As drawn,
+    // Silico gives the line a new start there, on the cutter (decision 5); held on the
+    // line by an on, the cutter's start is the line's, and the on goes.
+    let (points, lines) = cutter_at_the_middle();
+    let pick = along_line(0.2);
+    let drawn = freecads_line(&points, &lines, "");
+    let done = trim(
+        sketch_of(&drawn),
+        &id("a0000000"),
+        pick,
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&drawn, &done);
+    assert_eq!(at(&sketch, "n0000000"), (2.0, 3.0, false));
+    assert_eq!(
+        ends(&sketch, "a0000000"),
+        ("n0000000".to_owned(), "p0000002".to_owned())
+    );
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000000", "e0000000"));
+    assert!(!has(&sketch, "p0000001"));
+    assert_eq!(done.pieces, ids(&["a0000000"]));
+    assert_eq!(done.edited.added, ids(&["n0000000", "k0000009"]));
+    assert_eq!(done.edited.modified, ids(&["a0000000"]));
+    assert_eq!(done.edited.removed, ids(&["p0000001"]));
+    let held = freecads_line(
+        &points,
+        &lines,
+        r#"{"id": "k0000000", "type": "on", "point": "c0000001", "curve": "a0000000"}"#,
+    );
+    let done = trim(sketch_of(&held), &id("a0000000"), pick, &[]).unwrap();
+    let sketch = gated(&held, &done);
+    assert_eq!(
+        ends(&sketch, "a0000000"),
+        ("c0000001".to_owned(), "p0000002".to_owned())
+    );
+    assert!(sketch.constraints.is_empty());
+    assert_eq!(done.edited.removed, ids(&["p0000001", "k0000000"]));
+}
+
+#[test]
+fn freecads_trim_of_a_lines_middle_leaves_two_pieces_as_drawn_or_held() {
+    // testTrimLineSegmentMid, picked at 0.5: cutter 1 overlaps the line from 0.3 to 0.35,
+    // so the cut before the pick is its end, at 0.35; cutter 2 crosses it at 0.7. FreeCAD:
+    // 2 curves, 1 Coincident (cutter 1's end, within 5e-5 mm), 1 PointOnObject. As drawn,
+    // Silico: two new points, each on its cutter; held, cutter 1's end is shared.
+    let (c1, c2) = (
+        along_line(0.3),
+        [along_line(0.3)[0] + 0.1, along_line(0.3)[1] + 0.1],
+    );
+    let mid = along_line(0.7);
+    let points = vec![
+        point("c0000001", c1[0], c1[1]),
+        point("c0000002", c2[0], c2[1]),
+        point("c0000003", mid[0] - 0.1, mid[1] + 0.1),
+        point("c0000004", mid[0] + 0.1, mid[1] - 0.1),
+    ];
+    let lines = vec![
+        line("e0000000", "c0000001", "c0000002"),
+        line("f0000000", "c0000003", "c0000004"),
+    ];
+    let drawn = freecads_line(&points, &lines, "");
+    let done = trim(
+        sketch_of(&drawn),
+        &id("a0000000"),
+        along_line(0.5),
+        &ids(&["n0000000", "n0000001", "b1000000", "k0000008", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&drawn, &done);
+    near(&sketch, "n0000000", c2);
+    near(&sketch, "n0000001", mid);
+    assert_eq!(
+        ends(&sketch, "a0000000"),
+        ("p0000001".to_owned(), "n0000000".to_owned())
+    );
+    assert_eq!(
+        ends(&sketch, "b1000000"),
+        ("n0000001".to_owned(), "p0000002".to_owned())
+    );
+    assert_eq!(form(&sketch, "k0000008"), &on("n0000000", "e0000000"));
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000001", "f0000000"));
+    assert_eq!(done.pieces, ids(&["a0000000", "b1000000"]));
+    let held = freecads_line(
+        &points,
+        &lines,
+        r#"{"id": "k0000000", "type": "on", "point": "c0000002", "curve": "a0000000"}"#,
+    );
+    let done = trim(
+        sketch_of(&held),
+        &id("a0000000"),
+        along_line(0.5),
+        &ids(&["n0000001", "b1000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&held, &done);
+    assert_eq!(
+        ends(&sketch, "a0000000"),
+        ("p0000001".to_owned(), "c0000002".to_owned())
+    );
+    assert_eq!(
+        done.edited.added,
+        ids(&["n0000001", "b1000000", "k0000009"])
+    );
+    assert_eq!(done.edited.removed, ids(&["k0000000"]));
+}
+
+#[test]
+fn freecads_full_length_and_end_symmetry_constraints_go_with_the_end_trimmed_away() {
+    // testTrimEndEffectOnFullLengthConstraints and testTrimEndEffectOnSymmetricConstraints:
+    // trimmed at 0.2 back to the cutter at the middle, the line's start goes, and its
+    // length (one piece left, `2779f0b29f`) and the symmetry of its ends about the cutter's
+    // start (`f0d30cb570`) with it.
+    let (points, lines) = cutter_at_the_middle();
+    let before = freecads_line(
+        &points,
+        &lines,
+        r#"{"id": "k0000000", "type": "length", "line": "a0000000", "value": 2.828427, "driving": false}, {"id": "k0000001", "type": "symmetric", "a": "p0000001", "b": "p0000002", "about": "c0000001"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        along_line(0.2),
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert!(!has(&sketch, "k0000000") && !has(&sketch, "k0000001"));
+    assert_eq!(
+        done.edited.removed,
+        ids(&["p0000001", "k0000000", "k0000001"])
+    );
+}
+
+#[test]
+fn freecads_unrelated_tangent_stays_edge_to_edge() {
+    // testTrimEndEffectOnUnrelatedTangent (AstoCAD #24, 08a66afbc8): x = 1 from y = −2 to 2,
+    // tangent to a circle of radius 1 about the origin, cut by one of radius 1.5 at
+    // y = ±√1.25, picked at 0.2 (y = −1.2). The cut after the pick is the outer circle's;
+    // the inner's contact at (1, 0) is a cut too, but not one the trim uses, so its tangency
+    // stays an edge tangency.
+    let before = doc(
+        &[
+            point("p0000001", 1.0, -2.0),
+            point("p0000002", 1.0, 2.0),
+            point("z0000000", 0.0, 0.0),
+        ]
+        .join(", "),
+        &line("a0000000", "p0000001", "p0000002"),
+        &[
+            circle("c0000001", "z0000000", 1.0),
+            circle("c0000002", "z0000000", 1.5),
+        ]
+        .join(", "),
+        "",
+        r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "c0000001", "side": "left"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [1.0, -1.2],
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    near(&sketch, "n0000000", [1.0, -(1.25_f64.sqrt())]);
+    assert_eq!(
+        ends(&sketch, "a0000000"),
+        ("n0000000".to_owned(), "p0000002".to_owned())
+    );
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        form(sketch_of(&before), "k0000000")
+    );
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000000", "c0000002"));
+}
+
+// ---- FreeCAD's: circles and arcs (about (1, 2), radius 3)
+
+/// The point at `angle` on the circle of radius 3 about (1, 2).
+fn on_the_circle(angle: f64) -> [f64; 2] {
+    [1.0 + 3.0 * libm::cos(angle), 2.0 + 3.0 * libm::sin(angle)]
+}
+
+/// testTrimCircleMid's cutters: one starting on the circle at `first` and running 0.1 by
+/// 0.1 outward, one crossing it at `second` (from 0.1 by 0.1 before it to as far after).
+fn two_cutters(first: f64, second: f64) -> (Vec<String>, Vec<String>) {
+    let (p1, p3) = (on_the_circle(first), on_the_circle(second));
+    (
+        vec![
+            point("c0000001", p1[0], p1[1]),
+            point("c0000002", p1[0] + 0.1, p1[1] + 0.1),
+            point("c0000003", p3[0] - 0.1, p3[1] - 0.1),
+            point("c0000004", p3[0] + 0.1, p3[1] + 0.1),
+        ],
+        vec![
+            line("e0000000", "c0000001", "c0000002"),
+            line("f0000000", "c0000003", "c0000004"),
+        ],
+    )
+}
+
+#[test]
+fn freecads_circle_trimmed_with_one_cut_is_removed() {
+    // testTrimCircleEnd: one cutter, starting on the circle at π; picked at 0.2 of a turn.
+    let start = on_the_circle(std::f64::consts::PI);
+    let before = doc(
+        &[
+            point("z0000000", 1.0, 2.0),
+            point("c0000001", start[0], start[1]),
+            point("c0000002", start[0] + 0.1, start[1] + 0.1),
+        ]
+        .join(", "),
+        &line("e0000000", "c0000001", "c0000002"),
+        &circle("c0000000", "z0000000", 3.0),
+        "",
+        "",
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("c0000000"),
+        on_the_circle(0.2 * std::f64::consts::TAU),
+        &[],
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert!(sketch.circles.is_empty() && sketch.arcs.is_empty());
+    assert_eq!(done.edited.removed, ids(&["z0000000", "c0000000"]));
+}
+
+#[test]
+fn freecads_circle_trimmed_between_two_cuts_is_the_arc_from_the_one_after_to_the_one_before() {
+    // testTrimCircleMid, and testTrimEffectOnConstruction on a construction circle: cuts at
+    // 0.3 and 0.7 of a turn, picked at 0.5. FreeCAD: one arc, 1 Coincident (cutter 1's
+    // start), 1 PointOnObject. As drawn, Silico: the arc counter-clockwise from 0.7 to 0.3,
+    // keeping c0's ID, two new points each on its cutter, construction kept; held, the
+    // first cutter's start is the arc's end.
+    let tau = std::f64::consts::TAU;
+    let (points, lines) = two_cutters(0.3 * tau, 0.7 * tau);
+    let all = |more: &[String]| {
+        std::iter::once(point("z0000000", 1.0, 2.0))
+            .chain(points.iter().cloned())
+            .chain(more.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let drawn = doc(
+        &all(&[]),
+        &lines.join(", "),
+        &circle_as("c0000000", "z0000000", 3.0, true),
+        "",
+        "",
+    );
+    let done = trim(
+        sketch_of(&drawn),
+        &id("c0000000"),
+        on_the_circle(0.5 * tau),
+        &ids(&["n0000000", "n0000001", "k0000008", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&drawn, &done);
+    assert!(sketch.circles.is_empty());
+    assert_eq!(
+        arc_points(&sketch, "c0000000"),
+        ["z0000000", "n0000000", "n0000001"]
+    );
+    assert!(sketch.arcs[0].construction);
+    near(&sketch, "n0000000", on_the_circle(0.7 * tau));
+    near(&sketch, "n0000001", on_the_circle(0.3 * tau));
+    assert!(at(&sketch, "n0000000").2 && at(&sketch, "n0000001").2);
+    assert_eq!(form(&sketch, "k0000008"), &on("n0000000", "f0000000"));
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000001", "e0000000"));
+    assert_eq!(done.pieces, ids(&["c0000000"]));
+    let held = doc(
+        &all(&[]),
+        &lines.join(", "),
+        &circle("c0000000", "z0000000", 3.0),
+        "",
+        r#"{"id": "k0000000", "type": "on", "point": "c0000001", "curve": "c0000000"}"#,
+    );
+    let done = trim(
+        sketch_of(&held),
+        &id("c0000000"),
+        on_the_circle(0.5 * tau),
+        &ids(&["n0000000", "k0000008"]),
+    )
+    .unwrap();
+    let sketch = gated(&held, &done);
+    assert_eq!(
+        arc_points(&sketch, "c0000000"),
+        ["z0000000", "n0000000", "c0000001"]
+    );
+    assert_eq!(done.edited.removed, ids(&["k0000000"]));
+}
+
+/// testTrimArcOfCircle's arc: about (1, 2), radius 3, from π/3 to 3π/2.
+fn the_arc(points: &[String], lines: &[String], constraints: &str) -> Document {
+    let (start, end) = (
+        on_the_circle(std::f64::consts::FRAC_PI_3),
+        on_the_circle(1.5 * std::f64::consts::PI),
+    );
+    let all = [
+        point("z0000000", 1.0, 2.0),
+        point("r0000000", start[0], start[1]),
+        point("r0000001", end[0], end[1]),
+    ]
+    .into_iter()
+    .chain(points.iter().cloned())
+    .collect::<Vec<_>>()
+    .join(", ");
+    doc(
+        &all,
+        &lines.join(", "),
+        "",
+        &arc("a0000000", "z0000000", "r0000000", "r0000001"),
+        constraints,
+    )
+}
+
+/// The angle `t` of the way along testTrimArcOfCircle's arc.
+fn along_arc(t: f64) -> f64 {
+    std::f64::consts::FRAC_PI_3 + t * (1.5 * std::f64::consts::PI - std::f64::consts::FRAC_PI_3)
+}
+
+#[test]
+fn freecads_arc_trimmed_at_an_end_and_in_its_middle() {
+    // testTrimArcOfCircleEnd: a cutter starting on the arc at 0.5, picked at 0.2: the arc
+    // starts there now (FreeCAD: 1 Coincident; Silico, as drawn: a new point on the cutter).
+    // testTrimArcOfCircleMid: cuts at 0.3 and 0.7, picked at 0.5: two arcs sharing the
+    // centre (FreeCAD's second Coincident), each end new, on its cutter.
+    let half = on_the_circle(along_arc(0.5));
+    let one = the_arc(
+        &[
+            point("c0000001", half[0], half[1]),
+            point("c0000002", half[0] + 0.1, half[1] + 0.1),
+        ],
+        &[line("e0000000", "c0000001", "c0000002")],
+        "",
+    );
+    let done = trim(
+        sketch_of(&one),
+        &id("a0000000"),
+        on_the_circle(along_arc(0.2)),
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&one, &done);
+    assert_eq!(
+        arc_points(&sketch, "a0000000"),
+        ["z0000000", "n0000000", "r0000001"]
+    );
+    near(&sketch, "n0000000", half);
+    assert!(!has(&sketch, "r0000000"));
+    let (points, lines) = two_cutters(along_arc(0.3), along_arc(0.7));
+    let mid = the_arc(&points, &lines, "");
+    let done = trim(
+        sketch_of(&mid),
+        &id("a0000000"),
+        on_the_circle(along_arc(0.5)),
+        &ids(&["n0000000", "n0000001", "b1000000", "k0000008", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&mid, &done);
+    assert_eq!(
+        arc_points(&sketch, "a0000000"),
+        ["z0000000", "r0000000", "n0000000"]
+    );
+    assert_eq!(
+        arc_points(&sketch, "b1000000"),
+        ["z0000000", "n0000001", "r0000001"]
+    );
+    near(&sketch, "n0000000", on_the_circle(along_arc(0.3)));
+    near(&sketch, "n0000001", on_the_circle(along_arc(0.7)));
+    assert_eq!(form(&sketch, "k0000008"), &on("n0000000", "e0000000"));
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000001", "f0000000"));
+}
+
+// ---- Silico's own
+
+/// Line a0000000 from p0 (0, 0) to p4 (32, 0), beside `points`, `lines`, and the rest.
+fn a_line(points: &[String], lines: &[String], circles: &str, constraints: &str) -> Document {
+    let points = [point("p0000000", 0.0, 0.0), point("p0000004", 32.0, 0.0)]
+        .into_iter()
+        .chain(points.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let lines = std::iter::once(line("a0000000", "p0000000", "p0000004"))
+        .chain(lines.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(", ");
+    doc(&points, &lines, circles, "", constraints)
+}
+
+/// A vertical cutter `{name}0000000` at `x`, from `{name}0000001` at y = −5 to
+/// `{name}0000002` at y = 5.
+fn upright(name: char, x: f64) -> (Vec<String>, String) {
+    let (low, high) = (format!("{name}0000001"), format!("{name}0000002"));
+    (
+        vec![point(&low, x, -5.0), point(&high, x, 5.0)],
+        line(&format!("{name}0000000"), &low, &high),
+    )
+}
+
+#[test]
+fn a_lines_direction_constraints_go_to_both_pieces_which_nothing_joins() {
+    // §4, item 9 (assumeTangency = false; 1.1.3 puts a perpendicular to a line it doesn't
+    // touch on both pieces): cutters at 8 and 24, picked at 16. The copies come after the
+    // new piece, by the IDs of those they copy, then the new ends' ons.
+    let (mut points, d) = upright('d', 8.0);
+    let (more, e) = upright('e', 24.0);
+    points.extend(more);
+    points.push(point("f0000001", 40.0, 10.0));
+    points.push(point("f0000002", 40.0, 20.0));
+    let before = a_line(
+        &points,
+        &[d, e, line("f0000000", "f0000001", "f0000002")],
+        "",
+        r#"{"id": "k0000000", "type": "perpendicular", "a": "a0000000", "b": "f0000000"}, {"id": "k0000001", "type": "horizontal", "line": "a0000000"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [16.0, 0.0],
+        &ids(&[
+            "n0000000", "n0000001", "b1000000", "k0000002", "k0000003", "k0000004", "k0000005",
+        ]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(at(&sketch, "n0000000"), (8.0, 0.0, false));
+    assert_eq!(at(&sketch, "n0000001"), (24.0, 0.0, false));
+    assert_eq!(
+        form(&sketch, "k0000002"),
+        &Form::Perpendicular {
+            a: element("b1000000"),
+            b: element("f0000000")
+        }
+    );
+    assert_eq!(
+        form(&sketch, "k0000003"),
+        &Form::Horizontal {
+            line: element("b1000000")
+        }
+    );
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        form(sketch_of(&before), "k0000000")
+    );
+    assert_eq!(form(&sketch, "k0000004"), &on("n0000000", "d0000000"));
+    assert_eq!(form(&sketch, "k0000005"), &on("n0000001", "e0000000"));
+    // No tangent_at joins the pieces.
+    assert!(
+        !sketch
+            .constraints
+            .iter()
+            .any(|c| matches!(c.form, Form::TangentAt { .. }))
+    );
+    assert_eq!(
+        done.edited.added,
+        ids(&[
+            "n0000000", "n0000001", "b1000000", "k0000002", "k0000003", "k0000004", "k0000005"
+        ])
+    );
+    assert_eq!(done.edited.modified, ids(&["a0000000"]));
+    assert!(done.edited.removed.is_empty());
+}
+
+#[test]
+fn a_tangent_line_cuts_a_circle_and_one_more_than_1e_7_off_doesnt() {
+    // Decision 6: a gap of at most 1e-7 mm is contact. y = 10 + δ from x = −20 to 20 over
+    // the circle of radius 10 about the origin, picked at x = −10: at δ = 5e-8 the contact,
+    // (0, 10.00000005), cuts it; at δ = 2e-7 nothing does, and the line goes whole.
+    for (rise, cuts) in [(0.00000005, true), (0.0000002, false)] {
+        let y = 10.0 + rise;
+        let before = doc(
+            &[
+                point("p0000000", -20.0, y),
+                point("p0000004", 20.0, y),
+                point("z0000000", 0.0, 0.0),
+            ]
+            .join(", "),
+            &line("a0000000", "p0000000", "p0000004"),
+            &circle("c0000000", "z0000000", 10.0),
+            "",
+            "",
+        );
+        let picked = [-10.0, y];
+        if cuts {
+            let done = trim(
+                sketch_of(&before),
+                &id("a0000000"),
+                picked,
+                &ids(&["n0000000", "k0000009"]),
+            )
+            .unwrap();
+            let sketch = gated(&before, &done);
+            assert_eq!(at(&sketch, "n0000000"), (0.0, y, false), "{rise}");
+            assert_eq!(form(&sketch, "k0000009"), &on("n0000000", "c0000000"));
+        } else {
+            let done = trim(sketch_of(&before), &id("a0000000"), picked, &[]).unwrap();
+            assert!(done.pieces.is_empty(), "{rise}");
+        }
+    }
+}
+
+#[test]
+fn a_cutters_end_within_1e_7_mm_of_the_line_cuts_it_and_one_farther_doesnt() {
+    // e0000000 runs up x = 16 from 5e-8 above the line (an end on it, `e10068a648`): a cut;
+    // from 2e-7 above, neither its end nor its line's crossing, which it doesn't reach, is.
+    for (gap, cuts) in [(0.00000005, true), (0.0000002, false)] {
+        let before = a_line(
+            &[point("e0000001", 16.0, gap), point("e0000002", 16.0, 5.0)],
+            &[line("e0000000", "e0000001", "e0000002")],
+            "",
+            "",
+        );
+        let result = trim(
+            sketch_of(&before),
+            &id("a0000000"),
+            [8.0, 0.0],
+            &ids(&["n0000000", "k0000009"]),
+        );
+        if cuts {
+            let done = result.unwrap();
+            let sketch = gated(&before, &done);
+            assert_eq!(at(&sketch, "n0000000"), (16.0, 0.0, false), "{gap}");
+        } else {
+            assert_eq!(
+                result.unwrap_err().message(),
+                "the trim needs 0 new IDs, got 2",
+                "{gap}"
+            );
+        }
+    }
+}
+
+#[test]
+fn collinear_overlapping_lines_cut_at_the_overlaps_ends() {
+    // `3cbe309330`: b lies along a from 8 to 16; picked at 12, between its ends.
+    let before = a_line(
+        &[point("b0000001", 8.0, 0.0), point("b0000002", 16.0, 0.0)],
+        &[line("b0000000", "b0000001", "b0000002")],
+        "",
+        "",
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [12.0, 0.0],
+        &ids(&["n0000000", "n0000001", "b1000000", "k0000008", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(at(&sketch, "n0000000"), (8.0, 0.0, false));
+    assert_eq!(at(&sketch, "n0000001"), (16.0, 0.0, false));
+    assert_eq!(form(&sketch, "k0000008"), &on("n0000000", "b0000000"));
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000001", "b0000000"));
+}
+
+#[test]
+fn a_sketch_point_doesnt_cut_and_an_axis_doesnt_either() {
+    // s0 is held on a at 16, and a runs across the y axis: neither cuts, so a goes whole,
+    // with the on.
+    let before = doc(
+        &[
+            point("p0000000", -16.0, 0.0),
+            point("p0000004", 16.0, 0.0),
+            point("s0000000", 8.0, 0.0),
+        ]
+        .join(", "),
+        &line("a0000000", "p0000000", "p0000004"),
+        "",
+        "",
+        r#"{"id": "k0000000", "type": "on", "point": "s0000000", "curve": "a0000000"}"#,
+    );
+    let done = trim(sketch_of(&before), &id("a0000000"), [4.0, 0.0], &[]).unwrap();
+    let sketch = gated(&before, &done);
+    assert!(sketch.lines.is_empty());
+    assert!(has(&sketch, "s0000000"));
+    assert_eq!(
+        done.edited.removed,
+        ids(&["p0000000", "p0000004", "a0000000", "k0000000"])
+    );
+}
+
+#[test]
+fn a_neighbour_sharing_the_end_doesnt_cut_and_keeps_the_end_when_its_trimmed_away() {
+    // c starts at a's end p4 (no cut within 1e-7 mm of a's own end, 226d24792d), d crosses
+    // a at 16. Picked at 24, a is trimmed back to 16; p4 stays, c's; the tangent_at of a and
+    // c there goes, a no longer ending at p4.
+    let (points, d) = upright('d', 16.0);
+    let mut points = points;
+    points.push(point("c0000001", 32.0, 10.0));
+    let before = a_line(
+        &points,
+        &[d, line("c0000000", "p0000004", "c0000001")],
+        "",
+        r#"{"id": "k0000000", "type": "tangent_at", "a": "a0000000", "b": "c0000000", "at": "p0000004", "direction": "same"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [24.0, 0.0],
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        ends(&sketch, "a0000000"),
+        ("p0000000".to_owned(), "n0000000".to_owned())
+    );
+    assert_eq!(
+        ends(&sketch, "c0000000"),
+        ("p0000004".to_owned(), "c0000001".to_owned())
+    );
+    assert_eq!(done.edited.removed, ids(&["k0000000"]));
+}
+
+#[test]
+fn two_cuts_within_1e_7_mm_of_each_other_remove_the_line_whole() {
+    // FreeCAD's 5e-5 mm here is 1e-7 (the design): cutters at 16 and 16 + 5e-8, picked
+    // between them.
+    let (mut points, d) = upright('d', 16.0);
+    let (more, e) = upright('e', 16.00000005);
+    points.extend(more);
+    let before = a_line(&points, &[d, e], "", "");
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [16.000000025, 0.0],
+        &[],
+    )
+    .unwrap();
+    assert!(done.pieces.is_empty());
+    assert!(!has(&gated(&before, &done), "a0000000"));
+}
+
+#[test]
+fn a_tangency_with_the_cutter_becomes_an_end_tangency_as_the_drawing_shows_it() {
+    // y = 10 from x = −20 to 20 rests on the circle of radius 10 about the origin (k0, the
+    // circle on its right); picked at x = −10, it's trimmed back to the contact (0, 10), and
+    // k0 becomes a tangent_on of its new start on the circle (decision 8): the line leaves
+    // along +x, the circle runs counter-clockwise there along −x: opposite. No on is added.
+    let before = doc(
+        &[
+            point("p0000000", -20.0, 10.0),
+            point("p0000004", 20.0, 10.0),
+            point("z0000000", 0.0, 0.0),
+        ]
+        .join(", "),
+        &line("a0000000", "p0000000", "p0000004"),
+        &circle("c0000000", "z0000000", 10.0),
+        "",
+        r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "c0000000", "side": "right"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [-10.0, 10.0],
+        &ids(&["n0000000"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(at(&sketch, "n0000000"), (0.0, 10.0, false));
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        &Form::TangentOn {
+            a: element("a0000000"),
+            at: element("n0000000"),
+            b: element("c0000000"),
+            direction: Direction::Opposite,
+        }
+    );
+    assert_eq!(sketch.constraints.len(), 1);
+    assert_eq!(done.edited.added, ids(&["n0000000"]));
+    assert_eq!(done.edited.modified, ids(&["a0000000", "k0000000"]));
+    assert_eq!(done.edited.removed, ids(&["p0000000"]));
+}
+
+#[test]
+fn an_arcs_edge_tangency_no_piece_touches_is_refused_naming_it() {
+    // Decision 2: the upper half of the circle of radius 10 about the origin, cut at
+    // x = ±5 and picked at the top, where the line t, along y = 10 from x = 5 to 20 (so not
+    // reaching the contact, and no cut), touches it.
+    let before = doc(
+        &[
+            point("z0000000", 0.0, 0.0),
+            point("r0000000", 10.0, 0.0),
+            point("r0000001", -10.0, 0.0),
+            point("t0000001", 5.0, 10.0),
+            point("t0000002", 20.0, 10.0),
+            point("d0000001", 5.0, 0.0),
+            point("d0000002", 5.0, 20.0),
+            point("e0000001", -5.0, 0.0),
+            point("e0000002", -5.0, 20.0),
+        ]
+        .join(", "),
+        &[
+            line("t0000000", "t0000001", "t0000002"),
+            line("d0000000", "d0000001", "d0000002"),
+            line("e0000000", "e0000001", "e0000002"),
+        ]
+        .join(", "),
+        "",
+        &arc("r1000000", "z0000000", "r0000000", "r0000001"),
+        r#"{"id": "k0000000", "type": "tangent", "a": "r1000000", "b": "t0000000", "side": "right"}"#,
+    );
+    let error = trim(
+        sketch_of(&before),
+        &id("r1000000"),
+        [0.0, 10.0],
+        &ids(&["n0000000", "n0000001", "b1000000", "k0000008", "k0000009"]),
+    )
+    .unwrap_err();
+    assert_eq!(
+        said(&error),
+        (
+            "trimming arc r1000000 there would leave constraint k0000000, an edge tangency with t0000000, on no piece of it",
+            Some("pick"),
+            vec!["k0000000", "r1000000"]
+        )
+    );
+    assert_eq!(error.cause(), Some("no piece of the arc touches t0000000"));
+}
+
+#[test]
+fn a_member_that_isnt_a_curve_a_pick_not_finite_and_bad_ids_are_refused() {
+    let (points, d) = upright('d', 16.0);
+    let before = a_line(
+        &points,
+        &[d],
+        "",
+        r#"{"id": "k0000000", "type": "horizontal", "line": "a0000000"}"#,
+    );
+    let sketch = sketch_of(&before);
+    let two = ids(&["n0000000", "k0000009"]);
+    for (curve, message) in [
+        (
+            "p0000000",
+            "point p0000000 isn't a curve: a line, an arc, or a circle trims",
+        ),
+        (
+            "k0000000",
+            "constraint k0000000 isn't a curve: a line, an arc, or a circle trims",
+        ),
+    ] {
+        let error = trim(sketch, &id(curve), [8.0, 0.0], &two).unwrap_err();
+        assert_eq!(said(&error), (message, Some("curve"), vec![curve]));
+    }
+    assert_eq!(
+        trim(sketch, &id("zzzzzzzz"), [8.0, 0.0], &two)
+            .unwrap_err()
+            .message(),
+        "the sketch has no curve zzzzzzzz"
+    );
+    assert_eq!(
+        said(&trim(sketch, &id("a0000000"), [f64::NAN, 0.0], &two).unwrap_err()),
+        (
+            "the pick isn't a finite position",
+            Some("pick"),
+            vec!["a0000000"]
+        )
+    );
+    assert_eq!(
+        said(&trim(sketch, &id("a0000000"), [8.0, 0.0], &two[..1]).unwrap_err()),
+        ("the trim needs 2 new IDs, got 1", Some("ids"), vec![])
+    );
+    assert_eq!(
+        said(
+            &trim(
+                sketch,
+                &id("a0000000"),
+                [8.0, 0.0],
+                &ids(&["n0000000", "d0000001"])
+            )
+            .unwrap_err()
+        ),
+        (
+            "the sketch already has a member d0000001",
+            Some("ids.1"),
+            vec![]
+        )
+    );
+    assert_eq!(
+        said(
+            &trim(
+                sketch,
+                &id("a0000000"),
+                [8.0, 0.0],
+                &ids(&["n0000000", "n0000000"])
+            )
+            .unwrap_err()
+        ),
+        ("ID n0000000 is given twice", Some("ids.1"), vec![])
+    );
+    assert_eq!(sketch, sketch_of(&before));
+}
+
+#[test]
+fn a_pick_exactly_at_a_lines_cut_trims_on_to_the_next_either_side_as_freecad_does() {
+    // FreeCAD 1.1.3 (break-it's probe): cutters at 8 and 24 on a from 0 to 32; picked at 8,
+    // the cut there is none, so 0 to 24 goes; picked at 24, 8 to 32 does.
+    let (mut points, d) = upright('d', 8.0);
+    let (more, e) = upright('e', 24.0);
+    points.extend(more);
+    let before = a_line(&points, &[d, e], "", "");
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [8.0, 0.0],
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(at(&sketch, "n0000000"), (24.0, 0.0, false));
+    assert_eq!(
+        ends(&sketch, "a0000000"),
+        ("n0000000".to_owned(), "p0000004".to_owned())
+    );
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000000", "e0000000"));
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [24.0, 0.0],
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(at(&sketch, "n0000000"), (8.0, 0.0, false));
+    assert_eq!(
+        ends(&sketch, "a0000000"),
+        ("p0000000".to_owned(), "n0000000".to_owned())
+    );
+}
+
+#[test]
+fn a_pick_at_a_rounds_centre_is_refused_naming_the_pick() {
+    // FreeCAD 1.1.3 throws there; a centre is on no part of the circle.
+    let before = doc(
+        &point("z0000000", 1.0, 2.0),
+        "",
+        &circle("c0000000", "z0000000", 3.0),
+        "",
+        "",
+    );
+    let error = trim(sketch_of(&before), &id("c0000000"), [1.0, 2.0], &[]).unwrap_err();
+    assert_eq!(
+        said(&error),
+        (
+            "the pick is at circle c0000000's centre, on no part of it",
+            Some("pick"),
+            vec!["c0000000"]
+        )
+    );
+}
+
+// ---- the port review's
+
+#[test]
+fn an_arc_picked_outside_its_sweep_is_trimmed_at_the_end_nearer_in_angle() {
+    // An arc of radius 5 about the origin from r0 (5, 0), at 0, to r1 (0, −5), at 270°,
+    // cut by radii up to 90° and out to 180°, which cut it at (0, 5) and (−5, 0). Picked at
+    // 359°, 1° round from its start (89° past its end), it loses 0 to 90°; picked at 300°,
+    // 30° past its end, it loses 180° to 270°.
+    let before = doc(
+        &[
+            point("z0000000", 0.0, 0.0),
+            point("r0000000", 5.0, 0.0),
+            point("r0000001", 0.0, -5.0),
+            point("d0000001", 0.0, 10.0),
+            point("e0000001", -10.0, 0.0),
+        ]
+        .join(", "),
+        &[
+            line("d0000000", "z0000000", "d0000001"),
+            line("e0000000", "z0000000", "e0000001"),
+        ]
+        .join(", "),
+        "",
+        &arc("a0000000", "z0000000", "r0000000", "r0000001"),
+        "",
+    );
+    let degrees = |d: f64| {
+        let angle = d.to_radians();
+        [5.0 * libm::cos(angle), 5.0 * libm::sin(angle)]
+    };
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        degrees(359.0),
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(at(&sketch, "n0000000"), (0.0, 5.0, false));
+    assert_eq!(
+        arc_points(&sketch, "a0000000"),
+        ["z0000000", "n0000000", "r0000001"]
+    );
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000000", "d0000000"));
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        degrees(300.0),
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(at(&sketch, "n0000000"), (-5.0, 0.0, false));
+    assert_eq!(
+        arc_points(&sketch, "a0000000"),
+        ["z0000000", "r0000000", "n0000000"]
+    );
+}
+
+#[test]
+fn a_distance_or_on_over_the_part_removed_or_past_an_end_trimmed_away_is_dropped() {
+    // FreeCAD 1.1.3 (the port review's probes; findPieceContainingPoint has no fallback):
+    // cutters at 8 and 24, picked at 16: a distance from (16, 3) is dropped, one from
+    // (28, 3) moves to the second piece. One cutter at 8, picked at 4: an on at (−2, 0)
+    // and a distance from (−2, 3), past the start trimmed away, are dropped; an on at
+    // (40, 0), past the end kept, stays.
+    let (mut points, d) = upright('d', 8.0);
+    let (more, e) = upright('e', 24.0);
+    points.extend(more);
+    points.push(point("s0000000", 16.0, 3.0));
+    points.push(point("s0000001", 28.0, 3.0));
+    let before = a_line(
+        &points,
+        &[d.clone(), e],
+        "",
+        r#"{"id": "k0000000", "type": "point_line_distance", "point": "s0000000", "line": "a0000000", "value": 3, "side": "left", "driving": true}, {"id": "k0000001", "type": "point_line_distance", "point": "s0000001", "line": "a0000000", "value": 3, "side": "left", "driving": true}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [16.0, 0.0],
+        &ids(&["n0000000", "n0000001", "b1000000", "k0000008", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert!(!has(&sketch, "k0000000"));
+    match form(&sketch, "k0000001") {
+        Form::PointLineDistance { line, .. } => assert_eq!(line, &element("b1000000")),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(done.edited.removed, ids(&["k0000000"]));
+    let (mut points, _) = upright('d', 8.0);
+    points.extend([
+        point("s0000000", -2.0, 0.0),
+        point("s0000001", -2.0, 3.0),
+        point("s0000002", 40.0, 0.0),
+    ]);
+    let before = a_line(
+        &points,
+        &[d],
+        "",
+        r#"{"id": "k0000000", "type": "on", "point": "s0000000", "curve": "a0000000"}, {"id": "k0000001", "type": "point_line_distance", "point": "s0000001", "line": "a0000000", "value": 3, "side": "left", "driving": true}, {"id": "k0000002", "type": "on", "point": "s0000002", "curve": "a0000000"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [4.0, 0.0],
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(form(&sketch, "k0000002"), &on("s0000002", "a0000000"));
+    assert_eq!(
+        done.edited.removed,
+        ids(&["p0000000", "k0000000", "k0000001"])
+    );
+}
+
+#[test]
+fn a_constraint_on_both_ends_goes_when_one_is_trimmed_away_though_a_neighbour_keeps_it() {
+    // f0d30cb570 (involvesBothButNotBothKept): b shares a's start p0; a distance of a's
+    // ends goes with the trim back to the cutter at 8, though p0 stays, b's; a distance_x
+    // of p0 alone stays.
+    let (mut points, d) = upright('d', 8.0);
+    points.push(point("b0000001", 0.0, 10.0));
+    let before = a_line(
+        &points,
+        &[d, line("b0000000", "p0000000", "b0000001")],
+        "",
+        r#"{"id": "k0000000", "type": "distance", "a": "p0000000", "b": "p0000004", "value": 32, "driving": true}, {"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000000", "value": 0, "driving": true}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [4.0, 0.0],
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert!(has(&sketch, "p0000000"));
+    assert!(!has(&sketch, "k0000000"));
+    assert_eq!(
+        form(&sketch, "k0000001"),
+        form(sketch_of(&before), "k0000001")
+    );
+    assert_eq!(done.edited.removed, ids(&["k0000000"]));
+}
+
+// ---- the tests review's: where each constraint goes, and where rounds cross
+
+/// Line a from p0 (0, 0) to p4 (32, 0), uprights d at 8 and e at 24, and the rest.
+fn line_with_uprights(
+    more_points: &[String],
+    more_lines: &[String],
+    circles: &str,
+    arcs: &str,
+    constraints: &str,
+) -> Document {
+    let mut points = vec![
+        point("p0000000", 0.0, 0.0),
+        point("p0000004", 32.0, 0.0),
+        point("d0000001", 8.0, -5.0),
+        point("d0000002", 8.0, 5.0),
+        point("e0000001", 24.0, -5.0),
+        point("e0000002", 24.0, 5.0),
+    ];
+    points.extend(more_points.iter().cloned());
+    let mut lines = vec![
+        line("a0000000", "p0000000", "p0000004"),
+        line("d0000000", "d0000001", "d0000002"),
+        line("e0000000", "e0000001", "e0000002"),
+    ];
+    lines.extend(more_lines.iter().cloned());
+    doc(
+        &points.join(", "),
+        &lines.join(", "),
+        circles,
+        arcs,
+        constraints,
+    )
+}
+
+/// Two new points, the second piece, and the two ons.
+const FIVE: [&str; 5] = ["n0000000", "n0000001", "b1000000", "k0000008", "k0000009"];
+
+#[test]
+fn a_tangency_trimmed_back_from_the_other_side_is_same() {
+    // y = 10 from (−20, 10) to (20, 10) resting on the circle of radius 10; picked at
+    // (10, 10), the line keeps (−20, 10) to the contact (0, 10). Leaving its new end it runs
+    // −x; the circle runs counter-clockwise at the top along −x: same.
+    let before = doc(
+        &[
+            point("p0000000", -20.0, 10.0),
+            point("p0000004", 20.0, 10.0),
+            point("z0000000", 0.0, 0.0),
+        ]
+        .join(", "),
+        &line("a0000000", "p0000000", "p0000004"),
+        &circle("c0000000", "z0000000", 10.0),
+        "",
+        r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "c0000000", "side": "right"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [10.0, 10.0],
+        &ids(&["n0000000"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        &Form::TangentOn {
+            a: element("a0000000"),
+            at: element("n0000000"),
+            b: element("c0000000"),
+            direction: Direction::Same
+        }
+    );
+}
+
+#[test]
+fn an_arcs_edge_tangency_on_the_second_piece_goes_to_it() {
+    // Upper half of radius 25, cut at (±15, 20), picked at the top; t touches the circle at
+    // (−24, 7) (tangent direction (7, 24)) without reaching it: on the second piece.
+    let before = doc(
+        &[
+            point("z0000000", 0.0, 0.0),
+            point("r0000000", 25.0, 0.0),
+            point("r0000001", -25.0, 0.0),
+            point("d0000001", 15.0, 0.0),
+            point("d0000002", 15.0, 30.0),
+            point("e0000001", -15.0, 0.0),
+            point("e0000002", -15.0, 30.0),
+            point("t0000001", -17.0, 31.0),
+            point("t0000002", -10.0, 55.0),
+        ]
+        .join(", "),
+        &[
+            line("d0000000", "d0000001", "d0000002"),
+            line("e0000000", "e0000001", "e0000002"),
+            line("t0000000", "t0000001", "t0000002"),
+        ]
+        .join(", "),
+        "",
+        &arc("a0000000", "z0000000", "r0000000", "r0000001"),
+        r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "t0000000", "side": "left"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [0.0, 25.0],
+        &ids(&FIVE),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        &Form::Tangent {
+            a: element("b1000000"),
+            b: element("t0000000"),
+            side: TangentSide::Left
+        }
+    );
+}
+
+#[test]
+fn an_arcs_edge_tangency_with_a_circle_on_the_removed_part_is_refused() {
+    // Circle D about (0, 31), radius 5: its contact with the arc, (0, 25), is 1 mm off (no
+    // cut) and on the part removed.
+    let before = doc(
+        &[
+            point("z0000000", 0.0, 0.0),
+            point("r0000000", 25.0, 0.0),
+            point("r0000001", -25.0, 0.0),
+            point("d0000001", 15.0, 0.0),
+            point("d0000002", 15.0, 30.0),
+            point("e0000001", -15.0, 0.0),
+            point("e0000002", -15.0, 30.0),
+            point("q0000000", 0.0, 31.0),
+        ]
+        .join(", "),
+        &[
+            line("d0000000", "d0000001", "d0000002"),
+            line("e0000000", "e0000001", "e0000002"),
+        ]
+        .join(", "),
+        &circle("c0000000", "q0000000", 5.0),
+        &arc("a0000000", "z0000000", "r0000000", "r0000001"),
+        r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "c0000000", "side": "outside"}"#,
+    );
+    let error = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [0.0, 25.0],
+        &ids(&FIVE),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.elements(),
+        &["k0000000".to_owned(), "a0000000".to_owned()]
+    );
+}
+
+#[test]
+fn a_point_on_a_circles_removed_part_loses_its_on() {
+    // Chord x = 6, picked at (10, 0): the minor arc goes, and s on it with it; t at (−10, 0)
+    // keeps its on.
+    let before = doc(
+        &[
+            point("z0000000", 0.0, 0.0),
+            point("d0000001", 6.0, -20.0),
+            point("d0000002", 6.0, 20.0),
+            point("s0000000", 10.0, 0.0),
+            point("t0000000", -10.0, 0.0),
+        ]
+        .join(", "),
+        &line("d0000000", "d0000001", "d0000002"),
+        &circle("c0000000", "z0000000", 10.0),
+        "",
+        r#"{"id": "k0000000", "type": "on", "point": "s0000000", "curve": "c0000000"}, {"id": "k0000001", "type": "on", "point": "t0000000", "curve": "c0000000"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("c0000000"),
+        [10.0, 0.0],
+        &ids(&["n0000000", "n0000001", "k0000008", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert!(sketch.constraints.iter().all(|c| c.id != id("k0000000")));
+    assert_eq!(form(&sketch, "k0000001"), &on("t0000000", "c0000000"));
+    assert_eq!(done.edited.removed, ids(&["k0000000"]));
+}
+
+#[test]
+fn a_distance_from_the_line_goes_to_the_piece_under_the_point() {
+    let before = line_with_uprights(
+        &[point("s0000000", 28.0, 5.0)],
+        &[],
+        "",
+        "",
+        r#"{"id": "k0000000", "type": "point_line_distance", "point": "s0000000", "line": "a0000000", "value": 5, "side": "left", "driving": true}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [16.0, 0.0],
+        &ids(&FIVE),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert!(
+        matches!(form(&sketch, "k0000000"), Form::PointLineDistance { line, .. } if *line == element("b1000000"))
+    );
+}
+
+#[test]
+fn a_midpoint_of_a_line_cut_in_two_is_its_outer_ends_symmetry() {
+    let before = line_with_uprights(
+        &[point("s0000000", 16.0, 0.0)],
+        &[],
+        "",
+        "",
+        r#"{"id": "k0000000", "type": "midpoint", "point": "s0000000", "line": "a0000000"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [16.0, 0.0],
+        &ids(&FIVE),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        &Form::Symmetric {
+            a: element("p0000000"),
+            b: element("p0000004"),
+            about: element("s0000000")
+        }
+    );
+}
+
+#[test]
+fn a_lines_parallel_goes_to_both_pieces() {
+    let before = line_with_uprights(
+        &[point("f0000001", 0.0, 20.0), point("f0000002", 10.0, 20.0)],
+        &[line("f0000000", "f0000001", "f0000002")],
+        "",
+        "",
+        r#"{"id": "k0000000", "type": "parallel", "a": "a0000000", "b": "f0000000"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [16.0, 0.0],
+        &ids(&[
+            "n0000000", "n0000001", "b1000000", "k0000001", "k0000008", "k0000009",
+        ]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        form(&sketch, "k0000001"),
+        &Form::Parallel {
+            a: element("b1000000"),
+            b: element("f0000000")
+        }
+    );
+}
+
+#[test]
+fn a_circle_cut_by_a_circle_is_cut_where_they_cross() {
+    // C radius 25 about the origin, D radius 15 about (20, 0): they cross at (20, ±15).
+    let before = doc(
+        &[point("z0000000", 0.0, 0.0), point("q0000000", 20.0, 0.0)].join(", "),
+        "",
+        &[
+            circle("c0000000", "z0000000", 25.0),
+            circle("d0000000", "q0000000", 15.0),
+        ]
+        .join(", "),
+        "",
+        "",
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("c0000000"),
+        [25.0, 0.0],
+        &ids(&["n0000000", "n0000001", "k0000008", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    near(&sketch, "n0000000", [20.0, 15.0]);
+    near(&sketch, "n0000001", [20.0, -15.0]);
+}
+
+#[test]
+fn a_tangent_at_the_lines_kept_end_goes_to_the_second_piece() {
+    let before = line_with_uprights(
+        &[point("c0000001", 40.0, 10.0)],
+        &[line("c0000000", "p0000004", "c0000001")],
+        "",
+        "",
+        r#"{"id": "k0000000", "type": "tangent_at", "a": "a0000000", "b": "c0000000", "at": "p0000004", "direction": "same"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [16.0, 0.0],
+        &ids(&FIVE),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        &Form::TangentAt {
+            a: element("b1000000"),
+            b: element("c0000000"),
+            at: element("p0000004"),
+            direction: Direction::Same
+        }
+    );
+}
+
+#[test]
+fn a_far_cutters_tangent_on_goes_to_the_piece_holding_it() {
+    // Arc r about (28, 10) from r1 (28, 0) to (38, 10), held tangent on a at r1: a cut at 28,
+    // past the one at 24 the trim uses.
+    let before = line_with_uprights(
+        &[
+            point("q0000000", 28.0, 10.0),
+            point("r0000001", 28.0, 0.0),
+            point("r0000002", 38.0, 10.0),
+        ],
+        &[],
+        "",
+        &arc("r0000000", "q0000000", "r0000001", "r0000002"),
+        r#"{"id": "k0000000", "type": "tangent_on", "a": "r0000000", "at": "r0000001", "b": "a0000000", "direction": "same"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [16.0, 0.0],
+        &ids(&FIVE),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        &Form::TangentOn {
+            a: element("r0000000"),
+            at: element("r0000001"),
+            b: element("b1000000"),
+            direction: Direction::Same
+        }
+    );
+}
+
+#[test]
+fn an_on_past_the_lines_end_goes_to_the_nearer_piece() {
+    let before = line_with_uprights(
+        &[point("s0000000", 40.0, 0.0)],
+        &[],
+        "",
+        "",
+        r#"{"id": "k0000000", "type": "on", "point": "s0000000", "curve": "a0000000"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [16.0, 0.0],
+        &ids(&FIVE),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(form(&sketch, "k0000000"), &on("s0000000", "b1000000"));
+}
+
+#[test]
+fn a_rounds_equal_and_a_symmetry_about_a_shortened_line_stay() {
+    let before = doc(
+        &[
+            point("z0000000", 0.0, 0.0),
+            point("y0000000", 30.0, 0.0),
+            point("d0000001", 6.0, -20.0),
+            point("d0000002", 6.0, 20.0),
+        ]
+        .join(", "),
+        &line("d0000000", "d0000001", "d0000002"),
+        &[
+            circle("c0000000", "z0000000", 10.0),
+            circle("c0000001", "y0000000", 10.0),
+        ]
+        .join(", "),
+        "",
+        r#"{"id": "k0000000", "type": "equal", "a": "c0000000", "b": "c0000001"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("c0000000"),
+        [10.0, 0.0],
+        &ids(&["n0000000", "n0000001", "k0000008", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        form(sketch_of(&before), "k0000000")
+    );
+    let before = line_with_uprights(
+        &[point("s0000001", 16.0, 5.0), point("s0000002", 16.0, -5.0)],
+        &[],
+        "",
+        "",
+        r#"{"id": "k0000000", "type": "symmetric", "a": "s0000001", "b": "s0000002", "about": "a0000000"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [4.0, 0.0],
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        form(sketch_of(&before), "k0000000")
+    );
+}
+
+#[test]
+fn the_lines_own_tangent_on_at_its_kept_end_stays() {
+    let before = line_with_uprights(
+        &[point("q0000000", 32.0, 10.0)],
+        &[],
+        &circle("c0000000", "q0000000", 10.0),
+        "",
+        r#"{"id": "k0000000", "type": "tangent_on", "a": "a0000000", "at": "p0000004", "b": "c0000000", "direction": "same"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [4.0, 0.0],
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        form(sketch_of(&before), "k0000000")
+    );
+}
+
+#[test]
+fn an_arc_cut_by_a_circle_is_cut_where_they_cross() {
+    // The upper half of radius 25 about the origin, and D of radius 15 about (20, 0), which
+    // crosses it at (20, 15), at 36.87°; picked at the top, the arc keeps its start to there.
+    let before = doc(
+        &[
+            point("z0000000", 0.0, 0.0),
+            point("r0000000", 25.0, 0.0),
+            point("r0000001", -25.0, 0.0),
+            point("q0000000", 20.0, 0.0),
+        ]
+        .join(", "),
+        "",
+        &circle("d0000000", "q0000000", 15.0),
+        &arc("a0000000", "z0000000", "r0000000", "r0000001"),
+        "",
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [0.0, 25.0],
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    near(&sketch, "n0000000", [20.0, 15.0]);
+    assert_eq!(
+        arc_points(&sketch, "a0000000"),
+        ["z0000000", "r0000000", "n0000000"]
+    );
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000000", "d0000000"));
+}
+
+#[test]
+fn a_lines_angle_and_edge_tangency_are_copied_to_both_pieces() {
+    // §4, item 9: an angle to f and a tangency to circle c, resting on a at 28 (a cut, but
+    // not one the trim at 16 uses), each on both pieces; the copies by the IDs they copy.
+    let before = line_with_uprights(
+        &[
+            point("f0000001", 0.0, 20.0),
+            point("f0000002", 10.0, 20.0),
+            point("q0000000", 28.0, -10.0),
+        ],
+        &[line("f0000000", "f0000001", "f0000002")],
+        &circle("c0000000", "q0000000", 10.0),
+        "",
+        r#"{"id": "k0000000", "type": "angle", "a": "a0000000", "b": "f0000000", "value": 0, "driving": false}, {"id": "k0000001", "type": "tangent", "a": "c0000000", "b": "a0000000", "side": "left"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [16.0, 0.0],
+        &ids(&[
+            "n0000000", "n0000001", "b1000000", "k0000002", "k0000003", "k0000008", "k0000009",
+        ]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        form(sketch_of(&before), "k0000000")
+    );
+    assert_eq!(
+        form(&sketch, "k0000001"),
+        form(sketch_of(&before), "k0000001")
+    );
+    match form(&sketch, "k0000002") {
+        Form::Angle { a, b, .. } => {
+            assert_eq!((a, b), (&element("b1000000"), &element("f0000000")))
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        form(&sketch, "k0000003"),
+        &Form::Tangent {
+            a: element("c0000000"),
+            b: element("b1000000"),
+            side: TangentSide::Left,
+        }
+    );
+}
+
+#[test]
+fn a_cutter_tilted_within_1e_7_mm_of_the_line_cuts_it_at_its_ends_not_between() {
+    // From (8, −5e-8) to (16, 5e-8): overlapping a within 1e-7 mm, so its ends cut, and its
+    // line's crossing of a's at 12 doesn't (an overlap has no crossing).
+    let before = a_line(
+        &[
+            point("b0000001", 8.0, -0.00000005),
+            point("b0000002", 16.0, 0.00000005),
+        ],
+        &[line("b0000000", "b0000001", "b0000002")],
+        "",
+        "",
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [10.0, 0.0],
+        &ids(&["n0000000", "n0000001", "b1000000", "k0000008", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(at(&sketch, "n0000000"), (8.0, 0.0, false));
+    assert_eq!(at(&sketch, "n0000001"), (16.0, 0.0, false));
+}
+
+#[test]
+fn an_on_past_the_lines_start_stays_on_the_first_of_two_pieces() {
+    // The port review's gap's mirror: past the start kept, the first piece.
+    let before = line_with_uprights(
+        &[point("s0000000", -8.0, 0.0)],
+        &[],
+        "",
+        "",
+        r#"{"id": "k0000000", "type": "on", "point": "s0000000", "curve": "a0000000"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [16.0, 0.0],
+        &ids(&FIVE),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(form(&sketch, "k0000000"), &on("s0000000", "a0000000"));
+}
+
+#[test]
+fn an_arc_not_starting_at_0_picked_outside_its_sweep_goes_to_the_nearer_end() {
+    // Radius 5 about the origin from r0 (0, 5), at 90°, to r1 (−5, 0), at 180°, cut by a
+    // radius out to 135°. Picked at 300°: 120° past the end, 150° round to the start, so
+    // nearer the end: it loses 135° to 180° and keeps r0 to the cut.
+    let c = 5.0 * libm::cos(135f64.to_radians());
+    let s = 5.0 * libm::sin(135f64.to_radians());
+    let before = doc(
+        &[
+            point("z0000000", 0.0, 0.0),
+            point("r0000000", 0.0, 5.0),
+            point("r0000001", -5.0, 0.0),
+            point("d0000001", 2.0 * c, 2.0 * s),
+        ]
+        .join(", "),
+        &line("d0000000", "z0000000", "d0000001"),
+        "",
+        &arc("a0000000", "z0000000", "r0000000", "r0000001"),
+        "",
+    );
+    let p = [
+        5.0 * libm::cos(300f64.to_radians()),
+        5.0 * libm::sin(300f64.to_radians()),
+    ];
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        p,
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        arc_points(&sketch, "a0000000"),
+        ["z0000000", "r0000000", "n0000000"]
+    );
+}
+
+#[test]
+fn an_arcs_edge_tangency_touching_its_circle_past_its_ends_is_refused() {
+    // Decision 2: the upper half of radius 25 about the origin, cut at (−15, 20) and picked
+    // at (−20, 15), so it keeps the part from its start (25, 0). t touches the circle at
+    // (15, −20) (tangent direction (0.8, 0.6), from (7, −26) to (23, −14)): below the arc,
+    // past its ends, nearer its start. No piece touches t, so the trim is refused, as when
+    // the contact is on the part removed (FreeCAD drops the tangency).
+    let before = doc(
+        &[
+            point("z0000000", 0.0, 0.0),
+            point("r0000000", 25.0, 0.0),
+            point("r0000001", -25.0, 0.0),
+            point("e0000001", -15.0, 0.0),
+            point("e0000002", -15.0, 30.0),
+            point("t0000001", 7.0, -26.0),
+            point("t0000002", 23.0, -14.0),
+        ]
+        .join(", "),
+        &[
+            line("e0000000", "e0000001", "e0000002"),
+            line("t0000000", "t0000001", "t0000002"),
+        ]
+        .join(", "),
+        "",
+        &arc("a0000000", "z0000000", "r0000000", "r0000001"),
+        r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "t0000000", "side": "right"}"#,
+    );
+    let error = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [-20.0, 15.0],
+        &ids(&["n0000000", "k0000008"]),
+    )
+    .unwrap_err();
+    assert_eq!(
+        said(&error),
+        (
+            "trimming arc a0000000 there would leave constraint k0000000, an edge tangency with t0000000, on no piece of it",
+            Some("pick"),
+            vec!["k0000000", "a0000000"]
+        )
+    );
+    assert_eq!(error.cause(), Some("no piece of the arc touches t0000000"));
+}
+
+#[test]
+fn a_lines_perpendicular_with_a_cutter_goes_to_the_piece_at_that_cut_alone() {
+    // FreeCAD's trim turns a perpendicular with the cutter into one at the cut, on the piece
+    // whose end it is (`transformPreexistingConstraintForTrim`; 1.1.3 keeps a single one):
+    // never copied, so with the line horizontal no second piece holds the cutter upright
+    // twice. Cutters at 8 and 24, picked at 16: perpendicular with d, at the first cut, stays
+    // on the first piece; with e, at the second, it goes to the second. The horizontal is
+    // copied, then the new ends' ons.
+    for (cutter, piece, modified) in [
+        ("d0000000", "a0000000", vec!["a0000000"]),
+        ("e0000000", "b1000000", vec!["a0000000", "k0000000"]),
+    ] {
+        let (mut points, d) = upright('d', 8.0);
+        let (more, e) = upright('e', 24.0);
+        points.extend(more);
+        let before = a_line(
+            &points,
+            &[d, e],
+            "",
+            &format!(
+                r#"{{"id": "k0000000", "type": "perpendicular", "a": "a0000000", "b": "{cutter}"}}, {{"id": "k0000001", "type": "horizontal", "line": "a0000000"}}"#
+            ),
+        );
+        let done = trim(
+            sketch_of(&before),
+            &id("a0000000"),
+            [16.0, 0.0],
+            &ids(&[
+                "n0000000", "n0000001", "b1000000", "k0000002", "k0000003", "k0000004",
+            ]),
+        )
+        .unwrap();
+        let sketch = gated(&before, &done);
+        assert_eq!(
+            form(&sketch, "k0000000"),
+            &Form::Perpendicular {
+                a: element(piece),
+                b: element(cutter)
+            },
+            "{cutter}"
+        );
+        assert_eq!(
+            form(&sketch, "k0000002"),
+            &Form::Horizontal {
+                line: element("b1000000")
+            }
+        );
+        assert_eq!(form(&sketch, "k0000003"), &on("n0000000", "d0000000"));
+        assert_eq!(form(&sketch, "k0000004"), &on("n0000001", "e0000000"));
+        let perpendiculars = sketch
+            .constraints
+            .iter()
+            .filter(|c| matches!(c.form, Form::Perpendicular { .. }))
+            .count();
+        assert_eq!(perpendiculars, 1, "{cutter}");
+        assert_eq!(
+            done.edited.added,
+            ids(&[
+                "n0000000", "n0000001", "b1000000", "k0000002", "k0000003", "k0000004"
+            ])
+        );
+        assert_eq!(done.edited.modified, ids(&modified), "{cutter}");
+    }
+}
+
+// ---- the mutants' (#242): ties, constraints named either way round, and rounds' contacts
+
+#[test]
+fn an_arc_picked_as_far_from_both_ends_or_nearer_its_end_is_trimmed_at_its_end() {
+    // The upper half of radius 5 about the origin, from r0 (5, 0) to r1 (−5, 0), cut at
+    // (0, 5) by d. Picked straight below, at (0, −5), 90° past its end and 90° short of its
+    // start: the start is taken only when nearer, so the pick is at the end, and the arc
+    // loses (0, 5) to r1. Picked at 265°, 85° past its end and 95° short of its start: the
+    // end too.
+    let before = doc(
+        &[
+            point("z0000000", 0.0, 0.0),
+            point("r0000000", 5.0, 0.0),
+            point("r0000001", -5.0, 0.0),
+            point("d0000001", 0.0, 2.0),
+            point("d0000002", 0.0, 8.0),
+        ]
+        .join(", "),
+        &line("d0000000", "d0000001", "d0000002"),
+        "",
+        &arc("a0000000", "z0000000", "r0000000", "r0000001"),
+        "",
+    );
+    let past = 265f64.to_radians();
+    for pick in [[0.0, -5.0], [5.0 * libm::cos(past), 5.0 * libm::sin(past)]] {
+        let done = trim(
+            sketch_of(&before),
+            &id("a0000000"),
+            pick,
+            &ids(&["n0000000", "k0000009"]),
+        )
+        .unwrap();
+        let sketch = gated(&before, &done);
+        assert_eq!(
+            arc_points(&sketch, "a0000000"),
+            ["z0000000", "r0000000", "n0000000"],
+            "{pick:?}"
+        );
+        near(&sketch, "n0000000", [0.0, 5.0]);
+        assert_eq!(form(&sketch, "k0000009"), &on("n0000000", "d0000000"));
+    }
+}
+
+#[test]
+fn a_tangency_naming_the_line_second_becomes_its_end_tangency_and_the_others_stay() {
+    // As the tangency with the cutter becomes an end tangency, k0 naming the circle first
+    // (a: c0, b: a): y = 10 from x = −20 to 20 on the circle of radius 10 about the origin,
+    // picked at x = −10, trimmed back to the contact (0, 10), where the line leaves along +x
+    // and the circle runs along −x: opposite. The line's tangencies with c1 about (40, 20)
+    // and c2 about (−40, 0), which touch its carrier past its ends (no cut), stay edge
+    // tangencies, the line named first (k1) or second (k2).
+    let before = doc(
+        &[
+            point("p0000000", -20.0, 10.0),
+            point("p0000004", 20.0, 10.0),
+            point("z0000000", 0.0, 0.0),
+            point("y0000001", 40.0, 20.0),
+            point("y0000002", -40.0, 0.0),
+        ]
+        .join(", "),
+        &line("a0000000", "p0000000", "p0000004"),
+        &[
+            circle("c0000000", "z0000000", 10.0),
+            circle("c0000001", "y0000001", 10.0),
+            circle("c0000002", "y0000002", 10.0),
+        ]
+        .join(", "),
+        "",
+        r#"{"id": "k0000000", "type": "tangent", "a": "c0000000", "b": "a0000000", "side": "right"}, {"id": "k0000001", "type": "tangent", "a": "a0000000", "b": "c0000001", "side": "left"}, {"id": "k0000002", "type": "tangent", "a": "c0000002", "b": "a0000000", "side": "left"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [-10.0, 10.0],
+        &ids(&["n0000000"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(at(&sketch, "n0000000"), (0.0, 10.0, false));
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        &Form::TangentOn {
+            a: element("a0000000"),
+            at: element("n0000000"),
+            b: element("c0000000"),
+            direction: Direction::Opposite,
+        }
+    );
+    for kept in ["k0000001", "k0000002"] {
+        assert_eq!(
+            form(&sketch, kept),
+            form(sketch_of(&before), kept),
+            "{kept}"
+        );
+    }
+    assert_eq!(sketch.constraints.len(), 3);
+    assert_eq!(done.edited.added, ids(&["n0000000"]));
+    assert_eq!(done.edited.modified, ids(&["a0000000", "k0000000"]));
+    assert_eq!(done.edited.removed, ids(&["p0000000"]));
+}
+
+#[test]
+fn a_perpendicular_naming_the_line_second_goes_to_its_cuts_piece_or_to_both() {
+    // Cutters at 8 and 24, picked at 16. k0, the cutter e perpendicular to the line (a: e,
+    // b: a), goes to the piece at e's cut alone, the second; k1, f (x = 40, which the line
+    // doesn't reach) perpendicular to it, is copied to the second piece as k2.
+    let before = line_with_uprights(
+        &[point("f0000001", 40.0, 10.0), point("f0000002", 40.0, 20.0)],
+        &[line("f0000000", "f0000001", "f0000002")],
+        "",
+        "",
+        r#"{"id": "k0000000", "type": "perpendicular", "a": "e0000000", "b": "a0000000"}, {"id": "k0000001", "type": "perpendicular", "a": "f0000000", "b": "a0000000"}"#,
+    );
+    let six = ids(&[
+        "n0000000", "n0000001", "b1000000", "k0000002", "k0000008", "k0000009",
+    ]);
+    let done = trim(sketch_of(&before), &id("a0000000"), [16.0, 0.0], &six).unwrap();
+    let sketch = gated(&before, &done);
+    let perpendicular = |a: &str, b: &str| Form::Perpendicular {
+        a: element(a),
+        b: element(b),
+    };
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        &perpendicular("e0000000", "b1000000")
+    );
+    assert_eq!(
+        form(&sketch, "k0000001"),
+        &perpendicular("f0000000", "a0000000")
+    );
+    assert_eq!(
+        form(&sketch, "k0000002"),
+        &perpendicular("f0000000", "b1000000")
+    );
+    assert_eq!(form(&sketch, "k0000008"), &on("n0000000", "d0000000"));
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000001", "e0000000"));
+    assert_eq!(done.edited.added, six);
+    assert_eq!(done.edited.modified, ids(&["a0000000", "k0000000"]));
+}
+
+#[test]
+fn an_end_tangency_is_as_drawn_on_an_upright_line_and_a_tilted_one_off_the_origin() {
+    // Decision 8, where each component counts. The line x = 0 from (0, −5) to (0, 5) rests on
+    // the circle of radius 5 about (−5, 0) at the origin, where the circle runs up: picked at
+    // (0, −2.5), the line keeps the origin to (0, 5) and leaves it up, same; picked at
+    // (0, 2.5), it keeps (0, −5) to the origin and leaves it down, opposite. The line from
+    // (−6.5, 6.5) to (5.5, −9.5), along (12, −16), rests on the circle of radius 5 about
+    // (−4.5, −4.5) at (−0.5, −1.5) = the centre + (4, 3), where the circle runs along
+    // (−3, 4): picked at (2.5, −5.5), the line keeps its start to the contact and leaves it
+    // along (−6, 8), same; picked at (−3.5, 2.5), it keeps the contact to its end and leaves
+    // along (6, −8), opposite.
+    for (center, from, to, side, pick, contact, direction) in [
+        (
+            [-5.0, 0.0],
+            [0.0, -5.0],
+            [0.0, 5.0],
+            "left",
+            [0.0, -2.5],
+            [0.0, 0.0],
+            Direction::Same,
+        ),
+        (
+            [-5.0, 0.0],
+            [0.0, -5.0],
+            [0.0, 5.0],
+            "left",
+            [0.0, 2.5],
+            [0.0, 0.0],
+            Direction::Opposite,
+        ),
+        (
+            [-4.5, -4.5],
+            [-6.5, 6.5],
+            [5.5, -9.5],
+            "right",
+            [2.5, -5.5],
+            [-0.5, -1.5],
+            Direction::Same,
+        ),
+        (
+            [-4.5, -4.5],
+            [-6.5, 6.5],
+            [5.5, -9.5],
+            "right",
+            [-3.5, 2.5],
+            [-0.5, -1.5],
+            Direction::Opposite,
+        ),
+    ] {
+        let before = doc(
+            &[
+                point("p0000000", from[0], from[1]),
+                point("p0000004", to[0], to[1]),
+                point("z0000000", center[0], center[1]),
+            ]
+            .join(", "),
+            &line("a0000000", "p0000000", "p0000004"),
+            &circle("c0000000", "z0000000", 5.0),
+            "",
+            &format!(
+                r#"{{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "c0000000", "side": "{side}"}}"#
+            ),
+        );
+        let done = trim(
+            sketch_of(&before),
+            &id("a0000000"),
+            pick,
+            &ids(&["n0000000"]),
+        )
+        .unwrap();
+        let sketch = gated(&before, &done);
+        assert_eq!(at(&sketch, "n0000000"), (contact[0], contact[1], false));
+        assert_eq!(
+            form(&sketch, "k0000000"),
+            &Form::TangentOn {
+                a: element("a0000000"),
+                at: element("n0000000"),
+                b: element("c0000000"),
+                direction,
+            },
+            "{pick:?}"
+        );
+    }
+}
+
+#[test]
+fn a_cutters_own_constraints_stay_as_they_are() {
+    // Cutters at 8 and 24, picked at 16: d's length, d and e equal, and s held on d at
+    // (8, 3) don't name the line, and stay.
+    let before = line_with_uprights(
+        &[point("s0000000", 8.0, 3.0)],
+        &[],
+        "",
+        "",
+        r#"{"id": "k0000000", "type": "length", "line": "d0000000", "value": 10, "driving": true}, {"id": "k0000001", "type": "equal", "a": "d0000000", "b": "e0000000"}, {"id": "k0000002", "type": "on", "point": "s0000000", "curve": "d0000000"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [16.0, 0.0],
+        &ids(&FIVE),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    for kept in ["k0000000", "k0000001", "k0000002"] {
+        assert_eq!(
+            form(&sketch, kept),
+            form(sketch_of(&before), kept),
+            "{kept}"
+        );
+    }
+    assert_eq!(done.edited.modified, ids(&["a0000000"]));
+    assert!(done.edited.removed.is_empty());
+}
+
+#[test]
+fn an_edge_tangency_of_two_other_curves_stays_when_a_circle_is_trimmed() {
+    // The chord d along x = 6 across the circle of radius 10, picked at (10, 0): the minor
+    // arc goes. d's tangency with g, about (30, 30), names no piece of the circle (were it
+    // carried as the circle's, d's foot from the centre, (6, 0), would be on the part
+    // removed), and stays.
+    let before = doc(
+        &[
+            point("z0000000", 0.0, 0.0),
+            point("d0000001", 6.0, -20.0),
+            point("d0000002", 6.0, 20.0),
+            point("q0000000", 30.0, 30.0),
+        ]
+        .join(", "),
+        &line("d0000000", "d0000001", "d0000002"),
+        &[
+            circle("c0000000", "z0000000", 10.0),
+            circle("g0000000", "q0000000", 5.0),
+        ]
+        .join(", "),
+        "",
+        r#"{"id": "k0000000", "type": "tangent", "a": "d0000000", "b": "g0000000", "side": "left"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("c0000000"),
+        [10.0, 0.0],
+        &ids(&["n0000000", "n0000001", "k0000008", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        arc_points(&sketch, "c0000000"),
+        ["z0000000", "n0000000", "n0000001"]
+    );
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        form(sketch_of(&before), "k0000000")
+    );
+    assert_eq!(done.edited.modified, ids(&["c0000000"]));
+}
+
+#[test]
+fn the_lines_tangencies_at_its_kept_end_go_to_the_second_piece_named_either_way() {
+    // Cutters at 8 and 24, picked at 16: at p4, the second piece's end now, the line's
+    // tangent_on g, the circle of radius 10 about (32, 10) (the line named first), and c's
+    // tangent_at with it (the line named second) go to the second piece.
+    let before = line_with_uprights(
+        &[point("q0000000", 32.0, 10.0), point("c0000001", 40.0, 10.0)],
+        &[line("c0000000", "p0000004", "c0000001")],
+        &circle("g0000000", "q0000000", 10.0),
+        "",
+        r#"{"id": "k0000000", "type": "tangent_on", "a": "a0000000", "at": "p0000004", "b": "g0000000", "direction": "same"}, {"id": "k0000001", "type": "tangent_at", "a": "c0000000", "b": "a0000000", "at": "p0000004", "direction": "same"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [16.0, 0.0],
+        &ids(&FIVE),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        &Form::TangentOn {
+            a: element("b1000000"),
+            at: element("p0000004"),
+            b: element("g0000000"),
+            direction: Direction::Same,
+        }
+    );
+    assert_eq!(
+        form(&sketch, "k0000001"),
+        &Form::TangentAt {
+            a: element("c0000000"),
+            b: element("b1000000"),
+            at: element("p0000004"),
+            direction: Direction::Same,
+        }
+    );
+    assert_eq!(
+        done.edited.modified,
+        ids(&["a0000000", "k0000000", "k0000001"])
+    );
+}
+
+#[test]
+fn a_circles_tangencies_with_circles_touching_the_arc_left_stay() {
+    // Circle c about z0 (40, 30), radius 25, cut by e's start at (60, 45), 36.87°, and f's at
+    // (47, 54), 73.74°, and picked at (15, 30), 180°: the arc left runs between them,
+    // through 53.13°, where c touches each circle here, at (55, 50) = z0 + (15, 20), so each
+    // tangency stays on it; anywhere else on c (0°, where a contact rounded onto z0 would
+    // be, or 233.13°, the side away) is the part removed. With s = 2^-30: g1 about (43, 34),
+    // 5 from z0 along (3, 4), radius 20, inside c; g2 about z0 + s(3, 4), radius 25 − 5s,
+    // inside c too; g3 about z0 − s(3, 4), radius 25 + 5s, holding c inside it, so the
+    // contact is on c's side away from g3's centre; and g4 about z0 + 2s(3, 4), radius 25,
+    // as large as c: neither is inside the other, so the contact is toward g4's centre.
+    // Each tangency is inside. g2, g3, and g4 are c within 1e-7 mm, so they don't cut it;
+    // g1's contact cuts it, but the trim doesn't use that cut.
+    let s = 1.0 / 1_073_741_824.0;
+    let points = [
+        point("z0000000", 40.0, 30.0),
+        point("y0000001", 43.0, 34.0),
+        point("y0000002", 40.0 + 3.0 * s, 30.0 + 4.0 * s),
+        point("y0000003", 40.0 - 3.0 * s, 30.0 - 4.0 * s),
+        point("y0000004", 40.0 + 6.0 * s, 30.0 + 8.0 * s),
+        point("e0000001", 60.0, 45.0),
+        point("e0000002", 80.0, 45.0),
+        point("f0000001", 47.0, 54.0),
+        point("f0000002", 54.0, 78.0),
+    ]
+    .join(", ");
+    let circles = [
+        circle("c0000000", "z0000000", 25.0),
+        circle("g0000001", "y0000001", 20.0),
+        circle("g0000002", "y0000002", 25.0 - 5.0 * s),
+        circle("g0000003", "y0000003", 25.0 + 5.0 * s),
+        circle("g0000004", "y0000004", 25.0),
+    ]
+    .join(", ");
+    let constraints = (1..5)
+        .map(|i| {
+            format!(r#"{{"id": "k000000{i}", "type": "tangent", "a": "c0000000", "b": "g000000{i}", "side": "inside"}}"#)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let before = doc(
+        &points,
+        &[
+            line("e0000000", "e0000001", "e0000002"),
+            line("f0000000", "f0000001", "f0000002"),
+        ]
+        .join(", "),
+        &circles,
+        "",
+        &constraints,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("c0000000"),
+        [15.0, 30.0],
+        &ids(&["n0000000", "n0000001", "k0000008", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        arc_points(&sketch, "c0000000"),
+        ["z0000000", "n0000000", "n0000001"]
+    );
+    assert_eq!(at(&sketch, "n0000000"), (60.0, 45.0, false));
+    assert_eq!(at(&sketch, "n0000001"), (47.0, 54.0, false));
+    assert_eq!(form(&sketch, "k0000008"), &on("n0000000", "e0000000"));
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000001", "f0000000"));
+    for i in 1..5 {
+        let name = format!("k000000{i}");
+        assert_eq!(
+            form(&sketch, &name),
+            form(sketch_of(&before), &name),
+            "{name}"
+        );
+    }
+    assert_eq!(done.edited.modified, ids(&["c0000000"]));
+    assert!(done.edited.removed.is_empty());
+}
+
+#[test]
+fn a_cutters_end_on_the_line_is_shared_only_where_its_held_there() {
+    // e runs up x = 16 from e1, on the line but held by nothing, to e2 (16, 10), where it's
+    // held tangent on x, the circle of radius 5 about (21, 10); s is held on the line at 24,
+    // and the arc r is held tangent on it at r1 (28, 0). Picked at 8, the line is trimmed
+    // back to 16: none of those holds e1 on the line, so the line's new start is a new point
+    // there, on e.
+    let before = doc(
+        &[
+            point("p0000000", 0.0, 0.0),
+            point("p0000004", 32.0, 0.0),
+            point("e0000001", 16.0, 0.0),
+            point("e0000002", 16.0, 10.0),
+            point("x0000001", 21.0, 10.0),
+            point("s0000000", 24.0, 0.0),
+            point("q0000000", 28.0, 10.0),
+            point("r0000001", 28.0, 0.0),
+            point("r0000002", 38.0, 10.0),
+        ]
+        .join(", "),
+        &[
+            line("a0000000", "p0000000", "p0000004"),
+            line("e0000000", "e0000001", "e0000002"),
+        ]
+        .join(", "),
+        &circle("x0000000", "x0000001", 5.0),
+        &arc("r0000000", "q0000000", "r0000001", "r0000002"),
+        r#"{"id": "k0000000", "type": "on", "point": "s0000000", "curve": "a0000000"}, {"id": "k0000001", "type": "tangent_on", "a": "r0000000", "at": "r0000001", "b": "a0000000", "direction": "same"}, {"id": "k0000002", "type": "tangent_on", "a": "e0000000", "at": "e0000002", "b": "x0000000", "direction": "same"}"#,
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [8.0, 0.0],
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(at(&sketch, "n0000000"), (16.0, 0.0, false));
+    assert_eq!(
+        ends(&sketch, "a0000000"),
+        ("n0000000".to_owned(), "p0000004".to_owned())
+    );
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000000", "e0000000"));
+    for kept in ["k0000000", "k0000001", "k0000002"] {
+        assert_eq!(
+            form(&sketch, kept),
+            form(sketch_of(&before), kept),
+            "{kept}"
+        );
+    }
+    assert_eq!(done.edited.removed, ids(&["p0000000"]));
+}
+
+#[test]
+fn two_circles_of_one_radius_off_the_origin_cut_each_other_where_they_cross() {
+    // C about (40, 30) and D about (58, 54) = C's centre + 30 (0.6, 0.8), both of radius 25:
+    // they cross 15 along from C's centre, 20 either side, at (65, 30), 0° on C, and
+    // (33, 54), 106.26°. Picked at (15, 30), 180°, C keeps the arc from the one to the other.
+    let before = doc(
+        &[point("z0000000", 40.0, 30.0), point("y0000000", 58.0, 54.0)].join(", "),
+        "",
+        &[
+            circle("c0000000", "z0000000", 25.0),
+            circle("d0000000", "y0000000", 25.0),
+        ]
+        .join(", "),
+        "",
+        "",
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("c0000000"),
+        [15.0, 30.0],
+        &ids(&["n0000000", "n0000001", "k0000008", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        arc_points(&sketch, "c0000000"),
+        ["z0000000", "n0000000", "n0000001"]
+    );
+    near(&sketch, "n0000000", [65.0, 30.0]);
+    near(&sketch, "n0000001", [33.0, 54.0]);
+    assert_eq!(form(&sketch, "k0000008"), &on("n0000000", "d0000000"));
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000001", "d0000000"));
+}
+
+/// Circle c0 of radius 10 about the origin, a chord e along x = 6 crossing it at (6, ±8),
+/// and circle d0 of radius `radius` about (`x`, 0).
+fn circle_chord_and(x: f64, radius: f64) -> Document {
+    doc(
+        &[
+            point("z0000000", 0.0, 0.0),
+            point("y0000000", x, 0.0),
+            point("e0000001", 6.0, -20.0),
+            point("e0000002", 6.0, 20.0),
+        ]
+        .join(", "),
+        &line("e0000000", "e0000001", "e0000002"),
+        &[
+            circle("c0000000", "z0000000", 10.0),
+            circle("d0000000", "y0000000", radius),
+        ]
+        .join(", "),
+        "",
+        "",
+    )
+}
+
+#[test]
+fn a_circle_drawn_within_1e_7_mm_of_the_trimmed_one_doesnt_cut_it() {
+    // Decision 6: d, of radius 10 about (5e-8, 0), is c within 1e-7 mm, so only the chord
+    // cuts c. Picked at (8, −6), −36.87°, c keeps the arc from (6, 8) round to (6, −8).
+    let before = circle_chord_and(0.00000005, 10.0);
+    let done = trim(
+        sketch_of(&before),
+        &id("c0000000"),
+        [8.0, -6.0],
+        &ids(&["n0000000", "n0000001", "k0000008", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        arc_points(&sketch, "c0000000"),
+        ["z0000000", "n0000000", "n0000001"]
+    );
+    assert_eq!(at(&sketch, "n0000000"), (6.0, 8.0, false));
+    assert_eq!(at(&sketch, "n0000001"), (6.0, -8.0, false));
+    assert_eq!(form(&sketch, "k0000008"), &on("n0000000", "e0000000"));
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000001", "e0000000"));
+}
+
+#[test]
+fn circles_within_1e_7_mm_of_touching_outside_or_inside_cut_at_the_contact() {
+    // Decision 6: d, of radius 5, about (15 + 5e-8, 0), 5e-8 mm clear of c, or about
+    // (5 − 5e-8, 0), 5e-8 mm inside it, touches c at (10, 0). Picked at (8, 6), 36.87°, c
+    // keeps the arc from the chord's (6, 8) round to the contact.
+    for x in [15.00000005, 4.99999995] {
+        let before = circle_chord_and(x, 5.0);
+        let done = trim(
+            sketch_of(&before),
+            &id("c0000000"),
+            [8.0, 6.0],
+            &ids(&["n0000000", "n0000001", "k0000008", "k0000009"]),
+        )
+        .unwrap();
+        let sketch = gated(&before, &done);
+        assert_eq!(
+            arc_points(&sketch, "c0000000"),
+            ["z0000000", "n0000000", "n0000001"],
+            "{x}"
+        );
+        assert_eq!(at(&sketch, "n0000000"), (6.0, 8.0, false));
+        assert_eq!(at(&sketch, "n0000001"), (10.0, 0.0, false), "{x}");
+        assert_eq!(form(&sketch, "k0000008"), &on("n0000000", "e0000000"));
+        assert_eq!(form(&sketch, "k0000009"), &on("n0000001", "d0000000"));
+    }
+}
+
+#[test]
+fn a_circle_inside_another_it_touches_is_cut_at_its_far_side() {
+    // c, radius 5 about (5, 0), inside D, radius 10 about the origin, touches it at (10, 0),
+    // on c's side away from D's centre; the chord x = 8 crosses c at (8, ±4). Picked at
+    // (10, 1), 11.31° on c, c keeps the arc from (8, 4) round to the contact.
+    let before = doc(
+        &[
+            point("z0000000", 5.0, 0.0),
+            point("y0000000", 0.0, 0.0),
+            point("e0000001", 8.0, -20.0),
+            point("e0000002", 8.0, 20.0),
+        ]
+        .join(", "),
+        &line("e0000000", "e0000001", "e0000002"),
+        &[
+            circle("c0000000", "z0000000", 5.0),
+            circle("d0000000", "y0000000", 10.0),
+        ]
+        .join(", "),
+        "",
+        "",
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("c0000000"),
+        [10.0, 1.0],
+        &ids(&["n0000000", "n0000001", "k0000008", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        arc_points(&sketch, "c0000000"),
+        ["z0000000", "n0000000", "n0000001"]
+    );
+    assert_eq!(at(&sketch, "n0000000"), (8.0, 4.0, false));
+    assert_eq!(at(&sketch, "n0000001"), (10.0, 0.0, false));
+    assert_eq!(form(&sketch, "k0000008"), &on("n0000000", "e0000000"));
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000001", "d0000000"));
+}
+
+// ---- the mutants' (#242), again: rounds off the origin, an arc's end, a line's one piece
+
+/// Circle c0 of radius 5 about (10, 10), cut by line e0 from `from` to `to`.
+fn circle_off_the_origin_cut_by(from: [f64; 2], to: [f64; 2]) -> Document {
+    doc(
+        &[
+            point("z0000000", 10.0, 10.0),
+            point("e0000001", from[0], from[1]),
+            point("e0000002", to[0], to[1]),
+        ]
+        .join(", "),
+        &line("e0000000", "e0000001", "e0000002"),
+        &circle("c0000000", "z0000000", 5.0),
+        "",
+        "",
+    )
+}
+
+#[test]
+fn a_circle_off_the_origin_keeps_the_arc_away_from_the_pick() {
+    // Each angle is about c's centre, (10, 10). The line y = 10 crosses c at (15, 10), 0°,
+    // and (5, 10), 180°; picked at (10, 5), 270°, between 180° and 360°, c keeps the upper
+    // half, from (15, 10) round to (5, 10). The line x = 10 crosses it at (10, 15), 90°,
+    // and (10, 5), 270°; picked at (5, 10), 180°, between them, c keeps the right half,
+    // from (10, 5) round to (10, 15).
+    for (from, to, pick, start, end) in [
+        (
+            [0.0, 10.0],
+            [20.0, 10.0],
+            [10.0, 5.0],
+            [15.0, 10.0],
+            [5.0, 10.0],
+        ),
+        (
+            [10.0, 0.0],
+            [10.0, 20.0],
+            [5.0, 10.0],
+            [10.0, 5.0],
+            [10.0, 15.0],
+        ),
+    ] {
+        let before = circle_off_the_origin_cut_by(from, to);
+        let done = trim(
+            sketch_of(&before),
+            &id("c0000000"),
+            pick,
+            &ids(&["n0000000", "n0000001", "k0000008", "k0000009"]),
+        )
+        .unwrap();
+        let sketch = gated(&before, &done);
+        assert!(sketch.circles.is_empty());
+        assert_eq!(
+            arc_points(&sketch, "c0000000"),
+            ["z0000000", "n0000000", "n0000001"]
+        );
+        assert_eq!(
+            at(&sketch, "n0000000"),
+            (start[0], start[1], false),
+            "{pick:?}"
+        );
+        assert_eq!(at(&sketch, "n0000001"), (end[0], end[1], false), "{pick:?}");
+        assert_eq!(form(&sketch, "k0000008"), &on("n0000000", "e0000000"));
+        assert_eq!(form(&sketch, "k0000009"), &on("n0000001", "e0000000"));
+    }
+}
+
+#[test]
+fn an_arc_off_the_origin_loses_the_part_on_the_picks_side_of_its_cut() {
+    // The lower half of radius 5 about (10, 10), from r0 (5, 10), 180°, round to r1
+    // (15, 10), 360°, cut by d (x = 10, from (10, 0) to (10, 8)) at (10, 5), 270°. Picked at
+    // (7, 6), 10 + 5 (−0.6, −0.8), 233.13°, between its start and the cut: the arc runs from
+    // the cut to r1, and r0 goes.
+    let before = doc(
+        &[
+            point("z0000000", 10.0, 10.0),
+            point("r0000000", 5.0, 10.0),
+            point("r0000001", 15.0, 10.0),
+            point("d0000001", 10.0, 0.0),
+            point("d0000002", 10.0, 8.0),
+        ]
+        .join(", "),
+        &line("d0000000", "d0000001", "d0000002"),
+        "",
+        &arc("a0000000", "z0000000", "r0000000", "r0000001"),
+        "",
+    );
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [7.0, 6.0],
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        arc_points(&sketch, "a0000000"),
+        ["z0000000", "n0000000", "r0000001"]
+    );
+    assert_eq!(at(&sketch, "n0000000"), (10.0, 5.0, false));
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000000", "d0000000"));
+    assert_eq!(done.edited.removed, ids(&["r0000000"]));
+}
+
+/// Arc a0 of radius 5 about (10, 10), from r0 (15, 10), 0°, round to r1 (10, 15), 90°, cut
+/// by e (x = 13, from (13, 10) to (13, 20)) at (13, 14), 53.13°; line t from `from` to
+/// `to`, which k0 holds tangent to the arc.
+fn quarter_arc_tangent_to(from: [f64; 2], to: [f64; 2]) -> Document {
+    doc(
+        &[
+            point("z0000000", 10.0, 10.0),
+            point("r0000000", 15.0, 10.0),
+            point("r0000001", 10.0, 15.0),
+            point("e0000001", 13.0, 10.0),
+            point("e0000002", 13.0, 20.0),
+            point("t0000001", from[0], from[1]),
+            point("t0000002", to[0], to[1]),
+        ]
+        .join(", "),
+        &[
+            line("e0000000", "e0000001", "e0000002"),
+            line("t0000000", "t0000001", "t0000002"),
+        ]
+        .join(", "),
+        "",
+        &arc("a0000000", "z0000000", "r0000000", "r0000001"),
+        r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "t0000000", "side": "right"}"#,
+    )
+}
+
+#[test]
+fn an_arcs_edge_tangency_at_its_kept_end_stays_and_one_past_it_is_refused() {
+    // Picked at (14, 13), 36.87°, before the cut, the arc keeps the part from the cut to its
+    // end r1. t along y = 15 touches the circle at (10, 15), 90°, the arc's end: the arc
+    // touches it still, so k0 stays as it is. t along x = 5 touches it at (5, 10), 180°, past
+    // the arc's end: no piece touches it, so the trim is refused (decision 2).
+    let before = quarter_arc_tangent_to([5.0, 15.0], [15.0, 15.0]);
+    let done = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [14.0, 13.0],
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        arc_points(&sketch, "a0000000"),
+        ["z0000000", "n0000000", "r0000001"]
+    );
+    assert_eq!(at(&sketch, "n0000000"), (13.0, 14.0, false));
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        form(sketch_of(&before), "k0000000")
+    );
+    assert_eq!(form(&sketch, "k0000009"), &on("n0000000", "e0000000"));
+    assert_eq!(done.edited.modified, ids(&["a0000000"]));
+    assert_eq!(done.edited.removed, ids(&["r0000000"]));
+    let before = quarter_arc_tangent_to([5.0, 0.0], [5.0, 20.0]);
+    let error = trim(
+        sketch_of(&before),
+        &id("a0000000"),
+        [14.0, 13.0],
+        &ids(&["n0000000", "k0000009"]),
+    )
+    .unwrap_err();
+    assert_eq!(
+        said(&error),
+        (
+            "trimming arc a0000000 there would leave constraint k0000000, an edge tangency with t0000000, on no piece of it",
+            Some("pick"),
+            vec!["k0000000", "a0000000"]
+        )
+    );
+}
+
+#[test]
+fn a_point_on_a_line_trimmed_at_one_end_keeps_its_on_on_the_part_kept_alone() {
+    // The line from (0, 0) to (32, 0), cut at x = 8 by d; s on it at (20, 0), t at (2, 0).
+    // Picked at (4, 0), the line keeps (8, 0) to (32, 0): s's on stays, t's goes, and the
+    // start p0. Picked at (20, 0), it keeps (0, 0) to (8, 0): t's on stays, s's goes, and
+    // the end p4.
+    let (mut points, d) = upright('d', 8.0);
+    points.extend([point("s0000000", 20.0, 0.0), point("t0000000", 2.0, 0.0)]);
+    let before = a_line(
+        &points,
+        &[d],
+        "",
+        r#"{"id": "k0000000", "type": "on", "point": "s0000000", "curve": "a0000000"}, {"id": "k0000001", "type": "on", "point": "t0000000", "curve": "a0000000"}"#,
+    );
+    for (pick, line_ends, kept, gone, end_gone) in [
+        (
+            [4.0, 0.0],
+            ("n0000000", "p0000004"),
+            ("k0000000", "s0000000"),
+            "k0000001",
+            "p0000000",
+        ),
+        (
+            [20.0, 0.0],
+            ("p0000000", "n0000000"),
+            ("k0000001", "t0000000"),
+            "k0000000",
+            "p0000004",
+        ),
+    ] {
+        let done = trim(
+            sketch_of(&before),
+            &id("a0000000"),
+            pick,
+            &ids(&["n0000000", "k0000009"]),
+        )
+        .unwrap();
+        let sketch = gated(&before, &done);
+        assert_eq!(
+            ends(&sketch, "a0000000"),
+            (line_ends.0.to_string(), line_ends.1.to_string())
+        );
+        assert_eq!(at(&sketch, "n0000000"), (8.0, 0.0, false));
+        assert_eq!(form(&sketch, kept.0), &on(kept.1, "a0000000"), "{pick:?}");
+        assert!(!has(&sketch, gone), "{pick:?}");
+        assert_eq!(done.edited.removed, ids(&[end_gone, gone]), "{pick:?}");
+    }
+}

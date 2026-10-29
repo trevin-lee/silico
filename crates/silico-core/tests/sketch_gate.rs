@@ -667,6 +667,151 @@ fn a_curve_ending_on_another_and_tangent_there_is_one_tangent_on() {
 }
 
 #[test]
+fn a_curve_ending_on_another_and_tangent_there_is_refused_at_the_later_of_the_two() {
+    // The pair is refused once, at whichever comes later in the constraint list: here the
+    // `on`, after the tangent, so an edit that appends the `on` (sketch_add) is refused at
+    // its own member. The message names the tangent, and the suggestion is the same.
+    let text = ending_on_the_circle(
+        r#"{"id": "k0000000", "type": "tangent", "a": "nz000000", "b": "ca000000", "side": "right"}, {"id": "k0000001", "type": "on", "point": "pt000000", "curve": "ca000000"}"#,
+    );
+    only(
+        &text,
+        "constraints.k0000001.point",
+        "an on puts point pt000000, where nz000000 ends, on ca000000, which constraint k0000000 makes nz000000 edge tangent to: a curve ending on another is tangent where it ends",
+    );
+    let all = problems(&text);
+    assert_eq!(all[0].elements(), ["k0000001"]);
+    assert_eq!(
+        all[0].suggestion(),
+        Some("make the two one tangent_on, with a nz000000, at pt000000, and b ca000000")
+    );
+    // The tangent naming the circle first, its b the line that ends on it.
+    only(
+        &ending_on_the_circle(
+            r#"{"id": "k0000000", "type": "tangent", "a": "ca000000", "b": "nz000000", "side": "left"}, {"id": "k0000001", "type": "on", "point": "pt000000", "curve": "ca000000"}"#,
+        ),
+        "constraints.k0000001.point",
+        "which constraint k0000000 makes nz000000 edge tangent to",
+    );
+}
+
+#[test]
+fn a_curve_tangent_to_itself_makes_no_pair_with_an_on_of_its_end_on_it() {
+    // The tangent names nz000000 twice and the on holds nz000000's own end on it: each is
+    // refused once, for itself, and the on gets no pair error besides.
+    let all = problems(&ending_on_the_circle(
+        r#"{"id": "k0000000", "type": "tangent", "a": "nz000000", "b": "nz000000", "side": "right"}, {"id": "k0000001", "type": "on", "point": "pt000000", "curve": "nz000000"}"#,
+    ));
+    let at = |parameter: &str| {
+        all.iter()
+            .filter(|e| e.parameter() == Some(parameter))
+            .count()
+    };
+    assert_eq!(at("constraints.k0000001.point"), 1, "{all:?}");
+    assert!(
+        all.iter().all(|e| !e.message().contains("edge tangent to")),
+        "{all:?}"
+    );
+}
+
+#[test]
+fn an_on_after_two_tangents_it_pairs_with_names_the_first() {
+    // Two edge tangents of nz and ca, the circle named first in the first, then the `on`
+    // holding nz's end on ca: refused once, at the `on`, naming the earlier tangent.
+    only(
+        &ending_on_the_circle(
+            r#"{"id": "k0000000", "type": "tangent", "a": "ca000000", "b": "nz000000", "side": "left"}, {"id": "k0000001", "type": "tangent", "a": "nz000000", "b": "ca000000", "side": "right"}, {"id": "k0000002", "type": "on", "point": "pt000000", "curve": "ca000000"}"#,
+        ),
+        "constraints.k0000002.point",
+        "which constraint k0000000 makes nz000000 edge tangent to",
+    );
+}
+
+#[test]
+fn a_tangent_after_both_of_its_lines_ends_held_on_the_curve_names_the_earliest_on() {
+    // nz's end pt held on ca (k0000000), then its start pz (k0000001), then the tangent:
+    // refused at the tangent, naming the earlier `on` and its point, though pz comes first
+    // among nz's ends.
+    only(
+        &ending_on_the_circle(
+            r#"{"id": "k0000000", "type": "on", "point": "pt000000", "curve": "ca000000"}, {"id": "k0000001", "type": "on", "point": "pz000000", "curve": "ca000000"}, {"id": "k0000002", "type": "tangent", "a": "nz000000", "b": "ca000000", "side": "right"}"#,
+        ),
+        "constraints.k0000002.b",
+        "a tangent's nz000000 ends at point pt000000, which constraint k0000000 puts on ca000000",
+    );
+}
+
+#[test]
+fn the_tangent_rule_answers_each_pair_among_thousands_of_tangents_and_ons() {
+    // 2,000 lines n_i from p_i (-20, i) to q_i (0, i), each edge tangent to circle ca (k_i)
+    // and with its start held on circle cb (m_i): no pair, since each `on` holds the line's
+    // end on the other circle. Then line 0's end held on ca before its tangent, and line 1's
+    // after: two pairs, refused at the later member of each, k0000000 and m1000001. The
+    // sketch is past the solver's unknowns too (4,001 points and two circles: 8,004, over
+    // 1,024), refused at `points`; its values (8,010) and the rest are within its limits.
+    let n = 2_000;
+    let mut points =
+        vec![r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}"#.to_owned()];
+    let mut lines = Vec::new();
+    let mut constraints = Vec::new();
+    for i in 0..n {
+        points.push(format!(
+            r#"{{"id": "p{i:07}", "x": -20, "y": {i}, "construction": false}}"#
+        ));
+        points.push(format!(
+            r#"{{"id": "q{i:07}", "x": 0, "y": {i}, "construction": false}}"#
+        ));
+        lines.push(format!(
+            r#"{{"id": "n{i:07}", "from": "p{i:07}", "to": "q{i:07}", "construction": false}}"#
+        ));
+        let tangent = format!(
+            r#"{{"id": "k{i:07}", "type": "tangent", "a": "n{i:07}", "b": "ca000000", "side": "right"}}"#
+        );
+        let on = format!(
+            r#"{{"id": "m{i:07}", "type": "on", "point": "p{i:07}", "curve": "cb000000"}}"#
+        );
+        let pair = format!(
+            r#"{{"id": "m1{i:06}", "type": "on", "point": "q{i:07}", "curve": "ca000000"}}"#
+        );
+        match i {
+            0 => constraints.extend([pair, tangent, on]),
+            1 => constraints.extend([tangent, on, pair]),
+            _ => constraints.extend([tangent, on]),
+        }
+    }
+    let circles = format!(
+        r#"{CIRCLE}, {{"id": "cb000000", "center": "pa000000", "radius": 7, "construction": false}}"#
+    );
+    let text = document(&fields(
+        &points.join(", "),
+        &lines.join(", "),
+        &circles,
+        "",
+        &constraints.join(", "),
+    ));
+    let all = problems(&text);
+    let said: Vec<&str> = all.iter().filter_map(|e| e.parameter()).collect();
+    assert_eq!(
+        said,
+        [
+            "constraints.k0000000.b",
+            "constraints.m1000001.point",
+            "points"
+        ]
+    );
+    assert!(
+        all[0]
+            .message()
+            .contains("which constraint m1000000 puts on ca000000")
+    );
+    assert!(
+        all[1]
+            .message()
+            .contains("which constraint k0000001 makes n0000001 edge tangent to")
+    );
+}
+
+#[test]
 fn a_tangent_on_takes_an_end_of_a_that_isnt_an_end_of_b() {
     for (constraint, message) in [
         (

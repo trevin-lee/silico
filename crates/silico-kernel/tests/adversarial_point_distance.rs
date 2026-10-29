@@ -11,9 +11,9 @@
 
 use super::cube_elements::{cube, edge_between, vertex_at};
 use super::kernel;
+use crate::wait::WAIT;
 
 use std::path::Path;
-use std::time::Duration;
 
 use proptest::prelude::*;
 use silico_core::ErrorCode;
@@ -62,7 +62,7 @@ fn assert_near(what: &str, got: f64, want: f64, tolerance: f64) {
     );
 }
 
-/// The worker's answer to a point distance, within 30 s, its witness checked: `from` the
+/// The worker's answer to a point distance, within [`WAIT`], its witness checked: `from` the
 /// point itself, and `to` as far from it as the distance, to OCCT's precision.
 fn through(worker: &mut Worker, shape: &ShapeData, element: ElementRef, p: [f64; 3]) -> Distance {
     match worker
@@ -73,7 +73,7 @@ fn through(worker: &mut Worker, shape: &ShapeData, element: ElementRef, p: [f64;
                 element,
                 point: p,
             },
-            Duration::from_secs(30),
+            WAIT,
         )
         .unwrap_or_else(|e| panic!("{element} from {p:?}: {e} ({:?})", e.code()))
     {
@@ -248,7 +248,7 @@ fn a_point_at_the_bound_from_curved_elements_answers_or_refuses_in_time() {
                 element: face(n),
                 point: [most, -most, most],
             },
-            Duration::from_secs(30),
+            WAIT,
         ) {
             Ok(Reply::Distance(d)) => assert!(d.distance > 1e12, "face {n}: {d:?}"),
             Ok(other) => panic!("face {n}: {other:?}"),
@@ -529,18 +529,15 @@ fn a_point_distance_on_garbage_says_so_and_the_worker_goes_on() {
     }
 }
 
-/// `request`'s result on the fake kernel, within 5 s.
+/// `request`'s result on the fake kernel, within [`WAIT`].
 fn on_fake<T: Send + 'static>(
     fake: &FakeKernel,
     request: KernelRequest<T>,
 ) -> Result<T, silico_core::Error> {
-    match fake
-        .submit(fake.generation(), request)
-        .wait_timeout(Duration::from_secs(5))
-    {
+    match fake.submit(fake.generation(), request).wait_timeout(WAIT) {
         Ok(Outcome::Done(result)) => result,
         Ok(Outcome::Superseded) => panic!("superseded"),
-        Err(_) => panic!("no outcome within 5 s (the fake hung)"),
+        Err(_) => panic!("no outcome within {WAIT:?} (the fake hung)"),
     }
 }
 
@@ -643,7 +640,7 @@ fn the_core_refuses_a_point_past_the_bound_naming_it_before_any_worker_is_asked(
                 element: face(1),
                 point: [0.0, 0.0, past],
             },
-            Duration::from_secs(30),
+            WAIT,
         )
         .unwrap_err();
     assert_eq!(err.parameter(), Some("point"), "{err}");

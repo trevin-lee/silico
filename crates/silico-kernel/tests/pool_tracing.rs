@@ -6,9 +6,9 @@
 //! (nextest runs each test in its own): it installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use crate::wait::WAIT;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use silico_core::kernel::{Blob, Kernel, KernelRequest, KernelWorker};
 use silico_core::pool::{KernelPool, Outcome, Pending};
@@ -67,12 +67,12 @@ impl<S: Subscriber> Layer<S> for PoolRequests {
     }
 }
 
-/// Waits for `pending`, failing the test unless it's done, and well, within 30 s.
+/// Waits for `pending`, failing the test unless it's done, and well, within [`WAIT`].
 fn done<T: std::fmt::Debug>(pending: Pending<T>) {
-    match pending.wait_timeout(Duration::from_secs(30)) {
+    match pending.wait_timeout(WAIT) {
         Ok(Outcome::Done(Ok(_))) => {}
         Ok(other) => panic!("{other:?}"),
-        Err(_) => panic!("no outcome within 30 s"),
+        Err(_) => panic!("no outcome within {WAIT:?}"),
     }
 }
 

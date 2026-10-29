@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::export_report::{P, TETRA, caught, report, tetra, unasked, with_shell};
+use silico_core::document::ElementName;
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
@@ -549,7 +550,13 @@ fn a_membrane_inside_the_solid_is_left_out_and_the_solid_exported() {
         let m = with_unoriented(1, 0, outer, 2);
         m.validate().unwrap();
         let mesh = printable(&m, unasked, None).unwrap();
-        assert_eq!(mesh.left_out(), ["Face5", "Face6"]);
+        assert_eq!(
+            mesh.left_out()
+                .iter()
+                .map(ElementName::as_str)
+                .collect::<Vec<_>>(),
+            ["Face5", "Face6"]
+        );
         assert_eq!(mesh.volume(), 1.0 / 6.0);
         assert_eq!(mesh.triangles().len(), 4);
     }

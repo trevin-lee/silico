@@ -187,7 +187,10 @@ impl ToWire for AngleAnswer {
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("angle", Json::angle(self.angle)),
-            ("vertex", Json::or_null(self.vertex.as_deref(), Json::str)),
+            (
+                "vertex",
+                Json::or_null(self.vertex.as_ref(), ToWire::to_wire),
+            ),
         ])
     }
 }

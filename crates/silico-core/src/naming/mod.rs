@@ -12,6 +12,8 @@ mod build;
 pub mod freecad;
 mod parse;
 
+#[cfg(test)]
+pub(crate) use parse::makers_read;
 pub use parse::{Maker, NameError};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -457,6 +459,75 @@ impl Name {
             | Name::Lower { kind, .. }
             | Name::Sketch { kind, .. } => *kind,
             Name::Duplicate { name, .. } | Name::Modified { name, .. } => name.kind(),
+        }
+    }
+
+    /// Every feature named in it, its makers, in the order it writes them, each once: a
+    /// feature whose elements a reference to it stores, so an edit that would leave one of
+    /// them missing or after the feature storing it is refused (the M5.0 design's chain). A
+    /// modified element's are its source's, as it's written as that name.
+    pub fn features(&self) -> Vec<&FeatureId> {
+        let mut found = Vec::new();
+        self.collect_features(&mut found, &mut BTreeSet::new());
+        found
+    }
+
+    /// Into `found`, in written order, each feature `seen` doesn't hold yet: a search of a
+    /// sorted set, not of the list, however many a name writes out.
+    fn collect_features<'a>(
+        &'a self,
+        found: &mut Vec<&'a FeatureId>,
+        seen: &mut BTreeSet<&'a FeatureId>,
+    ) {
+        fn add<'a>(
+            id: &'a FeatureId,
+            found: &mut Vec<&'a FeatureId>,
+            seen: &mut BTreeSet<&'a FeatureId>,
+        ) {
+            if seen.insert(id) {
+                found.push(id);
+            }
+        }
+        match self {
+            Name::Element { feature, .. } | Name::Sketch { feature, .. } => {
+                add(feature, found, seen)
+            }
+            Name::Derived {
+                feature,
+                first,
+                more,
+                ..
+            } => {
+                add(feature, found, seen);
+                for source in std::iter::once(first).chain(more) {
+                    source.name.collect_features(found, seen);
+                }
+            }
+            Name::Upper {
+                feature,
+                upper,
+                more,
+                ..
+            } => {
+                add(feature, found, seen);
+                for name in std::iter::once(upper).chain(more) {
+                    name.collect_features(found, seen);
+                }
+            }
+            Name::Lower {
+                feature,
+                first,
+                more,
+                ..
+            } => {
+                add(feature, found, seen);
+                for name in std::iter::once(first).chain(more) {
+                    name.collect_features(found, seen);
+                }
+            }
+            Name::Duplicate { name, .. } | Name::Modified { name, .. } => {
+                name.collect_features(found, seen);
+            }
         }
     }
 

@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use bound::{bounded, set_time, total};
-use cache::{HOLE, Scratch, calls, example_with_pin, hole, session, subdirectory_files};
+use cache::{HOLE, Scratch, cache, calls, example_with_pin, hole, session, subdirectory_files};
 use example::EXAMPLE;
 use model::{checked, published};
 use silico_core::cache::{DEFAULT_BOUND, STALE_PARTIAL};
@@ -218,6 +218,47 @@ fn a_scan_removes_partials_an_hour_old_and_keeps_a_writers_and_what_it_doesnt_kn
     published(&both, checked(EXAMPLE));
     published(&both, example_with_pin("3"));
     assert!(calls(&both).is_empty(), "{:?}", calls(&both));
+}
+
+#[test]
+fn a_stale_partial_waits_through_a_rebuild_of_hits_and_a_clear_for_the_next_puts_scan() {
+    // The note's scans are "on put, never on get" (*When it runs*): a rebuild every step of
+    // which is a hit, as an open or a check of an unchanged document is, puts nothing, so it
+    // scans nothing and leaves a killed write's partial where it is. Nor does `cache_clear`
+    // remove one (docs/design/m4.1-command-api.md, decision 25 as built: "a stale one is the
+    // next put's scan's to remove"; docs/cli.md, `cache clear`). The session's first put
+    // scans, and removes it (an hour and a minute old, past `STALE_PARTIAL`), keeping a
+    // writer's, a moment old.
+    let dir = Scratch::new("stale-partial-waits");
+    published(&session(&dir.0), checked(EXAMPLE));
+    let sub = subdirectory_files(&dir.0)[0].parent().unwrap().to_owned();
+    let stale = SystemTime::now() - STALE_PARTIAL - Duration::from_secs(60);
+    let killed = sub.join(".partial-1-1");
+    std::fs::write(&killed, b"cut short").unwrap();
+    set_time(&killed, stale);
+    let killed_root = dir.0.join(".partial-1-2");
+    std::fs::write(&killed_root, b"cut short").unwrap();
+    set_time(&killed_root, stale);
+    let writing = sub.join(".partial-1-3");
+    std::fs::write(&writing, b"being written").unwrap();
+
+    // Every step a hit: the kernel makes nothing, and no partial goes.
+    let engine = bounded(&dir.0, DEFAULT_BOUND);
+    published(&engine, checked(EXAMPLE));
+    assert!(calls(&engine).is_empty(), "{:?}", calls(&engine));
+    assert!(killed.exists() && killed_root.exists() && writing.exists());
+
+    // A clear removes the example's four entries (a box, a pin, its move, the cut), and no
+    // partial, stale or not.
+    assert_eq!(cache(&dir.0).clear().unwrap(), 4);
+    assert!(killed.exists() && killed_root.exists() && writing.exists());
+
+    // The session's first put, of the pin of radius 3 (its block still in memory): it
+    // scans, and the stale partials go, in the subdirectory and the root; the writer's stays.
+    published(&engine, example_with_pin("3"));
+    assert_eq!(calls(&engine), ["Cut", "MakeCylinder", "Translate"]);
+    assert!(!killed.exists() && !killed_root.exists());
+    assert!(writing.exists());
 }
 
 #[test]

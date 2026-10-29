@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::fmt;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
-use silico_protocol::{BooleanOp, Primitive};
+use silico_protocol::{BooleanOp, ElementRef, Primitive};
 
 use super::fingerprint::Fingerprint;
 use super::quantity::{Angle, Length};
@@ -168,11 +168,19 @@ fn feature_refused(message: String, suggestion: &str) -> crate::Error {
 /// A feature's ID: 8 characters of Crockford's base32 in lower case, unique within the
 /// document. Other features refer to it by this.
 ///
-/// Compared, ordered, and hashed as its text, exactly as derived; written out by hand only
-/// so a test can count every comparison of two IDs (`document::compared`, in test
-/// builds), wherever it's made.
-#[derive(Debug, Clone)]
+/// Compared, ordered, hashed, and cloned as its text, exactly as derived; written out by
+/// hand only so a test can count every comparison of two IDs (`document::compared`, in
+/// test builds) and every copy of one (`document::cloned`), wherever it's made.
+#[derive(Debug)]
 pub struct FeatureId(String);
+
+impl Clone for FeatureId {
+    fn clone(&self) -> Self {
+        #[cfg(test)]
+        CLONED.with(|cloned| cloned.set(cloned.get() + 1));
+        FeatureId(self.0.clone())
+    }
+}
 
 impl PartialEq for FeatureId {
     fn eq(&self, other: &Self) -> bool {
@@ -209,6 +217,19 @@ impl std::hash::Hash for FeatureId {
 thread_local! {
     /// How many times two IDs have been compared on this thread.
     static COMPARED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times an ID has been cloned on this thread.
+    static CLONED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times an ID has been cloned on this thread so far, by anything: a test's count
+/// of the copies a structure holds of IDs it could read where they are.
+#[cfg(test)]
+pub(crate) fn cloned() -> u64 {
+    CLONED.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
@@ -268,9 +289,17 @@ pub type Position = [Length; 3];
 
 /// An element of a feature's solid, by its name in Silico's form as written
 /// (docs/ports/naming.md, `m3tq8v0z.cut.Edge(G k7f2qx3m.box.Face6, G a91cw0de.cylinder.Face1)`):
-/// never an element's number, which an upstream edit can make another's. The gate reads it back
+/// in a document, never an element's number, which an upstream edit can make another's. The gate reads it back
 /// (`naming::Name::parse`), knowing what each feature before it is; recompute finds the
 /// element it names, or fails the feature saying so.
+///
+/// Commands answer with it too, as the text the wire writes: `angle`'s vertex and an
+/// `elements` page's cursor, by their names (from a [`crate::naming::Name`]), and an export's faces left
+/// out, by their names or, for a solid with no element map, as FreeCAD numbers them
+/// ([`ElementName::numbered`]), which names the face only in that answer and is no reference
+/// a document can hold (the gate refuses it). Never empty, but for a cursor's name as a client sent it
+/// ([`ElementName::as_sent`]), which the listing reads as a name before it goes on from it,
+/// refusing one that isn't.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ElementName(String);
 
@@ -283,6 +312,25 @@ impl ElementName {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// An element as FreeCAD numbers it (`Face3`): an export's face of a solid with no
+    /// element map.
+    pub(crate) fn numbered(element: ElementRef) -> Self {
+        ElementName(element.to_string())
+    }
+
+    /// A cursor's name as a client sent it, empty or not: `elements` reads it as a name where
+    /// the listing goes on from it, and refuses one that isn't, as it refuses any other text.
+    pub fn as_sent(text: &str) -> Self {
+        ElementName(text.to_owned())
+    }
+}
+
+impl From<&crate::naming::Name> for ElementName {
+    /// The name as Silico writes it, which is never empty.
+    fn from(name: &crate::naming::Name) -> Self {
+        ElementName(name.to_string())
     }
 }
 
@@ -1017,5 +1065,28 @@ mod feature_id_tests {
         assert_eq!(id_a.cmp(&id_b), a.cmp(b));
         assert_eq!(id_b.partial_cmp(&id_a), Some(b.cmp(a)));
         assert!(id_a == FeatureId(a.to_owned()) && id_a != id_b);
+    }
+}
+
+#[cfg(test)]
+mod element_name_tests {
+    use super::{ElementName, FeatureId};
+    use crate::naming::{Maker, Name, PrimitiveKind};
+    use silico_protocol::ElementRef;
+
+    #[test]
+    fn a_name_is_written_as_silico_writes_it_and_a_number_as_freecad_does() {
+        // A box's second face, named as the gate reads it back (knowing k7f2qx3m is a box).
+        let makers = |_: &FeatureId| Some(Maker::Itself(PrimitiveKind::Box));
+        let name = Name::parse("k7f2qx3m.box.Face2", &makers).unwrap();
+        assert_eq!(ElementName::from(&name).as_str(), "k7f2qx3m.box.Face2");
+        assert_eq!(ElementName::numbered(ElementRef::face(3)).as_str(), "Face3");
+        // A client's cursor text is kept as sent, empty too; a document's name never is.
+        assert_eq!(ElementName::as_sent("").as_str(), "");
+        assert_eq!(ElementName::new(""), None);
+        assert_eq!(
+            ElementName::new("Face3"),
+            Some(ElementName::numbered(ElementRef::face(3)))
+        );
     }
 }

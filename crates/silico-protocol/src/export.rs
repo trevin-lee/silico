@@ -66,10 +66,16 @@ pub fn export_deflection(tolerance: f64, reach: f64) -> Result<f64, Refusal> {
 pub const MAX_EXPORT_TRIANGLES: u64 = 10_000_000;
 
 /// Refuses a mesh of more `triangles`, in all, than `limit` ([`Refusal::TooManyTriangles`]):
-/// an export's is [`MAX_EXPORT_TRIANGLES`].
-pub fn check_export_triangles(triangles: u64, limit: u64) -> Result<(), Refusal> {
+/// an export's is [`MAX_EXPORT_TRIANGLES`]. `unraised`, if the mesh is the one with no
+/// face's deflection raised, which an export's raised faces are compared with, not the
+/// export's own.
+pub fn check_export_triangles(triangles: u64, limit: u64, unraised: bool) -> Result<(), Refusal> {
     if triangles > limit {
-        return Err(Refusal::TooManyTriangles { triangles, limit });
+        return Err(Refusal::TooManyTriangles {
+            triangles,
+            limit,
+            unraised,
+        });
     }
     Ok(())
 }
@@ -364,16 +370,19 @@ mod tests {
     fn an_export_takes_ten_million_triangles_and_refuses_one_more() {
         assert_eq!(MAX_EXPORT_TRIANGLES, 10_000_000);
         let limit = MAX_EXPORT_TRIANGLES;
-        assert!(check_export_triangles(0, limit).is_ok());
-        assert!(check_export_triangles(10_000_000, limit).is_ok());
-        assert_eq!(
-            check_export_triangles(10_000_001, limit),
-            Err(Refusal::TooManyTriangles {
-                triangles: 10_000_001,
-                limit: 10_000_000
-            })
-        );
-        assert!(check_export_triangles(u64::MAX, limit).is_err());
+        for unraised in [false, true] {
+            assert!(check_export_triangles(0, limit, unraised).is_ok());
+            assert!(check_export_triangles(10_000_000, limit, unraised).is_ok());
+            assert_eq!(
+                check_export_triangles(10_000_001, limit, unraised),
+                Err(Refusal::TooManyTriangles {
+                    triangles: 10_000_001,
+                    limit: 10_000_000,
+                    unraised,
+                })
+            );
+            assert!(check_export_triangles(u64::MAX, limit, unraised).is_err());
+        }
     }
 
     #[test]

@@ -108,11 +108,11 @@ fn a_saved_document_rebuilds_to_the_same_bytes_with_a_cache_or_without() {
     assert_eq!(write(&again.saved()).unwrap(), saved);
     // Through a cache: built into it, then taken from it.
     let dir = Scratch::new("fingerprint");
-    for (pass, asks) in [(1, 16), (2, 0)] {
+    for (pass, asks) in [(1, 10), (2, 0)] {
         let engine = Recompute::with_cache(Counted::new(WORKER, 2), dir.cache());
         let cached = published(&engine, &saved_document);
-        // Four steps made, three features' solids measured (each a summary and a batch of
-        // each kind described: 4 + 3 × 4); then nothing.
+        // Four steps made, three features' solids measured (each a summary and one request
+        // describing it: 4 + 3 × 2); then nothing.
         assert_eq!(engine.kernel().asked(), asks, "pass {pass}");
         assert!(cached.drift().is_empty());
         assert_eq!(write(&cached.saved()).unwrap(), saved);

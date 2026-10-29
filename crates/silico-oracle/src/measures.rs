@@ -401,9 +401,9 @@ pub fn answers<K: Kernel>(
             let vertex_at = match &answer {
                 Ok(Answer::Angle(AngleAnswer {
                     vertex: Some(name), ..
-                })) => match resolve(model, bodies, name).map_err(at)?.element {
+                })) => match resolve(model, bodies, name.as_str()).map_err(at)?.element {
                     Element::Vertex { point } => Some(point),
-                    other => return Err(at(format!("its vertex {name} is {other:?}"))),
+                    other => return Err(at(format!("its vertex {} is {other:?}", name.as_str()))),
                 },
                 _ => None,
             };
@@ -768,7 +768,8 @@ pub fn against_expected(case: &MeasureCase, ours: &Ours) -> Vec<String> {
                 (Some(want), Some(at)) if point(at) == point(want) => {}
                 (want, _) => found.push(format!(
                     "vertex {:?} (at {:?}) against the expected {want:?}",
-                    a.vertex, ours.vertex_at
+                    a.vertex.as_ref().map(|v| v.as_str()),
+                    ours.vertex_at
                 )),
             }
         }

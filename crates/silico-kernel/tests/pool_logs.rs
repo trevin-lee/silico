@@ -7,6 +7,7 @@
 
 use super::running::{marking_worker, submit_running};
 use super::scripts;
+use crate::wait::WAIT;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -39,11 +40,11 @@ struct Events(Arc<Mutex<Vec<Logged>>>);
 
 impl Events {
     /// The events logged since the last call, once one about a superseded request is among
-    /// them (waiting up to two seconds): the pool logs it after delivering the outcome, and
+    /// them (waiting up to [`WAIT`]): the pool logs it after delivering the outcome, and
     /// outside its lock, so it can come a moment after the outcome. Then a moment more, for
     /// any other the pool logs with it.
     fn take_once_superseded(&self) -> Vec<Logged> {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + WAIT;
         while !self
             .0
             .lock()
@@ -227,7 +228,7 @@ fn a_superseded_failure_is_logged_at_warn_unless_the_pool_stopped_it() {
     let pool = KernelPool::start_workers(&dies, 1).unwrap();
     let pid = rustix::process::Pid::from_raw(i32::try_from(pool.pids()[0]).unwrap()).unwrap();
     let died = feature.in_scope(|| pool.submit(Generation(1), sleep_for(0)));
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + WAIT;
     while rustix::process::test_kill_process(pid) != Err(rustix::io::Errno::SRCH) {
         assert!(Instant::now() < deadline, "the worker didn't die");
         std::thread::sleep(Duration::from_millis(5));

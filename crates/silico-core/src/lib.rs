@@ -12,14 +12,18 @@
 //! ([`profile`]: its loops, nested into regions and oriented, or what keeps it from being
 //! one, named), and what a sketch feature's rebuild refuses of its profile, its solve, and
 //! its result ([`sweep`]); and a rebuilt document's warnings ([`warnings`]: what `check` finds
-//! that fails nothing); the rest of the command API arrives later.
+//! that fails nothing); and each sketch member's definition state, from its solve's
+//! diagnosis ([`sketch_states`]); the rest of the command API arrives later.
 
 pub mod cache;
 pub mod command;
+pub mod disk;
 pub mod document;
+pub mod drag;
 pub mod elements;
 mod error;
 pub mod export;
+pub mod extend;
 #[cfg(feature = "fake")]
 pub mod fake;
 pub mod file;
@@ -27,14 +31,17 @@ pub mod kernel;
 pub mod logging;
 pub mod meshes;
 pub mod naming;
+pub mod notify;
 pub mod pool;
 pub mod profile;
 pub mod recompute;
 mod references;
 pub mod render;
 pub mod sketch;
+pub mod sketch_states;
 pub mod step_worker;
 pub mod sweep;
+pub mod timeline;
 pub mod views;
 pub mod warnings;
 pub mod worker;

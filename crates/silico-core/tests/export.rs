@@ -615,5 +615,11 @@ fn a_map_that_names_no_face_of_the_shape_is_a_silico_bug() {
     assert!(error.message().contains("names no Face5"), "{error}");
     // With every face named, the faces left out are named as the map names them.
     let mesh = printable(&m, unasked, Some(&map(5))).unwrap();
-    assert_eq!(mesh.left_out(), ["k7f2qx3m.cut.Face5"]);
+    assert_eq!(
+        mesh.left_out()
+            .iter()
+            .map(silico_core::document::ElementName::as_str)
+            .collect::<Vec<_>>(),
+        ["k7f2qx3m.cut.Face5"]
+    );
 }

@@ -5,6 +5,7 @@
 //! tracing subscriber, as `silico_core::logging::init` does, with the core's log layer; its
 //! workers log at their default level, info.
 
+use crate::wait::WAIT;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -72,7 +73,7 @@ fn a_failed_fillets_logs_hold_the_request_that_failed_and_the_workers_own_line()
     // Its kind and OCCT's words, no element: the worker knows them only by their places.
     let worker_line = "Fillet refused, kernel_failed: Standard_Failure: the fillet couldn't be \
                        built";
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + WAIT;
     let events: Vec<LogEvent> = loop {
         let events = sessions.read_logs(&s1, &query).result.unwrap().events;
         if events.iter().any(|e| e.message.starts_with(worker_line)) || Instant::now() > deadline {
@@ -189,7 +190,7 @@ fn a_failed_fillet_of_a_cuts_edge_is_logged_by_the_edges_name_never_its_place() 
     assert_eq!(error.feature(), Some("f0000001"));
     assert_eq!(error.elements(), [RIM]);
     let query = query(LogLevel::Info, Some("f0000001"), None);
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + WAIT;
     let events: Vec<LogEvent> = loop {
         let events = sessions.read_logs(&s1, &query).result.unwrap().events;
         if events

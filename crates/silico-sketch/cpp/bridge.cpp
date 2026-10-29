@@ -146,19 +146,17 @@ struct Sketch {
 
   // A point on a line (extended), a circle, or an arc's whole circle, as FreeCAD's
   // PointOnObject puts it (Sketch::addPointOnObjectConstraint).
-  void point_on(GCS::Point &p, uint32_t i, int tag) {
+  // Returns the index of the row it added, as PlaneGCS's addConstraint calls do.
+  int point_on(GCS::Point &p, uint32_t i, int tag) {
     if (i >= geometry.size()) bug("geometry " + std::to_string(i) + " out of range");
     Geo &g = geometry[i];
     switch (g.kind) {
       case GeometryKind::Line:
-        system.addConstraintPointOnLine(p, g.line, tag);
-        break;
+        return system.addConstraintPointOnLine(p, g.line, tag);
       case GeometryKind::Circle:
-        system.addConstraintPointOnCircle(p, g.circle, tag);
-        break;
+        return system.addConstraintPointOnCircle(p, g.circle, tag);
       case GeometryKind::Arc:
-        system.addConstraintPointOnArc(p, g.arc, tag);
-        break;
+        return system.addConstraintPointOnArc(p, g.arc, tag);
       default:
         bug("geometry " + std::to_string(i) + " isn't a curve");
     }
@@ -469,15 +467,21 @@ rust::Vec<double> solver_residuals(Solver &solver, rust::Slice<const double> val
 
 // A drag's state (FreeCAD's Sketch::initMove and moveGeometries, absolute moves): the part
 // of the sketch the drag moves, diagnosed for its own redundant equations, and the targets
-// its pins hold points to. Which points to pin, and
-// how strongly, is Rust's to say (silico_sketch::Drag::begin); the first pin's target is
-// the cursor.
+// its pins hold. What to pin, how strongly, and which targets follow the cursor (at what
+// offset) is Rust's to say (silico_sketch::Drag::begin).
 struct DragSession::State {
   Sketch sketch;
   // Two values per pin: plain values, not unknowns, sized once before any pin points into
   // them and never resized, so the pins' pointers stay good (FreeCAD reserves its
   // MoveParameters for the same reason).
   std::vector<double> targets;
+  // For each pin whose target follows the cursor: its index, and its target's base and the
+  // point the cursor's offset is measured from (silico_protocol::Follow).
+  struct Follower {
+    size_t pin;
+    double bx, by, fx, fy;
+  };
+  std::vector<Follower> followers;
 
   State(const SolveInput &input, size_t pins) : sketch(input), targets(2 * pins) {}
 };
@@ -499,13 +503,26 @@ std::unique_ptr<DragSession> drag_begin(const SolveInput &input, rust::Slice<con
 
   GCS::System &system = s.sketch.system;
   for (size_t i = 0; i < pins.size(); ++i) {
+    GCS::Point target(&s.targets[2 * i], &s.targets[2 * i + 1]);
+    if (pins[i].follows)
+      s.followers.push_back({i, pins[i].bx, pins[i].by, pins[i].fx, pins[i].fy});
+    // Tagged -1 (GCS::DefaultTemporaryConstraint), so each stays out of the diagnosis and
+    // goes to the lower-priority subsystem.
+    if (pins[i].position == Position::Geometry) {
+      // A target held on a circle or an arc, starting on it at its top, as FreeCAD's
+      // (centre plus the radius up): a curve's edge dragged to size it.
+      GCS::Circle &c = s.sketch.round(pins[i].geometry);
+      s.targets[2 * i] = *c.center.x;
+      s.targets[2 * i + 1] = *c.center.y + *c.rad;
+      const int row =
+          s.sketch.point_on(target, pins[i].geometry, GCS::DefaultTemporaryConstraint);
+      if (pins[i].scale != 1.0) system.rescaleConstraint(row, pins[i].scale);
+      continue;
+    }
     GCS::Point &p = s.sketch.point_of(pins[i].position, pins[i].geometry);
-    // Each pin starts where its point is, as FreeCAD's do; tagged -1
-    // (GCS::DefaultTemporaryConstraint), so it stays out of the diagnosis and goes to the
-    // lower-priority subsystem.
+    // Each pin starts where its point is, as FreeCAD's do.
     s.targets[2 * i] = *p.x;
     s.targets[2 * i + 1] = *p.y;
-    GCS::Point target(&s.targets[2 * i], &s.targets[2 * i + 1]);
     const int last =
         system.addConstraintP2PCoincident(target, p, GCS::DefaultTemporaryConstraint);
     // Its two rows are the last two added.
@@ -532,8 +549,12 @@ Diagnosis diagnose(const SolveInput &input) {
 MoveOutput drag_move(DragSession &session, double x, double y) {
   DragSession::State &s = *session.state;
   GCS::System &system = s.sketch.system;
-  s.targets[0] = x;
-  s.targets[1] = y;
+  for (const auto &f : s.followers) {
+    // In FreeCAD's order: the base plus the cursor's offset, so a cursor back where it
+    // started gives the base exactly.
+    s.targets[2 * f.pin] = f.bx + (x - f.fx);
+    s.targets[2 * f.pin + 1] = f.by + (y - f.fy);
+  }
   // DogLeg alone, with no fallback, as FreeCAD drags; a part with a pin is solved by SQP.
   // Each solve starts from the values at the drag's start (System::solve resets to them).
   const int status = system.solve(true, GCS::DogLeg);

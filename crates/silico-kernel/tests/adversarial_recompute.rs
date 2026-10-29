@@ -102,9 +102,15 @@ fn dropping_the_engine_mid_recompute_returns_promptly() {
     // drop doesn't wait on it.
     let engine = Recompute::new(pool(2));
     let run = engine.start(part(2.5));
+    let lateness = crate::lateness::Lateness::start();
     let at = Instant::now();
     drop(engine);
-    assert!(at.elapsed() < Duration::from_secs(1), "{:?}", at.elapsed());
+    let bound = crate::lateness::allowance(Duration::from_secs(1), lateness.most());
+    assert!(
+        at.elapsed() < bound,
+        "{:?}, the bound {bound:?}",
+        at.elapsed()
+    );
     match run.wait_timeout(WAIT).ok() {
         Some(Ok(RunOutcome::Superseded | RunOutcome::Published(_))) => {}
         other => panic!("{other:?}"),
@@ -210,9 +216,15 @@ fn dropping_the_engine_while_its_on_demand_slots_start_returns_promptly() {
     for _ in 0..20 {
         let engine = Recompute::new(on_demand(8));
         let run = engine.start(part(2.5));
+        let lateness = crate::lateness::Lateness::start();
         let at = Instant::now();
         drop(engine);
-        assert!(at.elapsed() < Duration::from_secs(2), "{:?}", at.elapsed());
+        let bound = crate::lateness::allowance(Duration::from_secs(2), lateness.most());
+        assert!(
+            at.elapsed() < bound,
+            "{:?}, the bound {bound:?}",
+            at.elapsed()
+        );
         match run.wait_timeout(WAIT).ok() {
             Some(Ok(RunOutcome::Superseded | RunOutcome::Published(_))) => {}
             other => panic!("{other:?}"),
