@@ -16,6 +16,7 @@
 
 pub mod cache;
 pub mod command;
+pub mod disk;
 pub mod document;
 pub mod drag;
 pub mod elements;

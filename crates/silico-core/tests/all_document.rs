@@ -94,6 +94,8 @@ mod call;
 mod check_warnings;
 #[path = "command.rs"]
 mod command;
+#[path = "disk.rs"]
+mod disk;
 #[path = "document.rs"]
 mod document;
 #[path = "fingerprint.rs"]
