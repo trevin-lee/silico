@@ -13,22 +13,22 @@ A study note for M5.0's open item 26, "which relations tools and snaps add" (M5.
 
 The help pages read, all under `help.solidworks.com/2027/english/SolidWorks/sldworks/`:
 
-- Relations in general: [Inferencing], [Using Automatic Relations], [Relations/Snaps Options], [Sketch Relations Overview], [Areas that Rely on Sketch Relations], [Sketch Relations Icons], [Description of Sketch Relations], [Automatically Adding Relations], [FAQ Sketch Relations], [Geometric Relations], [Horizontal and Vertical Sketch Relations], [Selecting Midpoints with Dynamic Highlighting], [Continuity Relations].
+- Relations in general: [Inferencing], [Using Automatic Relations], [Relations/Snaps Options], [Sketch Relations Overview], [Areas that Rely on Sketch Relations], [Sketch Relations Icons], [Description of Sketch Relations], [Automatically Adding Relations], [FAQ Sketch Relations], [Sketch Geometry Status], [Geometric Relations], [Horizontal and Vertical Sketch Relations], [Selecting Midpoints with Dynamic Highlighting], [Continuity Relations].
 - Snaps: [Snaps], [Sketch Snaps], [Quick Snaps], [Grid/Snap].
 - Tools: [Sketch Modes], [Insert Line PropertyManager], [Sketching Lines], [Line Properties PropertyManager], [Modifying Lines by Dragging], [Autotransitioning], [Rectangles], [Corner Rectangles], [Center Rectangles], [3 Point Corner Rectangles], [3 Point Center Rectangles], [Parallelograms], [Rectangle PropertyManager], [Construction Lines and Centerlines], [Circles], [Sketching Circles], [Perimeter Circles], [Circle PropertyManager], [Arcs], [Centerpoint Arcs], [Tangent Arcs], [3 Point Arcs], [Arc PropertyManager], [Sketching Points], [Point PropertyManager].
 
 ## In brief
 
-- **The help gives one general rule, not a list per tool.** "If the pointer displays a relation … and you click to accept the sketch entity while the relation is displayed, the relation is added automatically to the entity" ([Inferencing]). That holds when *Automatic relations* is on. No page says which relations a given tool or snap leaves. The rectangle's page says only that its relations were "inferenced automatically during sketching".
-- **What the help does tie to sketching.** The pointer's six relations: horizontal, vertical, coincident, midpoint, perpendicular, tangent ([Using Automatic Relations]). The *Sketch Relations Icons* page marks these *Inferred*: coincident, intersection, midpoint, parallel, perpendicular, vertical (and symmetric, from Mirror). Its examples include a vertical relation between a circle's centre and the origin, a second line perpendicular to the first, two lines parallel, and a point at two lines' intersection. Concentric, coradial, collinear, equal, and fix are marked only *Added*.
+- **The help gives one general rule, not a list per tool.** "If the pointer displays a relation … and you click to accept the sketch entity while the relation is displayed, the relation is added automatically to the entity" ([Inferencing]). That holds when *Automatic relations* is on. A few pages tie relations to a tool: the line's *Orientation* option "specif[ies] the relation of sketched lines" ([Areas that Rely on Sketch Relations]), and the icons page gives symmetric to Mirror, offset to Offset Entities, and on edge to Convert Entities. For the other tools, and for the snaps, no page says which relations they leave. The rectangle's page says only that its relations were "inferenced automatically during sketching".
+- **What the help does tie to sketching.** [Using Automatic Relations] shows six pointers: horizontal, vertical, coincident, midpoint, perpendicular, tangent. [Inferencing] adds intersection, as an example of a relation the pointer shows. The *Sketch Relations Icons* page marks these *Inferred*: coincident, intersection, midpoint, parallel, perpendicular, vertical (and symmetric, from Mirror). Its examples include an inferred vertical between two sketch points (at a circle's centre and at a line's end on the circle), a second line perpendicular to the first, two lines parallel, and a point at two lines' intersection. Concentric, coradial, collinear, equal, and fix are marked only *Added*.
 - **The pages disagree in places.** The icons page marks horizontal and tangent *Added*, yet the pointer adds both while sketching. Its *Type* column seems to describe each example, not the relation. The *Description of Sketch Relations* table has coradial's text in perpendicular's row. The help's "coincident" is a point on a curve. Two points made one is *Merge Points*, and the help doesn't say which one a click on an endpoint makes.
-- **Snaps.** The help says snaps and Quick Snaps "add relations between sketch entities", but not which ones. The icons page and the tool pages tie a relation to these: endpoints (coincident), midpoints (midpoint), intersections (intersection), tangent (tangent), perpendicular, parallel, and horizontal or vertical to points. Nearest, length, and grid only place the pointer. For centre points, quadrants, horizontal or vertical to lines, and the angle snap, the help doesn't say.
-- **Inference lines** "display relations" and "guide" the pointer. Only the pointer's relation is said to be added. A 2025 example shows a dotted line marking a vertical relation between two endpoints. Its text says only the pointer's horizontal relation is added.
+- **Snaps.** The help says snaps and Quick Snaps "add relations between sketch entities", but not which ones. No page says which relation a given snap leaves. This note assumes the snap of the same name leaves that relation: endpoints (coincident), midpoints (midpoint), intersections (intersection), tangent (tangent), perpendicular, parallel, and horizontal or vertical to points. For nearest, length, grid, centre points, quadrants, horizontal or vertical to lines, and the angle snap, no page names a relation.
+- **Inference lines** "display relations" and "guide" the pointer. Only the pointer's relation is said to be added. A 2025 example shows a dotted line marking a vertical relation between two endpoints. Its text names only the pointer's horizontal relation as added, and doesn't say whether the vertical one is.
 - **"Automatic Relations" off.** With it on, "the relations are added". Clearing *Enable snapping* clears it too. Ctrl suppresses it while held. The help doesn't say what still happens with it off: whether a click on an endpoint still joins, a chain still joins, or a rectangle still gets its relations. In FreeCAD 1.1.3, with auto-constraints off, nothing is inferred, but a tool's own constraints stay. That covers a polyline's joins and a rectangle's corners and sides.
 - **In Silico's forms, most relations map exactly.** A coincidence between ends is a shared point (D2), and a point on a curve is an `on`. Horizontal, vertical, perpendicular, parallel, and midpoint (of a line) have forms of the same name. Points level or one above the other are `horizontal_points` and `vertical_points`. A tangency is `tangent`, `tangent_at`, or `tangent_on`, as the gate requires. Concentric is one shared centre point. Coradial is that plus `equal`. An intersection is two `on`s.
 - **What has no form.** A point at the origin (the origin isn't a point curves can share). An arc normal to an arc at a shared end. A midpoint of an arc. A quadrant point (two forms do it). An infinite line.
 - **Item 26's text needs four corrections.** Horizontal and vertical come from the pointer, not "within the angle snap". The help gives no tolerance. Parallel and the points' horizontal and vertical are missing. Tangent is the pointer's for any tool, not only the tangent arc's. And FreeCAD 1.1.3's auto-constraints aren't "the same set": they have no perpendicular or parallel.
-- **Found in passing, for item 32.** The help's FAQ shows "a redundant perpendicular relation is added. The sketch is still fully defined." Only a redundant dimension makes a sketch over defined. Item 32 reads every agreeing redundancy as `over_defined`, "SolidWorks' meaning". So a tool that infers a redundant relation would turn the sketch red in Silico but not in SolidWorks.
+- **Found in passing, for item 32.** Two pages bear on a redundant relation, and read alone they can be taken two ways. The FAQ shows "A redundant perpendicular relation is added. The sketch is still fully defined.", then a redundant dimension that leaves it "over defined" ([FAQ Sketch Relations]). But [Sketch Geometry Status] says *Item Conflicts* "Indicates a redundant dimension or an unnecessary relation". Item Conflicts is an element's colour, and the FAQ's sketch stays fully defined, so the two can both hold. The maintainer's decider has ruled (Fable's Addendum 3, 2026-10-29): Item Conflicts is the entity status of a conflicting sketch, Silico's member `over_defined`, and an agreeing redundant relation marks no point or curve. Item 32 was revised to match (Addendum 2, 2026-10-29): a redundant relation is read by `dofs` and reported `redundant`; a redundant driving dimension still reads `over_defined` (§1).
 
 ## 1. The general rule
 
@@ -54,17 +54,23 @@ The help doesn't say whether "click to accept" includes the release that ends a 
 | Midpoint | Inferred or Added | "Construction line sketched from the midpoint of the diagonal line." |
 | Parallel | Inferred | "Two lines sketched with parallel relation." |
 | Perpendicular | Inferred | "Second line sketched perpendicular to first line." (The image shows it drawn from the first line's end.) |
-| Vertical | Inferred | "Circle sketched with center inferred to sketch origin." (The image shows the centre straight above the origin.) |
+| Vertical | Inferred | "Circle sketched with center inferred to sketch origin." (The image shows vertical icons on the circle's centre and on a line's end at the circle's top: an inferred vertical between two sketch points. The origin is level with the centre, not below it, so how the relation involves the origin is unclear.) |
 | Symmetric | Inferred or Added | "Relations added using the Mirror Entities or Dynamic Mirror tool." |
 | Horizontal | Added | "Horizontal relation added to spline handles." |
 | Tangent | Added | "Tangent relation added to two splines." |
-| Colinear, Concentric, Coradial, Equal, Fix, Merge | Added | (by hand) |
+| Colinear | Added | "Colinear relation added to the first two horizontal lines." |
+| Concentric | Added | (no text; an image only) |
+| Coradial | Added | "Coradial relation added to the inner arcs." |
+| Equal | Added | "Equal relation added to all inner circles." |
+| Fix | Added | "Fixed relation added to point." |
+| Merge | Added | "The endpoint of the line and the point on the rectangle are merged to create one point." |
+| On Plane | Inferred and Added | "Any geometry sketched on a plane." |
 
-Offset, On Edge, and On Surface are inferred by other tools (Offset, Convert Entities) or in 3D. Along X, Y, and Z are 3D only.
+Offset, On Edge, and On Surface are inferred by other tools (Offset Entities, Convert Entities) or in 3D. Along X, Y, and Z are 3D only.
 
 ### Where the pages disagree
 
-- **Horizontal and tangent.** The icons page marks both *Added*. But [Using Automatic Relations] lists both among the pointer's relations, and [Inferencing] uses horizontal as its example of one added automatically. [Automatically Adding Relations] draws a perimeter circle "using the tangent icon". The *Type* column seems to describe the example (spline handles, two splines), not the relation.
+- **Horizontal and tangent.** The icons page marks both *Added*. But [Using Automatic Relations] lists both among the pointer's relations, and [Inferencing] uses horizontal as its example of one added automatically. [Automatically Adding Relations] sketches a second circle with the Perimeter Circle tool: "Use the tangent icon to place the pointer and sketch the second circle." The *Type* column seems to describe the example (spline handles, two splines), not the relation.
 - **Perpendicular and coradial.** In [Description of Sketch Relations], coradial's row has no result, and perpendicular's reads "The two items are perpendicular to each other.The items share the same center point and radius." The second sentence is coradial's.
 - **Coincident.** The help's coincident is "A point and a line, arc, or ellipse. The point lies on the line, arc, or ellipse" ([Description of Sketch Relations]). Two points made one is a separate relation, *Merge Points*, which the icons page marks *Added*. The help doesn't say which relation a click on an existing endpoint makes. [Using Automatic Relations] shows only a coincident pointer.
 - **A midpoint first reads as coincident.** "A midpoint highlights and the pointer shows that a coincident relation is possible at its current position." Then "The midpoint has changed color and the pointer shows that it recognizes the midpoint" ([Inferencing]). So near a line the pointer offers coincident (on the line), and at its middle, midpoint.
@@ -75,7 +81,14 @@ Offset, On Edge, and On Surface are inferred by other tools (Offset, Convert Ent
 
 ### Redundant relations
 
-"A redundant perpendicular relation is added. The sketch is still fully defined." Then "A redundant dimension is added. The sketch is over defined." ([FAQ Sketch Relations]). So in SolidWorks a redundant relation doesn't over-define a sketch. M5.0's item 32 reads an agreeing redundancy as `over_defined`. Tools that infer two relations implying each other would then over-define a Silico sketch where SolidWorks' wouldn't.
+Two pages bear on it.
+
+- [FAQ Sketch Relations]: "A redundant perpendicular relation is added. The sketch is still fully defined." Then "A redundant dimension is added. The sketch is over defined." Its definition of an over defined sketch begins "Dimensions or relations conflict with each other. Dimensions over-constrain the sketch."
+- [Sketch Geometry Status]: *Item Conflicts*, yellow, "Indicates a redundant dimension or an unnecessary relation." *Fully Defined*, black: "all required dimensions and relations to sketch entities are present, without redundant or unnecessary elements that cause the sketch to be over defined."
+
+Read alone, the help is ambiguous: the second page could mean a redundant relation marks the sketch. One reading fits both: Item Conflicts is an element's colour, and the FAQ's sketch stays fully defined, so the two can both hold.
+
+The maintainer's decider has ruled on it (Fable's Addendum 3, 2026-10-29, ~/.cache/silico-review/m5-item32-fable.md). Item Conflicts is the entity status of a conflicting sketch, which is Silico's member `over_defined`. An agreeing redundant relation marks no point or curve; its only mark is its own constraint state, `redundant`. Addendum 3 confirms Addendum 2 (2026-10-29), which revised M5.0's item 32: a sketch whose only redundancies are relations reads by its `dofs`, and the relation reads `redundant`. A redundant driving dimension still reads `over_defined`, as in the FAQ. So a tool that infers two relations implying each other leaves a Silico sketch's state as SolidWorks leaves it.
 
 ## 2. Snaps and inference lines
 
@@ -87,24 +100,24 @@ Offset, On Edge, and On Surface are inferred by other tools (Offset, Convert Ent
 
 ### Each snap
 
-The second column is the [Sketch Snaps] page's wording. The third is the relation the help ties to that snap, anywhere. "Unknown" means no page says.
+The second column is the [Sketch Snaps] page's wording. No page says which relation a given snap leaves. The third column is this note's assumption: the snap of the same name leaves that relation, where a page names the relation as inferred while sketching. "Unknown" means the snap's name matches no inferred relation, or more than one.
 
 | Snap | What it does | Relation it leaves | Silico |
 |---|---|---|---|
-| End points and sketch points | "Snaps to the end of … lines, polygons, rectangles, … points … Snaps to the center of arcs." | Coincident: the pointer's (§1). Whether a coincidence or a merge: unknown. | A shared point (D2) |
+| End points and sketch points | "Snaps to the end of … lines, polygons, rectangles, … points … Snaps to the center of arcs." | Coincident, assumed: the pointer's (§1). Whether a coincidence or a merge: unknown. | A shared point (D2) |
 | Center points | "Snaps to the center of … circles, arcs, …" | Unknown | A shared centre point, if it takes the centre |
-| Midpoints | "Snaps to the midpoints of lines, … arcs, …" | Midpoint, for lines ([Sketch Relations Icons]; [Description of Sketch Relations]: "Two lines or a point and a line"). For an arc: unknown. | `midpoint` (line only). An arc's: no form (§9) |
+| Midpoints | "Snaps to the midpoints of lines, … arcs, …" | Midpoint, assumed, for lines ([Sketch Relations Icons]; [Description of Sketch Relations]: "Two lines or a point and a line"). For an arc: unknown. | `midpoint` (line only). An arc's: no form (§9) |
 | Quadrant points | "Snaps to the quadrants of circles, arcs, …" | Unknown | No point on a circle; `on` and `horizontal_points` or `vertical_points` with the centre (§9) |
-| Intersections | "Snaps to the intersections of entities that meet or entities that intersect." | Intersection, for two lines and a point ([Sketch Relations Icons]). For other curves: unknown. | Two `on`s |
-| Nearest | "Clear Nearest Snap, to enable all snaps … Select Nearest Snap, and snaps are enabled only when the pointer is in the vicinity of the snap point." | None: it changes when other snaps act | — |
-| Tangent | "Snaps to tangents on circles, arcs, …" | Tangent ([Automatically Adding Relations], the perimeter circle) | `tangent`, `tangent_at`, or `tangent_on` (§9) |
-| Perpendicular | "Snaps a line to another line." | Perpendicular ([Sketch Relations Icons]) | `perpendicular` |
-| Parallel | "Creates a parallel entity to lines." | Parallel ([Sketch Relations Icons]) | `parallel` |
+| Intersections | "Snaps to the intersections of entities that meet or entities that intersect." | Intersection, assumed, for two lines and a point ([Sketch Relations Icons]). For other curves: unknown. | Two `on`s |
+| Nearest | "Clear Nearest Snap, to enable all snaps … Select Nearest Snap, and snaps are enabled only when the pointer is in the vicinity of the snap point." | No page names one | — |
+| Tangent | "Snaps to tangents on circles, arcs, …" | Tangent, assumed (the pointer's, §1; [Automatically Adding Relations] places a circle with the tangent icon) | `tangent`, `tangent_at`, or `tangent_on` (§9) |
+| Perpendicular | "Snaps a line to another line." | Perpendicular, assumed ([Sketch Relations Icons]: *Inferred*) | `perpendicular` |
+| Parallel | "Creates a parallel entity to lines." | Parallel, assumed ([Sketch Relations Icons]: *Inferred*) | `parallel` |
 | Horizontal/vertical lines | "Snaps a line vertically to an existing horizontal sketch line, and horizontally to an existing vertical sketch line." | Unknown: vertical, horizontal, or perpendicular | `vertical`/`horizontal`, or `perpendicular` |
-| Horizontal/vertical to points | "Snaps a line vertically or horizontally to an existing sketch point." | Vertical, in the icons page's circle-centre example. For a line's end: see *Inference lines* below. | `vertical_points`, `horizontal_points` |
-| Length | "Snaps lines to the increments that are set by the grid … press and hold Shift while sketching." | None said | — |
-| Grid | "Snaps sketch entities to the grid's vertical and horizontal divisions." Off by default. | None said | — |
-| Angle | "Snaps to angles." The snap angle counts from the sketch's axes, or from the existing line when you sketch from its end ([Relations/Snaps Options]). | None said, beyond the pointer's horizontal or vertical | — |
+| Horizontal/vertical to points | "Snaps a line vertically or horizontally to an existing sketch point." | Vertical or horizontal, assumed (the icons page's vertical example is between two points, §1). For a line's end: see *Inference lines* below. | `vertical_points`, `horizontal_points` |
+| Length | "Snaps lines to the increments that are set by the grid … press and hold Shift while sketching." | No page names one | — |
+| Grid | "Snaps sketch entities to the grid's vertical and horizontal divisions." Off by default. | No page names one | — |
+| Angle | "Snaps to angles." The snap angle counts from the sketch's axes, or from the existing line when you sketch from its end ([Relations/Snaps Options]). | No page names one, beyond the pointer's horizontal or vertical | — |
 
 *Snap to model geometry* "Allows sketch entities to snap to model geometry such as edges" ([Relations/Snaps Options]). Whether that leaves a relation is unknown. Silico's sketches can't name model edges, so it has no form for one.
 
@@ -112,11 +125,11 @@ The second column is the [Sketch Snaps] page's wording. The third is the relatio
 
 - "Inferencing lines are dotted lines that appear as you sketch, displaying relations between the pointer and existing sketch entities (or model geometry). When your pointer approaches highlighted cues such as midpoints, the inferencing lines guide you relative to existing sketch entities." ([Inferencing])
 - The help says only the pointer's relation is added (§1). No page says a dotted line's relation is added on its own.
-- The 2025 page describes the same image [Inferencing] shows (a line drawn level with a rectangle's corner): "The inferencing line shows a vertical relation between the endpoints of the two lines. The [icon] in the pointer display indicates that the line being sketched is horizontal. The horizontal relation is added to the entity properties automatically." ([AutoCAD Sketch Relations]). It names only the horizontal relation as added. It doesn't say the vertical one isn't.
-- The icons page's vertical example, a circle's centre above the origin, is marked *Inferred* (§1). What the pointer showed there isn't said.
+- The 2025 page describes the same image [Inferencing] shows (a horizontal line whose end is straight above a rectangle's corner): "The inferencing line shows a vertical relation between the endpoints of the two lines. The [icon] in the pointer display indicates that the line being sketched is horizontal. The horizontal relation is added to the entity properties automatically." ([AutoCAD Sketch Relations]). It names only the horizontal relation as added, and doesn't say whether the vertical one is.
+- The icons page's vertical example, between a circle's centre and a line's end on the circle's top, is marked *Inferred* (§1). What the pointer showed there isn't said.
 - docs/ux/solidworks.md cites one unofficial source: blue lines guide only, and lines in another colour capture a relation. The help says nothing about the lines' colours.
 
-So the help's rule is the pointer. Whether an inference line to a point leaves a vertical or horizontal relation is unknown. The one example that names a relation between points (the circle's centre) says it does.
+So the help's rule is the pointer. Whether an inference line to a point leaves a vertical or horizontal relation is unknown. The one example of such a relation between points (the icons page's vertical) says one is inferred, but not whether the pointer or a dotted line showed it.
 
 ## 3. The line
 
@@ -142,7 +155,7 @@ So the help's rule is the pointer. Whether an inference line to a point leaves a
 
 - **Centre.** "Click to place the center of the circle. Drag and click to set the radius." ([Sketching Circles])
 - **Perimeter.** "Click to place the perimeter. Drag left or right to sketch the circle. Right-click to set the circle." ([Perimeter Circles])
-- **Relations.** The general rule. The help has two examples. A second circle with its centre on the first gets coincident ([Sketch Relations Icons]). A perimeter circle drawn "using the tangent icon" is tangent to the first circle ([Automatically Adding Relations]). Concentric circles are an example of a relation added by hand ([Manually Adding Relations](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_Manually_Adding_Relations.htm)). What a centre clicked on an existing centre leaves (coincident, merge, or concentric) is unknown.
+- **Relations.** The general rule. The help has two examples. A second circle with its centre on the first gets coincident ([Sketch Relations Icons]). For tangent circles, a second circle is sketched with the Perimeter Circle tool: "Use the tangent icon to place the pointer and sketch the second circle." ([Automatically Adding Relations]). Concentric circles are an example of a relation added by hand ([Manually Adding Relations](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_Manually_Adding_Relations.htm)). What a centre clicked on an existing centre leaves (coincident, merge, or concentric) is unknown.
 
 ## 6. The arcs
 
@@ -208,7 +221,7 @@ Silico's sketch model: points listed by ID, curves naming their points (a line's
 | Symmetric | `symmetric` (two points about a line or a point) | For points. Lines and arcs need one per pair of points. |
 | Fix | **No form.** `distance_x` and `distance_y` from `origin` (D4) | No |
 | A quadrant point | **No form.** `on` the circle, and `horizontal_points` or `vertical_points` with its centre | Yes, as two |
-| An angle (Line orientation *Angle*, with *Add dimensions*) | `angle` (`a`: `x_axis`, `b`: the line, `driving`: true), and `length` | Yes |
+| An angle (Line orientation *Angle*, with *Add dimensions*) | The help's angle dimension is to a horizontal construction line ("The other line in the dimension must be a horizontal construction line", [Sketching Lines]), and no page says it's driving. Closest: `angle` (`a`: a horizontal construction line or `x_axis`, `b`: the line), and `length`, each with `driving` to be decided | No |
 | An infinite line | **No form.** Silico's lines have two points. | No |
 
 Each "no form" is an addition to the protected schema (`tests/contract/`), so it needs the maintainer.
@@ -224,14 +237,14 @@ From the `1.1.3` tag:
   - a direction within 2° of horizontal or vertical gives `Horizontal` or `Vertical`;
   - a curve the new one leaves along gives `Tangent`.
   
-  On creation, a coincidence plus a tangency becomes an endpoint-to-endpoint `Tangent`, and an on-object plus a tangency an endpoint-to-edge one (`createAutoConstraints`). These are Silico's `tangent_at` and `tangent_on`.
+  In the newer tools, built on `DrawSketchDefaultHandler`, a coincidence plus a tangency becomes an endpoint-to-endpoint `Tangent`, and an on-object plus a tangency an endpoint-to-edge one (`generateOneAutoConstraintFromSuggestion`, `DrawSketchDefaultHandler.h`). These are Silico's `tangent_at` and `tangent_on`. The polyline's `createAutoConstraints` (`DrawSketchHandler.cpp`) doesn't merge them.
 - **What it doesn't infer: perpendicular and parallel.** Those auto-constraints came to FreeCAD's main with the polyline rework (`d77c9647c3`, 2026-05-18). They aren't in 1.1.3.
 - **The rectangle** (`finishRectangleCreation`, `addAlignmentConstraints`):
   - four corner coincidences;
   - for a corner or centre rectangle, or any at angle 0, two `Horizontal` and two `Vertical`;
   - for a 3-point one at an angle, two `Parallel`, and `Perpendicular` only if its corner is square;
   - a centred one adds a construction point at the centre with `Symmetric` of two opposite corners about it (`finishCenteredRectangleCreation`).
-- **Redundancy.** With *Avoid redundant* on, the polyline drops a horizontal or vertical auto-constraint the sketch already implies (`removeRedundantHorizontalVertical`). Its default wasn't read.
+- **Redundancy.** With *Avoid redundant* on, the polyline drops a horizontal or vertical auto-constraint the sketch already implies (`removeRedundantHorizontalVertical`). The newer tools drop every redundant auto-constraint, not only horizontal and vertical ones (`removeRedundantAutoConstraints`, `DrawSketchDefaultHandler.h`). The setting's default wasn't read.
 
 ## For M5.0 and the maintainer
 
@@ -243,8 +256,8 @@ From the `1.1.3` tag:
 - "midpoint at a midpoint": **supported for lines.** For an arc's midpoint, the relation is unknown and Silico has no form.
 - "tangent for a tangent arc": **partly.** The tangent arc's page names no relation. Tangent is the pointer's relation for every tool ([Using Automatic Relations]; the perimeter circle example).
 - "perpendicular where the pointer shows it": **supported** (icons page).
-- **Missing:** parallel (icons page, *Inferred*); vertical and horizontal between points (the circle-centre example); intersection, as two `on`s (icons page); the line's *Horizontal* and *Vertical* orientations.
-- "Snaps that only guide add nothing": **consistent with the help for nearest, length, and grid.** The help ties no relation to centre points, quadrants, horizontal or vertical to lines, or angle, and doesn't say they add none.
+- **Missing:** parallel (icons page, *Inferred*); vertical and horizontal between points (the icons page's vertical example); intersection, as two `on`s (icons page); the line's *Horizontal* and *Vertical* orientations.
+- "Snaps that only guide add nothing": **not contradicted, not confirmed.** No page says which relation any snap leaves (§2). For nearest, length, grid, centre points, quadrants, horizontal or vertical to lines, and angle, no page names a relation, and none says they add none.
 - "FreeCAD's autoconstraints add the same set where SolidWorks is silent": **not the same set.** FreeCAD 1.1.3 infers no perpendicular or parallel (§10). Where SolidWorks is silent (the rectangle's relations, a chain's joins), FreeCAD 1.1.3 is the fallback that's there.
 
 ### Recommended for M5.11, by tool
@@ -262,7 +275,7 @@ Every inferred relation below is added only when the pointer shows it at the acc
    - `perpendicular` or `parallel` to the line the pointer names.
    
    In a chain, each segment shares its start with the last one's end, as section 9 of M5.0 has it.
-2. **Line options.** *Horizontal* and *Vertical* orientations add `horizontal` or `vertical` (the help: "specify the relation"). *Angle* with *Add dimensions* adds `angle` from `x_axis` and `length`. *Midpoint line* and *Infinite length* stay out of M5.11: what the first leaves is unknown, and the second has no form.
+2. **Line options.** *Horizontal* and *Vertical* orientations add `horizontal` or `vertical` (the help: "specify the relation"). *Angle* with *Add dimensions* adds an angle and a length. The help's angle is to a horizontal construction line ([Sketching Lines]), and no page says either is driving. Whether Silico's `angle` is from a construction line or from `x_axis`, and its `driving`, are for M5.11 (§9). *Midpoint line* and *Infinite length* stay out of M5.11: what the first leaves is unknown, and the second has no form.
 3. **Autotransition and the tangent arc.** The arc starts at the end it leaves (shared). A tangent arc adds `tangent_at`, `direction` `same`. A normal arc is decision B. Its other end is placed as a line's end.
 4. **Corner rectangle.** Four lines and four shared corners, two `horizontal`, two `vertical`. That's FreeCAD 1.1.3 and #196's key test. The help doesn't name them. The first and the opposite corner take what a line's end takes. Shift (a square) adds nothing until decided: the help doesn't say whether it leaves `equal`.
 5. **Other rectangles,** if M5.11 builds them. FreeCAD 1.1.3's constraints, in Silico's forms:
@@ -278,8 +291,8 @@ Every inferred relation below is added only when the pointer shows it at the acc
 7. **Arcs.** A centrepoint or 3 point arc's centre, start, and end take what a line's end takes. A 3 point arc's last click with the pointer showing tangent: `tangent`, or `tangent_at` where it shares an end. The gate decides which.
 8. **Point.** On a curve: `on`. At a line's middle: `midpoint`. At two lines' crossing: two `on`s. On an existing point: decision D.
 9. **Snaps.**
-   - **Add their relation:** endpoints (shared), midpoints of lines (`midpoint`), intersections (two `on`s), tangent, perpendicular, parallel.
-   - **Guide only:** nearest, length, grid, angle.
+   - **Add their relation**, assuming the snap of the same name leaves it (§2; no page says): endpoints (shared), midpoints of lines (`midpoint`), intersections (two `on`s), tangent, perpendicular, parallel.
+   - **Guide only:** nearest, length, grid, angle. No page names a relation for them.
    - **Decide:** horizontal or vertical to points (decision E), and centre points, quadrants, and horizontal or vertical to lines. For the last three, recommended: centre points give a shared centre (a click on the point); quadrants and horizontal or vertical to lines guide only, since the help names no relation for them.
 10. **Inference lines** guide only; the pointer's relations are added (decision E).
 11. **Automatic Relations off, and Ctrl:** decision F.
@@ -288,15 +301,15 @@ Every inferred relation below is added only when the pointer shows it at the acc
 
 - **A. A point at the origin.** (a) Two relations, `horizontal_points` and `vertical_points` with `origin`: no new form, no value. (b) A new form, a point at the origin, matching SolidWorks' one coincident. That changes the protected schema. (c) Two `distance_x`/`distance_y` of 0: dimensions, which SolidWorks wouldn't show. Recommended: (a), unless the maintainer wants one relation per SolidWorks relation.
 - **B. A normal arc** (the tangent arc's normal zones). The help names no relation. For a line, `on` of the arc's centre on the line is exact. For an arc, there's no form. Recommended: in M5.11, only tangent arcs, or normal arcs from lines only (`on`); a form for curves meeting at right angles later, if wanted.
-- **C. A centre rectangle's centre.** (a) FreeCAD's: a construction point with `symmetric` of two opposite corners about it, no centerlines. (b) SolidWorks' look: two construction diagonals sharing the corners, and the centre `midpoint` of one of them. Not both: with shared corners, a second `midpoint` is implied, so it's a redundancy, which item 32 reads `over_defined`. Recommended: (b), since SolidWorks draws the centerlines; the relations themselves are unknown.
+- **C. A centre rectangle's centre.** (a) FreeCAD's: a construction point with `symmetric` of two opposite corners about it, no centerlines. (b) SolidWorks' look: two construction diagonals sharing the corners, and the centre `midpoint` of one of them. Not both: with shared corners, a second `midpoint` is implied, so it's a redundant relation, which revised item 32 reports `redundant` (Addendum 2). Recommended: (b), since SolidWorks draws the centerlines; the relations themselves are unknown.
 - **D. A point clicked on an existing point.** The help is silent. FreeCAD 1.1.3 makes a second point with a coincidence. Silico has no coincidence between points. Recommended: nothing is added, and the tool says so.
-- **E. Points level with or above others.** The icons page's one example (a circle's centre above the origin) says a vertical relation is inferred. A 2025 example names only the pointer's relation as added. FreeCAD infers none. Recommended: `horizontal_points` or `vertical_points` only when the pointer shows the relation, never from the dotted line alone.
+- **E. Points level with or above others.** The icons page's one example (a vertical between a circle's centre and a line's end on the circle's top) says a vertical relation is inferred. What the pointer showed isn't said. A 2025 example names only the pointer's relation as added. FreeCAD infers none. Recommended: `horizontal_points` or `vertical_points` only when the pointer shows the relation, never from the dotted line alone.
 - **F. Automatic Relations off.** The help says only that relations aren't added. Recommended, as FreeCAD 1.1.3:
   - a tool's own structure stays: a chain's shared points, a rectangle's corners and relations, a tangent arc's `tangent_at`, a line orientation's relation;
   - nothing is inferred, including a join to an existing point: the new end is a new point at the snapped place.
   
   The cost: two ends at one place that aren't one point, which M3.5 refuses in a profile ("share the point"). The alternative: a click on an existing point always shares it, since D2 makes that geometry, not a relation. Ctrl does the same while held.
-- **G. Redundant inferred relations.** SolidWorks keeps a redundant relation and the sketch stays fully defined ([FAQ Sketch Relations]). Item 32 reads it `over_defined`. Recommended: tools don't add a relation the sketch already implies, as FreeCAD's *Avoid redundant* drops horizontal and vertical ones. Separately, item 32's "SolidWorks' meaning" holds for dimensions but, per this FAQ, not for relations. Worth a look before M5.11 colours sketches.
+- **G. Redundant inferred relations.** Settled by Fable's Addendum 2 and Addendum 3 (2026-10-29), from [FAQ Sketch Relations] and [Sketch Geometry Status] (§1). A redundant relation leaves the sketch's state to its `dofs`, marks no point or curve, and reads `redundant` itself. What's left, how the app draws that relation's glyph, is item 28's. Whether a tool should add a relation the sketch already implies stays M5.11's: FreeCAD's newer tools drop every redundant auto-constraint (`removeRedundantAutoConstraints`), and its polyline, with *Avoid redundant* on, only horizontal and vertical ones (§10).
 
 ## Method
 
@@ -315,6 +328,7 @@ Every inferred relation below is added only when the pointer shows it at the acc
 [Description of Sketch Relations]: https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Description_of_Sketch_Relations.htm
 [Automatically Adding Relations]: https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_Automatically_Adding_Relations.htm
 [FAQ Sketch Relations]: https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_FAQ_Sketch_Relations.htm
+[Sketch Geometry Status]: https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Sketch_Geometry_Status.htm
 [Geometric Relations]: https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Geometric_Relations.htm
 [Horizontal and Vertical Sketch Relations]: https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_horizontal_vertical_sketch_relations.htm
 [Selecting Midpoints with Dynamic Highlighting]: https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_Selecting_Midpoint_with_Dynamic_highlight.htm
