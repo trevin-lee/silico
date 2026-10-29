@@ -209,3 +209,7 @@ crates/silico-core/src/extend.rs | extend_line | replace < with <= | #259
 crates/silico-core/src/extend.rs | extend_arc | replace || with && | #259
 crates/silico-core/src/extend.rs | extend_arc | replace * with + | #259
 crates/silico-core/src/extend.rs | extend_arc | replace > with >= | #259
+# A warm start's equivalents: a kernel's default warm already starts none; and Warming's
+# drop with nothing left subtracts nothing, its notify only waking waiters to look again (#263).
+crates/silico-core/src/kernel.rs | Clients::warm | replace Clients::warm -> usize with 0 | #263
+crates/silico-core/src/recompute.rs | <impl Drop for Warming<'_>>::drop | replace > with >= | #263

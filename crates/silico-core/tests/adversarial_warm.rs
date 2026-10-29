@@ -359,3 +359,18 @@ fn a_warm_start_of_zero_or_of_none_more_starts_nothing_and_a_solve_starts_its_ow
     assert_eq!(starts.load(Ordering::SeqCst), 1);
     drop(drag);
 }
+
+#[test]
+fn sessions_on_a_kernel_with_no_workers_to_start_warm_none_of_it() {
+    // From #263's mutants: a kernel that isn't a pool (the fake) has no workers to warm, so
+    // its half of the warm start is none; the sketch solvers' half starts as asked.
+    use silico_core::cache::Cache;
+    use silico_core::command::Sessions;
+    use silico_core::fake::FakeKernel;
+    let sessions = Sessions::with_stand_ins(
+        Arc::new(FakeKernel::new(2).unwrap()),
+        |dir: &std::path::Path| Cache::unsealed(dir),
+        fake,
+    );
+    assert_eq!(sessions.warm(2, 1), (0, 1));
+}

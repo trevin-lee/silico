@@ -1880,6 +1880,30 @@ fn a_request_while_a_warmed_worker_starts_waits_for_it_rather_than_starting_anot
 }
 
 #[test]
+fn warm_starts_of_a_few_from_many_threads_at_once_stop_at_the_number_asked_for() {
+    // From #263's mutants: eight threads at once each warm two slots of a pool of eight.
+    // Each reads its budget before the others start any, so only the count checked as
+    // each slot is taken holds them to two between them.
+    let pool = std::sync::Arc::new(on_demand(TEST_WORKER, 8));
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            let (pool, barrier) = (
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&barrier),
+            );
+            std::thread::spawn(move || {
+                barrier.wait();
+                pool.warm(2)
+            })
+        })
+        .collect();
+    let started: usize = threads.into_iter().map(|t| t.join().unwrap()).sum();
+    assert_eq!(started, 2);
+    assert_eq!(pool.pids().len(), 2, "{:?}", pool.pids());
+}
+
+#[test]
 fn sessions_warm_their_pool_and_their_sketch_solvers_and_a_second_warm_starts_none() {
     // The app's call: both halves at once, each up when it returns; called again, none
     // more.
