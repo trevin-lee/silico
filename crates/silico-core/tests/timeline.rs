@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use silico_core::document::{Checked, Document, FeatureId, Operation, read};
 use silico_core::recompute::Model;
-use silico_core::timeline::{Entry, Health, Timeline, timeline};
+use silico_core::timeline::{Entry, Excepted, Health, Timeline, timeline};
 use silico_core::{Error, ErrorCode};
 use silico_protocol::Op;
 
@@ -100,7 +100,7 @@ fn entry(
 #[test]
 fn each_feature_carries_the_health_its_model_gave_it() {
     let model = rebuilt(ErrorCode::KernelFailed);
-    let got = timeline(model.document(), Some(&model), &BTreeSet::new());
+    let got = timeline(model.document(), Some(&model), &Excepted::default());
     use Health::{Error, Healthy, Warning};
     let want = vec![
         entry("aaaaaaaa", "box", "Block", &[], (Healthy, 0, 0)),
@@ -133,7 +133,14 @@ fn each_feature_carries_the_health_its_model_gave_it() {
 fn a_feature_an_open_transactions_edits_reached_isnt_warned_of_its_missing_fingerprint() {
     let model = rebuilt(ErrorCode::KernelFailed);
     let spared = BTreeSet::from([id("eeeeeeee")]);
-    let got = timeline(model.document(), Some(&model), &spared);
+    let got = timeline(
+        model.document(),
+        Some(&model),
+        &Excepted {
+            spared,
+            ..Excepted::default()
+        },
+    );
     let e = got
         .features
         .iter()
@@ -145,7 +152,7 @@ fn a_feature_an_open_transactions_edits_reached_isnt_warned_of_its_missing_finge
 #[test]
 fn a_kernel_fault_and_what_it_blocked_are_unknown_not_the_documents_problems() {
     let model = rebuilt(ErrorCode::WorkerCrashed);
-    let got = timeline(model.document(), Some(&model), &BTreeSet::new());
+    let got = timeline(model.document(), Some(&model), &Excepted::default());
     let mark = |f: &str| {
         let e = got.features.iter().find(|e| e.id == id(f)).unwrap();
         (e.health, e.problems, e.warnings)
@@ -164,7 +171,7 @@ fn a_feature_the_models_revision_hasnt_and_a_document_with_no_model_are_unknown(
     let mut newer = model.document().clone();
     let extra = read(document(&[&block("zzzzzzzz")]).as_bytes()).unwrap();
     newer.features.extend(extra.features);
-    let got = timeline(&newer, Some(&model), &BTreeSet::new());
+    let got = timeline(&newer, Some(&model), &Excepted::default());
     let last = got.features.last().unwrap();
     assert_eq!(
         last,
@@ -172,7 +179,7 @@ fn a_feature_the_models_revision_hasnt_and_a_document_with_no_model_are_unknown(
     );
     assert_eq!(got.features.len(), 11);
     // No model: every feature unknown, as the document holds it, and no bodies.
-    let Timeline { features, bodies } = timeline(&newer, None, &BTreeSet::new());
+    let Timeline { features, bodies } = timeline(&newer, None, &Excepted::default());
     assert!(bodies.is_empty());
     assert_eq!(features.len(), 11);
     for e in &features {
