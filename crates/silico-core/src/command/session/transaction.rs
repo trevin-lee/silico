@@ -896,7 +896,7 @@ impl<C: Kernel + 'static> Session<C> {
                 Arc::clone(&held.bytes),
             )
         };
-        self.save(stop, &path, &resolved, &bytes, &saved, saver)?;
+        let saving = self.save(stop, &path, &resolved, &bytes, &saved, saver)?;
         claim(&resolved);
         let carried = reach
             .iter()
@@ -912,7 +912,10 @@ impl<C: Kernel + 'static> Session<C> {
             Arc::clone(&gated),
             Arc::new(carried),
         );
-        held.bytes = saved;
+        held.bytes = Arc::clone(&saved);
+        // Under the held state's lock, the watch's taken last: a comparison that read the
+        // file before the save is dropped, and one after it finds the file unchanged.
+        saving.saved(saved);
         // Under the held state's lock, so no published read of the new revision starts its
         // rebuild before its model is there.
         let mut rebuilds = lock(&self.rebuilds);
@@ -1057,7 +1060,10 @@ impl<C: Kernel + 'static> Session<C> {
         let mut held = self.held.session_changing();
         // Nothing carried: a reloaded session is as a fresh `open`.
         held.change(next, Arc::clone(&now), gated, Arc::new(BTreeSet::new()));
-        held.bytes = now;
+        held.bytes = Arc::clone(&now);
+        // Under the held state's lock, the watch's taken last: what it compares with from
+        // now on, the file unchanged.
+        self.disk.held(now);
         held.last_reload = Some(next);
         drop(held);
         tracing::info!(session = %self.id, revision = next.number(), "the file changed outside the session: reloaded");
@@ -1070,7 +1076,10 @@ impl<C: Kernel + 'static> Session<C> {
     /// too late. Refused, nothing written, if the command was cancelled first, if the file
     /// changed since (a conflict, naming the file, with what `saver` advises) or can't be
     /// written; or if this session's own save left it part written before, saying where its
-    /// old text is. A save that leaves it so is marked, for the next to say.
+    /// old text is. A save that leaves it so is marked, for the next to say. Bracketed for
+    /// the session's disk watch: what it gives back is [`saved`](crate::disk::Saving::saved)
+    /// where the session takes what it wrote, so no comparison reads its own save as a
+    /// change; dropped on a failure, the watch's finding unknown until it compares again.
     fn save(
         &self,
         stop: &Ticket,
@@ -1079,7 +1088,7 @@ impl<C: Kernel + 'static> Session<C> {
         bytes: &[u8],
         text: &[u8],
         saver: Saver,
-    ) -> Result<(), Problems> {
+    ) -> Result<crate::disk::Saving<'_>, Problems> {
         if let Some(old) = &self.held.read().part_written {
             return Err(Problems::from(part_written(path, old)));
         }
@@ -1088,8 +1097,12 @@ impl<C: Kernel + 'static> Session<C> {
             workspace,
             given: Path::new(path),
         });
+        let saving = self.disk.saving();
+        #[cfg(test)]
+        self.writing.pass();
         file::save_within(resolved, bytes, text, within)
-            .map_err(|unsaved| self.unsaved(path, unsaved, saver))
+            .map_err(|unsaved| self.unsaved(path, unsaved, saver))?;
+        Ok(saving)
     }
 
     /// The refusal of a save of the document at `path` (as `open` was given it) that failed,

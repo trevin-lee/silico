@@ -94,6 +94,7 @@ use super::edit::{self, FeatureIds};
 use super::logs::{LogBuffer, LogQuery, Logs};
 use super::{Gated, Problems, ReadCommand, SessionCommand};
 use crate::cache::Cache;
+use crate::disk::{DISK_CHECK_INTERVAL, Disk, DiskWatch};
 use crate::document::json::Node;
 use crate::document::{self, FeatureId};
 #[cfg(doc)]
@@ -151,7 +152,8 @@ pub struct Sessions<P: Clients + 'static> {
 /// Its locks, and the registry's, are taken in one order, each let go before one earlier in
 /// the order is taken: the registry's book, then a session's published reads (then those
 /// unanswered), then its held state, then its rebuilds, then its queue, then the command
-/// running, under which none is taken. The registry's `feature_ids` is taken alone.
+/// running, then its disk watch's, under which none is taken. The registry's `feature_ids`
+/// is taken alone.
 struct Session<C: Kernel + 'static> {
     id: SessionId,
     /// The sessions' workspace, if they have one: each re-read and save of the session's file
@@ -175,6 +177,9 @@ struct Session<C: Kernel + 'static> {
     newest: Arc<Newest>,
     /// Its logs: the events of its commands' spans, as `read_logs` reads them.
     logs: Arc<LogBuffer>,
+    /// Whether its file changed on disk ([`Sessions::disk`]): told what the session reads
+    /// and writes of it, by its reloads and its saves.
+    disk: DiskWatch,
     /// Where its commands wait as each starts, in this crate's tests only.
     #[cfg(test)]
     gate: Gate,
@@ -182,6 +187,9 @@ struct Session<C: Kernel + 'static> {
     /// crate's tests only.
     #[cfg(test)]
     settled: Gate,
+    /// Where a save waits before it writes its file, in this crate's tests only.
+    #[cfg(test)]
+    writing: Gate,
 }
 
 /// Where a file a command writes may go ([`Sessions::write_rules`]).
@@ -432,8 +440,24 @@ impl<P: Clients + 'static> Sessions<P> {
                 )),
                 export_turns: Arc::default(),
                 workspace: None,
+                disk_interval: DISK_CHECK_INTERVAL,
             }),
         }
+    }
+
+    /// The same sessions, each comparing its file on disk at most once each `interval`,
+    /// as they're made: in this crate's tests, which don't wait out the second.
+    #[cfg(test)]
+    fn checking_disk_every(mut self, interval: std::time::Duration) -> Self {
+        let registry = Arc::get_mut(&mut self.registry);
+        assert!(
+            registry.is_some(),
+            "sessions are given their interval as they're made"
+        );
+        if let Some(registry) = registry {
+            registry.disk_interval = interval;
+        }
+        self
     }
 
     /// The same sessions, in the workspace at `root` (decision 26), as they're made, before
@@ -664,6 +688,18 @@ impl<P: Clients + 'static> Sessions<P> {
     /// revision's outcome (decision 32), `stopped` if it was cancelled.
     pub fn status(&self, session: &SessionId) -> Response<Status> {
         status_in(&self.registry, session)
+    }
+
+    /// Whether `session`'s file changed on disk since the session last read or wrote it
+    /// (docs/design/m5.0-app.md, section 4; what `status`'s `disk` will say, M5.4): the
+    /// last comparison's finding, none before one has ended, and the next comparison
+    /// started off the caller's thread if one is due ([`DiskWatch::finding`]). Answered on
+    /// the caller's thread, never waiting on the file or on the session's commands. It
+    /// reloads nothing: the next command does, as it always has (decision 2). Refused,
+    /// naming `session`, if it isn't open.
+    pub fn disk(&self, session: &SessionId) -> Result<Option<Disk>, Error> {
+        let found = find_in(&self.registry, session).ok_or_else(|| not_open(*session))?;
+        Ok(found.disk.finding())
     }
 
     /// `session`'s logs (M4.7): the events `query` asks for, from what its buffer keeps,

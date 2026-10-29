@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use silico_core::disk::{Disk, DiskWatch, Found, Reader};
+use silico_core::disk::{Clock, Disk, DiskWatch, Found, Reader};
 
 /// How long a test waits for something it expects.
 const WAIT: Duration = Duration::from_secs(10);
@@ -357,4 +357,40 @@ fn a_path_that_leads_out_of_the_workspace_is_unreadable_whatever_is_there() {
         None,
     );
     assert_eq!(settled(&w), Disk::Unchanged);
+}
+
+#[test]
+fn the_interval_runs_from_a_held_comparisons_end_by_the_watchs_clock() {
+    // The design's case, on a clock the test sets: a comparison held 0.8 s; asked 0.5 s
+    // after it ended, none starts; 1 s after, one does.
+    let start = Instant::now();
+    let time = Arc::new(Mutex::new(start));
+    let set = |millis| *time.lock().unwrap() = start + Duration::from_millis(millis);
+    let clock: Clock = {
+        let time = Arc::clone(&time);
+        Arc::new(move || *time.lock().unwrap())
+    };
+    let held = Held::new();
+    let w = DiskWatch::clocked(
+        "p",
+        Arc::new(b"A".to_vec()),
+        Duration::from_secs(1),
+        None,
+        held.reader(Found::Bytes(b"A".to_vec())),
+        clock,
+    );
+    assert_eq!(w.finding(), None);
+    held.wait_reads(1);
+    set(800);
+    held.open();
+    assert_eq!(settled(&w), Disk::Unchanged);
+    set(1300);
+    for _ in 0..100 {
+        assert_eq!(w.finding(), Some(Disk::Unchanged));
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(held.reads(), 1);
+    set(1800);
+    assert_eq!(w.finding(), Some(Disk::Unchanged));
+    held.wait_reads(2);
 }

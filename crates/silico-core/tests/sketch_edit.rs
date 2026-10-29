@@ -654,26 +654,62 @@ fn a_merge_that_makes_a_constraint_name_one_point_twice_is_refused() {
     assert_eq!(error.elements(), ["k0000000", "p0000001"]);
 }
 
-#[test]
-fn a_merge_that_leaves_an_edge_tangent_at_a_shared_end_is_refused() {
-    // a line and an arc whose ends touch, an edge tangent between them: after the merge
-    // they share an end, where only a tangent_at may hold (decision 10; open item 13 of
-    // the M5.0 design would convert it instead, pending the maintainer).
-    let points = format!("{POINTS}, {}", point("p0000009", 10.0, 0.00000004));
-    let before = doc(
+/// Line a0 from p0 (0, 0) to p1 (10, 0), and `arc` about q0 (10, 10), radius 10, with p9 at
+/// (10, 4e-8) one of its ends, held edge tangent to a0 by k0 (`a` and `b` as `pair` names
+/// them): a0 touches the circle at (10, 0), its foot from q0.
+fn tangent_touching(arc: &str, pair: [&str; 2]) -> Document {
+    let points = format!(
+        "{POINTS}, {}, {}, {}",
+        point("p0000009", 10.0, 0.00000004),
+        point("p0000007", 0.0, 10.0),
+        point("p0000008", 20.0, 10.0)
+    );
+    doc(
         &points,
         &line("a0000000", "p0000000", "p0000001"),
         "",
-        r#"{"id": "r0000000", "center": "q0000000", "start": "p0000009", "end": "p0000002", "construction": false}"#,
-        r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "r0000000", "side": "left"}"#,
-    );
-    let error = merge(sketch_of(&before), &ids(&["p0000001", "p0000009"])).unwrap_err();
-    assert_eq!(
-        error.message(),
-        "merging them would leave tangent k0000000 between a0000000 and r0000000, which would then share an end, where a tangency must be a tangent_at"
-    );
-    assert_eq!(error.parameter(), Some("points"));
-    assert_eq!(error.elements(), ["k0000000", "a0000000", "r0000000"]);
+        arc,
+        &format!(
+            r#"{{"id": "k0000000", "type": "tangent", "a": "{}", "b": "{}", "side": "left"}}"#,
+            pair[0], pair[1]
+        ),
+    )
+}
+
+#[test]
+fn a_merge_that_leaves_an_edge_tangent_at_a_shared_end_makes_it_a_tangent_at_as_drawn() {
+    // FreeCAD's coincident command substitutes an endpoint tangency (620188073e; open item
+    // 13). Merged at p1, the path along a0 into (10, 0) runs +x. An arc from p9 (270°)
+    // round to (20, 10) leaves it +x too, counter-clockwise at the circle's foot: smooth,
+    // `same`, whichever of the two k0 names first (read back along r0, it arrives −x and
+    // a0 leaves −x). An arc from (0, 10) (180°) round to p9 arrives +x, so leaving along it
+    // runs back −x: a cusp, `opposite`. The constraint keeps its ID.
+    let from_p9 = r#"{"id": "r0000000", "center": "q0000000", "start": "p0000009", "end": "p0000008", "construction": false}"#;
+    let to_p9 = r#"{"id": "r0000000", "center": "q0000000", "start": "p0000007", "end": "p0000009", "construction": false}"#;
+    for (arc, pair, direction) in [
+        (from_p9, ["a0000000", "r0000000"], "same"),
+        (from_p9, ["r0000000", "a0000000"], "same"),
+        (to_p9, ["a0000000", "r0000000"], "opposite"),
+        (to_p9, ["r0000000", "a0000000"], "opposite"),
+    ] {
+        let before = tangent_touching(arc, pair);
+        if let Err(invalid) = validate(&before) {
+            panic!("the gate refused the sketch before: {:?}", invalid.errors());
+        }
+        let edited = merge(sketch_of(&before), &ids(&["p0000001", "p0000009"])).unwrap();
+        let after = text(&gated(&before, &edited));
+        assert!(
+            after.contains(&format!(
+                r#"{{"id": "k0000000", "type": "tangent_at", "a": "{}", "b": "{}", "at": "p0000001", "direction": "{direction}"}}"#,
+                pair[0], pair[1]
+            )),
+            "{pair:?}: {after}"
+        );
+        assert!(!after.contains(r#""type": "tangent""#), "{after}");
+        assert_eq!(edited.added, Vec::<ElementId>::new());
+        assert_eq!(edited.modified, ids(&["r0000000", "k0000000"]));
+        assert_eq!(edited.removed, ids(&["p0000009"]));
+    }
 }
 
 #[test]
