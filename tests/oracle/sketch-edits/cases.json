@@ -1118,7 +1118,7 @@
   },
   {
     "name": "merge_leaves_edge_tangent",
-    "note": "Merging would leave an edge tangent at a shared end: Silico refuses (decision 8, until open item 13).",
+    "note": "Merging the touching ends: the edge tangent there becomes a tangent_at, its stored side kept (:275), as FreeCAD's Coincident command puts an end tangency in its place (180d722a53).",
     "sketch": "touching_with_edge_tangent",
     "edit": {
       "merge": {
@@ -1199,7 +1199,7 @@
   },
   {
     "name": "merge_conflicting_coincident",
-    "note": "test_conflicting_coincident_selection_is_rejected: the merge's solve conflicts, so Silico refuses it (:276), as FreeCAD's command rolls it back.",
+    "note": "test_conflicting_coincident_selection_is_rejected: the merge's solve conflicts, so Silico refuses it (:277), as FreeCAD's command rolls it back.",
     "sketch": "conflicting_coincident",
     "edit": {
       "merge": {
