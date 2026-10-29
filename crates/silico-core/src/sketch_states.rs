@@ -190,8 +190,8 @@ pub fn states(sketch: &Sketch, read: &Diagnosed) -> Result<SketchStates, Error> 
         if !constraints.get(&c.id).is_some_and(|s| s.flagged()) {
             continue;
         }
-        if let Some(read) = diagnosis.points_depended_on.get(&c.id) {
-            points_over.extend(read);
+        if let Some(depended_on) = diagnosis.points_depended_on.get(&c.id) {
+            points_over.extend(depended_on);
         }
         named.extend(
             c.form

@@ -403,7 +403,7 @@ fn the_states_dont_depend_on_the_order_the_sketch_holds_its_lists() {
 fn a_sketch_the_gate_never_saw_is_stated_without_a_panic() {
     // Curves naming points it doesn't have, IDs held twice, a constraint on nothing: the
     // translation calls it the gate's bug (internal), which is no sketch state, so it has
-    // none; its diagnosis of no equations counts every member once by ID, and nothing
+    // none; its diagnosis before its constraints counts every member once by ID, and nothing
     // panics.
     let sketch = read_sketch(&text(
         &[point("p0000001", 0.0, 0.0), point("p0000001", 1.0, 0.0)],
@@ -420,7 +420,7 @@ fn a_sketch_the_gate_never_saw_is_stated_without_a_panic() {
     let refused = Translation::new(&sketch).unwrap_err();
     // One point, one circle, one arc, each once: 2 + 1 + 3, less the arc's 4 rules.
     assert_eq!(
-        Diagnosis::no_equations(&sketch),
+        Diagnosis::untranslated(&sketch),
         Diagnosis {
             dofs: 2,
             free: ids(&["a0000001", "c0000001", "p0000001"]),
@@ -430,7 +430,7 @@ fn a_sketch_the_gate_never_saw_is_stated_without_a_panic() {
     assert_eq!(refused.code(), ErrorCode::Internal, "{refused}");
     let read = Diagnosed::untranslated(&sketch).unwrap();
     assert_eq!(read.outcome(), Err(&refused));
-    assert_eq!(read.diagnosis(), &Diagnosis::no_equations(&sketch));
+    assert_eq!(read.diagnosis(), &Diagnosis::untranslated(&sketch));
     assert_eq!(states(&sketch, &read), Err(refused));
 }
 

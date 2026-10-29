@@ -15,7 +15,8 @@ use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::document::{ElementId, Operation, Sketch, read, validate};
 use silico_core::sketch::{
-    Answer, Diagnosed, Diagnosis, EXTENT_TOLERANCE, REDUNDANCY_GAP_MM, SketchWorker, Translation,
+    Answer, Diagnosed, Diagnosis, EXTENT_TOLERANCE, REDUNDANCY_GAP_MM, SketchSolver, SketchWorker,
+    Translation,
 };
 use silico_core::sketch_states::{ConstraintState, MemberState, SketchState, SketchStates, states};
 
@@ -932,11 +933,11 @@ fn a_point_on_two_circles_touching_at_it_is_over_defined_by_the_redundant_on() {
     ];
     let sketch = sketch_of(&points, &[], &circles, &[], &constraints);
     let (_, diagnosis, got) = solved(&sketch);
-    let read: Vec<&str> = diagnosis.points_depended_on[&ElementId::new("k0000008").unwrap()]
+    let depended_on: Vec<&str> = diagnosis.points_depended_on[&ElementId::new("k0000008").unwrap()]
         .iter()
         .map(ElementId::as_str)
         .collect();
-    assert_eq!(read, ["p0000002", "p0000003"]);
+    assert_eq!(depended_on, ["p0000002", "p0000003"]);
     expect(
         &got,
         Want {
@@ -1694,7 +1695,8 @@ fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), Str
 /// its problem, an `invalid_input`; every member under defined and every constraint
 /// unsolved; and `dofs` the sketch's unknowns less its arcs' rules, counted from its lists, 2
 /// a point, 1 a circle, 3 an arc less its 4 rules, which PlaneGCS always sends (M5.0 open
-/// item 32, the sketch the translation refuses).
+/// item 32, the sketch the translation refuses): none repeats another, since the
+/// generator gives each arc ends of its own, so no two arcs share a distance.
 fn untranslated_invariants(sketch: &Sketch) -> Result<(), String> {
     let read = Diagnosed::untranslated(sketch).ok_or("translated after all")?;
     let refusal = read.outcome().err().ok_or("refused with a solution")?;
@@ -1883,11 +1885,15 @@ fn a_repeated_tangent_at_marks_the_lines_ends_the_arcs_centre_and_the_joint_not_
     let sketch = sketch_of(&points, &lines, &[], &arcs, &constraints);
     let (answer, diagnosis, got) = solved(&sketch);
     assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
-    let read: BTreeSet<&str> = diagnosis.points_depended_on[&ElementId::new("k0000002").unwrap()]
+    let depended_on: BTreeSet<&str> = diagnosis.points_depended_on
+        [&ElementId::new("k0000002").unwrap()]
         .iter()
         .map(ElementId::as_str)
         .collect();
-    assert_eq!(read, BTreeSet::from(["p0000001", "p0000003", "p0000004"]));
+    assert_eq!(
+        depended_on,
+        BTreeSet::from(["p0000001", "p0000003", "p0000004"])
+    );
     expect(
         &got,
         Want {
@@ -2199,4 +2205,259 @@ fn the_conflicting_coincidence_of_two_lines_held_apart_is_over_defined_as_stored
             constraints: &[("k0000001", Conflicting), ("k0000002", Conflicting)],
         },
     );
+}
+
+/// PlaneGCS's degrees of freedom for `sketch` where it's drawn: its translation sent to the
+/// worker once, and the reply's diagnosis, which PlaneGCS takes before any algorithm runs,
+/// read; none if the translation refuses it. (A solve's answer is its load's, diagnosed
+/// where the solve put the drawing, an arc's ends on its circle.)
+fn planegcs_dofs(sketch: &Sketch, worker: &mut SketchWorker) -> Option<i32> {
+    let translation = Translation::new(sketch).ok()?;
+    let solved = worker.solve(translation.system.clone()).unwrap();
+    Some(
+        translation
+            .read_diagnosed(&solved)
+            .unwrap()
+            .diagnosis()
+            .dofs,
+    )
+}
+
+/// Five points in general position, and for each, as a centre, three arcs end to end through
+/// the other four, in ID order: 15 arcs, reading all 10 distances between the points.
+fn five_centres() -> (Vec<String>, Vec<String>) {
+    let ids = ["p0000000", "p0000001", "p0000002", "p0000003", "p0000004"];
+    let at = [
+        (0.0, 0.0),
+        (7.0, 1.0),
+        (2.0, 9.0),
+        (-5.0, 3.0),
+        (-1.0, -6.0),
+    ];
+    let points = ids
+        .iter()
+        .zip(at)
+        .map(|(id, (x, y))| point(id, x, y))
+        .collect();
+    let mut arcs = Vec::new();
+    for c in 0..5 {
+        let others: Vec<usize> = (0..5).filter(|&o| o != c).collect();
+        for w in others.windows(2) {
+            arcs.push(arc(
+                &format!("a{:07}", arcs.len()),
+                ids[c],
+                ids[w[0]],
+                ids[w[1]],
+            ));
+        }
+    }
+    (points, arcs)
+}
+
+#[test]
+fn an_arcs_rules_repeat_where_planegcs_finds_them_repeat_counted_by_hand() {
+    // Geometry alone, no constraints: the arcs' rules are the only rows. Each count is by
+    // hand: 2 a point, 3 an arc (its radius and angles), less the rules' rank, 3 an arc (on
+    // its own radius and angles) and the rank of what's left of each arc's four, one row,
+    // d(C, S) − d(C, E) (Diagnosis::untranslated). PlaneGCS's own count, from the worker,
+    // and the core's, must both be it.
+    let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    let centre_and = |ends: &[(&str, f64, f64)]| {
+        let mut points = vec![point("p0000000", 0.0, 0.0)];
+        points.extend(ends.iter().map(|&(id, x, y)| point(id, x, y)));
+        points
+    };
+    let quarter = centre_and(&[("p0000001", 5.0, 0.0), ("p0000002", 0.0, 5.0)]);
+    let halves = centre_and(&[("p0000001", 5.0, 0.0), ("p0000002", -5.0, 0.0)]);
+    let ring = centre_and(&[
+        ("p0000001", 5.0, 0.0),
+        ("p0000002", -3.0, 4.0),
+        ("p0000003", -3.0, -4.0),
+    ]);
+    let triangle = vec![
+        point("p0000000", 0.0, 0.0),
+        point("p0000001", 6.0, 0.0),
+        point("p0000002", 3.0, 5.0),
+    ];
+    let copies = |n: usize| -> Vec<String> {
+        (0..n)
+            .map(|i| arc(&format!("a{i:07}"), "p0000000", "p0000001", "p0000002"))
+            .collect()
+    };
+    let (five, fifteen) = five_centres();
+    let cases: Vec<(&str, Vec<String>, Vec<String>, i32)> = vec![
+        // 3 points, 6; 1 arc, 3; rank 3 + 1: 5, FreeCAD 1.1.3's DoF for a lone arc.
+        ("a lone arc", quarter.clone(), copies(1), 5),
+        // A whole circle of two halves on its centre and two points: 6 + 6; each half's
+        // row d(p0, p1) − d(p0, p2) and d(p0, p2) − d(p0, p1), the one the other's
+        // negative: rank 6 + 1, so 5, FreeCAD 1.1.3's for two halves sharing their points
+        // (10 unshared), not 4.
+        (
+            "two halves",
+            halves,
+            vec![
+                arc("a0000000", "p0000000", "p0000001", "p0000002"),
+                arc("a0000001", "p0000000", "p0000002", "p0000001"),
+            ],
+            5,
+        ),
+        // Three arcs end to end round one centre, a whole circle: 8 + 9; rows
+        // d1 − d2, d2 − d3, d3 − d1 (d the distance from the centre), summing to nothing:
+        // rank 9 + 2, so 6: the centre, the radius, and where the three ends sit on it.
+        (
+            "a ring of three",
+            ring,
+            vec![
+                arc("a0000000", "p0000000", "p0000001", "p0000002"),
+                arc("a0000001", "p0000000", "p0000002", "p0000003"),
+                arc("a0000002", "p0000000", "p0000003", "p0000001"),
+            ],
+            6,
+        ),
+        // One arc drawn n times on its three points: 6 + 3n; n rows, each
+        // d(p0, p1) − d(p0, p2): rank 3n + 1, so 5 for every n (the count subtracting 4 an
+        // arc read 6 − n: 4, 3, and −1).
+        ("an arc drawn twice", quarter.clone(), copies(2), 5),
+        ("an arc drawn three times", quarter.clone(), copies(3), 5),
+        ("an arc drawn seven times", quarter, copies(7), 5),
+        // A triangle, each corner the centre of an arc through the other two: 6 + 9; rows
+        // d01 − d02, d12 − d10, d20 − d21, three distances, each row one's difference from
+        // another, summing to nothing round them: rank 9 + 2, so 4 (an equilateral
+        // triangle's place, turn, and size), not the 3 of counting each centre apart.
+        (
+            "a triangle of centres",
+            triangle,
+            vec![
+                arc("a0000000", "p0000000", "p0000001", "p0000002"),
+                arc("a0000001", "p0000001", "p0000002", "p0000000"),
+                arc("a0000002", "p0000002", "p0000000", "p0000001"),
+            ],
+            4,
+        ),
+        // Five centres, 15 arcs through all 10 distances, one graph: 10 + 45, its rows'
+        // rank 9 by the distances, but the points only move 2·5 − 3 = 7 ways that change a
+        // distance: rank 45 + 7, so 3 (10 − 7), the drawing's place and turn and nothing
+        // else.
+        ("five centres", five, fifteen, 3),
+    ];
+    for (name, points, arcs, want) in cases {
+        let sketch = sketch_of(&points, &[], &[], &arcs, &[]);
+        assert_eq!(
+            planegcs_dofs(&sketch, &mut worker),
+            Some(want),
+            "{name}: PlaneGCS"
+        );
+        assert_eq!(
+            Diagnosis::untranslated(&sketch).dofs,
+            want,
+            "{name}: the core"
+        );
+    }
+}
+
+/// Points, lines, circles, and arcs, no constraints, from `seed`: 2 to 5 points at random
+/// thousandths in a 20 mm square, and up to 12 arcs, each about one of them from a second to
+/// a third, so that arcs share their ends and centres and each other's distances.
+fn geometry(seed: u64) -> Option<Sketch> {
+    let mut rng = Rng(seed);
+    let n = 2 + rng.below(4) as usize;
+    let ids: Vec<String> = (0..n).map(|i| format!("p{i:07}")).collect();
+    let mut at = || (rng.range(-10.0, 10.0) * 1e3).round() / 1e3;
+    let points: Vec<String> = ids.iter().map(|id| point(id, at(), at())).collect();
+    let mut arcs = Vec::new();
+    let mut lines = Vec::new();
+    let mut circles = Vec::new();
+    for i in 0..rng.below(13) as usize {
+        let (c, s, e) = (
+            rng.below(n as u64) as usize,
+            rng.below(n as u64) as usize,
+            rng.below(n as u64) as usize,
+        );
+        if c != s && c != e && s != e {
+            arcs.push(arc(&format!("a{i:07}"), &ids[c], &ids[s], &ids[e]));
+        }
+    }
+    for i in 0..rng.below(3) as usize {
+        let (a, b) = (rng.below(n as u64) as usize, rng.below(n as u64) as usize);
+        if a != b {
+            lines.push(line(&format!("n{i:07}"), &ids[a], &ids[b]));
+        }
+    }
+    for i in 0..rng.below(3) as usize {
+        let c = rng.below(n as u64) as usize;
+        circles.push(circle(
+            &format!("c{i:07}"),
+            &ids[c],
+            1.0 + rng.below(4) as f64,
+        ));
+    }
+    let text = document(&fields(
+        &points.join(", "),
+        &lines.join(", "),
+        &circles.join(", "),
+        &arcs.join(", "),
+        "",
+    ));
+    let doc = read(text.as_bytes()).ok()?;
+    validate(&doc).ok()?;
+    match &doc.features[0].operation {
+        Operation::Sketch(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// That PlaneGCS's degrees of freedom for `sketch`, solved by `worker`, are the core's count
+/// of its geometry before its constraints, if the translation takes it.
+fn counted_as_planegcs_counts(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), String> {
+    let core = Diagnosis::untranslated(sketch).dofs;
+    match planegcs_dofs(sketch, worker) {
+        Some(planegcs) if planegcs != core => {
+            let points: Vec<String> = sketch
+                .points
+                .iter()
+                .map(|p| format!("{} ({}, {})", p.id, p.x.mm(), p.y.mm()))
+                .collect();
+            let arcs: Vec<String> = sketch
+                .arcs
+                .iter()
+                .map(|a| format!("{} about {} from {} to {}", a.id, a.center, a.start, a.end))
+                .collect();
+            Err(format!(
+                "PlaneGCS {planegcs}, the core {core}: points {points:?}, {} circles, arcs {arcs:?}",
+                sketch.circles.len()
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 1000, .. ProptestConfig::default() })]
+
+    #[test]
+    fn geometry_alone_counts_as_planegcs_counts_it_on_generated_sketches(seed in any::<u64>()) {
+        let Some(sketch) = geometry(seed) else {
+            return Ok(());
+        };
+        thread_local!(static W: std::cell::RefCell<SketchWorker> = std::cell::RefCell::new(
+            SketchWorker::start_worker(Path::new(WORKER)).unwrap()
+        ));
+        let got = W.with(|w| counted_as_planegcs_counts(&sketch, &mut w.borrow_mut()));
+        prop_assert!(got.is_ok(), "seed {seed}: {}", got.unwrap_err());
+    }
+
+    #[test]
+    fn the_generators_geometry_without_its_constraints_counts_as_planegcs_counts_it(
+        seed in any::<u64>()
+    ) {
+        let Some(mut sketch) = generated(seed) else {
+            return Ok(());
+        };
+        sketch.constraints.clear();
+        thread_local!(static W: std::cell::RefCell<SketchWorker> = std::cell::RefCell::new(
+            SketchWorker::start_worker(Path::new(WORKER)).unwrap()
+        ));
+        let got = W.with(|w| counted_as_planegcs_counts(&sketch, &mut w.borrow_mut()));
+        prop_assert!(got.is_ok(), "seed {seed}: {}", got.unwrap_err());
+    }
 }

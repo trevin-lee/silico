@@ -633,7 +633,8 @@ fn the_sketch_state_is_the_problems_code_then_the_flags_then_the_dofs() {
         assert_eq!(got.dofs, 0, "{code:?}");
     }
     // invalid_input, a translation's refusal of geometry that can't be held, is invalid like
-    // an invalid result: the collapsed symmetry, its 3 points' 6 unknowns, no equations.
+    // an invalid result: the collapsed symmetry, its 3 points' 6 unknowns, none of its constraints
+    // sent.
     let symmetric = collapsed_symmetry();
     let read = Diagnosed::untranslated(&symmetric).unwrap();
     let got = states(&symmetric, &read).unwrap();
@@ -679,11 +680,10 @@ fn the_sketch_state_is_the_problems_code_then_the_flags_then_the_dofs() {
 }
 
 #[test]
-fn an_error_that_is_no_sketch_state_has_no_states_and_is_the_error() {
-    // A worker's, a reply the core can't read, a bug's: they say nothing about the sketch, so
-    // the read fails with them (item 32's addendum, D), never no_solution. Each through the
-    // path that gives it. A worker that fails: the solve is the error, so there's no answer
-    // to diagnose.
+fn a_sketch_worker_that_fails_is_the_solves_own_error_with_no_answer_to_state() {
+    // A worker that crashes, hangs, can't start, or runs short says nothing about the
+    // sketch: the solve passes its error on, as it came, so there's no answer, and so no
+    // diagnosis and no states, never no_solution (item 32's addendum, D).
     let sketch = referenced_point();
     for code in [
         ErrorCode::WorkerCrashed,
@@ -697,11 +697,22 @@ fn an_error_that_is_no_sketch_state_has_no_states_and_is_the_error() {
             .unwrap()
             .solve(&mut fake.clone())
             .unwrap_err();
-        assert_eq!(error.code(), code);
+        assert_eq!(
+            (error.code(), error.message()),
+            (code, "the sketch worker went away"),
+            "{error}"
+        );
     }
-    // A reply the core can't read (the worker calls its solution unbuildable, and every
-    // piece of it can be built): the answer's outcome is the protocol error, and it has no
-    // diagnosis, so no states.
+}
+
+#[test]
+fn an_error_that_is_no_sketch_state_has_no_states_and_is_the_error() {
+    // A reply the core can't read, a bug's: they say nothing about the sketch, so the read
+    // fails with them (item 32's addendum, D), never no_solution. Each through the path that
+    // gives it; a worker that fails is the test above. A reply the core can't read (the
+    // worker calls its solution unbuildable, and every piece of it can be built): the
+    // answer's outcome is the protocol error, and it has no diagnosis, so no states.
+    let sketch = referenced_point();
     let fake = FakeSketches::new();
     fake.answer(|system| {
         Ok(Solved {
@@ -732,8 +743,8 @@ fn an_error_that_is_no_sketch_state_has_no_states_and_is_the_error() {
 fn a_sketch_the_translation_refuses_is_invalid_every_member_free_and_its_constraints_unsolved() {
     // Two refusals no solver sees (item 32's addendum, C). First a symmetry of p1 and p2,
     // both drawn at (3, 4), about p3: the translation refuses it, invalid_input. The
-    // diagnosis of no equations: 3 points, 6 unknowns; every member under defined; the
-    // symmetry unsolved.
+    // diagnosis of its geometry before its constraints: 3 points, 6 unknowns; every member
+    // under defined; the symmetry unsolved.
     let symmetric = collapsed_symmetry();
     let refusal = Translation::new(&symmetric).unwrap_err();
     assert_eq!(
@@ -741,7 +752,7 @@ fn a_sketch_the_translation_refuses_is_invalid_every_member_free_and_its_constra
         (ErrorCode::InvalidInput, &["k0000001".to_owned()][..])
     );
     assert_eq!(
-        Diagnosis::no_equations(&symmetric),
+        Diagnosis::untranslated(&symmetric),
         Diagnosis {
             dofs: 6,
             free: ids(&["p0000001", "p0000002", "p0000003"]),
@@ -808,7 +819,8 @@ fn a_lone_arc_that_sweeps_nothing_has_five_degrees_as_freecad_counts_a_lone_arc(
     // nothing, so the translation refuses it and no solver sees it. By hand: its centre and
     // ends, 3 points, 6 coordinates; its radius and two angles, 3; its 4 rules (each end on
     // its circle at its angle, in x and y), which PlaneGCS always sends, tag 0, and
-    // makeReducedJacobian keeps: 6 + 3 − 4 = 5, FreeCAD 1.1.3's DoF for a lone arc. No
+    // makeReducedJacobian keeps, none repeating another (a lone arc shares nothing):
+    // 6 + 3 − 4 = 5, FreeCAD 1.1.3's DoF for a lone arc. No
     // circle beside it, so the count can't be one that forgets the rules (2·3 + 3 = 9), nor
     // one that swaps a circle's count and an arc's (2·3 + 3·0 + 1 = 7).
     let lone = sketch_of(
@@ -828,7 +840,7 @@ fn a_lone_arc_that_sweeps_nothing_has_five_degrees_as_freecad_counts_a_lone_arc(
         (ErrorCode::InvalidInput, &["a0000001".to_owned()][..])
     );
     assert_eq!(
-        Diagnosis::no_equations(&lone),
+        Diagnosis::untranslated(&lone),
         Diagnosis {
             dofs: 5,
             free: ids(&["a0000001", "p0000001", "p0000002", "p0000003"]),
@@ -853,6 +865,84 @@ fn a_lone_arc_that_sweeps_nothing_has_five_degrees_as_freecad_counts_a_lone_arc(
             solve_problem: Some(refusal),
         }
     );
+}
+
+#[test]
+fn arcs_sharing_their_points_repeat_their_rules_once_round_each_cycle_of_distances() {
+    // By hand (Diagnosis::untranslated): 2 a point and 3 an arc, less the rules' rank, 3 an
+    // arc and the rank of each arc's one remaining row, d(C, S) − d(C, E). silico-sketch's
+    // tests/sketch_states.rs has PlaneGCS count the same drawings alike.
+    let quarter = [
+        point("p0000001", 0.0, 0.0),
+        point("p0000002", 5.0, 0.0),
+        point("p0000003", 0.0, 5.0),
+    ];
+    let dofs = |points: &[String], arcs: &[String]| {
+        Diagnosis::untranslated(&sketch_of(points, &[], &[], arcs, &[])).dofs
+    };
+    let copies = |n: usize| -> Vec<String> {
+        (1..=n)
+            .map(|i| arc(&format!("a{i:07}"), "p0000001", "p0000002", "p0000003"))
+            .collect()
+    };
+    // One arc, n times: 6 + 3n, its rows all d12 − d13, rank 3n + 1: 5 for every n (not
+    // 6 − n, the count that subtracts each arc's 4 rules: 4, 3, −1).
+    for n in [1, 2, 3, 7] {
+        assert_eq!(dofs(&quarter, &copies(n)), 5, "{n} copies");
+    }
+    // Two halves of a circle on its centre and two points: 6 + 6, rows d12 − d13 and
+    // d13 − d12, rank 6 + 1: 5, FreeCAD 1.1.3's for two halves sharing their points.
+    let halves = [
+        point("p0000001", 0.0, 0.0),
+        point("p0000002", 5.0, 0.0),
+        point("p0000003", -5.0, 0.0),
+    ];
+    let two = [
+        arc("a0000001", "p0000001", "p0000002", "p0000003"),
+        arc("a0000002", "p0000001", "p0000003", "p0000002"),
+    ];
+    assert_eq!(dofs(&halves, &two), 5);
+    // Three arcs round one centre, end to end: 8 + 9, rows d12 − d13, d13 − d14, d14 − d12,
+    // rank 9 + 2: 6.
+    let ring = [
+        point("p0000001", 0.0, 0.0),
+        point("p0000002", 5.0, 0.0),
+        point("p0000003", -3.0, 4.0),
+        point("p0000004", -3.0, -4.0),
+    ];
+    let three = [
+        arc("a0000001", "p0000001", "p0000002", "p0000003"),
+        arc("a0000002", "p0000001", "p0000003", "p0000004"),
+        arc("a0000003", "p0000001", "p0000004", "p0000002"),
+    ];
+    assert_eq!(dofs(&ring, &three), 6);
+    // Each corner of a triangle the centre of an arc through the other two: 6 + 9, rows
+    // d12 − d13, d23 − d21, d31 − d32, round three distances: rank 9 + 2, so 4, not the 3
+    // of each centre counted apart.
+    let triangle = [
+        point("p0000001", 0.0, 0.0),
+        point("p0000002", 6.0, 0.0),
+        point("p0000003", 3.0, 5.0),
+    ];
+    let corners = [
+        arc("a0000001", "p0000001", "p0000002", "p0000003"),
+        arc("a0000002", "p0000002", "p0000003", "p0000001"),
+        arc("a0000003", "p0000003", "p0000001", "p0000002"),
+    ];
+    assert_eq!(dofs(&triangle, &corners), 4);
+    // And a sketch the translation refuses: the two halves, and an arc about their centre
+    // from p2 to p4 (8, 0), both at angle 0, which sweeps nothing. 4 points and 3 arcs,
+    // 8 + 9; rows d12 − d13, d13 − d12, d12 − d14, three distances in one graph: rank 9 + 2,
+    // so 6 (the count subtracting 4 an arc read 5).
+    let mut points = halves.to_vec();
+    points.push(point("p0000004", 8.0, 0.0));
+    let mut arcs = two.to_vec();
+    arcs.push(arc("a0000003", "p0000001", "p0000002", "p0000004"));
+    let refused = sketch_of(&points, &[], &[], &arcs, &[]);
+    let read = Diagnosed::untranslated(&refused).unwrap();
+    assert_eq!(read.outcome().unwrap_err().elements(), ["a0000003"]);
+    let got = states(&refused, &read).unwrap();
+    assert_eq!((got.state, got.dofs), (SketchState::Invalid, 6));
 }
 
 #[test]

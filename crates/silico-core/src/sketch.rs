@@ -18,7 +18,7 @@ pub use silico_protocol::MovedOnce;
 
 use crate::document::{
     Angle as DocumentAngle, Checked, Coordinate, Direction, ElementId, FeatureId, Form, Length,
-    LineSide, MemberPaths, Operation, Reference, Sketch, SketchConstraint, TangentSide,
+    LineSide, MemberPaths, Operation, Reference, Sketch, SketchArc, SketchConstraint, TangentSide,
 };
 use crate::worker::{Executable, Worker, WorkerKind};
 use crate::{Error, ErrorCode};
@@ -848,38 +848,168 @@ pub struct Diagnosis {
 }
 
 impl Diagnosis {
-    /// The diagnosis of `sketch` with no equations of its constraints: every point, circle,
-    /// and arc free, and `dofs` its unknowns less its arcs' rules, 2 a point, 1 a circle (its
-    /// radius), 3 an arc (its radius and angles) less 4 (its rules, its ends each on its
-    /// circle at its angle, in x and y, which PlaneGCS always sends, tag 0, and
-    /// `makeReducedJacobian` keeps), each counted once by ID; nothing listed. So a lone arc
-    /// is 6 + 3 − 4 = 5, FreeCAD 1.1.3's DoF for it. What PlaneGCS gives a sketch none of
-    /// whose constraints' rows touch an unknown, and so the diagnosis of a sketch
-    /// [`Translation::new`] refuses, which no solver sees (M5.0 open item 32: two points
-    /// drawn at one place where a constraint is measured by the line between them, an arc
-    /// that sweeps nothing).
-    pub fn no_equations(sketch: &Sketch) -> Self {
+    /// The diagnosis of `sketch` before its constraints: what PlaneGCS gives its geometry
+    /// alone, its arcs' rules the only rows. It's the diagnosis of a sketch
+    /// [`Translation::new`] refuses, whose constraints never reach the solver (M5.0 open item
+    /// 32: two points drawn at one place where a constraint is measured by the line between
+    /// them, an arc that sweeps nothing). Every point, circle, and arc is free; nothing is
+    /// listed.
+    ///
+    /// `dofs` is PlaneGCS's: its unknowns less the rank of its rows (`diagnose`), which are
+    /// its arcs' rules, tag 0, which it always sends and `makeReducedJacobian` keeps. The
+    /// unknowns are 2 a point (x and y), 1 a circle (its radius), and 3 an arc (its radius r
+    /// and angles a and b), each counted once by ID; `arc_rules_rank` gives the rank, and why.
+    pub fn untranslated(sketch: &Sketch) -> Self {
         let points: BTreeSet<&ElementId> = sketch.points.iter().map(|p| &p.id).collect();
         let circles: BTreeSet<&ElementId> = sketch.circles.iter().map(|c| &c.id).collect();
-        let arcs: BTreeSet<&ElementId> = sketch.arcs.iter().map(|a| &a.id).collect();
-        // 2 a point, 1 a circle, and 3 − 4 = −1 an arc. The gate holds a sketch to far fewer
-        // members than these count.
+        let mut arcs: BTreeMap<&ElementId, &SketchArc> = BTreeMap::new();
+        for a in &sketch.arcs {
+            arcs.entry(&a.id).or_insert(a);
+        }
+        // Each arc's 3 unknowns and the 3 of its rules' rank on them cancel, leaving 2 a point
+        // and 1 a circle, less the rank past those. That's never below 0 for a sketch the gate
+        // has passed (`arc_rules_rank`); one it never saw, whose arcs name points it hasn't,
+        // is held at 0. The gate holds a sketch to far fewer members than these count.
+        let rank = arc_rules_rank(arcs.values().copied());
         let count = |n: usize| i64::try_from(n).unwrap_or(i64::MAX);
         let dofs = count(points.len())
             .saturating_mul(2)
             .saturating_add(count(circles.len()))
-            .saturating_sub(count(arcs.len()));
+            .saturating_sub(count(rank))
+            .max(0);
         let free = points
             .into_iter()
             .chain(circles)
-            .chain(arcs)
+            .chain(arcs.into_keys())
             .cloned()
             .collect();
         Diagnosis {
-            dofs: i32::try_from(dofs).unwrap_or(if dofs < 0 { i32::MIN } else { i32::MAX }),
+            dofs: i32::try_from(dofs).unwrap_or(i32::MAX),
             free,
             ..Diagnosis::default()
         }
+    }
+}
+
+/// The rank, past each arc's 3, of `arcs`' rules ([`Diagnosis::untranslated`]).
+///
+/// An arc about centre C from S to E has 4 rules (`addConstraintArcRules`, two
+/// `CurveValue`s): S = C + r·u(a) and E = C + r·u(b), in x and y, u(t) = (cos t, sin t).
+/// On its own r, a, and b, where it has a radius, their rank is 3: r's column is
+/// (−u(a), −u(b)), a's (−r·u′(a), 0), b's (0, −r·u′(b)). One combination of the four is
+/// free of all three, u(a)·(the first two) − u(b)·(the last two): the gradient of
+/// |S − C| − |E − C|, u(a) on S, −u(b) on E, and u(b) − u(a) on C. No other arc has a
+/// column in r, a, or b, so the rules' rank is 3 an arc and the rank of those
+/// combinations, and only they can repeat each other. Each angle is the direction its end is
+/// drawn in from the centre (`arc_from_points`), so each combination is
+/// d(C, S) − d(C, E), d the distance between two points: a difference of two distances,
+/// whichever arc it is. Two things make the combinations repeat:
+///
+/// - **One distance.** The combinations are differences of a potential along the edges of
+///   a graph whose vertices are distances, pairs of points {C, S} and {C, E}, and whose
+///   edges are the arcs. Around each cycle they sum to zero: two halves of a circle on three
+///   points, one from S to E about C and one from E back to S, are
+///   (d(C, S) − d(C, E)) + (d(C, E) − d(C, S)) = 0, and an arc drawn twice repeats its own.
+///   The pair is unordered: an arc about P through Q and one about Q through P share
+///   d(P, Q). So the graph's rank is its vertices less its components.
+/// - **Moving the points rigidly.** A translation or rotation of a set of points no arc
+///   joins to the rest, its arcs' angles turning with it, keeps every distance, and so
+///   every rule: each such set's combinations are at right angles to its 3 rigid motions,
+///   so their rank is at most 2 its points less 3. Five points, each the centre of three
+///   arcs that join the other four, give 10 distances in one component, a rank of 9 by
+///   the first, and PlaneGCS a rank of 7, 2·5 − 3 (silico-sketch's tests/sketch_states.rs).
+///
+/// The rank is the lesser of the two, for each set of points the arcs join. That's
+/// PlaneGCS's own wherever the distances the arcs read are independent of each other, as
+/// they are unless arcs read more distances among some n points than 2n − 3, and the drawing
+/// is in general position: the worker agrees on every generated drawing of up to five
+/// points and twelve arcs (silico-sketch's tests/sketch_states.rs). Past that, distances
+/// that repeat among a few points while the whole set is still free can repeat the
+/// combinations once more (six points and ten arcs can), and so can points drawn in line
+/// with a centre (an arc's end and another arc's centre in one direction from it); this
+/// count doesn't see those, and reads fewer degrees of freedom there than PlaneGCS does.
+/// So a lone arc counts 6 + 3 − (3 + 1) = 5, FreeCAD 1.1.3's DoF for it; two halves of
+/// a circle on three points, 6 + 6 − (6 + 1) = 5 (two distances, two edges: rank 1),
+/// FreeCAD's too; one arc drawn n times on its three points, 5 (two distances, rank 1);
+/// three arcs round one centre, end to end, 8 + 9 − (9 + 2) = 6, the centre, the radius,
+/// and the three points' angles. The rank is less than 2 a point the arcs name, so the
+/// diagnosis's `dofs` is never negative, as PlaneGCS's never is.
+fn arc_rules_rank<'a>(arcs: impl Iterator<Item = &'a SketchArc>) -> usize {
+    let pair = |p: &'a ElementId, q: &'a ElementId| if p <= q { (p, q) } else { (q, p) };
+    let mut distances = Forest::default();
+    let mut joined = Forest::default();
+    for a in arcs {
+        distances.join(pair(&a.center, &a.start), pair(&a.center, &a.end));
+        joined.join(&a.center, &a.start);
+        joined.join(&a.center, &a.end);
+    }
+    // For each set of points the arcs join: its distances, the roots among them, and its
+    // points.
+    let mut sets: BTreeMap<&ElementId, (usize, BTreeSet<_>, BTreeSet<&ElementId>)> =
+        BTreeMap::new();
+    for d in distances.members() {
+        let set = sets.entry(joined.root(d.0)).or_default();
+        set.0 += 1;
+        set.1.insert(distances.root(d));
+        set.2.extend([d.0, d.1]);
+    }
+    sets.values()
+        .map(|(distances, roots, points)| {
+            (distances - roots.len()).min((2 * points.len()).saturating_sub(3))
+        })
+        .sum()
+}
+
+/// A union–find over `K`s: each joined set's members, and a root that stands for it.
+struct Forest<K> {
+    /// Each member's parent; a root has none.
+    parents: BTreeMap<K, K>,
+    /// Each root's set's size, and each member that's been joined to anything.
+    sizes: BTreeMap<K, usize>,
+}
+
+impl<K> Default for Forest<K> {
+    fn default() -> Self {
+        Forest {
+            parents: BTreeMap::new(),
+            sizes: BTreeMap::new(),
+        }
+    }
+}
+
+impl<K: Ord + Copy> Forest<K> {
+    /// `k`'s root, each member on the way pointed at it.
+    fn root(&mut self, k: K) -> K {
+        let mut root = k;
+        while let Some(&p) = self.parents.get(&root) {
+            root = p;
+        }
+        let mut v = k;
+        while let Some(&p) = self.parents.get(&v) {
+            self.parents.insert(v, root);
+            v = p;
+        }
+        root
+    }
+
+    /// `a`'s set and `b`'s, joined: the smaller under the larger.
+    fn join(&mut self, a: K, b: K) {
+        let (a, b) = (self.root(a), self.root(b));
+        let (na, nb) = (
+            *self.sizes.entry(a).or_insert(1),
+            *self.sizes.entry(b).or_insert(1),
+        );
+        if a == b {
+            return;
+        }
+        let (small, large) = if na < nb { (a, b) } else { (b, a) };
+        self.parents.insert(small, large);
+        self.sizes.insert(large, na + nb);
+    }
+
+    /// Every member.
+    fn members(&self) -> Vec<K> {
+        self.sizes.keys().copied().collect()
     }
 }
 
@@ -895,7 +1025,8 @@ pub struct Diagnosed {
 
 impl Diagnosed {
     /// `sketch`, if [`Translation::new`] refuses it, so no solver sees it: the diagnosis of
-    /// no equations ([`Diagnosis::no_equations`]), beside the translation's own refusal. None
+    /// its geometry before its constraints ([`Diagnosis::untranslated`]), beside the
+    /// translation's own refusal. None
     /// if it translates: its states are then its answer's. Its states are read as any
     /// refusal's: an `invalid_input` is `invalid`; an error that's no sketch state (an
     /// `internal`, for a sketch that never passed the gate) is refused by the states, as it
@@ -903,7 +1034,7 @@ impl Diagnosed {
     pub fn untranslated(sketch: &Sketch) -> Option<Self> {
         let refusal = Translation::new(sketch).err()?;
         Some(Diagnosed {
-            diagnosis: Diagnosis::no_equations(sketch),
+            diagnosis: Diagnosis::untranslated(sketch),
             outcome: Err(refusal),
         })
     }
@@ -1992,7 +2123,7 @@ impl Translation {
             let Some(tag) = row.tag().filter(|t| listed.contains(t)) else {
                 continue;
             };
-            let read = self
+            let depended_on = self
                 .system
                 .depends_on(row)
                 .into_iter()
@@ -2000,7 +2131,7 @@ impl Translation {
             points_depended_on
                 .entry(self.id(tag)?.clone())
                 .or_default()
-                .extend(read);
+                .extend(depended_on);
         }
         Ok(Diagnosed {
             diagnosis: Diagnosis {
