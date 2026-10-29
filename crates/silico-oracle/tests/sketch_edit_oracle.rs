@@ -113,9 +113,9 @@ fn a_split_line_agrees_and_freecads_form_is_brought_to_decision_ones() {
         agrees(&v);
         assert!(v.excused.is_empty(), "{v:?}");
         // 1.1.3 joins line pieces with a Coincident, which becomes main's end-to-end
-        // Tangent (:447), and copies the horizontal (and the perpendicular and parallel) to
-        // the second piece, which come off it (:132).
-        assert_eq!(v.modulo, [132, 447], "{}", p.name);
+        // Tangent (:457), and copies the horizontal (and the perpendicular and parallel) to
+        // the second piece, which come off it (:133).
+        assert_eq!(v.modulo, [133, 457], "{}", p.name);
     }
 }
 
@@ -223,13 +223,13 @@ fn a_refusal_is_excused_only_where_the_note_gives_it() {
         "trim_arc_pick_outside_sweep",
     ]);
     // (2, 3.1) is |3.1 - 3| / √2 = 0.0707 mm off the line y = x + 1: Silico refuses it,
-    // FreeCAD splits at the projection, and decision 4 (:450) says so.
+    // FreeCAD splits at the projection, and decision 4 (:460) says so.
     let v = verdict(&prepared[0], theirs[0].as_ref());
     agrees(&v);
     assert_eq!(v.excused.len(), 1, "{v:?}");
     assert!(
         v.excused[0].starts_with("a split position 7.07106781")
-            && v.excused[0].contains("decision 4, docs/ports/sketch-edit.md:450"),
+            && v.excused[0].contains("decision 4, docs/ports/sketch-edit.md:460"),
         "{v:?}"
     );
     // The same refusal of a position on the line, (2.05, 3.05), far from its ends: nothing in
@@ -248,21 +248,21 @@ fn a_refusal_is_excused_only_where_the_note_gives_it() {
         "{v}"
     );
     // A pick at 315 degrees, outside the arc's 0 to 270: Silico places it at the nearer end
-    // (:219), and FreeCAD is given it there, so the results compare in full.
+    // (:221), and FreeCAD is given it there, so the results compare in full.
     let v = verdict(&prepared[2], theirs[2].as_ref());
     agrees(&v);
     assert!(v.excused.is_empty(), "{v:?}");
-    assert!(v.modulo.contains(&219), "{v:?}");
+    assert!(v.modulo.contains(&221), "{v:?}");
 }
 
 #[test]
 fn a_cutters_end_freecad_joins_by_tolerance_is_compared_as_decision_five_has_it() {
     let (_, prepared, theirs) = both(&["trim_line_end_as_drawn", "trim_line_end_held"]);
     // Drawn only: FreeCAD's 5e-5 mm test joins the new end to the cutter's start, which
-    // becomes a point on the cutter, as Silico's (:451).
+    // becomes a point on the cutter, as Silico's (:461).
     let v = verdict(&prepared[0], theirs[0].as_ref());
     agrees(&v);
-    assert_eq!(v.modulo, [451]);
+    assert_eq!(v.modulo, [461]);
     // Held by an on: FreeCAD's coincidence is Silico's shared point, as it is.
     let v = verdict(&prepared[1], theirs[1].as_ref());
     agrees(&v);
@@ -327,8 +327,8 @@ fn an_unjoins_shared_point_keeps_its_constraints_on_a_curve_that_keeps_it() {
     // FreeCAD's model has the lines as geometry 0, 1, 2; p0000002 is n0000001's end (0, 2),
     // n0000002's start (1, 1), and n0000003's start (2, 1), its distance_x on the first.
     // Unjoining n0000001 there, the distance_x sits on n0000002's start instead, as Silico's
-    // stays with the point the others keep (:235); FreeCAD's vertex Delete leaves an end's
-    // constraints on the curve it detaches (:230). The coincidences come first (:91).
+    // stays with the point the others keep (:237); FreeCAD's vertex Delete leaves an end's
+    // constraints on the curve it detaches (:232). The coincidences come first (:91).
     let Plan::Run { job, modulo } = planned(
         &three_way(),
         Edit::Unjoin {
@@ -338,7 +338,7 @@ fn an_unjoins_shared_point_keeps_its_constraints_on_a_curve_that_keeps_it() {
     ) else {
         panic!("FreeCAD's plan refuses it");
     };
-    assert_eq!(modulo, [235]);
+    assert_eq!(modulo, [237]);
     assert_eq!(
         job.edit,
         FreecadEdit::Unjoin {
@@ -364,7 +364,7 @@ fn an_unjoins_shared_point_keeps_its_constraints_on_a_curve_that_keeps_it() {
 #[test]
 fn edits_freecad_has_no_counterpart_for_are_its_refusals_citing_the_note() {
     let s = three_way();
-    // Deleting a point curves end at: FreeCAD has no such edit (:108).
+    // Deleting a point curves end at: FreeCAD has no such edit (:109).
     let Plan::Refuses(why) = planned(
         &s,
         Edit::Remove {
@@ -373,7 +373,7 @@ fn edits_freecad_has_no_counterpart_for_are_its_refusals_citing_the_note() {
     ) else {
         panic!("FreeCAD's plan runs it");
     };
-    assert!(why.contains(":108"), "{why}");
+    assert!(why.contains(":109"), "{why}");
     // A merge naming a point twice: FreeCAD's Coincident command refuses points already
     // coincident (:51).
     let Plan::Refuses(why) = planned(
@@ -450,7 +450,7 @@ fn a_generated_sweep_is_the_same_for_a_seed_and_every_sketch_is_drawn_as_it_solv
 
 #[test]
 fn a_result_the_gate_refuses_is_a_difference_whatever_freecad_does() {
-    // Every edit's result has to pass the gate (:34, :151): a gated result is Silico's bug,
+    // Every edit's result has to pass the gate (:34, :153): a gated result is Silico's bug,
     // even where FreeCAD refuses too (it fails in OCCT, or throws).
     let (_, prepared, theirs) = both(&[
         "split_line_at_end",
@@ -528,7 +528,7 @@ fn a_merge_from_apart_still_compares_the_points_it_doesnt_merge() {
 #[test]
 fn a_pick_outside_the_sweep_compares_the_result() {
     // trim_arc_pick_outside_sweep, Silico's result with its arcs made construction: FreeCAD
-    // is given the pick where Silico places it (:219), so the results compare, and this
+    // is given the pick where Silico places it (:221), so the results compare, and this
     // shows.
     let (cases, prepared, theirs) = both(&["trim_arc_pick_outside_sweep"]);
     let p = changed(&cases[0], &prepared[0], |s| {

@@ -741,7 +741,7 @@
   },
   {
     "name": "trim_perpendicular_cutter_into_two",
-    "note": "The line trimmed between its cuts at x 3 and 6: two pieces, each horizontal; the perpendicular to the upright on every piece (:183).",
+    "note": "The line trimmed between its cuts at x 3 and 6: two pieces, each horizontal; the perpendicular to the upright on every piece (:185).",
     "sketch": "trim_perpendicular_cutter_two",
     "edit": {
       "trim": {
@@ -1183,7 +1183,7 @@
   },
   {
     "name": "merge_conflicting_coincident",
-    "note": "test_conflicting_coincident_selection_is_rejected: the merge's solve conflicts, so Silico refuses it (:274), as FreeCAD's command rolls it back.",
+    "note": "test_conflicting_coincident_selection_is_rejected: the merge's solve conflicts, so Silico refuses it (:276), as FreeCAD's command rolls it back.",
     "sketch": "conflicting_coincident",
     "edit": {
       "merge": {
