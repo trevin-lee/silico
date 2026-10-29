@@ -9,11 +9,12 @@
 use super::example::EXAMPLE;
 use super::model::{checked, id, published};
 
+use silico_core::document::json::MAX_DOCUMENT_LEN;
 use silico_core::document::undo::{
     After, CHUNK_BYTES, ENTRY_BYTES, LIST_BYTES, Prepared, Pushed, Refusal, UNDO_BYTES, UndoStack,
     WHOLE_BYTES,
 };
-use silico_core::document::{Document, read, write};
+use silico_core::document::{Document, Name, read, write};
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::recompute::Recompute;
 use std::sync::Arc;
@@ -866,6 +867,40 @@ fn a_prepared_document_s_text_is_its_canonical_text() {
         assert_eq!(prepared.text(), write(document).unwrap());
         assert_eq!(prepared.text(), text);
     }
+    // A sketch, over several lines; and a name and a note not in ASCII, the note with a
+    // line separator, which canonical form escapes.
+    use super::fixture::{LINE, POINTS, document, fields};
+    let sketch = read(document(&fields(POINTS, LINE, "", "", "")).as_bytes()).unwrap();
+    let (_, mut named) = of(&tens(3));
+    named.features[1].name = Name::new("Bügel — 角").unwrap();
+    named.features[1].note = Some("Ø 6 mm ✓\u{2028}then".to_owned());
+    for document in [&sketch, &named] {
+        let written = write(document).unwrap();
+        assert!(written.lines().count() > 3);
+        assert_eq!(Prepared::of(document).unwrap().text(), written);
+    }
+    assert!(write(&named).unwrap().contains("Bügel — 角"));
+    assert!(write(&named).unwrap().contains("\\u2028"));
+}
+
+#[test]
+fn a_prepared_document_at_exactly_the_limit_is_its_canonical_text_and_one_byte_more_is_refused() {
+    // One box with a note of `n` letters: its canonical text is the text with an empty note
+    // and `n` bytes more, so `n` is chosen to make it exactly `MAX_DOCUMENT_LEN`.
+    let (_, mut noted) = of(&tens(1));
+    noted.features[0].note = Some(String::new());
+    let empty = write(&noted).unwrap().len();
+    noted.features[0].note = Some("x".repeat(MAX_DOCUMENT_LEN - empty));
+    let written = write(&noted).unwrap();
+    assert_eq!(written.len(), MAX_DOCUMENT_LEN);
+    assert_eq!(Prepared::of(&noted).unwrap().text(), written);
+    noted.features[0].note = Some("x".repeat(MAX_DOCUMENT_LEN - empty + 1));
+    let refused = Prepared::of(&noted).unwrap_err();
+    assert_eq!(
+        refused.message(),
+        write(&noted).unwrap_err().message(),
+        "refused otherwise than write refuses it"
+    );
 }
 
 #[test]
