@@ -838,3 +838,49 @@ fn a_bare_file_name_is_checked_in_the_current_directory() {
     assert_eq!(checked, here.join(&name));
     assert!(!checked.exists());
 }
+
+#[test]
+fn a_file_there_one_moment_and_gone_the_next_is_written_as_if_never_there_not_refused_as_a_broken_link()
+ {
+    // Found by the M4 milestone's mutation run: refusing any path the system can't resolve
+    // after something was seen at it, as if it were a broken link, passed every test. Only a
+    // race tells the two apart: `view.png`, a regular file and never a link, made and removed
+    // again and again by another thread at uneven intervals while it's checked, until a check
+    // is refused, 200,000 checks, or 10 seconds, whichever is first. Whether it's there or
+    // not, a path that's never a link is never refused (replacing allowed). A pass is no
+    // proof, but a failure is one.
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let dir = Scratch::new("output-flicker");
+    let path = dir.0.join("view.png");
+    let stop = Arc::new(AtomicBool::new(false));
+    let flicker = {
+        let (stop, path) = (Arc::clone(&stop), path.clone());
+        std::thread::spawn(move || {
+            let mut k: u64 = 0;
+            while !stop.load(Ordering::Relaxed) {
+                std::fs::write(&path, b"old").unwrap();
+                k = (k + 7919) % 4001;
+                for _ in 0..k {
+                    std::hint::spin_loop();
+                }
+                std::fs::remove_file(&path).unwrap();
+            }
+        })
+    };
+    let rules = png_rules(None, &[], true);
+    let began = std::time::Instant::now();
+    let mut refused = None;
+    for i in 0..200_000 {
+        if let Err(e) = silico_core::file::check_output(&path, &rules) {
+            refused = Some((i, e.to_string()));
+            break;
+        }
+        if began.elapsed() > std::time::Duration::from_secs(10) {
+            break;
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    flicker.join().unwrap();
+    assert_eq!(refused, None, "a path that's never a link was refused");
+}

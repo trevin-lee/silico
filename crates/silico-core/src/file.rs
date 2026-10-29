@@ -1230,6 +1230,98 @@ mod tests {
                 .contains("ulimit -f")
         );
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_link_that_cant_be_read_stops_the_walk_where_it_is() {
+        // Found by the M4 milestone's mutation run: deciding a link the system shows but
+        // won't read the wrong way round (out in the workspace, in in an ancestor) passed
+        // every test. macOS checks a link's own read permission: one of mode 000 is listed but
+        // can't be read (EACCES). The walk stops at it: in the workspace, in (the system's to
+        // say what's wrong); in an ancestor, out. Each link leads the other way, should it be
+        // followed: `work/locked` out, `locked` beside the root back in to it.
+        use rustix::fs::{AtFlags, CWD, Mode, chmodat};
+        let (_dir, w) = scratch();
+        let work = w.root().to_owned();
+        let top = work.parent().unwrap().to_owned();
+        std::os::unix::fs::symlink("../outside", work.join("locked")).unwrap();
+        std::os::unix::fs::symlink("work", top.join("locked")).unwrap();
+        for link in [work.join("locked"), top.join("locked")] {
+            chmodat(CWD, &link, Mode::empty(), AtFlags::SYMLINK_NOFOLLOW).unwrap();
+            assert!(
+                std::fs::read_link(&link).is_err(),
+                "a link of mode 000 is still readable (run as root?): this case can't be tested"
+            );
+        }
+        assert_eq!(w.walk(&work.join("locked")), Walked::In);
+        assert_eq!(w.walk(&work.join("locked/x")), Walked::In);
+        assert_eq!(w.walk(&top.join("locked")), Walked::Out);
+        assert_eq!(w.walk(&top.join("locked/part.silico")), Walked::Out);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_link_that_cant_be_read_stops_the_walk_where_it_is() {
+        // Found by the M4 milestone's mutation run: as macOS's test. Linux ignores a link's
+        // permissions, but /proc/1/cwd, init's directory, is a link it lists and won't read
+        // to another user (EACCES: no ptrace access to root's process). In the workspace
+        // /proc/1: in (followed, it would lead out, to /). In the workspace /proc/1/task,
+        // where /proc/1 is an ancestor: out. Run as root, or where process 1 is this user's
+        // (a process namespace of its own), the link can be read, and the test says so.
+        let init = Path::new("/proc/1");
+        assert!(
+            std::fs::symlink_metadata(init.join("cwd"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            std::fs::read_link(init.join("cwd")).is_err(),
+            "/proc/1/cwd is readable (run as root, or in a process namespace of this user's?): \
+             this case can't be tested"
+        );
+        let w = Workspace::new(init).unwrap();
+        assert_eq!(w.walk(&init.join("cwd")), Walked::In);
+        assert_eq!(w.walk(&init.join("cwd/x")), Walked::In);
+        let w = Workspace::new(&init.join("task")).unwrap();
+        assert_eq!(w.walk(&init.join("cwd")), Walked::Out);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_way_to_the_root_by_another_spelling_of_the_same_directory_goes_on_to_it() {
+        // Found by the M4 milestone's mutation run: going on only by the root's own
+        // spelling (the device and inode check dropped, or required beside the spelling)
+        // passed every test, as on Linux no other name of an ancestor is the same directory.
+        // The workspace `café`, its é one character (NFC), reached by `café` with an e and a
+        // combining accent (NFD): on macOS (APFS, insensitive to Unicode normalization,
+        // whatever its case-sensitivity) the same directory, so the way to the root: in, and
+        // resolved to the root's own spelling.
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let top = std::fs::canonicalize(dir.path()).unwrap();
+        let root = top.join("caf\u{e9}");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("part.silico"), b"{}").unwrap();
+        let w = Workspace::new(&root).unwrap();
+        let other = top.join("cafe\u{301}");
+        assert_ne!(other, root);
+        let (found, root_meta) = (
+            std::fs::symlink_metadata(&other).unwrap(),
+            std::fs::symlink_metadata(&root).unwrap(),
+        );
+        assert_eq!(
+            (found.dev(), found.ino()),
+            (root_meta.dev(), root_meta.ino()),
+            "{} isn't {} here: not APFS?",
+            other.display(),
+            root.display()
+        );
+        let part = other.join("part.silico");
+        assert_eq!(w.walk(&part), Walked::In);
+        assert_eq!(w.walk(&other), Walked::In);
+        assert_eq!(resolve(Some(&w), &part).unwrap(), root.join("part.silico"));
+    }
 }
 
 /// The rules a file a command writes besides the document is held to (decision 35:

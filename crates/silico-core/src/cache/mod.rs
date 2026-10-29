@@ -2702,4 +2702,55 @@ mod tests {
         assert_eq!(names[60..], ["3c", "3d", "3e", "3f"]);
         assert_eq!(names, sorted);
     }
+
+    #[test]
+    fn a_scan_counts_each_stale_partial_it_removes() {
+        // Found by the M4 milestone's mutation run: counting none (the count the scan's span
+        // reports, `partials_removed`) passed every test. Another process's partial files
+        // (process 1's, never this test's): two last written an hour and a minute ago, one in
+        // the cache's directory and one in a subdirectory, and one written now. The two are
+        // removed and counted; the fresh one is left, counted by its length, 7 bytes.
+        let scratch = Scratch::new("partials-counted");
+        let sub = scratch.0.join("ab");
+        std::fs::create_dir_all(&sub).unwrap();
+        let old_top = scratch.0.join(".partial-1-0");
+        let old_sub = sub.join(".partial-1-1");
+        let fresh = sub.join(".partial-1-2");
+        for path in [&old_top, &old_sub, &fresh] {
+            std::fs::write(path, b"partial").unwrap();
+        }
+        let stale = SystemTime::now() - STALE_PARTIAL - Duration::from_secs(60);
+        for path in [&old_top, &old_sub] {
+            let file = std::fs::File::options().write(true).open(path).unwrap();
+            file.set_modified(stale).unwrap();
+        }
+        let found = scan(&opened_at(&scratch.0), &scratch.0, SystemTime::now());
+        assert_eq!(found.partials_removed, 2);
+        assert!(!old_top.exists() && !old_sub.exists() && fresh.exists());
+        assert_eq!(found.bytes, 7);
+        assert!(found.entries.is_empty());
+    }
+
+    #[test]
+    fn a_scan_that_finds_exactly_the_bound_with_whats_coming_evicts_nothing() {
+        // Found by the M4 milestone's mutation run: evicting when what's on disk and what's
+        // coming make exactly the bound passed every test. A bound of 100; on disk a (40,
+        // used 20 s ago) and b (20, used 10 s ago).
+        let scratch = Scratch::new("scan-exactly");
+        let a = entry_file(&scratch.0, 'a', 40, Duration::from_secs(20));
+        let b = entry_file(&scratch.0, 'b', 20, Duration::from_secs(10));
+        let cache =
+            Cache::new(scratch.0.clone(), this_platform(), Some(Secret([7; 32]))).with_bound(100);
+        // 60 on disk, a put of 30, and 10 being written: exactly 100, within the bound, so
+        // nothing is evicted.
+        let left = cache.scan_and_evict(&root(&cache), 30, 10);
+        assert_eq!(left.bytes, 60);
+        assert_eq!(left.entries.len(), 2);
+        assert!(a.exists() && b.exists());
+        // One byte more coming: 101, past it, so it evicts to 75 - 41 = 34, the least
+        // recently used first: a goes (20 left), and b stays.
+        let left = cache.scan_and_evict(&root(&cache), 31, 10);
+        assert_eq!(left.bytes, 20);
+        assert!(!a.exists() && b.exists());
+    }
 }
