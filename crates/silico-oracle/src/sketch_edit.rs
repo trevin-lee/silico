@@ -907,8 +907,9 @@ pub const KNOWN: &[Known] = &[
         difference: "both refused, but Silico's refusal isn't one the note gives (its edit refused: invalid_input: merging them would make constraint k0000028 hold p0000027, a point of n0000005, on n0000005 itself (elements k0000028, p0000027, n0000005, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD's: FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:53): solve -2 with conflicting [], redundant [12], malformed []",
         why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, the gate's rule, :31, applied to the edit's result up front, :34), which isn't among the note's merge refusals (:272-275); FreeCAD 1.1.3 makes the merge, its solve finding the `on` redundant, which main's Coincident command (emulated) rolls back. Whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
     },
-    // `sketch-edit-sweep --seed 32 --count 500`'s case 413, new with #240's and #242's
-    // merged split and trim, through which the generator makes its sketch.
+    // `sketch-edit-sweep --seed 32 --count 500`'s case 413: a difference since 999146f9
+    // (both refusals agree only for the note's reason), where both refused it before; the
+    // seed's sweep wasn't run again in full until #251's rebase.
     Known {
         case: "edit_32_413",
         difference: "both refused, but Silico's refusal isn't one the note gives (its edit refused: invalid_input: merging them would make constraint k0000022 hold p0000001, a point of n0000005, on n0000005 itself (elements k0000022, p0000001, n0000005, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD's: FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:53): solve -2 with conflicting [], redundant [13], malformed []",
@@ -1347,28 +1348,37 @@ pub fn rule(p: &Prepared) -> Option<Rule> {
             }
             let position = *at.get(index("at.")?)?;
             // The edge tangent, of the split curve and another that ends where the split is
-            // asked for: the pieces would share that end with it.
-            if let [id, a, b, point] = &r.elements[..]
-                && (a == curve || b == curve)
-                && p.sketch.constraints.iter().any(|k| {
+            // asked for: the pieces would share that end with it. A curve the sketch hasn't is
+            // a piece the split made, the tangency carried to it (:152), so the curve's.
+            let piece = |c: &String| {
+                if shape.members.contains_key(c) {
+                    c.clone()
+                } else {
+                    curve.clone()
+                }
+            };
+            if let [id, a, b, point] = &r.elements[..] {
+                let (a, b) = (piece(a), piece(b));
+                let tangent = p.sketch.constraints.iter().any(|k| {
                     k.id.as_str() == id
                         && matches!(&k.form, Form::Tangent { a: x, b: y, .. }
                             if x.element().is_some_and(|x| x.as_str() == a)
                                 && y.element().is_some_and(|y| y.as_str() == b))
-                })
-            {
-                let other = if a == curve { b } else { a };
-                let ends_there = shape.members.get(other).is_some_and(|m| {
-                    m.kind != "point"
-                        && [1, 2]
-                            .iter()
-                            .filter_map(|pos| m.at.get(pos))
-                            .any(|q| q == point)
                 });
-                let at_point = shape.points.get(point).is_some_and(|q| {
-                    libm::hypot(q[0] - position[0], q[1] - position[1]) <= LENGTH_TOLERANCE
-                });
-                return (ends_there && at_point).then(|| Rule::SplitEdgeTangent(id.clone()));
+                if tangent && (a == *curve || b == *curve) {
+                    let other = if a == *curve { b } else { a };
+                    let ends_there = shape.members.get(&other).is_some_and(|m| {
+                        m.kind != "point"
+                            && [1, 2]
+                                .iter()
+                                .filter_map(|pos| m.at.get(pos))
+                                .any(|q| q == point)
+                    });
+                    let at_point = shape.points.get(point).is_some_and(|q| {
+                        libm::hypot(q[0] - position[0], q[1] - position[1]) <= LENGTH_TOLERANCE
+                    });
+                    return (ends_there && at_point).then(|| Rule::SplitEdgeTangent(id.clone()));
+                }
             }
             if names(&[curve]) && r.message.contains("farther than 1e-7 mm") {
                 let off = off_curve(&shape, curve, position)?;

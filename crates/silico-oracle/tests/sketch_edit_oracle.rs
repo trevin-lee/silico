@@ -348,12 +348,12 @@ fn a_split_sharing_an_end_with_an_edge_tangent_is_excused_naming_the_tangent() {
         ],
         "{v:?}"
     );
-    // The same refusal naming another constraint, or another point than the arc's end, isn't
-    // the note's.
+    // The same refusal naming another constraint, the arc's other end (p0000007, at (5, 2),
+    // not where the split is asked for), or the line's start, isn't the note's.
     let SilicoSide::Refused(r) = &prepared[0].silico else {
         panic!("Silico made the split: {:?}", prepared[0].silico);
     };
-    for (i, other) in [(0, "k0000009"), (3, "p0000001")] {
+    for (i, other) in [(0, "k0000009"), (3, "p0000007"), (3, "p0000001")] {
         let mut elements = r.elements.clone();
         elements[i] = other.to_owned();
         let p = Prepared {
@@ -367,6 +367,38 @@ fn a_split_sharing_an_end_with_an_edge_tangent_is_excused_naming_the_tangent() {
         assert!(v.excused.is_empty(), "{other}: {v:?}");
         assert_eq!(v.how.len(), 1, "{other}: {v}");
     }
+    // Asked for at the line's start, (0, 0), naming it: where the split is asked for, but no
+    // end of the arc.
+    let mut elements = r.elements.clone();
+    elements[3] = "p0000001".to_owned();
+    let p = Prepared {
+        edit: Edit::Split {
+            curve: "n0000003".to_owned(),
+            at: vec![[0.0, 0.0]],
+        },
+        silico: SilicoSide::Refused(silico_oracle::sketch_edit::Refusal {
+            elements,
+            ..r.clone()
+        }),
+        ..prepared[0].clone()
+    };
+    let v = verdict(&p, theirs[0].as_ref());
+    assert!(v.excused.is_empty(), "{v:?}");
+    // The tangency carried to the split's new piece, which the refusal names: still the
+    // note's, the piece the curve's.
+    let mut elements = r.elements.clone();
+    let at = elements.iter().position(|e| e == "n0000003").unwrap();
+    elements[at] = "n0000011".to_owned();
+    let p = Prepared {
+        silico: SilicoSide::Refused(silico_oracle::sketch_edit::Refusal {
+            elements,
+            ..r.clone()
+        }),
+        ..prepared[0].clone()
+    };
+    let v = verdict(&p, theirs[0].as_ref());
+    agrees(&v);
+    assert_eq!(v.excused.len(), 1, "{v:?}");
 }
 
 #[test]
