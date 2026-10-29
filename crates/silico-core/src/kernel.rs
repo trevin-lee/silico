@@ -127,6 +127,14 @@ pub trait Clients: Send + Sync {
     /// A new client of the kernel, at generation 0. It may outlive the kernel: its requests
     /// then end as the kernel's do once it stops.
     fn client(&self) -> Self::Client;
+
+    /// Starts up to `n` workers ahead of any request, and waits until they've started or
+    /// failed (an app's warm start, [`KernelPool::warm`](crate::pool::KernelPool::warm)):
+    /// how many it started. A kernel with no workers to start starts none.
+    fn warm(&self, n: usize) -> usize {
+        let _ = n;
+        0
+    }
 }
 
 impl<K: Clients> Clients for Arc<K> {
@@ -134,6 +142,10 @@ impl<K: Clients> Clients for Arc<K> {
 
     fn client(&self) -> K::Client {
         (**self).client()
+    }
+
+    fn warm(&self, n: usize) -> usize {
+        (**self).warm(n)
     }
 }
 

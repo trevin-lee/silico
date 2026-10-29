@@ -50,6 +50,8 @@ mod adversarial_sketch_solve;
 mod adversarial_sketch_split;
 #[path = "adversarial_stored_coordinates.rs"]
 mod adversarial_stored_coordinates;
+#[path = "adversarial_warm.rs"]
+mod adversarial_warm;
 #[path = "chain.rs"]
 mod chain;
 #[path = "drag_session.rs"]
