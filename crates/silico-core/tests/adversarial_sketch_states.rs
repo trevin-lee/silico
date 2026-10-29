@@ -626,7 +626,8 @@ fn an_empty_translations_diagnosis_is_empty_and_its_states_fully_defined() {
 // --- Addendum 2: a redundant relation doesn't over-define, a redundant dimension does ------
 
 /// Every form of constraint, each met exactly on [`every_form`]'s drawing, and whether it's
-/// a dimension: addendum 2's §3 list, by hand, not `Form::driving`.
+/// a dimension: the list in docs/ports/sketcher.md (*Definition states*, *An over-defining
+/// constraint*), by hand, not `Form::is_dimension`.
 const EVERY_FORM: [(&str, bool); 21] = [
     (r#""type": "horizontal", "line": "n0000001""#, false),
     (r#""type": "vertical", "line": "n0000003""#, false),
@@ -906,55 +907,101 @@ fn a_redundant_relation_beside_a_conflicting_dimension_over_defines_only_what_th
     assert_eq!(got.circles, members(&[("c0000001", Over)]));
 }
 
-proptest::proptest! {
-    #![proptest_config(proptest::prelude::ProptestConfig { cases: 1000, .. proptest::prelude::ProptestConfig::default() })]
-
-    #[test]
-    fn every_form_together_flagged_any_way_over_defines_by_addendum_2(
-        flags in proptest::collection::vec(0u8..4, 21),
-        free in proptest::bool::ANY,
-    ) {
-        // All 21 forms on the drawing at once, each listed by the fake as nothing (0),
-        // redundant (1), partially redundant (2), or conflicting (3), with every unknown free
-        // (2 left) or none (0 left). By addendum 2, by hand: over defined when any is
-        // conflicting or any dimension is listed; then some member over defined. Otherwise
-        // by the degrees left, no member over defined, every member under defined with
-        // everything free and fully defined with nothing.
-        let picked: Vec<usize> = (0..21).collect();
-        let sketch = every_form(&picked);
-        let translation = Translation::new(&sketch).unwrap();
-        let tags = |want: u8| -> Vec<Tag> {
-            (0..21).filter(|&i| flags[i] == want).map(|i| Tag(i as u32 + 1)).collect()
-        };
-        let solved = Solved {
-            dofs: if free { 2 } else { 0 },
-            free: if free { translation.system.unknowns.clone() } else { Vec::new() },
-            redundant: tags(1),
-            partially_redundant: tags(2),
-            conflicting: tags(3),
-            status: SolveStatus::SolvedExceptRedundant,
-            ..FakeSketches::as_sent(&translation.system)
-        };
-        let got = states(&sketch, &translation.read_diagnosed(&solved).unwrap()).unwrap();
-        let over = (0..21).any(|i| flags[i] == 3 || (flags[i] != 0 && EVERY_FORM[i].1));
-        let members: Vec<MemberState> = got
-            .points
-            .values()
-            .chain(got.lines.values())
-            .chain(got.circles.values())
-            .chain(got.arcs.values())
-            .copied()
-            .collect();
-        let want = match (over, free) {
-            (true, _) => SketchState::OverDefined,
-            (false, true) => SketchState::UnderDefined,
-            (false, false) => SketchState::FullyDefined,
-        };
-        proptest::prop_assert_eq!(got.state, want, "{:?}", flags);
-        proptest::prop_assert_eq!(members.contains(&Over), over, "{:?} {:#?}", flags, got);
-        if !over {
-            let each = if free { Under } else { Fully };
-            proptest::prop_assert!(members.iter().all(|&s| s == each), "{:?} {:#?}", flags, got);
-        }
-    }
+#[test]
+fn every_form_together_flagged_any_way_over_defines_by_addendum_2() {
+    // All 21 forms on the drawing at once, each listed by the fake as nothing (0),
+    // redundant (1), partially redundant (2), or conflicting (3), with every unknown free
+    // (2 left) or none (0 left). Half the cases are relations only: no dimension listed and
+    // no conflict, each relation listed as nothing, redundant, or partially redundant, the
+    // cases where the rule differs from "anything flagged over-defines". By the rule
+    // (docs/ports/sketcher.md, *Definition states*, *An over-defining constraint*), by
+    // hand: over defined when any is conflicting or any dimension is listed; then some
+    // member over defined. Otherwise by the degrees left, no member over defined, every
+    // member under defined with everything free and fully defined with nothing.
+    use proptest::strategy::Strategy;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let strategy = (
+        proptest::collection::vec(0u8..4, 21),
+        proptest::bool::ANY,
+        proptest::bool::ANY,
+    )
+        .prop_map(|(flags, relations_only, free)| {
+            let flags: Vec<u8> = if relations_only {
+                (0..21)
+                    .map(|i| if EVERY_FORM[i].1 { 0 } else { flags[i] % 3 })
+                    .collect()
+            } else {
+                flags
+            };
+            (flags, free)
+        });
+    // The cases where a relation is listed, nothing over-defines, and the sketch reads by
+    // its degrees: under defined (everything free) and fully defined (nothing free).
+    let (under, fully) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    let mut runner = proptest::test_runner::TestRunner::new(proptest::test_runner::Config {
+        cases: 1000,
+        failure_persistence: None,
+        ..proptest::test_runner::Config::default()
+    });
+    runner
+        .run(&strategy, |(flags, free)| {
+            let picked: Vec<usize> = (0..21).collect();
+            let sketch = every_form(&picked);
+            let translation = Translation::new(&sketch).unwrap();
+            let tags = |want: u8| -> Vec<Tag> {
+                (0..21)
+                    .filter(|&i| flags[i] == want)
+                    .map(|i| Tag(i as u32 + 1))
+                    .collect()
+            };
+            let solved = Solved {
+                dofs: if free { 2 } else { 0 },
+                free: if free {
+                    translation.system.unknowns.clone()
+                } else {
+                    Vec::new()
+                },
+                redundant: tags(1),
+                partially_redundant: tags(2),
+                conflicting: tags(3),
+                status: SolveStatus::SolvedExceptRedundant,
+                ..FakeSketches::as_sent(&translation.system)
+            };
+            let got = states(&sketch, &translation.read_diagnosed(&solved).unwrap()).unwrap();
+            let over = (0..21).any(|i| flags[i] == 3 || (flags[i] != 0 && EVERY_FORM[i].1));
+            let members: Vec<MemberState> = got
+                .points
+                .values()
+                .chain(got.lines.values())
+                .chain(got.circles.values())
+                .chain(got.arcs.values())
+                .copied()
+                .collect();
+            let want = match (over, free) {
+                (true, _) => SketchState::OverDefined,
+                (false, true) => SketchState::UnderDefined,
+                (false, false) => SketchState::FullyDefined,
+            };
+            proptest::prop_assert_eq!(got.state, want, "{:?}", flags);
+            proptest::prop_assert_eq!(members.contains(&Over), over, "{:?} {:#?}", flags, got);
+            if !over {
+                let each = if free { Under } else { Fully };
+                proptest::prop_assert!(
+                    members.iter().all(|&s| s == each),
+                    "{:?} {:#?}",
+                    flags,
+                    got
+                );
+                if flags.iter().any(|&f| f != 0) {
+                    let arm = if free { &under } else { &fully };
+                    arm.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+    // About 250 of each expected (half the cases relations only, a relation listed in all
+    // but 1 in 8192 of them, half of those free); 100 is far below what chance gives.
+    let (under, fully) = (under.into_inner(), fully.into_inner());
+    assert!(under >= 100 && fully >= 100, "under {under}, fully {fully}");
 }

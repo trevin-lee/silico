@@ -324,21 +324,21 @@ fn constraint_state(c: &SketchConstraint, diagnosis: &Diagnosis, solved: bool) -
     }
 }
 
-/// Whether a constraint of `form`, in `state`, over-defines what it governs (M5.0 open item
-/// 32's addendum 2, from SolidWorks' FAQ on sketch relations): when it's `conflicting`, or
-/// when it's `redundant` or `partially_redundant` and a dimension, a form with `driving`
-/// ([`Form::driving`] some: `length`, `distance`, `distance_x`, `distance_y`,
-/// `point_line_distance`, `angle`, `radius`, `diameter`). A repeated relation (the other 13
-/// forms) over-defines nothing: it has no value of its own to edit, so only an edit
-/// elsewhere can break it, and that edit's solve reports the conflict; a dimension's own
-/// value can. A reference dimension is never flagged ([`constraint_state`]), so never
-/// over-defines.
+/// Whether a constraint of `form`, in `state`, over-defines what it governs
+/// (docs/ports/sketcher.md, *Definition states*, *An over-defining constraint*, from
+/// SolidWorks' FAQ on sketch relations): when it's `conflicting`, or when it's `redundant`
+/// or `partially_redundant` and a dimension ([`Form::is_dimension`]: `length`, `distance`,
+/// `distance_x`, `distance_y`, `point_line_distance`, `angle`, `radius`, `diameter`). A
+/// repeated relation (the other 13 forms) over-defines nothing: it has no value of its own
+/// to edit, so only an edit elsewhere can break it, and that edit's solve reports the
+/// conflict; a dimension's own value can. A reference dimension is never flagged
+/// ([`constraint_state`]), so never over-defines.
 ///
 /// Which constraint of a dependent group is flagged is PlaneGCS's choice, blind to the
 /// kinds: a group of a relation and a dimension, its relation flagged, over-defines nothing
 /// (the one divergence from SolidWorks this rule leaves; docs/ports/sketcher.md).
 fn over_defines(state: ConstraintState, form: &Form) -> bool {
-    state == ConstraintState::Conflicting || (state.flagged() && form.driving().is_some())
+    state == ConstraintState::Conflicting || (state.flagged() && form.is_dimension())
 }
 
 /// A point's state (item 32's members' rule): `over_defined` if an over-defining
