@@ -1,0 +1,27 @@
+# Security advisories (M5 decision 13c): `cargo deny check advisories` on main, daily, on a
+# runner labelled control (silico-13, -14), which runs only short jobs. The gate checks
+# bans, licences, and sources only, since advisories need the network and change without a
+# commit; this run catches a new one within a day and fails where it's seen. Accepted ones
+# are ignored by name, with their reason, in deny.toml.
+#
+#   gh workflow run advisories.yml --ref main   (checks now)
+name: advisories
+
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    runs-on: [self-hosted, linux, x64, control]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Toolchains
+        run: bash .github/tools.sh
+      - name: Advisories
+        run: pixi run --quiet cargo deny check advisories
