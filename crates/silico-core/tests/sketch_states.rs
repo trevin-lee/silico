@@ -198,7 +198,7 @@ fn two_lines_through_a_twice_dimensioned_point_take_its_freedom_not_its_over_def
     );
     let (_, answer, diagnosis, got) = solved_by(&sketch, |system| Solved {
         redundant: vec![Tag(3)],
-        dependent_groups: vec![vec![Tag(2), Tag(3)]],
+        dependencies: vec![vec![Tag(2), Tag(3)]],
         status: SolveStatus::SolvedExceptRedundant,
         ..FakeSketches::as_sent(system)
     });
@@ -374,7 +374,7 @@ fn a_conflict_is_over_defined_its_dofs_as_given_and_a_constraint_listed_twice_re
         conflicting: vec![Tag(4), Tag(5)],
         redundant: vec![Tag(5)],
         partially_redundant: vec![Tag(3)],
-        dependent_groups: Vec::new(),
+        dependencies: Vec::new(),
         ..FakeSketches::as_sent(system)
     });
     assert_eq!(got.state, SketchState::OverDefined);
@@ -459,7 +459,7 @@ fn an_agreeing_redundancy_is_kept_and_read_redundant_not_conflicting() {
     );
     let (_, answer, diagnosis, got) = solved_by(&sketch, |system| Solved {
         redundant: vec![Tag(5)],
-        dependent_groups: vec![vec![Tag(4), Tag(5)]],
+        dependencies: vec![vec![Tag(4), Tag(5)]],
         status: SolveStatus::SolvedExceptRedundant,
         ..FakeSketches::as_sent(system)
     });
@@ -521,7 +521,7 @@ fn a_dimension_in_a_dependency_over_defines_whichever_constraint_of_it_planegcs_
                 r.sort();
                 r
             },
-            dependent_groups: vec![vec![Tag(3), Tag(5)], vec![Tag(4), Tag(6)]],
+            dependencies: vec![vec![Tag(3), Tag(5)], vec![Tag(4), Tag(6)]],
             status: SolveStatus::SolvedExceptRedundant,
             ..FakeSketches::as_sent(system)
         });
@@ -561,7 +561,7 @@ fn a_dimension_in_a_dependency_over_defines_whichever_constraint_of_it_planegcs_
     };
     let (_, _, _, got) = solved_by(&relations_only, |system| Solved {
         redundant: vec![Tag(5)],
-        dependent_groups: vec![vec![Tag(3), Tag(5)]],
+        dependencies: vec![vec![Tag(3), Tag(5)]],
         status: SolveStatus::SolvedExceptRedundant,
         ..FakeSketches::as_sent(system)
     });
@@ -773,7 +773,7 @@ fn a_constraint_listed_redundant_and_partially_redundant_is_redundant() {
         dofs: 1,
         redundant: vec![Tag(2)],
         partially_redundant: vec![Tag(2)],
-        dependent_groups: vec![vec![Tag(2)]],
+        dependencies: vec![vec![Tag(2)]],
         free,
         status: SolveStatus::SolvedExceptRedundant,
         ..FakeSketches::as_sent(&translation.system)
@@ -881,7 +881,7 @@ fn the_sketch_state_is_the_problems_code_then_the_over_defining_constraints_then
     // algorithm solving, the y listed partially redundant, in a dependency of its own.
     let reply = |dofs, partially_redundant: Vec<Tag>, status| Solved {
         dofs,
-        dependent_groups: if partially_redundant.is_empty() {
+        dependencies: if partially_redundant.is_empty() {
             Vec::new()
         } else {
             vec![partially_redundant.clone()]

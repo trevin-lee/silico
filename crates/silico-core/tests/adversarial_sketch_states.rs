@@ -126,7 +126,7 @@ fn a_reply_naming_values_the_sketch_doesnt_have_free_changes_nothing_it_does_hav
         },
         Solved {
             partially_redundant: vec![Tag(9)],
-            dependent_groups: Vec::new(),
+            dependencies: Vec::new(),
             status: SolveStatus::SolvedExceptRedundant,
             ..reply(Vec::new())
         },
@@ -248,7 +248,7 @@ fn a_diagnosis_of_any_garbage_reply_is_data_or_a_structured_error_never_a_panic(
                             conflicting: Vec::new(),
                             redundant: Vec::new(),
                             partially_redundant: Vec::new(),
-                            dependent_groups: Vec::new(),
+                            dependencies: Vec::new(),
                             free: free.clone(),
                             no_equations: which == 2,
                             status,
@@ -390,7 +390,7 @@ fn the_states_dont_depend_on_the_order_the_sketch_holds_its_lists() {
     let solved = Solved {
         redundant: vec![Tag(5)],
         partially_redundant: vec![Tag(7)],
-        dependent_groups: Vec::new(),
+        dependencies: Vec::new(),
         free: vec![Value(14)],
         status: SolveStatus::SolvedExceptRedundant,
         ..FakeSketches::as_sent(&translation.system)
@@ -777,7 +777,7 @@ fn every_form_flagged_alone_over_defines_exactly_when_it_carries_a_value() {
                 free: Vec::new(),
                 redundant,
                 partially_redundant,
-                dependent_groups: vec![vec![Tag(1)]],
+                dependencies: vec![vec![Tag(1)]],
                 conflicting,
                 status: if kept {
                     SolveStatus::Success
@@ -869,7 +869,7 @@ fn a_reply_listing_a_reference_dimension_redundant_is_a_protocol_error_not_an_ov
         ],
     ));
     let translation = Translation::new(&sketch).unwrap();
-    for (redundant, partially_redundant, dependent_groups) in [
+    for (redundant, partially_redundant, dependencies) in [
         (vec![Tag(1)], vec![], vec![]),
         (vec![], vec![Tag(1)], vec![]),
         (vec![], vec![], vec![vec![Tag(1)]]),
@@ -880,7 +880,7 @@ fn a_reply_listing_a_reference_dimension_redundant_is_a_protocol_error_not_an_ov
             free: vec![Value(6)],
             redundant,
             partially_redundant,
-            dependent_groups,
+            dependencies,
             status: SolveStatus::SolvedExceptRedundant,
             ..FakeSketches::as_sent(&translation.system)
         };
@@ -1018,7 +1018,7 @@ fn every_form_together_flagged_any_way_over_defines_by_addendum_4() {
                 },
                 redundant: tags(1),
                 partially_redundant: tags(2),
-                dependent_groups: (0..21)
+                dependencies: (0..21)
                     .filter(|&i| flags[i] != 0)
                     .map(|i| vec![Tag(i as u32 + 1)])
                     .collect(),

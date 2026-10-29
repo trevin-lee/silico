@@ -2893,7 +2893,7 @@ impl FakeSketches {
             conflicting: Vec::new(),
             redundant: Vec::new(),
             partially_redundant: Vec::new(),
-            dependent_groups: Vec::new(),
+            dependencies: Vec::new(),
             free: Vec::new(),
             no_equations: false,
             status: SolveStatus::Success,

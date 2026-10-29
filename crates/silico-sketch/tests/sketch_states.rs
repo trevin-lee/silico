@@ -1761,7 +1761,7 @@ fn an_arcs_ends_mirrored_about_a_line_a_midpoint_puts_its_centre_on_flag_the_sym
     assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
     expect_dependencies(&got, &diagnosis, &[&["k0000005", "k0000006"]]);
     assert_eq!(
-        answer.solved().dependent_groups,
+        answer.solved().dependencies,
         [vec![silico_protocol::Tag(5), silico_protocol::Tag(6)]]
     );
     expect(
@@ -1821,7 +1821,7 @@ fn a_midpoint_given_twice_is_one_dependency_listed_once_though_each_of_its_rows_
     let (answer, diagnosis, got) = solved(&sketch);
     assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
     assert_eq!(
-        answer.solved().dependent_groups,
+        answer.solved().dependencies,
         [vec![silico_protocol::Tag(5), silico_protocol::Tag(6)]]
     );
     expect_dependencies(&got, &diagnosis, &[&["k0000005", "k0000006"]]);
@@ -2300,7 +2300,7 @@ fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), Str
     // groups by ID, each group once.
     let by_id: BTreeSet<BTreeSet<ElementId>> = answer
         .solved()
-        .dependent_groups
+        .dependencies
         .iter()
         .map(|g| {
             g.iter()
@@ -2310,7 +2310,7 @@ fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), Str
         .collect();
     if got.dependencies != diagnosis.dependencies
         || got.dependencies != by_id
-        || by_id.len() != answer.solved().dependent_groups.len()
+        || by_id.len() != answer.solved().dependencies.len()
     {
         return fail("the dependencies aren't the solver's groups by ID, each once");
     }

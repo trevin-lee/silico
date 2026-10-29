@@ -10,12 +10,13 @@ the sketch, not of the contest: a caller can tell, for instance, that a dimensio
 value is fixed by the others whichever constraint the contest dropped.
 
 The groups' tags are now kept, before the contest reduces them, in a new member,
-dependentGroupTags: each group's distinct tags in increasing order, tag 0 and internal
-alignment excluded as they are from conflictingTags (a group of only those is kept,
-empty, so the groups stay one for each dependency). getDependentGroups gives them, as
-getConflicting gives conflictingTags, and they're cleared where redundantTags is
-(System::clear and the start of diagnose). Nothing else changes: the contest, the
-solve, and every other output are as they were.
+dependentConstraintGroupTags: each group's distinct tags in increasing order, tag 0 and
+internal alignment excluded as they are from conflictingTags (a group of only those is
+kept, empty, so the groups stay one for each dependency). getDependentConstraintGroups
+gives them, as getConflicting gives conflictingTags, and they're cleared where
+redundantTags is (System::clear and the start of diagnose). They're groups of
+constraints, not of parameters: getDependentParamsGroups is unchanged. Nothing else
+changes: the contest, the solve, and every other output are as they were.
 
 Upstream: none yet (the maintainer files it). Drop when FreeCAD exposes the groups.
 
@@ -25,7 +26,7 @@ Upstream: none yet (the maintainer files it). Drop when FreeCAD exposes the grou
      conflictingTags.clear();
      redundantTags.clear();
      partiallyRedundantTags.clear();
-+    dependentGroupTags.clear();
++    dependentConstraintGroupTags.clear();
  
      reference.clear();
      clearSubSystems();
@@ -33,7 +34,7 @@ Upstream: none yet (the maintainer files it). Drop when FreeCAD exposes the grou
      conflictingTags.clear();
      redundantTags.clear();
      partiallyRedundantTags.clear();
-+    dependentGroupTags.clear();
++    dependentConstraintGroupTags.clear();
  
      // This QR diagnosis uses a reduced Jacobian matrix to calculate the rank of the system
      // and identify conflicting and redundant constraints.
@@ -43,7 +44,7 @@ Upstream: none yet (the maintainer files it). Drop when FreeCAD exposes the grou
  
 +    // Each group's tags, before the contest below reduces the groups: tag 0 and internal
 +    // alignment excluded, as from conflictingTags.
-+    dependentGroupTags.clear();
++    dependentConstraintGroupTags.clear();
 +    for (const auto& cGroup : conflictGroups) {
 +        SET_I groupTags;
 +        for (const auto& constr : cGroup) {
@@ -53,7 +54,7 @@ Upstream: none yet (the maintainer files it). Drop when FreeCAD exposes the grou
 +                groupTags.insert(constr->getTag());
 +            }
 +        }
-+        dependentGroupTags.emplace_back(groupTags.begin(), groupTags.end());
++        dependentConstraintGroupTags.emplace_back(groupTags.begin(), groupTags.end());
 +    }
 +
      // Augment the information regarding the group of constraints that are conflicting or redundant.
@@ -67,19 +68,21 @@ Upstream: none yet (the maintainer files it). Drop when FreeCAD exposes the grou
      VEC_I conflictingTags, redundantTags, partiallyRedundantTags;
 +    // For each linear dependency among the diagnosed rows, the tags of its constraints,
 +    // before the popularity contest reduces the groups to conflictingTags and redundantTags.
-+    std::vector<VEC_I> dependentGroupTags;
++    std::vector<VEC_I> dependentConstraintGroupTags;
  
      bool hasUnknowns;   // if plist is filled with the unknown parameters
      bool hasDiagnosis;  // if dofs, conflictingTags, redundantTags are up to date
-@@ -622,6 +625,12 @@
+@@ -622,6 +625,14 @@
      {
          partiallyredundantOut = hasDiagnosis ? partiallyRedundantTags : VEC_I(0);
      }
-+    // Each group of constraints in one linear dependency, as tags in increasing order, tag 0
-+    // and internal alignment excluded as getConflicting excludes them.
-+    void getDependentGroups(std::vector<VEC_I>& dependentGroupsOut) const
++    // Each group of constraints in one linear dependency among the rows (constraints, not
++    // getDependentParamsGroups' parameters), as tags in increasing order, tag 0 and internal
++    // alignment excluded as getConflicting excludes them.
++    void getDependentConstraintGroups(std::vector<VEC_I>& dependentConstraintGroupsOut) const
 +    {
-+        dependentGroupsOut = hasDiagnosis ? dependentGroupTags : std::vector<VEC_I>();
++        dependentConstraintGroupsOut
++            = hasDiagnosis ? dependentConstraintGroupTags : std::vector<VEC_I>();
 +    }
      void getDependentParams(VEC_pD& pdependentparameterlist) const
      {

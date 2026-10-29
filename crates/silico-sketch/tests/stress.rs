@@ -345,7 +345,7 @@ fn line(name: &str, system: &SketchSystem, solved: &Solved) -> String {
         tags(&solved.conflicting),
         tags(&solved.redundant),
         tags(&solved.partially_redundant),
-        groups(&solved.dependent_groups),
+        groups(&solved.dependencies),
         free.join(","),
         digest(solved)
     )

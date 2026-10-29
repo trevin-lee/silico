@@ -14,7 +14,7 @@
 //! equations, never a relation, as SolidWorks' FAQ has it); a point's ([`point_state`]) and
 //! a curve's ([`curve_over_defined`], [`curve_state`]); a constraint's, `unsolved` on a
 //! refused sketch ([`constraint_state`]); and the empty sketch's ([`EMPTY_STATE`],
-//! [`EMPTY_DOFS`]). Item 32's addendum 4 decided them from the solver's dependent groups
+//! [`EMPTY_DOFS`]). Item 32's addendum 4 decided them from the solver's dependencies
 //! ([`Diagnosis::dependencies`]), which say which constraints are tied in one dependency
 //! whichever PlaneGCS's popularity contest dropped, so no state depends on its choice; what
 //! it dropped is still what a relation's state, and the solve's warnings, report.
@@ -138,10 +138,10 @@ pub struct SketchStates {
     pub arcs: BTreeMap<ElementId, MemberState>,
     pub constraints: BTreeMap<ElementId, ConstraintState>,
     /// The constraints in each linear dependency among the equations, by ID, the groups
-    /// sorted ([`Diagnosis::dependencies`]): removing any one of a group resolves its
-    /// dependency, and which is the user's choice (SolidWorks' SketchXpert). Empty for an
-    /// empty sketch, and for one the translation refuses (its constraints never reach the
-    /// solver).
+    /// sorted ([`Diagnosis::dependencies`]): removing one constraint of a group removes one
+    /// dependency; the next read lists any that remain. Which is removed is the user's
+    /// choice (SolidWorks' SketchXpert). Empty for an empty sketch, and for one the
+    /// translation refuses (its constraints never reach the solver).
     pub dependencies: BTreeSet<BTreeSet<ElementId>>,
     /// Why the solve was refused, as the core refused it (the error contract's object):
     /// present for every refused solve, `over_constrained` included; none when the sketch

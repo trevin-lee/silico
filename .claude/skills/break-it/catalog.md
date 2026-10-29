@@ -96,7 +96,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 
 - A drag whose frame moves more than points (a circle's radius through an `on`, a reference dimension measured again): a list of what changed built by comparing points alone misses them; and a drag of a point its constraints hold completely, which PlaneGCS answers with Success and nothing moved (FreeCAD's extend reports success too)
 - Rules that take two halves of one answer apart (a solve's diagnosis and its outcome): hand over a pair that disagree (a solution beside a listed conflict) and check every invariant the rules promise still holds
-- A state rule keyed on a constraint's kind (a dimension over-defines, a relation doesn't) fed by a solver whose redundancy contest ignores kinds: a dependent group of a relation and a dimension, in both tag orders, and the solver naming a third constraint more popular than both (a perpendicular and a 90° angle at one corner make PlaneGCS name the corner's vertical)
+- A state rule keyed on a constraint's kind (a dimension over-defines, a relation doesn't) fed by a solver whose redundancy contest ignores kinds: a dependency of a relation and a dimension, in both tag orders, and the solver naming a third constraint more popular than both (a perpendicular and a 90° angle at one corner make PlaneGCS name the corner's vertical)
 
 ## Features
 

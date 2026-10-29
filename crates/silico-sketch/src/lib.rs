@@ -127,14 +127,14 @@ mod ffi {
         conflicting: Vec<i32>,
         redundant: Vec<i32>,
         partially_redundant: Vec<i32>,
-        dependent_groups: Vec<DependentGroup>,
+        dependencies: Vec<Dependency>,
         free: Vec<u32>,
         no_equations: bool,
     }
 
     /// One linear dependency among the diagnosed equations: its constraints' tags, as
-    /// PlaneGCS's `getDependentGroups` gives them (patch 0002).
-    struct DependentGroup {
+    /// PlaneGCS's `getDependentConstraintGroups` gives them (patch 0002).
+    struct Dependency {
         tags: Vec<i32>,
     }
 
@@ -231,11 +231,11 @@ fn tags(tags: &[i32]) -> Result<Vec<Tag>, Failure> {
         .map_err(|_| internal("PlaneGCS reported a negative tag"))
 }
 
-/// PlaneGCS's dependent groups in [`Solved::dependent_groups`]' form: each group's tags
+/// PlaneGCS's dependent constraint groups in [`Solved::dependencies`]' form: each group's tags
 /// distinct and in increasing order, the groups in increasing lexicographic order, each
 /// once, and none left empty by PlaneGCS's leaving out tag 0 (a dependency among an arc's
 /// rules alone, which says nothing of the sketch's constraints).
-fn dependent_groups(groups: &[ffi::DependentGroup]) -> Result<Vec<Vec<Tag>>, Failure> {
+fn dependencies(groups: &[ffi::Dependency]) -> Result<Vec<Vec<Tag>>, Failure> {
     let mut out = std::collections::BTreeSet::new();
     for group in groups {
         let group: std::collections::BTreeSet<Tag> = tags(&group.tags)?.into_iter().collect();
@@ -278,7 +278,7 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
     let conflicting = tags(&diagnosed.conflicting)?;
     let redundant = tags(&diagnosed.redundant)?;
     let partially_redundant = tags(&diagnosed.partially_redundant)?;
-    let dependent_groups = dependent_groups(&diagnosed.dependent_groups)?;
+    let dependencies = dependencies(&diagnosed.dependencies)?;
     let dropped = !redundant.is_empty() || !partially_redundant.is_empty();
     let mut status = SolveStatus::Failed;
     let mut solution: Option<(Algorithm, Vec<f64>)> = None;
@@ -340,7 +340,7 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
         conflicting,
         redundant,
         partially_redundant,
-        dependent_groups,
+        dependencies,
         free: diagnosed.free.iter().map(|&v| Value(v)).collect(),
         no_equations: diagnosed.no_equations,
         status,

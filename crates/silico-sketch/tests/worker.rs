@@ -85,7 +85,7 @@ fn a_row_of_fixed_values_alone_is_a_dependency_of_its_own_through_the_worker() {
     };
     let mut w = worker();
     let held = solve(&mut w, build(0.0));
-    assert_eq!(held.dependent_groups, [vec![silico_protocol::Tag(1)]]);
+    assert_eq!(held.dependencies, [vec![silico_protocol::Tag(1)]]);
     assert_eq!(held.redundant, [silico_protocol::Tag(1)]);
     assert!(held.conflicting.is_empty(), "{held:?}");
     assert_eq!(held.dofs, 2);
@@ -96,12 +96,12 @@ fn a_row_of_fixed_values_alone_is_a_dependency_of_its_own_through_the_worker() {
     // The far end at y 1: the same zero row, the same dependency of one, but it doesn't hold
     // (1 ≠ 0), so PlaneGCS finds it in conflict; the conflicting group is listed too.
     let broken = solve(&mut w, build(1.0));
-    assert_eq!(broken.dependent_groups, [vec![silico_protocol::Tag(1)]]);
+    assert_eq!(broken.dependencies, [vec![silico_protocol::Tag(1)]]);
     assert_eq!(broken.conflicting, [silico_protocol::Tag(1)]);
     assert!(broken.redundant.is_empty(), "{broken:?}");
     // No dependency at all: the rectangle's rows are independent.
     let rectangle = solve(&mut w, rectangle_40_by_20().b.system(Algorithm::DogLeg));
-    assert!(rectangle.dependent_groups.is_empty(), "{rectangle:?}");
+    assert!(rectangle.dependencies.is_empty(), "{rectangle:?}");
 }
 
 #[test]

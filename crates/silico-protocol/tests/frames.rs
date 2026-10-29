@@ -551,7 +551,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             conflicting: vec![Tag(2), Tag(5)],
             redundant: vec![Tag(3)],
             partially_redundant: vec![],
-            dependent_groups: Vec::new(),
+            dependencies: Vec::new(),
             free: vec![Value(0), Value(7)],
             no_equations: false,
             status: SolveStatus::Converged,
