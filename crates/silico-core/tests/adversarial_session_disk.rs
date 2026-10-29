@@ -735,3 +735,124 @@ fn in_a_workspace_whose_root_is_moved_away_the_file_is_gone_as_the_next_command_
     std::fs::rename(&kept, &root).unwrap();
     reach(Disk::Unchanged);
 }
+
+/// The latest `Instant` this platform adds to `start` without overflow, from a thousand
+/// years down.
+fn far_future(start: Instant) -> Instant {
+    let mut ahead = Duration::from_secs(1000 * 365 * 24 * 3600);
+    loop {
+        if let Some(time) = start.checked_add(ahead) {
+            return time;
+        }
+        ahead /= 2;
+    }
+}
+
+#[test]
+fn a_watch_clock_that_goes_back_or_jumps_far_ahead_never_panics_or_sticks() {
+    use silico_core::disk::{Clock, DiskWatch, Found, Reader};
+    use std::sync::atomic::AtomicUsize;
+
+    // A clock the test sets, and a reader that counts its reads and finds "B" (another's
+    // bytes) once told to.
+    let start = Instant::now();
+    let time = Arc::new(Mutex::new(start));
+    let set = |to: Instant| *time.lock().unwrap() = to;
+    let clock: Clock = {
+        let time = Arc::clone(&time);
+        Arc::new(move || *time.lock().unwrap())
+    };
+    let reads = Arc::new(AtomicUsize::new(0));
+    let other = Arc::new(AtomicBool::new(false));
+    let read: Reader = {
+        let (reads, other) = (Arc::clone(&reads), Arc::clone(&other));
+        Arc::new(move |_: &Path| {
+            reads.fetch_add(1, Ordering::SeqCst);
+            Found::Bytes(if other.load(Ordering::SeqCst) {
+                b"B".to_vec()
+            } else {
+                b"A".to_vec()
+            })
+        })
+    };
+    let w = DiskWatch::clocked(
+        "p",
+        Arc::new(b"A".to_vec()),
+        Duration::from_secs(1),
+        None,
+        read,
+        clock,
+    );
+    let settle = |w: &DiskWatch, reads_before: usize| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let found = w.finding();
+            if reads.load(Ordering::SeqCst) > reads_before && found.is_some() {
+                // Let the comparison's end land before the next ask.
+                std::thread::sleep(Duration::from_millis(20));
+                return w.finding();
+            }
+            assert!(Instant::now() < deadline, "no comparison ended");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    };
+    assert_eq!(settle(&w, 0), Some(Disk::Unchanged));
+    let after_first = reads.load(Ordering::SeqCst);
+
+    // Back an hour: no comparison is due (the last ended "after" now), and none panics.
+    set(start
+        .checked_sub(Duration::from_secs(3600))
+        .unwrap_or(start));
+    other.store(true, Ordering::SeqCst);
+    for _ in 0..50 {
+        assert_eq!(w.finding(), Some(Disk::Unchanged));
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(reads.load(Ordering::SeqCst), after_first);
+    // The session's own reload still lands at once on the backward clock.
+    w.held(Arc::new(b"B".to_vec()));
+    assert_eq!(w.finding(), Some(Disk::Unchanged));
+
+    // Far ahead: a comparison is due at once, and finds the file as held.
+    other.store(false, Ordering::SeqCst);
+    let far = far_future(start);
+    set(far);
+    let before = reads.load(Ordering::SeqCst);
+    assert_eq!(settle(&w, before), Some(Disk::Changed));
+
+    // Back to the start after the far jump: the last comparison ended "in the future", so
+    // none is due until the clock passes it; then one is.
+    set(start);
+    let before = reads.load(Ordering::SeqCst);
+    for _ in 0..50 {
+        assert_eq!(w.finding(), Some(Disk::Changed));
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(reads.load(Ordering::SeqCst), before);
+    set(far.checked_add(Duration::from_secs(1)).unwrap_or(far));
+    w.held(Arc::new(b"A".to_vec()));
+    assert_eq!(settle(&w, before), Some(Disk::Unchanged));
+}
+
+#[test]
+fn the_disk_of_a_session_never_opened_is_refused_naming_it() {
+    let f = opened(BLOCK);
+    let max = format!("s{}", u64::MAX);
+    for text in ["s1000", "s0", max.as_str()] {
+        let Some(never) = SessionId::parse(text) else {
+            continue;
+        };
+        if never == f.id {
+            continue;
+        }
+        let refused = f.sessions.disk(&never).unwrap_err();
+        assert_eq!(
+            (refused.code(), refused.parameter()),
+            (ErrorCode::InvalidInput, Some("session")),
+            "{text}"
+        );
+        assert!(refused.message().contains(text), "{}", refused.message());
+    }
+    // The open one is untouched by the asks.
+    f.reaches(Disk::Unchanged);
+}
