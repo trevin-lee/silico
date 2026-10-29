@@ -140,7 +140,7 @@ fn a_reply_listing_a_conflict_beside_a_solution_reads_over_defined_never_fully_d
     // A reply that says it solved and lists a conflict: the read refuses the conflict first,
     // so the pair the states read is a refusal, not a solution beside a conflict (break-it
     // found that pair reading fully_defined when the states took the two apart; now they
-    // can't be, and a flagged constraint on a solved sketch reads over defined besides).
+    // can't be, and a conflicting constraint on a solved sketch over-defines besides).
     let sketch = placed_line();
     let translation = Translation::new(&sketch).unwrap();
     let solved = Solved {
@@ -286,7 +286,9 @@ fn a_diagnosis_of_any_garbage_reply_is_data_or_a_structured_error_never_a_panic(
 fn ten_thousand_repeated_horizontals_are_diagnosed_and_stated_at_once() {
     // The gate's most constraints: one line given `horizontal` 10,000 times, the fake calling
     // every one after the first redundant. The diagnosis and the states take one pass each:
-    // the first satisfied, the rest redundant, both ends and the line over defined.
+    // the first satisfied, the rest redundant. A redundant relation over-defines nothing
+    // (addendum 2), so the members and the sketch read by the freedom the reply gives: every
+    // unknown free, 3 left, both ends, the line, and the sketch under defined.
     let mut constraints: Vec<String> = Vec::new();
     for i in 0..10_000 {
         constraints.push(format!(
@@ -314,7 +316,7 @@ fn ten_thousand_repeated_horizontals_are_diagnosed_and_stated_at_once() {
     let took = started.elapsed();
     assert!(took < Duration::from_secs(10), "{took:?}");
     assert!(read.outcome().is_ok(), "{:?}", read.outcome());
-    assert_eq!(got.state, SketchState::OverDefined);
+    assert_eq!((got.state, got.dofs), (SketchState::UnderDefined, 3));
     assert_eq!(got.constraints[&id("k0000000")], Satisfied);
     assert_eq!(
         got.constraints
@@ -325,9 +327,9 @@ fn ten_thousand_repeated_horizontals_are_diagnosed_and_stated_at_once() {
     );
     assert_eq!(
         got.points,
-        members(&[("p0000001", Over), ("p0000002", Over)])
+        members(&[("p0000001", Under), ("p0000002", Under)])
     );
-    assert_eq!(got.lines, members(&[("n0000001", Over)]));
+    assert_eq!(got.lines, members(&[("n0000001", Under)]));
 }
 
 #[test]
@@ -619,4 +621,387 @@ fn an_empty_translations_diagnosis_is_empty_and_its_states_fully_defined() {
         (got.state, got.dofs, got.solve_problem),
         (SketchState::FullyDefined, 0, None)
     );
+}
+
+// --- Addendum 2: a redundant relation doesn't over-define, a redundant dimension does ------
+
+/// Every form of constraint, each met exactly on [`every_form`]'s drawing, and whether it's
+/// a dimension: the list in docs/ports/sketcher.md (*Definition states*, *An over-defining
+/// constraint*), by hand, not `Form::is_dimension`.
+const EVERY_FORM: [(&str, bool); 21] = [
+    (r#""type": "horizontal", "line": "n0000001""#, false),
+    (r#""type": "vertical", "line": "n0000003""#, false),
+    (
+        r#""type": "horizontal_points", "a": "p0000001", "b": "p0000002""#,
+        false,
+    ),
+    (
+        r#""type": "vertical_points", "a": "p0000001", "b": "p0000003""#,
+        false,
+    ),
+    (
+        r#""type": "length", "line": "n0000001", "value": 10, "driving": true"#,
+        true,
+    ),
+    (
+        r#""type": "distance", "a": "p0000001", "b": "p0000002", "value": 10, "driving": true"#,
+        true,
+    ),
+    (
+        r#""type": "distance_x", "a": "origin", "b": "p0000002", "value": 10, "driving": true"#,
+        true,
+    ),
+    (
+        r#""type": "distance_y", "a": "origin", "b": "p0000003", "value": 5, "driving": true"#,
+        true,
+    ),
+    (
+        r#""type": "point_line_distance", "point": "p0000003", "line": "n0000001", "value": 5, "side": "left", "driving": true"#,
+        true,
+    ),
+    (
+        r#""type": "on", "point": "p0000013", "curve": "n0000001""#,
+        false,
+    ),
+    (
+        r#""type": "parallel", "a": "n0000001", "b": "n0000002""#,
+        false,
+    ),
+    (
+        r#""type": "perpendicular", "a": "n0000001", "b": "n0000003""#,
+        false,
+    ),
+    (
+        r#""type": "angle", "a": "n0000001", "b": "n0000003", "value": 90, "driving": true"#,
+        true,
+    ),
+    (
+        r#""type": "radius", "curve": "c0000001", "value": 5, "driving": true"#,
+        true,
+    ),
+    (
+        r#""type": "diameter", "curve": "c0000001", "value": 10, "driving": true"#,
+        true,
+    ),
+    (
+        r#""type": "equal", "a": "n0000001", "b": "n0000002""#,
+        false,
+    ),
+    (
+        r#""type": "tangent", "a": "n0000002", "b": "c0000001", "side": "right""#,
+        false,
+    ),
+    (
+        r#""type": "tangent_on", "a": "n0000004", "at": "p0000006", "b": "c0000001", "direction": "opposite""#,
+        false,
+    ),
+    (
+        r#""type": "tangent_at", "a": "n0000005", "b": "a0000001", "at": "p0000009", "direction": "same""#,
+        false,
+    ),
+    (
+        r#""type": "symmetric", "a": "p0000001", "b": "p0000002", "about": "p0000013""#,
+        false,
+    ),
+    (
+        r#""type": "midpoint", "point": "p0000013", "line": "n0000001""#,
+        false,
+    ),
+];
+
+/// A drawing every form of [`EVERY_FORM`] is met on exactly: the bottom n1 (0, 0)–(10, 0),
+/// the top n2 (0, 5)–(10, 5), the left n3 (0, 0)–(0, 5); a circle c1 of radius 5 about
+/// (20, 0), its top (20, 5) the start of n4 to (30, 5); a quarter arc a1 about (40, 0) from
+/// (45, 0) to (40, 5), where n5 leaves along −x to (32, 5); and p13, n1's middle. With the
+/// forms `picked` by index, k0000001 the first picked (so tag 1), and so on.
+fn every_form(picked: &[usize]) -> Sketch {
+    let constraints: Vec<String> = picked
+        .iter()
+        .enumerate()
+        .map(|(k, &i)| format!(r#"{{"id": "k{:07}", {}}}"#, k + 1, EVERY_FORM[i].0))
+        .collect();
+    gated(&text(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 10.0, 0.0),
+            point("p0000003", 0.0, 5.0),
+            point("p0000004", 10.0, 5.0),
+            point("p0000005", 20.0, 0.0),
+            point("p0000006", 20.0, 5.0),
+            point("p0000007", 40.0, 0.0),
+            point("p0000008", 45.0, 0.0),
+            point("p0000009", 40.0, 5.0),
+            point("p0000011", 30.0, 5.0),
+            point("p0000012", 32.0, 5.0),
+            point("p0000013", 5.0, 0.0),
+        ],
+        &[
+            line("n0000001", "p0000001", "p0000002"),
+            line("n0000002", "p0000003", "p0000004"),
+            line("n0000003", "p0000001", "p0000003"),
+            line("n0000004", "p0000006", "p0000011"),
+            line("n0000005", "p0000009", "p0000012"),
+        ],
+        &[circle("c0000001", "p0000005", 5.0)],
+        &[arc("a0000001", "p0000007", "p0000008", "p0000009")],
+        &constraints,
+    ))
+}
+
+#[test]
+fn every_form_flagged_alone_over_defines_exactly_when_it_carries_a_value() {
+    // Each form alone on the drawing, which meets it exactly, the fake listing it (tag 1)
+    // redundant, then partially redundant, with nothing free and 0 left: solved and kept, so
+    // a relation (13 forms) leaves the sketch fully defined, every member fully defined, and
+    // a dimension (8) makes it over defined, with some member over defined (each reads a
+    // point or names a curve). Listed conflicting, any form is refused, over defined, and
+    // over-defines what it governs.
+    for (i, &(form, dimension)) in EVERY_FORM.iter().enumerate() {
+        let sketch = every_form(&[i]);
+        let translation = Translation::new(&sketch).unwrap();
+        for (redundant, partially_redundant, conflicting) in [
+            (vec![Tag(1)], vec![], vec![]),
+            (vec![], vec![Tag(1)], vec![]),
+            (vec![], vec![], vec![Tag(1)]),
+        ] {
+            let listed_conflicting = !conflicting.is_empty();
+            let solved = Solved {
+                dofs: 0,
+                free: Vec::new(),
+                redundant,
+                partially_redundant,
+                conflicting,
+                status: SolveStatus::SolvedExceptRedundant,
+                ..FakeSketches::as_sent(&translation.system)
+            };
+            let read = translation.read_diagnosed(&solved).unwrap();
+            // The drawing meets the form, so only a listed conflict refuses the solve.
+            assert_eq!(
+                read.outcome().is_err(),
+                listed_conflicting,
+                "{form}: {:?}",
+                read.outcome()
+            );
+            let got = states(&sketch, &read).unwrap();
+            let members: Vec<MemberState> = got
+                .points
+                .values()
+                .chain(got.lines.values())
+                .chain(got.circles.values())
+                .chain(got.arcs.values())
+                .copied()
+                .collect();
+            let over = listed_conflicting || dimension;
+            let want = if over {
+                SketchState::OverDefined
+            } else {
+                SketchState::FullyDefined
+            };
+            assert_eq!(got.state, want, "{form} {solved:?}");
+            assert_eq!(members.contains(&Over), over, "{form}: {got:#?}");
+            if !over {
+                assert!(members.iter().all(|&s| s == Fully), "{form}: {got:#?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_reply_listing_a_reference_dimension_redundant_is_a_protocol_error_not_an_over_definition() {
+    // A reference x (tag 1, never sent) is a dimension, so if it were ever flagged redundant
+    // the rule would over-define by it. It can't be: a reply listing it redundant, or
+    // partially redundant, names a tag the core never sent, a reply it can't read
+    // (protocol_error), so there are no states to over-define. (Listed conflicting, the
+    // read takes it and the reference stays unflagged: silico-core's tests/sketch_states.rs.)
+    let sketch = gated(&text(
+        &[point("p0000001", 3.0, 4.0)],
+        &[],
+        &[],
+        &[],
+        &[
+            c(
+                r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 3, "driving": false}"#,
+            ),
+            c(
+                r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 4, "driving": true}"#,
+            ),
+        ],
+    ));
+    let translation = Translation::new(&sketch).unwrap();
+    for (redundant, partially_redundant) in [(vec![Tag(1)], vec![]), (vec![], vec![Tag(1)])] {
+        let solved = Solved {
+            dofs: 1,
+            free: vec![Value(6)],
+            redundant,
+            partially_redundant,
+            status: SolveStatus::SolvedExceptRedundant,
+            ..FakeSketches::as_sent(&translation.system)
+        };
+        let e = translation.read_diagnosed(&solved).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::ProtocolError, "{e}");
+    }
+}
+
+#[test]
+fn a_redundant_relation_beside_a_conflicting_dimension_over_defines_only_what_the_conflict_reads() {
+    // The placed horizontal line, and a circle of radius 5 about p3 (20, 0) with a radius of
+    // 5 (k0000004). The fake lists the horizontal (tag 3) redundant and the radius (tag 4)
+    // conflicting: refused, over defined. The radius reads no point and names the circle:
+    // the circle over defined, its centre by its freedom (fixed here: nothing is free),
+    // fully defined. The horizontal, a relation, over-defines nothing: the line and both its
+    // ends fully defined. The horizontal stays redundant, the radius conflicting, the placing
+    // dimensions unsolved.
+    let sketch = gated(&text(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 10.0, 0.0),
+            point("p0000003", 20.0, 0.0),
+        ],
+        &[line("n0000001", "p0000001", "p0000002")],
+        &[circle("c0000001", "p0000003", 5.0)],
+        &[],
+        &[
+            c(
+                r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            ),
+            c(
+                r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            ),
+            c(r#"{"id": "k0000003", "type": "horizontal", "line": "n0000001"}"#),
+            c(
+                r#"{"id": "k0000004", "type": "radius", "curve": "c0000001", "value": 5, "driving": true}"#,
+            ),
+        ],
+    ));
+    let translation = Translation::new(&sketch).unwrap();
+    let solved = Solved {
+        dofs: -1,
+        redundant: vec![Tag(3)],
+        conflicting: vec![Tag(4)],
+        ..FakeSketches::as_sent(&translation.system)
+    };
+    let got = states(&sketch, &translation.read_diagnosed(&solved).unwrap()).unwrap();
+    assert_eq!(got.state, SketchState::OverDefined);
+    assert_eq!(
+        got.solve_problem.as_ref().map(|e| e.code()),
+        Some(ErrorCode::OverConstrained)
+    );
+    assert_eq!(
+        got.constraints,
+        members(&[
+            ("k0000001", ConstraintState::Unsolved),
+            ("k0000002", ConstraintState::Unsolved),
+            ("k0000003", Redundant),
+            ("k0000004", Conflicting),
+        ])
+    );
+    assert_eq!(
+        got.points,
+        members(&[
+            ("p0000001", Fully),
+            ("p0000002", Fully),
+            ("p0000003", Fully)
+        ])
+    );
+    assert_eq!(got.lines, members(&[("n0000001", Fully)]));
+    assert_eq!(got.circles, members(&[("c0000001", Over)]));
+}
+
+#[test]
+fn every_form_together_flagged_any_way_over_defines_by_addendum_2() {
+    // All 21 forms on the drawing at once, each listed by the fake as nothing (0),
+    // redundant (1), partially redundant (2), or conflicting (3), with every unknown free
+    // (2 left) or none (0 left). Half the cases are relations only: no dimension listed and
+    // no conflict, each relation listed as nothing, redundant, or partially redundant, the
+    // cases where the rule differs from "anything flagged over-defines". By the rule
+    // (docs/ports/sketcher.md, *Definition states*, *An over-defining constraint*), by
+    // hand: over defined when any is conflicting or any dimension is listed; then some
+    // member over defined. Otherwise by the degrees left, no member over defined, every
+    // member under defined with everything free and fully defined with nothing.
+    use proptest::strategy::Strategy;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let strategy = (
+        proptest::collection::vec(0u8..4, 21),
+        proptest::bool::ANY,
+        proptest::bool::ANY,
+    )
+        .prop_map(|(flags, relations_only, free)| {
+            let flags: Vec<u8> = if relations_only {
+                (0..21)
+                    .map(|i| if EVERY_FORM[i].1 { 0 } else { flags[i] % 3 })
+                    .collect()
+            } else {
+                flags
+            };
+            (flags, free)
+        });
+    // The cases where a relation is listed, nothing over-defines, and the sketch reads by
+    // its degrees: under defined (everything free) and fully defined (nothing free).
+    let (under, fully) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    let mut runner = proptest::test_runner::TestRunner::new(proptest::test_runner::Config {
+        cases: 1000,
+        failure_persistence: None,
+        ..proptest::test_runner::Config::default()
+    });
+    runner
+        .run(&strategy, |(flags, free)| {
+            let picked: Vec<usize> = (0..21).collect();
+            let sketch = every_form(&picked);
+            let translation = Translation::new(&sketch).unwrap();
+            let tags = |want: u8| -> Vec<Tag> {
+                (0..21)
+                    .filter(|&i| flags[i] == want)
+                    .map(|i| Tag(i as u32 + 1))
+                    .collect()
+            };
+            let solved = Solved {
+                dofs: if free { 2 } else { 0 },
+                free: if free {
+                    translation.system.unknowns.clone()
+                } else {
+                    Vec::new()
+                },
+                redundant: tags(1),
+                partially_redundant: tags(2),
+                conflicting: tags(3),
+                status: SolveStatus::SolvedExceptRedundant,
+                ..FakeSketches::as_sent(&translation.system)
+            };
+            let got = states(&sketch, &translation.read_diagnosed(&solved).unwrap()).unwrap();
+            let over = (0..21).any(|i| flags[i] == 3 || (flags[i] != 0 && EVERY_FORM[i].1));
+            let members: Vec<MemberState> = got
+                .points
+                .values()
+                .chain(got.lines.values())
+                .chain(got.circles.values())
+                .chain(got.arcs.values())
+                .copied()
+                .collect();
+            let want = match (over, free) {
+                (true, _) => SketchState::OverDefined,
+                (false, true) => SketchState::UnderDefined,
+                (false, false) => SketchState::FullyDefined,
+            };
+            proptest::prop_assert_eq!(got.state, want, "{:?}", flags);
+            proptest::prop_assert_eq!(members.contains(&Over), over, "{:?} {:#?}", flags, got);
+            if !over {
+                let each = if free { Under } else { Fully };
+                proptest::prop_assert!(
+                    members.iter().all(|&s| s == each),
+                    "{:?} {:#?}",
+                    flags,
+                    got
+                );
+                if flags.iter().any(|&f| f != 0) {
+                    let arm = if free { &under } else { &fully };
+                    arm.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+    // About 250 of each expected (half the cases relations only, a relation listed in all
+    // but 1 in 8192 of them, half of those free); 100 is far below what chance gives.
+    let (under, fully) = (under.into_inner(), fully.into_inner());
+    assert!(under >= 100 && fully >= 100, "under {under}, fully {fully}");
 }

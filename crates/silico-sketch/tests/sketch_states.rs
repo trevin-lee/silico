@@ -15,8 +15,8 @@ use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::document::{ElementId, Operation, Sketch, read, validate};
 use silico_core::sketch::{
-    Answer, Diagnosed, Diagnosis, EXTENT_TOLERANCE, REDUNDANCY_GAP_MM, SketchSolver, SketchWorker,
-    Translation,
+    Answer, Diagnosed, Diagnosis, EXTENT_TOLERANCE, LEAST_TANGENCY, REDUNDANCY_GAP_MM,
+    SketchSolver, SketchWorker, TANGENCY_TOLERANCE, Translation,
 };
 use silico_core::sketch_states::{ConstraintState, MemberState, SketchState, SketchStates, states};
 
@@ -288,11 +288,15 @@ fn a_construction_line_takes_the_same_states_as_a_line() {
 }
 
 #[test]
-fn a_repeated_horizontal_is_redundant_and_over_defines_the_line_and_both_its_ends() {
+fn a_repeated_horizontal_is_redundant_and_leaves_the_line_and_its_ends_fully_defined() {
     // A second horizontal on the dimensioned line: one equation repeating another, which
-    // agrees, so the sketch solves (M3.3) and is over defined (SolidWorks). The later of the
-    // two by tag is the redundant one (PlaneGCS's popularity contest, as FreeCAD's). A
-    // horizontal reads both ends, and names the line: both ends and the line over defined.
+    // agrees, so the sketch solves (M3.3). The later of the two by tag is the redundant one
+    // (PlaneGCS's popularity contest, as FreeCAD's). A horizontal is a relation, so its
+    // repetition over-defines nothing (addendum 2, SolidWorks' FAQ: a redundant relation
+    // leaves the sketch fully defined): re-derived by the new rule, 4 unknowns (the two ends'
+    // x and y), 5 rows of rank 4 (from's x and y, horizontal, length), 0 left, so no value
+    // free (a free value is a column past the rank: 4 − 4 = 0 of them), both ends and the
+    // line fully defined, and the sketch too.
     let constraints = [
         FROM_AT_ORIGIN[0],
         FROM_AT_ORIGIN[1],
@@ -321,10 +325,10 @@ fn a_repeated_horizontal_is_redundant_and_over_defines_the_line_and_both_its_end
         &got,
         Want {
             problem: None,
-            state: SketchState::OverDefined,
+            state: SketchState::FullyDefined,
             dofs: 0,
-            points: &[("p0000001", Over), ("p0000002", Over)],
-            lines: &[("n0000001", Over)],
+            points: &[("p0000001", Fully), ("p0000002", Fully)],
+            lines: &[("n0000001", Fully)],
             circles: &[],
             arcs: &[],
             constraints: &[
@@ -523,8 +527,9 @@ fn an_arc_with_only_its_centre_and_radius_fixed_has_its_ends_and_itself_under_de
 fn an_arc_whose_centre_and_ends_are_all_placed_repeats_one_dimension_and_stays_fully_defined_itself()
  {
     // Three points fix 6 values against the arc's 5 (1.1.3: DoF 0, redundant [5]): one of
-    // the six dimensions is redundant, it agrees (the arc is drawn on them), and the point it
-    // reads is over defined. No dimension names the arc, so the arc isn't over defined: it
+    // the six dimensions is redundant, it agrees (the arc is drawn on them), and, a driving
+    // dimension, it over-defines (addendum 2): the point it reads is over defined, and so is
+    // the sketch. No dimension names the arc, so the arc isn't over defined: it
     // takes its points' freedom, none, not their over-definition. The sketch is over defined.
     let (points, arcs) = quarter_arc();
     let constraints = [
@@ -848,8 +853,9 @@ fn an_arcs_ends_mirrored_about_the_y_axis_its_centre_placed_there_repeat_the_cen
     //
     // PlaneGCS flags the dimension, wholly redundant, in either tag order: one row against
     // the symmetric's two, its contest removing the constraint with fewer rows on a tie in
-    // popularity, order-independent (item 32's addendum, A): so the centre, which it reads,
-    // is over defined;
+    // popularity, order-independent (item 32's addendum, A). The flagged `distance_x` is a
+    // driving dimension, so under addendum 2 it still over-defines: the sketch over defined,
+    // and the centre, which it reads, over defined;
     // the ends, free along the circle, under defined, as is the arc, which nothing flagged
     // names.
     for symmetric in ["k0000000", "k0000003"] {
@@ -886,11 +892,11 @@ fn an_arcs_ends_mirrored_about_the_y_axis_its_centre_placed_there_repeat_the_cen
     }
 }
 
-#[test]
-fn a_fully_defined_rectangle_has_no_member_under_defined() {
-    // docs/design/m3.2-sketch-format.md's rectangle, as ARCHITECTURE.md's example holds it:
-    // 8 unknowns, 8 independent equations. Every member fully defined, every constraint
-    // satisfied (FreeCAD's CreateRectangleSketch: DoF 0).
+/// docs/design/m3.2-sketch-format.md's rectangle, as ARCHITECTURE.md's example holds it:
+/// (0, 0), (40, 0), (40, 20), (0, 20), its bottom 6t7v8w9x and top j8k9m0n1 horizontal, its
+/// right a0b1c2d3 and left p2q3r4s5 vertical, 40 by 20, its first corner at the origin; and
+/// `extra` after its eight constraints.
+fn rectangle(extra: &[&str]) -> Sketch {
     let points = [
         point("0a1b2c3d", 0.0, 0.0),
         point("2p3q4r5s", 0.0, 20.0),
@@ -913,7 +919,16 @@ fn a_fully_defined_rectangle_has_no_member_under_defined() {
         r#"{"id": "y4z5a6b7", "type": "distance_y", "a": "origin", "b": "0a1b2c3d", "value": 0, "driving": true}"#,
         r#"{"id": "z8a9b0c1", "type": "vertical", "line": "p2q3r4s5"}"#,
     ];
-    let sketch = sketch_of(&points, &lines, &[], &[], &constraints);
+    let mut constraints = constraints.to_vec();
+    constraints.extend(extra);
+    sketch_of(&points, &lines, &[], &[], &constraints)
+}
+
+#[test]
+fn a_fully_defined_rectangle_has_no_member_under_defined() {
+    // The rectangle: 8 unknowns, 8 independent equations. Every member fully defined, every
+    // constraint satisfied (FreeCAD's CreateRectangleSketch: DoF 0).
+    let sketch = rectangle(&[]);
     let (_, _, got) = solved(&sketch);
     assert_eq!((got.state, got.dofs), (SketchState::FullyDefined, 0));
     let every = |m: &BTreeMap<ElementId, MemberState>| m.values().all(|&s| s == Fully);
@@ -924,16 +939,351 @@ fn a_fully_defined_rectangle_has_no_member_under_defined() {
     assert_eq!(got.constraints.len(), 8);
 }
 
+/// The rectangle's eight constraints, each `state`, and `extra`'s.
+fn rectangle_constraints<'a>(
+    state: ConstraintState,
+    extra: &[(&'a str, ConstraintState)],
+) -> Vec<(&'a str, ConstraintState)> {
+    let mut out: Vec<(&str, ConstraintState)> = [
+        "c0d1e2f3", "g4h5j6k7", "m8n9p0q1", "r2s3t4v5", "w6x7y8z9", "x0y1z2a3", "y4z5a6b7",
+        "z8a9b0c1",
+    ]
+    .into_iter()
+    .map(|id| (id, state))
+    .collect();
+    out.extend_from_slice(extra);
+    out
+}
+
+const RECTANGLE_POINTS: [&str; 4] = ["0a1b2c3d", "2p3q4r5s", "4e5f6g7h", "8j9k0m1n"];
+const RECTANGLE_LINES: [&str; 4] = ["6t7v8w9x", "a0b1c2d3", "j8k9m0n1", "p2q3r4s5"];
+/// The perpendicular of the rectangle's top and left, after its eight constraints by tag.
+const FAQ_PERPENDICULAR: &str =
+    r#"{"id": "zz000001", "type": "perpendicular", "a": "j8k9m0n1", "b": "p2q3r4s5"}"#;
+/// An angle of 90° between the rectangle's bottom and right, the last tag.
+const FAQ_ANGLE: &str = r#"{"id": "zz000002", "type": "angle", "a": "6t7v8w9x", "b": "a0b1c2d3", "value": 90, "driving": true}"#;
+
 #[test]
-fn a_point_on_two_circles_touching_at_it_is_over_defined_by_the_redundant_on() {
+fn solidworks_faq_a_redundant_relation_leaves_the_rectangle_fully_defined() {
+    // A port of SolidWorks' FAQ on sketch relations ("Why can I not have redundant dimensions
+    // or distance mates?"), its first two captions: "Fully-defined sketch." (the rectangle,
+    // above) and "Redundant perpendicular relation added. Sketch is still fully defined."
+    // By hand: the top is horizontal (x0y1z2a3) and the left vertical (z8a9b0c1), so their
+    // perpendicular repeats what those two fix: its row's gradient, the dot product of the
+    // top's direction (−40, 0) and the left's (0, −20), normalised, is a combination of the
+    // horizontal's and the vertical's alone. 9 rows of rank 8 for 8 unknowns: 0 left, no
+    // value past the rank, every point and line fully defined. Of the one dependent group
+    // {horizontal, vertical, perpendicular}, each in one group and one row, PlaneGCS removes
+    // the latest tag (1.1.3 GCS.cpp's contest, rule 3): the perpendicular, redundant. A
+    // perpendicular is a relation, so it over-defines nothing (addendum 2): the sketch is
+    // fully defined, as SolidWorks says.
+    let sketch = rectangle(&[FAQ_PERPENDICULAR]);
+    let (answer, _, got) = solved(&sketch);
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    let points: Vec<_> = RECTANGLE_POINTS.iter().map(|&p| (p, Fully)).collect();
+    let lines: Vec<_> = RECTANGLE_LINES.iter().map(|&l| (l, Fully)).collect();
+    expect(
+        &got,
+        Want {
+            problem: None,
+            state: SketchState::FullyDefined,
+            dofs: 0,
+            points: &points,
+            lines: &lines,
+            circles: &[],
+            arcs: &[],
+            constraints: &rectangle_constraints(Satisfied, &[("zz000001", Redundant)]),
+        },
+    );
+}
+
+#[test]
+fn solidworks_faq_a_redundant_angle_dimension_then_over_defines_the_rectangle() {
+    // The FAQ's third caption: "Redundant dimension added. Sketch is over defined." An angle
+    // of 90° between the bottom and the right, after the perpendicular: a dimension "which,
+    // changing to something other than 90°, would conflict with the relations". By hand: the
+    // angle's row, the turn from the bottom's direction to the right's, has a gradient that
+    // combines the bottom's horizontal (c0d1e2f3) and the right's vertical (r2s3t4v5) alone,
+    // so it repeats them: 10 rows of rank 8, still 0 left, two dependent groups,
+    // {top's horizontal, left's vertical, perpendicular} and {bottom's horizontal, right's
+    // vertical, angle}, sharing nothing. Each constraint is in one group with one row, so
+    // PlaneGCS removes the latest tag first, the angle, which settles its group, then the
+    // perpendicular, which settles the other: both `redundant`. The perpendicular, a
+    // relation, over-defines nothing; the angle, a driving dimension, does (addendum 2): it
+    // depends on both ends of both lines (the bottom's 0a1b2c3d and 4e5f6g7h, the right's
+    // 4e5f6g7h and 8j9k0m1n), over defined, and names both lines, over defined; the fourth
+    // corner 2p3q4r5s and the top and left, which it neither reads nor names, keep their
+    // freedom, none: fully defined. The sketch is over defined.
+    let sketch = rectangle(&[FAQ_PERPENDICULAR, FAQ_ANGLE]);
+    let (answer, _, got) = solved(&sketch);
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    expect(
+        &got,
+        Want {
+            problem: None,
+            state: SketchState::OverDefined,
+            dofs: 0,
+            points: &[
+                ("0a1b2c3d", Over),
+                ("2p3q4r5s", Fully),
+                ("4e5f6g7h", Over),
+                ("8j9k0m1n", Over),
+            ],
+            lines: &[
+                ("6t7v8w9x", Over),
+                ("a0b1c2d3", Over),
+                ("j8k9m0n1", Fully),
+                ("p2q3r4s5", Fully),
+            ],
+            circles: &[],
+            arcs: &[],
+            constraints: &rectangle_constraints(
+                Satisfied,
+                &[("zz000001", Redundant), ("zz000002", Redundant)],
+            ),
+        },
+    );
+}
+
+#[test]
+fn a_redundant_angle_at_the_corner_a_perpendicular_holds_reads_by_dofs_when_planegcs_names_the_vertical()
+ {
+    // The one divergence from SolidWorks addendum 2 leaves (docs/ports/sketcher.md,
+    // *Definition states*): the perpendicular and the angle both at the bottom-right corner.
+    // By hand: PlaneGCS's perpendicular and angle rows are normalised, their gradients'
+    // entries about 1/40 and 1/20 against the horizontal's and vertical's 1, so the full
+    // pivoting of its QR takes every unit row first and leaves those two past the rank, each
+    // repeating the bottom's horizontal (c0d1e2f3) and the right's vertical (r2s3t4v5): the
+    // groups {horizontal, vertical, perpendicular} and {horizontal, vertical, angle}. The
+    // horizontal and the vertical are each in two, the most popular (1.1.3 GCS.cpp's
+    // contest, rule 1), tied on rows, so the later tag of the two is removed: the vertical,
+    // which settles both groups. It's a relation, so nothing over-defines: the sketch reads
+    // by `dofs`, 0, fully defined, every member fully defined, the angle satisfied, where
+    // SolidWorks would call the sketch over defined. An edit of the angle that breaks it is
+    // a conflict that edit's solve reports.
+    let perpendicular =
+        r#"{"id": "zz000001", "type": "perpendicular", "a": "6t7v8w9x", "b": "a0b1c2d3"}"#;
+    let sketch = rectangle(&[perpendicular, FAQ_ANGLE]);
+    let (answer, _, got) = solved(&sketch);
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    let points: Vec<_> = RECTANGLE_POINTS.iter().map(|&p| (p, Fully)).collect();
+    let lines: Vec<_> = RECTANGLE_LINES.iter().map(|&l| (l, Fully)).collect();
+    let mut constraints = rectangle_constraints(
+        Satisfied,
+        &[("zz000001", Satisfied), ("zz000002", Satisfied)],
+    );
+    constraints[3].1 = Redundant;
+    assert_eq!(constraints[3].0, "r2s3t4v5");
+    expect(
+        &got,
+        Want {
+            problem: None,
+            state: SketchState::FullyDefined,
+            dofs: 0,
+            points: &points,
+            lines: &lines,
+            circles: &[],
+            arcs: &[],
+            constraints: &constraints,
+        },
+    );
+}
+
+#[test]
+fn a_redundant_distance_over_defines_the_line_it_repeats_the_length_of() {
+    // The dimensioned line from the origin, horizontal, 10 long, and a driving distance of
+    // 10 between its ends (k0000005). By hand: the distance's row, |p2 − p1| − 10, has the
+    // length's gradient exactly, (−1, 0) at p1 and (1, 0) at p2, so the two are one group
+    // (the horizontal's gradient, in the ends' y, and the placing x and y are independent of
+    // them): 5 rows of rank 4, 0 left. Each one row, in one group: PlaneGCS removes the later
+    // tag, the distance, `redundant`. A driving dimension over-defines (addendum 2): it
+    // depends on both ends, over defined; it names only points, so the line, its ends fixed,
+    // is fully defined (a curve takes its points' freedom, not their over-definition). The
+    // sketch is over defined.
+    let constraints = [
+        FROM_AT_ORIGIN[0],
+        FROM_AT_ORIGIN[1],
+        HORIZONTAL,
+        LENGTH_10,
+        r#"{"id": "k0000005", "type": "distance", "a": "p0000001", "b": "p0000002", "value": 10, "driving": true}"#,
+    ];
+    let sketch = sketch_of(
+        &line_points((10.0, 0.0)),
+        &one_line(),
+        &[],
+        &[],
+        &constraints,
+    );
+    let (answer, _, got) = solved(&sketch);
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    expect(
+        &got,
+        Want {
+            problem: None,
+            state: SketchState::OverDefined,
+            dofs: 0,
+            points: &[("p0000001", Over), ("p0000002", Over)],
+            lines: &[("n0000001", Fully)],
+            circles: &[],
+            arcs: &[],
+            constraints: &[
+                ("k0000001", Satisfied),
+                ("k0000002", Satisfied),
+                ("k0000003", Satisfied),
+                ("k0000004", Satisfied),
+                ("k0000005", Redundant),
+            ],
+        },
+    );
+}
+
+/// A circle of radius 5 about p1, placed at the origin (k0000001, k0000002); p2 placed at
+/// (5, 0) (k0000003, k0000004); p2 `on` the circle, and a driving radius of 5, by these IDs.
+fn circle_through_a_placed_point(on: &str, radius: &str) -> Sketch {
+    let on = format!(r#"{{"id": "{on}", "type": "on", "point": "p0000002", "curve": "c0000001"}}"#);
+    let radius = format!(
+        r#"{{"id": "{radius}", "type": "radius", "curve": "c0000001", "value": 5, "driving": true}}"#
+    );
+    let constraints = [
+        FROM_AT_ORIGIN[0],
+        FROM_AT_ORIGIN[1],
+        r#"{"id": "k0000003", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 5, "driving": true}"#,
+        r#"{"id": "k0000004", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 0, "driving": true}"#,
+        on.as_str(),
+        radius.as_str(),
+    ];
+    sketch_of(
+        &line_points((5.0, 0.0)),
+        &[],
+        &[circle("c0000001", "p0000001", 5.0)],
+        &[],
+        &constraints,
+    )
+}
+
+#[test]
+fn a_redundant_radius_over_defines_its_circle_and_a_redundant_on_in_its_place_doesnt() {
+    // The centre and a point of the circle both placed, so the `on` fixes the radius and a
+    // radius dimension repeats it. By hand: 5 unknowns (p1's x and y, p2's, the radius), 6
+    // rows of rank 5, 0 left. The `on`'s gradient, p2 − p1 over its length minus the
+    // radius's, is (1, 0) at p2, (−1, 0) at p1, −1 in the radius: p2's x row less p1's x row
+    // less the radius row. So the one group is {k0000001, k0000003, on, radius}, each one row
+    // in one group, and PlaneGCS removes the latest tag of the four.
+    //
+    // The radius latest (k0000006): it's `redundant`, a driving dimension, so it over-defines
+    // (addendum 2): it names the circle, over defined, and reads no point, so both points
+    // keep their freedom, none: fully defined. The sketch is over defined.
+    let sketch = circle_through_a_placed_point("k0000005", "k0000006");
+    let (answer, _, got) = solved(&sketch);
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    // By position: k0000005 and k0000006 are the `on` and the radius, in either order.
+    let constraints = |k5, k6| {
+        vec![
+            ("k0000001", Satisfied),
+            ("k0000002", Satisfied),
+            ("k0000003", Satisfied),
+            ("k0000004", Satisfied),
+            ("k0000005", k5),
+            ("k0000006", k6),
+        ]
+    };
+    expect(
+        &got,
+        Want {
+            problem: None,
+            state: SketchState::OverDefined,
+            dofs: 0,
+            points: &[("p0000001", Fully), ("p0000002", Fully)],
+            lines: &[],
+            circles: &[("c0000001", Over)],
+            arcs: &[],
+            constraints: &constraints(Satisfied, Redundant),
+        },
+    );
+    // The `on` latest (k0000006, the radius k0000005): the `on` is `redundant`, a relation,
+    // so nothing over-defines and the sketch reads by `dofs`, 0: every member fully defined,
+    // the radius satisfied (the mixed group's divergence from SolidWorks, which would call
+    // the repeated radius over defining whichever is named).
+    let sketch = circle_through_a_placed_point("k0000006", "k0000005");
+    let (answer, _, got) = solved(&sketch);
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    expect(
+        &got,
+        Want {
+            problem: None,
+            state: SketchState::FullyDefined,
+            dofs: 0,
+            points: &[("p0000001", Fully), ("p0000002", Fully)],
+            lines: &[],
+            circles: &[("c0000001", Fully)],
+            arcs: &[],
+            constraints: &constraints(Satisfied, Redundant),
+        },
+    );
+}
+
+#[test]
+fn a_reference_dimension_beside_a_redundant_relation_is_satisfied_and_the_sketch_reads_by_dofs() {
+    // The line from the origin, horizontal twice (k0000003, k0000005), its far end's x free,
+    // and a reference length (k0000004, driving false) measuring it. By hand: 4 unknowns;
+    // the rows the placing x and y, and the two horizontals, one repeating the other (the
+    // same gradient, the ends' y), rank 3, 1 left. p2's x is in no row, a zero column, the
+    // one value past the rank: p2 and the line under defined, p1 fully defined. The later
+    // horizontal is `redundant`, a relation, over-defining nothing (addendum 2), so the
+    // sketch reads by `dofs`: under defined. The reference is never sent, so never flagged:
+    // `satisfied` on the solved sketch.
+    let constraints = [
+        FROM_AT_ORIGIN[0],
+        FROM_AT_ORIGIN[1],
+        HORIZONTAL,
+        r#"{"id": "k0000004", "type": "length", "line": "n0000001", "value": 10, "driving": false}"#,
+        r#"{"id": "k0000005", "type": "horizontal", "line": "n0000001"}"#,
+    ];
+    let sketch = sketch_of(
+        &line_points((10.0, 0.0)),
+        &one_line(),
+        &[],
+        &[],
+        &constraints,
+    );
+    let (answer, _, got) = solved(&sketch);
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    expect(
+        &got,
+        Want {
+            problem: None,
+            state: SketchState::UnderDefined,
+            dofs: 1,
+            points: &[("p0000001", Fully), ("p0000002", Under)],
+            lines: &[("n0000001", Under)],
+            circles: &[],
+            arcs: &[],
+            constraints: &[
+                ("k0000001", Satisfied),
+                ("k0000002", Satisfied),
+                ("k0000003", Satisfied),
+                ("k0000004", Satisfied),
+                ("k0000005", Redundant),
+            ],
+        },
+    );
+}
+
+#[test]
+fn a_point_on_two_circles_touching_at_it_keeps_its_freedom_beside_the_redundant_on() {
     // Two fully dimensioned circles of radius 5, centres 10 apart, touching at (5, 0), and a
     // point on both (1.1.3: DoF 1, redundant [7], the second `on`). At the point the two
     // circles' normals line up, so to first order the two `on`s are one equation: one is
     // redundant (the first-order rule), the point keeps a degree it can't use, 8 unknowns,
     // rank 7. The redundant `on` reads the point and its circle's centre and radius
-    // (`PointOnCircle`), and names the circle: the point, that circle, and its centre over
-    // defined (over-definition before the point's freedom: item 32's members' rule); the other
-    // circle and its centre fully defined; the sketch over defined.
+    // (`PointOnCircle`), and names the circle, but it's a relation, so under addendum 2 it
+    // over-defines nothing: every member reads by its freedom, and the sketch by `dofs`.
+    // Re-derived by hand: both centres and radii are fixed by their own dimensions (p1 by
+    // k1, k2; p2 by k4, k5; the radii by k3, k6), all pivots. Each `on`'s gradient in the
+    // point is the unit vector from its circle's centre, (1, 0) and (−1, 0) at (5, 0): both
+    // zero in the point's y, a zero column, which is the one value past the rank (8 − 7 =
+    // 1). So the point is under defined, both centres and both circles fully defined, and
+    // the sketch under defined with its 1 degree left (FreeCAD 1.1.3's DoF 1).
     let points = [
         point("p0000001", 0.0, 0.0),
         point("p0000002", 10.0, 0.0),
@@ -964,11 +1314,15 @@ fn a_point_on_two_circles_touching_at_it_is_over_defined_by_the_redundant_on() {
         &got,
         Want {
             problem: None,
-            state: SketchState::OverDefined,
+            state: SketchState::UnderDefined,
             dofs: 1,
-            points: &[("p0000001", Fully), ("p0000002", Over), ("p0000003", Over)],
+            points: &[
+                ("p0000001", Fully),
+                ("p0000002", Fully),
+                ("p0000003", Under),
+            ],
             lines: &[],
-            circles: &[("c0000001", Fully), ("c0000002", Over)],
+            circles: &[("c0000001", Fully), ("c0000002", Fully)],
             arcs: &[],
             constraints: &[
                 ("k0000001", Satisfied),
@@ -986,8 +1340,9 @@ fn a_point_on_two_circles_touching_at_it_is_over_defined_by_the_redundant_on() {
 
 #[test]
 fn a_doubled_radius_over_defines_its_circle_and_never_its_centre() {
-    // A radius reads only the radius: the second one, redundant, names the circle (over
-    // defined) and reads no point, so the centre, placed by its own dimensions, stays fully
+    // A radius reads only the radius: the second one, redundant, a driving dimension, so it
+    // over-defines (addendum 2): it names the circle (over defined), the sketch is over
+    // defined, and it reads no point, so the centre, placed by its own dimensions, stays fully
     // defined. 3 unknowns, rank 3.
     let constraints = [
         FROM_AT_ORIGIN[0],
@@ -1138,8 +1493,10 @@ fn an_arcs_ends_mirrored_about_a_line_a_one_row_constraint_puts_its_centre_on_lo
     // two holds the translation recognises, so the symmetric's both rows are sent, 14
     // equations for 13 unknowns, one repeating. Of the dependent group PlaneGCS removes the
     // constraint with fewer rows on a tie in popularity (1.1.3 GCS.cpp's contest): the
-    // one-row holder, redundant, which reads the centre and the line's end (both over
-    // defined) and names no curve; the arc's ends, read by nothing flagged, fully defined.
+    // one-row holder, redundant. It's a relation, so under addendum 2 it over-defines
+    // nothing; re-derived: 13 unknowns, rank 13 (14 rows, one repeating), 0 left, so no value
+    // is past the rank and every point, the line, and the arc are fully defined, and so is
+    // the sketch, the holder still listed redundant.
     let sketch = arc_held_on_a_line(
         r#"{"id": "k0000005", "type": "vertical_points", "a": "p0000004", "b": "p0000001"}"#,
     );
@@ -1149,13 +1506,13 @@ fn an_arcs_ends_mirrored_about_a_line_a_one_row_constraint_puts_its_centre_on_lo
         &got,
         Want {
             problem: None,
-            state: SketchState::OverDefined,
+            state: SketchState::FullyDefined,
             dofs: 0,
             points: &[
-                ("p0000001", Over),
+                ("p0000001", Fully),
                 ("p0000002", Fully),
                 ("p0000003", Fully),
-                ("p0000004", Over),
+                ("p0000004", Fully),
                 ("p0000005", Fully),
             ],
             lines: &[("n0000001", Fully)],
@@ -1182,9 +1539,10 @@ fn an_arcs_ends_mirrored_about_a_line_a_midpoint_puts_its_centre_on_flag_the_sym
     // the symmetric's both rows are sent, 14 equations for 13 unknowns, and the two tie on
     // rows, so PlaneGCS removes the later by tag: the symmetric, every row of it dependent,
     // so wholly redundant (item 32's addendum, A: `redundant` when both its rows are in the
-    // dependent set, `partially_redundant` when one is).
-    // It reads both the arc's ends and the line's (over defined), and names the line (over
-    // defined); the arc, named by nothing flagged, fully defined.
+    // dependent set, `partially_redundant` when one is). A symmetric is a relation, so under
+    // addendum 2 it over-defines nothing; re-derived: 13 unknowns, rank 13, 0 left, every
+    // value a pivot, so every point, the line, the arc, and the sketch fully defined, the
+    // symmetry still listed redundant.
     let (mut points, arcs) = mirrored_arc();
     points.push(point("p0000004", 0.0, -5.0));
     points.push(point("p0000005", 0.0, 5.0));
@@ -1206,16 +1564,16 @@ fn an_arcs_ends_mirrored_about_a_line_a_midpoint_puts_its_centre_on_flag_the_sym
         &got,
         Want {
             problem: None,
-            state: SketchState::OverDefined,
+            state: SketchState::FullyDefined,
             dofs: 0,
             points: &[
                 ("p0000001", Fully),
-                ("p0000002", Over),
-                ("p0000003", Over),
-                ("p0000004", Over),
-                ("p0000005", Over),
+                ("p0000002", Fully),
+                ("p0000003", Fully),
+                ("p0000004", Fully),
+                ("p0000005", Fully),
             ],
-            lines: &[("n0000001", Over)],
+            lines: &[("n0000001", Fully)],
             circles: &[],
             arcs: &[("a0000001", Fully)],
             constraints: &[
@@ -1585,15 +1943,48 @@ fn generated(seed: u64) -> Option<Sketch> {
     }
 }
 
-/// Item 32's invariants on one sketch's states, solved by `worker`: fully_defined ⇒ no
-/// member under or over defined and no constraint flagged; under_defined ⇒ dofs > 0 and
-/// some member under defined; over_defined ⇒ some constraint flagged; an `over_constrained`
-/// problem's elements are the conflicting constraints; a solve's problem exactly when the
-/// sketch is refused, every constraint not flagged then unsolved; every satisfied driving
-/// constraint met on the solution, its residual within decision 5's least window over the
-/// whole sketch (no smaller than its part's); and, solved, the diagnosis saying what the
-/// solution says of the degrees of freedom, the free members, and the repetitions kept. A
-/// sketch the translation refuses reads as [`untranslated_invariants`] says.
+/// The dimensions, by the file's word: the forms with a value (docs/ports/sketcher.md,
+/// *Definition states*, *An over-defining constraint*). Every other form is a relation.
+const DIMENSIONS: [&str; 8] = [
+    "length",
+    "distance",
+    "distance_x",
+    "distance_y",
+    "point_line_distance",
+    "angle",
+    "radius",
+    "diameter",
+];
+
+/// Whether `c`, in `state`, over-defines, as docs/ports/sketcher.md (*Definition states*,
+/// *An over-defining constraint*) states it: conflicting, or a dimension (by its word,
+/// [`DIMENSIONS`]) redundant or partially redundant.
+fn over_defining_by_kind(
+    c: &silico_core::document::SketchConstraint,
+    state: ConstraintState,
+) -> bool {
+    use ConstraintState::PartiallyRedundant;
+    state == Conflicting
+        || (matches!(state, Redundant | PartiallyRedundant)
+            && DIMENSIONS.contains(&c.form.type_name()))
+}
+
+/// Item 32's invariants on one sketch's states, solved by `worker`, as addendum 2 revises
+/// them (docs/ports/sketcher.md, *Definition states*): fully_defined ⇒ every member fully
+/// defined, no constraint conflicting, and no dimension redundant or partially redundant (a
+/// redundant relation may be there);
+/// under_defined ⇒ dofs > 0, some member under defined, and nothing over-defining (a
+/// redundant relation may be there); over_defined ⇒ some constraint conflicting or some
+/// dimension redundant or partially redundant, and some member over defined; a member over
+/// defined exactly when some constraint over-defines; an `over_constrained` problem's
+/// elements are the conflicting constraints; a solve's problem exactly when the sketch is
+/// refused, every constraint not flagged then unsolved; every satisfied driving constraint
+/// met on the solution, its residual within decision 5's least window over the whole sketch
+/// (no smaller than its part's), and every redundant or partially redundant one kept within
+/// the most any part's window can be (its gap, the read's own, at most that window or
+/// [`TANGENCY_TOLERANCE`] over [`LEAST_TANGENCY`]); and, solved, the diagnosis saying what
+/// the solution says of the degrees of freedom, the free members, and the repetitions kept.
+/// A sketch the translation refuses reads as [`untranslated_invariants`] says.
 fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), String> {
     let Ok(translation) = Translation::new(sketch) else {
         return untranslated_invariants(sketch, worker);
@@ -1631,25 +2022,33 @@ fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), Str
             .chain(got.circles.values())
             .chain(got.arcs.values())
     };
-    let flagged = got.constraints.values().any(|s| s.flagged());
+    let over_defining = sketch
+        .constraints
+        .iter()
+        .any(|c| over_defining_by_kind(c, got.constraints[&c.id]));
     let fail = |what: &str| Err(format!("{what}: {got:#?}"));
     match got.state {
         SketchState::FullyDefined => {
-            if members().any(|&s| s != Fully) || flagged {
-                return fail("fully defined, with a member not");
+            if members().any(|&s| s != Fully) || over_defining {
+                return fail(
+                    "fully defined, with a member not, or a conflict or repeated dimension",
+                );
             }
         }
         SketchState::UnderDefined => {
-            if got.dofs <= 0 || !members().any(|&s| s == Under) {
-                return fail("under defined, with no freedom");
+            if got.dofs <= 0 || !members().any(|&s| s == Under) || over_defining {
+                return fail("under defined, with no freedom, or something over-defining");
             }
         }
         SketchState::OverDefined => {
-            if !flagged {
-                return fail("over defined, nothing flagged");
+            if !over_defining || !members().any(|&s| s == Over) {
+                return fail("over defined, with nothing over-defining or no member over defined");
             }
         }
         SketchState::NoSolution | SketchState::Invalid => {}
+    }
+    if members().any(|&s| s == Over) != over_defining {
+        return fail("a member over defined, but not exactly when something over-defines");
     }
     if got.solve_problem.is_some() != answer.outcome().is_err() {
         return fail("a problem exactly when refused");
@@ -1706,6 +2105,22 @@ fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), Str
             match residual {
                 Some((_, Some(r))) if r.abs() <= window => {}
                 other => return Err(format!("{} satisfied but {other:?} off: {got:#?}", c.id)),
+            }
+        }
+        // Every redundant or partially redundant constraint kept, its gap (decision 5's, in
+        // millimetres) within the most a part's window can be: a part's extent is at most the
+        // whole's, and its tangency term at most TANGENCY_TOLERANCE / LEAST_TANGENCY.
+        let solution = answer.outcome().map_err(|e| e.to_string())?;
+        let most = window.max(TANGENCY_TOLERANCE / LEAST_TANGENCY);
+        for (id, state) in &got.constraints {
+            let gap = match state {
+                Redundant => solution.redundant.get(id),
+                ConstraintState::PartiallyRedundant => solution.partially_redundant.get(id),
+                _ => continue,
+            };
+            match gap {
+                Some(&g) if g.is_finite() && (0.0..=most).contains(&g) => {}
+                other => return Err(format!("{id} {state:?} but kept {other:?}: {got:#?}")),
             }
         }
     }
@@ -1868,6 +2283,47 @@ fn the_generator_reaches_every_sketch_state_and_every_constraint_state() {
         constraint_states.extend(got.constraints.values().copied());
     }
     assert!(gated >= 200, "{gated} of 400 pass the gate");
+    // Addendum 2's two sides, solved, so its invariants are checked on both: sketches whose
+    // only repetitions are relations, read by their degrees of freedom (fully and under
+    // defined both reached), and sketches with a repeated dimension, over defined.
+    let (mut relation_only, mut dimension) = (BTreeSet::new(), 0);
+    for seed in 0..4000u64 {
+        let Some(sketch) = generated(seed) else {
+            continue;
+        };
+        let Ok(translation) = Translation::new(&sketch) else {
+            continue;
+        };
+        let Ok(answer) = translation.solve(&mut worker) else {
+            continue;
+        };
+        if answer.outcome().is_err() {
+            continue;
+        }
+        let got = states(&sketch, answer.diagnosed().unwrap()).unwrap();
+        let repeated = |dimension: bool| {
+            sketch.constraints.iter().any(|c| {
+                got.constraints[&c.id].flagged()
+                    && DIMENSIONS.contains(&c.form.type_name()) == dimension
+            })
+        };
+        if repeated(true) {
+            dimension += 1;
+        } else if repeated(false) {
+            relation_only.insert(got.state);
+        }
+    }
+    assert!(
+        dimension >= 5,
+        "{dimension} solved with a repeated dimension"
+    );
+    // The generator draws too few constraints to fix a sketch whole with a relation to
+    // spare, so a fully defined one with a repeated relation is the rectangle's to reach
+    // (each_repetition_of_the_rectangle_alone_reads_by_its_kind, below).
+    assert!(
+        relation_only.contains(&SketchState::UnderDefined),
+        "the states of sketches whose only repetitions are relations: {relation_only:?}"
+    );
     // And some the translation refuses, so their invariants are checked too.
     let untranslated = (0..4000u64)
         .filter_map(generated)
@@ -1882,19 +2338,179 @@ fn the_generator_reaches_every_sketch_state_and_every_constraint_state() {
     assert_eq!(constraint_states.len(), 5, "{constraint_states:?}");
 }
 
+/// Constraints that repeat what the rectangle already fixes, and agree, by ID after its
+/// eight (so by tag too): 12 relations, then 6 dimensions.
+const RECTANGLE_REPEATS: [(&str, bool); 18] = [
+    (
+        r#"{"id": "zz000001", "type": "horizontal", "line": "6t7v8w9x"}"#,
+        false,
+    ),
+    (
+        r#"{"id": "zz000002", "type": "horizontal", "line": "j8k9m0n1"}"#,
+        false,
+    ),
+    (
+        r#"{"id": "zz000003", "type": "vertical", "line": "a0b1c2d3"}"#,
+        false,
+    ),
+    (
+        r#"{"id": "zz000004", "type": "vertical", "line": "p2q3r4s5"}"#,
+        false,
+    ),
+    (
+        r#"{"id": "zz000005", "type": "perpendicular", "a": "6t7v8w9x", "b": "a0b1c2d3"}"#,
+        false,
+    ),
+    (
+        r#"{"id": "zz000006", "type": "perpendicular", "a": "j8k9m0n1", "b": "p2q3r4s5"}"#,
+        false,
+    ),
+    (
+        r#"{"id": "zz000007", "type": "perpendicular", "a": "6t7v8w9x", "b": "p2q3r4s5"}"#,
+        false,
+    ),
+    (
+        r#"{"id": "zz000008", "type": "parallel", "a": "6t7v8w9x", "b": "j8k9m0n1"}"#,
+        false,
+    ),
+    (
+        r#"{"id": "zz000009", "type": "parallel", "a": "a0b1c2d3", "b": "p2q3r4s5"}"#,
+        false,
+    ),
+    (
+        r#"{"id": "zz000010", "type": "horizontal_points", "a": "0a1b2c3d", "b": "4e5f6g7h"}"#,
+        false,
+    ),
+    (
+        r#"{"id": "zz000011", "type": "vertical_points", "a": "4e5f6g7h", "b": "8j9k0m1n"}"#,
+        false,
+    ),
+    (
+        r#"{"id": "zz000012", "type": "equal", "a": "6t7v8w9x", "b": "j8k9m0n1"}"#,
+        false,
+    ),
+    (
+        r#"{"id": "zz000013", "type": "length", "line": "j8k9m0n1", "value": 40, "driving": true}"#,
+        true,
+    ),
+    (
+        r#"{"id": "zz000014", "type": "length", "line": "p2q3r4s5", "value": 20, "driving": true}"#,
+        true,
+    ),
+    (
+        r#"{"id": "zz000015", "type": "distance_x", "a": "origin", "b": "4e5f6g7h", "value": 40, "driving": true}"#,
+        true,
+    ),
+    (
+        r#"{"id": "zz000016", "type": "distance_y", "a": "origin", "b": "8j9k0m1n", "value": 20, "driving": true}"#,
+        true,
+    ),
+    (
+        r#"{"id": "zz000017", "type": "angle", "a": "6t7v8w9x", "b": "a0b1c2d3", "value": 90, "driving": true}"#,
+        true,
+    ),
+    (
+        r#"{"id": "zz000018", "type": "distance", "a": "0a1b2c3d", "b": "4e5f6g7h", "value": 40, "driving": true}"#,
+        true,
+    ),
+];
+
+/// The rectangle with the repetitions `mask`'s bits pick.
+fn rectangle_repeating(mask: u32) -> Sketch {
+    let extra: Vec<&str> = RECTANGLE_REPEATS
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| mask >> i & 1 == 1)
+        .map(|(_, (c, _))| *c)
+        .collect();
+    rectangle(&extra)
+}
+
+#[test]
+fn each_repetition_of_the_rectangle_alone_reads_by_its_kind() {
+    // By hand, for each repetition alone: the rectangle's eight rows are independent, so one
+    // more that agrees leaves 9 rows of rank 8, 0 left, and one dependent group, which has
+    // the repetition in it (the eight alone are independent). Every constraint of it is one
+    // row, in one group: PlaneGCS removes the latest tag (1.1.3 GCS.cpp's contest, rule 3),
+    // the repetition's, `redundant`, every other satisfied. Addendum 2: a relation leaves
+    // the sketch by `dofs`, fully defined, every member fully defined; a driving dimension
+    // makes it over defined, with some member over defined (each dimension here reads a
+    // point of the rectangle).
+    let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    for (i, &(text, dimension)) in RECTANGLE_REPEATS.iter().enumerate() {
+        let sketch = rectangle_repeating(1 << i);
+        let translation = Translation::new(&sketch).unwrap();
+        let answer = translation.solve(&mut worker).unwrap();
+        assert!(answer.outcome().is_ok(), "{text}: {:?}", answer.outcome());
+        let got = states(&sketch, answer.diagnosed().unwrap()).unwrap();
+        let id = ElementId::new(&format!("zz{:06}", i + 1)).unwrap();
+        let flagged: Vec<(&ElementId, &ConstraintState)> = got
+            .constraints
+            .iter()
+            .filter(|(_, s)| s.flagged())
+            .collect();
+        assert_eq!(flagged, [(&id, &Redundant)], "{text}");
+        assert_eq!(got.dofs, 0, "{text}");
+        let members = || got.points.values().chain(got.lines.values());
+        if dimension {
+            assert_eq!(got.state, SketchState::OverDefined, "{text}");
+            assert!(members().any(|&s| s == Over), "{text}: {got:#?}");
+        } else {
+            assert_eq!(got.state, SketchState::FullyDefined, "{text}");
+            assert!(members().all(|&s| s == Fully), "{text}: {got:#?}");
+        }
+        invariants_hold(&sketch, &mut worker).unwrap();
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 300, .. ProptestConfig::default() })]
+
+    #[test]
+    fn addendum_2s_invariants_hold_on_the_rectangle_repeated_any_way(
+        mask in 0u32..(1 << RECTANGLE_REPEATS.len())
+    ) {
+        // Any set of repetitions that agree: the sketch solves, 0 left, and the invariants
+        // hold whichever constraints PlaneGCS's contest names (its own or the rectangle's).
+        let sketch = rectangle_repeating(mask);
+        thread_local!(static W: std::cell::RefCell<SketchWorker> = std::cell::RefCell::new(
+            SketchWorker::start_worker(Path::new(WORKER)).unwrap()
+        ));
+        let got = W.with(|w| {
+            let mut w = w.borrow_mut();
+            let answer = Translation::new(&sketch).unwrap().solve(&mut *w).unwrap();
+            let read = answer.diagnosed().unwrap();
+            let got = states(&sketch, read).unwrap();
+            if answer.outcome().is_err() || got.dofs != 0 {
+                return Err(format!("{:?} {got:#?}", answer.outcome()));
+            }
+            invariants_hold(&sketch, &mut w)
+        });
+        prop_assert!(got.is_ok(), "mask {mask:#x}: {}", got.unwrap_err());
+    }
+}
+
 // --- What a flagged constraint governs: its equations' support (item 32's addendum, B) ----
 
 #[test]
-fn a_repeated_tangent_at_marks_the_lines_ends_the_arcs_centre_and_the_joint_not_the_arcs_far_end() {
+fn a_repeated_tangent_at_depends_on_the_lines_ends_the_arcs_centre_and_the_joint_and_over_defines_none()
+ {
     // A quarter arc about p1 (0, 0) from p2 (5, 0) to p3 (0, 5), and a line from p3 to
     // p4 (−10, 5), leaving p3 along −x as the arc arrives there: tangent at p3, given twice.
     // 11 unknowns (4 points, the arc's radius and angles), 6 rows (the arc's 4 rules, the two
     // tangencies), the second repeating the first: rank 5, 6 left. Of two alike, PlaneGCS
     // removes the later tag: k0000002 redundant. Its equation is the angle between the
     // curves' normals at p3, which reads the line's ends and the arc's centre (1.1.3's
-    // CalculateNormal) and never the arc's far end: p1, p3, and p4 over defined, p2 as its
-    // freedom gives (free along the circle), under defined. It names both curves: over
-    // defined.
+    // CalculateNormal) and never the arc's far end. A tangency is a relation, so under
+    // addendum 2 it over-defines nothing (re-derived: before, p1, p3, p4 and both curves
+    // were over defined by it): every member by its freedom, the sketch by `dofs`, 6, under
+    // defined. By hand: p4's x and y are in the tangency rows alone, of rank 1, so at most
+    // one is a pivot and p4 is under defined, and so is the line; the arc's 9 values in all
+    // (its centre, ends, radius, and angles) are in 5 rows of rank 5 at most, so 4 at least
+    // are past the rank and the arc is under defined. p2, the arc's far end, is free along
+    // its circle. Which of p1's and p3's values are past the rank is the full pivoting of
+    // PlaneGCS's QR, not a count by hand: they're pinned as the worker gives them today,
+    // under defined, and none is over defined.
     let points = [
         point("p0000001", 0.0, 0.0),
         point("p0000002", 5.0, 0.0),
@@ -1923,28 +2539,32 @@ fn a_repeated_tangent_at_marks_the_lines_ends_the_arcs_centre_and_the_joint_not_
         &got,
         Want {
             problem: None,
-            state: SketchState::OverDefined,
+            state: SketchState::UnderDefined,
             dofs: 6,
             points: &[
-                ("p0000001", Over),
+                // p1 and p3 as the worker gives them today, from PlaneGCS's pivoting.
+                ("p0000001", Under),
+                // The arc's far end, free along its circle.
                 ("p0000002", Under),
-                ("p0000003", Over),
-                ("p0000004", Over),
+                ("p0000003", Under),
+                ("p0000004", Under),
             ],
-            lines: &[("n0000001", Over)],
+            lines: &[("n0000001", Under)],
             circles: &[],
-            arcs: &[("a0000001", Over)],
+            arcs: &[("a0000001", Under)],
             constraints: &[("k0000001", Satisfied), ("k0000002", Redundant)],
         },
     );
 }
 
 #[test]
-fn a_repeated_equal_of_two_circles_marks_the_circles_and_neither_centre() {
+fn a_repeated_equal_of_two_circles_leaves_both_circles_and_centres_as_their_freedom_gives() {
     // Circles of radius 5 about p1 (0, 0) and p2 (20, 0), made equal twice: 6 unknowns (two
     // centres, two radii), one row repeated, rank 1, 5 left. The later equal redundant; its
-    // equation is r1 − r2, which no centre is in: both centres keep their freedom (under
-    // defined), both circles, named, over defined.
+    // equation is r1 − r2, which no centre is in. An `equal` is a relation, so under addendum
+    // 2 it over-defines nothing; re-derived: both centres' columns are zero, so both centres
+    // are free (under defined), and each circle has a free centre, so both circles are under
+    // defined too, whichever radius is the pivot; the sketch under defined, 5 left.
     let points = [point("p0000001", 0.0, 0.0), point("p0000002", 20.0, 0.0)];
     let circles = [
         circle("c0000001", "p0000001", 5.0),
@@ -1962,11 +2582,11 @@ fn a_repeated_equal_of_two_circles_marks_the_circles_and_neither_centre() {
         &got,
         Want {
             problem: None,
-            state: SketchState::OverDefined,
+            state: SketchState::UnderDefined,
             dofs: 5,
             points: &[("p0000001", Under), ("p0000002", Under)],
             lines: &[],
-            circles: &[("c0000001", Over), ("c0000002", Over)],
+            circles: &[("c0000001", Under), ("c0000002", Under)],
             arcs: &[],
             constraints: &[("k0000001", Satisfied), ("k0000002", Redundant)],
         },
