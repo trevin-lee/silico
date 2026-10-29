@@ -109,7 +109,7 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use super::edit::{self, FeatureIds};
 use super::logs::{LogBuffer, LogQuery, Logs};
 use super::{Gated, Problems, ReadCommand, RunningCommand, SessionCommand};
-use crate::cache::Cache;
+use crate::cache::{Cache, Cleared};
 use crate::disk::{DISK_CHECK_INTERVAL, Disk, DiskWatch};
 use crate::document::json::Node;
 use crate::document::{self, FeatureId};
@@ -1144,8 +1144,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// changed neither refuses it nor moves the session's revision; and it runs inside a
     /// transaction too. In a workspace (decision 26), the directory is named from its root,
     /// and whether it leads out of it is checked by the cache as the clear opens it
-    /// ([`Cache::within`]): nothing is removed through one that does then (`removed` 0), and
-    /// one inside then is cleared, whatever it was as the session opened, through the handle
+    /// ([`Cache::within`]): nothing is removed through one that does then, and the clear is
+    /// refused, `invalid_input` naming no parameter, its cause the link; one inside then is
+    /// cleared, whatever it was as the session opened, through the handle
     /// the clear opened, so a link put on its way during the clear redirects nothing.
     pub fn cache_clear(&self, session: &SessionId) -> Running<CacheCleared> {
         self.queued_with(
@@ -1157,8 +1158,8 @@ impl<P: Clients + 'static> Sessions<P> {
                 // writes nothing if its directory led out of it as the session opened
                 // (`Registry::cache`). Whether this clear goes through is the cache's to
                 // check, as it opens the directory (decision 26: where a path resolves):
-                // nothing is removed through one that leads out then, and it says it removed
-                // none.
+                // nothing is removed through one that leads out then, and the clear is
+                // refused, saying so, never answered as an empty cache's.
                 let cache = lock(&session.rebuilds).cache.clone();
                 let path = session.held.read().path.clone();
                 let workspace = session.workspace.as_ref();
@@ -1166,8 +1167,13 @@ impl<P: Clients + 'static> Sessions<P> {
                 stop.settle()?;
                 #[cfg(test)]
                 session.settled.pass();
-                match cache.clear() {
-                    Ok(removed) => Ok(CacheCleared { directory, removed }),
+                match cache.clear_unless_out() {
+                    Ok(Cleared::Removed(removed)) => Ok(CacheCleared { directory, removed }),
+                    Ok(Cleared::LeadsOut) => Err(Problems::from(clearing::leads_out(
+                        workspace,
+                        &path,
+                        cache.directory(),
+                    ))),
                     Err(partly) => Err(partly_cleared_problems(
                         &directory,
                         cache.directory(),

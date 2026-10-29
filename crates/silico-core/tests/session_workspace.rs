@@ -586,6 +586,20 @@ fn cleared_by_name(f: &Fixture, s: &str) -> serde_json::Value {
     crate::calls::envelope(&cleared)["result"].clone()
 }
 
+/// `cache_clear` called by name on session `s`, open on `path` at revision 1, refused for
+/// a cache that leads out of the workspace through `link` (from the workspace's root): the
+/// refusal, as the envelope carries it (written out by hand).
+fn refused_by_name(f: &Fixture, s: &str, path: &str, link: &str) {
+    let cleared = f.call("cache_clear", &format!(r#"{{"session": "{s}"}}"#));
+    assert!(!cleared.ok, "{}", cleared.text);
+    assert_eq!(
+        cleared.text,
+        format!(
+            r#"{{"ok": false, "session": {{"id": "{s}", "path": "{path}", "revision": 1, "transaction": false, "reloaded": false}}, "model": null, "errors": [{{"code": "invalid_input", "message": "the rebuild cache beside \"{path}\" leads out of the workspace, through a link, so it isn't cleared", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": "\"{link}\" is a link that leads out of the workspace", "suggestion": "remove the link, or clear the cache from inside the workspace", "candidates": []}}], "total": 1}}"#
+        )
+    );
+}
+
 /// The entry-named files at `cache`: `ab/` and `cd/`, each holding one named by 62 hex
 /// digits, as the cache names its entries.
 fn plant_entries(cache: &Path) -> Vec<PathBuf> {
@@ -604,8 +618,8 @@ fn plant_entries(cache: &Path) -> Vec<PathBuf> {
 fn cache_clear_through_a_cache_directory_linked_out_of_the_workspace_removes_nothing() {
     // `.silico-cache` beside the document is a link to a directory outside, holding files
     // named as entries are: the session's engine got a stand-in that keeps nothing, and a
-    // clear removes none of them, saying so (0), the directory named as the request's path
-    // names the document, never where it leads.
+    // clear removes none of them and is refused, saying why (never `removed: 0`, as an
+    // empty cache's), the link named from the workspace's root, never where it leads.
     let f = fixture();
     f.file("part.silico", BOX);
     let theirs = f.outside.join("cache");
@@ -617,10 +631,7 @@ fn cache_clear_through_a_cache_directory_linked_out_of_the_workspace_removes_not
         r#"{"session": "s1", "model": "current", "fresh": true}"#,
     );
     assert!(check.ok, "{}", check.text);
-    assert_eq!(
-        cleared_by_name(&f, "s1"),
-        serde_json::json!({"directory": ".silico-cache", "removed": 0})
-    );
+    refused_by_name(&f, "s1", "part.silico", ".silico-cache");
     for entry in &planted {
         assert_eq!(std::fs::read(entry).unwrap(), b"theirs", "{entry:?}");
     }
@@ -630,10 +641,31 @@ fn cache_clear_through_a_cache_directory_linked_out_of_the_workspace_removes_not
 }
 
 #[test]
+fn cache_clears_refusal_of_a_cache_linked_out_is_the_designs_example() {
+    // The design's `bracket.silico`, its `.silico-cache` a link out: the refusal, written as
+    // the error contract writes it, is the example's text byte for byte.
+    use silico_core::command::wire::{Layout, ToWire, write};
+    let f = fixture();
+    f.file("bracket.silico", BOX);
+    std::fs::create_dir(f.outside.join("cache")).unwrap();
+    std::os::unix::fs::symlink(f.outside.join("cache"), f.work.join(".silico-cache")).unwrap();
+    let s = answer(f.sessions.open("bracket.silico", false))
+        .result
+        .unwrap()
+        .session;
+    let problems = answer(f.sessions.cache_clear(&s)).result.unwrap_err();
+    assert_eq!(problems.total(), 1);
+    let text = write(&problems.errors()[0].to_wire(), Layout::Canonical).unwrap() + "\n";
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/contract/commands/examples/cache_clear/refused-leads-out.json");
+    assert_eq!(text, std::fs::read_to_string(path).unwrap());
+}
+
+#[test]
 fn cache_clear_after_its_directory_is_swapped_for_a_link_out_removes_nothing_through_it() {
     // A document in `sub/`, its cache opened inside the workspace and cleared there, named
     // from the workspace's root; then `sub` moved outside and a link to it put in its place:
-    // the cache now leads out, and a clear removes nothing through it.
+    // the cache now leads out, and a clear removes nothing through it, refused, naming `sub`.
     let f = fixture();
     f.file("sub/part.silico", BOX);
     assert!(f.open("sub/part.silico", false).ok);
@@ -655,10 +687,7 @@ fn cache_clear_after_its_directory_is_swapped_for_a_link_out_removes_nothing_thr
     std::os::unix::fs::symlink(&moved, f.work.join("sub")).unwrap();
     let kept = crate::cache_control::entries(&moved.join(".silico-cache"));
     assert_eq!(kept.len(), 1);
-    assert_eq!(
-        cleared_by_name(&f, "s1"),
-        serde_json::json!({"directory": "sub/.silico-cache", "removed": 0})
-    );
+    refused_by_name(&f, "s1", "sub/part.silico", "sub");
     assert_eq!(
         crate::cache_control::entries(&moved.join(".silico-cache")),
         kept
@@ -680,10 +709,7 @@ fn cache_clear_of_a_stand_in_whose_documents_directory_is_swapped_out_removes_no
     std::fs::rename(f.work.join("sub"), &moved).unwrap();
     std::os::unix::fs::symlink(&moved, f.work.join("sub")).unwrap();
     let planted = plant_entries(&moved.join(".silico-cache"));
-    assert_eq!(
-        cleared_by_name(&f, "s1"),
-        serde_json::json!({"directory": "sub/.silico-cache", "removed": 0})
-    );
+    refused_by_name(&f, "s1", "sub/part.silico", "sub");
     for entry in &planted {
         assert_eq!(std::fs::read(entry).unwrap(), b"theirs", "{entry:?}");
     }
