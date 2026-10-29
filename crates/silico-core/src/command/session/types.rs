@@ -13,12 +13,13 @@ use super::cancel::Ticket;
 use super::rebuilds::met_fault;
 use super::rebuilds::{Label, Newest};
 use super::transaction::{Checking, Reached};
-use super::{Problems, ReadCommand, SessionCommand};
+use super::{Gated, Problems, ReadCommand, SessionCommand};
 #[cfg(doc)]
 use crate::document;
 use crate::document::json::Plain;
 use crate::document::{Feature, FeatureId};
 use crate::recompute::{Model, StepCount};
+use crate::timeline::{Entry, Excepted, Timeline, timeline};
 use crate::warnings::Warnings;
 use crate::{Error, ErrorCode};
 
@@ -597,15 +598,16 @@ pub struct CheckAnswer {
 }
 
 impl CheckAnswer {
-    /// The answer of a check of `model`: its problems, as `problems` gives them, and its
-    /// warnings, none of a missing fingerprint for a feature in `spared`: one an open
-    /// transaction's edits reached (its commit writes one, and `format` is refused there:
-    /// decision 28), or one the session's document stores a fingerprint for now
-    /// ([`Checking::spared`]).
-    pub(super) fn of(problems: Problems, model: &Model, spared: &BTreeSet<FeatureId>) -> Self {
+    /// The answer of a check of `model`, excepting what `excepted` does
+    /// ([`Checking::excepted`], which `timeline` marks by too): its problems, but the drift
+    /// of a feature the session's edits reached (decision 28), and its warnings, none of a
+    /// missing fingerprint for a feature spared: one an open transaction's edits reached
+    /// (its commit writes one, and `format` is refused there: decision 28), or one the
+    /// session's document stores a fingerprint for now ([`Checking::spared`]).
+    pub(super) fn of(model: &Model, excepted: &Excepted) -> Self {
         CheckAnswer {
-            problems,
-            warnings: crate::warnings::of(model, spared),
+            problems: crate::command::check_except(model, &excepted.drift),
+            warnings: crate::warnings::of(model, &excepted.spared),
         }
     }
 
@@ -615,6 +617,73 @@ impl CheckAnswer {
         CheckAnswer {
             problems,
             warnings: Warnings::none(),
+        }
+    }
+}
+
+/// What `timeline` answers (docs/design/m5.0-app.md, section 7, M5.1): the session's
+/// document's features in timeline order, each with the health the model read gave it
+/// ([`crate::timeline`]), so the browser and the timeline are drawn from a command, never
+/// from an outline's text or the model in Rust (decision 33, A8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimelineAnswer {
+    /// The session's revision, whose document the features are: newer than `model` where
+    /// the published model is an older revision's.
+    pub revision: Revision,
+    /// The revision of the model whose marks the features carry, as the response's
+    /// [`ModelRead`] names it, so a client knows how stale they are: none where none does
+    /// (a document the gate refused, or text that doesn't read), every feature `unknown`.
+    pub model: Option<Revision>,
+    /// How many problems the gate (or the reader) found in the session's document: 0 for one
+    /// the gate took, whose model's problems `check` gives.
+    pub problems: u64,
+    /// The features, in timeline order, with their health; none if the text doesn't read as
+    /// a document.
+    pub features: Option<Vec<Entry>>,
+    /// The bodies the model has, in timeline order ([`Timeline::bodies`]): none without a
+    /// model.
+    pub bodies: Vec<FeatureId>,
+}
+
+impl TimelineAnswer {
+    /// The timeline of `read`'s model, excepting what a check of it excepts
+    /// ([`Checking::excepted`]): of the model's own document if it's of the session's
+    /// revision, or else of the session's document now, the features the model hasn't built
+    /// `unknown` ([`crate::timeline::timeline`]); or, if the session's document now is one
+    /// the gate (or the reader) refused, as [`refused`](Self::refused) gives it.
+    pub(super) fn of<C>(read: &Read<'_, C>) -> Self {
+        let model = read.model();
+        let (revision, document) = match read.checking.now() {
+            None => (read.read.revision, model.document()),
+            Some((revision, Gated::Checked(checked))) => (revision, checked.document()),
+            Some((revision, refused)) => return Self::refused(revision, refused),
+        };
+        let Timeline { features, bodies } =
+            timeline(document, Some(model), &read.checking.excepted(read.reached));
+        TimelineAnswer {
+            revision,
+            model: Some(read.read.revision),
+            problems: 0,
+            features: Some(features),
+            bodies,
+        }
+    }
+
+    /// The timeline of a session at `revision` whose document the gate or the reader
+    /// refused, with no model to mark it (the design's *A refused document*): the document
+    /// as read, every feature `unknown`, and the gate's count of its problems; or, for text
+    /// that doesn't read as a document, no features, and the reader's count.
+    pub(super) fn refused(revision: Revision, gated: &Gated) -> Self {
+        let features = gated
+            .document()
+            .ok()
+            .map(|document| timeline(document, None, &Excepted::default()).features);
+        TimelineAnswer {
+            revision,
+            model: None,
+            problems: gated.problems().total(),
+            features,
+            bodies: Vec::new(),
         }
     }
 }

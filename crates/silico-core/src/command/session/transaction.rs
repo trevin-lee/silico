@@ -26,6 +26,7 @@ use crate::document::{self, Document, FeatureId};
 use crate::file::{self, Workspace};
 use crate::kernel::Kernel;
 use crate::recompute::{self, Model};
+use crate::timeline::Excepted;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
@@ -360,9 +361,13 @@ pub(super) enum Checking {
     /// The model is of the session's revision; `open`, whether a transaction is open.
     Latest { open: bool },
     /// The model is an older revision's, the newest published; `open`, whether a
-    /// transaction is open in the session now, and `now`, the session's document now, as
-    /// the reader and the gate found it.
-    Older { open: bool, now: Arc<Gated> },
+    /// transaction is open in the session now, `now`, the session's document now, as the
+    /// reader and the gate found it, and `at`, the session's revision, whose document it is.
+    Older {
+        open: bool,
+        now: Arc<Gated>,
+        at: Revision,
+    },
 }
 
 impl Checking {
@@ -376,7 +381,30 @@ impl Checking {
             Checking::Older {
                 open,
                 now: Arc::clone(gated),
+                at: now,
             }
+        }
+    }
+
+    /// The session's revision and its document, as the reader and the gate found it, if the
+    /// model is an older revision's; none if it's of the session's revision, whose document
+    /// is the model's own.
+    pub(super) fn now(&self) -> Option<(Revision, &Gated)> {
+        match self {
+            Checking::Latest { .. } => None,
+            Checking::Older { now, at, .. } => Some((*at, now)),
+        }
+    }
+
+    /// What a check of the model, whose revision's edits reached `reached`, excepts, as
+    /// `check` excepts it and so `timeline` marks by it: the missing fingerprints it doesn't
+    /// warn of ([`spared`](Self::spared)), and the drift it doesn't say, of the features the
+    /// edits reached (decision 28: a commit writes their records anew). One place for both,
+    /// so a timeline's marks never disagree with the check of the same model.
+    pub(super) fn excepted(&self, reached: &Reached) -> Excepted {
+        Excepted {
+            spared: self.spared(reached).into_owned(),
+            drift: reached.get().clone(),
         }
     }
 
@@ -396,7 +424,7 @@ impl Checking {
     /// does.
     pub(super) fn spared<'a>(&'a self, reached: &'a Reached) -> Cow<'a, BTreeSet<FeatureId>> {
         let committing = reached.committing(self);
-        let Checking::Older { open, now } = self else {
+        let Checking::Older { open, now, .. } = self else {
             return Cow::Borrowed(committing);
         };
         let Ok(now) = now.document() else {
