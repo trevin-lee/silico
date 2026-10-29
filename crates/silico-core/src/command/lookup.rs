@@ -46,6 +46,18 @@ pub(crate) struct Hit<'m> {
     pub(crate) built: &'m Built,
 }
 
+/// What a lookup of one name finds.
+pub(crate) enum Found<'m> {
+    /// The solid whose element it names, its map, the element, and the name as read.
+    Hit(&'m FeatureId, &'m ElementMap, ElementRef, Name),
+    /// Nothing: why kept to say; and, a selection's ([`Lookup::selection`]), the feature
+    /// whose failure is why, if one is (its failure kept once, [`Lookup::failures`]).
+    Refused(Option<FeatureId>),
+    /// A selection's: a map it needs isn't named yet, so it isn't answered now; asked
+    /// again once the model's names are, it is.
+    Pending,
+}
+
 /// Names looked up in one request's solids, every refusal kept to say at the end
 /// ([`finish`](Self::finish)).
 pub(crate) struct Lookup<'m> {
@@ -57,9 +69,12 @@ pub(crate) struct Lookup<'m> {
     place: String,
     kinds: Kinds,
     refused: Problems,
-    /// Whether a feature's failure is said once a request (a command's, whose refusals are
-    /// one list), or for each name of it (a selection's, each name's reasons its own).
-    once: bool,
+    /// Whether it reads a selection's names ([`Lookup::selection`]): each name's reasons
+    /// its own, a failed feature's failure kept once in `failures`, and no map named on the
+    /// caller's thread.
+    selection: bool,
+    /// A selection's failed features' failures, once each, by feature.
+    failures: BTreeMap<FeatureId, Problems>,
     /// Features whose failure is said already: once each.
     unbuilt: BTreeSet<FeatureId>,
     /// Solids whose missing description is said already: once each.
@@ -82,7 +97,8 @@ impl<'m> Lookup<'m> {
             },
             kinds,
             refused: Problems::none(),
-            once: true,
+            selection: false,
+            failures: BTreeMap::new(),
             unbuilt: BTreeSet::new(),
             undescribed: Vec::new(),
             candidates: BTreeMap::new(),
@@ -102,12 +118,16 @@ impl<'m> Lookup<'m> {
         lookup
     }
 
-    /// A lookup in every body of `model` whose refusals are each name's own: a feature's
-    /// failure said for each name of it, not once, so each name's reasons can be taken
-    /// ([`take`](Self::take)) as it's looked up (a selection's, `crate::selection`).
-    pub(crate) fn each_name(model: &'m Model, kinds: Kinds) -> Self {
+    /// A selection's lookup (`crate::selection`), in every body of `model`: each name's
+    /// reasons its own, taken ([`take`](Self::take)) as it's looked up; a name of a feature
+    /// that didn't build refused at its own place, pointing to that feature's failure, kept
+    /// once ([`failures`](Self::failures)); a name read as of the model, not of a place in
+    /// a document (`Name::parse_in_model`); and no element map named on the caller's
+    /// thread, which may be the UI's: a name that needs a map not named yet is
+    /// [`Found::Pending`].
+    pub(crate) fn selection(model: &'m Model, kinds: Kinds) -> Self {
         Lookup {
-            once: false,
+            selection: true,
             ..Lookup::new(model, None, kinds)
         }
     }
@@ -115,7 +135,9 @@ impl<'m> Lookup<'m> {
     /// The element `text` names, the request's `parameter` (`elements.0`); or none, why
     /// kept to say.
     pub(crate) fn find(&mut self, parameter: &str, text: &str) -> Option<Hit<'m>> {
-        let (id, map, element, _) = self.found(parameter, text)?;
+        let Found::Hit(id, map, element, _) = self.found(parameter, text) else {
+            return None;
+        };
         let model = self.model;
         let (Some(description), Ok(built)) = (model.description(id), built(model, id, false))
         else {
@@ -153,17 +175,15 @@ impl<'m> Lookup<'m> {
         parameter: &str,
         text: &str,
     ) -> Option<(&'m FeatureId, ElementRef)> {
-        self.found(parameter, text)
-            .map(|(id, _, element, _)| (id, element))
+        match self.found(parameter, text) {
+            Found::Hit(id, _, element, _) => Some((id, element)),
+            Found::Refused(_) | Found::Pending => None,
+        }
     }
 
     /// The solid whose element `text` names, its map, the element, and the name as read; or
-    /// none, why kept to say.
-    pub(crate) fn found(
-        &mut self,
-        parameter: &str,
-        text: &str,
-    ) -> Option<(&'m FeatureId, &'m ElementMap, ElementRef, Name)> {
+    /// none, why kept to say; or, a selection's, not yet.
+    pub(crate) fn found(&mut self, parameter: &str, text: &str) -> Found<'m> {
         let model = self.model;
         let makers = |id: &FeatureId| model.maker(id);
         let broken = |why: String, candidates: Vec<String>| {
@@ -182,12 +202,17 @@ impl<'m> Lookup<'m> {
             .with_candidates(candidates)
             .with_suggestion(suggestion)
         };
-        let name = match Name::parse(text, &makers) {
+        let parsed = if self.selection {
+            Name::parse_in_model(text, &makers)
+        } else {
+            Name::parse(text, &makers)
+        };
+        let name = match parsed {
             Ok(name) => name,
             Err(error) => {
                 self.refused
                     .push(broken(format!("isn't a name: {error}"), Vec::new()));
-                return None;
+                return Found::Refused(None);
             }
         };
         if !self.kinds.taken.contains(&name.kind()) {
@@ -205,47 +230,103 @@ impl<'m> Lookup<'m> {
                 .with_element(crate::references::cut_short(text))
                 .with_suggestion(self.kinds.suggestion),
             );
-            return None;
+            return Found::Refused(None);
         }
-        let Some((id, map, element)) = self.located(&name) else {
+        let located = if self.selection {
+            match self.located_now(&name) {
+                Located::Hit(id, map, element) => Some((id, map, element)),
+                Located::Nowhere => None,
+                Located::Pending => return Found::Pending,
+                Located::Unnamed(id) => {
+                    self.refused.push(unnamed(parameter, text, id));
+                    return Found::Refused(None);
+                }
+            }
+        } else {
+            self.located(&name)
+        };
+        let Some((id, map, element)) = located else {
             // An element of a feature that failed, was broken, or was blocked is in no
             // solid: that feature's own failure is why, said once (as `elements` and the
             // measures answer one: M4.1 section 7, M4.5), never a
             // name that finds nothing with another solid's elements offered for it.
             // (A sketch's elements are refused as they're parsed: no name of one gets here.)
             let maker = name.feature();
-            // Its failure said already: not worded again for each name of it.
-            if self.once && self.unbuilt.contains(maker) {
-                return None;
-            }
-            if let Err(problems) = built(model, maker, false) {
-                self.refused.absorb(problems);
-                self.unbuilt.insert(maker.clone());
-                return None;
+            if self.selection {
+                // Each name's own reason, at its place, pointing to the failure, kept once.
+                if let Err(problems) = built(model, maker, false) {
+                    self.refused
+                        .push(failed_at(parameter, text, maker, &problems));
+                    self.failures.entry(maker.clone()).or_insert(problems);
+                    return Found::Refused(Some(maker.clone()));
+                }
+            } else {
+                // Its failure said already: not worded again for each name of it.
+                if self.unbuilt.contains(maker) {
+                    return Found::Refused(None);
+                }
+                if let Err(problems) = built(model, maker, false) {
+                    self.refused.absorb(problems);
+                    self.unbuilt.insert(maker.clone());
+                    return Found::Refused(None);
+                }
             }
             // The request's `feature` was refused already: its solid has nothing to look in.
             if self.solids.is_empty() && self.asked {
-                return None;
+                return Found::Refused(None);
             }
-            let solids = &self.solids;
+            let kind = name.kind();
+            if !self.candidates.contains_key(&kind) {
+                // A selection's candidates wait for every body's names: offered from some
+                // bodies now and all of them later, they'd differ from call to call.
+                let maps: Option<Vec<&ElementMap>> = if self.selection {
+                    self.solids
+                        .iter()
+                        .map(|id| model.named_so_far(id))
+                        .collect::<Option<Vec<_>>>()
+                        .map(|maps| maps.into_iter().flatten().collect())
+                } else {
+                    Some(
+                        self.solids
+                            .iter()
+                            .filter_map(|id| model.element_map(id))
+                            .collect(),
+                    )
+                };
+                let Some(maps) = maps else {
+                    return Found::Pending;
+                };
+                self.candidates.insert(kind, Candidates::of(&maps, kind));
+            }
             let candidates = self
                 .candidates
-                .entry(name.kind())
-                .or_insert_with(|| {
-                    let maps: Vec<&ElementMap> = solids
-                        .iter()
-                        .filter_map(|id| model.element_map(id))
-                        .collect();
-                    Candidates::of(&maps, name.kind())
-                })
-                .of_name(&name);
+                .get(&kind)
+                .map(|c| c.of_name(&name))
+                .unwrap_or_default();
             self.refused.push(broken(
                 format!("names no element of {}", self.place),
                 candidates,
             ));
-            return None;
+            return Found::Refused(None);
         };
-        Some((id, map, element, name))
+        Found::Hit(id, map, element, name)
+    }
+
+    /// As [`located`](Self::located) finds it in every body, but naming no map: a
+    /// selection's, whose caller may be the UI's thread.
+    fn located_now(&self, name: &Name) -> Located<'m> {
+        let model = self.model;
+        let Some(id) = model.live_body(name.feature()) else {
+            return Located::Nowhere;
+        };
+        match model.named_so_far(id) {
+            None => Located::Pending,
+            Some(None) => Located::Unnamed(id),
+            Some(Some(map)) => match map.element(name) {
+                Some(element) => Located::Hit(id, map, element),
+                None => Located::Nowhere,
+            },
+        }
     }
 
     /// The solid `name`'s element is in, its map, and the element, if the request's solids
@@ -275,8 +356,13 @@ impl<'m> Lookup<'m> {
         self.refused.push(error);
     }
 
+    /// A selection's failed features' failures, once each, by feature.
+    pub(crate) fn failures(self) -> BTreeMap<FeatureId, Problems> {
+        self.failures
+    }
+
     /// The refusals kept so far, in the order they came, taken: the lookup's since the last
-    /// take, so a lookup of each name's own ([`each_name`](Self::each_name)) gives each its
+    /// take, so a selection's lookup ([`selection`](Self::selection)) gives each name its
     /// reasons.
     pub(crate) fn take(&mut self) -> Problems {
         std::mem::replace(&mut self.refused, Problems::none())
@@ -286,6 +372,62 @@ impl<'m> Lookup<'m> {
     pub(crate) fn finish(self) -> Result<(), Problems> {
         self.refused.into_result()
     }
+}
+
+/// Where a selection's name is, as named so far.
+enum Located<'m> {
+    Hit(&'m FeatureId, &'m ElementMap, ElementRef),
+    /// In no body.
+    Nowhere,
+    /// Its live body's map isn't named yet.
+    Pending,
+    /// Its live body built, but its elements couldn't be named.
+    Unnamed(&'m FeatureId),
+}
+
+/// A selection's refusal of `text`, at `parameter`, a name of an element of `feature`, which
+/// didn't build (`problems`, its failure, kept once for the selection): the failure's
+/// code, and its first words, naming the feature.
+fn failed_at(parameter: &str, text: &str, feature: &FeatureId, problems: &Problems) -> Error {
+    let (code, first) = match problems.errors().first() {
+        Some(error) => (error.code(), error.message()),
+        None => (ErrorCode::Internal, "no reason was kept"),
+    };
+    let more = match problems.total() {
+        0 | 1 => String::new(),
+        total => format!(" (the first of {total} problems)"),
+    };
+    Error::new(
+        code,
+        format!(
+            "{parameter}, {}, is of {feature}, which didn't build: {first}{more}",
+            crate::document::json::shown(text)
+        ),
+    )
+    .with_feature(feature.as_str())
+    .with_parameter(parameter)
+    .with_element(crate::references::cut_short(text))
+    .with_suggestion(format!(
+        "mend {feature} first: its failure says why, and its elements are in no solid until \
+         it builds"
+    ))
+}
+
+/// A selection's refusal of `text`, at `parameter`, a name whose body, `feature`, built but
+/// whose elements couldn't be named: a fault in Silico, not the name's.
+fn unnamed(parameter: &str, text: &str, feature: &FeatureId) -> Error {
+    Error::new(
+        ErrorCode::Internal,
+        format!(
+            "{parameter}, {}, is of {feature}'s solid, which built, but whose elements couldn't \
+             be named",
+            crate::document::json::shown(text)
+        ),
+    )
+    .with_feature(feature.as_str())
+    .with_parameter(parameter)
+    .with_element(crate::references::cut_short(text))
+    .with_suggestion(crate::worker::SILICO_BUG)
 }
 
 #[cfg(test)]

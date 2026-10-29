@@ -2,30 +2,32 @@
 //! *Selection*): a selection is a list of element names, each with its stability, and this
 //! reads one against a model. Each name is found in the model's bodies as every command
 //! that reads elements by name finds it (`command::lookup`), and, found, said stable or
-//! not as `elements` says it (`elements::stable_name`: its own name or an alias stable);
-//! one that isn't is held, but what a store would say of it is said with it, in the words a
-//! fillet's or chamfer's reference refuses it with (`references`, N3; M4.1 section 2). A
-//! name not found is gone, with every reason the lookup gives: a name that isn't one, one
-//! of no live solid's element, or one of a feature that didn't build (that feature's
-//! failure).
+//! not as `elements` says it (`elements::stable_name`: its own name or an alias stable),
+//! and held by a stable name if it has one. One with none is held when picked
+//! ([`resolve`]), but what a store would say of it is said with it, in the words a fillet's
+//! or chamfer's reference refuses it with (`references`, N3; M4.1 section 2). A name not
+//! found is gone, with every reason the lookup gives: a name that isn't one, one of no live
+//! solid's element, or one of a feature that didn't build (pointing to that feature's
+//! failure, kept once). A name whose body isn't named yet is pending: nothing here waits.
 //!
-//! After a rebuild, the selection is read again against the newly published model: what's
-//! kept, each with its stability now, and what's gone, with a word, for the app to clear and
-//! say (M5.7's *After a rebuild*). Which names are selected, and how (clicks, Ctrl, a box,
+//! After a rebuild, the selection is carried to the newly published model ([`refresh`]):
+//! what's kept, each with its stability now, and what's gone, with a word, for the app to
+//! clear and say (M5.7's *After a rebuild*); a name with no stable form is gone then, since
+//! its text can outlive its element. Which names are selected, and how (clicks, Ctrl, a box,
 //! filters, Esc), is the app's own state, not this.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::Error;
 use crate::command::Problems;
-use crate::command::lookup::{Kinds, Lookup};
+use crate::command::lookup::{Found, Kinds, Lookup};
 use crate::document::FeatureId;
 use crate::elements::stable_name;
 use crate::kernel::{ElementKind, ElementRef};
 use crate::naming::Name;
 use crate::recompute::Model;
 use crate::references::{Candidates, refused, unstable};
+use crate::{Error, ErrorCode};
 
 /// The kinds a selection holds by name, and what it says of a name of another (a solid's).
 const SELECTED: Kinds = Kinds {
@@ -34,30 +36,46 @@ const SELECTED: Kinds = Kinds {
     suggestion: "select a face, an edge, or a vertex of a body",
 };
 
-/// A selection read against a model: the names found, in the selection's order, and those
-/// gone, in its order too. A name given more than once is read once, at its first place;
-/// a name of an element an earlier name found already is dropped (an element is selected
-/// or not, however many of its names are given).
+/// The most names one selection holds: ten times the most a render highlights, room for a
+/// box selection across a large part. Each name's answer costs what its own text does, and
+/// a failed feature's failure is kept once, so a selection this long answers in bounded
+/// time and memory.
+pub const MAX_SELECTED: usize = 10_000;
+
+/// A selection read against a model: the names found, those gone, and those not answered
+/// yet, each list in the selection's order. A name given more than once is read once, at its
+/// first place; a name of an element an earlier name found already is dropped (an element is
+/// selected or not, however many of its names are given).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Resolved {
     pub kept: Vec<Selected>,
     pub gone: Vec<Gone>,
+    /// Names whose body's elements aren't named yet: the background names a model's
+    /// elements once it's published, so asked again on a later frame, they're answered.
+    pub pending: Vec<Pending>,
+    /// The failure of each feature that didn't build that a gone name is of, once each: its
+    /// errors as `check` gives them.
+    pub failures: BTreeMap<FeatureId, Problems>,
 }
 
 /// A selected element, found by its name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Selected {
-    /// The name as selected.
+    /// The name the selection holds for it: the name selected, if it's stable; or else
+    /// the element's own or an alias that's stable (`elements::stable_name`), so a later
+    /// read follows a name that can't come to name another element; or the name selected,
+    /// if none of its names is stable.
     pub name: Arc<Name>,
+    /// Its place in the selection given, from 0.
+    pub place: usize,
     /// The feature whose solid it's of: the body it's in.
     pub feature: FeatureId,
     /// The element, in that solid's numbering.
     pub element: ElementRef,
-    /// The name a store (a fillet's edge, a sketch's face) writes for it: the name selected
-    /// if it's stable, or else its own or an alias that is (`elements::stable_name`); or,
-    /// if none of its names is stable, the store's refusal: `reference_broken`, saying why
-    /// as a fillet's reference does, with the stable names it most likely meant as
-    /// candidates, at the parameter `selection.<n>`, its place in the selection.
+    /// The name a store (a fillet's edge, a sketch's face) writes for it, the stable one
+    /// `name` holds; or, if none of its names is stable, the store's refusal:
+    /// `reference_broken`, saying why as a fillet's reference does, with the stable names
+    /// it most likely meant as candidates, at the parameter `<parameter>.<place>`.
     pub stored: Result<Arc<Name>, Error>,
 }
 
@@ -74,25 +92,95 @@ impl Selected {
     }
 }
 
-/// A selected name the model doesn't find, and why, as the lookup says it (each reason an
-/// error at the parameter `selection.<n>`, its place in the selection).
+/// A selected name the model doesn't find, or, carried to a new model ([`refresh`]), an
+/// unstable one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Gone {
     /// The name as selected.
     pub name: String,
+    /// Its place in the selection given, from 0.
+    pub place: usize,
+    /// Why, each reason an error at the parameter `<parameter>.<place>`: as the lookup says
+    /// it (a name that isn't one, of no live solid's element, of a kind a selection doesn't
+    /// hold), the store's refusal of an unstable name ([`refresh`]'s), or, for an element of
+    /// a feature that didn't build, one naming that feature, with the first of its failure.
     pub why: Problems,
+    /// The feature that didn't build, if that's why: its whole failure is in
+    /// [`Resolved::failures`].
+    pub failed: Option<FeatureId>,
 }
 
-/// `names`, a selection, read against `model`: on its own, or, after a rebuild, against the
-/// newly published model, whose `kept` are what survives and whose `gone` are what the app
-/// clears, saying why. Each name is looked for in the model's bodies, as `distance`,
-/// `angle`, and `render`'s highlights look ([`Lookup`]).
-pub fn resolve<S: AsRef<str>>(model: &Model, names: &[S]) -> Resolved {
+/// A selected name not answered yet: its body's elements aren't named yet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pending {
+    pub name: String,
+    /// Its place in the selection given, from 0.
+    pub place: usize,
+}
+
+/// `names`, a pick on `model` (the app's clicks, an agent's names): each name found is
+/// kept, an unstable one too, flagged (`Selected::stable`), with the refusal a store would
+/// give. Each name is looked for in the model's bodies, as `distance`, `angle`, and
+/// `render`'s highlights look ([`Lookup`]). Each error is at `<parameter>.<place>` (the
+/// app's `selection.2`, a dialog's `edges.0`). Refused, at `parameter`, past
+/// [`MAX_SELECTED`] names.
+///
+/// Any thread may call it, the UI's too: it names no element map and waits for none, reading
+/// only those the model's background has named ([`Resolved::pending`] for the rest), and asks
+/// the kernel nothing.
+pub fn resolve<S: AsRef<str>>(
+    model: &Model,
+    names: &[S],
+    parameter: &str,
+) -> Result<Resolved, Error> {
     let _span = tracing::info_span!("selection_resolve", names = names.len()).entered();
-    let mut lookup = Lookup::each_name(model, SELECTED);
+    read(model, names, parameter, Carry::Unstable)
+}
+
+/// `names`, a selection carried to `model`, newly published after a rebuild: what's kept,
+/// each with its stability now, and what's gone, for the app to clear and say. As
+/// [`resolve`], but a name that's unstable and has no stable alias is gone, its reason the
+/// store's refusal: its text can survive while its element doesn't, so it could come to
+/// name another element. The same threads may call it.
+pub fn refresh<S: AsRef<str>>(
+    model: &Model,
+    names: &[S],
+    parameter: &str,
+) -> Result<Resolved, Error> {
+    let _span = tracing::info_span!("selection_refresh", names = names.len()).entered();
+    read(model, names, parameter, Carry::StableOnly)
+}
+
+/// Whether a read keeps an element with no stable name.
+#[derive(Clone, Copy, PartialEq)]
+enum Carry {
+    Unstable,
+    StableOnly,
+}
+
+fn read<S: AsRef<str>>(
+    model: &Model,
+    names: &[S],
+    parameter: &str,
+    carry: Carry,
+) -> Result<Resolved, Error> {
+    if names.len() > MAX_SELECTED {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "{} names selected, more than the {MAX_SELECTED} a selection holds",
+                names.len()
+            ),
+        )
+        .with_parameter(parameter)
+        .with_suggestion(format!("select at most {MAX_SELECTED} elements")));
+    }
+    let mut lookup = Lookup::selection(model, SELECTED);
     let mut resolved = Resolved {
         kept: Vec::new(),
         gone: Vec::new(),
+        pending: Vec::new(),
+        failures: BTreeMap::new(),
     };
     let mut read: BTreeSet<&str> = BTreeSet::new();
     let mut found: BTreeSet<(&FeatureId, ElementRef)> = BTreeSet::new();
@@ -103,13 +191,25 @@ pub fn resolve<S: AsRef<str>>(model: &Model, names: &[S]) -> Resolved {
         if !read.insert(text) {
             continue;
         }
-        let parameter = format!("selection.{place}");
-        let Some((feature, map, element, name)) = lookup.found(&parameter, text) else {
-            resolved.gone.push(Gone {
-                name: text.to_owned(),
-                why: lookup.take(),
-            });
-            continue;
+        let at = format!("{parameter}.{place}");
+        let (feature, map, element, name) = match lookup.found(&at, text) {
+            Found::Hit(feature, map, element, name) => (feature, map, element, name),
+            Found::Refused(failed) => {
+                resolved.gone.push(Gone {
+                    name: text.to_owned(),
+                    place,
+                    why: lookup.take(),
+                    failed,
+                });
+                continue;
+            }
+            Found::Pending => {
+                resolved.pending.push(Pending {
+                    name: text.to_owned(),
+                    place,
+                });
+                continue;
+            }
         };
         if !found.insert((feature, element)) {
             continue;
@@ -121,31 +221,34 @@ pub fn resolve<S: AsRef<str>>(model: &Model, names: &[S]) -> Resolved {
                     .entry((feature, element.kind))
                     .or_insert_with(|| Candidates::of(&[map], element.kind))
                     .of_name(&name);
-                refused(
-                    &parameter,
-                    text,
-                    &unstable(element.kind),
-                    element.kind,
-                    candidates,
-                )
+                refused(&at, text, &unstable(element.kind), element.kind, candidates)
             })
         } else {
             Ok(Arc::clone(&name))
         };
-        resolved.kept.push(Selected {
-            name,
-            feature: feature.clone(),
-            element,
-            stored,
-        });
+        match (stored, carry) {
+            (Err(refusal), Carry::StableOnly) => resolved.gone.push(Gone {
+                name: text.to_owned(),
+                place,
+                why: refusal.into(),
+                failed: None,
+            }),
+            (stored, _) => resolved.kept.push(Selected {
+                name: stored.as_ref().map_or(name, Arc::clone),
+                place,
+                feature: feature.clone(),
+                element,
+                stored,
+            }),
+        }
     }
-    resolved
+    resolved.failures = lookup.failures();
+    Ok(resolved)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ErrorCode;
     use crate::document::Checked;
     use crate::fake::FakeKernel;
     use crate::kernel::{
@@ -169,8 +272,19 @@ mod tests {
         Checked::new(crate::document::read(text.as_bytes()).unwrap()).unwrap()
     }
 
-    /// `features` rebuilt on a fake kernel `setup` has prepared, and published.
+    /// `features` rebuilt on a fake kernel `setup` has prepared, and published, every
+    /// feature's elements named (as the background names them, and a selection read on a
+    /// later frame sees them).
     fn rebuilt(features: &[String], setup: impl FnOnce(&FakeKernel)) -> Arc<Model> {
+        let model = published(features, setup);
+        for (id, _) in model.features() {
+            model.element_map(id);
+        }
+        model
+    }
+
+    /// `features` rebuilt on a fake kernel `setup` has prepared, and published, as it is.
+    fn published(features: &[String], setup: impl FnOnce(&FakeKernel)) -> Arc<Model> {
         let engine = Recompute::new(FakeKernel::new(2).unwrap())
             .with_sketches(crate::fake::FakeSketches::new());
         setup(engine.kernel());
@@ -271,7 +385,7 @@ mod tests {
             want(names[3], ElementKind::Face, 1),
         ];
         let before = model(&[a_box("k7f2qx3m", 0, 40)]);
-        let resolved = resolve(&before, &names);
+        let resolved = resolve(&before, &names, "selection").unwrap();
         assert_eq!(kept(&resolved), expected);
         assert!(resolved.gone.is_empty());
         assert!(resolved.kept.iter().all(Selected::stable));
@@ -286,7 +400,7 @@ mod tests {
             ]
         );
         let after = model(&[a_box("k7f2qx3m", 0, 50), a_box("b0000001", 80, 1)]);
-        let refreshed = resolve(&after, &names);
+        let refreshed = refresh(&after, &names, "selection").unwrap();
         assert_eq!(kept(&refreshed), expected);
         assert!(refreshed.gone.is_empty());
     }
@@ -306,7 +420,7 @@ mod tests {
             "b0000001.box.Edge3",
         ];
         let boxes = [a_box("a0000001", 0, 4), a_box("b0000001", 1, 1)];
-        let resolved = resolve(&model(&boxes), &names);
+        let resolved = resolve(&model(&boxes), &names, "selection").unwrap();
         let stored = |name: &str| Some(name.to_owned());
         assert_eq!(
             kept(&resolved),
@@ -333,7 +447,7 @@ mod tests {
         );
         let mut cut = boxes.to_vec();
         cut.push(operation("c0000001", "cut", "a0000001", "b0000001"));
-        let refreshed = resolve(&model(&cut), &names);
+        let refreshed = refresh(&model(&cut), &names, "selection").unwrap();
         assert_eq!(
             kept(&refreshed),
             [(
@@ -375,7 +489,9 @@ mod tests {
             refreshed.gone[1].why.errors()[0].candidates(),
             ["c0000001.cut.Edge(I b0000001.box.Edge3)"]
         );
-        let removed = resolve(&model(&boxes[..1]), &names);
+        // Worded for a model, which has no place in a timeline as a document's reference
+        // does ("before this one").
+        let removed = refresh(&model(&boxes[..1]), &names, "selection").unwrap();
         assert_eq!(kept(&removed).len(), 1);
         let why: Vec<Vec<(ErrorCode, &str)>> =
             gone(&removed).into_iter().map(|(_, why)| why).collect();
@@ -384,20 +500,21 @@ mod tests {
             [
                 vec![(
                     ErrorCode::ReferenceBroken,
-                    r#"selection.1, "b0000001.box.Face2", isn't a name: no feature b0000001 before this one, at column 1"#
+                    r#"selection.1, "b0000001.box.Face2", isn't a name: no feature b0000001 in the model, at column 1"#
                 )],
                 vec![(
                     ErrorCode::ReferenceBroken,
-                    r#"selection.2, "b0000001.box.Edge3", isn't a name: no feature b0000001 before this one, at column 1"#
+                    r#"selection.2, "b0000001.box.Edge3", isn't a name: no feature b0000001 in the model, at column 1"#
                 )],
             ]
         );
     }
 
     #[test]
-    fn each_name_of_a_feature_that_failed_is_gone_with_that_failure() {
+    fn each_name_of_a_feature_that_failed_is_gone_at_its_place_and_the_failure_kept_once() {
         // A box the kernel refuses (2 mm long) has no solid: each of its names selected is
-        // gone, each with the box's failure, its own copy, not said once for the first.
+        // gone, each with its own reason at its place, of the failure's code, naming the box
+        // and the failure's words; the box's failure itself kept once for the selection.
         let refusing = |kernel: &FakeKernel| {
             kernel.refuse(|op| {
                 matches!(op, Op::MakePrimitive(silico_protocol::Primitive::Box { dx, .. }) if *dx == 2.0)
@@ -413,20 +530,49 @@ mod tests {
             "a0000001.box.Face1",
             "e0000001.box.Edge2",
         ];
-        let resolved = resolve(&model, &names);
+        let resolved = resolve(&model, &names, "selection").unwrap();
         assert_eq!(kept(&resolved).len(), 1);
         assert_eq!(resolved.kept[0].feature.as_str(), "a0000001");
         assert_eq!(resolved.gone.len(), 2);
-        for (gone, name) in resolved.gone.iter().zip([names[0], names[2]]) {
-            assert_eq!(gone.name, name);
-            let failure: Vec<(ErrorCode, Option<&str>)> = gone
-                .why
-                .errors()
-                .iter()
-                .map(|e| (e.code(), e.feature()))
-                .collect();
-            assert_eq!(failure, [(ErrorCode::KernelFailed, Some("e0000001"))]);
+        for (gone, place) in resolved.gone.iter().zip([0, 2]) {
+            assert_eq!(gone.name, names[place]);
+            assert_eq!(gone.place, place);
+            assert_eq!(
+                gone.failed.as_ref().map(FeatureId::as_str),
+                Some("e0000001")
+            );
+            let [error] = gone.why.errors() else {
+                panic!("{:?}", gone.why)
+            };
+            assert_eq!(error.code(), ErrorCode::KernelFailed);
+            assert_eq!(error.feature(), Some("e0000001"));
+            let at = format!("selection.{place}");
+            assert_eq!(error.parameter(), Some(at.as_str()));
+            assert_eq!(
+                error.message(),
+                format!(
+                    r#"{at}, "{}", is of e0000001, which didn't build: MakeBox failed"#,
+                    names[place]
+                )
+            );
         }
+        let failures: Vec<(&str, Vec<(ErrorCode, &str)>)> = resolved
+            .failures
+            .iter()
+            .map(|(id, p)| {
+                (
+                    id.as_str(),
+                    p.errors().iter().map(|e| (e.code(), e.message())).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            failures,
+            [(
+                "e0000001",
+                vec![(ErrorCode::KernelFailed, "MakeBox failed")]
+            )]
+        );
     }
 
     #[test]
@@ -437,7 +583,9 @@ mod tests {
         let resolved = resolve(
             &model,
             &["k7f2qx3m.box", "k7f2qx3m.box.Face1", "k7f2qx3m.box.Solid1"],
-        );
+            "selection",
+        )
+        .unwrap();
         assert_eq!(resolved.kept.len(), 1);
         let [gone, solid] = resolved.gone.as_slice() else {
             panic!("{:?}", resolved.gone)
@@ -546,7 +694,12 @@ mod tests {
             operation("rrrrrrrr", "fuse", "aaaaaaaa", "bbbbbbbb"),
         ];
         let model = rebuilt(&features, forging(|_| Some(numbering_fuse())));
-        let resolved = resolve(&model, &["aaaaaaaa.box.Face2", "rrrrrrrr.fuse.Face1"]);
+        let resolved = resolve(
+            &model,
+            &["aaaaaaaa.box.Face2", "rrrrrrrr.fuse.Face1"],
+            "selection",
+        )
+        .unwrap();
         assert!(resolved.gone.is_empty());
         let [face2, face1] = resolved.kept.as_slice() else {
             panic!("{resolved:?}")
@@ -648,7 +801,7 @@ mod tests {
         let first = map.name(element(ElementKind::Edge, 1)).unwrap();
         assert_eq!(first.to_string(), edge1);
         assert!(map.is_unstable(&first));
-        let resolved = resolve(&before, &[edge1]);
+        let resolved = resolve(&before, &[edge1], "selection").unwrap();
         let [selected] = resolved.kept.as_slice() else {
             panic!("{resolved:?}")
         };
@@ -682,6 +835,13 @@ mod tests {
         // The fillet's names its feature; a selection's has none.
         assert_eq!(fillets.feature(), Some("ffffffff"));
         assert_eq!(refusal.feature(), None);
+        // A dialog's, at its own parameter (`edges`): the fillet's message, word for word.
+        let dialog = resolve(&before, &[edge1], "edges").unwrap();
+        let Err(refusal) = &dialog.kept[0].stored else {
+            panic!("{dialog:?}")
+        };
+        assert_eq!(refusal.message(), fillets.message());
+        assert_eq!(refusal.parameter(), Some("edges.0"));
     }
 
     /// A second fuse's history, of the numbering fuse (base) and a cube (tool): the base
@@ -730,8 +890,9 @@ mod tests {
         // The numbering fuse's Face1, `rrrrrrrr.fuse.Face1`, unstable, fused again with a
         // cube (cccccccc, 2 mm) whose Face1 becomes the same face: its own name is still
         // the first fuse's, and `cccccccc.box.Face1` its alias, stable. Selected by its own
-        // name, it's stable, and a store writes the alias; selected by the alias, the alias.
-        // Both names selected are one element: taken once, at the first.
+        // name, it's stable, held by the alias (so a later read follows a name that can't
+        // come to name another element), and a store writes the alias; selected by the
+        // alias, the alias. Both names selected are one element: taken once, at the first.
         let features = [
             a_box("aaaaaaaa", 0, 1),
             a_box("bbbbbbbb", 5, 1),
@@ -761,21 +922,185 @@ mod tests {
         let own = "rrrrrrrr.fuse.Face1";
         let alias = "cccccccc.box.Face1";
         let face1 = element(ElementKind::Face, 1);
-        let by_own = resolve(&model, &[own, alias]);
+        let by_own = resolve(&model, &[own, alias], "selection").unwrap();
         assert_eq!(
             kept(&by_own),
-            [(own.to_owned(), "ssssssss", face1, Some(alias.to_owned()))]
+            [(alias.to_owned(), "ssssssss", face1, Some(alias.to_owned()))]
         );
+        assert_eq!(by_own.kept[0].place, 0);
         assert!(by_own.kept[0].stable());
         assert!(by_own.gone.is_empty());
-        let by_alias = resolve(&model, &[alias, own]);
+        let by_alias = resolve(&model, &[alias, own], "selection").unwrap();
         assert_eq!(
             kept(&by_alias),
             [(alias.to_owned(), "ssssssss", face1, Some(alias.to_owned()))]
         );
-        // Its Edge1, by its number in the first fuse and no other name: unstable still.
-        let edge = resolve(&model, &["rrrrrrrr.fuse.Edge1"]);
+        // Its Edge1, by its number in the first fuse and no other name: unstable still,
+        // held as selected when picked, and gone when carried to a model.
+        let edge = resolve(&model, &["rrrrrrrr.fuse.Edge1"], "selection").unwrap();
         assert!(!edge.kept[0].stable());
+        assert_eq!(edge.kept[0].name.to_string(), "rrrrrrrr.fuse.Edge1");
+        // Carried, the face is kept by its alias, the edge gone.
+        let carried = refresh(&model, &[own, "rrrrrrrr.fuse.Edge1"], "selection").unwrap();
+        assert_eq!(
+            kept(&carried),
+            [(alias.to_owned(), "ssssssss", face1, Some(alias.to_owned()))]
+        );
+        assert_eq!(carried.gone.len(), 1);
+        assert_eq!(carried.gone[0].place, 1);
+    }
+
+    /// The numbering fuse after an edit of its tool: the base's Face1 kept, as the result's
+    /// Face2, and its Face2 reported by nothing, so the result's Face1 is the base's Face2's
+    /// place's face, named by its number, `rrrrrrrr.fuse.Face1` again: the same text, another
+    /// element.
+    fn renumbering_fuse() -> History {
+        let mut history = numbering_fuse();
+        let kept = |n: u32| ElementFate {
+            kept: Some(n),
+            ..ElementFate::default()
+        };
+        history.inputs[0].faces = vec![
+            kept(2),
+            ElementFate::default(),
+            kept(3),
+            kept(4),
+            kept(5),
+            kept(6),
+        ];
+        history.validate(2).unwrap();
+        history
+    }
+
+    #[test]
+    fn a_numbered_name_a_rebuild_gives_another_element_is_gone_when_carried_not_kept() {
+        // The format reviewer's proof. Before: `rrrrrrrr.fuse.Face1` is the face where the
+        // base's Face1 was (nothing reported it), held unstable when picked. Then the tool
+        // edited (a 3 mm box): the base's Face1 is kept as the result's Face2, and the
+        // result's Face1 is another face, named by its number as before. A pick of the text
+        // finds that other face, flagged unstable; carried across the rebuild, it's gone,
+        // its word the store's refusal, never silently kept on another element.
+        let features = |tool: u32| {
+            [
+                a_box("aaaaaaaa", 0, 1),
+                a_box("bbbbbbbb", 5, tool),
+                operation("rrrrrrrr", "fuse", "aaaaaaaa", "bbbbbbbb"),
+            ]
+        };
+        let fusing = || {
+            forging(|tool| {
+                if tool.contains("box(3,") {
+                    Some(renumbering_fuse())
+                } else {
+                    Some(numbering_fuse())
+                }
+            })
+        };
+        let name = "rrrrrrrr.fuse.Face1";
+        let before = rebuilt(&features(1), fusing());
+        let picked = resolve(&before, &[name], "selection").unwrap();
+        assert!(!picked.kept[0].stable());
+        let after = rebuilt(&features(3), fusing());
+        let map = after
+            .element_map(&FeatureId::new("rrrrrrrr").unwrap())
+            .unwrap();
+        // The base's Face1 is the result's Face2 now.
+        let base_face1 = Name::parse("aaaaaaaa.box.Face1", &|id| after.maker(id)).unwrap();
+        assert_eq!(
+            map.element(&base_face1),
+            Some(element(ElementKind::Face, 2))
+        );
+        let carried = refresh(&after, &[name], "selection").unwrap();
+        assert!(carried.kept.is_empty(), "{carried:?}");
+        let [gone] = carried.gone.as_slice() else {
+            panic!("{carried:?}")
+        };
+        assert_eq!(
+            (gone.name.as_str(), gone.place, &gone.failed),
+            (name, 0, &None)
+        );
+        let [error] = gone.why.errors() else {
+            panic!("{:?}", gone.why)
+        };
+        assert_eq!(error.code(), ErrorCode::ReferenceBroken);
+        assert_eq!(
+            error.message(),
+            format!(r#"selection.0, "{name}", {UNSTABLE_FACE}"#)
+        );
+        // Picked on the new model, the text is held, flagged, on the other face.
+        let repicked = resolve(&after, &[name], "selection").unwrap();
+        assert_eq!(repicked.kept[0].element, element(ElementKind::Face, 1));
+        assert!(!repicked.kept[0].stable());
+    }
+
+    #[test]
+    fn a_selection_read_before_the_models_names_are_named_answers_pending_and_names_nothing() {
+        // A model as published, before the background has named any element: a name of a
+        // body is pending, never named on the caller's thread (which may be the UI's), so
+        // no map is named after it either; a name of a feature that failed, or one that
+        // isn't a name, needs no map and is answered. Once one body is named, its names are
+        // kept, and a name its map hasn't stays pending, since its candidates come from
+        // every body's map. Once all are, every name is answered.
+        let refusing = |kernel: &FakeKernel| {
+            kernel.refuse(|op| {
+                matches!(op, Op::MakePrimitive(silico_protocol::Primitive::Box { dx, .. }) if *dx == 2.0)
+                    .then(|| Error::new(ErrorCode::KernelFailed, "MakeBox failed"))
+            })
+        };
+        let features = [
+            a_box("a0000001", 0, 1),
+            a_box("b0000001", 5, 1),
+            a_box("e0000001", 9, 2),
+        ];
+        let model = published(&features, refusing).unnamed();
+        let names = [
+            "a0000001.box.Face1",
+            "e0000001.box.Face1",
+            "b0000001.box.Edge4",
+            "nonsense",
+            "a0000001.box.Face7",
+        ];
+        let pending = |resolved: &Resolved| -> Vec<(String, usize)> {
+            resolved
+                .pending
+                .iter()
+                .map(|p| (p.name.clone(), p.place))
+                .collect()
+        };
+        let at = |place: usize| (names[place].to_owned(), place);
+        let gone =
+            |resolved: &Resolved| -> Vec<usize> { resolved.gone.iter().map(|g| g.place).collect() };
+        let resolved = resolve(&model, &names, "selection").unwrap();
+        assert!(resolved.kept.is_empty());
+        assert_eq!(pending(&resolved), [at(0), at(2), at(4)]);
+        assert_eq!(gone(&resolved), [1, 3]);
+        for (id, _) in model.features() {
+            assert!(model.named_so_far(id).is_none(), "{id} named");
+        }
+        // One body named.
+        assert!(
+            model
+                .element_map(&FeatureId::new("a0000001").unwrap())
+                .is_some()
+        );
+        let resolved = resolve(&model, &names, "selection").unwrap();
+        assert_eq!(kept(&resolved).len(), 1);
+        assert_eq!(resolved.kept[0].place, 0);
+        assert_eq!(pending(&resolved), [at(2), at(4)]);
+        assert!(
+            model
+                .named_so_far(&FeatureId::new("b0000001").unwrap())
+                .is_none()
+        );
+        // Every body named.
+        for (id, _) in model.features() {
+            model.element_map(id);
+        }
+        let resolved = resolve(&model, &names, "selection").unwrap();
+        let places: Vec<usize> = resolved.kept.iter().map(|s| s.place).collect();
+        assert_eq!(places, [0, 2]);
+        assert!(resolved.pending.is_empty());
+        assert_eq!(gone(&resolved), [1, 3, 4]);
     }
 
     #[test]
@@ -791,7 +1116,7 @@ mod tests {
         let model = rebuilt(&features, forging(|_| Some(aliasing_fuse())));
         let alias = "cccccccc.box.Face1";
         assert_eq!(
-            kept(&resolve(&model, &[alias])),
+            kept(&resolve(&model, &[alias], "selection").unwrap()),
             [(
                 alias.to_owned(),
                 "ssssssss",
@@ -800,7 +1125,12 @@ mod tests {
             )]
         );
         let own = "aaaaaaaa.box.Face1";
-        assert_eq!(kept(&resolve(&model, &[own]))[0].3.as_deref(), Some(own));
+        assert_eq!(
+            kept(&resolve(&model, &[own], "selection").unwrap())[0]
+                .3
+                .as_deref(),
+            Some(own)
+        );
     }
 
     #[test]
@@ -819,7 +1149,7 @@ mod tests {
             "k7f2qx3m.box.Edge12",
             "k7f2qx3m.box.Face1",
         ];
-        let resolved = resolve(&model, &names);
+        let resolved = resolve(&model, &names, "selection").unwrap();
         let kept: Vec<String> = resolved.kept.iter().map(|s| s.name.to_string()).collect();
         assert_eq!(
             kept,
@@ -836,6 +1166,6 @@ mod tests {
         assert_eq!(gone.name, "nonsense");
         assert_eq!(gone.why.errors()[0].parameter(), Some("selection.2"));
         // Again, the same answer.
-        assert_eq!(resolve(&model, &names), resolved);
+        assert_eq!(resolve(&model, &names, "selection").unwrap(), resolved);
     }
 }

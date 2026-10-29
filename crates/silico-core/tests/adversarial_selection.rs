@@ -24,7 +24,7 @@ use silico_core::kernel::{
     InputHistory, Op, Reported, Topology,
 };
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
-use silico_core::selection::{Resolved, resolve};
+use silico_core::selection::{MAX_SELECTED, Resolved, refresh, resolve};
 use silico_core::{Error, ErrorCode};
 
 const HEADER: &str =
@@ -38,16 +38,23 @@ fn checked(features: &[String]) -> Checked {
     model::checked(&text(features))
 }
 
+/// `features` rebuilt and published, every feature's elements named (as the background
+/// names them, and a selection read on a later frame sees them: one read before is
+/// `pending`, selection.rs's unit tests).
 fn rebuilt(features: &[String], setup: impl FnOnce(&FakeKernel)) -> Arc<Model> {
     let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new());
     setup(engine.kernel());
-    match engine
+    let model = match engine
         .start(Arc::new(checked(features)))
         .wait_timeout(model::WAIT)
     {
         Ok(Ok(RunOutcome::Published(model))) => model,
         _ => panic!("not published"),
+    };
+    for (id, _) in model.features() {
+        model.element_map(id);
     }
+    model
 }
 
 fn plain(features: &[String]) -> Arc<Model> {
@@ -247,7 +254,7 @@ fn every_name(model: &Model) -> Vec<(FeatureId, ElementRef, String)> {
 /// The one reason `text`, selected alone, is gone for.
 #[track_caller]
 fn sole_reason(model: &Model, text: &str) -> Error {
-    let resolved = resolve(model, &[text]);
+    let resolved = resolve(model, &[text], "selection").unwrap();
     assert!(resolved.kept.is_empty(), "{text:?} kept: {resolved:?}");
     let [gone] = resolved.gone.as_slice() else {
         panic!("{text:?}: {resolved:?}")
@@ -291,10 +298,12 @@ fn an_empty_selection_keeps_nothing_and_loses_nothing() {
     let model = plain(&[a_box("k7f2qx3m", 0, 1)]);
     let none: [&str; 0] = [];
     assert_eq!(
-        resolve(&model, &none),
+        resolve(&model, &none, "selection").unwrap(),
         Resolved {
             kept: Vec::new(),
-            gone: Vec::new()
+            gone: Vec::new(),
+            pending: Vec::new(),
+            failures: std::collections::BTreeMap::new(),
         }
     );
 }
@@ -385,7 +394,7 @@ fn names_that_parse_but_find_nothing_are_gone_with_the_box_s_likeliest_names() {
         assert_actionable(&error, text);
         // Whatever is offered is a name the model finds, and stable.
         for candidate in error.candidates() {
-            let found = resolve(&model, &[candidate.as_str()]);
+            let found = resolve(&model, &[candidate.as_str()], "selection").unwrap();
             assert_eq!(found.kept.len(), 1, "{text:?} offers {candidate:?}");
             assert!(found.kept[0].stable(), "{text:?} offers {candidate:?}");
         }
@@ -432,16 +441,38 @@ fn a_megabyte_name_and_nesting_past_the_bound_are_gone_promptly() {
 }
 
 #[test]
-fn a_hundred_thousand_names_resolve_each_to_its_place() {
-    // Faces 1 to 100,000 of a box, every one past 6 gone with candidates, and the six found:
-    // the candidates built once, each name's cost its own.
+fn a_selection_as_long_as_it_may_be_resolves_each_to_its_place_and_a_longer_is_refused() {
+    // Faces 1 to 10,000 of a box (`MAX_SELECTED`), every one past 6 gone with candidates,
+    // and the six found: the candidates built once, each name's cost its own. One more name,
+    // or a hundred thousand: refused whole, at the parameter, saying the bound.
     let model = plain(&[a_box("k7f2qx3m", 0, 1)]);
-    let names: Vec<String> = (1..=100_000)
+    assert_eq!(MAX_SELECTED, 10_000);
+    let names: Vec<String> = (1..=10_000)
         .map(|n| format!("k7f2qx3m.box.Face{n}"))
         .collect();
-    let resolved = model::promptly("100,000 names", move || resolve(&model, &names));
+    let resolved = model::promptly("10,000 names", {
+        let model = Arc::clone(&model);
+        move || resolve(&model, &names, "selection").unwrap()
+    });
     assert_eq!(resolved.kept.len(), 6);
-    assert_eq!(resolved.gone.len(), 99_994);
+    assert_eq!(resolved.gone.len(), 9_994);
+    for count in [10_001, 100_000] {
+        let names: Vec<String> = (1..=count)
+            .map(|n| format!("k7f2qx3m.box.Face{n}"))
+            .collect();
+        for refused in [
+            resolve(&model, &names, "selection"),
+            refresh(&model, &names, "selection"),
+        ] {
+            let error = refused.unwrap_err();
+            assert_eq!(error.code(), ErrorCode::InvalidInput);
+            assert_eq!(error.parameter(), Some("selection"));
+            assert_eq!(
+                error.message(),
+                format!("{count} names selected, more than the 10000 a selection holds")
+            );
+        }
+    }
 }
 
 #[test]
@@ -497,12 +528,17 @@ fn every_name_of_a_pad_and_a_pocket_of_a_sketch_is_kept_as_selected() {
 fn round_trips(model: &Model, all: &[(FeatureId, ElementRef, String)]) -> usize {
     let mut unstable_seen = 0;
     for (body, element, text) in all {
-        let resolved = resolve(model, &[text.as_str()]);
+        let resolved = resolve(model, &[text.as_str()], "selection").unwrap();
         assert!(resolved.gone.is_empty(), "{text}: {resolved:?}");
         let [kept] = resolved.kept.as_slice() else {
             panic!("{text}: {resolved:?}")
         };
-        assert_eq!(kept.name.to_string(), *text);
+        // Held by the name a store writes, if it has one (a stable name never comes to name
+        // another element), else as selected.
+        match &kept.stored {
+            Ok(stored) => assert_eq!(kept.name, *stored, "{text}"),
+            Err(_) => assert_eq!(kept.name.to_string(), *text),
+        }
         assert_eq!(&kept.feature, body, "{text}");
         assert_eq!(kept.element, *element, "{text}");
         let map = model.element_map(body).unwrap();
@@ -513,7 +549,7 @@ fn round_trips(model: &Model, all: &[(FeatureId, ElementRef, String)]) -> usize 
                 if !map.is_unstable(&kept.name) {
                     assert_eq!(stored.to_string(), *text);
                 }
-                let again = resolve(model, &[stored.to_string()]);
+                let again = resolve(model, &[stored.to_string()], "selection").unwrap();
                 assert_eq!(again.kept.len(), 1);
                 assert_eq!(again.kept[0].element, *element);
                 assert_eq!(
@@ -530,7 +566,7 @@ fn round_trips(model: &Model, all: &[(FeatureId, ElementRef, String)]) -> usize 
                 assert_eq!(refusal.code(), ErrorCode::ReferenceBroken);
                 assert_eq!(refusal.parameter(), Some("selection.0"));
                 for candidate in refusal.candidates() {
-                    let found = resolve(model, &[candidate.as_str()]);
+                    let found = resolve(model, &[candidate.as_str()], "selection").unwrap();
                     assert!(
                         found.kept.len() == 1 && found.kept[0].stable(),
                         "{text} offers {candidate}"
@@ -541,7 +577,7 @@ fn round_trips(model: &Model, all: &[(FeatureId, ElementRef, String)]) -> usize 
     }
     // All at once: one kept for each element, in the order its first name came, none gone.
     let texts: Vec<&str> = all.iter().map(|(_, _, t)| t.as_str()).collect();
-    let resolved = resolve(model, &texts);
+    let resolved = resolve(model, &texts, "selection").unwrap();
     assert!(resolved.gone.is_empty());
     let elements: BTreeSet<(FeatureId, ElementRef)> =
         all.iter().map(|(b, e, _)| (b.clone(), *e)).collect();
@@ -565,7 +601,7 @@ fn every_edge_a_selection_stores_is_one_the_gate_and_a_fillet_of_its_body_take()
     let mut checked_stored = 0;
     let mut checked_refused = 0;
     for (body, _, text) in &edges {
-        let resolved = resolve(&model, &[text.as_str()]);
+        let resolved = resolve(&model, &[text.as_str()], "selection").unwrap();
         let kept = &resolved.kept[0];
         let (name, expect_taken) = match &kept.stored {
             Ok(stored) => (stored.to_string(), true),
@@ -629,15 +665,16 @@ fn a_failed_features_names_are_gone_each_saying_its_place_in_the_selection() {
             "e0000001.box.Face1",
             "e0000001.box.Edge2",
         ],
-    );
+        "selection",
+    )
+    .unwrap();
     assert_eq!(resolved.gone.len(), 2);
     for (place, gone) in [1, 2].into_iter().zip(&resolved.gone) {
         let parameters: Vec<Option<&str>> =
             gone.why.errors().iter().map(Error::parameter).collect();
         let want = format!("selection.{place}");
-        // BREAKS: the feature's failure is passed on as it is (no parameter, the kernel's
-        // words), so a reason says nothing of where in the selection its name is, against
-        // `Gone`'s doc ("each reason an error at the parameter `selection.<n>`").
+        // Found by break-it: the feature's failure was passed on as it was (no parameter, the
+        // kernel's words), against `Gone`'s doc. Each reason is its own now, at its place.
         assert_eq!(parameters, [Some(want.as_str())], "{gone:?}");
     }
 }
@@ -652,7 +689,12 @@ fn a_name_of_a_feature_blocked_by_a_failure_is_gone_naming_the_feature_and_its_b
         fillet("f0000001", "a0000001", &["a0000001.box.Edge1"]),
     ];
     let model = rebuilt(&features, refusing_length(2.0, ErrorCode::KernelFailed));
-    let resolved = resolve(&model, &["f0000001.fillet.Face1", "a0000001.box.Face1"]);
+    let resolved = resolve(
+        &model,
+        &["f0000001.fillet.Face1", "a0000001.box.Face1"],
+        "selection",
+    )
+    .unwrap();
     assert!(resolved.kept.is_empty(), "{resolved:?}");
     let [fillet_face, box_face] = resolved.gone.as_slice() else {
         panic!("{resolved:?}")
@@ -672,7 +714,7 @@ fn a_name_of_a_feature_blocked_by_a_failure_is_gone_naming_the_feature_and_its_b
     assert_eq!(failed.code(), ErrorCode::KernelFailed);
     assert_eq!(failed.feature(), Some("a0000001"));
     let mended = plain(&features);
-    let resolved = resolve(&mended, &["a0000001.box.Face1"]);
+    let resolved = resolve(&mended, &["a0000001.box.Face1"], "selection").unwrap();
     assert_eq!(resolved.kept.len(), 1, "{resolved:?}");
     assert_eq!(resolved.kept[0].feature.as_str(), "f0000001");
 }
@@ -687,11 +729,13 @@ fn a_sketchs_elements_and_a_solid_are_gone_saying_why() {
 }
 
 #[test]
-fn ten_thousand_names_of_a_broken_fillet_each_carry_its_whole_failure() {
+fn ten_thousand_names_of_a_broken_fillet_keep_its_failure_once() {
     // A fillet of a box naming 200 edges the box hasn't (Edge13 to Edge212): broken, its
     // first hundred references listed, each with candidates. A selection of 10,000 of its
-    // faces (Face1 to Face10000, each a name of a feature that failed): each gone with the
-    // fillet's failure. Measured: how many errors the result holds.
+    // faces (Face1 to Face10000, each a name of a feature that failed): each gone with one
+    // reason at its own place, pointing to the fillet, whose failure is kept once. At the
+    // break-it run (2026-10-29) each name held the fillet's hundred listed errors, a million
+    // errors and about 300 MB for a 250 KB selection.
     let missing: Vec<String> = (13..213).map(|n| format!("bbbbbbbb.box.Edge{n}")).collect();
     let refs: Vec<&str> = missing.iter().map(String::as_str).collect();
     let features = [
@@ -706,27 +750,45 @@ fn ten_thousand_names_of_a_broken_fillet_each_carry_its_whole_failure() {
     };
     assert_eq!(*total, 200);
     let listed = errors.len();
+    assert_eq!(listed, 100);
     let names: Vec<String> = (1..=10_000)
         .map(|n| format!("ffffffff.fillet.Face{n}"))
         .collect();
     let resolved = model::promptly("10,000 names of a broken fillet", {
         let model = Arc::clone(&model);
-        move || resolve(&model, &names)
+        move || resolve(&model, &names, "selection").unwrap()
     });
-    let errors_held: usize = resolved.gone.iter().map(|g| g.why.errors().len()).sum();
-    let candidates_held: usize = resolved
+    assert_eq!(resolved.gone.len(), 10_000);
+    let fillet = FeatureId::new("ffffffff").unwrap();
+    for (place, gone) in resolved.gone.iter().enumerate() {
+        assert_eq!(gone.place, place);
+        assert_eq!(gone.failed.as_ref(), Some(&fillet));
+        let [error] = gone.why.errors() else {
+            panic!("{gone:?}")
+        };
+        let at = format!("selection.{place}");
+        assert_eq!(error.parameter(), Some(at.as_str()));
+        assert_eq!(error.code(), ErrorCode::ReferenceBroken);
+        assert!(error.candidates().is_empty());
+        assert!(
+            error.message().ends_with("(the first of 200 problems)"),
+            "{}",
+            error.message()
+        );
+    }
+    // The fillet's failure, once: its hundred listed of 200.
+    let [(id, failure)] = resolved.failures.iter().collect::<Vec<_>>()[..] else {
+        panic!("{:?}", resolved.failures.keys())
+    };
+    assert_eq!(id, &fillet);
+    assert_eq!((failure.errors().len(), failure.total()), (100, 200));
+    let errors_held: usize = resolved
         .gone
         .iter()
-        .flat_map(|g| g.why.errors())
-        .map(|e| e.candidates().len())
-        .sum();
-    // Measured at the break-it run (2026-10-29): each name holds the fillet's hundred
-    // listed errors, each with its candidates, a million errors and about 300 MB of text for
-    // a 250 KB selection. Said here so a change to it is seen: the
-    // design gives each name its own copy (selection.rs), and the selection has no bound.
-    assert_eq!(errors_held, 10_000 * listed);
-    assert!(candidates_held >= errors_held, "{candidates_held}");
-    assert_eq!(resolved.gone.len(), 10_000);
+        .map(|g| g.why.errors().len())
+        .sum::<usize>()
+        + failure.errors().len();
+    assert_eq!(errors_held, 10_000 + 100);
 }
 
 // Any selection drawn from a pool of names: found and stable, found and unstable, aliases of
@@ -763,7 +825,7 @@ proptest! {
     ) {
         let model = rich_model();
         let names: Vec<&str> = picks.iter().map(|&i| POOL[i]).collect();
-        let resolved = resolve(model, &names);
+        let resolved = resolve(model, &names, "selection").unwrap();
         // Each text at most once, kept or gone, at its first place, in order.
         let mut firsts: Vec<&str> = Vec::new();
         for name in &names {
@@ -772,13 +834,14 @@ proptest! {
             }
         }
         let gone: Vec<&str> = resolved.gone.iter().map(|g| g.name.as_str()).collect();
-        let kept: Vec<String> = resolved.kept.iter().map(|s| s.name.to_string()).collect();
-        let order = |list: &[&str]| -> Vec<usize> {
-            list.iter().map(|n| firsts.iter().position(|f| f == n).unwrap()).collect()
-        };
-        let kept_refs: Vec<&str> = kept.iter().map(String::as_str).collect();
-        let kept_order = order(&kept_refs);
-        let gone_order = order(&gone);
+        // Each at its first place (a kept one held perhaps by another name of its element),
+        // in order.
+        let kept_order: Vec<usize> = resolved.kept.iter().map(|s| s.place).collect();
+        let gone_order: Vec<usize> = resolved.gone.iter().map(|g| g.place).collect();
+        for &place in kept_order.iter().chain(&gone_order) {
+            prop_assert_eq!(names.iter().position(|n| *n == names[place]), Some(place));
+        }
+        prop_assert!(resolved.pending.is_empty());
         prop_assert!(kept_order.windows(2).all(|w| w[0] < w[1]));
         prop_assert!(gone_order.windows(2).all(|w| w[0] < w[1]));
         // Each element once.
@@ -790,7 +853,7 @@ proptest! {
         prop_assert_eq!(elements.len(), resolved.kept.len());
         // Every first text is kept, gone, or another name of an element kept before it.
         for name in &firsts {
-            let alone = resolve(model, &[*name]);
+            let alone = resolve(model, &[*name], "selection").unwrap();
             if let Some(found) = alone.kept.first() {
                 prop_assert!(
                     resolved.kept.iter().any(|s| s.feature == found.feature && s.element == found.element)
@@ -814,15 +877,15 @@ proptest! {
             }
         }
         // Again, the same answer; and the same from a model rebuilt alike is checked below.
-        prop_assert_eq!(resolve(model, &names), resolved);
+        prop_assert_eq!(resolve(model, &names, "selection").unwrap(), resolved);
     }
 }
 
 #[test]
 fn two_rebuilds_of_one_document_resolve_a_selection_alike() {
     let names: Vec<&str> = POOL.iter().rev().chain(POOL.iter()).copied().collect();
-    let first = resolve(&rich(), &names);
-    let second = resolve(&rich(), &names);
+    let first = resolve(&rich(), &names, "selection").unwrap();
+    let second = resolve(&rich(), &names, "selection").unwrap();
     assert_eq!(first, second);
 }
 
@@ -859,7 +922,7 @@ fn a_stable_name_a_rebuild_makes_ambiguous_is_held_refused_never_stored() {
         operation("rrrrrrrr", "fuse", "aaaaaaaa", "bbbbbbbb"),
     ];
     let before = rebuilt(&features, forging(|_| Some(single_fuse())));
-    let resolved = resolve(&before, &[name, &format!("{name}~1")]);
+    let resolved = resolve(&before, &[name, &format!("{name}~1")], "selection").unwrap();
     assert_eq!(resolved.kept.len(), 1, "{resolved:?}");
     assert_eq!(resolved.kept[0].element, element(ElementKind::Edge, 1));
     assert_eq!(
@@ -878,7 +941,7 @@ fn a_stable_name_a_rebuild_makes_ambiguous_is_held_refused_never_stored() {
     let after = rebuilt(&features, forging(|_| Some(duplicating_fuse())));
     // The old name, now that two edges come about alike, finds neither (their names say
     // their places, `G1/2`): gone, never kept as one of them.
-    let resolved = resolve(&after, &[name]);
+    let resolved = resolve(&after, &[name], "selection").unwrap();
     assert!(resolved.kept.is_empty(), "{resolved:?}");
     let [gone] = resolved.gone.as_slice() else {
         panic!("{resolved:?}")
@@ -887,7 +950,7 @@ fn a_stable_name_a_rebuild_makes_ambiguous_is_held_refused_never_stored() {
     // The two new names: each found, its own edge, each refused a store.
     let ranked = "rrrrrrrr.fuse.Edge(G1/2 aaaaaaaa.box.Face1, G1/2 aaaaaaaa.box.Face6)";
     let tilde = format!("{ranked}~1");
-    let resolved = resolve(&after, &[ranked, tilde.as_str()]);
+    let resolved = resolve(&after, &[ranked, tilde.as_str()], "selection").unwrap();
     assert!(resolved.gone.is_empty(), "{resolved:?}");
     let [first, second] = resolved.kept.as_slice() else {
         panic!("{resolved:?}")
@@ -913,7 +976,7 @@ fn a_model_read_by_many_threads_at_once_resolves_alike_on_each() {
     // The model's live bodies are worked out once, the first time a name needs them: eight
     // threads asking at once, on a fresh model, each get the answer one thread alone gets.
     let names: Vec<String> = POOL.iter().map(|s| (*s).to_owned()).collect();
-    let alone = resolve(&rich(), &names);
+    let alone = resolve(&rich(), &names, "selection").unwrap();
     for _ in 0..5 {
         let model = rich();
         let barrier = Arc::new(std::sync::Barrier::new(8));
@@ -924,7 +987,7 @@ fn a_model_read_by_many_threads_at_once_resolves_alike_on_each() {
                 let barrier = Arc::clone(&barrier);
                 std::thread::spawn(move || {
                     barrier.wait();
-                    resolve(&model, &names)
+                    resolve(&model, &names, "selection").unwrap()
                 })
             })
             .collect();
@@ -942,8 +1005,8 @@ fn a_name_of_a_removed_feature_is_gone_without_a_place_in_the_timeline_it_has_no
     let error = sole_reason(&model, "b0000001.box.Face2");
     assert_eq!(error.code(), ErrorCode::ReferenceBroken);
     assert!(error.message().contains("b0000001"), "{}", error.message());
-    // BREAKS: the parser's words for a document's reference ("no feature b0000001 before
-    // this one") are passed on to a selection, which has no "this one".
+    // Found by break-it: the parser's words for a document's reference ("no feature
+    // b0000001 before this one") were passed on to a selection, which has no "this one".
     assert!(
         !error.message().contains("before this one"),
         "{}",
