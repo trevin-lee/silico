@@ -185,8 +185,9 @@ fn two_arcs_of_one_circle_end_to_end_at_unshared_points_should_share_them() {
             .iter()
             .all(|e| e.suggestion() == Some("share the point: end the curves at one point"))
     );
-    assert_eq!(errors[0].elements()[..2], [s.clone(), s2.clone()]);
-    assert_eq!(errors[1].elements()[..2], [e.clone(), e2.clone()]);
+    // Each pair's two points alone, as check's ends_not_joined names them.
+    assert_eq!(errors[0].elements(), [s.clone(), s2.clone()]);
+    assert_eq!(errors[1].elements(), [e.clone(), e2.clone()]);
 }
 
 #[test]

@@ -563,16 +563,6 @@ fn of_sketch(
         }
     }
     for group in &groups {
-        // Each curve once, though both its ends were in the group.
-        let mut curves_there: Vec<String> = Vec::new();
-        for id in group
-            .iter()
-            .flat_map(|&p| at_point[p].iter().map(|&c| curves[c].id.to_string()))
-        {
-            if !curves_there.contains(&id) {
-                curves_there.push(id);
-            }
-        }
         if let [p] = group.as_slice() {
             let curve = &curves[at_point[*p][0]];
             let elements = vec![point_name(*p), curve.id.to_string()];
@@ -619,7 +609,9 @@ fn of_sketch(
             } else {
                 collapsing_advice(&both_ends, "end the curves at one point")
             };
-            let elements: Vec<String> = names.iter().cloned().chain(curves_there).collect();
+            // The points alone, which are what isn't joined, as `check`'s warning of the
+            // same ends names them; a curve that would collapse is named in the advice.
+            let elements: Vec<String> = names.clone();
             found.add(elements, |elements| {
                 refuse(
                     format!(
