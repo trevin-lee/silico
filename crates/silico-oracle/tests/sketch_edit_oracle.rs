@@ -399,6 +399,19 @@ fn a_split_sharing_an_end_with_an_edge_tangent_is_excused_naming_the_tangent() {
     let v = verdict(&p, theirs[0].as_ref());
     agrees(&v);
     assert_eq!(v.excused.len(), 1, "{v:?}");
+    // A point of the sketch in a curve's place, the arc's end: no piece of the split, so not
+    // the curve's.
+    let mut elements = r.elements.clone();
+    elements[at] = "p0000006".to_owned();
+    let p = Prepared {
+        silico: SilicoSide::Refused(silico_oracle::sketch_edit::Refusal {
+            elements,
+            ..r.clone()
+        }),
+        ..prepared[0].clone()
+    };
+    let v = verdict(&p, theirs[0].as_ref());
+    assert!(v.excused.is_empty(), "{v:?}");
 }
 
 #[test]
