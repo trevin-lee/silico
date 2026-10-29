@@ -10,7 +10,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::PROBLEMS_LISTED;
-use super::sketch::{Direction, ElementId, ElementKind, Form, Reference, Sketch, SketchPoint};
+use super::sketch::{
+    Direction, ElementId, ElementKind, Form, Reference, Sketch, SketchPoint, TangentSide,
+};
 use crate::{Error, ErrorCode};
 
 mod split;
@@ -442,21 +444,25 @@ fn gated(edited: &Sketch, points: &[ElementId]) -> Result<(), Error> {
 /// Each edge `tangent` of `sketch` between two curves that share one end, made a
 /// `tangent_at` at that point, keeping its ID (docs/design/m5.0-app.md, open item 13), as a
 /// merge leaves one where it made the shared end: FreeCAD's coincident command substitutes
-/// an endpoint tangency for an edge one so (`620188073e`). Its `direction` is the
-/// drawing's (sketch-edit decision 8): `same` where the path along `a` into the point and on
-/// along `b` runs on smoothly, `opposite` where it turns back. Curves sharing both ends,
-/// which have no one point for it, are left for [`own_curve`] to refuse. The IDs made
-/// `tangent_at`s.
+/// an endpoint tangency for an edge one so (`620188073e`). Its `direction` keeps the
+/// tangent's `side` (sketch-edit decision 8), whatever the merge moved: see [`kept_side`].
+/// Curves sharing both ends, which have no one point for it, are left for [`own_curve`] to
+/// refuse. The IDs made `tangent_at`s.
 fn tangents_at_shared_ends(sketch: &mut Sketch) -> Vec<ElementId> {
-    let ends: BTreeMap<&ElementId, [&ElementId; 2]> = sketch
+    let ends: BTreeMap<ElementId, [ElementId; 2]> = sketch
         .lines
         .iter()
-        .map(|l| (&l.id, [&l.from, &l.to]))
-        .chain(sketch.arcs.iter().map(|a| (&a.id, [&a.start, &a.end])))
+        .map(|l| (l.id.clone(), [l.from.clone(), l.to.clone()]))
+        .chain(
+            sketch
+                .arcs
+                .iter()
+                .map(|a| (a.id.clone(), [a.start.clone(), a.end.clone()])),
+        )
         .collect();
     let mut made = Vec::new();
-    for (place, constraint) in sketch.constraints.iter().enumerate() {
-        let Form::Tangent { a, b, .. } = &constraint.form else {
+    for constraint in &mut sketch.constraints {
+        let Form::Tangent { a, b, side } = &constraint.form else {
             continue;
         };
         let (Some(of_a), Some(of_b)) = (
@@ -465,53 +471,38 @@ fn tangents_at_shared_ends(sketch: &mut Sketch) -> Vec<ElementId> {
         ) else {
             continue;
         };
-        let shared: Vec<&ElementId> = of_a.iter().copied().filter(|p| of_b.contains(p)).collect();
+        let shared: Vec<&ElementId> = of_a.iter().filter(|p| of_b.contains(p)).collect();
         let [at] = shared[..] else {
             continue;
         };
-        let at = Reference::Element(at.clone());
-        let direction = drawn_at(sketch, a, b, &at);
-        made.push((place, a.clone(), b.clone(), at, direction));
+        // Whether the shared point ends one curve and starts the other.
+        let end_to_start = (of_a[0] == *at) != (of_b[0] == *at);
+        constraint.form = Form::TangentAt {
+            a: a.clone(),
+            b: b.clone(),
+            at: Reference::Element(at.clone()),
+            direction: kept_side(*side, end_to_start),
+        };
+        made.push(constraint.id.clone());
     }
-    made.into_iter()
-        .filter_map(|(place, a, b, at, direction)| {
-            let constraint = sketch.constraints.get_mut(place)?;
-            constraint.form = Form::TangentAt {
-                a,
-                b,
-                at,
-                direction,
-            };
-            Some(constraint.id.clone())
-        })
-        .collect()
+    made
 }
 
-/// The `direction` of a `tangent_at` of `a` and `b` at their shared end `at`, as `sketch`'s
-/// coordinates show it, as FreeCAD locks an endpoint tangency's angle
-/// (`AutoLockTangencyAndPerpty`, `SketchObjectConstraints.cpp`): the angle between the two
-/// curves' own directions there is 0 unless they're more than a right angle apart, then π,
-/// so square to each other (or with no direction to measure) it's 0. The solve's
-/// translation reads 0 as `same` where `at` ends one and starts the other, `opposite`
-/// where it's both's start or both's end.
-fn drawn_at(sketch: &Sketch, a: &Reference, b: &Reference, at: &Reference) -> Direction {
-    let (Some(xy), Some(a_starts), Some(b_starts)) = (
-        split::reference_at(sketch, at),
-        split::starts_at(sketch, a, at),
-        split::starts_at(sketch, b, at),
-    ) else {
-        return Direction::Same;
-    };
-    let (Some(along_a), Some(along_b)) = (
-        trim::own_direction(sketch, a, xy),
-        trim::own_direction(sketch, b, xy),
-    ) else {
-        return Direction::Same;
-    };
-    let apart = along_a[0] * along_b[0] + along_a[1] * along_b[1] < 0.0;
-    // A path along `a` into `at` and on along `b` runs with both curves' own directions
-    // where `at` ends one and starts the other.
-    if (a_starts != b_starts) != apart {
+/// The `direction` of a `tangent_at` that keeps an edge tangent's `side` where the curves
+/// now share an end, `end_to_start` if it ends one and starts the other. The side fixes the
+/// angle between the two curves' own directions (a line's from start to end, a round's
+/// counter-clockwise) at the point they touch: a round on the line's left, or two rounds one
+/// inside the other, turn the same way there, an angle of 0; on its right, or outside each
+/// other, opposite ways, π. The solve's translation reads 0 as `same` where the point ends
+/// one and starts the other, and as `opposite` where it starts or ends both. Read from the
+/// side, not from the drawing the merge leaves: points merged from apart move a curve's
+/// end, and its drawing can then show the other side. FreeCAD's edge tangency holds no side,
+/// so its coincident command locks the angle the unmerged drawing shows at the point
+/// (`AutoLockTangencyAndPerpty`); where the merged points touch, that point is the contact
+/// and the two agree.
+fn kept_side(side: TangentSide, end_to_start: bool) -> Direction {
+    let turn_alike = matches!(side, TangentSide::Left | TangentSide::Inside);
+    if turn_alike == end_to_start {
         Direction::Same
     } else {
         Direction::Opposite

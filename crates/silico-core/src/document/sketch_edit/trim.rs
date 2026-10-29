@@ -545,7 +545,7 @@ fn drawn(
 
 /// A curve's own direction at `xy`: a line's from `from` to `to`, a round's
 /// counter-clockwise.
-pub(super) fn own_direction(sketch: &Sketch, curve: &Reference, xy: [f64; 2]) -> Option<[f64; 2]> {
+fn own_direction(sketch: &Sketch, curve: &Reference, xy: [f64; 2]) -> Option<[f64; 2]> {
     let id = curve.element()?;
     if let Some(line) = sketch.lines.iter().find(|l| &l.id == id) {
         let (from, to) = (point_at(sketch, &line.from)?, point_at(sketch, &line.to)?);
