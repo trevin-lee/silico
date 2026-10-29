@@ -11,14 +11,14 @@ use std::time::Duration;
 use silico_protocol::{
     Algorithm, DragBegin, Generation, Geometry, Op, Part, Parts, PointOf, PointValues, Reply,
     SketchGeometry, SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value,
-    arc_from_points, no_distance, squared_distance,
+    arc_from_points, arc_from_points_or_unswept, no_distance, squared_distance,
 };
 
 pub use silico_protocol::MovedOnce;
 
 use crate::document::{
     Angle as DocumentAngle, Checked, Coordinate, Direction, ElementId, FeatureId, Form, Length,
-    LineSide, MemberPaths, Operation, Reference, Sketch, SketchArc, SketchConstraint, TangentSide,
+    LineSide, MemberPaths, Operation, Reference, Sketch, SketchConstraint, TangentSide,
 };
 use crate::worker::{Executable, Worker, WorkerKind};
 use crate::{Error, ErrorCode};
@@ -848,195 +848,35 @@ pub struct Diagnosis {
 }
 
 impl Diagnosis {
-    /// The diagnosis of `sketch` before its constraints: what PlaneGCS gives its geometry
-    /// alone, its arcs' rules the only rows. It's the diagnosis of a sketch
+    /// The diagnosis of `sketch` before its constraints: PlaneGCS's, from `solver`, of its
+    /// geometry alone, its arcs' rules the only rows. It's the diagnosis of a sketch
     /// [`Translation::new`] refuses, whose constraints never reach the solver (M5.0 open item
     /// 32: two points drawn at one place where a constraint is measured by the line between
-    /// them, an arc that sweeps nothing). Every point, circle, and arc is free; nothing is
-    /// listed.
+    /// them, an arc that sweeps nothing). It's sent as the solve request is, every point,
+    /// line, circle, and arc as [`Translation::new`] sends it, and the arcs' rules, but no
+    /// constraint; the reply's diagnosis is taken before any algorithm runs, so its solve is
+    /// never read. An arc that sweeps nothing is sent at its start's angle at both ends
+    /// ([`arc_from_points_or_unswept`]): its rules are well defined there.
     ///
-    /// `dofs` is PlaneGCS's: its unknowns less the rank of its rows (`diagnose`), which are
-    /// its arcs' rules, tag 0, which it always sends and `makeReducedJacobian` keeps. The
-    /// unknowns are 2 a point (x and y), 1 a circle (its radius), and 3 an arc (its radius r
-    /// and angles a and b), each counted once by ID; `arc_rules_rank` gives the rank, and why.
-    pub fn untranslated(sketch: &Sketch) -> Self {
-        let mut points: BTreeMap<&ElementId, [f64; 2]> = BTreeMap::new();
-        for p in &sketch.points {
-            points.entry(&p.id).or_insert([p.x.mm(), p.y.mm()]);
+    /// `dofs` and `free` are the reply's: PlaneGCS's unknowns less the rank of its rows, and
+    /// the values its dependent parameters name (no constraint is sent, so it lists none).
+    /// A solver that fails, a reply that can't be trusted, or geometry that can't be
+    /// translated (a sketch the gate never saw, whose curves name points it hasn't) is the
+    /// error: it's no sketch state.
+    pub fn untranslated(sketch: &Sketch, solver: &mut dyn SketchSolver) -> Result<Self, Error> {
+        let _span = tracing::info_span!("diagnose untranslated sketch").entered();
+        let geometry = Translation::geometry(sketch, NoSweep::AtItsStart)?;
+        let solved = solver.solve(geometry.system.clone())?;
+        if let Err(e) = geometry.check_reply(&solved) {
+            solver.distrust();
+            return Err(e);
         }
-        let circles: BTreeSet<&ElementId> = sketch.circles.iter().map(|c| &c.id).collect();
-        let mut arcs: BTreeMap<&ElementId, &SketchArc> = BTreeMap::new();
-        for a in &sketch.arcs {
-            arcs.entry(&a.id).or_insert(a);
-        }
-        // Each arc's 3 unknowns and the 3 of its rules' rank on them cancel, leaving 2 a point
-        // and 1 a circle, less the rank past those. That's never below 0 for a sketch the gate
-        // has passed (`arc_rules_rank`); one it never saw, whose arcs name points it hasn't,
-        // is held at 0. The gate holds a sketch to far fewer members than these count.
-        let rank = arc_rules_rank(arcs.values().copied(), &points);
-        let count = |n: usize| i64::try_from(n).unwrap_or(i64::MAX);
-        let dofs = count(points.len())
-            .saturating_mul(2)
-            .saturating_add(count(circles.len()))
-            .saturating_sub(count(rank))
-            .max(0);
-        let free = points
-            .into_keys()
-            .chain(circles)
-            .chain(arcs.into_keys())
-            .cloned()
-            .collect();
-        Diagnosis {
-            dofs: i32::try_from(dofs).unwrap_or(i32::MAX),
-            free,
+        Ok(Diagnosis {
+            dofs: solved.dofs,
+            free: geometry.free(&solved),
             ..Diagnosis::default()
-        }
-    }
-}
-
-/// PlaneGCS's threshold for a pivot of its diagnosis's QR to count toward the rank, beside
-/// the largest pivot: `qrpivotThreshold(1E-13)` in `System`'s constructor (GCS.cpp:490, in
-/// third_party/planegcs), set on the dense `FullPivHouseholderQR` of the transposed
-/// Jacobian (`qrJT.setThreshold`, :5086). PlaneGCS takes that QR below 1000 unknowns
-/// (`autoQRThreshold`, :4817), and a sparse one, with the same threshold, from there to the
-/// gate's 1024; the sparse one can miss a repetition the dense one finds (FreeCAD #10903),
-/// and Silico counts as the dense one does.
-const QR_PIVOT_THRESHOLD: f64 = 1e-13;
-
-/// The rank, past each arc's 3, of `arcs`' rules where `points` are drawn
-/// ([`Diagnosis::untranslated`]).
-///
-/// An arc about centre C from S to E has 4 rules (`addConstraintArcRules`, two
-/// `CurveValue`s): S = C + r·u(a) and E = C + r·u(b), in x and y, u(t) = (cos t, sin t).
-/// On its own r, a, and b, where it has a radius, their rank is 3: r's column is
-/// (−u(a), −u(b)), a's (−r·u′(a), 0), b's (0, −r·u′(b)). One combination of the four is
-/// free of all three, u(a)·(the first two) − u(b)·(the last two): the gradient of
-/// |S − C| − |E − C|, u(a) on S, −u(b) on E, and u(b) − u(a) on C. No other arc has a
-/// column in r, a, or b, so the rules' rank is 3 an arc and the rank of those
-/// combinations, one row an arc, two columns a point; and only they can repeat each other.
-/// Each angle is the direction its end is drawn in from the centre (`arc_from_points`'s
-/// `atan2`, 0 for an end drawn on the centre). So two halves of a circle on three points,
-/// one from S to E about C and one from E back to S, give rows that sum to zero, an arc
-/// drawn twice repeats its own, and arcs about different centres repeat each other where
-/// their distances do, as the drawing has them: the rank is the matrix's, worked out as
-/// PlaneGCS works out its own ([`rank`]). An arc that names a point the sketch hasn't, which
-/// only a sketch the gate never saw can, counts its 4 rules, as a lone arc's; one of no
-/// radius, which the gate refuses, is counted as if it had one.
-///
-/// So a lone arc counts 6 + 3 − (3 + 1) = 5, FreeCAD 1.1.3's DoF for it; two halves of
-/// a circle on three points, 6 + 6 − (6 + 1) = 5, FreeCAD's too; one arc drawn n times on
-/// its three points, 5; three arcs round one centre, end to end, 8 + 9 − (9 + 2) = 6, the
-/// centre, the radius, and the three points' angles. The rows never move a set of points
-/// rigidly, so their rank is less than 2 a point they name, and the diagnosis's `dofs` is
-/// never negative, as PlaneGCS's never is.
-fn arc_rules_rank<'a>(
-    arcs: impl Iterator<Item = &'a SketchArc>,
-    points: &BTreeMap<&'a ElementId, [f64; 2]>,
-) -> usize {
-    // One column of the transposed matrix an arc, as PlaneGCS transposes its Jacobian; one
-    // row each coordinate of the points the arcs name, in the order the arcs, by ID, name
-    // them.
-    let mut named: BTreeMap<&ElementId, usize> = BTreeMap::new();
-    let mut columns: Vec<[(usize, [f64; 2]); 3]> = Vec::new();
-    let mut unplaced = 0;
-    for a in arcs {
-        let (Some(&c), Some(&s), Some(&e)) = (
-            points.get(&a.center),
-            points.get(&a.start),
-            points.get(&a.end),
-        ) else {
-            unplaced += 1;
-            continue;
-        };
-        let direction = |p: [f64; 2]| {
-            let t = libm::atan2(p[1] - c[1], p[0] - c[0]);
-            [libm::cos(t), libm::sin(t)]
-        };
-        let (us, ue) = (direction(s), direction(e));
-        let mut row = |id: &'a ElementId| {
-            let next = named.len();
-            *named.entry(id).or_insert(next)
-        };
-        columns.push([
-            (row(&a.start), us),
-            (row(&a.end), [-ue[0], -ue[1]]),
-            (row(&a.center), [ue[0] - us[0], ue[1] - us[1]]),
-        ]);
-    }
-    let rows = 2 * named.len();
-    let matrix = columns
-        .iter()
-        .map(|entries| {
-            let mut column = vec![0.0; rows];
-            for &(point, [x, y]) in entries {
-                column[2 * point] += x;
-                column[2 * point + 1] += y;
-            }
-            column
         })
-        .collect();
-    rank(matrix) + unplaced
-}
-
-/// The rank of `matrix`, its columns each as long, as Eigen's `FullPivHouseholderQR` gives
-/// PlaneGCS its own: each step takes the largest entry left, moved to the diagonal (the
-/// first of equals, a column at a time), reflects the rest of its column away
-/// (Householder), and stops at a corner of zeros; the rank is the number of diagonal entries
-/// larger than [`QR_PIVOT_THRESHOLD`] times the largest pivot taken. One thread, in a fixed
-/// order, so the same matrix always gives the same rank.
-fn rank(mut matrix: Vec<Vec<f64>>) -> usize {
-    let rows = matrix.first().map_or(0, Vec::len);
-    let mut diagonal = Vec::new();
-    let mut largest = 0.0f64;
-    for k in 0..rows.min(matrix.len()) {
-        let mut pivot = (0.0, k, k);
-        for (c, column) in matrix.iter().enumerate().skip(k) {
-            for (r, v) in column.iter().enumerate().skip(k) {
-                if v.abs() > pivot.0 {
-                    pivot = (v.abs(), r, c);
-                }
-            }
-        }
-        let (biggest, pr, pc) = pivot;
-        if biggest == 0.0 {
-            break;
-        }
-        largest = largest.max(biggest);
-        matrix.swap(k, pc);
-        for column in matrix.iter_mut().skip(k) {
-            column.swap(k, pr);
-        }
-        let Some((done, rest)) = matrix.split_at_mut_checked(k + 1) else {
-            break;
-        };
-        let Some(v) = done.last_mut().and_then(|c| c.get_mut(k..)) else {
-            break;
-        };
-        let norm = v.iter().map(|x| x * x).sum::<f64>().sqrt();
-        let beta = if v.first().is_some_and(|&x| x >= 0.0) {
-            -norm
-        } else {
-            norm
-        };
-        if let Some(first) = v.first_mut() {
-            *first -= beta;
-        }
-        let vv: f64 = v.iter().map(|x| x * x).sum();
-        for column in rest {
-            let Some(below) = column.get_mut(k..) else {
-                continue;
-            };
-            let f = 2.0 * below.iter().zip(&*v).map(|(a, x)| a * x).sum::<f64>() / vv;
-            for (a, x) in below.iter_mut().zip(&*v) {
-                *a -= f * x;
-            }
-        }
-        diagonal.push(beta.abs());
     }
-    diagonal
-        .iter()
-        .filter(|&&d| d > QR_PIVOT_THRESHOLD * largest)
-        .count()
 }
 
 /// A solve's [`Diagnosis`] and its outcome, paired by the core from one answer, so the states
@@ -1050,19 +890,22 @@ pub struct Diagnosed {
 }
 
 impl Diagnosed {
-    /// `sketch`, if [`Translation::new`] refuses it, so no solver sees it: the diagnosis of
-    /// its geometry before its constraints ([`Diagnosis::untranslated`]), beside the
-    /// translation's own refusal. None
-    /// if it translates: its states are then its answer's. Its states are read as any
-    /// refusal's: an `invalid_input` is `invalid`; an error that's no sketch state (an
-    /// `internal`, for a sketch that never passed the gate) is refused by the states, as it
-    /// would be from an answer.
-    pub fn untranslated(sketch: &Sketch) -> Option<Self> {
-        let refusal = Translation::new(sketch).err()?;
-        Some(Diagnosed {
-            diagnosis: Diagnosis::untranslated(sketch),
+    /// `sketch`, if [`Translation::new`] refuses it, so no solve is sent: the diagnosis of its
+    /// geometry before its constraints, from `solver` ([`Diagnosis::untranslated`]), beside the
+    /// translation's own refusal; None if it translates, as its states are then its answer's.
+    /// A solver that fails is the error, and the read fails with it (item 32's addendum, D).
+    /// The states read it as any refusal: an `invalid_input` is `invalid`.
+    pub fn untranslated(
+        sketch: &Sketch,
+        solver: &mut dyn SketchSolver,
+    ) -> Result<Option<Self>, Error> {
+        let Err(refusal) = Translation::new(sketch) else {
+            return Ok(None);
+        };
+        Ok(Some(Diagnosed {
+            diagnosis: Diagnosis::untranslated(sketch, solver)?,
             outcome: Err(refusal),
-        })
+        }))
     }
 
     /// The diagnosis.
@@ -1247,10 +1090,49 @@ const Y_AXIS: Line = Line {
     to: Y_AXIS_END,
 };
 
+/// What [`Translation::geometry`] makes of an arc whose ends are at one angle from its
+/// centre, so it sweeps nothing, or a whole turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoSweep {
+    /// Refused, `invalid_input`: no arc a solve is sent sweeps nothing.
+    Refused,
+    /// Drawn at its start's angle at both ends ([`arc_from_points_or_unswept`]), for
+    /// [`Diagnosis::untranslated`] alone, which never solves it.
+    AtItsStart,
+}
+
 impl Translation {
     /// `sketch`, which the gate has checked, in the solver's terms
     /// (docs/design/m3.3-solving.md, *The translation*).
     pub fn new(sketch: &Sketch) -> Result<Self, Error> {
+        let mut translation = Translation::geometry(sketch, NoSweep::Refused)?;
+        let mut constraints = sketch.constraints.clone();
+        constraints.sort_by(|a, b| a.id.cmp(&b.id));
+        translation.on = constraints
+            .iter()
+            .filter_map(|c| match &c.form {
+                Form::On {
+                    point: Reference::Element(p),
+                    curve,
+                } => Some((p.clone(), curve.clone())),
+                _ => None,
+            })
+            .collect();
+        for (i, c) in constraints.iter().enumerate() {
+            let tag = Tag(i as u32 + 1);
+            let sent = translation
+                .constraint(c, tag)
+                .map_err(|e| e.with_element(c.id.as_str()))?;
+            translation.system.constraints.extend(sent);
+        }
+        translation.constraints = constraints;
+        Ok(translation)
+    }
+
+    /// `sketch`'s geometry alone in the solver's terms, as [`new`](Self::new) sends it: every
+    /// point, line, circle, and arc, and the arcs' rules, but none of its constraints. An arc
+    /// that sweeps nothing is as `no_sweep` says.
+    fn geometry(sketch: &Sketch, no_sweep: NoSweep) -> Result<Self, Error> {
         let mut values = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
         let mut unknowns = Vec::new();
         let mut geometry = vec![
@@ -1341,7 +1223,13 @@ impl Translation {
                     values.get(p.y.0 as usize).copied().unwrap_or(f64::NAN),
                 ]
             };
-            let Some([r, a0, a1]) = arc_from_points(at(center), at(start), at(end)) else {
+            let drawn = match no_sweep {
+                NoSweep::Refused => arc_from_points(at(center), at(start), at(end)),
+                NoSweep::AtItsStart => {
+                    Some(arc_from_points_or_unswept(at(center), at(start), at(end)))
+                }
+            };
+            let Some([r, a0, a1]) = drawn else {
                 return Err(Error::new(
                     ErrorCode::InvalidInput,
                     format!(
@@ -1382,19 +1270,7 @@ impl Translation {
                 },
             );
         }
-        let mut constraints = sketch.constraints.clone();
-        constraints.sort_by(|a, b| a.id.cmp(&b.id));
-        let on = constraints
-            .iter()
-            .filter_map(|c| match &c.form {
-                Form::On {
-                    point: Reference::Element(p),
-                    curve,
-                } => Some((p.clone(), curve.clone())),
-                _ => None,
-            })
-            .collect();
-        let mut translation = Translation {
+        Ok(Translation {
             system: SketchSystem {
                 values,
                 unknowns,
@@ -1408,18 +1284,9 @@ impl Translation {
             lines,
             circles,
             arcs,
-            on,
+            on: Vec::new(),
             sketch: sketch.clone(),
-        };
-        for (i, c) in constraints.iter().enumerate() {
-            let tag = Tag(i as u32 + 1);
-            let sent = translation
-                .constraint(c, tag)
-                .map_err(|e| e.with_element(c.id.as_str()))?;
-            translation.system.constraints.extend(sent);
-        }
-        translation.constraints = constraints;
-        Ok(translation)
+        })
     }
 
     /// The point a constraint names: points are geometry of their own, so it's `Point(g)`;

@@ -1483,6 +1483,21 @@ pub fn arc_from_points(center: [f64; 2], start: [f64; 2], end: [f64; 2]) -> Opti
     (sweep > 0.0 && sweep < std::f64::consts::TAU).then_some([radius, start_angle, end_angle])
 }
 
+/// An arc's radius and angles as [`arc_from_points`] gives them, or, for an arc it gives none
+/// (its ends at one angle from its centre), the radius and its start's angle as both angles.
+///
+/// It exists for one diagnosis: of a sketch's geometry alone, whose translation the core
+/// refuses (silico-core's `Diagnosis::untranslated`), so that its degrees of freedom are
+/// PlaneGCS's own, from the worker. An arc's rules, each end on its circle at its angle, are
+/// well defined where the two angles are one, so PlaneGCS can diagnose such an arc; it's
+/// never sent to be solved as a sketch's arc, which [`arc_from_points`] still refuses.
+pub fn arc_from_points_or_unswept(center: [f64; 2], start: [f64; 2], end: [f64; 2]) -> [f64; 3] {
+    arc_from_points(center, start, end).unwrap_or_else(|| {
+        let angle = libm::atan2(start[1] - center[1], start[0] - center[0]);
+        [squared_distance(center, start).sqrt(), angle, angle]
+    })
+}
+
 impl SolverConstraint {
     /// The tag it's reported by: every constraint but an arc's rules has one.
     pub fn tag(&self) -> Option<Tag> {
@@ -2630,6 +2645,33 @@ mod tests {
         );
         let most = arc_from_points([0.0, 0.0], [1.0, 1e-9], [1.0, 0.0]).unwrap();
         assert!(most[2] - most[1] > std::f64::consts::TAU - 1e-8, "{most:?}");
+    }
+
+    #[test]
+    fn an_arc_that_sweeps_nothing_is_diagnosed_at_its_starts_angle() {
+        use std::f64::consts::{FRAC_PI_2, PI};
+        // A swept arc is arc_from_points' own: the quarter from (1, 0) to (0, 1).
+        assert_eq!(
+            arc_from_points_or_unswept([0.0, 0.0], [1.0, 0.0], [0.0, 2.0]),
+            [1.0, 0.0, FRAC_PI_2]
+        );
+        // The end further out along the start's direction, at π/2 about (1, 1): the start's
+        // radius, 2, and its angle, π/2, at both ends.
+        assert_eq!(
+            arc_from_points_or_unswept([1.0, 1.0], [1.0, 3.0], [1.0, 5.0]),
+            [2.0, FRAC_PI_2, FRAC_PI_2]
+        );
+        // Either side of −0 on the far side: the start's π, not the end's −π.
+        assert_eq!(
+            arc_from_points_or_unswept([0.0, 0.0], [-1.0, 0.0], [-2.0, -0.0]),
+            [1.0, PI, PI]
+        );
+        assert_eq!(
+            arc_from_points_or_unswept([0.0, 0.0], [-1.0, -0.0], [-2.0, 0.0]),
+            [1.0, -PI, -PI]
+        );
+        // And arc_from_points still refuses them.
+        assert_eq!(arc_from_points([1.0, 1.0], [1.0, 3.0], [1.0, 5.0]), None);
     }
 
     #[test]

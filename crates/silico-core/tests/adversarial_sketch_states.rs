@@ -402,9 +402,9 @@ fn the_states_dont_depend_on_the_order_the_sketch_holds_its_lists() {
 #[test]
 fn a_sketch_the_gate_never_saw_is_stated_without_a_panic() {
     // Curves naming points it doesn't have, IDs held twice, a constraint on nothing: the
-    // translation calls it the gate's bug (internal), which is no sketch state, so it has
-    // none; its diagnosis before its constraints counts every member once by ID, and nothing
-    // panics.
+    // translation calls it the gate's bug (internal), which is no sketch state. Its geometry
+    // can't be sent alone either, for the same reason, so the read of its refused
+    // translation is that error: no states, nothing sent, and nothing panics.
     let sketch = read_sketch(&text(
         &[point("p0000001", 0.0, 0.0), point("p0000001", 1.0, 0.0)],
         &[
@@ -418,20 +418,17 @@ fn a_sketch_the_gate_never_saw_is_stated_without_a_panic() {
         )],
     ));
     let refused = Translation::new(&sketch).unwrap_err();
-    // One point, one circle, one arc, each once: 2 + 1 + 3, less the arc's 4 rules.
-    assert_eq!(
-        Diagnosis::untranslated(&sketch),
-        Diagnosis {
-            dofs: 2,
-            free: ids(&["a0000001", "c0000001", "p0000001"]),
-            ..Diagnosis::default()
-        }
-    );
     assert_eq!(refused.code(), ErrorCode::Internal, "{refused}");
-    let read = Diagnosed::untranslated(&sketch).unwrap();
-    assert_eq!(read.outcome(), Err(&refused));
-    assert_eq!(read.diagnosis(), &Diagnosis::untranslated(&sketch));
-    assert_eq!(states(&sketch, &read), Err(refused));
+    let fake = FakeSketches::new();
+    assert_eq!(
+        Diagnosis::untranslated(&sketch, &mut fake.clone()).as_ref(),
+        Err(&refused)
+    );
+    assert_eq!(
+        Diagnosed::untranslated(&sketch, &mut fake.clone()),
+        Err(refused)
+    );
+    assert!(fake.requests().is_empty());
 }
 
 /// `sketch` with its points moved by (dx, dy), and its circles' radii scaled by `scale`.

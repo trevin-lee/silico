@@ -1574,7 +1574,7 @@ fn generated(seed: u64) -> Option<Sketch> {
 /// sketch the translation refuses reads as [`untranslated_invariants`] says.
 fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), String> {
     let Ok(translation) = Translation::new(sketch) else {
-        return untranslated_invariants(sketch);
+        return untranslated_invariants(sketch, worker);
     };
     let answer = match translation.solve(worker) {
         Ok(answer) => answer,
@@ -1691,20 +1691,23 @@ fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), Str
 }
 
 /// A sketch [`Translation::new`] refuses (two points drawn at one place where a constraint is
-/// measured by the line between them, an arc that sweeps nothing): `invalid`, the refusal as
-/// its problem, an `invalid_input`; every member under defined and every constraint
-/// unsolved; and `dofs` the sketch's unknowns less its arcs' rules, counted from its lists, 2
-/// a point, 1 a circle, 3 an arc less its 4 rules, which PlaneGCS always sends (M5.0 open
-/// item 32, the sketch the translation refuses): none repeats another, since the
-/// generator gives each arc ends of its own, so no two arcs share a distance.
-fn untranslated_invariants(sketch: &Sketch) -> Result<(), String> {
-    let read = Diagnosed::untranslated(sketch).ok_or("translated after all")?;
+/// measured by the line between them, an arc that sweeps nothing), its geometry alone
+/// diagnosed by `worker`: `invalid`, the refusal as its problem, an `invalid_input`; every
+/// member under defined and every constraint unsolved; and `dofs` the sketch's unknowns less
+/// its arcs' rules, counted by hand from its lists, 2 a point, 1 a circle, 3 an arc less its
+/// 4 rules, which PlaneGCS always sends (M5.0 open item 32, the sketch the translation
+/// refuses): none repeats another, since the generator gives each arc ends of its own, so no
+/// two arcs share a distance.
+fn untranslated_invariants(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), String> {
+    let read = Diagnosed::untranslated(sketch, worker)
+        .map_err(|e| format!("diagnosis: {e}"))?
+        .ok_or("translated after all")?;
     let refusal = read.outcome().err().ok_or("refused with a solution")?;
     if refusal.code() != ErrorCode::InvalidInput {
         return Err(format!("the translation refuses with {refusal:?}"));
     }
     let got = states(sketch, &read).map_err(|e| format!("states: {e}"))?;
-    let unknowns =
+    let dofs =
         2 * sketch.points.len() as i64 + sketch.circles.len() as i64 + 3 * sketch.arcs.len() as i64
             - 4 * sketch.arcs.len() as i64;
     let all_under = got
@@ -1716,7 +1719,7 @@ fn untranslated_invariants(sketch: &Sketch) -> Result<(), String> {
         .all(|&s| s == Under);
     if got.state != SketchState::Invalid
         || got.solve_problem.as_ref() != Some(refusal)
-        || i64::from(got.dofs) != unknowns
+        || i64::from(got.dofs) != dofs
         || !all_under
         || got.constraints.values().any(|&s| s != Unsolved)
         || got.constraints.len() != sketch.constraints.len()
@@ -2259,8 +2262,9 @@ fn an_arcs_rules_repeat_where_planegcs_finds_them_repeat_counted_by_hand() {
     // Geometry alone, no constraints: the arcs' rules are the only rows. Each count is by
     // hand: 2 a point, 3 an arc (its radius and angles), less the rules' rank, 3 an arc (on
     // its own radius and angles) and the rank of what's left of each arc's four, one row,
-    // d(C, S) − d(C, E) (Diagnosis::untranslated). PlaneGCS's own count, from the worker,
-    // and the core's, must both be it.
+    // d(C, S) − d(C, E). PlaneGCS's own count, from the worker, must be it: of the sketch's
+    // solve, and of its geometry alone as a refused translation's is diagnosed
+    // (Diagnosis::untranslated).
     let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
     let centre_and = |ends: &[(&str, f64, f64)]| {
         let mut points = vec![point("p0000000", 0.0, 0.0)];
@@ -2348,9 +2352,9 @@ fn an_arcs_rules_repeat_where_planegcs_finds_them_repeat_counted_by_hand() {
             "{name}: PlaneGCS"
         );
         assert_eq!(
-            Diagnosis::untranslated(&sketch).dofs,
+            Diagnosis::untranslated(&sketch, &mut worker).unwrap().dofs,
             want,
-            "{name}: the core"
+            "{name}: the geometry alone"
         );
     }
 }
@@ -2382,7 +2386,8 @@ fn arcs_whose_distances_repeat_past_any_count_of_them_are_ranked_as_planegcs_ran
     // Drawings the generator found where a count from the arcs' graph alone (each centre's
     // cycles, shared distances, and 2n − 3 a joined set of n points) reads a degree of
     // freedom fewer than PlaneGCS: repetitions only the drawing's numbers show. Each want is
-    // PlaneGCS's, through the worker, diagnosed where drawn; the core must give it too.
+    // PlaneGCS's, through the worker, diagnosed where drawn, of the solve and of the geometry
+    // alone; and, the drawing in line moved a micron off it, the graph count again.
     let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
     let cases = [
         (
@@ -2466,6 +2471,32 @@ fn arcs_whose_distances_repeat_past_any_count_of_them_are_ranked_as_planegcs_ran
             ),
             4,
         ),
+        (
+            // The tests reviewer's (round 4): p3 moved 1 µm off x = 0, so from p4 the ends p2
+            // and p3 are no longer one direction, and the repetition is gone: the graph count,
+            // 3, PlaneGCS's too (its pivot for it about 1e-7 of the largest, far above its
+            // 1e-13 threshold).
+            "points a micron off line",
+            numbered(
+                &[
+                    (-4.0, -3.0),
+                    (1.0, 4.0),
+                    (0.0, 4.0),
+                    (1e-6, 1.0),
+                    (0.0, -3.0),
+                ],
+                &[
+                    (0, 0, 1, 2),
+                    (5, 2, 4, 0),
+                    (7, 4, 2, 0),
+                    (8, 2, 1, 3),
+                    (9, 4, 0, 3),
+                    (10, 4, 1, 0),
+                    (11, 2, 0, 1),
+                ],
+            ),
+            3,
+        ),
     ];
     for (name, sketch, want) in cases {
         assert_eq!(
@@ -2474,124 +2505,162 @@ fn arcs_whose_distances_repeat_past_any_count_of_them_are_ranked_as_planegcs_ran
             "{name}: PlaneGCS"
         );
         assert_eq!(
-            Diagnosis::untranslated(&sketch).dofs,
+            Diagnosis::untranslated(&sketch, &mut worker).unwrap().dofs,
             want,
-            "{name}: the core"
+            "{name}: the geometry alone"
         );
     }
 }
 
-/// Points, lines, circles, and arcs, no constraints, from `seed`: 2 to 8 points, at random
-/// thousandths in a 20 mm square or, half the time, on a grid of whole millimetres, where
-/// points fall in line with each other; and up to 25 arcs, each about one of them from a
-/// second to a third, so that arcs share their ends and centres and each other's distances.
-fn geometry(seed: u64) -> Option<Sketch> {
-    let mut rng = Rng(seed);
-    let n = 2 + rng.below(7) as usize;
-    let grid = rng.below(2) == 0;
-    let ids: Vec<String> = (0..n).map(|i| format!("p{i:07}")).collect();
-    let mut at = || {
-        if grid {
-            rng.below(9) as f64 - 4.0
-        } else {
-            (rng.range(-10.0, 10.0) * 1e3).round() / 1e3
-        }
-    };
-    let points: Vec<String> = ids.iter().map(|id| point(id, at(), at())).collect();
-    let mut arcs = Vec::new();
-    let mut lines = Vec::new();
-    let mut circles = Vec::new();
-    for i in 0..rng.below(26) as usize {
-        let (c, s, e) = (
-            rng.below(n as u64) as usize,
-            rng.below(n as u64) as usize,
-            rng.below(n as u64) as usize,
+#[test]
+fn a_drawing_a_hair_from_a_repetition_is_counted_as_freecad_counts_it() {
+    // The port reviewer's (round 4): A (10, 0), B (0, 0), C (5, 1e-12), D (10, 10), E (10, 5),
+    // and arcs about A from B to D, about A from E to C, about B from E to C, and about E from
+    // D to B. With C on AB (d = 0) the arcs' distance rows repeat once, and 1e-12 off it the
+    // repetition's pivot is below PlaneGCS's threshold: FreeCAD 1.1.3 counts 7, as at d = 0
+    // (10 + 12 − (12 + 3)). Beside an arc of radius 1000 about (0, 100) from (1000, 100) to
+    // (0, 1100), which sweeps a quarter and shares nothing, FreeCAD 1.1.3 counts 12: the
+    // big arc's 5, and the drawing's 7 still. PlaneGCS's own threshold decides it, so the
+    // worker gives FreeCAD's count, of the solve and of the geometry alone.
+    let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    let near = [
+        (10.0, 0.0),
+        (0.0, 0.0),
+        (5.0, 1e-12),
+        (10.0, 10.0),
+        (10.0, 5.0),
+    ];
+    let arcs = [(0, 0, 1, 3), (1, 0, 4, 2), (2, 1, 4, 2), (3, 4, 3, 1)];
+    let mut far = near.to_vec();
+    far.extend([(0.0, 100.0), (1000.0, 100.0), (0.0, 1100.0)]);
+    let mut with_big = arcs.to_vec();
+    with_big.push((4, 5, 6, 7));
+    for (name, sketch, want) in [
+        ("alone", numbered(&near, &arcs), 7),
+        ("beside a big arc", numbered(&far, &with_big), 12),
+    ] {
+        assert_eq!(
+            planegcs_dofs(&sketch, &mut worker),
+            Some(want),
+            "{name}: PlaneGCS"
         );
-        if c != s && c != e && s != e {
-            arcs.push(arc(&format!("a{i:07}"), &ids[c], &ids[s], &ids[e]));
-        }
-    }
-    for i in 0..rng.below(3) as usize {
-        let (a, b) = (rng.below(n as u64) as usize, rng.below(n as u64) as usize);
-        if a != b {
-            lines.push(line(&format!("n{i:07}"), &ids[a], &ids[b]));
-        }
-    }
-    for i in 0..rng.below(3) as usize {
-        let c = rng.below(n as u64) as usize;
-        circles.push(circle(
-            &format!("c{i:07}"),
-            &ids[c],
-            1.0 + rng.below(4) as f64,
-        ));
-    }
-    let text = document(&fields(
-        &points.join(", "),
-        &lines.join(", "),
-        &circles.join(", "),
-        &arcs.join(", "),
-        "",
-    ));
-    let doc = read(text.as_bytes()).ok()?;
-    validate(&doc).ok()?;
-    match &doc.features[0].operation {
-        Operation::Sketch(s) => Some(s.clone()),
-        _ => None,
+        assert_eq!(
+            Diagnosis::untranslated(&sketch, &mut worker).unwrap().dofs,
+            want,
+            "{name}: the geometry alone"
+        );
     }
 }
 
-/// That PlaneGCS's degrees of freedom for `sketch`, solved by `worker`, are the core's count
-/// of its geometry before its constraints, if the translation takes it.
-fn counted_as_planegcs_counts(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), String> {
-    let core = Diagnosis::untranslated(sketch).dofs;
-    match planegcs_dofs(sketch, worker) {
-        Some(planegcs) if planegcs != core => {
-            let points: Vec<String> = sketch
-                .points
-                .iter()
-                .map(|p| format!("{} ({}, {})", p.id, p.x.mm(), p.y.mm()))
-                .collect();
-            let arcs: Vec<String> = sketch
-                .arcs
-                .iter()
-                .map(|a| format!("{} about {} from {} to {}", a.id, a.center, a.start, a.end))
-                .collect();
-            Err(format!(
-                "PlaneGCS {planegcs}, the core {core}: points {points:?}, {} circles, arcs {arcs:?}",
-                sketch.circles.len()
-            ))
+#[test]
+fn a_lone_arc_that_sweeps_nothing_has_five_degrees_as_freecad_counts_a_lone_arc() {
+    // An arc about p1 (0, 0) from p2 (5, 0) to p3 (8, 0), both ends at angle 0: it sweeps
+    // nothing, so the translation refuses it, and its geometry alone is diagnosed by the
+    // worker, both its angles its start's. By hand: its centre and ends, 3 points, 6
+    // coordinates; its radius and two angles, 3; its 4 rules (each end on its circle at its
+    // angle, in x and y), which PlaneGCS always sends, tag 0, none repeating another (a lone
+    // arc shares nothing): 6 + 3 − 4 = 5, FreeCAD 1.1.3's DoF for a lone arc, though this one
+    // is drawn with its end off its circle. Every member under defined, from PlaneGCS's own
+    // free values: the arc and its three points.
+    let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    let lone = sketch_of(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 5.0, 0.0),
+            point("p0000003", 8.0, 0.0),
+        ],
+        &[],
+        &[],
+        &[arc("a0000001", "p0000001", "p0000002", "p0000003")],
+        &[],
+    );
+    let read = Diagnosed::untranslated(&lone, &mut worker)
+        .unwrap()
+        .unwrap();
+    let refusal = read.outcome().unwrap_err();
+    assert_eq!(
+        (refusal.code(), refusal.elements()),
+        (ErrorCode::InvalidInput, &["a0000001".to_owned()][..])
+    );
+    let free: BTreeSet<ElementId> = ["a0000001", "p0000001", "p0000002", "p0000003"]
+        .map(|id| ElementId::new(id).unwrap())
+        .into();
+    assert_eq!(
+        read.diagnosis(),
+        &Diagnosis {
+            dofs: 5,
+            free,
+            ..Diagnosis::default()
         }
-        _ => Ok(()),
-    }
+    );
+    expect(
+        &states(&lone, &read).unwrap(),
+        Want {
+            problem: Some(ErrorCode::InvalidInput),
+            state: SketchState::Invalid,
+            dofs: 5,
+            points: &[
+                ("p0000001", Under),
+                ("p0000002", Under),
+                ("p0000003", Under),
+            ],
+            lines: &[],
+            circles: &[],
+            arcs: &[("a0000001", Under)],
+            constraints: &[],
+        },
+    );
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig { cases: 1000, .. ProptestConfig::default() })]
-
-    #[test]
-    fn geometry_alone_counts_as_planegcs_counts_it_on_generated_sketches(seed in any::<u64>()) {
-        let Some(sketch) = geometry(seed) else {
-            return Ok(());
-        };
-        thread_local!(static W: std::cell::RefCell<SketchWorker> = std::cell::RefCell::new(
-            SketchWorker::start_worker(Path::new(WORKER)).unwrap()
-        ));
-        let got = W.with(|w| counted_as_planegcs_counts(&sketch, &mut w.borrow_mut()));
-        prop_assert!(got.is_ok(), "seed {seed}: {}", got.unwrap_err());
-    }
-
-    #[test]
-    fn the_generators_geometry_without_its_constraints_counts_as_planegcs_counts_it(
-        seed in any::<u64>()
-    ) {
-        let Some(mut sketch) = generated(seed) else {
-            return Ok(());
-        };
-        sketch.constraints.clear();
-        thread_local!(static W: std::cell::RefCell<SketchWorker> = std::cell::RefCell::new(
-            SketchWorker::start_worker(Path::new(WORKER)).unwrap()
-        ));
-        let got = W.with(|w| counted_as_planegcs_counts(&sketch, &mut w.borrow_mut()));
-        prop_assert!(got.is_ok(), "seed {seed}: {}", got.unwrap_err());
-    }
+#[test]
+fn two_halves_beside_an_arc_that_sweeps_nothing_are_counted_by_the_worker_as_by_hand() {
+    // Two halves of a circle about p1 (0, 0) on p2 (5, 0) and p3 (−5, 0), and an arc about
+    // p1 from p2 to p4 (8, 0), both at angle 0, which sweeps nothing, so the translation
+    // refuses the sketch. By hand: 4 points and 3 arcs, 8 + 9; less each arc's 3 on its own
+    // radius and angles, and the rank of the rows left, d12 − d13, d13 − d12, d12 − d14, the
+    // first two one the other's negative: 9 + 2, so 6 (the count subtracting 4 an arc read
+    // 5). Through the worker, its geometry alone; every member under defined.
+    let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    let refused = sketch_of(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 5.0, 0.0),
+            point("p0000003", -5.0, 0.0),
+            point("p0000004", 8.0, 0.0),
+        ],
+        &[],
+        &[],
+        &[
+            arc("a0000001", "p0000001", "p0000002", "p0000003"),
+            arc("a0000002", "p0000001", "p0000003", "p0000002"),
+            arc("a0000003", "p0000001", "p0000002", "p0000004"),
+        ],
+        &[],
+    );
+    let read = Diagnosed::untranslated(&refused, &mut worker)
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.outcome().unwrap_err().elements(), ["a0000003"]);
+    expect(
+        &states(&refused, &read).unwrap(),
+        Want {
+            problem: Some(ErrorCode::InvalidInput),
+            state: SketchState::Invalid,
+            dofs: 6,
+            points: &[
+                ("p0000001", Under),
+                ("p0000002", Under),
+                ("p0000003", Under),
+                ("p0000004", Under),
+            ],
+            lines: &[],
+            circles: &[],
+            arcs: &[
+                ("a0000001", Under),
+                ("a0000002", Under),
+                ("a0000003", Under),
+            ],
+            constraints: &[],
+        },
+    );
 }
