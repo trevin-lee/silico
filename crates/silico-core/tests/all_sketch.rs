@@ -48,6 +48,8 @@ mod adversarial_sketch_features;
 mod adversarial_sketch_solve;
 #[path = "adversarial_sketch_split.rs"]
 mod adversarial_sketch_split;
+#[path = "adversarial_sketch_trim.rs"]
+mod adversarial_sketch_trim;
 #[path = "adversarial_stored_coordinates.rs"]
 mod adversarial_stored_coordinates;
 #[path = "adversarial_warm.rs"]
@@ -74,6 +76,8 @@ mod sketch_gate;
 mod sketch_solve;
 #[path = "sketch_split.rs"]
 mod sketch_split;
+#[path = "sketch_trim.rs"]
+mod sketch_trim;
 #[path = "stored_coordinates.rs"]
 mod stored_coordinates;
 #[path = "timeline.rs"]

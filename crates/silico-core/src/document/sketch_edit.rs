@@ -14,7 +14,9 @@ use super::sketch::{ElementId, ElementKind, Form, Reference, Sketch, SketchPoint
 use crate::{Error, ErrorCode};
 
 mod split;
+mod trim;
 pub use split::{Split, split};
+pub use trim::{Trim, trim};
 
 /// A sketch edited, and what changed (docs/design/m5.0-app.md, section 7, *The sketch
 /// edits*): `added` in the order the edit made them, by kind (points, lines, circles, arcs,
@@ -692,6 +694,40 @@ fn no_member(id: &ElementId, kind: ElementKind, parameter: &str) -> Error {
     )
     .with_parameter(parameter.to_owned())
     .with_suggestion(format!("name a {what} of this sketch by its ID"))
+}
+
+/// Refuses `ids` unless they're `needed` IDs no member of the sketch has, each once: the new
+/// members' of `edit` ("the split"), `order` saying what they're for, in order.
+fn new_ids(
+    kinds: &BTreeMap<ElementId, ElementKind>,
+    ids: &[ElementId],
+    needed: usize,
+    edit: &str,
+    order: &str,
+) -> Result<(), Error> {
+    if ids.len() != needed {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!("{edit} needs {needed} new IDs, got {}", ids.len()),
+        )
+        .with_parameter("ids")
+        .with_suggestion(format!(
+            "give one ID for each member {edit} adds, in order: {order}"
+        )));
+    }
+    for (place, id) in ids.iter().enumerate() {
+        let message = if kinds.contains_key(id) {
+            format!("the sketch already has a member {id}")
+        } else if ids[..place].contains(id) {
+            format!("ID {id} is given twice")
+        } else {
+            continue;
+        };
+        return Err(Error::new(ErrorCode::InvalidInput, message)
+            .with_parameter(format!("ids.{place}"))
+            .with_suggestion("give IDs no member of the sketch has, each once"));
+    }
+    Ok(())
 }
 
 /// A merge of fewer than two points.
