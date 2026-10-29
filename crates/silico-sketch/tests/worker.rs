@@ -113,9 +113,12 @@ fn an_arc_whose_rules_alone_depend_lists_no_dependency_and_still_solves() {
     // π/2: the start's x row is (−cos a1, r sin a1, 0) = (−1, 0, 0), its y row (−sin a1,
     // −r cos a1, 0) = (0, −5, 0), the end's x row (−cos a2, 0, r sin a2) = (0, 0, 5), and its
     // y row (−sin a2, 0, −r cos a2) = (−1, 0, 0) (to cos(π/2)'s 6e-17): 4 rows of rank 3,
-    // the start's x and the end's y one dependency, all tag 0. So no dependency is listed,
-    // nothing is flagged, 0 left, nothing free, and the drawing, which meets every rule,
-    // solves.
+    // the start's x and the end's y one dependency, all tag 0. So no dependency is listed and
+    // nothing is flagged: PlaneGCS's contest takes no tag-0 row (GCS.cpp,
+    // identifyConflictingRedundantConstraints), so all 4 rows count as kept, and with as
+    // many unknowns as the rank (3) and more kept rows than that its count is 3 − 4 = −1
+    // (System::diagnose's over-constrained case), the core's to read. Nothing is free, and
+    // the drawing, which meets every rule, solves.
     let mut b = systems::Builder::default();
     let center = silico_protocol::PointValues {
         x: b.fixed(0.0),
@@ -147,7 +150,7 @@ fn an_arc_whose_rules_alone_depend_lists_no_dependency_and_still_solves() {
     assert!(solved.conflicting.is_empty(), "{solved:?}");
     assert!(solved.redundant.is_empty(), "{solved:?}");
     assert!(solved.partially_redundant.is_empty(), "{solved:?}");
-    assert_eq!(solved.dofs, 0, "{solved:?}");
+    assert_eq!(solved.dofs, -1, "{solved:?}");
     assert!(solved.free.is_empty(), "{solved:?}");
     assert_eq!(solved.status, SolveStatus::Success, "{solved:?}");
 }
