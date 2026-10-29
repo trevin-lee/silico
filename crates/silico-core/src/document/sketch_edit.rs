@@ -404,12 +404,39 @@ pub fn merge(sketch: &Sketch, points: &[ElementId]) -> Result<Edited, Error> {
     own_curve(&edited, "merging them", "points", "merge other points")?;
     modified.extend(repointed);
     edited.points.retain(|p| !others.contains(&p.id));
+    gated(&edited, points)?;
     Ok(Edited {
         sketch: edited,
         added: Vec::new(),
         modified: ordered(&kinds, modified),
         removed: ordered(&kinds, others.into_iter().cloned()),
     })
+}
+
+/// Refuses a merged sketch the gate would: as the merge's refusal, naming the points and
+/// what the gate names. The merge places points by ID, never by value, so a curve it leaves
+/// with no size (its ends, or an arc's end and centre, drawn at one place) or a sketch its
+/// `tangent_at`s take past the solver's values is the gate's to find.
+fn gated(edited: &Sketch, points: &[ElementId]) -> Result<(), Error> {
+    let Some(problem) = super::sketch_problems(edited).into_iter().next() else {
+        return Ok(());
+    };
+    let mut elements: Vec<String> = points.iter().map(ToString::to_string).collect();
+    for e in problem.elements() {
+        if !elements.contains(e) {
+            elements.push(e.clone());
+        }
+    }
+    Err(Error::new(
+        ErrorCode::InvalidInput,
+        format!(
+            "merging them would leave a sketch the gate refuses: {}",
+            problem.message()
+        ),
+    )
+    .with_elements(elements)
+    .with_parameter("points")
+    .with_suggestion("merge other points, or change what the merge would collapse"))
 }
 
 /// Each edge `tangent` of `sketch` between two curves that share one end, made a
@@ -461,8 +488,12 @@ fn tangents_at_shared_ends(sketch: &mut Sketch) -> Vec<ElementId> {
 }
 
 /// The `direction` of a `tangent_at` of `a` and `b` at their shared end `at`, as `sketch`'s
-/// coordinates show it: `same` where the way `a` arrives at `at` and the way `b` leaves it
-/// agree (their dot product not negative), as the solve reads a `tangent_at`.
+/// coordinates show it, as FreeCAD locks an endpoint tangency's angle
+/// (`AutoLockTangencyAndPerpty`, `SketchObjectConstraints.cpp`): the angle between the two
+/// curves' own directions there is 0 unless they're more than a right angle apart, then π,
+/// so square to each other (or with no direction to measure) it's 0. The solve's
+/// translation reads 0 as `same` where `at` ends one and starts the other, `opposite`
+/// where it's both's start or both's end.
 fn drawn_at(sketch: &Sketch, a: &Reference, b: &Reference, at: &Reference) -> Direction {
     let (Some(xy), Some(a_starts), Some(b_starts)) = (
         split::reference_at(sketch, at),
@@ -477,17 +508,10 @@ fn drawn_at(sketch: &Sketch, a: &Reference, b: &Reference, at: &Reference) -> Di
     ) else {
         return Direction::Same;
     };
-    let arriving = if a_starts {
-        [-along_a[0], -along_a[1]]
-    } else {
-        along_a
-    };
-    let leaving = if b_starts {
-        along_b
-    } else {
-        [-along_b[0], -along_b[1]]
-    };
-    if arriving[0] * leaving[0] + arriving[1] * leaving[1] >= 0.0 {
+    let apart = along_a[0] * along_b[0] + along_a[1] * along_b[1] < 0.0;
+    // A path along `a` into `at` and on along `b` runs with both curves' own directions
+    // where `at` ends one and starts the other.
+    if (a_starts != b_starts) != apart {
         Direction::Same
     } else {
         Direction::Opposite

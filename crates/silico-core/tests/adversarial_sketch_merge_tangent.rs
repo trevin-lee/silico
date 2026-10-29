@@ -447,7 +447,34 @@ fn an_arcs_end_merged_onto_its_centres_place_beside_an_edge_tangent() {
     // Before its fix: merge returns Ok; the gate refuses "arc r0000000's start, point
     // p0000001 at (10, 10), is 0 mm from its center, point q0000000 at (10, 10)".
     let before = line_to((10.0, 10.0), true);
-    let _ = refused_or_gated(&before, &["p0000001", "p0000009"]);
+    let error = refused_or_gated(&before, &["p0000001", "p0000009"]).unwrap_err();
+    assert_refused(
+        &error,
+        "arc r0000000's start, point p0000001 at (10, 10), is 0 mm from its center",
+        &["p0000001", "p0000009", "r0000000"],
+    );
+}
+
+/// The merge's refusal of what the gate would refuse: its words, then the gate's.
+#[track_caller]
+fn assert_refused(error: &silico_core::Error, gate_says: &str, elements: &[&str]) {
+    let prefix = "merging them would leave a sketch the gate refuses: ";
+    assert!(
+        error
+            .message()
+            .strip_prefix(prefix)
+            .is_some_and(|m| m.starts_with(gate_says)),
+        "{error:?}"
+    );
+    assert_eq!(error.code(), silico_core::ErrorCode::InvalidInput);
+    assert_eq!(error.parameter(), Some("points"));
+    for e in elements {
+        assert!(error.elements().iter().any(|x| x == e), "{e}: {error:?}");
+    }
+    assert_eq!(
+        error.suggestion(),
+        Some("merge other points, or change what the merge would collapse")
+    );
 }
 
 #[test]
@@ -458,7 +485,20 @@ fn an_arcs_end_merged_onto_its_other_ends_place_beside_an_edge_tangent() {
     // points p0000001 and p0000008, are both drawn at (20, 10), so its sweep is 0 or a
     // whole turn".
     let before = line_to((20.0, 10.0), true);
-    let _ = refused_or_gated(&before, &["p0000001", "p0000009"]);
+    let error = refused_or_gated(&before, &["p0000001", "p0000009"]).unwrap_err();
+    assert_refused(
+        &error,
+        "arc r0000000's start and end",
+        &["p0000001", "p0000009", "r0000000"],
+    );
+    // With no tangency it's refused alike (main's merge, which places by ID, took it).
+    let error =
+        refused_or_gated(&line_to((20.0, 10.0), false), &["p0000001", "p0000009"]).unwrap_err();
+    assert_refused(
+        &error,
+        "arc r0000000's start and end",
+        &["p0000001", "p0000009", "r0000000"],
+    );
 }
 
 #[test]
@@ -480,7 +520,12 @@ fn a_lines_end_merged_onto_its_other_ends_place_beside_an_edge_tangent() {
         &[arc("r0000000", "q0000000", "p0000009", "p0000008")],
         &[tangent("k0000000", "a0000000", "r0000000", "left")],
     );
-    let _ = refused_or_gated(&before, &["p0000009", "p0000001"]);
+    let error = refused_or_gated(&before, &["p0000009", "p0000001"]).unwrap_err();
+    assert_refused(
+        &error,
+        "line a0000000 is 0 mm long",
+        &["p0000009", "p0000001", "a0000000"],
+    );
 }
 
 // --------------------------------------------------- a sketch at the solver's limits
@@ -528,10 +573,44 @@ fn a_merge_at_the_values_limit_whose_tangent_ats_carry_it_past() {
         &arcs,
         &constraints,
     );
-    let edited = refused_or_gated(&before, &["p0000001", "p0000009"]);
-    if let Err(error) = edited {
-        assert_eq!(error.parameter(), Some("points"), "{error:?}");
-    }
+    let error = refused_or_gated(&before, &["p0000001", "p0000009"]).unwrap_err();
+    assert_refused(
+        &error,
+        "the sketch has 10001 values, more than the 10000 the sketch solver takes",
+        &["p0000001", "p0000009"],
+    );
+}
+
+#[test]
+fn square_curves_both_starting_at_the_merged_point_lock_at_0_as_freecad_does() {
+    // a0 from p1 (10, 0) down to (10, −10), its own direction −y; r0 about (10, 10) from p9
+    // (10, 4e-8) round to (20, 10), its own direction +x there: square, both starting at
+    // p1. FreeCAD's AutoLockTangencyAndPerpty locks the angle between their own directions
+    // at 0 unless they're more than a right angle apart, so 0 here; with both starting at
+    // the point, the solve reads 0 as `opposite`.
+    // Before its fix: `same` (a path's dot product of 0 taken as smooth), which the solve
+    // reads as π.
+    let before = doc(
+        &[
+            point("p0000000", 10.0, -10.0),
+            point("p0000001", 10.0, 0.0),
+            point("p0000008", 20.0, 10.0),
+            point("p0000009", 10.0, 0.00000004),
+            point("q0000000", 10.0, 10.0),
+        ],
+        &[line("a0000000", "p0000001", "p0000000")],
+        &[arc("r0000000", "q0000000", "p0000009", "p0000008")],
+        &[tangent("k0000000", "a0000000", "r0000000", "left")],
+    );
+    let edited = merged(&before, &["p0000001", "p0000009"]);
+    tangent_at(
+        &edited,
+        "k0000000",
+        "a0000000",
+        "r0000000",
+        "p0000001",
+        Direction::Opposite,
+    );
 }
 
 // ------------------------------------------------------------------ property test
