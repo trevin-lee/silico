@@ -125,7 +125,7 @@ pub(crate) fn fits(document: &Document) -> bool {
 
 /// The gate's first refusal of an edit's result `edited`, said as the edit's refusal:
 /// "{`doing`} would leave a sketch the gate refuses: {the gate's message}", naming `leading`
-/// and then what the gate names, each once; none if the gate takes it. The sketch edits
+/// and then what the gate names, each once; `Ok` if the gate takes it. The sketch edits
 /// place points by ID and extend moves one, so what they leave by value is the gate's to
 /// find.
 pub(crate) fn refused_by_gate(
@@ -134,25 +134,25 @@ pub(crate) fn refused_by_gate(
     mut leading: Vec<String>,
     parameter: &str,
     suggestion: &str,
-) -> Option<Error> {
-    let problem = sketch_problems(edited).into_iter().next()?;
+) -> Result<(), Error> {
+    let Some(problem) = sketch_problems(edited).into_iter().next() else {
+        return Ok(());
+    };
     for e in problem.elements() {
         if !leading.contains(e) {
             leading.push(e.clone());
         }
     }
-    Some(
-        Error::new(
-            ErrorCode::InvalidInput,
-            format!(
-                "{doing} would leave a sketch the gate refuses: {}",
-                problem.message()
-            ),
-        )
-        .with_elements(leading)
-        .with_parameter(parameter.to_owned())
-        .with_suggestion(suggestion.to_owned()),
+    Err(Error::new(
+        ErrorCode::InvalidInput,
+        format!(
+            "{doing} would leave a sketch the gate refuses: {}",
+            problem.message()
+        ),
     )
+    .with_elements(leading)
+    .with_parameter(parameter.to_owned())
+    .with_suggestion(suggestion.to_owned()))
 }
 
 /// What the gate refuses of `sketch` on its own (`sketch_gate`): M3.4 checks a solve's

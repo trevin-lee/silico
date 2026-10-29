@@ -456,16 +456,13 @@ fn place(sketch: &mut Sketch, id: &ElementId, xy: [f64; 2]) -> Result<(), ()> {
 /// Refuses an edited sketch the gate would: as the edit's refusal, naming what the gate
 /// names, with the curve extended.
 fn gated(edited: &Sketch, curve: &ElementId) -> Result<(), Error> {
-    match crate::document::refused_by_gate(
+    crate::document::refused_by_gate(
         edited,
         &format!("extending {curve} there"),
         vec![curve.to_string()],
         "by",
         "extend it by less, or change what moves with its end",
-    ) {
-        Some(refusal) => Err(refusal),
-        None => Ok(()),
-    }
+    )
 }
 
 fn refused(message: String, parameter: &str, suggestion: &str) -> Error {

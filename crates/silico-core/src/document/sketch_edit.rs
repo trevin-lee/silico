@@ -410,15 +410,13 @@ pub fn merge(sketch: &Sketch, points: &[ElementId]) -> Result<Edited, Error> {
     // A merge places points by ID: a curve it leaves with no size (its ends, or an arc's end
     // and centre, drawn at one place), or a sketch its tangent_ats take past the solver's
     // values, is the gate's to find.
-    if let Some(refusal) = super::refused_by_gate(
+    super::refused_by_gate(
         &edited,
         "merging them",
         points.iter().map(ToString::to_string).collect(),
         "points",
         "merge other points, or change what the merge would collapse",
-    ) {
-        return Err(refusal);
-    }
+    )?;
     Ok(Edited {
         sketch: edited,
         added: Vec::new(),
@@ -435,19 +433,19 @@ pub fn merge(sketch: &Sketch, points: &[ElementId]) -> Result<Edited, Error> {
 /// Curves sharing both ends, which have no one point for it, are left for [`own_curve`] to
 /// refuse. The IDs made `tangent_at`s.
 fn tangents_at_shared_ends(sketch: &mut Sketch) -> Vec<ElementId> {
-    let ends: BTreeMap<ElementId, [ElementId; 2]> = sketch
-        .lines
+    let Sketch {
+        lines,
+        arcs,
+        constraints,
+        ..
+    } = sketch;
+    let ends: BTreeMap<&ElementId, [&ElementId; 2]> = lines
         .iter()
-        .map(|l| (l.id.clone(), [l.from.clone(), l.to.clone()]))
-        .chain(
-            sketch
-                .arcs
-                .iter()
-                .map(|a| (a.id.clone(), [a.start.clone(), a.end.clone()])),
-        )
+        .map(|l| (&l.id, [&l.from, &l.to]))
+        .chain(arcs.iter().map(|a| (&a.id, [&a.start, &a.end])))
         .collect();
     let mut made = Vec::new();
-    for constraint in &mut sketch.constraints {
+    for constraint in constraints {
         let Form::Tangent { a, b, side } = &constraint.form else {
             continue;
         };
@@ -457,12 +455,12 @@ fn tangents_at_shared_ends(sketch: &mut Sketch) -> Vec<ElementId> {
         ) else {
             continue;
         };
-        let shared: Vec<&ElementId> = of_a.iter().filter(|p| of_b.contains(p)).collect();
+        let shared: Vec<&ElementId> = of_a.iter().copied().filter(|p| of_b.contains(p)).collect();
         let [at] = shared[..] else {
             continue;
         };
         // Whether the shared point ends one curve and starts the other.
-        let end_to_start = (of_a[0] == *at) != (of_b[0] == *at);
+        let end_to_start = (of_a[0] == at) != (of_b[0] == at);
         constraint.form = Form::TangentAt {
             a: a.clone(),
             b: b.clone(),
