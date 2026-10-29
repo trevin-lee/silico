@@ -150,6 +150,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Two features with the same display name
 - Features that produce zero faces or an empty result
 - Long undo/redo sequences mixed with recomputes
+- State kept "the first time" inside a transaction (the first edit that mends text that didn't read, kept as its mend): undo back past it and edit otherwise, and the stale first state still decides what the new edits reach; compare the commit with the same edits made without the undone one
 - References by stale names after an upstream edit
 - Ambiguous (`~n`) names that the next feature keeps unchanged: a "duplicated" set filled only by one map's own collisions forgets them, so the pair is unmarked downstream; check `is_duplicated` one feature later
 - Element number 0 in a name (`k7f2qx3m.Face0`): a map that answers for any number of a kind resolves it, and a bound of `index <= count` lets it through; elements count from 1
