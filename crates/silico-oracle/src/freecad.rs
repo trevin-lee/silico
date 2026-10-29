@@ -264,6 +264,12 @@ impl Freecad {
             .env("XDG_CONFIG_HOME", home.join(".config"))
             .env("XDG_DATA_HOME", home.join(".local/share"))
             .env("XDG_CACHE_HOME", home.join(".cache"))
+            // One locale on every platform, whatever the caller's: what OCCT's C library
+            // calls answer can depend on it (`isgraph` past ASCII, which macOS's UTF-8
+            // locales accept and its C locale and glibc's don't), and an oracle answers
+            // alike everywhere.
+            .env("LC_ALL", "C")
+            .env("LANG", "C")
             .stdin(Stdio::null())
             .stdout(input.try_clone().map_err(pipe)?)
             .stderr(input);
