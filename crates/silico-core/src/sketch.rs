@@ -840,7 +840,9 @@ fn holdable(file: &Sketch) -> Result<(), Error> {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Diagnosis {
     /// Degrees of freedom left, as PlaneGCS counts them: negative when constraints
-    /// conflict, and −1 for a sketch of no unknowns.
+    /// conflict, and −1 for a sketch of no unknowns. Negative too when an arc's rules alone
+    /// repeat each other (PlaneGCS then counts every row), a case no document reaches
+    /// (docs/ports/sketcher.md, *A dependency*).
     pub dofs: i32,
     /// The points, circles, and arcs with a value of their own the diagnosis finds free (a
     /// point's x or y, a circle's radius, an arc's radius or either angle): every one, when
