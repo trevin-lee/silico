@@ -39,7 +39,8 @@ const SELECTED: Kinds = Kinds {
 /// The most names one selection holds: ten times the most a render highlights, room for a
 /// box selection across a large part. Each name's answer costs what its own text does, and
 /// a failed feature's failure is kept once, so a selection this long answers in bounded
-/// time and memory.
+/// time and memory. A box selection over a large part can take more: the app clips it to
+/// this, or warns, before calling, rather than lose the whole selection to the refusal.
 pub const MAX_SELECTED: usize = 10_000;
 
 /// A selection read against a model: the names found, those gone, and those not answered
@@ -52,6 +53,10 @@ pub struct Resolved {
     pub gone: Vec<Gone>,
     /// Names whose body's elements aren't named yet: the background names a model's
     /// elements once it's published, so asked again on a later frame, they're answered.
+    /// Meanwhile the app keeps its previous answer for each, so the selection doesn't
+    /// flicker. A model the background never finishes naming (a newer one published, or
+    /// the engine dropped, mid-naming) leaves them pending: the app asks again of the next
+    /// published model.
     pub pending: Vec<Pending>,
     /// The failure of each feature that didn't build that a gone name is of, once each: its
     /// errors as `check` gives them.
@@ -139,9 +144,11 @@ pub fn resolve<S: AsRef<str>>(
 
 /// `names`, a selection carried to `model`, newly published after a rebuild: what's kept,
 /// each with its stability now, and what's gone, for the app to clear and say. As
-/// [`resolve`], but a name that's unstable and has no stable alias is gone, its reason the
-/// store's refusal: its text can survive while its element doesn't, so it could come to
-/// name another element. The same threads may call it.
+/// [`resolve`], but a name that's unstable in `model` is gone, its reason the store's
+/// refusal, whatever the element it finds now and whatever that element's aliases: its text
+/// can survive while its element doesn't, so it could find another element now. Nothing is
+/// lost by it: [`resolve`] holds an element picked by an unstable name by its stable alias,
+/// if it had one then. The same threads may call it.
 pub fn refresh<S: AsRef<str>>(
     model: &Model,
     names: &[S],
@@ -211,36 +218,42 @@ fn read<S: AsRef<str>>(
                 continue;
             }
         };
+        let name = Arc::new(name);
+        // The store's refusal of the name as given, if it's unstable.
+        let mut refusal = || {
+            let candidates = candidates
+                .entry((feature, element.kind))
+                .or_insert_with(|| Candidates::of(&[map], element.kind))
+                .of_name(&name);
+            refused(&at, text, &unstable(element.kind), element.kind, candidates)
+        };
+        let stored = match (map.is_unstable(&name), carry) {
+            (false, _) => Ok(Arc::clone(&name)),
+            // Carried, unstable text is gone whatever the element it finds now: that may be
+            // another element than the one picked, and an alias it has now would be held as
+            // if it were the one picked. A pick holds the stable alias it had then.
+            (true, Carry::StableOnly) => {
+                resolved.gone.push(Gone {
+                    name: text.to_owned(),
+                    place,
+                    why: refusal().into(),
+                    failed: None,
+                });
+                continue;
+            }
+            (true, Carry::Unstable) => stable_name(map, element).ok_or_else(refusal),
+        };
+        // An element found again by a later name: taken once, at the first.
         if !found.insert((feature, element)) {
             continue;
         }
-        let name = Arc::new(name);
-        let stored = if map.is_unstable(&name) {
-            stable_name(map, element).ok_or_else(|| {
-                let candidates = candidates
-                    .entry((feature, element.kind))
-                    .or_insert_with(|| Candidates::of(&[map], element.kind))
-                    .of_name(&name);
-                refused(&at, text, &unstable(element.kind), element.kind, candidates)
-            })
-        } else {
-            Ok(Arc::clone(&name))
-        };
-        match (stored, carry) {
-            (Err(refusal), Carry::StableOnly) => resolved.gone.push(Gone {
-                name: text.to_owned(),
-                place,
-                why: refusal.into(),
-                failed: None,
-            }),
-            (stored, _) => resolved.kept.push(Selected {
-                name: stored.as_ref().map_or(name, Arc::clone),
-                place,
-                feature: feature.clone(),
-                element,
-                stored,
-            }),
-        }
+        resolved.kept.push(Selected {
+            name: stored.as_ref().map_or(name, Arc::clone),
+            place,
+            feature: feature.clone(),
+            element,
+            stored,
+        });
     }
     resolved.failures = lookup.failures();
     Ok(resolved)
@@ -940,14 +953,115 @@ mod tests {
         let edge = resolve(&model, &["rrrrrrrr.fuse.Edge1"], "selection").unwrap();
         assert!(!edge.kept[0].stable());
         assert_eq!(edge.kept[0].name.to_string(), "rrrrrrrr.fuse.Edge1");
-        // Carried, the face is kept by its alias, the edge gone.
+        // Carried, unstable text is gone, the face's own name too, though the face has a
+        // stable alias now: the pick held it by the alias, which is carried and kept.
         let carried = refresh(&model, &[own, "rrrrrrrr.fuse.Edge1"], "selection").unwrap();
+        assert!(carried.kept.is_empty(), "{carried:?}");
+        let places: Vec<usize> = carried.gone.iter().map(|g| g.place).collect();
+        assert_eq!(places, [0, 1]);
+        assert_eq!(
+            carried.gone[0].why.errors()[0].message(),
+            format!(r#"selection.0, "{own}", {UNSTABLE_FACE}"#)
+        );
+        let held: Vec<String> = by_own.kept.iter().map(|s| s.name.to_string()).collect();
+        let carried = refresh(&model, &held, "selection").unwrap();
         assert_eq!(
             kept(&carried),
             [(alias.to_owned(), "ssssssss", face1, Some(alias.to_owned()))]
         );
-        assert_eq!(carried.gone.len(), 1);
-        assert_eq!(carried.gone[0].place, 1);
+        // Unstable text gone, the element's stable name after it is still kept: the gone
+        // name holds no place for its element.
+        let carried = refresh(&model, &[own, alias], "selection").unwrap();
+        assert_eq!(
+            kept(&carried),
+            [(alias.to_owned(), "ssssssss", face1, Some(alias.to_owned()))]
+        );
+        assert_eq!(carried.kept[0].place, 1);
+    }
+
+    /// A second fuse's history, of the numbering fuse (base) and a cube (tool): the base
+    /// kept whole, and nothing of the tool reported, so it names nothing new.
+    fn plain_fuse() -> History {
+        let mut history = aliasing_fuse();
+        history.inputs[1].faces[0] = ElementFate::default();
+        history.validate(2).unwrap();
+        history
+    }
+
+    #[test]
+    fn carried_unstable_text_is_gone_though_the_element_it_finds_now_has_a_stable_alias() {
+        // The format reviewer's proof. Before: the numbering fuse's `rrrrrrrr.fuse.Face1`,
+        // fused again plainly with a 2 mm cube, names the second fuse's Face1, which has no
+        // other name: picked, unstable, held as given. Then the first fuse's tool edited (3
+        // mm: the renumbering fuse, so the text names another face) and the cube made 4 mm
+        // (the aliasing fuse: its Face1 joins the face the text names now). The text finds
+        // a face it never picked, which has a stable alias now; carried, it's gone, its word
+        // the store's refusal, never kept as `cccccccc.box.Face1`.
+        let name = "rrrrrrrr.fuse.Face1";
+        let features = |tool: u32, cube: u32| {
+            [
+                a_box("aaaaaaaa", 0, 1),
+                a_box("bbbbbbbb", 5, tool),
+                operation("rrrrrrrr", "fuse", "aaaaaaaa", "bbbbbbbb"),
+                a_box("cccccccc", 9, cube),
+                operation("ssssssss", "fuse", "rrrrrrrr", "cccccccc"),
+            ]
+        };
+        let fusing = || {
+            forging(|tool| {
+                Some(if tool.contains("box(3,") {
+                    renumbering_fuse()
+                } else if tool.contains("box(2,") {
+                    plain_fuse()
+                } else if tool.contains("box(4,") {
+                    aliasing_fuse()
+                } else {
+                    numbering_fuse()
+                })
+            })
+        };
+        let face1 = element(ElementKind::Face, 1);
+        let before = rebuilt(&features(1, 2), fusing());
+        let names_of = |model: &Model| -> Vec<String> {
+            model
+                .element_map(&FeatureId::new("ssssssss").unwrap())
+                .unwrap()
+                .names(face1)
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        };
+        assert_eq!(names_of(&before), [name]);
+        let picked = resolve(&before, &[name], "selection").unwrap();
+        assert_eq!(kept(&picked), [(name.to_owned(), "ssssssss", face1, None)]);
+        let after = rebuilt(&features(3, 4), fusing());
+        assert_eq!(names_of(&after), [name, "cccccccc.box.Face1"]);
+        let held: Vec<String> = picked.kept.iter().map(|s| s.name.to_string()).collect();
+        let carried = refresh(&after, &held, "selection").unwrap();
+        assert!(carried.kept.is_empty(), "{carried:?}");
+        let [gone] = carried.gone.as_slice() else {
+            panic!("{carried:?}")
+        };
+        let [error] = gone.why.errors() else {
+            panic!("{:?}", gone.why)
+        };
+        assert_eq!(error.code(), ErrorCode::ReferenceBroken);
+        assert_eq!(
+            error.message(),
+            format!(r#"selection.0, "{name}", {UNSTABLE_FACE}"#)
+        );
+        // A new pick of the text on the edited model is another matter: held by the alias
+        // the face has now.
+        let repicked = resolve(&after, &[name], "selection").unwrap();
+        assert_eq!(
+            kept(&repicked),
+            [(
+                "cccccccc.box.Face1".to_owned(),
+                "ssssssss",
+                face1,
+                Some("cccccccc.box.Face1".to_owned())
+            )]
+        );
     }
 
     /// The numbering fuse after an edit of its tool: the base's Face1 kept, as the result's
