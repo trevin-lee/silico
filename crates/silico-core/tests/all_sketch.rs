@@ -44,6 +44,8 @@ mod adversarial_sketch_extend;
 mod adversarial_sketch_features;
 #[path = "adversarial_sketch_solve.rs"]
 mod adversarial_sketch_solve;
+#[path = "adversarial_sketch_split.rs"]
+mod adversarial_sketch_split;
 #[path = "adversarial_stored_coordinates.rs"]
 mod adversarial_stored_coordinates;
 #[path = "chain.rs"]
@@ -64,6 +66,8 @@ mod sketch_features_gate;
 mod sketch_gate;
 #[path = "sketch_solve.rs"]
 mod sketch_solve;
+#[path = "sketch_split.rs"]
+mod sketch_split;
 #[path = "stored_coordinates.rs"]
 mod stored_coordinates;
 #[path = "undo.rs"]
