@@ -4055,3 +4055,53 @@ fn the_disk_of_a_session_not_open_is_refused_naming_it() {
     f.sessions.close(&f.id).wait().result.unwrap();
     assert!(f.sessions.disk(&f.id).is_err());
 }
+
+// ---- Break-it (PR #269): the session's own saves, compared with no interval ----
+
+#[test]
+fn asked_without_pause_through_many_commits_the_sessions_own_saves_never_read_as_changed() {
+    let f = Arc::new(opened(STORED));
+    disk_reaches(&f, Disk::Unchanged);
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let askers: Vec<_> = (0..3)
+        .map(|_| {
+            let (f, done) = (Arc::clone(&f), Arc::clone(&done));
+            std::thread::spawn(move || {
+                let mut seen = Vec::new();
+                let mut asked = 0_u64;
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    let found = f.sessions.disk(&f.id).unwrap();
+                    asked += 1;
+                    if found.is_some_and(|found| found != Disk::Unchanged) {
+                        seen.push(found);
+                    }
+                }
+                (asked, seen)
+            })
+        })
+        .collect();
+    for n in 0..60 {
+        f.begin();
+        f.edit(&if n % 2 == 0 {
+            longer()
+        } else {
+            STORED.to_owned()
+        });
+        let committed = f.sessions.commit(&f.id).wait().result.unwrap();
+        assert!(committed.written, "{n}");
+        // At once, whatever comparison was running.
+        assert_eq!(
+            f.sessions.disk(&f.id).unwrap(),
+            Some(Disk::Unchanged),
+            "{n}"
+        );
+    }
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    for asker in askers {
+        let (asked, seen) = asker.join().unwrap();
+        assert!(asked > 0);
+        assert!(seen.is_empty(), "{seen:?}");
+    }
+    // And after: the file is what the last commit wrote.
+    disk_reaches(&f, Disk::Unchanged);
+}
