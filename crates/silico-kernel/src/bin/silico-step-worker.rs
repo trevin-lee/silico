@@ -9,6 +9,7 @@
 // root (see ARCHITECTURE.md).
 #![allow(unsafe_code)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::process::ExitCode;
 
@@ -71,11 +72,13 @@ fn handle(op: Op) -> Result<Reply, Failure> {
 /// `export` written as one STEP file, each part a product whose id and name are its
 /// strings, already encoded ([`silico_protocol::step_encoded`]), under an assembly named
 /// `export.assembly` if there are two or more; the header's file name `export.file_name`, its
-/// other fields Silico's constants. Refused if a string isn't in that form (the core encodes
-/// them all), a part's B-rep is refused as the kernel refuses one, or OCCT can't transfer or
-/// write the parts. Reports each part's faces left out as bounding no material, what else the
-/// writer's check list says it failed to transfer, and the faces and their bounds against
-/// those written, for the core to refuse; what it warns of, it corrected, and is logged.
+/// other fields Silico's constants. OCCT is given a token for each string but the ids, which
+/// are spliced into the text it writes ([`Strings`]). Refused if a string isn't in that form
+/// (the core encodes them all), a part's B-rep is refused as the kernel refuses one, or OCCT
+/// can't transfer or write the parts, or its text doesn't hold the tokens it was given.
+/// Reports each part's faces left out as bounding no material, what else the writer's check
+/// list says it failed to transfer, and the faces and their bounds against those written,
+/// for the core to refuse; what it warns of, it corrected, and is logged.
 fn export_step(export: &ExportStep) -> Result<StepFile, Failure> {
     export.check().map_err(|invalid| {
         Failure::new(Refusal::InvalidParameter {
@@ -87,7 +90,8 @@ fn export_step(export: &ExportStep) -> Result<StepFile, Failure> {
     let Some(mut adding) = writer.as_mut() else {
         return Err(internal("the STEP writer couldn't be made"));
     };
-    for part in &export.parts {
+    let mut strings = Strings::default();
+    for (index, part) in export.parts.iter().enumerate() {
         let brep = part.shape.brep().as_bytes();
         // Refused as the kernel refuses a B-rep (its checksum, its defects), then read again
         // by the writer from the body the checksum was of.
@@ -97,13 +101,21 @@ fn export_step(export: &ExportStep) -> Result<StepFile, Failure> {
             .checked_sub(4)
             .and_then(|len| brep.get(..len))
             .unwrap_or_default();
+        let name = strings.token("NAME", index, &part.name);
         adding
             .as_mut()
-            .add_part(body, &part.id, &part.name)
+            .add_part(body, &part.id, &name)
             .map_err(|e| failure(KernelError::from(e)))?;
     }
+    // The writer names an assembly only for two parts or more.
+    let assembly = if export.parts.len() > 1 {
+        strings.token("ASSEMBLY", 0, &export.assembly)
+    } else {
+        String::new()
+    };
+    let file_name = strings.token("FILE", 0, &export.file_name);
     let raw = writer
-        .write(&export.assembly, &export.file_name)
+        .write(&assembly, &file_name)
         .map_err(|e| failure(KernelError::from(e)))?;
     let Some(raw) = raw.as_ref() else {
         return Err(internal("the STEP writer returned nothing"));
@@ -111,8 +123,11 @@ fn export_step(export: &ExportStep) -> Result<StepFile, Failure> {
     for warning in raw.warnings() {
         tracing::debug!(warning = %warning, "the STEP writer corrected what it wrote");
     }
+    let step = strings
+        .splice(raw.bytes())
+        .map_err(|fault| internal(&fault.what()))?;
     Ok(StepFile {
-        step: silico_protocol::Blob::inline(raw.bytes().to_vec()),
+        step: silico_protocol::Blob::inline(step),
         left_out: by_part(raw.left_out_counts(), raw.left_out()),
         unwritten: unwritten(
             raw.unwritten_parts(),
@@ -129,6 +144,93 @@ fn export_step(export: &ExportStep) -> Result<StepFile, Failure> {
             written: raw.bounds_written(),
         },
     })
+}
+
+/// The strings a STEP file holds (docs/ports/step-export.md, *Strings*), by the token OCCT is
+/// given in place of each: `SILICO-<what>-<index>`, which no shape of OCCT's names anything,
+/// short enough that OCCT never wraps it. OCCT breaks a string past 72 columns, inside an
+/// encoded run too, and its reader decodes before it joins the lines, so OCCT writes none of
+/// Silico's strings itself: each is spliced in where its token is, once the file is written.
+#[derive(Debug, Default)]
+struct Strings<'a> {
+    by_token: BTreeMap<String, &'a str>,
+}
+
+/// What keeps a STEP file's strings from being spliced in: OCCT's text is not what it was
+/// given, a fault of the worker's.
+#[derive(Debug, PartialEq, Eq)]
+enum SpliceFault {
+    /// A `'SILICO-` with no `'` after it.
+    Unclosed,
+    /// A token no string was given for (lossily, if it isn't UTF-8).
+    Unknown(String),
+    /// A token given that the text doesn't hold.
+    Missing(String),
+}
+
+impl SpliceFault {
+    fn what(&self) -> String {
+        match self {
+            Self::Unclosed => "OCCT's STEP writer left a placeholder unclosed".to_owned(),
+            Self::Unknown(token) => {
+                format!("OCCT's STEP writer wrote a placeholder Silico didn't give: {token}")
+            }
+            Self::Missing(token) => format!("OCCT's STEP writer wrote no {token}"),
+        }
+    }
+}
+
+impl<'a> Strings<'a> {
+    /// The token for `value`, the `index`th string of its kind `what`, which [`Strings::splice`]
+    /// replaces with it.
+    fn token(&mut self, what: &str, index: usize, value: &'a str) -> String {
+        let token = format!("SILICO-{what}-{index}");
+        self.by_token.insert(token.clone(), value);
+        token
+    }
+
+    /// `text` with each `'TOKEN'` (a `'SILICO-` to the next `'`) made `'VALUE'`, in one pass,
+    /// so it's as long as the file however many there are; values as given (in
+    /// [`silico_protocol::step_encoded`]'s form, which has no `'`, as `ExportStep::check`
+    /// makes sure), never searched again. Refused if a token is unclosed or unknown, or one
+    /// given isn't found.
+    fn splice(&self, text: &[u8]) -> Result<Vec<u8>, SpliceFault> {
+        const OPEN: &[u8] = b"'SILICO-";
+        let mut out = Vec::with_capacity(text.len());
+        let mut found = BTreeSet::new();
+        let mut rest = text;
+        while let Some(next) = rest.windows(OPEN.len()).position(|w| w == OPEN) {
+            let (before, quoted) = rest.split_at(next);
+            let after_open = quoted.get(1..).unwrap_or_default();
+            let Some(close) = after_open.iter().position(|&b| b == b'\'') else {
+                return Err(SpliceFault::Unclosed);
+            };
+            let (token, closed) = after_open.split_at(close);
+            let Some((key, value)) = std::str::from_utf8(token)
+                .ok()
+                .and_then(|token| self.by_token.get_key_value(token))
+            else {
+                return Err(SpliceFault::Unknown(
+                    String::from_utf8_lossy(token).into_owned(),
+                ));
+            };
+            out.extend_from_slice(before);
+            out.push(b'\'');
+            out.extend_from_slice(value.as_bytes());
+            out.push(b'\'');
+            found.insert(key.as_str());
+            rest = closed.get(1..).unwrap_or_default();
+        }
+        out.extend_from_slice(rest);
+        match self
+            .by_token
+            .keys()
+            .find(|token| !found.contains(token.as_str()))
+        {
+            Some(token) => Err(SpliceFault::Missing(token.clone())),
+            None => Ok(out),
+        }
+    }
 }
 
 /// `flat`, a part at a time, `counts[i]` of them for the `i`th.
@@ -266,6 +368,146 @@ mod tests {
                 Refusal::InvalidParameter { parameter, .. } if parameter == "name"
             ),
             "{failure:?}"
+        );
+    }
+
+    /// The strings a two-part export gives, by their tokens, as `export_step` makes them.
+    fn two_parts<'a>(names: [&'a str; 2], assembly: &'a str, file: &'a str) -> Strings<'a> {
+        let mut strings = Strings::default();
+        assert_eq!(strings.token("NAME", 0, names[0]), "SILICO-NAME-0");
+        assert_eq!(strings.token("NAME", 1, names[1]), "SILICO-NAME-1");
+        assert_eq!(strings.token("ASSEMBLY", 0, assembly), "SILICO-ASSEMBLY-0");
+        assert_eq!(strings.token("FILE", 0, file), "SILICO-FILE-0");
+        strings
+    }
+
+    #[test]
+    fn each_token_is_replaced_by_its_string_wherever_it_is() {
+        let strings = two_parts(
+            ["Bracket", "Kl\\X2\\00F6\\X0\\tzchen"],
+            "bracket",
+            "bracket.silico",
+        );
+        let text = b"FILE_NAME('SILICO-FILE-0','1970');\n\
+            #1=PRODUCT('k7','SILICO-NAME-0','SILICO-NAME-0',(#9));\n\
+            #2=PRODUCT('q3','SILICO-NAME-1','SILICO-NAME-1',(#9));\n\
+            #3=PRODUCT('','SILICO-ASSEMBLY-0','SILICO-ASSEMBLY-0',(#9));\n";
+        let want = b"FILE_NAME('bracket.silico','1970');\n\
+            #1=PRODUCT('k7','Bracket','Bracket',(#9));\n\
+            #2=PRODUCT('q3','Kl\\X2\\00F6\\X0\\tzchen','Kl\\X2\\00F6\\X0\\tzchen',(#9));\n\
+            #3=PRODUCT('','bracket','bracket',(#9));\n";
+        assert_eq!(
+            String::from_utf8_lossy(&strings.splice(text).unwrap()),
+            String::from_utf8_lossy(want)
+        );
+    }
+
+    #[test]
+    fn an_empty_string_and_a_token_at_either_end_are_spliced() {
+        let mut strings = Strings::default();
+        strings.token("NAME", 0, "");
+        strings.token("FILE", 0, "f");
+        assert_eq!(
+            strings.splice(b"'SILICO-NAME-0' 'SILICO-FILE-0'").unwrap(),
+            b"'' 'f'"
+        );
+    }
+
+    #[test]
+    fn text_without_tokens_is_returned_as_it_is_bytes_that_arent_utf8_too() {
+        let text = b"ISO-10303-21;\n#1=PRODUCT('a','\xff\xfe',());\nSILICO-NAME-0 'SILICO";
+        assert_eq!(Strings::default().splice(text).unwrap(), text);
+        assert_eq!(Strings::default().splice(b"").unwrap(), b"");
+    }
+
+    #[test]
+    fn a_token_given_but_never_written_is_refused_by_its_name() {
+        let mut strings = Strings::default();
+        strings.token("NAME", 0, "Bracket");
+        strings.token("FILE", 0, "bracket.silico");
+        // The name's token is in the text, but not quoted: it isn't one.
+        let fault = strings
+            .splice(b"FILE_NAME('SILICO-FILE-0'); #1=PRODUCT(SILICO-NAME-0);")
+            .unwrap_err();
+        assert_eq!(fault, SpliceFault::Missing("SILICO-NAME-0".to_owned()));
+        assert_eq!(fault.what(), "OCCT's STEP writer wrote no SILICO-NAME-0");
+        // Nothing at all written.
+        assert_eq!(
+            strings.splice(b"").unwrap_err(),
+            SpliceFault::Missing("SILICO-FILE-0".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_token_not_given_is_refused_by_its_name_even_one_a_given_one_begins() {
+        let mut strings = Strings::default();
+        strings.token("NAME", 1, "Bracket");
+        let fault = strings
+            .splice(b"'SILICO-NAME-1' 'SILICO-NAME-10'")
+            .unwrap_err();
+        assert_eq!(fault, SpliceFault::Unknown("SILICO-NAME-10".to_owned()));
+        assert_eq!(
+            fault.what(),
+            "OCCT's STEP writer wrote a placeholder Silico didn't give: SILICO-NAME-10"
+        );
+        assert_eq!(
+            strings.splice(b"'SILICO-' 'SILICO-NAME-1'").unwrap_err(),
+            SpliceFault::Unknown("SILICO-".to_owned())
+        );
+        // Bytes that aren't UTF-8, lossily.
+        assert_eq!(
+            strings.splice(b"'SILICO-\xff'").unwrap_err(),
+            SpliceFault::Unknown("SILICO-\u{fffd}".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_token_never_closed_is_refused() {
+        let mut strings = Strings::default();
+        strings.token("FILE", 0, "bracket.silico");
+        for text in [
+            &b"FILE_NAME('SILICO-FILE-0);"[..],
+            b"'SILICO-",
+            b"'SILICO-FILE-0' 'SILICO-FILE-0",
+        ] {
+            let fault = strings.splice(text).unwrap_err();
+            assert_eq!(
+                fault,
+                SpliceFault::Unclosed,
+                "{}",
+                String::from_utf8_lossy(text)
+            );
+            assert_eq!(
+                fault.what(),
+                "OCCT's STEP writer left a placeholder unclosed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_string_that_looks_like_a_token_is_written_as_it_is_and_never_read_again() {
+        // A name that is another's token, and one that is a quoted token's start: each is
+        // written, never itself replaced, and the text's own tokens are still each found.
+        let strings = two_parts(
+            ["SILICO-NAME-1", "SILICO-"],
+            "SILICO-FILE-0",
+            "SILICO-ASSEMBLY-0",
+        );
+        let text = b"'SILICO-NAME-0','SILICO-NAME-1','SILICO-ASSEMBLY-0','SILICO-FILE-0'";
+        assert_eq!(
+            String::from_utf8_lossy(&strings.splice(text).unwrap()),
+            "'SILICO-NAME-1','SILICO-','SILICO-FILE-0','SILICO-ASSEMBLY-0'"
+        );
+        // Text that looks like a token's start but isn't one: no quote, or a short one.
+        let mut file = Strings::default();
+        file.token("FILE", 0, "f");
+        assert_eq!(
+            String::from_utf8_lossy(
+                &file
+                    .splice(b"SILICO-FILE-0 'SILICO 'SILICO_FILE-0' ''SILICO-FILE-0'")
+                    .unwrap()
+            ),
+            "SILICO-FILE-0 'SILICO 'SILICO_FILE-0' ''f'"
         );
     }
 

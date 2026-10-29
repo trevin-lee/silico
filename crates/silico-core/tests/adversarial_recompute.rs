@@ -8,8 +8,10 @@ use super::example;
 use super::lateness;
 use super::model;
 use super::recompute;
+use super::share;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write as _;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
@@ -20,6 +22,7 @@ use lateness::{Lateness, allowance};
 use model::{WAIT, checked, described, id, made, published};
 use proptest::prelude::*;
 use recompute::{calls_since, engine};
+use share::Share;
 use silico_core::document::{Checked, FeatureId, read};
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{BooleanOp, Generation, Kernel, KernelRequest, Op, Primitive, ShapeData};
@@ -159,7 +162,7 @@ fn a_panic_under_one_step_ends_the_recompute_with_an_error_not_a_hang() {
         boxed("aaaaaaaa", [0.0; 3], [1.0, 1.0, 1.0]),
         sphere("bbbbbbbb", [0.0; 3], 1.0),
     ]));
-    match run.wait_timeout(Duration::from_secs(5)) {
+    match run.wait_timeout(WAIT) {
         Ok(Err(error)) => {
             assert_eq!(error.code(), ErrorCode::Internal, "{error}");
             // Which feature's step, and the panic's own words.
@@ -177,11 +180,7 @@ fn a_panic_with_a_formatted_message_is_named_with_it() {
     let run = engine.start(document(&[
         r#"{"id": "cccccccc", "type": "cylinder", "v": 1, "name": "C", "position": [0, 0, 0], "radius": 1, "height": 1}"#.to_owned(),
     ]));
-    let error = run
-        .wait_timeout(Duration::from_secs(5))
-        .ok()
-        .expect("hung")
-        .unwrap_err();
+    let error = run.wait_timeout(WAIT).ok().expect("hung").unwrap_err();
     assert_eq!(error.code(), ErrorCode::Internal);
     assert_eq!(error.feature(), Some("cccccccc"));
     assert_eq!(error.cause(), Some("bug number 2 under a recompute step"));
@@ -854,30 +853,58 @@ fn keys_are_the_same_on_another_engine_and_another_kernel_size() {
 /// however loaded the machine.
 const HANG: Duration = Duration::from_secs(60);
 
+/// How long [`published_costing`] waits before it takes a recompute as hung: past any bound
+/// it scales for load (`wall` and `work` times a slowdown of fifty or more), and under
+/// nextest's limit for a test in the mutants runs (5 times 60 s), so a starved shard's
+/// recompute is measured against its bound rather than killed.
+const COSTING_HANG: Duration = Duration::from_secs(280);
+
 /// Recomputes `document` and gives the model it published, and the CPU time this process
 /// spent meanwhile: every thread's, the engine's and the fake kernel's, which is what the
 /// recompute costs, where a loaded machine's wall clock measures the machine. (Nextest
-/// runs each test in its own process.) CPU time doesn't see a recompute that waits instead
-/// of working, so it must also finish within `wall`, as on a quiet machine, and ten times
-/// how late the machine wakes threads meanwhile ([`allowance`]): a recompute's threads hand
-/// each other work, each waking the next. Fails if it wasn't published, or took longer.
+/// runs each test in its own process; the probes' own CPU is taken out.) CPU time doesn't
+/// see a recompute that waits instead of working, so it must also finish within `wall`, what
+/// it takes a quiet machine with room to spare, plus what load adds: its `work` (about twice
+/// what it computes on a quiet machine) slowed as much as the machine slowed work handed
+/// from thread to thread meanwhile ([`Share`]), and ten times how late the machine woke
+/// threads ([`allowance`]). Only the work is scaled, so on a quiet machine the bound is
+/// `wall`'s, and a recompute that waits between its steps still misses it under load by
+/// what it waits. Fails if it wasn't published, or took longer.
 fn published_costing(
     engine: &Recompute<FakeKernel>,
     document: Checked,
     wall: Duration,
+    work: Duration,
 ) -> (Arc<Model>, Duration) {
     let lateness = Lateness::start();
+    let share = Share::start();
     let start = cpu_time::ProcessTime::now();
     let at = Instant::now();
-    let model = match engine.start(document).wait_timeout(HANG) {
+    let model = match engine.start(document).wait_timeout(COSTING_HANG) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("not published: {other:?}"),
-        Err(_) => panic!("the recompute didn't finish in {HANG:?}"),
+        Err(_) => panic!("the recompute didn't finish in {COSTING_HANG:?}"),
     };
     let took = at.elapsed();
-    let cost = start.elapsed();
-    let most = allowance(wall, lateness.most());
-    assert!(took < most, "the recompute took {took:?}, past {most:?}");
+    let measured = share.finish();
+    let cost = start.elapsed().saturating_sub(measured.cost);
+    let most = allowance(
+        wall + work.mul_f64(measured.slowdown - 1.0),
+        lateness.most(),
+    );
+    // Kept by nextest when the test fails or is retried, so a bound's reading is seen.
+    let _ = writeln!(
+        std::io::stderr(),
+        "the recompute took {took:?} of {most:?}, the machine running handed-on work {:.2} \
+         times slower than a quiet one",
+        measured.slowdown
+    );
+    assert!(
+        took < most,
+        "the recompute took {took:?}, past {most:?} (the machine ran handed-on work {:.2} \
+         times slower than a quiet one)",
+        measured.slowdown
+    );
     (model, cost)
 }
 
@@ -898,7 +925,12 @@ fn a_chain_of_four_hundred_booleans_finishes_promptly() {
         last = b;
     }
     let engine = engine(8);
-    let (model, took) = published_costing(&engine, document(&features), Duration::from_secs(5));
+    let (model, took) = published_costing(
+        &engine,
+        document(&features),
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+    );
     assert_eq!(model.bodies(), [id(&last)]);
     assert_eq!(made(&engine.kernel().calls()).len(), 1 + 2 * (n - 1));
     assert!(took < Duration::from_secs(5), "took {took:?} of CPU");
@@ -913,12 +945,22 @@ fn five_thousand_independent_features_finish_promptly() {
         .map(|i| boxed(&fid(i), [0.0; 3], [(i + 1) as f64, 1.0, 1.0]))
         .collect();
     let engine = engine(8);
-    let (model, took) = published_costing(&engine, document(&features), Duration::from_secs(5));
+    let (model, took) = published_costing(
+        &engine,
+        document(&features),
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+    );
     assert_eq!(model.bodies().len(), n);
     assert!(engine.kernel().most_running() <= 8);
     assert!(took < Duration::from_secs(5), "took {took:?} of CPU");
     // And again, unchanged: nothing runs, and it's quick.
-    let (_, again) = published_costing(&engine, document(&features), Duration::from_secs(2));
+    let (_, again) = published_costing(
+        &engine,
+        document(&features),
+        Duration::from_secs(2),
+        Duration::from_millis(200),
+    );
     assert_eq!(made(&engine.kernel().calls()).len(), n);
     assert!(
         again < Duration::from_secs(2),

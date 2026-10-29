@@ -27,6 +27,7 @@ pub mod export;
 pub mod logs;
 mod lookup;
 pub mod measure;
+pub mod meshes;
 pub mod render;
 pub mod schema;
 mod session;
@@ -38,8 +39,8 @@ pub use session::{
     Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, FieldSet,
     MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, NOT_RELOADED, Opened, OutlineAnswer,
     Progress, Published, Read, ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced,
-    Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, Status, Stopper,
-    TOO_LONG, TextAnswer,
+    Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, Status, Stepped,
+    Stopper, TOO_LONG, TextAnswer, TimelineAnswer, TryAgainBy, fault_suggestion,
 };
 pub use session_command::{ReadCommand, SessionCommand};
 
@@ -50,9 +51,7 @@ pub use crate::warnings::Warnings;
 const API_VERSION: u32 = 1;
 
 /// What `version` answers: the API's version, the document format's and naming scheme's,
-/// and the limits (the design's section 6) of the commands built so far, as data. Each
-/// later step adds its own command's limits as it comes (renders with M4.6, logs with M4.7,
-/// exports with M4.8).
+/// and every command's limits (the design's section 6), as data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Version {
     pub api: u32,

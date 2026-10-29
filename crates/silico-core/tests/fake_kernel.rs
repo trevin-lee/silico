@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::echo::{echo, echoed};
+use super::model::WAIT;
 
 use std::time::Duration;
 
@@ -16,8 +17,6 @@ use silico_core::kernel::{
 };
 use silico_core::pool::Outcome;
 use silico_protocol::PointPlace;
-
-const WAIT: Duration = Duration::from_secs(10);
 
 fn done<T: std::fmt::Debug>(outcome: Outcome<T>) -> T {
     match outcome {

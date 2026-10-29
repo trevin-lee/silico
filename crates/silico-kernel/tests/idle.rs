@@ -4,6 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::scripts;
+use crate::wait::WAIT;
 
 use std::path::Path;
 use std::time::Duration;
@@ -28,7 +29,7 @@ fn waiting_on_a_worker_costs_no_cpu() {
     // An idle worker: the reply thread waits for the next reply. Load can't make a sleeping
     // thread cost CPU, only take it from one that spins.
     let mut w = Worker::spawn(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker"))).unwrap();
-    assert!(echo(&mut w, 1, Duration::from_secs(30)).is_ok());
+    assert!(echo(&mut w, 1, WAIT).is_ok());
     // This process's CPU time: every thread's.
     let before = cpu_time::ProcessTime::now();
     std::thread::sleep(Duration::from_secs(1));

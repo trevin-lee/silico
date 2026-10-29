@@ -23,6 +23,7 @@ use silico_core::{Error, ErrorCode};
 
 use super::model;
 use super::references;
+use super::share::Share;
 use super::within;
 
 use model::{checked, described, id, made, published};
@@ -427,33 +428,57 @@ fn arb_name() -> impl Strategy<Value = Name> {
     })
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig { cases: 2000, failure_persistence: None, ..ProptestConfig::default() })]
-
-    /// Every name the grammar allows reads back from its text as itself (by identity), and
-    /// writes the same text again.
-    #[test]
-    fn name_any_constructed_name_reads_back_as_itself(name in arb_name()) {
-        let text = name.to_string();
-        let read = parse(&text);
-        prop_assert!(read.is_ok(), "{} doesn't read: {:?}", text, read);
-        let read = read.unwrap();
-        prop_assert_eq!(&read, &name, "{}", text);
-        prop_assert_eq!(read.to_string(), text);
-        prop_assert_eq!(read.kind(), name.kind());
+/// Runs `property` on a thread with a stack of its own, 16 MiB. Proptest builds an
+/// [`arb_name`]'s value tree in nested generic frames that, unoptimized, take over 1 MiB for one
+/// name, and a large draw went past a test thread's 2 MiB: the test aborted on a stack overflow
+/// in proptest's `new_tree`, before any name was made (gates 40288718906 and 40520391297).
+fn on_a_deep_stack(property: impl FnOnce() + Send + 'static) {
+    let thread = std::thread::Builder::new()
+        .stack_size(16 << 20)
+        .spawn(property)
+        .unwrap();
+    if let Err(panic) = thread.join() {
+        std::panic::resume_unwind(panic);
     }
+}
 
-    /// Two names are never written alike unless they're the same name: the text is the
-    /// name, so a reference by text can't find another element's name.
-    #[test]
-    fn name_two_names_written_alike_are_one_name(a in arb_name(), b in arb_name()) {
-        if a.to_string() == b.to_string() {
-            prop_assert_eq!(&a, &b);
-        }
-        if a == b {
-            prop_assert_eq!(a.to_string(), b.to_string());
-        }
-    }
+/// Every name the grammar allows reads back from its text as itself (by identity), and
+/// writes the same text again.
+#[test]
+fn name_any_constructed_name_reads_back_as_itself() {
+    on_a_deep_stack(|| {
+        proptest!(
+            ProptestConfig { cases: 2000, failure_persistence: None, ..ProptestConfig::default() },
+            |(name in arb_name())| {
+                let text = name.to_string();
+                let read = parse(&text);
+                prop_assert!(read.is_ok(), "{} doesn't read: {:?}", text, read);
+                let read = read.unwrap();
+                prop_assert_eq!(&read, &name, "{}", text);
+                prop_assert_eq!(read.to_string(), text);
+                prop_assert_eq!(read.kind(), name.kind());
+            }
+        );
+    });
+}
+
+/// Two names are never written alike unless they're the same name: the text is the name, so
+/// a reference by text can't find another element's name.
+#[test]
+fn name_two_names_written_alike_are_one_name() {
+    on_a_deep_stack(|| {
+        proptest!(
+            ProptestConfig { cases: 2000, failure_persistence: None, ..ProptestConfig::default() },
+            |(a in arb_name(), b in arb_name())| {
+                if a.to_string() == b.to_string() {
+                    prop_assert_eq!(&a, &b);
+                }
+                if a == b {
+                    prop_assert_eq!(a.to_string(), b.to_string());
+                }
+            }
+        );
+    });
 }
 
 // ---------------------------------------------------------------------------------------
@@ -886,10 +911,13 @@ fn fillet_with_many_broken_names_says_each_without_running_away() {
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
     let text = document(&[&fillet("f0000001", "m3tq8v0z", &refs, "0.5")]);
     let document = checked(&text);
+    // A recompute, its work handed from thread to thread: its wall time over how much slower
+    // than a quiet machine this one ran it (`Share`), which load doesn't move.
+    let share = Share::start();
     let start = Instant::now();
     let engine = engine();
     let model = published(&engine, document);
-    let spent = start.elapsed();
+    let spent = start.elapsed().div_f64(share.finish().slowdown);
     // The first hundred listed, each in place, and how many there are, as the gate lists
     // its problems and counts them (found by the review: 500,000 errors from an 11 MB
     // document, 231 MB of JSON; and by the rebase's review: a summary error counted as one).

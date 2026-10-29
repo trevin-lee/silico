@@ -3,15 +3,24 @@
 # stays as a backstop), and whenever a mutants run or an oracle sweep someone started ends,
 # one short job looks at the runners, starts at most one filler run, and exits.
 #
-# It starts nothing while any run or job is queued (a gate, a real run's shards, or a
-# filler run waiting for runners), or while a filler run (mutants or the oracle sweep) is
-# queued or running. Free runners aren't idle CPU: the VM is saturated by about six
-# shards. So it fills only when more than a fifth of the VM's CPUs are idle (over 15
-# seconds; this job runs on the VM), with as many shards as the idle CPUs feed at a
-# filler shard's share (a quarter of the VM) and the free runners labelled filler
-# (silico-9 to -12) hold. Filler shards run only there, at the idle scheduling class on
-# runners whose cgroups are at the idle CPU weight (mutants.yml), so they hold no runner a
-# gate could use and take no CPU a gate wants.
+# It starts nothing while a job asking for mutants, mutants-pr, or filler (a real run's
+# shards, or a filler run's) is queued and could start: a runner of its lane is free, or
+# between jobs. One queued behind a lane whose every runner is busy (a long run's shards
+# waiting on its own) doesn't stop it: that CPU would sit idle meanwhile, on the runners only
+# filler uses (silico-22, -23), and a real run starting cancels filler as before (its plan,
+# cancel-filler.sh); a queued shard of a run already going doesn't, so the shards it starts
+# count filler's CPU as spare when they choose their threads (.github/shard-threads.sh). Nor
+# does it start while a mutants run or a sweep is starting (no shard or sweep job yet); a
+# queued gate or control job takes other runners, so it doesn't stop filler. A filler mutants
+# run going doesn't stop another: each takes what's free when it starts (2026-10-27: one at a
+# time, a run of one shard kept the rest idle); but a filler sweep and filler mutants never
+# run together. Free runners aren't idle CPU: the VM is saturated by about six shards. So it
+# fills only when more than a fifth of the VM's CPUs are idle (over 15 seconds; this job runs
+# on the VM), with as many shards as the idle CPUs feed at a filler shard's share (a quarter
+# of the VM) and the free runners labelled filler (silico-5 to -12, -22 and -23) hold. Filler
+# shards run only there, at the idle scheduling class on runners whose cgroups are at the idle
+# CPU weight (mutants.yml), so they hold no runner a gate could use and take no CPU a gate
+# wants.
 # In order:
 #   a. Main's new commits: mutants in what main changed in its source since the commit the
 #      last filler `a` run tested (or since main's parent, at first).
@@ -22,8 +31,9 @@
 #
 # Its state is the runs it started, on its own branch: their titles start "filler a
 # <commit>", "filler b<k>", or "filler oracle sweep" (mutants.yml, oracle-sweep.yml). Every
-# finished run counts as done, so the rotation never stalls on a slice that's always cut
-# off or cancelled; what one run didn't reach, later turns do (shards test in random order).
+# run started counts as done, going or finished, so two runs never take the same work and
+# the rotation never stalls on a slice that's always cut off or cancelled; what one run
+# didn't reach, later turns do (shards test in random order).
 # Filler mutants runs stop after an hour and fail only on misses not in
 # .github/mutants-triaged.txt. Real work (a real mutants run, the bench, the nightly sweep)
 # cancels them first (.github/cancel-filler.sh), from a runner labelled control
@@ -73,20 +83,25 @@ jobs:
         run: |
           set -euo pipefail
           . .github/gh.sh
-          # Runners labelled filler (silico-9 to -12), the only ones filler shards run on.
-          pool=4
+          # Runners labelled filler, the only ones filler shards and sweeps run on: silico-9 to
+          # -12, which the mutants lanes share, and -22 and -23, filler's alone (2026-10-28,
+          # Main), so filler can fill the idle CPU while a long run holds 9 to 12; and silico-5
+          # to -8, the merge lane's since gates were capped at four (2026-10-28, Main).
+          pool=10
           # A slice's source: about 80 mutants, at the workspace's 3.4 a KiB (2026-10-23).
           # A run cut off at its hour has tested a random part of its slice.
           slice_kib=24
           oracle_every=$((4 * 3600))
 
-          say() { echo "$1"; echo "$1" >>"$GITHUB_STEP_SUMMARY"; }
-          skip() { say "Nothing started: $1."; exit 0; }
+          # Not `say`, which on macOS speaks: a line of this pasted into a Mac's shell read it
+          # aloud.
+          report() { echo "$1"; echo "$1" >>"$GITHUB_STEP_SUMMARY"; }
+          skip() { report "Nothing started: $1."; exit 0; }
           start() {
             local workflow=$1
             shift
-            say "Starting $workflow $*"
-            if [ "$DRY" = true ]; then say "(dry: not started)"; return; fi
+            report "Starting $workflow $*"
+            if [ "$DRY" = true ]; then report "(dry: not started)"; return; fi
             gh workflow run "$workflow" --ref "$BRANCH" "$@"
           }
 
@@ -99,10 +114,10 @@ jobs:
             --jq '[.[] | select(.status != "completed")] | length') || clock=1
           if [ "$clock" -eq 0 ]; then
             if [ "$DRY" = true ]; then
-              say "The clock isn't running (dry: not started)"
+              report "The clock isn't running (dry: not started)"
             else
-              gh workflow run filler-clock.yml --ref main && say "The clock wasn't running: started it" ||
-                say "The clock isn't running and couldn't be started (disabled?)"
+              gh workflow run filler-clock.yml --ref main && report "The clock wasn't running: started it" ||
+                report "The clock isn't running and couldn't be started (disabled?)"
             fi
           fi
 
@@ -115,29 +130,74 @@ jobs:
           # Runs of this workflow are decisions like this one, and the clock's (filler-clock.yml)
           # only start them: neither is work, nor waits for a runner work could use.
           active=$(awk -F '\t' '$2 != "filler.yml" && $2 != "filler-clock.yml"' <<<"$active")
-          if awk -F '\t' '$3 == "queued" { found = 1 } END { exit !found }' <<<"$active"; then
-            skip "a run is queued, waiting for runners"
-          fi
-          if awk -F '\t' '$4 ~ /^filler / { found = 1 } END { exit !found }' <<<"$active"; then
-            skip "a filler run is going"
-          fi
           # A bench measures times, and a night's sweep holds cases to deadlines: no filler
           # beside them, even on idle CPU (caches, memory bandwidth, SMT siblings).
           if awk -F '\t' '$2 == "bench.yml" || ($2 == "oracle-sweep.yml" && $4 !~ /^filler /) { found = 1 } END { exit !found }' <<<"$active"; then
             skip "a bench or a night's sweep is going"
           fi
 
-          # The unfinished jobs of every run going: their status and runner. A run in
-          # progress can still have jobs waiting for runners, which come first.
-          jobs=$(awk -F '\t' '$3 == "in_progress" { print $1 }' <<<"$active" | while read -r run; do
-            gh api "repos/$GH_REPO/actions/runs/$run/jobs?per_page=100" \
-              --jq '.jobs[] | select(.status != "completed") | [.status, (.runner_name // "")] | @tsv'
+          # The unfinished jobs of every run going: their status, runner, and labels. A run in
+          # progress can still have jobs waiting for runners, which come first if a filler
+          # runner could take them (silico-5 to -12 carry mutants-pr and filler, 9 to 12 mutants
+          # too).
+          # A mutants run or an oracle sweep with no shard or sweep job yet is starting (its
+          # plan, or its yield, still going): a real one's plan has cancelled filler and its
+          # shards will want filler's runners; a filler one's shards don't show yet as busy
+          # or queued. Either way, wait for it: marked "starting".
+          jobs=$(awk -F '\t' 'NF { print $1, $2 }' <<<"$active" | while read -r run workflow; do
+            [ -n "$run" ] || continue
+            gh api "repos/$GH_REPO/actions/runs/$run/jobs?per_page=100" --jq "
+              (.jobs[] | select(.status != \"completed\")
+                | [.status, (.runner_name // \"\"), (.labels // [] | join(\",\"))] | @tsv),
+              (if (\"$workflow\" == \"mutants.yml\" or \"$workflow\" == \"oracle-sweep.yml\")
+                  and ([.jobs[].name | select(startswith(\"shard\") or startswith(\"sweep\"))] | length) == 0
+                then \"starting\\t\\t\" else empty end)"
           done)
-          if awk -F '\t' '$1 != "" && $1 != "in_progress" { found = 1 } END { exit !found }' <<<"$jobs"; then
-            skip "a job is queued, waiting for a runner"
+          if awk -F '\t' '$1 == "starting" { found = 1 } END { exit !found }' <<<"$jobs"; then
+            skip "a mutants run or a sweep is starting"
           fi
+          # A job waiting for a runner of the mutants lanes (a real run's or a filler run's)
+          # comes first only if it could start: a runner it asks for is free, or between jobs
+          # (each takes one job, then registers again). One whose every runner is busy, a long
+          # run's shards queued behind its own, waits whatever filler does, so filler fills the
+          # idle CPU meanwhile on silico-22 and -23, which no lane uses; a real run starting
+          # still cancels it (its plan, cancel-filler.sh). The runners each label is on, as
+          # /etc/ci-runner/labels gives them on the VM (this token can't list runners): mutants,
+          # the long lane; mutants-pr, the merge lane; filler, filler's own.
+          lane_mutants='9 10 11 12 15 16 17'
+          lane_mutants_pr='5 6 7 8 9 10 11 12 15 16 17 20 21'
+          lane_filler='5 6 7 8 9 10 11 12 22 23'
+          # Runners running a job now, of any run going, by number (pve-silico-N-...).
+          running=" $(awk -F '\t' '$1 == "in_progress" { if (match($2, /^pve-silico-[0-9]+-/)) { n = substr($2, 12, RLENGTH - 12); print n } }' <<<"$jobs" | tr '\n' ' ')"
+          free_for() {
+            local label=$1 lane n
+            case $label in
+              mutants) lane=$lane_mutants ;;
+              mutants-pr) lane=$lane_mutants_pr ;;
+              filler) lane=$lane_filler ;;
+              *) return 1 ;;
+            esac
+            for n in $lane; do
+              case $running in *" $n "*) ;; *) return 0 ;; esac
+            done
+            return 1
+          }
+          # Each queued job's labels (by awk: `read` would merge the empty runner field
+          # into the next, a tab being whitespace to it).
+          for label in $(awk -F '\t' '$1 != "" && $1 != "in_progress" && $1 != "starting" { n = split($3, l, ","); for (i = 1; i <= n; i++) print l[i] }' <<<"$jobs" | sort -u); do
+            if free_for "$label"; then
+              skip "a job asking for $label is queued, and a runner of that lane is free"
+            fi
+          done
+          # A filler sweep and filler mutants never run together: at the idle weight each
+          # runner gets an equal share, and a sweep holds cases to its own deadline (60 s a
+          # conversion), which a starved case would miss, a false alarm.
+          if awk -F '\t' '$2 == "oracle-sweep.yml" && $4 ~ /^filler / { found = 1 } END { exit !found }' <<<"$active"; then
+            skip "a filler sweep is going"
+          fi
+          filler_mutants=$(awk -F '\t' '$2 == "mutants.yml" && $4 ~ /^filler /' <<<"$active" | wc -l)
           # The runners labelled filler that are running a job, of any run.
-          busy=$(awk -F '\t' '$1 == "in_progress" && $2 ~ /^pve-silico-(9|1[0-2])-/' <<<"$jobs" | wc -l)
+          busy=$(awk -F '\t' '$1 == "in_progress" && $2 ~ /^pve-silico-([5-9]|1[0-2]|2[23])-/' <<<"$jobs" | wc -l)
           # The CPUs idle now, over 15 seconds (this job runs on the VM; the load average lags
           # minutes behind a run that just ended): idle and I/O wait over all time spent.
           cpu() { awk '/^cpu / { print $2 + $3 + $4 + $5 + $6 + $7 + $8 + $9, $5 + $6 }' /proc/stat; }
@@ -150,19 +210,20 @@ jobs:
             skip "$idle of $cpus CPUs are idle, a fifth or less"
           fi
           # A filler shard's share of the VM, as mutants.yml gives it: a quarter, at least 2.
-          share=$((cpus / pool > 2 ? cpus / pool : 2))
+          share=$((cpus / 4 > 2 ? cpus / 4 : 2))
           shards=$((pool - busy))
           if [ $((idle / share)) -lt "$shards" ]; then shards=$((idle / share)); fi
           if [ "$shards" -lt 1 ]; then
             skip "no room: $busy of $pool filler runners busy, $idle of $cpus CPUs idle"
           fi
-          say "Room for $shards shards: $busy of $pool filler runners busy, $idle of $cpus CPUs idle"
+          report "Room for $shards shards: $busy of $pool filler runners busy, $idle of $cpus CPUs idle"
 
           # The latest filler run on this branch whose title matches $1, captured as x. Every
-          # finished run counts as done, cut off or cancelled too, so no slice or range is
-          # tried forever: what a cut-off run didn't reach, later turns of the rotation do.
+          # run started counts, going or finished (cut off or cancelled too): so two filler
+          # runs going at once never take the same work, and no slice or range is tried
+          # forever (what a cut-off run didn't reach, later turns of the rotation do).
           last() {
-            gh run list --workflow mutants.yml --branch "$BRANCH" --status completed --limit 300 \
+            gh run list --workflow mutants.yml --branch "$BRANCH" --limit 300 \
               --json displayTitle --jq "[.[].displayTitle | capture(\"$1\").x][0] // empty"
           }
           head=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
@@ -177,14 +238,19 @@ jobs:
               start mutants.yml -f ref="$head" -f base="$base" -f shards="$shards" -f filler=a
               exit 0
             fi
-            say "Main's source is unchanged since ${base:0:12}"
+            report "Main's source is unchanged since ${base:0:12}"
           fi
 
           # c. The oracle sweep, if no filler sweep started in the last four hours.
           recent=$(gh run list --workflow oracle-sweep.yml --branch "$BRANCH" --limit 100 --json displayTitle,createdAt \
             --jq "[.[] | select((.displayTitle | startswith(\"filler \"))
                     and now - (.createdAt | fromdateiso8601) < $oracle_every)] | length")
+          # Due while filler mutants go: wait for them to end, so the sweep comes next, rather
+          # than start more, which overlap and would keep it from ever coming.
           if [ "$recent" -eq 0 ]; then
+            if [ "$filler_mutants" -gt 0 ]; then
+              skip "the oracle sweep is due, waiting for filler mutants to end"
+            fi
             start oracle-sweep.yml -f filler=true
             exit 0
           fi
@@ -210,5 +276,5 @@ jobs:
           if [ -n "$previous" ] && [ $((10#$previous + 1)) -lt "${#slices[@]}" ]; then
             k=$((10#$previous + 1))
           fi
-          say "Slice $k, of 0 to $((${#slices[@]} - 1))"
+          report "Slice $k, of 0 to $((${#slices[@]} - 1))"
           start mutants.yml -f ref="$head" -f files="${slices[$k]}" -f shards="$shards" -f filler="b$k"

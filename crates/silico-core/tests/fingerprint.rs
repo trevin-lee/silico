@@ -369,18 +369,13 @@ fn each_features_solid_is_measured_once_and_a_kept_one_not_again() {
         .collect();
     names.sort_unstable();
     // Four steps (the block, the pin and its move, the cut); three features' solids
-    // measured (the pin's is its move's, not its make's), each summarized and described, a
-    // batch for each of its faces, edges, and vertices (each fewer than DESCRIBE_BATCH).
+    // measured (the pin's is its move's, not its make's), each summarized and described in
+    // one request (`DescribeAll`, named `Describe`), its faces, edges, and vertices fewer
+    // than DESCRIBE_BATCH in all.
     assert_eq!(
         names,
         [
             "Cut",
-            "Describe",
-            "Describe",
-            "Describe",
-            "Describe",
-            "Describe",
-            "Describe",
             "Describe",
             "Describe",
             "Describe",

@@ -16,6 +16,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::scripts;
+use crate::wait::WAIT;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -117,7 +118,7 @@ impl Sink {
     }
 
     fn wait_entered(&self) {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + WAIT;
         while !self.entered.load(Ordering::SeqCst) {
             assert!(Instant::now() < deadline, "the sink was never given a line");
             std::thread::sleep(Duration::from_millis(2));
@@ -225,14 +226,15 @@ fn a_stalled_sink_has_every_line_given_or_counted_and_in_order() {
     );
     let mut worker = Worker::spawn(&exe).unwrap();
     sink.wait_entered();
+    // Reading the burst's lines is work: the wall time over how much slower than a quiet
+    // machine this one ran it (`Share`), which load doesn't move.
+    let share = crate::share::Share::start();
     let asked = Instant::now();
-    let err = worker
-        .call(Generation(1), echo(), Duration::from_secs(20))
-        .unwrap_err();
+    let err = worker.call(Generation(1), echo(), WAIT).unwrap_err();
+    let (wall, slowdown) = (asked.elapsed(), share.finish().slowdown);
     assert!(
-        asked.elapsed() < Duration::from_secs(8),
-        "the crash took {:?} to report",
-        asked.elapsed()
+        wall.div_f64(slowdown) < Duration::from_secs(8),
+        "the crash took {wall:?} to report, the machine {slowdown:.2} times slower than a quiet one"
     );
     assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     let cause = err.cause().unwrap_or_default();
@@ -241,7 +243,7 @@ fn a_stalled_sink_has_every_line_given_or_counted_and_in_order() {
         "{cause}"
     );
     sink.release();
-    let accounted = sink.wait_accounted(total, Duration::from_secs(30));
+    let accounted = sink.wait_accounted(total, WAIT);
     drop(worker);
     std::thread::sleep(Duration::from_millis(200));
     let seen = sink.seen();
@@ -296,7 +298,7 @@ fn lines_dropped_while_the_sink_stalled_are_counted_once_it_recovers_while_the_w
     // Every line is given or counted while the worker lives: the count is said once the
     // sink gets to where lines were first dropped, not held for the worker's next line or
     // its end (a pool's worker is quiet between requests, and lives as long as the app).
-    let while_alive = sink.wait_accounted(total, Duration::from_secs(20));
+    let while_alive = sink.wait_accounted(total, WAIT);
     let counted = sink.seen().iter().any(|s| matches!(s, Seen::Dropped(_)));
     assert!(
         counted && while_alive == total,
@@ -321,9 +323,7 @@ fn a_crash_report_waits_for_a_log_held_open_by_the_workers_child() {
     );
     let mut worker = Worker::spawn(&exe).unwrap();
     sink.wait_entered();
-    let err = worker
-        .call(Generation(1), echo(), Duration::from_secs(20))
-        .unwrap_err();
+    let err = worker.call(Generation(1), echo(), WAIT).unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     let cause = err.cause().unwrap_or_default();
     assert!(cause.ends_with("first\nLAST WORDS"), "{cause}");
@@ -338,12 +338,11 @@ fn a_stalled_sink_still_has_the_crash_report_wait_for_a_log_held_open() {
     );
     let mut worker = Worker::spawn(&exe).unwrap();
     sink.wait_entered();
+    let lateness = crate::lateness::Lateness::start();
     let asked = Instant::now();
-    let err = worker
-        .call(Generation(1), echo(), Duration::from_secs(20))
-        .unwrap_err();
+    let err = worker.call(Generation(1), echo(), WAIT).unwrap_err();
     assert!(
-        asked.elapsed() < Duration::from_secs(8),
+        asked.elapsed() < crate::lateness::allowance(Duration::from_secs(8), lateness.most()),
         "{:?}",
         asked.elapsed()
     );
@@ -369,14 +368,12 @@ fn a_sink_that_panics_leaves_the_crash_report_whole() {
     sink.wait_entered();
     // Let the sink thread's panic unwind.
     std::thread::sleep(Duration::from_millis(100));
-    let err = worker
-        .call(Generation(1), echo(), Duration::from_secs(20))
-        .unwrap_err();
+    let err = worker.call(Generation(1), echo(), WAIT).unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     let cause = err.cause().unwrap_or_default();
     assert!(cause.ends_with("first\nLAST WORDS"), "{cause}");
     // The sink thread is every worker's: it lost the line it panicked on, and goes on.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + WAIT;
     while !sink.seen().contains(&Seen::Line("LAST WORDS".to_owned())) {
         assert!(
             Instant::now() < deadline,
@@ -410,7 +407,7 @@ fn a_log_sink_that_blocks_outright_never_holds_up_a_kernel_worker() {
     for i in 0..requests {
         let data = Blob::inline(i.to_le_bytes().to_vec());
         let echoed = worker
-            .run(KernelRequest::echo(data.clone()).with_timeout(Duration::from_secs(10)))
+            .run(KernelRequest::echo(data.clone()).with_timeout(WAIT))
             .unwrap_or_else(|e| panic!("request {i} of {requests}: {e}"));
         assert_eq!(echoed, data, "request {i}");
     }
@@ -425,12 +422,15 @@ fn a_log_sink_that_blocks_outright_never_holds_up_a_kernel_worker() {
         .collect();
     let mut doomed =
         Worker::spawn(&script("worker-logs-doomed", &format!("{lines}exit 3"))).unwrap();
+    let lateness = crate::lateness::Lateness::start();
     let asked = Instant::now();
-    let err = doomed
-        .call(Generation(1), echo(), Duration::from_secs(10))
-        .unwrap_err();
+    let err = doomed.call(Generation(1), echo(), WAIT).unwrap_err();
     assert!(
-        asked.elapsed() < Duration::from_millis(1500),
+        // Never the whole 2 s exit grace, which a report held up by the sink takes: load makes
+        // that slower, never faster.
+        asked.elapsed()
+            < crate::lateness::allowance(Duration::from_millis(1500), lateness.most())
+                .min(Duration::from_secs(2)),
         "the crash took {:?} to report",
         asked.elapsed()
     );
@@ -442,7 +442,7 @@ fn a_log_sink_that_blocks_outright_never_holds_up_a_kernel_worker() {
     // Released, the sink takes every line it was given: the warning, then the ended
     // worker's 25, none dropped.
     sink.release();
-    assert_eq!(sink.wait_accounted(26, Duration::from_secs(30)), 26);
+    assert_eq!(sink.wait_accounted(26, WAIT), 26);
     drop(worker);
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(sink.seen().len(), 26, "{:?}", sink.seen());
@@ -459,11 +459,11 @@ fn a_sink_slower_than_the_reader_but_never_stalled_loses_no_lines() {
     let exe = burst_then("burst", 5_000, "read -r _ <&3\nexit 0");
     let worker = Worker::spawn(&exe).unwrap();
     // Every line that will be given is given within 5,000 x 20 us, with room to spare.
-    sink.wait_accounted(5_000, Duration::from_secs(3));
+    sink.wait_accounted(5_000, WAIT);
     let given = line_numbers(&sink.seen()).len();
     // Once the worker ends, every line is given or counted.
     drop(worker);
-    let accounted = sink.wait_accounted(5_000, Duration::from_secs(20));
+    let accounted = sink.wait_accounted(5_000, WAIT);
     assert_eq!(accounted, 5_000, "the sink saw {accounted}");
     // Found by break-it, against an earlier version of the hand-off: a queue of 1,024
     // lines filled in such a burst, and most of it was dropped, though the sink never
@@ -494,9 +494,7 @@ fn a_text_log_written_to_a_file_has_every_line_of_a_burst() {
     let exe = burst_then("fmt-burst", total as usize, "exit 0");
     let mut worker = Worker::spawn(&exe).unwrap();
     // The worker ends once its burst is read; its crash report waits for the log.
-    let err = worker
-        .call(Generation(1), echo(), Duration::from_secs(20))
-        .unwrap_err();
+    let err = worker.call(Generation(1), echo(), WAIT).unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     drop(worker);
     // The lines given, and the counts dropped, in the log so far.
@@ -520,7 +518,7 @@ fn a_text_log_written_to_a_file_has_every_line_of_a_burst() {
             .sum();
         (given, dropped)
     };
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + WAIT;
     let (given, dropped) = loop {
         let (given, dropped) = counted();
         if given + dropped >= total || Instant::now() >= deadline {
@@ -715,7 +713,7 @@ fn a_timed_out_requests_span_never_closes_on_the_log_thread() {
     drop(span);
     drop(worker);
     // The child lets the log close a second on; then the span goes.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + WAIT;
     while !exporter.on_sink.load(Ordering::SeqCst) && !exporter.on_reader.load(Ordering::SeqCst) {
         assert!(Instant::now() < deadline, "the request's span never closed");
         std::thread::sleep(Duration::from_millis(5));
@@ -742,14 +740,12 @@ fn every_workers_log_goes_to_one_sink_thread() {
         "printf 'second\\n' >&2\nexit 0",
     ))
     .unwrap();
-    let err = second
-        .call(Generation(1), echo(), Duration::from_secs(20))
-        .unwrap_err();
+    let err = second.call(Generation(1), echo(), WAIT).unwrap_err();
     assert!(err.cause().unwrap_or_default().ends_with("second"), "{err}");
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(sink.seen(), [Seen::Line("first".to_owned())]);
     sink.release();
-    assert_eq!(sink.wait_accounted(2, Duration::from_secs(10)), 2);
+    assert_eq!(sink.wait_accounted(2, WAIT), 2);
 }
 
 #[test]
@@ -761,9 +757,7 @@ fn a_crash_report_comes_after_its_workers_last_lines_are_logged() {
         .map(|i| format!("printf 'line {i}\\n' >&2\n"))
         .collect();
     let mut worker = Worker::spawn(&script("worker-logs-flush", &format!("{body}exit 0"))).unwrap();
-    let err = worker
-        .call(Generation(1), echo(), Duration::from_secs(20))
-        .unwrap_err();
+    let err = worker.call(Generation(1), echo(), WAIT).unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     assert_eq!(line_numbers(&sink.seen()), (0..20).collect::<Vec<u64>>());
 }
@@ -851,11 +845,7 @@ fn a_call_warns_when_its_worker_hasnt_said_the_most_requests_were_done() {
     );
     let mut worker = Worker::spawn(&exe).unwrap();
     for i in 0..calls {
-        let answer = worker.call(
-            Generation(1),
-            Op::Debug(DebugOp::Sleep { millis: 0 }),
-            Duration::from_secs(10),
-        );
+        let answer = worker.call(Generation(1), Op::Debug(DebugOp::Sleep { millis: 0 }), WAIT);
         assert_eq!(
             answer.map_err(|e| e.to_string()),
             Ok(silico_protocol::Reply::Done)

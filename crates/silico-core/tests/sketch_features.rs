@@ -5,6 +5,7 @@
 //! from the design. (The gate's rules: tests/sketch_features_gate.rs.)
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::model::WAIT;
 use super::sweeps;
 
 use silico_core::document::{
@@ -20,10 +21,7 @@ use sweeps::*;
 /// What `engine` published for `document`, and the names of the kernel calls that made
 /// shapes (every call but the summaries) since it started.
 fn published(engine: &Recompute<FakeKernel>, document: Checked) -> std::sync::Arc<Model> {
-    match engine
-        .start(document)
-        .wait_timeout(std::time::Duration::from_secs(60))
-    {
+    match engine.start(document).wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("not published: {other:?}"),
         Err(_) => panic!("the recompute didn't finish"),

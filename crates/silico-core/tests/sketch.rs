@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::fixture;
+use super::model::WAIT;
 
 use fixture::{
     ARC, CIRCLE, FEATURE, LINE, POINTS, arc, circle, constrained, document, fields, line, point,
@@ -1228,10 +1229,7 @@ fn a_document_with_a_sketch_rebuilds_its_solids_and_the_sketch_makes_none() {
     let engine = Recompute::new(FakeKernel::new(2).unwrap())
         .with_sketches(silico_core::fake::FakeSketches::new());
     let checked = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
-    let model = match engine
-        .start(checked)
-        .wait_timeout(std::time::Duration::from_secs(10))
-    {
+    let model = match engine.start(checked).wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("{other:?}"),
         Err(_) => panic!("the recompute didn't finish"),
@@ -1255,10 +1253,6 @@ fn a_document_with_a_sketch_rebuilds_its_solids_and_the_sketch_makes_none() {
         .iter()
         .map(|c| c.op.name())
         .collect();
-    // The box made, then measured: summarized and described, a batch each of its faces,
-    // edges, and vertices.
-    assert_eq!(
-        calls,
-        ["MakeBox", "Summarize", "Describe", "Describe", "Describe"]
-    );
+    // The box made, then measured: summarized, and described in one request.
+    assert_eq!(calls, ["MakeBox", "Summarize", "Describe"]);
 }

@@ -1,4 +1,5 @@
 //! The core's typed layer over a fresh kernel worker.
+#![allow(dead_code)]
 
 use std::path::Path;
 
@@ -11,7 +12,6 @@ pub fn kernel() -> KernelWorker {
 }
 
 /// A newly started STEP worker.
-#[allow(dead_code)]
 pub fn step() -> StepWorker {
     StepWorker::start_worker(Path::new(env!("CARGO_BIN_EXE_silico-step-worker"))).unwrap()
 }

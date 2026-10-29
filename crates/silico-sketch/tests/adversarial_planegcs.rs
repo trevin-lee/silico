@@ -8,6 +8,7 @@
 
 use super::generate;
 use super::systems;
+use super::wait::WAIT;
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -615,6 +616,9 @@ fn a_heavily_conflicting_system_at_the_limits_is_answered_or_timed_out_and_reape
     system.check().unwrap();
     let mut w = Worker::spawn_as(Path::new(WORKER), WorkerKind::Sketch).unwrap();
     let pid = w.pid();
+    // Answered, or stopped at its 5 s: 15 s on a quiet machine, and the wakes on the way as
+    // late as this machine runs them.
+    let lateness = crate::lateness::Lateness::start();
     let start = Instant::now();
     match w.call(Generation(1), Op::Solve(system), Duration::from_secs(5)) {
         Ok(Reply::Solved(solved)) => {
@@ -629,7 +633,7 @@ fn a_heavily_conflicting_system_at_the_limits_is_answered_or_timed_out_and_reape
         }
     }
     assert!(
-        start.elapsed() < Duration::from_secs(15),
+        start.elapsed() < crate::lateness::allowance(Duration::from_secs(15), lateness.most()),
         "{:?}",
         start.elapsed()
     );
@@ -711,11 +715,7 @@ fn a_sketch_workers_errors_dont_call_it_the_kernel_worker() {
     // worker started as a sketch worker is now named as one.
     let mut w = Worker::spawn_as(Path::new(TEST_WORKER), WorkerKind::Sketch).unwrap();
     let err = w
-        .call(
-            Generation(1),
-            Op::Debug(DebugOp::Segfault),
-            Duration::from_secs(30),
-        )
+        .call(Generation(1), Op::Debug(DebugOp::Segfault), WAIT)
         .unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
     assert!(!err.message().contains("kernel"), "{err}");

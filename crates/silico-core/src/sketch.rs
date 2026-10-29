@@ -9,10 +9,12 @@ use std::path::Path;
 use std::time::Duration;
 
 use silico_protocol::{
-    Algorithm, Generation, Geometry, Op, Part, Parts, PointOf, PointValues, Reply, SketchGeometry,
-    SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value, arc_from_points, no_distance,
-    squared_distance,
+    Algorithm, DragBegin, Generation, Geometry, Op, Part, Parts, PointOf, PointValues, Reply,
+    SketchGeometry, SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value,
+    arc_from_points, arc_from_points_or_unswept, no_distance, squared_distance,
 };
+
+pub use silico_protocol::MovedOnce;
 
 use crate::document::{
     Angle as DocumentAngle, Checked, Coordinate, Direction, ElementId, FeatureId, Form, Length,
@@ -113,6 +115,62 @@ pub trait SketchSolver: Send {
     fn stopper(&mut self) -> Result<Option<SolveStopper>, Error> {
         Ok(None)
     }
+
+    /// Readies the solver for a request of a drag under way, and gives a handle that stops
+    /// it, as [`stopper`](Self::stopper) does, but never starts a worker: one that ended
+    /// took the drag's session with it, so the request fails as a crash. Every solver that
+    /// starts again in `stopper` must override it.
+    fn session_stopper(&mut self) -> Result<Option<SolveStopper>, Error> {
+        self.stopper()
+    }
+
+    /// Starts a drag (M3.7's session in the sketch worker), each request begun as a solve
+    /// is, with [`stopper`](Self::stopper): the sketch diagnosed once and its point pinned.
+    /// A solver that can't drag refuses.
+    fn drag_begin(&mut self, begin: DragBegin) -> Result<DragStarted, Error> {
+        let _ = begin;
+        Err(no_drags())
+    }
+
+    /// Moves the drag's cursor to `to`, solved from where the drag began, under `timeout`.
+    fn drag_move(
+        &mut self,
+        to: [f64; 2],
+        timeout: Duration,
+    ) -> Result<silico_protocol::Moved, Error> {
+        let _ = (to, timeout);
+        Err(no_drags())
+    }
+
+    /// Ends the drag.
+    fn drag_end(&mut self) -> Result<(), Error> {
+        Err(no_drags())
+    }
+
+    /// One move of `begin`'s point to `to`, begun as a solve is, with
+    /// [`stopper`](Self::stopper): a sketch edit's (an extend's), held to a solve's limits
+    /// and its time, not a drag's (`Op::MoveOnce`). A solver that can't refuses.
+    fn move_once(&mut self, begin: DragBegin, to: [f64; 2]) -> Result<MovedOnce, Error> {
+        let _ = (begin, to);
+        Err(no_drags())
+    }
+}
+
+/// A drag's start, as the worker found it: the degrees of freedom left, and the
+/// constraints in conflict, by tag (none, or no drag was started).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DragStarted {
+    pub dofs: i32,
+    pub conflicting: Vec<Tag>,
+}
+
+/// A solver that can't drag refusing a drag's request.
+fn no_drags() -> Error {
+    Error::new(
+        ErrorCode::Internal,
+        "this sketch solver can't drag a sketch",
+    )
+    .with_suggestion(crate::worker::SILICO_BUG)
 }
 
 /// Stops a solve from another thread ([`SketchSolver::stopper`]).
@@ -155,16 +213,22 @@ pub struct SketchWorker {
     begun: bool,
 }
 
+/// The sketch worker executable: [`SKETCH_WORKER_ENV`], or `silico-sketch-worker` beside
+/// the running executable ([`worker::worker_path`](crate::worker::worker_path)).
+pub fn worker_path() -> Result<std::path::PathBuf, Error> {
+    crate::worker::worker_path(
+        SKETCH_WORKER_ENV,
+        "silico-sketch-worker",
+        "sketch worker",
+        "cargo build -p silico-sketch --bin silico-sketch-worker",
+    )
+}
+
 impl SketchWorker {
     /// Starts the sketch worker: [`SKETCH_WORKER_ENV`], or `silico-sketch-worker` next to
     /// the running executable.
     pub fn start() -> Result<Self, Error> {
-        Self::start_worker(&crate::worker::worker_path(
-            SKETCH_WORKER_ENV,
-            "silico-sketch-worker",
-            "sketch worker",
-            "cargo build -p silico-sketch --bin silico-sketch-worker",
-        )?)
+        Self::start_worker(&worker_path()?)
     }
 
     /// Starts the sketch worker at `exe`.
@@ -253,6 +317,76 @@ impl SketchSolver for SketchWorker {
     }
 
     fn solve(&mut self, system: SketchSystem) -> Result<Solved, Error> {
+        self.usable()?;
+        match self.call(Op::Solve(system), self.timeout)? {
+            Reply::Solved(solved) => Ok(solved),
+            other => Err(self.wrong_reply("Solve", &other)),
+        }
+    }
+
+    fn session_stopper(&mut self) -> Result<Option<SolveStopper>, Error> {
+        if self.stopped.load(std::sync::atomic::Ordering::SeqCst)
+            || self.worker.is_stopped()
+            || self.worker.has_exited()
+        {
+            return Err(Error::new(
+                ErrorCode::WorkerCrashed,
+                "the sketch worker ended during the drag, and its session with it",
+            )
+            .with_suggestion("begin the drag again: the next begin starts another worker"));
+        }
+        let killer = self.worker.killer();
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.stopped = std::sync::Arc::clone(&stopped);
+        self.begun = true;
+        Ok(Some(SolveStopper::new(move || {
+            stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+            killer.kill();
+        })))
+    }
+
+    fn drag_begin(&mut self, begin: DragBegin) -> Result<DragStarted, Error> {
+        self.usable()?;
+        match self.call(Op::DragBegin(begin), self.timeout)? {
+            Reply::DragStarted { dofs, conflicting } => Ok(DragStarted { dofs, conflicting }),
+            other => Err(self.wrong_reply("DragBegin", &other)),
+        }
+    }
+
+    fn drag_move(
+        &mut self,
+        to: [f64; 2],
+        timeout: Duration,
+    ) -> Result<silico_protocol::Moved, Error> {
+        self.usable()?;
+        match self.call(Op::DragMove { to }, timeout)? {
+            Reply::Moved(moved) => Ok(moved),
+            other => Err(self.wrong_reply("DragMove", &other)),
+        }
+    }
+
+    fn move_once(&mut self, begin: DragBegin, to: [f64; 2]) -> Result<MovedOnce, Error> {
+        self.usable()?;
+        // A solve's time, as it's a sketch edit's one move, not a drag's.
+        match self.call(Op::MoveOnce { begin, to }, self.timeout)? {
+            Reply::MovedOnce(once) => Ok(once),
+            other => Err(self.wrong_reply("MoveOnce", &other)),
+        }
+    }
+
+    fn drag_end(&mut self) -> Result<(), Error> {
+        self.usable()?;
+        // A drag's end does no solving: past a move's limit, the worker is hung.
+        match self.call(Op::DragEnd, crate::drag::DRAG_MOVE_TIMEOUT)? {
+            Reply::Done => Ok(()),
+            other => Err(self.wrong_reply("DragEnd", &other)),
+        }
+    }
+}
+
+impl SketchWorker {
+    /// Whether a request may run now: a solve's, or a drag's, each begun as a solve is.
+    fn usable(&mut self) -> Result<(), Error> {
         // A solve that was stopped stays stopped: its later requests (a re-diagnosis from
         // its solution) aren't run on a new worker (council, robustness, round 2: one ran
         // 125 s after its recompute was superseded, and the newer waited for it).
@@ -299,19 +433,92 @@ impl SketchSolver for SketchWorker {
         } else {
             self.ready()?;
         }
-        let op = Op::Solve(system);
-        let name = op.name();
-        match self.worker.call(Generation(0), op, self.timeout)? {
-            Reply::Solved(solved) => Ok(solved),
-            other => {
-                self.worker.shut_down();
-                Err(Error::new(
-                    ErrorCode::ProtocolError,
-                    format!("the sketch worker replied to {name} with {}", other.kind()),
-                ))
-            }
+        Ok(())
+    }
+
+    /// `op` run on the worker, under `timeout`.
+    fn call(&mut self, op: Op, timeout: Duration) -> Result<Reply, Error> {
+        self.worker.call(Generation(0), op, timeout)
+    }
+
+    /// A reply of the wrong kind: the worker can't be trusted, and is stopped.
+    fn wrong_reply(&mut self, name: &str, reply: &Reply) -> Error {
+        self.worker.shut_down();
+        Error::new(
+            ErrorCode::ProtocolError,
+            format!("the sketch worker replied to {name} with {}", reply.kind()),
+        )
+    }
+}
+
+/// Refuses `solved` unless it could be the solution of `sent`: as many values, its fixed
+/// ones as sent, every value within reach (one that can't be built may not be), lists of
+/// tags sent and unknowns, in order, a residual for each tag sent, and an algorithm exactly
+/// where a solution is given ([`Translation::check_reply`]'s, and a drag's closing solve's).
+/// A worker that answers otherwise can't be trusted.
+pub(crate) fn check_solved(sent: &SketchSystem, solved: &Solved) -> Result<(), Error> {
+    let bad = |what: String| {
+        Err(Error::new(
+            ErrorCode::ProtocolError,
+            format!("the sketch worker's solution {what}"),
+        ))
+    };
+    if solved.values.len() != sent.values.len() {
+        return bad(format!(
+            "has {} values for {} sent",
+            solved.values.len(),
+            sent.values.len()
+        ));
+    }
+    for (i, (a, b)) in sent.values.iter().zip(&solved.values).enumerate() {
+        let unknown = sent.unknowns.binary_search(&Value(i as u32)).is_ok();
+        if !unknown && a.to_bits() != b.to_bits() {
+            return bad(format!("moves value {i}, which is fixed"));
+        }
+        // A solution that can't be built may be out of reach: it's named, not used.
+        if solved.status != SolveStatus::SolvedInvalid && !silico_protocol::within_reach(*b) {
+            return bad(format!("has value {i} out of reach"));
         }
     }
+    let mut tags: Vec<Tag> = sent
+        .constraints
+        .iter()
+        .filter_map(SolverConstraint::tag)
+        .collect();
+    tags.sort_unstable();
+    for (name, list) in [
+        ("conflicting", &solved.conflicting),
+        ("redundant", &solved.redundant),
+        ("partially redundant", &solved.partially_redundant),
+    ] {
+        if list.windows(2).any(|w| w[0] >= w[1]) || list.iter().any(|t| !tags.contains(t)) {
+            return bad(format!("lists {name} tags it wasn't sent, or out of order"));
+        }
+    }
+    if solved.free.windows(2).any(|w| w[0] >= w[1])
+        || solved
+            .free
+            .iter()
+            .any(|v| sent.unknowns.binary_search(v).is_err())
+    {
+        return bad("lists free values that aren't unknowns, or out of order".to_owned());
+    }
+    if solved
+        .residuals
+        .iter()
+        .map(|(t, _)| *t)
+        .ne(tags.iter().copied())
+    {
+        return bad("has residuals for other tags than were sent".to_owned());
+    }
+    let solution = matches!(
+        solved.status,
+        SolveStatus::Success | SolveStatus::SolvedExceptRedundant | SolveStatus::SolvedInvalid
+    );
+    if solution != solved.algorithm.is_some_and(|a| ALGORITHMS.contains(&a)) {
+        return bad(format!("is {:?} by {:?}", solved.status, solved.algorithm));
+    }
+    Ok(())
 }
 
 /// What a solved sketch is: where everything is, and what the solve found.
@@ -554,7 +761,7 @@ pub fn solve(
     let translation = Translation::new(sketch).map_err(|e| e.with_feature(feature.as_str()))?;
     let named = |e: Error| e.with_feature(feature.as_str());
     let answer = translation.solve(solver).map_err(named)?;
-    answer.outcome.map_err(named)
+    answer.into_outcome().map_err(named)
 }
 
 /// Whether `file`, a sketch with a solve written back, is one the gate takes: a solve can be
@@ -604,12 +811,157 @@ fn holdable(file: &Sketch) -> Result<(), Error> {
     Err(error)
 }
 
+/// What a solve's diagnosis says of a sketch's members, by ID, for every answer that stands,
+/// solved or refused (docs/ports/sketcher.md, *Definition states*): PlaneGCS's diagnosis,
+/// taken where the solve started, before any algorithm ran, and the constraints decision 5
+/// refuses. What each member's state is, from it, is [`crate::sketch_states`]'s; it reaches
+/// them only paired with its outcome, as a [`Diagnosed`].
+///
+/// Its `dofs`, `free`, and redundant lists say again, for a solved sketch, what the
+/// [`SketchSolution`] says: the solution's are M3.3's (each kept repetition with its gap,
+/// which warnings and saves read), there only when the sketch solved; these are there for
+/// every answer, refused ones too, which is what the states need. On a solved answer the two
+/// agree (a property test pins it).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Diagnosis {
+    /// Degrees of freedom left, as PlaneGCS counts them: negative when constraints
+    /// conflict, and −1 for a sketch of no unknowns.
+    pub dofs: i32,
+    /// The points, circles, and arcs with a value of their own the diagnosis finds free (a
+    /// point's x or y, a circle's radius, an arc's radius or either angle): every one, when
+    /// no constraint touches an unknown (FreeCAD's reading). A line has no value of its own.
+    pub free: BTreeSet<ElementId>,
+    /// The constraints in conflict: PlaneGCS's, and the redundant ones that disagree with
+    /// the others past decision 5's tolerance, which the read refuses as `over_constrained`
+    /// (they're in [`redundant`](Self::redundant) or
+    /// [`partially_redundant`](Self::partially_redundant) too, as PlaneGCS lists them).
+    pub conflicting: BTreeSet<ElementId>,
+    /// The constraints all of whose equations repeat others', as PlaneGCS lists them.
+    pub redundant: BTreeSet<ElementId>,
+    /// The constraints some, but not all, of whose equations repeat others', as PlaneGCS
+    /// lists them.
+    pub partially_redundant: BTreeSet<ElementId>,
+    /// Each constraint listed above, with the points whose x or y its equations depend on
+    /// ([`SketchSystem::depends_on`]): none, for one whose rows depend only on fixed values,
+    /// radii, and angles.
+    pub points_depended_on: BTreeMap<ElementId, BTreeSet<ElementId>>,
+}
+
+impl Diagnosis {
+    /// The diagnosis of `sketch` before its constraints: PlaneGCS's, from `solver`, of its
+    /// geometry alone, its arcs' rules the only rows. It's the diagnosis of a sketch
+    /// [`Translation::new`] refuses, whose constraints never reach the solver (M5.0 open item
+    /// 32: two points drawn at one place where a constraint is measured by the line between
+    /// them, an arc that sweeps nothing). It's sent as the solve request is, every point,
+    /// line, circle, and arc as [`Translation::new`] sends it, and the arcs' rules, but no
+    /// constraint; the reply's diagnosis is taken before any algorithm runs, so its solve is
+    /// never read. An arc that sweeps nothing is sent at its start's angle at both ends
+    /// ([`arc_from_points_or_unswept`]): its rules are well defined there.
+    ///
+    /// `dofs` and `free` are the reply's: PlaneGCS's unknowns less the rank of its rows, and
+    /// the values its dependent parameters name (no constraint is sent, so it lists none).
+    /// A solver that fails, a reply that can't be trusted, or geometry that can't be
+    /// translated (a sketch the gate never saw, whose curves name points it hasn't) is the
+    /// error: it's no sketch state.
+    pub fn untranslated(sketch: &Sketch, solver: &mut dyn SketchSolver) -> Result<Self, Error> {
+        let _span = tracing::info_span!("diagnose untranslated sketch").entered();
+        let geometry = Translation::geometry(sketch, NoSweep::AtItsStart)?;
+        // Only the diagnosis is read, taken before any algorithm runs: one algorithm, the
+        // least the protocol takes, so no solve nobody reads can time out or fault.
+        let mut system = geometry.system.clone();
+        system.algorithms = vec![Algorithm::DogLeg];
+        let solved = solver.solve(system)?;
+        if let Err(e) = geometry.check_reply(&solved) {
+            solver.distrust();
+            return Err(e);
+        }
+        Ok(Diagnosis {
+            dofs: solved.dofs,
+            free: geometry.free(&solved),
+            ..Diagnosis::default()
+        })
+    }
+}
+
+/// A solve's [`Diagnosis`] and its outcome, paired by the core from one answer, so the states
+/// ([`crate::sketch_states::states`]) never read a diagnosis beside another answer's outcome:
+/// [`Translation::read_diagnosed`]'s, an [`Answer`]'s ([`Answer::diagnosed`]), or a refused
+/// translation's ([`Diagnosed::untranslated`]). Only these make one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Diagnosed {
+    diagnosis: Diagnosis,
+    outcome: Result<SketchSolution, Error>,
+}
+
+impl Diagnosed {
+    /// `sketch`, if [`Translation::new`] refuses it, so no solve is sent: the diagnosis of its
+    /// geometry before its constraints, from `solver` ([`Diagnosis::untranslated`]), beside the
+    /// translation's own refusal; None if it translates, as its states are then its answer's.
+    /// A solver that fails is the error, and the read fails with it (item 32's addendum, D).
+    /// The states read it as any refusal: an `invalid_input` is `invalid`.
+    pub fn untranslated(
+        sketch: &Sketch,
+        solver: &mut dyn SketchSolver,
+    ) -> Result<Option<Self>, Error> {
+        let Err(refusal) = Translation::new(sketch) else {
+            return Ok(None);
+        };
+        Ok(Some(Diagnosed {
+            diagnosis: Diagnosis::untranslated(sketch, solver)?,
+            outcome: Err(refusal),
+        }))
+    }
+
+    /// The diagnosis.
+    pub fn diagnosis(&self) -> &Diagnosis {
+        &self.diagnosis
+    }
+
+    /// The outcome: the solution, or why the solve was refused.
+    pub fn outcome(&self) -> Result<&SketchSolution, &Error> {
+        self.outcome.as_ref()
+    }
+
+    /// The outcome, the diagnosis dropped.
+    pub fn into_outcome(self) -> Result<SketchSolution, Error> {
+        self.outcome
+    }
+}
+
 /// What solving a [`Translation`] found: the worker's answer the outcome is read from, and
-/// the outcome.
+/// what reading it gave, its diagnosis and outcome paired, or, for a reply the core couldn't
+/// read, that error. Only [`Translation::solve`] makes one.
 #[derive(Debug, Clone)]
 pub struct Answer {
-    pub solved: Solved,
-    pub outcome: Result<SketchSolution, Error>,
+    solved: Solved,
+    read: Result<Diagnosed, Error>,
+}
+
+impl Answer {
+    /// The worker's answer the outcome is read from.
+    pub fn solved(&self) -> &Solved {
+        &self.solved
+    }
+
+    /// The outcome: the solution, or why the solve was refused, a reply the core couldn't
+    /// read included.
+    pub fn outcome(&self) -> Result<&SketchSolution, &Error> {
+        match &self.read {
+            Ok(read) => read.outcome(),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The outcome, the rest dropped.
+    pub fn into_outcome(self) -> Result<SketchSolution, Error> {
+        self.read.and_then(Diagnosed::into_outcome)
+    }
+
+    /// The answer's diagnosis and outcome, paired; or, for a reply the core couldn't read,
+    /// that error: such an answer has no states.
+    pub fn diagnosed(&self) -> Result<&Diagnosed, &Error> {
+        self.read.as_ref()
+    }
 }
 
 /// A sketch in the solver's terms, and how to read the solution back.
@@ -742,10 +1094,49 @@ const Y_AXIS: Line = Line {
     to: Y_AXIS_END,
 };
 
+/// What [`Translation::geometry`] makes of an arc whose ends are at one angle from its
+/// centre, so it sweeps nothing, or a whole turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoSweep {
+    /// Refused, `invalid_input`: no arc a solve is sent sweeps nothing.
+    Refused,
+    /// Drawn at its start's angle at both ends ([`arc_from_points_or_unswept`]), for
+    /// [`Diagnosis::untranslated`] alone, which never solves it.
+    AtItsStart,
+}
+
 impl Translation {
     /// `sketch`, which the gate has checked, in the solver's terms
     /// (docs/design/m3.3-solving.md, *The translation*).
     pub fn new(sketch: &Sketch) -> Result<Self, Error> {
+        let mut translation = Translation::geometry(sketch, NoSweep::Refused)?;
+        let mut constraints = sketch.constraints.clone();
+        constraints.sort_by(|a, b| a.id.cmp(&b.id));
+        translation.on = constraints
+            .iter()
+            .filter_map(|c| match &c.form {
+                Form::On {
+                    point: Reference::Element(p),
+                    curve,
+                } => Some((p.clone(), curve.clone())),
+                _ => None,
+            })
+            .collect();
+        for (i, c) in constraints.iter().enumerate() {
+            let tag = Tag(i as u32 + 1);
+            let sent = translation
+                .constraint(c, tag)
+                .map_err(|e| e.with_element(c.id.as_str()))?;
+            translation.system.constraints.extend(sent);
+        }
+        translation.constraints = constraints;
+        Ok(translation)
+    }
+
+    /// `sketch`'s geometry alone in the solver's terms, as [`new`](Self::new) sends it: every
+    /// point, line, circle, and arc, and the arcs' rules, but none of its constraints. An arc
+    /// that sweeps nothing is as `no_sweep` says.
+    fn geometry(sketch: &Sketch, no_sweep: NoSweep) -> Result<Self, Error> {
         let mut values = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
         let mut unknowns = Vec::new();
         let mut geometry = vec![
@@ -836,7 +1227,13 @@ impl Translation {
                     values.get(p.y.0 as usize).copied().unwrap_or(f64::NAN),
                 ]
             };
-            let Some([r, a0, a1]) = arc_from_points(at(center), at(start), at(end)) else {
+            let drawn = match no_sweep {
+                NoSweep::Refused => arc_from_points(at(center), at(start), at(end)),
+                NoSweep::AtItsStart => {
+                    Some(arc_from_points_or_unswept(at(center), at(start), at(end)))
+                }
+            };
+            let Some([r, a0, a1]) = drawn else {
                 return Err(Error::new(
                     ErrorCode::InvalidInput,
                     format!(
@@ -877,19 +1274,7 @@ impl Translation {
                 },
             );
         }
-        let mut constraints = sketch.constraints.clone();
-        constraints.sort_by(|a, b| a.id.cmp(&b.id));
-        let on = constraints
-            .iter()
-            .filter_map(|c| match &c.form {
-                Form::On {
-                    point: Reference::Element(p),
-                    curve,
-                } => Some((p.clone(), curve.clone())),
-                _ => None,
-            })
-            .collect();
-        let mut translation = Translation {
+        Ok(Translation {
             system: SketchSystem {
                 values,
                 unknowns,
@@ -903,18 +1288,9 @@ impl Translation {
             lines,
             circles,
             arcs,
-            on,
+            on: Vec::new(),
             sketch: sketch.clone(),
-        };
-        for (i, c) in constraints.iter().enumerate() {
-            let tag = Tag(i as u32 + 1);
-            let sent = translation
-                .constraint(c, tag)
-                .map_err(|e| e.with_element(c.id.as_str()))?;
-            translation.system.constraints.extend(sent);
-        }
-        translation.constraints = constraints;
-        Ok(translation)
+        })
     }
 
     /// The point a constraint names: points are geometry of their own, so it's `Point(g)`;
@@ -1395,7 +1771,7 @@ impl Translation {
         // A refusal writes no file, so its load solves the drawing again and refuses alike.
         // Only an over-constrained one is checked by loads (a diagnosis on the drawing): a load
         // from an invalid result would measure sides from where that result put them.
-        let checked_by_load = match &first.outcome {
+        let checked_by_load = match first.outcome() {
             Ok(_) => true,
             Err(e) => e.code() == ErrorCode::OverConstrained,
         };
@@ -1430,7 +1806,7 @@ impl Translation {
             // the load's error too, so a drawing that solved is refused with it.
             let here = match load.answer(solver) {
                 Ok(here) => here,
-                Err(e) if e.code() == ErrorCode::InvalidInput && first.outcome.is_err() => {
+                Err(e) if e.code() == ErrorCode::InvalidInput && first.outcome().is_err() => {
                     return Ok(first);
                 }
                 Err(e) => return Err(e),
@@ -1444,7 +1820,7 @@ impl Translation {
                 Err(e) => return Ok(refusal(first, Err(e))),
             };
             if settled {
-                return Ok(if here.outcome.is_ok() {
+                return Ok(if here.outcome().is_ok() {
                     here
                 } else {
                     refusal(first, Ok(here))
@@ -1472,10 +1848,8 @@ impl Translation {
             solver.distrust();
             return Err(e);
         }
-        Ok(Answer {
-            outcome: self.read(&solved),
-            solved,
-        })
+        let read = self.read_diagnosed(&solved);
+        Ok(Answer { solved, read })
     }
 
     /// The points, circles' radii, and reference dimensions' measures at `values`.
@@ -1507,21 +1881,9 @@ impl Translation {
 
     /// The sketch as its file holds it once `values` are written back, as a save writes a
     /// solution ([`SketchSolution::written`]): what a load starts from.
-    fn stored(&self, values: &[f64]) -> Result<Sketch, Error> {
+    pub(crate) fn stored(&self, values: &[f64]) -> Result<Sketch, Error> {
         let (points, radii, references) = self.placed(values)?;
         Ok(written(&self.sketch, &points, &radii, &references))
-    }
-
-    /// The tags sent, in increasing order.
-    fn tags(&self) -> Vec<Tag> {
-        let mut tags: Vec<Tag> = self
-            .system
-            .constraints
-            .iter()
-            .filter_map(SolverConstraint::tag)
-            .collect();
-        tags.sort_unstable();
-        tags
     }
 
     /// That `solved` answers what was sent: as many values, the fixed ones as sent and all
@@ -1529,64 +1891,39 @@ impl Translation {
     /// algorithm exactly where a solution is given. A worker that answers otherwise can't
     /// be trusted.
     pub fn check_reply(&self, solved: &Solved) -> Result<(), Error> {
-        let bad = |what: String| {
-            Err(Error::new(
-                ErrorCode::ProtocolError,
-                format!("the sketch worker's solution {what}"),
-            ))
-        };
-        let sent = &self.system;
-        if solved.values.len() != sent.values.len() {
-            return bad(format!(
-                "has {} values for {} sent",
-                solved.values.len(),
-                sent.values.len()
-            ));
-        }
-        for (i, (a, b)) in sent.values.iter().zip(&solved.values).enumerate() {
-            let unknown = sent.unknowns.binary_search(&Value(i as u32)).is_ok();
-            if !unknown && a.to_bits() != b.to_bits() {
-                return bad(format!("moves value {i}, which is fixed"));
-            }
-            // A solution that can't be built may be out of reach: it's named, not used.
-            if solved.status != SolveStatus::SolvedInvalid && !silico_protocol::within_reach(*b) {
-                return bad(format!("has value {i} out of reach"));
-            }
-        }
-        let tags = self.tags();
-        for (name, list) in [
-            ("conflicting", &solved.conflicting),
-            ("redundant", &solved.redundant),
-            ("partially redundant", &solved.partially_redundant),
-        ] {
-            if list.windows(2).any(|w| w[0] >= w[1]) || list.iter().any(|t| !tags.contains(t)) {
-                return bad(format!("lists {name} tags it wasn't sent, or out of order"));
-            }
-        }
-        if solved.free.windows(2).any(|w| w[0] >= w[1])
-            || solved
-                .free
-                .iter()
-                .any(|v| sent.unknowns.binary_search(v).is_err())
-        {
-            return bad("lists free values that aren't unknowns, or out of order".to_owned());
-        }
-        if solved
-            .residuals
+        check_solved(&self.system, solved)
+    }
+
+    /// Point `id`'s own geometry, which a drag of it pins, if the sketch has the point.
+    pub(crate) fn point_geometry(&self, id: &ElementId) -> Option<Geometry> {
+        self.point_geometry.get(id).copied()
+    }
+
+    /// Curve `id`'s geometry (a line's, a circle's, or an arc's), whose edge a drag of it
+    /// pins, if the sketch has the curve.
+    pub(crate) fn curve_geometry(&self, id: &ElementId) -> Option<Geometry> {
+        self.lines
+            .get(id)
+            .map(|l| l.geometry)
+            .or_else(|| self.circles.get(id).map(|c| c.geometry))
+            .or_else(|| self.arcs.get(id).map(|a| a.round.geometry))
+    }
+
+    /// Each point's values, by ID.
+    pub(crate) fn point_values(&self) -> impl Iterator<Item = (&ElementId, PointValues)> {
+        self.points.iter().map(|(id, &v)| (id, v))
+    }
+
+    /// Each circle's and arc's radius, by ID.
+    pub(crate) fn radius_values(&self) -> Vec<(&ElementId, Value)> {
+        let mut radii: Vec<(&ElementId, Value)> = self
+            .circles
             .iter()
-            .map(|(t, _)| *t)
-            .ne(tags.iter().copied())
-        {
-            return bad("has residuals for other tags than were sent".to_owned());
-        }
-        let solution = matches!(
-            solved.status,
-            SolveStatus::Success | SolveStatus::SolvedExceptRedundant | SolveStatus::SolvedInvalid
-        );
-        if solution != solved.algorithm.is_some_and(|a| ALGORITHMS.contains(&a)) {
-            return bad(format!("is {:?} by {:?}", solved.status, solved.algorithm));
-        }
-        Ok(())
+            .map(|(id, c)| (id, c.radius))
+            .chain(self.arcs.iter().map(|(id, a)| (id, a.round.radius)))
+            .collect();
+        radii.sort_by(|a, b| a.0.cmp(b.0));
+        radii
     }
 
     /// The ID of the constraint the solver reports as `tag`, if one is.
@@ -1638,8 +1975,92 @@ impl Translation {
     }
 
     /// What `solved`, which [`check_reply`](Self::check_reply) passed, says about the sketch
-    /// (docs/design/m3.3-solving.md, *Outcomes, as data*).
+    /// (docs/design/m3.3-solving.md, *Outcomes, as data*): [`read_diagnosed`]'s outcome.
+    ///
+    /// [`read_diagnosed`]: Self::read_diagnosed
     pub fn read(&self, solved: &Solved) -> Result<SketchSolution, Error> {
+        self.read_diagnosed(solved)
+            .and_then(Diagnosed::into_outcome)
+    }
+
+    /// What `solved` says about the sketch, read once: its outcome, solved or refused, and
+    /// its diagnosis, what it says of each member whatever the outcome
+    /// (docs/ports/sketcher.md, *Definition states*). `solved` is one
+    /// [`check_reply`](Self::check_reply) passed, for this translation or any other of the
+    /// same sketch, as a load's ([`Answer::solved`]): a translation decides its rows
+    /// from the sketch's references alone, never from where it's drawn, so every translation
+    /// of one sketch reads a reply alike.
+    ///
+    /// A reply the read can't read (a `protocol_error`), or a bug (`internal`), is the
+    /// error: it's no sketch state, so it has no diagnosis.
+    pub fn read_diagnosed(&self, solved: &Solved) -> Result<Diagnosed, Error> {
+        let _span = tracing::info_span!("read sketch").entered();
+        let mut disagreeing = Vec::new();
+        let outcome = match self.read_noting(solved, &mut disagreeing) {
+            Err(e) if crate::sketch_states::refusal_state(e.code()).is_none() => return Err(e),
+            outcome => outcome,
+        };
+        let named = |tags: &[Tag]| -> Result<BTreeSet<ElementId>, Error> {
+            tags.iter().map(|&t| self.id(t).cloned()).collect()
+        };
+        let mut conflicting = named(&solved.conflicting)?;
+        conflicting.extend(named(&disagreeing)?);
+        let redundant = named(&solved.redundant)?;
+        let partially_redundant = named(&solved.partially_redundant)?;
+        // Each listed constraint's rows, in one pass over the rows, and the points whose x or
+        // y their equations depend on.
+        let listed: BTreeSet<Tag> = solved
+            .conflicting
+            .iter()
+            .chain(&disagreeing)
+            .chain(&solved.redundant)
+            .chain(&solved.partially_redundant)
+            .copied()
+            .collect();
+        let owner: BTreeMap<Value, &ElementId> = self
+            .points
+            .iter()
+            .flat_map(|(id, p)| [(p.x, id), (p.y, id)])
+            .collect();
+        let mut points_depended_on: BTreeMap<ElementId, BTreeSet<ElementId>> = BTreeMap::new();
+        for &tag in &listed {
+            points_depended_on.insert(self.id(tag)?.clone(), BTreeSet::new());
+        }
+        for row in &self.system.constraints {
+            let Some(tag) = row.tag().filter(|t| listed.contains(t)) else {
+                continue;
+            };
+            let depended_on = self
+                .system
+                .depends_on(row)
+                .into_iter()
+                .filter_map(|v| owner.get(&v).map(|&id| id.clone()));
+            points_depended_on
+                .entry(self.id(tag)?.clone())
+                .or_default()
+                .extend(depended_on);
+        }
+        Ok(Diagnosed {
+            diagnosis: Diagnosis {
+                dofs: solved.dofs,
+                free: self.free(solved),
+                conflicting,
+                redundant,
+                partially_redundant,
+                points_depended_on,
+            },
+            outcome,
+        })
+    }
+
+    /// [`read`](Self::read), noting in `disagreeing` the redundant constraints, by tag, it
+    /// refuses for disagreeing with the others past decision 5's tolerance: none, unless it
+    /// refuses them.
+    fn read_noting(
+        &self,
+        solved: &Solved,
+        disagreeing_out: &mut Vec<Tag>,
+    ) -> Result<SketchSolution, Error> {
         if !solved.conflicting.is_empty() {
             let n = solved.conflicting.len();
             return Err(Error::new(
@@ -1753,6 +2174,7 @@ impl Translation {
                 )
             });
             let id = self.id(tag)?;
+            disagreeing_out.extend_from_slice(&disagreeing);
             return Err(Error::new(
                 ErrorCode::OverConstrained,
                 format!(
@@ -2358,14 +2780,18 @@ type Placed = (
 /// give back, so it stands as `load` ended: the last load's answer, or, where a load
 /// couldn't be made, checked, or settled, the first solve's values with that error.
 fn refusal(first: Answer, load: Result<Answer, Error>) -> Answer {
-    if first.outcome.is_err() {
+    if first.outcome().is_err() {
         return first;
     }
     match load {
         Ok(load) => load,
+        // The first solve's diagnosis, of the values it stands with, beside the load's error.
         Err(e) => Answer {
             solved: first.solved,
-            outcome: Err(e),
+            read: first.read.map(|read| Diagnosed {
+                outcome: Err(e),
+                ..read
+            }),
         },
     }
 }

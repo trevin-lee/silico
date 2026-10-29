@@ -67,12 +67,13 @@ public:
 
 // The parts of a STEP file, added in the file's order (each from its binary B-rep, the
 // checksum Silico appends already checked and taken off), then written as one: each a product
-// whose id and name are given (already encoded as ISO 10303-21 strings, with no quote), under
-// an assembly named `assembly` if there are two or more; by STEPCAFControl_Writer from an XCAF
-// document of its own, every setting given as DESTEP_Parameters (never a process-wide static),
-// and every header field set from the arguments or Silico's constants, so the bytes are the
-// same every run. OCCT is given a placeholder for each name and for the file name, and the
-// strings are spliced into the bytes it writes; the ids, feature IDs, are set as they are.
+// whose id and name are given, under an assembly named `assembly` if there are two or more; by
+// STEPCAFControl_Writer from an XCAF document of its own, every setting given as
+// DESTEP_Parameters (never a process-wide static), and every header field set from the
+// arguments or Silico's constants, so the bytes are the same every run. The names, the
+// assembly's, and the file name are the worker's tokens for its strings, which it splices
+// into the bytes returned (silico-step-worker.rs, `Strings`); the ids, feature IDs, are set
+// as they are.
 class StepWriter {
 public:
   void add_part(rust::Slice<const uint8_t> brep, rust::Str id, rust::Str name);

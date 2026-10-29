@@ -10,9 +10,9 @@
 
 use super::cube_elements::cube;
 use super::kernel;
+use crate::wait::WAIT;
 
 use std::path::Path;
-use std::time::Duration;
 
 use proptest::prelude::*;
 use silico_core::ErrorCode;
@@ -729,18 +729,15 @@ fn a_worker_asked_for_a_distance_on_garbage_says_so_and_goes_on() {
     );
 }
 
-/// `request`'s result on the fake kernel, within 5 s.
+/// `request`'s result on the fake kernel, within [`WAIT`].
 fn on_fake<T: Send + 'static>(
     fake: &FakeKernel,
     request: KernelRequest<T>,
 ) -> Result<T, silico_core::Error> {
-    match fake
-        .submit(fake.generation(), request)
-        .wait_timeout(Duration::from_secs(5))
-    {
+    match fake.submit(fake.generation(), request).wait_timeout(WAIT) {
         Ok(Outcome::Done(result)) => result,
         Ok(Outcome::Superseded) => panic!("superseded"),
-        Err(_) => panic!("no outcome within 5 s (the fake hung)"),
+        Err(_) => panic!("no outcome within {WAIT:?} (the fake hung)"),
     }
 }
 

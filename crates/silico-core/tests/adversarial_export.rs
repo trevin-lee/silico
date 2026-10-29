@@ -641,6 +641,38 @@ fn a_vertex_past_32_bits_is_refused_even_with_no_edge_to_check() {
 }
 
 #[test]
+fn a_face_both_meshed_and_left_out_or_numbered_0_is_refused_for_that() {
+    // Each report is whole but for the one fault, so each is refused by the check that
+    // names it, not by an earlier count. An unoriented face of its own (Face9, in shell 0)
+    // is a report that holds together.
+    let mut m = tetra();
+    m.unoriented_faces = vec![9];
+    m.unoriented_shells = vec![0];
+    assert_eq!(m.validate(), Ok(()));
+    m.unoriented_faces = vec![2];
+    assert_eq!(
+        m.validate(),
+        Err("Face2 is both left out as unoriented and in the mesh or loose".to_owned())
+    );
+    let mut m = tetra();
+    m.loose_faces = vec![7];
+    m.unoriented_faces = vec![7];
+    m.unoriented_shells = vec![0];
+    assert_eq!(
+        m.validate(),
+        Err("Face7 is both left out as unoriented and in the mesh or loose".to_owned())
+    );
+    let numbered_0 = Err("an element is numbered 0, but elements are numbered from 1".to_owned());
+    let mut m = tetra();
+    m.loose_faces = vec![0];
+    assert_eq!(m.validate(), numbered_0);
+    let mut m = tetra();
+    m.unoriented_faces = vec![0];
+    m.unoriented_shells = vec![0];
+    assert_eq!(m.validate(), numbered_0);
+}
+
+#[test]
 fn a_report_with_a_value_that_isnt_finite_or_an_element_numbered_0_is_refused() {
     // The council's tests lens: validate's finiteness and numbering checks are all that
     // keep NaN geometry from being exported.
@@ -658,9 +690,16 @@ fn a_report_with_a_value_that_isnt_finite_or_an_element_numbered_0_is_refused() 
         |m| {
             m.face_tolerances.pop();
         },
-        // An unoriented face numbered from 1, and neither a face of the mesh nor loose.
-        |m| m.unoriented_faces = vec![0],
-        |m| m.unoriented_faces = vec![2],
+        // An unoriented face numbered from 1, and neither a face of the mesh nor loose,
+        // each with its shell, so only the numbering or the overlap is wrong.
+        |m| {
+            m.unoriented_faces = vec![0];
+            m.unoriented_shells = vec![0];
+        },
+        |m| {
+            m.unoriented_faces = vec![2];
+            m.unoriented_shells = vec![0];
+        },
         // A deflection past the tolerance it was meant to meet.
         |m| m.deflection = 0.2,
     ];

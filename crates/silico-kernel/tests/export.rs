@@ -695,20 +695,27 @@ fn the_worker_refuses_a_mesh_of_more_triangles_than_its_limit_counted_in_all() {
         assert_eq!(mesh.triangles.len(), 12);
         let error = within(11).unwrap_err();
         assert_eq!(error.kind(), KernelErrorKind::InvalidInput, "{error}");
+        // The unraised mesh's refusal says it's the unraised mesh, not the export's (the
+        // M4.8 architecture review: its words are silico-protocol's, tested there).
         assert_eq!(
             error.refusal(),
             &silico_protocol::Refusal::TooManyTriangles {
                 triangles: 12,
-                limit: 11
+                limit: 11,
+                unraised: forced,
             }
         );
         assert_eq!(error.refusal().parameter(), Some("tolerance"));
         let said = error.refusal().describe(None, &|e| e.to_string());
-        assert!(
-            said.message
-                .contains("has 12 triangles, more than the 11 an export may have"),
-            "{}",
-            said.message
+        assert_eq!(
+            said.message,
+            if forced {
+                "an export's unraised mesh, which the faces OCCT meshed more coarsely for their \
+                 own tolerance are compared with, has 12 triangles, more than the 11 an \
+                 export's mesh may have"
+            } else {
+                "an export's mesh has 12 triangles, more than the 11 an export may have"
+            }
         );
         // The export's own limit takes it.
         assert_eq!(export_mesh(&block, 0.1, forced).unwrap(), mesh);

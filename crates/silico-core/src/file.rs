@@ -31,22 +31,30 @@ pub fn read(file: &Path) -> Result<Vec<u8>, Error> {
 
 /// `file`, opened, and as much of it as [`read`] reads, the rest left to read.
 pub fn opened_and_read(file: &Path) -> Result<(std::fs::File, Vec<u8>), Error> {
+    opened_and_read_io(file).map_err(unreadable)
+}
+
+/// [`opened_and_read`], its failure the system's own, its kind kept (no file at the path is
+/// `NotFound`; a file that isn't a regular one, `InvalidInput`): for a caller that tells
+/// them apart, as a disk comparison tells a file gone from one it can't read.
+pub(crate) fn opened_and_read_io(file: &Path) -> std::io::Result<(std::fs::File, Vec<u8>)> {
     // Opened without waiting (a pipe with no writer would block an open), then checked.
     let opened = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
-        .open(file)
-        .map_err(unreadable)?;
-    let metadata = opened.metadata().map_err(unreadable)?;
+        .open(file)?;
+    let metadata = opened.metadata()?;
     if !metadata.is_file() {
-        return Err(unreadable("it isn't a regular file"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "it isn't a regular file",
+        ));
     }
     let mut opened = opened;
     let mut bytes = Vec::new();
     (&mut opened)
         .take(MAX_INPUT_LEN as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(unreadable)?;
+        .read_to_end(&mut bytes)?;
     Ok((opened, bytes))
 }
 
@@ -132,14 +140,8 @@ impl Step {
 /// only if it is the directory `canonical` names now (the same device and inode), so a link
 /// put there meanwhile gives none, never its target's spelling.
 fn held_spelling(canonical: &Path) -> Option<PathBuf> {
-    use rustix::fs::{CWD, Mode, OFlags};
-    let handle = rustix::fs::openat(
-        CWD,
-        canonical,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .ok()?;
+    use rustix::fs::CWD;
+    let handle = crate::cache::open_dir(CWD, canonical).ok()?;
     let opened = rustix::fs::fstat(&handle).ok()?;
     let named = rustix::fs::statat(CWD, canonical, rustix::fs::AtFlags::SYMLINK_NOFOLLOW).ok()?;
     if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino) {
@@ -1011,6 +1013,147 @@ mod tests {
     }
 
     #[test]
+    fn a_path_of_exactly_the_longest_walked_is_left_to_the_system_and_one_byte_more_isnt() {
+        // Found by the M4 milestone's mutation run: refusing a path of exactly
+        // WALKED_PATH_BYTES as too long, unresolved, passed every test (the one above takes
+        // that length out through a link first). A path in the workspace, `sub/../` again
+        // and again and then a file's name, its `..`s taking it back to the root, so each
+        // name the system looks up is short: of 4096 bytes, walked, in, and then resolved
+        // by the system. glibc's `realpath` resolves it, a name at a time, to the file
+        // (checked on Debian's glibc 2.41); macOS's refuses any path past its own PATH_MAX,
+        // 1024 bytes, before looking at it. Of 4097, decided by its form, in, and refused
+        // as too long without asking the system, on either.
+        let (_dir, w) = scratch();
+        let work = w.root().to_owned();
+        let room = work.as_os_str().len() + 1;
+        // The relative path, of `bytes` joined to the root, and the file it leads to.
+        let of = |bytes: usize| {
+            let churn = (bytes - room - 100) / 7;
+            let name = "p".repeat(bytes - room - 7 * churn);
+            std::fs::write(work.join(&name), b"{}").unwrap();
+            let path = PathBuf::from(format!("{}{name}", "sub/../".repeat(churn)));
+            assert_eq!(work.join(&path).as_os_str().len(), bytes);
+            (path, work.join(name))
+        };
+        let (path, file) = of(WALKED_PATH_BYTES);
+        assert!(!w.leads_out(&work.join(&path)));
+        match resolve(Some(&w), &path) {
+            Ok(resolved) if cfg!(target_os = "linux") => assert_eq!(resolved, file),
+            Err(Unresolved::Unreachable(e)) if cfg!(target_os = "macos") => {
+                assert_eq!(e.raw_os_error(), Some(libc::ENAMETOOLONG));
+            }
+            other => panic!("{other:?}"),
+        }
+        let (longer, _) = of(WALKED_PATH_BYTES + 1);
+        assert!(!w.leads_out(&work.join(&longer)));
+        match resolve(Some(&w), &longer) {
+            Err(Unresolved::Unreachable(e)) => {
+                assert_eq!(e.raw_os_error(), Some(libc::ENAMETOOLONG));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_roots_held_spelling_is_the_directorys_own_and_a_files_is_none() {
+        // Found by the M4 milestone's mutation run: none for the directory itself (the
+        // device and inode check turned), or a spelling for a file (opened without
+        // O_DIRECTORY), passed every test; on Linux the handle's spelling is the canonical
+        // root's, so nothing that compares paths with both tells. A plain directory, reached
+        // through no link: the system names its handle as `canonicalize` names it. A file at
+        // the root's path (the root replaced since it was checked to be a directory): no
+        // handle on a directory, so no spelling.
+        let dir = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        let work = real.join("work");
+        std::fs::create_dir(&work).unwrap();
+        assert_eq!(held_spelling(&work), Some(work.clone()));
+        let file = real.join("file");
+        std::fs::write(&file, b"").unwrap();
+        assert_eq!(held_spelling(&file), None);
+    }
+
+    #[test]
+    fn a_path_is_in_the_workspace_below_either_spelling_of_its_root() {
+        // Found by the M4 milestone's mutation run: holding only a path below both
+        // spellings passed every test, as on Linux the two are one. Below the canonical
+        // root, or the root as the system names its handle (macOS's firmlinks), it's in;
+        // below neither, it isn't. With no held spelling (a system that can't say where a
+        // handle is), the canonical root stands alone.
+        let both = Workspace {
+            root: PathBuf::from("/top/canonical"),
+            as_held: Some(PathBuf::from("/top/held")),
+        };
+        assert!(both.holds(Path::new("/top/canonical/x")));
+        assert!(both.holds(Path::new("/top/held/x")));
+        assert!(!both.holds(Path::new("/top/other/x")));
+        let alone = Workspace {
+            root: PathBuf::from("/top/canonical"),
+            as_held: None,
+        };
+        assert!(alone.holds(Path::new("/top/canonical/x")));
+        assert!(!alone.holds(Path::new("/top/held/x")));
+    }
+
+    #[test]
+    fn a_resolve_raced_by_a_directory_flipping_with_a_link_out_never_resolves_outside() {
+        // Found by the M4 milestone's mutation run: taking the system's resolution without
+        // checking it again passed every test. `sub/part.silico` is walked a name at a time,
+        // then resolved by the system; with `work/sub` exchanged, again and again, with
+        // `work/link` (a link to `outside/a`), the walk can find the directory and the
+        // system the link, and resolve to `outside/a/part.silico`, which must be refused,
+        // out, as it leads now. A race, so a loop: resolves, as another thread flips the two
+        // at uneven intervals, until one resolves outside, 300,000 resolves, or 20 seconds,
+        // whichever is first. A pass is no proof, but a failure is one.
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (dir, w) = scratch();
+        let work = w.root().to_owned();
+        let outside = std::fs::canonicalize(dir.path()).unwrap().join("outside");
+        std::fs::write(work.join("sub/part.silico"), b"{}").unwrap();
+        std::fs::write(outside.join("a/part.silico"), b"{}").unwrap();
+        std::os::unix::fs::symlink(outside.join("a"), work.join("link")).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let flipper = {
+            let (stop, work) = (Arc::clone(&stop), work.clone());
+            std::thread::spawn(move || {
+                let mut k: u64 = 0;
+                while !stop.load(Ordering::Relaxed) {
+                    renameat_with(
+                        CWD,
+                        work.join("sub"),
+                        CWD,
+                        work.join("link"),
+                        RenameFlags::EXCHANGE,
+                    )
+                    .unwrap();
+                    k = (k + 7919) % 4001;
+                    for _ in 0..k {
+                        std::hint::spin_loop();
+                    }
+                }
+            })
+        };
+        let began = std::time::Instant::now();
+        let mut escaped = None;
+        for i in 0..300_000 {
+            if let Ok(resolved) = resolve(Some(&w), Path::new("sub/part.silico"))
+                && !resolved.starts_with(&work)
+            {
+                escaped = Some((i, resolved));
+                break;
+            }
+            if began.elapsed() > std::time::Duration::from_secs(20) {
+                break;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        flipper.join().unwrap();
+        assert_eq!(escaped, None, "a path resolved outside the workspace");
+    }
+
+    #[test]
     fn a_name_outside_is_never_looked_up_whether_or_not_its_there() {
         use std::os::unix::fs::PermissionsExt as _;
         let (dir, w) = scratch();
@@ -1195,9 +1338,7 @@ fn output_target(
             "give a path in a directory that exists",
         ),
     })?;
-    // Where it would be written: through a link already at the path, to what it names; and
-    // a file already there by the name it has on disk, as the documents held are named (on
-    // a case-insensitive file system, `HELD.png` is a held `Held.png`).
+    // Where it would be written: through a link already at the path, to what it names.
     let existing = std::fs::symlink_metadata(dir.join(name)).ok();
     let target = match &existing {
         // Through a link at the path as every path is resolved: in a workspace, never
@@ -1240,18 +1381,24 @@ fn output_target(
             "write it to a path that isn't a link to another kind of file",
         ));
     }
-    let held: Vec<PathBuf> = rules
-        .held
-        .iter()
-        .filter_map(|p| std::fs::canonicalize(p).ok())
-        .collect();
-    if held.contains(&target) {
+    // A held document is the file, not a spelling of its path: whatever name reaches it (a
+    // hard link's, or another case of its own on a case-insensitive file system, which
+    // Linux's `realpath` keeps as given), it's the device and inode of one held. Both, since
+    // inode numbers repeat across file systems: a file on another volume may have a held
+    // document's inode. The device's half is tested on Linux only, where a test makes two
+    // file systems of its own (tests/file.rs, two tmpfs mounts in a namespace of its own).
+    let there = std::fs::metadata(&target);
+    if let Ok(meta) = &there
+        && rules.held.iter().any(|held| {
+            std::fs::metadata(held).is_ok_and(|h| h.dev() == meta.dev() && h.ino() == meta.ino())
+        })
+    {
         return Err(a_document(
             "is a document a session holds",
             "write it to a path that isn't a document's".to_owned(),
         ));
     }
-    let replaced = match std::fs::metadata(&target) {
+    let replaced = match there {
         Ok(meta) if !meta.is_file() => {
             return Err(refuse(
                 "is there, and isn't a file".to_owned(),

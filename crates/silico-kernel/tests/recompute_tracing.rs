@@ -5,6 +5,7 @@
 //! test in its own): it installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use crate::wait::WAIT;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -98,7 +99,7 @@ fn an_occt_warning_in_a_worker_traces_back_to_the_step_and_the_edit_with_more_wo
         assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
     }
     // The worker's lines are emitted as the log sink thread gets to them.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + WAIT;
     while seen.lock().unwrap().len() < rounds {
         assert!(
             std::time::Instant::now() < deadline,

@@ -5,6 +5,7 @@
 //! design's messages, documents written by hand and their exact bytes, and boxes'
 //! fingerprints by hand arithmetic (l × w × h, and 2(lw + lh + wh)).
 
+use crate::model::WAIT;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -959,6 +960,31 @@ fn replace_text_inside_a_transaction_gives_back_nothing() {
 }
 
 #[test]
+fn a_document_saved_before_naming_was_recorded_takes_its_own_text_back() {
+    // A document with no naming (saved before M4.0): `text` gives its bytes, and those bytes
+    // given back to replace_text are the same document, not text written now without its
+    // header. A change to it, still without naming, is taken too, and written with the header.
+    let unnamed = BLOCK.replacen(r#""naming": 5, "#, "", 1);
+    assert!(!unnamed.contains("naming"));
+    let f = opened(&unnamed);
+    assert_eq!(f.text(), unnamed);
+    let replaced = answer(
+        f.sessions
+            .replace_text(&f.id, Revision::OPENED, unnamed.clone()),
+    )
+    .result
+    .unwrap();
+    assert!(!replaced.changed);
+    assert_eq!(f.file(), unnamed);
+    let longer = unnamed.replacen(r#""length": 40"#, r#""length": 41"#, 1);
+    let replaced = answer(f.sessions.replace_text(&f.id, Revision::OPENED, longer))
+        .result
+        .unwrap();
+    assert!(replaced.changed);
+    assert!(f.text().contains("\"naming\": 5"), "{}", f.text());
+}
+
+#[test]
 fn replace_text_refuses_text_without_naming_and_what_check_refuses() {
     let f = opened(BLOCK);
     let unnamed =
@@ -986,6 +1012,25 @@ fn replace_text_refuses_text_without_naming_and_what_check_refuses() {
             Some("add \"naming\": 5 after units")
         )
     );
+    // JSON, but not a document's object (so no header to lack naming): the reader's own
+    // error, naming text, not "the document's header has no naming".
+    for not_an_object in ["[]", "5"] {
+        let error = the_error(&answer(f.sessions.replace_text(
+            &f.id,
+            Revision::OPENED,
+            not_an_object.to_owned(),
+        )));
+        assert_eq!(
+            error.parameter(),
+            Some("text"),
+            "{not_an_object}: {error:?}"
+        );
+        assert_ne!(
+            error.message(),
+            "the document's header has no naming",
+            "{not_an_object}"
+        );
+    }
     // Not JSON: the reader's error, with where, naming text.
     let error = the_error(&answer(f.sessions.replace_text(
         &f.id,
@@ -1575,7 +1620,7 @@ fn dropping_the_sessions_while_an_edit_rebuilds_refuses_it_and_writes_nothing() 
         "points.pb000000.x".to_owned(),
         value("11"),
     );
-    assert!(f.sketches.wait_held(std::time::Duration::from_secs(10)));
+    assert!(f.sketches.wait_held(WAIT));
     let Fixture {
         _dir,
         sessions,

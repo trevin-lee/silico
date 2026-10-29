@@ -7,10 +7,11 @@
 //! refusal's effect on what's stored. Expected values are from the design's text.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::model::WAIT;
 use super::sweeps;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use proptest::prelude::*;
 use silico_core::document::{
@@ -44,9 +45,11 @@ fn with(feature: &str) -> String {
 
 #[test]
 fn length_past_i64_nanometres_is_refused_by_the_reader_naming_the_field() {
-    // i64::MAX nm is 9223372036854.775807 mm; one nm more doesn't fit.
+    // i64::MAX nm is 9223372036854.775807 mm, the most a length is either way; one nm more
+    // doesn't fit.
     for text in [
         "9223372036854.775808",
+        "-9223372036854.775808",
         "-9223372036854.775809",
         "1e400",
         "1e13",
@@ -425,17 +428,18 @@ proptest! {
 // ---------------------------------------------------------------------------------------
 // The writer: every value the in-memory types hold writes a file that reads back as it.
 
+/// A length as far as a document holds it: at most i64::MAX nm either way (i64::MIN, which
+/// only code can make, the reader refuses).
 fn length_nm() -> impl Strategy<Value = i64> {
     prop_oneof![
-        Just(i64::MIN),
-        Just(i64::MIN + 1),
+        Just(-i64::MAX),
         Just(i64::MAX),
         Just(-1),
         Just(0),
         Just(1),
         Just(1_000_000_000_000),
         Just(1_000_000_000_001),
-        any::<i64>(),
+        any::<i64>().prop_filter("at most i64::MAX either way", |&n| n != i64::MIN),
         -10_000_000i64..10_000_000,
     ]
 }
@@ -704,8 +708,10 @@ fn many_revolves(points: usize, axis: &str) -> (Document, usize) {
     (read(document(&refs).as_bytes()).unwrap(), n)
 }
 
+/// The gate's CPU time on `document`, in this thread, which load doesn't change; and how
+/// many problems it found.
 fn gate_time(document: &Document) -> (Duration, u64) {
-    let start = Instant::now();
+    let start = cpu_time::ThreadTime::now();
     let total = validate(document).map_or_else(|invalid| invalid.total(), |()| 0);
     (start.elapsed(), total)
 }
@@ -729,7 +735,7 @@ fn the_gate_on_many_revolves_about_a_missing_line_takes_about_as_long_as_about_x
     assert_eq!(missing_total, x_total + n as u64);
     assert!(
         missing_took < x_took * 4 + Duration::from_millis(500),
-        "{n} revolves on a 10,000-point sketch: {x_took:?} about x_axis, {missing_took:?} about a missing line"
+        "{n} revolves on a 10,000-point sketch: {x_took:?} of CPU about x_axis, {missing_took:?} about a missing line"
     );
 }
 
@@ -812,7 +818,7 @@ fn checking_an_axis_twice_gives_the_same_answer_and_leaves_the_solution_alone() 
 // Recompute and format: what a sweep it can't build leaves behind.
 
 fn published(engine: &Recompute<FakeKernel>, document: Checked) -> std::sync::Arc<Model> {
-    match engine.start(document).wait_timeout(Duration::from_secs(60)) {
+    match engine.start(document).wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("not published: {other:?}"),
         Err(_) => panic!("the recompute didn't finish"),

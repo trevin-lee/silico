@@ -14,6 +14,8 @@ mod lateness;
 mod pool;
 #[path = "common/scripts.rs"]
 mod scripts;
+#[path = "common/wait.rs"]
+mod wait;
 
 use std::collections::BTreeSet;
 use std::io::Write as _;
@@ -35,6 +37,7 @@ use silico_core::pool::{KernelPool, Outcome, Pending, PoolClient, STOP_AFTER};
 use silico_protocol::{
     DebugOp, Failure, Generation, Misbehavior, Op, Refusal, Reply, RequestId, Response,
 };
+use wait::{UNREACHED, promptly};
 
 /// One of the mixed requests the concurrency test sends, for both the pool and the
 /// reference worker.
@@ -578,9 +581,11 @@ fn a_request_after_advance_never_lands_on_a_killed_worker() {
     sweep_across(300, Duration::from_micros(100), |delay| {
         let g = pool.generation().0;
         let before = pool.pids();
-        drop(pool.submit(Generation(g), sleep(200)));
+        // Kept until after `advance`, so it's superseded, not given up by its drop.
+        let superseded = pool.submit(Generation(g), sleep(200));
         spin(delay);
         pool.advance(Generation(g + 1));
+        drop(superseded);
         match outcome(pool.submit(Generation(g + 1), echo(&[1]))) {
             Outcome::Done(Ok(_)) => {}
             other => failures.push((delay, format!("{other:?}"))),
@@ -773,6 +778,25 @@ impl Drop for Released<'_> {
     fn drop(&mut self) {
         let _ = std::fs::write(self.0.join("release"), b"");
     }
+}
+
+#[test]
+fn a_request_dropped_while_it_waits_never_reaches_a_worker_and_the_next_runs() {
+    // One worker, held by a long sleep; a sleep submitted and dropped at once while it waits,
+    // then another kept. Let go, the worker takes the kept one: two sleeps ran, not three.
+    let marks = marks_dir("dropped");
+    let _released = Released(&marks);
+    let pool = KernelPool::start_workers(&sleep_marking_worker(&marks), 1).unwrap();
+    let long = pool.submit(Generation(0), long_sleep());
+    wait_started(&marks, 1);
+    drop(pool.submit(Generation(0), sleep(1)));
+    let kept = pool.submit(Generation(0), sleep(1));
+    release(&marks);
+    done(kept).unwrap();
+    done(long).unwrap();
+    let started = std::fs::read_to_string(marks.join("running")).unwrap();
+    assert_eq!(started.lines().count(), 2, "the dropped request ran");
+    let _ = std::fs::remove_dir_all(&marks);
 }
 
 #[test]
@@ -1036,11 +1060,16 @@ fn a_longer_stop_after_lets_superseded_work_run_on() {
 fn a_crashed_worker_is_replaced_at_once_not_at_the_idle_check() {
     let pool = pool(TEST_WORKER, 1);
     let before = pool.pids();
+    let lateness = Lateness::start();
     let err =
         done(pool.submit(Generation(1), KernelRequest::debug(DebugOp::Segfault))).unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
-    // The idle check comes after a second: the replacement must be there well before.
-    let deadline = Instant::now() + Duration::from_millis(500);
+    // The idle check comes a second after the crash is delivered: the replacement must be
+    // there well before, at 500 ms and as late as this machine wakes threads on top, but
+    // never by 900 ms, which a replacement at the idle check can't beat.
+    let delivered = Instant::now();
+    let deadline = delivered
+        + allowance(Duration::from_millis(500), lateness.most()).min(Duration::from_millis(900));
     loop {
         let pids = pool.pids();
         if pids.len() == 1 && pids != before {
@@ -1048,7 +1077,8 @@ fn a_crashed_worker_is_replaced_at_once_not_at_the_idle_check() {
         }
         assert!(
             Instant::now() < deadline,
-            "not replaced within 500 ms: {pids:?}"
+            "not replaced by {:?}: {pids:?}",
+            deadline - delivered
         );
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -1230,6 +1260,9 @@ fn a_crash_fails_its_request_once_and_the_pool_goes_on() {
 #[test]
 fn a_hung_request_times_out_and_the_pool_goes_on() {
     let pool = pool(TEST_WORKER, 1);
+    // Its 300 ms, then a kill: 10 s on a quiet machine with room to spare, and the wakes on
+    // the way as late as this machine runs them.
+    let lateness = Lateness::start();
     let start = Instant::now();
     let err = done(pool.submit(
         Generation(1),
@@ -1238,7 +1271,7 @@ fn a_hung_request_times_out_and_the_pool_goes_on() {
     .unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerTimeout, "{err}");
     assert!(
-        start.elapsed() < Duration::from_secs(10),
+        start.elapsed() < allowance(Duration::from_secs(10), lateness.most()),
         "{:?}",
         start.elapsed()
     );
@@ -1266,22 +1299,22 @@ fn a_worker_whose_replies_cant_be_trusted_is_replaced() {
 
 #[test]
 fn dropping_the_pool_stops_at_once_and_ends_every_request() {
-    // Requests running (30 s sleeps) and waiting end without a result as soon as the pool
-    // is dropped, and its workers are gone.
+    // Requests running (sleeps no test reaches) and waiting end without a result as soon as
+    // the pool is dropped, and its workers are gone: a drop that waited for them never
+    // returns within `WAIT`.
     let pool = pool(TEST_WORKER, 2);
     let pending: Vec<_> = (0..6)
-        .map(|_| pool.submit(Generation(1), sleep(30_000)))
+        .map(|_| {
+            pool.submit(
+                Generation(1),
+                sleep(UNREACHED.as_millis() as u64).with_timeout(UNREACHED),
+            )
+        })
         .collect();
     std::thread::sleep(Duration::from_millis(200));
     let held = pool.pids();
-    let start = Instant::now();
-    drop(pool);
+    promptly("dropping the pool", move || drop(pool));
     assert_reaped(&held, "after the drop");
-    assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        start.elapsed()
-    );
     for p in pending {
         let err = done(p).unwrap_err();
         assert_eq!(err.code(), ErrorCode::Internal, "{err}");

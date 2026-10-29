@@ -26,7 +26,7 @@ use silico_core::cache::Cache;
 use silico_core::command::{self, CheckModel, Problems, Response, SessionId, Sessions, Warnings};
 use silico_core::file::opened_and_read;
 use silico_core::pool::KernelPool;
-use silico_core::{Error, ErrorCode};
+use silico_core::{Error, ErrorCode, Said};
 
 /// A line on stderr (the workspace forbids `eprintln!`, which panics if stderr is closed).
 macro_rules! say {
@@ -298,7 +298,10 @@ const SIGNAL_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 /// stdout closes, or SIGTERM, its sessions in the workspace `DIR` (or the current
 /// directory), on one kernel pool, sketch solver, and render worker. `/` (or a drive's
 /// root) is refused: some MCP clients start servers there, which would make the whole disk
-/// the workspace. Logs go to stderr; stdout holds nothing but MCP's messages. A second
+/// the workspace. A kernel worker that isn't there (or can't be read) is refused too (exit 2,
+/// before the handshake: one there that can't be run is met at the first rebuild, as its
+/// fault); a sketch, render, or STEP worker that isn't there is warned of, and the server
+/// runs. Logs go to stderr; stdout holds nothing but MCP's messages. A second
 /// SIGTERM, while the first is still ending it, ends it at once (exit 1).
 fn serve(workspace: Option<&Path>) -> Ended {
     let root = match workspace.map_or_else(std::env::current_dir, |dir| Ok(dir.to_owned())) {
@@ -325,7 +328,23 @@ fn serve(workspace: Option<&Path>) -> Ended {
         );
         return Ended::Failed;
     }
-    let mut sessions = Sessions::new(KernelPool::start());
+    // The workers, found before the handshake. Without a kernel worker nothing builds, so a
+    // server that ran would only answer every read with its fault: it's a broken install,
+    // said here, and the server doesn't start. Without another, the commands that need it
+    // are refused with its fault as data (sketches solved, STEP exported, renders drawn),
+    // and the rest work: each is said here, and the server runs.
+    let pool = KernelPool::start();
+    if let Some(why) = pool.refused() {
+        say!("silico serve: there's no kernel worker it can use, so nothing can be built: {why}");
+        return Ended::Failed;
+    }
+    if let Err(e) = silico_core::sketch::worker_path() {
+        tracing::warn!("sketches are refused: there's no sketch worker: {e}");
+    }
+    if let Err(e) = silico_core::step_worker::worker_path() {
+        tracing::warn!("STEP export is refused: there's no STEP worker: {e}");
+    }
+    let mut sessions = Sessions::new(pool);
     match silico_core::render::worker_path().and_then(|exe| {
         silico_core::render::RenderClient::start(
             &exe,
@@ -564,9 +583,10 @@ impl Refusal {
     }
 
     /// This refusal of `silico command`, with `fault`, a kernel fault its response's model
-    /// read carries: the command's failure (exit 2), as a fault beside a result is, with
-    /// the CLI's advice to run it again. Said once: where the refusal lists it already (a
-    /// solid it stopped, asked for), there, in the CLI's words, not a session's.
+    /// read carries: the command's failure (exit 2), as a fault beside a result is, worded
+    /// with running the command again ([`with_retry`]). Said once: where the refusal lists
+    /// it already (a solid it stopped, asked for), there, reworded from the fault as met, not
+    /// as a session worded it.
     fn with_fault(self, fault: Option<Error>, command: &str) -> Self {
         let Some(fault) = fault else {
             return self;
@@ -638,13 +658,12 @@ impl Refusal {
 }
 
 /// `fault`, a kernel fault the rebuild of a file met (its suggestion the worker's own), as
-/// `silico command` says it: then, to run the command again, which rebuilds the file anew.
+/// `silico command` says it: worded as every client words one (`command::fault_suggestion`),
+/// trying again by running the command again, which rebuilds the file anew; said once, and
+/// not at all after a crash the request's values caused, which the same file would cause
+/// again.
 fn with_retry(fault: &Error, command: &str) -> Error {
-    let again = format!("run `silico {command}` again to retry it");
-    let suggestion = match fault.suggestion() {
-        Some(own) => format!("{own}; {again}"),
-        None => again,
-    };
+    let suggestion = command::fault_suggestion(fault, command::TryAgainBy::Running(command));
     fault.clone().with_suggestion(suggestion)
 }
 
@@ -761,7 +780,7 @@ impl<'a> FailedLine<'a> {
 struct LineError<'a> {
     candidates: &'a [String],
     cause: Option<&'a str>,
-    code: ErrorCode,
+    code: &'static str,
     elements: &'a [String],
     elements_total: u64,
     feature: Option<&'a str>,
@@ -771,17 +790,30 @@ struct LineError<'a> {
 }
 
 impl<'a> LineError<'a> {
+    /// `error`'s every field, taken whole ([`Said`]), so a field an error gains is one this
+    /// must write.
     fn new(error: &'a Error) -> Self {
+        let Said {
+            code,
+            message,
+            feature,
+            elements,
+            elements_total,
+            parameter,
+            cause,
+            suggestion,
+            candidates,
+        } = error.said();
         LineError {
-            candidates: error.candidates(),
-            cause: error.cause(),
-            code: error.code(),
-            elements: error.elements(),
-            elements_total: error.elements_total(),
-            feature: error.feature(),
-            message: error.message(),
-            parameter: error.parameter(),
-            suggestion: error.suggestion(),
+            candidates,
+            cause,
+            code,
+            elements,
+            elements_total,
+            feature,
+            message,
+            parameter,
+            suggestion,
         }
     }
 }
@@ -943,7 +975,12 @@ fn export(
                             let _ = writeln!(
                                 stdout,
                                 "  left out as bounding no material: {}",
-                                object.left_out.join(", ")
+                                object
+                                    .left_out
+                                    .iter()
+                                    .map(|n| n.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
                             );
                         }
                     }
@@ -1343,7 +1380,7 @@ mod tests {
             (stopped.code(), stopped.suggestion()),
             (
                 ErrorCode::WorkerCrashed,
-                Some("report it; run `silico fmt` again to retry it")
+                Some("report it; then run `silico fmt` to try it again")
             )
         );
         let cancelled = Problems::from(Error::new(ErrorCode::Cancelled, "cancelled"));
@@ -1364,7 +1401,7 @@ mod tests {
         assert_eq!(once.errors.len(), 1);
         assert_eq!(
             once.errors[0].suggestion(),
-            Some("install it; run `silico export` again to retry it")
+            Some("install it; then run `silico export` to try it again")
         );
         assert!(failed(&once.ended()));
         for other in [
@@ -1388,12 +1425,12 @@ mod tests {
         let timeout = Error::new(ErrorCode::WorkerTimeout, "timed out");
         assert_eq!(
             with_retry(&timeout, "check").suggestion(),
-            Some("run `silico check` again to retry it")
+            Some("run `silico check` to try it again")
         );
         let own = timeout.with_suggestion("simplify the part");
         assert_eq!(
             with_retry(&own, "check").suggestion(),
-            Some("simplify the part; run `silico check` again to retry it")
+            Some("simplify the part; then run `silico check` to try it again")
         );
     }
 }

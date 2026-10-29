@@ -1197,7 +1197,7 @@ fn fmt_refused_a_save_past_the_limit_still_says_the_kernel_fault_its_rebuild_met
         "{said}"
     );
     assert!(
-        lines[1].ends_with("run `silico fmt` again to retry it."),
+        lines[1].ends_with("run `silico fmt` to try it again."),
         "{said}"
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
@@ -1292,7 +1292,7 @@ const SKETCH_AND_BOX: &str = r#"{
 fn no_sketch_worker(command: &str) -> String {
     format!(
         "worker_unavailable: SILICO_SKETCH_WORKER names \"/nowhere\", which isn't a file. \
-         Suggestion: {}; run `silico {command}` again to retry it.",
+         Suggestion: {}; then run `silico {command}` to try it again.",
         NO_SKETCH_WORKER_ADVICE
     )
 }
@@ -1366,7 +1366,7 @@ fn a_kernel_fault_is_said_in_the_clis_words_by_check_and_check_json() {
     assert_eq!(line["error"]["code"], "worker_unavailable", "{line}");
     assert_eq!(
         line["error"]["suggestion"],
-        format!("{NO_SKETCH_WORKER_ADVICE}; run `silico check` again to retry it"),
+        format!("{NO_SKETCH_WORKER_ADVICE}; then run `silico check` to try it again"),
         "{line}"
     );
 }
@@ -1739,4 +1739,143 @@ fn cache_clear_of_several_files_says_each_and_exits_with_the_worst() {
         assert!(entry.is_file());
         assert_eq!(entries(&caches[1]), Vec::<PathBuf>::new());
     }
+}
+
+/// A kernel worker that says it started (an empty frame on its socket, descriptor 3), takes
+/// a byte of the first request, and then runs `end`: how a worker's crash during a request
+/// is met, without a real crash of OCCT.
+fn worker_that_ends(scratch: &Scratch, name: &str, end: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = scratch.0.join(name);
+    std::fs::write(
+        &path,
+        format!("#!/bin/sh\nprintf '\\0\\0\\0\\0' >&3\nhead -c 1 <&3 >/dev/null\n{end}\nexec sleep 600\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[test]
+fn each_crash_says_the_designs_words_once_and_a_values_crash_only_to_change_them() {
+    // The design's section 6 (docs/design/m4.1-command-api.md), as docs/cli.md's rows point
+    // to it: the CLI words a fault as a session does, trying again by running its command
+    // ("run `silico check` to try it again"), said once. A worker stopped from outside: "run
+    // `silico check` to try it again: the kernel worker was stopped from outside, stopped
+    // responding, or was gone before the request reached it, not by these values". A crash on
+    // the request's values: the worker's advice alone, "change the operation's values: these
+    // crashed the kernel, and the same request would crash it again". Any other advice of the
+    // worker's own (its install, for one that exits), it, then "; then run `silico check` to
+    // try it again". A kill, which may have been for the memory, is "once more".
+    let scratch = Scratch::new("crash-advice");
+    let file = scratch.0.join("part.silico");
+    std::fs::write(&file, EXAMPLE).unwrap();
+    let values = "change the operation's values: these crashed the kernel, and the same request \
+                  would crash it again";
+    let outside = |command: &str| {
+        format!(
+            "run `silico {command}` to try it again: the kernel worker was stopped from outside, \
+             stopped responding, or was gone before the request reached it, not by these values"
+        )
+    };
+    let terminated = outside("check");
+    // Each worker's end, and its suggestion: how it starts and ends (the whole of it where
+    // the two are the same).
+    let cases = [
+        ("segfault", "kill -SEGV $$", values, values),
+        (
+            "terminated",
+            "kill -TERM $$",
+            terminated.as_str(),
+            terminated.as_str(),
+        ),
+        (
+            "killed",
+            "kill -KILL $$",
+            "run `silico check` to try it once more: the kernel worker was killed",
+            "the request needs too much memory: simplify it",
+        ),
+        (
+            "exited",
+            "exit 1",
+            "check Silico's install: ",
+            "; then run `silico check` to try it again",
+        ),
+    ];
+    for (name, end, opening, ending) in cases {
+        let kernel = worker_that_ends(&scratch, name, end);
+        let out = silico_on_kernel(&scratch, &["check", "--json"], &file, &kernel);
+        assert_eq!(out.status.code(), Some(2), "{name}: {}", stderr(&out));
+        let line: serde_json::Value =
+            serde_json::from_slice(out.stdout.split(|&b| b == b'\n').next().unwrap()).unwrap();
+        assert_eq!(line["ok"], false, "{name}: {line}");
+        assert_eq!(line["error"]["code"], "worker_crashed", "{name}: {line}");
+        let suggestion = line["error"]["suggestion"].as_str().unwrap();
+        assert!(suggestion.starts_with(opening), "{name}: {suggestion:?}");
+        assert!(suggestion.ends_with(ending), "{name}: {suggestion:?}");
+        if opening == ending {
+            assert_eq!(suggestion, opening, "{name}");
+        }
+        // How to try again, said once, or not at all after the values' crash; never the
+        // more time no option gives.
+        let tries = usize::from(name != "segfault");
+        assert_eq!(
+            suggestion.matches("to try it").count(),
+            tries,
+            "{name}: {suggestion:?}"
+        );
+        assert!(!suggestion.contains("more time"), "{name}: {suggestion:?}");
+        // Without --json, the same suggestion, said once.
+        let out = silico_on_kernel(&scratch, &["check"], &file, &kernel);
+        assert_eq!(out.status.code(), Some(2), "{name}: {}", stderr(&out));
+        let said = stderr(&out);
+        assert_eq!(said.matches(suggestion).count(), 1, "{name}: {said}");
+        assert_eq!(said.matches("to try it").count(), tries, "{name}: {said}");
+    }
+    // fmt and export word a kernel fault as check does, each naming itself (docs/cli.md,
+    // their rows).
+    let exe = Path::new(env!("CARGO_BIN_EXE_silico"));
+    let out = scratch.0.join("part.3mf");
+    for (name, end) in [
+        ("segfault", "kill -SEGV $$"),
+        ("terminated", "kill -TERM $$"),
+    ] {
+        let kernel = worker_that_ends(&scratch, name, end);
+        for (command, args) in [
+            ("fmt", vec![file.clone()]),
+            ("export", vec![file.clone(), out.clone()]),
+        ] {
+            let mut cmd = Command::new(exe);
+            cmd.arg(command)
+                .args(&args)
+                .env("SILICO_KERNEL_WORKER", &kernel)
+                .env(
+                    "SILICO_SKETCH_WORKER",
+                    exe.with_file_name("silico-sketch-worker"),
+                )
+                .env("XDG_CACHE_HOME", scratch.0.join("cache-home"))
+                .env_remove("SILICO_LOG")
+                .stdin(Stdio::null());
+            let ran = run::output(cmd);
+            let said = stderr(&ran);
+            assert_eq!(ran.status.code(), Some(2), "{command} {name}: {said}");
+            let expected = if name == "segfault" {
+                values.to_owned()
+            } else {
+                outside(command)
+            };
+            assert_eq!(
+                said.matches(&expected).count(),
+                1,
+                "{command} {name}: {said}"
+            );
+            let tries = usize::from(name != "segfault");
+            assert_eq!(
+                said.matches("to try it").count(),
+                tries,
+                "{command} {name}: {said}"
+            );
+        }
+    }
+    assert!(!out.exists());
 }

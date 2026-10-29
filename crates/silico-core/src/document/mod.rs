@@ -3,6 +3,7 @@
 //! Reading checks each value on its own; whether features fit together, and the kernel can
 //! make each, is the validation gate's ([`validate`]).
 
+pub mod chain;
 mod decode;
 mod fingerprint;
 mod index;
@@ -11,7 +12,9 @@ mod model;
 mod quantity;
 mod reach;
 mod sketch;
+pub mod sketch_edit;
 mod sketch_gate;
+pub mod undo;
 mod validate;
 pub(crate) mod write;
 
@@ -24,13 +27,13 @@ pub use fingerprint::{Difference, Fingerprint, MEASURE_DECIMALS, Measure};
 pub(crate) use index::FeatureIndex;
 #[cfg(test)]
 pub(crate) use index::looked_up;
-#[cfg(test)]
-pub(crate) use model::compared;
 pub use model::{
     Axis, ChamferSize, Document, ElementName, Extent, ExtentValue, FEATURE_TYPES, Feature,
     FeatureId, FeatureVersion, FormatVersion, ID_ALPHABET, ID_LENGTH, Made, Name, NamingScheme,
     Operation, PadExtent, PocketExtent, Position, SweepFeature, TurnExtent, Units,
 };
+#[cfg(test)]
+pub(crate) use model::{cloned, compared};
 pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 pub use reach::{Before, QuotedIds, net_reach, with_users};
 pub use sketch::{
@@ -118,6 +121,38 @@ pub fn write_feature(feature: &Feature) -> Result<String, Error> {
 /// can be written, counted without writing it.
 pub(crate) fn fits(document: &Document) -> bool {
     write::fits(document, json::MAX_DOCUMENT_LEN)
+}
+
+/// The gate's first refusal of an edit's result `edited`, said as the edit's refusal:
+/// "{`doing`} would leave a sketch the gate refuses: {the gate's message}", naming `leading`
+/// and then what the gate names, each once; `Ok` if the gate takes it. The sketch edits
+/// place points by ID and extend moves one, so what they leave by value is the gate's to
+/// find.
+pub(crate) fn refused_by_gate(
+    edited: &Sketch,
+    doing: &str,
+    mut leading: Vec<String>,
+    parameter: &str,
+    suggestion: &str,
+) -> Result<(), Error> {
+    let Some(problem) = sketch_problems(edited).into_iter().next() else {
+        return Ok(());
+    };
+    for e in problem.elements() {
+        if !leading.contains(e) {
+            leading.push(e.clone());
+        }
+    }
+    Err(Error::new(
+        ErrorCode::InvalidInput,
+        format!(
+            "{doing} would leave a sketch the gate refuses: {}",
+            problem.message()
+        ),
+    )
+    .with_elements(leading)
+    .with_parameter(parameter.to_owned())
+    .with_suggestion(suggestion.to_owned()))
 }
 
 /// What the gate refuses of `sketch` on its own (`sketch_gate`): M3.4 checks a solve's

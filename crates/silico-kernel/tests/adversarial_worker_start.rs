@@ -7,6 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::scripts;
+use crate::wait::WAIT;
 
 use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
@@ -23,7 +24,6 @@ use silico_core::{Error, ErrorCode};
 use silico_protocol::{Algorithm, Generation, Op, Reply, SketchSystem};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
-const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A first frame, as `silico_protocol::write_started` writes it: an empty frame.
 const STARTED: &str = "printf '\\0\\0\\0\\0' >&3";
@@ -189,7 +189,7 @@ fn unstarted_errors(tag: &str) -> Vec<(&'static str, Error)> {
             if let Some(signal) = signal {
                 kill(w.pid(), signal);
             }
-            let err = echo(&mut w, TIMEOUT).unwrap_err();
+            let err = echo(&mut w, WAIT).unwrap_err();
             assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{what}: {err}");
             (what, err)
         })
@@ -263,10 +263,10 @@ fn the_start_code_follows_the_first_frame_every_time() {
             let runs = if what == "closes and lingers" { 3 } else { 12 };
             for run in 0..runs {
                 let mut w = Worker::spawn(&exe).unwrap();
-                let err = echo(&mut w, TIMEOUT).unwrap_err();
+                let err = echo(&mut w, WAIT).unwrap_err();
                 assert_eq!(err.code(), want, "{what}, {said}, run {run}: {err}");
                 // Stopped: the next call fails at once, never hangs or answers.
-                let next = echo(&mut w, TIMEOUT).unwrap_err();
+                let next = echo(&mut w, WAIT).unwrap_err();
                 assert!(w.is_stopped(), "{what}, {said}: {next}");
             }
         }
@@ -289,8 +289,9 @@ fn a_first_frame_that_isnt_a_frame_of_this_build_is_a_structured_error() {
     ] {
         let exe = script(&format!("first-frame-{}", what.replace(' ', "-")), body);
         let mut w = Worker::spawn(&exe).unwrap();
+        let lateness = crate::lateness::Lateness::start();
         let started = Instant::now();
-        let err = echo(&mut w, TIMEOUT).unwrap_err();
+        let err = echo(&mut w, WAIT).unwrap_err();
         assert!(
             matches!(
                 err.code(),
@@ -298,7 +299,8 @@ fn a_first_frame_that_isnt_a_frame_of_this_build_is_a_structured_error() {
             ),
             "{what}: {err}"
         );
-        assert!(started.elapsed() < Duration::from_secs(5), "{what}: {err}");
+        let bound = crate::lateness::allowance(Duration::from_secs(5), lateness.most());
+        assert!(started.elapsed() < bound, "{what}: {err}");
         assert!(w.is_stopped(), "{what}");
     }
 }
@@ -350,11 +352,13 @@ fn every_executable_that_cant_be_started_is_unavailable_naming_it() {
         ("a truncated ELF header", garbage),
         ("/dev/null", PathBuf::from("/dev/null")),
     ] {
+        let lateness = crate::lateness::Lateness::start();
         let started = Instant::now();
-        let result = Worker::spawn(&path).and_then(|mut w| echo(&mut w, TIMEOUT));
+        let result = Worker::spawn(&path).and_then(|mut w| echo(&mut w, WAIT));
         let err = result.unwrap_err();
         assert!(
-            started.elapsed() < Duration::from_secs(10),
+            started.elapsed()
+                < crate::lateness::allowance(Duration::from_secs(10), lateness.most()),
             "{what}: took {:?}",
             started.elapsed()
         );
@@ -390,9 +394,11 @@ fn a_pool_of_an_executable_that_isnt_a_file_is_unavailable_at_once() {
         ("a directory", directory),
         ("a missing file", dir.join("missing")),
     ] {
+        let lateness = crate::lateness::Lateness::start();
         let started = Instant::now();
         let err = KernelPool::start_on_demand(&path, 1).err().unwrap();
-        assert!(started.elapsed() < Duration::from_secs(5), "{what}");
+        let bound = crate::lateness::allowance(Duration::from_secs(5), lateness.most());
+        assert!(started.elapsed() < bound, "{what}");
         assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{what}: {err}");
         assert!(err.suggestion().is_some(), "{what}: {err}");
     }
@@ -431,10 +437,17 @@ fn a_worker_made_unrunnable_under_a_pool_is_unavailable_and_runs_again_once_fixe
     assert_eq!(err.code(), ErrorCode::WorkerUnavailable, "{err}");
     // Fixed: the next request runs, at once (a request starts a worker whatever the wait).
     chmod(&exe, 0o755);
+    // A worker's start is work: its wall time over how much slower than a quiet machine this
+    // one ran it (`Share`), which load doesn't move.
+    let share = crate::share::Share::start();
     let started = Instant::now();
     let ok = pool_echo(&pool);
     assert!(ok.is_ok(), "after the fix: {:?}", ok.err());
-    assert!(started.elapsed() < Duration::from_secs(20));
+    let (wall, slowdown) = (started.elapsed(), share.finish().slowdown);
+    assert!(
+        wall.div_f64(slowdown) < Duration::from_secs(20),
+        "{wall:?}, the machine {slowdown:.2} times slower than a quiet one"
+    );
 }
 
 #[test]

@@ -142,8 +142,15 @@ pub enum Refusal {
         reach: f64,
     },
     /// An export's mesh of more `triangles`, in all, than the `limit` an export may have
-    /// ([`crate::MAX_EXPORT_TRIANGLES`]).
-    TooManyTriangles { triangles: u64, limit: u64 },
+    /// ([`crate::MAX_EXPORT_TRIANGLES`]); or, `unraised`, the mesh of the same shape with no
+    /// face's deflection raised for its own tolerance (OCCT's `ForceFaceDeflection`), which
+    /// the faces OCCT raised are compared with, the worker's limit holding for it too
+    /// (docs/ports/mesh-export.md, rule 7).
+    TooManyTriangles {
+        triangles: u64,
+        limit: u64,
+        unraised: bool,
+    },
     /// OCCT's `BRepExtrema_DistShapeShape` found no least distance between two elements
     /// ([`crate::Op::Distance`]): it isn't done.
     DistanceNotDone,
@@ -159,6 +166,10 @@ pub enum Refusal {
     /// no CPU adapter (Mesa's lavapipe, its compiled-in paths gone, or none built in).
     /// `cause` names what it looked for and what it found.
     NoAdapter { cause: String },
+    /// A reply the worker made but couldn't send: `bytes` encoded, past the `limit` a frame
+    /// may carry ([`crate::MAX_FRAME_LEN`]). Sent in the reply's place, so the worker goes
+    /// on, rather than ending as if it had crashed.
+    ReplyTooLarge { bytes: u64, limit: u64 },
 }
 
 /// What OCCT gave back nothing of.
@@ -312,7 +323,8 @@ impl Refusal {
             | Refusal::SweepFlat { .. }
             | Refusal::RoundingPastTolerance { .. }
             | Refusal::TooManyTriangles { .. }
-            | Refusal::ElementMissing { .. } => FailureKind::InvalidInput,
+            | Refusal::ElementMissing { .. }
+            | Refusal::ReplyTooLarge { .. } => FailureKind::InvalidInput,
             Refusal::ResultInvalid { .. } | Refusal::DescriptionImpossible { .. } => {
                 FailureKind::InvalidResult
             }
@@ -692,13 +704,42 @@ impl Refusal {
                         .to_owned(),
                 ),
             ),
-            Refusal::TooManyTriangles { triangles, limit } => (
+            Refusal::TooManyTriangles {
+                triangles,
+                limit,
+                unraised: false,
+            } => (
                 format!(
                     "an export's mesh has {triangles} triangles, more than the {limit} an export \
                      may have"
                 ),
                 Some(
                     "export with a coarser tolerance, which makes fewer, or fewer parts at once"
+                        .to_owned(),
+                ),
+            ),
+            // Not the export's mesh, but one part's made only to be compared with: fewer parts
+            // at once wouldn't make it smaller.
+            Refusal::TooManyTriangles {
+                triangles,
+                limit,
+                unraised: true,
+            } => (
+                format!(
+                    "an export's unraised mesh, which the faces OCCT meshed more coarsely for \
+                     their own tolerance are compared with, has {triangles} triangles, more \
+                     than the {limit} an export's mesh may have"
+                ),
+                Some("export with a coarser tolerance, which makes fewer".to_owned()),
+            ),
+            Refusal::ReplyTooLarge { bytes, limit } => (
+                format!(
+                    "the worker's reply would be {bytes} bytes, more than the {limit} a reply may \
+                     carry"
+                ),
+                Some(
+                    "ask for less at once: a coarser tolerance, fewer elements or features, or a \
+                     smaller part"
                         .to_owned(),
                 ),
             ),
@@ -1080,6 +1121,12 @@ mod tests {
             Refusal::TooManyTriangles {
                 triangles: 10_000_001,
                 limit: 10_000_000,
+                unraised: false,
+            },
+            Refusal::TooManyTriangles {
+                triangles: 10_000_001,
+                limit: 10_000_000,
+                unraised: true,
             },
             Refusal::DistanceNotDone,
             Refusal::ElementMissing {
@@ -1089,6 +1136,10 @@ mod tests {
             },
             Refusal::NoAdapter {
                 cause: "no CPU adapter; found [\"Apple M4 Pro\"]".to_owned(),
+            },
+            Refusal::ReplyTooLarge {
+                bytes: 536_870_913,
+                limit: 536_870_912,
             },
         ]
     }
@@ -1102,6 +1153,67 @@ mod tests {
             let said = refusal.describe(None, &|e| e.to_string());
             assert!(!said.message.is_empty(), "{refusal:?}");
         }
+    }
+
+    #[test]
+    fn a_reply_too_large_says_its_size_and_the_limit_and_to_ask_for_less() {
+        let said = Refusal::ReplyTooLarge {
+            bytes: 536_870_913,
+            limit: 536_870_912,
+        }
+        .describe(None, &|e| e.to_string());
+        assert_eq!(
+            said.message,
+            "the worker's reply would be 536870913 bytes, more than the 536870912 a reply may carry"
+        );
+        assert_eq!(
+            said.suggestion.as_deref(),
+            Some(
+                "ask for less at once: a coarser tolerance, fewer elements or features, or a smaller part"
+            )
+        );
+    }
+
+    #[test]
+    fn too_many_triangles_says_whether_its_the_exports_mesh_or_the_unraised_one_compared_with() {
+        // The M4.8 architecture review (a low): the worker's limit holds for the unraised
+        // mesh too (docs/ports/mesh-export.md, rule 7, which it's made for), and its refusal
+        // said "an export's mesh has" its triangles, though the export's mesh is the raised
+        // one, and advised fewer parts at once, which doesn't make one part's unraised mesh
+        // smaller. The export's form is the limits table's (docs/design/m4.1-command-api.md,
+        // section 6: "a coarser one makes fewer, or export fewer parts"), word for word as
+        // before; the unraised form, docs/ports/mesh-export.md's, says the same of the mesh
+        // it is. Both are `invalid_input`, naming the tolerance.
+        let said = |unraised| {
+            let refusal = Refusal::TooManyTriangles {
+                triangles: 12,
+                limit: 11,
+                unraised,
+            };
+            assert_eq!(refusal.kind(), FailureKind::InvalidInput);
+            assert_eq!(refusal.parameter(), Some("tolerance"));
+            refusal.describe(None, &|e| e.to_string())
+        };
+        let export = said(false);
+        assert_eq!(
+            export.message,
+            "an export's mesh has 12 triangles, more than the 11 an export may have"
+        );
+        assert_eq!(
+            export.suggestion.as_deref(),
+            Some("export with a coarser tolerance, which makes fewer, or fewer parts at once")
+        );
+        let unraised = said(true);
+        assert_eq!(
+            unraised.message,
+            "an export's unraised mesh, which the faces OCCT meshed more coarsely for their own \
+             tolerance are compared with, has 12 triangles, more than the 11 an export's mesh \
+             may have"
+        );
+        assert_eq!(
+            unraised.suggestion.as_deref(),
+            Some("export with a coarser tolerance, which makes fewer")
+        );
     }
 
     #[test]
@@ -1211,9 +1323,11 @@ mod tests {
             InvalidInput,      // SweepFlat
             InvalidInput,      // RoundingPastTolerance
             InvalidInput,      // TooManyTriangles
+            InvalidInput,      // TooManyTriangles, the unraised mesh's
             KernelFailed,      // DistanceNotDone (new with M4.5)
             InvalidInput,      // ElementMissing (new with M4.5)
             Unavailable,       // NoAdapter
+            InvalidInput,      // ReplyTooLarge (new with the M4 review: was a crash)
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), kinds.len());
@@ -1264,9 +1378,11 @@ mod tests {
             Some("axis"),       // SweepFlat
             Some("tolerance"),  // RoundingPastTolerance
             Some("tolerance"),  // TooManyTriangles
+            Some("tolerance"),  // TooManyTriangles, the unraised mesh's
             None,               // DistanceNotDone
             Some("second"),     // ElementMissing
             None,               // NoAdapter
+            None,               // ReplyTooLarge
         ];
         let refusals = every_refusal();
         assert_eq!(refusals.len(), parameters.len());

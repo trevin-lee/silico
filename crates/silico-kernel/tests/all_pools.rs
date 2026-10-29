@@ -6,8 +6,14 @@
 //! each test needs a process of its own, as nextest runs each in (`pixi run test`).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "../../silico-core/tests/common/lateness.rs"]
+mod lateness;
+#[path = "../../silico-core/tests/common/share.rs"]
+mod share;
 #[path = "../../silico-core/tests/common/test_programs.rs"]
 mod test_programs;
+#[path = "common/wait.rs"]
+mod wait;
 
 // Shared by the files below, each loaded once.
 #[path = "common/launches.rs"]
@@ -39,6 +45,8 @@ mod pool_slot_panics_in_run;
 mod pool_slot_panics_running;
 #[path = "pool_tracing.rs"]
 mod pool_tracing;
+#[path = "pool_warm_log.rs"]
+mod pool_warm_log;
 
 /// Every file in tests/ is built: this crate lists its test programs (`autotests = false`),
 /// so a new file must be added as a module of one, or as one, or it would never run.

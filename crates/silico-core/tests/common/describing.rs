@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::Op;
 
+use super::model::WAIT;
+
 /// How many requests of `op` a kernel was asked.
 pub fn asked(kernel: &FakeKernel, op: &str) -> usize {
     asked_of(kernel, |asked| asked.name() == op)
@@ -17,11 +19,13 @@ pub fn asked_of(kernel: &FakeKernel, picks: impl Fn(&Op) -> bool) -> usize {
 }
 
 /// How many requests `picks` a kernel has started once it has started `n` of them, and a
-/// little longer, failing after ten seconds: `n`, unless it started more. A description
-/// that fails leaves its other batches in flight to run, unwaited, so they may start after
-/// the model is published.
+/// little longer, failing, with how many started, after [`WAIT`]: `n`, unless it started
+/// more. A description that fails cancels its other batches in flight, but one a worker had
+/// already taken runs on, unwaited, so it may start after the model is published. The wait
+/// is the binary's own for a run, not a shorter one: a request held mid-run starts when the
+/// run reaches it, which a loaded machine delays.
 pub fn settled(kernel: &FakeKernel, picks: impl Fn(&Op) -> bool, n: usize) -> usize {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + WAIT;
     while asked_of(kernel, &picks) < n {
         assert!(
             Instant::now() < deadline,

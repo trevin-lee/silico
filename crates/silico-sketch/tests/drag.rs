@@ -6,9 +6,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::systems;
+use super::wait::WAIT;
 
+use std::f64::consts::{FRAC_PI_2, PI};
 use std::path::Path;
-use std::time::Duration;
 
 use silico_core::ErrorCode;
 use silico_core::worker::{Worker, WorkerKind};
@@ -21,7 +22,6 @@ use silico_sketch::worker::State;
 use systems::Builder;
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
-const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The solver stops when its step is under 1e-10: a point lands within this of where it
 /// should.
@@ -40,7 +40,11 @@ fn at(values: &[f64], p: PointValues) -> [f64; 2] {
 }
 
 fn begin(system: SketchSystem, point: PointOf) -> Drag {
-    let start = Drag::begin(&DragBegin { system, point }).unwrap();
+    let start = Drag::begin(&DragBegin {
+        system,
+        dragged: silico_protocol::Dragged::Point(point),
+    })
+    .unwrap();
     assert!(start.conflicting.is_empty(), "{:?}", start.conflicting);
     start.drag.unwrap()
 }
@@ -77,7 +81,7 @@ fn a_lines_end_dragged_around_its_fixed_start_lands_on_its_circle_toward_the_cur
     let (system, line, end) = fixed_length_line();
     let start = Drag::begin(&DragBegin {
         system,
-        point: PointOf::End(line),
+        dragged: silico_protocol::Dragged::Point(PointOf::End(line)),
     })
     .unwrap();
     // Two unknowns, one equation.
@@ -149,7 +153,7 @@ fn a_free_point_lands_exactly_on_the_cursor() {
     let point = b.add(SketchGeometry::Point(p));
     let start = Drag::begin(&DragBegin {
         system: b.system(Algorithm::DogLeg),
-        point: PointOf::Point(point),
+        dragged: silico_protocol::Dragged::Point(PointOf::Point(point)),
     })
     .unwrap();
     assert_eq!(start.dofs, 2);
@@ -247,6 +251,100 @@ fn an_arc_of_fixed_radius_follows_its_end_by_the_weight_of_its_centres_pin() {
 }
 
 #[test]
+fn a_sketch_point_an_arc_ends_at_pins_the_arcs_centre_as_the_arcs_end_does() {
+    // The core drags a sketch's point (M3.2's D2), whose values the arc's end shares, not
+    // the arc's end: the fixed-radius quarter arc, dragged by such a point, lands where its
+    // end dragged does (the case above, δ = (d - 5) / (1 + 1e-4)). Were the centre not
+    // pinned, it would follow freely, δ = d - 5, and the end would reach the cursor.
+    let (mut system, _, center, end) = quarter_arc(true);
+    system.geometry.push(SketchGeometry::Point(end));
+    let point = Geometry(system.geometry.len() as u32 - 1);
+    let mut drag = begin(system, PointOf::Point(point));
+    for cursor in [[1.0, 17.0], [-11.0, -7.0], [4.0, 6.0]] {
+        let values = moved(&mut drag, cursor);
+        let (dx, dy) = (cursor[0] - 1.0, cursor[1] - 2.0);
+        let d = libm::hypot(dx, dy);
+        let u = [dx / d, dy / d];
+        let delta = (d - 5.0) / (1.0 + 1e-4);
+        let c = [1.0 + delta * u[0], 2.0 + delta * u[1]];
+        assert_near(
+            at(&values, center),
+            c,
+            &format!("centre, cursor {cursor:?}"),
+        );
+        assert_near(
+            at(&values, end),
+            [c[0] + 5.0 * u[0], c[1] + 5.0 * u[1]],
+            &format!("end, cursor {cursor:?}"),
+        );
+    }
+}
+
+#[test]
+fn a_point_two_arcs_end_at_pins_both_their_centres() {
+    // P at (0, 0) is the start of an arc about (-5, 0) and the end of one about (5, 0),
+    // each of radius 5 held, mirror images in x = 0. Dragged to (0, d), P stays on x = 0,
+    // at (0, y); each centre goes to the point 5 from P nearest where it started, s - 5 from
+    // there, s = √(25 + y²); and y makes (y - d)² + 2 · 1e-4 · (s - 5)² least, the two
+    // centres' pins each weighted 0.01² (found here by Newton's method). With one centre
+    // pinned, the weight would be 1e-4, and P would land about half as far short: 5.5e-4
+    // mm nearer the cursor at d = 10, 4.3e-5 at d = 3. A centre is held along its circle
+    // about P by its 1e-4-weighted pin alone, so the solver stops with it less close than
+    // P: within 1e-8, still far finer than those.
+    let mut b = Builder::default();
+    let p = b.point_values(0.0, 0.0);
+    let arc = |b: &mut Builder, center: (f64, f64), start, end, angles: [f64; 2]| {
+        let center = b.point_values(center.0, center.1);
+        let radius = b.unknown(5.0);
+        let start_angle = b.unknown(angles[0]);
+        let end_angle = b.unknown(angles[1]);
+        let arc = b.add(SketchGeometry::Arc {
+            center,
+            radius,
+            start_angle,
+            end_angle,
+            start,
+            end,
+        });
+        b.constraints.push(SolverConstraint::ArcRules { arc });
+        let five = b.fixed(5.0);
+        b.constrain(|tag| SolverConstraint::Radius {
+            tag,
+            circle: arc,
+            value: five,
+        });
+        center
+    };
+    let left_end = b.point_values(-5.0, 5.0);
+    let left = arc(&mut b, (-5.0, 0.0), p, left_end, [0.0, FRAC_PI_2]);
+    let right_start = b.point_values(5.0, 5.0);
+    let right = arc(&mut b, (5.0, 0.0), right_start, p, [FRAC_PI_2, PI]);
+    let point = b.add(SketchGeometry::Point(p));
+    let mut drag = begin(b.system(Algorithm::DogLeg), PointOf::Point(point));
+    for d in [10.0, -8.0, 3.0] {
+        let mut y: f64 = d;
+        for _ in 0..50 {
+            let s = libm::hypot(5.0, y);
+            let f = (y - d) + 2e-4 * (s - 5.0) * y / s;
+            let df = 1.0 + 2e-4 * ((y / s) * (y / s) + (s - 5.0) * 25.0 / (s * s * s));
+            y -= f / df;
+        }
+        let s = libm::hypot(5.0, y);
+        let values = moved(&mut drag, [0.0, d]);
+        assert_near(at(&values, p), [0.0, y], &format!("P, cursor (0, {d})"));
+        let rise = y - 5.0 * y / s;
+        for (centre, want) in [(left, [-25.0 / s, rise]), (right, [25.0 / s, rise])] {
+            let got = at(&values, centre);
+            let off = libm::hypot(got[0] - want[0], got[1] - want[1]);
+            assert!(
+                off <= 1e-8,
+                "centre, cursor (0, {d}): got {got:?}, want {want:?} ({off:e} off)"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_move_the_solver_fails_gives_no_values_and_the_next_move_starts_afresh() {
     // The free arc's end dragged to (30, -40) or (-11, -7): from the drag's start, SQP
     // can't meet the arc's rules, and the move fails, as FreeCAD 1.1.3's does ("Not able
@@ -285,7 +383,7 @@ fn a_solution_out_of_reach_is_refused_and_the_drag_goes_on() {
     assert!(matches!(
         state.handle(Op::DragBegin(DragBegin {
             system,
-            point: PointOf::Point(first)
+            dragged: PointOf::Point(first).into()
         })),
         Ok(Reply::DragStarted { .. })
     ));
@@ -421,7 +519,7 @@ fn a_drag_of_a_sketch_with_constraints_in_conflict_starts_no_session() {
     });
     let begin = DragBegin {
         system: b.system(Algorithm::DogLeg),
-        point: PointOf::End(line),
+        dragged: silico_protocol::Dragged::Point(PointOf::End(line)),
     };
     let start = Drag::begin(&begin).unwrap();
     assert_eq!(start.conflicting, [Tag(1), Tag(2)]);
@@ -489,7 +587,7 @@ fn a_begin_naming_geometry_there_isnt_or_a_point_it_lacks_is_refused() {
     ] {
         let begin = DragBegin {
             system: system.clone(),
-            point,
+            dragged: silico_protocol::Dragged::Point(point),
         };
         let refused = |failure: silico_protocol::Failure| {
             assert_eq!(
@@ -513,7 +611,7 @@ fn worker() -> Worker {
 }
 
 fn call(w: &mut Worker, op: Op) -> Result<Reply, silico_core::Error> {
-    w.call(Generation(1), op, TIMEOUT)
+    w.call(Generation(1), op, WAIT)
 }
 
 fn moved_there(w: &mut Worker, to: [f64; 2]) -> Moved {
@@ -552,7 +650,15 @@ fn a_drag_through_the_worker_begins_moves_and_ends_as_in_this_process() {
         .collect();
     let mut here = begin(system.clone(), point);
     let mut w = worker();
-    match call(&mut w, Op::DragBegin(DragBegin { system, point })).unwrap() {
+    match call(
+        &mut w,
+        Op::DragBegin(DragBegin {
+            system,
+            dragged: silico_protocol::Dragged::Point(point),
+        }),
+    )
+    .unwrap()
+    {
         // 32 unknowns; 8 lengths, 7 joins and the pin to the origin (2 each), 4 angles.
         Reply::DragStarted { dofs, conflicting } => {
             assert_eq!((dofs, conflicting.as_slice()), (32 - 8 - 16 - 4, &[][..]));
@@ -600,7 +706,7 @@ fn moving_or_ending_with_no_drag_is_refused_and_a_solve_ends_a_drag() {
     let point = PointOf::End(line);
     let start = Op::DragBegin(DragBegin {
         system: system.clone(),
-        point,
+        dragged: silico_protocol::Dragged::Point(point),
     });
     assert!(matches!(
         call(&mut w, start.clone()),
@@ -634,7 +740,7 @@ fn moving_or_ending_with_no_drag_is_refused_and_a_solve_ends_a_drag() {
         &mut w,
         Op::DragBegin(DragBegin {
             system: system.clone(),
-            point: PointOf::Center(line),
+            dragged: silico_protocol::Dragged::Point(PointOf::Center(line)),
         }),
     )
     .unwrap_err();
@@ -657,7 +763,7 @@ fn moving_or_ending_with_no_drag_is_refused_and_a_solve_ends_a_drag() {
             &mut w,
             Op::DragBegin(DragBegin {
                 system: b.system(Algorithm::DogLeg),
-                point: PointOf::Start(free),
+                dragged: silico_protocol::Dragged::Point(PointOf::Start(free)),
             })
         ),
         Ok(Reply::DragStarted { dofs: 2, .. })
@@ -676,7 +782,7 @@ fn a_bad_target_through_the_worker_is_invalid_input_and_the_drag_goes_on() {
             &mut w,
             Op::DragBegin(DragBegin {
                 system,
-                point: PointOf::End(line)
+                dragged: PointOf::End(line).into()
             })
         ),
         Ok(Reply::DragStarted { .. })
@@ -688,4 +794,196 @@ fn a_bad_target_through_the_worker_is_invalid_input_and_the_drag_goes_on() {
     }
     let values = moved_there(&mut w, [3.0, -22.0]).values.unwrap();
     assert_near(at(&values, end), [3.0, -12.0], "end");
+}
+
+#[test]
+fn the_cores_drag_client_drags_through_the_worker_and_ends_with_the_whole_sketch_solved() {
+    // M5's core client (`silico_core::drag`) on the sketch worker: a 10 mm line's end, its
+    // start fixed at (3, -2), moved toward (20, 5), then (5, 30), and ended toward (3, 20).
+    // Each frame lands on the circle of radius 10 about the start toward its cursor, and
+    // the end's closing solve keeps the end where the final move put it: (3, 8).
+    use silico_core::drag::{Begun, Kept, MoveOutcome};
+    use silico_core::recompute::SketchSolvers;
+    use silico_core::sketch::{SketchSolver, SketchWorker};
+    let solvers = SketchSolvers::starting(|| {
+        SketchWorker::start_worker(Path::new(WORKER)).map(|w| Box::new(w) as Box<dyn SketchSolver>)
+    });
+    let (system, line, end) = fixed_length_line();
+    let Begun::Open { session, dofs } = silico_core::drag::begin(
+        &solvers,
+        DragBegin {
+            system,
+            dragged: silico_protocol::Dragged::Point(PointOf::End(line)),
+        },
+    )
+    .unwrap() else {
+        panic!("conflicting")
+    };
+    assert_eq!(dofs, 1);
+    for cursor in [[20.0, 5.0], [5.0, 30.0]] {
+        let MoveOutcome::Solved { moved, .. } = session.move_to(cursor).unwrap().wait() else {
+            panic!("{cursor:?}")
+        };
+        let values = moved.values.unwrap();
+        let (dx, dy) = (cursor[0] - 3.0, cursor[1] + 2.0);
+        let d = libm::hypot(dx, dy);
+        assert_near(
+            at(&values, end),
+            [3.0 + 10.0 * dx / d, -2.0 + 10.0 * dy / d],
+            &format!("cursor {cursor:?}"),
+        );
+    }
+    let ended = session.end(Some([3.0, 20.0])).unwrap();
+    assert_eq!(ended.kept, Kept::Cursor);
+    let solved = ended.solved.unwrap();
+    assert_near(at(&solved.values, end), [3.0, 8.0], "the end");
+    assert_eq!(&solved.values[..2], &[3.0, -2.0]);
+}
+
+// --- Dragging an edge (docs/ports/sketcher.md, *Dragging an edge*) -----------------------
+// Each expected value is FreeCAD 1.1.3's for the same sketch and move (`moveGeometry`, the
+// note's table), and worked by hand.
+
+fn begin_edge(system: SketchSystem, edge: Geometry) -> Drag {
+    let start = Drag::begin(&DragBegin::edge(system, edge)).unwrap();
+    assert!(start.conflicting.is_empty(), "{:?}", start.conflicting);
+    start.drag.unwrap()
+}
+
+/// A line from `a` to `b`, its values unknowns, unless `fixed_start`.
+fn line_from(
+    b: &mut Builder,
+    a: (f64, f64),
+    to: (f64, f64),
+    fixed_start: bool,
+) -> (Geometry, PointValues, PointValues) {
+    let start = if fixed_start {
+        PointValues {
+            x: b.fixed(a.0),
+            y: b.fixed(a.1),
+        }
+    } else {
+        b.point_values(a.0, a.1)
+    };
+    let end = b.point_values(to.0, to.1);
+    (b.add(SketchGeometry::Line { start, end }), start, end)
+}
+
+#[test]
+fn a_lines_edge_dragged_moves_it_whole_its_midpoint_to_the_cursor() {
+    // (0,0)-(10,0), its midpoint (5,0) to (8,4), the press's offset (3,4) as FreeCAD's
+    // relative drag: (3,4)-(13,4).
+    let mut b = Builder::default();
+    let (line, start, end) = line_from(&mut b, (0.0, 0.0), (10.0, 0.0), false);
+    let mut drag = begin_edge(b.system(Algorithm::DogLeg), line);
+    let values = moved(&mut drag, [8.0, 4.0]);
+    assert_near(at(&values, start), [3.0, 4.0], "start");
+    assert_near(at(&values, end), [13.0, 4.0], "end");
+}
+
+#[test]
+fn a_lines_edge_whose_start_is_held_moves_only_its_end_the_whole_offset() {
+    // Its start held at the origin: the start stays, the end goes the offset (3,4):
+    // (0,0)-(13,4), as 1.1.3's.
+    let mut b = Builder::default();
+    let (line, start, end) = line_from(&mut b, (0.0, 0.0), (10.0, 0.0), true);
+    let mut drag = begin_edge(b.system(Algorithm::DogLeg), line);
+    let values = moved(&mut drag, [8.0, 4.0]);
+    assert_near(at(&values, start), [0.0, 0.0], "start");
+    assert_near(at(&values, end), [13.0, 4.0], "end");
+}
+
+#[test]
+fn a_lines_edge_dragged_takes_the_neighbour_that_shares_its_end() {
+    // A horizontal line of length 10 from (0,0), its end shared with a free line's start,
+    // that line to (10,5); dragged by (0,2) (its midpoint to (5,2)): (0,2)-(10,2), the
+    // neighbour's start with it, its end staying at (10,5), as 1.1.3's.
+    let mut b = Builder::default();
+    let (line, start, joint) = line_from(&mut b, (0.0, 0.0), (10.0, 0.0), false);
+    let far = b.point_values(10.0, 5.0);
+    b.add(SketchGeometry::Line {
+        start: joint,
+        end: far,
+    });
+    b.constrain(|tag| SolverConstraint::Horizontal { tag, line });
+    let ten = b.fixed(10.0);
+    b.constrain(|tag| SolverConstraint::Distance {
+        tag,
+        a: PointOf::Start(line),
+        b: PointOf::End(line),
+        value: ten,
+    });
+    let mut drag = begin_edge(b.system(Algorithm::DogLeg), line);
+    let values = moved(&mut drag, [5.0, 2.0]);
+    assert_near(at(&values, start), [0.0, 2.0], "start");
+    assert_near(at(&values, joint), [10.0, 2.0], "the shared end");
+    assert_near(at(&values, far), [10.0, 5.0], "the neighbour's far end");
+}
+
+/// A circle about (0,0), radius 5, its radius held if `held`.
+fn circle(held: bool) -> (SketchSystem, Geometry, PointValues) {
+    let mut b = Builder::default();
+    let center = b.point_values(0.0, 0.0);
+    let radius = b.unknown(5.0);
+    let circle = b.add(SketchGeometry::Circle { center, radius });
+    if held {
+        let five = b.fixed(5.0);
+        b.constrain(|tag| SolverConstraint::Radius {
+            tag,
+            circle,
+            value: five,
+        });
+    }
+    (b.system(Algorithm::DogLeg), circle, center)
+}
+
+#[test]
+fn a_circles_edge_dragged_sizes_it_through_the_cursor_its_centre_staying() {
+    // Radius 8 to (0,8), 10 to (6,8); the centre stays: 1.1.3's.
+    for (cursor, radius) in [([0.0, 8.0], 8.0), ([6.0, 8.0], 10.0)] {
+        let (system, circle, center) = circle(false);
+        let mut drag = begin_edge(system, circle);
+        let values = moved(&mut drag, cursor);
+        assert_near(at(&values, center), [0.0, 0.0], "centre");
+        let r = values[2];
+        assert!(
+            (r - radius).abs() <= CLOSE,
+            "{cursor:?}: radius {r}, want {radius}"
+        );
+    }
+}
+
+#[test]
+fn a_held_circles_edge_dragged_moves_its_centre_by_the_weight_of_its_pin() {
+    // Radius held at 5, its edge to (0,8): the centre goes (8 - 5)/(1 + 1e-4) =
+    // 2.99970003 up, as 1.1.3's, the circle then passing as near the cursor as it can.
+    let (system, circle, center) = circle(true);
+    let mut drag = begin_edge(system, circle);
+    let values = moved(&mut drag, [0.0, 8.0]);
+    assert_near(at(&values, center), [0.0, 3.0 / (1.0 + 1e-4)], "centre");
+    assert!((values[2] - 5.0).abs() <= CLOSE, "radius {}", values[2]);
+}
+
+#[test]
+fn an_arcs_edge_dragged_sizes_its_circle_through_the_cursor() {
+    // The free quarter arc about (1,2), radius 5, its edge to (1,10): radius 8, the centre
+    // staying, as 1.1.3's. Its ends land where the solve leaves its angles, on its circle.
+    let (system, arc, center, end) = quarter_arc(false);
+    let mut drag = begin_edge(system, arc);
+    let values = moved(&mut drag, [1.0, 10.0]);
+    assert_near(at(&values, center), [1.0, 2.0], "centre");
+    assert!((values[2] - 8.0).abs() <= CLOSE, "radius {}", values[2]);
+    let e = at(&values, end);
+    let r = libm::hypot(e[0] - 1.0, e[1] - 2.0);
+    assert!((r - 8.0).abs() <= CLOSE, "the end off its circle: {r}");
+}
+
+#[test]
+fn a_points_edge_is_refused() {
+    let mut b = Builder::default();
+    let p = b.point_values(1.0, 2.0);
+    let point = b.add(SketchGeometry::Point(p));
+    let begin = DragBegin::edge(b.system(Algorithm::DogLeg), point);
+    let e = begin.check().unwrap_err();
+    assert!(e.message.contains("it's a point"), "{e:?}");
 }

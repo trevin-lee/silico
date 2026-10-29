@@ -24,6 +24,7 @@ use super::{
 use crate::cache::Cache;
 use crate::command::edit::FeatureIds;
 use crate::command::logs::LogBuffer;
+use crate::disk::DiskWatch;
 use crate::document::json::MAX_INPUT_LEN;
 use crate::document::{self, Document, FormatVersion, NamingScheme, Units};
 use crate::file::{self, Unresolved, Workspace};
@@ -52,11 +53,19 @@ pub(super) struct Registry<P: Clients + 'static> {
     pub(super) step: Mutex<Arc<dyn crate::step_worker::StepExporter>>,
     /// The display meshes `render` makes, shared by the sessions of this kernel.
     pub(super) meshes: Arc<crate::meshes::MeshCache<crate::recompute::Key>>,
+    /// The turn each export's mesh waits for: one export mesh at a time across the sessions.
+    pub(super) export_turns: Arc<crate::command::export::MeshTurns>,
     /// The workspace every path a session is given, and every file it reads, writes, or
     /// keeps its cache in, must lie in (decision 26): given as the sessions are made
     /// ([`Sessions::in_workspace`](super::Sessions::in_workspace)), fixed for their life.
     /// None for the CLI's, whose paths resolve as the system resolves them.
     pub(super) workspace: Option<Workspace>,
+    /// The least time between two comparisons of a session's file on disk
+    /// ([`DISK_CHECK_INTERVAL`](crate::disk::DISK_CHECK_INTERVAL), but in this crate's tests).
+    pub(super) disk_interval: std::time::Duration,
+    /// The bound of each transaction's undo stack, in bytes as it counts them
+    /// ([`UNDO_BYTES`](crate::document::undo::UNDO_BYTES), but in this crate's tests).
+    pub(super) undo_bytes: usize,
 }
 
 /// A file as the system knows it, whatever path reaches it: its device and inode.
@@ -210,9 +219,18 @@ pub(super) fn start<P: Clients + 'static>(
         );
         // From here it opens, unless it was cancelled first (the file it made goes as above).
         ticket.settle()?;
+        // Against the bytes it read (or made), at the path they were read from.
+        let disk = DiskWatch::new(
+            held.resolved.clone(),
+            registry.workspace.clone(),
+            Arc::clone(&held.bytes),
+            registry.disk_interval,
+            None,
+        );
         let session = Arc::new(Session {
             id,
             workspace: registry.workspace.clone(),
+            undo_bytes: registry.undo_bytes,
             held: Holding::new(held),
             queue: Mutex::new(Some(queue)),
             rebuilds: Mutex::new(Rebuilds {
@@ -232,10 +250,13 @@ pub(super) fn start<P: Clients + 'static>(
             command: Mutex::new(None),
             newest,
             logs,
+            disk,
             #[cfg(test)]
             gate: super::Gate::default(),
             #[cfg(test)]
             settled: super::Gate::default(),
+            #[cfg(test)]
+            writing: super::Gate::default(),
         });
         // Open from here: the commands sent while it opened are in its queue, ahead of any
         // sent after, and its published reads sent then start now, in the order sent,

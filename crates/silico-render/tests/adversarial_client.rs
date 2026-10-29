@@ -15,9 +15,10 @@ use silico_protocol::{Mesh, RenderScene};
 use silico_render::bench::front_of_a_box;
 
 use crate::common::{
-    TEST_WORKER, WORKER, client, crashing, drawn, ended, eventually, failed, hanging,
-    process_exists, scratch, signal, small, state, wait_within, zombie,
+    LeakOnPanic, TEST_WORKER, UNREACHED, WAIT, WORKER, client, crashing, drawn, ended, eventually,
+    failed, hanging, process_exists, promptly, scratch, signal, small, state, wait_within, zombie,
 };
+use crate::lateness::{Lateness, allowance};
 
 // ---- Dropping the client ----
 
@@ -26,37 +27,33 @@ fn dropping_the_client_with_renders_queued_behind_a_hung_one_returns_promptly() 
     // BREAKS: dropping the client closes its queue, but the thread drains it, sending every
     // queued render to the worker in turn, each its full timeout: three renders queued behind
     // a hung one hold the drop (and whoever drops it: a `Sessions` closing, the app quitting)
-    // for four timeouts, 8 s here, 2 minutes at the default 30 s. The design's session
-    // closing drops queued renders and kills the running one's worker; a client dropped
-    // should do no less.
+    // for four timeouts, 2 minutes at the default 30 s. The design's session closing drops
+    // queued renders and kills the running one's worker; a client dropped should do no less.
+    // A render's time here is one no test reaches, so a drop that waited for any fails.
     let c = client(
         TEST_WORKER,
         RenderSettings {
-            timeout: Duration::from_secs(10),
+            timeout: UNREACHED,
             ..RenderSettings::default()
         },
     );
     let tickets: Vec<RenderTicket> = (0..4).map(|_| c.render(hanging())).collect();
-    assert!(eventually(Duration::from_secs(10), || c.pid().is_some()));
+    assert!(eventually(WAIT, || c.pid().is_some()));
     let pid = c.pid().unwrap();
     std::thread::sleep(Duration::from_millis(200));
-    let start = Instant::now();
-    drop(c);
-    let took = start.elapsed();
-    // Every ticket has its outcome by now, whatever it is.
+    promptly("dropping the client", move || drop(c));
+    // Every ticket is answered cancelled now: the drop cancels the running one and those
+    // queued, and answers them all before it returns.
     for t in tickets {
-        assert!(
-            wait_within(t, Duration::from_millis(100)).is_some(),
-            "a ticket still waits after the client was dropped"
-        );
+        match t.try_take() {
+            Ok(RenderOutcome::Cancelled) => {}
+            Ok(other) => panic!("a ticket after the client was dropped: {other:?}"),
+            Err(_) => panic!("a ticket still waits after the client was dropped"),
+        }
     }
     assert!(
-        eventually(Duration::from_secs(5), || !process_exists(pid)),
+        eventually(WAIT, || !process_exists(pid)),
         "pid {pid} still runs after the client was dropped"
-    );
-    assert!(
-        took < Duration::from_millis(2500),
-        "dropping the client took {took:?}"
     );
 }
 
@@ -64,50 +61,44 @@ fn dropping_the_client_with_renders_queued_behind_a_hung_one_returns_promptly() 
 fn dropping_the_client_just_after_a_render_is_queued_doesnt_wait_for_it() {
     // BREAKS (fixed): the client's thread took a render from the queue after the client
     // began closing, but before it saw the render as current, so the drop found nothing to
-    // cancel, and the render ran its whole time (a hung one here, 5 s) while the drop
-    // waited. Now the render is made current before the closing is looked at again.
-    let mut worst = Duration::ZERO;
+    // cancel, and the render ran its whole time (a hung one here, one no test reaches) while
+    // the drop waited. Now the render is made current before the closing is looked at again.
     for i in 0..10 {
         let client = client(
             TEST_WORKER,
             RenderSettings {
-                timeout: Duration::from_secs(5),
+                timeout: UNREACHED,
                 ..RenderSettings::default()
             },
         );
         std::thread::sleep(Duration::from_millis(50));
         let t = client.render(hanging());
-        let start = Instant::now();
-        drop(client);
-        let took = start.elapsed();
-        worst = worst.max(took);
-        let outcome = wait_within(t, Duration::from_secs(1))
-            .unwrap_or_else(|| panic!("{i}: the ticket waits after the client was dropped"));
+        promptly(&format!("{i}: dropping the client"), move || drop(client));
+        let outcome = t
+            .try_take()
+            .unwrap_or_else(|_| panic!("{i}: the ticket waits after the client was dropped"));
         assert!(
             matches!(outcome, RenderOutcome::Cancelled),
             "{i}: {outcome:?}"
         );
     }
-    assert!(
-        worst < Duration::from_millis(2500),
-        "dropping the client took {worst:?}"
-    );
 }
 
 #[test]
 fn dropping_the_client_with_only_a_warm_worker_stops_it_at_once() {
-    let c = client(WORKER, RenderSettings::default());
+    // Kept idle past any wait, so a drop that waited for the idle stop fails.
+    let c = client(
+        WORKER,
+        RenderSettings {
+            idle: UNREACHED,
+            ..RenderSettings::default()
+        },
+    );
     drawn(c.render(small()).wait());
     let pid = c.pid().unwrap();
-    let start = Instant::now();
-    drop(c);
+    promptly("dropping the client", move || drop(c));
     assert!(
-        start.elapsed() < Duration::from_secs(2),
-        "{:?}",
-        start.elapsed()
-    );
-    assert!(
-        eventually(Duration::from_secs(5), || !process_exists(pid)),
+        eventually(WAIT, || !process_exists(pid)),
         "pid {pid} still runs"
     );
 }
@@ -122,7 +113,7 @@ fn a_worker_killed_while_idle_is_replaced_and_the_next_render_draws() {
     signal(pid, "-KILL");
     // Ended, every thread: before that the client can't reap it, and finds it still there.
     assert!(
-        eventually(Duration::from_secs(5), || ended(pid)),
+        eventually(WAIT, || ended(pid)),
         "the killed worker {pid} hasn't ended: ps says {:?}",
         state(pid)
     );
@@ -143,18 +134,19 @@ fn a_worker_stopped_with_sigstop_while_idle_times_out_and_is_killed() {
     drawn(c.render(small()).wait());
     let pid = c.pid().unwrap();
     signal(pid, "-STOP");
+    // Its 2 s, then a kill and a reap: 6 s on a quiet machine, and the wakes on the way as
+    // late as this machine runs them.
+    let lateness = Lateness::start();
     let start = Instant::now();
-    let outcome = wait_within(c.render(small()), Duration::from_secs(10))
-        .expect("a render on a stopped worker never answered");
+    let outcome =
+        wait_within(c.render(small()), WAIT).expect("a render on a stopped worker never answered");
+    let took = start.elapsed();
     let e = failed(outcome);
     assert_eq!(e.code(), ErrorCode::WorkerTimeout, "{e:?}");
+    let bound = allowance(Duration::from_secs(6), lateness.most());
+    assert!(took < bound, "{took:?}, the bound {bound:?}");
     assert!(
-        start.elapsed() < Duration::from_secs(6),
-        "{:?}",
-        start.elapsed()
-    );
-    assert!(
-        eventually(Duration::from_secs(5), || !process_exists(pid)),
+        eventually(WAIT, || !process_exists(pid)),
         "the stopped worker {pid} was left"
     );
     drawn(c.render(small()).wait());
@@ -185,7 +177,7 @@ fn a_render_cancelled_at_once_is_cancelled_or_drawn_never_failed() {
             std::thread::sleep(Duration::from_micros(i * 500));
         }
         t.cancel();
-        match wait_within(t, Duration::from_secs(30)).expect("no outcome") {
+        match wait_within(t, WAIT).expect("no outcome") {
             RenderOutcome::Cancelled | RenderOutcome::Done(Ok(_)) => {}
             RenderOutcome::Done(Err(e)) => panic!("cancel {i} failed the render: {e:?}"),
         }
@@ -302,9 +294,9 @@ fn an_executable_removed_after_the_start_fails_each_render_until_its_back() {
     )
     .unwrap();
     drawn(c.render(small()).wait());
-    assert!(eventually(Duration::from_secs(5), || c.pid().is_none()));
+    assert!(eventually(WAIT, || c.pid().is_none()));
     std::fs::remove_file(&link).unwrap();
-    let e = failed(wait_within(c.render(small()), Duration::from_secs(10)).expect("no outcome"));
+    let e = failed(wait_within(c.render(small()), WAIT).expect("no outcome"));
     assert_eq!(e.code(), ErrorCode::WorkerUnavailable, "{e:?}");
     assert!(e.suggestion().is_some(), "{e:?}");
     std::os::unix::fs::symlink(WORKER, &link).unwrap();
@@ -327,10 +319,10 @@ fn an_executable_swapped_for_another_build_after_the_start_is_refused_with_advic
     )
     .unwrap();
     drawn(c.render(small()).wait());
-    assert!(eventually(Duration::from_secs(5), || c.pid().is_none()));
+    assert!(eventually(WAIT, || c.pid().is_none()));
     std::fs::remove_file(&link).unwrap();
     std::os::unix::fs::symlink(TEST_WORKER, &link).unwrap();
-    match wait_within(c.render(small()), Duration::from_secs(30)).expect("no outcome") {
+    match wait_within(c.render(small()), WAIT).expect("no outcome") {
         // Refused as another build, with what to do.
         RenderOutcome::Done(Err(e)) => {
             assert!(e.suggestion().is_some(), "{e:?}");
@@ -376,7 +368,7 @@ fn settings_of_no_time_and_all_the_time_neither_panic_nor_hang() {
             ..RenderSettings::default()
         },
     );
-    let e = failed(wait_within(c.render(small()), Duration::from_secs(10)).expect("no outcome"));
+    let e = failed(wait_within(c.render(small()), WAIT).expect("no outcome"));
     assert_eq!(e.code(), ErrorCode::WorkerTimeout, "{e:?}");
 }
 
@@ -431,23 +423,27 @@ fn large_by_triangles_exactly_at_the_bound_isnt_large() {
 
 #[test]
 fn a_render_waited_on_in_one_thread_is_cancelled_from_another() {
-    let c = client(TEST_WORKER, RenderSettings::default());
+    // A render's time no test reaches: only the cancel can answer it, or end its worker.
+    let c = LeakOnPanic::new(client(
+        TEST_WORKER,
+        RenderSettings {
+            timeout: UNREACHED,
+            ..RenderSettings::default()
+        },
+    ));
     let ticket = c.render(hanging());
     let cancel = ticket.canceller();
     let waiting = std::thread::spawn(move || ticket.wait());
-    assert!(eventually(Duration::from_secs(10), || c.pid().is_some()));
+    assert!(eventually(WAIT, || c.pid().is_some()));
     std::thread::sleep(Duration::from_millis(200));
     let pid = c.pid().unwrap();
-    let start = Instant::now();
     cancel.clone().cancel();
-    assert!(matches!(waiting.join().unwrap(), RenderOutcome::Cancelled));
+    let outcome = promptly("the cancelled render's wait", move || {
+        waiting.join().unwrap()
+    });
+    assert!(matches!(outcome, RenderOutcome::Cancelled), "{outcome:?}");
     assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        start.elapsed()
-    );
-    assert!(
-        eventually(Duration::from_secs(5), || !process_exists(pid)),
+        eventually(WAIT, || !process_exists(pid)),
         "the cancelled render's worker {pid} still runs"
     );
     // Cancelling again, after the answer, does nothing.
@@ -457,7 +453,14 @@ fn a_render_waited_on_in_one_thread_is_cancelled_from_another() {
 
 #[test]
 fn a_ticket_polled_or_waited_on_for_a_while_comes_back_until_it_answers() {
-    let c = client(TEST_WORKER, RenderSettings::default());
+    // A render's time no test reaches: only the cancel answers the hung one.
+    let c = LeakOnPanic::new(client(
+        TEST_WORKER,
+        RenderSettings {
+            timeout: UNREACHED,
+            ..RenderSettings::default()
+        },
+    ));
     let mut ticket = c.render(hanging());
     for _ in 0..3 {
         ticket = match ticket.try_take() {
@@ -470,7 +473,7 @@ fn a_ticket_polled_or_waited_on_for_a_while_comes_back_until_it_answers() {
         };
     }
     ticket.cancel();
-    let outcome = wait_within(ticket, Duration::from_secs(5)).expect("no outcome");
+    let outcome = wait_within(ticket, WAIT).expect("no outcome");
     assert!(matches!(outcome, RenderOutcome::Cancelled), "{outcome:?}");
     // A drawn one, taken by polling.
     let mut ticket = c.render(small());
@@ -478,7 +481,7 @@ fn a_ticket_polled_or_waited_on_for_a_while_comes_back_until_it_answers() {
     let outcome = loop {
         match ticket.try_take() {
             Ok(outcome) => break outcome,
-            Err(t) if start.elapsed() < Duration::from_secs(30) => ticket = t,
+            Err(t) if start.elapsed() < WAIT => ticket = t,
             Err(_) => panic!("a small render never answered"),
         }
         std::thread::sleep(Duration::from_millis(5));
@@ -617,18 +620,20 @@ fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
 fn a_worker_that_exits_at_once_fails_each_render_promptly_and_says_what_to_do() {
     let dir = scratch("exits");
     let exe = script(&dir, "exits", "exit 3");
-    let c = RenderClient::start(
-        &exe,
-        RenderSettings {
-            timeout: Duration::from_secs(5),
-            ..RenderSettings::default()
-        },
-    )
-    .unwrap();
+    // A render's time no test reaches: a client that waited it out, not seeing the worker
+    // gone, never answers within `WAIT`.
+    let c = LeakOnPanic::new(
+        RenderClient::start(
+            &exe,
+            RenderSettings {
+                timeout: UNREACHED,
+                ..RenderSettings::default()
+            },
+        )
+        .unwrap(),
+    );
     for _ in 0..3 {
-        let start = Instant::now();
-        let e =
-            failed(wait_within(c.render(small()), Duration::from_secs(20)).expect("no outcome"));
+        let e = failed(wait_within(c.render(small()), WAIT).expect("no outcome"));
         assert!(
             matches!(
                 e.code(),
@@ -637,11 +642,6 @@ fn a_worker_that_exits_at_once_fails_each_render_promptly_and_says_what_to_do() 
             "{e:?}"
         );
         assert!(e.suggestion().is_some(), "{e:?}");
-        assert!(
-            start.elapsed() < Duration::from_secs(4),
-            "{:?}",
-            start.elapsed()
-        );
     }
     drop(c);
     let _ = std::fs::remove_dir_all(&dir);
@@ -664,8 +664,12 @@ fn a_worker_that_never_says_it_started_times_out_and_is_killed() {
         },
     )
     .unwrap();
+    // Its 2 s, then a kill: 6 s on a quiet machine, and the wakes on the way as late as this
+    // machine runs them.
+    let lateness = Lateness::start();
     let start = Instant::now();
-    let e = failed(wait_within(c.render(small()), Duration::from_secs(20)).expect("no outcome"));
+    let e = failed(wait_within(c.render(small()), WAIT).expect("no outcome"));
+    let took = start.elapsed();
     assert!(
         matches!(
             e.code(),
@@ -673,18 +677,15 @@ fn a_worker_that_never_says_it_started_times_out_and_is_killed() {
         ),
         "{e:?}"
     );
-    assert!(
-        start.elapsed() < Duration::from_secs(6),
-        "{:?}",
-        start.elapsed()
-    );
+    let bound = allowance(Duration::from_secs(6), lateness.most());
+    assert!(took < bound, "{took:?}, the bound {bound:?}");
     let pid: u32 = std::fs::read_to_string(&marker)
         .unwrap()
         .trim()
         .parse()
         .unwrap();
     assert!(
-        eventually(Duration::from_secs(5), || !process_exists(pid)),
+        eventually(WAIT, || !process_exists(pid)),
         "the silent worker {pid} was left running"
     );
     drop(c);
@@ -695,26 +696,21 @@ fn a_worker_that_never_says_it_started_times_out_and_is_killed() {
 fn a_queued_render_cancelled_answers_cancelled_at_once_not_when_its_turn_comes() {
     // BREAKS: a queued render's cancel only sets its flag; it answers `Cancelled` when the
     // client's thread reaches it, after every render ahead of it, so one session's cancel
-    // waits out another's render (a hung one's whole timeout, 30 s by default; 5 s here).
-    let c = client(
+    // waits out another's render (a hung one's whole timeout, 30 s by default; here one no
+    // test reaches, so a cancel that waited for it never answers within `WAIT`).
+    let c = LeakOnPanic::new(client(
         TEST_WORKER,
         RenderSettings {
-            timeout: Duration::from_secs(5),
+            timeout: UNREACHED,
             ..RenderSettings::default()
         },
-    );
+    ));
     let running = c.render(hanging());
     let queued = c.render(small());
-    assert!(eventually(Duration::from_secs(10), || c.pid().is_some()));
+    assert!(eventually(WAIT, || c.pid().is_some()));
     std::thread::sleep(Duration::from_millis(200));
     queued.cancel();
-    let start = Instant::now();
-    let outcome = wait_within(queued, Duration::from_secs(10)).expect("no outcome");
+    let outcome = wait_within(queued, WAIT).expect("the cancelled render never answered");
     assert!(matches!(outcome, RenderOutcome::Cancelled), "{outcome:?}");
-    assert!(
-        start.elapsed() < Duration::from_millis(2500),
-        "the cancelled render answered after {:?}",
-        start.elapsed()
-    );
     drop(running);
 }

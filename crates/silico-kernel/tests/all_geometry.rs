@@ -34,6 +34,8 @@ mod hostile;
 mod imports;
 #[path = "common/kernel.rs"]
 mod kernel;
+#[path = "../../silico-core/tests/common/lateness.rs"]
+mod lateness;
 #[path = "common/logs.rs"]
 mod logs;
 #[path = "common/numbers.rs"]
@@ -42,8 +44,12 @@ mod numbers;
 mod oracle;
 #[path = "common/quadrature.rs"]
 mod quadrature;
+#[path = "../../silico-core/tests/common/share.rs"]
+mod share;
 #[path = "../../silico-core/tests/common/sweeps.rs"]
 mod sweeps;
+#[path = "common/wait.rs"]
+mod wait;
 
 #[path = "adversarial_arc_range.rs"]
 mod adversarial_arc_range;

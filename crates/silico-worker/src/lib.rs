@@ -22,8 +22,9 @@ use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 
 use silico_protocol::{
-    Failure, FrameError, FrameReader, Generation, Op, REQUEST_DONE, Refusal, Reply, Request,
-    RequestId, Response, WORKER_FD, WORKER_FD_ENV, write_message, write_started,
+    Failure, FrameError, FrameReader, Generation, MAX_FRAME_LEN, Op, REQUEST_DONE, Refusal, Reply,
+    Request, RequestId, Response, WORKER_FD, WORKER_FD_ENV, encoded_len, write_message_within,
+    write_started,
 };
 
 #[cfg(feature = "test_ops")]
@@ -175,7 +176,21 @@ fn worker_filter(value: Option<&str>) -> tracing_subscriber::EnvFilter {
 /// operation, given the request's id and generation, and may write to the socket directly
 /// (the test workers' garbage and out-of-turn operations do). Returns an error if the
 /// stream breaks or a request can't be read.
-pub fn serve<F>(socket: UnixStream, platform: &Platform, mut handle: F) -> Result<(), FrameError>
+pub fn serve<F>(socket: UnixStream, platform: &Platform, handle: F) -> Result<(), FrameError>
+where
+    F: FnMut(RequestId, Generation, Op, &mut dyn Write) -> Result<Reply, Failure>,
+{
+    serve_within(socket, platform, handle, MAX_FRAME_LEN)
+}
+
+/// As [`serve`], each reply at most `most` bytes: one past it is refused in its place
+/// ([`fitted`]), and the worker goes on to the next request.
+fn serve_within<F>(
+    socket: UnixStream,
+    platform: &Platform,
+    mut handle: F,
+    most: u32,
+) -> Result<(), FrameError>
 where
     F: FnMut(RequestId, Generation, Op, &mut dyn Write) -> Result<Reply, Failure>,
 {
@@ -206,12 +221,20 @@ where
                 op: name.to_owned(),
             }));
         }
+        let response = fitted(
+            Response {
+                id: request.id,
+                generation: request.generation,
+                result,
+            },
+            most,
+        )?;
         // In the request's span, so the core files it under the call that asked: a
         // session's logs hold the worker's own line for what it refused, its kind and OCCT's
         // words. Not its elements: the worker knows them only by their places in its shapes,
         // which aren't the document's names, and the core's line for the refusal names
         // them (ARCHITECTURE.md, invariant 2: the core words a refusal).
-        if let Err(failure) = &result {
+        if let Err(failure) = &response.result {
             let kind = failure.refusal.kind().word();
             // Its cause in the message: the core re-emits a worker's line by its message. Cut
             // to fit the line the core reads: OCCT's words can be long.
@@ -228,16 +251,27 @@ where
             let mut log = std::io::stderr().lock();
             let _ = writeln!(log, "{{\"{REQUEST_DONE}\":{}}}", request.trace.0);
         }
-        write_message(
-            &mut writer,
-            &Response {
-                id: request.id,
-                generation: request.generation,
-                result,
-            },
-        )?;
+        write_message_within(&mut writer, &response, most)?;
     }
     Ok(())
+}
+
+/// `response`, or, if it encodes past the `most` bytes a frame carries, the request refused
+/// in its place ([`Refusal::ReplyTooLarge`]), measured before it's encoded: so the request
+/// is refused, logged as any refusal is, and the worker goes on, rather than ending as if it
+/// had crashed and being started again for no fault of its own.
+fn fitted(response: Response, most: u32) -> Result<Response, FrameError> {
+    let bytes = encoded_len(&response)?;
+    if bytes <= most as usize {
+        return Ok(response);
+    }
+    Ok(Response {
+        result: Err(Failure::new(Refusal::ReplyTooLarge {
+            bytes: bytes as u64,
+            limit: u64::from(most),
+        })),
+        ..response
+    })
 }
 
 /// The traps as a worker starts: switched off and checked off for [`Traps::Checked`] (or why
@@ -363,13 +397,112 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use silico_protocol::{
-        DebugOp, Failure, FrameReader, Generation, Op, Refusal, Reply, Request, RequestId,
+        Blob, DebugOp, Failure, FrameReader, Generation, Op, Refusal, Reply, Request, RequestId,
         Response, TraceId, write_message,
     };
 
     use super::{
         Platform, REFUSAL_LINE_ROOM, Traps, serve, traps_at_start, within_line, worker_filter,
     };
+
+    #[test]
+    fn a_reply_past_what_a_frame_carries_is_refused_in_its_place_and_the_worker_goes_on() {
+        // A response's size encoded: its frame less the frame's 4-byte length.
+        let encoded = |response: &Response| {
+            let mut frame = Vec::new();
+            write_message(&mut frame, response).unwrap();
+            frame.len() - 4
+        };
+        let echo = |n: usize| {
+            Ok(Reply::Echo {
+                data: Blob::inline(vec![7; n]),
+            })
+        };
+        let echoed = |id, n| {
+            encoded(&Response {
+                id: RequestId(id),
+                generation: Generation(2),
+                result: echo(n),
+            })
+        };
+        // The frame's limit here: room for the refusal, and an echo of 64 bytes fits.
+        let limit = 64
+            + encoded(&Response {
+                id: RequestId(1),
+                generation: Generation(2),
+                result: Err(Failure::new(Refusal::ReplyTooLarge {
+                    bytes: 1 << 20,
+                    limit: 1 << 20,
+                })),
+            });
+        let past = (0..).find(|&n| echoed(1, n) > limit).unwrap();
+        // Three requests: an echo one byte past the limit, one at it, and one past it again;
+        // each answered in turn, the worker going on after each refusal.
+        let sizes = [past, past - 1, past];
+        let (core, worker) = UnixStream::pair().unwrap();
+        for id in 1..=3 {
+            let request = Request {
+                id: RequestId(id),
+                generation: Generation(2),
+                trace: TraceId(id),
+                op: Op::Debug(DebugOp::Sleep { millis: 0 }),
+            };
+            write_message(&mut &core, &request).unwrap();
+        }
+        core.shutdown(std::net::Shutdown::Write).unwrap();
+        let replies = std::thread::spawn(move || {
+            let mut frames = FrameReader::new(core);
+            frames.read_frame().unwrap();
+            let mut replies = Vec::new();
+            while let Some(response) = frames.read_message::<Response>().unwrap() {
+                replies.push(response);
+            }
+            replies
+        });
+        let log = Log::default();
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let platform = Platform {
+            built_from: "test",
+            traps: Traps::Unchecked,
+        };
+        tracing::subscriber::with_default(subscriber, || {
+            super::serve_within(
+                worker,
+                &platform,
+                |id, _, _, _| echo(sizes[id.0 as usize - 1]),
+                u32::try_from(limit).unwrap(),
+            )
+        })
+        .unwrap();
+        let refused = |id, n| Response {
+            id: RequestId(id),
+            generation: Generation(2),
+            result: Err(Failure::new(Refusal::ReplyTooLarge {
+                bytes: echoed(id, n) as u64,
+                limit: limit as u64,
+            })),
+        };
+        let at_limit = Response {
+            id: RequestId(2),
+            generation: Generation(2),
+            result: echo(past - 1),
+        };
+        assert_eq!(
+            replies.join().unwrap(),
+            [refused(1, past), at_limit, refused(3, past)]
+        );
+        // Each refusal logged in its request's span, as any refusal is.
+        let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            log.matches("DebugSleep refused, invalid_input").count(),
+            2,
+            "{log}"
+        );
+    }
 
     /// What a test's subscriber writes.
     #[derive(Clone, Default)]

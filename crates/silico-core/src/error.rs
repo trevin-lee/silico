@@ -267,6 +267,57 @@ impl<C> Fields<C> {
     }
 }
 
+impl<C: Copy> Fields<C> {
+    /// What it says, every field of it the error contract writes, its code as `word` writes
+    /// it.
+    fn said(&self, word: impl Fn(C) -> &'static str) -> Said<'_> {
+        let Fields {
+            code,
+            message,
+            feature,
+            elements,
+            elements_total,
+            parameter,
+            cause,
+            suggestion,
+            candidates,
+            // What it was worded from, never written out.
+            worker: _,
+            advice: _,
+        } = self;
+        Said {
+            code: word(*code),
+            message,
+            feature: feature.as_deref(),
+            elements,
+            elements_total: *elements_total,
+            parameter: parameter.as_deref(),
+            cause: cause.as_deref(),
+            suggestion: suggestion.as_deref(),
+            candidates,
+        }
+    }
+}
+
+/// What an error or a warning says, every field the error contract writes
+/// (`tests/contract/error-full.json`), borrowed: built from the error's fields taken whole,
+/// and taken whole by each writer of the contract (the command API's, `check --json`'s), so
+/// a field added to an error is a field each of them must write, or it doesn't compile.
+#[derive(Debug, Clone, Copy)]
+pub struct Said<'a> {
+    /// Its code, as the contract writes it (an error's or a warning's).
+    pub code: &'static str,
+    pub message: &'a str,
+    pub feature: Option<&'a str>,
+    pub elements: &'a [String],
+    /// How many elements are at fault, never fewer than `elements` names.
+    pub elements_total: u64,
+    pub parameter: Option<&'a str>,
+    pub cause: Option<&'a str>,
+    pub suggestion: Option<&'a str>,
+    pub candidates: &'a [String],
+}
+
 /// A kernel worker's failure, as data, and the operation it was for, from which the core
 /// worded an error.
 #[derive(Debug, Clone)]
@@ -367,6 +418,15 @@ impl Error {
         self
     }
 
+    /// The suggestion, worded again from this error's own advice (a session's wording of a
+    /// kept fault): unlike [`with_suggestion`](Self::with_suggestion), the advice is kept,
+    /// since the words still say it.
+    #[must_use]
+    pub(crate) fn reworded(mut self, suggestion: impl Into<String>) -> Self {
+        self.0.suggestion = Some(suggestion.into());
+        self
+    }
+
     /// The worker's advice the suggestion was worded from, if it was.
     pub(crate) fn advice(&self) -> Option<&Advice> {
         self.0.advice.as_deref()
@@ -439,6 +499,20 @@ impl Error {
 
     pub fn candidates(&self) -> &[String] {
         &self.0.candidates
+    }
+
+    /// Whether the worker's advice says the request's values crashed it, and the same request
+    /// would crash it again: read from the advice as data, never from the suggestion's words.
+    /// Meaningful for a kernel fault, as the model read meets it or a session words it
+    /// ([`kept_fault`](crate::command)); false for any error without that advice. A client
+    /// that adds its own "try again" leaves it out then: the CLI's "run it again".
+    pub fn would_crash_again(&self) -> bool {
+        matches!(self.advice(), Some(Advice::ChangeTheValues { .. }))
+    }
+
+    /// What it says, every field the error contract writes.
+    pub fn said(&self) -> Said<'_> {
+        self.0.said(ErrorCode::as_str)
     }
 
     /// Logs the error at info, `what` before its message (`the step failed`), with its
@@ -620,6 +694,12 @@ impl Warning {
 
     pub fn suggestion(&self) -> Option<&str> {
         self.0.suggestion.as_deref()
+    }
+
+    /// What it says, every field the error contract writes (its candidates none: nothing's
+    /// broken for it to have meant).
+    pub fn said(&self) -> Said<'_> {
+        self.0.said(WarningCode::as_str)
     }
 }
 

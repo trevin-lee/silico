@@ -4,6 +4,7 @@
 //! installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use crate::wait::WAIT;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -45,7 +46,7 @@ fn the_recompute_and_edit_spans_close_once_the_recompute_is_done() {
         let run = edit.in_scope(|| engine.start(document));
         assert!(matches!(run.wait().unwrap(), RunOutcome::Published(_)));
     }
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + WAIT;
     loop {
         let names = closed.lock().unwrap().clone();
         if ["recompute_step", "recompute", "user_edit"]

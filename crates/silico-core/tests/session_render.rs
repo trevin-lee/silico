@@ -244,3 +244,34 @@ fn a_render_to_a_document_a_session_holds_is_refused_and_the_document_kept() {
     assert_eq!(std::fs::read_to_string(&held).unwrap(), EXAMPLE);
     assert!(renderer.sent().is_empty());
 }
+
+#[test]
+fn a_render_to_another_name_of_a_document_a_session_holds_is_refused_and_the_document_kept() {
+    // The held document is a file, not a spelling of its path: a hard link to it by another
+    // name (as a case-insensitive file system's `HELD.png` is its `Held.png`, on Linux too,
+    // where the path's spelling is kept as given) is the document. Refused, its bytes kept,
+    // nothing drawn.
+    let (f, renderer, _) = rendering();
+    let s = f.open("Held.png", EXAMPLE);
+    let held = f.dir.path().join("Held.png");
+    let alias = f.dir.path().join("Alias.png");
+    std::fs::hard_link(&held, &alias).unwrap();
+    let mut request = front();
+    request.to = Some(alias.clone());
+    request.replace = true;
+    let done = answer(f.sessions.render(&s, ModelChoice::Current, request));
+    let problems = done.result.unwrap_err();
+    let e = &problems.errors()[0];
+    assert_eq!(
+        (e.code(), e.parameter()),
+        (ErrorCode::InvalidInput, Some("to")),
+        "{e:?}"
+    );
+    assert!(
+        e.message().contains("is a document a session holds"),
+        "{e:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&held).unwrap(), EXAMPLE);
+    assert_eq!(std::fs::read_to_string(&alias).unwrap(), EXAMPLE);
+    assert!(renderer.sent().is_empty());
+}

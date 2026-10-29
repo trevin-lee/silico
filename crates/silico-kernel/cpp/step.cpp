@@ -50,7 +50,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <istream>
-#include <map>
 #include <sstream>
 #include <streambuf>
 #include <string>
@@ -126,7 +125,7 @@ void StepWriter::add_part(rust::Slice<const uint8_t> brep, rust::Str id, rust::S
 namespace {
 
 // The header's fields Silico sets, every one, after the transfer (which writes OCCT's own,
-// the transfer's time among them): fixed but for the document's file name.
+// the transfer's time among them): fixed but for the file name, the worker's token for it.
 void write_header(const Handle(StepData_StepModel) &model, const std::string &file_name) {
   APIHeaderSection_MakeHeader header(model);
   header.SetName(new TCollection_HAsciiString(file_name.c_str()));
@@ -140,62 +139,9 @@ void write_header(const Handle(StepData_StepModel) &model, const std::string &fi
   header.SetDescriptionValue(1, new TCollection_HAsciiString(""));
 }
 
-// A label's name, from a string already encoded (ASCII).
+// A label's name, from the worker's token for it (ASCII; the worker splices the string in).
 void set_name(const TDF_Label &label, const std::string &name) {
   TDataStd_Name::Set(label, TCollection_ExtendedString(name.c_str()));
-}
-
-// What OCCT is given in place of each string Silico writes (docs/ports/step-export.md,
-// *Strings*): a token no shape of OCCT's names anything, short enough that it never wraps.
-// OCCT breaks a string past 72 columns, inside an encoded run too, and its reader decodes
-// before it joins the lines, so OCCT writes none of Silico's strings itself: each is spliced
-// in where its token is, once the file is written.
-std::string placeholder(const char *what, size_t index) {
-  return std::string("SILICO-") + what + "-" + std::to_string(index);
-}
-
-// `text` with each `'TOKEN'` of `strings` (every key's quoted form, starting `'SILICO-`) made
-// `'VALUE'`: refused if a key isn't found, or a value holds a `'` (Silico's encoding has
-// none). One pass, so it's as long as the file, however many there are.
-std::string spliced(const std::string &text, const std::map<std::string, std::string> &strings) {
-  for (const auto &kv : strings) {
-    if (kv.second.find('\'') != std::string::npos) {
-      throw Standard_DomainError("a STEP string holds a quote: it isn't encoded");
-    }
-  }
-  std::string out;
-  out.reserve(text.size());
-  std::map<std::string, size_t> found;
-  const std::string open = "'SILICO-";
-  size_t at = 0;
-  while (true) {
-    const size_t next = text.find(open, at);
-    if (next == std::string::npos) {
-      out.append(text, at, std::string::npos);
-      break;
-    }
-    const size_t close = text.find('\'', next + 1);
-    if (close == std::string::npos) {
-      throw StdFail_NotDone("OCCT's STEP writer left a placeholder unclosed");
-    }
-    const std::string token = text.substr(next + 1, close - next - 1);
-    const auto value = strings.find(token);
-    if (value == strings.end()) {
-      throw StdFail_NotDone("OCCT's STEP writer wrote a placeholder Silico didn't give");
-    }
-    out.append(text, at, next - at);
-    out += '\'';
-    out += value->second;
-    out += '\'';
-    ++found[token];
-    at = close + 1;
-  }
-  for (const auto &kv : strings) {
-    if (found[kv.first] == 0) {
-      throw StdFail_NotDone(("OCCT's STEP writer wrote no " + kv.first).c_str());
-    }
-  }
-  return out;
 }
 
 } // namespace
@@ -246,37 +192,25 @@ std::unique_ptr<StepOut> StepWriter::write(rust::Str assembly, rust::Str file_na
       given[i] = compound;
     }
   }
-  // Each string the file holds, by the placeholder OCCT is given for it.
-  std::map<std::string, std::string> strings;
-  std::vector<std::string> names(parts);
-  for (size_t i = 0; i < parts; ++i) {
-    names[i] = placeholder("NAME", i);
-    strings[names[i]] = names_[i];
-  }
   Handle(TDocStd_Document) doc = new TDocStd_Document("XmlXCAF");
   // In millimetres, the document's own unit, not OCCT's process-wide one.
   XCAFDoc_DocumentTool::SetLengthUnit(doc, 1.0, UnitsMethods_LengthUnit_Millimeter);
   Handle(XCAFDoc_ShapeTool) tool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
   if (parts == 1) {
-    set_name(tool->AddShape(given[0], Standard_False, Standard_False), names[0]);
+    set_name(tool->AddShape(given[0], Standard_False, Standard_False), names_[0]);
   } else {
-    const std::string root_name = placeholder("ASSEMBLY", 0);
-    strings[root_name] = std::string(assembly.data(), assembly.size());
     const TDF_Label root = tool->NewShape();
-    set_name(root, root_name);
+    set_name(root, std::string(assembly.data(), assembly.size()));
     for (size_t i = 0; i < parts; ++i) {
       const TDF_Label component = tool->AddComponent(root, given[i], Standard_False);
       TDF_Label referred;
       if (XCAFDoc_ShapeTool::GetReferredShape(component, referred)) {
-        set_name(referred, names[i]);
+        set_name(referred, names_[i]);
       }
-      set_name(component, names[i]);
+      set_name(component, names_[i]);
     }
     tool->UpdateAssemblies();
   }
-  const std::string file_name_token = placeholder("FILE", 0);
-  strings[file_name_token] = std::string(file_name.data(), file_name.size());
-
   DESTEP_Parameters params;
   params.WriteSchema = DESTEP_Parameters::WriteMode_StepSchema_AP214IS;
   params.WriteUnit = UnitsMethods_LengthUnit_Millimeter;
@@ -335,7 +269,7 @@ std::unique_ptr<StepOut> StepWriter::write(rust::Str assembly, rust::Str file_na
       link->SetId(new TCollection_HAsciiString(std::to_string(++links).c_str()));
     }
   }
-  write_header(model, file_name_token);
+  write_header(model, std::string(file_name.data(), file_name.size()));
 
   // The writer's check list: what it failed to transfer, but a face left out, and, as
   // diagnostics, what it warned of (it warns of what it corrects as it writes: "Direction of
@@ -445,7 +379,7 @@ std::unique_ptr<StepOut> StepWriter::write(rust::Str assembly, rust::Str file_na
   if (writer.WriteStream(stream) != IFSelect_RetDone) {
     throw StdFail_NotDone("OCCT's STEP writer couldn't write the file");
   }
-  const std::string text = spliced(stream.str(), strings);
+  const std::string text = stream.str();
   out->bytes_.assign(text.begin(), text.end());
   return out;
 }

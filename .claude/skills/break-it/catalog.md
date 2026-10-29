@@ -17,6 +17,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Two rules composed into a third (a direction within 4ε of unit length times a length up to the limit, then checked as a vector at most the limit): the product lands a few ulps past it and is refused naming a parameter the caller never sent; search the boundary with `next_up`/`next_down`
 - Parallel tests by an exact zero (a cross product `== 0.0`) beside others at a rounded tolerance (an angle of 0 at the nanodegree): two axes an ulp from parallel are taken as skew and their distance across the cross product is 0 (coplanar lines that cross 5e16 mm away); end one sketch line of a revolve's axis an ulp off
 - Refusals written as `change <= k * before`: NaN makes every comparison false, so the refusal is skipped; an infinite result or a negative (inverted) base passes too
+- Finite inputs whose intermediate products overflow into NaN (a projection's `1e308·32 − 1e308·32`), then guarded by `off > tol`: the NaN passes the guard, and a later step refuses it naming the wrong parameter and nothing, or worse; feed `[1e308, -1e308]` and `[-f64::MAX, f64::MAX]` to every closest-point check
+- Distances by `hypot` from a centre to a finite pick past ~1.3e308 on a diagonal: ∞, and a projection scaled by r / ∞ lands on the centre, its angle atan2(0, 0) = 0; and a NaN place along a curve (∞ − ∞) finds no cut either side, so the curve is "removed whole" as Ok
 - Angles from `atan2` at a signed zero (a point at its centre's left with y = −0 gives −π, +0 gives π): a request whose points are placed with zeros as 0 still differs by a turn, and the kernel's bytes with it
 - One rule computed twice, by the core and again by a worker (a sliver's |area| ≤ tol × perimeter about different first points, sqrt against hypot): bisect a turned thin strip's width to the core's boundary and send it; a shoelace sum of coordinates ~10 cancels to ~1e-8 relative
 - Relative no-op thresholds on large parts (a change of at most 1e-9 × the base's volume is "nothing"): a 4 × 2 mm hole through a 200 m block removes 1.6 litres and is refused, the message claiming the volumes equal
@@ -24,6 +26,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Two results compared by their coordinates' bits where the same module elsewhere takes -0 as 0 (joining nodes, writing f32): a node at -0 in one and 0 in the other is called a different result
 - Fixed decimals presented as a relative precision (a volume to 6 decimals, "precise to a relative 1e-9"): the smallest solid the gate admits (a 1 µm cube, 1e-9 mm³) reads as 0 mm³, and everything under 500 mm³ is held to less than promised; push the gate's smallest values through every rounded output
 - Directions a request gives that are valid but tiny or huge (1e-160, 1e-200, 1e200, `f64::MAX`), used without scaling: their squares underflow to subnormals (an angle off by thousandths of a degree) or to 0, or overflow to infinity, so a direction is refused as zero or answered wrong; scale by the largest component first
+
+- A point rotated about a centre far from the origin (5e5 mm) on a radius just above the floor (1.0000001e-7): the rounded coordinates move the radius by an ulp of the coordinate, a thousandth of the radius, below the floor; and turns of a few nanodegrees that leave the point the same bit for bit, taken as an edit that changed something
 
 ## Sketch geometry
 
@@ -44,6 +48,21 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Checks that predict FreeCAD's joining of ends from the sketch's points: FreeCAD joins its edges' vertices, and a line's end vertex is `start + dir · length` (GC_MakeSegment's trimmed line), ulps from the `to` point, so within a few ulps of 1e-7 the verdict flips both ways (5 in 600 random lines drawn within 5e-12 of it); build each in FreeCAD and count `Shape.Vertexes`
 - k ends at one place reported a pair at a time: k(k − 1)/2 warnings where FreeCAD's missing-coincidence analysis (`SketchAnalysis::getMissingCoincidences`) gives k − 1, crowding later features' out of the first hundred
 - A hub where hundreds of curves meet, near another point: a report about the two points that names every curve at each puts all of them in `elements`, where the contract lists the first hundred and counts the rest
+- Sketch edits that re-point references (a merge of points; split and trim later) refusing only the gate rules they thought of: a re-pointed `on`, `midpoint`, `point_line_distance`, or `symmetric` lands on its curve's own point, a `tangent_on`'s `at` becomes an end of its `b`, an `on` lands on a tangent curve's end; build random gated sketches, edit them, and gate every `Ok`
+- Edits that convert a constraint into a form the solver counts as more (an edge `tangent` made a `tangent_at`, one fixed angle more): a sketch at exactly the gate's values limit (10,000; pad with driving dimensions) gates before the edit and not after; convert several at once, as a merge at a hub does
+- Edits that used to refuse a case wholesale and now convert it (a merge's edge tangent at the shared end): the inputs that refusal hid reach by-value rules the edit never repeats (an arc's end merged onto its centre's place, or its other end's; a line's onto its other end's); gate every newly Ok input, with coordinates placed on each other's points
+- Edits that substitute an existing point for a computed one within the tolerance (a split's cut taken by a point held `on` the curve): the checks run on the computed point, the result is built from the substituted one, which can be within the tolerance of an end, or of the other cut, that the computed one cleared; place the held point between the cut and the end, each 1e-7 apart
+- Constraint forms whose direction is relative to each curve's start or end (`tangent_on`'s "a's direction leaving at against b's own", `tangent_at`'s "into at along a, on along b"), converted one to the other by an edit: a piece that starts at the point where the original ran through flips the meaning; compare the solver's sent angle before and after for every carried tangency (a circle split at a tangency given first)
+- Points an edit makes a curve's own end (an `on` point made the split point): every form that may not name a curve's own point (`point_line_distance`, a reference one of 0 included; `symmetric` about the line) must go with the `on` or be refused, not be carried onto the piece
+- Batches of new members checked by gating the sketch they make: a rule between two members (an edge `tangent` beside an `on` of one curve's end onto the other) fires at whichever is checked second, so with the tangent in the sketch the refusal names its untouched member, not the batch's; give each half of every cross-member rule from the batch, the other from the sketch
+- Sketch-wide counts filed under one fixed list (every values count at `points`): reach the limit through another kind alone (driving dimensions) and read the parameter
+- A round's own centre projected onto it (a projection that keeps a point at the centre where it is): a radius line's or pie slice's end at the centre is "an end on the curve" at distance 0, a cut at atan2(0, 0) = 0, and the trimmed arc ends at its centre; give every closest-point or cut search on a round a line from its centre
+- A pick exactly at one of a closed curve's cuts: the nearest cut behind and the nearest ahead are that one cut, 0 away each, so "fewer than two distinct cuts" removes the whole circle (FreeCAD 1.1.3 keeps the arc behind it); pick each cut's exact coordinates
+- Two cuts at one place, one an end held on the curve and one another cutter's crossing, ordered by cutter ID: "share the held end" holds from one side and not the mirror's; draw the T both ways and pick either side
+- Arcs whose end the gate takes off their circle (the solve's to mend): a "cut at the end" tested by distance to the stored end misses a cut at the end's angle 2e-7 inward, and the piece left has no sweep; test ends in the curve's parameter too
+- A finder and its consumer that each decide "on the carrier within the tolerance" their own way (a next crossing measured off an arc's circle from its start by √(dx² + dy²), then checked from the moving end by `hypot`; a line projected from one end, then from the other): points the finder offers 1e-7 off are refused an ulp past it, and an arc whose end isn't on its start's circle (the gate leaves that to the solve) has every offer refused; feed every answer to its consumer in a proptest biased to the tolerance
+- Near-tangent contacts reported at the perpendicular's foot: a line that joins an arc at a shared point within g of tangent has its foot √(2rg) from the joint (4.5 µm at g = 1e-12, r = 10), so "the next curve past the end" is the curve it already joins, microns on
+- Collinear neighbours as crossings: a line chained straight into another (a shared end) is offered the other's far end, an overlap no edit can take
 
 ## Sketch solver
 
@@ -71,6 +90,13 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A save's answer against its load's, whole: solve, write through the file, read, solve again, and compare Ok-ness, bits, and the redundant constraints named; an answer's outcome depends on where it was diagnosed, not only its values (a solution Ok from the drawing that PlaneGCS calls conflicting from itself), and a "solve again from the solution" that starts from the solver's values rather than what a load derives from the file (an arc's radius and angles from its points) isn't a load
 - Redundancies that agree held by an angle at micrometre scale: the solver's absolute convergence on lengths (1e-10) is a relative 1e-8 on a 1.6 µm side, past a scale-free angle tolerance
 - Tolerances taken over parts that the dropped row itself joins: a redundant row bridging two rigid, linearly held points far apart gets the bridged box's extent though PlaneGCS solved each apart exactly (5 nm kept at 10 m, refused at 1 mm); and per-part windows each recomputed over every constraint (512 parts × 9,000 rows: 0.4 s a read in release, 13× one part's)
+- Anchors a drag takes once and adds to every later cursor (an edge's press, its offset to the line's midpoint): unchecked at begin, a NaN or out-of-reach press opens a drag whose every move is refused naming `to`; and the shifted cursor checked against reach where only the result should be (a line whose ends' x are held, pressed 5e5 from its midpoint, moved straight up)
+- Drag frames that pass the worker's build check but not the next solve's system check (a free circle's centre dragged past its point-on-circle, or that point across the centre: radius 9e-16, the point exactly on the centre): the drag's end solves from the frame and is refused in the solver's indices; feed every Success frame to `SketchSystem::check`
+- A drag released exactly where it began (a click): the begin state meets every pin, but SQP still steps on float residuals (an arc ending at angle π, sin π ≠ 0) and the end rewrites coordinates by 1e-17; compare the end of a zero-length drag with the file, bit for bit
+
+- A drag whose frame moves more than points (a circle's radius through an `on`, a reference dimension measured again): a list of what changed built by comparing points alone misses them; and a drag of a point its constraints hold completely, which PlaneGCS answers with Success and nothing moved (FreeCAD's extend reports success too)
+- Rules that take two halves of one answer apart (a solve's diagnosis and its outcome): hand over a pair that disagree (a solution beside a listed conflict) and check every invariant the rules promise still holds
+- A state rule keyed on a constraint's kind (a dimension over-defines, a relation doesn't) fed by a solver whose redundancy contest ignores kinds: a dependent group of a relation and a dimension, in both tag orders, and the solver naming a third constraint more popular than both (a perpendicular and a 90° angle at one corner make PlaneGCS name the corner's vertical)
 
 ## Features
 
@@ -134,6 +160,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Two features with the same display name
 - Features that produce zero faces or an empty result
 - Long undo/redo sequences mixed with recomputes
+- State kept "the first time" inside a transaction (the first edit that mends text that didn't read, kept as its mend): undo back past it and edit otherwise, and the stale first state still decides what the new edits reach; compare the commit with the same edits made without the undone one
 - References by stale names after an upstream edit
 - Ambiguous (`~n`) names that the next feature keeps unchanged: a "duplicated" set filled only by one map's own collisions forgets them, so the pair is unmarked downstream; check `is_duplicated` one feature later
 - Element number 0 in a name (`k7f2qx3m.Face0`): a map that answers for any number of a kind resolves it, and a bound of `index <= count` lets it through; elements count from 1
@@ -144,6 +171,13 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Elements a boolean keeps whole (a pin wholly inside a block: the void's rim is the pin's circle) under the boolean retyped (cut to common) or its operands swapped: a rule about which side an operation keeps that's applied only to modified elements lets the kept one keep its bare name in both solids, and a fillet of the void's concave rim silently rounds the pin's convex one; check where the fillet takes material
 - Examples an error message gives ("as `m3tq8v0z.cut.Edge1`"): feed each back through the same gate; an example in a form the gate refuses (an operation's element by its number) sends an agent from one refusal to another
 - Advice that names an element as a feature usually makes it (a sweep's start edge, `M`) given whatever the extent: a symmetric or reversed through pocket starts outside its base and keeps no start edge; follow the advice on every extent
+- Timeline edits that keep every feature in its own chain but take a boolean from between a tool's features and a later feature naming the tool's elements (a fuse moved past, or removed under, a fillet of the tool's edge): the name says only the tool, so a "names its elements" rule lets it through, and the rebuild breaks the reference
+- Timeline edits checked one way and not the other: move a tool chain's last feature back up its chain, then try to move it back; the inverse of an allowed move can be refused
+- Edits whose results are diffed against the document before by a scan per feature (what each rewired, each feature's consumer, each candidate's consumer): quadratic in the timeline; time one edit of a document at the size limit against the gate's time for it
+- Refusals that list every candidate (every earlier solid nothing consumes): 20,000 boxes give a 20,000-entry error where others list five or the first hundred
+- Per-feature views of a model (a timeline's health and counts) beside the document-wide `check`: compare them under an open transaction (drift `check` excepts), with a kernel fault on only a feature's measure, and for a feature blocked by both a fault and a real failure, in each operand order
+- A read answered of the session's newest document while an older published model is the one read (a published read after a change the gate refuses, or before the new revision's rebuild): the response's model block (its revision, its fault) can name a model the answer doesn't mark by, and `check` of the same published model counts other problems; read both models first and last after every edit, change on disk, undo, and rollback, and compare each answer's own revision and model with the response's
+- Functions over a document that take `&Document`, not the gate's `Checked`: a feature that is its own base is its own consumer, and a walk down the chain from it starts past the end of the timeline without it
 
 ## Files
 
@@ -172,6 +206,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Names in exported text formats whose writer wraps long strings (OCCT's STEP writer breaks a string past 72 columns at a space, else a `\`, else a `_`, else anywhere, and its reader decodes `\X2\` runs and `''` pairs before it drops the line ends): 40 `ü` or 100 `'` read back otherwise in FreeCAD; read every exported name back through a real consumer, not the writer's bytes
 - Apostrophes before `,` or `)` in a STEP string (`'Bracket ''A'', left'`): OCCT's lexer ends a string at an apostrophe followed by either, so the name is cut short or the entity misread, from FreeCAD's own export too
 - Writers quadratic in a string's length (OCCT's STEP writer copies the rest of a long string at each 72-column wrap): a 4 MiB name takes 36 s, an 8 MiB one runs past the worker's 60 s
+- A size limit summed from parts that leave a separator or closing out (each feature's `[\n` or `,\n`, not the `\n  ]\n}\n` after the last): a whole 1 to 7 bytes past the limit passes; build a document exactly 1 and 7 bytes past it
+- A file classified by a `stat` then read by an `open` (gone, or its bytes): a file deleted between the two reads as unreadable, not gone; churn remove-and-write on another thread while polling, which hits it within milliseconds
 
 ## Command line
 
@@ -203,6 +239,10 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - JSON-RPC frames refused for a member given twice (two `params`, two `jsonrpc`): answered with a null ID though the one `id` was readable, so the client waits on its request forever
 - IDs, progress tokens, and cancels' `requestId`s that are valid JSON strings but no Unicode (`"\ud800"`): a decoder that refuses them calls the string "neither a string nor a number"
 - Every JSON-RPC refusal path (params, `_meta`, a progress token, not just the tool's name) checked for a suggestion, not only a message and a parameter
+- A targeted request checked after a generic emptiness test (an `undo` or `redo` `to` a revision, on a side with nothing left): the session's own revision, or one the bound dropped, is answered "nothing to undo", never naming `to`; send each `to` at the stack's two ends
+- Lists checked for repeats by scanning the entries before each (`list[..i].contains(x)`): 200,000 distinct IDs (2 MB of a 64 MiB request) take minutes; time a long list of distinct members, not only of repeats
+- Edit requests with no size bound of their own, checked by a gate whose size limits come last: a batch far past the solver's limit runs every rule first, a quadratic one included (each edge tangent scans every `on`: 80,000 constraints, about 43 s in a debug build); time a batch eight times the limit
+- Helpers shared between commands that word an error with one command's name ("the session closed before the render finished", "render it there"): reach each shared failure path from the other command and read its words
 
 ## Kernel worker and IPC
 
@@ -242,16 +282,25 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A list from a worker or OCCT deduplicated with `Vec::contains`: 200,000 distinct entries, 2.4 MB of a 512 MiB frame, are 2·10^10 comparisons; time it, and give exactly one more than its words name ("and 1 more pair", not "pairs"), and none at all
 - Process-wide statics in OCCT's writers (`static Standard_Integer id` for each STEP NEXT_ASSEMBLY_USAGE_OCCURRENCE): a determinism test of one-part files never reaches them; compare an assembly's bytes in a fresh worker and in one that wrote an assembly before
 - Checks that count entities written against the topology (STEP face surfaces against `TopExp::MapShapes` faces): a face two solids of a compound share is written once a solid, so an exact count refuses a whole file as missing faces
+- A refusal from a worker that keeps its session (a drag's frame solved out of reach) taken by the client as the worker failing: send one refused frame, then a good one; the client mustn't end what the worker still holds
+- A worker killed while idle mid-session (a drag): a client that readies (restarts) its worker before each request sends the next to a fresh worker with no session, and the crash comes back as the worker's "no session" `invalid_input`
+- A session's replies (a drag's frames, its closing solve) passed up unchecked where one-shot replies are checked: forge a frame or solution of the wrong length, a fixed value moved, NaN, a value out of reach
+- A resource counted taken (a slot "started", so free) before the thread or process that backs it exists, by a path other than the one that grows on demand: a request queued in between starts nothing, and if the start then fails the count is put back without growing again or failing the waiters; run it with threads exhausted (`pool_slot_spawn_fails`) and sweep the request across the start with a spin lead
 
 ## Recompute and scheduling
 
 - Generation counters at their end (a kernel already at `u64::MAX`): a `+ 1` panics (or wraps to 0 in release, so every request is superseded), and a `saturating_add` leaves the generation where it was, so a cancel cancels nothing
 - A panic under one of several threads that count themselves running under a shared condvar (a kernel bug in `submit`, say): the others wait for it forever, the scope never joins, and the handling for a dead thread is never reached; wrap a test kernel that panics on one op
+- A panic on a session's own thread (a drag's, under a solver call): every handle waiting on its condvar for an outcome (a move's ticket, the end, the drop) waits forever; and a handle whose `wait(&self)` takes the outcome out blocks forever on a second wait
 - A naive sequential evaluator as the oracle: random timelines with value-based refusals (kept and not kept), several edits in a row, comparing every feature's outcome, the bodies, which keys are equal, and exactly which steps each edit ran
 - Results taken from the cache or memory without their inputs' (an entry lost, a subdirectory that's a link): a step that reads more than its inputs (a fillet naming its base's elements from the whole lineage) runs before they're rebuilt
 - A superseded recompute that ends after the newer one: both keep their results by key, the last wins, and the older one's copy (its measure superseded, so unmeasured) overwrites the newer's measured or refused one; hold the older one's requests, start the newer, and loop a few hundred rounds, since which keeps last is a race
 - A measure made of several requests (a summary, then batches of a description): refuse, crash, supersede, or cancel at a later batch after the earlier ones came back; nothing partial may be published, kept in memory, or written, and the retry starts from the first request
 - Features alike in every value but their IDs (two identical boxes each pocketed alike, or a refused feature deleted and re-added under a new ID): the deduplicated step, or the refusal kept by its key, carries the first feature's words, so the second is told another feature and base failed
+- A count of work "on its way" that callers wait on (`warming`), set from a caller's unbounded argument: `usize::MAX` with starts that fail keeps every waiter waiting for ever, and the count plus what's idle overflows on the next call
+- A watch that drops findings against a superseded counter, told of the session's own write after it lands or before: a comparison that reads the new bytes and ends between the write and `held` (or reads the old ones between `held` and the write) is kept as changed; gate a stand-in reader and try both orders
+- A save bracketed for a watch, ended every way a save ends (a conflict, a cancel before it writes, a directory that won't take the file, a file it can't read to check): after each, the finding goes back to what's on disk, never stuck unknown and never the session's own text where nothing was written; then a save that works is its own
+- A background job's "running" flag cleared only after a callback returns (a reader, a solver): a callback that panics leaves it set, and no job ever starts again
 
 ## Oracles and comparisons
 
@@ -299,6 +348,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A walk up a missing path that spends the links' budget (40) on each directory too: past ~40 missing directories below an outside one, whether that one exists decides "outside" against "can't be reached", an oracle for what exists outside the workspace
 - Paths to make ending in `/` or `/.`: `Path::file_name` skips both, so `brand/.` makes a file `brand`, which `open(2)` of the same path never would
 - Paths quoted whole in errors: `../` and a megabyte of `./` is a path under a request's limit whose "outside the workspace" refusal is a megabyte
+- A worker's reply kept in a shared cache before the code that reads it checks it (a mesh of more faces than the solid's element map): one bad reply refuses every later read from the cache, the kernel well again; forge it once with `answer_instead`, then read again with the kernel well
+- Answers that report what the cache knows (a floor recorded, an entry kept) rather than what the request asks: a value exactly at a boundary the cache learns later (a floor that's exactly a power of two, met at its own level) answers one request two ways by another session's history; read on a fresh cache, then after other reads
 
 ## Rendering
 
@@ -311,3 +362,4 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A body far deeper along a named view than across it (a 1 x 500,000 x 1 rod seen end-on): a view fitted to its extent across is under the renderer's least zoom for the scene's reach, and a check meant for given cameras answers the core's own view as Silico's bug
 - A body built but never measured (its summary refused or failed): code that culls, fits, or checks the eye by the body's box leaves it out of every view, so a camera on it draws nothing as Ok and an eye inside it is taken
 - A value the command normalizes, passed back as answered (a camera's up already of unit length and perpendicular): renormalizing in f64 isn't a fixed point, so the answer changes in its last bits every round trip
+- Worker meshes of fewer faces or edges than the solid (counts the model already holds in its summary): answered Ok, named short, with nothing saying the rest are missing

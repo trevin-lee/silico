@@ -12,7 +12,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use silico_core::command::elements::{
-    AxisToken, ElementType, Entry, Facing, MeasureName, Order, Query, entries, query,
+    AxisToken, ElementType, Entry, Facing, MeasureName, Order, Quantity, Query, Range, entries,
+    query,
 };
 use silico_core::document::{Angle, FeatureId, Length};
 use silico_core::kernel::ElementKind;
@@ -421,4 +422,74 @@ fn an_order_by_radius_across_bodies_keeps_only_the_faces_that_have_one() {
         .map(|e| e.name.to_string())
         .collect();
     assert_eq!(names, ["bbbbbbbb.box.Face1", "bbbbbbbb.box.Face2"]);
+}
+
+#[test]
+fn tori_are_ordered_and_kept_by_their_major_and_minor_radii_each() {
+    // A torus 10 and 2 and a torus 6 and 3: by major radius, largest first, 10 then 6; by
+    // minor radius, 3 then 2, the other way round; a major radius from 9 to 11 keeps the
+    // first alone, a minor radius from 2.5 to 4 the second.
+    let engine = engine();
+    let model = rebuilt(
+        &engine,
+        &[
+            r#"{"id": "tttttttt", "type": "torus", "v": 1, "name": "Torus", "position": [0, 0, 0], "radius1": 10, "radius2": 2}"#.to_owned(),
+            r#"{"id": "vvvvvvvv", "type": "torus", "v": 1, "name": "Torus001", "position": [100, 0, 0], "radius1": 6, "radius2": 3}"#.to_owned(),
+        ],
+    );
+    let mm = |v: f64| Some(Quantity::Length(Length::from_nm((v * 1e6) as i64)));
+    let ask = |measures: Vec<Range>, order: Option<MeasureName>| {
+        let found = query(
+            &model,
+            &Query {
+                measures,
+                order: order.map(|by| Order {
+                    by,
+                    descending: true,
+                }),
+                ..Query::of(ElementKind::Face, 1000)
+            },
+        )
+        .unwrap();
+        found
+            .entries
+            .iter()
+            .map(|e| {
+                (
+                    e.feature.as_str().to_owned(),
+                    e.major_radius.unwrap().nm(),
+                    e.minor_radius.unwrap().nm(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let first = ("tttttttt".to_owned(), 10_000_000, 2_000_000);
+    let second = ("vvvvvvvv".to_owned(), 6_000_000, 3_000_000);
+    assert_eq!(
+        ask(Vec::new(), Some(MeasureName::MajorRadius)),
+        [first.clone(), second.clone()]
+    );
+    assert_eq!(
+        ask(Vec::new(), Some(MeasureName::MinorRadius)),
+        [second.clone(), first.clone()]
+    );
+    let range = |measure, at_least, at_most| Range {
+        measure,
+        at_least,
+        at_most,
+    };
+    assert_eq!(
+        ask(
+            vec![range(MeasureName::MajorRadius, mm(9.0), mm(11.0))],
+            None
+        ),
+        [first]
+    );
+    assert_eq!(
+        ask(
+            vec![range(MeasureName::MinorRadius, mm(2.5), mm(4.0))],
+            None
+        ),
+        [second]
+    );
 }
