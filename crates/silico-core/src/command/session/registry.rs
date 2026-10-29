@@ -24,6 +24,7 @@ use super::{
 use crate::cache::Cache;
 use crate::command::edit::FeatureIds;
 use crate::command::logs::LogBuffer;
+use crate::disk::DiskWatch;
 use crate::document::json::MAX_INPUT_LEN;
 use crate::document::{self, Document, FormatVersion, NamingScheme, Units};
 use crate::file::{self, Unresolved, Workspace};
@@ -59,6 +60,9 @@ pub(super) struct Registry<P: Clients + 'static> {
     /// ([`Sessions::in_workspace`](super::Sessions::in_workspace)), fixed for their life.
     /// None for the CLI's, whose paths resolve as the system resolves them.
     pub(super) workspace: Option<Workspace>,
+    /// The least time between two comparisons of a session's file on disk
+    /// ([`DISK_CHECK_INTERVAL`](crate::disk::DISK_CHECK_INTERVAL), but in this crate's tests).
+    pub(super) disk_interval: std::time::Duration,
 }
 
 /// A file as the system knows it, whatever path reaches it: its device and inode.
@@ -212,6 +216,14 @@ pub(super) fn start<P: Clients + 'static>(
         );
         // From here it opens, unless it was cancelled first (the file it made goes as above).
         ticket.settle()?;
+        // Against the bytes it read (or made), at the path they were read from.
+        let disk = DiskWatch::new(
+            held.resolved.clone(),
+            registry.workspace.clone(),
+            Arc::clone(&held.bytes),
+            registry.disk_interval,
+            None,
+        );
         let session = Arc::new(Session {
             id,
             workspace: registry.workspace.clone(),
@@ -234,10 +246,13 @@ pub(super) fn start<P: Clients + 'static>(
             command: Mutex::new(None),
             newest,
             logs,
+            disk,
             #[cfg(test)]
             gate: super::Gate::default(),
             #[cfg(test)]
             settled: super::Gate::default(),
+            #[cfg(test)]
+            writing: super::Gate::default(),
         });
         // Open from here: the commands sent while it opened are in its queue, ahead of any
         // sent after, and its published reads sent then start now, in the order sent,
