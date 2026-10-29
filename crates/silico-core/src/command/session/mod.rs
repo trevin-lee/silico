@@ -187,10 +187,9 @@ struct Session<C: Kernel + 'static> {
     /// crate's tests only.
     #[cfg(test)]
     settled: Gate,
-    /// Where a save waits once its file is written, before the session takes what it wrote,
-    /// in this crate's tests only.
+    /// Where a save waits before it writes its file, in this crate's tests only.
     #[cfg(test)]
-    written: Gate,
+    writing: Gate,
 }
 
 /// Where a file a command writes may go ([`Sessions::write_rules`]).

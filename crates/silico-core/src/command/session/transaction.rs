@@ -1098,10 +1098,10 @@ impl<C: Kernel + 'static> Session<C> {
             given: Path::new(path),
         });
         let saving = self.disk.saving();
-        let written = file::save_within(resolved, bytes, text, within);
         #[cfg(test)]
-        self.written.pass();
-        written.map_err(|unsaved| self.unsaved(path, unsaved, saver))?;
+        self.writing.pass();
+        file::save_within(resolved, bytes, text, within)
+            .map_err(|unsaved| self.unsaved(path, unsaved, saver))?;
         Ok(saving)
     }
 

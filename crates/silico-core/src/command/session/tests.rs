@@ -76,7 +76,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
         ),
         gate: Gate::default(),
         settled: Gate::default(),
-        written: Gate::default(),
+        writing: Gate::default(),
     });
     (session, jobs)
 }
@@ -4074,12 +4074,12 @@ fn a_sessions_own_save_is_unknown_on_disk_from_before_its_file_is_written() {
     f.edit(&longer());
     let (started, was_started) = mpsc::channel();
     let (through, wait) = mpsc::channel();
-    f.session().written.shut(started, wait);
+    f.session().writing.shut(started, wait);
     let committing = f.sessions.commit(&f.id);
     was_started.recv_timeout(WAIT).unwrap();
-    // The file holds the commit's text and the session doesn't yet: no finding, and no
-    // comparison starts to find one.
-    assert_ne!(f.file(), STORED);
+    // The file still as the session opened it, the save about to write it: already no
+    // finding, and no comparison starts to find one, so none reads it mid-save.
+    assert_eq!(f.file(), STORED);
     for _ in 0..20 {
         assert_eq!(f.sessions.disk(&f.id).unwrap(), None);
         std::thread::sleep(Duration::from_millis(1));
