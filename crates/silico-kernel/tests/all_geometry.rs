@@ -101,6 +101,8 @@ mod bridge;
 mod chamfer;
 #[path = "classify.rs"]
 mod classify;
+#[path = "copies.rs"]
+mod copies;
 #[path = "describe.rs"]
 mod describe;
 #[path = "distance.rs"]
