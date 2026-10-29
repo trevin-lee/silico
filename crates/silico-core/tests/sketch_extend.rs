@@ -85,7 +85,10 @@ fn said(error: &Error) -> (&str, Option<&str>, Vec<&str>) {
 /// The begin state with the dragged point at `xy`: a frame the fake answers instead.
 fn frame_at(begin: &DragBegin, xy: [f64; 2]) -> Moved {
     let mut values = begin.system.values.clone();
-    let geometry = begin.point.geometry();
+    let silico_protocol::Dragged::Point(point) = begin.dragged else {
+        panic!("an extend drags a point")
+    };
+    let geometry = point.geometry();
     match begin.system.geometry[geometry.0 as usize] {
         SketchGeometry::Point(PointValues { x, y }) => {
             (values[x.0 as usize], values[y.0 as usize]) = (xy[0], xy[1]);

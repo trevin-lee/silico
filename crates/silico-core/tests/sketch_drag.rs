@@ -112,7 +112,10 @@ fn a_drag_of_a_sketch_point_moves_it_by_its_id_and_reads_every_point_of_its_part
     let Some(DragCall::Begin(sent)) = fake.drag_calls().first().cloned() else {
         panic!("{:?}", fake.drag_calls())
     };
-    assert_eq!(sent.point, PointOf::Point(silico_protocol::Geometry(5)));
+    assert_eq!(
+        sent.dragged,
+        PointOf::Point(silico_protocol::Geometry(5)).into()
+    );
     // (62.5, 7), nudged by a thousandth of (60, 5).
     let frame = drag.move_to([62.5, 7.0]).unwrap().wait().unwrap();
     let want = [62.5 + 60.0 / 1000.0, 7.0 + 5.0 / 1000.0];

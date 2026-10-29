@@ -2784,16 +2784,25 @@ impl FakeSketches {
     }
 
     /// A move of `begin`'s drag to `to`, as the fake answers one: from the begin state
-    /// alone, the dragged point at the cursor nudged by a thousandth of where it began, so
-    /// a drag begun again from a later frame answers otherwise; every other value as it
-    /// began.
+    /// alone, each point a pin holds to the cursor (the dragged point; a line's ends) at the
+    /// cursor and its offset, nudged by a thousandth of where it began, so a drag begun again
+    /// from a later frame answers otherwise; every other value as it began (a target on a
+    /// curve moves nothing).
     pub fn dragged(begin: &DragBegin, to: [f64; 2]) -> Moved {
         let mut values = begin.system.values.clone();
-        if let Some(p) = begin.system.point_values(begin.point) {
+        for pin in begin.pins() {
+            let (silico_protocol::PinAt::Point(point), Some(follow)) = (pin.at, pin.follows) else {
+                continue;
+            };
+            let Some(p) = begin.system.point_values(point) else {
+                continue;
+            };
             let (x, y) = (p.x.0 as usize, p.y.0 as usize);
-            if let (Some(&bx), Some(&by)) = (values.get(x), values.get(y)) {
-                values[x] = to[0] + bx / 1000.0;
-                values[y] = to[1] + by / 1000.0;
+            if let (Some(&bx), Some(&by)) = (begin.system.values.get(x), begin.system.values.get(y))
+            {
+                let [tx, ty] = follow.at(to);
+                values[x] = tx + bx / 1000.0;
+                values[y] = ty + by / 1000.0;
             }
         }
         Moved {

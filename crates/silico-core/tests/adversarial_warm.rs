@@ -43,7 +43,7 @@ fn two_points() -> DragBegin {
             constraints: vec![],
             algorithms: vec![Algorithm::DogLeg],
         },
-        point: PointOf::Point(Geometry(0)),
+        dragged: silico_protocol::Dragged::Point(PointOf::Point(Geometry(0))),
     }
 }
 
