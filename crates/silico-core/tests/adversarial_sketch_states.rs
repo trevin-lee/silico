@@ -8,8 +8,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::fixture;
+use super::within;
 
 use fixture::{arc, circle, line, point};
+use within::within;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -87,6 +89,96 @@ fn placed_line() -> Sketch {
             c(r#"{"id": "k0000003", "type": "horizontal", "line": "n0000001"}"#),
         ],
     ))
+}
+
+/// The gate's most constraints: one line given `horizontal` 10,000 times, `k0000000` to
+/// `k0009999`, tags 1 to 10,000.
+fn ten_thousand_horizontals() -> Sketch {
+    let mut constraints: Vec<String> = Vec::new();
+    for i in 0..10_000 {
+        constraints.push(format!(
+            r#"{{"id": "k{i:07}", "type": "horizontal", "line": "n0000001"}}"#
+        ));
+    }
+    gated(&text(
+        &[point("p0000001", 0.0, 0.0), point("p0000002", 10.0, 0.0)],
+        &[line("n0000001", "p0000001", "p0000002")],
+        &[],
+        &[],
+        &constraints,
+    ))
+}
+
+/// The reply of
+/// [`a_reply_naming_a_million_tags_in_its_dependencies_is_checked_read_and_stated_promptly`]:
+/// its groups, the tags in each, and the first tag of its first group.
+const GROUPS: u32 = 1_000;
+const GROUP_TAGS: u32 = 1_001;
+const FIRST_TAG: u32 = 8_001;
+
+#[test]
+fn a_reply_naming_a_million_tags_in_its_dependencies_is_checked_read_and_stated_promptly() {
+    // Robustness review, round 1: the read found each group's tags among the rows sent by a
+    // scan, for every tag, so a reply PlaneGCS's bounds allow, 9,000 groups of 1,001 tags
+    // on the gate's 10,000 constraints, took 12 minutes in the core, after the worker's
+    // timeout. Here the ten thousand horizontals and 1,000 groups of 1,001 tags, group i the
+    // tags from 8,001 + i (each sorted, the groups increasing, every tag sent: a reply
+    // check_reply takes), 1,001,000 tags, each near the end of the rows a scan walks; the
+    // fake calls every horizontal after the first redundant. Checked, read, and stated in
+    // 10 s of CPU (about 1.5 s in a debug build; the scan took more than 10). A smaller
+    // reply than the review's, whose 9,009,000 tags take 13 s of CPU in a debug build even
+    // looked up at once, the work of reading them. By hand: each group names its tags' IDs
+    // (tag t is k{t − 1}), the first k0008000 to k0009000, the last k0008999 to k0009999;
+    // the horizontals are relations, which a dependency doesn't over-define (addendum 4), so
+    // the first reads satisfied, the rest redundant as listed, and with every unknown free
+    // the members and the sketch read under defined, 3 left.
+    let sketch = ten_thousand_horizontals();
+    let translation = Translation::new(&sketch).unwrap();
+    let solved = Solved {
+        dofs: 3,
+        redundant: (2..=10_000).map(Tag).collect(),
+        dependencies: (0..GROUPS)
+            .map(|i| {
+                (FIRST_TAG + i..FIRST_TAG + i + GROUP_TAGS)
+                    .map(Tag)
+                    .collect()
+            })
+            .collect(),
+        free: translation.system.unknowns.clone(),
+        status: SolveStatus::SolvedExceptRedundant,
+        ..FakeSketches::as_sent(&translation.system)
+    };
+    let (read, got) = within(Duration::from_secs(10), move || {
+        translation.check_reply(&solved).unwrap();
+        let read = translation.read_diagnosed(&solved).unwrap();
+        let got = states(&sketch, &read).unwrap();
+        (read, got)
+    });
+    assert!(read.outcome().is_ok(), "{:?}", read.outcome());
+    let named = |from: u32| -> BTreeSet<ElementId> {
+        (from..from + GROUP_TAGS)
+            .map(|i| id(&format!("k{i:07}")))
+            .collect()
+    };
+    let dependencies = &read.diagnosis().dependencies;
+    assert_eq!(dependencies.len(), GROUPS as usize);
+    assert_eq!(dependencies.first(), Some(&named(8_000)));
+    assert_eq!(dependencies.last(), Some(&named(8_999)));
+    assert_eq!(&got.dependencies, dependencies);
+    assert_eq!((got.state, got.dofs), (SketchState::UnderDefined, 3));
+    assert_eq!(got.constraints[&id("k0000000")], Satisfied);
+    assert_eq!(
+        got.constraints
+            .values()
+            .filter(|&&s| s == Redundant)
+            .count(),
+        9_999
+    );
+    assert_eq!(
+        got.points,
+        members(&[("p0000001", Under), ("p0000002", Under)])
+    );
+    assert_eq!(got.lines, members(&[("n0000001", Under)]));
 }
 
 #[test]
@@ -290,19 +382,7 @@ fn ten_thousand_repeated_horizontals_are_diagnosed_and_stated_at_once() {
     // the first satisfied, the rest redundant. A redundant relation over-defines nothing
     // (addendum 2), so the members and the sketch read by the freedom the reply gives: every
     // unknown free, 3 left, both ends, the line, and the sketch under defined.
-    let mut constraints: Vec<String> = Vec::new();
-    for i in 0..10_000 {
-        constraints.push(format!(
-            r#"{{"id": "k{i:07}", "type": "horizontal", "line": "n0000001"}}"#
-        ));
-    }
-    let sketch = gated(&text(
-        &[point("p0000001", 0.0, 0.0), point("p0000002", 10.0, 0.0)],
-        &[line("n0000001", "p0000001", "p0000002")],
-        &[],
-        &[],
-        &constraints,
-    ));
+    let sketch = ten_thousand_horizontals();
     let translation = Translation::new(&sketch).unwrap();
     let solved = Solved {
         dofs: 3,

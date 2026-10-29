@@ -1005,6 +1005,22 @@ pub struct Translation {
     sketch: Sketch,
 }
 
+/// The constraints a translation sent, by tag ([`Translation::sent`]).
+struct Sent<'a>(BTreeMap<Tag, &'a SolverConstraint>);
+
+impl<'a> Sent<'a> {
+    /// The constraint sent tagged `tag`: a reply naming a tag that wasn't is a protocol
+    /// error.
+    fn get(&self, tag: Tag) -> Result<&'a SolverConstraint, Error> {
+        self.0.get(&tag).copied().ok_or_else(|| {
+            Error::new(
+                ErrorCode::ProtocolError,
+                format!("the sketch worker names tag {}, which wasn't sent", tag.0),
+            )
+        })
+    }
+}
+
 /// A line, or an axis, as the solver holds it.
 #[derive(Debug, Clone, Copy)]
 struct Line {
@@ -2028,13 +2044,14 @@ impl Translation {
         let redundant = named(&solved.redundant)?;
         let partially_redundant = named(&solved.partially_redundant)?;
         // Each tag of a group sent: a reference dimension's place has a tag, but no row.
+        let sent = self.sent();
         let dependencies = solved
             .dependencies
             .iter()
             .map(|group| {
                 group
                     .iter()
-                    .map(|&t| self.sent(t).and_then(|_| self.id(t)).cloned())
+                    .map(|&t| sent.get(t).and_then(|_| self.id(t)).cloned())
                     .collect()
             })
             .collect::<Result<BTreeSet<_>, Error>>()?;
@@ -2176,8 +2193,9 @@ impl Translation {
         // The disagreeing row with the largest gap (one that isn't a number the largest),
         // the lowest tag on a tie, and its part's window.
         let mut worst: Option<(Tag, f64, Window)> = None;
+        let sent = self.sent();
         for &tag in &dropped {
-            let c = self.sent(tag)?;
+            let c = sent.get(tag)?;
             let part = parts.of_constraint(c);
             let window = *windows
                 .entry(part)
@@ -2288,18 +2306,17 @@ impl Translation {
         })
     }
 
-    /// The constraint sent tagged `tag`.
-    fn sent(&self, tag: Tag) -> Result<&SolverConstraint, Error> {
-        self.system
-            .constraints
-            .iter()
-            .find(|c| c.tag() == Some(tag))
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorCode::ProtocolError,
-                    format!("the sketch worker names tag {}, which wasn't sent", tag.0),
-                )
-            })
+    /// Each tag sent, with the first constraint sent under it, to look tags up in: built
+    /// once for each read, since a reply may name millions of tags, and a scan of the rows
+    /// for each would take minutes (robustness review).
+    fn sent(&self) -> Sent<'_> {
+        let mut by_tag = BTreeMap::new();
+        for c in &self.system.constraints {
+            if let Some(tag) = c.tag() {
+                by_tag.entry(tag).or_insert(c);
+            }
+        }
+        Sent(by_tag)
     }
 
     /// The points, lines, circles, and arcs `values` can't build, by ID, in order: the
