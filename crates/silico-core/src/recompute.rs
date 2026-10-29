@@ -1078,9 +1078,12 @@ type SolverStarter = Box<dyn FnMut() -> Result<Box<dyn SketchSolver>, Error> + S
 pub struct SketchSolvers(Arc<SharedSolvers>);
 
 struct SharedSolvers {
-    /// The solvers given back, the last given back taken first. Taken alone, or after an
-    /// engine's state or `start`, never before either.
-    idle: Mutex<Vec<Box<dyn SketchSolver>>>,
+    /// The solvers given back, the last given back taken first, and how many a warm start
+    /// is still starting. Taken alone, or after an engine's state or `start`, never before
+    /// either.
+    idle: Mutex<Idle>,
+    /// Told as each solver a warm start started is idle, or failed to start.
+    warmed: Condvar,
     /// Starts another when none is idle. Taken alone, or before `idle`; held across the
     /// start, so engines that find none idle start one at a time.
     start: Mutex<SolverStarter>,
@@ -1113,20 +1116,84 @@ impl SketchSolvers {
 
     fn of(idle: Vec<Box<dyn SketchSolver>>, start: SolverStarter) -> Self {
         SketchSolvers(Arc::new(SharedSolvers {
-            idle: Mutex::new(idle),
+            idle: Mutex::new(Idle {
+                solvers: idle,
+                warming: 0,
+            }),
+            warmed: Condvar::new(),
             start: Mutex::new(start),
         }))
     }
 
-    /// An idle solver, or, with none idle, one started now. The idle list is looked at
-    /// again once the start is this one's: a solver given back while another engine's start
-    /// ran is taken, not one more started.
+    /// Starts solvers, here, until `n` are idle or starting (at most as many as the machine
+    /// has cores, as a kernel pool's workers are), and waits until each has started or
+    /// failed: an app's warm start (M5.0's decision 10), run off its UI thread, so its first
+    /// rebuild needn't wait for a sketch worker to start. A solve that comes while they
+    /// start waits for one, rather than starting another. A start that fails ends the warm
+    /// start, none more tried, and the next solve starts one, as without a warm start.
+    /// Called again with as many idle, it starts none more. How many it started.
+    pub fn warm(&self, n: usize) -> usize {
+        let _span = tracing::info_span!("sketch_solvers_warm", n).entered();
+        let cores = std::thread::available_parallelism().map_or(1, usize::from);
+        let n = n.min(cores.min(crate::pool::MAX_WORKERS));
+        let wanted = {
+            let mut idle = lock(&self.0.idle);
+            let wanted = n.saturating_sub(idle.solvers.len().saturating_add(idle.warming));
+            idle.warming += wanted;
+            wanted
+        };
+        let mut warming = Warming {
+            shared: &self.0,
+            left: wanted,
+        };
+        let mut started = 0;
+        while warming.left > 0 {
+            let result = (*lock(&self.0.start))();
+            let mut idle = lock(&self.0.idle);
+            idle.warming -= 1;
+            warming.left -= 1;
+            match result {
+                Ok(solver) => {
+                    idle.solvers.push(solver);
+                    started += 1;
+                }
+                Err(e) => {
+                    tracing::warn!("a sketch solver started ahead of its solves failed: {e}");
+                    // The rest would fail alike: they're counted off, and a solve waiting
+                    // starts its own.
+                    idle.warming -= warming.left;
+                    warming.left = 0;
+                }
+            }
+            drop(idle);
+            self.0.warmed.notify_all();
+        }
+        tracing::debug!(started, "warmed the sketch solvers");
+        started
+    }
+
+    /// An idle solver, or, with none idle, one a warm start is starting, or one started
+    /// now. The idle list is looked at again once the start is this one's: a solver given
+    /// back while another engine's start ran is taken, not one more started.
     pub(crate) fn take(&self) -> Result<Box<dyn SketchSolver>, Error> {
-        if let Some(solver) = lock(&self.0.idle).pop() {
-            return Ok(solver);
+        {
+            let mut idle = lock(&self.0.idle);
+            loop {
+                if let Some(solver) = idle.solvers.pop() {
+                    return Ok(solver);
+                }
+                if idle.warming == 0 {
+                    break;
+                }
+                idle = self
+                    .0
+                    .warmed
+                    .wait(idle)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
         }
         let mut start = lock(&self.0.start);
-        if let Some(solver) = lock(&self.0.idle).pop() {
+        if let Some(solver) = lock(&self.0.idle).solvers.pop() {
             return Ok(solver);
         }
         let started = (*start)();
@@ -1138,7 +1205,30 @@ impl SketchSolvers {
 
     /// `solver`, idle again.
     pub(crate) fn give_back(&self, solver: Box<dyn SketchSolver>) {
-        lock(&self.0.idle).push(solver);
+        lock(&self.0.idle).solvers.push(solver);
+        self.0.warmed.notify_all();
+    }
+}
+
+/// The solvers given back, and how many a warm start is still starting.
+struct Idle {
+    solvers: Vec<Box<dyn SketchSolver>>,
+    warming: usize,
+}
+
+/// A warm start's count of solvers left to start: those it didn't start (its starter
+/// panicked) are counted off as it unwinds, so a solve waiting for them goes on.
+struct Warming<'a> {
+    shared: &'a SharedSolvers,
+    left: usize,
+}
+
+impl Drop for Warming<'_> {
+    fn drop(&mut self) {
+        if self.left > 0 {
+            lock(&self.shared.idle).warming -= self.left;
+            self.shared.warmed.notify_all();
+        }
     }
 }
 
@@ -4174,6 +4264,18 @@ fn feature_outcome(
 
 #[cfg(test)]
 impl Model {
+    /// This model with feature `id`'s outcome replaced by `outcome`: a test's stand-in for
+    /// outcomes no document reaches on the fake (Silico's own bug naming a base's elements).
+    pub(crate) fn with_outcome(&self, id: &FeatureId, outcome: FeatureOutcome) -> Model {
+        let mut model = self.clone();
+        for (feature, held) in &mut model.features {
+            if feature == id {
+                *held = outcome.clone();
+            }
+        }
+        model
+    }
+
     /// This model with feature `id`'s solid measured as `summary` says, if it built: a
     /// test's stand-in for measures past what a fingerprint holds, which no solid the gate
     /// admits has (a kilometre each way is 1e18 mm³, and a volume holds to 1.7e32).
@@ -5169,6 +5271,159 @@ mod tests {
         ];
         for (step, key) in pinned {
             assert_eq!(step.key().to_string(), key, "{step:?}");
+        }
+    }
+
+    #[test]
+    fn a_broken_outcome_is_marked_in_the_timeline_as_the_check_counts_it() {
+        // From #265's robustness review: an outcome's errors that are kernel faults (Silico's
+        // own bug) are no problems of the document, as the check sets them aside; one that's
+        // all faults is unknown.
+        use crate::timeline::{Excepted, Health, timeline};
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap());
+        let model = published(engine.start(Arc::new(boxes(2, |_| false))));
+        let first = FeatureId::new("b0000000").unwrap();
+        let bug = || Error::new(ErrorCode::Internal, "a base's elements couldn't be named");
+        let broken = || Error::new(ErrorCode::ReferenceBroken, "Edge90 isn't there");
+        for (errors, total, want) in [
+            (vec![bug()], 1, (Health::Unknown, 0)),
+            // One fault, one listed of the document's, and one unlisted.
+            (vec![bug(), broken()], 3, (Health::Error, 2)),
+        ] {
+            let marked = model.with_outcome(&first, FeatureOutcome::Broken { errors, total });
+            let got = timeline(marked.document(), Some(&marked), &Excepted::default());
+            let e = &got.features[0];
+            assert_eq!((e.health, e.problems), want);
+            assert_eq!(
+                got.features.iter().map(|e| e.problems).sum::<u64>(),
+                crate::command::check(&marked).total()
+            );
+        }
+    }
+
+    /// Solvers whose starts are counted, each run by `start` with its number from 0, and
+    /// wait while `gate` is shut.
+    fn counted_starts(
+        start: impl Fn(usize) -> Result<Box<dyn SketchSolver>, Error> + Send + 'static,
+    ) -> (
+        SketchSolvers,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<Gate>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let starts = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new((Mutex::new(true), Condvar::new()));
+        let (count, shut) = (Arc::clone(&starts), Arc::clone(&gate));
+        let solvers = SketchSolvers::starting(move || {
+            let n = count.fetch_add(1, Ordering::SeqCst);
+            let mut closed = lock(&shut.0);
+            while *closed {
+                closed = shut.1.wait(closed).unwrap();
+            }
+            drop(closed);
+            start(n)
+        });
+        (solvers, starts, gate)
+    }
+
+    /// Shut while its flag is set; opened once.
+    type Gate = (Mutex<bool>, Condvar);
+
+    fn open(gate: &Gate) {
+        *lock(&gate.0) = false;
+        gate.1.notify_all();
+    }
+
+    fn fake() -> Result<Box<dyn SketchSolver>, Error> {
+        Ok(Box::new(crate::fake::FakeSketches::new()))
+    }
+
+    /// `solvers.take()` on a thread of its own, within ten seconds.
+    fn taken(solvers: &SketchSolvers) -> Result<Box<dyn SketchSolver>, Error> {
+        let solvers = solvers.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(solvers.take().map(|_| ()));
+        });
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("a take waited past ten seconds")
+            .map(|()| -> Box<dyn SketchSolver> { Box::new(crate::fake::FakeSketches::new()) })
+    }
+
+    #[test]
+    fn a_solve_while_a_warm_start_runs_takes_the_warmed_solver_and_starts_no_other() {
+        use std::sync::atomic::Ordering;
+        let (solvers, starts, gate) = counted_starts(|_| fake());
+        // The warm start, on a thread of its own as an app runs it, held mid-start; a take
+        // now waits for it, rather than starting its own (which the shut gate would hold
+        // too, and count).
+        let warmed = {
+            let solvers = solvers.clone();
+            std::thread::spawn(move || solvers.warm(1))
+        };
+        while starts.load(Ordering::SeqCst) == 0 {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let waiting = {
+            let solvers = solvers.clone();
+            std::thread::spawn(move || solvers.take().is_ok())
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        open(&gate);
+        assert_eq!(warmed.join().unwrap(), 1);
+        assert!(waiting.join().unwrap());
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_warm_start_counts_the_solvers_idle_and_starting() {
+        use std::sync::atomic::Ordering;
+        let (solvers, starts, gate) = counted_starts(|_| fake());
+        open(&gate);
+        solvers.give_back(fake().unwrap());
+        // One idle: one more makes two (on a machine of two cores or more).
+        assert_eq!(solvers.warm(2), 1);
+        // Two idle or starting: none more for two, nor for one.
+        assert_eq!(solvers.warm(2), 0);
+        assert_eq!(solvers.warm(1), 0);
+        assert_eq!(solvers.warm(0), 0);
+        // Both taken without a start of their own.
+        taken(&solvers).unwrap();
+        taken(&solvers).unwrap();
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_warm_start_starts_at_most_as_many_solvers_as_the_machine_has_cores() {
+        // From the tests review: asked for three more than there are cores, it starts one
+        // a core, and says so.
+        use std::sync::atomic::Ordering;
+        let cores = std::thread::available_parallelism().map_or(1, usize::from);
+        let (solvers, starts, gate) = counted_starts(|_| fake());
+        open(&gate);
+        assert_eq!(solvers.warm(cores + 3), cores);
+        assert_eq!(starts.load(Ordering::SeqCst), cores);
+    }
+
+    #[test]
+    fn a_warm_start_that_fails_or_panics_leaves_the_solve_to_start_its_own() {
+        use std::sync::atomic::Ordering;
+        for panics in [false, true] {
+            let (solvers, starts, gate) = counted_starts(move |n| {
+                if n == 0 {
+                    if panics {
+                        panic!("the warm start's starter panicked");
+                    }
+                    return Err(Error::new(ErrorCode::WorkerCrashed, "no sketch worker"));
+                }
+                fake()
+            });
+            open(&gate);
+            // Started none: failed, or its panic its caller's.
+            let warmed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| solvers.warm(1)));
+            assert_eq!(warmed.ok(), (!panics).then_some(0), "panics: {panics}");
+            taken(&solvers).unwrap();
+            assert_eq!(starts.load(Ordering::SeqCst), 2, "panics: {panics}");
         }
     }
 }

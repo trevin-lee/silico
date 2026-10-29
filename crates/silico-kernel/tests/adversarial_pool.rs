@@ -1843,6 +1843,112 @@ fn requests_one_after_another_on_demand_start_one_worker_and_one_slot() {
 }
 
 #[test]
+fn a_warm_start_starts_the_workers_it_says_and_a_request_after_takes_one_of_them() {
+    // Warmed, two slots of four start their workers ahead of any request, up once the warm
+    // start returns; a request then runs on one of them, starting no slot or worker more.
+    let pool = on_demand(TEST_WORKER, 4);
+    assert_eq!(pool.warm(2), 2);
+    let warmed = pool.pids();
+    assert_eq!(warmed.len(), 2, "{warmed:?}");
+    let before = threads();
+    done(pool.submit(Generation(1), sleep(0))).unwrap();
+    assert_eq!(pool.pids(), warmed);
+    assert_eq!(threads(), before);
+}
+
+#[test]
+fn a_request_while_a_warmed_worker_starts_waits_for_it_rather_than_starting_another() {
+    // From the tests review: the order fixed. A worker that takes half a second to start
+    // (a script that waits, then becomes the test worker). A warm start of one returns once
+    // its process is started; a request then comes while the worker is still starting: the
+    // slot, started and free, takes it once its worker is up, and the pool doesn't grow.
+    // (Were a warming slot not counted free, the request would start a second.)
+    let dir = scratch_dir("warm-slow");
+    let exe = dir.join("worker");
+    write_executable(
+        &exe,
+        &format!("#!/bin/sh\nsleep 0.5\nexec '{TEST_WORKER}' \"$@\"\n"),
+    );
+    for _ in 0..3 {
+        let pool = on_demand(exe.to_str().unwrap(), 4);
+        assert_eq!(pool.warm(1), 1);
+        let warmed = pool.pids();
+        assert_eq!(warmed.len(), 1, "{warmed:?}");
+        done(pool.submit(Generation(1), sleep(0))).unwrap();
+        assert_eq!(pool.pids(), warmed);
+    }
+}
+
+#[test]
+fn warm_starts_of_a_few_from_many_threads_at_once_stop_at_the_number_asked_for() {
+    // From #263's mutants: eight threads at once each warm two slots of a pool of eight.
+    // Each reads its budget before the others start any, so only the count checked as
+    // each slot is taken holds them to two between them.
+    let pool = std::sync::Arc::new(on_demand(TEST_WORKER, 8));
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            let (pool, barrier) = (
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&barrier),
+            );
+            std::thread::spawn(move || {
+                barrier.wait();
+                pool.warm(2)
+            })
+        })
+        .collect();
+    let started: usize = threads.into_iter().map(|t| t.join().unwrap()).sum();
+    assert_eq!(started, 2);
+    assert_eq!(pool.pids().len(), 2, "{:?}", pool.pids());
+}
+
+#[test]
+fn sessions_warm_their_pool_and_their_sketch_solvers_and_a_second_warm_starts_none() {
+    // The app's call: both halves at once, each up when it returns; called again, none
+    // more.
+    use silico_core::sketch::SketchSolver;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let pool = std::sync::Arc::new(on_demand(TEST_WORKER, 4));
+    let starts = std::sync::Arc::new(AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&starts);
+    let sessions = silico_core::command::Sessions::with_stand_ins(
+        std::sync::Arc::clone(&pool),
+        |dir: &std::path::Path| silico_core::cache::Cache::unsealed(dir),
+        move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(silico_core::fake::FakeSketches::new()) as Box<dyn SketchSolver>)
+        },
+    );
+    // Counts that differ, so neither half can take the other's.
+    assert_eq!(sessions.warm(2, 1), (2, 1));
+    assert_eq!(pool.pids().len(), 2);
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    assert_eq!(sessions.warm(2, 1), (0, 0));
+    assert_eq!(pool.pids().len(), 2);
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_warm_start_starts_only_the_slots_not_yet_started() {
+    let pool = on_demand(TEST_WORKER, 2);
+    assert_eq!(pool.warm(5), 2);
+    assert_eq!(pool.warm(1), 0);
+    wait_full(&pool, 2, &BTreeSet::new());
+    // A request first starts one slot on demand; a warm start then starts the other.
+    let pool = on_demand(TEST_WORKER, 2);
+    done(pool.submit(Generation(1), sleep(0))).unwrap();
+    assert_eq!(pool.warm(2), 1);
+    wait_full(&pool, 2, &BTreeSet::new());
+    // A pool that refuses every request has no slot to start.
+    let refusing = KernelPool::refusing(silico_core::Error::new(
+        ErrorCode::WorkerCrashed,
+        "no kernel worker",
+    ));
+    assert_eq!(refusing.warm(1), 0);
+}
+
+#[test]
 fn a_request_after_one_that_crashed_its_worker_waits_for_the_slot_not_a_new_one() {
     // Requests one after another, every other one crashing its worker: the slot replaces it
     // (a new process) after the crash is reported, free, so the next request, submitted the
@@ -2786,4 +2892,94 @@ fn a_clients_submits_racing_its_pools_drop_leave_no_worker_or_thread_behind() {
         );
     }
     wait_no_children("after the pools and their clients");
+}
+
+// break-it (warm start): warm starts racing each other and requests, of workers that can't
+// start or whose binary changed after the pool opened.
+
+#[test]
+fn warm_starts_from_many_threads_at_once_start_each_slot_once_and_no_more() {
+    let pool = std::sync::Arc::new(on_demand(TEST_WORKER, 4));
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            let pool = std::sync::Arc::clone(&pool);
+            std::thread::spawn(move || pool.warm(usize::MAX))
+        })
+        .collect();
+    let started: usize = threads.into_iter().map(|t| t.join().unwrap()).sum();
+    assert_eq!(started, 4, "eight warm starts at once of a pool of four");
+    let warmed = wait_full(&pool, 4, &BTreeSet::new());
+    // Eight requests at once run on the four: no slot or worker more.
+    let pending: Vec<_> = (0..8u8)
+        .map(|i| pool.submit(Generation(1), echo(&[i])))
+        .collect();
+    for (i, p) in pending.into_iter().enumerate() {
+        assert_eq!(
+            done(p).unwrap(),
+            Blob::inline(vec![u8::try_from(i).unwrap()])
+        );
+    }
+    assert_eq!(pool.pids(), warmed);
+    assert_eq!(pool.warm(usize::MAX), 0);
+}
+
+#[test]
+fn a_warm_start_of_a_worker_that_exits_at_once_leaves_a_request_failed_not_waiting() {
+    let dir = scratch_dir("warm-exits");
+    let exe = dir.join("worker");
+    write_executable(&exe, "#!/bin/sh\nexit 3\n");
+    let pool = on_demand(exe.to_str().unwrap(), 1);
+    // Its process starts and exits: counted started or not, as the exit is seen before or
+    // after the start; the requests fail promptly either way, which is what's checked.
+    pool.warm(1);
+    for byte in 0..3u8 {
+        let err = pool
+            .submit(Generation(1), echo(&[byte]))
+            .wait_timeout(WAIT)
+            .unwrap_or_else(|_| panic!("request {byte} waited on a warm start that can't start"))
+            .done()
+            .expect("superseded")
+            .unwrap_err();
+        assert!(
+            matches!(
+                err.code(),
+                ErrorCode::WorkerCrashed | ErrorCode::WorkerUnavailable
+            ),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn a_warm_start_after_the_workers_binary_changed_leaves_each_request_failed_promptly() {
+    let dir = scratch_dir("warm-changed");
+    let exe = dir.join("worker");
+    std::fs::copy(TEST_WORKER, &exe).unwrap();
+    let pool = on_demand(exe.to_str().unwrap(), 1);
+    // Another build put in its place after the pool opened: the warm start's worker isn't
+    // taken, and each request fails at once rather than waiting on it.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&exe)
+        .unwrap()
+        .write_all(b"\0")
+        .unwrap();
+    // The changed binary's worker isn't taken: none warmed.
+    assert_eq!(pool.warm(1), 0);
+    let err = pool
+        .submit(Generation(1), echo(&[1]))
+        .wait_timeout(WAIT)
+        .unwrap_or_else(|_| panic!("the request waited on a warm start that can't start"))
+        .done()
+        .expect("superseded")
+        .unwrap_err();
+    assert!(!err.to_string().is_empty());
+    // And the next, as promptly: no worker of the changed binary is ever taken.
+    pool.submit(Generation(1), echo(&[2]))
+        .wait_timeout(WAIT)
+        .unwrap_or_else(|_| panic!("the second request waited"))
+        .done()
+        .expect("superseded")
+        .unwrap_err();
+    assert!(pool.pids().is_empty(), "{:?}", pool.pids());
 }

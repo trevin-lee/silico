@@ -353,10 +353,11 @@ pub struct DragStart {
 
 impl Drag {
     /// Checks `begin` ([`DragBegin::check`]), builds and diagnoses its sketch, and, unless
-    /// constraints conflict, pins its point where it is.
+    /// constraints conflict, pins its point where it is: a drag session's pins
+    /// ([`DragBegin::shared_pins`], every arc's centre at a point arcs share).
     pub fn begin(begin: &DragBegin) -> Result<DragStart, Failure> {
         begin.check().map_err(invalid)?;
-        Self::start(begin, begin.pins())
+        Self::start(begin, begin.shared_pins())
     }
 
     /// Checks `begin` as one move ([`DragBegin::check_move`]: a solve's limits, not the
