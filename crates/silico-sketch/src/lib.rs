@@ -127,8 +127,15 @@ mod ffi {
         conflicting: Vec<i32>,
         redundant: Vec<i32>,
         partially_redundant: Vec<i32>,
+        dependent_groups: Vec<DependentGroup>,
         free: Vec<u32>,
         no_equations: bool,
+    }
+
+    /// One linear dependency among the diagnosed equations: its constraints' tags, as
+    /// PlaneGCS's `getDependentGroups` gives them (patch 0002).
+    struct DependentGroup {
+        tags: Vec<i32>,
     }
 
     /// One algorithm's solve: PlaneGCS's status, and every value of its solution unless it
@@ -175,9 +182,10 @@ mod ffi {
         type Solver;
         fn solver_new(input: &SolveInput) -> Result<UniquePtr<Solver>>;
         // A `Result`, as every other call here that can fail has: what it does now can't
-        // throw (it pushes plain integers into `rust::Vec`s, whose growth is `noexcept` and
-        // runs out of memory by aborting, as Rust's allocations do), but C++ added to it
-        // later that throws comes back as a refusal, not `std::terminate` across the bridge.
+        // throw (it pushes plain integers, and groups of them, into `rust::Vec`s, whose
+        // growth is `noexcept` and runs out of memory by aborting, as Rust's allocations
+        // do), but C++ added to it later that throws comes back as a refusal, not
+        // `std::terminate` across the bridge.
         fn solver_diagnosis(solver: &Solver) -> Result<Diagnosed>;
         fn solver_try(solver: Pin<&mut Solver>, algorithm: AlgorithmIn) -> Result<Attempt>;
         fn solver_residuals(
@@ -223,6 +231,21 @@ fn tags(tags: &[i32]) -> Result<Vec<Tag>, Failure> {
         .map_err(|_| internal("PlaneGCS reported a negative tag"))
 }
 
+/// PlaneGCS's dependent groups in [`Solved::dependent_groups`]' form: each group's tags
+/// distinct and in increasing order, the groups in increasing lexicographic order, each
+/// once, and none left empty by PlaneGCS's leaving out tag 0 (a dependency among an arc's
+/// rules alone, which says nothing of the sketch's constraints).
+fn dependent_groups(groups: &[ffi::DependentGroup]) -> Result<Vec<Vec<Tag>>, Failure> {
+    let mut out = std::collections::BTreeSet::new();
+    for group in groups {
+        let group: std::collections::BTreeSet<Tag> = tags(&group.tags)?.into_iter().collect();
+        if !group.is_empty() {
+            out.insert(group.into_iter().collect::<Vec<Tag>>());
+        }
+    }
+    Ok(out.into_iter().collect())
+}
+
 /// A value refused by the protocol's check, as the worker refuses it.
 pub fn invalid(e: InvalidParameter) -> Failure {
     Failure::new(Refusal::InvalidParameter {
@@ -255,6 +278,7 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
     let conflicting = tags(&diagnosed.conflicting)?;
     let redundant = tags(&diagnosed.redundant)?;
     let partially_redundant = tags(&diagnosed.partially_redundant)?;
+    let dependent_groups = dependent_groups(&diagnosed.dependent_groups)?;
     let dropped = !redundant.is_empty() || !partially_redundant.is_empty();
     let mut status = SolveStatus::Failed;
     let mut solution: Option<(Algorithm, Vec<f64>)> = None;
@@ -316,6 +340,7 @@ pub fn solve(system: &SketchSystem) -> Result<Solved, Failure> {
         conflicting,
         redundant,
         partially_redundant,
+        dependent_groups,
         free: diagnosed.free.iter().map(|&v| Value(v)).collect(),
         no_equations: diagnosed.no_equations,
         status,

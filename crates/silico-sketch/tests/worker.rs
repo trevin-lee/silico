@@ -60,6 +60,51 @@ fn a_sketch_solved_through_the_worker_is_solved_as_in_this_process() {
 }
 
 #[test]
+fn a_row_of_fixed_values_alone_is_a_dependency_of_its_own_through_the_worker() {
+    // M5.0 open item 32's addendum 4: a group may be one tag. A line whose ends are fixed
+    // values, (0, 0) to (10, 0), made horizontal (tag 1), beside a free point with nothing
+    // on it. By hand: 2 unknowns (the free point's x and y); the horizontal's row reads no
+    // unknown, so its gradient is zero: 1 row of rank 0, the row past the rank with no pivot
+    // in it, a dependency of its one row, [[1]]. PlaneGCS drops it, and it holds (0 = 0) on
+    // the fixed ends, so it's redundant; 2 left, both unknowns free.
+    let build = |end_y: f64| {
+        let mut b = systems::Builder::default();
+        let start = silico_protocol::PointValues {
+            x: b.fixed(0.0),
+            y: b.fixed(0.0),
+        };
+        let end = silico_protocol::PointValues {
+            x: b.fixed(10.0),
+            y: b.fixed(end_y),
+        };
+        let line = b.add(silico_protocol::SketchGeometry::Line { start, end });
+        let free = b.point_values(3.0, 4.0);
+        b.add(silico_protocol::SketchGeometry::Point(free));
+        b.constrain(|tag| silico_protocol::SolverConstraint::Horizontal { tag, line });
+        b.system(Algorithm::DogLeg)
+    };
+    let mut w = worker();
+    let held = solve(&mut w, build(0.0));
+    assert_eq!(held.dependent_groups, [vec![silico_protocol::Tag(1)]]);
+    assert_eq!(held.redundant, [silico_protocol::Tag(1)]);
+    assert!(held.conflicting.is_empty(), "{held:?}");
+    assert_eq!(held.dofs, 2);
+    assert_eq!(
+        held.free,
+        [silico_protocol::Value(4), silico_protocol::Value(5)]
+    );
+    // The far end at y 1: the same zero row, the same dependency of one, but it doesn't hold
+    // (1 ≠ 0), so PlaneGCS finds it in conflict; the conflicting group is listed too.
+    let broken = solve(&mut w, build(1.0));
+    assert_eq!(broken.dependent_groups, [vec![silico_protocol::Tag(1)]]);
+    assert_eq!(broken.conflicting, [silico_protocol::Tag(1)]);
+    assert!(broken.redundant.is_empty(), "{broken:?}");
+    // No dependency at all: the rectangle's rows are independent.
+    let rectangle = solve(&mut w, rectangle_40_by_20().b.system(Algorithm::DogLeg));
+    assert!(rectangle.dependent_groups.is_empty(), "{rectangle:?}");
+}
+
+#[test]
 fn a_system_that_fails_its_check_is_invalid_input_and_the_worker_lives_on() {
     let mut system = rectangle_40_by_20().b.system(Algorithm::DogLeg);
     system.values[3] = f64::NAN;

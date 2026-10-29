@@ -481,6 +481,15 @@ pub struct Solved {
     pub redundant: Vec<Tag>,
     /// Constraints some of whose equations repeat others, by tag, in increasing order.
     pub partially_redundant: Vec<Tag>,
+    /// The constraints in each linear dependency among the diagnosed equations, before
+    /// PlaneGCS chooses which to drop (patch 0002's `getDependentGroups`): for each, the
+    /// distinct tags of its equations, tag 0 (an arc's rules) left out as PlaneGCS leaves it
+    /// out of `conflicting`, in increasing order; the groups in increasing lexicographic
+    /// order, each once (two equations of one constraint can give one group twice), and
+    /// none of only tag 0. A group may be one tag: an equation of fixed values alone. A
+    /// constraint is in some group exactly when one of its equations lies in the span of the
+    /// others, whichever PlaneGCS dropped; conflicting groups are listed too.
+    pub dependent_groups: Vec<Vec<Tag>>,
     /// Unknowns PlaneGCS finds the constraints don't fix, each once, in increasing order.
     /// It finds none when there are no equations to diagnose (`no_equations`), which
     /// FreeCAD reads as every unknown free.

@@ -126,6 +126,7 @@ fn a_reply_naming_values_the_sketch_doesnt_have_free_changes_nothing_it_does_hav
         },
         Solved {
             partially_redundant: vec![Tag(9)],
+            dependent_groups: Vec::new(),
             status: SolveStatus::SolvedExceptRedundant,
             ..reply(Vec::new())
         },
@@ -247,6 +248,7 @@ fn a_diagnosis_of_any_garbage_reply_is_data_or_a_structured_error_never_a_panic(
                             conflicting: Vec::new(),
                             redundant: Vec::new(),
                             partially_redundant: Vec::new(),
+                            dependent_groups: Vec::new(),
                             free: free.clone(),
                             no_equations: which == 2,
                             status,
@@ -388,6 +390,7 @@ fn the_states_dont_depend_on_the_order_the_sketch_holds_its_lists() {
     let solved = Solved {
         redundant: vec![Tag(5)],
         partially_redundant: vec![Tag(7)],
+        dependent_groups: Vec::new(),
         free: vec![Value(14)],
         status: SolveStatus::SolvedExceptRedundant,
         ..FakeSketches::as_sent(&translation.system)
@@ -749,28 +752,37 @@ fn every_form(picked: &[usize]) -> Sketch {
 
 #[test]
 fn every_form_flagged_alone_over_defines_exactly_when_it_carries_a_value() {
-    // Each form alone on the drawing, which meets it exactly, the fake listing it (tag 1)
-    // redundant, then partially redundant, with nothing free and 0 left: solved and kept, so
-    // a relation (13 forms) leaves the sketch fully defined, every member fully defined, and
-    // a dimension (8) makes it over defined, with some member over defined (each reads a
-    // point or names a curve). Listed conflicting, any form is refused, over defined, and
-    // over-defines what it governs.
+    // Each form alone on the drawing, which meets it exactly, in a dependency of its own (tag
+    // 1), the fake listing it redundant, then partially redundant, then not at all (kept),
+    // with nothing free and 0 left: solved, so a relation (13 forms) leaves the sketch fully
+    // defined, every member fully defined, and a dimension (8) makes it over defined, with
+    // some member over defined (each reads a point or names a curve), and reads redundant
+    // even where the solver kept it (addendum 4). Listed conflicting, any form is refused,
+    // over defined, and over-defines what it governs.
     for (i, &(form, dimension)) in EVERY_FORM.iter().enumerate() {
         let sketch = every_form(&[i]);
         let translation = Translation::new(&sketch).unwrap();
         for (redundant, partially_redundant, conflicting) in [
             (vec![Tag(1)], vec![], vec![]),
             (vec![], vec![Tag(1)], vec![]),
+            (vec![], vec![], vec![]),
             (vec![], vec![], vec![Tag(1)]),
         ] {
             let listed_conflicting = !conflicting.is_empty();
+            let kept =
+                redundant.is_empty() && partially_redundant.is_empty() && !listed_conflicting;
             let solved = Solved {
                 dofs: 0,
                 free: Vec::new(),
                 redundant,
                 partially_redundant,
+                dependent_groups: vec![vec![Tag(1)]],
                 conflicting,
-                status: SolveStatus::SolvedExceptRedundant,
+                status: if kept {
+                    SolveStatus::Success
+                } else {
+                    SolveStatus::SolvedExceptRedundant
+                },
                 ..FakeSketches::as_sent(&translation.system)
             };
             let read = translation.read_diagnosed(&solved).unwrap();
@@ -801,7 +813,36 @@ fn every_form_flagged_alone_over_defines_exactly_when_it_carries_a_value() {
             if !over {
                 assert!(members.iter().all(|&s| s == Fully), "{form}: {got:#?}");
             }
+            if kept {
+                let state = if dimension {
+                    Redundant
+                } else {
+                    ConstraintState::Satisfied
+                };
+                assert_eq!(
+                    got.constraints.values().collect::<Vec<_>>(),
+                    [&state],
+                    "{form}"
+                );
+            }
         }
+        // Listed redundant, but in no dependency (a reply PlaneGCS never gives: what it drops
+        // is from a dependency): the state follows the list, and over-definition the
+        // dependencies alone, so nothing over-defines.
+        let solved = Solved {
+            dofs: 0,
+            free: Vec::new(),
+            redundant: vec![Tag(1)],
+            status: SolveStatus::SolvedExceptRedundant,
+            ..FakeSketches::as_sent(&translation.system)
+        };
+        let got = states(&sketch, &translation.read_diagnosed(&solved).unwrap()).unwrap();
+        assert_eq!(got.state, SketchState::FullyDefined, "{form}: {got:#?}");
+        assert_eq!(
+            got.constraints.values().collect::<Vec<_>>(),
+            [&Redundant],
+            "{form}"
+        );
     }
 }
 
@@ -827,12 +868,18 @@ fn a_reply_listing_a_reference_dimension_redundant_is_a_protocol_error_not_an_ov
         ],
     ));
     let translation = Translation::new(&sketch).unwrap();
-    for (redundant, partially_redundant) in [(vec![Tag(1)], vec![]), (vec![], vec![Tag(1)])] {
+    for (redundant, partially_redundant, dependent_groups) in [
+        (vec![Tag(1)], vec![], vec![]),
+        (vec![], vec![Tag(1)], vec![]),
+        (vec![], vec![], vec![vec![Tag(1)]]),
+        (vec![], vec![], vec![vec![Tag(1), Tag(2)]]),
+    ] {
         let solved = Solved {
             dofs: 1,
             free: vec![Value(6)],
             redundant,
             partially_redundant,
+            dependent_groups,
             status: SolveStatus::SolvedExceptRedundant,
             ..FakeSketches::as_sent(&translation.system)
         };
@@ -911,15 +958,16 @@ proptest::proptest! {
 
     #[test]
     fn every_form_together_flagged_any_way_over_defines_by_addendum_2(
-        flags in proptest::collection::vec(0u8..4, 21),
+        flags in proptest::collection::vec(0u8..5, 21),
         free in proptest::bool::ANY,
     ) {
         // All 21 forms on the drawing at once, each listed by the fake as nothing (0),
-        // redundant (1), partially redundant (2), or conflicting (3), with every unknown free
-        // (2 left) or none (0 left). By addendum 2, by hand: over defined when any is
-        // conflicting or any dimension is listed; then some member over defined. Otherwise
-        // by the degrees left, no member over defined, every member under defined with
-        // everything free and fully defined with nothing.
+        // redundant (1), partially redundant (2), conflicting (3), or nothing but in a
+        // dependency PlaneGCS kept (4), every one listed also in a dependency of its own,
+        // with every unknown free (2 left) or none (0 left). By addendum 4, by hand: over
+        // defined when any is conflicting or any dimension is in a dependency; then some
+        // member over defined. Otherwise by the degrees left, no member over defined, every
+        // member under defined with everything free and fully defined with nothing.
         let picked: Vec<usize> = (0..21).collect();
         let sketch = every_form(&picked);
         let translation = Translation::new(&sketch).unwrap();
@@ -931,6 +979,10 @@ proptest::proptest! {
             free: if free { translation.system.unknowns.clone() } else { Vec::new() },
             redundant: tags(1),
             partially_redundant: tags(2),
+            dependent_groups: (0..21)
+                .filter(|&i| flags[i] != 0)
+                .map(|i| vec![Tag(i as u32 + 1)])
+                .collect(),
             conflicting: tags(3),
             status: SolveStatus::SolvedExceptRedundant,
             ..FakeSketches::as_sent(&translation.system)

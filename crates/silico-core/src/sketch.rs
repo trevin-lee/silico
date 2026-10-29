@@ -453,7 +453,8 @@ impl SketchWorker {
 
 /// Refuses `solved` unless it could be the solution of `sent`: as many values, its fixed
 /// ones as sent, every value within reach (one that can't be built may not be), lists of
-/// tags sent and unknowns, in order, a residual for each tag sent, and an algorithm exactly
+/// tags sent and unknowns, in order, dependent groups of tags sent in
+/// [`Solved::dependent_groups`]' form, a residual for each tag sent, and an algorithm exactly
 /// where a solution is given ([`Translation::check_reply`]'s, and a drag's closing solve's).
 /// A worker that answers otherwise can't be trusted.
 pub(crate) fn check_solved(sent: &SketchSystem, solved: &Solved) -> Result<(), Error> {
@@ -494,6 +495,19 @@ pub(crate) fn check_solved(sent: &SketchSystem, solved: &Solved) -> Result<(), E
         if list.windows(2).any(|w| w[0] >= w[1]) || list.iter().any(|t| !tags.contains(t)) {
             return bad(format!("lists {name} tags it wasn't sent, or out of order"));
         }
+    }
+    // Each dependent group distinct tags sent, in increasing order, none empty; the groups in
+    // increasing lexicographic order, so each once.
+    if solved.dependent_groups.windows(2).any(|w| w[0] >= w[1])
+        || solved.dependent_groups.iter().any(|group| {
+            group.is_empty()
+                || group.windows(2).any(|w| w[0] >= w[1])
+                || group.iter().any(|t| !tags.contains(t))
+        })
+    {
+        return bad(
+            "lists dependent groups of tags it wasn't sent, empty, or out of order".to_owned(),
+        );
     }
     if solved.free.windows(2).any(|w| w[0] >= w[1])
         || solved
@@ -841,9 +855,14 @@ pub struct Diagnosis {
     /// The constraints some, but not all, of whose equations repeat others', as PlaneGCS
     /// lists them.
     pub partially_redundant: BTreeSet<ElementId>,
-    /// Each constraint listed above, with the points whose x or y its equations depend on
-    /// ([`SketchSystem::depends_on`]): none, for one whose rows depend only on fixed values,
-    /// radii, and angles.
+    /// The constraints in each linear dependency among the diagnosed equations
+    /// ([`Solved::dependent_groups`], M5.0 open item 32's addendum 4): removing any one of a
+    /// group resolves that dependency. Which constraint is in some group is a fact of the
+    /// sketch, whichever PlaneGCS dropped; conflicting groups are here too.
+    pub dependencies: BTreeSet<BTreeSet<ElementId>>,
+    /// Each constraint listed above, or in a dependency, with the points whose x or y its
+    /// equations depend on ([`SketchSystem::depends_on`]): none, for one whose rows depend
+    /// only on fixed values, radii, and angles.
     pub points_depended_on: BTreeMap<ElementId, BTreeSet<ElementId>>,
 }
 
@@ -2007,14 +2026,26 @@ impl Translation {
         conflicting.extend(named(&disagreeing)?);
         let redundant = named(&solved.redundant)?;
         let partially_redundant = named(&solved.partially_redundant)?;
-        // Each listed constraint's rows, in one pass over the rows, and the points whose x or
-        // y their equations depend on.
+        // Each tag of a group sent: a reference dimension's place has a tag, but no row.
+        let dependencies = solved
+            .dependent_groups
+            .iter()
+            .map(|group| {
+                group
+                    .iter()
+                    .map(|&t| self.sent(t).and_then(|_| self.id(t)).cloned())
+                    .collect()
+            })
+            .collect::<Result<BTreeSet<_>, Error>>()?;
+        // Each listed constraint's rows, and each in a dependency, in one pass over the rows,
+        // and the points whose x or y their equations depend on.
         let listed: BTreeSet<Tag> = solved
             .conflicting
             .iter()
             .chain(&disagreeing)
             .chain(&solved.redundant)
             .chain(&solved.partially_redundant)
+            .chain(solved.dependent_groups.iter().flatten())
             .copied()
             .collect();
         let owner: BTreeMap<Value, &ElementId> = self
@@ -2047,6 +2078,7 @@ impl Translation {
                 conflicting,
                 redundant,
                 partially_redundant,
+                dependencies,
                 points_depended_on,
             },
             outcome,

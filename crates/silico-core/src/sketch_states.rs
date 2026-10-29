@@ -10,13 +10,14 @@
 //! Every rule is decided here, each in a function of its own, so any one can change: the
 //! sketch's state from the refusal's code, then the over-defining constraints, then the
 //! degrees of freedom ([`refusal_state`], [`sketch_state`]); which constraints over-define
-//! ([`over_defines`]: a conflict, or a repeated driving dimension, never a repeated relation,
-//! as SolidWorks' FAQ has it); a point's ([`point_state`]) and a curve's
-//! ([`curve_over_defined`], [`curve_state`]); a constraint's, `unsolved` on a refused sketch
-//! ([`constraint_state`]); and the empty sketch's ([`EMPTY_STATE`], [`EMPTY_DOFS`]). Which
-//! constraint of a dependent group is flagged, and as what, is PlaneGCS's choice as it lists
-//! it (its popularity contest), never a rule here: the symmetric arc's case is the solver's
-//! answer, reported as it gives it.
+//! ([`over_defines`]: a conflict, or a driving dimension in a dependency among the
+//! equations, never a relation, as SolidWorks' FAQ has it); a point's ([`point_state`]) and
+//! a curve's ([`curve_over_defined`], [`curve_state`]); a constraint's, `unsolved` on a
+//! refused sketch ([`constraint_state`]); and the empty sketch's ([`EMPTY_STATE`],
+//! [`EMPTY_DOFS`]). Item 32's addendum 4 decided them from the solver's dependent groups
+//! ([`Diagnosis::dependencies`]), which say which constraints are tied in one dependency
+//! whichever PlaneGCS's popularity contest dropped, so no state depends on its choice; what
+//! it dropped is still what a relation's state, and the solve's warnings, report.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,14 +28,14 @@ use crate::{Error, ErrorCode};
 /// A sketch's state: SolidWorks' five (docs/ux/solidworks.md, §2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SketchState {
-    /// Solved, with degrees of freedom left, and no driving dimension repeating others (a
-    /// repeated relation may be).
+    /// Solved, with degrees of freedom left, and no driving dimension in a dependency (a
+    /// relation may be).
     UnderDefined,
-    /// Solved, with none left and no driving dimension repeating others (a repeated relation
-    /// may be); or empty.
+    /// Solved, with none left and no driving dimension in a dependency (a relation may be);
+    /// or empty.
     FullyDefined,
-    /// Constraints that conflict (refused), or a driving dimension that repeats others and
-    /// agrees (solved).
+    /// Constraints that conflict (refused), or a driving dimension in a dependency among the
+    /// equations, its value fixed by the others' (solved).
     OverDefined,
     /// No algorithm placed it, or its loads don't settle.
     NoSolution,
@@ -64,7 +65,7 @@ pub enum MemberState {
     UnderDefined,
     /// Every value of it is fixed.
     FullyDefined,
-    /// An over-defining constraint (in conflict, or a driving dimension repeating others)
+    /// An over-defining constraint (in conflict, or a driving dimension in a dependency)
     /// governs it.
     OverDefined,
 }
@@ -88,7 +89,8 @@ pub enum ConstraintState {
     Satisfied,
     /// In conflict with others: PlaneGCS's, or decision 5's disagreeing redundancy.
     Conflicting,
-    /// Every equation of it repeats others'.
+    /// Every equation of it repeats others': a driving dimension in a dependency, whether or
+    /// not PlaneGCS dropped it, or another constraint PlaneGCS dropped whole.
     Redundant,
     /// Some equations of it repeat others'.
     PartiallyRedundant,
@@ -135,6 +137,12 @@ pub struct SketchStates {
     pub circles: BTreeMap<ElementId, MemberState>,
     pub arcs: BTreeMap<ElementId, MemberState>,
     pub constraints: BTreeMap<ElementId, ConstraintState>,
+    /// The constraints in each linear dependency among the equations, by ID, the groups
+    /// sorted ([`Diagnosis::dependencies`]): removing any one of a group resolves its
+    /// dependency, and which is the user's choice (SolidWorks' SketchXpert). Empty for an
+    /// empty sketch, and for one the translation refuses (its constraints never reach the
+    /// solver).
+    pub dependencies: BTreeSet<BTreeSet<ElementId>>,
     /// Why the solve was refused, as the core refused it (the error contract's object):
     /// present for every refused solve, `over_constrained` included; none when the sketch
     /// solved, or is empty.
@@ -179,21 +187,26 @@ pub fn states(sketch: &Sketch, read: &Diagnosed) -> Result<SketchStates, Error> 
             circles: BTreeMap::new(),
             arcs: BTreeMap::new(),
             constraints: BTreeMap::new(),
+            dependencies: BTreeSet::new(),
             solve_problem: None,
         });
     }
     let solved = outcome.is_ok();
+    let dependent: BTreeSet<&ElementId> = diagnosis.dependencies.iter().flatten().collect();
     let constraints: BTreeMap<ElementId, ConstraintState> = sketch
         .constraints
         .iter()
-        .map(|c| (c.id.clone(), constraint_state(c, diagnosis, solved)))
+        .map(|c| {
+            let state = constraint_state(c, diagnosis, dependent.contains(&c.id), solved);
+            (c.id.clone(), state)
+        })
         .collect();
     // What the over-defining constraints govern: the points their equations depend on, and
     // the curves they name.
     let over = |c: &SketchConstraint| {
         constraints
             .get(&c.id)
-            .is_some_and(|&s| over_defines(s, &c.form))
+            .is_some_and(|&s| over_defines(s, &c.form, dependent.contains(&c.id)))
     };
     let mut points_over: BTreeSet<&ElementId> = BTreeSet::new();
     let mut named: BTreeSet<&ElementId> = BTreeSet::new();
@@ -248,6 +261,7 @@ pub fn states(sketch: &Sketch, read: &Diagnosed) -> Result<SketchStates, Error> 
         circles,
         arcs,
         constraints,
+        dependencies: diagnosis.dependencies.clone(),
         solve_problem: outcome.err().cloned(),
     })
 }
@@ -289,10 +303,11 @@ pub(crate) fn refusal_state(code: ErrorCode) -> Option<SketchState> {
 /// The sketch's state: the refusal's, if the solve was `refused`; then, solved, any
 /// constraint that over-defines ([`over_defines`]), then the degrees of freedom. Solved, an
 /// over-defining constraint makes it over defined (SolidWorks' over-defining prompt is for
-/// exactly this: a repeated dimension that agrees, kept, though its features build), so
-/// `fully_defined` never has a conflict or a repeated driving dimension; a repeated relation
-/// leaves it as its degrees of freedom say (SolidWorks' FAQ: "Redundant perpendicular
-/// relation added. Sketch is still fully defined.").
+/// exactly this: a dimension whose value the others fix, kept, though its features build),
+/// so `fully_defined` never has a conflict or a driving dimension in a dependency, whichever
+/// constraint of it PlaneGCS dropped; a dependency of relations alone leaves it as its
+/// degrees of freedom say (SolidWorks' FAQ: "Redundant perpendicular relation added. Sketch
+/// is still fully defined.").
 fn sketch_state(refused: Option<SketchState>, over_defining: bool, dofs: i32) -> SketchState {
     match refused {
         Some(state) => state,
@@ -303,16 +318,27 @@ fn sketch_state(refused: Option<SketchState>, over_defining: bool, dofs: i32) ->
 }
 
 /// A constraint's state, on a sketch `solved` or refused: `conflicting` if it's in a
-/// conflict; otherwise `redundant` or `partially_redundant` as PlaneGCS lists it (one it
-/// lists as both is redundant, as the read keeps it); otherwise `satisfied` on a solved
-/// sketch and `unsolved` on a refused one (item 32's fifth constraint state: SolidWorks' "Not
-/// Solved", so `satisfied` always means met on the coordinates the read shows). A reference
-/// dimension (`driving: false`) is never sent to the solver, so it's never flagged and fixes
-/// nothing: `satisfied` on a solved sketch, `unsolved` otherwise.
-fn constraint_state(c: &SketchConstraint, diagnosis: &Diagnosis, solved: bool) -> ConstraintState {
+/// conflict; otherwise `redundant` if it's a driving dimension `dependent`, in a dependency
+/// ([`Diagnosis::dependencies`]), whether or not PlaneGCS dropped it (item 32's addendum 4:
+/// its one equation repeats others', and `satisfied` would hide it); otherwise `redundant`
+/// or `partially_redundant` as PlaneGCS lists it (one it lists as both is redundant, as the
+/// read keeps it), so a relation in a dependency PlaneGCS kept is `satisfied`, as SolidWorks
+/// leaves a fully defined sketch's redundant perpendicular unmarked; otherwise `satisfied` on
+/// a solved sketch and `unsolved` on a refused one (item 32's fifth constraint state:
+/// SolidWorks' "Not Solved", so `satisfied` always means met on the coordinates the read
+/// shows). A reference dimension (`driving: false`) is never sent to the solver, so it's
+/// never flagged and fixes nothing: `satisfied` on a solved sketch, `unsolved` otherwise.
+fn constraint_state(
+    c: &SketchConstraint,
+    diagnosis: &Diagnosis,
+    dependent: bool,
+    solved: bool,
+) -> ConstraintState {
     let sent = c.form.driving() != Some(false);
     if sent && diagnosis.conflicting.contains(&c.id) {
         ConstraintState::Conflicting
+    } else if dependent && c.form.driving() == Some(true) {
+        ConstraintState::Redundant
     } else if sent && diagnosis.redundant.contains(&c.id) {
         ConstraintState::Redundant
     } else if sent && diagnosis.partially_redundant.contains(&c.id) {
@@ -325,20 +351,18 @@ fn constraint_state(c: &SketchConstraint, diagnosis: &Diagnosis, solved: bool) -
 }
 
 /// Whether a constraint of `form`, in `state`, over-defines what it governs (M5.0 open item
-/// 32's addendum 2, from SolidWorks' FAQ on sketch relations): when it's `conflicting`, or
-/// when it's `redundant` or `partially_redundant` and a dimension, a form with `driving`
-/// ([`Form::driving`] some: `length`, `distance`, `distance_x`, `distance_y`,
-/// `point_line_distance`, `angle`, `radius`, `diameter`). A repeated relation (the other 13
-/// forms) over-defines nothing: it has no value of its own to edit, so only an edit
-/// elsewhere can break it, and that edit's solve reports the conflict; a dimension's own
-/// value can. A reference dimension is never flagged ([`constraint_state`]), so never
-/// over-defines.
-///
-/// Which constraint of a dependent group is flagged is PlaneGCS's choice, blind to the
-/// kinds: a group of a relation and a dimension, its relation flagged, over-defines nothing
-/// (the one divergence from SolidWorks this rule leaves; docs/ports/sketcher.md).
-fn over_defines(state: ConstraintState, form: &Form) -> bool {
-    state == ConstraintState::Conflicting || (state.flagged() && form.driving().is_some())
+/// 32's addendum 4, from SolidWorks' FAQ on sketch relations): when it's `conflicting`, or
+/// when it's a driving dimension (a form with `driving` true: `length`, `distance`,
+/// `distance_x`, `distance_y`, `point_line_distance`, `angle`, `radius`, `diameter`)
+/// `dependent`, in a dependency among the equations ([`Diagnosis::dependencies`]): its
+/// value is fixed by the others, so editing it conflicts. That is a fact of the sketch, not
+/// of which constraint PlaneGCS dropped: a dimension it kept over-defines as one it dropped
+/// does. A relation (the other 13 forms) over-defines nothing, dropped or not: it has no
+/// value of its own to edit, so only an edit elsewhere can break it, and that edit's solve
+/// reports the conflict. A reference dimension is never sent, so it's in no dependency and
+/// never over-defines.
+fn over_defines(state: ConstraintState, form: &Form, dependent: bool) -> bool {
+    state == ConstraintState::Conflicting || (dependent && form.driving() == Some(true))
 }
 
 /// A point's state (item 32's members' rule): `over_defined` if an over-defining

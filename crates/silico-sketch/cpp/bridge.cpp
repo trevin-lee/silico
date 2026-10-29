@@ -9,6 +9,7 @@
 #include <new>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <Eigen/Core>
@@ -374,6 +375,7 @@ struct Solver::State {
   std::vector<int> conflicting;
   std::vector<int> redundant;
   std::vector<int> partially_redundant;
+  std::vector<std::vector<int>> dependent_groups;
   std::vector<uint32_t> free;
   bool no_equations = false;
 
@@ -391,6 +393,8 @@ std::unique_ptr<Solver> solver_new(const SolveInput &input) {
   s.sketch.diagnose(s.dofs, s.conflicting);
   system.getRedundant(s.redundant);
   system.getPartiallyRedundant(s.partially_redundant);
+  // Each linear dependency's constraints, before PlaneGCS chooses which to drop (patch 0002).
+  system.getDependentGroups(s.dependent_groups);
   // PlaneGCS lists a value once for each group of dependent values it's in, and none when
   // there are no equations: no_equations says which (FreeCAD reads it as every unknown
   // free; that's the core's to decide).
@@ -415,6 +419,11 @@ Diagnosed solver_diagnosis(const Solver &solver) {
   for (int t : s.conflicting) out.conflicting.push_back(t);
   for (int t : s.redundant) out.redundant.push_back(t);
   for (int t : s.partially_redundant) out.partially_redundant.push_back(t);
+  for (const std::vector<int> &group : s.dependent_groups) {
+    DependentGroup g;
+    for (int t : group) g.tags.push_back(t);
+    out.dependent_groups.push_back(std::move(g));
+  }
   for (uint32_t v : s.free) out.free.push_back(v);
   out.no_equations = s.no_equations;
   return out;

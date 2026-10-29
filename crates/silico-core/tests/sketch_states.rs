@@ -128,6 +128,7 @@ fn an_empty_sketch_is_fully_defined_with_no_degrees_whatever_planegcs_counts() {
         circles: BTreeMap::new(),
         arcs: BTreeMap::new(),
         constraints: BTreeMap::new(),
+        dependencies: BTreeSet::new(),
         solve_problem: None,
     };
     assert_eq!(got, empty);
@@ -185,24 +186,35 @@ fn twice_placed_point(again: &str) -> Sketch {
 #[test]
 fn two_lines_through_a_twice_dimensioned_point_take_its_freedom_not_its_over_definition() {
     // p1 placed again by a second distance_y of 0 from the origin (PlaneGCS's redundant, tag
-    // 3). Values: p1 6, 7; p2 8, 9; p3 10, 11; nothing free. The redundant constraint is a
-    // driving dimension, so it over-defines (addendum 2): it reads the origin (fixed, no
-    // member) and p1, so p1 is over defined, and so is the sketch. It names no line, and the
-    // lines' points are all fixed: both lines fully defined (item 32's members' rule: a curve
-    // takes its points' freedom, not their over-definition).
+    // 3). Values: p1 6, 7; p2 8, 9; p3 10, 11; nothing free. By hand, the two distance_y's
+    // rows are both p1's y, one dependency of the two (tags 2 and 3), as the fake says. Both
+    // are driving dimensions in it, so both read redundant and over-define (addendum 4):
+    // each reads the origin (fixed, no member) and p1, so p1 is over defined, and so is the
+    // sketch. They name no line, and the lines' points are all fixed: both lines fully
+    // defined (item 32's members' rule: a curve takes its points' freedom, not their
+    // over-definition).
     let sketch = twice_placed_point(
         r#"{"id": "k0000003", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
     );
     let (_, answer, diagnosis, got) = solved_by(&sketch, |system| Solved {
         redundant: vec![Tag(3)],
+        dependent_groups: vec![vec![Tag(2), Tag(3)]],
         status: SolveStatus::SolvedExceptRedundant,
         ..FakeSketches::as_sent(system)
     });
     assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
     assert_eq!(diagnosis.redundant, ids(&["k0000003"]));
     assert_eq!(
+        diagnosis.dependencies,
+        BTreeSet::from([ids(&["k0000002", "k0000003"])])
+    );
+    assert_eq!(got.dependencies, diagnosis.dependencies);
+    assert_eq!(
         diagnosis.points_depended_on,
-        BTreeMap::from([(id("k0000003"), ids(&["p0000001"]))])
+        BTreeMap::from([
+            (id("k0000002"), ids(&["p0000001"])),
+            (id("k0000003"), ids(&["p0000001"]))
+        ])
     );
     assert_eq!(got.state, SketchState::OverDefined);
     assert_eq!(got.dofs, 0);
@@ -219,7 +231,7 @@ fn two_lines_through_a_twice_dimensioned_point_take_its_freedom_not_its_over_def
         got.constraints,
         members(&[
             ("k0000001", Satisfied),
-            ("k0000002", Satisfied),
+            ("k0000002", Redundant),
             ("k0000003", Redundant),
             ("k0000004", Satisfied),
             ("k0000005", Satisfied),
@@ -361,6 +373,7 @@ fn a_conflict_is_over_defined_its_dofs_as_given_and_a_constraint_listed_twice_re
         conflicting: vec![Tag(4), Tag(5)],
         redundant: vec![Tag(5)],
         partially_redundant: vec![Tag(3)],
+        dependent_groups: Vec::new(),
         ..FakeSketches::as_sent(system)
     });
     assert_eq!(got.state, SketchState::OverDefined);
@@ -435,14 +448,17 @@ fn decision_5s_disagreeing_redundancy_goes_into_the_conflicting_list_the_read_un
 
 #[test]
 fn an_agreeing_redundancy_is_kept_and_read_redundant_not_conflicting() {
-    // The same distance_x at 10, the fake calling it redundant: met, kept, the sketch solved
-    // and over defined (a repeated driving dimension over-defines, addendum 2), nothing
-    // conflicting.
+    // The same distance_x at 10, the fake calling it redundant, in one dependency with the
+    // length it repeats (by hand: both rows are p2's x less p1's at the drawing): met, kept,
+    // the sketch solved and over defined (a driving dimension in a dependency over-defines,
+    // addendum 4), nothing conflicting. The length, kept, is in the dependency too, so it
+    // reads redundant as well; the horizontal, in none, satisfied.
     let sketch = ten_long(
         r#"{"id": "k0000005", "type": "distance_x", "a": "p0000001", "b": "p0000002", "value": 10, "driving": true}"#,
     );
     let (_, answer, diagnosis, got) = solved_by(&sketch, |system| Solved {
         redundant: vec![Tag(5)],
+        dependent_groups: vec![vec![Tag(4), Tag(5)]],
         status: SolveStatus::SolvedExceptRedundant,
         ..FakeSketches::as_sent(system)
     });
@@ -451,7 +467,118 @@ fn an_agreeing_redundancy_is_kept_and_read_redundant_not_conflicting() {
     assert_eq!(got.state, SketchState::OverDefined);
     assert_eq!(got.solve_problem, None);
     assert_eq!(got.constraints[&id("k0000005")], Redundant);
+    assert_eq!(got.constraints[&id("k0000004")], Redundant);
     assert_eq!(got.constraints[&id("k0000003")], Satisfied);
+    // What PlaneGCS dropped is still its list alone: the solution keeps the distance_x with
+    // its gap, and the length, kept by the solver, has none.
+    let solution = answer.outcome().unwrap();
+    assert_eq!(
+        solution.redundant.keys().collect::<Vec<_>>(),
+        [&id("k0000005")]
+    );
+}
+
+#[test]
+fn a_dimension_in_a_dependency_over_defines_whichever_constraint_of_it_planegcs_drops() {
+    // M5.0 open item 32's addendum 4. The ten-long line (p1 at the origin by k1 and k2, the
+    // horizontal k3, the length k4), its ends' y given again by a horizontal_points (k5) and
+    // their x by a distance_x of 10 (k6). By hand, at the drawing: k5's row is k3's (both
+    // p2's y less p1's), and k6's is k4's (both p2's x less p1's), so two dependencies, {k3,
+    // k5} and {k4, k6}, as the fake says. Whichever of each PlaneGCS drops, the states are
+    // the same: both dimensions read redundant (each a driving dimension in a dependency),
+    // and over-define what they read and name (p1, p2, and, named by the length, the line);
+    // the relations read what the solver lists, the dropped one redundant and the kept one
+    // satisfied (a kept relation in a dependency isn't marked, as SolidWorks' FAQ has it).
+    // The read lists the two dependencies, each sorted, sorted.
+    let sketch = sketch_of(
+        &[point("p0000001", 0.0, 0.0), point("p0000002", 10.0, 0.0)],
+        &[line("n0000001", "p0000001", "p0000002")],
+        &[],
+        &[],
+        &[
+            P1_AT_ORIGIN[0],
+            P1_AT_ORIGIN[1],
+            r#"{"id": "k0000003", "type": "horizontal", "line": "n0000001"}"#,
+            r#"{"id": "k0000004", "type": "length", "line": "n0000001", "value": 10, "driving": true}"#,
+            r#"{"id": "k0000005", "type": "horizontal_points", "a": "p0000001", "b": "p0000002"}"#,
+            r#"{"id": "k0000006", "type": "distance_x", "a": "p0000001", "b": "p0000002", "value": 10, "driving": true}"#,
+        ],
+    );
+    let dependencies = BTreeSet::from([
+        ids(&["k0000003", "k0000005"]),
+        ids(&["k0000004", "k0000006"]),
+    ]);
+    for (dropped, relations) in [
+        (vec![Tag(5), Tag(6)], [Satisfied, Redundant]),
+        (vec![Tag(3), Tag(4)], [Redundant, Satisfied]),
+        (vec![Tag(5), Tag(4)], [Satisfied, Redundant]),
+    ] {
+        let listed = dropped.clone();
+        let (_, answer, diagnosis, got) = solved_by(&sketch, move |system| Solved {
+            redundant: {
+                let mut r = listed.clone();
+                r.sort();
+                r
+            },
+            dependent_groups: vec![vec![Tag(3), Tag(5)], vec![Tag(4), Tag(6)]],
+            status: SolveStatus::SolvedExceptRedundant,
+            ..FakeSketches::as_sent(system)
+        });
+        assert!(
+            answer.outcome().is_ok(),
+            "{dropped:?}: {:?}",
+            answer.outcome()
+        );
+        assert_eq!(diagnosis.dependencies, dependencies, "{dropped:?}");
+        assert_eq!(got.dependencies, dependencies, "{dropped:?}");
+        assert_eq!(got.state, SketchState::OverDefined, "{dropped:?}");
+        assert_eq!(
+            got.constraints,
+            members(&[
+                ("k0000001", Satisfied),
+                ("k0000002", Satisfied),
+                ("k0000003", relations[0]),
+                ("k0000004", Redundant),
+                ("k0000005", relations[1]),
+                ("k0000006", Redundant),
+            ]),
+            "{dropped:?}"
+        );
+        assert_eq!(
+            got.points,
+            members(&[("p0000001", Over), ("p0000002", Over)]),
+            "{dropped:?}"
+        );
+        assert_eq!(got.lines, members(&[("n0000001", Over)]), "{dropped:?}");
+    }
+    // The relations' dependency alone (the distance_x left out): the length is in none, so
+    // nothing over-defines and the sketch reads by its degrees, 0, every member fully
+    // defined; the dropped relation redundant, the kept one satisfied, the dependency listed.
+    let relations_only = Sketch {
+        constraints: sketch.constraints[..5].to_vec(),
+        ..sketch.clone()
+    };
+    let (_, _, _, got) = solved_by(&relations_only, |system| Solved {
+        redundant: vec![Tag(5)],
+        dependent_groups: vec![vec![Tag(3), Tag(5)]],
+        status: SolveStatus::SolvedExceptRedundant,
+        ..FakeSketches::as_sent(system)
+    });
+    assert_eq!(got.state, SketchState::FullyDefined);
+    assert_eq!(
+        got.dependencies,
+        BTreeSet::from([ids(&["k0000003", "k0000005"])])
+    );
+    assert_eq!(got.constraints[&id("k0000003")], Satisfied);
+    assert_eq!(got.constraints[&id("k0000004")], Satisfied);
+    assert_eq!(got.constraints[&id("k0000005")], Redundant);
+    assert!(
+        got.points
+            .values()
+            .chain(got.lines.values())
+            .all(|&s| s == Fully),
+        "{got:#?}"
+    );
 }
 
 #[test]
@@ -637,13 +764,15 @@ fn a_reference_dimension_is_never_flagged_satisfied_when_solved_and_unsolved_whe
 
 #[test]
 fn a_constraint_listed_redundant_and_partially_redundant_is_redundant() {
-    // The driving y (tag 2), met where drawn, listed both ways: kept, redundant.
+    // The driving y (tag 2), met where drawn, listed both ways, in a dependency of its own:
+    // kept, redundant.
     let sketch = referenced_point();
     let translation = Translation::new(&sketch).unwrap();
     let reply = |free: Vec<Value>| Solved {
         dofs: 1,
         redundant: vec![Tag(2)],
         partially_redundant: vec![Tag(2)],
+        dependent_groups: vec![vec![Tag(2)]],
         free,
         status: SolveStatus::SolvedExceptRedundant,
         ..FakeSketches::as_sent(&translation.system)
@@ -748,9 +877,14 @@ fn the_sketch_state_is_the_problems_code_then_the_flags_then_the_dofs() {
     );
     assert_eq!(got.dofs, 6);
     // A refusal with a constraint flagged reads its code's state, not over defined: no
-    // algorithm solving, the y listed partially redundant.
+    // algorithm solving, the y listed partially redundant, in a dependency of its own.
     let reply = |dofs, partially_redundant: Vec<Tag>, status| Solved {
         dofs,
+        dependent_groups: if partially_redundant.is_empty() {
+            Vec::new()
+        } else {
+            vec![partially_redundant.clone()]
+        },
         partially_redundant,
         status,
         algorithm: (status != SolveStatus::Failed).then_some(silico_protocol::Algorithm::DogLeg),
@@ -764,8 +898,8 @@ fn the_sketch_state_is_the_problems_code_then_the_flags_then_the_dofs() {
         state(reply(3, vec![Tag(2)], SolveStatus::Failed)),
         (SketchState::NoSolution, 3, Some(ErrorCode::SolveFailed))
     );
-    // Solved: a kept repetition of a driving dimension (the y, a distance_y), then the
-    // degrees left.
+    // Solved: a driving dimension in a dependency (the y, a distance_y), then the degrees
+    // left.
     assert_eq!(
         state(reply(3, vec![Tag(2)], SolveStatus::SolvedExceptRedundant)),
         (SketchState::OverDefined, 3, None)
@@ -938,6 +1072,7 @@ fn a_sketch_the_translation_refuses_is_invalid_every_member_free_and_its_constra
             circles: BTreeMap::new(),
             arcs: BTreeMap::new(),
             constraints: members(&[("k0000001", Unsolved)]),
+            dependencies: BTreeSet::new(),
             solve_problem: Some(refusal),
         }
     );
@@ -1071,6 +1206,7 @@ fn a_lone_arc_that_sweeps_nothing_is_sent_at_its_starts_angle_at_both_ends() {
             circles: BTreeMap::new(),
             arcs: members(&[("a0000001", Under)]),
             constraints: BTreeMap::new(),
+            dependencies: BTreeSet::new(),
             solve_problem: Some(refusal),
         }
     );

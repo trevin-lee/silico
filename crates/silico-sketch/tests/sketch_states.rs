@@ -121,6 +121,20 @@ fn expect(got: &SketchStates, want: Want<'_>) {
     assert_eq!(got.constraints, members(constraints), "constraints");
 }
 
+/// That `got`'s dependencies, and its diagnosis's, are `want`'s groups (each group's IDs
+/// sorted, the groups sorted, as the read gives them).
+#[track_caller]
+fn expect_dependencies(got: &SketchStates, diagnosis: &Diagnosis, want: &[&[&str]]) {
+    let listed: Vec<Vec<&str>> = got
+        .dependencies
+        .iter()
+        .map(|g| g.iter().map(ElementId::as_str).collect())
+        .collect();
+    let want: Vec<Vec<&str>> = want.iter().map(|g| g.to_vec()).collect();
+    assert_eq!(listed, want, "dependencies: {got:#?}");
+    assert_eq!(got.dependencies, diagnosis.dependencies);
+}
+
 const FROM_AT_ORIGIN: [&str; 2] = [
     r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
     r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
@@ -524,12 +538,18 @@ fn an_arc_with_only_its_centre_and_radius_fixed_has_its_ends_and_itself_under_de
 }
 
 #[test]
-fn an_arc_whose_centre_and_ends_are_all_placed_repeats_one_dimension_and_stays_fully_defined_itself()
+fn an_arc_whose_centre_and_ends_are_all_placed_repeats_four_dimensions_in_one_dependency_and_stays_fully_defined_itself()
  {
-    // Three points fix 6 values against the arc's 5 (1.1.3: DoF 0, redundant [5]): one of
-    // the six dimensions is redundant, it agrees (the arc is drawn on them), and, a driving
-    // dimension, it over-defines (addendum 2): the point it reads is over defined, and so is
-    // the sketch. No dimension names the arc, so the arc isn't over defined: it
+    // Three points fix 6 values against the arc's 5 (1.1.3: DoF 0, redundant [5]): 10 rows
+    // (the arc's 4 rules, tag 0, and the 6 dimensions) of rank 9 for 9 unknowns, one
+    // dependency. By hand: the arc's rules make |p2 − p1| = |p3 − p1| (both the radius); at
+    // p1 (0, 0), p2 (5, 0), p3 (0, 5) that equation's gradient is (−1, 1) in p1, (1, 0) in
+    // p2, (0, −1) in p3: p1's x and y (k0000001, k0000002), p2's x (k0000003), and p3's y
+    // (k0000006), but not p2's y (k0000004) or p3's x (k0000005), whose coefficients are 0
+    // there. So the one group is {k1, k2, k3, k6} (the rules, tag 0, left out). Each one row
+    // in one group: PlaneGCS drops the latest tag, k6. All four are driving dimensions in a
+    // dependency, so all four read redundant and over-define (addendum 4): they read p1, p2,
+    // and p3, all over defined. No dimension names the arc, so the arc isn't over defined: it
     // takes its points' freedom, none, not their over-definition. The sketch is over defined.
     let (points, arcs) = quarter_arc();
     let constraints = [
@@ -541,36 +561,57 @@ fn an_arc_whose_centre_and_ends_are_all_placed_repeats_one_dimension_and_stays_f
         r#"{"id": "k0000006", "type": "distance_y", "a": "origin", "b": "p0000003", "value": 5, "driving": true}"#,
     ];
     let sketch = sketch_of(&points, &[], &[], &arcs, &constraints);
-    let (_, diagnosis, got) = solved(&sketch);
-    assert_eq!(got.state, SketchState::OverDefined);
-    assert_eq!(got.dofs, 0);
-    let flagged: Vec<(&ElementId, &ConstraintState)> = got
-        .constraints
-        .iter()
-        .filter(|(_, s)| s.flagged())
-        .collect();
-    assert_eq!(flagged.len(), 1, "{got:#?}");
-    let (repeated, state) = flagged[0];
-    assert_eq!(*state, Redundant);
-    // Each dimension reads the origin, fixed, and one point: that point is over defined.
-    let placed = match repeated.as_str() {
-        "k0000001" | "k0000002" => "p0000001",
-        "k0000003" | "k0000004" => "p0000002",
-        "k0000005" | "k0000006" => "p0000003",
-        other => panic!("{other}"),
-    };
+    let (answer, diagnosis, got) = solved(&sketch);
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
     assert_eq!(
-        diagnosis.points_depended_on[repeated]
+        diagnosis
+            .redundant
             .iter()
             .map(ElementId::as_str)
             .collect::<Vec<_>>(),
-        [placed]
+        ["k0000006"]
     );
-    for (id, state) in &got.points {
-        let want = if id.as_str() == placed { Over } else { Fully };
-        assert_eq!(*state, want, "{id}");
+    expect_dependencies(
+        &got,
+        &diagnosis,
+        &[&["k0000001", "k0000002", "k0000003", "k0000006"]],
+    );
+    // Each dimension reads the origin, fixed, and one point.
+    for (constraint, placed) in [
+        ("k0000001", "p0000001"),
+        ("k0000002", "p0000001"),
+        ("k0000003", "p0000002"),
+        ("k0000006", "p0000003"),
+    ] {
+        assert_eq!(
+            diagnosis.points_depended_on[&ElementId::new(constraint).unwrap()]
+                .iter()
+                .map(ElementId::as_str)
+                .collect::<Vec<_>>(),
+            [placed],
+            "{constraint}"
+        );
     }
-    assert_eq!(got.arcs, members(&[("a0000001", Fully)]));
+    expect(
+        &got,
+        Want {
+            problem: None,
+            state: SketchState::OverDefined,
+            dofs: 0,
+            points: &[("p0000001", Over), ("p0000002", Over), ("p0000003", Over)],
+            lines: &[],
+            circles: &[],
+            arcs: &[("a0000001", Fully)],
+            constraints: &[
+                ("k0000001", Redundant),
+                ("k0000002", Redundant),
+                ("k0000003", Redundant),
+                ("k0000004", Satisfied),
+                ("k0000005", Satisfied),
+                ("k0000006", Redundant),
+            ],
+        },
+    );
 }
 
 #[test]
@@ -687,11 +728,12 @@ fn a_redundant_length_that_disagrees_past_decision_5_conflicts_as_data() {
     // A horizontal line from the origin, its length 10, and its ends' x 10.000005 apart: the
     // same equation twice to first order, 5e-6 apart, within PlaneGCS's 1e-5, so PlaneGCS
     // calls the later one redundant; decision 5's tolerance here is 1e-8 mm, so the read
-    // refuses it as over_constrained, naming it. The diagnosis carries it as conflicting;
-    // the length it repeats isn't flagged (PlaneGCS doesn't say which it repeats), so it's
-    // unsolved with the rest, the sketch refused. It reads
-    // both ends, which are over defined, but names no line (a distance_x names points), so
-    // the line isn't.
+    // refuses it as over_constrained, naming it. The diagnosis carries it as conflicting.
+    // By hand, the two rows' gradients are both p2's x less p1's: one dependency, {k0000004,
+    // k0000005}, which the read lists, so the length it repeats is known now. The length, a
+    // driving dimension in the dependency, reads redundant and over-defines (addendum 4),
+    // and so does the conflicting distance_x: both read both ends, over defined, and the
+    // length names the line, over defined. The rest are unsolved, the sketch refused.
     let constraints = [
         FROM_AT_ORIGIN[0],
         FROM_AT_ORIGIN[1],
@@ -723,6 +765,7 @@ fn a_redundant_length_that_disagrees_past_decision_5_conflicts_as_data() {
             .collect::<Vec<_>>(),
         ["k0000005"]
     );
+    expect_dependencies(&got, &diagnosis, &[&["k0000004", "k0000005"]]);
     expect(
         &got,
         Want {
@@ -730,14 +773,14 @@ fn a_redundant_length_that_disagrees_past_decision_5_conflicts_as_data() {
             state: SketchState::OverDefined,
             dofs: 0,
             points: &[("p0000001", Over), ("p0000002", Over)],
-            lines: &[("n0000001", Fully)],
+            lines: &[("n0000001", Over)],
             circles: &[],
             arcs: &[],
             constraints: &[
                 ("k0000001", Unsolved),
                 ("k0000002", Unsolved),
                 ("k0000003", Unsolved),
-                ("k0000004", Unsolved),
+                ("k0000004", Redundant),
                 ("k0000005", Conflicting),
             ],
         },
@@ -975,11 +1018,13 @@ fn solidworks_faq_a_redundant_relation_leaves_the_rectangle_fully_defined() {
     // value past the rank, every point and line fully defined. Of the one dependent group
     // {horizontal, vertical, perpendicular}, each in one group and one row, PlaneGCS removes
     // the latest tag (1.1.3 GCS.cpp's contest, rule 3): the perpendicular, redundant. A
-    // perpendicular is a relation, so it over-defines nothing (addendum 2): the sketch is
-    // fully defined, as SolidWorks says.
+    // perpendicular is a relation, so it over-defines nothing (addendum 4: no driving
+    // dimension is in the dependency): the sketch is fully defined, as SolidWorks says. The
+    // read lists the one dependency.
     let sketch = rectangle(&[FAQ_PERPENDICULAR]);
-    let (answer, _, got) = solved(&sketch);
+    let (answer, diagnosis, got) = solved(&sketch);
     assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    expect_dependencies(&got, &diagnosis, &[&["x0y1z2a3", "z8a9b0c1", "zz000001"]]);
     let points: Vec<_> = RECTANGLE_POINTS.iter().map(|&p| (p, Fully)).collect();
     let lines: Vec<_> = RECTANGLE_LINES.iter().map(|&l| (l, Fully)).collect();
     expect(
@@ -1009,14 +1054,23 @@ fn solidworks_faq_a_redundant_angle_dimension_then_over_defines_the_rectangle() 
     // vertical, angle}, sharing nothing. Each constraint is in one group with one row, so
     // PlaneGCS removes the latest tag first, the angle, which settles its group, then the
     // perpendicular, which settles the other: both `redundant`. The perpendicular, a
-    // relation, over-defines nothing; the angle, a driving dimension, does (addendum 2): it
+    // relation, over-defines nothing; the angle, a driving dimension in a dependency, does
+    // (addendum 4; its group holds no other dimension, so the state is as addendum 2's): it
     // depends on both ends of both lines (the bottom's 0a1b2c3d and 4e5f6g7h, the right's
     // 4e5f6g7h and 8j9k0m1n), over defined, and names both lines, over defined; the fourth
     // corner 2p3q4r5s and the top and left, which it neither reads nor names, keep their
     // freedom, none: fully defined. The sketch is over defined.
     let sketch = rectangle(&[FAQ_PERPENDICULAR, FAQ_ANGLE]);
-    let (answer, _, got) = solved(&sketch);
+    let (answer, diagnosis, got) = solved(&sketch);
     assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    expect_dependencies(
+        &got,
+        &diagnosis,
+        &[
+            &["c0d1e2f3", "r2s3t4v5", "zz000002"],
+            &["x0y1z2a3", "z8a9b0c1", "zz000001"],
+        ],
+    );
     expect(
         &got,
         Want {
@@ -1046,31 +1100,48 @@ fn solidworks_faq_a_redundant_angle_dimension_then_over_defines_the_rectangle() 
 }
 
 #[test]
-fn a_redundant_angle_at_the_corner_a_perpendicular_holds_reads_by_dofs_when_planegcs_names_the_vertical()
+fn a_redundant_angle_at_the_corner_a_perpendicular_holds_over_defines_the_rectangle_though_planegcs_drops_the_vertical()
  {
-    // The one divergence from SolidWorks addendum 2 leaves (docs/ports/sketcher.md,
-    // *Definition states*): the perpendicular and the angle both at the bottom-right corner.
-    // By hand: PlaneGCS's perpendicular and angle rows are normalised, their gradients'
-    // entries about 1/40 and 1/20 against the horizontal's and vertical's 1, so the full
-    // pivoting of its QR takes every unit row first and leaves those two past the rank, each
-    // repeating the bottom's horizontal (c0d1e2f3) and the right's vertical (r2s3t4v5): the
-    // groups {horizontal, vertical, perpendicular} and {horizontal, vertical, angle}. The
-    // horizontal and the vertical are each in two, the most popular (1.1.3 GCS.cpp's
-    // contest, rule 1), tied on rows, so the later tag of the two is removed: the vertical,
-    // which settles both groups. It's a relation, so nothing over-defines: the sketch reads
-    // by `dofs`, 0, fully defined, every member fully defined, the angle satisfied, where
-    // SolidWorks would call the sketch over defined. An edit of the angle that breaks it is
-    // a conflict that edit's solve reports.
+    // The FAQ's sequence with the perpendicular and the angle both at the bottom-right corner:
+    // the case addendum 2's rule got wrong, and addendum 4's dependencies decide. By hand:
+    // PlaneGCS's perpendicular and angle rows are normalised, their gradients' entries about
+    // 1/40 and 1/20 against the horizontal's and vertical's 1, so the full pivoting of its QR
+    // takes every unit row first and leaves those two past the rank, each repeating the
+    // bottom's horizontal (c0d1e2f3) and the right's vertical (r2s3t4v5): the groups
+    // {horizontal, vertical, perpendicular} and {horizontal, vertical, angle}, the read's
+    // dependencies. The horizontal and the vertical are each in two, the most popular (1.1.3
+    // GCS.cpp's contest, rule 1), tied on rows, so the later tag of the two is dropped: the
+    // vertical, `redundant`, which settles both groups. The angle, kept, is a driving
+    // dimension in a dependency: its value is fixed by the others, so it reads `redundant`
+    // and over-defines (addendum 4), as SolidWorks' FAQ says of a redundant dimension,
+    // whichever constraint PlaneGCS dropped. It reads both ends of the bottom and the right
+    // (0a1b2c3d, 4e5f6g7h, 8j9k0m1n), over defined, and names both lines, over defined; the
+    // fourth corner and the top and left keep their freedom, none. The horizontal and the
+    // perpendicular, relations kept, are `satisfied`. The sketch is over defined.
     let perpendicular =
         r#"{"id": "zz000001", "type": "perpendicular", "a": "6t7v8w9x", "b": "a0b1c2d3"}"#;
     let sketch = rectangle(&[perpendicular, FAQ_ANGLE]);
-    let (answer, _, got) = solved(&sketch);
+    let (answer, diagnosis, got) = solved(&sketch);
     assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
-    let points: Vec<_> = RECTANGLE_POINTS.iter().map(|&p| (p, Fully)).collect();
-    let lines: Vec<_> = RECTANGLE_LINES.iter().map(|&l| (l, Fully)).collect();
+    assert_eq!(
+        diagnosis
+            .redundant
+            .iter()
+            .map(ElementId::as_str)
+            .collect::<Vec<_>>(),
+        ["r2s3t4v5"]
+    );
+    expect_dependencies(
+        &got,
+        &diagnosis,
+        &[
+            &["c0d1e2f3", "r2s3t4v5", "zz000001"],
+            &["c0d1e2f3", "r2s3t4v5", "zz000002"],
+        ],
+    );
     let mut constraints = rectangle_constraints(
         Satisfied,
-        &[("zz000001", Satisfied), ("zz000002", Satisfied)],
+        &[("zz000001", Satisfied), ("zz000002", Redundant)],
     );
     constraints[3].1 = Redundant;
     assert_eq!(constraints[3].0, "r2s3t4v5");
@@ -1078,10 +1149,20 @@ fn a_redundant_angle_at_the_corner_a_perpendicular_holds_reads_by_dofs_when_plan
         &got,
         Want {
             problem: None,
-            state: SketchState::FullyDefined,
+            state: SketchState::OverDefined,
             dofs: 0,
-            points: &points,
-            lines: &lines,
+            points: &[
+                ("0a1b2c3d", Over),
+                ("2p3q4r5s", Fully),
+                ("4e5f6g7h", Over),
+                ("8j9k0m1n", Over),
+            ],
+            lines: &[
+                ("6t7v8w9x", Over),
+                ("a0b1c2d3", Over),
+                ("j8k9m0n1", Fully),
+                ("p2q3r4s5", Fully),
+            ],
             circles: &[],
             arcs: &[],
             constraints: &constraints,
@@ -1090,16 +1171,16 @@ fn a_redundant_angle_at_the_corner_a_perpendicular_holds_reads_by_dofs_when_plan
 }
 
 #[test]
-fn a_redundant_distance_over_defines_the_line_it_repeats_the_length_of() {
+fn a_redundant_distance_and_the_length_it_repeats_over_define_the_line_and_its_ends() {
     // The dimensioned line from the origin, horizontal, 10 long, and a driving distance of
     // 10 between its ends (k0000005). By hand: the distance's row, |p2 − p1| − 10, has the
     // length's gradient exactly, (−1, 0) at p1 and (1, 0) at p2, so the two are one group
     // (the horizontal's gradient, in the ends' y, and the placing x and y are independent of
     // them): 5 rows of rank 4, 0 left. Each one row, in one group: PlaneGCS removes the later
-    // tag, the distance, `redundant`. A driving dimension over-defines (addendum 2): it
-    // depends on both ends, over defined; it names only points, so the line, its ends fixed,
-    // is fully defined (a curve takes its points' freedom, not their over-definition). The
-    // sketch is over defined.
+    // tag, the distance, `redundant`. Both are driving dimensions in the dependency, so both
+    // read `redundant` and over-define (addendum 4): each depends on both ends, over
+    // defined, and the length names the line, over defined (the distance names only
+    // points). The sketch is over defined.
     let constraints = [
         FROM_AT_ORIGIN[0],
         FROM_AT_ORIGIN[1],
@@ -1114,8 +1195,17 @@ fn a_redundant_distance_over_defines_the_line_it_repeats_the_length_of() {
         &[],
         &constraints,
     );
-    let (answer, _, got) = solved(&sketch);
+    let (answer, diagnosis, got) = solved(&sketch);
     assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    assert_eq!(
+        diagnosis
+            .redundant
+            .iter()
+            .map(ElementId::as_str)
+            .collect::<Vec<_>>(),
+        ["k0000005"]
+    );
+    expect_dependencies(&got, &diagnosis, &[&["k0000004", "k0000005"]]);
     expect(
         &got,
         Want {
@@ -1123,14 +1213,14 @@ fn a_redundant_distance_over_defines_the_line_it_repeats_the_length_of() {
             state: SketchState::OverDefined,
             dofs: 0,
             points: &[("p0000001", Over), ("p0000002", Over)],
-            lines: &[("n0000001", Fully)],
+            lines: &[("n0000001", Over)],
             circles: &[],
             arcs: &[],
             constraints: &[
                 ("k0000001", Satisfied),
                 ("k0000002", Satisfied),
                 ("k0000003", Satisfied),
-                ("k0000004", Satisfied),
+                ("k0000004", Redundant),
                 ("k0000005", Redundant),
             ],
         },
@@ -1162,66 +1252,80 @@ fn circle_through_a_placed_point(on: &str, radius: &str) -> Sketch {
 }
 
 #[test]
-fn a_redundant_radius_over_defines_its_circle_and_a_redundant_on_in_its_place_doesnt() {
+fn a_radius_repeating_an_on_of_a_placed_point_over_defines_its_circle_whichever_is_tagged_later() {
     // The centre and a point of the circle both placed, so the `on` fixes the radius and a
     // radius dimension repeats it. By hand: 5 unknowns (p1's x and y, p2's, the radius), 6
     // rows of rank 5, 0 left. The `on`'s gradient, p2 − p1 over its length minus the
     // radius's, is (1, 0) at p2, (−1, 0) at p1, −1 in the radius: p2's x row less p1's x row
-    // less the radius row. So the one group is {k0000001, k0000003, on, radius}, each one row
-    // in one group, and PlaneGCS removes the latest tag of the four.
+    // less the radius row. So the one dependency is {k0000001, k0000003, on, radius}: each
+    // of the four is fixed by the other three (the y placings, k0000002 and k0000004, are in
+    // none). PlaneGCS drops the latest tag of the four, each one row in one group.
     //
-    // The radius latest (k0000006): it's `redundant`, a driving dimension, so it over-defines
-    // (addendum 2): it names the circle, over defined, and reads no point, so both points
-    // keep their freedom, none: fully defined. The sketch is over defined.
-    let sketch = circle_through_a_placed_point("k0000005", "k0000006");
-    let (answer, _, got) = solved(&sketch);
-    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    // Addendum 4: the three driving dimensions in it, p1's x (k0000001), p2's x (k0000003),
+    // and the radius, read `redundant` and over-define, whichever is dropped: p1 and p2,
+    // which they read, and the circle, which the radius names, are over defined, and so is
+    // the sketch. The `on`, a relation, reads what the solver lists: `redundant` when it's
+    // the latest tag, dropped, and `satisfied` when it's kept. Addendum 2's rule read the
+    // second order fully defined, the divergence this removes.
     let constraints = |on, radius| {
         vec![
-            ("k0000001", Satisfied),
+            ("k0000001", Redundant),
             ("k0000002", Satisfied),
-            ("k0000003", Satisfied),
+            ("k0000003", Redundant),
             ("k0000004", Satisfied),
             ("k0000005", on),
             ("k0000006", radius),
         ]
     };
-    expect(
-        &got,
-        Want {
-            problem: None,
-            state: SketchState::OverDefined,
-            dofs: 0,
-            points: &[("p0000001", Fully), ("p0000002", Fully)],
-            lines: &[],
-            circles: &[("c0000001", Over)],
-            arcs: &[],
-            constraints: &constraints(Satisfied, Redundant),
-        },
-    );
-    // The `on` latest (k0000006, the radius k0000005): the `on` is `redundant`, a relation,
-    // so nothing over-defines and the sketch reads by `dofs`, 0: every member fully defined,
-    // the radius satisfied (the mixed group's divergence from SolidWorks, which would call
-    // the repeated radius over defining whichever is named).
-    let sketch = circle_through_a_placed_point("k0000006", "k0000005");
-    let (answer, _, got) = solved(&sketch);
-    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
-    expect(
-        &got,
-        Want {
-            problem: None,
-            state: SketchState::FullyDefined,
-            dofs: 0,
-            points: &[("p0000001", Fully), ("p0000002", Fully)],
-            lines: &[],
-            circles: &[("c0000001", Fully)],
-            arcs: &[],
-            constraints: &constraints(Satisfied, Redundant)
-                .into_iter()
-                .map(|(id, s)| (id, if id == "k0000005" { Satisfied } else { s }))
+    // The `on` k0000005 kept, satisfied, the radius k0000006 dropped; then the radius
+    // k0000005 kept and the `on` k0000006 dropped, both redundant.
+    for (on, radius, dropped, states) in [
+        (
+            "k0000005",
+            "k0000006",
+            "k0000006",
+            constraints(Satisfied, Redundant),
+        ),
+        (
+            "k0000006",
+            "k0000005",
+            "k0000006",
+            constraints(Redundant, Redundant),
+        ),
+    ] {
+        let sketch = circle_through_a_placed_point(on, radius);
+        let (answer, diagnosis, got) = solved(&sketch);
+        assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+        assert_eq!(
+            diagnosis
+                .redundant
+                .iter()
+                .map(ElementId::as_str)
                 .collect::<Vec<_>>(),
-        },
-    );
+            [dropped],
+            "the on {on}"
+        );
+        expect_dependencies(
+            &got,
+            &diagnosis,
+            &[&["k0000001", "k0000003", "k0000005", "k0000006"]],
+        );
+        // The radius in either order: redundant.
+        assert!(states.contains(&(radius, Redundant)), "{radius}");
+        expect(
+            &got,
+            Want {
+                problem: None,
+                state: SketchState::OverDefined,
+                dofs: 0,
+                points: &[("p0000001", Over), ("p0000002", Over)],
+                lines: &[],
+                circles: &[("c0000001", Over)],
+                arcs: &[],
+                constraints: &states,
+            },
+        );
+    }
 }
 
 #[test]
@@ -1272,20 +1376,26 @@ fn a_reference_dimension_beside_a_redundant_relation_is_satisfied_and_the_sketch
 }
 
 #[test]
-fn a_point_on_two_circles_touching_at_it_keeps_its_freedom_beside_the_redundant_on() {
+fn a_point_on_two_circles_touching_at_it_keeps_its_freedom_and_the_dimensions_placing_them_over_define_them()
+ {
     // Two fully dimensioned circles of radius 5, centres 10 apart, touching at (5, 0), and a
     // point on both (1.1.3: DoF 1, redundant [7], the second `on`). At the point the two
-    // circles' normals line up, so to first order the two `on`s are one equation: one is
-    // redundant (the first-order rule), the point keeps a degree it can't use, 8 unknowns,
-    // rank 7. The redundant `on` reads the point and its circle's centre and radius
-    // (`PointOnCircle`), and names the circle, but it's a relation, so under addendum 2 it
-    // over-defines nothing: every member reads by its freedom, and the sketch by `dofs`.
-    // Re-derived by hand: both centres and radii are fixed by their own dimensions (p1 by
-    // k1, k2; p2 by k4, k5; the radii by k3, k6), all pivots. Each `on`'s gradient in the
-    // point is the unit vector from its circle's centre, (1, 0) and (−1, 0) at (5, 0): both
-    // zero in the point's y, a zero column, which is the one value past the rank (8 − 7 =
-    // 1). So the point is under defined, both centres and both circles fully defined, and
-    // the sketch under defined with its 1 degree left (FreeCAD 1.1.3's DoF 1).
+    // circles' normals line up, so to first order the two `on`s repeat each other through
+    // the circles' placings: 8 unknowns, rank 7. By hand: both centres and radii are fixed by
+    // their own dimensions (p1 by k1, k2; p2 by k4, k5; the radii by k3, k6). Each `on`'s
+    // gradient in the point is the unit vector from its circle's centre, (1, 0) and (−1, 0)
+    // at (5, 0), so the sum of the two rows has none in the point: it's p2's x less p1's x
+    // less both radii, (−1, 0) at p1, (1, 0) at p2, −1 and −1 in the radii. So the one
+    // dependency is {k1, k3, k4, k6, k7, k8} (the y placings, k2 and k5, in none), and the
+    // point's y, in no row, is the one value past the rank (8 − 7 = 1, FreeCAD 1.1.3's DoF 1).
+    // PlaneGCS drops the latest tag, the second `on`, `redundant`; the first, kept, a
+    // relation, `satisfied`.
+    //
+    // Addendum 4: the four driving dimensions in the dependency read `redundant` and
+    // over-define: p1 and p2, which k1 and k4 read, and both circles, which the radii name,
+    // are over defined, and so is the sketch, `dofs` 1. The point, which none of them reads,
+    // keeps its freedom: under defined. (The dependency is the first-order one: a radius
+    // edited a little moves the touching point, and the solve finds it.)
     let points = [
         point("p0000001", 0.0, 0.0),
         point("p0000002", 10.0, 0.0),
@@ -1307,6 +1417,13 @@ fn a_point_on_two_circles_touching_at_it_keeps_its_freedom_beside_the_redundant_
     ];
     let sketch = sketch_of(&points, &[], &circles, &[], &constraints);
     let (_, diagnosis, got) = solved(&sketch);
+    expect_dependencies(
+        &got,
+        &diagnosis,
+        &[&[
+            "k0000001", "k0000003", "k0000004", "k0000006", "k0000007", "k0000008",
+        ]],
+    );
     let depended_on: Vec<&str> = diagnosis.points_depended_on[&ElementId::new("k0000008").unwrap()]
         .iter()
         .map(ElementId::as_str)
@@ -1316,23 +1433,19 @@ fn a_point_on_two_circles_touching_at_it_keeps_its_freedom_beside_the_redundant_
         &got,
         Want {
             problem: None,
-            state: SketchState::UnderDefined,
+            state: SketchState::OverDefined,
             dofs: 1,
-            points: &[
-                ("p0000001", Fully),
-                ("p0000002", Fully),
-                ("p0000003", Under),
-            ],
+            points: &[("p0000001", Over), ("p0000002", Over), ("p0000003", Under)],
             lines: &[],
-            circles: &[("c0000001", Fully), ("c0000002", Fully)],
+            circles: &[("c0000001", Over), ("c0000002", Over)],
             arcs: &[],
             constraints: &[
-                ("k0000001", Satisfied),
+                ("k0000001", Redundant),
                 ("k0000002", Satisfied),
-                ("k0000003", Satisfied),
-                ("k0000004", Satisfied),
+                ("k0000003", Redundant),
+                ("k0000004", Redundant),
                 ("k0000005", Satisfied),
-                ("k0000006", Satisfied),
+                ("k0000006", Redundant),
                 ("k0000007", Satisfied),
                 ("k0000008", Redundant),
             ],
@@ -1341,11 +1454,12 @@ fn a_point_on_two_circles_touching_at_it_keeps_its_freedom_beside_the_redundant_
 }
 
 #[test]
-fn a_doubled_radius_over_defines_its_circle_and_never_its_centre() {
-    // A radius reads only the radius: the second one, redundant, a driving dimension, so it
-    // over-defines (addendum 2): it names the circle (over defined), the sketch is over
-    // defined, and it reads no point, so the centre, placed by its own dimensions, stays fully
-    // defined. 3 unknowns, rank 3.
+fn a_doubled_radius_over_defines_its_circle_both_radii_redundant_and_never_its_centre() {
+    // A radius reads only the radius: two of them, one row each, the same row, so one
+    // dependency of the two (k0000003, k0000004), the later dropped. Both are driving
+    // dimensions in it, so both read redundant and over-define (addendum 4): they name the
+    // circle (over defined), the sketch is over defined, and they read no point, so the
+    // centre, placed by its own dimensions, stays fully defined. 3 unknowns, rank 3.
     let constraints = [
         FROM_AT_ORIGIN[0],
         FROM_AT_ORIGIN[1],
@@ -1360,7 +1474,9 @@ fn a_doubled_radius_over_defines_its_circle_and_never_its_centre() {
         &constraints,
     );
     let (_, diagnosis, got) = solved(&sketch);
+    assert!(diagnosis.points_depended_on[&ElementId::new("k0000003").unwrap()].is_empty());
     assert!(diagnosis.points_depended_on[&ElementId::new("k0000004").unwrap()].is_empty());
+    expect_dependencies(&got, &diagnosis, &[&["k0000003", "k0000004"]]);
     expect(
         &got,
         Want {
@@ -1374,7 +1490,7 @@ fn a_doubled_radius_over_defines_its_circle_and_never_its_centre() {
             constraints: &[
                 ("k0000001", Satisfied),
                 ("k0000002", Satisfied),
-                ("k0000003", Satisfied),
+                ("k0000003", Redundant),
                 ("k0000004", Redundant),
             ],
         },
@@ -1418,7 +1534,8 @@ fn an_arcs_ends_mirrored_about_a_line_its_centre_ends_are_one_row_and_fully_defi
         ARC_START_Y,
     ];
     let sketch = sketch_of(&points, &lines, &[], &arcs, &constraints);
-    let (_, _, got) = solved(&sketch);
+    let (_, diagnosis, got) = solved(&sketch);
+    expect_dependencies(&got, &diagnosis, &[]);
     expect(
         &got,
         Want {
@@ -1475,7 +1592,8 @@ fn an_arcs_ends_mirrored_about_a_line_its_centre_is_on_are_one_row_and_fully_def
     let sketch = arc_held_on_a_line(
         r#"{"id": "k0000005", "type": "on", "point": "p0000001", "curve": "n0000001"}"#,
     );
-    let (_, _, got) = solved(&sketch);
+    let (_, diagnosis, got) = solved(&sketch);
+    expect_dependencies(&got, &diagnosis, &[]);
     assert_eq!(
         (got.state, got.dofs),
         (SketchState::FullyDefined, 0),
@@ -1495,15 +1613,22 @@ fn an_arcs_ends_mirrored_about_a_line_a_one_row_constraint_puts_its_centre_on_lo
     // two holds the translation recognises, so the symmetric's both rows are sent, 14
     // equations for 13 unknowns, one repeating. Of the dependent group PlaneGCS removes the
     // constraint with fewer rows on a tie in popularity (1.1.3 GCS.cpp's contest): the
-    // one-row holder, redundant. It's a relation, so under addendum 2 it over-defines
-    // nothing; re-derived: 13 unknowns, rank 13 (14 rows, one repeating), 0 left, so no value
-    // is past the rank and every point, the line, and the arc are fully defined, and so is
-    // the sketch, the holder still listed redundant.
+    // one-row holder, redundant. The dependency, by hand: the symmetric's midpoint row puts
+    // the chord's middle on the line, whose x is its ends' (the vertical, k0000003, ties
+    // them); its perpendicular row and the arc's rules put that middle at the centre's x; and
+    // the holder puts the centre's x at the line's end's. So {k0000003, k0000005, k0000006}
+    // (the rules, tag 0, left out; the line's placing x, k0000001, isn't needed: every x in
+    // it is measured from the line's own end). No driving dimension is in it (the arc's
+    // radius, k0000008, whose row the rules eliminate, isn't), so nothing over-defines
+    // (addendum 4): 13 unknowns, rank 13 (14 rows, one repeating), 0 left, so no value is
+    // past the rank and every point, the line, and the arc are fully defined, and so is the
+    // sketch, the holder still listed redundant.
     let sketch = arc_held_on_a_line(
         r#"{"id": "k0000005", "type": "vertical_points", "a": "p0000004", "b": "p0000001"}"#,
     );
-    let (answer, _, got) = solved(&sketch);
+    let (answer, diagnosis, got) = solved(&sketch);
     assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    expect_dependencies(&got, &diagnosis, &[&["k0000003", "k0000005", "k0000006"]]);
     expect(
         &got,
         Want {
@@ -1536,13 +1661,84 @@ fn an_arcs_ends_mirrored_about_a_line_a_one_row_constraint_puts_its_centre_on_lo
 }
 
 #[test]
+fn an_arcs_ends_mirrored_about_a_line_a_distance_x_puts_its_centre_on_over_define_the_centre_and_the_lines_end()
+ {
+    // The centre put on the line by a `distance_x` of 0 from the origin, a dimension: not a
+    // hold the translation recognises, so the symmetric's both rows are sent, 14 equations
+    // for 13 unknowns, one dependency. By hand, as for the vertical_points holder, but the
+    // holder measures the centre's x from the origin, so the line's own x comes in through
+    // its placing: {k0000001 (the line's end's x), k0000003 (the vertical), k0000005 (the
+    // holder), k0000006 (the symmetric)}, the arc's rules, tag 0, left out. The arc's radius
+    // (k0000008) isn't in it: its row is the rules' to eliminate, and nothing else reads the
+    // radius. Of the group's one-row constraints PlaneGCS drops the latest tag on the tie in
+    // popularity and rows (1.1.3 GCS.cpp's contest, rules 2 and 3): the holder, `redundant`.
+    //
+    // Addendum 4: the two driving dimensions in the dependency, the line's placing x and the
+    // holder, read `redundant` and over-define: the line's end p0000004 and the centre
+    // p0000001, which they read, are over defined, and so is the sketch. They name only
+    // points, so the line and the arc keep their freedom, none: fully defined, as do the
+    // arc's ends and the line's other end. The vertical and the symmetric, relations kept,
+    // are `satisfied`; 0 left.
+    let sketch = arc_held_on_a_line(
+        r#"{"id": "k0000005", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+    );
+    let (answer, diagnosis, got) = solved(&sketch);
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    assert_eq!(
+        diagnosis
+            .redundant
+            .iter()
+            .map(ElementId::as_str)
+            .collect::<Vec<_>>(),
+        ["k0000005"]
+    );
+    expect_dependencies(
+        &got,
+        &diagnosis,
+        &[&["k0000001", "k0000003", "k0000005", "k0000006"]],
+    );
+    expect(
+        &got,
+        Want {
+            problem: None,
+            state: SketchState::OverDefined,
+            dofs: 0,
+            points: &[
+                ("p0000001", Over),
+                ("p0000002", Fully),
+                ("p0000003", Fully),
+                ("p0000004", Over),
+                ("p0000005", Fully),
+            ],
+            lines: &[("n0000001", Fully)],
+            circles: &[],
+            arcs: &[("a0000001", Fully)],
+            constraints: &[
+                ("k0000001", Redundant),
+                ("k0000002", Satisfied),
+                ("k0000003", Satisfied),
+                ("k0000004", Satisfied),
+                ("k0000005", Redundant),
+                ("k0000006", Satisfied),
+                ("k0000007", Satisfied),
+                ("k0000008", Satisfied),
+                ("k0000009", Satisfied),
+            ],
+        },
+    );
+}
+
+#[test]
 fn an_arcs_ends_mirrored_about_a_line_a_midpoint_puts_its_centre_on_flag_the_symmetry() {
     // The centre held at the line's middle by a `midpoint` (two rows, like the symmetric):
     // the symmetric's both rows are sent, 14 equations for 13 unknowns, and the two tie on
     // rows, so PlaneGCS removes the later by tag: the symmetric, every row of it dependent,
     // so wholly redundant (item 32's addendum, A: `redundant` when both its rows are in the
-    // dependent set, `partially_redundant` when one is). A symmetric is a relation, so under
-    // addendum 2 it over-defines nothing; re-derived: 13 unknowns, rank 13, 0 left, every
+    // dependent set, `partially_redundant` when one is). By hand, the dependency is the
+    // midpoint's two rows and the symmetric's two (its perpendicular row and its midpoint
+    // row both have a coefficient in it, with the arc's rules): {k0000005, k0000006}, the
+    // symmetric's tag once though two of its rows are in it. No dimension is in it, so
+    // nothing over-defines (addendum 4); re-derived: 13 unknowns, rank 13, 0 left, every
     // value a pivot, so every point, the line, the arc, and the sketch fully defined, the
     // symmetry still listed redundant.
     let (mut points, arcs) = mirrored_arc();
@@ -1560,8 +1756,13 @@ fn an_arcs_ends_mirrored_about_a_line_a_midpoint_puts_its_centre_on_flag_the_sym
         ARC_START_Y,
     ];
     let sketch = sketch_of(&points, &lines, &[], &arcs, &constraints);
-    let (answer, _, got) = solved(&sketch);
+    let (answer, diagnosis, got) = solved(&sketch);
     assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    expect_dependencies(&got, &diagnosis, &[&["k0000005", "k0000006"]]);
+    assert_eq!(
+        answer.solved().dependent_groups,
+        [vec![silico_protocol::Tag(5), silico_protocol::Tag(6)]]
+    );
     expect(
         &got,
         Want {
@@ -1587,6 +1788,63 @@ fn an_arcs_ends_mirrored_about_a_line_a_midpoint_puts_its_centre_on_flag_the_sym
                 ("k0000006", Redundant),
                 ("k0000008", Satisfied),
                 ("k0000009", Satisfied),
+            ],
+        },
+    );
+}
+
+#[test]
+fn a_midpoint_given_twice_is_one_dependency_listed_once_though_each_of_its_rows_repeats() {
+    // A line from p1 (0, 0) to p2 (10, 0), placed, horizontal, 10 long, and p3 (5, 0) put at
+    // its middle twice (k0000005, k0000006, two rows each: the middle's x and y). By hand:
+    // 6 unknowns, 8 rows of rank 6: the second midpoint's x row is the first's, and so is its
+    // y row, two dependencies, {k5's x, k6's x} and {k5's y, k6's y}. By tag both are {k5,
+    // k6}: PlaneGCS's two groups, one dependency of the sketch's constraints, listed once.
+    // Each midpoint is in both groups with two rows, a tie, so PlaneGCS drops the later, k6,
+    // both rows: `redundant`. Relations only, so nothing over-defines: the sketch fully
+    // defined, 0 left, every member fully defined.
+    let points = [
+        point("p0000001", 0.0, 0.0),
+        point("p0000002", 10.0, 0.0),
+        point("p0000003", 5.0, 0.0),
+    ];
+    let constraints = [
+        FROM_AT_ORIGIN[0],
+        FROM_AT_ORIGIN[1],
+        HORIZONTAL,
+        LENGTH_10,
+        r#"{"id": "k0000005", "type": "midpoint", "point": "p0000003", "line": "n0000001"}"#,
+        r#"{"id": "k0000006", "type": "midpoint", "point": "p0000003", "line": "n0000001"}"#,
+    ];
+    let sketch = sketch_of(&points, &one_line(), &[], &[], &constraints);
+    let (answer, diagnosis, got) = solved(&sketch);
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    assert_eq!(
+        answer.solved().dependent_groups,
+        [vec![silico_protocol::Tag(5), silico_protocol::Tag(6)]]
+    );
+    expect_dependencies(&got, &diagnosis, &[&["k0000005", "k0000006"]]);
+    expect(
+        &got,
+        Want {
+            problem: None,
+            state: SketchState::FullyDefined,
+            dofs: 0,
+            points: &[
+                ("p0000001", Fully),
+                ("p0000002", Fully),
+                ("p0000003", Fully),
+            ],
+            lines: &[("n0000001", Fully)],
+            circles: &[],
+            arcs: &[],
+            constraints: &[
+                ("k0000001", Satisfied),
+                ("k0000002", Satisfied),
+                ("k0000003", Satisfied),
+                ("k0000004", Satisfied),
+                ("k0000005", Satisfied),
+                ("k0000006", Redundant),
             ],
         },
     );
@@ -1958,29 +2216,38 @@ const DIMENSIONS: [&str; 8] = [
     "diameter",
 ];
 
-/// Whether `c`, in `state`, over-defines, as addendum 2's §4 states it: conflicting, or a
-/// dimension (by its word, [`DIMENSIONS`]) redundant or partially redundant.
+/// Whether `c` is a driving dimension: a dimension by its word ([`DIMENSIONS`]), not a
+/// reference.
+fn driving_dimension(c: &silico_core::document::SketchConstraint) -> bool {
+    DIMENSIONS.contains(&c.form.type_name()) && c.form.driving() == Some(true)
+}
+
+/// Whether `c`, in `state`, over-defines, as addendum 4 states it: conflicting, or a
+/// driving dimension in one of `dependencies`.
 fn over_defining_by_kind(
     c: &silico_core::document::SketchConstraint,
     state: ConstraintState,
+    dependencies: &BTreeSet<BTreeSet<ElementId>>,
 ) -> bool {
-    use ConstraintState::PartiallyRedundant;
-    state == Conflicting
-        || (matches!(state, Redundant | PartiallyRedundant)
-            && DIMENSIONS.contains(&c.form.type_name()))
+    state == Conflicting || (driving_dimension(c) && dependencies.iter().any(|g| g.contains(&c.id)))
 }
 
-/// Item 32's invariants on one sketch's states, solved by `worker`, as addendum 2's §4
-/// revises them: fully_defined ⇒ every member fully defined, no constraint conflicting, and
-/// no dimension redundant or partially redundant (a redundant relation may be there);
-/// under_defined ⇒ dofs > 0, some member under defined, and nothing over-defining (a
-/// redundant relation may be there); over_defined ⇒ some constraint conflicting or some
-/// dimension redundant or partially redundant, and some member over defined; a member over
-/// defined exactly when some constraint over-defines; an `over_constrained` problem's
+/// Item 32's invariants on one sketch's states, solved by `worker`, as addendum 4 revises
+/// them: fully_defined ⇒ every member fully defined, no constraint conflicting, and no
+/// driving dimension in a dependency (a relation may be); under_defined ⇒ dofs > 0, some
+/// member under defined, and nothing over-defining; over_defined ⇒ some constraint
+/// conflicting or some driving dimension in a dependency, and some member over defined; a
+/// member over defined exactly when some constraint over-defines; addendum 4's own (its
+/// item 4): over_defined exactly when the solve was refused as `over_constrained` or, solved,
+/// some driving dimension reads redundant; a driving dimension not conflicting reads
+/// redundant exactly when it's in a dependency; every constraint PlaneGCS dropped or found
+/// in conflict is in a dependency; the read's dependencies the diagnosis's, each of tags the
+/// solver gave; an `over_constrained` problem's
 /// elements are the conflicting constraints; a solve's problem exactly when the sketch is
 /// refused, every constraint not flagged then unsolved; every satisfied driving constraint
 /// met on the solution, its residual within decision 5's least window over the whole sketch
-/// (no smaller than its part's), and every redundant or partially redundant one kept within
+/// (no smaller than its part's), as is every driving dimension that reads redundant though
+/// PlaneGCS kept it, and every one PlaneGCS dropped kept within
 /// the most any part's window can be (its gap, the read's own, at most that window or
 /// [`TANGENCY_TOLERANCE`] over [`LEAST_TANGENCY`]); and, solved, the diagnosis saying what
 /// the solution says of the degrees of freedom, the free members, and the repetitions kept.
@@ -2025,8 +2292,66 @@ fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), Str
     let over_defining = sketch
         .constraints
         .iter()
-        .any(|c| over_defining_by_kind(c, got.constraints[&c.id]));
+        .any(|c| over_defining_by_kind(c, got.constraints[&c.id], &got.dependencies));
     let fail = |what: &str| Err(format!("{what}: {got:#?}"));
+    // Addendum 4's item 4. The read's dependencies are the diagnosis's, and the solver's
+    // groups by ID, each group once.
+    let by_id: BTreeSet<BTreeSet<ElementId>> = answer
+        .solved()
+        .dependent_groups
+        .iter()
+        .map(|g| {
+            g.iter()
+                .map(|&t| translation.constraint_id(t).cloned().unwrap())
+                .collect()
+        })
+        .collect();
+    if got.dependencies != diagnosis.dependencies
+        || got.dependencies != by_id
+        || by_id.len() != answer.solved().dependent_groups.len()
+    {
+        return fail("the dependencies aren't the solver's groups by ID, each once");
+    }
+    let dependent = |id: &ElementId| got.dependencies.iter().any(|g| g.contains(id));
+    let refused_over_constrained = got
+        .solve_problem
+        .as_ref()
+        .is_some_and(|e| e.code() == ErrorCode::OverConstrained);
+    let dimension_redundant = sketch
+        .constraints
+        .iter()
+        .any(|c| driving_dimension(c) && got.constraints[&c.id] == Redundant);
+    if (got.state == SketchState::OverDefined)
+        != (refused_over_constrained || (answer.outcome().is_ok() && dimension_redundant))
+    {
+        return fail(
+            "over defined, but not exactly when refused over-constrained or a driving dimension reads redundant",
+        );
+    }
+    for c in sketch.constraints.iter().filter(|c| driving_dimension(c)) {
+        let state = got.constraints[&c.id];
+        if state != Conflicting && (state == Redundant) != dependent(&c.id) {
+            return fail(&format!(
+                "{} reads {state:?}, but it is{} in a dependency",
+                c.id,
+                if dependent(&c.id) { "" } else { " not" }
+            ));
+        }
+    }
+    let solver_flagged = answer
+        .solved()
+        .conflicting
+        .iter()
+        .chain(&answer.solved().redundant)
+        .chain(&answer.solved().partially_redundant);
+    for &tag in solver_flagged {
+        let id = translation.constraint_id(tag).unwrap();
+        if !dependent(id) {
+            return fail(&format!(
+                "{id}, which PlaneGCS flagged, is in no dependency"
+            ));
+        }
+    }
     match got.state {
         SketchState::FullyDefined => {
             if members().any(|&s| s != Fully) || over_defining {
@@ -2097,7 +2422,14 @@ fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), Str
         let extent = ((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1])).sqrt();
         let window = REDUNDANCY_GAP_MM.max(EXTENT_TOLERANCE * extent);
         for (i, c) in sketch_sorted(sketch).iter().enumerate() {
-            if got.constraints[&c.id] != Satisfied || c.form.driving() == Some(false) {
+            // Met where the solve put it: a satisfied driving constraint, and a driving
+            // dimension that reads redundant though PlaneGCS kept it.
+            let kept_redundant = got.constraints[&c.id] == Redundant
+                && !diagnosis.redundant.contains(&c.id)
+                && !diagnosis.partially_redundant.contains(&c.id);
+            if !(got.constraints[&c.id] == Satisfied || kept_redundant)
+                || c.form.driving() == Some(false)
+            {
                 continue;
             }
             let tag = silico_protocol::Tag(i as u32 + 1);
@@ -2107,16 +2439,23 @@ fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), Str
                 other => return Err(format!("{} satisfied but {other:?} off: {got:#?}", c.id)),
             }
         }
-        // Every redundant or partially redundant constraint kept, its gap (decision 5's, in
-        // millimetres) within the most a part's window can be: a part's extent is at most the
-        // whole's, and its tangency term at most TANGENCY_TOLERANCE / LEAST_TANGENCY.
+        // Every constraint PlaneGCS dropped, redundant or partially redundant, kept, its gap
+        // (decision 5's, in millimetres) within the most a part's window can be: a part's
+        // extent is at most the whole's, and its tangency term at most TANGENCY_TOLERANCE /
+        // LEAST_TANGENCY.
         let solution = answer.outcome().map_err(|e| e.to_string())?;
         let most = window.max(TANGENCY_TOLERANCE / LEAST_TANGENCY);
         for (id, state) in &got.constraints {
-            let gap = match state {
-                Redundant => solution.redundant.get(id),
-                ConstraintState::PartiallyRedundant => solution.partially_redundant.get(id),
-                _ => continue,
+            if !matches!(state, Redundant | ConstraintState::PartiallyRedundant) {
+                continue;
+            }
+            let gap = if diagnosis.redundant.contains(id) {
+                solution.redundant.get(id)
+            } else if diagnosis.partially_redundant.contains(id) {
+                solution.partially_redundant.get(id)
+            } else {
+                // A driving dimension in a dependency PlaneGCS kept: checked as met above.
+                continue;
             };
             match gap {
                 Some(&g) if g.is_finite() && (0.0..=most).contains(&g) => {}
@@ -2286,7 +2625,7 @@ fn the_generator_reaches_every_sketch_state_and_every_constraint_state() {
     // Addendum 2's two sides, solved, so its invariants are checked on both: sketches whose
     // only repetitions are relations, read by their degrees of freedom (fully and under
     // defined both reached), and sketches with a repeated dimension, over defined.
-    let (mut relation_only, mut dimension) = (BTreeSet::new(), 0);
+    let (mut relation_only, mut dimension, mut kept_dimension) = (BTreeSet::new(), 0, 0);
     for seed in 0..4000u64 {
         let Some(sketch) = generated(seed) else {
             continue;
@@ -2312,14 +2651,27 @@ fn the_generator_reaches_every_sketch_state_and_every_constraint_state() {
         } else if repeated(false) {
             relation_only.insert(got.state);
         }
+        let diagnosis = answer.diagnosed().unwrap().diagnosis();
+        kept_dimension += usize::from(sketch.constraints.iter().any(|c| {
+            driving_dimension(c)
+                && got.constraints[&c.id] == Redundant
+                && !diagnosis.redundant.contains(&c.id)
+                && !diagnosis.partially_redundant.contains(&c.id)
+        }));
     }
     assert!(
         dimension >= 5,
         "{dimension} solved with a repeated dimension"
     );
+    // Addendum 4's own case, so its invariants are checked on it: a driving dimension in a
+    // dependency that PlaneGCS kept, which reads redundant all the same.
+    assert!(
+        kept_dimension >= 5,
+        "{kept_dimension} solved with a driving dimension in a dependency PlaneGCS kept"
+    );
     // The generator draws too few constraints to fix a sketch whole with a relation to
     // spare, so a fully defined one with a repeated relation is the rectangle's to reach
-    // (each_repetition_of_the_rectangle_alone_reads_by_its_kind, below).
+    // (each_repetition_of_the_rectangle_alone_reads_by_its_dependency, below).
     assert!(
         relation_only.contains(&SketchState::UnderDefined),
         "the states of sketches whose only repetitions are relations: {relation_only:?}"
@@ -2426,38 +2778,106 @@ fn rectangle_repeating(mask: u32) -> Sketch {
     rectangle(&extra)
 }
 
+/// The one dependency each of [`RECTANGLE_REPEATS`] makes alone with the rectangle's eight
+/// constraints, counted by hand from the rows' gradients at the drawing (the rectangle's
+/// eight are independent, so each repetition makes exactly one): a repetition of a
+/// direction is in one with what it repeats; a perpendicular or a parallel with the two
+/// directions that fix its lines'; an equal of the bottom and top with the two verticals
+/// (both lines' lengths are their ends' x apart, which the verticals tie) and the two
+/// horizontals, which first order leaves out but PlaneGCS doesn't: its equal-length row
+/// keeps a derivative of ±1e-10 where the true one is 0 (1.1.3 Constraints.cpp,
+/// `ConstraintEqualLineLength::errorgrad`, so a horizontal or vertical line's ends aren't
+/// taken as free), here in the four ends' y, which only the horizontals' rows can give, with
+/// coefficients above the diagnosis's 1e-10; the top's length
+/// with the bottom's and both verticals; the left's with the right's and both horizontals; the
+/// far corner's x with the bottom's length and the first corner's x; its y with the right's
+/// length, the bottom's horizontal, and the first corner's y; the angle at the bottom right
+/// with the bottom's horizontal and the right's vertical (its gradient, at 90°, is in the
+/// bottom's y and the right's x alone); and the distance between the bottom's ends with the
+/// bottom's length.
+const RECTANGLE_REPEAT_DEPENDENCIES: [&[&str]; 18] = [
+    &["c0d1e2f3", "zz000001"],
+    &["x0y1z2a3", "zz000002"],
+    &["r2s3t4v5", "zz000003"],
+    &["z8a9b0c1", "zz000004"],
+    &["c0d1e2f3", "r2s3t4v5", "zz000005"],
+    &["x0y1z2a3", "z8a9b0c1", "zz000006"],
+    &["c0d1e2f3", "z8a9b0c1", "zz000007"],
+    &["c0d1e2f3", "x0y1z2a3", "zz000008"],
+    &["r2s3t4v5", "z8a9b0c1", "zz000009"],
+    &["c0d1e2f3", "zz000010"],
+    &["r2s3t4v5", "zz000011"],
+    &["c0d1e2f3", "r2s3t4v5", "x0y1z2a3", "z8a9b0c1", "zz000012"],
+    &["g4h5j6k7", "r2s3t4v5", "z8a9b0c1", "zz000013"],
+    &["c0d1e2f3", "w6x7y8z9", "x0y1z2a3", "zz000014"],
+    &["g4h5j6k7", "m8n9p0q1", "zz000015"],
+    &["c0d1e2f3", "w6x7y8z9", "y4z5a6b7", "zz000016"],
+    &["c0d1e2f3", "r2s3t4v5", "zz000017"],
+    &["g4h5j6k7", "zz000018"],
+];
+
+/// The rectangle's driving dimensions, by ID.
+const RECTANGLE_DIMENSIONS: [&str; 4] = ["g4h5j6k7", "m8n9p0q1", "w6x7y8z9", "y4z5a6b7"];
+
 #[test]
-fn each_repetition_of_the_rectangle_alone_reads_by_its_kind() {
-    // By hand, for each repetition alone: the rectangle's eight rows are independent, so one
-    // more that agrees leaves 9 rows of rank 8, 0 left, and one dependent group, which has
-    // the repetition in it (the eight alone are independent). Every constraint of it is one
-    // row, in one group: PlaneGCS removes the latest tag (1.1.3 GCS.cpp's contest, rule 3),
-    // the repetition's, `redundant`, every other satisfied. Addendum 2: a relation leaves
-    // the sketch by `dofs`, fully defined, every member fully defined; a driving dimension
-    // makes it over defined, with some member over defined (each dimension here reads a
-    // point of the rectangle).
+fn each_repetition_of_the_rectangle_alone_reads_by_its_dependency() {
+    // By hand, for each repetition alone: 9 rows of rank 8, 0 left, and the one dependency
+    // [`RECTANGLE_REPEAT_DEPENDENCIES`] gives, which has the repetition in it. Every
+    // constraint of it is one row, in one group: PlaneGCS drops the latest tag (1.1.3
+    // GCS.cpp's contest, rule 3), the repetition's, `redundant`. Addendum 4: every driving
+    // dimension in the dependency, the repetition's or the rectangle's, reads `redundant`,
+    // and the sketch is over defined, with some member over defined (each dimension here
+    // reads a point of the rectangle), exactly when there's one; otherwise it reads by
+    // `dofs`, fully defined, every member fully defined. Every other constraint satisfied.
     let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
-    for (i, &(text, dimension)) in RECTANGLE_REPEATS.iter().enumerate() {
+    for (i, (&(text, dimension), group)) in RECTANGLE_REPEATS
+        .iter()
+        .zip(RECTANGLE_REPEAT_DEPENDENCIES)
+        .enumerate()
+    {
         let sketch = rectangle_repeating(1 << i);
         let translation = Translation::new(&sketch).unwrap();
         let answer = translation.solve(&mut worker).unwrap();
         assert!(answer.outcome().is_ok(), "{text}: {:?}", answer.outcome());
-        let got = states(&sketch, answer.diagnosed().unwrap()).unwrap();
-        let id = ElementId::new(&format!("zz{:06}", i + 1)).unwrap();
-        let flagged: Vec<(&ElementId, &ConstraintState)> = got
+        let read = answer.diagnosed().unwrap();
+        let got = states(&sketch, read).unwrap();
+        let id = format!("zz{:06}", i + 1);
+        expect_dependencies(&got, read.diagnosis(), &[group]);
+        assert_eq!(
+            read.diagnosis()
+                .redundant
+                .iter()
+                .map(ElementId::as_str)
+                .collect::<Vec<_>>(),
+            [id.as_str()],
+            "{text}"
+        );
+        let dimensions: Vec<&str> = group
+            .iter()
+            .copied()
+            .filter(|&c| RECTANGLE_DIMENSIONS.contains(&c) || (c == id && dimension))
+            .collect();
+        let mut want: Vec<&str> = dimensions.clone();
+        if !dimension {
+            want.push(&id);
+        }
+        want.sort_unstable();
+        let flagged: Vec<(&str, ConstraintState)> = got
             .constraints
             .iter()
             .filter(|(_, s)| s.flagged())
+            .map(|(c, &s)| (c.as_str(), s))
             .collect();
-        assert_eq!(flagged, [(&id, &Redundant)], "{text}");
+        let want: Vec<(&str, ConstraintState)> = want.into_iter().map(|c| (c, Redundant)).collect();
+        assert_eq!(flagged, want, "{text}");
         assert_eq!(got.dofs, 0, "{text}");
         let members = || got.points.values().chain(got.lines.values());
-        if dimension {
-            assert_eq!(got.state, SketchState::OverDefined, "{text}");
-            assert!(members().any(|&s| s == Over), "{text}: {got:#?}");
-        } else {
+        if dimensions.is_empty() {
             assert_eq!(got.state, SketchState::FullyDefined, "{text}");
             assert!(members().all(|&s| s == Fully), "{text}: {got:#?}");
+        } else {
+            assert_eq!(got.state, SketchState::OverDefined, "{text}");
+            assert!(members().any(|&s| s == Over), "{text}: {got:#?}");
         }
         invariants_hold(&sketch, &mut worker).unwrap();
     }
@@ -2467,7 +2887,7 @@ proptest! {
     #![proptest_config(ProptestConfig { cases: 300, .. ProptestConfig::default() })]
 
     #[test]
-    fn addendum_2s_invariants_hold_on_the_rectangle_repeated_any_way(
+    fn addendum_4s_invariants_hold_on_the_rectangle_repeated_any_way(
         mask in 0u32..(1 << RECTANGLE_REPEATS.len())
     ) {
         // Any set of repetitions that agree: the sketch solves, 0 left, and the invariants

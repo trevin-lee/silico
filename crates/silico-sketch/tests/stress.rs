@@ -319,6 +319,11 @@ fn tags(tags: &[silico_protocol::Tag]) -> String {
     format!("[{}]", list.join(","))
 }
 
+fn groups(groups: &[Vec<silico_protocol::Tag>]) -> String {
+    let list: Vec<String> = groups.iter().map(|g| tags(g)).collect();
+    format!("[{}]", list.join(","))
+}
+
 /// One line of the reference: everything the solve says, its values as a digest of
 /// their bits.
 fn line(name: &str, system: &SketchSystem, solved: &Solved) -> String {
@@ -331,13 +336,14 @@ fn line(name: &str, system: &SketchSystem, solved: &Solved) -> String {
     };
     let free: Vec<String> = solved.free.iter().map(|v| v.0.to_string()).collect();
     format!(
-        "  \"{name}\": {{\"values\": {}, \"constraints\": {}, \"status\": \"{status}\", \"dofs\": {}, \"conflicting\": {}, \"redundant\": {}, \"partially_redundant\": {}, \"free\": [{}], \"solution\": \"{}\"}}",
+        "  \"{name}\": {{\"values\": {}, \"constraints\": {}, \"status\": \"{status}\", \"dofs\": {}, \"conflicting\": {}, \"redundant\": {}, \"partially_redundant\": {}, \"dependencies\": {}, \"free\": [{}], \"solution\": \"{}\"}}",
         system.values.len(),
         system.constraints.len(),
         solved.dofs,
         tags(&solved.conflicting),
         tags(&solved.redundant),
         tags(&solved.partially_redundant),
+        groups(&solved.dependent_groups),
         free.join(","),
         digest(solved)
     )
