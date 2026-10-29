@@ -1,8 +1,8 @@
 //! Extending a sketch's line or arc at one end (docs/ports/sketch-edit.md, §7, decision 11;
 //! docs/design/m5.0-app.md, open item 12, pending Trevin): a core function, with no command
 //! yet, as the other sketch edits are (`document::sketch_edit`). Its result is a function of
-//! its inputs alone, the sketch as stored and the increment, as a drag's end is (`drag`):
-//! a drag the app shows while the person picks the increment is only its preview.
+//! its inputs alone, the sketch as stored and the increment or point, as a drag's end is
+//! (`drag`): a drag the app shows while the person picks the increment is only its preview.
 //!
 //! - **A line's end** moves by a `Length` along the line, through one move of the sketch
 //!   worker's drag, as FreeCAD's `extend` moves it (`moveGeometry`): begun from the sketch
@@ -33,7 +33,9 @@
 //! crossing with another curve past the end (open item 12c). No increment reaches it: a
 //! `Length` is whole nanometres, an `Angle` whole nanodegrees, so an end moved by the
 //! nearest would miss the other curve by more than the 1e-7 mm the gate and trim count as
-//! touching.
+//! touching. The edit adds nothing to hold the end there, as FreeCAD's App `extend` adds
+//! nothing: an `on` or a shared point is the tool's or the caller's, as FreeCAD's Gui adds
+//! its auto-constraints after the edit.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::TAU;
@@ -155,8 +157,9 @@ pub fn extend(
 /// on it exactly. Past the end means farther than 1e-7 mm from it (and, for an arc, from its
 /// other end), and within the sketch's reach. A curve the extension runs along to the point
 /// (within 1e-7 mm of it halfway there) isn't met there: a collinear neighbour, or a round
-/// the curve runs into nearly tangent. The nearest wins, a line's by distance, an arc's by
-/// angle; at the same distance, the least ID. Found from the stored coordinates in closed
+/// the curve runs into nearly tangent. Nor is a curve built on the moving end's point, which
+/// the edit moves with it: one that starts or ends there, or a round about it. The nearest
+/// wins, a line's by distance, an arc's by angle; at the same distance, the least ID. Found from the stored coordinates in closed
 /// form, with the libm shim's math, as trim finds its cuts. Refused as [`extend`] refuses a
 /// member that isn't a line or an arc, and an arc whose ends are at one angle from its
 /// centre, which has no circle to go around.
@@ -237,12 +240,31 @@ pub fn next_crossing(
             Geo::Circle { .. } => None,
         }
     };
+    // A curve built on the moving end's point (an arc starting at a line's end, a circle
+    // about it) moves with it, so it isn't met.
+    let moving_id = end_ids(sketch, curve)
+        .into_iter()
+        .nth(usize::from(end == End::End));
+    let free = |points: &[&ElementId]| moving_id.as_ref().is_none_or(|m| !points.contains(&m));
     let others = sketch
         .lines
         .iter()
+        .filter(|l| free(&[&l.from, &l.to]))
         .map(|l| &l.id)
-        .chain(sketch.circles.iter().map(|c| &c.id))
-        .chain(sketch.arcs.iter().map(|a| &a.id))
+        .chain(
+            sketch
+                .circles
+                .iter()
+                .filter(|c| free(&[&c.center]))
+                .map(|c| &c.id),
+        )
+        .chain(
+            sketch
+                .arcs
+                .iter()
+                .filter(|a| free(&[&a.center, &a.start, &a.end]))
+                .map(|a| &a.id),
+        )
         .filter(|id| *id != curve);
     let mut nearest: Option<(f64, &ElementId, [f64; 2])> = None;
     for id in others {
@@ -808,7 +830,7 @@ fn off_carrier(curve: &ElementId, carrier: &str, said: &str, off: f64) -> Error 
             "{noun} {curve} can't extend {said}: the point is {off} mm from its {carrier}, farther than 1e-7 mm"
         ),
         "by",
-        &format!("give a point on its {carrier}, as next_crossing finds one"),
+        &format!("give a point on its {carrier}, such as where it meets another curve"),
     )
     .with_elements([curve.to_string()])
 }

@@ -344,7 +344,7 @@ fn a_point_off_the_curves_carrier_its_own_end_or_behind_its_other_end_is_refused
             "line a0000000 can't extend to (15, 0.0000002): the point is 0.0000002 mm from its line, farther than 1e-7 mm",
             Some("by"),
             vec!["a0000000"],
-            Some("give a point on its line, as next_crossing finds one"),
+            Some("give a point on its line, such as where it meets another curve"),
         )
     );
     // Its own end: nothing.
@@ -408,7 +408,7 @@ fn an_arcs_point_off_its_circle_or_at_its_other_end_is_refused() {
             format!("arc r0000000 can't extend to (-6, 8.5): the point is {off} mm from its circle, farther than 1e-7 mm").as_str(),
             Some("by"),
             vec!["r0000000"],
-            Some("give a point on its circle, as next_crossing finds one"),
+            Some("give a point on its circle, such as where it meets another curve"),
         )
     );
     // Its start: no sweep left.
