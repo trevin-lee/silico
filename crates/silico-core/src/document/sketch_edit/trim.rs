@@ -890,7 +890,7 @@ fn cuts(sketch: &Sketch, curve: &ElementId, geo: &Geo) -> Vec<Cut> {
 }
 
 /// A line's or arc's two end points' IDs; none for a circle.
-fn end_ids(sketch: &Sketch, curve: &ElementId) -> Vec<ElementId> {
+pub(crate) fn end_ids(sketch: &Sketch, curve: &ElementId) -> Vec<ElementId> {
     if let Some(line) = sketch.lines.iter().find(|l| &l.id == curve) {
         return vec![line.from.clone(), line.to.clone()];
     }
@@ -905,7 +905,7 @@ fn end_ids(sketch: &Sketch, curve: &ElementId) -> Vec<ElementId> {
 /// Where the carriers of `a` and `b` (a line through its ends, a round's whole circle)
 /// meet: crossings, and a tangent contact where the gap is at most 1e-7 mm. None where they
 /// overlap: an overlap's cuts are the ends of each on the other.
-fn crossings(a: &Geo, b: &Geo) -> Vec<[f64; 2]> {
+pub(crate) fn crossings(a: &Geo, b: &Geo) -> Vec<[f64; 2]> {
     match (a, b) {
         (Geo::Line { from: p, to: q }, Geo::Line { from: r, to: s }) => {
             let collinear = [*r, *s]
@@ -971,7 +971,7 @@ fn crossings(a: &Geo, b: &Geo) -> Vec<[f64; 2]> {
 
 /// A curve as its stored points place it.
 #[derive(Debug, Clone)]
-enum Geo {
+pub(crate) enum Geo {
     Line {
         from: [f64; 2],
         to: [f64; 2],
@@ -992,7 +992,7 @@ enum Geo {
 }
 
 impl Geo {
-    fn of(sketch: &Sketch, id: &ElementId) -> Option<Geo> {
+    pub(crate) fn of(sketch: &Sketch, id: &ElementId) -> Option<Geo> {
         if let Some(line) = sketch.lines.iter().find(|l| &l.id == id) {
             return Some(Geo::Line {
                 from: point_at(sketch, &line.from)?,
@@ -1056,7 +1056,7 @@ impl Geo {
     }
 
     /// `point`'s projection onto the carrier; a round's centre stays where it is.
-    fn project(&self, point: [f64; 2]) -> [f64; 2] {
+    pub(crate) fn project(&self, point: [f64; 2]) -> [f64; 2] {
         match self {
             Geo::Line { from, to } => project_on_line(*from, *to, point),
             Geo::Arc { center, radius, .. } | Geo::Circle { center, radius } => {
@@ -1075,7 +1075,7 @@ impl Geo {
 
     /// How far `point` is from the carrier: from the line through a line's ends, from a
     /// round's circle (a round's centre is a radius away).
-    fn off(&self, point: [f64; 2]) -> f64 {
+    pub(crate) fn off(&self, point: [f64; 2]) -> f64 {
         match self {
             Geo::Line { from, to } => distance(project_on_line(*from, *to, point), point),
             Geo::Arc { center, radius, .. } | Geo::Circle { center, radius } => {
@@ -1105,7 +1105,7 @@ impl Geo {
     }
 
     /// Whether a point on the carrier is on the curve, or within 1e-7 mm of its ends.
-    fn spans(&self, point: [f64; 2]) -> bool {
+    pub(crate) fn spans(&self, point: [f64; 2]) -> bool {
         let near_end = self
             .ends()
             .iter()

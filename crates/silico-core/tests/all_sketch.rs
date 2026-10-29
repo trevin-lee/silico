@@ -42,6 +42,8 @@ mod adversarial_sketch_drag;
 mod adversarial_sketch_edit;
 #[path = "adversarial_sketch_extend.rs"]
 mod adversarial_sketch_extend;
+#[path = "adversarial_sketch_extend_to.rs"]
+mod adversarial_sketch_extend_to;
 #[path = "adversarial_sketch_features.rs"]
 mod adversarial_sketch_features;
 #[path = "adversarial_sketch_merge_tangent.rs"]
@@ -68,6 +70,8 @@ mod sketch_drag;
 mod sketch_edit;
 #[path = "sketch_extend.rs"]
 mod sketch_extend;
+#[path = "sketch_extend_to.rs"]
+mod sketch_extend_to;
 #[path = "sketch_features.rs"]
 mod sketch_features;
 #[path = "sketch_features_gate.rs"]

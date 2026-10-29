@@ -192,6 +192,50 @@ fn a_lines_end_an_arc_starts_at_pins_only_that_end_as_freecads_line_extend_does(
 }
 
 #[test]
+fn a_line_extended_to_the_next_curve_ends_on_it() {
+    // A free line from (1, 2) to (4, 3) and a circle about (10, 7) of radius 4. Its line's
+    // foot from the centre is (10.6, 5.2), √3.6 mm off, so it meets the circle √12.4 mm
+    // either side: first at (7.2593413823019868, 4.0864471274339956), by hand to 40 places.
+    // The end goes there through the worker's one move, so it touches the circle as the
+    // gate and trim count it, which no whole-nanometre increment could promise.
+    let text = document(&fields(
+        &[
+            point("p0000000", 1.0, 2.0),
+            point("p0000001", 4.0, 3.0),
+            point("z0000000", 10.0, 7.0),
+        ]
+        .join(", "),
+        &line("a0000000", "p0000000", "p0000001"),
+        &super::fixture::circle("c0000000", "z0000000", 4.0),
+        "",
+        "",
+    ));
+    let before = read(text.as_bytes()).unwrap();
+    let Operation::Sketch(sketch) = &before.features[0].operation else {
+        panic!("not a sketch")
+    };
+    let a = ElementId::new("a0000000").unwrap();
+    let met = silico_core::extend::next_crossing(sketch, &a, End::End)
+        .unwrap()
+        .unwrap();
+    assert_eq!(met.curve.as_str(), "c0000000");
+    let want = [7.259_341_382_301_987, 4.086_447_127_433_996];
+    let crossing = [met.at[0].mm(), met.at[1].mm()];
+    assert!(
+        (crossing[0] - want[0]).abs() <= 1e-12 && (crossing[1] - want[1]).abs() <= 1e-12,
+        "{crossing:?}"
+    );
+    let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    let edited = extend(sketch, &a, End::End, By::To(met.at), &mut worker).unwrap();
+    let end = at(&edited.sketch, "p0000001");
+    close(end, crossing);
+    let off = (libm::hypot(end[0] - 10.0, end[1] - 7.0) - 4.0).abs();
+    assert!(off <= 1e-7, "{off} mm off the circle");
+    // The start stays: the line is free, and its one move takes only the end.
+    close(at(&edited.sketch, "p0000000"), [1.0, 2.0]);
+}
+
+#[test]
 fn a_line_in_a_part_past_a_drags_unknowns_extends_as_one_solve_does() {
     // 140 lines end to end along x, p0 at 0 to p140 at 1,400, each held 10 mm long: one
     // part of 141 free points, 282 unknowns, past the 256 a drag takes. An extend isn't a
