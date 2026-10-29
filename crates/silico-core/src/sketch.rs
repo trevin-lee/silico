@@ -1899,6 +1899,16 @@ impl Translation {
         self.point_geometry.get(id).copied()
     }
 
+    /// Curve `id`'s geometry (a line's, a circle's, or an arc's), whose edge a drag of it
+    /// pins, if the sketch has the curve.
+    pub(crate) fn curve_geometry(&self, id: &ElementId) -> Option<Geometry> {
+        self.lines
+            .get(id)
+            .map(|l| l.geometry)
+            .or_else(|| self.circles.get(id).map(|c| c.geometry))
+            .or_else(|| self.arcs.get(id).map(|a| a.round.geometry))
+    }
+
     /// Each point's values, by ID.
     pub(crate) fn point_values(&self) -> impl Iterator<Item = (&ElementId, PointValues)> {
         self.points.iter().map(|(id, &v)| (id, v))

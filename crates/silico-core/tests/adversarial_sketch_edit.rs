@@ -53,8 +53,10 @@ fn messages(errors: &[Error]) -> Vec<String> {
 }
 
 /// A merge whose result would break one of the gate's rules for a constraint, refused as
-/// the merge says it (FreeCAD's coincident command refuses or substitutes; which one is
-/// M5.0's open item 13): `message` word for word, `elements` the constraint and what it names.
+/// the merge says it (FreeCAD's coincident command substitutes for some of these; the merge
+/// substitutes only for an edge tangency at an end it makes shared, a `tangent_at`, M5.0's
+/// open item 13, and refuses these): `message` word for word, `elements` the constraint and
+/// what it names.
 #[track_caller]
 fn refused_as(result: Result<Edited, Error>, message: &str, elements: &[&str]) {
     let error = result.unwrap_err();

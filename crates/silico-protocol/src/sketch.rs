@@ -522,21 +522,141 @@ pub struct DragBegin {
     /// algorithms aren't used (but are checked, as a solve's are): a drag solves with
     /// DogLeg alone, as FreeCAD's does.
     pub system: SketchSystem,
-    /// The point dragged.
-    pub point: PointOf,
+    /// What's dragged: a point, or a curve's edge.
+    pub dragged: Dragged,
+}
+
+/// What a drag drags (FreeCAD's `GeoElementId` given `initMove`: a point, or a curve's
+/// edge, its position `none`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum Dragged {
+    /// A point: a lone point, a curve's end, or a centre, held to the cursor.
+    Point(PointOf),
+    /// A curve's edge, pressed at `press` in the sketch's coordinates (docs/ports/sketcher.md,
+    /// *Dragging an edge*): a line moved whole, each end following the cursor at its offset
+    /// from the press (FreeCAD's relative drag); a circle or an arc sized to pass through the
+    /// cursor, its centre pinned where it starts, more weakly (the press unused).
+    Edge { curve: Geometry, press: [f64; 2] },
+}
+
+impl From<PointOf> for Dragged {
+    fn from(point: PointOf) -> Self {
+        Dragged::Point(point)
+    }
+}
+
+/// Where a drag's pin holds: a point to its target, or a target held on a curve (a circle's
+/// or an arc's, FreeCAD's `addConstraintPointOnCircle` and `PointOnArc`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PinAt {
+    Point(PointOf),
+    OnCurve(Geometry),
+}
+
+/// One of a drag's pins: where it holds, the weight of its rows (1, or less to give way
+/// first), and, if it follows the cursor, how ([`Follow`]); one that doesn't is held where it
+/// starts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pin {
+    pub at: PinAt,
+    pub scale: f64,
+    pub follows: Option<Follow>,
+}
+
+/// How a pin's target follows the cursor: `base` plus the cursor's offset from `from`,
+/// computed in that order, as FreeCAD's relative drag computes each target
+/// (`InitParameters[i] + (toPoint − press)`), so a cursor back at `from` gives `base`
+/// exactly. The cursor itself is a `base` and `from` of zero.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Follow {
+    pub base: [f64; 2],
+    pub from: [f64; 2],
+}
+
+impl Follow {
+    /// The cursor itself.
+    pub const CURSOR: Follow = Follow {
+        base: [0.0, 0.0],
+        from: [0.0, 0.0],
+    };
+
+    /// The target for the cursor at `to`.
+    pub fn at(self, to: [f64; 2]) -> [f64; 2] {
+        [
+            self.base[0] + (to[0] - self.from[0]),
+            self.base[1] + (to[1] - self.from[1]),
+        ]
+    }
+}
+
+impl Pin {
+    /// Held to the cursor itself, at full weight.
+    fn cursor(at: PinAt) -> Self {
+        Pin {
+            at,
+            scale: 1.0,
+            follows: Some(Follow::CURSOR),
+        }
+    }
+
+    /// A centre held where it starts, a hundred times more weakly, so what it centres moves
+    /// before it does (`4d7a9435c1`).
+    fn centre(g: Geometry) -> Self {
+        Pin {
+            at: PinAt::Point(PointOf::Center(g)),
+            scale: 0.01,
+            follows: None,
+        }
+    }
 }
 
 impl DragBegin {
+    /// A drag of `point` in `system`.
+    pub fn point(system: SketchSystem, point: PointOf) -> Self {
+        DragBegin {
+            system,
+            dragged: Dragged::Point(point),
+        }
+    }
+
+    /// A drag of `curve`'s edge in `system`, pressed where FreeCAD's App form presses it: a
+    /// line at its midpoint (`moveGeometry` puts the midpoint at the cursor), a circle or an
+    /// arc at its centre (unused). Values not in `system` press at the origin. For tests and
+    /// the App form's moves; a client's drag gives its own press (`Dragged::Edge`).
+    pub fn edge(system: SketchSystem, curve: Geometry) -> Self {
+        let at = |v: Value| system.values.get(v.0 as usize).copied().unwrap_or(0.0);
+        let press = match system.geometry.get(curve.0 as usize) {
+            Some(SketchGeometry::Line { start, end }) => [
+                (at(start.x) + at(end.x)) * 0.5,
+                (at(start.y) + at(end.y)) * 0.5,
+            ],
+            Some(SketchGeometry::Circle { center, .. } | SketchGeometry::Arc { center, .. }) => {
+                [at(center.x), at(center.y)]
+            }
+            _ => [0.0, 0.0],
+        };
+        DragBegin {
+            system,
+            dragged: Dragged::Edge { curve, press },
+        }
+    }
+
     /// Whether the worker can start this drag: the system passes
-    /// [`SketchSystem::check`], the point is one its geometry has, as a constraint's points
-    /// must be, and the part of the sketch its pins hold ([`DragBegin::pins`],
-    /// [`SketchSystem::part`]) has at most [`MAX_DRAG_UNKNOWNS`] unknowns.
+    /// [`SketchSystem::check`], what's dragged is a point its geometry has (as a
+    /// constraint's points must be) or a line's, circle's, or arc's edge, and the part of the
+    /// sketch its pins hold ([`DragBegin::shared_pins`], [`SketchSystem::part`]) has at most
+    /// [`MAX_DRAG_UNKNOWNS`] unknowns.
     pub fn check(&self) -> Result<(), InvalidParameter> {
         self.check_move()?;
         let n = self.part().unknowns.len();
         if n > MAX_DRAG_UNKNOWNS {
+            // What the request named: the point dragged, or the curve whose edge is.
+            let parameter = match self.dragged {
+                Dragged::Point(_) => "point",
+                Dragged::Edge { .. } => "curve",
+            };
             return Err(invalid(
-                "point",
+                parameter,
                 format!(
                     "the part of the sketch the drag moves has {n} unknowns, and a drag takes at most {MAX_DRAG_UNKNOWNS} there: each move of a larger part takes too long"
                 ),
@@ -546,41 +666,112 @@ impl DragBegin {
     }
 
     /// Whether the worker can make one move of this ([`crate::Op::MoveOnce`]): the system
-    /// passes [`SketchSystem::check`], a solve's limits, and the point is one its geometry
-    /// has. A single move isn't held to [`MAX_DRAG_UNKNOWNS`], which bounds each of a drag's
-    /// many moves for the cursor's sake.
+    /// passes [`SketchSystem::check`], a solve's limits, and what's dragged is a point its
+    /// geometry has or a curve's edge. A single move isn't held to [`MAX_DRAG_UNKNOWNS`],
+    /// which bounds each of a drag's many moves for the cursor's sake.
     pub fn check_move(&self) -> Result<(), InvalidParameter> {
         self.system.check()?;
-        self.system.check_point(self.point, "point", "the drag")
-    }
-
-    /// The points the drag pins, with their weights, as FreeCAD's `Sketch::initMove` pins
-    /// one point: the point itself, held to the cursor; and for an arc's start or end, the
-    /// arc's centre too, where it starts, a hundred times more weakly, so the end moves
-    /// before the centre does (`4d7a9435c1`). By geometry, as FreeCAD's `moveGeometry`
-    /// pins the geometry it's given: a move of a line's end pins no arc's centre, though an
-    /// arc ends there too (extend's one move, as FreeCAD's `extend`).
-    pub fn pins(&self) -> Vec<(PointOf, f64)> {
-        let mut pins = vec![(self.point, 1.0)];
-        if let (Some(SketchGeometry::Arc { .. }), PointOf::Start(g) | PointOf::End(g)) = (
-            self.system.geometry.get(self.point.geometry().0 as usize),
-            self.point,
-        ) {
-            pins.push((PointOf::Center(g), 0.01));
+        match self.dragged {
+            Dragged::Point(point) => self.system.check_point(point, "point", "the drag"),
+            Dragged::Edge { curve: g, press } => {
+                // Where the press landed, as a cursor is: every move's offset is from it.
+                check_drag_target(press).map_err(|invalid| InvalidParameter {
+                    parameter: "press",
+                    message: invalid.message.replace("drag's target", "drag's press"),
+                })?;
+                match self.system.geometry.get(g.0 as usize) {
+                    Some(
+                        SketchGeometry::Line { .. }
+                        | SketchGeometry::Circle { .. }
+                        | SketchGeometry::Arc { .. },
+                    ) => Ok(()),
+                    Some(SketchGeometry::Point(_)) => Err(invalid(
+                        "curve",
+                        format!("the drag names geometry {}'s edge, but it's a point", g.0),
+                    )),
+                    None => Err(invalid(
+                        "curve",
+                        format!(
+                            "the drag names geometry {}, but there are {}",
+                            g.0,
+                            self.system.geometry.len()
+                        ),
+                    )),
+                }
+            }
         }
-        pins
     }
 
-    /// The points a drag session pins (M5.0's open item 16): [`pins`](Self::pins), and for
-    /// each arc whose start or end is the dragged point by its values, the arc's centre
-    /// too, as weakly. A sketch point that arcs share as an end (the core's, M3.2's D2) has
-    /// no picked arc, as FreeCAD's vertex has, so every such arc's centre is pinned: each
-    /// once, in the order of the arcs' geometry, however many arcs share it, and never the
-    /// dragged point itself. Each pins the same part as [`pins`](Self::pins): an arc's
-    /// rules join its centre to its ends.
-    pub fn shared_pins(&self) -> Vec<(PointOf, f64)> {
-        let mut pins = vec![(self.point, 1.0)];
-        let Some(dragged) = self.system.point_values(self.point) else {
+    /// The pins of the drag, as FreeCAD's `Sketch::initMove` pins what it's given:
+    ///
+    /// - a point, held to the cursor; for an arc's start or end, the arc's centre too,
+    ///   where it starts, a hundred times more weakly, so the end moves before the centre
+    ///   does (`4d7a9435c1`);
+    /// - a line's edge: both its ends, at full weight, each following the cursor at its
+    ///   offset from the press where the drag began (the cursor being where the press is
+    ///   dragged to);
+    /// - a circle's or an arc's edge: a target held on its circle, at the cursor, and its
+    ///   centre where it starts, as weakly.
+    ///
+    /// By geometry, as FreeCAD's `moveGeometry` pins the geometry it's given: a move of a
+    /// line's end pins no arc's centre, though an arc ends there too (extend's one move, as
+    /// FreeCAD's `extend`).
+    pub fn pins(&self) -> Vec<Pin> {
+        match self.dragged {
+            Dragged::Point(point) => {
+                let mut pins = vec![Pin::cursor(PinAt::Point(point))];
+                if let (Some(SketchGeometry::Arc { .. }), PointOf::Start(g) | PointOf::End(g)) =
+                    (self.system.geometry.get(point.geometry().0 as usize), point)
+                {
+                    pins.push(Pin::centre(g));
+                }
+                pins
+            }
+            Dragged::Edge { curve: g, press } => match self.system.geometry.get(g.0 as usize) {
+                Some(SketchGeometry::Line { start, end }) => {
+                    let at = |p: PointValues| {
+                        [p.x, p.y]
+                            .map(|v| self.system.values.get(v.0 as usize).copied().unwrap_or(0.0))
+                    };
+                    // Each end moved by the cursor's offset from the press.
+                    let offset = |p: PointValues| Follow {
+                        base: at(p),
+                        from: press,
+                    };
+                    vec![
+                        Pin {
+                            at: PinAt::Point(PointOf::Start(g)),
+                            scale: 1.0,
+                            follows: Some(offset(*start)),
+                        },
+                        Pin {
+                            at: PinAt::Point(PointOf::End(g)),
+                            scale: 1.0,
+                            follows: Some(offset(*end)),
+                        },
+                    ]
+                }
+                Some(SketchGeometry::Circle { .. } | SketchGeometry::Arc { .. }) => {
+                    vec![Pin::cursor(PinAt::OnCurve(g)), Pin::centre(g)]
+                }
+                Some(SketchGeometry::Point(_)) | None => Vec::new(),
+            },
+        }
+    }
+
+    /// The pins a drag session holds (M5.0's open item 16): [`pins`](Self::pins), and, for
+    /// a point, for each arc whose start or end is that point by its values, the arc's
+    /// centre too, as weakly. A sketch point that arcs share as an end (the core's, M3.2's
+    /// D2) has no picked arc, as FreeCAD's vertex has, so every such arc's centre is pinned:
+    /// each once, in the order of the arcs' geometry, however many arcs share it, and
+    /// never the dragged point itself. Each pins the same part as [`pins`](Self::pins): an
+    /// arc's rules join its centre to its ends. An edge's pins are [`pins`](Self::pins)'.
+    pub fn shared_pins(&self) -> Vec<Pin> {
+        let Dragged::Point(point) = self.dragged else {
+            return self.pins();
+        };
+        let mut pins = vec![Pin::cursor(PinAt::Point(point))];
+        let Some(dragged) = self.system.point_values(point) else {
             return pins;
         };
         let mut centres = vec![dragged];
@@ -593,7 +784,7 @@ impl DragBegin {
                 && let Ok(i) = u32::try_from(i)
             {
                 centres.push(center);
-                pins.push((PointOf::Center(Geometry(i)), 0.01));
+                pins.push(Pin::centre(Geometry(i)));
             }
         }
         pins
@@ -601,11 +792,31 @@ impl DragBegin {
 
     /// The part of the sketch the drag moves: the system reduced to the part its pins are
     /// in ([`SketchSystem::part`]), a session's ([`shared_pins`](Self::shared_pins), which
-    /// hold every point [`pins`](Self::pins) holds). Each move solves only that, so no other
-    /// part is solved again each frame; the rest stays where the drag began.
+    /// hold every point [`pins`](Self::pins) holds; a pin on a curve holds its centre's and
+    /// its radius's parts). Each move solves only that, so no other part is solved
+    /// again each frame; the rest stays where the drag began.
     pub fn part(&self) -> SketchSystem {
-        let points: Vec<PointOf> = self.shared_pins().into_iter().map(|(p, _)| p).collect();
-        self.system.part(&points)
+        let values: Vec<Value> = self
+            .shared_pins()
+            .into_iter()
+            .flat_map(|pin| match pin.at {
+                PinAt::Point(p) => self
+                    .system
+                    .point_values(p)
+                    .map(|v| vec![v.x, v.y])
+                    .unwrap_or_default(),
+                // The curve's centre and radius: a circle's radius is joined to nothing
+                // else but the pin, which isn't one of the sketch's constraints.
+                PinAt::OnCurve(g) => match self.system.geometry.get(g.0 as usize) {
+                    Some(
+                        SketchGeometry::Circle { center, radius }
+                        | SketchGeometry::Arc { center, radius, .. },
+                    ) => vec![center.x, center.y, *radius],
+                    _ => Vec::new(),
+                },
+            })
+            .collect();
+        self.system.part_of(&values)
     }
 }
 
@@ -1069,13 +1280,18 @@ impl SketchSystem {
     /// held where it is, as a fixed value. Points that don't name a point their geometry
     /// has join nothing.
     pub fn part(&self, points: &[PointOf]) -> SketchSystem {
-        let parts = self.parts();
-        let mut wanted: Vec<Part> = points
+        let values: Vec<Value> = points
             .iter()
             .filter_map(|&p| self.point_values(p))
             .flat_map(|v| [v.x, v.y])
-            .filter_map(|v| parts.of(v))
             .collect();
+        self.part_of(&values)
+    }
+
+    /// The part of the system `values` are in, as [`part`](Self::part) finds a point's.
+    pub fn part_of(&self, values: &[Value]) -> SketchSystem {
+        let parts = self.parts();
+        let mut wanted: Vec<Part> = values.iter().filter_map(|&v| parts.of(v)).collect();
         wanted.sort_unstable();
         wanted.dedup();
         let in_part = |v: Value| {
@@ -1584,6 +1800,60 @@ fn invalid(parameter: &'static str, message: String) -> InvalidParameter {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_edge_drag_begun_by_the_app_form_presses_a_circle_or_an_arc_at_its_centre() {
+        // A circle at (3, 4) and an arc at (-2, 7): each pressed at its centre, as
+        // FreeCAD's App form presses one, not at the origin.
+        let p = |x, y| PointValues {
+            x: Value(x),
+            y: Value(y),
+        };
+        let system = SketchSystem {
+            values: vec![3.0, 4.0, 1.0, -2.0, 7.0, 2.0, 0.0, 1.0, 0.0, 7.0, -2.0, 9.0],
+            unknowns: vec![],
+            geometry: vec![
+                SketchGeometry::Circle {
+                    center: p(0, 1),
+                    radius: Value(2),
+                },
+                SketchGeometry::Arc {
+                    center: p(3, 4),
+                    radius: Value(5),
+                    start_angle: Value(6),
+                    end_angle: Value(7),
+                    start: p(8, 9),
+                    end: p(10, 11),
+                },
+            ],
+            constraints: vec![],
+            algorithms: vec![Algorithm::DogLeg],
+        };
+        for (curve, press) in [(Geometry(0), [3.0, 4.0]), (Geometry(1), [-2.0, 7.0])] {
+            let begin = DragBegin::edge(system.clone(), curve);
+            assert_eq!(begin.dragged, Dragged::Edge { curve, press });
+        }
+    }
+
+    #[test]
+    fn a_follower_moves_by_the_cursors_offset_from_its_press_in_freecads_order() {
+        // FreeCAD's InitParameters + (toPoint - press): a cursor at the press gives the base
+        // exactly. The other order, toPoint + (InitParameters - press), rounds this pair to
+        // -31.002554775011955.
+        let follow = Follow {
+            base: [-31.00255477501196, 2.0],
+            from: [9.710164596515956, 0.5],
+        };
+        assert_eq!(
+            follow.at([9.710164596515956, 0.5]),
+            [-31.00255477501196, 2.0]
+        );
+        assert_eq!(
+            follow.at([10.710164596515956, 3.5]),
+            [-30.00255477501196, 5.0]
+        );
+        assert_eq!(Follow::CURSOR.at([3.25, -7.5]), [3.25, -7.5]);
+    }
+
     use super::*;
 
     /// A line from (0, 0) to (10, 0), a circle at (0, 5) of radius 2, and an arc; the
@@ -2189,7 +2459,7 @@ mod tests {
     fn drag(point: PointOf) -> DragBegin {
         DragBegin {
             system: system(),
-            point,
+            dragged: Dragged::Point(point),
         }
     }
 
@@ -2969,9 +3239,17 @@ mod tests {
         let pins = |point| {
             DragBegin {
                 system: system.clone(),
-                point,
+                dragged: Dragged::Point(point),
             }
             .shared_pins()
+            .into_iter()
+            .map(|pin| {
+                let PinAt::Point(at) = pin.at else {
+                    panic!("a point's drag pins no curve")
+                };
+                (at, pin.scale)
+            })
+            .collect::<Vec<_>>()
         };
         assert_eq!(
             pins(PointOf::Point(Geometry(0))),
@@ -3010,9 +3288,17 @@ mod tests {
         let by_geometry = |point| {
             DragBegin {
                 system: system.clone(),
-                point,
+                dragged: Dragged::Point(point),
             }
             .pins()
+            .into_iter()
+            .map(|pin| {
+                let PinAt::Point(at) = pin.at else {
+                    panic!("a point's drag pins no curve")
+                };
+                (at, pin.scale)
+            })
+            .collect::<Vec<_>>()
         };
         assert_eq!(
             by_geometry(PointOf::Point(Geometry(0))),

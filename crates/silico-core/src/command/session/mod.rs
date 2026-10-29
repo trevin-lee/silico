@@ -30,7 +30,10 @@
 //! transaction's edits changed through [`file::save_over`], writing new fingerprints and
 //! solves only for the features they reached (decision 28), and [`Sessions::rollback`]
 //! restores what `begin` kept, the text byte for byte and the model `begin` saw, at a new
-//! revision whose state equals the old. One at a time, never nested; a session isn't closed
+//! revision whose state equals the old. Inside a transaction, [`Sessions::undo`] and
+//! [`Sessions::redo`] step back and forth through its edits, kept on its undo stack
+//! ([`crate::document::undo`]), each at a new revision whose state equals an earlier one;
+//! a commit or a rollback empties it. One at a time, never nested; a session isn't closed
 //! while one is open, and a client that goes away (the sessions dropped) leaves its file as
 //! it was. An edit made outside a transaction ([`Sessions::add_feature`],
 //! [`Sessions::set_field`], [`Sessions::remove_feature`], [`Sessions::replace_text`]) is
@@ -84,6 +87,7 @@ mod registry;
 mod threads;
 mod transaction;
 mod types;
+mod undo;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -125,7 +129,7 @@ pub use types::{
     Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, FieldSet,
     ModelChoice, ModelRead, Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild,
     RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
-    SessionId, SessionInfo, Status, Stopper, TextAnswer,
+    SessionId, SessionInfo, Status, Stepped, Stopper, TextAnswer, TimelineAnswer,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 
@@ -159,6 +163,8 @@ struct Session<C: Kernel + 'static> {
     /// The sessions' workspace, if they have one: each re-read and save of the session's file
     /// is refused if the file now leads out of it.
     workspace: Option<Workspace>,
+    /// The bound of each of its transactions' undo stacks, in bytes as the stack counts them.
+    undo_bytes: usize,
     held: Holding,
     /// Where its commands are queued, in order: none once it's closed.
     queue: Mutex<Option<Sender<Job<C>>>>,
@@ -441,6 +447,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 export_turns: Arc::default(),
                 workspace: None,
                 disk_interval: DISK_CHECK_INTERVAL,
+                undo_bytes: crate::document::undo::UNDO_BYTES,
             }),
         }
     }
@@ -456,6 +463,21 @@ impl<P: Clients + 'static> Sessions<P> {
         );
         if let Some(registry) = registry {
             registry.disk_interval = interval;
+        }
+        self
+    }
+
+    /// The same sessions, each transaction's undo stack bounded by `bytes` as the stack counts
+    /// them, as they're made: in this crate's tests, which don't fill 256 MiB.
+    #[cfg(test)]
+    fn bounding_undo(mut self, bytes: usize) -> Self {
+        let registry = Arc::get_mut(&mut self.registry);
+        assert!(
+            registry.is_some(),
+            "sessions are given their undo bound as they're made"
+        );
+        if let Some(registry) = registry {
+            registry.undo_bytes = bytes;
         }
         self
     }
@@ -812,9 +834,8 @@ impl<P: Clients + 'static> Sessions<P> {
                 move |read| {
                     let _span = tracing::info_span!("check").entered();
                     Ok(CheckAnswer::of(
-                        super::check_except(read.model(), read.reached()),
                         read.model(),
-                        &read.checking.spared(read.reached),
+                        &read.checking.excepted(read.reached),
                     ))
                 },
             ),
@@ -830,13 +851,29 @@ impl<P: Clients + 'static> Sessions<P> {
         command: SessionCommand,
         read: impl FnOnce(Read<'_, P::Client>) -> Result<T, Problems> + Send + 'static,
     ) -> Running<T> {
+        self.read_current_or(session, command, read, rebuilds::gated_problems)
+    }
+
+    /// [`read_current`](Self::read_current), but answering a document the gate (or the
+    /// reader) refused with `answer_refused`, given the session's revision and that document.
+    fn read_current_or<T: Send + 'static>(
+        &self,
+        session: &SessionId,
+        command: SessionCommand,
+        read: impl FnOnce(Read<'_, P::Client>) -> Result<T, Problems> + Send + 'static,
+        answer_refused: impl FnOnce(Revision, &Gated) -> Result<T, Problems> + Send + 'static,
+    ) -> Running<T> {
         // The read's own client, made as it's asked for and dropped when it returns, its stop
         // able to retire it if it's cancelled or its session closes first.
         let kernel: Arc<ReadClient<P::Client>> =
             Arc::new(ReadClient::new(self.registry.kernel.client()));
         self.queued(session, command, move |session, stop, model| {
             stop.interrupt_with(Arc::downgrade(&kernel) as Weak<dyn Interrupt>);
-            let current = session.current(stop).map_err(Unbuilt::problems)?;
+            let current = match session.current(stop) {
+                Ok(current) => current,
+                Err(Unbuilt::Gated { revision, gated }) => return answer_refused(revision, &gated),
+                Err(unbuilt) => return Err(unbuilt.problems()),
+            };
             *model = Some(current.read.clone());
             let path = session.held.read().path.clone();
             read(Read {
@@ -862,12 +899,11 @@ impl<P: Clients + 'static> Sessions<P> {
                     let fresh = reads == recompute::Reads::Nothing;
                     let _span = tracing::info_span!("check", fresh).entered();
                     Ok(CheckAnswer::of(
-                        super::check_except(&current.model, current.reached.get()),
                         &current.model,
-                        &current.checking.spared(&current.reached),
+                        &current.checking.excepted(&current.reached),
                     ))
                 }
-                Err(Unbuilt::Gated(problems)) => Ok(CheckAnswer::refused(problems)),
+                Err(Unbuilt::Gated { gated, .. }) => Ok(CheckAnswer::refused(gated.problems())),
                 Err(Unbuilt::Unavailable(problems)) => Err(problems),
             },
         )
@@ -942,8 +978,25 @@ impl<P: Clients + 'static> Sessions<P> {
         choice: ModelChoice,
         read: impl FnOnce(Read<'_, P::Client>) -> Result<T, Problems> + Send + 'static,
     ) -> Running<T> {
+        self.read_model_or(session, command, choice, read, rebuilds::gated_problems)
+    }
+
+    /// [`read_model`](Self::read_model), but answering a document the gate (or the reader)
+    /// refused, where there's no model to read (the current one, or nothing published),
+    /// with `answer_refused`, given the session's revision and that document, the response
+    /// naming no model: for `timeline`, which answers one.
+    fn read_model_or<T: Send + 'static>(
+        &self,
+        session: &SessionId,
+        command: ReadCommand,
+        choice: ModelChoice,
+        read: impl FnOnce(Read<'_, P::Client>) -> Result<T, Problems> + Send + 'static,
+        answer_refused: impl FnOnce(Revision, &Gated) -> Result<T, Problems> + Send + 'static,
+    ) -> Running<T> {
         match choice {
-            ModelChoice::Current => self.read_current(session, command.into(), read),
+            ModelChoice::Current => {
+                self.read_current_or(session, command.into(), read, answer_refused)
+            }
             ModelChoice::Published => {
                 // The read's own client, made as it's asked for and dropped when it returns,
                 // its stop able to retire it if it's cancelled or its session closes first.
@@ -956,7 +1009,13 @@ impl<P: Clients + 'static> Sessions<P> {
                 if let Some(found) = book.sessions.get(session).cloned() {
                     drop(book);
                     return match start_published(
-                        &found, command, kernel, read, &ticket, &reply, caller,
+                        &found,
+                        command,
+                        kernel,
+                        (read, answer_refused),
+                        &ticket,
+                        &reply,
+                        caller,
                     ) {
                         Ok(()) => Running::new(answer, READ_STOPPED, Some(ticket), None),
                         Err(response) => Running::answered(response),
@@ -976,7 +1035,13 @@ impl<P: Clients + 'static> Sessions<P> {
                     let refusal = match turn {
                         Turn::Run(found) => {
                             match start_published(
-                                found, command, kernel, read, &stop, &reply, caller,
+                                found,
+                                command,
+                                kernel,
+                                (read, answer_refused),
+                                &stop,
+                                &reply,
+                                caller,
                             ) {
                                 Ok(()) => return,
                                 Err(response) => response,
@@ -1005,7 +1070,51 @@ impl<P: Clients + 'static> Sessions<P> {
             return refused(not_open(*session));
         };
         let (info, read) = found.published_now();
-        published_answer(info, read, |published, _, _| Ok(published.clone()))
+        published_answer(
+            info,
+            read,
+            |published, _, _| Ok(published.clone()),
+            rebuilds::gated_problems,
+        )
+    }
+
+    /// `session`'s document's features as the browser and the timeline draw them
+    /// (docs/design/m5.0-app.md, section 7's `timeline`, M5.1), each with the health the
+    /// model `model` names gave it ([`crate::timeline`]), read as every model is
+    /// ([`read_model`](Self::read_model)): the current one queued, waiting for the
+    /// revision's rebuild, or the newest published at once, beside the queue, counted among
+    /// the session's published reads. The features are the session's document's at its
+    /// revision, and the model is the one named, whatever revision it's of: a feature it
+    /// hasn't built, changed since or using one that was, is `unknown`, and the result says
+    /// the model's revision. Each feature's problems and warnings are those a `check` of the
+    /// same model has on it, excepting what that check excepts ([`Checking::excepted`]:
+    /// during an open transaction, the drift and the missing fingerprints of what its edits
+    /// reached, which its commit writes).
+    ///
+    /// A document the gate refused is answered, not refused: the document as read, every
+    /// feature `unknown`, and the gate's count of problems; text that doesn't read as a
+    /// document gives no features, and the reader's count. With no model to read (the
+    /// current one, or nothing published), it names none and has no bodies; under a
+    /// published model of an older revision, which marks nothing of this document, it names
+    /// that model and gives its bodies, as a client still draws them. Otherwise refused as
+    /// every read is.
+    ///
+    /// [`Checking::excepted`]: transaction::Checking::excepted
+    pub fn timeline(&self, session: &SessionId, model: ModelChoice) -> Running<TimelineAnswer> {
+        self.read_model_or(
+            session,
+            ReadCommand::Timeline,
+            model,
+            |read| {
+                let _span =
+                    tracing::info_span!("timeline", model = read.read.of.as_str()).entered();
+                Ok(TimelineAnswer::of(&read))
+            },
+            |revision, gated| {
+                let _span = tracing::info_span!("timeline", refused = true).entered();
+                Ok(TimelineAnswer::refused(revision, gated))
+            },
+        )
     }
 
     /// `session`'s document's outline ([`super::outline`]), as `silico show` prints it.
@@ -1066,6 +1175,42 @@ impl<P: Clients + 'static> Sessions<P> {
     pub fn rollback(&self, session: &SessionId) -> Running<RolledBack> {
         self.queued(session, SessionCommand::Rollback, |session, stop, _| {
             session.rollback(stop)
+        })
+    }
+
+    /// Undoes the last edit of `session`'s transaction not undone (docs/design/m5.0-app.md,
+    /// section 7), or, with `to`, every edit after that revision's state, made against
+    /// `revision` (decision 12): the state before restored at a new revision whose state
+    /// equals it, byte for byte, through the gate, what the edits reach worked out again from
+    /// it, and its model rebuilt when a command needs it, from the cache. Refused, the
+    /// session as it was, with no transaction open, against a revision that isn't the
+    /// session's (`conflict`), with nothing to undo (none made, all undone, or the rest
+    /// dropped past the stack's bound), and for a `to` the stack doesn't hold, or one that
+    /// isn't before the session's state (its own revision among them), naming `to`. Never
+    /// touches the file.
+    pub fn undo(
+        &self,
+        session: &SessionId,
+        revision: Revision,
+        to: Option<Revision>,
+    ) -> Running<Stepped> {
+        self.queued(session, SessionCommand::Undo, move |session, stop, _| {
+            session.step(stop, undo::Way::Undo, revision, to)
+        })
+    }
+
+    /// Redoes the last edit of `session`'s transaction undone, or, with `to`, every edit
+    /// undone up to that revision's state, as [`undo`](Self::undo) undoes them. Refused as
+    /// `undo` is, with nothing to redo (none undone, or an edit since dropped what was), and
+    /// for a `to` that isn't after the session's state.
+    pub fn redo(
+        &self,
+        session: &SessionId,
+        revision: Revision,
+        to: Option<Revision>,
+    ) -> Running<Stepped> {
+        self.queued(session, SessionCommand::Redo, move |session, stop, _| {
+            session.step(stop, undo::Way::Redo, revision, to)
         })
     }
 
@@ -1426,13 +1571,18 @@ impl<P: Clients + 'static> Sessions<P> {
 
 /// `read`, the published read named `command`, started on `found` on a thread of its own
 /// (`session-sN-read`), stopped by `ticket`, answered through `reply`, under the caller's
-/// span: or, refused before it starts, the refusal (the session closed since it was found,
-/// [`MAX_PUBLISHED_READS`] unanswered, or no thread to be had), never sent.
+/// span, or `answer_refused`, for a document the gate refused with nothing published to
+/// read ([`published_answer`]): or, refused before it starts, the refusal (the session
+/// closed since it was found, [`MAX_PUBLISHED_READS`] unanswered, or no thread to be had),
+/// never sent.
 fn start_published<C: Kernel + 'static, T: Send + 'static>(
     found: &Arc<Session<C>>,
     command: ReadCommand,
     kernel: Arc<ReadClient<C>>,
-    read: impl FnOnce(Read<'_, C>) -> Result<T, Problems> + Send + 'static,
+    (read, answer_refused): (
+        impl FnOnce(Read<'_, C>) -> Result<T, Problems> + Send + 'static,
+        impl FnOnce(Revision, &Gated) -> Result<T, Problems> + Send + 'static,
+    ),
     ticket: &Arc<Ticket>,
     reply: &mpsc::SyncSender<Response<T>>,
     caller: tracing::Span,
@@ -1479,17 +1629,22 @@ fn start_published<C: Kernel + 'static, T: Send + 'static>(
                 || {
                     let (info, published) = session.published_now();
                     let path = session.held.read().path.clone();
-                    published_answer(info, published, |published, checking, model| {
-                        read(Read {
-                            path,
-                            model: &published.model,
-                            read: model,
-                            stop: &stop,
-                            kernel: &kernel,
-                            reached: &published.reached,
-                            checking,
-                        })
-                    })
+                    published_answer(
+                        info,
+                        published,
+                        |published, checking, model| {
+                            read(Read {
+                                path,
+                                model: &published.model,
+                                read: model,
+                                stop: &stop,
+                                kernel: &kernel,
+                                reached: &published.reached,
+                                checking,
+                            })
+                        },
+                        answer_refused,
+                    )
                 },
             );
             drop(counted);
@@ -1547,8 +1702,8 @@ fn status_in<P: Clients + 'static>(
         result: Ok(Status {
             features: held.gated.document().ok().map(|d| d.features.len()),
             gated,
-            transaction: held.transaction.as_ref().map(|begun| Begun {
-                base: begun.revision,
+            transaction: held.transaction.as_ref().map(|open| Begun {
+                base: open.begun.revision,
             }),
             running,
             reads,

@@ -41,7 +41,8 @@ pub struct SketchDrag {
     sketch: Sketch,
     /// The begin state's translation: an end's solve is read by it.
     translation: Translation,
-    /// Where the dragged point began: a release there is a click, and changes nothing.
+    /// Where the dragged point began, or where an edge's press landed: a release there is a
+    /// click, and changes nothing.
     origin: [f64; 2],
     /// Why the begin state is where the file draws the sketch, if its solve failed.
     unsolved: Option<Error>,
@@ -176,6 +177,81 @@ pub fn begin_stoppable(
     held: Option<Held<'_>>,
     stop: &DragStop,
 ) -> Result<Opened, Error> {
+    start(
+        solvers,
+        notify,
+        document,
+        feature,
+        Grab::Point(point),
+        held,
+        stop,
+    )
+}
+
+/// Begins a drag of curve `curve`'s edge in sketch `feature` of `document`, pressed at
+/// `press` in the sketch's coordinates (docs/ports/sketcher.md, *Dragging an edge*): a line
+/// moved whole, each cursor's offset from the press; a circle or an arc sized to pass through
+/// the cursor, its centre pinned where it starts, more weakly. As
+/// [`begin_stoppable`] begins a point's, refused alike, and a curve the sketch hasn't
+/// refused naming `curve`.
+pub fn begin_edge(
+    solvers: &SketchSolvers,
+    notify: Option<Notify>,
+    document: &Checked,
+    feature: &FeatureId,
+    edge: EdgeGrab<'_>,
+    held: Option<Held<'_>>,
+    stop: &DragStop,
+) -> Result<Opened, Error> {
+    let EdgeGrab { curve, press } = edge;
+    start(
+        solvers,
+        notify,
+        document,
+        feature,
+        Grab::Edge { curve, press },
+        held,
+        stop,
+    )
+}
+
+/// A curve's edge, pressed: the curve, by ID, and where the press landed, in the sketch's
+/// coordinates.
+#[derive(Debug, Clone, Copy)]
+pub struct EdgeGrab<'a> {
+    pub curve: &'a ElementId,
+    pub press: [f64; 2],
+}
+
+/// A drag's begin, made on its solver: the begin state's translation, what its frames are
+/// read into, where a release is a click, and why the sketch didn't
+/// solve, if it didn't.
+struct Prepared {
+    translation: Translation,
+    reading: Reading,
+    origin: [f64; 2],
+    unsolved: Option<Error>,
+}
+
+/// What a drag grabs: a point, or a curve's edge where the press landed.
+#[derive(Clone, Copy)]
+enum Grab<'a> {
+    Point(&'a ElementId),
+    Edge {
+        curve: &'a ElementId,
+        press: [f64; 2],
+    },
+}
+
+fn start(
+    solvers: &SketchSolvers,
+    notify: Option<Notify>,
+    document: &Checked,
+    feature: &FeatureId,
+    grab: Grab<'_>,
+    held: Option<Held<'_>>,
+    stop: &DragStop,
+) -> Result<Opened, Error> {
     let named = |e: Error| e.with_feature(feature.as_str());
     let sketch = match document.feature(feature) {
         Ok(found) => match &found.operation {
@@ -193,54 +269,93 @@ pub fn begin_stoppable(
         },
         Err(error) => return Err(error.with_parameter("sketch")),
     };
-    if !sketch.points.iter().any(|p| &p.id == point) {
+    let has = match grab {
+        Grab::Point(point) => sketch.points.iter().any(|p| &p.id == point),
+        Grab::Edge { curve, .. } => {
+            sketch.lines.iter().any(|l| &l.id == curve)
+                || sketch.circles.iter().any(|c| &c.id == curve)
+                || sketch.arcs.iter().any(|a| &a.id == curve)
+        }
+    };
+    if !has {
+        let (what, id, parameter) = match grab {
+            Grab::Point(point) => ("point", point, "point"),
+            Grab::Edge { curve, .. } => ("curve", curve, "curve"),
+        };
         return Err(named(
             Error::new(
                 ErrorCode::InvalidInput,
-                format!("sketch {feature} has no point {point}"),
+                format!("sketch {feature} has no {what} {id}"),
             )
-            .with_parameter("point")
-            .with_suggestion("name one of the sketch's points"),
+            .with_parameter(parameter)
+            .with_suggestion(format!("name one of the sketch's {what}s")),
         ));
     }
-    let mut prepared: Option<(Translation, Reading, [f64; 2], Option<Error>)> = None;
+    let mut prepared: Option<Prepared> = None;
     let begun = super::begin_under(solvers, notify, stop, |solver| {
         let (begin_state, unsolved) = match held.filter(|held| held.sketch == sketch) {
             Some(held) => (held.solution.written(sketch), None),
             None => solved_or_drawn(document, feature, sketch, solver, stop)?,
         };
         let translation = Translation::new(&begin_state)?;
-        let geometry = translation.point_geometry(point).ok_or_else(|| {
+        let missing = |what: &str, id: &ElementId| {
             Error::new(
                 ErrorCode::Internal,
-                format!("the translation of sketch {feature} has no point {point}"),
+                format!("the translation of sketch {feature} has no {what} {id}"),
             )
             .with_suggestion(crate::worker::SILICO_BUG)
-        })?;
-        let begin = DragBegin {
-            system: translation.system.clone(),
-            point: PointOf::Point(geometry),
+        };
+        let value = |v: silico_protocol::Value| {
+            translation
+                .system
+                .values
+                .get(v.0 as usize)
+                .copied()
+                .unwrap_or(f64::NAN)
+        };
+        let (begin, origin) = match grab {
+            Grab::Point(point) => {
+                let geometry = translation
+                    .point_geometry(point)
+                    .ok_or_else(|| missing("point", point))?;
+                let begin = DragBegin::point(translation.system.clone(), PointOf::Point(geometry));
+                let origin = begin
+                    .system
+                    .point_values(PointOf::Point(geometry))
+                    .map(|p| [value(p.x), value(p.y)])
+                    .unwrap_or([f64::NAN; 2]);
+                (begin, origin)
+            }
+            Grab::Edge { curve, press } => {
+                let geometry = translation
+                    .curve_geometry(curve)
+                    .ok_or_else(|| missing("curve", curve))?;
+                let begin = DragBegin {
+                    system: translation.system.clone(),
+                    dragged: silico_protocol::Dragged::Edge {
+                        curve: geometry,
+                        press,
+                    },
+                };
+                (begin, press)
+            }
         };
         let reading = reading(&translation, &begin);
-        let origin = begin
-            .system
-            .point_values(begin.point)
-            .map(|p| {
-                [p.x, p.y].map(|v| {
-                    translation
-                        .system
-                        .values
-                        .get(v.0 as usize)
-                        .copied()
-                        .unwrap_or(f64::NAN)
-                })
-            })
-            .unwrap_or([f64::NAN; 2]);
-        prepared = Some((translation, reading, origin, unsolved));
+        prepared = Some(Prepared {
+            translation,
+            reading,
+            origin,
+            unsolved,
+        });
         Ok(begin)
     })
     .map_err(named)?;
-    let (translation, reading, origin, unsolved) = prepared.ok_or_else(|| {
+    let Prepared {
+        translation,
+        reading,
+        origin,
+        unsolved,
+    } = prepared.ok_or_else(|| {
         Error::new(ErrorCode::Internal, "a drag began with no begin state")
             .with_suggestion(crate::worker::SILICO_BUG)
     })?;

@@ -1,8 +1,9 @@
 //! What each sketch edit does to a sketch's geometry and constraints (docs/ports/sketch-edit.md,
 //! whose rules are FreeCAD's behavior with Silico's shared points, M3.2's D2): pure
 //! functions from a sketch to the sketch edited, or the reasons it can't be, as errors
-//! naming its members. Each result is a sketch the validation gate then checks, and a
-//! solve then settles (the edit's command, M5.10, which this doesn't hold).
+//! naming its members. Each result is a sketch the validation gate then checks (a merge
+//! checks its own, refusing what the gate would), and a solve then settles (the edit's
+//! command, M5.10, which this doesn't hold).
 //!
 //! Here: removing members (the note's §2, decision 7), pulling a shared point apart (§5,
 //! decision 9), and merging points (§6, decision 10). Splitting and trimming follow.
@@ -10,7 +11,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::PROBLEMS_LISTED;
-use super::sketch::{ElementId, ElementKind, Form, Reference, Sketch, SketchPoint};
+use super::sketch::{
+    Direction, ElementId, ElementKind, Form, Reference, Sketch, SketchPoint, TangentSide,
+};
 use crate::{Error, ErrorCode};
 
 mod split;
@@ -273,11 +276,12 @@ pub fn unjoin(
 /// FreeCAD `cb2780e2fa`), a curve that would then use one point twice (a line's ends, an
 /// arc's centre and an end, or its two ends: `084379651a`, #20771), and a constraint that
 /// would then name one point twice (a `distance` or `horizontal_points` between merged
-/// points).
+/// points), and a merged sketch the gate refuses, naming the points and what it names.
 ///
-/// An edge `tangent` between two curves that would then share an end is refused too, as
-/// decision 10 has it, until the maintainer settles docs/design/m5.0-app.md's open item 13,
-/// which recommends making it a `tangent_at` instead (sketch-edit decision 8).
+/// An edge `tangent` between two curves that then share an end becomes a `tangent_at` at
+/// that point, keeping its ID, as FreeCAD's coincident command substitutes one
+/// (`620188073e`; docs/design/m5.0-app.md, open item 13): its `direction` keeps the
+/// tangent's `side` (sketch-edit decision 8), listed in `modified`.
 ///
 /// A request with one bad pair is refused whole, where FreeCAD's coincident command skips
 /// that pair and makes the rest coincident (`CommandConstraints.cpp`, its multi-select): an
@@ -365,20 +369,6 @@ pub fn merge(sketch: &Sketch, points: &[ElementId]) -> Result<Edited, Error> {
             modified.insert(arc.id.clone());
         }
     }
-    // Which curves end at the kept point, after the merge, for the tangent rule.
-    let ends_at: BTreeSet<&ElementId> = edited
-        .lines
-        .iter()
-        .filter(|l| l.from == *kept || l.to == *kept)
-        .map(|l| &l.id)
-        .chain(
-            edited
-                .arcs
-                .iter()
-                .filter(|a| a.start == *kept || a.end == *kept)
-                .map(|a| &a.id),
-        )
-        .collect();
     let mut repointed = Vec::new();
     for constraint in &mut edited.constraints {
         let mut changed = false;
@@ -409,35 +399,98 @@ pub fn merge(sketch: &Sketch, points: &[ElementId]) -> Result<Edited, Error> {
                 .with_suggestion("remove the constraint first, or merge other points"));
             }
         }
-        if let Form::Tangent { a, b, .. } = &constraint.form
-            && let (Some(a), Some(b)) = (a.element(), b.element())
-            && ends_at.contains(a)
-            && ends_at.contains(b)
-        {
-            return Err(Error::new(
-                ErrorCode::InvalidInput,
-                format!(
-                    "merging them would leave tangent {} between {a} and {b}, which would then share an end, where a tangency must be a tangent_at",
-                    constraint.id
-                ),
-            )
-            .with_elements([constraint.id.to_string(), a.to_string(), b.to_string()])
-            .with_parameter("points")
-            .with_suggestion("replace the tangent with a tangent_at at the shared point first"));
-        }
         if changed {
             repointed.push(constraint.id.clone());
         }
     }
+    repointed.extend(tangents_at_shared_ends(&mut edited));
     own_curve(&edited, "merging them", "points", "merge other points")?;
     modified.extend(repointed);
     edited.points.retain(|p| !others.contains(&p.id));
+    // A merge places points by ID: a curve it leaves with no size (its ends, or an arc's end
+    // and centre, drawn at one place), or a sketch its tangent_ats take past the solver's
+    // values, is the gate's to find.
+    super::refused_by_gate(
+        &edited,
+        "merging them",
+        points.iter().map(ToString::to_string).collect(),
+        "points",
+        "merge other points, or change what the merge would collapse",
+    )?;
     Ok(Edited {
         sketch: edited,
         added: Vec::new(),
         modified: ordered(&kinds, modified),
         removed: ordered(&kinds, others.into_iter().cloned()),
     })
+}
+
+/// Each edge `tangent` of `sketch` between two curves that share one end, made a
+/// `tangent_at` at that point, keeping its ID (docs/design/m5.0-app.md, open item 13), as a
+/// merge leaves one where it made the shared end: FreeCAD's coincident command substitutes
+/// an endpoint tangency for an edge one so (`620188073e`). Its `direction` keeps the
+/// tangent's `side` (sketch-edit decision 8), whatever the merge moved: see [`kept_side`].
+/// Curves sharing both ends, which have no one point for it, are left for [`own_curve`] to
+/// refuse. The IDs made `tangent_at`s.
+fn tangents_at_shared_ends(sketch: &mut Sketch) -> Vec<ElementId> {
+    let Sketch {
+        lines,
+        arcs,
+        constraints,
+        ..
+    } = sketch;
+    let ends: BTreeMap<&ElementId, [&ElementId; 2]> = lines
+        .iter()
+        .map(|l| (&l.id, [&l.from, &l.to]))
+        .chain(arcs.iter().map(|a| (&a.id, [&a.start, &a.end])))
+        .collect();
+    let mut made = Vec::new();
+    for constraint in constraints {
+        let Form::Tangent { a, b, side } = &constraint.form else {
+            continue;
+        };
+        let (Some(of_a), Some(of_b)) = (
+            a.element().and_then(|a| ends.get(a)),
+            b.element().and_then(|b| ends.get(b)),
+        ) else {
+            continue;
+        };
+        let shared: Vec<&ElementId> = of_a.iter().copied().filter(|p| of_b.contains(p)).collect();
+        let [at] = shared[..] else {
+            continue;
+        };
+        // Whether the shared point ends one curve and starts the other.
+        let end_to_start = (of_a[0] == at) != (of_b[0] == at);
+        constraint.form = Form::TangentAt {
+            a: a.clone(),
+            b: b.clone(),
+            at: Reference::Element(at.clone()),
+            direction: kept_side(*side, end_to_start),
+        };
+        made.push(constraint.id.clone());
+    }
+    made
+}
+
+/// The `direction` of a `tangent_at` that keeps an edge tangent's `side` where the curves
+/// now share an end, `end_to_start` if it ends one and starts the other. The side fixes the
+/// angle between the two curves' own directions (a line's from start to end, a round's
+/// counter-clockwise) at the point they touch: a round on the line's left, or two rounds one
+/// inside the other, turn the same way there, an angle of 0; on its right, or outside each
+/// other, opposite ways, π. The solve's translation reads 0 as `same` where the point ends
+/// one and starts the other, and as `opposite` where it starts or ends both. Read from the
+/// side, not from the drawing the merge leaves: points merged from apart move a curve's
+/// end, and its drawing can then show the other side. FreeCAD's edge tangency holds no side,
+/// so its coincident command locks the angle the unmerged drawing shows at the point
+/// (`AutoLockTangencyAndPerpty`); where the merged points touch, that point is the contact
+/// and the two agree.
+fn kept_side(side: TangentSide, end_to_start: bool) -> Direction {
+    let turn_alike = matches!(side, TangentSide::Left | TangentSide::Inside);
+    if turn_alike == end_to_start {
+        Direction::Same
+    } else {
+        Direction::Opposite
+    }
 }
 
 /// Refuses an edited sketch in which a constraint holds a curve's own point on it, or
@@ -510,8 +563,11 @@ fn own_curve(sketch: &Sketch, edit: &str, parameter: &str, instead: &str) -> Res
                 );
             }
             Form::Tangent { a, b, .. } => {
-                // Curves that share an end: where they meet, a tangency is a tangent_at
-                // (a split at the end of a curve held tangent on it, as a merge refuses).
+                // Curves that share an end: where they meet, a tangency is a tangent_at. A
+                // merge's is made one (`tangents_at_shared_ends`), but not where the two share
+                // both ends. A split meets one only at a curve's end held tangent on it,
+                // whose tangent_on becomes that tangent_at (the gate refuses an edge tangency
+                // beside an `on` of an end), so it's refused, repeating it.
                 let shared = match (a.element(), b.element()) {
                     (Some(a), Some(b)) => ends
                         .get(a)

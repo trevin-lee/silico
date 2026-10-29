@@ -583,7 +583,10 @@ impl<C: Kernel + 'static> Session<C> {
                     checking,
                 })
                 .map_err(Unbuilt::Unavailable),
-            refused => Err(Unbuilt::Gated(refused.problems())),
+            _ => Err(Unbuilt::Gated {
+                revision,
+                gated: Arc::clone(&gated),
+            }),
         }
     }
 
@@ -620,11 +623,14 @@ impl<C: Kernel + 'static> Session<C> {
             Gated::Checked(checked) => self
                 .published_read(revision, checked, reaching)
                 .map_err(Unbuilt::Unavailable),
-            refused => lock(&self.rebuilds)
+            _ => lock(&self.rebuilds)
                 .published
                 .clone()
                 .filter(|published| published.revision <= revision)
-                .ok_or_else(|| Unbuilt::Gated(refused.problems())),
+                .ok_or_else(|| Unbuilt::Gated {
+                    revision,
+                    gated: Arc::clone(&gated),
+                }),
         };
         let read = read.map(|published| {
             let checking = Checking::of(open, revision, &gated, published.revision);
@@ -746,8 +752,13 @@ pub(super) struct Current {
 
 /// Why a session's model couldn't be read.
 pub(super) enum Unbuilt {
-    /// The gate refused the document: nothing is built of it, and these are its problems.
-    Gated(Problems),
+    /// The gate refused the document (or the reader did): nothing is built of it. The
+    /// session's revision, and its document as the reader and the gate found it, whose
+    /// problems are the refusal's.
+    Gated {
+        revision: Revision,
+        gated: Arc<Gated>,
+    },
     /// No model could be had: the session closed or was dropped, its recompute failed, or
     /// (a published read) nothing's been published.
     Unavailable(Problems),
@@ -756,17 +767,21 @@ pub(super) enum Unbuilt {
 impl Unbuilt {
     pub(super) fn problems(self) -> Problems {
         match self {
-            Unbuilt::Gated(problems) | Unbuilt::Unavailable(problems) => problems,
+            Unbuilt::Gated { gated, .. } => gated.problems(),
+            Unbuilt::Unavailable(problems) => problems,
         }
     }
 }
 
 /// A published read's response: `then` on the model read, if there was one, and the session
-/// as a check of it finds it, the response naming it; or why there wasn't.
+/// as a check of it finds it, the response naming it; or, with none for a document the gate
+/// (or the reader) refused, `refused` on the session's revision and that document, naming
+/// no model; or why there wasn't one.
 pub(super) fn published_answer<T>(
     info: Option<SessionInfo>,
     read: Result<(Published, Checking), Unbuilt>,
     then: impl FnOnce(&Published, Checking, ModelRead) -> Result<T, Problems>,
+    refused: impl FnOnce(Revision, &Gated) -> Result<T, Problems>,
 ) -> Response<T> {
     match read {
         Ok((published, checking)) => {
@@ -777,12 +792,23 @@ pub(super) fn published_answer<T>(
                 model: Some(read),
             }
         }
+        Err(Unbuilt::Gated { revision, gated }) => Response {
+            session: info,
+            model: None,
+            result: refused(revision, &gated),
+        },
         Err(unbuilt) => Response {
             session: info,
             model: None,
             result: Err(unbuilt.problems()),
         },
     }
+}
+
+/// The refusal of a read that answers nothing of a document the gate (or the reader)
+/// refused, with no model to read: its problems. Every read's but `timeline`'s.
+pub(super) fn gated_problems<T>(_: Revision, gated: &Gated) -> Result<T, Problems> {
+    Err(gated.problems())
 }
 
 /// What does `done` for a revision whose model holds a kernel fault, kept as its outcome

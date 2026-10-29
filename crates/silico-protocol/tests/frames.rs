@@ -186,7 +186,7 @@ fn every_op() -> Vec<Op> {
                 }],
                 algorithms: vec![Algorithm::DogLeg],
             },
-            point: PointOf::End(Geometry(0)),
+            dragged: silico_protocol::Dragged::Point(PointOf::End(Geometry(0))),
         }),
         Op::DragMove {
             to: [-1e6, 3.000_000_000_000_000_4],
@@ -211,7 +211,7 @@ fn every_op() -> Vec<Op> {
                     constraints: vec![],
                     algorithms: vec![Algorithm::DogLeg],
                 },
-                point: PointOf::End(Geometry(0)),
+                dragged: silico_protocol::Dragged::Point(PointOf::End(Geometry(0))),
             },
             to: [1e6, 3.000_000_000_000_000_4],
         },

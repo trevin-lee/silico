@@ -78,6 +78,10 @@ mod adversarial_references;
 mod adversarial_render_command;
 #[path = "adversarial_session_disk.rs"]
 mod adversarial_session_disk;
+#[path = "adversarial_session_timeline.rs"]
+mod adversarial_session_timeline;
+#[path = "adversarial_session_undo.rs"]
+mod adversarial_session_undo;
 #[path = "adversarial_timeline.rs"]
 mod adversarial_timeline;
 #[path = "adversarial_type_words.rs"]

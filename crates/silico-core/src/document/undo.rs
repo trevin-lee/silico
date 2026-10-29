@@ -57,6 +57,8 @@ impl Prepared {
     /// `document`'s features' canonical texts; refused, as `write` refuses it, if its text
     /// would be more than a document may be.
     pub fn of(document: &Document) -> Result<Prepared, Error> {
+        let _span =
+            tracing::debug_span!("document_prepare", features = document.features.len()).entered();
         write::placed(document, MAX_DOCUMENT_LEN)
             .map(|features| Prepared { features })
             .map_err(|write::TooLong| too_long(document, "the document is too large to write"))
@@ -72,7 +74,10 @@ impl Prepared {
 /// features' ([`Prepared`]), or a text held whole, as it is.
 #[derive(Debug, Clone)]
 pub enum After {
+    /// What a session's edits push: each holds its document's canonical text.
     Canonical(Prepared),
+    /// Kept for a caller that holds the bytes it was given, not a document's canonical form
+    /// (none of a session's edits does today): held as they are, sharing nothing.
     Whole(Arc<Vec<u8>>),
 }
 
@@ -267,6 +272,15 @@ impl<K: Copy + Ord> UndoStack<K> {
             },
         };
         Ok(self.restore(target, revision))
+    }
+
+    /// Whether a state after the session's, one [`UndoStack::redo`] can restore, was the
+    /// session's state at `revision`: so one an edit would drop.
+    pub fn redo_holds(&self, revision: K) -> bool {
+        self.states
+            .iter()
+            .skip(self.at + 1)
+            .any(|state| state.revisions.contains(&revision))
     }
 
     /// How many edits [`UndoStack::undo`] can undo.
