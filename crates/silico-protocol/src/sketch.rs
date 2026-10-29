@@ -1194,6 +1194,66 @@ impl SketchSystem {
         }
     }
 
+    /// The values constraint `c`'s equations depend on: the support of their gradient, where
+    /// [`reads`](Self::reads) gives PlaneGCS's parameter list, which takes a geometry whole.
+    /// The two are the same for every form but three, whose equations read less than their
+    /// list (M5.0 open item 32, docs/ports/sketcher.md, *Definition states*):
+    /// - a tangency at an end ([`TangentOn`]) and an angle at a point ([`AngleViaPoint`]):
+    ///   the point, the angle, and of each curve what its normal there reads
+    ///   (`CalculateNormal` in 1.1.3's `Geo.cpp`): a line's both ends, a circle's or an arc's
+    ///   centre; and, for [`TangentOn`]'s row holding the point on `b`, `b`'s radius when it's
+    ///   round. Never an arc's ends or angles, whose columns are zero in every one of these
+    ///   rows;
+    /// - two radii equal ([`EqualRadius`]): the two radii, never the centres (`r1 − r2`).
+    ///
+    /// The diagnosis's flags are the Jacobian's, so what a flagged constraint governs is
+    /// this; `reads` stays the parameter list, the safe side for the parts it's partitioned
+    /// into (PlaneGCS's partition is by its parameter lists).
+    ///
+    /// [`TangentOn`]: SolverConstraint::TangentOn
+    /// [`AngleViaPoint`]: SolverConstraint::AngleViaPoint
+    /// [`EqualRadius`]: SolverConstraint::EqualRadius
+    pub fn depends_on(&self, c: &SolverConstraint) -> Vec<Value> {
+        let point = |p: PointOf| {
+            self.point_values(p)
+                .map(|v| vec![v.x, v.y])
+                .unwrap_or_default()
+        };
+        // What a curve's normal at a point reads: a line's both ends; a circle's or an arc's
+        // centre.
+        let normal = |g: Geometry| match self.geometry.get(g.0 as usize) {
+            Some(SketchGeometry::Line { start, end }) => vec![start.x, start.y, end.x, end.y],
+            Some(SketchGeometry::Circle { center, .. } | SketchGeometry::Arc { center, .. }) => {
+                vec![center.x, center.y]
+            }
+            _ => Vec::new(),
+        };
+        let radius = |g: Geometry| match self.geometry.get(g.0 as usize) {
+            Some(SketchGeometry::Circle { radius, .. } | SketchGeometry::Arc { radius, .. }) => {
+                vec![*radius]
+            }
+            _ => Vec::new(),
+        };
+        match *c {
+            SolverConstraint::TangentOn {
+                a,
+                point: q,
+                b,
+                angle,
+                ..
+            } => [point(q), normal(a), normal(b), radius(b), vec![angle]].concat(),
+            SolverConstraint::AngleViaPoint {
+                a,
+                b,
+                point: q,
+                angle,
+                ..
+            } => [point(q), normal(a), normal(b), vec![angle]].concat(),
+            SolverConstraint::EqualRadius { a, b, .. } => [radius(a), radius(b)].concat(),
+            _ => self.reads(c),
+        }
+    }
+
     /// The values of the point `p` names, if its geometry has it.
     pub fn point_values(&self, p: PointOf) -> Option<PointValues> {
         match (self.geometry.get(p.geometry().0 as usize)?, p) {
@@ -2916,5 +2976,76 @@ mod tests {
             by_geometry(PointOf::End(Geometry(2))),
             [(PointOf::End(Geometry(2)), 1.0)]
         );
+    }
+
+    #[test]
+    fn what_a_tangency_and_equal_radii_depend_on_is_less_than_their_parameter_lists() {
+        // On system()'s layout: the line's ends 0, 1 and 2, 3; the circle's centre 4, 5 and
+        // radius 6; the arc's centre 7, 8, radius 9, angles 10, 11, start 12, 13, end 14, 15;
+        // 16 a fixed angle. Written out from 1.1.3's gradients: a curve's normal at a point
+        // reads a line's both ends or a round curve's centre (Geo.cpp, CalculateNormal), the
+        // point on a round curve its centre and radius too; equal radii r1 − r2.
+        let s = system();
+        let v = |list: &[u32]| list.iter().copied().map(Value).collect::<Vec<_>>();
+        let (line, circle, arc) = (Geometry(0), Geometry(1), Geometry(2));
+        let cases = [
+            // An arc's end tangent on the line: the end, the arc's centre, the line's ends.
+            (
+                SolverConstraint::TangentOn {
+                    tag: Tag(4),
+                    a: arc,
+                    point: PointOf::End(arc),
+                    b: line,
+                    angle: Value(16),
+                },
+                v(&[14, 15, 7, 8, 0, 1, 2, 3, 16]),
+                true,
+            ),
+            // The line's end tangent on the circle: the circle's radius too, for the point on
+            // it, so its whole list (a circle has no ends or angles).
+            (
+                SolverConstraint::TangentOn {
+                    tag: Tag(4),
+                    a: line,
+                    point: PointOf::End(line),
+                    b: circle,
+                    angle: Value(16),
+                },
+                v(&[2, 3, 0, 1, 2, 3, 4, 5, 6, 16]),
+                false,
+            ),
+            // The line and the arc meeting at the arc's start: no radius, no angle of the arc.
+            (
+                SolverConstraint::AngleViaPoint {
+                    tag: Tag(4),
+                    a: line,
+                    b: arc,
+                    point: PointOf::Start(arc),
+                    angle: Value(16),
+                },
+                v(&[12, 13, 0, 1, 2, 3, 7, 8, 16]),
+                true,
+            ),
+            (
+                SolverConstraint::EqualRadius {
+                    tag: Tag(4),
+                    a: circle,
+                    b: arc,
+                },
+                v(&[6, 9]),
+                true,
+            ),
+        ];
+        for (c, want, less) in cases {
+            assert_eq!(s.depends_on(&c), want, "{c:?}");
+            let reads: std::collections::BTreeSet<Value> = s.reads(&c).into_iter().collect();
+            let want: std::collections::BTreeSet<Value> = want.into_iter().collect();
+            assert!(want.is_subset(&reads), "{c:?}");
+            assert_eq!(want != reads, less, "{c:?}");
+        }
+        // Every other form: its parameter list.
+        for c in &s.constraints {
+            assert_eq!(s.depends_on(c), s.reads(c), "{c:?}");
+        }
     }
 }

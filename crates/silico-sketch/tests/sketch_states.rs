@@ -1,6 +1,6 @@
 //! `silico_core::sketch_states` through the sketch worker (docs/ports/sketcher.md,
 //! *Definition states*): each probe case of the note solved by PlaneGCS, its diagnosis read
-//! back (`Translation::diagnosis`), and every member's state checked against the state
+//! back with its outcome (`Answer::diagnosed`), and every member's state checked against the state
 //! worked out by hand from the geometry and the note's rules, with FreeCAD 1.1.3's degrees of
 //! freedom and constraint lists where the note's probe ran.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -15,7 +15,7 @@ use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::document::{ElementId, Operation, Sketch, read, validate};
 use silico_core::sketch::{
-    Answer, Diagnosis, EXTENT_TOLERANCE, REDUNDANCY_GAP_MM, SketchWorker, Translation,
+    Answer, Diagnosed, Diagnosis, EXTENT_TOLERANCE, REDUNDANCY_GAP_MM, SketchWorker, Translation,
 };
 use silico_core::sketch_states::{ConstraintState, MemberState, SketchState, SketchStates, states};
 
@@ -52,9 +52,9 @@ fn solved(sketch: &Sketch) -> (Answer, Diagnosis, SketchStates) {
     let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
     let translation = Translation::new(sketch).unwrap();
     let answer = translation.solve(&mut worker).unwrap();
-    let diagnosis = translation.diagnosis(&answer.solved).unwrap();
-    let states = states(sketch, &diagnosis, answer.outcome.as_ref());
-    (answer, diagnosis, states)
+    let read = answer.diagnosed().unwrap();
+    let states = states(sketch, &read).unwrap();
+    (answer, read.diagnosis().clone(), states)
 }
 
 fn members<S: Copy>(list: &[(&str, S)]) -> BTreeMap<ElementId, S> {
@@ -606,9 +606,9 @@ fn two_lengths_that_conflict_over_define_their_line_and_leave_a_free_line_under_
     // (1.1.3: conflicting [3, 4], DoF 4). The two lengths conflict; the horizontal and the
     // placing dimensions don't; each length reads both ends and names the line, so those
     // are over defined; the free line and its ends under defined. The sketch is over defined,
-    // not no_solution (the decision's 1), its members as stored, their states from the
-    // conflict; the constraints not in it unsolved (the decision's A: no solution to be met
-    // on). Degrees: 8 unknowns, rank 4 (the first line's), so 4.
+    // not no_solution (item 32: a conflict is over defined), its members as stored, their
+    // states from the conflict; the constraints not in it unsolved (item 32's `unsolved`: no
+    // solution to be met on). Degrees: 8 unknowns, rank 4 (the first line's), so 4.
     let constraints = [
         FROM_AT_ORIGIN[0],
         FROM_AT_ORIGIN[1],
@@ -818,8 +818,10 @@ fn an_arcs_ends_mirrored_about_the_y_axis_its_centre_placed_there_repeat_the_cen
     // sketch is over defined. 9 unknowns, rank 7 (the arc's 4 rules, the 2 dimensions, the
     // symmetric's midpoint row): 2 left, the radius and the ends' turn.
     //
-    // PlaneGCS flags the dimension, wholly redundant, in either tag order (the note expected
-    // the symmetric, partially redundant): so the centre, which it reads, is over defined;
+    // PlaneGCS flags the dimension, wholly redundant, in either tag order: one row against
+    // the symmetric's two, its contest removing the constraint with fewer rows on a tie in
+    // popularity, order-independent (item 32's addendum, A): so the centre, which it reads,
+    // is over defined;
     // the ends, free along the circle, under defined, as is the arc, which nothing flagged
     // names.
     for symmetric in ["k0000000", "k0000003"] {
@@ -902,7 +904,7 @@ fn a_point_on_two_circles_touching_at_it_is_over_defined_by_the_redundant_on() {
     // redundant (the first-order rule), the point keeps a degree it can't use, 8 unknowns,
     // rank 7. The redundant `on` reads the point and its circle's centre and radius
     // (`PointOnCircle`), and names the circle: the point, that circle, and its centre over
-    // defined (over-definition before the point's freedom: the decision's 3); the other
+    // defined (over-definition before the point's freedom: item 32's members' rule); the other
     // circle and its centre fully defined; the sketch over defined.
     let points = [
         point("p0000001", 0.0, 0.0),
@@ -1150,8 +1152,9 @@ fn an_arcs_ends_mirrored_about_a_line_a_one_row_constraint_puts_its_centre_on_lo
 fn an_arcs_ends_mirrored_about_a_line_a_midpoint_puts_its_centre_on_flag_the_symmetry() {
     // The centre held at the line's middle by a `midpoint` (two rows, like the symmetric):
     // the symmetric's both rows are sent, 14 equations for 13 unknowns, and the two tie on
-    // rows, so PlaneGCS removes the later by tag: the symmetric, which it lists as
-    // redundant, not partially (the decision expected partially; the solver's word stands).
+    // rows, so PlaneGCS removes the later by tag: the symmetric, every row of it dependent,
+    // so wholly redundant (item 32's addendum, A: `redundant` when both its rows are in the
+    // dependent set, `partially_redundant` when one is).
     // It reads both the arc's ends and the line's (over defined), and names the line (over
     // defined); the arc, named by nothing flagged, fully defined.
     let (mut points, arcs) = mirrored_arc();
@@ -1248,7 +1251,7 @@ fn a_half_circles_ends_left_unmirrored_are_invalid_naming_the_symmetry() {
     );
 }
 
-// --- The decision's invariants, over generated sketches -----------------------------------
+// --- Item 32's invariants, over generated sketches -----------------------------------------
 
 /// A sketch of a few points on a small grid (so points line up, mirror, and coincide often),
 /// lines between them, circles about them, arcs of radius 5 through Pythagorean points
@@ -1329,7 +1332,7 @@ fn generated(seed: u64) -> Option<Sketch> {
             let a = rng.below(n as u64) as usize;
             (a, (a + 1 + rng.below(n as u64 - 1) as usize) % n)
         };
-        let text = match rng.below(13) {
+        let text = match rng.below(16) {
             0 | 1 if !lines.is_empty() => {
                 let l = &lines[rng.below(lines.len() as u64) as usize];
                 let kind = if rng.below(2) == 0 {
@@ -1441,6 +1444,80 @@ fn generated(seed: u64) -> Option<Sketch> {
                     a.2, a.3
                 )
             }
+            13 if !lines.is_empty() || !arcs.is_empty() => {
+                // A tangency at an end of a line or an arc, on any other curve.
+                let ends: Vec<(String, String, String)> = lines
+                    .iter()
+                    .map(|l| (l.0.clone(), points[l.1].0.clone(), points[l.2].0.clone()))
+                    .chain(arcs.iter().map(|a| (a.0.clone(), a.2.clone(), a.3.clone())))
+                    .collect();
+                let (a, start, end) = &ends[rng.below(ends.len() as u64) as usize];
+                let at = if rng.below(2) == 0 { start } else { end };
+                let others: Vec<String> = lines
+                    .iter()
+                    .map(|l| l.0.clone())
+                    .chain(circles.iter().map(|c| c.0.clone()))
+                    .chain(arcs.iter().map(|a| a.0.clone()))
+                    .filter(|o| o != a)
+                    .collect();
+                let b = if others.is_empty() {
+                    "x_axis".to_owned()
+                } else {
+                    others[rng.below(others.len() as u64) as usize].clone()
+                };
+                let direction = if rng.below(2) == 0 {
+                    "same"
+                } else {
+                    "opposite"
+                };
+                format!(
+                    r#"{{"id": "{id}", "type": "tangent_on", "a": "{a}", "at": "{at}", "b": "{b}", "direction": "{direction}"}}"#
+                )
+            }
+            14 => {
+                // A tangency where two curves, lines or arcs, share an end.
+                let ends: Vec<(String, [String; 2])> = lines
+                    .iter()
+                    .map(|l| (l.0.clone(), [points[l.1].0.clone(), points[l.2].0.clone()]))
+                    .chain(
+                        arcs.iter()
+                            .map(|a| (a.0.clone(), [a.2.clone(), a.3.clone()])),
+                    )
+                    .collect();
+                let mut shared = Vec::new();
+                for (i, (x, xe)) in ends.iter().enumerate() {
+                    for (y, ye) in &ends[i + 1..] {
+                        for at in xe.iter().filter(|p| ye.contains(p)) {
+                            shared.push((x.clone(), y.clone(), at.clone()));
+                        }
+                    }
+                }
+                if shared.is_empty() {
+                    continue;
+                }
+                let (a, b, at) = &shared[rng.below(shared.len() as u64) as usize];
+                let direction = if rng.below(2) == 0 {
+                    "same"
+                } else {
+                    "opposite"
+                };
+                format!(
+                    r#"{{"id": "{id}", "type": "tangent_at", "a": "{a}", "b": "{b}", "at": "{at}", "direction": "{direction}"}}"#
+                )
+            }
+            15 if circles.len() + arcs.len() >= 2 => {
+                // Two round curves' radii equal.
+                let round: Vec<String> = circles
+                    .iter()
+                    .map(|c| c.0.clone())
+                    .chain(arcs.iter().map(|a| a.0.clone()))
+                    .collect();
+                let (a, b) = pair(&mut rng, round.len());
+                format!(
+                    r#"{{"id": "{id}", "type": "equal", "a": "{}", "b": "{}"}}"#,
+                    round[a], round[b]
+                )
+            }
             _ => {
                 let (a, b) = pair(&mut rng, points.len());
                 let v = value(length(points[a].1, points[b].1), &mut rng);
@@ -1480,28 +1557,46 @@ fn generated(seed: u64) -> Option<Sketch> {
     }
 }
 
-/// The decision's invariants on one sketch's states, solved by `worker`: fully_defined ⇒ no
+/// Item 32's invariants on one sketch's states, solved by `worker`: fully_defined ⇒ no
 /// member under or over defined and no constraint flagged; under_defined ⇒ dofs > 0 and
 /// some member under defined; over_defined ⇒ some constraint flagged; an `over_constrained`
 /// problem's elements are the conflicting constraints; a solve's problem exactly when the
-/// sketch is refused, every constraint not flagged then unsolved; and every satisfied
-/// driving constraint met on the solution, its residual within decision 5's least window
-/// over the whole sketch (no smaller than its part's).
+/// sketch is refused, every constraint not flagged then unsolved; every satisfied driving
+/// constraint met on the solution, its residual within decision 5's least window over the
+/// whole sketch (no smaller than its part's); and, solved, the diagnosis saying what the
+/// solution says of the degrees of freedom, the free members, and the repetitions kept. A
+/// sketch the translation refuses reads as [`untranslated_invariants`] says.
 fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), String> {
-    // A sketch the translation refuses (two points drawn at one place where a constraint
-    // is measured by the line between them) is never solved: no diagnosis, no states.
-    let Ok(translation) = Translation::new(sketch) else {
-        return Ok(());
+    let translation = match Translation::new(sketch) {
+        Ok(translation) => translation,
+        Err(refusal) => return untranslated_invariants(sketch, refusal),
     };
     let answer = match translation.solve(worker) {
         Ok(answer) => answer,
         // A solver that couldn't answer isn't a state: nothing to check.
         Err(_) => return Ok(()),
     };
-    let diagnosis = translation
-        .diagnosis(&answer.solved)
-        .map_err(|e| format!("diagnosis: {e}"))?;
-    let got = states(sketch, &diagnosis, answer.outcome.as_ref());
+    let read = answer.diagnosed().map_err(|e| format!("diagnosis: {e}"))?;
+    let diagnosis = read.diagnosis();
+    let got = states(sketch, &read).map_err(|e| format!("states: {e}"))?;
+    if let Ok(solution) = &answer.outcome {
+        let kept = |m: &BTreeMap<ElementId, f64>| m.keys().cloned().collect::<BTreeSet<_>>();
+        let partly: BTreeSet<ElementId> = diagnosis
+            .partially_redundant
+            .difference(&diagnosis.redundant)
+            .cloned()
+            .collect();
+        if solution.dofs != diagnosis.dofs
+            || solution.free != diagnosis.free
+            || kept(&solution.redundant) != diagnosis.redundant
+            || kept(&solution.partially_redundant) != partly
+            || !diagnosis.conflicting.is_empty()
+        {
+            return Err(format!(
+                "the diagnosis and the solution disagree: {diagnosis:#?} {solution:#?}"
+            ));
+        }
+    }
     let members = || {
         got.points
             .values()
@@ -1590,6 +1685,37 @@ fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), Str
     Ok(())
 }
 
+/// A sketch [`Translation::new`] refuses (two points drawn at one place where a constraint is
+/// measured by the line between them, an arc that sweeps nothing): `invalid`, the refusal as
+/// its problem, an `invalid_input`; every member under defined and every constraint
+/// unsolved; and `dofs` the sketch's unknowns, counted from its lists, 2 a point, 1 a
+/// circle, 3 an arc (M5.0 open item 32, the sketch the translation refuses).
+fn untranslated_invariants(sketch: &Sketch, refusal: silico_core::Error) -> Result<(), String> {
+    if refusal.code() != ErrorCode::InvalidInput {
+        return Err(format!("the translation refuses with {refusal:?}"));
+    }
+    let got = states(sketch, &Diagnosed::untranslated(sketch, refusal.clone()))
+        .map_err(|e| format!("states: {e}"))?;
+    let unknowns = 2 * sketch.points.len() + sketch.circles.len() + 3 * sketch.arcs.len();
+    let all_under = got
+        .points
+        .values()
+        .chain(got.lines.values())
+        .chain(got.circles.values())
+        .chain(got.arcs.values())
+        .all(|&s| s == Under);
+    if got.state != SketchState::Invalid
+        || got.solve_problem.as_ref() != Some(&refusal)
+        || got.dofs != unknowns as i32
+        || !all_under
+        || got.constraints.values().any(|&s| s != Unsolved)
+        || got.constraints.len() != sketch.constraints.len()
+    {
+        return Err(format!("untranslated: {got:#?}"));
+    }
+    Ok(())
+}
+
 /// The sketch's constraints in ID order: a constraint's tag is its place there, plus one.
 fn sketch_sorted(sketch: &Sketch) -> Vec<silico_core::document::SketchConstraint> {
     let mut constraints = sketch.constraints.clone();
@@ -1632,13 +1758,367 @@ fn the_generator_reaches_every_sketch_state_and_every_constraint_state() {
         let Ok(answer) = translation.solve(&mut worker) else {
             continue;
         };
-        let diagnosis = translation.diagnosis(&answer.solved).unwrap();
-        let got = states(&sketch, &diagnosis, answer.outcome.as_ref());
+        let got = states(&sketch, &answer.diagnosed().unwrap()).unwrap();
         sketch_states.insert(got.state);
         constraint_states.extend(got.constraints.values().copied());
     }
     assert!(gated >= 200, "{gated} of 400 pass the gate");
+    // And some the translation refuses, so their invariants are checked too.
+    let untranslated = (0..4000u64)
+        .filter_map(generated)
+        .filter(|sketch| Translation::new(sketch).is_err())
+        .count();
+    assert!(
+        untranslated >= 10,
+        "{untranslated} of 4000 refused by the translation"
+    );
     // Five of each: every state of both kinds reached.
     assert_eq!(sketch_states.len(), 5, "{sketch_states:?}");
     assert_eq!(constraint_states.len(), 5, "{constraint_states:?}");
+}
+
+// --- What a flagged constraint governs: its equations' support (item 32's addendum, B) ----
+
+#[test]
+fn a_repeated_tangent_at_marks_the_lines_ends_the_arcs_centre_and_the_joint_not_the_arcs_far_end() {
+    // A quarter arc about p1 (0, 0) from p2 (5, 0) to p3 (0, 5), and a line from p3 to
+    // p4 (−10, 5), leaving p3 along −x as the arc arrives there: tangent at p3, given twice.
+    // 11 unknowns (4 points, the arc's radius and angles), 6 rows (the arc's 4 rules, the two
+    // tangencies), the second repeating the first: rank 5, 6 left. Of two alike, PlaneGCS
+    // removes the later tag: k0000002 redundant. Its equation is the angle between the
+    // curves' normals at p3, which reads the line's ends and the arc's centre (1.1.3's
+    // CalculateNormal) and never the arc's far end: p1, p3, and p4 over defined, p2 as its
+    // freedom gives (free along the circle), under defined. It names both curves: over
+    // defined.
+    let points = [
+        point("p0000001", 0.0, 0.0),
+        point("p0000002", 5.0, 0.0),
+        point("p0000003", 0.0, 5.0),
+        point("p0000004", -10.0, 5.0),
+    ];
+    let lines = [line("n0000001", "p0000003", "p0000004")];
+    let arcs = [arc("a0000001", "p0000001", "p0000002", "p0000003")];
+    let constraints = [
+        r#"{"id": "k0000001", "type": "tangent_at", "a": "n0000001", "b": "a0000001", "at": "p0000003", "direction": "same"}"#,
+        r#"{"id": "k0000002", "type": "tangent_at", "a": "n0000001", "b": "a0000001", "at": "p0000003", "direction": "same"}"#,
+    ];
+    let sketch = sketch_of(&points, &lines, &[], &arcs, &constraints);
+    let (answer, diagnosis, got) = solved(&sketch);
+    assert!(answer.outcome.is_ok(), "{:?}", answer.outcome);
+    let read: BTreeSet<&str> = diagnosis.points_read[&ElementId::new("k0000002").unwrap()]
+        .iter()
+        .map(ElementId::as_str)
+        .collect();
+    assert_eq!(read, BTreeSet::from(["p0000001", "p0000003", "p0000004"]));
+    expect(
+        &got,
+        Want {
+            problem: None,
+            state: SketchState::OverDefined,
+            dofs: 6,
+            points: &[
+                ("p0000001", Over),
+                ("p0000002", Under),
+                ("p0000003", Over),
+                ("p0000004", Over),
+            ],
+            lines: &[("n0000001", Over)],
+            circles: &[],
+            arcs: &[("a0000001", Over)],
+            constraints: &[("k0000001", Satisfied), ("k0000002", Redundant)],
+        },
+    );
+}
+
+#[test]
+fn a_repeated_equal_of_two_circles_marks_the_circles_and_neither_centre() {
+    // Circles of radius 5 about p1 (0, 0) and p2 (20, 0), made equal twice: 6 unknowns (two
+    // centres, two radii), one row repeated, rank 1, 5 left. The later equal redundant; its
+    // equation is r1 − r2, which no centre is in: both centres keep their freedom (under
+    // defined), both circles, named, over defined.
+    let points = [point("p0000001", 0.0, 0.0), point("p0000002", 20.0, 0.0)];
+    let circles = [
+        circle("c0000001", "p0000001", 5.0),
+        circle("c0000002", "p0000002", 5.0),
+    ];
+    let constraints = [
+        r#"{"id": "k0000001", "type": "equal", "a": "c0000001", "b": "c0000002"}"#,
+        r#"{"id": "k0000002", "type": "equal", "a": "c0000001", "b": "c0000002"}"#,
+    ];
+    let sketch = sketch_of(&points, &[], &circles, &[], &constraints);
+    let (answer, diagnosis, got) = solved(&sketch);
+    assert!(answer.outcome.is_ok(), "{:?}", answer.outcome);
+    assert!(diagnosis.points_read[&ElementId::new("k0000002").unwrap()].is_empty());
+    expect(
+        &got,
+        Want {
+            problem: None,
+            state: SketchState::OverDefined,
+            dofs: 5,
+            points: &[("p0000001", Under), ("p0000002", Under)],
+            lines: &[],
+            circles: &[("c0000001", Over), ("c0000002", Over)],
+            arcs: &[],
+            constraints: &[("k0000001", Satisfied), ("k0000002", Redundant)],
+        },
+    );
+}
+
+#[test]
+fn a_conflicting_tangent_on_an_arc_leaves_the_arcs_own_ends_under_defined() {
+    // The port review's proof. A half arc about p1, held at the origin, radius 10, from p2
+    // (10, 0) to p3 (−10, 0); a line from p4, held at (−20, 10.5), ending at p5 tangent on the
+    // arc; and p5 held 5 above the origin, which no tangent from p4 touches: a conflict. The
+    // tangency's rows (p5 on the arc's circle: p5, the centre, the radius; the normals' angle:
+    // p5, the line's ends, the centre) never read the arc's ends or angles, which only the
+    // arc's own rules touch: p2 and p3 slide along the circle, under defined, though the
+    // tangency is flagged.
+    let points = [
+        point("p0000001", 0.0, 0.0),
+        point("p0000002", 10.0, 0.0),
+        point("p0000003", -10.0, 0.0),
+        point("p0000004", -20.0, 10.5),
+        point("p0000005", 0.5, 10.2),
+    ];
+    let lines = [line("n0000001", "p0000004", "p0000005")];
+    let arcs = [arc("a0000001", "p0000001", "p0000002", "p0000003")];
+    let constraints = [
+        FROM_AT_ORIGIN[0],
+        FROM_AT_ORIGIN[1],
+        r#"{"id": "k0000003", "type": "radius", "curve": "a0000001", "value": 10, "driving": true}"#,
+        r#"{"id": "k0000004", "type": "distance_x", "a": "origin", "b": "p0000004", "value": -20, "driving": true}"#,
+        r#"{"id": "k0000005", "type": "distance_y", "a": "origin", "b": "p0000004", "value": 10.5, "driving": true}"#,
+        r#"{"id": "k0000006", "type": "tangent_on", "a": "n0000001", "at": "p0000005", "b": "a0000001", "direction": "same"}"#,
+        r#"{"id": "k0000007", "type": "distance_y", "a": "origin", "b": "p0000005", "value": 5, "driving": true}"#,
+    ];
+    let sketch = sketch_of(&points, &lines, &[], &arcs, &constraints);
+    let (_, _, got) = solved(&sketch);
+    assert_eq!(
+        got.solve_problem.as_ref().map(|e| e.code()),
+        Some(ErrorCode::OverConstrained),
+        "{got:#?}"
+    );
+    assert_eq!(got.state, SketchState::OverDefined);
+    let at = |id: &str| ElementId::new(id).unwrap();
+    assert_eq!(got.constraints[&at("k0000006")], Conflicting, "{got:#?}");
+    assert_eq!(got.constraints[&at("k0000007")], Conflicting, "{got:#?}");
+    assert_eq!(got.points[&at("p0000005")], Over, "{got:#?}");
+    assert_eq!(got.points[&at("p0000002")], Under, "{got:#?}");
+    assert_eq!(got.points[&at("p0000003")], Under, "{got:#?}");
+    // Named by the flagged tangency.
+    assert_eq!(got.arcs, members(&[("a0000001", Over)]));
+    assert_eq!(got.lines, members(&[("n0000001", Over)]));
+}
+
+/// That every row `translation` sends depends on no value its parameter list doesn't have,
+/// and on its whole list for every form but the three whose equations read less: a
+/// tangency at an end, an angle at a point (never an arc's angles, nor its ends but the
+/// point), and equal radii (never a centre).
+fn depends_on_within_reads(translation: &Translation) -> Result<(), String> {
+    use silico_protocol::SolverConstraint as S;
+    let system = &translation.system;
+    let arc_own = |g: silico_protocol::Geometry| match system.geometry.get(g.0 as usize) {
+        Some(silico_protocol::SketchGeometry::Arc {
+            start_angle,
+            end_angle,
+            ..
+        }) => vec![*start_angle, *end_angle],
+        _ => Vec::new(),
+    };
+    let center = |g: silico_protocol::Geometry| match system.geometry.get(g.0 as usize) {
+        Some(
+            silico_protocol::SketchGeometry::Circle { center, .. }
+            | silico_protocol::SketchGeometry::Arc { center, .. },
+        ) => vec![center.x, center.y],
+        _ => Vec::new(),
+    };
+    for c in &system.constraints {
+        let (depends, reads) = (system.depends_on(c), system.reads(c));
+        let list: BTreeSet<_> = reads.iter().copied().collect();
+        if let Some(v) = depends.iter().find(|v| !list.contains(v)) {
+            return Err(format!("{c:?} depends on {v:?}, not in {reads:?}"));
+        }
+        let never = match *c {
+            S::TangentOn { a, b, .. } | S::AngleViaPoint { a, b, .. } => {
+                [arc_own(a), arc_own(b)].concat()
+            }
+            S::EqualRadius { a, b, .. } => [center(a), center(b)].concat(),
+            _ if depends != reads => return Err(format!("{c:?}: {depends:?} ≠ {reads:?}")),
+            _ => Vec::new(),
+        };
+        if let Some(v) = never.iter().find(|v| depends.contains(v)) {
+            return Err(format!("{c:?} depends on {v:?}"));
+        }
+    }
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 1000, .. ProptestConfig::default() })]
+
+    #[test]
+    fn what_a_row_depends_on_is_within_its_parameter_list_on_generated_sketches(
+        seed in any::<u64>()
+    ) {
+        let Some(sketch) = generated(seed) else {
+            return Ok(());
+        };
+        let Ok(translation) = Translation::new(&sketch) else {
+            return Ok(());
+        };
+        let got = depends_on_within_reads(&translation);
+        prop_assert!(got.is_ok(), "seed {seed}: {}", got.unwrap_err());
+    }
+}
+
+#[test]
+fn the_generator_sends_each_form_whose_equations_read_less_than_its_list() {
+    // So the property above isn't vacuous for the three: over these seeds, each is sent, and
+    // each at least once on a round curve, where it reads less than its list.
+    use silico_protocol::SolverConstraint as S;
+    let mut narrower = BTreeSet::new();
+    for seed in 0..400u64 {
+        let Some(sketch) = generated(seed) else {
+            continue;
+        };
+        let Ok(translation) = Translation::new(&sketch) else {
+            continue;
+        };
+        let system = &translation.system;
+        for c in &system.constraints {
+            let set = |v: Vec<silico_protocol::Value>| v.into_iter().collect::<BTreeSet<_>>();
+            if set(system.depends_on(c)) == set(system.reads(c)) {
+                continue;
+            }
+            narrower.insert(match c {
+                S::TangentOn { .. } => "tangent_on",
+                S::AngleViaPoint { .. } => "tangent_at",
+                S::EqualRadius { .. } => "equal",
+                other => panic!("{other:?} reads less than its list"),
+            });
+        }
+    }
+    assert_eq!(
+        narrower,
+        BTreeSet::from(["equal", "tangent_at", "tangent_on"])
+    );
+}
+
+// --- FreeCAD's fully constrained sketches (tests/src/Mod/PartDesign/App/Pipe.cpp) ---------
+
+#[test]
+fn pipes_circle_centred_on_the_root_point_with_a_diameter_is_fully_defined() {
+    // Pipe.cpp's circle sketch: a circle of radius 1 centred on the root point (here its
+    // centre placed at the origin by x and y) with a diameter of 1, FullyConstrained in
+    // FreeCAD. 3 unknowns (the centre, the radius), 3 equations: none left.
+    let sketch = sketch_of(
+        &[point("p0000001", 0.0, 0.0)],
+        &[],
+        &[circle("c0000001", "p0000001", 1.0)],
+        &[],
+        &[
+            FROM_AT_ORIGIN[0],
+            FROM_AT_ORIGIN[1],
+            r#"{"id": "k0000003", "type": "diameter", "curve": "c0000001", "value": 1, "driving": true}"#,
+        ],
+    );
+    let (answer, _, got) = solved(&sketch);
+    assert!(answer.outcome.is_ok(), "{:?}", answer.outcome);
+    expect(
+        &got,
+        Want {
+            problem: None,
+            state: SketchState::FullyDefined,
+            dofs: 0,
+            points: &[("p0000001", Fully)],
+            lines: &[],
+            circles: &[("c0000001", Fully)],
+            arcs: &[],
+            constraints: &[
+                ("k0000001", Satisfied),
+                ("k0000002", Satisfied),
+                ("k0000003", Satisfied),
+            ],
+        },
+    );
+}
+
+#[test]
+fn pipes_vertical_line_from_the_root_point_with_a_length_is_fully_defined() {
+    // Pipe.cpp's line sketch: a line from the root point to (0, 1), vertical, 1 long,
+    // FullyConstrained in FreeCAD. 4 unknowns, 4 equations: none left.
+    let sketch = sketch_of(
+        &line_points((0.0, 1.0)),
+        &one_line(),
+        &[],
+        &[],
+        &[
+            FROM_AT_ORIGIN[0],
+            FROM_AT_ORIGIN[1],
+            r#"{"id": "k0000003", "type": "vertical", "line": "n0000001"}"#,
+            r#"{"id": "k0000004", "type": "length", "line": "n0000001", "value": 1, "driving": true}"#,
+        ],
+    );
+    let (answer, _, got) = solved(&sketch);
+    assert!(answer.outcome.is_ok(), "{:?}", answer.outcome);
+    expect(
+        &got,
+        Want {
+            problem: None,
+            state: SketchState::FullyDefined,
+            dofs: 0,
+            points: &[("p0000001", Fully), ("p0000002", Fully)],
+            lines: &[("n0000001", Fully)],
+            circles: &[],
+            arcs: &[],
+            constraints: &[
+                ("k0000001", Satisfied),
+                ("k0000002", Satisfied),
+                ("k0000003", Satisfied),
+                ("k0000004", Satisfied),
+            ],
+        },
+    );
+}
+
+#[test]
+fn the_conflicting_coincidence_of_two_lines_held_apart_is_over_defined_as_stored() {
+    // TestCoincidentCommandGui.py's conflicting coincidence, as Silico's M3.3 port has it
+    // (silico-sketch's tests/document.rs): FreeCAD holds two lines' ends at x 10 and x 20 and
+    // then makes them coincident, three constraints in conflict; with shared points the
+    // coincidence is the one point the two lines meet at, held at both, so the two holds
+    // conflict. 6 unknowns, the two rows on p2's x of rank 1: 5 left. Both holds conflicting;
+    // p2, which they read, over defined; the lines, named by neither, and their free far ends
+    // under defined; the sketch over defined, as stored.
+    let sketch = sketch_of(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 10.0, 0.0),
+            point("p0000003", 30.0, 0.0),
+        ],
+        &[
+            line("n0000001", "p0000001", "p0000002"),
+            line("n0000002", "p0000002", "p0000003"),
+        ],
+        &[],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 10, "driving": true}"#,
+            r#"{"id": "k0000002", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 20, "driving": true}"#,
+        ],
+    );
+    let (_, _, got) = solved(&sketch);
+    expect(
+        &got,
+        Want {
+            problem: Some(ErrorCode::OverConstrained),
+            state: SketchState::OverDefined,
+            dofs: 5,
+            points: &[("p0000001", Under), ("p0000002", Over), ("p0000003", Under)],
+            lines: &[("n0000001", Under), ("n0000002", Under)],
+            circles: &[],
+            arcs: &[],
+            constraints: &[("k0000001", Conflicting), ("k0000002", Conflicting)],
+        },
+    );
 }
