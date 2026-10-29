@@ -62,9 +62,9 @@ pub enum Expected {
     Angle(ExpectedAngle),
 }
 
-/// A `distance` answer's values, by hand: `center_distance` and `normal_distance` are
-/// written, `null` where the answer has none; the witness, where it's given, is the pair of
-/// points the answer gives (from the first element, to the second).
+/// A `distance` answer's values, by hand: `center_distance`, `normal_distance`, and
+/// `center_to_element` are written, `null` where the answer has none; the witness, where it's
+/// given, is the pair of points the answer gives (from the first element, to the second).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExpectedDistance {
@@ -73,6 +73,8 @@ pub struct ExpectedDistance {
     pub center_distance: Option<f64>,
     #[serde(deserialize_with = "written")]
     pub normal_distance: Option<f64>,
+    #[serde(deserialize_with = "written")]
+    pub center_to_element: Option<f64>,
     #[serde(default)]
     pub witness: Option<[[f64; 3]; 2]>,
 }
@@ -174,6 +176,17 @@ impl Element {
             self,
             Element::Edge {
                 curve: "circle",
+                ..
+            }
+        )
+    }
+
+    /// A cylinder face, whose centre is its axis.
+    fn is_cylinder(&self) -> bool {
+        matches!(
+            self,
+            Element::Face {
+                surface: "cylinder",
                 ..
             }
         )
@@ -430,9 +443,11 @@ pub enum Theirs {
 }
 
 /// FreeCAD's measures of a case's pair: the sub-elements it found them as (`Face3`); for a
-/// distance, `MeasureDistance`'s distance and points, `distToShape`'s least distance, and
-/// how far Silico's witness points are from the elements they're on; for an angle,
-/// `MeasureAngle`'s.
+/// distance, `MeasureDistance`'s distance and points, `distToShape`'s least distance, how
+/// far Silico's witness points are from the elements they're on, and, where one element is a
+/// vertex or a circle or arc and the other a planar face or a straight edge, the distance from
+/// its centre to the other as `Measurement::circleCenterDistance` builds it (the centre made a
+/// vertex, `distToShape` from it); for an angle, `MeasureAngle`'s.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Measured {
@@ -447,6 +462,8 @@ pub struct Measured {
     pub dist_to_shape: Option<f64>,
     #[serde(default)]
     pub witness: Option<[f64; 2]>,
+    #[serde(default)]
+    pub center_to_element: Option<f64>,
     #[serde(default)]
     pub angle: Option<f64>,
 }
@@ -661,6 +678,25 @@ pub fn compare(case: &MeasureCase, rule: Rule, ours: &Ours, theirs: &Theirs) -> 
                     measured.distance,
                 )),
             }
+            // The centre's distance from the other element: FreeCAD's where it builds one,
+            // none on both sides where neither does. A cylinder's axis against a plane or a
+            // line is Silico's own (docs/ports/measure.md), which FreeCAD has no measure of:
+            // its number is checked by hand only ([`against_expected`]).
+            let [first, second] = [&ours.found[0].element, &ours.found[1].element];
+            let axis = |x: &Element, y: &Element| x.is_cylinder() && (y.is_plane() || y.is_line());
+            match (d.center_to_element, measured.center_to_element) {
+                (None, None) => {}
+                (Some(_), None) if axis(first, second) || axis(second, first) => {}
+                (Some(centre), theirs @ Some(_)) => found.extend(length(
+                    "center_to_element (FreeCAD's circleCenterDistance)",
+                    centre.mm(),
+                    theirs,
+                )),
+                (centre, theirs) => found.push(format!(
+                    "Silico's center_to_element {:?} against FreeCAD's {theirs:?}",
+                    centre.map(Length::mm)
+                )),
+            }
             // Silico's witness, on its elements as FreeCAD has them.
             match measured.witness {
                 Some(apart) => {
@@ -728,6 +764,11 @@ pub fn against_expected(case: &MeasureCase, ours: &Ours) -> Vec<String> {
             for (what, got, want) in [
                 ("center_distance", d.center_distance, want.center_distance),
                 ("normal_distance", d.normal_distance, want.normal_distance),
+                (
+                    "center_to_element",
+                    d.center_to_element,
+                    want.center_to_element,
+                ),
             ] {
                 if got.map(Some) != want.map(mm) {
                     found.push(format!("{what} {got:?} against the expected {want:?}"));

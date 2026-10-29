@@ -3,157 +3,157 @@
     "name": "box_bottom_and_top",
     "note": "Fable's case: a 10 mm cube's bottom and top are its height apart, and normally too; met over the whole faces, its witness the pair first by coordinates, (0, 0, 0) to (0, 0, 10). FreeCAD's MeasureDistance reads 10 (its first solution, (0, 10, 0) to (0, 10, 10)). The pinned witness is OCCT's choice, not a hand value: the faces are 10 apart at every pair of points over each other, and which pairs OCCT reports (Silico takes the first of them by coordinates) is OCCT's. It's pinned so a change of it is seen; any of the many would be right, and it's checked on the elements by FreeCAD and against the distance.",
     "elements": ["bxa00001.box.Face5", "bxa00001.box.Face6"],
-    "expected": {"distance": {"distance": 10, "center_distance": null, "normal_distance": 10, "witness": [[0, 0, 0], [0, 0, 10]]}}
+    "expected": {"distance": {"distance": 10, "center_distance": null, "normal_distance": 10, "center_to_element": null, "witness": [[0, 0, 0], [0, 0, 10]]}}
   },
   {
     "name": "box_top_and_bottom",
     "note": "The same faces the other way round: the witness swaps, nothing else. As for box_bottom_and_top, the witness is OCCT's choice among many, checked on the elements.",
     "elements": ["bxa00001.box.Face6", "bxa00001.box.Face5"],
-    "expected": {"distance": {"distance": 10, "center_distance": null, "normal_distance": 10, "witness": [[0, 0, 10], [0, 0, 0]]}}
+    "expected": {"distance": {"distance": 10, "center_distance": null, "normal_distance": 10, "center_to_element": null, "witness": [[0, 0, 10], [0, 0, 0]]}}
   },
   {
     "name": "parallel_faces_apart",
     "note": "Fable's case: the cube's top (z = 10) and the bottom of a cube from (25, 25, 15), parallel but not overlapping: sqrt(15^2 + 15^2 + 5^2) = sqrt(475) = 21.79449471770337 apart, at the near corners; their planes 5 apart.",
     "elements": ["bxa00001.box.Face6", "bxb00001.box.Face5"],
-    "expected": {"distance": {"distance": 21.79449471770337, "center_distance": null, "normal_distance": 5, "witness": [[10, 10, 10], [25, 25, 15]]}}
+    "expected": {"distance": {"distance": 21.79449471770337, "center_distance": null, "normal_distance": 5, "center_to_element": null, "witness": [[10, 10, 10], [25, 25, 15]]}}
   },
   {
     "name": "adjacent_faces_touch",
     "note": "Fable's case: the cube's faces x = 0 and y = 0 share an edge: 0 apart; at 90 degrees, so no normal distance.",
     "elements": ["bxa00001.box.Face1", "bxa00001.box.Face3"],
-    "expected": {"distance": {"distance": 0, "center_distance": null, "normal_distance": null}}
+    "expected": {"distance": {"distance": 0, "center_distance": null, "normal_distance": null, "center_to_element": null}}
   },
   {
     "name": "faces_a_nanometre_apart",
     "note": "The cube's top and the bottom of a cube 1 nm (0.000001 mm, the document's resolution) above it: 0.000001 apart, and normally.",
     "elements": ["bxa00001.box.Face6", "bxd00001.box.Face5"],
-    "expected": {"distance": {"distance": 1e-06, "center_distance": null, "normal_distance": 1e-06}}
+    "expected": {"distance": {"distance": 1e-06, "center_distance": null, "normal_distance": 1e-06, "center_to_element": null}}
   },
   {
     "name": "discs_overlapping",
     "note": "FreeCAD main's QuickMeasure ParallelDiscsHaveNominalDistance: discs of radius 5, the top of a cylinder at z = 2 and the bottom of one at z = 9.5 centred 3 along x, overlapping in plan: 7.5 apart, and normally (main's planePlaneDistance 7.5).",
     "elements": ["dsa00001.cylinder.Face3", "dsb00001.cylinder.Face2"],
-    "expected": {"distance": {"distance": 7.5, "center_distance": null, "normal_distance": 7.5}}
+    "expected": {"distance": {"distance": 7.5, "center_distance": null, "normal_distance": 7.5, "center_to_element": null}}
   },
   {
     "name": "disc_and_plane",
     "note": "QuickMeasure ParallelDiscAndPlaneHaveNominalDistance: the disc at z = 2 and a slab's bottom at z = 10 over it: 8 apart, and normally (planePlaneDistance 8).",
     "elements": ["dsa00001.cylinder.Face3", "sbb00001.box.Face5"],
-    "expected": {"distance": {"distance": 8, "center_distance": null, "normal_distance": 8}}
+    "expected": {"distance": {"distance": 8, "center_distance": null, "normal_distance": 8, "center_to_element": null}}
   },
   {
     "name": "step_tops",
     "note": "Fable's case: a step's tops, z = 10 and z = 5, side by side: 5 apart, across the step's riser, and normally.",
     "elements": ["spa00001.box.Face6", "spb00001.box.Face6"],
-    "expected": {"distance": {"distance": 5, "center_distance": null, "normal_distance": 5}}
+    "expected": {"distance": {"distance": 5, "center_distance": null, "normal_distance": 5, "center_to_element": null}}
   },
   {
     "name": "split_top_halves",
     "note": "Two cubes fused side by side, unrefined: their coplanar tops meet along an edge, 0 apart, and 0 normally.",
     "elements": ["hfa00001.box.Face6", "hfb00001.box.Face6"],
-    "expected": {"distance": {"distance": 0, "center_distance": null, "normal_distance": 0}}
+    "expected": {"distance": {"distance": 0, "center_distance": null, "normal_distance": 0, "center_to_element": null}}
   },
   {
     "name": "two_boxes_moved",
     "note": "FreeCAD main's testTwoBoxesMovedByContainers: two 10 mm cubes 50 apart along x, each one's Vertex1: 50, and their centres (the vertices themselves) 50. OCCT's box's Vertex1 is (0, 0, 10).",
     "elements": ["bxa00001.box.Vertex1", "bxc00001.box.Vertex1"],
-    "expected": {"distance": {"distance": 50, "center_distance": 50, "normal_distance": null, "witness": [[0, 0, 10], [50, 0, 10]]}}
+    "expected": {"distance": {"distance": 50, "center_distance": 50, "normal_distance": null, "center_to_element": null, "witness": [[0, 0, 10], [50, 0, 10]]}}
   },
   {
     "name": "vertex_to_rim",
     "note": "Fable's case: a corner at (3, 4, 0) and a radius 1 rim about the origin: 5 from its centre, 4 from the rim, met at (0.6, 0.8, 0).",
     "elements": ["bxe00001.box.Vertex2", "cpa00001.cylinder.Edge2"],
-    "expected": {"distance": {"distance": 4, "center_distance": 5, "normal_distance": null, "witness": [[3, 4, 0], [0.6, 0.8, 0]]}}
+    "expected": {"distance": {"distance": 4, "center_distance": 5, "normal_distance": null, "center_to_element": null, "witness": [[3, 4, 0], [0.6, 0.8, 0]]}}
   },
   {
     "name": "skew_edges",
     "note": "Fable's case: the cube's edge (0, 0, 0) to (10, 0, 0) and a bar's edge (5, -5, 3) to (5, 5, 3), skew: 3 apart, from (5, 0, 0) to (5, 0, 3); not parallel, so no normal distance.",
     "elements": ["bxa00001.box.Edge9", "skw00001.box.Edge4"],
-    "expected": {"distance": {"distance": 3, "center_distance": null, "normal_distance": null, "witness": [[5, 0, 0], [5, 0, 3]]}}
+    "expected": {"distance": {"distance": 3, "center_distance": null, "normal_distance": null, "center_to_element": null, "witness": [[5, 0, 0], [5, 0, 3]]}}
   },
   {
     "name": "crossing_edges",
     "note": "Fable's case: the cube's edge along x and a bar's edge (5, -5, 0) to (5, 5, 0) crossing it: 0, at (5, 0, 0).",
     "elements": ["bxa00001.box.Edge9", "crs00001.box.Edge4"],
-    "expected": {"distance": {"distance": 0, "center_distance": null, "normal_distance": null, "witness": [[5, 0, 0], [5, 0, 0]]}}
+    "expected": {"distance": {"distance": 0, "center_distance": null, "normal_distance": null, "center_to_element": null, "witness": [[5, 0, 0], [5, 0, 0]]}}
   },
   {
     "name": "parallel_edges",
     "note": "Fable's case: the cube's edge along x and a bar's edge (0, 2, 0) to (10, 2, 0): 2 apart, and normally; met along their length, the witness first by coordinates. The pinned witness is OCCT's choice, not a hand value: the edges are 2 apart all along them, and which pairs OCCT reports is OCCT's. It's pinned so a change of it is seen, and checked on the elements by FreeCAD and against the distance.",
     "elements": ["bxa00001.box.Edge9", "par00001.box.Edge9"],
-    "expected": {"distance": {"distance": 2, "center_distance": null, "normal_distance": 2, "witness": [[0, 0, 0], [0, 2, 0]]}}
+    "expected": {"distance": {"distance": 2, "center_distance": null, "normal_distance": 2, "center_to_element": null, "witness": [[0, 0, 0], [0, 2, 0]]}}
   },
   {
     "name": "collinear_edges_apart",
     "note": "Fable's case: the cube's edge along x, (0, 0, 0) to (10, 0, 0), and a bar's (20, 0, 0) to (30, 0, 0) on its line: 10 apart, 0 normally.",
     "elements": ["bxa00001.box.Edge9", "cnr00001.box.Edge9"],
-    "expected": {"distance": {"distance": 10, "center_distance": null, "normal_distance": 0, "witness": [[10, 0, 0], [20, 0, 0]]}}
+    "expected": {"distance": {"distance": 10, "center_distance": null, "normal_distance": 0, "center_to_element": null, "witness": [[10, 0, 0], [20, 0, 0]]}}
   },
   {
     "name": "rims_r3_r4",
     "note": "Fable's case: bottom rims of radii 3 and 4, centres 20 apart along y: 20 - 3 - 4 = 13 apart, from (0, 3, 0) to (0, 16, 0); centres 20. FreeCAD's MeasureDistance reads 20 (circles centre to centre), its distToShape 13.",
     "elements": ["cra00003.cylinder.Edge2", "crb00004.cylinder.Edge2"],
-    "expected": {"distance": {"distance": 13, "center_distance": 20, "normal_distance": null, "witness": [[0, 3, 0], [0, 16, 0]]}}
+    "expected": {"distance": {"distance": 13, "center_distance": 20, "normal_distance": null, "center_to_element": null, "witness": [[0, 3, 0], [0, 16, 0]]}}
   },
   {
     "name": "walls_r3_r4",
     "note": "Fable's case: those cylinders' walls: 13 apart, their axes 20. FreeCAD's MeasureDistance reads 13 (faces, not circles).",
     "elements": ["cra00003.cylinder.Face1", "crb00004.cylinder.Face1"],
-    "expected": {"distance": {"distance": 13, "center_distance": 20, "normal_distance": null}}
+    "expected": {"distance": {"distance": 13, "center_distance": 20, "normal_distance": null, "center_to_element": null}}
   },
   {
     "name": "crossing_rims",
     "note": "Fable's case: radius 5 rims centred 3 apart cross: 0 apart, centres 3 (FreeCAD 3, distToShape 0).",
     "elements": ["ccx00005.cylinder.Edge2", "ccy00005.cylinder.Edge2"],
-    "expected": {"distance": {"distance": 0, "center_distance": 3, "normal_distance": null}}
+    "expected": {"distance": {"distance": 0, "center_distance": 3, "normal_distance": null, "center_to_element": null}}
   },
   {
     "name": "concentric_rims",
     "note": "Fable's case: rims of radii 5 and 2 about one centre: 3 apart, centres 0 (FreeCAD 0, distToShape 3).",
     "elements": ["ccx00005.cylinder.Edge2", "ccz00002.cylinder.Edge2"],
-    "expected": {"distance": {"distance": 3, "center_distance": 0, "normal_distance": null}}
+    "expected": {"distance": {"distance": 3, "center_distance": 0, "normal_distance": null, "center_to_element": null}}
   },
   {
     "name": "circle_circle",
     "note": "FreeCAD's testCircleCircle (1.1.3's MeasureDistance.cpp): radius 1 circles at (0, 0, 0) and (3, 4, 0), as cylinders' bottom rims: centres 5 (FreeCAD's 5), and 5 - 1 - 1 = 3 apart, from (0.6, 0.8, 0) to (2.4, 3.2, 0).",
     "elements": ["cpa00001.cylinder.Edge2", "cpb00001.cylinder.Edge2"],
-    "expected": {"distance": {"distance": 3, "center_distance": 5, "normal_distance": null, "witness": [[0.6, 0.8, 0], [2.4, 3.2, 0]]}}
+    "expected": {"distance": {"distance": 3, "center_distance": 5, "normal_distance": null, "center_to_element": null, "witness": [[0.6, 0.8, 0], [2.4, 3.2, 0]]}}
   },
   {
     "name": "circle_circle_placed",
     "note": "FreeCAD main's testCircleCircleWithPlacement: radius 1 circles placed at (10, 0, 0) and (10, 0, 5), coaxial: centres 5 (FreeCAD's 5), and 5 apart.",
     "elements": ["cpc00001.cylinder.Edge2", "cpd00001.cylinder.Edge2"],
-    "expected": {"distance": {"distance": 5, "center_distance": 5, "normal_distance": null}}
+    "expected": {"distance": {"distance": 5, "center_distance": 5, "normal_distance": null, "center_to_element": null}}
   },
   {
     "name": "hole_rims",
     "note": "Fable's case: a hole's two rims, through a plate 10 thick: 10 apart, and their centres 10 (FreeCAD 10, distToShape 10).",
     "elements": ["hza00001.cut.Edge(G pta00001.box.Face5, G dra00001.cylinder.Face1)", "hza00001.cut.Edge(G pta00001.box.Face6, G dra00001.cylinder.Face1)"],
-    "expected": {"distance": {"distance": 10, "center_distance": 10, "normal_distance": null}}
+    "expected": {"distance": {"distance": 10, "center_distance": 10, "normal_distance": null, "center_to_element": null}}
   },
   {
     "name": "hole_wall_to_side",
-    "note": "A radius 3 hole's wall, its axis at x = 10, and the plate's side x = 0: 10 - 3 = 7 apart; a plane has no centre.",
+    "note": "A radius 3 hole's wall, its axis at x = 10, and the plate's side x = 0: 10 - 3 = 7 apart; a plane has no centre. Its center_to_element is the axis's gap from the side's plane, parallel to it: the axis x = 10 (the drill at (10, 10, -1) along z) from x = 0, 10. Silico's own measure, which FreeCAD has none of: checked by hand only, not against FreeCAD (docs/ports/measure.md).",
     "elements": ["hza00001.cut.Face(I dra00001.cylinder.Face1)", "pta00001.box.Face1"],
-    "expected": {"distance": {"distance": 7, "center_distance": null, "normal_distance": null}}
+    "expected": {"distance": {"distance": 7, "center_distance": null, "normal_distance": null, "center_to_element": 10}}
   },
   {
     "name": "hole_wall_to_counterbore_wall",
     "note": "Fable's case: a radius 3 hole's wall (z 0 to 6) and its radius 5 counterbore's (z 6 to 10), about one axis: 5 - 3 = 2 apart, where they meet the counterbore's floor; their axes 0.",
     "elements": ["hzb00001.cut.Face(I drb00001.cylinder.Face1)", "hzc00001.cut.Face(I cbr00001.cylinder.Face1)"],
-    "expected": {"distance": {"distance": 2, "center_distance": 0, "normal_distance": null}}
+    "expected": {"distance": {"distance": 2, "center_distance": 0, "normal_distance": null, "center_to_element": null}}
   },
   {
     "name": "opposite_quarter_arcs",
     "note": "Fable's case: opposite quarter arcs of a radius 5 circle, (5, 0) to (0, 5) and (-5, 0) to (0, -5): 2 * 5 * sin 45 = 7.0710678118654755 apart, met at two pairs, the witness the pair first by coordinates, (0, 5, 0) to (-5, 0, 0); centres 0 (FreeCAD 0, distToShape 7.0710678). The pinned witness is OCCT's choice between the two pairs, not a hand value (either is right); it's pinned so a change of it is seen, and checked on the elements by FreeCAD and against the distance.",
     "elements": ["arc00001.pad.Edge(M sar00001.sketch.Edge.a0000001)", "arc00001.pad.Edge(M sar00001.sketch.Edge.a0000003)"],
-    "expected": {"distance": {"distance": 7.0710678118654755, "center_distance": 0, "normal_distance": null, "witness": [[0, 5, 0], [-5, 0, 0]]}}
+    "expected": {"distance": {"distance": 7.0710678118654755, "center_distance": 0, "normal_distance": null, "center_to_element": null, "witness": [[0, 5, 0], [-5, 0, 0]]}}
   },
   {
     "name": "opposite_quarter_arcs_swapped",
     "note": "The same arcs the other way round: the witness mirrored. As for opposite_quarter_arcs, the witness is OCCT's choice between the two pairs, checked on the elements.",
     "elements": ["arc00001.pad.Edge(M sar00001.sketch.Edge.a0000003)", "arc00001.pad.Edge(M sar00001.sketch.Edge.a0000001)"],
-    "expected": {"distance": {"distance": 7.0710678118654755, "center_distance": 0, "normal_distance": null, "witness": [[-5, 0, 0], [0, 5, 0]]}}
+    "expected": {"distance": {"distance": 7.0710678118654755, "center_distance": 0, "normal_distance": null, "center_to_element": null, "witness": [[-5, 0, 0], [0, 5, 0]]}}
   },
   {
     "name": "box_adjacent_faces",
@@ -321,48 +321,48 @@
     "name": "sphere_to_a_wall",
     "note": "FreeCAD main's testCurvedFaceDistance, its box moved to (20, -5, -5) so the nearest point is inside the face (FreeCAD's box at (20, 0, 0) meets it at a corner vertex): a sphere of radius 5 at the origin and a box's face, the plane x = 20: 20 - 5 = 15, from (5, 0, 0) to (20, 0, 0) (FreeCAD 1.1.3 reads 15 through MeasureDistance from Python; its gate, which refuses a sphere, is the GUI's, not execute's). A sphere has no centre a distance takes, and a plane none, so no center_distance; no normal distance either.",
     "elements": ["sph00005.sphere.Face1", "wbx00020.box.Face1"],
-    "expected": {"distance": {"distance": 15, "center_distance": null, "normal_distance": null, "witness": [[5, 0, 0], [20, 0, 0]]}}
+    "expected": {"distance": {"distance": 15, "center_distance": null, "normal_distance": null, "center_to_element": null, "witness": [[5, 0, 0], [20, 0, 0]]}}
   },
   {
     "name": "vertex_over_a_top",
-    "note": "docs/ports/measure.md's vertex 10 above the cube's top's middle: (5, 5, 20) to (5, 5, 10), 10 (FreeCAD 10). A vertex's point is its centre, but a plane has none, so no center_distance.",
+    "note": "docs/ports/measure.md's vertex 10 above the cube's top's middle: (5, 5, 20) to (5, 5, 10), 10 (FreeCAD 10). A vertex's point is its centre, but a plane has none, so no center_distance. Its center_to_element is the distance, 10: a vertex is its own centre, so its distance from the face is the pair's least distance (FreeCAD's circleCenterDistance, the vertex to the face).",
     "elements": ["vtx00001.box.Vertex2", "bxa00001.box.Face6"],
-    "expected": {"distance": {"distance": 10, "center_distance": null, "normal_distance": null, "witness": [[5, 5, 20], [5, 5, 10]]}}
+    "expected": {"distance": {"distance": 10, "center_distance": null, "normal_distance": null, "center_to_element": 10, "witness": [[5, 5, 20], [5, 5, 10]]}}
   },
   {
     "name": "vertex_beyond_a_tops_corner",
-    "note": "The port note's vertex beyond the top's corner: (15, 15, 20) to the corner (10, 10, 10), sqrt(5^2 + 5^2 + 10^2) = sqrt(150) = 12.24744871391589 (FreeCAD 12.24744871391589).",
+    "note": "The port note's vertex beyond the top's corner: (15, 15, 20) to the corner (10, 10, 10), sqrt(5^2 + 5^2 + 10^2) = sqrt(150) = 12.24744871391589 (FreeCAD 12.24744871391589). Its center_to_element is the distance, sqrt(150): a vertex is its own centre.",
     "elements": ["vtx00001.box.Vertex8", "bxa00001.box.Face6"],
-    "expected": {"distance": {"distance": 12.24744871391589, "center_distance": null, "normal_distance": null, "witness": [[15, 15, 20], [10, 10, 10]]}}
+    "expected": {"distance": {"distance": 12.24744871391589, "center_distance": null, "normal_distance": null, "center_to_element": 12.24744871391589, "witness": [[15, 15, 20], [10, 10, 10]]}}
   },
   {
     "name": "vertex_inside_to_a_top",
-    "note": "The port note's vertex inside the cube, to its top (the face, not the solid): (5, 5, 5) to (5, 5, 10), 5 (FreeCAD 5).",
+    "note": "The port note's vertex inside the cube, to its top (the face, not the solid): (5, 5, 5) to (5, 5, 10), 5 (FreeCAD 5). Its center_to_element is the distance, 5: a vertex is its own centre.",
     "elements": ["xbx00001.box.Vertex2", "bxa00001.box.Face6"],
-    "expected": {"distance": {"distance": 5, "center_distance": null, "normal_distance": null, "witness": [[5, 5, 5], [5, 5, 10]]}}
+    "expected": {"distance": {"distance": 5, "center_distance": null, "normal_distance": null, "center_to_element": 5, "witness": [[5, 5, 5], [5, 5, 10]]}}
   },
   {
     "name": "crossing_faces",
     "note": "The port note's crossing faces: the cube's top (z = 10) and the overlapping cube's side x = 5, which crosses it along x = 5, y 5 to 10: 0 (FreeCAD 0). Met all along that segment, so no witness is pinned: Silico's is checked on the elements, and its points 0 apart. At 90 degrees, so no normal distance.",
     "elements": ["bxa00001.box.Face6", "xbx00001.box.Face1"],
-    "expected": {"distance": {"distance": 0, "center_distance": null, "normal_distance": null}}
+    "expected": {"distance": {"distance": 0, "center_distance": null, "normal_distance": null, "center_to_element": null}}
   },
   {
     "name": "a_face_and_itself",
     "note": "The port note's face and itself: the cube's top named twice, 0 (FreeCAD 0), and 0 normally (one plane, parallel to itself). Met everywhere on it, so no witness is pinned.",
     "elements": ["bxa00001.box.Face6", "bxa00001.box.Face6"],
-    "expected": {"distance": {"distance": 0, "center_distance": null, "normal_distance": 0}}
+    "expected": {"distance": {"distance": 0, "center_distance": null, "normal_distance": 0, "center_to_element": null}}
   },
   {
     "name": "circle_and_a_line",
-    "note": "The port note's circle of radius 5 at the origin and the line x = 10: the cylinder's bottom rim and a bar's edge (10, -5, 0) to (10, 5, 0), 10 - 5 = 5, from (5, 0, 0) to (10, 0, 0) (FreeCAD 5: not two circles, so its least distance). A line has no centre, so no center_distance.",
+    "note": "The port note's circle of radius 5 at the origin and the line x = 10: the cylinder's bottom rim and a bar's edge (10, -5, 0) to (10, 5, 0), 10 - 5 = 5, from (5, 0, 0) to (10, 0, 0) (FreeCAD 5: not two circles, so its least distance). A line has no centre, so no center_distance. Its center_to_element: the circle's centre (0, 0, 0) to the segment, whose foot (10, 0, 0) is on it (y = 0 within -5 to 5), sqrt(10^2 + 0^2 + 0^2) = 10 (FreeCAD's circleCenterDistance, the centre made a vertex).",
     "elements": ["ccx00005.cylinder.Edge2", "bxf00010.box.Edge4"],
-    "expected": {"distance": {"distance": 5, "center_distance": null, "normal_distance": null, "witness": [[5, 0, 0], [10, 0, 0]]}}
+    "expected": {"distance": {"distance": 5, "center_distance": null, "normal_distance": null, "center_to_element": 10, "witness": [[5, 0, 0], [10, 0, 0]]}}
   },
   {
     "name": "segment_over_a_segment",
     "note": "The port note's segments (0, 0, 0) to (10, 0, 0) and (5, -1, 1) to (5, 1, 1): 1, between the bounded segments, from (5, 0, 0) to (5, 0, 1) (FreeCAD 1). Not parallel, so no normal distance.",
     "elements": ["bxa00001.box.Edge9", "sgx00001.box.Edge4"],
-    "expected": {"distance": {"distance": 1, "center_distance": null, "normal_distance": null, "witness": [[5, 0, 0], [5, 0, 1]]}}
+    "expected": {"distance": {"distance": 1, "center_distance": null, "normal_distance": null, "center_to_element": null, "witness": [[5, 0, 0], [5, 0, 1]]}}
   }
 ]
