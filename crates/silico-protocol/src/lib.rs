@@ -316,6 +316,18 @@ pub enum Op {
     /// ([`Refusal::Internal`]): the core asks only of a shape its summary counts within one.
     /// Replies with [`Reply::DescribedAll`].
     DescribeAll { shape: ShapeData },
+    /// A copy of `tool` at each of `placements`, fused into `base` or cut from it in one
+    /// boolean, each copy a tool of its own (docs/ports/patterns.md, §7): a rigid move is a
+    /// location, as [`Op::Translate`]'s, and a reflection a rebuilt copy, as FreeCAD's
+    /// `makeElementTransform` makes one. The values are checked by [`check_copies`]. Replies
+    /// with [`Reply::Built`], whose history has `base` as input 0 and copy k (placed at
+    /// `placements[k - 1]`) as input k, each copy's elements numbered as the tool's.
+    Copies {
+        base: ShapeData,
+        tool: ShapeData,
+        op: CopiesOp,
+        placements: Vec<Placement>,
+    },
 }
 
 impl Op {
@@ -348,6 +360,10 @@ impl Op {
             Op::Prism { .. } => "Prism",
             Op::PrismThroughAll { .. } => "PrismThroughAll",
             Op::DescribeAll { .. } => "Describe",
+            Op::Copies { op, .. } => match op {
+                CopiesOp::Fuse => "FuseCopies",
+                CopiesOp::Cut => "CutCopies",
+            },
             Op::Revolution { .. } => "Revolution",
             Op::Echo { .. } => "Echo",
             Op::Debug(op) => op.name(),

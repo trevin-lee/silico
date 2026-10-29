@@ -64,6 +64,8 @@ struct EdgeFacts;
 struct TopologyFacts;
 struct FaceCurve;
 enum class CurveKind : uint8_t;
+struct CopyPlacement;
+enum class PlacementKind : uint8_t;
 
 // An OCCT shape, owned from Rust through a UniquePtr.
 struct Shape {
@@ -368,6 +370,23 @@ std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &too
                                rust::Vec<HistoryEntry> &history,
                                rust::Vec<rust::String> &warnings,
                                rust::Vec<SkippedElement> &skipped);
+
+// A compound of a copy of `tool` at each of `placements`, in order: a rigid move a
+// location, the move composed with the tool's own, as translate places a shape; a
+// reflection the tool rebuilt by BRepBuilderAPI_Transform with copy, as FreeCAD's
+// makeElementTransform rebuilds one. Each copy's faces, edges, and vertices are the tool's,
+// in TopExp::MapShapes order, checked: it throws otherwise.
+std::unique_ptr<Shape> make_copies(const Shape &tool, rust::Slice<const CopyPlacement> placements);
+
+// Fuses `base` with each of `copies`' children (make_copies's copies), or cuts each from it,
+// in one boolean, as `boolean` does: `base` the argument, each copy a tool of its own (a
+// copy that's a compound, its every shape), never one compound of them. Appends the history
+// of `base` as input 0 and of copy k as input k, and the warnings and skipped pairs as
+// `boolean` does, each skipped element by its input. Throws for a common.
+std::unique_ptr<Shape> copies_boolean(BooleanOp op, const Shape &base, const Shape &copies,
+                                      rust::Vec<HistoryEntry> &history,
+                                      rust::Vec<rust::String> &warnings,
+                                      rust::Vec<SkippedElement> &skipped);
 
 // How many distinct faces, edges, vertices, and solids the shape has.
 Counts count_elements(const Shape &shape);

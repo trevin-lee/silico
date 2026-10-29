@@ -18,6 +18,7 @@ use silico_protocol::{
     Camera, EDGE_BIT, Projection, RenderBody, RenderScene, StepCount, StepFile, StepPart,
     StepUnwritten,
 };
+use silico_protocol::{CopiesOp, Placement};
 use silico_protocol::{Curve, Distance, FaceRegions, Region, SketchPlane};
 use silico_protocol::{Description, EdgeCurve, EdgeDescription, FaceDescription, Surface};
 
@@ -348,6 +349,36 @@ fn every_op() -> Vec<Op> {
             assembly: "bracket".to_owned(),
             file_name: "bracket.silico".to_owned(),
         })),
+        // Every kind of placement, with values at the edges of what's allowed.
+        Op::Copies {
+            base: ShapeData::checked(Blob::inline(vec![9, 4]), true),
+            tool: ShapeData::unchecked(Blob::inline(vec![9, 5])),
+            op: CopiesOp::Fuse,
+            placements: vec![
+                Placement::Translation {
+                    offset: [1e6, -0.0, 1.000_000_000_000_000_2e-7],
+                },
+                Placement::Rotation {
+                    axis: AXIS,
+                    angle: -6.283_185_307_178,
+                },
+                Placement::Mirror {
+                    origin: [-1e6, f64::MIN_POSITIVE, 0.0],
+                    normal: [0.0, -0.0, -1.0],
+                },
+                Placement::TurnedAndMoved {
+                    axis: AXIS,
+                    angle: 1e-11,
+                    offset: [0.0, 5e-324, 3.000_000_000_000_000_4],
+                },
+            ],
+        },
+        Op::Copies {
+            base: ShapeData::unchecked(Blob::inline(vec![])),
+            tool: ShapeData::checked(Blob::inline(vec![1]), false),
+            op: CopiesOp::Cut,
+            placements: vec![],
+        },
     ];
     let indices: std::collections::BTreeSet<usize> = ops
         .iter()
@@ -419,9 +450,15 @@ fn every_op() -> Vec<Op> {
             Op::ExportStep(_) => 47,
             Op::DescribeAll { .. } => 48,
             Op::MoveOnce { .. } => 49,
+            Op::Copies {
+                op: CopiesOp::Fuse, ..
+            } => 50,
+            Op::Copies {
+                op: CopiesOp::Cut, ..
+            } => 51,
         })
         .collect();
-    assert_eq!(indices, (0..50).collect(), "an operation has no case");
+    assert_eq!(indices, (0..52).collect(), "an operation has no case");
     ops
 }
 
@@ -1238,6 +1275,8 @@ fn every_op_has_its_own_name() {
             "Classify",
             "PointDistance",
             "ExportStep",
+            "FuseCopies",
+            "CutCopies",
         ]
     );
 }

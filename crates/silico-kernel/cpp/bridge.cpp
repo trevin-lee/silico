@@ -27,6 +27,7 @@
 #include <BRepMesh_ShapeTool.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GCPnts_TangentialDeflection.hxx>
@@ -118,6 +119,7 @@
 #include <TopoDS_Solid.hxx>
 #include <gp_Pnt.hxx>
 
+#include <array>
 #include <cmath>
 #include <csignal>
 #include <sstream>
@@ -1569,18 +1571,19 @@ static void expand_compound(const TopoDS_Shape &shape, NCollection_List<TopoDS_S
 
 namespace {
 // The elements of a pair OCCT skipped intersecting, each numbered as its input numbers it
-// (TopExp::MapShapes, as every element is numbered), or as neither input's: an element OCCT
-// made of one (a copy with a larger tolerance, which a non-destructive boolean makes
+// (TopExp::MapShapes, as every element is numbered), or as no input's (index 0): an element
+// OCCT made of one (a copy with a larger tolerance, which a non-destructive boolean makes
 // instead of changing its input). Each input's map of a kind is built once, the first time
 // an element of that kind is looked for. OCCT gives only vertices, edges, and faces
-// (AddIntersectionFailedWarning's callers); anything else is Kind::Other, of neither input,
-// for the log to say so: this is for the log alone, so it never throws.
+// (AddIntersectionFailedWarning's callers); anything else is Kind::Other, of no input, for
+// the log to say so: this is for the log alone, so it never throws.
 class SkippedElements {
 public:
-  SkippedElements(const TopoDS_Shape &base, const TopoDS_Shape &tool) : inputs_{&base, &tool} {}
+  explicit SkippedElements(std::vector<const TopoDS_Shape *> inputs)
+      : inputs_(std::move(inputs)), maps_(inputs_.size()), built_(inputs_.size()) {}
 
   SkippedElement of(const TopoDS_Shape &element) {
-    int slot;
+    size_t slot;
     Kind kind;
     switch (element.ShapeType()) {
     case TopAbs_VERTEX:
@@ -1596,46 +1599,90 @@ public:
       kind = Kind::Face;
       break;
     default:
-      return SkippedElement{Kind::Other, 2, 0};
+      return SkippedElement{Kind::Other, 0, 0};
     }
-    for (uint8_t input = 0; input < 2; ++input) {
+    for (size_t input = 0; input < inputs_.size(); ++input) {
       if (!built_[input][slot]) {
         TopExp::MapShapes(*inputs_[input], element.ShapeType(), maps_[input][slot]);
         built_[input][slot] = true;
       }
       const int index = maps_[input][slot].FindIndex(element);
       if (index > 0) {
-        return SkippedElement{kind, input, static_cast<uint32_t>(index)};
+        return SkippedElement{kind, static_cast<uint32_t>(input), static_cast<uint32_t>(index)};
       }
     }
-    return SkippedElement{kind, 2, 0};
+    return SkippedElement{kind, 0, 0};
   }
 
 private:
-  const TopoDS_Shape *inputs_[2];
-  TopTools_IndexedMapOfShape maps_[2][3];
-  bool built_[2][3] = {};
+  std::vector<const TopoDS_Shape *> inputs_;
+  std::vector<std::array<TopTools_IndexedMapOfShape, 3>> maps_;
+  std::vector<std::array<bool, 3>> built_;
 };
+
+// The boolean `op` makes, or a throw for one there isn't.
+std::unique_ptr<BRepAlgoAPI_BooleanOperation> boolean_maker(BooleanOp op) {
+  switch (op) {
+  case BooleanOp::Fuse:
+    return std::make_unique<BRepAlgoAPI_Fuse>();
+  case BooleanOp::Cut:
+    return std::make_unique<BRepAlgoAPI_Cut>();
+  case BooleanOp::Common:
+    return std::make_unique<BRepAlgoAPI_Common>();
+  default:
+    throw Standard_Failure("unknown boolean operation");
+  }
+}
+
+// Runs `maker` on `arguments` and `tools`, non-destructive and single-threaded, throwing
+// with OCCT's report if it fails, and appends the names of the warnings OCCT reported to
+// `warnings` and, two by two, each pair of elements it skipped intersecting to `skipped`,
+// each element by its place among `inputs`.
+void run_boolean(BRepAlgoAPI_BooleanOperation &maker,
+                 const NCollection_List<TopoDS_Shape> &arguments,
+                 const NCollection_List<TopoDS_Shape> &tools,
+                 std::vector<const TopoDS_Shape *> inputs, rust::Vec<rust::String> &warnings,
+                 rust::Vec<SkippedElement> &skipped) {
+  maker.SetArguments(arguments);
+  maker.SetTools(tools);
+  // Leave the inputs' sub-shapes as they are, so history reports changed elements as
+  // modified (docs/ports/booleans.md). Single-threaded, so the result is deterministic.
+  maker.SetNonDestructive(true);
+  maker.SetRunParallel(false);
+  maker.Build();
+  if (maker.HasErrors() || !maker.IsDone()) {
+    std::ostringstream report;
+    maker.DumpErrors(report);
+    std::string message = report.str();
+    while (!message.empty() && (message.back() == '\n' || message.back() == ' ')) {
+      message.pop_back();
+    }
+    throw Standard_Failure(
+        (message.empty() ? std::string("the boolean couldn't be built") : message).c_str());
+  }
+  SkippedElements elements(std::move(inputs));
+  for (const Handle(Message_Alert) &alert : maker.GetReport()->GetAlerts(Message_Warning)) {
+    warnings.push_back(rust::String(alert->GetMessageKey()));
+    // Its shape is a compound of the pair, in OCCT's order (AddIntersectionFailedWarning);
+    // alerts with a shape are never merged, so each pair is its own. A compound of other
+    // than two (none, from 7.9.3) is left to its warning's key.
+    Handle(BOPAlgo_AlertIntersectionOfPairOfShapesFailed) pair =
+        Handle(BOPAlgo_AlertIntersectionOfPairOfShapesFailed)::DownCast(alert);
+    if (pair.IsNull() || pair->GetShape().NbChildren() != 2) {
+      continue;
+    }
+    for (TopoDS_Iterator element(pair->GetShape()); element.More(); element.Next()) {
+      skipped.push_back(elements.of(element.Value()));
+    }
+  }
+}
 } // namespace
 
 std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &tool,
                                rust::Vec<HistoryEntry> &history,
                                rust::Vec<rust::String> &warnings,
                                rust::Vec<SkippedElement> &skipped) {
-  std::unique_ptr<BRepAlgoAPI_BooleanOperation> maker;
-  switch (op) {
-  case BooleanOp::Fuse:
-    maker = std::make_unique<BRepAlgoAPI_Fuse>();
-    break;
-  case BooleanOp::Cut:
-    maker = std::make_unique<BRepAlgoAPI_Cut>();
-    break;
-  case BooleanOp::Common:
-    maker = std::make_unique<BRepAlgoAPI_Common>();
-    break;
-  default:
-    throw Standard_Failure("unknown boolean operation");
-  }
+  std::unique_ptr<BRepAlgoAPI_BooleanOperation> maker = boolean_maker(op);
   NCollection_List<TopoDS_Shape> arguments;
   arguments.Append(base.shape);
   NCollection_List<TopoDS_Shape> tools;
@@ -1655,41 +1702,119 @@ std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &too
   } else {
     tools.Append(tool.shape);
   }
-  maker->SetArguments(arguments);
-  maker->SetTools(tools);
-  // Leave the inputs' sub-shapes as they are, so history reports changed elements as
-  // modified (docs/ports/booleans.md). Single-threaded, so the result is deterministic.
-  maker->SetNonDestructive(true);
-  maker->SetRunParallel(false);
-  maker->Build();
-  if (maker->HasErrors() || !maker->IsDone()) {
-    std::ostringstream report;
-    maker->DumpErrors(report);
-    std::string message = report.str();
-    while (!message.empty() && (message.back() == '\n' || message.back() == ' ')) {
-      message.pop_back();
-    }
-    throw Standard_Failure(
-        (message.empty() ? std::string("the boolean couldn't be built") : message).c_str());
-  }
-  SkippedElements elements(base.shape, tool.shape);
-  for (const Handle(Message_Alert) &alert : maker->GetReport()->GetAlerts(Message_Warning)) {
-    warnings.push_back(rust::String(alert->GetMessageKey()));
-    // Its shape is a compound of the pair, in OCCT's order (AddIntersectionFailedWarning);
-    // alerts with a shape are never merged, so each pair is its own. A compound of other
-    // than two (none, from 7.9.3) is left to its warning's key.
-    Handle(BOPAlgo_AlertIntersectionOfPairOfShapesFailed) pair =
-        Handle(BOPAlgo_AlertIntersectionOfPairOfShapesFailed)::DownCast(alert);
-    if (pair.IsNull() || pair->GetShape().NbChildren() != 2) {
-      continue;
-    }
-    for (TopoDS_Iterator element(pair->GetShape()); element.More(); element.Next()) {
-      skipped.push_back(elements.of(element.Value()));
-    }
-  }
+  run_boolean(*maker, arguments, tools, {&base.shape, &tool.shape}, warnings, skipped);
   const TopoDS_Shape result = maker->Shape();
   capture_history(*maker, 0, base.shape, result, history);
   capture_history(*maker, 1, tool.shape, result, history);
+  return std::make_unique<Shape>(Shape{result});
+}
+
+namespace {
+// The transformation a placement says, by OCCT's own: a translation, a rotation (about the
+// axis through `origin` along `direction`), a mirror in the plane through `origin` whose
+// normal is `direction`, or the rotation then the translation.
+gp_Trsf placement_trsf(const CopyPlacement &placement) {
+  const gp_Pnt origin(placement.origin.x, placement.origin.y, placement.origin.z);
+  const gp_Vec offset(placement.offset.x, placement.offset.y, placement.offset.z);
+  // Made only for the placements that have one: a translation's is 0, no direction.
+  auto direction = [&placement] {
+    return gp_Dir(placement.direction.x, placement.direction.y, placement.direction.z);
+  };
+  gp_Trsf trsf;
+  switch (placement.kind) {
+  case PlacementKind::Translation:
+    trsf.SetTranslation(offset);
+    break;
+  case PlacementKind::Rotation:
+    trsf.SetRotation(gp_Ax1(origin, direction()), placement.angle);
+    break;
+  case PlacementKind::Mirror:
+    trsf.SetMirror(gp_Ax2(origin, direction()));
+    break;
+  case PlacementKind::TurnedAndMoved: {
+    gp_Trsf turn;
+    turn.SetRotation(gp_Ax1(origin, direction()), placement.angle);
+    gp_Trsf move;
+    move.SetTranslation(offset);
+    trsf = move * turn;
+    break;
+  }
+  default:
+    throw Standard_Failure("unknown placement");
+  }
+  return trsf;
+}
+} // namespace
+
+std::unique_ptr<Shape> make_copies(const Shape &tool, rust::Slice<const CopyPlacement> placements) {
+  TopoDS_Compound copies;
+  BRep_Builder builder;
+  builder.MakeCompound(copies);
+  for (const CopyPlacement &placement : placements) {
+    const gp_Trsf trsf = placement_trsf(placement);
+    TopoDS_Shape copy;
+    std::unique_ptr<BRepBuilderAPI_Transform> rebuilt;
+    if (placement.kind == PlacementKind::Mirror) {
+      rebuilt = std::make_unique<BRepBuilderAPI_Transform>(tool.shape, trsf, Standard_True);
+      if (!rebuilt->IsDone()) {
+        throw Standard_Failure("the mirrored copy couldn't be built");
+      }
+      copy = rebuilt->Shape();
+    } else {
+      copy = placed(tool.shape, trsf);
+    }
+    // The copy's element n is the tool's element n: the same sub-shape moved (a location),
+    // or the one the transform rebuilt from it. Checked rather than assumed.
+    for (TopAbs_ShapeEnum type : {TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX}) {
+      ShapeMap inputs, outputs;
+      TopExp::MapShapes(tool.shape, type, inputs);
+      TopExp::MapShapes(copy, type, outputs);
+      if (inputs.Extent() != outputs.Extent()) {
+        throw Standard_Failure("a copy doesn't have the tool's elements");
+      }
+      for (int i = 1; i <= inputs.Extent(); ++i) {
+        const bool same =
+            rebuilt ? rebuilt->ModifiedShape(inputs(i)).IsSame(outputs(i))
+                    : inputs(i).IsPartner(outputs(i)) &&
+                          inputs(i).Orientation() == outputs(i).Orientation();
+        if (!same) {
+          throw Standard_Failure("a copy's elements aren't the tool's, in order");
+        }
+      }
+    }
+    builder.Add(copies, copy);
+  }
+  return std::make_unique<Shape>(Shape{copies});
+}
+
+std::unique_ptr<Shape> copies_boolean(BooleanOp op, const Shape &base, const Shape &copies,
+                                      rust::Vec<HistoryEntry> &history,
+                                      rust::Vec<rust::String> &warnings,
+                                      rust::Vec<SkippedElement> &skipped) {
+  if (op == BooleanOp::Common) {
+    throw Standard_Failure("copies are fused or cut, not intersected");
+  }
+  std::unique_ptr<BRepAlgoAPI_BooleanOperation> maker = boolean_maker(op);
+  NCollection_List<TopoDS_Shape> arguments;
+  arguments.Append(base.shape);
+  NCollection_List<TopoDS_Shape> tools;
+  std::vector<TopoDS_Shape> each;
+  for (TopoDS_Iterator copy(copies.shape); copy.More(); copy.Next()) {
+    each.push_back(copy.Value());
+  }
+  std::vector<const TopoDS_Shape *> inputs{&base.shape};
+  for (const TopoDS_Shape &copy : each) {
+    // Each copy a tool of its own, a compound's every shape: one compound of copies that
+    // overlap is a self-intersecting argument, which OCCT cuts wrongly (booleans.md).
+    expand_compound(copy, tools);
+    inputs.push_back(&copy);
+  }
+  run_boolean(*maker, arguments, tools, inputs, warnings, skipped);
+  const TopoDS_Shape result = maker->Shape();
+  capture_history(*maker, 0, base.shape, result, history);
+  for (size_t k = 0; k < each.size(); ++k) {
+    capture_history(*maker, static_cast<uint32_t>(k + 1), each[k], result, history);
+  }
   return std::make_unique<Shape>(Shape{result});
 }
 
