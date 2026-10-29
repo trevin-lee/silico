@@ -40,7 +40,7 @@ pub use session::{
     MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, NOT_RELOADED, Opened, OutlineAnswer,
     Progress, Published, Read, ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced,
     Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, Status, Stepped,
-    Stopper, TOO_LONG, TextAnswer, TryAgainBy, fault_suggestion,
+    Stopper, TOO_LONG, TextAnswer, TimelineAnswer, TryAgainBy, fault_suggestion,
 };
 pub use session_command::{ReadCommand, SessionCommand};
 

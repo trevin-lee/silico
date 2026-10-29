@@ -169,6 +169,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Edits whose results are diffed against the document before by a scan per feature (what each rewired, each feature's consumer, each candidate's consumer): quadratic in the timeline; time one edit of a document at the size limit against the gate's time for it
 - Refusals that list every candidate (every earlier solid nothing consumes): 20,000 boxes give a 20,000-entry error where others list five or the first hundred
 - Per-feature views of a model (a timeline's health and counts) beside the document-wide `check`: compare them under an open transaction (drift `check` excepts), with a kernel fault on only a feature's measure, and for a feature blocked by both a fault and a real failure, in each operand order
+- A read answered of the session's newest document while an older published model is the one read (a published read after a change the gate refuses, or before the new revision's rebuild): the response's model block (its revision, its fault) can name a model the answer doesn't mark by, and `check` of the same published model counts other problems; read both models first and last after every edit, change on disk, undo, and rollback, and compare each answer's own revision and model with the response's
 - Functions over a document that take `&Document`, not the gate's `Checked`: a feature that is its own base is its own consumer, and a walk down the chain from it starts past the end of the timeline without it
 
 ## Files

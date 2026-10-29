@@ -129,7 +129,7 @@ pub use types::{
     Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, FieldSet,
     ModelChoice, ModelRead, Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild,
     RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
-    SessionId, SessionInfo, Status, Stepped, Stopper, TextAnswer,
+    SessionId, SessionInfo, Status, Stepped, Stopper, TextAnswer, TimelineAnswer,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 
@@ -834,9 +834,8 @@ impl<P: Clients + 'static> Sessions<P> {
                 move |read| {
                     let _span = tracing::info_span!("check").entered();
                     Ok(CheckAnswer::of(
-                        super::check_except(read.model(), read.reached()),
                         read.model(),
-                        &read.checking.spared(read.reached),
+                        &read.checking.excepted(read.reached),
                     ))
                 },
             ),
@@ -852,13 +851,29 @@ impl<P: Clients + 'static> Sessions<P> {
         command: SessionCommand,
         read: impl FnOnce(Read<'_, P::Client>) -> Result<T, Problems> + Send + 'static,
     ) -> Running<T> {
+        self.read_current_or(session, command, read, rebuilds::gated_problems)
+    }
+
+    /// [`read_current`](Self::read_current), but answering a document the gate (or the
+    /// reader) refused with `answer_refused`, given the session's revision and that document.
+    fn read_current_or<T: Send + 'static>(
+        &self,
+        session: &SessionId,
+        command: SessionCommand,
+        read: impl FnOnce(Read<'_, P::Client>) -> Result<T, Problems> + Send + 'static,
+        answer_refused: impl FnOnce(Revision, &Gated) -> Result<T, Problems> + Send + 'static,
+    ) -> Running<T> {
         // The read's own client, made as it's asked for and dropped when it returns, its stop
         // able to retire it if it's cancelled or its session closes first.
         let kernel: Arc<ReadClient<P::Client>> =
             Arc::new(ReadClient::new(self.registry.kernel.client()));
         self.queued(session, command, move |session, stop, model| {
             stop.interrupt_with(Arc::downgrade(&kernel) as Weak<dyn Interrupt>);
-            let current = session.current(stop).map_err(Unbuilt::problems)?;
+            let current = match session.current(stop) {
+                Ok(current) => current,
+                Err(Unbuilt::Gated { revision, gated }) => return answer_refused(revision, &gated),
+                Err(unbuilt) => return Err(unbuilt.problems()),
+            };
             *model = Some(current.read.clone());
             let path = session.held.read().path.clone();
             read(Read {
@@ -884,12 +899,11 @@ impl<P: Clients + 'static> Sessions<P> {
                     let fresh = reads == recompute::Reads::Nothing;
                     let _span = tracing::info_span!("check", fresh).entered();
                     Ok(CheckAnswer::of(
-                        super::check_except(&current.model, current.reached.get()),
                         &current.model,
-                        &current.checking.spared(&current.reached),
+                        &current.checking.excepted(&current.reached),
                     ))
                 }
-                Err(Unbuilt::Gated(problems)) => Ok(CheckAnswer::refused(problems)),
+                Err(Unbuilt::Gated { gated, .. }) => Ok(CheckAnswer::refused(gated.problems())),
                 Err(Unbuilt::Unavailable(problems)) => Err(problems),
             },
         )
@@ -964,8 +978,25 @@ impl<P: Clients + 'static> Sessions<P> {
         choice: ModelChoice,
         read: impl FnOnce(Read<'_, P::Client>) -> Result<T, Problems> + Send + 'static,
     ) -> Running<T> {
+        self.read_model_or(session, command, choice, read, rebuilds::gated_problems)
+    }
+
+    /// [`read_model`](Self::read_model), but answering a document the gate (or the reader)
+    /// refused, where there's no model to read (the current one, or nothing published),
+    /// with `answer_refused`, given the session's revision and that document, the response
+    /// naming no model: for `timeline`, which answers one.
+    fn read_model_or<T: Send + 'static>(
+        &self,
+        session: &SessionId,
+        command: ReadCommand,
+        choice: ModelChoice,
+        read: impl FnOnce(Read<'_, P::Client>) -> Result<T, Problems> + Send + 'static,
+        answer_refused: impl FnOnce(Revision, &Gated) -> Result<T, Problems> + Send + 'static,
+    ) -> Running<T> {
         match choice {
-            ModelChoice::Current => self.read_current(session, command.into(), read),
+            ModelChoice::Current => {
+                self.read_current_or(session, command.into(), read, answer_refused)
+            }
             ModelChoice::Published => {
                 // The read's own client, made as it's asked for and dropped when it returns,
                 // its stop able to retire it if it's cancelled or its session closes first.
@@ -978,7 +1009,13 @@ impl<P: Clients + 'static> Sessions<P> {
                 if let Some(found) = book.sessions.get(session).cloned() {
                     drop(book);
                     return match start_published(
-                        &found, command, kernel, read, &ticket, &reply, caller,
+                        &found,
+                        command,
+                        kernel,
+                        (read, answer_refused),
+                        &ticket,
+                        &reply,
+                        caller,
                     ) {
                         Ok(()) => Running::new(answer, READ_STOPPED, Some(ticket), None),
                         Err(response) => Running::answered(response),
@@ -998,7 +1035,13 @@ impl<P: Clients + 'static> Sessions<P> {
                     let refusal = match turn {
                         Turn::Run(found) => {
                             match start_published(
-                                found, command, kernel, read, &stop, &reply, caller,
+                                found,
+                                command,
+                                kernel,
+                                (read, answer_refused),
+                                &stop,
+                                &reply,
+                                caller,
                             ) {
                                 Ok(()) => return,
                                 Err(response) => response,
@@ -1027,7 +1070,51 @@ impl<P: Clients + 'static> Sessions<P> {
             return refused(not_open(*session));
         };
         let (info, read) = found.published_now();
-        published_answer(info, read, |published, _, _| Ok(published.clone()))
+        published_answer(
+            info,
+            read,
+            |published, _, _| Ok(published.clone()),
+            rebuilds::gated_problems,
+        )
+    }
+
+    /// `session`'s document's features as the browser and the timeline draw them
+    /// (docs/design/m5.0-app.md, section 7's `timeline`, M5.1), each with the health the
+    /// model `model` names gave it ([`crate::timeline`]), read as every model is
+    /// ([`read_model`](Self::read_model)): the current one queued, waiting for the
+    /// revision's rebuild, or the newest published at once, beside the queue, counted among
+    /// the session's published reads. The features are the session's document's at its
+    /// revision, and the model is the one named, whatever revision it's of: a feature it
+    /// hasn't built, changed since or using one that was, is `unknown`, and the result says
+    /// the model's revision. Each feature's problems and warnings are those a `check` of the
+    /// same model has on it, excepting what that check excepts ([`Checking::excepted`]:
+    /// during an open transaction, the drift and the missing fingerprints of what its edits
+    /// reached, which its commit writes).
+    ///
+    /// A document the gate refused is answered, not refused: the document as read, every
+    /// feature `unknown`, and the gate's count of problems; text that doesn't read as a
+    /// document gives no features, and the reader's count. With no model to read (the
+    /// current one, or nothing published), it names none and has no bodies; under a
+    /// published model of an older revision, which marks nothing of this document, it names
+    /// that model and gives its bodies, as a client still draws them. Otherwise refused as
+    /// every read is.
+    ///
+    /// [`Checking::excepted`]: transaction::Checking::excepted
+    pub fn timeline(&self, session: &SessionId, model: ModelChoice) -> Running<TimelineAnswer> {
+        self.read_model_or(
+            session,
+            ReadCommand::Timeline,
+            model,
+            |read| {
+                let _span =
+                    tracing::info_span!("timeline", model = read.read.of.as_str()).entered();
+                Ok(TimelineAnswer::of(&read))
+            },
+            |revision, gated| {
+                let _span = tracing::info_span!("timeline", refused = true).entered();
+                Ok(TimelineAnswer::refused(revision, gated))
+            },
+        )
     }
 
     /// `session`'s document's outline ([`super::outline`]), as `silico show` prints it.
@@ -1484,13 +1571,18 @@ impl<P: Clients + 'static> Sessions<P> {
 
 /// `read`, the published read named `command`, started on `found` on a thread of its own
 /// (`session-sN-read`), stopped by `ticket`, answered through `reply`, under the caller's
-/// span: or, refused before it starts, the refusal (the session closed since it was found,
-/// [`MAX_PUBLISHED_READS`] unanswered, or no thread to be had), never sent.
+/// span, or `answer_refused`, for a document the gate refused with nothing published to
+/// read ([`published_answer`]): or, refused before it starts, the refusal (the session
+/// closed since it was found, [`MAX_PUBLISHED_READS`] unanswered, or no thread to be had),
+/// never sent.
 fn start_published<C: Kernel + 'static, T: Send + 'static>(
     found: &Arc<Session<C>>,
     command: ReadCommand,
     kernel: Arc<ReadClient<C>>,
-    read: impl FnOnce(Read<'_, C>) -> Result<T, Problems> + Send + 'static,
+    (read, answer_refused): (
+        impl FnOnce(Read<'_, C>) -> Result<T, Problems> + Send + 'static,
+        impl FnOnce(Revision, &Gated) -> Result<T, Problems> + Send + 'static,
+    ),
     ticket: &Arc<Ticket>,
     reply: &mpsc::SyncSender<Response<T>>,
     caller: tracing::Span,
@@ -1537,17 +1629,22 @@ fn start_published<C: Kernel + 'static, T: Send + 'static>(
                 || {
                     let (info, published) = session.published_now();
                     let path = session.held.read().path.clone();
-                    published_answer(info, published, |published, checking, model| {
-                        read(Read {
-                            path,
-                            model: &published.model,
-                            read: model,
-                            stop: &stop,
-                            kernel: &kernel,
-                            reached: &published.reached,
-                            checking,
-                        })
-                    })
+                    published_answer(
+                        info,
+                        published,
+                        |published, checking, model| {
+                            read(Read {
+                                path,
+                                model: &published.model,
+                                read: model,
+                                stop: &stop,
+                                kernel: &kernel,
+                                reached: &published.reached,
+                                checking,
+                            })
+                        },
+                        answer_refused,
+                    )
                 },
             );
             drop(counted);

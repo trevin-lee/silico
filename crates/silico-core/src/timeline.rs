@@ -1,7 +1,8 @@
 //! A document's features as the browser and the timeline draw them, structured, so no
 //! client parses an outline's text (docs/design/m5.0-app.md, `timeline`, M5.1; decision 33,
-//! A8, pending the maintainer). Below any command: the command adds the session's revision
-//! and the gate's count of problems, and names the model it reads.
+//! A8, pending the maintainer). Below any command: the session's
+//! ([`Sessions::timeline`](crate::command::Sessions::timeline)) adds the session's revision,
+//! the model's, and the gate's count of problems, and names the model it reads.
 //!
 //! Each feature's health is one of Fusion's health states (docs/ux/fusion.md, *The
 //! timeline*), as the model gave it:
@@ -134,42 +135,49 @@ pub fn timeline(document: &Document, model: Option<&Model>, excepted: &Excepted)
             }
         })
         .collect();
-    // The bodies: the document's features, in its order, that the model built a solid for
-    // and no feature of the document consumes (below). One edited since stays (marked unknown), so
-    // a body doesn't vanish while its rebuild runs; one a feature added since consumes, or
-    // whose consumer was removed since, is judged by the document.
-    // Consumed: by a feature the model built, or one it hasn't built yet (whose build will).
-    // A solid whose consumer failed is a body still, as the model has it.
-    let consumed: BTreeSet<&FeatureId> = model
-        .map(|model| {
-            document
-                .features
-                .iter()
-                .filter(|f| {
-                    unbuilt.contains(&f.id)
-                        || matches!(model.outcome(&f.id), Some(FeatureOutcome::Built { .. }))
-                })
-                .flat_map(|f| f.operation.inputs().into_iter().map(|(_, id)| id))
-                .collect()
-        })
-        .unwrap_or_default();
     let bodies = model
-        .map(|model| {
-            document
-                .features
-                .iter()
-                // A feature edited into a sketch since makes no solid, whatever the model built.
-                .filter(|f| !matches!(f.operation, crate::document::Operation::Sketch(_)))
-                .map(|f| &f.id)
-                .filter(|id| {
-                    !consumed.contains(id)
-                        && matches!(model.outcome(id), Some(FeatureOutcome::Built { .. }))
-                })
-                .cloned()
-                .collect()
-        })
+        .map(|model| bodies_of(document, model, &unbuilt))
         .unwrap_or_default();
     Timeline { features, bodies }
+}
+
+/// The bodies `model` has as it drew them: of its own document, every feature it built a
+/// solid for that no feature of that document consumes, in its order. What a client draws
+/// of the model whatever the session's document is now: one the gate refused, whose
+/// features it doesn't mark, among them.
+pub fn bodies(model: &Model) -> Vec<FeatureId> {
+    bodies_of(model.document(), model, &BTreeSet::new())
+}
+
+/// The bodies of `model` under `document`: the document's features, in its order, that the
+/// model built a solid for and no feature of the document consumes (below). One edited
+/// since (in `unbuilt`) stays (marked unknown), so a body doesn't vanish while its rebuild
+/// runs; one a feature added since consumes, or whose consumer was removed since, is judged
+/// by the document.
+fn bodies_of(document: &Document, model: &Model, unbuilt: &BTreeSet<FeatureId>) -> Vec<FeatureId> {
+    // Consumed: by a feature the model built, or one it hasn't built yet (whose build will).
+    // A solid whose consumer failed is a body still, as the model has it.
+    let consumed: BTreeSet<&FeatureId> = document
+        .features
+        .iter()
+        .filter(|f| {
+            unbuilt.contains(&f.id)
+                || matches!(model.outcome(&f.id), Some(FeatureOutcome::Built { .. }))
+        })
+        .flat_map(|f| f.operation.inputs().into_iter().map(|(_, id)| id))
+        .collect();
+    document
+        .features
+        .iter()
+        // A feature edited into a sketch since makes no solid, whatever the model built.
+        .filter(|f| !matches!(f.operation, crate::document::Operation::Sketch(_)))
+        .map(|f| &f.id)
+        .filter(|id| {
+            !consumed.contains(id)
+                && matches!(model.outcome(id), Some(FeatureOutcome::Built { .. }))
+        })
+        .cloned()
+        .collect()
 }
 
 /// What the model marks a feature with.
