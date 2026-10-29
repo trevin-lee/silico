@@ -155,15 +155,10 @@ fn an_empty_sketch_is_fully_defined_with_no_degrees_whatever_planegcs_counts() {
     assert!(fake.requests().is_empty());
 }
 
-#[test]
-fn two_lines_through_a_twice_placed_point_take_its_freedom_not_its_over_definition() {
-    // p1 (0, 0) is placed by x and y from the origin and again level with it (a
-    // horizontal_points, PlaneGCS's redundant, tag 3); p2 (10, 0) and p3 (0, 10) are each
-    // placed. Lines p1–p2 and p1–p3. Values: p1 6, 7; p2 8, 9; p3 10, 11; nothing free.
-    // The redundant constraint reads the origin (fixed, no member) and p1: p1 over defined.
-    // It names no line, and the lines' points are all fixed: both lines fully defined (item
-    // 32's members' rule: a curve takes its points' freedom, not their over-definition).
-    let sketch = sketch_of(
+/// p1 (0, 0) placed by x and y from the origin and again by `again` (k0000003); p2 (10, 0)
+/// and p3 (0, 10) each placed; lines p1–p2 and p1–p3.
+fn twice_placed_point(again: &str) -> Sketch {
+    sketch_of(
         &[
             point("p0000001", 0.0, 0.0),
             point("p0000002", 10.0, 0.0),
@@ -178,12 +173,25 @@ fn two_lines_through_a_twice_placed_point_take_its_freedom_not_its_over_definiti
         &[
             P1_AT_ORIGIN[0],
             P1_AT_ORIGIN[1],
-            r#"{"id": "k0000003", "type": "horizontal_points", "a": "origin", "b": "p0000001"}"#,
+            again,
             r#"{"id": "k0000004", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 10, "driving": true}"#,
             r#"{"id": "k0000005", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 0, "driving": true}"#,
             r#"{"id": "k0000006", "type": "distance_x", "a": "origin", "b": "p0000003", "value": 0, "driving": true}"#,
             r#"{"id": "k0000007", "type": "distance_y", "a": "origin", "b": "p0000003", "value": 10, "driving": true}"#,
         ],
+    )
+}
+
+#[test]
+fn two_lines_through_a_twice_dimensioned_point_take_its_freedom_not_its_over_definition() {
+    // p1 placed again by a second distance_y of 0 from the origin (PlaneGCS's redundant, tag
+    // 3). Values: p1 6, 7; p2 8, 9; p3 10, 11; nothing free. The redundant constraint is a
+    // driving dimension, so it over-defines (addendum 2): it reads the origin (fixed, no
+    // member) and p1, so p1 is over defined, and so is the sketch. It names no line, and the
+    // lines' points are all fixed: both lines fully defined (item 32's members' rule: a curve
+    // takes its points' freedom, not their over-definition).
+    let sketch = twice_placed_point(
+        r#"{"id": "k0000003", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
     );
     let (_, answer, diagnosis, got) = solved_by(&sketch, |system| Solved {
         redundant: vec![Tag(3)],
@@ -219,6 +227,67 @@ fn two_lines_through_a_twice_placed_point_take_its_freedom_not_its_over_definiti
             ("k0000007", Satisfied),
         ])
     );
+}
+
+#[test]
+fn a_point_placed_again_by_a_relation_stays_fully_defined_its_relation_redundant() {
+    // The same point placed again by a horizontal_points with the origin, a relation, which
+    // the fake calls redundant (tag 3) as PlaneGCS would. A redundant relation over-defines
+    // nothing (addendum 2; SolidWorks' FAQ: "Redundant perpendicular relation added. Sketch
+    // is still fully defined."): nothing free, 0 left, so the sketch, p1, and every member
+    // fully defined, by their freedom; the relation still listed redundant.
+    let sketch = twice_placed_point(
+        r#"{"id": "k0000003", "type": "horizontal_points", "a": "origin", "b": "p0000001"}"#,
+    );
+    let (_, answer, diagnosis, got) = solved_by(&sketch, |system| Solved {
+        redundant: vec![Tag(3)],
+        status: SolveStatus::SolvedExceptRedundant,
+        ..FakeSketches::as_sent(system)
+    });
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    assert_eq!(diagnosis.redundant, ids(&["k0000003"]));
+    assert_eq!(
+        diagnosis.points_depended_on,
+        BTreeMap::from([(id("k0000003"), ids(&["p0000001"]))])
+    );
+    assert_eq!((got.state, got.dofs), (SketchState::FullyDefined, 0));
+    assert_eq!(got.solve_problem, None);
+    assert_eq!(
+        got.points,
+        members(&[
+            ("p0000001", Fully),
+            ("p0000002", Fully),
+            ("p0000003", Fully)
+        ])
+    );
+    assert_eq!(
+        got.lines,
+        members(&[("n0000001", Fully), ("n0000002", Fully)])
+    );
+    assert_eq!(got.constraints[&id("k0000003")], Redundant);
+    // With p1's x free (value 6) and a degree left, the same relation leaves the sketch and
+    // p1 under defined, by the freedom: still nothing over defined.
+    let (_, _, _, got) = solved_by(&sketch, |system| Solved {
+        dofs: 1,
+        free: vec![Value(6)],
+        redundant: vec![Tag(3)],
+        status: SolveStatus::SolvedExceptRedundant,
+        ..FakeSketches::as_sent(system)
+    });
+    assert_eq!((got.state, got.dofs), (SketchState::UnderDefined, 1));
+    assert_eq!(
+        got.points,
+        members(&[
+            ("p0000001", Under),
+            ("p0000002", Fully),
+            ("p0000003", Fully)
+        ])
+    );
+    assert_eq!(
+        got.lines,
+        members(&[("n0000001", Under), ("n0000002", Under)])
+    );
+    assert_eq!(got.constraints[&id("k0000003")], Redundant);
 }
 
 #[test]
@@ -280,8 +349,9 @@ fn a_conflict_is_over_defined_its_dofs_as_given_and_a_constraint_listed_twice_re
     // The fake finds the two lengths (tags 4 and 5) in conflict, the second redundant too,
     // the horizontal (tag 3) partially redundant, and −1 degrees. Conflicting comes first,
     // so both lengths conflicting; the horizontal partially redundant; the placing
-    // dimensions unsolved, the sketch refused. Each length and the horizontal read both
-    // ends and name the line: all over defined. dofs −1, PlaneGCS's number as given; the
+    // dimensions unsolved, the sketch refused. Each length, conflicting, reads both ends and
+    // names the line: all over defined (the horizontal, a partially redundant relation,
+    // over-defines nothing, addendum 2, but the lengths already cover what it reads). dofs −1, PlaneGCS's number as given; the
     // problem `over_constrained`, naming exactly the conflicting two.
     let sketch = ten_long(
         r#"{"id": "k0000005", "type": "length", "line": "n0000001", "value": 12, "driving": true}"#,
@@ -366,7 +436,8 @@ fn decision_5s_disagreeing_redundancy_goes_into_the_conflicting_list_the_read_un
 #[test]
 fn an_agreeing_redundancy_is_kept_and_read_redundant_not_conflicting() {
     // The same distance_x at 10, the fake calling it redundant: met, kept, the sketch solved
-    // and over defined, nothing conflicting.
+    // and over defined (a repeated driving dimension over-defines, addendum 2), nothing
+    // conflicting.
     let sketch = ten_long(
         r#"{"id": "k0000005", "type": "distance_x", "a": "p0000001", "b": "p0000002", "value": 10, "driving": true}"#,
     );
@@ -693,7 +764,8 @@ fn the_sketch_state_is_the_problems_code_then_the_flags_then_the_dofs() {
         state(reply(3, vec![Tag(2)], SolveStatus::Failed)),
         (SketchState::NoSolution, 3, Some(ErrorCode::SolveFailed))
     );
-    // Solved: a kept repetition, then the degrees left.
+    // Solved: a kept repetition of a driving dimension (the y, a distance_y), then the
+    // degrees left.
     assert_eq!(
         state(reply(3, vec![Tag(2)], SolveStatus::SolvedExceptRedundant)),
         (SketchState::OverDefined, 3, None)

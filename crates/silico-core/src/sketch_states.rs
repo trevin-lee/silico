@@ -8,8 +8,10 @@
 //! them, so no client maps unknowns to members.
 //!
 //! Every rule is decided here, each in a function of its own, so any one can change: the
-//! sketch's state from the refusal's code, then the flags, then the degrees of freedom
-//! ([`refusal_state`], [`sketch_state`]); a point's ([`point_state`]) and a curve's
+//! sketch's state from the refusal's code, then the over-defining constraints, then the
+//! degrees of freedom ([`refusal_state`], [`sketch_state`]); which constraints over-define
+//! ([`over_defines`]: a conflict, or a repeated driving dimension, never a repeated relation,
+//! as SolidWorks' FAQ has it); a point's ([`point_state`]) and a curve's
 //! ([`curve_over_defined`], [`curve_state`]); a constraint's, `unsolved` on a refused sketch
 //! ([`constraint_state`]); and the empty sketch's ([`EMPTY_STATE`], [`EMPTY_DOFS`]). Which
 //! constraint of a dependent group is flagged, and as what, is PlaneGCS's choice as it lists
@@ -18,18 +20,21 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::document::{ElementId, Sketch, SketchConstraint};
+use crate::document::{ElementId, Form, Sketch, SketchConstraint};
 use crate::sketch::{Diagnosed, Diagnosis};
 use crate::{Error, ErrorCode};
 
 /// A sketch's state: SolidWorks' five (docs/ux/solidworks.md, §2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SketchState {
-    /// Solved, with degrees of freedom left, and no constraint repeating others.
+    /// Solved, with degrees of freedom left, and no driving dimension repeating others (a
+    /// repeated relation may be).
     UnderDefined,
-    /// Solved, with none left and no constraint repeating others; or empty.
+    /// Solved, with none left and no driving dimension repeating others (a repeated relation
+    /// may be); or empty.
     FullyDefined,
-    /// Constraints that conflict (refused), or that repeat others and agree (solved).
+    /// Constraints that conflict (refused), or a driving dimension that repeats others and
+    /// agrees (solved).
     OverDefined,
     /// No algorithm placed it, or its loads don't settle.
     NoSolution,
@@ -59,7 +64,8 @@ pub enum MemberState {
     UnderDefined,
     /// Every value of it is fixed.
     FullyDefined,
-    /// A flagged constraint (in conflict, or repeating others) governs it.
+    /// An over-defining constraint (in conflict, or a driving dimension repeating others)
+    /// governs it.
     OverDefined,
 }
 
@@ -104,8 +110,8 @@ impl ConstraintState {
         }
     }
 
-    /// Whether the constraint is flagged: in conflict, or repeating others. A flagged
-    /// constraint over-defines what it governs.
+    /// Whether the constraint is flagged: listed by the diagnosis, in conflict or repeating
+    /// others.
     pub fn flagged(self) -> bool {
         matches!(
             self,
@@ -182,14 +188,16 @@ pub fn states(sketch: &Sketch, read: &Diagnosed) -> Result<SketchStates, Error> 
         .iter()
         .map(|c| (c.id.clone(), constraint_state(c, diagnosis, solved)))
         .collect();
-    // What the flagged constraints govern: the points their equations depend on, and the
-    // curves they name.
+    // What the over-defining constraints govern: the points their equations depend on, and
+    // the curves they name.
+    let over = |c: &SketchConstraint| {
+        constraints
+            .get(&c.id)
+            .is_some_and(|&s| over_defines(s, &c.form))
+    };
     let mut points_over: BTreeSet<&ElementId> = BTreeSet::new();
     let mut named: BTreeSet<&ElementId> = BTreeSet::new();
-    for c in &sketch.constraints {
-        if !constraints.get(&c.id).is_some_and(|s| s.flagged()) {
-            continue;
-        }
+    for c in sketch.constraints.iter().filter(|c| over(c)) {
         if let Some(depended_on) = diagnosis.points_depended_on.get(&c.id) {
             points_over.extend(depended_on);
         }
@@ -231,9 +239,9 @@ pub fn states(sketch: &Sketch, read: &Diagnosed) -> Result<SketchStates, Error> 
         .iter()
         .map(|a| curve(&a.id, free(&a.id), &[&a.center, &a.start, &a.end]))
         .collect();
-    let flagged = constraints.values().any(|s| s.flagged());
+    let over_defining = sketch.constraints.iter().any(over);
     Ok(SketchStates {
-        state: sketch_state(refused, flagged, diagnosis.dofs),
+        state: sketch_state(refused, over_defining, diagnosis.dofs),
         dofs: diagnosis.dofs,
         points,
         lines,
@@ -278,14 +286,17 @@ pub(crate) fn refusal_state(code: ErrorCode) -> Option<SketchState> {
     }
 }
 
-/// The sketch's state: the refusal's, if the solve was `refused`; then, solved, the flagged
-/// lists, then the degrees of freedom. Solved, any constraint `flagged` makes it over defined
-/// (SolidWorks' over-defining prompt is for exactly this: a repetition that agrees, kept,
-/// though its features build), so `fully_defined` never has a constraint flagged.
-fn sketch_state(refused: Option<SketchState>, flagged: bool, dofs: i32) -> SketchState {
+/// The sketch's state: the refusal's, if the solve was `refused`; then, solved, any
+/// constraint that over-defines ([`over_defines`]), then the degrees of freedom. Solved, an
+/// over-defining constraint makes it over defined (SolidWorks' over-defining prompt is for
+/// exactly this: a repeated dimension that agrees, kept, though its features build), so
+/// `fully_defined` never has a conflict or a repeated driving dimension; a repeated relation
+/// leaves it as its degrees of freedom say (SolidWorks' FAQ: "Redundant perpendicular
+/// relation added. Sketch is still fully defined.").
+fn sketch_state(refused: Option<SketchState>, over_defining: bool, dofs: i32) -> SketchState {
     match refused {
         Some(state) => state,
-        None if flagged => SketchState::OverDefined,
+        None if over_defining => SketchState::OverDefined,
         None if dofs > 0 => SketchState::UnderDefined,
         None => SketchState::FullyDefined,
     }
@@ -313,17 +324,35 @@ fn constraint_state(c: &SketchConstraint, diagnosis: &Diagnosis, solved: bool) -
     }
 }
 
-/// A point's state (item 32's members' rule): `over_defined` if a flagged constraint's
-/// equations depend on its x or y
+/// Whether a constraint of `form`, in `state`, over-defines what it governs (M5.0 open item
+/// 32's addendum 2, from SolidWorks' FAQ on sketch relations): when it's `conflicting`, or
+/// when it's `redundant` or `partially_redundant` and a dimension, a form with `driving`
+/// ([`Form::driving`] some: `length`, `distance`, `distance_x`, `distance_y`,
+/// `point_line_distance`, `angle`, `radius`, `diameter`). A repeated relation (the other 13
+/// forms) over-defines nothing: it has no value of its own to edit, so only an edit
+/// elsewhere can break it, and that edit's solve reports the conflict; a dimension's own
+/// value can. A reference dimension is never flagged ([`constraint_state`]), so never
+/// over-defines.
+///
+/// Which constraint of a dependent group is flagged is PlaneGCS's choice, blind to the
+/// kinds: a group of a relation and a dimension, its relation flagged, over-defines nothing
+/// (the one divergence from SolidWorks this rule leaves; docs/ports/sketcher.md).
+fn over_defines(state: ConstraintState, form: &Form) -> bool {
+    state == ConstraintState::Conflicting || (state.flagged() && form.driving().is_some())
+}
+
+/// A point's state (item 32's members' rule): `over_defined` if an over-defining
+/// constraint's equations depend on its x or y
 /// ([`SketchSystem::depends_on`](silico_protocol::SketchSystem::depends_on)), before its
 /// freedom; otherwise `under_defined` if its x or y is free; otherwise `fully_defined`. A
 /// point no constraint reads is free (a zero column of the diagnosis), so it's
 /// `under_defined` with no special case; a point curves share has one state, whichever
 /// curves use it. So a point on two curves that touch at it, one `on` redundant at first
-/// order, is `over_defined`, its unusable freedom left in `dofs`; and an arc's far end, which
-/// a flagged tangency at its other end never depends on, keeps the state its freedom gives.
-fn point_state(depended_on_by_flagged: bool, free: bool) -> MemberState {
-    if depended_on_by_flagged {
+/// order, a relation, keeps the state its freedom gives (`under_defined`, the degree it
+/// can't use left in `dofs`); and an arc's far end, which a conflicting tangency at its other
+/// end never depends on, keeps the state its freedom gives.
+fn point_state(depended_on_by_over_defining: bool, free: bool) -> MemberState {
+    if depended_on_by_over_defining {
         MemberState::OverDefined
     } else if free {
         MemberState::UnderDefined
@@ -337,8 +366,8 @@ fn point_state(depended_on_by_flagged: bool, free: bool) -> MemberState {
 /// (FreeCAD's `getGeometry`: a line fully constrained when both its ends are, a circle when
 /// its centre and radius are, an arc when its centre, ends, radius, and angles are);
 /// otherwise `fully_defined`.
-fn curve_state(named_by_flagged: bool, free: bool) -> MemberState {
-    if curve_over_defined(named_by_flagged) {
+fn curve_state(named_by_over_defining: bool, free: bool) -> MemberState {
+    if curve_over_defined(named_by_over_defining) {
         MemberState::OverDefined
     } else if free {
         MemberState::UnderDefined
@@ -347,15 +376,15 @@ fn curve_state(named_by_flagged: bool, free: bool) -> MemberState {
     }
 }
 
-/// Item 32's members' rule: a curve is over-defined when a flagged constraint names it, not
-/// when a point of it is over-defined: it takes its points' freedom but not their
+/// Item 32's members' rule: a curve is over-defined when an over-defining constraint names
+/// it, not when a point of it is over-defined: it takes its points' freedom but not their
 /// over-definition. So two lines through a point dimensioned twice aren't over defined; the
 /// point is, and so is the repeated dimension. The alternative, over-defined whenever a point
 /// of it is, would redden every line through a twice-dimensioned corner and point at nothing
 /// removable.
 ///
-/// It's the rule's hook, so the rule can change here alone: today a flagged constraint's
-/// naming the curve decides it, so it gives that back as it's given.
-fn curve_over_defined(named_by_flagged: bool) -> bool {
-    named_by_flagged
+/// It's the rule's hook, so the rule can change here alone: today an over-defining
+/// constraint's naming the curve decides it, so it gives that back as it's given.
+fn curve_over_defined(named_by_over_defining: bool) -> bool {
+    named_by_over_defining
 }
