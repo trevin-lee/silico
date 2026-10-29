@@ -57,6 +57,9 @@ pub(crate) struct Lookup<'m> {
     place: String,
     kinds: Kinds,
     refused: Problems,
+    /// Whether a feature's failure is said once a request (a command's, whose refusals are
+    /// one list), or for each name of it (a selection's, each name's reasons its own).
+    once: bool,
     /// Features whose failure is said already: once each.
     unbuilt: BTreeSet<FeatureId>,
     /// Solids whose missing description is said already: once each.
@@ -79,6 +82,7 @@ impl<'m> Lookup<'m> {
             },
             kinds,
             refused: Problems::none(),
+            once: true,
             unbuilt: BTreeSet::new(),
             undescribed: Vec::new(),
             candidates: BTreeMap::new(),
@@ -98,10 +102,20 @@ impl<'m> Lookup<'m> {
         lookup
     }
 
+    /// A lookup in every body of `model` whose refusals are each name's own: a feature's
+    /// failure said for each name of it, not once, so each name's reasons can be taken
+    /// ([`take`](Self::take)) as it's looked up (a selection's, `crate::selection`).
+    pub(crate) fn each_name(model: &'m Model, kinds: Kinds) -> Self {
+        Lookup {
+            once: false,
+            ..Lookup::new(model, None, kinds)
+        }
+    }
+
     /// The element `text` names, the request's `parameter` (`elements.0`); or none, why
     /// kept to say.
     pub(crate) fn find(&mut self, parameter: &str, text: &str) -> Option<Hit<'m>> {
-        let (id, map, element) = self.found(parameter, text)?;
+        let (id, map, element, _) = self.found(parameter, text)?;
         let model = self.model;
         let (Some(description), Ok(built)) = (model.description(id), built(model, id, false))
         else {
@@ -140,16 +154,16 @@ impl<'m> Lookup<'m> {
         text: &str,
     ) -> Option<(&'m FeatureId, ElementRef)> {
         self.found(parameter, text)
-            .map(|(id, _, element)| (id, element))
+            .map(|(id, _, element, _)| (id, element))
     }
 
-    /// The solid whose element `text` names, its map, and the element; or none, why kept to
-    /// say.
-    fn found(
+    /// The solid whose element `text` names, its map, the element, and the name as read; or
+    /// none, why kept to say.
+    pub(crate) fn found(
         &mut self,
         parameter: &str,
         text: &str,
-    ) -> Option<(&'m FeatureId, &'m ElementMap, ElementRef)> {
+    ) -> Option<(&'m FeatureId, &'m ElementMap, ElementRef, Name)> {
         let model = self.model;
         let makers = |id: &FeatureId| model.maker(id);
         let broken = |why: String, candidates: Vec<String>| {
@@ -201,7 +215,7 @@ impl<'m> Lookup<'m> {
             // (A sketch's elements are refused as they're parsed: no name of one gets here.)
             let maker = name.feature();
             // Its failure said already: not worded again for each name of it.
-            if self.unbuilt.contains(maker) {
+            if self.once && self.unbuilt.contains(maker) {
                 return None;
             }
             if let Err(problems) = built(model, maker, false) {
@@ -231,7 +245,7 @@ impl<'m> Lookup<'m> {
             ));
             return None;
         };
-        Some((id, map, element))
+        Some((id, map, element, name))
     }
 
     /// The solid `name`'s element is in, its map, and the element, if the request's solids
@@ -259,6 +273,13 @@ impl<'m> Lookup<'m> {
     /// A refusal of the request's own, kept with the lookup's to say in its order.
     pub(crate) fn refuse(&mut self, error: Error) {
         self.refused.push(error);
+    }
+
+    /// The refusals kept so far, in the order they came, taken: the lookup's since the last
+    /// take, so a lookup of each name's own ([`each_name`](Self::each_name)) gives each its
+    /// reasons.
+    pub(crate) fn take(&mut self) -> Problems {
+        std::mem::replace(&mut self.refused, Problems::none())
     }
 
     /// Every refusal kept, in the order they came; none if every name was found.
