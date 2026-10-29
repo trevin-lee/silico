@@ -204,7 +204,7 @@ fn an_added_conflicting_length_is_found_by_the_solve_naming_it() {
             .unwrap()
             .solve(worker)
             .unwrap()
-            .outcome
+            .into_outcome()
     };
     // Before the add, it solves.
     assert!(solve(&before, &mut worker).is_ok());
