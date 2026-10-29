@@ -1748,6 +1748,76 @@ proptest! {
 }
 
 #[test]
+fn the_sketch_the_persisted_seed_drew_before_the_tangencies_holds_the_invariants() {
+    // sketch_states.proptest-regressions keeps seed 2832580052307869825, found when the
+    // generator drew a constraint's kind from 13; drawing from 16 (the tangencies and equal
+    // radii) changed what that seed builds. This is the sketch it built then, regenerated
+    // from that generator exactly. 7 points, 14 unknowns; the circle's radius, 1; the arc's
+    // radius and angles, 3: 18. Rows: the arc's 4 rules; k0000000's distance_y, 1 (y of
+    // p0000101 − y of p0000004 = 6, as drawn); k0000001 a reference, none; k0000002's
+    // vertical_points, 1 (x of p0000000 = x of p0000003); k0000003's vertical, 1 (x of
+    // p0000004 = x of p0000100); k0000004's symmetry about the y axis, 2 (p0000001 the
+    // mirror of p0000004). Each row brings in a value no earlier one has, so they're
+    // independent: 18 − 9 = 9 left. Every member keeps a free value (p0000000 its y,
+    // p0000004 its x along the chain to p0000100 and p0000001, the circle its radius) and
+    // nothing repeats: under defined, every member under defined, every constraint
+    // satisfied.
+    let points = [
+        point("p0000000", -2.0, -4.0),
+        point("p0000001", -1.0, 0.0),
+        point("p0000002", 4.0, 0.0),
+        point("p0000003", 3.0, -2.0),
+        point("p0000004", 3.0, -2.0),
+        point("p0000100", 7.0, -4.0),
+        point("p0000101", 1.0, 4.0),
+    ];
+    let lines = [
+        line("n0000000", "p0000002", "p0000000"),
+        line("n0000001", "p0000004", "p0000100"),
+    ];
+    let circles = [circle("c0000000", "p0000003", 1.0)];
+    let arcs = [arc("a0000000", "p0000002", "p0000100", "p0000101")];
+    let constraints = [
+        r#"{"id": "k0000000", "type": "distance_y", "a": "p0000004", "b": "p0000101", "value": 6, "driving": true}"#,
+        r#"{"id": "k0000001", "type": "distance_y", "a": "origin", "b": "p0000004", "value": -1, "driving": false}"#,
+        r#"{"id": "k0000002", "type": "vertical_points", "a": "p0000000", "b": "p0000003"}"#,
+        r#"{"id": "k0000003", "type": "vertical", "line": "n0000001"}"#,
+        r#"{"id": "k0000004", "type": "symmetric", "a": "p0000004", "b": "p0000001", "about": "y_axis"}"#,
+    ];
+    let sketch = sketch_of(&points, &lines, &circles, &arcs, &constraints);
+    let (_, _, got) = solved(&sketch);
+    expect(
+        &got,
+        Want {
+            problem: None,
+            state: SketchState::UnderDefined,
+            dofs: 9,
+            points: &[
+                ("p0000000", Under),
+                ("p0000001", Under),
+                ("p0000002", Under),
+                ("p0000003", Under),
+                ("p0000004", Under),
+                ("p0000100", Under),
+                ("p0000101", Under),
+            ],
+            lines: &[("n0000000", Under), ("n0000001", Under)],
+            circles: &[("c0000000", Under)],
+            arcs: &[("a0000000", Under)],
+            constraints: &[
+                ("k0000000", Satisfied),
+                ("k0000001", Satisfied),
+                ("k0000002", Satisfied),
+                ("k0000003", Satisfied),
+                ("k0000004", Satisfied),
+            ],
+        },
+    );
+    let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    invariants_hold(&sketch, &mut worker).unwrap();
+}
+
+#[test]
 fn the_generator_reaches_every_sketch_state_and_every_constraint_state() {
     // So the property above isn't vacuous: over these seeds, every sketch state and every
     // constraint state occurs, and most sketches pass the gate.
