@@ -189,6 +189,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Apostrophes before `,` or `)` in a STEP string (`'Bracket ''A'', left'`): OCCT's lexer ends a string at an apostrophe followed by either, so the name is cut short or the entity misread, from FreeCAD's own export too
 - Writers quadratic in a string's length (OCCT's STEP writer copies the rest of a long string at each 72-column wrap): a 4 MiB name takes 36 s, an 8 MiB one runs past the worker's 60 s
 - A size limit summed from parts that leave a separator or closing out (each feature's `[\n` or `,\n`, not the `\n  ]\n}\n` after the last): a whole 1 to 7 bytes past the limit passes; build a document exactly 1 and 7 bytes past it
+- A file classified by a `stat` then read by an `open` (gone, or its bytes): a file deleted between the two reads as unreadable, not gone; churn remove-and-write on another thread while polling, which hits it within milliseconds
 
 ## Command line
 
@@ -278,6 +279,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A measure made of several requests (a summary, then batches of a description): refuse, crash, supersede, or cancel at a later batch after the earlier ones came back; nothing partial may be published, kept in memory, or written, and the retry starts from the first request
 - Features alike in every value but their IDs (two identical boxes each pocketed alike, or a refused feature deleted and re-added under a new ID): the deduplicated step, or the refusal kept by its key, carries the first feature's words, so the second is told another feature and base failed
 - A count of work "on its way" that callers wait on (`warming`), set from a caller's unbounded argument: `usize::MAX` with starts that fail keeps every waiter waiting for ever, and the count plus what's idle overflows on the next call
+- A watch that drops findings against a superseded counter, told of the session's own write after it lands or before: a comparison that reads the new bytes and ends between the write and `held` (or reads the old ones between `held` and the write) is kept as changed; gate a stand-in reader and try both orders
+- A background job's "running" flag cleared only after a callback returns (a reader, a solver): a callback that panics leaves it set, and no job ever starts again
 
 ## Oracles and comparisons
 

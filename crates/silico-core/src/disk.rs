@@ -12,8 +12,11 @@
 //!   writes it compared against, by a counter [`DiskWatch::held`] advances at each one, never
 //!   by the bytes: two of the session's own saves, A then B then A again, would match by
 //!   bytes. A result whose counter is no longer the session's (its own save landed
-//!   meanwhile) is dropped, never reported. So the session's own save never reads as a
-//!   change on disk.
+//!   meanwhile) is dropped, never reported. A save is bracketed: [`DiskWatch::saving`]
+//!   before it writes, which keeps every finding back and starts no comparison, and
+//!   [`DiskWatch::held`] once it has written (or, if it failed, with the bytes it still
+//!   holds). So the session's own save never reads as a change on disk, whenever a
+//!   comparison reads the file.
 //!
 //! It reloads nothing: what to do with a finding is the session's (A3).
 
@@ -85,8 +88,15 @@ struct State {
     /// The last comparison's finding against the session's current bytes; none before one
     /// has ended.
     finding: Option<Disk>,
+    /// The finding the waker was last told of: what a new one is told against, whatever
+    /// the session's reads and writes cleared since (so its own save, found unchanged
+    /// again, tells nothing).
+    told: Option<Disk>,
     /// A comparison running.
     running: bool,
+    /// The session is writing its file ([`DiskWatch::saving`]): no finding until it holds
+    /// what it wrote.
+    saving: bool,
     /// When the last comparison ended, if one has.
     ended: Option<Instant>,
 }
@@ -123,7 +133,9 @@ impl DiskWatch {
                     held,
                     counter: 0,
                     finding: None,
+                    told: None,
                     running: false,
+                    saving: false,
                     ended: None,
                 }),
             }),
@@ -138,6 +150,19 @@ impl DiskWatch {
         state.held = bytes;
         state.counter = state.counter.wrapping_add(1);
         state.finding = None;
+        state.saving = false;
+    }
+
+    /// The session is about to write its file: until [`held`](Self::held) says what it
+    /// holds after (what it wrote, or, if the save failed, what it held before), no
+    /// comparison starts, one running is dropped, and there's no finding. So a comparison
+    /// that reads the file mid-save, or the saved file before the session holds it, is
+    /// never its own save read as a change.
+    pub fn saving(&self) {
+        let mut state = lock(&self.shared.state);
+        state.counter = state.counter.wrapping_add(1);
+        state.finding = None;
+        state.saving = true;
     }
 
     /// The last comparison's finding against what the session holds now, none before one
@@ -149,7 +174,7 @@ impl DiskWatch {
         let due = state
             .ended
             .is_none_or(|ended| ended.elapsed() >= self.shared.interval);
-        if !state.running && due {
+        if !state.running && !state.saving && due {
             state.running = true;
             let counter = state.counter;
             let held = Arc::clone(&state.held);
@@ -171,6 +196,9 @@ impl DiskWatch {
 /// finding kept if the session still holds them, and told if it changed.
 fn compare(shared: &Shared, counter: u64, held: &[u8]) {
     let _span = tracing::debug_span!("disk_compare").entered();
+    // However the read ends, a panic too (a test's reader), the comparison has: the next
+    // can start.
+    let _ended = Ended(shared);
     let found = match (shared.read)(&shared.path) {
         Found::Bytes(bytes) if bytes == held => Disk::Unchanged,
         Found::Bytes(_) => Disk::Changed,
@@ -178,31 +206,39 @@ fn compare(shared: &Shared, counter: u64, held: &[u8]) {
         Found::Unreadable => Disk::Unreadable,
     };
     let mut state = lock(&shared.state);
-    state.running = false;
-    state.ended = Some(Instant::now());
     // The session read or wrote since: this was against its bytes before.
     if state.counter != counter {
         return;
     }
-    let changed = state.finding != Some(found);
+    let changed = state.told != Some(found);
     state.finding = Some(found);
+    state.told = Some(found);
     drop(state);
     if changed && let Some(notify) = &shared.notify {
         notify();
     }
 }
 
-/// The file at `path` as the session reads a document: its bytes; gone if nothing is at
-/// its path; unreadable if it isn't a regular file this user may read, or is longer than
-/// Silico reads of one.
-fn read(path: &Path) -> Found {
-    match std::fs::metadata(path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Found::Gone,
-        _ => {}
+/// A comparison's end, however it ends: none running, and the time it ended.
+struct Ended<'a>(&'a Shared);
+
+impl Drop for Ended<'_> {
+    fn drop(&mut self) {
+        let mut state = lock(&self.0.state);
+        state.running = false;
+        state.ended = Some(Instant::now());
     }
-    match crate::file::read(path) {
-        Ok(bytes) if bytes.len() > MAX_INPUT_LEN => Found::Unreadable,
-        Ok(bytes) => Found::Bytes(bytes),
+}
+
+/// The file at `path` as the session reads a document ([`crate::file::read`]): its bytes;
+/// gone if nothing is at its path when it's opened; unreadable if it isn't a regular file
+/// this user may read, or is longer than Silico reads of one. One open decides: a file
+/// removed and made again around it is one or the other, never misread.
+fn read(path: &Path) -> Found {
+    match crate::file::opened_and_read_io(path) {
+        Ok((_, bytes)) if bytes.len() > MAX_INPUT_LEN => Found::Unreadable,
+        Ok((_, bytes)) => Found::Bytes(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Found::Gone,
         Err(_) => Found::Unreadable,
     }
 }

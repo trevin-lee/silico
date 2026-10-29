@@ -58,6 +58,8 @@ mod adversarial_call;
 mod adversarial_center_to_element;
 #[path = "adversarial_command.rs"]
 mod adversarial_command;
+#[path = "adversarial_disk.rs"]
+mod adversarial_disk;
 #[path = "adversarial_document.rs"]
 mod adversarial_document;
 #[path = "adversarial_fingerprint.rs"]
