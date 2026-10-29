@@ -337,9 +337,9 @@ fn constraint_state(
     let sent = c.form.driving() != Some(false);
     if sent && diagnosis.conflicting.contains(&c.id) {
         ConstraintState::Conflicting
-    } else if dependent && driving_dimension(&c.form) {
-        ConstraintState::Redundant
-    } else if sent && diagnosis.redundant.contains(&c.id) {
+    } else if (dependent && driving_dimension(&c.form))
+        || (sent && diagnosis.redundant.contains(&c.id))
+    {
         ConstraintState::Redundant
     } else if sent && diagnosis.partially_redundant.contains(&c.id) {
         ConstraintState::PartiallyRedundant
