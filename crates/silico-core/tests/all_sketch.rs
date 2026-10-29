@@ -36,6 +36,8 @@ mod adversarial_load_path;
 mod adversarial_redundant_resolve;
 #[path = "adversarial_sketch.rs"]
 mod adversarial_sketch;
+#[path = "adversarial_sketch_add.rs"]
+mod adversarial_sketch_add;
 #[path = "adversarial_sketch_drag.rs"]
 mod adversarial_sketch_drag;
 #[path = "adversarial_sketch_edit.rs"]
@@ -64,6 +66,8 @@ mod chain;
 mod drag_session;
 #[path = "sketch.rs"]
 mod sketch;
+#[path = "sketch_add.rs"]
+mod sketch_add;
 #[path = "sketch_drag.rs"]
 mod sketch_drag;
 #[path = "sketch_edit.rs"]
