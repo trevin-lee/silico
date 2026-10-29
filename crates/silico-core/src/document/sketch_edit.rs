@@ -16,8 +16,10 @@ use super::sketch::{
 };
 use crate::{Error, ErrorCode};
 
+mod add;
 mod split;
 mod trim;
+pub use add::{Members, add};
 pub use split::{Split, split};
 pub(crate) use trim::{Geo, crossings, end_ids};
 pub use trim::{Trim, trim};

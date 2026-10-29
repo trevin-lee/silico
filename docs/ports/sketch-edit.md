@@ -40,13 +40,26 @@ M5's sketch mode needs them, and the draft M5 plan (#196) puts them in a step of
 ### Add a point, a curve, a constraint
 
 **What FreeCAD does:**
-- **`addGeometry`** (`SketchObjectGeometry.cpp:148-207`) checks nothing ("a sketchobject managed operation", :186). It copies the geometry with a fresh tag (`71a555a6bb`, so adding one Python object twice makes two curves) and appends it.
-  - Degenerate input is refused only by Part: a line's ends within `gp::Resolution` raise "Both points are equal" (`Part/Geometry.cpp:4822`).
+- **`addGeometry`** (`SketchObjectGeometry.cpp:148-207`) checks nothing ("a sketchobject managed operation", :150, :186). It copies each geometry with a fresh tag (`71a555a6bb`, so adding one Python object twice makes two curves, with two tags *(1.1.3)*) and appends it. The list form appends the whole list in one `setValues`.
+  - **Construction** is one flag for the call, so the list form sets it on every member *(1.1.3)*. Since `3db4633f9d` (2024) a point is construction only when asked; before it every new point was forced to construction *(1.1.3: a point added alone isn't)*.
+  - **Degenerate input** is refused only where Part won't make it: a line's ends within `gp::Resolution` raise "Both points are equal" (`Part/Geometry.cpp:4822`) before the sketch sees the line *(1.1.3)*. A circle of radius 0 and a line 1e-12 mm long are added, and the sketch solves them (status 0) *(1.1.3)*.
   - Since `0e174da56d` and `f32d5e5fd9` (2026), the Gui's tools refuse non-finite positions and zero-size rectangles before they add anything.
-  - `3db4633f9d` stopped forcing every new point to be construction.
-- **`addConstraint`** (`SketchObjectConstraints.cpp:930-962`) checks only index ranges (`evaluateConstraint`, :2172-2233; Python raises "Constraint has invalid indexes"). A constraint whose form doesn't fit is found later, by the solver, as malformed. That has been an error at recompute since `150e50c700`.
-  - It records a distance's or tangent's side, and the kind of tangency, **from the current geometry** (`setOrientation`, `AutoLockTangencyAndPerpty`, :948-951).
-  - Python's list forms skip items of the wrong type silently.
+- **Python's `addGeometry`** (`SketchObjectPyImp.cpp:69-196`) takes one geometry or a list:
+  - In a list, an item that isn't a geometry is **skipped silently**: `[line, 5, circle]` adds two curves *(1.1.3)*.
+  - A geometry of a type the sketch doesn't take (an unbounded `Part.Line`) raises `TypeError`, "Unsupported geometry type", **before any is added**, so that list adds nothing *(1.1.3)*.
+  - A `Part.Arc`, a trimmed circle, is taken as an arc of a circle (`d974d6897b`, #1713).
+- **`addConstraint`** (`SketchObjectConstraints.cpp:930-962`) and its list form **`addConstraints`** (:858-893) check nothing either. Each new constraint has its form completed **from the current geometry**:
+  - a tangency's or perpendicularity's kind at an end, 0 or π, by `AutoLockTangencyAndPerpty` (:2674, from `3838bddcdb`, 2014);
+  - on main only, a distance's or a line-circle tangent's side, by `setOrientation` (:1407; `3c8a254356`, 2025-12, for distances; `f432d1c6a7` and `5a6be36bc3`, 2026-04, for tangency, #29007). 1.1.3 records no side *(1.1.3: its `Constraint` has no orientation attribute)*.
+- **Python's `addConstraint`** (`SketchObjectPyImp.cpp:370-439`) checks index ranges (`evaluateConstraint`, `SketchObjectConstraints.cpp:2172-2233`), since `7d8b1f30c3` (2014, #1720: invalid sketches crashed FreeCAD):
+  - **One constraint** out of range raises `IndexError`, "Constraint has invalid indexes", and adds nothing *(1.1.3)*. A constraint can only name geometry the sketch already holds, so a shape's geometry and its constraints take two calls *(1.1.3: a `Horizontal` of geometry 0 on an empty sketch is refused)*.
+  - **A list is checked whole before any of it is added.** One constraint out of range refuses the whole list, with "The constraint has invalid index information and is malformed." (`0e85b24348`, 2023's wording) and one message for the list *(1.1.3: `[Horizontal(0), Horizontal(5)]` on a sketch of one line adds neither)*. Items that aren't constraints are skipped silently.
+  - **Only the range is checked.** A position a curve hasn't, like a line's `mid`, is added, and the solve then reports it malformed *(1.1.3: status −5, `MalformedConstraints` [1])*. That has been an error at recompute since `150e50c700`.
+  - **One constraint is solved as it's added,** so its geometry moves before the command is committed. `e1dd86f0a9` (2015, #2281) recomputes the initial solution after that solve. **A list isn't solved** *(1.1.3: a `Horizontal` on a line from (0, 0) to (10, 1) moves it at once when added alone, and added as a list leaves it at (10, 1) until the next solve)*.
+  - **A conflicting constraint is kept,** alone or in a list. The solve reports the conflict (status −3), and the sketch holds every constraint *(1.1.3: two `DistanceX` of 10 and 12 on one line)*. Only main's Coincident command rolls back a worse solve (`cb2780e2fa`, below).
+- **Setting the properties directly** (`sketch.Constraints = …`) is an "unmanaged" operation. Since `c35d8be9a3` (2020) its indices are checked too, and a bad constraint is shown empty, with an error in the report, but not refused.
+- **The Gui's tools** add a shape's geometry and its constraints in one transaction, and abort it on any exception (`Gui/DrawSketchHandlerLine.h:130-158`: "This prevents constraints from being applied on non existing geometry"). So a tool's batch is made whole or not at all.
+  - **Before they commit,** the tools drop the auto-constraints they inferred (a snap's coincidence, a tangency, a horizontal) that the solver finds redundant, and abort on a redundancy or conflict that isn't one of those: `removeRedundantAutoConstraints` and `diagnoseWithAutoConstraints` (`Gui/DrawSketchDefaultHandler.h:752-798`, from `677694b0ba`, 2023). Silico's add keeps a redundant constraint, which the edit's solve flags with a warning, so M5's drawing tools must carry the same filter before they send the batch.
 - **The Coincident command** (`Gui/CommandConstraints.cpp:5310-5782`, from `e38154474a`, `084379651a` and `cb2780e2fa`, 2025–2026) refuses:
   - points already coincident, even through other points ("already coincident");
   - a coincidence that would bring two ends of one curve together, directly or through a chain ("would collapse geometry to zero length", #20771);
@@ -54,13 +67,27 @@ M5's sketch mode needs them, and the draft M5 plan (#196) puts them in a step of
   - Its tests are the six in `SketcherTests/TestCoincidentCommandGui.py`.
 - **Tangency substitution:** adding a tangency between curves whose ends are joined gives an endpoint tangency, and adding a coincidence where an edge tangency exists does the same (`180d722a53`, `620188073e`, #3299).
 
-**What Silico does differently:**
-- Every add goes through the gate, so a wrong form, a dangling ID, a degenerate curve or a non-finite coordinate is refused when it's made, naming the field. FreeCAD finds these at the next solve or not at all.
-- Each new element gets a fresh ID, and the gate refuses duplicates.
-- `side` and `direction` are part of the request (D4: stored, never decided from geometry).
-- `construction` is as given, for points too (D7, `3db4633f9d`).
-- A batch of adds is checked whole before any is applied.
-- The tangency substitution is already the gate's rule (`tangent_at` where two curves share an end).
+**Edge cases:**
+- **An empty list** adds nothing, and both list forms return an empty tuple *(1.1.3)*.
+- **The same object added twice** gives two curves with different tags (`71a555a6bb`).
+- **A constraint before its geometry** is refused for its index (above).
+
+**What Silico does differently** (docs/design/m5.0-app.md, `sketch_add`):
+- **One batch of every kind,** as the document writes them: points, lines, circles, arcs and constraints, each member with its own ID. A constraint may name a member added in the same batch, because the batch is checked as the sketch it makes. FreeCAD's two calls, geometry then constraints, become one.
+- **Whole-batch checking.** The batch is checked whole before any of it is added, as Python's list `addConstraint` and the Gui's transactions do, but by every rule of the gate, not only index ranges:
+  - The gate runs on the sketch with every member added, and refuses it with **all** its errors at once.
+  - Each error names its field by ID path (`circles.cb000003.radius`). A new member has the same path in the sketch as in the request, so each error points at the request's own field.
+  - A wrong form, a dangling ID (with candidates), a curve of 1e-7 mm or less (the circle of radius 0 and the 1e-12 mm line that FreeCAD adds), a curve's own point constrained onto it, an edge `tangent` between curves that share an end, a value out of range: each is refused when it's made, never at the next solve. Nothing in the batch is skipped silently.
+- **ID paths.** A member's ID that the sketch already holds is refused at the request's field (`circles.cb000003.id`), naming the member that holds it (M4.1 §2, *An edit that repeats an ID*). An ID given twice in the batch is refused at the later member's place (`circles.1.id`), where the gate names a later holder. Both are checked before the gate, which would name the untouched member by its place. There is no tag to copy: the ID is the member's identity, so `71a555a6bb`'s rule becomes a refusal, not a renaming.
+- **Shared points** (M3.2's D2). A new line may run from a point the sketch already holds, so it's joined to that point's curves by construction, where FreeCAD adds a curve with ends of its own and a `Coincident`.
+- **D4.** `side` and `direction` are given, never recorded from the geometry as `setOrientation` and `AutoLockTangencyAndPerpty` record them. A `tangent` given `right` where the drawing shows the circle on the line's left is added as `right`. What the edit's solve then does depends on the form:
+  - **A line's `left` or `right`** (a `tangent`'s, a `point_line_distance`'s): the solve never moves the drawing across. 1.1.3's PlaneGCS measures a point's or a circle's distance from a line unsigned, so it solves the drawing on the side it's on, and M3.3 refuses the result as `invalid_result` (`wrong_sides`), naming the constraint.
+  - **`inside` or `outside`, and a `direction`**: the solve moves the drawing to the side given, or fails, refusing the edit (M3.3).
+- **`construction` is per member,** as given, for points too (D7; `3db4633f9d`).
+- **The add doesn't solve.** The command solves once, after the gate, as for every edit (the design's common rules), and a conflict that solve finds refuses the edit as data (M3.3). FreeCAD keeps a conflicting constraint and reports it. That check belongs to the command, around the edit, as it does for the merge (decision 10).
+- **An empty batch changes nothing:** nothing is added, and the sketch is as it was, so the command's `changed` is false, as for `set_field` to a field's own value. FreeCAD's empty lists add nothing too.
+- **`added`** lists the members by kind (points, lines, circles, arcs, constraints), each kind in the request's order, which is the order the edit makes them. `modified` and `removed` are empty.
+- **Tangency substitution** is already the gate's rule (`tangent_at` where two curves share an end), so an edge `tangent` added between curves that share an end is refused, naming its field, never converted.
 
 ### Remove a constraint
 
@@ -373,6 +400,12 @@ The fixes that set a rule the port must carry, newest first within each operatio
 | `150e50c700` | 2021-01 | Malformed constraints silently ignored | The gate refuses every malformed form |
 | `71a555a6bb` | 2017-04 | One object added twice gave two curves one tag | Fresh IDs; duplicates refused |
 | `180d722a53`, `620188073e` | 2018-01, #3299 | A tangency plus a joint at the same ends | The gate's `tangent_at` rule; decision 8 |
+| `f432d1c6a7`, `5a6be36bc3`, `3c8a254356` | 2026-04, #29007; 2025-12 | A tangent's or a distance's side recorded from the geometry when added (main only) | `side` given, never recorded (D4); test a side given against the drawing |
+| `0e85b24348` | 2023-05 | A list with a bad index refused with one message | Every problem in the batch at once, each at its path |
+| `c35d8be9a3` | 2020-06 | Constraints set directly bypassed the index check | One gate for every edit and every file |
+| `e1dd86f0a9` | 2015-10, #2281 | A solve inside `addConstraint` left a stale initial solution | The add doesn't solve; the command solves once, after the gate |
+| `7d8b1f30c3` | 2014-12, #1720 | A constraint with indices out of range crashed FreeCAD; a list is now checked whole first | Every reference checked by the gate, the whole batch before any is added |
+| `3838bddcdb` | 2014-11 | An end tangency's kind locked from the geometry | `direction` given (D4) |
 | **Missing coincidences** | | | |
 | `c036128aa0` | 2022-02 | Grouping made transitive; also made every constraint count as a join | Carry the grouping (built in #189); not the bug |
 | `5696ee821c` | 2024-05, #14240 | Fix acted on a different analysis from Find | The merge acts on the same check of the same document state |
@@ -409,6 +442,15 @@ FreeCAD's split and trim tests count curves and `Coincident` and `PointOnObject`
 | `testSplitCircle` | one arc (index unchanged) | decision 3 |
 | `testSplitArcOfCircle` | 1 arc added, 2 `Coincident` (end and centres) | 1 arc added; the shared end and centre are points, with no constraints |
 
+For adding, from `SketcherTests/TestSketcherSolver.py`:
+
+| Test | Checks | Silico |
+|---|---|---|
+| `testBoxCase` (`CreateBoxSketchSet`) | four lines, four `Coincident`s, two `Horizontal`, two `Vertical`, two lengths, added one by one, then solved | the box added in one batch: four lines through four shared points, with the six constraints; the gate takes it, and `added` lists it by kind |
+| `testCircleLineTangentOriented` (#29007), `testPointToLineDistanceSigned` | main records each side from the drawing as it's added, and the solve keeps it | the side is the request's (D4): a `tangent` given against the drawing is added as given, and the edit's solve then refuses a line's `left` or `right` as `invalid_result` (it never moves the drawing across) |
+
+FreeCAD has no test of a list refused whole; the 1.1.3 probe above (`[Horizontal(0), Horizontal(5)]`) becomes one: a batch with one bad member adds nothing.
+
 Others:
 - `SketcherTests/TestCoincidentCommandGui.py`'s six tests become the merge command's tests: already one point, collapsing a curve (directly and through a chain), and a merge whose solve conflicts, refused.
 - `TestSketchValidateCoincidents.testSingleMissingCoincidentCase` and `TestSketcherSolver.testThreeLinesWithCoincidences_1`/`_2` are already ported for `ends_not_joined` (#189). They become the merge's cases too: merging the found cluster leaves no warning.
@@ -436,6 +478,16 @@ FreeCAD has no test for how constraints move on split, for extend, or for most o
   - a point `on` the line's extension beyond `to` goes to the end piece;
   - refused, naming the curve: a split at `from`, at `to`, beyond an end, within 1e-7 mm of one, off the curve, or of a point;
   - after a split of a fully constrained sketch, every untouched point keeps its exact coordinates.
+- **Add:**
+  - a batch of each kind, `added` by kind and in the request's order;
+  - a line from a point the sketch already has (shared points);
+  - a batch with one bad member refused whole, nothing added, every problem at its ID path;
+  - an ID the sketch has, at the request's field; one given twice in the batch, at the later member's place;
+  - a constraint naming a member of the same batch; one naming no member, with candidates;
+  - `construction` kept, on points too;
+  - `side` and `direction` as given, against the drawing;
+  - an empty batch changes nothing;
+  - a conflicting constraint is added, and the sketch's solve then finds the conflict (the real worker).
 - **Delete:**
   - at a three-way joint every other curve still shares the point;
   - with a `tangent_at` to the deleted curve listed first or last, the result is the same (1.1.3 differs);
