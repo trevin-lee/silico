@@ -856,6 +856,12 @@ impl Form {
             _ => None,
         }
     }
+
+    /// Whether the form is a dimension: exactly when it carries `driving`, reference
+    /// dimensions included. Every other form is a relation.
+    pub fn is_dimension(&self) -> bool {
+        self.driving().is_some()
+    }
 }
 
 /// Every constraint type, as the file writes it.

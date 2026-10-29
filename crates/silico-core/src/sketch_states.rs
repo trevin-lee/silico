@@ -337,7 +337,7 @@ fn constraint_state(
     let sent = c.form.driving() != Some(false);
     if sent && diagnosis.conflicting.contains(&c.id) {
         ConstraintState::Conflicting
-    } else if dependent && c.form.driving() == Some(true) {
+    } else if dependent && driving_dimension(&c.form) {
         ConstraintState::Redundant
     } else if sent && diagnosis.redundant.contains(&c.id) {
         ConstraintState::Redundant
@@ -350,19 +350,25 @@ fn constraint_state(
     }
 }
 
-/// Whether a constraint of `form`, in `state`, over-defines what it governs (M5.0 open item
-/// 32's addendum 4, from SolidWorks' FAQ on sketch relations): when it's `conflicting`, or
-/// when it's a driving dimension (a form with `driving` true: `length`, `distance`,
-/// `distance_x`, `distance_y`, `point_line_distance`, `angle`, `radius`, `diameter`)
-/// `dependent`, in a dependency among the equations ([`Diagnosis::dependencies`]): its
-/// value is fixed by the others, so editing it conflicts. That is a fact of the sketch, not
-/// of which constraint PlaneGCS dropped: a dimension it kept over-defines as one it dropped
-/// does. A relation (the other 13 forms) over-defines nothing, dropped or not: it has no
-/// value of its own to edit, so only an edit elsewhere can break it, and that edit's solve
-/// reports the conflict. A reference dimension is never sent, so it's in no dependency and
-/// never over-defines.
+/// Whether a constraint of `form`, in `state`, over-defines what it governs
+/// (docs/ports/sketcher.md, *Definition states*, *An over-defining constraint*: M5.0 open
+/// item 32's addendum 4, from SolidWorks' FAQ on sketch relations): when it's `conflicting`,
+/// or when it's a driving dimension ([`driving_dimension`]) `dependent`, in a dependency
+/// among the equations ([`Diagnosis::dependencies`]): its value is fixed by the others, so
+/// editing it conflicts. That is a fact of the sketch, not of which constraint PlaneGCS
+/// dropped: a dimension it kept over-defines as one it dropped does. A relation (the other
+/// 13 forms) over-defines nothing, dropped or not: it has no value of its own to edit, so
+/// only an edit elsewhere can break it, and that edit's solve reports the conflict. A
+/// reference dimension is never sent, so it's in no dependency and never over-defines.
 fn over_defines(state: ConstraintState, form: &Form, dependent: bool) -> bool {
-    state == ConstraintState::Conflicting || (dependent && form.driving() == Some(true))
+    state == ConstraintState::Conflicting || (dependent && driving_dimension(form))
+}
+
+/// Whether `form` is a driving dimension: a dimension ([`Form::is_dimension`]: `length`,
+/// `distance`, `distance_x`, `distance_y`, `point_line_distance`, `angle`, `radius`,
+/// `diameter`) that drives, not a reference, so the solver has its row.
+fn driving_dimension(form: &Form) -> bool {
+    form.is_dimension() && form.driving() == Some(true)
 }
 
 /// A point's state (item 32's members' rule): `over_defined` if an over-defining

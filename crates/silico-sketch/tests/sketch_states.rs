@@ -1267,14 +1267,15 @@ fn a_radius_repeating_an_on_of_a_placed_point_over_defines_its_circle_whichever_
     // the sketch. The `on`, a relation, reads what the solver lists: `redundant` when it's
     // the latest tag, dropped, and `satisfied` when it's kept. Addendum 2's rule read the
     // second order fully defined, the divergence this removes.
-    let constraints = |on, radius| {
+    // By position: k0000005 and k0000006 are the `on` and the radius, in either order.
+    let constraints = |k5, k6| {
         vec![
             ("k0000001", Redundant),
             ("k0000002", Satisfied),
             ("k0000003", Redundant),
             ("k0000004", Satisfied),
-            ("k0000005", on),
-            ("k0000006", radius),
+            ("k0000005", k5),
+            ("k0000006", k6),
         ]
     };
     // The `on` k0000005 kept, satisfied, the radius k0000006 dropped; then the radius
@@ -2203,8 +2204,8 @@ fn generated(seed: u64) -> Option<Sketch> {
     }
 }
 
-/// Addendum 2's dimensions, by the file's word: the forms with a value (M5.0 open item 32,
-/// addendum 2, §3). Every other form is a relation.
+/// The dimensions, by the file's word: the forms with a value (docs/ports/sketcher.md,
+/// *Definition states*, *An over-defining constraint*). Every other form is a relation.
 const DIMENSIONS: [&str; 8] = [
     "length",
     "distance",
@@ -2222,8 +2223,9 @@ fn driving_dimension(c: &silico_core::document::SketchConstraint) -> bool {
     DIMENSIONS.contains(&c.form.type_name()) && c.form.driving() == Some(true)
 }
 
-/// Whether `c`, in `state`, over-defines, as addendum 4 states it: conflicting, or a
-/// driving dimension in one of `dependencies`.
+/// Whether `c`, in `state`, over-defines, as docs/ports/sketcher.md (*Definition states*,
+/// *An over-defining constraint*: M5.0 open item 32's addendum 4) states it: conflicting, or
+/// a driving dimension in one of `dependencies`.
 fn over_defining_by_kind(
     c: &silico_core::document::SketchConstraint,
     state: ConstraintState,
@@ -2233,7 +2235,7 @@ fn over_defining_by_kind(
 }
 
 /// Item 32's invariants on one sketch's states, solved by `worker`, as addendum 4 revises
-/// them: fully_defined ⇒ every member fully defined, no constraint conflicting, and no
+/// them (docs/ports/sketcher.md, *Definition states*): fully_defined ⇒ every member fully defined, no constraint conflicting, and no
 /// driving dimension in a dependency (a relation may be); under_defined ⇒ dofs > 0, some
 /// member under defined, and nothing over-defining; over_defined ⇒ some constraint
 /// conflicting or some driving dimension in a dependency, and some member over defined; a
@@ -2927,9 +2929,10 @@ fn a_repeated_tangent_at_depends_on_the_lines_ends_the_arcs_centre_and_the_joint
     // defined. By hand: p4's x and y are in the tangency rows alone, of rank 1, so at most
     // one is a pivot and p4 is under defined, and so is the line; the arc's 9 values in all
     // (its centre, ends, radius, and angles) are in 5 rows of rank 5 at most, so 4 at least
-    // are past the rank and the arc is under defined. Which of p1's, p2's, and p3's values
-    // are past the rank is the full pivoting of PlaneGCS's QR, not a count by hand: each is
-    // as the worker's free values give it, and none is over defined.
+    // are past the rank and the arc is under defined. p2, the arc's far end, is free along
+    // its circle. Which of p1's and p3's values are past the rank is the full pivoting of
+    // PlaneGCS's QR, not a count by hand: they're pinned as the worker gives them today,
+    // under defined, and none is over defined.
     let points = [
         point("p0000001", 0.0, 0.0),
         point("p0000002", 5.0, 0.0),
@@ -2954,13 +2957,6 @@ fn a_repeated_tangent_at_depends_on_the_lines_ends_the_arcs_centre_and_the_joint
         depended_on,
         BTreeSet::from(["p0000001", "p0000003", "p0000004"])
     );
-    let by_freedom = |p: &str| {
-        if diagnosis.free.contains(&ElementId::new(p).unwrap()) {
-            Under
-        } else {
-            Fully
-        }
-    };
     expect(
         &got,
         Want {
@@ -2968,9 +2964,11 @@ fn a_repeated_tangent_at_depends_on_the_lines_ends_the_arcs_centre_and_the_joint
             state: SketchState::UnderDefined,
             dofs: 6,
             points: &[
-                ("p0000001", by_freedom("p0000001")),
-                ("p0000002", by_freedom("p0000002")),
-                ("p0000003", by_freedom("p0000003")),
+                // p1 and p3 as the worker gives them today, from PlaneGCS's pivoting.
+                ("p0000001", Under),
+                // The arc's far end, free along its circle.
+                ("p0000002", Under),
+                ("p0000003", Under),
                 ("p0000004", Under),
             ],
             lines: &[("n0000001", Under)],

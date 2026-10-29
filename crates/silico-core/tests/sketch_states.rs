@@ -363,8 +363,9 @@ fn a_conflict_is_over_defined_its_dofs_as_given_and_a_constraint_listed_twice_re
     // so both lengths conflicting; the horizontal partially redundant; the placing
     // dimensions unsolved, the sketch refused. Each length, conflicting, reads both ends and
     // names the line: all over defined (the horizontal, a partially redundant relation,
-    // over-defines nothing, addendum 2, but the lengths already cover what it reads). dofs −1, PlaneGCS's number as given; the
-    // problem `over_constrained`, naming exactly the conflicting two.
+    // over-defines nothing, addendum 2, but the lengths already cover what it reads). dofs
+    // −1, PlaneGCS's number as given; the problem `over_constrained`, naming exactly the
+    // conflicting two.
     let sketch = ten_long(
         r#"{"id": "k0000005", "type": "length", "line": "n0000001", "value": 12, "driving": true}"#,
     );
@@ -814,7 +815,7 @@ fn collapsed_symmetry() -> Sketch {
 }
 
 #[test]
-fn the_sketch_state_is_the_problems_code_then_the_flags_then_the_dofs() {
+fn the_sketch_state_is_the_problems_code_then_the_over_defining_constraints_then_the_dofs() {
     // Item 32's table, for one point with a driving y, each refusal read from a reply that
     // gives it. The code first, whatever the diagnosis: every reply says 0 degrees left and
     // nothing free, which solved would read fully defined, and the conflict's lists only its
