@@ -9,6 +9,11 @@ use super::call::Command;
 /// command but those answered at once, never running (`version`, `status`, `cancel`,
 /// `read_logs`, and `schema`), and `open`, which runs before its session is there to name
 /// it. Its name is the command's ([`command`](Self::command)), as requests and tools give it.
+///
+/// `undo` and `redo` (M5.2) run in a session as every other command does, so `status` says
+/// they're running and `cancel` stops them, but no transport names them yet: they're in no
+/// list a client reads ([`ALL`](Self::ALL), [`Command`]), whose change, with MCP's tools and
+/// the protected contracts, is the maintainer's (docs/design/m5.0-app.md, section 7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SessionCommand {
     Close,
@@ -31,10 +36,13 @@ pub enum SessionCommand {
     Angle,
     Render,
     Export,
+    Undo,
+    Redo,
 }
 
 impl SessionCommand {
-    /// Every command that runs in a session, in the design's order.
+    /// Every command that runs in a session that a transport names, in the design's order:
+    /// all but `undo` and `redo`, which none names yet.
     pub const ALL: [SessionCommand; 20] = [
         SessionCommand::Close,
         SessionCommand::Begin,
@@ -58,9 +66,27 @@ impl SessionCommand {
         SessionCommand::Export,
     ];
 
-    /// The command it is, of every command ([`Command`]).
-    pub const fn command(self) -> Command {
-        match self {
+    /// The command it is, of every command a transport names ([`Command`]): none for `undo`
+    /// and `redo`, which none names yet.
+    pub const fn command(self) -> Option<Command> {
+        match self.named() {
+            Ok(command) => Some(command),
+            Err(_) => None,
+        }
+    }
+
+    /// The command's name, as requests, `status`, and `cancel` give it.
+    pub const fn as_str(self) -> &'static str {
+        match self.named() {
+            Ok(command) => command.as_str(),
+            Err(name) => name,
+        }
+    }
+
+    /// The command it is, of every command a transport names; or, for one none names yet,
+    /// its name.
+    const fn named(self) -> Result<Command, &'static str> {
+        Ok(match self {
             SessionCommand::Close => Command::Close,
             SessionCommand::Begin => Command::Begin,
             SessionCommand::Commit => Command::Commit,
@@ -81,12 +107,9 @@ impl SessionCommand {
             SessionCommand::Angle => Command::Angle,
             SessionCommand::Render => Command::Render,
             SessionCommand::Export => Command::Export,
-        }
-    }
-
-    /// The command's name, as requests, `status`, and `cancel` give it.
-    pub const fn as_str(self) -> &'static str {
-        self.command().as_str()
+            SessionCommand::Undo => return Err("undo"),
+            SessionCommand::Redo => return Err("redo"),
+        })
     }
 }
 

@@ -21,6 +21,7 @@ use super::{
 };
 use crate::command::edit::Candidate;
 use crate::document::json::MAX_INPUT_LEN;
+use crate::document::undo::UndoStack;
 use crate::document::{self, Document, FeatureId};
 use crate::file::{self, Workspace};
 use crate::kernel::Kernel;
@@ -50,6 +51,11 @@ pub(super) struct Held {
     pub(super) carried: Arc<BTreeSet<FeatureId>>,
     /// The state `begin` kept, while a transaction is open.
     pub(super) transaction: Option<Snapshot>,
+    /// The open transaction's undo stack (docs/design/m5.0-app.md, section 3's A2): every
+    /// state its edits left, from the one `begin` saw, for `undo` and `redo`. Made by `begin`
+    /// and emptied with what it kept ([`end_transaction`]), so it's there exactly while
+    /// `transaction` is.
+    pub(super) undo: Option<UndoStack<Revision>>,
     /// Where the file's old text is, if this session's own save left the file part
     /// written and couldn't put it back: the next save says so, rather than take the file
     /// for one changed outside the session; until the file holds what the session last read
@@ -382,15 +388,16 @@ impl std::fmt::Debug for Reached {
     }
 }
 
-/// The transaction open in `held` ended, and the models its `begin` kept with `rebuilds`
-/// let go: what `begin` kept, if one was open. Every way a transaction ends (a commit, one
-/// that writes nothing, a rollback) goes through here, with both locks held, so the two
-/// halves of what `begin` kept are never apart.
+/// The transaction open in `held` ended, its undo stack emptied, and the models its `begin`
+/// kept with `rebuilds` let go: what `begin` kept, if one was open. Every way a transaction
+/// ends (a commit, one that writes nothing, a rollback) goes through here, with both locks
+/// held, so the two halves of what `begin` kept are never apart.
 fn end_transaction<C: Kernel + 'static>(
     held: &mut Held,
     rebuilds: &mut Rebuilds<C>,
 ) -> Option<(Snapshot, Kept)> {
     let snapshot = held.transaction.take();
+    held.undo = None;
     let kept = rebuilds.kept.take();
     snapshot.zip(kept)
 }
@@ -431,6 +438,11 @@ impl<C: Kernel + 'static> Session<C> {
         });
         drop(rebuilds);
         held.transaction = Some(held.snapshot());
+        held.undo = Some(UndoStack::new(
+            Arc::clone(&held.text),
+            revision,
+            self.undo_bytes,
+        ));
         Ok(Begun { base: revision })
     }
 

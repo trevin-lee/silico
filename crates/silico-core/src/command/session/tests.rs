@@ -37,6 +37,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
     let session = Arc::new(Session {
         id: SessionId(1),
         workspace: None,
+        undo_bytes: crate::document::undo::UNDO_BYTES,
         held: Holding::new(Held {
             path: "a.silico".to_owned(),
             resolved: PathBuf::from("a.silico"),
@@ -46,6 +47,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
             revision: Revision::OPENED,
             carried: Arc::new(BTreeSet::new()),
             transaction: None,
+            undo: None,
             part_written: None,
             last_reload: None,
         }),
@@ -4209,3 +4211,5 @@ fn asked_without_pause_through_many_commits_the_sessions_own_saves_never_read_as
     // And after: the file is what the last commit wrote.
     disk_reaches(&f, Disk::Unchanged);
 }
+
+mod undo;

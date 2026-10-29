@@ -30,7 +30,10 @@
 //! transaction's edits changed through [`file::save_over`], writing new fingerprints and
 //! solves only for the features they reached (decision 28), and [`Sessions::rollback`]
 //! restores what `begin` kept, the text byte for byte and the model `begin` saw, at a new
-//! revision whose state equals the old. One at a time, never nested; a session isn't closed
+//! revision whose state equals the old. Inside a transaction, [`Sessions::undo`] and
+//! [`Sessions::redo`] step back and forth through its edits, kept on its undo stack
+//! ([`crate::document::undo`]), each at a new revision whose state equals an earlier one;
+//! a commit or a rollback empties it. One at a time, never nested; a session isn't closed
 //! while one is open, and a client that goes away (the sessions dropped) leaves its file as
 //! it was. An edit made outside a transaction ([`Sessions::add_feature`],
 //! [`Sessions::set_field`], [`Sessions::remove_feature`], [`Sessions::replace_text`]) is
@@ -84,6 +87,7 @@ mod registry;
 mod threads;
 mod transaction;
 mod types;
+mod undo;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -125,7 +129,7 @@ pub use types::{
     Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, FieldSet,
     ModelChoice, ModelRead, Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild,
     RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
-    SessionId, SessionInfo, Status, Stopper, TextAnswer,
+    SessionId, SessionInfo, Status, Stepped, Stopper, TextAnswer,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 
@@ -159,6 +163,8 @@ struct Session<C: Kernel + 'static> {
     /// The sessions' workspace, if they have one: each re-read and save of the session's file
     /// is refused if the file now leads out of it.
     workspace: Option<Workspace>,
+    /// The bound of each of its transactions' undo stacks, in bytes as the stack counts them.
+    undo_bytes: usize,
     held: Holding,
     /// Where its commands are queued, in order: none once it's closed.
     queue: Mutex<Option<Sender<Job<C>>>>,
@@ -441,6 +447,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 export_turns: Arc::default(),
                 workspace: None,
                 disk_interval: DISK_CHECK_INTERVAL,
+                undo_bytes: crate::document::undo::UNDO_BYTES,
             }),
         }
     }
@@ -456,6 +463,21 @@ impl<P: Clients + 'static> Sessions<P> {
         );
         if let Some(registry) = registry {
             registry.disk_interval = interval;
+        }
+        self
+    }
+
+    /// The same sessions, each transaction's undo stack bounded by `bytes` as the stack counts
+    /// them, as they're made: in this crate's tests, which don't fill 256 MiB.
+    #[cfg(test)]
+    fn bounding_undo(mut self, bytes: usize) -> Self {
+        let registry = Arc::get_mut(&mut self.registry);
+        assert!(
+            registry.is_some(),
+            "sessions are given their undo bound as they're made"
+        );
+        if let Some(registry) = registry {
+            registry.undo_bytes = bytes;
         }
         self
     }
@@ -1066,6 +1088,42 @@ impl<P: Clients + 'static> Sessions<P> {
     pub fn rollback(&self, session: &SessionId) -> Running<RolledBack> {
         self.queued(session, SessionCommand::Rollback, |session, stop, _| {
             session.rollback(stop)
+        })
+    }
+
+    /// Undoes the last edit of `session`'s transaction not undone (docs/design/m5.0-app.md,
+    /// section 7), or, with `to`, every edit after that revision's state, made against
+    /// `revision` (decision 12): the state before restored at a new revision whose state
+    /// equals it, byte for byte, through the gate, what the edits reach worked out again from
+    /// it, and its model rebuilt when a command needs it, from the cache. Refused, the
+    /// session as it was, with no transaction open, against a revision that isn't the
+    /// session's (`conflict`), with nothing to undo (none made, all undone, or the rest
+    /// dropped past the stack's bound), and for a `to` the stack doesn't hold, or one that
+    /// isn't before the session's state (its own revision among them), naming `to`. Never
+    /// touches the file.
+    pub fn undo(
+        &self,
+        session: &SessionId,
+        revision: Revision,
+        to: Option<Revision>,
+    ) -> Running<Stepped> {
+        self.queued(session, SessionCommand::Undo, move |session, stop, _| {
+            session.step(stop, undo::Way::Undo, revision, to)
+        })
+    }
+
+    /// Redoes the last edit of `session`'s transaction undone, or, with `to`, every edit
+    /// undone up to that revision's state, as [`undo`](Self::undo) undoes them. Refused as
+    /// `undo` is, with nothing to redo (none undone, or an edit since dropped what was), and
+    /// for a `to` that isn't after the session's state.
+    pub fn redo(
+        &self,
+        session: &SessionId,
+        revision: Revision,
+        to: Option<Revision>,
+    ) -> Running<Stepped> {
+        self.queued(session, SessionCommand::Redo, move |session, stop, _| {
+            session.step(stop, undo::Way::Redo, revision, to)
         })
     }
 

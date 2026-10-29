@@ -63,6 +63,9 @@ pub(super) struct Registry<P: Clients + 'static> {
     /// The least time between two comparisons of a session's file on disk
     /// ([`DISK_CHECK_INTERVAL`](crate::disk::DISK_CHECK_INTERVAL), but in this crate's tests).
     pub(super) disk_interval: std::time::Duration,
+    /// The bound of each transaction's undo stack, in bytes as it counts them
+    /// ([`UNDO_BYTES`](crate::document::undo::UNDO_BYTES), but in this crate's tests).
+    pub(super) undo_bytes: usize,
 }
 
 /// A file as the system knows it, whatever path reaches it: its device and inode.
@@ -227,6 +230,7 @@ pub(super) fn start<P: Clients + 'static>(
         let session = Arc::new(Session {
             id,
             workspace: registry.workspace.clone(),
+            undo_bytes: registry.undo_bytes,
             held: Holding::new(held),
             queue: Mutex::new(Some(queue)),
             rebuilds: Mutex::new(Rebuilds {
@@ -403,6 +407,7 @@ fn open<P: Clients + 'static>(
         revision: Revision::OPENED,
         carried: Arc::new(BTreeSet::new()),
         transaction: None,
+        undo: None,
         part_written: None,
         last_reload: None,
     };

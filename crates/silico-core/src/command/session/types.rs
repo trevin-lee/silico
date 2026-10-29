@@ -662,6 +662,19 @@ pub struct RolledBack {
     pub restored: Revision,
 }
 
+/// What `undo` and `redo` answer (docs/design/m5.0-app.md, section 7): the revision whose
+/// state the step restored, the session now at a new revision whose state equals it; how
+/// many edits are left to undo and to redo; and how many more of the transaction's edits
+/// this step left out of undo's reach, the stack's bound having dropped its oldest states
+/// (2 at the first drop, 1 for each after).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stepped {
+    pub restored: Revision,
+    pub undo: usize,
+    pub redo: usize,
+    pub dropped: usize,
+}
+
 impl Committed {
     /// A commit that wrote nothing, of the document at `path`: what it found, `problems`.
     pub(super) fn unwritten(path: String, problems: Problems) -> Self {
