@@ -74,6 +74,8 @@ mod adversarial_read_logs;
 mod adversarial_references;
 #[path = "adversarial_render_command.rs"]
 mod adversarial_render_command;
+#[path = "adversarial_timeline.rs"]
+mod adversarial_timeline;
 #[path = "adversarial_type_words.rs"]
 mod adversarial_type_words;
 #[path = "adversarial_warnings.rs"]

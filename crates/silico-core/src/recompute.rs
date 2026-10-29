@@ -4264,6 +4264,18 @@ fn feature_outcome(
 
 #[cfg(test)]
 impl Model {
+    /// This model with feature `id`'s outcome replaced by `outcome`: a test's stand-in for
+    /// outcomes no document reaches on the fake (Silico's own bug naming a base's elements).
+    pub(crate) fn with_outcome(&self, id: &FeatureId, outcome: FeatureOutcome) -> Model {
+        let mut model = self.clone();
+        for (feature, held) in &mut model.features {
+            if feature == id {
+                *held = outcome.clone();
+            }
+        }
+        model
+    }
+
     /// This model with feature `id`'s solid measured as `summary` says, if it built: a
     /// test's stand-in for measures past what a fingerprint holds, which no solid the gate
     /// admits has (a kilometre each way is 1e18 mm³, and a volume holds to 1.7e32).
@@ -5259,6 +5271,33 @@ mod tests {
         ];
         for (step, key) in pinned {
             assert_eq!(step.key().to_string(), key, "{step:?}");
+        }
+    }
+
+    #[test]
+    fn a_broken_outcome_is_marked_in_the_timeline_as_the_check_counts_it() {
+        // From #265's robustness review: an outcome's errors that are kernel faults (Silico's
+        // own bug) are no problems of the document, as the check sets them aside; one that's
+        // all faults is unknown.
+        use crate::timeline::{Excepted, Health, timeline};
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap());
+        let model = published(engine.start(Arc::new(boxes(2, |_| false))));
+        let first = FeatureId::new("b0000000").unwrap();
+        let bug = || Error::new(ErrorCode::Internal, "a base's elements couldn't be named");
+        let broken = || Error::new(ErrorCode::ReferenceBroken, "Edge90 isn't there");
+        for (errors, total, want) in [
+            (vec![bug()], 1, (Health::Unknown, 0)),
+            // One fault, one listed of the document's, and one unlisted.
+            (vec![bug(), broken()], 3, (Health::Error, 2)),
+        ] {
+            let marked = model.with_outcome(&first, FeatureOutcome::Broken { errors, total });
+            let got = timeline(marked.document(), Some(&marked), &Excepted::default());
+            let e = &got.features[0];
+            assert_eq!((e.health, e.problems), want);
+            assert_eq!(
+                got.features.iter().map(|e| e.problems).sum::<u64>(),
+                crate::command::check(&marked).total()
+            );
         }
     }
 
