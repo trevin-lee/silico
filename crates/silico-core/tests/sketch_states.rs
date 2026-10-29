@@ -1009,7 +1009,7 @@ fn a_sketchs_geometry_alone_is_sent_as_its_translation_sends_it_without_its_cons
     // What Diagnosis::untranslated sends is Translation::new's system, its constraints'
     // rows and their values dropped: a quarter arc about p1 (0, 0) from p2 (5, 0) to p3
     // (0, 5), with a radius and a horizontal line p1–p2, which translates. The same points,
-    // arc, line, values, and unknowns, and the arc's rules its one row.
+    // arc, line, values, and unknowns, and the arc's rules its one row; one algorithm.
     let sketch = sketch_of(
         &[
             point("p0000001", 0.0, 0.0),
@@ -1036,7 +1036,9 @@ fn a_sketchs_geometry_alone_is_sent_as_its_translation_sends_it_without_its_cons
     assert_eq!(translated.values[15..], [5.0]);
     assert_eq!(alone.unknowns, translated.unknowns);
     assert_eq!(alone.geometry, translated.geometry);
-    assert_eq!(alone.algorithms, translated.algorithms);
+    // One algorithm, not the translation's four: only the diagnosis is read.
+    assert_eq!(alone.algorithms, [silico_protocol::Algorithm::DogLeg]);
+    assert_eq!(translated.algorithms.len(), 4);
     assert_eq!(
         alone.constraints,
         [SolverConstraint::ArcRules { arc: Geometry(7) }]
@@ -1126,4 +1128,72 @@ fn each_states_word_is_the_one_the_decision_spells() {
         .map(ConstraintState::flagged),
         [false, true, true, true, false]
     );
+}
+
+/// A solver that answers with `reply` and counts how often it's distrusted.
+struct CountsDistrust {
+    reply: fn(&SketchSystem) -> Result<Solved, Error>,
+    distrusted: usize,
+}
+
+impl silico_core::sketch::SketchSolver for CountsDistrust {
+    fn solve(&mut self, system: SketchSystem) -> Result<Solved, Error> {
+        (self.reply)(&system)
+    }
+
+    fn distrust(&mut self) {
+        self.distrusted += 1;
+    }
+}
+
+#[test]
+fn a_refused_translations_untrusted_reply_distrusts_the_worker_and_no_other_does() {
+    // As every solve does: a reply that can't be trusted (a tag listed where no constraint
+    // was sent) distrusts the worker, once; a good reply and a worker's own error don't.
+    let symmetric = collapsed_symmetry();
+    let mut bad = CountsDistrust {
+        reply: |system| {
+            Ok(Solved {
+                redundant: vec![Tag(1)],
+                ..FakeSketches::as_sent(system)
+            })
+        },
+        distrusted: 0,
+    };
+    let error = Diagnosed::untranslated(&symmetric, &mut bad).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::ProtocolError);
+    assert_eq!(bad.distrusted, 1);
+    let mut good = CountsDistrust {
+        reply: |system| Ok(FakeSketches::as_sent(system)),
+        distrusted: 0,
+    };
+    assert!(
+        Diagnosed::untranslated(&symmetric, &mut good)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(good.distrusted, 0);
+    let mut crashed = CountsDistrust {
+        reply: |_| Err(Error::new(ErrorCode::WorkerCrashed, "gone")),
+        distrusted: 0,
+    };
+    assert_eq!(
+        Diagnosed::untranslated(&symmetric, &mut crashed)
+            .unwrap_err()
+            .code(),
+        ErrorCode::WorkerCrashed
+    );
+    assert_eq!(crashed.distrusted, 0);
+}
+
+#[test]
+fn a_refused_translations_geometry_is_sent_for_its_diagnosis_alone() {
+    // One algorithm, the least the protocol takes: only the diagnosis is read.
+    let mut fake = FakeSketches::new();
+    Diagnosed::untranslated(&collapsed_symmetry(), &mut fake)
+        .unwrap()
+        .unwrap();
+    let sent = fake.requests();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].algorithms, [silico_protocol::Algorithm::DogLeg]);
 }

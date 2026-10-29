@@ -866,7 +866,11 @@ impl Diagnosis {
     pub fn untranslated(sketch: &Sketch, solver: &mut dyn SketchSolver) -> Result<Self, Error> {
         let _span = tracing::info_span!("diagnose untranslated sketch").entered();
         let geometry = Translation::geometry(sketch, NoSweep::AtItsStart)?;
-        let solved = solver.solve(geometry.system.clone())?;
+        // Only the diagnosis is read, taken before any algorithm runs: one algorithm, the
+        // least the protocol takes, so no solve nobody reads can time out or fault.
+        let mut system = geometry.system.clone();
+        system.algorithms = vec![Algorithm::DogLeg];
+        let solved = solver.solve(system)?;
         if let Err(e) = geometry.check_reply(&solved) {
             solver.distrust();
             return Err(e);
