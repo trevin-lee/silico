@@ -74,5 +74,7 @@ mod sketch_solve;
 mod sketch_split;
 #[path = "stored_coordinates.rs"]
 mod stored_coordinates;
+#[path = "timeline.rs"]
+mod timeline;
 #[path = "undo.rs"]
 mod undo;
