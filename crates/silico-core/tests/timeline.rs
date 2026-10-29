@@ -264,3 +264,19 @@ fn bodies_are_the_documents_built_solids_that_nothing_in_it_consumes() {
     assert_eq!(t.bodies, [id("j0000001")]);
     assert_eq!(t.features[2].health, Health::Unknown);
 }
+
+#[test]
+fn a_solid_edited_into_a_sketch_since_isnt_a_body() {
+    // From #265's round 3: the model built aaaaaaaa as a block; the document now holds a
+    // sketch under that ID.
+    let engine = engine();
+    let model = published(
+        &engine,
+        Checked::new(read(document(&[&block("aaaaaaaa")]).as_bytes()).unwrap()).unwrap(),
+    );
+    let sketch =
+        read(document(&[&rectangle("aaaaaaaa", "xy", [0.0, 0.0], 4.0, 2.0)]).as_bytes()).unwrap();
+    let got = timeline(&sketch, Some(&model), &Excepted::default());
+    assert!(got.bodies.is_empty(), "{:?}", got.bodies);
+    assert_eq!(got.features[0].health, Health::Unknown);
+}

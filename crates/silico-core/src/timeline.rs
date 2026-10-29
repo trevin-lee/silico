@@ -158,6 +158,8 @@ pub fn timeline(document: &Document, model: Option<&Model>, excepted: &Excepted)
             document
                 .features
                 .iter()
+                // A feature edited into a sketch since makes no solid, whatever the model built.
+                .filter(|f| !matches!(f.operation, crate::document::Operation::Sketch(_)))
                 .map(|f| &f.id)
                 .filter(|id| {
                     !consumed.contains(id)
