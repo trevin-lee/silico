@@ -91,7 +91,7 @@ pub(crate) fn solid<'m>(
                 .or(built.measure_refused())
                 .or(model.unmeasured(id))
             {
-                Some(refused) => worded(refused),
+                Some(refused) => worded(&impossible_named(model, id, refused)),
                 None => Error::new(
                     ErrorCode::KernelFailed,
                     format!("{id}'s solid couldn't be described, so its elements aren't known"),
@@ -102,6 +102,34 @@ pub(crate) fn solid<'m>(
         )
         .into()),
     }
+}
+
+/// `refused`, the kernel's refusal of the feature `id`'s solid's description: if it's for an
+/// element described as no element is (`DescriptionImpossible`, the element as data), with
+/// that element named as the feature's element map names it (or as FreeCAD numbers it,
+/// without one), as other refusals of a shape's elements name theirs; any other, as it is.
+fn impossible_named(model: &Model, id: &FeatureId, refused: &Error) -> Error {
+    let Some((_, failure)) = refused.worker_failure() else {
+        return refused.clone();
+    };
+    let silico_protocol::Refusal::DescriptionImpossible { kind, number, .. } = failure.refusal
+    else {
+        return refused.clone();
+    };
+    let element = silico_protocol::ElementRef {
+        kind,
+        index: number,
+    };
+    let name = model
+        .element_map(id)
+        .and_then(|map| map.name(element))
+        .map_or_else(
+            || ElementName::numbered(element),
+            |name| ElementName::from(&*name),
+        );
+    refused
+        .clone()
+        .with_elements_as([crate::references::cut_short(name.as_str())])
 }
 
 /// `error`, naming the request's `feature` if `asked`.

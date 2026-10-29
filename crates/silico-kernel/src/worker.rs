@@ -296,9 +296,13 @@ fn check_description(first: u32, description: &Description) -> Result<(), Failur
             value,
         }));
     }
-    description
-        .validate(first)
-        .map_err(|problem| Failure::new(Refusal::DescriptionImpossible { problem }))
+    description.validate(first).map_err(|impossible| {
+        Failure::new(Refusal::DescriptionImpossible {
+            kind: impossible.element.kind,
+            number: impossible.element.index,
+            problem: impossible.problem,
+        })
+    })
 }
 
 /// A distance OCCT found, refused if its value or a point of its witness isn't finite.
@@ -445,10 +449,14 @@ mod tests {
                 "the kernel's Face7's normal [0.0, 0.0, 1.5] isn't a unit vector",
             ),
         ] {
-            match described(7, 7, description).unwrap_err().refusal {
-                Refusal::DescriptionImpossible { problem } => assert_eq!(problem, said),
-                other => panic!("{said}: {other:?}"),
-            }
+            assert_eq!(
+                described(7, 7, description).unwrap_err().refusal,
+                Refusal::DescriptionImpossible {
+                    kind: silico_protocol::ElementKind::Face,
+                    number: 7,
+                    problem: said.to_owned(),
+                }
+            );
         }
         // In range: an area of 0 (a face can be that small), a unit normal pointing down.
         for description in [face(plane(1.0), 0.0), face(plane(-1.0), 2.5)] {

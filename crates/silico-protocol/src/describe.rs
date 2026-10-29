@@ -284,12 +284,12 @@ impl Description {
     /// [`NORMAL_LENGTH_TOLERANCE`]); every radius above 0 (a cone's at least 0, at its apex),
     /// a cone's half-angle within a right angle, every area at least 0, and every edge's
     /// length above 0 but a degenerated one's, which is 0, its ends and middle one point.
-    /// Says what's wrong, naming the value by the kernel's number for its element, its
-    /// lists' first numbered `first` (1 for a whole description, a batch's first otherwise),
-    /// if not.
-    pub fn validate(&self, first: u32) -> Result<(), String> {
+    /// Says what's wrong, and of which element, naming the value by the kernel's number for
+    /// its element, its lists' first numbered `first` (1 for a whole description, a batch's
+    /// first otherwise), if not.
+    pub fn validate(&self, first: u32) -> Result<(), Impossible> {
         if let Some((quantity, x)) = self.non_finite(first) {
-            return Err(format!("{quantity} is {x}"));
+            return Err(Impossible::of(quantity, format!("{quantity} is {x}")));
         }
         let mut problem = None;
         self.each(first, &mut |quantity, x| {
@@ -316,7 +316,7 @@ impl Description {
                 _ => true,
             };
             if !ok {
-                problem = Some(format!("{quantity} is {x}"));
+                problem = Some(Impossible::of(quantity, format!("{quantity} is {x}")));
             }
         });
         if let Some(problem) = problem {
@@ -349,9 +349,12 @@ impl Description {
                 EdgeCurve::Degenerated => {
                     for (what, at) in [(What::End, edge.end), (What::Middle, edge.middle)] {
                         if at != edge.start {
-                            return Err(format!(
-                                "{} isn't its start, though the edge is degenerated",
-                                quantity(ElementKind::Edge, i, what)
+                            let quantity = quantity(ElementKind::Edge, i, what);
+                            return Err(Impossible::of(
+                                quantity,
+                                format!(
+                                    "{quantity} isn't its start, though the edge is degenerated"
+                                ),
                             ));
                         }
                     }
@@ -368,12 +371,38 @@ fn number(first: u32, i: usize) -> u32 {
     first.saturating_add(u32::try_from(i).unwrap_or(u32::MAX))
 }
 
-fn unit(quantity: Quantity, v: [f64; 3]) -> Result<(), String> {
+fn unit(quantity: Quantity, v: [f64; 3]) -> Result<(), Impossible> {
     let length = libm::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
     if (length - 1.0).abs() <= NORMAL_LENGTH_TOLERANCE {
         Ok(())
     } else {
-        Err(format!("{quantity} {v:?} isn't a unit vector"))
+        Err(Impossible::of(
+            quantity,
+            format!("{quantity} {v:?} isn't a unit vector"),
+        ))
+    }
+}
+
+/// What [`Description::validate`] finds wrong: the element whose value no element has, by
+/// the kernel's number for it, and what's wrong, in words naming the value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Impossible {
+    pub element: ElementRef,
+    pub problem: String,
+}
+
+impl Impossible {
+    fn of(quantity: Quantity, problem: String) -> Self {
+        Impossible {
+            element: quantity.element,
+            problem,
+        }
+    }
+}
+
+impl fmt::Display for Impossible {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.problem)
     }
 }
 
@@ -722,7 +751,13 @@ mod tests {
             let mut d = good();
             spoil(&mut d);
             let e = d.validate(1).unwrap_err();
-            assert!(e.starts_with(says), "{e}, not {says}");
+            assert!(e.problem.starts_with(says), "{e}, not {says}");
+            // The element as data, the one the words name.
+            assert!(
+                says.starts_with(&format!("the kernel's {}'s ", e.element)),
+                "{:?}, not {says}",
+                e.element
+            );
         }
     }
 
@@ -787,7 +822,10 @@ mod tests {
         d.edges[1].length = 0.0;
         assert_eq!(
             d.validate(1001),
-            Err("the kernel's Edge1002's length is 0".to_owned())
+            Err(Impossible {
+                element: ElementRef::edge(1002),
+                problem: "the kernel's Edge1002's length is 0".to_owned()
+            })
         );
         d.edges[1].length = f64::NAN;
         let (quantity, _) = d.non_finite(1001).unwrap();
@@ -802,10 +840,12 @@ mod tests {
         d.edges[3].end = [1.0, 0.0, 0.0];
         assert_eq!(
             d.validate(501),
-            Err(
-                "the kernel's Edge504's end isn't its start, though the edge is degenerated"
-                    .to_owned()
-            )
+            Err(Impossible {
+                element: ElementRef::edge(504),
+                problem:
+                    "the kernel's Edge504's end isn't its start, though the edge is degenerated"
+                        .to_owned()
+            })
         );
     }
 
@@ -817,10 +857,12 @@ mod tests {
         d.edges[3].middle = [0.0, 0.0, 2.0];
         assert_eq!(
             d.validate(1),
-            Err(
-                "the kernel's Edge4's middle isn't its start, though the edge is degenerated"
-                    .to_owned()
-            )
+            Err(Impossible {
+                element: ElementRef::edge(4),
+                problem:
+                    "the kernel's Edge4's middle isn't its start, though the edge is degenerated"
+                        .to_owned()
+            })
         );
     }
 

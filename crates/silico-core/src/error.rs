@@ -392,6 +392,19 @@ impl Error {
         self
     }
 
+    /// The same elements named anew, in place of how they were named (the kernel's number
+    /// for one, named by its element map): as many, so the total stands.
+    #[must_use]
+    pub(crate) fn with_elements_as<I, S>(mut self, elements: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.0.elements = elements.into_iter().map(Into::into).collect();
+        self.0.count_elements();
+        self
+    }
+
     /// The parameter at fault, as a dotted name: the operation's field, and the part of it at
     /// fault where it has parts (`radius`, `offset.x`, a chamfer's `size.angle`).
     #[must_use]

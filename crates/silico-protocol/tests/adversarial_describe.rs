@@ -35,6 +35,7 @@ fn a_cones_half_angle_not_finite_is_named_as_its_half_angle() {
     assert!(
         d.validate(1)
             .unwrap_err()
+            .problem
             .starts_with("the kernel's Face1's half-angle")
     );
     let (what, value) = d.non_finite(1).unwrap();
