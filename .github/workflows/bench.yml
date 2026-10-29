@@ -1,8 +1,12 @@
 # The drag latency benchmark (crates/silico-sketch/benches/drag.rs, M3.7) on the
 # self-hosted Linux runner, on request: its table in the run's summary, and the table and
-# its JSON lines as an artifact. It records times; it fails on none.
+# its JSON lines as an artifact. It records times; it fails on none. Also, on request, the
+# sketch stress reference as a commit writes it (sketch-stress): the file as an artifact, to
+# compare with the committed one and another platform's before
+# tests/determinism/sketch-stress-reference.json (protected) is rewritten.
 #
 #   gh workflow run bench.yml --ref main -f ref=<branch>
+#   gh workflow run bench.yml --ref <branch> -f bench=sketch-stress -f ref=<full SHA>
 name: bench
 run-name: "${{ inputs.bench || 'drag' }} bench ${{ inputs.ref || github.ref_name }}"
 
@@ -13,9 +17,9 @@ on:
         description: "Branch, tag, or commit to measure (empty: the branch this runs on)"
         default: ""
       bench:
-        description: "What to measure: drag (the sketch worker's drag latency), render (M4.6's bench: a 4096 by 4096 render on lavapipe through the worker's renderer, its time and memory), or warm (M5.3's: a first rebuild with and without the workers' warm start)"
+        description: "What to measure: drag (the sketch worker's drag latency), render (M4.6's bench: a 4096 by 4096 render on lavapipe through the worker's renderer, its time and memory), warm (M5.3's: a first rebuild with and without the workers' warm start), or sketch-stress (the sketch stress reference as the commit writes it, as an artifact)"
         type: choice
-        options: [drag, render, warm]
+        options: [drag, render, warm, sketch-stress]
         default: drag
 
 permissions:
@@ -138,3 +142,41 @@ jobs:
             grep -A4 '^first rebuild' "$RUNNER_TEMP/warm.txt"
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
+
+  sketch-stress:
+    needs: yield
+    # Even if the yield failed: the reference is the point.
+    if: ${{ !cancelled() && inputs.bench == 'sketch-stress' }}
+    runs-on: [self-hosted, linux, x64, sweep]
+    timeout-minutes: 90
+    env:
+      NEXTEST_PROFILE: ci
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Toolchains
+        run: bash .github/tools.sh
+      - name: Write the reference
+        env:
+          OUT: ${{ runner.temp }}/sketch-stress/sketch-stress-reference-linux-x64.json
+        run: |
+          mkdir -p "$(dirname "$OUT")"
+          echo "Writing from $(git log -1 --format='%H %s')"
+          pixi run occt
+          share=$(( $(nproc) / 4 > 2 ? $(nproc) / 4 : 2 ))
+          export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share CMAKE_BUILD_PARALLEL_LEVEL=$share
+          SILICO_WRITE_SKETCH_STRESS="$OUT" pixi run cargo nextest run -p silico-sketch --test stress \
+            -E 'test(generated_sketches_solve_to_the_references_bits)'
+          git rev-parse HEAD >"$(dirname "$OUT")/commit.txt"
+          {
+            echo "## Sketch stress reference: $(git log -1 --format='%h %s')"
+            echo
+            echo "$(wc -l <"$OUT") lines; sha256 $(sha256sum "$OUT" | cut -d' ' -f1)"
+          } >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: sketch-stress-reference-linux-x64
+          path: ${{ runner.temp }}/sketch-stress
