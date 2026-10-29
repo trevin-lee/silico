@@ -112,15 +112,35 @@ fn ten_thousand_horizontals() -> Sketch {
     ))
 }
 
-/// The reply of
-/// [`a_reply_naming_a_million_tags_in_its_dependencies_is_checked_read_and_stated_promptly`]:
-/// its groups, the tags in each, and the first tag of its first group.
-const GROUPS: u32 = 1_000;
-const GROUP_TAGS: u32 = 1_001;
-const FIRST_TAG: u32 = 8_001;
+/// What [`ten_thousand_horizontals`] reads, the fake calling every horizontal after the first
+/// redundant, every unknown free, 3 left: the horizontals are relations, which a dependency
+/// doesn't over-define (addendum 4), so the first reads satisfied, the rest redundant as
+/// listed, and the members and the sketch under defined.
+#[track_caller]
+fn expect_horizontals_read(read: &Diagnosed, got: &SketchStates) {
+    assert!(read.outcome().is_ok(), "{:?}", read.outcome());
+    assert_eq!((got.state, got.dofs), (SketchState::UnderDefined, 3));
+    assert_eq!(got.constraints[&id("k0000000")], Satisfied);
+    assert_eq!(
+        got.constraints
+            .values()
+            .filter(|&&s| s == Redundant)
+            .count(),
+        9_999
+    );
+    assert_eq!(
+        got.points,
+        members(&[("p0000001", Under), ("p0000002", Under)])
+    );
+    assert_eq!(got.lines, members(&[("n0000001", Under)]));
+}
 
 #[test]
 fn a_reply_naming_a_million_tags_in_its_dependencies_is_checked_read_and_stated_promptly() {
+    // The reply's groups, the tags in each, and the first tag of its first group.
+    const GROUPS: u32 = 1_000;
+    const GROUP_TAGS: u32 = 1_001;
+    const FIRST_TAG: u32 = 8_001;
     // Robustness review, round 1: the read found each group's tags among the rows sent by a
     // scan, for every tag, so a reply PlaneGCS's bounds allow, 9,000 groups of 1,001 tags
     // on the gate's 10,000 constraints, took 12 minutes in the core, after the worker's
@@ -188,21 +208,7 @@ fn a_reply_naming_a_million_tags_in_its_dependencies_is_checked_read_and_stated_
     let dependent: BTreeSet<ElementId> = (8_000..10_000).map(|i| id(&format!("k{i:07}"))).collect();
     assert_eq!(dependencies.dependent, dependent);
     assert_eq!(&got.dependencies, dependencies);
-    assert!(read.outcome().is_ok(), "{:?}", read.outcome());
-    assert_eq!((got.state, got.dofs), (SketchState::UnderDefined, 3));
-    assert_eq!(got.constraints[&id("k0000000")], Satisfied);
-    assert_eq!(
-        got.constraints
-            .values()
-            .filter(|&&s| s == Redundant)
-            .count(),
-        9_999
-    );
-    assert_eq!(
-        got.points,
-        members(&[("p0000001", Under), ("p0000002", Under)])
-    );
-    assert_eq!(got.lines, members(&[("n0000001", Under)]));
+    expect_horizontals_read(&read, &got);
 }
 
 /// One line p1 (0, 0)–p2 (10, 0) given `horizontal` `n` times, `k0000000` on (tags 1 to
@@ -609,21 +615,7 @@ fn ten_thousand_repeated_horizontals_are_diagnosed_and_stated_at_once() {
     let got = states(&sketch, &read).unwrap();
     let took = started.elapsed();
     assert!(took < Duration::from_secs(10), "{took:?}");
-    assert!(read.outcome().is_ok(), "{:?}", read.outcome());
-    assert_eq!((got.state, got.dofs), (SketchState::UnderDefined, 3));
-    assert_eq!(got.constraints[&id("k0000000")], Satisfied);
-    assert_eq!(
-        got.constraints
-            .values()
-            .filter(|&&s| s == Redundant)
-            .count(),
-        9_999
-    );
-    assert_eq!(
-        got.points,
-        members(&[("p0000001", Under), ("p0000002", Under)])
-    );
-    assert_eq!(got.lines, members(&[("n0000001", Under)]));
+    expect_horizontals_read(&read, &got);
 }
 
 #[test]
