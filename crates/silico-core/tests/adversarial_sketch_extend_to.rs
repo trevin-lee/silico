@@ -1348,12 +1348,26 @@ fn an_arcs_start_sent_within_the_floor_of_its_end_is_too_short() {
         &mut FakeSketches::new(),
     )
     .unwrap_err();
+    // Refused before anything is solved, as 10 mm × 5e-9 rad long (to rounding).
+    let (code, message, parameter, elements, suggestion) = said(&e);
     assert_eq!(
-        e.suggestion(),
-        Some("give a point farther around its circle from its other end"),
-        "{:?}",
-        said(&e)
+        (code, parameter, elements, suggestion),
+        (
+            ErrorCode::InvalidInput,
+            Some("by"),
+            vec!["r0000000"],
+            Some("give a point farther around its circle from its other end"),
+        )
     );
+    let size = message
+        .strip_prefix("extending arc r0000000 that far would leave it ")
+        .and_then(|m| {
+            m.strip_suffix(
+                " mm long or flipped: an arc must be longer than 1e-7 mm and keep its direction",
+            )
+        })
+        .and_then(|m| m.parse::<f64>().ok());
+    assert!(size.is_some_and(|s| (s - 5e-8).abs() <= 1e-15), "{message}");
 }
 
 #[test]
@@ -1380,4 +1394,79 @@ fn a_line_sent_within_the_floor_of_its_other_end_is_too_short_before_any_drag() 
         said(&e)
     );
     assert_eq!(fake.drag_calls(), []);
+}
+
+#[test]
+fn a_line_ending_at_an_arcs_moving_end_is_not_met() {
+    // b0 runs from (−20, −10) to e0, r0's end at (0, 10), crossing r0's circle again at
+    // (−10, 0), 90° on; it ends at e0, so it moves with it.
+    let before = doc(
+        &[
+            p("z0000000", [0.0, 0.0]),
+            p("s0000000", [10.0, 0.0]),
+            p("e0000000", [0.0, 10.0]),
+            p("q0000000", [-20.0, -10.0]),
+        ],
+        &[line("b0000000", "q0000000", "e0000000")],
+        &[],
+        &[arc("r0000000", "z0000000", "s0000000", "e0000000")],
+    );
+    assert_eq!(gate_of(&before), Vec::<String>::new());
+    assert_eq!(
+        next_crossing(sketch_of(&before), &id("r0000000"), End::End).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn an_arc_about_a_lines_moving_end_is_not_met() {
+    // r0 about p1 at (−10, 0), radius 5, from (−10, −5) round to (−10, 5): it crosses the
+    // extension at (−5, 0), but it's centred on p1 and moves with it.
+    let before = doc(
+        &[
+            p("p0000000", [-20.0, 0.0]),
+            p("p0000001", [-10.0, 0.0]),
+            p("s0000000", [-10.0, -5.0]),
+            p("e0000000", [-10.0, 5.0]),
+        ],
+        &[line("a0000000", "p0000000", "p0000001")],
+        &[],
+        &[arc("r0000000", "p0000001", "s0000000", "e0000000")],
+    );
+    assert_eq!(gate_of(&before), Vec::<String>::new());
+    assert_eq!(
+        next_crossing(sketch_of(&before), &id("a0000000"), End::End).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn a_line_joined_to_an_arcs_end_meets_the_curve_ahead_not_the_arc() {
+    // The first joined test with r0 the other way round: from (10, 0) round to p1 at
+    // (−10, 0), ending at the moving end. The extension meets r0's circle at (10, 0), r0's
+    // start; b0 at (20, 0) is next.
+    let before = doc(
+        &[
+            p("p0000000", [-20.0, 0.0]),
+            p("p0000001", [-10.0, 0.0]),
+            p("z0000000", [0.0, 0.0]),
+            p("s0000000", [10.0, 0.0]),
+            p("q0000000", [20.0, -5.0]),
+            p("q0000001", [20.0, 5.0]),
+        ],
+        &[
+            line("a0000000", "p0000000", "p0000001"),
+            line("b0000000", "q0000000", "q0000001"),
+        ],
+        &[],
+        &[arc("r0000000", "z0000000", "s0000000", "p0000001")],
+    );
+    assert_eq!(gate_of(&before), Vec::<String>::new());
+    assert_eq!(
+        next_crossing(sketch_of(&before), &id("a0000000"), End::End).unwrap(),
+        Some(Crossing {
+            curve: id("b0000000"),
+            at: xy(20.0, 0.0),
+        })
+    );
 }

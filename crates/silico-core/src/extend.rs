@@ -159,10 +159,10 @@ pub fn extend(
 /// (within 1e-7 mm of it halfway there) isn't met there: a collinear neighbour, or a round
 /// the curve runs into nearly tangent. Nor is a curve built on the moving end's point, which
 /// the edit moves with it: one that starts or ends there, or a round about it. The nearest
-/// wins, a line's by distance, an arc's by angle; at the same distance, the least ID. Found from the stored coordinates in closed
-/// form, with the libm shim's math, as trim finds its cuts. Refused as [`extend`] refuses a
-/// member that isn't a line or an arc, and an arc whose ends are at one angle from its
-/// centre, which has no circle to go around.
+/// wins, a line's by distance, an arc's by angle; at the same distance, the least ID. Found
+/// from the stored coordinates in closed form, with the libm shim's math, as trim finds its
+/// cuts. Refused as [`extend`] refuses a member that isn't a line or an arc, and an arc
+/// whose ends are at one angle from its centre, which has no circle to go around.
 pub fn next_crossing(
     sketch: &Sketch,
     curve: &ElementId,
@@ -242,10 +242,14 @@ pub fn next_crossing(
     };
     // A curve built on the moving end's point (an arc starting at a line's end, a circle
     // about it) moves with it, so it isn't met.
-    let moving_id = end_ids(sketch, curve)
-        .into_iter()
-        .nth(usize::from(end == End::End));
-    let free = |points: &[&ElementId]| moving_id.as_ref().is_none_or(|m| !points.contains(&m));
+    let ends = end_ids(sketch, curve);
+    let Some(moving_id) = (match end {
+        End::Start => ends.first(),
+        End::End => ends.get(1),
+    }) else {
+        return Err(not_extendable(sketch, curve));
+    };
+    let free = |points: &[&ElementId]| !points.contains(&moving_id);
     let others = sketch
         .lines
         .iter()
