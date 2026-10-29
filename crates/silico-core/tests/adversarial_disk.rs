@@ -249,11 +249,11 @@ fn a_file_replaced_by_a_directory_then_a_file_again_recovers() {
 
 #[test]
 fn a_file_deleted_and_made_again_reads_only_as_gone_or_its_bytes() {
-    // Found by break-it, fixed (a failed read looks again, and gone is gone): `read` stats the path, then `file::read` opens it. A file deleted between the
-    // two reads as `Unreadable` (file::read's open fails with ENOENT, and every error of
-    // file::read is unreadable), not `Gone`: an editor that saves by unlink-and-create, or
-    // a `git checkout` that removes and writes the file, flickers the session's status to
-    // "unreadable", and the waker fires for it. Raced, so it's tried for a few seconds.
+    // Found by break-it, fixed (one open decides, its not-found gone): `read` once stat'd
+    // the path, then opened it, so a file deleted between the two read as `Unreadable`, not
+    // `Gone`: an editor that saves by unlink-and-create, or a `git checkout` that removes
+    // and writes the file, flickered the session's status to "unreadable", and the waker
+    // fired for it. Raced, so it's tried for a few seconds.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("a.silico");
     std::fs::write(&path, b"A").unwrap();
@@ -695,4 +695,38 @@ fn a_held_with_no_comparison_running_is_unchanged_until_the_next_ends() {
     assert_eq!(settled_other(&w, Disk::Unchanged), Disk::Changed);
     *answer.lock().unwrap() = Found::Bytes(b"B".to_vec());
     assert_eq!(settled_other(&w, Disk::Changed), Disk::Unchanged);
+}
+
+#[test]
+fn no_comparison_starts_while_the_session_saves() {
+    // From the tests review: the session has written B but not yet said it holds it; an idle
+    // frame asks. A comparison started then carries the save's own counter, so only the
+    // saving flag keeps it from reading B against A as changed.
+    let disk = Disk2::new(b"A");
+    disk.open();
+    let (told, notify) = told();
+    let w = DiskWatch::reading(
+        "p",
+        Arc::new(b"A".to_vec()),
+        Duration::ZERO,
+        Some(notify),
+        disk.reader(),
+    );
+    assert_eq!(settled(&w), Disk::Unchanged);
+    std::thread::sleep(Duration::from_millis(50));
+    let before = told.load(Ordering::SeqCst);
+    let saving = w.saving();
+    disk.write(b"B");
+    let deadline = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < deadline {
+        assert_eq!(w.finding(), None, "a finding mid-save");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(
+        told.load(Ordering::SeqCst),
+        before,
+        "the waker told of its own save"
+    );
+    saving.saved(Arc::new(b"B".to_vec()));
+    assert_eq!(settled(&w), Disk::Unchanged);
 }
