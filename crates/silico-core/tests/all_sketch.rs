@@ -76,6 +76,8 @@ mod sketch_gate;
 mod sketch_solve;
 #[path = "sketch_split.rs"]
 mod sketch_split;
+#[path = "sketch_states.rs"]
+mod sketch_states;
 #[path = "sketch_trim.rs"]
 mod sketch_trim;
 #[path = "stored_coordinates.rs"]

@@ -811,6 +811,36 @@ fn holdable(file: &Sketch) -> Result<(), Error> {
     Err(error)
 }
 
+/// What a solve's diagnosis says of a sketch's members, by ID, for every answer that stands,
+/// solved or refused ([`Translation::diagnosis`]; docs/ports/sketcher.md, *Definition
+/// states*): PlaneGCS's diagnosis, taken where the solve started, before any algorithm ran,
+/// and the constraints decision 5 refuses. What each member's state is, from it, is
+/// [`crate::sketch_states`]'s.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Diagnosis {
+    /// Degrees of freedom left, as PlaneGCS counts them: negative when constraints
+    /// conflict, and −1 for a sketch of no unknowns.
+    pub dofs: i32,
+    /// The points, circles, and arcs with a value of their own the diagnosis finds free (a
+    /// point's x or y, a circle's radius, an arc's radius or either angle): every one, when
+    /// no constraint touches an unknown (FreeCAD's reading). A line has no value of its own.
+    pub free: BTreeSet<ElementId>,
+    /// The constraints in conflict: PlaneGCS's, and the redundant ones that disagree with
+    /// the others past decision 5's tolerance, which the read refuses as `over_constrained`
+    /// (they're in [`redundant`](Self::redundant) or
+    /// [`partially_redundant`](Self::partially_redundant) too, as PlaneGCS lists them).
+    pub conflicting: BTreeSet<ElementId>,
+    /// The constraints all of whose equations repeat others', as PlaneGCS lists them.
+    pub redundant: BTreeSet<ElementId>,
+    /// The constraints some, but not all, of whose equations repeat others', as PlaneGCS
+    /// lists them.
+    pub partially_redundant: BTreeSet<ElementId>,
+    /// Each constraint listed above, with the points whose x or y its rows read
+    /// ([`SketchSystem::reads`]): none, for one whose rows read only fixed values, radii,
+    /// and angles.
+    pub points_read: BTreeMap<ElementId, BTreeSet<ElementId>>,
+}
+
 /// What solving a [`Translation`] found: the worker's answer the outcome is read from, and
 /// the outcome.
 #[derive(Debug, Clone)]
@@ -1800,6 +1830,80 @@ impl Translation {
     /// What `solved`, which [`check_reply`](Self::check_reply) passed, says about the sketch
     /// (docs/design/m3.3-solving.md, *Outcomes, as data*).
     pub fn read(&self, solved: &Solved) -> Result<SketchSolution, Error> {
+        self.read_noting(solved, &mut Vec::new())
+    }
+
+    /// What `solved`'s diagnosis says of each of the sketch's members, whatever the read
+    /// of it ([`read`](Self::read)) comes to: solved, or refused
+    /// (docs/ports/sketcher.md, *Definition states*). `solved` is one
+    /// [`check_reply`](Self::check_reply) passed, for this translation or any other of the
+    /// same sketch, as a load's (an [`Answer`]'s `solved`): a translation decides its rows
+    /// from the sketch's references alone, never from where it's drawn, so every translation
+    /// of one sketch reads a reply alike.
+    pub fn diagnosis(&self, solved: &Solved) -> Result<Diagnosis, Error> {
+        let _span = tracing::info_span!("diagnose sketch").entered();
+        let mut disagreeing = Vec::new();
+        // Only the constraints decision 5 refuses are wanted of the read: its outcome is
+        // the answer's, read already.
+        let _ = self.read_noting(solved, &mut disagreeing);
+        let named = |tags: &[Tag]| -> Result<BTreeSet<ElementId>, Error> {
+            tags.iter().map(|&t| self.id(t).cloned()).collect()
+        };
+        let mut conflicting = named(&solved.conflicting)?;
+        conflicting.extend(named(&disagreeing)?);
+        let redundant = named(&solved.redundant)?;
+        let partially_redundant = named(&solved.partially_redundant)?;
+        // Each listed constraint's rows, in one pass over the rows, and the points whose x or
+        // y they read.
+        let listed: BTreeSet<Tag> = solved
+            .conflicting
+            .iter()
+            .chain(&disagreeing)
+            .chain(&solved.redundant)
+            .chain(&solved.partially_redundant)
+            .copied()
+            .collect();
+        let owner: BTreeMap<Value, &ElementId> = self
+            .points
+            .iter()
+            .flat_map(|(id, p)| [(p.x, id), (p.y, id)])
+            .collect();
+        let mut points_read: BTreeMap<ElementId, BTreeSet<ElementId>> = BTreeMap::new();
+        for &tag in &listed {
+            points_read.insert(self.id(tag)?.clone(), BTreeSet::new());
+        }
+        for row in &self.system.constraints {
+            let Some(tag) = row.tag().filter(|t| listed.contains(t)) else {
+                continue;
+            };
+            let read = self
+                .system
+                .reads(row)
+                .into_iter()
+                .filter_map(|v| owner.get(&v).map(|&id| id.clone()));
+            points_read
+                .entry(self.id(tag)?.clone())
+                .or_default()
+                .extend(read);
+        }
+        Ok(Diagnosis {
+            dofs: solved.dofs,
+            free: self.free(solved),
+            conflicting,
+            redundant,
+            partially_redundant,
+            points_read,
+        })
+    }
+
+    /// [`read`](Self::read), noting in `disagreeing` the redundant constraints, by tag, it
+    /// refuses for disagreeing with the others past decision 5's tolerance: none, unless it
+    /// refuses them.
+    fn read_noting(
+        &self,
+        solved: &Solved,
+        disagreeing_out: &mut Vec<Tag>,
+    ) -> Result<SketchSolution, Error> {
         if !solved.conflicting.is_empty() {
             let n = solved.conflicting.len();
             return Err(Error::new(
@@ -1913,6 +2017,7 @@ impl Translation {
                 )
             });
             let id = self.id(tag)?;
+            disagreeing_out.extend_from_slice(&disagreeing);
             return Err(Error::new(
                 ErrorCode::OverConstrained,
                 format!(

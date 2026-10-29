@@ -1102,8 +1102,10 @@ impl SketchSystem {
         }
     }
 
-    /// The values constraint `c` reads, as PlaneGCS's rows for it do.
-    fn reads(&self, c: &SolverConstraint) -> Vec<Value> {
+    /// The values constraint `c` reads, as PlaneGCS's rows for it do, its fixed values too: a
+    /// row that takes a geometry whole reads all of it (a line's both ends; an arc's centre,
+    /// radius, angles, and ends).
+    pub fn reads(&self, c: &SolverConstraint) -> Vec<Value> {
         let geometry = |g: Geometry| {
             self.geometry
                 .get(g.0 as usize)
