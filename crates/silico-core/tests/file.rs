@@ -291,7 +291,7 @@ fn png_rules<'a>(
 ) -> silico_core::file::Output<'a> {
     silico_core::file::Output {
         field: "to",
-        extension: "png",
+        extensions: &["png"],
         writer: "a render",
         replace,
         workspace,

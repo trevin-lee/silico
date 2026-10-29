@@ -47,6 +47,15 @@ impl ExportFormat {
         }
     }
 
+    /// The extensions its file may end in, without their dots, the first the format's own:
+    /// STEP's two spellings, which SolidWorks and FreeCAD both write.
+    pub const fn extensions(self) -> &'static [&'static str] {
+        match self {
+            ExportFormat::ThreeMf { .. } => &["3mf"],
+            ExportFormat::Step => &["step", "stp"],
+        }
+    }
+
     /// The mesh's tolerance, for a mesh format; none for an exact one.
     pub const fn tolerance(self) -> Option<Length> {
         match self {
@@ -71,7 +80,7 @@ pub const TOLERANCES: [Length; 2] = [Length::from_nm(10), Length::from_nm(100_00
 #[derive(Debug, Clone, PartialEq)]
 pub struct Export {
     pub format: ExportFormat,
-    /// Where to write the file: in the workspace, ending in the format's extension.
+    /// Where to write the file: in the workspace, ending in one of the format's extensions.
     pub path: PathBuf,
     /// Whether to replace a file already at `path`.
     pub replace: bool,
@@ -332,7 +341,7 @@ pub fn export<K: Kernel>(
     .entered();
     let output = Output {
         field: "path",
-        extension: request.format.name(),
+        extensions: request.format.extensions(),
         writer: "an export",
         replace: request.replace,
         workspace: on.workspace,
