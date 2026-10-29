@@ -23,7 +23,6 @@
     "properties": {
       "base": {
         "description": "The revision the transaction began from: the one `rollback` returns to.",
-        "format": "uint64",
         "minimum": 1,
         "type": "integer"
       }

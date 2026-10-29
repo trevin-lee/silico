@@ -24,7 +24,6 @@
     "properties": {
       "after": {
         "description": "Read the events after this one: the last read's `next`; or null, from the oldest\nkept. Refused if it's past the session's newest event.",
-        "format": "uint64",
         "minimum": 0,
         "type": [
           "integer",
@@ -48,7 +47,6 @@
       },
       "limit": {
         "description": "How many events to read at most.",
-        "format": "uint32",
         "maximum": 1000,
         "minimum": 1,
         "type": "integer"
@@ -82,7 +80,6 @@
         "properties": {
           "at_ms": {
             "description": "When it happened, in milliseconds since the session opened.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
@@ -106,7 +103,6 @@
           },
           "seq": {
             "description": "Its number in the session, from 1, one more for each event the session kept.",
-            "format": "uint64",
             "minimum": 1,
             "type": "integer"
           },
@@ -146,7 +142,6 @@
     "properties": {
       "dropped": {
         "description": "How many events the session's buffer dropped since it opened, oldest first, to keep\nwithin its bound.",
-        "format": "uint64",
         "minimum": 0,
         "type": "integer"
       },
@@ -159,7 +154,6 @@
       },
       "next": {
         "description": "Where the next read goes on from, its `after`: the last event returned, if the read\nstopped at its limit or at 1 MiB of text; else the session's newest event.",
-        "format": "uint64",
         "minimum": 0,
         "type": "integer"
       }
