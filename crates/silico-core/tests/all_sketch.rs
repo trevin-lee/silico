@@ -54,6 +54,8 @@ mod adversarial_sketch_merge_tangent;
 mod adversarial_sketch_solve;
 #[path = "adversarial_sketch_split.rs"]
 mod adversarial_sketch_split;
+#[path = "adversarial_sketch_states.rs"]
+mod adversarial_sketch_states;
 #[path = "adversarial_sketch_trim.rs"]
 mod adversarial_sketch_trim;
 #[path = "adversarial_stored_coordinates.rs"]
@@ -86,6 +88,8 @@ mod sketch_gate;
 mod sketch_solve;
 #[path = "sketch_split.rs"]
 mod sketch_split;
+#[path = "sketch_states.rs"]
+mod sketch_states;
 #[path = "sketch_trim.rs"]
 mod sketch_trim;
 #[path = "stored_coordinates.rs"]

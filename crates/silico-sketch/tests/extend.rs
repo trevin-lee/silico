@@ -71,7 +71,7 @@ fn a_horizontal_line_with_its_length_slides_when_extended_as_freecads_drag_moves
         .unwrap()
         .solve(&mut worker)
         .unwrap()
-        .outcome
+        .into_outcome()
         .unwrap();
     close(
         solution
@@ -133,7 +133,7 @@ fn an_arcs_extended_end_takes_a_free_neighbour_with_it_as_freecads_arc_first_sol
             .unwrap()
             .solve(&mut worker)
             .unwrap()
-            .outcome
+            .into_outcome()
             .unwrap();
         let p = |name: &str| solution.point(&ElementId::new(name).unwrap()).unwrap();
         close(p("e0000000"), [-5.0, h]);
@@ -289,7 +289,7 @@ fn a_line_in_a_part_past_a_drags_unknowns_extends_as_one_solve_does() {
         .unwrap()
         .solve(&mut worker)
         .unwrap()
-        .outcome
+        .into_outcome()
         .unwrap();
     for i in 0..n {
         let p = |j: usize| {

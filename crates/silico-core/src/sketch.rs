@@ -11,7 +11,7 @@ use std::time::Duration;
 use silico_protocol::{
     Algorithm, DragBegin, Generation, Geometry, Op, Part, Parts, PointOf, PointValues, Reply,
     SketchGeometry, SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value,
-    arc_from_points, no_distance, squared_distance,
+    arc_from_points, arc_from_points_or_unswept, no_distance, squared_distance,
 };
 
 pub use silico_protocol::MovedOnce;
@@ -761,7 +761,7 @@ pub fn solve(
     let translation = Translation::new(sketch).map_err(|e| e.with_feature(feature.as_str()))?;
     let named = |e: Error| e.with_feature(feature.as_str());
     let answer = translation.solve(solver).map_err(named)?;
-    answer.outcome.map_err(named)
+    answer.into_outcome().map_err(named)
 }
 
 /// Whether `file`, a sketch with a solve written back, is one the gate takes: a solve can be
@@ -811,12 +811,157 @@ fn holdable(file: &Sketch) -> Result<(), Error> {
     Err(error)
 }
 
+/// What a solve's diagnosis says of a sketch's members, by ID, for every answer that stands,
+/// solved or refused (docs/ports/sketcher.md, *Definition states*): PlaneGCS's diagnosis,
+/// taken where the solve started, before any algorithm ran, and the constraints decision 5
+/// refuses. What each member's state is, from it, is [`crate::sketch_states`]'s; it reaches
+/// them only paired with its outcome, as a [`Diagnosed`].
+///
+/// Its `dofs`, `free`, and redundant lists say again, for a solved sketch, what the
+/// [`SketchSolution`] says: the solution's are M3.3's (each kept repetition with its gap,
+/// which warnings and saves read), there only when the sketch solved; these are there for
+/// every answer, refused ones too, which is what the states need. On a solved answer the two
+/// agree (a property test pins it).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Diagnosis {
+    /// Degrees of freedom left, as PlaneGCS counts them: negative when constraints
+    /// conflict, and −1 for a sketch of no unknowns.
+    pub dofs: i32,
+    /// The points, circles, and arcs with a value of their own the diagnosis finds free (a
+    /// point's x or y, a circle's radius, an arc's radius or either angle): every one, when
+    /// no constraint touches an unknown (FreeCAD's reading). A line has no value of its own.
+    pub free: BTreeSet<ElementId>,
+    /// The constraints in conflict: PlaneGCS's, and the redundant ones that disagree with
+    /// the others past decision 5's tolerance, which the read refuses as `over_constrained`
+    /// (they're in [`redundant`](Self::redundant) or
+    /// [`partially_redundant`](Self::partially_redundant) too, as PlaneGCS lists them).
+    pub conflicting: BTreeSet<ElementId>,
+    /// The constraints all of whose equations repeat others', as PlaneGCS lists them.
+    pub redundant: BTreeSet<ElementId>,
+    /// The constraints some, but not all, of whose equations repeat others', as PlaneGCS
+    /// lists them.
+    pub partially_redundant: BTreeSet<ElementId>,
+    /// Each constraint listed above, with the points whose x or y its equations depend on
+    /// ([`SketchSystem::depends_on`]): none, for one whose rows depend only on fixed values,
+    /// radii, and angles.
+    pub points_depended_on: BTreeMap<ElementId, BTreeSet<ElementId>>,
+}
+
+impl Diagnosis {
+    /// The diagnosis of `sketch` before its constraints: PlaneGCS's, from `solver`, of its
+    /// geometry alone, its arcs' rules the only rows. It's the diagnosis of a sketch
+    /// [`Translation::new`] refuses, whose constraints never reach the solver (M5.0 open item
+    /// 32: two points drawn at one place where a constraint is measured by the line between
+    /// them, an arc that sweeps nothing). It's sent as the solve request is, every point,
+    /// line, circle, and arc as [`Translation::new`] sends it, and the arcs' rules, but no
+    /// constraint; the reply's diagnosis is taken before any algorithm runs, so its solve is
+    /// never read. An arc that sweeps nothing is sent at its start's angle at both ends
+    /// ([`arc_from_points_or_unswept`]): its rules are well defined there.
+    ///
+    /// `dofs` and `free` are the reply's: PlaneGCS's unknowns less the rank of its rows, and
+    /// the values its dependent parameters name (no constraint is sent, so it lists none).
+    /// A solver that fails, a reply that can't be trusted, or geometry that can't be
+    /// translated (a sketch the gate never saw, whose curves name points it hasn't) is the
+    /// error: it's no sketch state.
+    pub fn untranslated(sketch: &Sketch, solver: &mut dyn SketchSolver) -> Result<Self, Error> {
+        let _span = tracing::info_span!("diagnose untranslated sketch").entered();
+        let geometry = Translation::geometry(sketch, NoSweep::AtItsStart)?;
+        // Only the diagnosis is read, taken before any algorithm runs: one algorithm, the
+        // least the protocol takes, so no solve nobody reads can time out or fault.
+        let mut system = geometry.system.clone();
+        system.algorithms = vec![Algorithm::DogLeg];
+        let solved = solver.solve(system)?;
+        if let Err(e) = geometry.check_reply(&solved) {
+            solver.distrust();
+            return Err(e);
+        }
+        Ok(Diagnosis {
+            dofs: solved.dofs,
+            free: geometry.free(&solved),
+            ..Diagnosis::default()
+        })
+    }
+}
+
+/// A solve's [`Diagnosis`] and its outcome, paired by the core from one answer, so the states
+/// ([`crate::sketch_states::states`]) never read a diagnosis beside another answer's outcome:
+/// [`Translation::read_diagnosed`]'s, an [`Answer`]'s ([`Answer::diagnosed`]), or a refused
+/// translation's ([`Diagnosed::untranslated`]). Only these make one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Diagnosed {
+    diagnosis: Diagnosis,
+    outcome: Result<SketchSolution, Error>,
+}
+
+impl Diagnosed {
+    /// `sketch`, if [`Translation::new`] refuses it, so no solve is sent: the diagnosis of its
+    /// geometry before its constraints, from `solver` ([`Diagnosis::untranslated`]), beside the
+    /// translation's own refusal; None if it translates, as its states are then its answer's.
+    /// A solver that fails is the error, and the read fails with it (item 32's addendum, D).
+    /// The states read it as any refusal: an `invalid_input` is `invalid`.
+    pub fn untranslated(
+        sketch: &Sketch,
+        solver: &mut dyn SketchSolver,
+    ) -> Result<Option<Self>, Error> {
+        let Err(refusal) = Translation::new(sketch) else {
+            return Ok(None);
+        };
+        Ok(Some(Diagnosed {
+            diagnosis: Diagnosis::untranslated(sketch, solver)?,
+            outcome: Err(refusal),
+        }))
+    }
+
+    /// The diagnosis.
+    pub fn diagnosis(&self) -> &Diagnosis {
+        &self.diagnosis
+    }
+
+    /// The outcome: the solution, or why the solve was refused.
+    pub fn outcome(&self) -> Result<&SketchSolution, &Error> {
+        self.outcome.as_ref()
+    }
+
+    /// The outcome, the diagnosis dropped.
+    pub fn into_outcome(self) -> Result<SketchSolution, Error> {
+        self.outcome
+    }
+}
+
 /// What solving a [`Translation`] found: the worker's answer the outcome is read from, and
-/// the outcome.
+/// what reading it gave, its diagnosis and outcome paired, or, for a reply the core couldn't
+/// read, that error. Only [`Translation::solve`] makes one.
 #[derive(Debug, Clone)]
 pub struct Answer {
-    pub solved: Solved,
-    pub outcome: Result<SketchSolution, Error>,
+    solved: Solved,
+    read: Result<Diagnosed, Error>,
+}
+
+impl Answer {
+    /// The worker's answer the outcome is read from.
+    pub fn solved(&self) -> &Solved {
+        &self.solved
+    }
+
+    /// The outcome: the solution, or why the solve was refused, a reply the core couldn't
+    /// read included.
+    pub fn outcome(&self) -> Result<&SketchSolution, &Error> {
+        match &self.read {
+            Ok(read) => read.outcome(),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The outcome, the rest dropped.
+    pub fn into_outcome(self) -> Result<SketchSolution, Error> {
+        self.read.and_then(Diagnosed::into_outcome)
+    }
+
+    /// The answer's diagnosis and outcome, paired; or, for a reply the core couldn't read,
+    /// that error: such an answer has no states.
+    pub fn diagnosed(&self) -> Result<&Diagnosed, &Error> {
+        self.read.as_ref()
+    }
 }
 
 /// A sketch in the solver's terms, and how to read the solution back.
@@ -949,10 +1094,49 @@ const Y_AXIS: Line = Line {
     to: Y_AXIS_END,
 };
 
+/// What [`Translation::geometry`] makes of an arc whose ends are at one angle from its
+/// centre, so it sweeps nothing, or a whole turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoSweep {
+    /// Refused, `invalid_input`: no arc a solve is sent sweeps nothing.
+    Refused,
+    /// Drawn at its start's angle at both ends ([`arc_from_points_or_unswept`]), for
+    /// [`Diagnosis::untranslated`] alone, which never solves it.
+    AtItsStart,
+}
+
 impl Translation {
     /// `sketch`, which the gate has checked, in the solver's terms
     /// (docs/design/m3.3-solving.md, *The translation*).
     pub fn new(sketch: &Sketch) -> Result<Self, Error> {
+        let mut translation = Translation::geometry(sketch, NoSweep::Refused)?;
+        let mut constraints = sketch.constraints.clone();
+        constraints.sort_by(|a, b| a.id.cmp(&b.id));
+        translation.on = constraints
+            .iter()
+            .filter_map(|c| match &c.form {
+                Form::On {
+                    point: Reference::Element(p),
+                    curve,
+                } => Some((p.clone(), curve.clone())),
+                _ => None,
+            })
+            .collect();
+        for (i, c) in constraints.iter().enumerate() {
+            let tag = Tag(i as u32 + 1);
+            let sent = translation
+                .constraint(c, tag)
+                .map_err(|e| e.with_element(c.id.as_str()))?;
+            translation.system.constraints.extend(sent);
+        }
+        translation.constraints = constraints;
+        Ok(translation)
+    }
+
+    /// `sketch`'s geometry alone in the solver's terms, as [`new`](Self::new) sends it: every
+    /// point, line, circle, and arc, and the arcs' rules, but none of its constraints. An arc
+    /// that sweeps nothing is as `no_sweep` says.
+    fn geometry(sketch: &Sketch, no_sweep: NoSweep) -> Result<Self, Error> {
         let mut values = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
         let mut unknowns = Vec::new();
         let mut geometry = vec![
@@ -1043,7 +1227,13 @@ impl Translation {
                     values.get(p.y.0 as usize).copied().unwrap_or(f64::NAN),
                 ]
             };
-            let Some([r, a0, a1]) = arc_from_points(at(center), at(start), at(end)) else {
+            let drawn = match no_sweep {
+                NoSweep::Refused => arc_from_points(at(center), at(start), at(end)),
+                NoSweep::AtItsStart => {
+                    Some(arc_from_points_or_unswept(at(center), at(start), at(end)))
+                }
+            };
+            let Some([r, a0, a1]) = drawn else {
                 return Err(Error::new(
                     ErrorCode::InvalidInput,
                     format!(
@@ -1084,19 +1274,7 @@ impl Translation {
                 },
             );
         }
-        let mut constraints = sketch.constraints.clone();
-        constraints.sort_by(|a, b| a.id.cmp(&b.id));
-        let on = constraints
-            .iter()
-            .filter_map(|c| match &c.form {
-                Form::On {
-                    point: Reference::Element(p),
-                    curve,
-                } => Some((p.clone(), curve.clone())),
-                _ => None,
-            })
-            .collect();
-        let mut translation = Translation {
+        Ok(Translation {
             system: SketchSystem {
                 values,
                 unknowns,
@@ -1110,18 +1288,9 @@ impl Translation {
             lines,
             circles,
             arcs,
-            on,
+            on: Vec::new(),
             sketch: sketch.clone(),
-        };
-        for (i, c) in constraints.iter().enumerate() {
-            let tag = Tag(i as u32 + 1);
-            let sent = translation
-                .constraint(c, tag)
-                .map_err(|e| e.with_element(c.id.as_str()))?;
-            translation.system.constraints.extend(sent);
-        }
-        translation.constraints = constraints;
-        Ok(translation)
+        })
     }
 
     /// The point a constraint names: points are geometry of their own, so it's `Point(g)`;
@@ -1602,7 +1771,7 @@ impl Translation {
         // A refusal writes no file, so its load solves the drawing again and refuses alike.
         // Only an over-constrained one is checked by loads (a diagnosis on the drawing): a load
         // from an invalid result would measure sides from where that result put them.
-        let checked_by_load = match &first.outcome {
+        let checked_by_load = match first.outcome() {
             Ok(_) => true,
             Err(e) => e.code() == ErrorCode::OverConstrained,
         };
@@ -1637,7 +1806,7 @@ impl Translation {
             // the load's error too, so a drawing that solved is refused with it.
             let here = match load.answer(solver) {
                 Ok(here) => here,
-                Err(e) if e.code() == ErrorCode::InvalidInput && first.outcome.is_err() => {
+                Err(e) if e.code() == ErrorCode::InvalidInput && first.outcome().is_err() => {
                     return Ok(first);
                 }
                 Err(e) => return Err(e),
@@ -1651,7 +1820,7 @@ impl Translation {
                 Err(e) => return Ok(refusal(first, Err(e))),
             };
             if settled {
-                return Ok(if here.outcome.is_ok() {
+                return Ok(if here.outcome().is_ok() {
                     here
                 } else {
                     refusal(first, Ok(here))
@@ -1679,10 +1848,8 @@ impl Translation {
             solver.distrust();
             return Err(e);
         }
-        Ok(Answer {
-            outcome: self.read(&solved),
-            solved,
-        })
+        let read = self.read_diagnosed(&solved);
+        Ok(Answer { solved, read })
     }
 
     /// The points, circles' radii, and reference dimensions' measures at `values`.
@@ -1808,8 +1975,92 @@ impl Translation {
     }
 
     /// What `solved`, which [`check_reply`](Self::check_reply) passed, says about the sketch
-    /// (docs/design/m3.3-solving.md, *Outcomes, as data*).
+    /// (docs/design/m3.3-solving.md, *Outcomes, as data*): [`read_diagnosed`]'s outcome.
+    ///
+    /// [`read_diagnosed`]: Self::read_diagnosed
     pub fn read(&self, solved: &Solved) -> Result<SketchSolution, Error> {
+        self.read_diagnosed(solved)
+            .and_then(Diagnosed::into_outcome)
+    }
+
+    /// What `solved` says about the sketch, read once: its outcome, solved or refused, and
+    /// its diagnosis, what it says of each member whatever the outcome
+    /// (docs/ports/sketcher.md, *Definition states*). `solved` is one
+    /// [`check_reply`](Self::check_reply) passed, for this translation or any other of the
+    /// same sketch, as a load's ([`Answer::solved`]): a translation decides its rows
+    /// from the sketch's references alone, never from where it's drawn, so every translation
+    /// of one sketch reads a reply alike.
+    ///
+    /// A reply the read can't read (a `protocol_error`), or a bug (`internal`), is the
+    /// error: it's no sketch state, so it has no diagnosis.
+    pub fn read_diagnosed(&self, solved: &Solved) -> Result<Diagnosed, Error> {
+        let _span = tracing::info_span!("read sketch").entered();
+        let mut disagreeing = Vec::new();
+        let outcome = match self.read_noting(solved, &mut disagreeing) {
+            Err(e) if crate::sketch_states::refusal_state(e.code()).is_none() => return Err(e),
+            outcome => outcome,
+        };
+        let named = |tags: &[Tag]| -> Result<BTreeSet<ElementId>, Error> {
+            tags.iter().map(|&t| self.id(t).cloned()).collect()
+        };
+        let mut conflicting = named(&solved.conflicting)?;
+        conflicting.extend(named(&disagreeing)?);
+        let redundant = named(&solved.redundant)?;
+        let partially_redundant = named(&solved.partially_redundant)?;
+        // Each listed constraint's rows, in one pass over the rows, and the points whose x or
+        // y their equations depend on.
+        let listed: BTreeSet<Tag> = solved
+            .conflicting
+            .iter()
+            .chain(&disagreeing)
+            .chain(&solved.redundant)
+            .chain(&solved.partially_redundant)
+            .copied()
+            .collect();
+        let owner: BTreeMap<Value, &ElementId> = self
+            .points
+            .iter()
+            .flat_map(|(id, p)| [(p.x, id), (p.y, id)])
+            .collect();
+        let mut points_depended_on: BTreeMap<ElementId, BTreeSet<ElementId>> = BTreeMap::new();
+        for &tag in &listed {
+            points_depended_on.insert(self.id(tag)?.clone(), BTreeSet::new());
+        }
+        for row in &self.system.constraints {
+            let Some(tag) = row.tag().filter(|t| listed.contains(t)) else {
+                continue;
+            };
+            let depended_on = self
+                .system
+                .depends_on(row)
+                .into_iter()
+                .filter_map(|v| owner.get(&v).map(|&id| id.clone()));
+            points_depended_on
+                .entry(self.id(tag)?.clone())
+                .or_default()
+                .extend(depended_on);
+        }
+        Ok(Diagnosed {
+            diagnosis: Diagnosis {
+                dofs: solved.dofs,
+                free: self.free(solved),
+                conflicting,
+                redundant,
+                partially_redundant,
+                points_depended_on,
+            },
+            outcome,
+        })
+    }
+
+    /// [`read`](Self::read), noting in `disagreeing` the redundant constraints, by tag, it
+    /// refuses for disagreeing with the others past decision 5's tolerance: none, unless it
+    /// refuses them.
+    fn read_noting(
+        &self,
+        solved: &Solved,
+        disagreeing_out: &mut Vec<Tag>,
+    ) -> Result<SketchSolution, Error> {
         if !solved.conflicting.is_empty() {
             let n = solved.conflicting.len();
             return Err(Error::new(
@@ -1923,6 +2174,7 @@ impl Translation {
                 )
             });
             let id = self.id(tag)?;
+            disagreeing_out.extend_from_slice(&disagreeing);
             return Err(Error::new(
                 ErrorCode::OverConstrained,
                 format!(
@@ -2528,14 +2780,18 @@ type Placed = (
 /// give back, so it stands as `load` ended: the last load's answer, or, where a load
 /// couldn't be made, checked, or settled, the first solve's values with that error.
 fn refusal(first: Answer, load: Result<Answer, Error>) -> Answer {
-    if first.outcome.is_err() {
+    if first.outcome().is_err() {
         return first;
     }
     match load {
         Ok(load) => load,
+        // The first solve's diagnosis, of the values it stands with, beside the load's error.
         Err(e) => Answer {
             solved: first.solved,
-            outcome: Err(e),
+            read: first.read.map(|read| Diagnosed {
+                outcome: Err(e),
+                ..read
+            }),
         },
     }
 }

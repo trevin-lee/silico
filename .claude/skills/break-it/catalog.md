@@ -95,6 +95,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A drag released exactly where it began (a click): the begin state meets every pin, but SQP still steps on float residuals (an arc ending at angle π, sin π ≠ 0) and the end rewrites coordinates by 1e-17; compare the end of a zero-length drag with the file, bit for bit
 
 - A drag whose frame moves more than points (a circle's radius through an `on`, a reference dimension measured again): a list of what changed built by comparing points alone misses them; and a drag of a point its constraints hold completely, which PlaneGCS answers with Success and nothing moved (FreeCAD's extend reports success too)
+- Rules that take two halves of one answer apart (a solve's diagnosis and its outcome): hand over a pair that disagree (a solution beside a listed conflict) and check every invariant the rules promise still holds
 
 ## Features
 
