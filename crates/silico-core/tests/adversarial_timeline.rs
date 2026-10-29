@@ -325,9 +325,12 @@ fn twenty_thousand_broken_names_are_twenty_thousand_problems_as_check_counts_the
         r#"{"id": "f0000003", "type": "fillet", "v": 1, "name": "Round", "base": "f0000002", "edges": ["bbbbbbbb.box.Edge1"], "radius": 0.1}"#,
     ]);
     let model = rebuilt_with(&text, |_| None);
+    let share = crate::share::Share::start();
     let at = Instant::now();
     let got = timeline(model.document(), Some(&model), &Excepted::default());
-    let took = at.elapsed();
+    // Over how much slower than a quiet machine this one ran it (`Share`), which load
+    // doesn't move.
+    let took = at.elapsed().div_f64(share.finish().slowdown);
     assert_eq!(
         mark(entry(&got.features, "f0000002")),
         (Health::Error, 20_000, 0)
@@ -347,9 +350,12 @@ fn five_thousand_features_warned_each_count_one_and_add_up_to_warnings_of() {
     let blocks: Vec<String> = (0..5_000).map(|n| block(&format!("b{n:07}"))).collect();
     let refs: Vec<&str> = blocks.iter().map(String::as_str).collect();
     let model = rebuilt_with(&document(&refs), |_| None);
+    let share = crate::share::Share::start();
     let at = Instant::now();
     let got = timeline(model.document(), Some(&model), &Excepted::default());
-    let took = at.elapsed();
+    // Over how much slower than a quiet machine this one ran it (`Share`), which load
+    // doesn't move.
+    let took = at.elapsed().div_f64(share.finish().slowdown);
     let all = silico_core::warnings::of(&model, &BTreeSet::new());
     assert_eq!(all.total(), 5_000);
     assert_eq!(all.listed().len(), 100);
@@ -425,4 +431,115 @@ fn a_timeline_is_the_same_read_twice_and_from_two_threads() {
     for t in threads {
         assert_eq!(t.join().unwrap(), once);
     }
+}
+
+// --- From the tests review ---------------------------------------------------------------------
+
+#[test]
+fn a_removed_features_body_is_not_among_the_timelines_bodies() {
+    let text = document(&[&block("aaaaaaaa"), &block("bbbbbbbb"), &block("cccccccc")]);
+    let model = rebuilt_with(&text, |_| None);
+    assert_eq!(model.bodies().len(), 3);
+    let newer = read(document(&[&block("cccccccc"), &block("aaaaaaaa")]).as_bytes()).unwrap();
+    let got = timeline(&newer, Some(&model), &Excepted::default());
+    assert!(!got.bodies.contains(&id("bbbbbbbb")), "{:?}", got.bodies);
+    assert_eq!(got.bodies.len(), 2, "{:?}", got.bodies);
+}
+
+#[test]
+fn a_feature_blocked_by_a_blocked_feature_on_a_document_failure_is_an_error() {
+    let text = document(&[
+        &block("bbbbbbbb"),
+        r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "bbbbbbbb", "edges": ["bbbbbbbb.box.Edge90"], "radius": 0.1}"#,
+        r#"{"id": "f0000002", "type": "fillet", "v": 1, "name": "Round", "base": "f0000001", "edges": ["bbbbbbbb.box.Edge1"], "radius": 0.1}"#,
+        r#"{"id": "f0000003", "type": "fillet", "v": 1, "name": "Round", "base": "f0000002", "edges": ["bbbbbbbb.box.Edge1"], "radius": 0.1}"#,
+    ]);
+    let model = rebuilt_with(&text, |_| None);
+    let got = timeline(model.document(), Some(&model), &Excepted::default());
+    let f = &got.features;
+    assert_eq!(mark(entry(f, "f0000001")), (Health::Error, 1, 0));
+    assert_eq!(mark(entry(f, "f0000002")), (Health::Error, 0, 0));
+    // Two levels down from the broken reference: still the document's problem.
+    assert_eq!(mark(entry(f, "f0000003")), (Health::Error, 0, 0));
+}
+
+/// A sketch of three lines along x whose ends meet 5e-8 mm short twice (below FreeCAD's
+/// 1e-7 joining distance, so two clusters: two `ends_not_joined`), solved by the fake as
+/// sent, or with its first point moved 1 mm (a solve its file doesn't hold: drift).
+fn sketch_model(moved: bool) -> Arc<Model> {
+    let text = document(&[
+        r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 10, "y": 0, "construction": false}, {"id": "pa000003", "x": 10.00000005, "y": 0, "construction": false}, {"id": "pa000004", "x": 20, "y": 0, "construction": false}, {"id": "pa000005", "x": 20.00000005, "y": 0, "construction": false}, {"id": "pa000006", "x": 30, "y": 0, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000003", "from": "pa000005", "to": "pa000006", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "k0000001", "type": "horizontal", "line": "na000001"}]}"#,
+    ]);
+    let sketches = silico_core::fake::FakeSketches::new();
+    if moved {
+        sketches.answer(|system| {
+            let mut solved = silico_core::fake::FakeSketches::as_sent(system);
+            let n = solved.values.len();
+            solved.values[n - 1] = 7.0;
+            Ok(solved)
+        });
+    }
+    let engine =
+        silico_core::recompute::Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(sketches);
+    published(
+        &engine,
+        Checked::new(read(text.as_bytes()).unwrap()).unwrap(),
+    )
+}
+
+#[test]
+fn a_sketch_with_two_warnings_counts_two() {
+    let model = sketch_model(false);
+    assert_eq!(
+        silico_core::warnings::of(&model, &BTreeSet::new()).total(),
+        2
+    );
+    let got = timeline(model.document(), Some(&model), &Excepted::default());
+    assert_eq!(
+        mark(entry(&got.features, "s0000001")),
+        (Health::Warning, 0, 2)
+    );
+    assert_totals_agree(&model, &BTreeSet::new());
+}
+
+#[test]
+fn a_sketch_that_solves_otherwise_than_its_file_is_an_error() {
+    let model = sketch_model(true);
+    assert_eq!(
+        model.drift().len(),
+        1,
+        "{:?} {:?}",
+        model.drift(),
+        model.outcome(&id("s0000001"))
+    );
+    let got = timeline(model.document(), Some(&model), &Excepted::default());
+    assert_eq!(
+        mark(entry(&got.features, "s0000001")),
+        (Health::Error, 1, 2)
+    );
+    assert_totals_agree(&model, &BTreeSet::new());
+}
+
+#[test]
+fn a_built_feature_whose_measure_the_kernel_refused_is_an_error_as_check_counts_it() {
+    let text = document(&[STALE_BOX]);
+    let model = rebuilt_with(&text, |op| {
+        matches!(op, Op::Summarize { .. })
+            .then(|| Error::new(ErrorCode::KernelFailed, "the measure failed"))
+    });
+    assert!(matches!(
+        model.outcome(&id("dddddddd")),
+        Some(FeatureOutcome::Built { .. })
+    ));
+    assert_eq!(
+        command::check(&model).total(),
+        1,
+        "{:?}",
+        command::check(&model).errors()
+    );
+    let got = timeline(model.document(), Some(&model), &Excepted::default());
+    assert_eq!(
+        mark(entry(&got.features, "dddddddd")),
+        (Health::Error, 1, 0)
+    );
 }

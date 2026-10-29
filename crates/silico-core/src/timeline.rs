@@ -228,11 +228,12 @@ fn marks(model: &Model, excepted: &Excepted) -> BTreeMap<FeatureId, Mark> {
                 roots.insert(id, Root::Fault);
                 unknown
             }
+            // A feature that didn't build has no measure to drift: its problems are its own.
             FeatureOutcome::Failed(_) => {
                 roots.insert(id, Root::Document);
                 Mark {
                     health: Health::Error,
-                    problems: 1 + drifts,
+                    problems: 1,
                     warnings: warned,
                 }
             }
@@ -249,7 +250,7 @@ fn marks(model: &Model, excepted: &Excepted) -> BTreeMap<FeatureId, Mark> {
                     roots.insert(id, Root::Document);
                     Mark {
                         health: Health::Error,
-                        problems: own + drifts,
+                        problems: own,
                         warnings: warned,
                     }
                 }
@@ -267,7 +268,7 @@ fn marks(model: &Model, excepted: &Excepted) -> BTreeMap<FeatureId, Mark> {
                 match root {
                     Root::Document => Mark {
                         health: Health::Error,
-                        problems: drifts,
+                        problems: 0,
                         warnings: warned,
                     },
                     Root::Fault => unknown,
@@ -291,4 +292,23 @@ fn marks(model: &Model, excepted: &Excepted) -> BTreeMap<FeatureId, Mark> {
         marks.insert(id.clone(), mark);
     }
     marks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Health;
+
+    #[test]
+    fn each_health_has_the_word_fusion_names_it_by() {
+        // The command writes these (docs/design/m5.0-app.md, `timeline`).
+        for (health, word) in [
+            (Health::Healthy, "healthy"),
+            (Health::Warning, "warning"),
+            (Health::Error, "error"),
+            (Health::Suppressed, "suppressed"),
+            (Health::Unknown, "unknown"),
+        ] {
+            assert_eq!(health.word(), word);
+        }
+    }
 }
