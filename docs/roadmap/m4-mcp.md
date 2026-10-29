@@ -29,7 +29,7 @@
 
 ## As built
 
-Each step as it stands, with its PRs (merged unless marked open). Recorded 2026-10-27, for M4's close, against main at 36b62725, with #226 to #230 since.
+Each step as it stands, with its PRs (merged unless marked open). Recorded 2026-10-27, for M4's close, against main at 36b62725, and brought up to main at 00b2ac74 on 2026-10-29.
 
 - **M4.0, the naming scheme in the document: built.** #112.
 - **M4.1, the command API's design: built.** The design, docs/design/m4.1-command-api.md, approved by the maintainer on 2026-10-24 (all recommended, decisions 1–7 and 9–35; it takes in amendments A1–A3 and A7): #119. Added to since, reopening no decision: #126 (a cone's half-angle and apex, an edge's ends), #130 and #131 (export's left-out faces, the tolerance, the 4 GiB archive, a raised face meshed again). The study notes: #111 (measure), #113 (mesh export), #114 (the attacher, for A4).
@@ -40,10 +40,30 @@ Each step as it stands, with its PRs (merged unless marked open). Recorded 2026-
 - **M4.6, offscreen PNG: built.** The design: #135. Its steps: #141 (a worker's traps as data, step 0), #142 (the probe, step 1), #147 (the render worker, step 2), #149 (the core's client, step 3), #170 (`render`, step 4). Follow-ups: #166, #175, #176, #179, #181 (render's mutants).
 - **M4.7, logs: built.** `read_logs`, each session's events (the workers' included) in a bounded buffer, read by level, feature, and cursor, and `version` giving every limit: #194.
 - **M4.8, export: built.** The export core: #123. `export` as 3MF and `silico export`: #182. STEP (decision 6), written by a STEP worker of its own: #186. Follow-ups: #216 (a STEP refusal names each of OCCT's messages once, and a malformed STEP reply is the STEP worker's fault).
-- **M4.9, the MCP server and the bracket: built, but for the live run.** The core's entry by name and the workspace, with docs/design/m4.9-mcp.md: #184. The server, `silico-mcp` and `silico serve`: #185. The bracket, designed over MCP from a spec and checked by hand: #190. Workers found beside `silico` reached through a link: #198. `serve` refusing to start without a kernel worker, and warning of each other one missing: #199. The guide for agents, docs/mcp.md: #197. The maintainer's live run with a fresh agent, recorded in docs/walkthrough/m4.md: not yet.
+- **M4.9, the MCP server and the bracket: built.** The core's entry by name and the workspace, with docs/design/m4.9-mcp.md: #184. The server, `silico-mcp` and `silico serve`: #185. The bracket, designed over MCP from a spec and checked by hand: #190. Workers found beside `silico` reached through a link: #198. `serve` refusing to start without a kernel worker, and warning of each other one missing: #199. The guide for agents, docs/mcp.md: #197. The live run with a fresh agent, which had only `silico serve`, given the spec word for word: run on 2026-10-29 and recorded in docs/walkthrough/m4.md, its 3MF sliced by PrusaSlicer 2.9.6 with no repair: #284 (open).
 - **Not a step of this plan, built in M4:** ROADMAP.md's check warnings (decision 17: `ends_not_joined`, `constraints_redundant`, `fingerprint_missing`): #189. A length or an angle bounded by `i64::MAX` either way: #200. Lookups by ID and by name in logarithmic time: #187, #193. `check --json`'s key order in every build: #192. Kernel fixes: #171 (a boolean's skipped pairs logged by name), #177 (patch 0005, a section edge with no 3D curve). Tests: #120 (the core's tests as 9 programs), #124, #160, #178, #191; and at the close, #211 (the recompute tests' wall-clock bound scaled by the CPU share they get, so they rejoin mutants runs), #213, #214, #215, #217, #219 (flaky or heavy tests made exact), #227 and #230 (the describe tests' crashed-batch race, and their waits). Dependencies: #146. CI: #116, #169, #204 (a PR's mutants run on runners of its own), #206, #210, #221 (mutants shards' threads, and the filler).
 - **The milestone review:** its fixes: #202 (STEP strings spliced in Rust, held documents found by identity, one export mesh at a time, two untested checks pinned) and #205 (one 3-vector module). Its round-1 lows: #203. Its mutation run's survivors in the cache and workspace, killed or argued: #212. Its open lows, carried into M5's debt or fixed since: #216, #218, #220, #224 (above); the fault advice, #226 (no re-run line after a crash the request's values caused) and #229 (one wording of a fault's suggestion for sessions and the CLI).
+- **Since #230, at M4's close:**
+  - **Follow-ups:**
+    - #231, a kernel pool that couldn't find its worker looks again at each request;
+    - #233, a published check no longer warns of fingerprints a save since stored, and the unraised mesh refusal;
+    - #225 and #228, the test gaps the milestone review left.
+  - **Tests:** every wait for something expected allows the tests' one WAIT (#232, #234–#238), and every timing bound is a wait, a CPU-time bound, or scaled by the machine's load (#245, #247, #248, #250, #253, #255).
+  - **CI:**
+    - #249, #256 and #257: filler runners, gates capped at four, and the test scratch removed;
+    - #264: a mutants run plans its shards from its mutant count.
+  - **The milestone mutation run's survivors outside the cache and workspace,** killed or argued: #275 (open).
 - **M5's study notes, written during M4's close:** #208 (docs/ports/sketch-edit.md), #209 (docs/ux/solidworks.md, docs/ux/fusion.md), #223 (docs/study/viewport.md, docs/study/toolkit.md).
+- **M5's work, begun on main during M4's close (not M4's):**
+  - sketch edits (#239, #240, #241, #242, #252, #259, #270, #272, #277);
+  - drags (#246, #262, #268);
+  - display meshes for a view (#244);
+  - a transaction's undo stack and undo and redo (#260, #273);
+  - workers started ahead (#263);
+  - the timeline (#265, #276);
+  - files watched and compared off the caller's thread (#266, #269);
+  - sketch definition state (#274, #281);
+  - and its notes (#243, #278, #280).
 - **M3's close, finished during M4:** #110, #117, #118, #129, #137, #138, #139.
 - **Amendment A4, sketches on faces: not built in M4.** The bracket sketches on origin planes. `elements` reports each planar face's `default_x` (F1) already (#140, #152).
 - **The open decisions below:** 1 to 7 were taken as recommended with M4.1's design (2026-10-24, #119); 8 was decided on 2026-10-21 and built in #112.
