@@ -233,6 +233,9 @@ fn abort_becomes_error() {
 fn hang_times_out() {
     let mut w = test_worker();
     let pid = w.pid();
+    // Its 1 s, then a kill: 10 s on a quiet machine with room to spare, and the wakes on the
+    // way as late as this machine runs them.
+    let lateness = crate::lateness::Lateness::start();
     let start = Instant::now();
     let err = w
         .call(
@@ -242,7 +245,7 @@ fn hang_times_out() {
         )
         .unwrap_err();
     assert!(
-        start.elapsed() < Duration::from_secs(10),
+        start.elapsed() < crate::lateness::allowance(Duration::from_secs(10), lateness.most()),
         "{:?}",
         start.elapsed()
     );

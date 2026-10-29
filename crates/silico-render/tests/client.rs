@@ -11,9 +11,10 @@ use silico_render::bench::front_of_a_box;
 use silico_render::test_scenes;
 
 use crate::common::{
-    TEST_WORKER, WAIT, WORKER, at, client, crashing, drawn, eventually, failed, hanging,
-    process_exists, small,
+    LeakOnPanic, TEST_WORKER, UNREACHED, WAIT, WORKER, at, client, crashing, drawn, eventually,
+    failed, hanging, process_exists, small, wait_within,
 };
+use crate::lateness::{Lateness, allowance};
 
 #[test]
 fn the_worker_starts_on_the_first_render_and_draws_what_the_worker_draws() {
@@ -231,14 +232,15 @@ fn a_render_past_its_time_is_a_timeout_and_the_next_render_works() {
             ..RenderSettings::default()
         },
     );
+    // Its 2 s, then a kill and a reap: 10 s on a quiet machine with room to spare, and the
+    // wakes on the way as late as this machine runs them.
+    let lateness = Lateness::start();
     let start = Instant::now();
     let e = failed(c.render(hanging()).wait());
+    let took = start.elapsed();
     assert_eq!(e.code(), ErrorCode::WorkerTimeout, "{e:?}");
-    assert!(
-        start.elapsed() < Duration::from_secs(10),
-        "{:?}",
-        start.elapsed()
-    );
+    let bound = allowance(Duration::from_secs(10), lateness.most());
+    assert!(took < bound, "{took:?}, the bound {bound:?}");
     assert_eq!(c.pid(), None);
     drawn(c.render(front_of_a_box(8, 8)).wait());
 }
@@ -254,12 +256,13 @@ fn a_worker_that_crashes_is_a_crash_and_the_next_render_works() {
 
 #[test]
 fn renders_queued_each_have_their_own_time_from_when_theyre_sent() {
-    // The first hangs for its 2 s; the second, queued behind it, waits those 2 s but still
-    // has its own 2 s once it's sent, and draws.
+    // The first hangs for its 5 s; the second, queued behind it, waits those 5 s but still
+    // has its own 5 s once it's sent, and draws: timed from when it was queued, it would have
+    // none left. 5 s, not less: a small render on a fresh worker takes that, loaded.
     let c = client(
         TEST_WORKER,
         RenderSettings {
-            timeout: Duration::from_secs(2),
+            timeout: Duration::from_secs(5),
             ..RenderSettings::default()
         },
     );
@@ -271,22 +274,24 @@ fn renders_queued_each_have_their_own_time_from_when_theyre_sent() {
 
 #[test]
 fn a_render_cancelled_while_queued_is_never_sent_and_one_running_is_stopped() {
-    let c = client(TEST_WORKER, RenderSettings::default());
+    let c = LeakOnPanic::new(client(
+        TEST_WORKER,
+        RenderSettings {
+            timeout: UNREACHED,
+            ..RenderSettings::default()
+        },
+    ));
     let running = c.render(hanging());
     let queued = c.render(front_of_a_box(8, 8));
     // The queued one, cancelled first, is dropped when its turn comes.
     queued.cancel();
-    // The running one, hung (its time is 30 s), stops at once when cancelled.
+    // The running one, hung (its time one no test reaches), stops when cancelled: nothing
+    // else answers it within `WAIT`.
     assert!(eventually(WAIT, || c.pid().is_some()));
     std::thread::sleep(Duration::from_millis(200));
-    let start = Instant::now();
     running.cancel();
-    assert!(matches!(running.wait(), RenderOutcome::Cancelled));
-    assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        start.elapsed()
-    );
+    let outcome = wait_within(running, WAIT).expect("the cancelled render never answered");
+    assert!(matches!(outcome, RenderOutcome::Cancelled), "{outcome:?}");
     assert!(matches!(queued.wait(), RenderOutcome::Cancelled));
     // And the next render starts a worker and draws.
     drawn(c.render(front_of_a_box(8, 8)).wait());

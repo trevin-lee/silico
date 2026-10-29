@@ -5,9 +5,9 @@
 //! snapshot agreeing), and a published read held in the kernel while the session goes on.
 //! The fake places each element at (n, 0, 0), n its number, so its distances are by hand.
 
-use super::model::WAIT;
+use super::model::{WAIT, promptly};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::example::EXAMPLE;
 use super::listing::{BOX, TWO_BODIES, answer, fixture, model_of};
@@ -243,7 +243,9 @@ fn a_megabyte_name_is_refused_at_once_and_shown_short() {
             "I k7f2qx3m.box.Face1, ".repeat(40_000)
         ),
     ] {
-        let started = Instant::now();
+        // Refused in this thread, before the kernel is asked: its CPU, which load doesn't
+        // change.
+        let started = cpu_time::ThreadTime::now();
         let refused = distance(
             &model,
             &kernel,
@@ -253,7 +255,7 @@ fn a_megabyte_name_is_refused_at_once_and_shown_short() {
         .unwrap_err();
         assert!(
             started.elapsed() < Duration::from_secs(5),
-            "{:?}",
+            "{:?} of CPU",
             started.elapsed()
         );
         assert_eq!(refused.total(), 1);
@@ -497,11 +499,12 @@ fn a_million_names_are_refused_by_their_count_at_once() {
         "[{}]",
         vec![r#""k7f2qx3m.box.Face1""#; 1_000_000].join(",")
     ));
-    let started = Instant::now();
+    // Read and refused in this thread: its CPU, which load doesn't change.
+    let started = cpu_time::ThreadTime::now();
     let refused = refusals(&text);
     assert!(
         started.elapsed() < Duration::from_secs(10),
-        "{:?}",
+        "{:?} of CPU",
         started.elapsed()
     );
     assert_eq!(
@@ -768,13 +771,9 @@ fn dropping_the_sessions_stops_a_current_read_held_in_the_kernel() {
         None,
     );
     assert!(f.kernel.wait_running(1, WAIT));
-    let started = Instant::now();
-    drop(f.sessions);
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        started.elapsed()
-    );
+    // The held request is let go only at the end: a drop that waited for it never returns.
+    let sessions = f.sessions;
+    promptly("dropping the sessions", move || drop(sessions));
     let refused = reading.wait_timeout(WAIT).ok().unwrap().result.unwrap_err();
     assert_eq!(
         refused.errors()[0].message(),

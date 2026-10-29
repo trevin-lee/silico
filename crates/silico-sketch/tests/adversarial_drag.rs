@@ -30,8 +30,9 @@ use systems::{Builder, Rng};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
 const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-test-worker");
-/// The time the largest admitted drag's move is allowed: the bound its test holds it to
-/// (a move answered in time), not a wait for something to happen, which is [`WAIT`].
+/// What the largest admitted drag's move may cost: the bound its test holds it to (a move
+/// answered in time), measured as its wall time over how much slower than a quiet machine
+/// this one ran it (`Share`); the call itself is allowed [`WAIT`].
 const TIMEOUT: Duration = Duration::from_secs(30);
 const CLOSE: f64 = 1e-9;
 
@@ -740,19 +741,25 @@ fn a_move_of_the_largest_part_a_drag_admits_is_answered_in_time() {
         }
         other => panic!("begin: {other:?}"),
     }
+    let share = crate::share::Share::start();
     let t = Instant::now();
     let moved = w.call(
         Generation(1),
         Op::DragMove {
             to: [-(links as f64) / 2.0, 10.0],
         },
-        TIMEOUT,
+        WAIT,
     );
-    let took = t.elapsed();
+    let (took, slowdown) = (t.elapsed(), share.finish().slowdown);
     match moved {
         Ok(Reply::Moved(_)) => {}
         other => panic!("a move of the largest admitted drag, after {took:?}: {other:?}"),
     }
+    assert!(
+        took.div_f64(slowdown) < TIMEOUT,
+        "a move of the largest admitted drag took {took:?}, the machine {slowdown:.2} times \
+         slower than a quiet one"
+    );
 }
 
 /// `n` unit links joined end to end in a zigzag, the first start held at the origin: one

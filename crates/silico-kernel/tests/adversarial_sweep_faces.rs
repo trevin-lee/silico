@@ -601,6 +601,9 @@ fn a_profile_of_thousands_of_sides_and_a_hundred_holes_sweeps_in_reasonable_time
     };
     let area = 0.5 * n as f64 * r * r * libm::sin(TAU / n as f64) - 100.0 * PI;
     // The holes sit symmetrically about x 100 too.
+    // Its wall time over how much slower than a quiet machine this one ran it (`Share`),
+    // which load doesn't move.
+    let share = crate::share::Share::start();
     let started = std::time::Instant::now();
     let made = make_faces(&regions).unwrap();
     judge(
@@ -616,7 +619,11 @@ fn a_profile_of_thousands_of_sides_and_a_hundred_holes_sweeps_in_reasonable_time
         area * 100.0 * TAU,
     );
     let elapsed = started.elapsed();
-    assert!(elapsed.as_secs() < 60, "took {elapsed:?}");
+    let slowdown = share.finish().slowdown;
+    assert!(
+        elapsed.div_f64(slowdown).as_secs() < 60,
+        "took {elapsed:?}, the machine {slowdown:.2} times slower than a quiet one"
+    );
 }
 
 // --- Determinism ---------------------------------------------------------------------------

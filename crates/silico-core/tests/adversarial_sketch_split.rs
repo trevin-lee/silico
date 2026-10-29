@@ -13,7 +13,9 @@ use proptest::prelude::*;
 use proptest::test_runner::RngSeed;
 use silico_core::Error;
 use silico_core::document::sketch_edit::{Split, split};
-use silico_core::document::{Document, ElementId, Form, Operation, Sketch, read, validate};
+use silico_core::document::{
+    Direction, Document, ElementId, Form, Operation, Reference, Sketch, read, validate,
+};
 use silico_core::sketch::Translation;
 
 use crate::fixture::{arc, circle, document, fields, line, point};
@@ -170,6 +172,41 @@ fn a_circle_split_second_at_a_tangent_on_point_keeps_the_tangency() {
     let before = circle_with_a_tangent_line_at_s();
     let done = refused_or_gated(&before, "c0000000", &[[-10.0, 0.0], [10.0, 0.0]]).unwrap();
     assert_eq!(sent_angle(&done.edited.sketch, "k0000001"), 0.0);
+}
+
+#[test]
+fn a_circle_split_first_at_a_tangent_on_point_a_line_ends_at_keeps_the_tangency() {
+    // Line x from t (10, −10) ends at s (10, 0), running +y, c's own direction there; x
+    // leaves s along −y, against c: `opposite`, sent as 0 (its end, opposite). Split with s
+    // first, the start-side arc c starts at s, where x ends: a path along x into s and on
+    // along c runs +y throughout, smooth, so the carried tangent_at is `same`, sent as 0
+    // (one's end, the other's start).
+    let points = [
+        point("z0000000", 0.0, 0.0),
+        point("s0000000", 10.0, 0.0),
+        point("t0000000", 10.0, -10.0),
+    ]
+    .join(", ");
+    let before = doc(
+        &points,
+        &line("x0000000", "t0000000", "s0000000"),
+        &circle("c0000000", "z0000000", 10.0),
+        "",
+        r#"{"id": "k0000001", "type": "tangent_on", "a": "x0000000", "at": "s0000000", "b": "c0000000", "direction": "opposite"}"#,
+    );
+    assert_eq!(sent_angle(sketch_of(&before), "k0000001"), 0.0);
+    let done = refused_or_gated(&before, "c0000000", &[[10.0, 0.0], [-10.0, 0.0]]).unwrap();
+    let after = &done.edited.sketch;
+    assert_eq!(
+        form(after, "k0000001"),
+        &Form::TangentAt {
+            a: Reference::Element(id("x0000000")),
+            b: Reference::Element(id("c0000000")),
+            at: Reference::Element(id("s0000000")),
+            direction: Direction::Same,
+        }
+    );
+    assert_eq!(sent_angle(after, "k0000001"), 0.0);
 }
 
 #[test]
