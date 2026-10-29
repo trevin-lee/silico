@@ -530,6 +530,7 @@ void System::clear()
     conflictingTags.clear();
     redundantTags.clear();
     partiallyRedundantTags.clear();
+    dependentGroupTags.clear();
 
     reference.clear();
     clearSubSystems();
@@ -4778,6 +4779,7 @@ int System::diagnose(Algorithm alg)
     conflictingTags.clear();
     redundantTags.clear();
     partiallyRedundantTags.clear();
+    dependentGroupTags.clear();
 
     // This QR diagnosis uses a reduced Jacobian matrix to calculate the rank of the system
     // and identify conflicting and redundant constraints.
@@ -5449,6 +5451,21 @@ void System::identifyConflictingRedundantConstraints(
         int origCol = qrJT.colsPermutation().indices()[j];
 
         conflictGroups[j - rank].push_back(clist[jacobianconstraintmap.at(origCol)]);
+    }
+
+    // Each group's tags, before the contest below reduces the groups: tag 0 and internal
+    // alignment excluded, as from conflictingTags.
+    dependentGroupTags.clear();
+    for (const auto& cGroup : conflictGroups) {
+        SET_I groupTags;
+        for (const auto& constr : cGroup) {
+            bool isinternalalignment
+                = (constr->isInternalAlignment() == Constraint::Alignment::InternalAlignment);
+            if (!isinternalalignment && constr->getTag() != 0) {
+                groupTags.insert(constr->getTag());
+            }
+        }
+        dependentGroupTags.emplace_back(groupTags.begin(), groupTags.end());
     }
 
     // Augment the information regarding the group of constraints that are conflicting or redundant.

@@ -20,6 +20,7 @@ OCCT's patch policy (`third_party/occt/README.md`), with single-threading allowe
 | Patch | Upstream | What it changes |
 |---|---|---|
 | [0001](patches/0001-dependent-parameters-on-the-calling-thread.patch) | An issue drafted for the maintainer to file | `System::diagnose()` ran its dependent-parameter QR on a second thread (`std::async`'s default policy), joined before its result is read. It now runs deferred, on the calling thread, with the same arguments and result, so workers stay single-threaded (ARCHITECTURE.md, Deterministic kernel, 5). |
+| [0002](patches/0002-dependent-constraint-groups.patch) | An issue drafted for the maintainer to file | `System::identifyConflictingRedundantConstraints` built the groups of constraints in each linear dependency among the rows (`conflictGroups`), then reduced them by its popularity contest to the conflicting and redundant lists, and dropped them. Each group's tags are now kept before the contest, tag 0 and internal alignment excluded as from `conflictingTags` (`dependentGroupTags`), given by `getDependentGroups`, and cleared where `redundantTags` is. Nothing it computed or returned before changes. |
 
 ## Updating
 
