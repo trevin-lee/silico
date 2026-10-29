@@ -177,6 +177,220 @@ M3.6's port note, docs/ports/sketch-features.md, covers these in full and correc
 - **The result** fuses with or cuts the base, with an automatic fuzzy value (1e-6 × the diagonal, `cf8ad66373`). The single-solid rule ("Result has multiple solids", counting every solid since `eb52dd4a9a`) applies only when the body's `AllowCompound` is false, and it's true by default since `406c3ba42c`.
 - **Refine** has been on by default since `e490531510` (2024): oracle comparisons of face and edge counts set it explicitly.
 
+## Definition states (the sketch read, M5.10, open item 32)
+
+The `sketch` read (docs/design/m5.0-app.md, section 7, *`sketch` (M5.10)*) gives each sketch a `state`: SolidWorks' five, `under_defined`, `fully_defined`, `over_defined`, `no_solution`, or `invalid`. It gives each point and curve `under_defined`, `fully_defined`, or `over_defined`, and each constraint `satisfied`, `conflicting`, `redundant`, or `partially_redundant`. The core decides them, so no client maps unknowns to members. This section is the study for those rules. **It decides nothing.** Each rule under *What Silico does* is a recommendation for M5.10 and the maintainer.
+
+Sources:
+- FreeCAD's main at `876271d660`, whose line numbers are cited. The commits since 1.2 branched (`e8f826d0ed`) to `Sketch.cpp`'s dependent-parameter code, `SolverGeometryExtension`, `getGeometryWithDependentParameters`, `EditModeGeometryCoinManager.cpp` and `ViewProviderSketch.cpp` were read. None changes these rules (`d8cf415e4f` only turned `solve()`'s return codes into an enum).
+- The oracle, FreeCAD 1.1.3, run headless on probe scripts. A result marked *(1.1.3)* was observed.
+- docs/ux/solidworks.md §2, *Definition states*.
+
+### What FreeCAD does
+
+**Per parameter: dependent parameters.** The diagnosis (`GCS.cpp`, `System::diagnose`, :4773) builds one Jacobian (`makeReducedJacobian`, :4725-4771):
+- its rows are every driving row tagged 0 or more: the arc rules, and conflicting and redundant rows too;
+- its columns are every unknown except driven values.
+
+The first QR, of the transposed Jacobian, gives the rank, the conflicting constraints, and the redundant ones. A second QR, of the Jacobian itself, gives the dependent parameters (`identifyDependentParameters`, :5298-5335). After the entries above the pivots are eliminated, each non-pivot column is one free direction. Its group is the parameters with an entry above 1e-10 in that column, plus the column's own parameter. So a parameter is dependent exactly when some motion the constraints allow, to first order, moves it. That doesn't depend on which basis the QR picks. A parameter that no row reads is a zero column, so it's always dependent. With no rows at all (:4911) the second QR doesn't run, `emptyDiagnoseMatrix` stays set, and `Sketch::calculateDependentParametersElements` marks every parameter dependent (`Sketch.cpp:575-580`). Silico's worker reads the same list (`getDependentParams`, `bridge.cpp`) and reports `no_equations` for the empty case. History:
+- `ed25902e12` (2018) added dependent parameters at the sketch level.
+- `5e2a2cbbbb` and `b2fd91c333` (2020-12) moved the second QR to `std::async`. Silico patches that to run deferred (above, *Determinism*).
+- `c635b4b954` refactored the sparse-QR version.
+
+**Per geometry: `SolverGeometryExtension`** (`603a232349`, 2020-12; `f2c1f35aaf`, 2022-05, added each point's x and y and each edge parameter on its own; `2326186428` fixed an index on an empty vector):
+- Each geometry's parameters are split into its edge's own (`notifyAttachment`, `SolverGeometryExtension.cpp:82`: an arc's radius and two angles, a circle's radius, none for a line or a point) and its `start`, `end`, and `mid` points (x and y each).
+- `calculateDependentParametersElements` (`Sketch.cpp:559-632`) marks each one dependent or independent from the list.
+- A geometry is `FullyConstraint` exactly when every one of them is independent (`getGeometry`, `SolverGeometryExtension.h:379-385`). So:
+  - a line is fully constrained when both its ends are;
+  - a circle when its centre and radius are;
+  - an arc when its centre, start, end, radius, and both angles are.
+- `analyseBlockedGeometry` (`Sketch.cpp:204-251`, `07725ede25`) is about the `Block` constraint. It fixes geometry that only a block holds, before the diagnosis. It isn't a definition state, and Silico has no `Block`.
+
+**`getGeometryWithDependentParameters`** (`SketchObjectGeometry.cpp:1553-1608`; `830932db4e`, 2018; rewritten in `cb68fa4fb8`, 2020-12) lists `(geometry, position)` for each geometry that isn't fully constrained. Since `cb68fa4fb8`, a dependent `end` or `mid` is listed as `start` (:1603-1606), on main and in 1.1.3. Examples *(1.1.3)*:
+- A line whose start is on the root point and whose end is free gives `[(0, 1)]`, which says the start is free.
+- A circle with its radius fixed and its centre free gives `[(0, 1)]`.
+
+The Gui's *Select unconstrained DoF* command (`CommandSketcherTools.cpp:1015-1075`, `fdc4df0202`) reads the extension directly and gets it right. So the Python list is a reliable answer only to whether a geometry is listed at all.
+
+**Colours** (`EditModeGeometryCoinManager.cpp`, `updateGeometryColor`, :133). Each step applies only if the ones before it don't:
+1. The sketch is *invalid*: it has redundant, conflicting, or malformed constraints (`ViewProviderSketch::isSketchInvalid`, `ViewProviderSketch.cpp:5321-5328`). Every point and curve is drawn `InvalidSketchColor`, #FF6D00. Redundancy counts, since FreeCAD's redundant sketch isn't solved.
+2. The sketch is `FullyConstrained`. Every curve and point is drawn `FullyConstrainedColor`, #00FF00 (:259-261, :554-555).
+3. Otherwise each curve is drawn by its own state: `FullyConstraintElementColor` #80D0A0 or `CurveColor` white (:557-561). Construction geometry uses #8FA9FD or `CurveDraftColor` #0000DC, and internal-alignment geometry has its own pair. Colour values are at `EditModeCoinManagerParameters.cpp:75-95`.
+4. **A point takes its curve's state, not its own** (:264, `isFullyConstraintElement(GeoId)` of the vertex's geometry). A line's fixed end is drawn as unconstrained while its other end is free. A joint that isn't fully constrained is drawn in the constraint colour (`c42b1f1654`, 2024-03). Points follow their construction state (`f5da655429`). The root point is always `FullyConstraintElementColor`, and the axes have their own colours.
+
+A constraint is coloured only by kind (`EditModeConstraintCoinManager.cpp:1877-1900`, `constrColor` :3047-3072): driving #FF2600, reference #0026FF, an expression's #FF7F26, inactive #7F7F7F. **No constraint is ever coloured as conflicting or redundant.** Those appear only in the solver messages, with a link that selects them (`TaskSketcherMessages.cpp:64-74`). So FreeCAD has no per-element over-constrained state: a conflict or a redundancy turns the whole sketch orange.
+
+**The whole sketch.** `UpdateSolverInformation` (`ViewProviderSketch.cpp:4459-4516`) shows the first message that applies, in this order:
+1. "Empty sketch": no geometry, and no external geometry but the two axes.
+2. "Over-constrained": degrees of freedom below 0, or conflicts.
+3. "Malformed constraints".
+4. "Redundant constraints".
+5. "Partially redundant".
+6. "Solver failed to converge".
+7. "Under-constrained: n Degrees of Freedom".
+8. "Fully constrained".
+
+The `FullyConstrained` property (`035bea5082`, 2021) is set to degrees of freedom = 0 only when the solve succeeds (`b7945b6a15`, 2022-12: not when it fails to converge; `SketchObjectConstraints.cpp:166-170`). Any other outcome leaves it at its last value. It's stale on purpose, and the tree's overlay icon reads it (`ViewProviderSketch.cpp:5054`). **The per-geometry states are stale the same way.** Each solve diagnoses afresh, but its solver extensions reach the document's geometry only when the solved geometry is written back, on success (`f2c1f35aaf`'s message). `getGeometryWithDependentParameters` and the colours read the document's geometry, so after a failed solve they show the last successful one. The Gui's tools read the solver's copy instead (`getSolvedSketch().getSolverExtension`, `DrawSketchDefaultHandler.h:810-811`: "it is important not to rely on Geometry attached extension from the solver, as geometry is not updated during temporary diagnose"). Conflicts and redundancy turn everything orange anyway. A solver failure doesn't, so its per-element colours are the last success's. Where it matters, the probes below add the new constraints in one call, so one solve sees them all.
+
+**Probes** *(1.1.3, `sketch.solve()`, `DoF`, the constraint lists, `FullyConstrained`, `getGeometryWithDependentParameters()`; constraints numbered from 1)*:
+
+| Sketch | solve | DoF | Lists | FullyConstrained | Dependent |
+|---|---|---|---|---|---|
+| Empty | 0 | 0 | | True | none |
+| A line, no constraints | 0 | 4 | | False | start, end, and mid, each listed as start |
+| A line from the root point, its end free | 0 | 2 | | False | `(0, 1)`: in fact the end |
+| A line from the root point, horizontal, length 10; then a free line added | 0 | 0, then 4 | | True, then False | none, then the new line's start and end |
+| A circle, centre on the root point | 0 | 1 | | False | its edge (the radius) |
+| An arc, centre on the root point, radius 5 | 0 | 2 | | False | edge, start, end; the centre independent |
+| An arc's centre, start, and end each placed by `DistanceX`/`DistanceY` | −2 | 0 | redundant [5]: three points fix 6 values against the arc's 5 | True (the solve before the fifth) | none (likewise) |
+| A point on the x axis | 0 | 1 | | False | the point (x free, y fixed) |
+| A point with only reference x and y | 0 | 2 | | False | everything (no driving rows) |
+| A fixed line, then a second length 12 | −4 | −1 | conflicting [3, 4] | **True (stale)** | none (stale) |
+| A new sketch whose first solve conflicts so (one call) | −4 | −1 | conflicting [3, 4] | False (its default) | none: no solve has written any |
+| A line at the root and a free line, then horizontal and lengths 10 and 12 on the first, in one call | −3 | 4 | conflicting [3, 4] | False | **stale**: the first line's end and the free line, as before the call |
+| The same with a second horizontal for the second length | −1 | 4 | redundant [4] | False | stale, as before. The solve fails, since the dropped horizontal isn't met where the line is drawn (above, *Its API*) |
+| The same with a horizontal and a vertical | −1 | 4 | | False | stale, as before; "Both points are equal" from every solver |
+| A horizontal and a vertical line from the root, 80° apart | −3 | 2 | conflicting [3, 4, 5] | False | both lines (the solve before the angle) |
+| The same at 90° | −2 | 2 | redundant [5] | False | both lines (likewise) |
+| A fixed line, and a second line from its end with a free end | 0 | 2 | | False | the second line (its end) |
+| A triangle from the root point, sides 1, 1, and 10 | −1 | 1 | | False | (not read) |
+| A point on two fixed circles of radius 5, 10 apart, touching at it | −2 | 1 | redundant [7] | False | the point, by elimination: both circles are fully dimensioned, so the one degree of freedom is the point's, though only (5, 0) lies on both (the list itself is the solve's before the seventh) |
+
+The point on two touching circles shows that the rule is a first-order one, for FreeCAD's rank as for its dependent parameters. Two curves' normals that line up at a point are taken as one equation, so one `PointOnObject` is redundant and the point keeps a degree of freedom it can't use.
+
+### What SolidWorks does (docs/ux/solidworks.md §2)
+
+- **The sketch** is Fully Defined, Over Defined, Under Defined, No Solution Found, or Invalid Solution Found. **Invalid Solution Found** means the solve finished but the geometry is invalid: a zero-length line, a zero-radius arc, a self-intersecting spline. **No Solution Found** means the position can't be determined (Sketch Geometry Status). The error-message page swaps the two, and its "No Solution Found" text describes invalid geometry. Silico takes the definitions from Sketch Status Conventions and Sketch Geometry Status, the two pages that define states, and treats the error page as the odd one out.
+- **Over defined** is SolidWorks' word for a sketch whose relations or dimensions over-define it, whether they agree or not. Its error text is "The sketch conflicts. Consider deleting some over defining dimensions or relations." A dimension that over-defines asks: make it driven, leave it driving (the sketch stays over defined), or cancel. So a redundant dimension that agrees still makes the sketch over defined. That's the behaviour M3.3's redundancy rule already follows: the sketch solves, and the extra constraints are marked.
+- **Each entity has a state.** Under defined is blue, fully defined black, over defined red. Endpoints are coloured on their own: black fully defined, blue under defined, red over defined. Over-defined and dangling points always show. The help doesn't say which entities an over-defining relation makes red, beyond the entities and endpoints it governs. Item conflicts are drawn yellow, invalid yellow, and unsolvable red. M5.0's open item 28 settles the colours.
+- **The tree:** `(+)` over defined, `(–)` under defined, `(?)` not solvable, and nothing when fully defined.
+- **Dangling:** a relation to geometry that no longer exists. Silico has no such state: references are IDs, and the gate refuses a missing one.
+
+### Where they differ, and which Silico follows
+
+| Question | FreeCAD | SolidWorks | Silico (recommended) |
+|---|---|---|---|
+| A point's state | its curve's | its own | its own (SolidWorks; with shared points, D2, a point belongs to no single curve) |
+| An over-defined entity | none: the whole sketch turns orange | red, per entity | per entity (SolidWorks) |
+| A redundant sketch | not solved; "Redundant constraints"; orange | solved, over defined | solved (M3.3), `over_defined` (SolidWorks) |
+| Can't solve, or solves to invalid geometry | both "Solver failed to converge" (each solver's invalid result is rejected and the next tried) | No Solution Found, or Invalid Solution Found | `no_solution` or `invalid` (SolidWorks) |
+| The states after a failed solve | the sketch's `FullyConstrained` and every element's state keep the last success's | the current state | the current states, from the answer that stands, on every read: FreeCAD's staleness isn't copied |
+| An empty sketch | "Empty sketch", DoF 0, `FullyConstrained` | help silent | `fully_defined`, dofs 0 (FreeCAD) |
+
+### What Silico does (recommended)
+
+Everything comes from the answer that stands (M3.3, *Checked by loads*): the load's, when loads ran. Its diagnosis was taken at the coordinates its file holds. For a solved sketch those are the solution the read gives. For a refused one they're the stored coordinates, which the read gives too. So the states describe the geometry the read shows. The worker's `Solved` carries the diagnosis for every outcome, since `solver_new` diagnoses before any algorithm runs: `dofs`, `free`, `no_equations`, `conflicting`, `redundant`, `partially_redundant`.
+
+**A flagged constraint** is one the answer marks:
+- conflicting: PlaneGCS's conflicting, and the redundant ones that disagree past decision 5's tolerance, which the core refuses as `over_constrained`;
+- redundant or partially redundant: those it keeps.
+
+**A constraint's state:**
+- `conflicting` if it's in a conflict;
+- otherwise `redundant` or `partially_redundant` as PlaneGCS lists it;
+- otherwise `satisfied`.
+
+`satisfied` means the diagnosis finds the constraint independent of the others. On a solved sketch it holds on the solution. On a sketch with no solution or an invalid one it has no solution to hold on, so the read's problem (below) says why.
+
+A reference constraint (`driving: false`) is never sent to the solver, so it's always `satisfied` and never fixes anything. FreeCAD likewise keeps driven values out of the diagnosis (`96f6c46949`, `7055b5ef0f`), and the probe's point with only reference x and y stays free. Which constraint of a redundant set is the redundant one is PlaneGCS's popularity contest (above), as in FreeCAD: of a horizontal given twice, the later; of a horizontal, a vertical, and 90° between them, the angle.
+
+**A point's state:**
+- `over_defined` if a flagged constraint reads its x or y, as `SketchSystem::reads` gives the values a constraint's rows read. A radius reads only the radius, so it never over-defines the centre. A line's `horizontal` reads both of its ends.
+- Otherwise `under_defined` if its x or y is free.
+- Otherwise `fully_defined`.
+
+A point no constraint reads is a zero column, so it's always free: no special case. A point that curves share (D2) has one state, whichever curves use it. FreeCAD draws one vertex per curve end, each in its own curve's colour, so a corner between a fixed line and a free one shows two colours.
+
+**A curve's state.** A curve's own values are a circle's radius, an arc's radius and two angles, and none for a line. Its values in all are its own and its points' (a line's `from` and `to`, a circle's `center`, an arc's `center`, `start`, and `end`). Then:
+- `over_defined` if a flagged constraint names the curve;
+- otherwise `under_defined` if any of its values in all is free (FreeCAD's `getGeometry`);
+- otherwise `fully_defined`.
+
+A curve takes its points' freedom but not their over-definition. Two lines through a point that's dimensioned twice aren't over defined; the point is, and so is the duplicated dimension. Today's `SketchSolution::free` names points, circles, and arcs by their own values only (`Translation::free`), so a line's state, and the centre and ends of a circle or arc, come from its points. The worked cases:
+- A line is `under_defined` if either end is.
+- A circle with its centre fixed and its radius free is `under_defined`. So is one with its radius fixed and its centre free; its centre is `under_defined` too.
+- An arc whose centre and radius are fixed but whose ends are free: its centre is `fully_defined`, its start and end `under_defined`, and the arc `under_defined`, its angles being free. FreeCAD reports the same *(1.1.3)*.
+- An arc whose centre, start, and end are all dimensioned is over-specified by one (6 against 5, *(1.1.3)*: redundant [5]). The redundant dimension and the point it reads are `over_defined`. The arc itself, named by no flagged constraint, is `fully_defined`, and the sketch is `over_defined`.
+
+**The sketch's state** follows the error the core's `read` returns, in the order it checks them. The rule is the error's code, so no second order can drift from it:
+
+| The answer | Code | `state` | Members |
+|---|---|---|---|
+| PlaneGCS's conflicts, or redundant constraints that disagree (decision 5) | `over_constrained` | `over_defined` | as stored |
+| No algorithm solved, or the loads don't settle | `solve_failed` | `no_solution` | as stored |
+| Solved to geometry that can't be built, or a side flipped, concentric circles touching outside, a collapsed symmetry, an arc's ends unmirrored | `invalid_result` | `invalid` | as stored |
+| Solved, with redundant or partially redundant constraints kept | none (a warning) | `over_defined` | as solved |
+| Solved, `dofs` > 0 | none | `under_defined` | as solved |
+| Solved, `dofs` = 0 | none | `fully_defined` | as solved |
+
+"As stored" is SolidWorks' "the sketch has not been updated". Members' states come from the diagnosis in every row, and constraints' states too. So a conflicting sketch shows its free geometry as `under_defined`, its fixed geometry as `fully_defined`, and what the conflicting constraints read as `over_defined`. That's what the design means by "their states from the conflict". FreeCAD's diagnosis computes the same, its conflicting rows counted as fixing what they read, but its document shows the last success's (above).
+
+The design's sentence "a sketch whose constraints conflict has no solution" is about its coordinates. **Its state is `over_defined`, not `no_solution`**: SolidWorks' over-defined text is the conflict text, and `no_solution` is reserved for a sketch the solver couldn't place.
+
+`dofs` is PlaneGCS's in every row. It's negative when over-constrained by conflicts. It can be positive in an over-defined sketch: a redundancy in one part leaves the other parts free. The state, not the sign of `dofs`, says over defined. In a solved sketch with no redundancy, `dofs` > 0 exactly when some member is `under_defined`. Every free direction has its own non-pivot parameter in its group, and a free parameter belongs to some free direction. So the sketch's state and its members' states agree, since the two QRs have the same rank in exact arithmetic. A test pins that a `fully_defined` sketch has no `under_defined` member.
+
+**Edge cases:**
+- **An empty sketch** (no points, so no curves or constraints): `fully_defined`, `dofs` 0, decided by the core before any solve. That's FreeCAD's DoF 0 and `FullyConstrained` *(1.1.3)*. PlaneGCS itself gives −1 for no unknowns, which the core must not read as over-defined.
+- **No constraints, or only reference ones:** `no_equations`, so every member is `under_defined` and the sketch is too (FreeCAD's reading, already `Translation::free`'s).
+- **Construction geometry:** the same rules. It's solved like any other, and FreeCAD colours it by its state too.
+- **A member no constraint names:** `under_defined`, through the zero column above. A point is `fully_defined` without being named only when constraints on curves through it fix it.
+- **`origin`, `x_axis`, `y_axis`:** fixed values, not members. They aren't listed and have no state. A client draws them as fixed, as FreeCAD always draws the root point. Constraints to them count like any other.
+- **Driven (reference) dimensions:** `satisfied`, and they fix nothing. Their values are measured on a solved sketch, and given as stored otherwise. Making an over-defining dimension driven (SolidWorks' prompt) takes it out of the diagnosis, so the sketch's state is read again from the next solve.
+- **The first-order rule:** a point on two curves that touch at it is `under_defined`, and one of the two `on`s `redundant`, as PlaneGCS diagnoses *(1.1.3: DoF 1, redundant [7])*. Silico reports what the diagnosis says. It doesn't second-guess it with a global test.
+- **Silico's own rows:** a `symmetric` of an arc's ends about a line that other constraints put the centre on is sent as both rows (above, *Choices made from the current geometry*). Its perpendicular row is then partially redundant, so such a sketch reads `over_defined` with the `symmetric` `partially_redundant`. FreeCAD, deciding from the drawing, sends one row and reports nothing. That's a consequence of decision 5's choice, and a test pins it.
+- **Shared points and arcs:** an arc's rules are tagged 0 and are never flagged (above). So an arc's own rules never over-define its points.
+
+### What the solve doesn't report today, and the smallest way to get it
+
+The worker needs nothing new. The diagnosis it already sends has every value's freedom and every constraint's flags, for every outcome. Per-entity conflict membership needs no solver report: the core built the rows, and `SketchSystem::reads` says which values each one reads. Dependent-parameter groups aren't needed; FreeCAD uses them only for `Block`.
+
+The core needs:
+1. **The diagnosis kept beside an error.** `Translation::read` returns the error alone and drops the `Solved` it read. The smallest change is a diagnosis for every answer that stands: `dofs`, the free members (`Translation::free`), and the conflicting, redundant, and partially redundant constraint IDs, beside `Ok` and `Err` alike. The model then holds it for each sketch, so `sketch` reads it for a sketch whose rebuild failed.
+2. **Decision 5's disagreeing constraints as data.** Today they're only the `over_constrained` error's elements. They should go into the diagnosis's conflicting list. PlaneGCS doesn't report redundant groups, so the partner a disagreeing constraint repeats isn't known. It stays `satisfied`, and the one named is the one to remove, as the error's suggestion says.
+3. **`SketchSystem::reads` made public** (it's private in silico-protocol), or a function giving the values a constraint reads.
+4. **The solve's problem in the read.** The design's result has `profile_problems` but nothing for the solve. `no_solution` and `invalid` need it: SolidWorks colours the invalid entities, and `invalid_result` names them (the line that collapsed, the tangency and its circles). Recommended: `solve_problem`, the solve's error as data (code, message, elements), or `null`.
+
+### Tests
+
+**FreeCAD's.** FreeCAD has no test of a geometry's or a point's state, of `getGeometryWithDependentParameters`, or of any message. Two test the whole sketch's `FullyConstrained`:
+
+| FreeCAD | What | Silico |
+|---|---|---|
+| `TestSketchFillet.py` `testDistance` | a rectangle fully constrained before and after a corner fillet | Waits for a sketch corner's fillet (M5.0 decision 12). Then: `fully_defined` before and after |
+| `tests/src/Mod/PartDesign/App/Pipe.cpp` (main only, `422da33962`, 2026-08) | a circle centred on the root point with a diameter, and a vertical line from the root with a length: both `FullyConstrained` | Port as two sketch-read cases: `fully_defined`, `dofs` 0, every member `fully_defined`, every constraint `satisfied` |
+| `CreateRectangleSketch` (M3.3: DoF 0); `TestCoincidentCommandGui.py` fixtures (M3.3) | | Extend with states: the rectangle `fully_defined` throughout. The conflicting coincidence's three constraints `conflicting`, the sketch `over_defined`, members as stored. The second horizontal `redundant`, its line and ends `over_defined`. The collapsed line `invalid` |
+
+**Silico's own,** from hand counts, with the FreeCAD 1.1.3 results above where a probe ran:
+- The empty sketch: `fully_defined`, `dofs` 0.
+- Points and a line with no constraints: all `under_defined`, `dofs` 2 per point.
+- A line whose `from` is placed by `distance_x` and `distance_y` from `origin` and whose `to` is free: `from` `fully_defined`; `to`, the line, and the sketch `under_defined`; `dofs` 2. FreeCAD would draw both ends as free.
+- That line made `horizontal` with a `length`: all `fully_defined`, `dofs` 0.
+- A `horizontal` added again: the second `redundant`, the first `satisfied`, both points and the line `over_defined`, the sketch `over_defined`, `dofs` 0, the geometry as solved.
+- A second line from that line's `to`, its other end free: the shared point `fully_defined`, the second line `under_defined`, `dofs` 2 *(1.1.3: 2)*.
+- Lengths 10 and 12 on the first line, with a free line beside it: both lengths `conflicting`; the `horizontal` `satisfied`; the first line and its ends `over_defined`; the free line and its ends `under_defined`; the sketch `over_defined`; `dofs` 4; members as stored *(1.1.3: conflicting [3, 4], DoF 4)*.
+- A horizontal and a vertical line at 80°: all three `conflicting`, `over_defined`. At 90°: the angle `redundant`, the sketch `over_defined` *(1.1.3: [3, 4, 5]; [5])*.
+- A horizontal line with a `length` of 10 and a `distance_x` of 10.000005 between its ends (decision 5; PlaneGCS calls one redundant): the dropped one `conflicting`, the sketch `over_defined`, members as stored.
+- A circle with centre fixed, radius free, and the reverse: `under_defined` each, `dofs` 1 and 2.
+- An arc with centre and radius fixed: centre `fully_defined`, ends and arc `under_defined`, `dofs` 2. With its sweep fixed too: `dofs` 1.
+- An arc with centre, start, and end all dimensioned: one dimension `redundant`, its point `over_defined`, the arc `fully_defined`, the sketch `over_defined`.
+- A point `on` `x_axis`: `under_defined`, `dofs` 1.
+- A point with only reference `distance_x` and `distance_y`: `under_defined`, both references `satisfied`.
+- A line made `horizontal` and `vertical`: `invalid`, members as stored, `solve_problem` naming the line.
+- A triangle with one corner placed from `origin` and sides 1, 1, and 10: `no_solution`, `dofs` 1, members as stored, the placed corner `fully_defined` and the others `under_defined` (it can still turn), `solve_problem` `solve_failed` *(1.1.3: solve −1, DoF 1)*.
+- A point on two touching circles: `under_defined`, one `on` `redundant` *(1.1.3)*.
+- Construction geometry in each case above gives the same states.
+- A `fully_defined` sketch has no `under_defined` member, as a property over the sketch stress corpus.
+
+**The oracle.** `silico-oracle`'s sketch cases could also compare which curves are fully constrained. Whether `getGeometryWithDependentParameters()` lists a curve at all is reliable, despite its position bug. A curve is listed exactly when Silico's rule makes it `under_defined`, before over-definition, since shared points sent as FreeCAD's coincidences keep their freedom. Lone points compare the same way. A line's ends can't be compared through Python. This adds a comparison to the harness, not to the protected cases.
+
+### Open, for M5.10
+
+1. **A conflict's state is `over_defined`.** Recommended: SolidWorks' meaning, as above, rather than reading the design's "has no solution" as `no_solution`.
+2. **An agreeing redundancy makes the sketch `over_defined`**, though it solves and its features build. Recommended: SolidWorks', whose over-defining prompt is for exactly this, rather than reporting `fully_defined` or `under_defined` with a warning.
+3. **Members' over-definition:** a point by the values flagged constraints read, a curve by being named, freedom passing from points to curves but over-definition not. Recommended as above. The alternative, a curve over defined whenever a point of it is, would colour every line through a doubly dimensioned point.
+4. **`solve_problem` in the result.** Recommended, for `invalid` and `no_solution`.
+5. **The empty sketch is `fully_defined`.** Recommended, with FreeCAD.
+
 ## Where Silico differs on purpose
 
 - PlaneGCS at 1.1.3, the oracle's, not main: none of main's signed constraints, and not its status regression.
@@ -193,6 +407,7 @@ M3.6's port note, docs/ports/sketch-features.md, covers these in full and correc
   Every Silico path refuses the arc as data, so the gate is left as it is.
 - Pad and pocket depth > 0, with `reversed`; pocket without a base refused.
 - No heuristics: no weight nudge, no geometry-id reuse by endpoint matching, no auto-removal, no fix-up of faces.
+- Definition states as SolidWorks gives them (recommended, *Definition states*, above): each point its own state, not its curve's; an over-defined state for each entity a conflicting or redundant constraint governs, where FreeCAD only turns the whole sketch orange; a redundant sketch solved and `over_defined`; `no_solution` and `invalid` told apart; and never FreeCAD's stale `FullyConstrained`.
 
 ## Tests to port
 
