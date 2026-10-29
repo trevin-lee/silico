@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use silico_core::document::{ElementId, Operation, Sketch, read, validate};
 use silico_core::fake::FakeSketches;
-use silico_core::sketch::{Answer, Diagnosed, Diagnosis, Translation};
+use silico_core::sketch::{Answer, Dependencies, Dependency, Diagnosed, Diagnosis, Translation};
 use silico_core::sketch_states::{
     ConstraintState, EMPTY_DOFS, EMPTY_STATE, MemberState, SketchState, SketchStates, states,
 };
@@ -99,6 +99,26 @@ fn ids(list: &[&str]) -> BTreeSet<ElementId> {
     list.iter().map(|s| id(s)).collect()
 }
 
+/// Dependencies of `groups`, each a group's IDs in order, all listed (each under the
+/// hundred the read lists), each counted, and every ID in any.
+fn groups(groups: &[&[&str]]) -> Dependencies {
+    Dependencies {
+        groups: groups
+            .iter()
+            .map(|g| Dependency {
+                constraints: g.iter().map(|s| id(s)).collect(),
+                constraints_total: g.len() as u64,
+            })
+            .collect(),
+        groups_total: groups.len() as u64,
+        dependent: groups
+            .iter()
+            .flat_map(|g| g.iter())
+            .map(|s| id(s))
+            .collect(),
+    }
+}
+
 fn members<S: Copy>(list: &[(&str, S)]) -> BTreeMap<ElementId, S> {
     list.iter().map(|&(s, state)| (id(s), state)).collect()
 }
@@ -128,7 +148,7 @@ fn an_empty_sketch_is_fully_defined_with_no_degrees_whatever_planegcs_counts() {
         circles: BTreeMap::new(),
         arcs: BTreeMap::new(),
         constraints: BTreeMap::new(),
-        dependencies: BTreeSet::new(),
+        dependencies: Dependencies::default(),
         solve_problem: None,
     };
     assert_eq!(got, empty);
@@ -204,10 +224,7 @@ fn two_lines_through_a_twice_dimensioned_point_take_its_freedom_not_its_over_def
     });
     assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
     assert_eq!(diagnosis.redundant, ids(&["k0000003"]));
-    assert_eq!(
-        diagnosis.dependencies,
-        BTreeSet::from([ids(&["k0000002", "k0000003"])])
-    );
+    assert_eq!(diagnosis.dependencies, groups(&[&["k0000002", "k0000003"]]));
     assert_eq!(got.dependencies, diagnosis.dependencies);
     assert_eq!(
         diagnosis.points_depended_on,
@@ -432,10 +449,7 @@ fn decision_5s_disagreeing_redundancy_goes_into_the_conflicting_list_the_read_un
     );
     assert_eq!(diagnosis.conflicting, ids(&["k0000005"]));
     assert_eq!(diagnosis.redundant, ids(&["k0000005"]));
-    assert_eq!(
-        diagnosis.dependencies,
-        BTreeSet::from([ids(&["k0000004", "k0000005"])])
-    );
+    assert_eq!(diagnosis.dependencies, groups(&[&["k0000004", "k0000005"]]));
     assert_eq!(
         diagnosis.points_depended_on,
         BTreeMap::from([
@@ -520,10 +534,7 @@ fn a_dimension_in_a_dependency_over_defines_whichever_constraint_of_it_planegcs_
             r#"{"id": "k0000006", "type": "distance_x", "a": "p0000001", "b": "p0000002", "value": 10, "driving": true}"#,
         ],
     );
-    let dependencies = BTreeSet::from([
-        ids(&["k0000003", "k0000005"]),
-        ids(&["k0000004", "k0000006"]),
-    ]);
+    let dependencies = groups(&[&["k0000003", "k0000005"], &["k0000004", "k0000006"]]);
     for (dropped, relations) in [
         (vec![Tag(5), Tag(6)], [Satisfied, Redundant]),
         (vec![Tag(3), Tag(4)], [Redundant, Satisfied]),
@@ -581,10 +592,7 @@ fn a_dimension_in_a_dependency_over_defines_whichever_constraint_of_it_planegcs_
         ..FakeSketches::as_sent(system)
     });
     assert_eq!(got.state, SketchState::FullyDefined);
-    assert_eq!(
-        got.dependencies,
-        BTreeSet::from([ids(&["k0000003", "k0000005"])])
-    );
+    assert_eq!(got.dependencies, groups(&[&["k0000003", "k0000005"]]));
     assert_eq!(got.constraints[&id("k0000003")], Satisfied);
     assert_eq!(got.constraints[&id("k0000004")], Satisfied);
     assert_eq!(got.constraints[&id("k0000005")], Redundant);
@@ -1088,7 +1096,7 @@ fn a_sketch_the_translation_refuses_is_invalid_every_member_free_and_its_constra
             circles: BTreeMap::new(),
             arcs: BTreeMap::new(),
             constraints: members(&[("k0000001", Unsolved)]),
-            dependencies: BTreeSet::new(),
+            dependencies: Dependencies::default(),
             solve_problem: Some(refusal),
         }
     );
@@ -1222,7 +1230,7 @@ fn a_lone_arc_that_sweeps_nothing_is_sent_at_its_starts_angle_at_both_ends() {
             circles: BTreeMap::new(),
             arcs: members(&[("a0000001", Under)]),
             constraints: BTreeMap::new(),
-            dependencies: BTreeSet::new(),
+            dependencies: Dependencies::default(),
             solve_problem: Some(refusal),
         }
     );

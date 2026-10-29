@@ -15,8 +15,8 @@ use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::document::{ElementId, Operation, Sketch, read, validate};
 use silico_core::sketch::{
-    Answer, Diagnosed, Diagnosis, EXTENT_TOLERANCE, LEAST_TANGENCY, REDUNDANCY_GAP_MM,
-    SketchSolver, SketchWorker, TANGENCY_TOLERANCE, Translation,
+    Answer, Dependencies, Dependency, Diagnosed, Diagnosis, EXTENT_TOLERANCE, LEAST_TANGENCY,
+    REDUNDANCY_GAP_MM, SketchSolver, SketchWorker, TANGENCY_TOLERANCE, Translation,
 };
 use silico_core::sketch_states::{ConstraintState, MemberState, SketchState, SketchStates, states};
 
@@ -122,16 +122,40 @@ fn expect(got: &SketchStates, want: Want<'_>) {
 }
 
 /// That `got`'s dependencies, and its diagnosis's, are `want`'s groups (each group's IDs
-/// sorted, the groups sorted, as the read gives them).
+/// sorted, the groups sorted, as the read gives them), each listed whole (all under the
+/// hundred the read lists) and counted, and every ID in any of them dependent.
 #[track_caller]
 fn expect_dependencies(got: &SketchStates, diagnosis: &Diagnosis, want: &[&[&str]]) {
     let listed: Vec<Vec<&str>> = got
         .dependencies
+        .groups
         .iter()
-        .map(|g| g.iter().map(ElementId::as_str).collect())
+        .map(|g| g.constraints.iter().map(ElementId::as_str).collect())
         .collect();
-    let want: Vec<Vec<&str>> = want.iter().map(|g| g.to_vec()).collect();
+    let totals: Vec<u64> = got
+        .dependencies
+        .groups
+        .iter()
+        .map(|g| g.constraints_total)
+        .collect();
+    let dependent: BTreeSet<&str> = got
+        .dependencies
+        .dependent
+        .iter()
+        .map(ElementId::as_str)
+        .collect();
     assert_eq!(listed, want, "dependencies: {got:#?}");
+    assert_eq!(
+        totals,
+        want.iter().map(|g| g.len() as u64).collect::<Vec<_>>(),
+        "group totals: {got:#?}"
+    );
+    assert_eq!(got.dependencies.groups_total, want.len() as u64);
+    assert_eq!(
+        dependent,
+        want.iter().flat_map(|g| g.iter().copied()).collect(),
+        "dependent: {got:#?}"
+    );
     assert_eq!(got.dependencies, diagnosis.dependencies);
 }
 
@@ -2238,13 +2262,13 @@ fn driving_dimension(c: &silico_core::document::SketchConstraint) -> bool {
 
 /// Whether `c`, in `state`, over-defines, as docs/ports/sketcher.md (*Definition states*,
 /// *An over-defining constraint*: M5.0 open item 32's addendum 4) states it: conflicting, or
-/// a driving dimension in one of `dependencies`.
+/// a driving dimension `dependent`, in some dependency.
 fn over_defining_by_kind(
     c: &silico_core::document::SketchConstraint,
     state: ConstraintState,
-    dependencies: &BTreeSet<BTreeSet<ElementId>>,
+    dependent: &BTreeSet<ElementId>,
 ) -> bool {
-    state == Conflicting || (driving_dimension(c) && dependencies.iter().any(|g| g.contains(&c.id)))
+    state == Conflicting || (driving_dimension(c) && dependent.contains(&c.id))
 }
 
 /// Item 32's invariants on one sketch's states, solved by `worker`, as addendum 4 revises
@@ -2304,30 +2328,44 @@ fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), Str
             .chain(got.circles.values())
             .chain(got.arcs.values())
     };
+    let fail = |what: &str| Err(format!("{what}: {got:#?}"));
+    // Addendum 4's item 4, and invariant 9's cut. The read's dependencies are the
+    // diagnosis's, and the solver's groups by ID, each group once: the first 100 groups,
+    // each its first 100 IDs and its count, the count of groups, and every ID in any group,
+    // listed or not.
+    let solver_groups = &answer.solved().dependencies;
+    let by_id = |tags: &[silico_protocol::Tag]| -> Vec<ElementId> {
+        tags.iter()
+            .map(|&t| translation.constraint_id(t).cloned().unwrap())
+            .collect()
+    };
+    let whole: BTreeSet<Vec<ElementId>> = solver_groups.iter().map(|g| by_id(g)).collect();
+    let dependent_ids: BTreeSet<ElementId> = whole.iter().flatten().cloned().collect();
+    let want = Dependencies {
+        groups: solver_groups
+            .iter()
+            .take(100)
+            .map(|g| Dependency {
+                constraints: by_id(&g[..g.len().min(100)]),
+                constraints_total: g.len() as u64,
+            })
+            .collect(),
+        groups_total: solver_groups.len() as u64,
+        dependent: dependent_ids.clone(),
+    };
+    if got.dependencies != diagnosis.dependencies
+        || got.dependencies != want
+        || whole.len() != solver_groups.len()
+    {
+        return fail(
+            "the dependencies aren't the solver's groups by ID, each once, cut and counted",
+        );
+    }
     let over_defining = sketch
         .constraints
         .iter()
-        .any(|c| over_defining_by_kind(c, got.constraints[&c.id], &got.dependencies));
-    let fail = |what: &str| Err(format!("{what}: {got:#?}"));
-    // Addendum 4's item 4. The read's dependencies are the diagnosis's, and the solver's
-    // groups by ID, each group once.
-    let by_id: BTreeSet<BTreeSet<ElementId>> = answer
-        .solved()
-        .dependencies
-        .iter()
-        .map(|g| {
-            g.iter()
-                .map(|&t| translation.constraint_id(t).cloned().unwrap())
-                .collect()
-        })
-        .collect();
-    if got.dependencies != diagnosis.dependencies
-        || got.dependencies != by_id
-        || by_id.len() != answer.solved().dependencies.len()
-    {
-        return fail("the dependencies aren't the solver's groups by ID, each once");
-    }
-    let dependent = |id: &ElementId| got.dependencies.iter().any(|g| g.contains(id));
+        .any(|c| over_defining_by_kind(c, got.constraints[&c.id], &dependent_ids));
+    let dependent = |id: &ElementId| dependent_ids.contains(id);
     let refused_over_constrained = got
         .solve_problem
         .as_ref()

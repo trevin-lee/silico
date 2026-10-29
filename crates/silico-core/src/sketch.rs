@@ -18,7 +18,8 @@ pub use silico_protocol::MovedOnce;
 
 use crate::document::{
     Angle as DocumentAngle, Checked, Coordinate, Direction, ElementId, FeatureId, Form, Length,
-    LineSide, MemberPaths, Operation, Reference, Sketch, SketchConstraint, TangentSide,
+    LineSide, MemberPaths, Operation, PROBLEMS_LISTED, Reference, Sketch, SketchConstraint,
+    TangentSide,
 };
 use crate::worker::{Executable, Worker, WorkerKind};
 use crate::{Error, ErrorCode};
@@ -855,16 +856,62 @@ pub struct Diagnosis {
     /// The constraints some, but not all, of whose equations repeat others', as PlaneGCS
     /// lists them.
     pub partially_redundant: BTreeSet<ElementId>,
-    /// The constraints in each linear dependency among the diagnosed equations
-    /// ([`Solved::dependencies`], M5.0 open item 32's addendum 4): removing one constraint
-    /// of a group removes one dependency; the next read lists any that remain. Which
-    /// constraint is in some group is a fact of the sketch, whichever PlaneGCS dropped;
-    /// conflicting groups are here too.
-    pub dependencies: BTreeSet<BTreeSet<ElementId>>,
+    /// The linear dependencies among the diagnosed equations ([`Solved::dependencies`], M5.0
+    /// open item 32's addendum 4), listed up to [`DEPENDENCIES_LISTED`] groups of
+    /// [`DEPENDENCY_IDS_LISTED`] constraints each and counted whole, and every constraint in
+    /// any of them: removing one constraint of a group removes one dependency; the next read
+    /// lists any that remain. Which constraint is in some group is a fact of the sketch,
+    /// whichever PlaneGCS dropped; conflicting groups are here too.
+    pub dependencies: Dependencies,
     /// Each constraint listed above, or in a dependency, with the points whose x or y its
     /// equations depend on ([`SketchSystem::depends_on`]): none, for one whose rows depend
     /// only on fixed values, radii, and angles.
     pub points_depended_on: BTreeMap<ElementId, BTreeSet<ElementId>>,
+}
+
+/// How many of a sketch's dependency groups the core lists ([`Dependencies::groups`]), the
+/// first in order; it counts them all ([`Dependencies::groups_total`]). The hundred every
+/// list of problems has (ARCHITECTURE.md, invariant 9): a reply PlaneGCS's bounds allow may
+/// name about ten thousand groups of a thousand constraints each, which as IDs would be about
+/// a gigabyte for each read.
+pub const DEPENDENCIES_LISTED: usize = PROBLEMS_LISTED;
+
+/// How many of a dependency group's constraints the core lists ([`Dependency::constraints`]),
+/// the first in ID order; it counts them all ([`Dependency::constraints_total`]).
+pub const DEPENDENCY_IDS_LISTED: usize = PROBLEMS_LISTED;
+
+/// One linear dependency among a sketch's equations ([`Solved::dependencies`]' group), as the
+/// core holds it: its first [`DEPENDENCY_IDS_LISTED`] constraints, by ID, in ID order, and
+/// how many it has.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Dependency {
+    /// The group's constraints, in ID order: every one, or the first
+    /// [`DEPENDENCY_IDS_LISTED`].
+    pub constraints: Vec<ElementId>,
+    /// How many constraints the group has: more than `constraints` lists when there are too
+    /// many to list, never fewer.
+    pub constraints_total: u64,
+}
+
+/// A sketch's linear dependencies among its equations, as the core holds them
+/// ([`Diagnosis::dependencies`]): the first [`DEPENDENCIES_LISTED`] groups, in the solver's
+/// order, each listed as a [`Dependency`]; how many groups there are; and every constraint in
+/// any group, all of them, which is what the states read (a driving dimension in some group
+/// over-defines, however far into it or into the list its group is).
+///
+/// The groups are in increasing order of their constraints' IDs, compared as lists, as the
+/// solver gives them (a constraint's tag follows its ID's order, so the tags' order is the
+/// IDs'). They're a list, not a set: two groups the solver tells apart may list alike, both
+/// cut at the same first [`DEPENDENCY_IDS_LISTED`] constraints, and both are listed.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Dependencies {
+    /// The groups: every one, or the first [`DEPENDENCIES_LISTED`].
+    pub groups: Vec<Dependency>,
+    /// How many groups there are: more than `groups` lists when there are too many to list,
+    /// never fewer.
+    pub groups_total: u64,
+    /// Every constraint in any group, listed or not, by ID.
+    pub dependent: BTreeSet<ElementId>,
 }
 
 impl Diagnosis {
@@ -2043,18 +2090,9 @@ impl Translation {
         conflicting.extend(named(&disagreeing)?);
         let redundant = named(&solved.redundant)?;
         let partially_redundant = named(&solved.partially_redundant)?;
-        // Each tag of a group sent: a reference dimension's place has a tag, but no row.
-        let sent = self.sent();
-        let dependencies = solved
-            .dependencies
-            .iter()
-            .map(|group| {
-                group
-                    .iter()
-                    .map(|&t| sent.get(t).and_then(|_| self.id(t)).cloned())
-                    .collect()
-            })
-            .collect::<Result<BTreeSet<_>, Error>>()?;
+        // Every tag in a dependency, from every group, listed or not.
+        let dependent: BTreeSet<Tag> = solved.dependencies.iter().flatten().copied().collect();
+        let dependencies = self.dependencies(&solved.dependencies, &dependent)?;
         // Each listed constraint's rows, and each in a dependency, in one pass over the rows,
         // and the points whose x or y their equations depend on.
         let listed: BTreeSet<Tag> = solved
@@ -2063,7 +2101,7 @@ impl Translation {
             .chain(&disagreeing)
             .chain(&solved.redundant)
             .chain(&solved.partially_redundant)
-            .chain(solved.dependencies.iter().flatten())
+            .chain(&dependent)
             .copied()
             .collect();
         let owner: BTreeMap<Value, &ElementId> = self
@@ -2100,6 +2138,45 @@ impl Translation {
                 points_depended_on,
             },
             outcome,
+        })
+    }
+
+    /// `groups`, a reply's dependencies, `dependent` every tag in them, as the core holds
+    /// them ([`Dependencies`]): every constraint in any group, and how many groups there are
+    /// and how many in each, from all of them, in tag space; only the first
+    /// [`DEPENDENCIES_LISTED`] groups' first [`DEPENDENCY_IDS_LISTED`] tags made IDs, so a
+    /// reply of ten million tags makes ten thousand IDs and one for each constraint, not ten
+    /// million. Each tag must have been sent: a reference dimension's place has a tag, but no
+    /// row.
+    fn dependencies(
+        &self,
+        groups: &[Vec<Tag>],
+        dependent: &BTreeSet<Tag>,
+    ) -> Result<Dependencies, Error> {
+        let sent = self.sent();
+        let dependent = dependent
+            .iter()
+            .map(|&t| sent.get(t).and_then(|_| self.id(t)).cloned())
+            .collect::<Result<BTreeSet<_>, Error>>()?;
+        let listed = groups
+            .iter()
+            .take(DEPENDENCIES_LISTED)
+            .map(|group| {
+                let constraints = group
+                    .iter()
+                    .take(DEPENDENCY_IDS_LISTED)
+                    .map(|&t| self.id(t).cloned())
+                    .collect::<Result<Vec<_>, Error>>()?;
+                Ok(Dependency {
+                    constraints,
+                    constraints_total: group.len() as u64,
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        Ok(Dependencies {
+            groups: listed,
+            groups_total: groups.len() as u64,
+            dependent,
         })
     }
 

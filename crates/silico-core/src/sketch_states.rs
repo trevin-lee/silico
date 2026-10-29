@@ -22,7 +22,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::document::{ElementId, Form, Sketch, SketchConstraint};
-use crate::sketch::{Diagnosed, Diagnosis};
+use crate::sketch::{Dependencies, Diagnosed, Diagnosis};
 use crate::{Error, ErrorCode};
 
 /// A sketch's state: SolidWorks' five (docs/ux/solidworks.md, §2).
@@ -137,12 +137,15 @@ pub struct SketchStates {
     pub circles: BTreeMap<ElementId, MemberState>,
     pub arcs: BTreeMap<ElementId, MemberState>,
     pub constraints: BTreeMap<ElementId, ConstraintState>,
-    /// The constraints in each linear dependency among the equations, by ID, the groups
-    /// sorted ([`Diagnosis::dependencies`]): removing one constraint of a group removes one
-    /// dependency; the next read lists any that remain. Which is removed is the user's
-    /// choice (SolidWorks' SketchXpert). Empty for an empty sketch, and for one the
-    /// translation refuses (its constraints never reach the solver).
-    pub dependencies: BTreeSet<BTreeSet<ElementId>>,
+    /// The linear dependencies among the equations, by ID ([`Diagnosis::dependencies`]):
+    /// the first [`DEPENDENCIES_LISTED`](crate::sketch::DEPENDENCIES_LISTED) groups, in
+    /// order, each its first [`DEPENDENCY_IDS_LISTED`](crate::sketch::DEPENDENCY_IDS_LISTED)
+    /// constraints and how many it has, how many groups there are, and every constraint in
+    /// any of them. Removing one constraint of a group removes one dependency; the next read
+    /// lists any that remain. Which is removed is the user's choice (SolidWorks'
+    /// SketchXpert). Empty for an empty sketch, and for one the translation refuses (its
+    /// constraints never reach the solver).
+    pub dependencies: Dependencies,
     /// Why the solve was refused, as the core refused it (the error contract's object):
     /// present for every refused solve, `over_constrained` included; none when the sketch
     /// solved, or is empty.
@@ -187,12 +190,14 @@ pub fn states(sketch: &Sketch, read: &Diagnosed) -> Result<SketchStates, Error> 
             circles: BTreeMap::new(),
             arcs: BTreeMap::new(),
             constraints: BTreeMap::new(),
-            dependencies: BTreeSet::new(),
+            dependencies: Dependencies::default(),
             solve_problem: None,
         });
     }
     let solved = outcome.is_ok();
-    let dependent: BTreeSet<&ElementId> = diagnosis.dependencies.iter().flatten().collect();
+    // Every constraint in any dependency, from every group, listed or not: a driving
+    // dimension past the listed hundred over-defines as the first does.
+    let dependent = &diagnosis.dependencies.dependent;
     let constraints: BTreeMap<ElementId, ConstraintState> = sketch
         .constraints
         .iter()
