@@ -245,6 +245,29 @@ impl Ended {
     }
 }
 
+/// FreeCAD's command for `script`, its settings and caches in `home`, in the C locale.
+fn command(exe: PathBuf, script: &Path, home: &Path) -> Command {
+    let mut command = Command::new(exe);
+    command
+        .arg(script)
+        .env("FREECAD_USER_HOME", home)
+        .env("HOME", home)
+        .env("CFFIXED_USER_HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .env("XDG_CACHE_HOME", home.join(".cache"))
+        // One locale on every platform, whatever the caller's: what OCCT's C library calls
+        // answer can depend on it (`isgraph` past ASCII, which macOS's UTF-8 locales accept
+        // and its C locale and glibc's don't), and an oracle answers alike everywhere. So
+        // FreeCAD's Python is ASCII for its stdout and for files opened without an encoding
+        // (its interpreter is isolated, so no PYTHONUTF8 or PYTHONIOENCODING reaches it):
+        // scripts print only through `json.dumps`, which writes ASCII, and open their
+        // input as UTF-8.
+        .env("LC_ALL", "C")
+        .env("LANG", "C");
+    command
+}
+
 impl Freecad {
     fn start(scratch: &Scratch, script: &Path, env: &[(&str, &OsStr)]) -> Result<Freecad, String> {
         // Its stdout and stderr share one pipe, so its lines come in the order it wrote
@@ -255,21 +278,8 @@ impl Freecad {
         // user's home besides, its caches among them (found through CFFIXED_USER_HOME on
         // macOS, HOME and the XDG directories elsewhere).
         let home = scratch.0.join("home");
-        let mut command = Command::new(freecadcmd()?);
+        let mut command = command(freecadcmd()?, script, &home);
         command
-            .arg(script)
-            .env("FREECAD_USER_HOME", &home)
-            .env("HOME", &home)
-            .env("CFFIXED_USER_HOME", &home)
-            .env("XDG_CONFIG_HOME", home.join(".config"))
-            .env("XDG_DATA_HOME", home.join(".local/share"))
-            .env("XDG_CACHE_HOME", home.join(".cache"))
-            // One locale on every platform, whatever the caller's: what OCCT's C library
-            // calls answer can depend on it (`isgraph` past ASCII, which macOS's UTF-8
-            // locales accept and its C locale and glibc's don't), and an oracle answers
-            // alike everywhere.
-            .env("LC_ALL", "C")
-            .env("LANG", "C")
             .stdin(Stdio::null())
             .stdout(input.try_clone().map_err(pipe)?)
             .stderr(input);
@@ -396,4 +406,25 @@ fn read_lines(output: std::io::PipeReader) -> mpsc::Receiver<String> {
         }
     });
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn freecad_runs_in_the_c_locale_whatever_the_callers() {
+        let command = command(
+            PathBuf::from("freecadcmd"),
+            Path::new("s.py"),
+            Path::new("h"),
+        );
+        let envs: Vec<_> = command.get_envs().collect();
+        for name in ["LC_ALL", "LANG"] {
+            assert!(
+                envs.contains(&(OsStr::new(name), Some(OsStr::new("C")))),
+                "{name}: {envs:?}"
+            );
+        }
+    }
 }
