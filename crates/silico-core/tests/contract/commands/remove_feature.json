@@ -17,7 +17,6 @@
       },
       "revision": {
         "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
-        "format": "uint64",
         "minimum": 1,
         "type": "integer"
       },
@@ -77,7 +76,6 @@
           },
           "problems_total": {
             "description": "How many problems there are, listed or not.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
@@ -163,7 +161,6 @@
           },
           "elements_total": {
             "description": "How many elements are at fault, listed or not.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
@@ -697,19 +694,16 @@
             "type": "array"
           },
           "edges": {
-            "format": "uint32",
             "maximum": 4294967295,
             "minimum": 0,
             "type": "integer"
           },
           "faces": {
-            "format": "uint32",
             "maximum": 4294967295,
             "minimum": 0,
             "type": "integer"
           },
           "vertices": {
-            "format": "uint32",
             "maximum": 4294967295,
             "minimum": 0,
             "type": "integer"
@@ -1627,7 +1621,6 @@
       },
       "index": {
         "description": "Its place in the timeline, from 0.",
-        "format": "uint64",
         "minimum": 0,
         "type": "integer"
       }

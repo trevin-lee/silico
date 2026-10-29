@@ -53,7 +53,6 @@
           },
           "elements_total": {
             "description": "How many elements are at fault, listed or not.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
@@ -119,7 +118,6 @@
       },
       "features": {
         "description": "How many features the document has: null if its text doesn't read as a document.",
-        "format": "uint64",
         "minimum": 0,
         "type": [
           "integer",
@@ -140,7 +138,6 @@
       },
       "problems_total": {
         "description": "How many problems there are, listed or not.",
-        "format": "uint64",
         "minimum": 0,
         "type": "integer"
       }
