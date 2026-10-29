@@ -795,6 +795,33 @@ fn an_arc_longer_than_the_floor_with_its_ends_within_it_is_refused_with_its_leng
     );
 }
 
+#[test]
+fn an_arcs_start_turned_to_under_the_floor_long_short_of_an_end_off_its_circle_is_refused() {
+    // About (0, 0), from (10, 0), radius 10, a quarter turn to (0, 10.5), 0.5 mm off its
+    // circle, as the gate leaves it to the solve. The start turned back by 89.999999999°:
+    // 1e-9° left, 10 × 1e-9 × π/180 = 1.7453292519943295e-10 mm long, under the floor,
+    // though its ends are 0.5 mm apart. Refused with that length (to the rounding of the
+    // sweep, 1e-4 of it, from π/2 less nearly π/2).
+    let before = an_arc_at([0.0, 0.0], [10.0, 0.0], [0.0, 10.5]);
+    assert_eq!(gate(&before, sketch_of(&before)), Vec::new());
+    let e = refused(
+        extend(
+            sketch_of(&before),
+            &id("r0000000"),
+            End::Start,
+            By::Angle(Angle::rounded(-89.999_999_999).unwrap()),
+            &mut FakeSketches::new(),
+        ),
+        "by",
+        "r0000000",
+    );
+    let size = arc_too_short(&e);
+    assert!(
+        (size - 1.745_329_251_994_329_5e-10).abs() <= 1e-4 * 1.75e-10,
+        "{e}"
+    );
+}
+
 fn config(cases: u32) -> ProptestConfig {
     ProptestConfig {
         cases,

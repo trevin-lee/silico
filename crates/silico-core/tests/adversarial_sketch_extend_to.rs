@@ -1581,3 +1581,300 @@ fn an_arc_about_a_centre_off_the_origin_meets_the_nearest_curve_around_it() {
         })
     );
 }
+
+#[test]
+fn an_arc_starting_off_zero_meets_a_curve_in_the_rest_of_its_circle() {
+    // r0 about (0, 0), radius 10, from (0, 10) at 90° to (−10, 0) at 180°: the rest of its
+    // circle, 270°, is where its ends can go. x = 6 (b0, y from −20 to 0) meets the circle
+    // at (6, −8), 306.87°: 126.87° on from the end, 143.13° back from the start, both
+    // within the 270°. Arcs starting at 0° left the start's angle in that window untested.
+    let before = doc(
+        &[
+            p("z0000000", [0.0, 0.0]),
+            p("s0000000", [0.0, 10.0]),
+            p("e0000000", [-10.0, 0.0]),
+            p("q0000000", [6.0, -20.0]),
+            p("q0000001", [6.0, 0.0]),
+        ],
+        &[line("b0000000", "q0000000", "q0000001")],
+        &[],
+        &[arc("r0000000", "z0000000", "s0000000", "e0000000")],
+    );
+    assert_eq!(gate_of(&before), Vec::<String>::new());
+    let sketch = sketch_of(&before);
+    let want = Some(Crossing {
+        curve: id("b0000000"),
+        at: xy(6.0, -8.0),
+    });
+    assert_eq!(
+        next_crossing(sketch, &id("r0000000"), End::End).unwrap(),
+        want
+    );
+    assert_eq!(
+        next_crossing(sketch, &id("r0000000"), End::Start).unwrap(),
+        want
+    );
+}
+
+#[test]
+fn an_arc_overlapping_another_of_its_circle_by_a_sliver_meets_nothing_along_it() {
+    // r0 from 30° to 120°, off zero at both ends. r1 from 10° to 32° overlaps its start by
+    // 2°: back from 30°, the extension runs along r1 to its start, 20° back, halfway there
+    // at 20°, on r1, so r1 isn't met. r2 from 118° to 200° overlaps its end by 2°: on from
+    // 120°, it runs along r2 to its end, 80° on, halfway at 160°, on r2. The halfway place
+    // is the end's angle less or more half the way: 43° or 83.8°, off r1 and r2, would
+    // have them met.
+    let with = |other: &str, from: f64, to: f64| {
+        let (start, end) = (format!("s{}", &other[1..]), format!("e{}", &other[1..]));
+        doc(
+            &[
+                p("z0000000", [0.0, 0.0]),
+                p("s0000000", on_circle(30.0)),
+                p("e0000000", on_circle(120.0)),
+                p(&start, on_circle(from)),
+                p(&end, on_circle(to)),
+            ],
+            &[],
+            &[],
+            &[
+                arc("r0000000", "z0000000", "s0000000", "e0000000"),
+                arc(other, "z0000000", &start, &end),
+            ],
+        )
+    };
+    let before = with("r0000001", 10.0, 32.0);
+    assert_eq!(gate_of(&before), Vec::<String>::new());
+    assert_eq!(
+        next_crossing(sketch_of(&before), &id("r0000000"), End::Start).unwrap(),
+        None
+    );
+    let before = with("r0000002", 118.0, 200.0);
+    assert_eq!(gate_of(&before), Vec::<String>::new());
+    assert_eq!(
+        next_crossing(sketch_of(&before), &id("r0000000"), End::End).unwrap(),
+        None
+    );
+}
+
+/// Arc r0 about z0 at (0, 0) from s0 at (10, 0), radius 10, to e0 at (0, 10.5), 0.5 mm off
+/// its circle, as the gate leaves it to the solve; and `more`.
+fn an_arc_ending_off_its_circle(points: &[String], arcs: &[String]) -> Document {
+    let mut all = vec![
+        p("z0000000", [0.0, 0.0]),
+        p("s0000000", [10.0, 0.0]),
+        p("e0000000", [0.0, 10.5]),
+    ];
+    all.extend(points.iter().cloned());
+    let mut rounds = vec![arc("r0000000", "z0000000", "s0000000", "e0000000")];
+    rounds.extend(arcs.iter().cloned());
+    doc(&all, &[], &[], &rounds)
+}
+
+#[test]
+fn a_point_of_the_circle_at_either_ends_angle_is_past_neither() {
+    // r1 about (0, 20) from (5, 20), radius 5, round 270° to (0, 10), 5 mm off its own
+    // circle, which meets r0's nowhere (20 apart, radii 10 and 5). Its end (0, 10) is on
+    // r0's circle at r0's end's angle, 90°: 0° on from the end, though 0.5 mm from it; and
+    // 270° back from the start, at the other end's angle. Where the arc ends, not past it
+    // either way, so nothing is met.
+    let before = an_arc_ending_off_its_circle(
+        &[
+            p("z0000001", [0.0, 20.0]),
+            p("s0000001", [5.0, 20.0]),
+            p("e0000001", [0.0, 10.0]),
+        ],
+        &[arc("r0000001", "z0000001", "s0000001", "e0000001")],
+    );
+    assert_eq!(gate_of(&before), Vec::<String>::new());
+    let sketch = sketch_of(&before);
+    assert_eq!(
+        next_crossing(sketch, &id("r0000000"), End::End).unwrap(),
+        None
+    );
+    assert_eq!(
+        next_crossing(sketch, &id("r0000000"), End::Start).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn an_arcs_start_sent_to_its_circle_at_its_ends_angle_is_too_short() {
+    // (0, 10) is on r0's circle at its end's angle: the start there leaves a sweep of 0,
+    // though the end, off the circle, is 0.5 mm away. Refused as 0 mm long.
+    let before = an_arc_ending_off_its_circle(&[], &[]);
+    let e = extend(
+        sketch_of(&before),
+        &id("r0000000"),
+        End::Start,
+        By::To(xy(0.0, 10.0)),
+        &mut FakeSketches::new(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        said(&e),
+        (
+            ErrorCode::InvalidInput,
+            "extending arc r0000000 that far would leave it 0 mm long or flipped: an arc must be longer than 1e-7 mm and keep its direction",
+            Some("by"),
+            vec!["r0000000"],
+            Some("give a point farther around its circle from its other end"),
+        )
+    );
+}
+
+#[test]
+fn an_arcs_end_goes_to_a_point_sharing_a_coordinate_with_it_or_mirroring_its_start() {
+    // r0 about (0, 0), radius 10, from (8, 6) at 36.87° to (0, 10). (0, −10) shares the
+    // end's x; (8, −6) is the start mirrored, at −36.87°, so the sweep from the start is
+    // 360° − 73.74°, not the 0 the two angles add to. Each is put there exactly.
+    let before = doc(
+        &[
+            p("z0000000", [0.0, 0.0]),
+            p("s0000000", [8.0, 6.0]),
+            p("e0000000", [0.0, 10.0]),
+        ],
+        &[],
+        &[],
+        &[arc("r0000000", "z0000000", "s0000000", "e0000000")],
+    );
+    assert_eq!(gate_of(&before), Vec::<String>::new());
+    for to in [[0.0, -10.0], [8.0, -6.0]] {
+        let edited = extend(
+            sketch_of(&before),
+            &id("r0000000"),
+            End::End,
+            By::To(xy(to[0], to[1])),
+            &mut FakeSketches::new(),
+        )
+        .unwrap();
+        assert_eq!(gate_edit(&before, &edited), Vec::<String>::new());
+        assert_eq!(at(&edited.sketch, "e0000000"), to);
+        assert_eq!(at(&edited.sketch, "s0000000"), [8.0, 6.0]);
+        assert_eq!(edited.modified, [id("e0000000")]);
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// A line's By::To off the axes.
+
+#[test]
+fn a_line_off_the_axes_sent_behind_its_other_end_is_refused_with_its_length() {
+    // a0 from (2, 1) to (10, 7), 10 mm along (0.8, 0.6). (−2, −2) is on its line, 5 mm
+    // behind its start: flipped, 5 mm long.
+    let before = doc(
+        &[p("p0000000", [2.0, 1.0]), p("p0000001", [10.0, 7.0])],
+        &[line("a0000000", "p0000000", "p0000001")],
+        &[],
+        &[],
+    );
+    assert_eq!(gate_of(&before), Vec::<String>::new());
+    let mut fake = exact();
+    let e = extend(
+        sketch_of(&before),
+        &id("a0000000"),
+        End::End,
+        By::To(xy(-2.0, -2.0)),
+        &mut fake,
+    )
+    .unwrap_err();
+    assert_eq!(
+        said(&e),
+        (
+            ErrorCode::InvalidInput,
+            "extending line a0000000 that far would leave it 5 mm long or flipped: a line must be longer than 1e-7 mm and keep its direction",
+            Some("by"),
+            vec!["a0000000"],
+            Some("give a point farther from its other end, the way the line runs"),
+        )
+    );
+    assert_eq!(fake.drag_calls(), []);
+}
+
+#[test]
+fn a_vertical_line_goes_to_a_point_ahead_on_it() {
+    // a0 from (3, −10) up to (3, −5); (3, −2) is 3 mm on. Its x runs nowhere: the end
+    // goes there.
+    let before = doc(
+        &[p("p0000000", [3.0, -10.0]), p("p0000001", [3.0, -5.0])],
+        &[line("a0000000", "p0000000", "p0000001")],
+        &[],
+        &[],
+    );
+    let edited = extend(
+        sketch_of(&before),
+        &id("a0000000"),
+        End::End,
+        By::To(xy(3.0, -2.0)),
+        &mut exact(),
+    )
+    .unwrap();
+    assert_eq!(gate_edit(&before, &edited), Vec::<String>::new());
+    assert_eq!(at(&edited.sketch, "p0000001"), [3.0, -2.0]);
+    assert_eq!(edited.modified, [id("p0000001")]);
+}
+
+#[test]
+fn a_point_square_to_a_lines_end_isnt_past_it_though_within_the_floor_of_its_line() {
+    // a0 from F = (1 − 134814, 1 − 173732) to T = (1, 1), 219,903.67 mm long. X = T +
+    // (−173732, 134814) · 2^-41 is square to it at T, the dot product exactly 0, and
+    // 219,903.67 · 2^-41 = 1.0000061e-7 mm from T: over the floor. Yet the line's
+    // projection of X, from F, rounds to within 1e-7 mm of X, so X is within the floor of
+    // the line. X is r1's end, 9 mm off r1's own circle, which meets nothing: beside the
+    // end, not past it, so the end meets nothing; and the start, sent to X, is refused as
+    // turning the line, before any drag.
+    let s = 1.0 / 2_199_023_255_552.0; // 2^-41, exactly
+    let t = [1.0, 1.0];
+    let f = [1.0 - 134_814.0, 1.0 - 173_732.0];
+    let x = [1.0 - 173_732.0 * s, 1.0 + 134_814.0 * s];
+    assert_eq!(
+        (x[0] - t[0]) * (t[0] - f[0]) + (x[1] - t[1]) * (t[1] - f[1]),
+        0.0
+    );
+    assert!(libm::hypot(x[0] - t[0], x[1] - t[1]) > 1e-7);
+    let before = doc(
+        &[
+            p("p0000000", f),
+            p("p0000001", t),
+            p("z0000001", [-10.0, 10.0]),
+            p("s0000001", [-5.0, 10.0]),
+            p("e0000001", x),
+        ],
+        &[line("a0000000", "p0000000", "p0000001")],
+        &[],
+        &[arc("r0000001", "z0000001", "s0000001", "e0000001")],
+    );
+    assert_eq!(gate_of(&before), Vec::<String>::new());
+    assert_eq!(
+        next_crossing(sketch_of(&before), &id("a0000000"), End::End).unwrap(),
+        None
+    );
+    let mut fake = exact();
+    let e = extend(
+        sketch_of(&before),
+        &id("a0000000"),
+        End::Start,
+        By::To(xy(x[0], x[1])),
+        &mut fake,
+    )
+    .unwrap_err();
+    assert_eq!(e.code(), ErrorCode::InvalidInput, "{e}");
+    assert_eq!(e.parameter(), Some("by"), "{e}");
+    assert_eq!(e.elements(), ["a0000000"], "{e}");
+    assert_eq!(
+        e.suggestion(),
+        Some("give a point farther from its other end, the way the line runs"),
+        "{e}"
+    );
+    let size = e
+        .message()
+        .strip_prefix("extending line a0000000 that far would leave it ")
+        .and_then(|rest| {
+            rest.strip_suffix(
+                " mm long or flipped: a line must be longer than 1e-7 mm and keep its direction",
+            )
+        })
+        .unwrap_or_else(|| panic!("{e}"));
+    let size: f64 = size.parse().unwrap();
+    assert!((size - 1.000_006_096_668_7e-7).abs() <= 1e-20, "{e}");
+    assert_eq!(fake.drag_calls(), []);
+}
