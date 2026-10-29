@@ -696,6 +696,25 @@ fn a_curve_ending_on_another_and_tangent_there_is_refused_at_the_later_of_the_tw
 }
 
 #[test]
+fn a_curve_tangent_to_itself_makes_no_pair_with_an_on_of_its_end_on_it() {
+    // The tangent names nz000000 twice and the on holds nz000000's own end on it: each is
+    // refused once, for itself, and the on gets no pair error besides.
+    let all = problems(&ending_on_the_circle(
+        r#"{"id": "k0000000", "type": "tangent", "a": "nz000000", "b": "nz000000", "side": "right"}, {"id": "k0000001", "type": "on", "point": "pt000000", "curve": "nz000000"}"#,
+    ));
+    let at = |parameter: &str| {
+        all.iter()
+            .filter(|e| e.parameter() == Some(parameter))
+            .count()
+    };
+    assert_eq!(at("constraints.k0000001.point"), 1, "{all:?}");
+    assert!(
+        all.iter().all(|e| !e.message().contains("edge tangent to")),
+        "{all:?}"
+    );
+}
+
+#[test]
 fn the_tangent_rule_answers_each_pair_among_thousands_of_tangents_and_ons() {
     // 2,000 lines n_i from p_i (-20, i) to q_i (0, i), each edge tangent to circle ca (k_i)
     // and with its start held on circle cb (m_i): no pair, since each `on` holds the line's

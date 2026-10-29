@@ -619,6 +619,11 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                         let Some(curve) = x.element() else {
                             continue;
                         };
+                        // A curve tangent to itself is refused above, naming it twice: no
+                        // pair to find.
+                        if y.element() == Some(curve) {
+                            continue;
+                        }
                         let ends = ends_of(sketch, curve, lookup);
                         for &end in &ends {
                             tangents.entry((y, end)).or_insert((&constraint.id, x));
