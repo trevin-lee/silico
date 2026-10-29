@@ -219,14 +219,9 @@ pub fn states(
         .iter()
         .map(|a| curve(&a.id, free(&a.id), &[&a.center, &a.start, &a.end]))
         .collect();
-    let repeats = constraints.values().any(|s| {
-        matches!(
-            s,
-            ConstraintState::Redundant | ConstraintState::PartiallyRedundant
-        )
-    });
+    let flagged = constraints.values().any(|s| s.flagged());
     SketchStates {
-        state: sketch_state(outcome, repeats, diagnosis.dofs),
+        state: sketch_state(outcome, flagged, diagnosis.dofs),
         dofs: diagnosis.dofs,
         points,
         lines,
@@ -248,8 +243,11 @@ fn is_empty(sketch: &Sketch) -> bool {
 
 /// The sketch's state: a function of the solve's problem's code, then the flagged lists,
 /// then the degrees of freedom, in that order (the decision's table). The code is the one
-/// the core's read returns, so no second order can drift from the read's.
-fn sketch_state(outcome: Result<&SketchSolution, &Error>, repeats: bool, dofs: i32) -> SketchState {
+/// the core's read returns, so no second order can drift from the read's. Solved, any
+/// constraint `flagged` makes it over defined: a kept repetition, or (break-it: a solution
+/// handed over beside a diagnosis that lists a conflict, which the read never gives) a
+/// conflict, so `fully_defined` never has a constraint flagged.
+fn sketch_state(outcome: Result<&SketchSolution, &Error>, flagged: bool, dofs: i32) -> SketchState {
     match outcome {
         Err(e) => match e.code() {
             ErrorCode::OverConstrained => conflict_state(),
@@ -262,7 +260,7 @@ fn sketch_state(outcome: Result<&SketchSolution, &Error>, repeats: bool, dofs: i
             ErrorCode::InvalidInput => SketchState::Invalid,
             _ => SketchState::NoSolution,
         },
-        Ok(_) if repeats => redundancy_state(),
+        Ok(_) if flagged => redundancy_state(),
         Ok(_) if dofs > 0 => SketchState::UnderDefined,
         Ok(_) => SketchState::FullyDefined,
     }
