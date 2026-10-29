@@ -473,3 +473,30 @@ impl RenderBody {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::length_and_unit;
+
+    #[test]
+    fn a_zero_vector_has_no_length_or_direction_and_the_least_positive_one_has() {
+        // Found by the M4 milestone's mutation run: taking 0 (or anything at all) as
+        // positive passed every test, as the camera's checks refuse a zero vector after,
+        // through the NaN it then gives. A direction is a vector over its length: a zero
+        // vector, of either sign, has none.
+        assert_eq!(length_and_unit([0.0; 3]), None);
+        assert_eq!(length_and_unit([-0.0, 0.0, -0.0]), None);
+        // By hand: the least positive double, 2^-1074, alone on x, is its own length, along
+        // x; and (3, 4, 0) is 5 long, along (0.6, 0.8, 0): scaled by its largest part, 4, it's
+        // (0.75, 1, 0), whose squares sum to 1.5625 and whose length is 1.25, all exact, so
+        // 0.75 / 1.25 and 1 / 1.25 round to the doubles nearest 0.6 and 0.8.
+        assert_eq!(
+            length_and_unit([f64::from_bits(1), 0.0, 0.0]),
+            Some((f64::from_bits(1), [1.0, 0.0, 0.0]))
+        );
+        assert_eq!(
+            length_and_unit([3.0, 4.0, 0.0]),
+            Some((5.0, [0.6, 0.8, 0.0]))
+        );
+    }
+}
