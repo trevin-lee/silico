@@ -1487,6 +1487,90 @@
       "arcs": [],
       "constraints": [],
       "note": "A construction circle about the origin, radius 5."
+    },
+    {
+      "id": "s0000061",
+      "type": "sketch",
+      "v": 1,
+      "name": "construction_line",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": true},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": true}
+      ],
+      "lines": [
+        {"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": true}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "A construction line from the origin to (10, 0)."
+    },
+    {
+      "id": "s0000062",
+      "type": "sketch",
+      "v": 1,
+      "name": "construction_arc",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": true},
+        {"id": "p0000002", "x": 5, "y": 0, "construction": true},
+        {"id": "p0000003", "x": 0, "y": 5, "construction": true}
+      ],
+      "lines": [],
+      "circles": [],
+      "arcs": [
+        {"id": "a0000004", "center": "p0000001", "start": "p0000002", "end": "p0000003", "construction": true}
+      ],
+      "constraints": [],
+      "note": "A construction arc about the origin, radius 5, from 0 to 90 degrees."
+    },
+    {
+      "id": "s0000063",
+      "type": "sketch",
+      "v": 1,
+      "name": "construction_circle_beside_line",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": true},
+        {"id": "p0000003", "x": 10, "y": -5, "construction": false},
+        {"id": "p0000004", "x": 10, "y": 5, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000005", "from": "p0000003", "to": "p0000004", "construction": false}
+      ],
+      "circles": [
+        {"id": "c0000002", "center": "p0000001", "radius": 5, "construction": true}
+      ],
+      "arcs": [],
+      "constraints": [],
+      "note": "A construction circle about the origin, radius 5, and an upright normal line at x 10, apart from it."
+    },
+    {
+      "id": "s0000064",
+      "type": "sketch",
+      "v": 1,
+      "name": "line_tangent_on_and_edge_tangent",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false},
+        {"id": "p0000005", "x": 7, "y": 2, "construction": false},
+        {"id": "p0000006", "x": 7, "y": 0, "construction": false},
+        {"id": "p0000007", "x": 5, "y": 2, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [
+        {"id": "a0000008", "center": "p0000005", "start": "p0000007", "end": "p0000006", "construction": false}
+      ],
+      "constraints": [
+        {"id": "k0000009", "type": "tangent_on", "a": "a0000008", "at": "p0000006", "b": "n0000003", "direction": "opposite"},
+        {"id": "k0000010", "type": "tangent", "a": "n0000003", "b": "a0000008", "side": "left"}
+      ],
+      "note": "line_tangent_on_onto's line and arc, the arc's end held tangent on the line, and an edge tangent between them besides (1.1.3 finds it redundant)."
     }
   ]
 }

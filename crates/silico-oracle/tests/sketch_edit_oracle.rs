@@ -216,6 +216,160 @@ fn a_piece_of_another_construction_is_reported() {
 }
 
 #[test]
+fn only_a_split_construction_circles_pieces_are_excused_their_construction() {
+    let (cases, prepared, theirs) = both(&[
+        "split_construction_circle",
+        "split_construction_line",
+        "split_construction_arc",
+        "split_construction_circle_beside_line",
+        "split_circle_at_two_positions",
+    ]);
+    // 1.1.3's circle split drops construction from both arcs, where Silico's keep it (:150):
+    // excused, each piece by name, and compared modulo that line, beside decision 3's
+    // joining of 1.1.3's two arcs (:459).
+    let excuse = |piece: &str| {
+        format!(
+            "Silico's {piece} is construction, FreeCAD's isn't: FreeCAD 1.1.3's split of a construction circle drops it, where Silico's pieces keep it (docs/ports/sketch-edit.md:150)"
+        )
+    };
+    for i in [0, 3] {
+        let v = verdict(&prepared[i], theirs[i].as_ref());
+        agrees(&v);
+        assert_eq!(v.excused, [excuse("c0000002"), excuse("w0000002")], "{v:?}");
+        assert_eq!(v.modulo, [150, 459], "{v:?}");
+    }
+    // A line's and an arc's pieces keep it in 1.1.3 too: nothing to excuse.
+    for i in [1, 2] {
+        let v = verdict(&prepared[i], theirs[i].as_ref());
+        agrees(&v);
+        assert!(v.excused.is_empty(), "{v:?}");
+        assert!(!v.modulo.contains(&150), "{v:?}");
+    }
+    // Beside the circle, a normal line Silico's result made construction: not a piece of
+    // the split, so reported, while the pieces stay excused.
+    let p = changed(&cases[3], &prepared[3], |s| {
+        s.lines
+            .iter_mut()
+            .find(|l| l.id == id("n0000005"))
+            .unwrap()
+            .construction = true;
+    });
+    let v = verdict(&p, theirs[3].as_ref());
+    assert_eq!(
+        v.how,
+        ["Silico's n0000005 is construction, FreeCAD's isn't"],
+        "{v}"
+    );
+    assert_eq!(v.excused, [excuse("c0000002"), excuse("w0000002")], "{v:?}");
+    // FreeCAD's pieces of a construction line or arc made normal, as its circle's are:
+    // reported, since only a circle's split drops it (:150).
+    for i in [1, 2] {
+        let Some(Theirs::Edited(fc)) = &theirs[i] else {
+            panic!("FreeCAD didn't split it: {:?}", theirs[i]);
+        };
+        let mut fc = fc.clone();
+        for g in &mut fc.geometry {
+            g.construction = false;
+        }
+        let v = verdict(&prepared[i], Some(&Theirs::Edited(fc)));
+        assert_eq!(v.how.len(), 2, "{v}");
+        assert!(
+            v.how
+                .iter()
+                .all(|h| h.ends_with("is construction, FreeCAD's isn't")),
+            "{v}"
+        );
+        assert!(v.excused.is_empty(), "{v:?}");
+    }
+    // The circle's pieces normal in Silico's result where FreeCAD's are construction: the
+    // other way round from :150, reported.
+    let Some(Theirs::Edited(fc)) = &theirs[0] else {
+        panic!("FreeCAD didn't split it: {:?}", theirs[0]);
+    };
+    let mut fc = fc.clone();
+    for g in &mut fc.geometry {
+        g.construction = true;
+    }
+    let p = changed(&cases[0], &prepared[0], |s| {
+        for a in &mut s.arcs {
+            a.construction = false;
+        }
+    });
+    let v = verdict(&p, Some(&Theirs::Edited(fc)));
+    assert!(v.excused.is_empty(), "{v:?}");
+    assert!(
+        !v.how.is_empty()
+            && v.how
+                .iter()
+                .all(|h| h.ends_with("is not construction, FreeCAD's is")),
+        "{v}"
+    );
+    // A normal circle's split, a piece made construction in Silico's result: the circle
+    // wasn't construction, so nothing excuses it.
+    let p = changed(&cases[4], &prepared[4], |s| {
+        s.arcs[0].construction = true;
+    });
+    let v = verdict(&p, theirs[4].as_ref());
+    assert!(v.excused.is_empty(), "{v:?}");
+    assert_eq!(v.how.len(), 1, "{v}");
+    assert!(
+        v.how[0].ends_with("is construction, FreeCAD's isn't"),
+        "{v}"
+    );
+    // A split arc's pieces made normal in Silico's result where FreeCAD's are construction:
+    // the other way round, never excused.
+    let p = changed(&cases[2], &prepared[2], |s| {
+        for a in &mut s.arcs {
+            a.construction = false;
+        }
+    });
+    let v = verdict(&p, theirs[2].as_ref());
+    assert_eq!(v.how.len(), 2, "{v}");
+    assert!(
+        v.how
+            .iter()
+            .all(|h| h.ends_with("is not construction, FreeCAD's is")),
+        "{v}"
+    );
+    assert!(v.excused.is_empty(), "{v:?}");
+}
+
+#[test]
+fn a_split_sharing_an_end_with_an_edge_tangent_is_excused_naming_the_tangent() {
+    let (_, prepared, theirs) = both(&["split_line_at_tangent_on_end_with_edge_tangent"]);
+    // The line split at the arc's end, (7, 0), with an edge tangent k0000010 of the two:
+    // Silico refuses it, naming the tangent (:152); 1.1.3 splits.
+    let v = verdict(&prepared[0], theirs[0].as_ref());
+    agrees(&v);
+    assert_eq!(
+        v.excused,
+        [
+            "edge tangent k0000010 with a curve ending at the split point: Silico refuses the split (docs/ports/sketch-edit.md:152), where FreeCAD's split makes the pieces new ends and never shares the point"
+        ],
+        "{v:?}"
+    );
+    // The same refusal naming another constraint, or another point than the arc's end, isn't
+    // the note's.
+    let SilicoSide::Refused(r) = &prepared[0].silico else {
+        panic!("Silico made the split: {:?}", prepared[0].silico);
+    };
+    for (i, other) in [(0, "k0000009"), (3, "p0000001")] {
+        let mut elements = r.elements.clone();
+        elements[i] = other.to_owned();
+        let p = Prepared {
+            silico: SilicoSide::Refused(silico_oracle::sketch_edit::Refusal {
+                elements,
+                ..r.clone()
+            }),
+            ..prepared[0].clone()
+        };
+        let v = verdict(&p, theirs[0].as_ref());
+        assert!(v.excused.is_empty(), "{other}: {v:?}");
+        assert_eq!(v.how.len(), 1, "{other}: {v}");
+    }
+}
+
+#[test]
 fn a_refusal_is_excused_only_where_the_note_gives_it() {
     let (_, prepared, theirs) = both(&[
         "split_line_at_freecads_position",

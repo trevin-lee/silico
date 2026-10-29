@@ -568,7 +568,7 @@ pub fn plan(sketch: &Sketch, model: &FreecadSketch, edit: &Edit) -> Plan {
     let mut modulo = Vec::new();
     // The curves the edit takes a point from: a shared point's constraints sit, in FreeCAD's
     // model, on the end of a curve that keeps it, as Silico's stay with the point
-    // (:95, :213, :237-238); FreeCAD's own rules then have nothing to move.
+    // (:95, :148, :213, :237-238); FreeCAD's own rules then have nothing to move.
     let (away, line): (BTreeSet<&str>, u32) = match edit {
         Edit::Remove { members } => (members.iter().map(String::as_str).collect(), 95),
         Edit::Unjoin { curve, .. } => (BTreeSet::from([curve.as_str()]), 237),
@@ -1248,6 +1248,9 @@ pub enum Rule {
     SplitOffCurve(f64),
     /// A split position at, past, or within 1e-7 mm of an end (:153).
     SplitAtEnd,
+    /// A split at the end of a curve held `tangent_on` the split one, with an edge `tangent`
+    /// between the two, which would then share that end (:152): the constraint.
+    SplitEdgeTangent(String),
     /// Trimming a point (:316).
     TrimPoint,
     /// A trim picked at a round's centre (:222).
@@ -1277,6 +1280,7 @@ impl Rule {
     pub fn lines(&self) -> Vec<u32> {
         match self {
             Rule::SplitNotCurve | Rule::SplitAtEnd => vec![153],
+            Rule::SplitEdgeTangent(_) => vec![152],
             Rule::SplitCircleAtOne => vec![459],
             Rule::SplitOffCurve(_) => vec![460],
             Rule::TrimPoint => vec![316],
@@ -1342,6 +1346,30 @@ pub fn rule(p: &Prepared) -> Option<Rule> {
                 return Some(Rule::SplitCircleAtOne);
             }
             let position = *at.get(index("at.")?)?;
+            // The edge tangent, of the split curve and another that ends where the split is
+            // asked for: the pieces would share that end with it.
+            if let [id, a, b, point] = &r.elements[..]
+                && (a == curve || b == curve)
+                && p.sketch.constraints.iter().any(|k| {
+                    k.id.as_str() == id
+                        && matches!(&k.form, Form::Tangent { a: x, b: y, .. }
+                            if x.element().is_some_and(|x| x.as_str() == a)
+                                && y.element().is_some_and(|y| y.as_str() == b))
+                })
+            {
+                let other = if a == curve { b } else { a };
+                let ends_there = shape.members.get(other).is_some_and(|m| {
+                    m.kind != "point"
+                        && [1, 2]
+                            .iter()
+                            .filter_map(|pos| m.at.get(pos))
+                            .any(|q| q == point)
+                });
+                let at_point = shape.points.get(point).is_some_and(|q| {
+                    libm::hypot(q[0] - position[0], q[1] - position[1]) <= LENGTH_TOLERANCE
+                });
+                return (ends_there && at_point).then(|| Rule::SplitEdgeTangent(id.clone()));
+            }
             if names(&[curve]) && r.message.contains("farther than 1e-7 mm") {
                 let off = off_curve(&shape, curve, position)?;
                 return (off > LENGTH_TOLERANCE).then_some(Rule::SplitOffCurve(off));
@@ -1550,6 +1578,9 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
                 )
             })
         }
+        Rule::SplitEdgeTangent(id) => Some(format!(
+            "edge tangent {id} with a curve ending at the split point: Silico refuses the split ({NOTE}:152), where FreeCAD's split makes the pieces new ends and never shares the point"
+        )),
         Rule::TrimPoint => Some(format!(
             "a trim of a point: Silico refuses it ({NOTE}:316), FreeCAD 1.1.3 deletes it (:159)"
         )),
@@ -1969,13 +2000,18 @@ fn compare_edited(
     let mut how = Vec::new();
     let before = Shape::of(&p.sketch);
     // A split construction circle: FreeCAD 1.1.3's pieces aren't construction, where every
-    // piece of Silico's keeps it (:150).
+    // piece of Silico's keeps it (:150). Its pieces only: the circle's ID, kept by its
+    // start-side piece, and the curves the split made.
     let split_circle = match &p.edit {
-        Edit::Split { curve, .. } => before
-            .members
-            .get(curve)
-            .is_some_and(|m| m.kind == "circle" && m.construction),
-        _ => false,
+        Edit::Split { curve, .. }
+            if before
+                .members
+                .get(curve)
+                .is_some_and(|m| m.kind == "circle" && m.construction) =>
+        {
+            Some(curve.as_str())
+        }
+        _ => None,
     };
     let after = Shape::of(&s.edited.sketch);
     let renamed: BTreeMap<String, String> = match &p.edit {
@@ -2050,7 +2086,9 @@ fn compare_edited(
                         member.kind, g.kind
                     ));
                 }
-                if split_circle && member.construction && !g.construction {
+                let piece = split_circle
+                    .is_some_and(|circle| m == circle || new_ours.iter().any(|n| n == m));
+                if piece && member.construction && !g.construction {
                     excused.push(format!(
                         "Silico's {m} is construction, FreeCAD's isn't: FreeCAD 1.1.3's split of a construction circle drops it, where Silico's pieces keep it ({NOTE}:150)"
                     ));

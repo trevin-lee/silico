@@ -306,6 +306,22 @@
     }
   },
   {
+    "name": "split_line_at_tangent_on_end_with_edge_tangent",
+    "note": "The line split at the arc's end, (7, 0), which a tangent_on holds on it, beside an edge tangent of the two: Silico refuses it, naming the tangent, as the pieces would share the arc's end (:152); 1.1.3 splits, its pieces new ends.",
+    "sketch": "line_tangent_on_and_edge_tangent",
+    "edit": {
+      "split": {
+        "curve": "n0000003",
+        "at": [
+          [
+            7,
+            0
+          ]
+        ]
+      }
+    }
+  },
+  {
     "name": "split_arc_keeps_end_tangents",
     "note": "Both tangent_ats kept at the outer ends (6d06b61c7e; 1.1.3 makes them coincidences), the radius on one piece.",
     "sketch": "arc_with_end_tangents",
@@ -985,7 +1001,7 @@
   },
   {
     "name": "remove_line_with_midpoint",
-    "note": "Deleting a line with a midpoint whose ends the sides keep: Silico removes the midpoint with its line.",
+    "note": "Deleting a line with a midpoint whose ends the sides keep: the midpoint becomes a symmetric of the ends about the point, as FreeCAD keeps its Symmetric (:97).",
     "sketch": "midpoint_of_side",
     "edit": {
       "remove": {
@@ -1238,8 +1254,60 @@
   },
   {
     "name": "split_construction_circle",
-    "note": "A construction circle split at 0 and 90 degrees: both arcs are construction, as every piece keeps it.",
+    "note": "A construction circle split at 0 and 90 degrees: both of Silico's arcs are construction, as every piece keeps it; 1.1.3's aren't, its circle split dropping it (:150).",
     "sketch": "construction_circle",
+    "edit": {
+      "split": {
+        "curve": "c0000002",
+        "at": [
+          [
+            5,
+            0
+          ],
+          [
+            0,
+            5
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_construction_line",
+    "note": "A construction line split at (4, 0): both pieces are construction on both sides, as 1.1.3's split of a line keeps it (GeomTrimmedCurve::createArc copies the curve).",
+    "sketch": "construction_line",
+    "edit": {
+      "split": {
+        "curve": "n0000003",
+        "at": [
+          [
+            4,
+            0
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_construction_arc",
+    "note": "A construction arc split at 45 degrees: both pieces are construction on both sides, as 1.1.3's split of an arc keeps it.",
+    "sketch": "construction_arc",
+    "edit": {
+      "split": {
+        "curve": "a0000004",
+        "at": [
+          [
+            3.5355339059327378,
+            3.5355339059327378
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_construction_circle_beside_line",
+    "note": "A construction circle split at 0 and 90 degrees beside a normal line: only the circle's pieces differ in construction, as :150 has it; the line is normal on both sides.",
+    "sketch": "construction_circle_beside_line",
     "edit": {
       "split": {
         "curve": "c0000002",

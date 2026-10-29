@@ -575,7 +575,7 @@ def edit_unjoin(s, e, applied):
     if ends and not joined:
         return
     # The vertex Delete drops the curve's own length (0358ff7ce2), which Silico keeps
-    # (sketch-edit.md:233, 238): put back.
+    # (sketch-edit.md:233, 240): put back.
     lengths = [captured(s, i) for i, c in enumerate(s.Constraints)
                if c.Type in ("Distance", "DistanceX", "DistanceY") and c.First == g
                and c.FirstPos == 0 and c.Second == GEO_UNDEF]
