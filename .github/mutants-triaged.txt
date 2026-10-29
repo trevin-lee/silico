@@ -247,3 +247,6 @@ crates/silico-mcp/src/lib.rs | Dispatch<'_, P>::message | delete match arm "noti
 crates/silico-render/src/lib.rs | all_adapters | replace | with ^ | #TBD
 crates/silico-render/src/lib.rs | all_adapters | delete field backends from struct wgpu::InstanceDescriptor expression | #TBD
 crates/silico-render/src/lib.rs | all_adapters | delete field flags from struct wgpu::InstanceDescriptor expression | #TBD
+# The compiled-in ICD path is the build's own pixi file: empty or there, both forms agree; they
+# differ only when it was removed after the build, which no test can arrange.
+crates/silico-render/src/lavapipe.rs | environment | replace && with || | #TBD
