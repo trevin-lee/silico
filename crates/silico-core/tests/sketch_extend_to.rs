@@ -71,7 +71,10 @@ fn crossing(curve: &str, x: f64, y: f64) -> Option<Crossing> {
 /// A frame with the dragged point at `xy`, everything else where it began.
 fn frame_at(begin: &DragBegin, xy: [f64; 2]) -> Moved {
     let mut values = begin.system.values.clone();
-    match begin.system.geometry[begin.point.geometry().0 as usize] {
+    let silico_protocol::Dragged::Point(point) = begin.dragged else {
+        panic!("an extend drags a point")
+    };
+    match begin.system.geometry[point.geometry().0 as usize] {
         SketchGeometry::Point(PointValues { x, y }) => {
             (values[x.0 as usize], values[y.0 as usize]) = (xy[0], xy[1]);
         }
