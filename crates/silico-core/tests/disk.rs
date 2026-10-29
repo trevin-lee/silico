@@ -25,7 +25,7 @@ fn settled(watch: &DiskWatch) -> Disk {
 }
 
 fn watch(path: &std::path::Path, held: &[u8]) -> DiskWatch {
-    DiskWatch::new(path, Arc::new(held.to_vec()), Duration::ZERO, None)
+    DiskWatch::new(path, None, Arc::new(held.to_vec()), Duration::ZERO, None)
 }
 
 #[test]
@@ -134,27 +134,34 @@ fn a_comparison_against_bytes_the_session_no_longer_holds_is_dropped() {
     // The session holds A; a comparison reads the file, which its own save has made B, while
     // the session moves on to hold B. The comparison was against A: dropped, never
     // reported as changed. Then A again (a save of A after B): a comparison begun at A
-    // would match it by bytes, but it's dropped all the same, by the counter.
-    for (now, file) in [(b"B", b"B"), (b"A", b"A")] {
+    // isn't the session's either, though its bytes would match, and is dropped by the
+    // counter. What the session holds reads unchanged until a comparison says otherwise.
+    // The file reads B (the save, landed) for each, so a comparison kept against A would
+    // find it changed; dropped, the session's own holding (unchanged) stands.
+    for back_to_a in [false, true] {
         let held = Held::new();
         let w = DiskWatch::reading(
             "p",
             Arc::new(b"A".to_vec()),
             Duration::from_secs(3600),
             None,
-            held.reader(Found::Bytes(file.to_vec())),
+            held.reader(Found::Bytes(b"B".to_vec())),
         );
         assert_eq!(w.finding(), None);
         held.wait_reads(1);
         w.held(Arc::new(b"B".to_vec()));
-        if now == b"A" {
+        if back_to_a {
             w.held(Arc::new(b"A".to_vec()));
         }
         held.open();
         // Ended, and its finding dropped; the hour's interval starts no other.
         let deadline = Instant::now() + Duration::from_millis(200);
         while Instant::now() < deadline {
-            assert_eq!(w.finding(), None, "a finding against the bytes before");
+            assert_eq!(
+                w.finding(),
+                Some(Disk::Unchanged),
+                "a finding against the bytes before"
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(held.reads(), 1);
@@ -265,4 +272,89 @@ fn each_finding_has_the_word_status_writes() {
     ] {
         assert_eq!(disk.word(), word);
     }
+}
+
+#[test]
+fn a_failed_save_leaves_the_finding_unknown_and_comparisons_go_on() {
+    // The bracket dropped without saved(): the file may be part written, or as it was.
+    let (reader, reads) = counting();
+    let w = DiskWatch::reading("p", Arc::new(b"A".to_vec()), Duration::ZERO, None, reader);
+    assert_eq!(settled(&w), Disk::Unchanged);
+    drop(w.saving());
+    assert_eq!(w.finding(), None, "a failed save's file is unknown");
+    let before = reads.load(Ordering::SeqCst);
+    assert_eq!(settled(&w), Disk::Unchanged);
+    assert!(
+        reads.load(Ordering::SeqCst) > before,
+        "no comparison after the failed save"
+    );
+}
+
+#[test]
+fn a_saved_or_reloaded_file_is_unchanged_at_once_and_a_change_after_wakes_the_client_again() {
+    // Found by the architecture and robustness reviews: once told `changed`, a reload left
+    // the waker thinking so, and a second change after it told nothing.
+    let told = Arc::new(AtomicUsize::new(0));
+    let t = Arc::clone(&told);
+    let answer = Arc::new(Mutex::new(Found::Bytes(b"B".to_vec())));
+    let a = Arc::clone(&answer);
+    let reader: Reader = Arc::new(move |_| a.lock().unwrap().clone());
+    let w = DiskWatch::reading(
+        "p",
+        Arc::new(b"A".to_vec()),
+        Duration::ZERO,
+        Some(Arc::new(move || {
+            t.fetch_add(1, Ordering::SeqCst);
+        })),
+        reader,
+    );
+    assert_eq!(settled(&w), Disk::Changed);
+    assert_eq!(told.load(Ordering::SeqCst), 1);
+    // The session reloads B: unchanged at once, as its own save is.
+    w.held(Arc::new(b"B".to_vec()));
+    assert_eq!(w.finding(), Some(Disk::Unchanged));
+    let saving = w.saving();
+    saving.saved(Arc::new(b"B".to_vec()));
+    assert_eq!(w.finding(), Some(Disk::Unchanged));
+    // Another agent writes C: changed again, and the client woken again.
+    *answer.lock().unwrap() = Found::Bytes(b"C".to_vec());
+    let deadline = Instant::now() + WAIT;
+    while w.finding() != Some(Disk::Changed) {
+        assert!(
+            Instant::now() < deadline,
+            "the change after the reload went unseen"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(told.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_path_that_leads_out_of_the_workspace_is_unreadable_whatever_is_there() {
+    // From the robustness review: the session's file reached through a link that a checkout
+    // made point outside the workspace. Read, it would say what's there; it's unreadable.
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("a.silico"), b"A").unwrap();
+    std::os::unix::fs::symlink(outside.path(), root.path().join("sub")).unwrap();
+    let workspace = silico_core::file::Workspace::new(root.path()).unwrap();
+    let w = DiskWatch::new(
+        "sub/a.silico",
+        Some(workspace.clone()),
+        Arc::new(b"A".to_vec()),
+        Duration::ZERO,
+        None,
+    );
+    assert_eq!(settled(&w), Disk::Unreadable);
+    // And one inside is read.
+    std::fs::write(root.path().join("b.silico"), b"A").unwrap();
+    let w = DiskWatch::new(
+        "b.silico",
+        Some(workspace),
+        Arc::new(b"A".to_vec()),
+        Duration::ZERO,
+        None,
+    );
+    assert_eq!(settled(&w), Disk::Unchanged);
 }

@@ -25,10 +25,21 @@ fn settled(watch: &DiskWatch) -> Disk {
 }
 
 fn watch(path: &Path, held: &[u8]) -> DiskWatch {
-    DiskWatch::new(path, Arc::new(held.to_vec()), Duration::ZERO, None)
+    DiskWatch::new(path, None, Arc::new(held.to_vec()), Duration::ZERO, None)
 }
 
 /// Asked until a comparison has ended with a finding other than `not`, within [`WAIT`].
+/// `watch`'s finding once it's `want`, within [`WAIT`]: between two steps of a change on
+/// disk, a comparison may find the state between (a file removed before a directory is
+/// made), which is true then.
+fn reaches(watch: &DiskWatch, want: Disk) {
+    let deadline = Instant::now() + WAIT;
+    while watch.finding() != Some(want) {
+        assert!(Instant::now() < deadline, "never {want:?}");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
 fn settled_other(watch: &DiskWatch, not: Disk) -> Disk {
     let deadline = Instant::now() + WAIT;
     loop {
@@ -149,7 +160,7 @@ fn a_file_at_exactly_the_limit_is_compared_and_one_byte_past_it_is_unreadable() 
     let bytes = vec![b' '; MAX_INPUT_LEN];
     std::fs::write(&path, &bytes).unwrap();
     let held = Arc::new(bytes);
-    let w = DiskWatch::new(&path, Arc::clone(&held), Duration::ZERO, None);
+    let w = DiskWatch::new(&path, None, Arc::clone(&held), Duration::ZERO, None);
     assert_eq!(settled(&w), Disk::Unchanged);
     // The file grows by one byte past the limit: unreadable, never "changed" by a
     // truncated compare (the first MAX_INPUT_LEN bytes still match the held ones).
@@ -229,11 +240,11 @@ fn a_file_replaced_by_a_directory_then_a_file_again_recovers() {
     assert_eq!(settled(&w), Disk::Unchanged);
     std::fs::remove_file(&path).unwrap();
     std::fs::create_dir(&path).unwrap();
-    assert_eq!(settled_other(&w, Disk::Unchanged), Disk::Unreadable);
+    reaches(&w, Disk::Unreadable);
     std::fs::remove_dir(&path).unwrap();
-    assert_eq!(settled_other(&w, Disk::Unreadable), Disk::Gone);
+    reaches(&w, Disk::Gone);
     std::fs::write(&path, b"A").unwrap();
-    assert_eq!(settled_other(&w, Disk::Gone), Disk::Unchanged);
+    reaches(&w, Disk::Unchanged);
 }
 
 #[test]
@@ -367,7 +378,7 @@ fn the_sessions_own_save_written_then_held_never_reads_as_changed() {
     assert_eq!(w.finding(), None);
     disk.wait_reads(1);
     // The session's save, bracketed as a save is: the file is B.
-    w.saving();
+    let saving = w.saving();
     disk.write(b"B");
     // The comparison reads it and ends, before the session says it holds B.
     disk.open();
@@ -380,7 +391,8 @@ fn the_sessions_own_save_written_then_held_never_reads_as_changed() {
         }
         std::thread::sleep(Duration::from_millis(2));
     }
-    w.held(Arc::new(b"B".to_vec()));
+    saving.saved(Arc::new(b"B".to_vec()));
+    assert_eq!(w.finding(), Some(Disk::Unchanged));
     assert_ne!(
         seen,
         Some(Disk::Changed),
@@ -411,12 +423,12 @@ fn the_sessions_own_save_held_then_written_never_reads_as_changed() {
     assert_eq!(settled(&w), Disk::Unchanged);
     let before = told.load(Ordering::SeqCst);
     // The save, bracketed: while it writes, nothing is compared or found; then it holds B.
-    w.saving();
+    let saving = w.saving();
     for _ in 0..20 {
         assert_eq!(w.finding(), None, "a finding mid-save");
     }
     disk.write(b"B");
-    w.held(Arc::new(b"B".to_vec()));
+    saving.saved(Arc::new(b"B".to_vec()));
     let found = settled(&w);
     assert_eq!(found, Disk::Unchanged);
     assert_ne!(
@@ -467,13 +479,14 @@ fn findings_are_always_against_what_the_session_holds_now() {
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
                     let holds_file = current.lock().unwrap();
+                    // Never changed while it holds the file: that would be a comparison
+                    // against the bytes before. (Unchanged is what a reload leaves until a
+                    // comparison ends, whatever is held.)
                     if let Some(found) = w.finding() {
-                        let expected = if *holds_file {
-                            Disk::Unchanged
-                        } else {
-                            Disk::Changed
-                        };
-                        assert_eq!(found, expected, "a finding against bytes before");
+                        assert!(
+                            !(*holds_file && found == Disk::Changed),
+                            "a finding against bytes before"
+                        );
                         checked.fetch_add(1, Ordering::Relaxed);
                     }
                     drop(holds_file);
@@ -667,9 +680,10 @@ fn an_interval_of_duration_max_compares_once_and_never_overflows() {
 }
 
 #[test]
-fn a_held_with_no_comparison_running_clears_the_finding_until_the_next_ends() {
-    // After a reload with nothing running, the finding is none (not the old one against
-    // other bytes), and the next comparison is against what's held now.
+fn a_held_with_no_comparison_running_is_unchanged_until_the_next_ends() {
+    // After a reload with nothing running, the file is as the session holds it, unchanged
+    // (the design's `unchanged` after a reload), and the next comparison is against what's
+    // held now.
     let answer = Arc::new(Mutex::new(Found::Bytes(b"A".to_vec())));
     let a = Arc::clone(&answer);
     let reader: Reader = Arc::new(move |_| a.lock().unwrap().clone());
@@ -677,7 +691,8 @@ fn a_held_with_no_comparison_running_clears_the_finding_until_the_next_ends() {
     assert_eq!(settled(&w), Disk::Unchanged);
     std::thread::sleep(Duration::from_millis(20));
     w.held(Arc::new(b"B".to_vec()));
-    assert_eq!(settled(&w), Disk::Changed);
+    assert_eq!(w.finding(), Some(Disk::Unchanged));
+    assert_eq!(settled_other(&w, Disk::Unchanged), Disk::Changed);
     *answer.lock().unwrap() = Found::Bytes(b"B".to_vec());
     assert_eq!(settled_other(&w, Disk::Changed), Disk::Unchanged);
 }

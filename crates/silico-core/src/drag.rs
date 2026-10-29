@@ -51,7 +51,7 @@ use crate::{Error, ErrorCode};
 pub const DRAG_MOVE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Told of each change of a drag's moves or state, with no lock held: the caller's waker.
-pub type Notify = Arc<dyn Fn() + Send + Sync>;
+pub use crate::notify::Notify;
 
 /// A drag begun: open, or not started for the constraints in conflict, by tag.
 pub enum Begun {
