@@ -609,7 +609,7 @@ fn edits_freecad_has_no_counterpart_for_are_its_refusals_citing_the_note() {
 fn a_known_difference_that_no_longer_shows_is_a_problem() {
     let known = [sketch_edit::Known {
         case: "c",
-        difference: "it differs",
+        shows: sketch_edit::Shows::Difference("it differs"),
         why: "because",
     }];
     let agreeing = Verdict {
@@ -629,6 +629,35 @@ fn a_known_difference_that_no_longer_shows_is_a_problem() {
     assert_eq!(differ.len(), 1);
     assert!(shown.is_empty());
     assert_eq!(stale.len(), 1);
+}
+
+#[test]
+fn a_case_freecad_answers_otherwise_run_to_run_is_shown_whatever_it_shows() {
+    let known = [sketch_edit::Known {
+        case: "c",
+        shows: sketch_edit::Shows::Varies,
+        why: "FreeCAD varies",
+    }];
+    // Agreeing or differing, it's shown as known, never a difference, and never stale.
+    for how in [Vec::new(), vec!["it differs".to_owned()]] {
+        let v = Verdict {
+            case: "c".to_owned(),
+            how: how.clone(),
+            ..Verdict::default()
+        };
+        let (differ, shown, stale) = without_known(vec![v], &known);
+        assert!(differ.is_empty() && stale.is_empty(), "{how:?}");
+        assert_eq!(shown.len(), 1, "{how:?}");
+        assert!(shown[0].contains("varies run to run"), "{shown:?}");
+    }
+    // Another case is compared as ever.
+    let other = Verdict {
+        case: "d".to_owned(),
+        how: vec!["it differs".to_owned()],
+        ..Verdict::default()
+    };
+    let (differ, _, _) = without_known(vec![other], &known);
+    assert_eq!(differ.len(), 1);
 }
 
 #[test]
@@ -1126,49 +1155,123 @@ fn fc_id(p: &Prepared, theirs: &Option<Theirs>, member: &str) -> i64 {
 }
 
 #[test]
-fn a_merge_whose_solve_silico_cant_take_is_excused_only_where_freecads_solves() {
-    // `sketch-edit-sweep --seed 32 --count 500`'s case 154: points merged from apart, whose
-    // solve shortens a line to nothing, which Silico refuses (:280); FreeCAD's coincidences
-    // solve.
+fn a_merge_whose_solve_silico_cant_take_agrees_where_freecads_solves_or_rolls_back() {
+    // `sketch-edit-sweep --seed 32 --count 500`'s case 184: the top-left corner merged onto
+    // the bottom line's far end, so the vertical n0000008 is left with no length (:280), and
+    // Silico refuses it. FreeCAD 1.1.3's solve fails (-1), which its Coincident command rolls
+    // back (10 of 10 runs, when this test was written): both refuse, as the note has it (:278).
     let mut cases = silico_oracle::generate::sketch_edit_cases(32, 500).unwrap();
-    let case = cases.swap_remove(154);
-    assert_eq!(case.name, "edit_32_154");
+    let case = cases.swap_remove(184);
+    assert_eq!(case.name, "edit_32_184");
     let mut worker = SketchWorker::start().unwrap();
     let prepared = vec![prepare(&case, &mut worker).unwrap()];
     let theirs = freecad_outcomes(&prepared).unwrap();
     let p = &prepared[0];
     assert_eq!(rule(p), Some(Rule::MergeSolveUnbuildable), "{:?}", p.silico);
-    // FreeCAD 1.1.3's solve of this merge isn't the same each run: mostly it solves, as the
-    // note says, and now and then it fails (-1), which its Coincident command rolls back (4
-    // of 36 runs, when this test was written). So its result is set to each outcome here,
-    // not taken as it came.
-    let solved = Some(doctored(&theirs[0], |fc| {
-        fc.after.code = 0;
-        fc.after.conflicting.clear();
-        fc.after.redundant.clear();
-        fc.after.partially_redundant.clear();
-        fc.after.malformed.clear();
-    }));
-    let v = verdict(p, solved.as_ref());
-    agrees(&v);
-    assert_eq!(v.excused.len(), 1, "{v:?}");
-    // FreeCAD's solve failing, where it failed before the merge too (so its Coincident
-    // command has nothing worse to roll back): not the note's, a difference.
-    let made = doctored(&solved, |fc| {
-        fc.before.code = -1;
-        fc.after.code = -1;
-    });
-    refused_against_freecads_edit(&verdict(p, Some(&made)), "its solve failing");
-    // Its solve failing after the merge alone, which its command rolls back: both refuse,
-    // where the note has FreeCAD's coincidences solve, a difference.
-    let made = doctored(&solved, |fc| fc.after.code = -1);
-    let v = verdict(p, Some(&made));
-    assert!(!v.refused && v.excused.is_empty(), "{v:?}");
-    assert_eq!(v.how.len(), 1, "{v}");
     assert!(
-        v.how[0].starts_with("both refused, but the note has FreeCAD make the edit"),
-        "{v}"
+        sketch_edit::rolled_back(p, theirs[0].as_ref()),
+        "{:?}",
+        theirs[0]
     );
+    let v = verdict(p, theirs[0].as_ref());
+    agrees(&v);
+    assert!(v.refused && v.excused.is_empty(), "{v:?}");
+    assert_eq!(v.modulo, [278, 279, 280], "{v:?}");
+    // Its solve succeeding instead, the note's other outcome: Silico's refusal excused.
+    let v = verdict(
+        p,
+        Some(&doctored(&theirs[0], |fc| {
+            fc.after.code = 0;
+        })),
+    );
+    agrees(&v);
+    assert!(!v.refused, "{v:?}");
+    assert_eq!(v.excused.len(), 1, "{v:?}");
+    // Anything else FreeCAD does is a difference: a failure that moved a point, a partial
+    // merge (its coincidence missing), a constraint of the case's gone or one more, a
+    // geometry made or gone, a failure as redundant (-2), a failure where the sketch failed
+    // before the merge too (nothing to roll back), its edit raising, a crash, or a hang.
+    let failed: Vec<(&str, Doctoring)> = vec![
+        (
+            "a point moved",
+            Box::new(|fc| {
+                fc.geometry[0].points.get_mut("1").unwrap()[0] += 1e-6;
+            }),
+        ),
+        (
+            "the merge's coincidence missing",
+            Box::new(|fc| {
+                fc.constraints.pop();
+            }),
+        ),
+        (
+            "a named constraint gone",
+            Box::new(|fc| {
+                let named = fc
+                    .constraints
+                    .iter()
+                    .position(|c| !c.name.is_empty())
+                    .unwrap();
+                fc.constraints.remove(named);
+            }),
+        ),
+        (
+            "a constraint more",
+            Box::new(|fc| {
+                let mut extra = fc.constraints[0].clone();
+                extra.name = "s_k9999999".to_owned();
+                fc.constraints.push(extra);
+            }),
+        ),
+        (
+            "a geometry made",
+            Box::new(|fc| {
+                let mut made = fc.geometry[0].clone();
+                made.id = 999;
+                fc.geometry.push(made.clone());
+                fc.edited.push(made);
+            }),
+        ),
+        (
+            "a geometry gone",
+            Box::new(|fc| {
+                fc.geometry.pop();
+                fc.edited.pop();
+            }),
+        ),
+        (
+            "failed as redundant",
+            Box::new(|fc| {
+                fc.after.code = -2;
+                fc.after.redundant = vec![1];
+            }),
+        ),
+        (
+            "failing before the merge too",
+            Box::new(|fc| {
+                fc.before.code = -1;
+            }),
+        ),
+    ];
+    for (what, change) in failed {
+        let made = doctored(&theirs[0], |fc| change(fc));
+        assert!(!sketch_edit::rolled_back(p, Some(&made)), "{what}");
+        let v = verdict(p, Some(&made));
+        assert!(!v.refused && v.excused.is_empty(), "{what}: {v:?}");
+        assert_eq!(v.how.len(), 1, "{what}: {v}");
+    }
+    for other in [
+        Theirs::Failed("refused by hand".to_owned()),
+        Theirs::Lost("FreeCAD crashed building it (signal: 11 (SIGSEGV))".to_owned()),
+        Theirs::Lost("FreeCAD took longer than 60 s building it".to_owned()),
+    ] {
+        let v = verdict(p, Some(&other));
+        assert!(
+            !v.refused && !v.crashed && v.excused.is_empty(),
+            "{other:?}: {v:?}"
+        );
+        assert_eq!(v.how.len(), 1, "{other:?}: {v}");
+    }
 }
 
 #[test]

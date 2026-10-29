@@ -886,13 +886,24 @@ impl std::fmt::Display for Verdict {
 /// A case of `tests/oracle/sketch-edits` whose difference from FreeCAD the port note doesn't
 /// explain, kept for a decision (a fix to the edit, or a line in the note): shown as known,
 /// not as agreement, by its whole report, so any other difference in the case still shows;
-/// and one that no longer shows is a problem, so the list can't go stale.
+/// and one that no longer shows is a problem, so the list can't go stale. Or a case FreeCAD
+/// answers otherwise run to run, which it's no oracle for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Known {
     pub case: &'static str,
-    /// The case's report ([`Verdict::how`], joined by "; "), exactly.
-    pub difference: &'static str,
+    pub shows: Shows,
     pub why: &'static str,
+}
+
+/// What a [`Known`] case shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shows {
+    /// This report ([`Verdict::how`], joined by "; "), exactly.
+    Difference(&'static str),
+    /// Whatever it shows: FreeCAD 1.1.3 doesn't answer the case the same every run, so its
+    /// answer is no oracle, and the case is shown as known, its report with it, never as an
+    /// agreement or a difference.
+    Varies,
 }
 
 /// The case file's differences the note doesn't explain, each reported with its judgment;
@@ -900,26 +911,40 @@ pub struct Known {
 pub const KNOWN: &[Known] = &[
     Known {
         case: "merge_holds_own_point_on_line",
-        difference: "both refused, but Silico's refusal isn't one the note gives (its edit refused: invalid_input: merging them would make constraint k0000005 hold p0000004, a point of n0000003, on n0000003 itself (elements k0000005, p0000004, n0000003, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD's: FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:53): solve -2 with conflicting [], redundant [1], malformed []",
+        shows: Shows::Difference(
+            "both refused, but Silico's refusal isn't one the note gives (its edit refused: invalid_input: merging them would make constraint k0000005 hold p0000004, a point of n0000003, on n0000003 itself (elements k0000005, p0000004, n0000003, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD's: FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:53): solve -2 with conflicting [], redundant [1], malformed []",
+        ),
         why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, the gate's rule, :31, applied to the edit's result up front, :34), which the note gives only generally, as the gate's (:31, :276); FreeCAD 1.1.3 makes the merge, its solve finding the `on` redundant, which main's Coincident command (emulated) rolls back. Whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
     },
     // `sketch-edit-sweep --seed 32 --count 500`'s case 490.
     Known {
         case: "edit_32_490",
-        difference: "both refused, but Silico's refusal isn't one the note gives (its edit refused: invalid_input: merging them would make constraint k0000028 hold p0000027, a point of n0000005, on n0000005 itself (elements k0000028, p0000027, n0000005, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD's: FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:53): solve -2 with conflicting [], redundant [12], malformed []",
+        shows: Shows::Difference(
+            "both refused, but Silico's refusal isn't one the note gives (its edit refused: invalid_input: merging them would make constraint k0000028 hold p0000027, a point of n0000005, on n0000005 itself (elements k0000028, p0000027, n0000005, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD's: FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:53): solve -2 with conflicting [], redundant [12], malformed []",
+        ),
         why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, the gate's rule, :31, applied to the edit's result up front, :34), which the note gives only generally, as the gate's (:31, :276); FreeCAD 1.1.3 makes the merge, its solve finding the `on` redundant, which main's Coincident command (emulated) rolls back. Whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
     },
     // `sketch-edit-sweep --seed 32 --count 500`'s case 413: a decision-13b merge, as case 490
     // is; first seen in sweep 40851790630, after #251's rebase.
     Known {
         case: "edit_32_413",
-        difference: "both refused, but Silico's refusal isn't one the note gives (its edit refused: invalid_input: merging them would make constraint k0000022 hold p0000001, a point of n0000005, on n0000005 itself (elements k0000022, p0000001, n0000005, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD's: FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:53): solve -2 with conflicting [], redundant [13], malformed []",
+        shows: Shows::Difference(
+            "both refused, but Silico's refusal isn't one the note gives (its edit refused: invalid_input: merging them would make constraint k0000022 hold p0000001, a point of n0000005, on n0000005 itself (elements k0000022, p0000001, n0000005, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD's: FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:53): solve -2 with conflicting [], redundant [13], malformed []",
+        ),
         why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, the gate's rule, :31, applied to the edit's result up front, :34), which the note gives only generally, as the gate's (:31, :276); FreeCAD 1.1.3 makes the merge, its solve finding the `on` redundant, which main's Coincident command (emulated) rolls back. Whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
     },
     Known {
         case: "merge_two_locked_ends",
-        difference: "FreeCAD refused (FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:53): solve -2 with conflicting [], redundant [3, 4], malformed []); Silico made the edit",
+        shows: Shows::Difference(
+            "FreeCAD refused (FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:53): solve -2 with conflicting [], redundant [3, 4], malformed []); Silico made the edit",
+        ),
         why: "the two locks agree once the points are one, so Silico's solve keeps them as redundant (M3.3's decision 5) and the merge stands (as the note's own merge tests have a lock merge, :452); FreeCAD's Coincident command rolls back a solve that finds new redundancy (:53); the note says only that a conflict refuses the merge (:277)",
+    },
+    // `sketch-edit-sweep --seed 32 --count 500`'s case 154.
+    Known {
+        case: "edit_32_154",
+        shows: Shows::Varies,
+        why: "FreeCAD 1.1.3 isn't the same run to run here (:278): points merged from apart, whose solve shortens a line to nothing, which Silico refuses (:280); FreeCAD's solve mostly succeeds, its line 5e-13 mm long, and now and then (about 4 of 36 runs) fails (-1), which its Coincident command rolls back; alone in a script, it failed 3 of 20 runs and its 17 solves landed in three different places. Either outcome is the note's, but an answer that varies is no oracle",
     },
 ];
 
@@ -934,7 +959,10 @@ pub fn without_known(
         let Some(v) = verdicts.iter().find(|v| v.case == k.case) else {
             continue;
         };
-        if v.how.join("; ") != k.difference {
+        let Shows::Difference(difference) = k.shows else {
+            continue;
+        };
+        if v.how.join("; ") != difference {
             missing.push(format!(
                 "{}: its known difference didn't show as it's written ({}); it now reads: {}",
                 k.case,
@@ -949,7 +977,18 @@ pub fn without_known(
     }
     for v in verdicts {
         match known.iter().find(|k| k.case == v.case) {
-            Some(k) if v.how.join("; ") == k.difference => {
+            Some(k) if k.shows == Shows::Varies => {
+                let report = if v.how.is_empty() {
+                    "agreed this run".to_owned()
+                } else {
+                    v.how.join("; ")
+                };
+                shown.push(format!(
+                    "known: {}: FreeCAD's answer varies run to run, so it isn't compared ({report}) -- {}",
+                    v.case, k.why
+                ));
+            }
+            Some(k) if matches!(k.shows, Shows::Difference(d) if d == v.how.join("; ")) => {
                 shown.push(format!("known: {v} -- {}", k.why));
             }
             Some(_) if v.how.is_empty() => {}
@@ -1186,6 +1225,12 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
         // the note doesn't pin FreeCAD's outcome as another than a refusal.
         (Some(ours), Some(theirs_why)) => match rule(p) {
             Some(r) => match r.pinned() {
+                // A merge FreeCAD's solve fails, which its Coincident command rolls back: one
+                // of the two outcomes the note gives it (:278).
+                Some(Pinned::SolvesOrRollsBack) if rolled_back(p, theirs) => {
+                    v.refused = true;
+                    v.modulo.extend(r.lines());
+                }
                 Some(pinned) => v.how.push(format!(
                     "both refused, but the note has FreeCAD {} ({NOTE}{}): Silico's refusal ({ours}); FreeCAD's: {theirs_why}",
                     pinned.does(),
@@ -1363,8 +1408,8 @@ impl Rule {
             Rule::SplitCircleAtOne
             | Rule::SplitOffCurve(_)
             | Rule::SplitEdgeTangent(_)
-            | Rule::TrimPoint
-            | Rule::MergeSolveUnbuildable => Some(Pinned::Edits),
+            | Rule::TrimPoint => Some(Pinned::Edits),
+            Rule::MergeSolveUnbuildable => Some(Pinned::SolvesOrRollsBack),
             _ => None,
         }
     }
@@ -1377,6 +1422,10 @@ pub enum Pinned {
     Crashes,
     /// It makes the edit, and its result is what the note says, which the excusal checks.
     Edits,
+    /// It makes the merge, and its solve either succeeds, which the excusal checks, or fails
+    /// (-1), which its Coincident command rolls back, the sketch as it was before
+    /// ([`rolled_back`]): FreeCAD 1.1.3 isn't the same every run here (:278).
+    SolvesOrRollsBack,
 }
 
 impl Pinned {
@@ -1384,6 +1433,9 @@ impl Pinned {
         match self {
             Pinned::Crashes => "crash",
             Pinned::Edits => "make the edit",
+            Pinned::SolvesOrRollsBack => {
+                "make the merge, its solve succeeding, or failing (-1) and rolled back to the sketch before it"
+            }
         }
     }
 }
@@ -1729,6 +1781,91 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
         )),
         _ => None,
     }
+}
+
+/// Whether FreeCAD's merge of `p` failed its solve (-1, where the sketch before it solved)
+/// and is rolled back to just what it was before, as its Coincident command does (:53,
+/// :278): its geometry where the case drew it, every curve and point kept and none made,
+/// each place, radius, and construction as drawn; and its constraints the case's, as FreeCAD
+/// was given them, and the merge's coincidences, which the rollback takes off. Anything else
+/// (a partial merge, a solve that moved something, another failure) isn't the rollback.
+pub fn rolled_back(p: &Prepared, theirs: Option<&Theirs>) -> bool {
+    let (Some(Theirs::Edited(fc)), Plan::Run { job, .. }) = (theirs, &p.plan) else {
+        return false;
+    };
+    let FreecadEdit::Merge { coincidences } = &job.edit else {
+        return false;
+    };
+    if fc.before.code != 0 || fc.after.code != -1 {
+        return false;
+    }
+    let shape = Shape::of(&p.sketch);
+    let drawn = |g: &FcGeometry| -> bool {
+        let Some(member) = fc
+            .ids_before
+            .iter()
+            .position(|id| *id == g.id)
+            .and_then(|i| p.model.elements.get(i))
+        else {
+            return false;
+        };
+        let Some(m) = shape.members.get(member) else {
+            return false;
+        };
+        let places = g.points.iter().all(|(pos, at)| {
+            let point = match (m.kind, pos.parse::<i32>()) {
+                ("point", Ok(1)) => Some(member),
+                (_, Ok(pos)) => m.at.get(&pos),
+                _ => None,
+            };
+            point
+                .and_then(|q| shape.points.get(q))
+                .is_some_and(|q| near(*q, *at))
+        });
+        let radius = match (g.radius, shape.radii.get(member)) {
+            (Some(r), Some(drawn)) => (r - drawn).abs() <= sketch::TOLERANCE,
+            (None, None) => true,
+            _ => false,
+        };
+        g.kind == m.kind && places && radius && g.construction == m.construction
+    };
+    let ids = |list: &[FcGeometry]| list.iter().map(|g| g.id).collect::<Vec<_>>();
+    if ids(&fc.geometry) != fc.ids_before
+        || ids(&fc.edited) != fc.ids_before
+        || !fc.geometry.iter().all(drawn)
+        || !fc.edited.iter().all(drawn)
+    {
+        return false;
+    }
+    type Made = (String, Vec<[i32; 2]>, bool, String);
+    let mut given: Vec<Made> = job
+        .constraints
+        .iter()
+        .map(|c| {
+            (
+                c.kind.to_owned(),
+                pairs(c.kind, &c.ints),
+                c.driving,
+                c.name.clone().unwrap_or_default(),
+            )
+        })
+        .chain(coincidences.iter().map(|&[g1, p1, g2, p2]| {
+            (
+                "Coincident".to_owned(),
+                vec![[g1, p1], [g2, p2]],
+                true,
+                String::new(),
+            )
+        }))
+        .collect();
+    let mut found: Vec<Made> = fc
+        .constraints
+        .iter()
+        .map(|c| (c.kind.clone(), c.refs.clone(), c.driving, c.name.clone()))
+        .collect();
+    given.sort();
+    found.sort();
+    given == found
 }
 
 /// `member`'s FreeCAD geometry after the edit, before the solve, by the ID it had before.
