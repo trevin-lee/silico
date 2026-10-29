@@ -180,7 +180,7 @@ fn a_document_file_name_that_is_hostile_still_gives_a_file_that_reads_back() {
 
 #[test]
 fn a_name_of_no_ascii_at_all_is_written_exactly_and_read_back_as_the_products_id() {
-    // Short names with no ASCII graphic character: written exactly (read_back checks the
+    // Names with no ASCII graphic character: written exactly (read_back checks the
     // file), read back as the product's id by OCCT's reader in the oracle's C locale, on
     // every platform (label_of): OCCT's bug, followed and said, not worked around.
     let wrong = misread(&[
