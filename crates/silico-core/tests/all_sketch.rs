@@ -36,6 +36,8 @@ mod adversarial_load_path;
 mod adversarial_redundant_resolve;
 #[path = "adversarial_sketch.rs"]
 mod adversarial_sketch;
+#[path = "adversarial_sketch_drag.rs"]
+mod adversarial_sketch_drag;
 #[path = "adversarial_sketch_edit.rs"]
 mod adversarial_sketch_edit;
 #[path = "adversarial_sketch_extend.rs"]
@@ -44,6 +46,8 @@ mod adversarial_sketch_extend;
 mod adversarial_sketch_features;
 #[path = "adversarial_sketch_solve.rs"]
 mod adversarial_sketch_solve;
+#[path = "adversarial_sketch_split.rs"]
+mod adversarial_sketch_split;
 #[path = "adversarial_stored_coordinates.rs"]
 mod adversarial_stored_coordinates;
 #[path = "adversarial_warm.rs"]
@@ -54,6 +58,8 @@ mod chain;
 mod drag_session;
 #[path = "sketch.rs"]
 mod sketch;
+#[path = "sketch_drag.rs"]
+mod sketch_drag;
 #[path = "sketch_edit.rs"]
 mod sketch_edit;
 #[path = "sketch_extend.rs"]
@@ -66,6 +72,8 @@ mod sketch_features_gate;
 mod sketch_gate;
 #[path = "sketch_solve.rs"]
 mod sketch_solve;
+#[path = "sketch_split.rs"]
+mod sketch_split;
 #[path = "stored_coordinates.rs"]
 mod stored_coordinates;
 #[path = "undo.rs"]

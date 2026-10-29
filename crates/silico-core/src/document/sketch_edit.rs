@@ -13,8 +13,12 @@ use super::PROBLEMS_LISTED;
 use super::sketch::{ElementId, ElementKind, Form, Reference, Sketch, SketchPoint};
 use crate::{Error, ErrorCode};
 
-/// A sketch edited, and what changed: each list by kind (points, lines, circles, arcs,
-/// constraints), then by ID (docs/design/m5.0-app.md, section 7, *The sketch edits*).
+mod split;
+pub use split::{Split, split};
+
+/// A sketch edited, and what changed (docs/design/m5.0-app.md, section 7, *The sketch
+/// edits*): `added` in the order the edit made them, by kind (points, lines, circles, arcs,
+/// constraints), then along the curve; `modified` and `removed` by kind, then by ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Edited {
     pub sketch: Sketch,
@@ -423,7 +427,7 @@ pub fn merge(sketch: &Sketch, points: &[ElementId]) -> Result<Edited, Error> {
             repointed.push(constraint.id.clone());
         }
     }
-    own_curve(&edited)?;
+    own_curve(&edited, "merging them", "points", "merge other points")?;
     modified.extend(repointed);
     edited.points.retain(|p| !others.contains(&p.id));
     Ok(Edited {
@@ -434,16 +438,18 @@ pub fn merge(sketch: &Sketch, points: &[ElementId]) -> Result<Edited, Error> {
     })
 }
 
-/// Refuses a merged sketch in which a constraint holds a curve's own point on it, or leaves
-/// a tangency in a form the gate refuses where the curves meet: what the gate would refuse
-/// of the merge's result, said as the merge's refusal, naming the constraint. Before the
-/// merge these points were apart, so the sketch it was given had none of them.
+/// Refuses an edited sketch in which a constraint holds a curve's own point on it, or
+/// leaves a tangency in a form the gate refuses where the curves meet: what the gate would
+/// refuse of the edit's result, said as the edit's refusal (`edit` its subject, "merging
+/// them"; `parameter` the request's field; `instead` what else to do), naming the
+/// constraint. Before a merge these points were apart, and before a split the point wasn't
+/// the curve's, so the sketch it was given had none of them.
 ///
 /// Refused, not mended: an `on` that the merge makes hold an end on its own line is implied
 /// by then, and could be dropped, as trim drops one (sketch-edit decision 5), but the note's
 /// decision 10 says the merge makes no fix-up, and FreeCAD's coincidence command rolls back a
 /// worse result (`e38154474a`); which one the merge takes is for the M5.0 design to settle.
-fn own_curve(sketch: &Sketch) -> Result<(), Error> {
+fn own_curve(sketch: &Sketch, edit: &str, parameter: &str, instead: &str) -> Result<(), Error> {
     let points: BTreeMap<&ElementId, Vec<&ElementId>> = curves(sketch)
         .into_iter()
         .map(|(_, id, points)| (id, points))
@@ -465,11 +471,11 @@ fn own_curve(sketch: &Sketch) -> Result<(), Error> {
     let refuse = |constraint: &ElementId, why: String, elements: Vec<String>| {
         Err(Error::new(
             ErrorCode::InvalidInput,
-            format!("merging them would make constraint {constraint} {why}"),
+            format!("{edit} would make constraint {constraint} {why}"),
         )
         .with_elements(std::iter::once(constraint.to_string()).chain(elements))
-        .with_parameter("points")
-        .with_suggestion("remove the constraint first, or merge other points"))
+        .with_parameter(parameter.to_owned())
+        .with_suggestion(format!("remove the constraint first, or {instead}")))
     };
     for constraint in &sketch.constraints {
         let id = &constraint.id;
@@ -502,6 +508,24 @@ fn own_curve(sketch: &Sketch) -> Result<(), Error> {
                 );
             }
             Form::Tangent { a, b, .. } => {
+                // Curves that share an end: where they meet, a tangency is a tangent_at
+                // (a split at the end of a curve held tangent on it, as a merge refuses).
+                let shared = match (a.element(), b.element()) {
+                    (Some(a), Some(b)) => ends
+                        .get(a)
+                        .zip(ends.get(b))
+                        .and_then(|(of_a, of_b)| of_a.iter().find(|p| of_b.contains(p))),
+                    _ => None,
+                };
+                if let Some(point) = shared {
+                    return refuse(
+                        id,
+                        format!(
+                            "an edge tangency of {a} and {b}, which would then share an end, {point}: where curves meet, a tangency is a tangent_at"
+                        ),
+                        vec![a.to_string(), b.to_string(), point.to_string()],
+                    );
+                }
                 // An end of one held on the other: the gate takes that as a tangent_on.
                 for on in &sketch.constraints {
                     if let Form::On { point, curve } = &on.form
