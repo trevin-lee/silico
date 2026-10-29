@@ -3,13 +3,15 @@
 //! the tangent's side. Where the merged points touch, PlaneGCS solves the merged sketch
 //! without moving it, and the other direction moves it; merged from apart, the solve holds
 //! the side, and the other direction would flip it. Expected values by hand: a line along
-//! y = 0 into (10, 0), an arc about (10, 10).
+//! y = 0 into (10, 0), an arc about (10, 10). And an add the gate takes, whose solve then
+//! finds the conflict it makes, which refuses the edit (docs/ports/sketch-edit.md, §2).
 
 use super::fixture::{document, fields, line, point};
 
 use std::path::Path;
 
-use silico_core::document::sketch_edit::merge;
+use silico_core::ErrorCode;
+use silico_core::document::sketch_edit::{Members, add, merge};
 use silico_core::document::{Direction, ElementId, Form, Operation, Sketch, read};
 use silico_core::sketch::{SketchWorker, Translation};
 
@@ -163,5 +165,55 @@ fn a_merge_from_apart_solves_with_the_arc_still_on_the_lines_left() {
     assert!(
         other.is_none_or(|(side, _)| side < 0.0),
         "flipped: {other:?}"
+    );
+}
+
+#[test]
+fn an_added_conflicting_length_is_found_by_the_solve_naming_it() {
+    // Line na from (0, 0) to (10, 0), its length 10; a second length of 12 added. FreeCAD
+    // 1.1.3 keeps such a constraint and its solve reports the conflict (status -3, the port
+    // note's probe); Silico's add takes it, the gate having nothing against it, and the
+    // edit's solve refuses it, naming it.
+    let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    let sketch_in = |constraints: &str| {
+        let text = document(&fields(
+            &[point("pa000000", 0.0, 0.0), point("pb000000", 10.0, 0.0)].join(", "),
+            &line("na000000", "pa000000", "pb000000"),
+            "",
+            "",
+            constraints,
+        ));
+        let read = read(text.as_bytes()).unwrap();
+        let Operation::Sketch(sketch) = &read.features[0].operation else {
+            panic!("not a sketch")
+        };
+        sketch.clone()
+    };
+    let before = sketch_in(
+        r#"{"id": "ka000001", "type": "length", "line": "na000000", "value": 10, "driving": true}"#,
+    );
+    let batch = Members {
+        constraints: sketch_in(
+            r#"{"id": "kz000001", "type": "length", "line": "na000000", "value": 12, "driving": true}"#,
+        )
+        .constraints,
+        ..Members::default()
+    };
+    let solve = |sketch: &Sketch, worker: &mut SketchWorker| {
+        Translation::new(sketch)
+            .unwrap()
+            .solve(worker)
+            .unwrap()
+            .outcome
+    };
+    // Before the add, it solves.
+    assert!(solve(&before, &mut worker).is_ok());
+    let edited = add(&before, &batch).unwrap();
+    let error = solve(&edited.sketch, &mut worker).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::OverConstrained, "{error}");
+    assert!(
+        error.elements().iter().any(|e| e == "kz000001"),
+        "{:?}",
+        error.elements()
     );
 }

@@ -16,8 +16,10 @@ use super::sketch::{
 };
 use crate::{Error, ErrorCode};
 
+mod add;
 mod split;
 mod trim;
+pub use add::{Members, add};
 pub use split::{Split, split};
 pub use trim::{Trim, trim};
 

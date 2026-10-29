@@ -62,6 +62,8 @@ mod chain;
 mod drag_session;
 #[path = "sketch.rs"]
 mod sketch;
+#[path = "sketch_add.rs"]
+mod sketch_add;
 #[path = "sketch_drag.rs"]
 mod sketch_drag;
 #[path = "sketch_edit.rs"]
