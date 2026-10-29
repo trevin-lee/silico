@@ -427,11 +427,15 @@ proptest! {
                 prop_assert!(libm::hypot(v[0] - x, v[1] - y) <= 1e-3 * (d - r).abs() + tol,
                     "the centre moved: {:?}", v);
             }
-            // Far from the begin state, SQP can stop short, as 1.1.3's does: a radius of 404
-            // about (0, 48203) dragged to (0.49, 820609) is "Not able to move point" there
-            // too (the sketcher note's *Dragging*: a failed frame keeps the last good one).
-            // A move that's no success is a failed frame, never a wrong one.
-            Ok(moved) => prop_assert!(moved.values.is_none(), "{:?}", moved),
+            // Within 2^19 mm every residual can reach DogLeg's 1e-10, and every move
+            // succeeds; past it one ulp of a length is more than that, and a move succeeds or
+            // not by its last bit of rounding, in 1.1.3 too (the sketcher note's *Dragging an
+            // edge*, the port review's oracle rates). Kept under 5e5 for margin.
+            Ok(moved) => {
+                let far = [x, y, cx, cy, d, r].iter().any(|v| v.abs() >= 5e5);
+                prop_assert!(far, "a failed frame within 2^19 mm: {:?}", moved);
+                prop_assert!(moved.values.is_none(), "{:?}", moved);
+            }
             // Refused only for a radius past reach.
             Err(f) => prop_assert!(d > 1e6 * (1.0 - 1e-9), "refused: {:?}", f),
         }
@@ -746,13 +750,13 @@ fn a_line_whose_end_an_arc_ends_at_moved_up_takes_the_arc_as_freecad_does() {
     near(
         at("pr000001"),
         [-0.388189584, 1.152720427],
-        1e-4,
+        1e-9,
         "the arc's centre",
     );
     near(
         at("pr000002"),
         [5.373193561, 0.081350360],
-        1e-4,
+        1e-9,
         "the arc's start",
     );
 }

@@ -554,13 +554,39 @@ pub enum PinAt {
 }
 
 /// One of a drag's pins: where it holds, the weight of its rows (1, or less to give way
-/// first), and, if it follows the cursor, its target's offset from the cursor; one that
-/// doesn't is held where it starts.
+/// first), and, if it follows the cursor, how ([`Follow`]); one that doesn't is held where it
+/// starts.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pin {
     pub at: PinAt,
     pub scale: f64,
-    pub follows: Option<[f64; 2]>,
+    pub follows: Option<Follow>,
+}
+
+/// How a pin's target follows the cursor: `base` plus the cursor's offset from `from`,
+/// computed in that order, as FreeCAD's relative drag computes each target
+/// (`InitParameters[i] + (toPoint − press)`), so a cursor back at `from` gives `base`
+/// exactly. The cursor itself is a `base` and `from` of zero.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Follow {
+    pub base: [f64; 2],
+    pub from: [f64; 2],
+}
+
+impl Follow {
+    /// The cursor itself.
+    pub const CURSOR: Follow = Follow {
+        base: [0.0, 0.0],
+        from: [0.0, 0.0],
+    };
+
+    /// The target for the cursor at `to`.
+    pub fn at(self, to: [f64; 2]) -> [f64; 2] {
+        [
+            self.base[0] + (to[0] - self.from[0]),
+            self.base[1] + (to[1] - self.from[1]),
+        ]
+    }
 }
 
 impl Pin {
@@ -569,7 +595,7 @@ impl Pin {
         Pin {
             at,
             scale: 1.0,
-            follows: Some([0.0, 0.0]),
+            follows: Some(Follow::CURSOR),
         }
     }
 
@@ -707,11 +733,10 @@ impl DragBegin {
                         [p.x, p.y]
                             .map(|v| self.system.values.get(v.0 as usize).copied().unwrap_or(0.0))
                     };
-                    // Each end at its offset from the press: the cursor is where the press is
-                    // dragged to.
-                    let offset = |p: PointValues| {
-                        let [x, y] = at(p);
-                        [x - press[0], y - press[1]]
+                    // Each end moved by the cursor's offset from the press.
+                    let offset = |p: PointValues| Follow {
+                        base: at(p),
+                        from: press,
                     };
                     vec![
                         Pin {
@@ -1687,6 +1712,26 @@ fn invalid(parameter: &'static str, message: String) -> InvalidParameter {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_follower_moves_by_the_cursors_offset_from_its_press_in_freecads_order() {
+        // FreeCAD's InitParameters + (toPoint - press): a cursor at the press gives the base
+        // exactly. The other order, toPoint + (InitParameters - press), rounds this pair to
+        // -31.002554775011955.
+        let follow = Follow {
+            base: [-31.00255477501196, 2.0],
+            from: [9.710164596515956, 0.5],
+        };
+        assert_eq!(
+            follow.at([9.710164596515956, 0.5]),
+            [-31.00255477501196, 2.0]
+        );
+        assert_eq!(
+            follow.at([10.710164596515956, 3.5]),
+            [-30.00255477501196, 5.0]
+        );
+        assert_eq!(Follow::CURSOR.at([3.25, -7.5]), [3.25, -7.5]);
+    }
+
     use super::*;
 
     /// A line from (0, 0) to (10, 0), a circle at (0, 5) of radius 2, and an arc; the

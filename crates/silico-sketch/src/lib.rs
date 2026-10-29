@@ -140,15 +140,18 @@ mod ffi {
 
     /// What a drag pins: a point (`Point`, `Start`, `End`, or `Center` of `geometry`), or,
     /// `Geometry`, a target held on that circle or arc; the weight of its rows (1, or less to
-    /// let it give way first); and whether its target follows the cursor, at the offset
-    /// (`dx`, `dy`) from it, or is held where it starts.
+    /// let it give way first); and whether its target follows the cursor, at `(bx, by)` plus
+    /// the cursor's offset from `(fx, fy)` (silico_protocol::Follow), or is held where it
+    /// starts.
     struct Pin {
         position: Position,
         geometry: u32,
         scale: f64,
         follows: bool,
-        dx: f64,
-        dy: f64,
+        bx: f64,
+        by: f64,
+        fx: f64,
+        fy: f64,
     }
 
     /// What a diagnosis found: the degrees of freedom, and the tags of the constraints in
@@ -395,14 +398,18 @@ impl Drag {
                     silico_protocol::PinAt::Point(p) => point(p),
                     silico_protocol::PinAt::OnCurve(g) => (ffi::Position::Geometry, g.0),
                 };
-                let [dx, dy] = pin.follows.unwrap_or([0.0, 0.0]);
+                let follow = pin.follows.unwrap_or(silico_protocol::Follow::CURSOR);
+                let [bx, by] = follow.base;
+                let [fx, fy] = follow.from;
                 ffi::Pin {
                     position,
                     geometry,
                     scale: pin.scale,
                     follows: pin.follows.is_some(),
-                    dx,
-                    dy,
+                    bx,
+                    by,
+                    fx,
+                    fy,
                 }
             })
             .collect();

@@ -475,10 +475,11 @@ struct DragSession::State {
   // them and never resized, so the pins' pointers stay good (FreeCAD reserves its
   // MoveParameters for the same reason).
   std::vector<double> targets;
-  // For each pin whose target follows the cursor: its index and its offset from it.
+  // For each pin whose target follows the cursor: its index, and its target's base and the
+  // point the cursor's offset is measured from (silico_protocol::Follow).
   struct Follower {
     size_t pin;
-    double dx, dy;
+    double bx, by, fx, fy;
   };
   std::vector<Follower> followers;
 
@@ -503,7 +504,8 @@ std::unique_ptr<DragSession> drag_begin(const SolveInput &input, rust::Slice<con
   GCS::System &system = s.sketch.system;
   for (size_t i = 0; i < pins.size(); ++i) {
     GCS::Point target(&s.targets[2 * i], &s.targets[2 * i + 1]);
-    if (pins[i].follows) s.followers.push_back({i, pins[i].dx, pins[i].dy});
+    if (pins[i].follows)
+      s.followers.push_back({i, pins[i].bx, pins[i].by, pins[i].fx, pins[i].fy});
     // Tagged -1 (GCS::DefaultTemporaryConstraint), so each stays out of the diagnosis and
     // goes to the lower-priority subsystem.
     if (pins[i].position == Position::Geometry) {
@@ -548,8 +550,10 @@ MoveOutput drag_move(DragSession &session, double x, double y) {
   DragSession::State &s = *session.state;
   GCS::System &system = s.sketch.system;
   for (const auto &f : s.followers) {
-    s.targets[2 * f.pin] = x + f.dx;
-    s.targets[2 * f.pin + 1] = y + f.dy;
+    // In FreeCAD's order: the base plus the cursor's offset, so a cursor back where it
+    // started gives the base exactly.
+    s.targets[2 * f.pin] = f.bx + (x - f.fx);
+    s.targets[2 * f.pin + 1] = f.by + (y - f.fy);
   }
   // DogLeg alone, with no fallback, as FreeCAD drags; a part with a pin is solved by SQP.
   // Each solve starts from the values at the drag's start (System::solve resets to them).

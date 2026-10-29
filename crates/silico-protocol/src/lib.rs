@@ -73,7 +73,7 @@ pub use render::{
     RenderAdapter, RenderBody, RenderScene,
 };
 pub use sketch::{
-    Algorithm, DragBegin, Dragged, Geometry, MAX_DRAG_UNKNOWNS, MAX_JACOBIAN_ENTRIES,
+    Algorithm, DragBegin, Dragged, Follow, Geometry, MAX_DRAG_UNKNOWNS, MAX_JACOBIAN_ENTRIES,
     MAX_SKETCH_CONSTRAINTS, MAX_SKETCH_GEOMETRY, MAX_SKETCH_UNKNOWNS, MAX_SKETCH_VALUES, MAX_TAG,
     Moved, Part, Parts, Pin, PinAt, PointOf, PointValues, SketchGeometry, SketchSystem,
     SolveStatus, Solved, SolverConstraint, Tag, Value, arc_from_points, check_drag_target,

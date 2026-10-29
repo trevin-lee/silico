@@ -2791,7 +2791,7 @@ impl FakeSketches {
     pub fn dragged(begin: &DragBegin, to: [f64; 2]) -> Moved {
         let mut values = begin.system.values.clone();
         for pin in begin.pins() {
-            let (silico_protocol::PinAt::Point(point), Some(offset)) = (pin.at, pin.follows) else {
+            let (silico_protocol::PinAt::Point(point), Some(follow)) = (pin.at, pin.follows) else {
                 continue;
             };
             let Some(p) = begin.system.point_values(point) else {
@@ -2800,8 +2800,9 @@ impl FakeSketches {
             let (x, y) = (p.x.0 as usize, p.y.0 as usize);
             if let (Some(&bx), Some(&by)) = (begin.system.values.get(x), begin.system.values.get(y))
             {
-                values[x] = to[0] + offset[0] + bx / 1000.0;
-                values[y] = to[1] + offset[1] + by / 1000.0;
+                let [tx, ty] = follow.at(to);
+                values[x] = tx + bx / 1000.0;
+                values[y] = ty + by / 1000.0;
             }
         }
         Moved {
