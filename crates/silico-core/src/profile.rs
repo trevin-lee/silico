@@ -553,7 +553,7 @@ fn of_sketch(
     let open: Vec<usize> = (0..points.len())
         .filter(|&p| at_point[p].len() == 1)
         .collect();
-    let groups = one_point_groups(&open, &points);
+    let groups = one_place_groups(&open, &points, |p, q| touching(distance(p, q)));
     // Each point as the meet test takes it: an open end grouped with others is the group's
     // first, so curves ending there are neighbours, not a meeting.
     let mut shared_as: Vec<usize> = (0..points.len()).collect();
@@ -589,27 +589,35 @@ fn of_sketch(
             });
         } else {
             let names: Vec<String> = group.iter().map(|&p| point_name(p)).collect();
-            // A curve with both its ends here would shrink to nothing if they shared a
-            // point: it's to be lengthened, not closed up.
-            let mut both_ends: Vec<String> = Vec::new();
-            for &c in group.iter().flat_map(|&p| &at_point[p]) {
-                let curve = &curves[c];
-                let named = curve.named();
-                if curve
-                    .ends
-                    .is_some_and(|ends| ends.iter().all(|p| group.contains(p)))
-                    && !both_ends.contains(&named)
-                {
-                    both_ends.push(named);
-                }
-            }
+            // A curve with both its ends here would collapse if they shared a point: a line
+            // to nothing, an arc to a circle or to nothing. By ID, as `check`'s warning names
+            // them.
+            let mut both_ends: Vec<Collapsing<&ElementId>> = group
+                .iter()
+                .flat_map(|&p| &at_point[p])
+                .map(|&c| &curves[c])
+                .filter(|curve| {
+                    curve
+                        .ends
+                        .is_some_and(|ends| ends.iter().all(|p| group.contains(p)))
+                })
+                .map(|curve| Collapsing {
+                    id: curve.id,
+                    kind: curve.kind,
+                    past_half_turn: match curve.shape {
+                        Shape::Round {
+                            c, arc: Some(arc), ..
+                        } => sweeps_past_half_turn(c, arc.start, arc.end),
+                        Shape::Round { arc: None, .. } | Shape::Line { .. } => false,
+                    },
+                })
+                .collect();
+            both_ends.sort();
+            both_ends.dedup();
             let suggestion = if both_ends.is_empty() {
                 "share the point: end the curves at one point".to_owned()
             } else {
-                format!(
-                    "lengthen {}, or end the curves at one point",
-                    both_ends.join(" and ")
-                )
+                collapsing_advice(&both_ends, "end the curves at one point")
             };
             let elements: Vec<String> = names.iter().cloned().chain(curves_there).collect();
             found.add(elements, |elements| {
@@ -932,16 +940,85 @@ fn gather<'a>(
     })
 }
 
-/// The open ends, grouped: ends within the tolerance of each other (and so on, through
-/// each other) together, each group in order and the groups by their first.
-fn one_point_groups(open: &[usize], points: &[Xy]) -> Vec<Vec<usize>> {
-    let mut by_x: Vec<usize> = (0..open.len()).collect();
+/// A curve with both its ends among ends that should be one point, so sharing one would
+/// collapse it: its ID, its kind, and, for an arc, whether it sweeps past a half turn
+/// ([`sweeps_past_half_turn`]), which decides the advice for it ([`collapsing_advice`]).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Collapsing<I> {
+    pub(crate) id: I,
+    pub(crate) kind: CurveKind,
+    pub(crate) past_half_turn: bool,
+}
+
+/// Whether an arc about `c`, counter-clockwise from `s` to `e` as Silico's arcs run, sweeps
+/// past a half turn: by the sign of the cross product of `s − c` and `e − c`, negative past
+/// one, positive short of one. A product of zero is a sweep of exactly a half turn (the dot
+/// product negative), which isn't past one, or ends on one ray from the centre (the dot
+/// product positive), a whole turn or nothing, ends at one place, which is. No tolerance:
+/// the signs as doubles compute them, the same on every platform.
+pub(crate) fn sweeps_past_half_turn(c: Xy, s: Xy, e: Xy) -> bool {
+    let (u, v) = (sub(s, c), sub(e, c));
+    let turn = cross(u, v);
+    turn < 0.0 || (turn == 0.0 && dot(u, v) > 0.0)
+}
+
+/// The advice for ends that should be one point where `collapsing`, in ID order, have both
+/// their ends among them, so sharing one point would collapse each: first, those to be
+/// lengthened, by noun and ID, joined by " and ", each line and each arc short of a half
+/// turn, which lengthening moves its ends apart; then each arc past a half turn, named,
+/// given the sketch gate's advice for an arc whose ends are one place, "draw a circle
+/// instead, or open the arc" (lengthening it would make it overlap itself); then, those
+/// done, the ends shared at one point, `share`; clauses apart by "; ". The profile's refusal
+/// of those ends and `check`'s warning of them ([`crate::warnings`]) say it alike, each with
+/// its own `share`.
+pub(crate) fn collapsing_advice<I: std::fmt::Display>(
+    collapsing: &[Collapsing<I>],
+    share: &str,
+) -> String {
+    let mut lengthen = Vec::new();
+    let mut arcs = Vec::new();
+    for curve in collapsing {
+        let id = &curve.id;
+        match curve.kind {
+            CurveKind::Line => lengthen.push(format!("line {id}")),
+            CurveKind::Arc if curve.past_half_turn => {
+                arcs.push(format!(
+                    "for arc {id}, draw a circle instead, or open the arc"
+                ));
+            }
+            CurveKind::Arc => lengthen.push(format!("arc {id}")),
+            // A circle has no ends, so it's never among them: no advice for it.
+            CurveKind::Circle => {}
+        }
+    }
+    let lengthen = (!lengthen.is_empty()).then(|| format!("lengthen {}", lengthen.join(" and ")));
+    lengthen
+        .into_iter()
+        .chain(arcs)
+        .chain([format!("then {share}")])
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// The points `of` names (indices into `points`), grouped: points `joined` (and so on,
+/// through each other) together, each group in `of`'s order and the groups by their first,
+/// singletons too. `joined` holds of no two points further apart along x than twice
+/// [`LENGTH_TOLERANCE`]: the sweep compares only those nearer. Deterministic: nothing
+/// depends on the order the sweep meets the points in. The profile's open ends that should
+/// be one point (`touching`), and `check`'s ends FreeCAD would join
+/// ([`crate::warnings`]), each by its own comparison.
+pub(crate) fn one_place_groups(
+    of: &[usize],
+    points: &[Xy],
+    joined: impl Fn(Xy, Xy) -> bool,
+) -> Vec<Vec<usize>> {
+    let mut by_x: Vec<usize> = (0..of.len()).collect();
     by_x.sort_by(|&a, &b| {
-        points[open[a]][0]
-            .total_cmp(&points[open[b]][0])
+        points[of[a]][0]
+            .total_cmp(&points[of[b]][0])
             .then(a.cmp(&b))
     });
-    let mut parent: Vec<usize> = (0..open.len()).collect();
+    let mut parent: Vec<usize> = (0..of.len()).collect();
     fn root(parent: &mut [usize], mut i: usize) -> usize {
         while parent[i] != i {
             parent[i] = parent[parent[i]];
@@ -950,21 +1027,21 @@ fn one_point_groups(open: &[usize], points: &[Xy]) -> Vec<Vec<usize>> {
         i
     }
     for (k, &i) in by_x.iter().enumerate() {
-        let p = points[open[i]];
+        let p = points[of[i]];
         for &j in &by_x[k + 1..] {
-            let q = points[open[j]];
+            let q = points[of[j]];
             // Twice the tolerance: a pair this far apart along x is apart.
             if q[0] - p[0] > 2.0 * LENGTH_TOLERANCE {
                 break;
             }
-            if touching(distance(p, q)) {
+            if joined(p, q) {
                 let (ri, rj) = (root(&mut parent, i), root(&mut parent, j));
                 parent[ri.max(rj)] = ri.min(rj);
             }
         }
     }
     let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    for (i, &p) in open.iter().enumerate() {
+    for (i, &p) in of.iter().enumerate() {
         let r = root(&mut parent, i);
         groups.entry(r).or_default().push(p);
     }
@@ -1765,5 +1842,41 @@ impl Profile {
                 })
                 .collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sweeps_past_half_turn;
+
+    #[test]
+    fn an_arc_sweeps_past_a_half_turn_by_its_ends_cross_product_from_its_centre() {
+        // Counter-clockwise from (1, 0): to (1, 1), an eighth of a turn (the cross product
+        // and the dot product both 1), and to (0, 1), a quarter turn, short of a half; to
+        // (0, −1), three quarters, past one; to (−1, 0), exactly a half turn (the cross
+        // product 0, the dot product −1), not past one; to (2, 0), on the start's ray (the
+        // cross product 0, the dot product 2), ends at one place, as a whole turn, past one.
+        let c = [0.0, 0.0];
+        let s = [1.0, 0.0];
+        assert!(!sweeps_past_half_turn(c, s, [1.0, 1.0]));
+        assert!(!sweeps_past_half_turn(c, s, [0.0, 1.0]));
+        assert!(sweeps_past_half_turn(c, s, [0.0, -1.0]));
+        assert!(!sweeps_past_half_turn(c, s, [-1.0, 0.0]));
+        assert!(sweeps_past_half_turn(c, s, [2.0, 0.0]));
+        // About (10, 10): the same, the ends moved with it.
+        let c = [10.0, 10.0];
+        assert!(!sweeps_past_half_turn(c, [11.0, 10.0], [10.0, 11.0]));
+        assert!(sweeps_past_half_turn(c, [11.0, 10.0], [10.0, 9.0]));
+    }
+
+    #[test]
+    fn a_quarter_turn_whose_products_underflow_to_zero_is_short_of_a_half_turn() {
+        // Counter-clockwise from (1e-170, 0) to (0, 1e-170) about the origin: a quarter
+        // turn, short of a half. Both products are 0 as doubles: the cross product,
+        // 1e-170 · 1e-170 = 1e-340, is below the least subnormal (about 4.9e-324), and the
+        // dot product is 1e-170 · 0 + 0 · 1e-170. Neither negative nor positive, so not past.
+        let (c, s, e) = ([0.0, 0.0], [1e-170, 0.0], [0.0, 1e-170]);
+        assert_eq!(1e-170_f64 * 1e-170, 0.0);
+        assert!(!sweeps_past_half_turn(c, s, e));
     }
 }

@@ -42,10 +42,17 @@ const EXPONENT_CAP: i128 = 1 << 40;
 
 /// The value of `text`, a JSON number (a decimal, with or without an exponent: `0.1`,
 /// `1e-05`, `1.05E1`), in units of 10^-`decimals`: `0.1` with 6 decimals is 100,000. Read
-/// from its digits, never through a float. Digits past `decimals` must be zeros.
+/// from its digits, never through a float. Digits past `decimals` must be zeros. At most
+/// `i64::MAX` units either way, as the refusals say: `i64::MIN`, one more than that below
+/// zero, is out of range, so every value read has its negation, and the range is the same
+/// either side of zero.
 pub fn parse_number(text: &str, decimals: u32) -> Result<i64, NumberError> {
-    parse_wide(text, decimals)
-        .and_then(|value| i64::try_from(value).map_err(|_| NumberError::OutOfRange))
+    parse_wide(text, decimals).and_then(|value| {
+        i64::try_from(value)
+            .ok()
+            .filter(|&value| value != i64::MIN)
+            .ok_or(NumberError::OutOfRange)
+    })
 }
 
 /// As [`parse_number`], to an `i128`: as large as one holds, either way.
@@ -171,6 +178,8 @@ pub struct Length(i64);
 pub const LENGTH_DECIMALS: u32 = 6;
 
 impl Length {
+    /// `nm` nanometres. A document holds at most `i64::MAX` either way ([`parse_number`]):
+    /// `i64::MIN`, which only code can make, writes a number the reader refuses.
     pub const fn from_nm(nm: i64) -> Self {
         Length(nm)
     }
@@ -230,6 +239,8 @@ pub struct Angle(i64);
 pub const ANGLE_DECIMALS: u32 = 9;
 
 impl Angle {
+    /// `ndeg` nanodegrees. A document holds at most `i64::MAX` either way ([`parse_number`]):
+    /// `i64::MIN`, which only code can make, writes a number the reader refuses.
     pub const fn from_ndeg(ndeg: i64) -> Self {
         Angle(ndeg)
     }
@@ -309,6 +320,28 @@ mod tests {
     }
 
     #[test]
+    fn no_float_rounds_to_i64_min_so_whatever_is_rounded_reads_back() {
+        // Below zero, the floats either side of -2^63 nm, 2^-9 mm apart there, exactly:
+        // -4722366482869645/512 mm (-9223372036854775390.625 nm, to -...775391) is inside
+        // the bound, and the next, -2361183241434823/256 mm (-...777343.75 nm, to
+        // -...777344), past i64. So nothing rounded is i64::MIN, which the reader refuses.
+        assert_eq!(
+            Length::rounded(-4_722_366_482_869_645.0 / 512.0),
+            Some(Length::from_nm(-9_223_372_036_854_775_391))
+        );
+        assert_eq!(Length::rounded(-2_361_183_241_434_823.0 / 256.0), None);
+        // An angle's, 2^-19 degrees apart there: -1208925819614629/131072 degrees
+        // (-...774475 ndeg) inside; -4835703278458517/524288 (-...776382 ndeg), past.
+        assert_eq!(
+            Angle::rounded(-1_208_925_819_614_629.0 / 131_072.0),
+            Some(Angle::from_ndeg(-9_223_372_036_854_774_475))
+        );
+        assert_eq!(Angle::rounded(-4_835_703_278_458_517.0 / 524_288.0), None);
+        let rounded = Length::rounded(-4_722_366_482_869_645.0 / 512.0).unwrap();
+        assert_eq!(Length::parse(&rounded.to_string()), Ok(rounded));
+    }
+
+    #[test]
     fn decimals_read_exactly_without_a_float() {
         // 0.1 is exactly 100,000 nm; no f64 holds 0.1 exactly.
         assert_eq!(Length::parse("0.1"), Ok(Length::from_nm(100_000)));
@@ -347,17 +380,16 @@ mod tests {
             ("0e999999999", 0),
             ("0.000e-5", 0),
             ("9.223372036854775807e12", i64::MAX),
-            ("-9.223372036854775808e12", i64::MIN),
+            ("-9.223372036854775807e12", -i64::MAX),
         ];
         for (text, nm) in cases {
             assert_eq!(Length::parse(text), Ok(Length::from_nm(nm)), "{text}");
         }
         assert_eq!(Angle::parse("4.5e1"), Ok(Angle::from_ndeg(45_000_000_000)));
         assert_eq!(Angle::parse("1e-9"), Ok(Angle::from_ndeg(1)));
-        assert_eq!(
-            Length::parse("9.223372036854775808e12"),
-            Err(NumberError::OutOfRange)
-        );
+        for past in ["9.223372036854775808e12", "-9.223372036854775808e12"] {
+            assert_eq!(Length::parse(past), Err(NumberError::OutOfRange), "{past}");
+        }
     }
 
     #[test]
@@ -413,23 +445,41 @@ mod tests {
         assert_eq!(Length::parse("-0.0E-3"), Err(NumberError::NegativeZero));
         assert_eq!(Length::parse("-0"), Err(NumberError::NegativeZero));
         assert_eq!(Length::parse("-0.000"), Err(NumberError::NegativeZero));
-        // i64 nanometres: ±9,223,372,036,854.775807 mm.
+        // At most 9,223,372,036,854.775807 mm either way, as the refusals say: i64::MAX nm
+        // and its negation, and one nanometre past either is refused (below zero, that's
+        // i64::MIN, which an i64 holds but the bound doesn't).
         assert_eq!(
             Length::parse("9223372036854.775807"),
-            Ok(Length::from_nm(i64::MAX))
+            Ok(Length::from_nm(9_223_372_036_854_775_807))
         );
         assert_eq!(
-            Length::parse("-9223372036854.775808"),
-            Ok(Length::from_nm(i64::MIN))
+            Length::parse("-9223372036854.775807"),
+            Ok(Length::from_nm(-9_223_372_036_854_775_807))
+        );
+        for past in [
+            "9223372036854.775808",
+            "-9223372036854.775808",
+            "-9223372036854.775809",
+            "-9223372036854775808e-6",
+        ] {
+            assert_eq!(Length::parse(past), Err(NumberError::OutOfRange), "{past}");
+        }
+        // An angle's the same, in nanodegrees: at most 9,223,372,036.854775807 degrees.
+        assert_eq!(
+            Angle::parse("9223372036.854775807"),
+            Ok(Angle::from_ndeg(9_223_372_036_854_775_807))
         );
         assert_eq!(
-            Length::parse("9223372036854.775808"),
-            Err(NumberError::OutOfRange)
+            Angle::parse("-9223372036.854775807"),
+            Ok(Angle::from_ndeg(-9_223_372_036_854_775_807))
         );
-        assert_eq!(
-            Length::parse("-9223372036854.775809"),
-            Err(NumberError::OutOfRange)
-        );
+        for past in [
+            "9223372036.854775808",
+            "-9223372036.854775808",
+            "-9223372036.854775809",
+        ] {
+            assert_eq!(Angle::parse(past), Err(NumberError::OutOfRange), "{past}");
+        }
         assert_eq!(
             Length::parse(&"9".repeat(10_000)),
             Err(NumberError::OutOfRange)
@@ -452,12 +502,18 @@ mod tests {
             (-1, "-0.000001"),
             (0, "0"),
             (i64::MAX, "9223372036854.775807"),
-            (i64::MIN, "-9223372036854.775808"),
+            (-i64::MAX, "-9223372036854.775807"),
         ];
         for (nm, text) in cases {
             assert_eq!(Length::from_nm(nm).to_string(), text);
             assert_eq!(Length::parse(text), Ok(Length::from_nm(nm)));
         }
+        // i64::MIN, which only code can make, is still written exactly (its magnitude is
+        // past i64's), though the reader refuses it.
+        assert_eq!(
+            Length::from_nm(i64::MIN).to_string(),
+            "-9223372036854.775808"
+        );
         assert_eq!(Angle::from_ndeg(45_000_000_001).to_string(), "45.000000001");
         assert_eq!(
             Angle::from_ndeg(i64::MIN).to_string(),

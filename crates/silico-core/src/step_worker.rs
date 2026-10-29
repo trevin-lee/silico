@@ -127,7 +127,7 @@ impl StepWorker {
 
 /// The STEP worker executable: [`STEP_WORKER_ENV`], or `silico-step-worker` next to the
 /// running executable.
-fn worker_path() -> Result<PathBuf, Error> {
+pub fn worker_path() -> Result<PathBuf, Error> {
     crate::worker::worker_path(
         STEP_WORKER_ENV,
         "silico-step-worker",

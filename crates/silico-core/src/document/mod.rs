@@ -3,6 +3,7 @@
 //! Reading checks each value on its own; whether features fit together, and the kernel can
 //! make each, is the validation gate's ([`validate`]).
 
+pub mod chain;
 mod decode;
 mod fingerprint;
 mod index;
@@ -11,7 +12,9 @@ mod model;
 mod quantity;
 mod reach;
 mod sketch;
+pub mod sketch_edit;
 mod sketch_gate;
+pub mod undo;
 mod validate;
 pub(crate) mod write;
 
@@ -24,13 +27,13 @@ pub use fingerprint::{Difference, Fingerprint, MEASURE_DECIMALS, Measure};
 pub(crate) use index::FeatureIndex;
 #[cfg(test)]
 pub(crate) use index::looked_up;
-#[cfg(test)]
-pub(crate) use model::compared;
 pub use model::{
     Axis, ChamferSize, Document, ElementName, Extent, ExtentValue, FEATURE_TYPES, Feature,
     FeatureId, FeatureVersion, FormatVersion, ID_ALPHABET, ID_LENGTH, Made, Name, NamingScheme,
     Operation, PadExtent, PocketExtent, Position, SweepFeature, TurnExtent, Units,
 };
+#[cfg(test)]
+pub(crate) use model::{cloned, compared};
 pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 pub use reach::{Before, QuotedIds, net_reach, with_users};
 pub use sketch::{
@@ -120,6 +123,38 @@ pub(crate) fn fits(document: &Document) -> bool {
     write::fits(document, json::MAX_DOCUMENT_LEN)
 }
 
+/// The gate's first refusal of an edit's result `edited`, said as the edit's refusal:
+/// "{`doing`} would leave a sketch the gate refuses: {the gate's message}", naming `leading`
+/// and then what the gate names, each once; `Ok` if the gate takes it. The sketch edits
+/// place points by ID and extend moves one, so what they leave by value is the gate's to
+/// find.
+pub(crate) fn refused_by_gate(
+    edited: &Sketch,
+    doing: &str,
+    mut leading: Vec<String>,
+    parameter: &str,
+    suggestion: &str,
+) -> Result<(), Error> {
+    let Some(problem) = sketch_problems(edited).into_iter().next() else {
+        return Ok(());
+    };
+    for e in problem.elements() {
+        if !leading.contains(e) {
+            leading.push(e.clone());
+        }
+    }
+    Err(Error::new(
+        ErrorCode::InvalidInput,
+        format!(
+            "{doing} would leave a sketch the gate refuses: {}",
+            problem.message()
+        ),
+    )
+    .with_elements(leading)
+    .with_parameter(parameter.to_owned())
+    .with_suggestion(suggestion.to_owned()))
+}
+
 /// What the gate refuses of `sketch` on its own (`sketch_gate`): M3.4 checks a solve's
 /// result as its file would hold it, so a save never writes what the gate refuses.
 pub(crate) fn sketch_problems(sketch: &Sketch) -> Vec<Error> {
@@ -189,9 +224,18 @@ pub fn schema() -> Result<String, Error> {
 }
 
 /// The JSON Schema of `T` (draft 2020-12), every object's keys sorted: the document's, and
-/// the command API's (`command::wire::snapshot_value`).
+/// the command API's (`command::wire::snapshot_value`). With no `format` keyword anywhere:
+/// schemars names a Rust integer's or float's type in `format` (`uint64`, `uint32`,
+/// `double`), which JSON Schema doesn't define (its formats are all strings', and Silico's
+/// strings have none), so strict validators warn of each (Ajv, the MCP SDKs': one warning
+/// for each such field a `tools/list` names). Each bound is its field's own `range`.
 pub(crate) fn schema_value_of<T: schemars::JsonSchema>() -> serde_json::Value {
     let schema = SchemaSettings::draft2020_12()
+        .with_transform(schemars::transform::RecursiveTransform(
+            |schema: &mut schemars::Schema| {
+                schema.remove("format");
+            },
+        ))
         .into_generator()
         .into_root_schema_for::<T>();
     sorted(schema.as_value())
@@ -200,22 +244,27 @@ pub(crate) fn schema_value_of<T: schemars::JsonSchema>() -> serde_json::Value {
 /// `schema` as the protected snapshots hold it: its keys sorted, pretty, with a trailing
 /// newline. `what` names it for the error a schema that couldn't be written gives.
 pub(crate) fn schema_text(schema: &serde_json::Value, what: &str) -> Result<String, Error> {
-    serde_json::to_string_pretty(&sorted(schema))
+    contract_text(schema, &format!("{what}'s schema"))
+}
+
+/// `value` as every protected contract file holds its value (the core's snapshots, MCP's
+/// `tools.json`): its keys sorted, pretty, with a trailing newline. `what` names it for
+/// the error a value that couldn't be written gives.
+pub fn contract_text(value: &serde_json::Value, what: &str) -> Result<String, Error> {
+    serde_json::to_string_pretty(&sorted(value))
         .map(|text| text + "\n")
         .map_err(|e| {
-            Error::new(
-                ErrorCode::Internal,
-                format!("{what}'s schema couldn't be written"),
-            )
-            .with_cause(e.to_string())
-            .with_suggestion(crate::worker::SILICO_BUG)
+            Error::new(ErrorCode::Internal, format!("{what} couldn't be written"))
+                .with_cause(e.to_string())
+                .with_suggestion(crate::worker::SILICO_BUG)
         })
 }
 
 /// `value` with every object's keys in sorted order. serde_json keeps an object's keys in
 /// the order they were added when a crate in the build turns on its `preserve_order`
-/// feature, and sorts them otherwise: sorting here makes the schema the same either way.
-fn sorted(value: &serde_json::Value) -> serde_json::Value {
+/// feature, and sorts them otherwise: sorting here makes the schema (and MCP's tool list)
+/// the same either way.
+pub fn sorted(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(map) => {
             let mut entries: Vec<_> = map.iter().collect();

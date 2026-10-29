@@ -204,6 +204,7 @@ fn a_right_angle_chamfer_occt_hangs_on_is_refused_or_stopped() {
     let request = KernelRequest::chamfer(&shape, &[9], angled(585.597_912_646_372_6, 90.0), false)
         .unwrap()
         .with_timeout(Duration::from_secs(10));
+    let lateness = crate::lateness::Lateness::start();
     let started = Instant::now();
     let err = match k.run(request) {
         Ok(_) => panic!("a right-angle chamfer on a square edge was built"),
@@ -214,7 +215,12 @@ fn a_right_angle_chamfer_occt_hangs_on_is_refused_or_stopped() {
         // worker stopped while running it.
         let elapsed = started.elapsed();
         assert!(
-            elapsed >= Duration::from_secs(10) && elapsed < Duration::from_secs(30),
+            // Within 30 s and the wakes on the way as late as this machine runs them, and
+            // always before the default minute it would have run to otherwise.
+            elapsed >= Duration::from_secs(10)
+                && elapsed
+                    < crate::lateness::allowance(Duration::from_secs(30), lateness.most())
+                        .min(silico_core::kernel::DEFAULT_TIMEOUT),
             "{elapsed:?}: {err}"
         );
         assert!(
@@ -1248,6 +1254,9 @@ fn a_million_edges_is_refused_quickly_and_the_worker_goes_on() {
             dz: 30.0,
         })
         .unwrap();
+    // Its wall time over how much slower than a quiet machine this one ran it (`Share`),
+    // which load doesn't move.
+    let share = crate::share::Share::start();
     let start = Instant::now();
     let repeated = vec![1u32; 1_000_000];
     let err = k.chamfer(&b, &repeated, equal(1.0), false).unwrap_err();
@@ -1269,10 +1278,10 @@ fn a_million_edges_is_refused_quickly_and_the_worker_goes_on() {
         err.message(),
         "edge 4294967295 doesn't exist: the shape has edges 1 to 12"
     );
+    let (wall, slowdown) = (start.elapsed(), share.finish().slowdown);
     assert!(
-        start.elapsed() < Duration::from_secs(20),
-        "{:?}",
-        start.elapsed()
+        wall.div_f64(slowdown) < Duration::from_secs(20),
+        "{wall:?}, the machine {slowdown:.2} times slower than a quiet one"
     );
     let after = k.chamfer(&b, &[1], equal(2.0), false).unwrap().shape;
     let s = k.summarize(&after).unwrap();

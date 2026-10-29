@@ -56,7 +56,7 @@ fn worker() -> KernelWorker {
 }
 
 fn data(shape: &Shape) -> ShapeData {
-    ShapeData::unchecked(Blob::Inline(to_brep(shape).unwrap()))
+    ShapeData::unchecked(Blob::inline(to_brep(shape).unwrap()))
 }
 
 // ---- Shapes that aren't one closed solid ----
@@ -338,7 +338,7 @@ fn a_point_that_isnt_finite_is_refused_through_the_worker_and_it_keeps_answering
 fn bytes_that_arent_a_shape_are_refused_naming_the_shape() {
     let mut w = worker();
     for brep in [vec![], vec![0u8; 16], b"garbage that is no B-rep".to_vec()] {
-        let shape = ShapeData::unchecked(Blob::Inline(brep));
+        let shape = ShapeData::unchecked(Blob::inline(brep));
         let e = w
             .run(KernelRequest::classify(&shape, [0.0, 0.0, 0.0]))
             .unwrap_err();
@@ -654,7 +654,7 @@ mod fake_against_real {
         let fake = FakeKernel::new(1).unwrap();
         let mut real = worker();
         for brep in [vec![], b"garbage that is no B-rep".to_vec()] {
-            let shape = ShapeData::unchecked(Blob::Inline(brep));
+            let shape = ShapeData::unchecked(Blob::inline(brep));
             let f = on_fake(&fake, KernelRequest::classify(&shape, [0.0; 3])).unwrap_err();
             let r = real
                 .run(KernelRequest::classify(&shape, [0.0; 3]))

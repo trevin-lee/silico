@@ -497,6 +497,36 @@ fn valid(validator: &jsonschema::Validator, text: &str) -> bool {
 }
 
 #[test]
+fn the_schema_gives_no_format() {
+    // JSON Schema's formats are all strings', and a document's strings have none: a `format`
+    // would be schemars' name of a Rust number's type (`uint64`, `double`), which a strict
+    // validator warns of. Each keyword is a string under `format`; a property of that name
+    // would be an object.
+    fn formats(value: &serde_json::Value, at: &str, found: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if let Some(serde_json::Value::String(f)) = map.get("format") {
+                    found.push(format!("{at}: {f}"));
+                }
+                for (key, value) in map {
+                    formats(value, &format!("{at}/{key}"), found);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (i, value) in items.iter().enumerate() {
+                    formats(value, &format!("{at}/{i}"), found);
+                }
+            }
+            _ => {}
+        }
+    }
+    let schema: serde_json::Value = serde_json::from_str(&schema().unwrap()).unwrap();
+    let mut found = Vec::new();
+    formats(&schema, "", &mut found);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
 fn the_schema_accepts_what_the_reader_reads() {
     // Once, the schema said lengths were a `multipleOf` 1e-6, and validators, dividing in
     // floating point, refused 0.1 mm (0.1 / 1e-6 isn't whole to them) and 27 more of
@@ -515,7 +545,7 @@ fn the_schema_accepts_what_the_reader_reads() {
         read(text.as_bytes()).unwrap();
         assert!(valid(validator, &text), "{radius}");
     }
-    for value in ["100.123456", "0.000001", "-9223372036854.775808", "1.1"] {
+    for value in ["100.123456", "0.000001", "-9223372036854.775807", "1.1"] {
         let text = EXAMPLE.replacen("\"length\": 40", &format!("\"length\": {value}"), 1);
         read(text.as_bytes()).unwrap();
         assert!(valid(validator, &text), "{value}");
@@ -1212,7 +1242,7 @@ proptest! {
         nm in prop_oneof![
             any::<i64>(),
             -10_000_000i64..10_000_000,
-            prop::sample::select(vec![i64::MIN, i64::MAX, 0, 1, -1, 10, 999_999, 1_000_000]),
+            prop::sample::select(vec![i64::MIN, -i64::MAX, i64::MAX, 0, 1, -1, 10, 999_999, 1_000_000]),
         ],
         moved in -30i32..30,
         zeros in 0usize..4,
@@ -1234,6 +1264,17 @@ proptest! {
         };
         let sign = if negative { "-" } else { "" };
         let text = format!("{sign}{mantissa}e{exponent}");
+        // At most i64::MAX nm either way, as the reader's refusal says: i64::MIN, one past,
+        // is refused however it's spelt.
+        if nm == i64::MIN {
+            prop_assert_eq!(
+                Length::parse(&text),
+                Err(silico_core::document::NumberError::OutOfRange),
+                "{}",
+                text
+            );
+            return Ok(());
+        }
         prop_assert_eq!(Length::parse(&text), Ok(Length::from_nm(nm)), "{}", text);
         // A tenth of a nanometre more, spelled with an exponent: the digits of nm and a 1,
         // times 10^-(7 + zeros), refused as too precise however the zeros fall.
@@ -1420,6 +1461,10 @@ fn a_refused_numbers_suggestion_says_how_to_write_it() {
         ),
         (
             example_with("\"length\": 40", "\"length\": 9223372036854.775808"),
+            "a length is at most 9223372036854.775807 mm either way",
+        ),
+        (
+            example_with("\"length\": 40", "\"length\": -9223372036854.775808"),
             "a length is at most 9223372036854.775807 mm either way",
         ),
         (example_with("\"length\": 40", "\"length\": -0"), "write 0"),

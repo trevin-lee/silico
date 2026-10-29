@@ -15,6 +15,28 @@ use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 /// machine.
 pub const WAIT: Duration = Duration::from_secs(60);
 
+/// `f`'s result, if it returns within [`WAIT`]: for something that should be prompt (a
+/// drop, a close) and would, wrong, block on a request held until the test lets it go,
+/// which a test must fail at, not hang on. Run on a thread of its own, left blocked if it
+/// never returns.
+pub fn promptly<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    match rx.recv_timeout(WAIT) {
+        Ok(out) => out,
+        // `f` panicked: its panic, not a timeout.
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match thread.join() {
+            Err(panic) => std::panic::resume_unwind(panic),
+            Ok(()) => panic!("{what} ended without a result"),
+        },
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!("{what} didn't return in {WAIT:?}")
+        }
+    }
+}
+
 pub fn checked(text: &str) -> Checked {
     Checked::new(read(text.as_bytes()).unwrap()).unwrap()
 }

@@ -34,8 +34,10 @@
 
 use std::collections::BTreeMap;
 
+use silico_protocol::vec3::{cross, dot, sub};
 use silico_protocol::{ElementRef, ExportMesh, FACES_NAMED};
 
+use crate::document::ElementName;
 use crate::naming::ElementMap;
 use crate::{Error, ErrorCode};
 
@@ -49,7 +51,7 @@ pub struct PrintableMesh {
     vertices: Vec<[f32; 3]>,
     triangles: Vec<[u32; 3]>,
     volume: f64,
-    left_out: Vec<String>,
+    left_out: Vec<ElementName>,
 }
 
 impl PrintableMesh {
@@ -72,7 +74,7 @@ impl PrintableMesh {
     /// Faces of the solid left out, named as the feature's element map names them (as
     /// FreeCAD numbers them, `Face7`, without one): INTERNAL and EXTERNAL faces, which bound
     /// no change of material (as OCCT's own volume leaves them out, `BRepGProp.cxx:264-270`).
-    pub fn left_out(&self) -> &[String] {
+    pub fn left_out(&self) -> &[ElementName] {
         &self.left_out
     }
 }
@@ -80,7 +82,10 @@ impl PrintableMesh {
 /// The names of `faces` of a shape `names` is the element map of (or, without one, as
 /// FreeCAD numbers them, `Face3`), in order: a STEP export's `left_out`, named as a mesh's
 /// is. A map that doesn't name one of them is another shape's, Silico's bug.
-pub(crate) fn face_names(names: Option<&ElementMap>, faces: &[u32]) -> Result<Vec<String>, Error> {
+pub(crate) fn face_names(
+    names: Option<&ElementMap>,
+    faces: &[u32],
+) -> Result<Vec<ElementName>, Error> {
     if let Some(map) = names
         && let Some(&missing) = faces
             .iter()
@@ -96,7 +101,7 @@ pub(crate) fn face_names(names: Option<&ElementMap>, faces: &[u32]) -> Result<Ve
         .with_suggestion(crate::worker::SILICO_BUG));
     }
     let namer = FaceNamer { names };
-    Ok(faces.iter().map(|&f| namer.name(f)).collect())
+    Ok(faces.iter().map(|&f| namer.element_name(f)).collect())
 }
 
 /// Names faces in a refusal as the feature's element map names them (or as FreeCAD numbers
@@ -108,10 +113,17 @@ struct FaceNamer<'a> {
 
 impl FaceNamer<'_> {
     fn name(&self, face: u32) -> String {
+        self.element_name(face).as_str().to_owned()
+    }
+
+    /// Face `face`'s name as the feature's element map gives it, or as FreeCAD numbers it
+    /// without one.
+    fn element_name(&self, face: u32) -> ElementName {
         let element = ElementRef::face(face);
-        self.names
-            .and_then(|map| map.name(element))
-            .map_or_else(|| element.to_string(), |name| name.to_string())
+        self.names.and_then(|map| map.name(element)).map_or_else(
+            || ElementName::numbered(element),
+            |name| ElementName::from(&*name),
+        )
     }
 
     /// `message` as an error of `code`, naming `faces` (each once, in order).
@@ -166,14 +178,21 @@ pub fn printable(
     names: Option<&ElementMap>,
 ) -> Result<PrintableMesh, Error> {
     let namer = FaceNamer { names };
-    let left_out: Vec<String> = mesh
+    let left_out: Vec<ElementName> = mesh
         .unoriented_faces
         .iter()
-        .map(|&f| namer.name(f))
+        .map(|&f| namer.element_name(f))
         .collect();
+    let listed = || {
+        left_out
+            .iter()
+            .map(ElementName::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     if !left_out.is_empty() {
         tracing::info!(
-            faces = left_out.join(", "),
+            faces = listed(),
             "left out of the export as bounding no material (INTERNAL or EXTERNAL)"
         );
     }
@@ -182,7 +201,7 @@ pub fn printable(
         (None, false) => {
             let cause = format!(
                 "left out of the mesh as bounding no material (INTERNAL or EXTERNAL): {}",
-                left_out.join(", ")
+                listed()
             );
             error.with_cause(cause)
         }
@@ -642,7 +661,7 @@ fn checked(
         left_out: mesh
             .unoriented_faces
             .iter()
-            .map(|&f| faces.name(f))
+            .map(|&f| faces.element_name(f))
             .collect(),
     })
 }
@@ -744,22 +763,6 @@ impl Joined {
     }
 }
 
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
 fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
     let d = sub(a, b);
     dot(d, d).sqrt()
@@ -776,13 +779,13 @@ pub struct Object<'a> {
 
 /// The largest archive [`three_mf`] writes: a plain zip's limit, 4 GiB less a byte, since
 /// ZIP64 is left out.
-const MAX_ARCHIVE: u64 = u32::MAX as u64;
+pub(crate) const MAX_ARCHIVE: u64 = u32::MAX as u64;
 
 /// Nothing, if `triangles` in all are few enough for one file
 /// ([`silico_protocol::MAX_EXPORT_TRIANGLES`]); otherwise the kernel's refusal of a mesh
 /// that large, naming the tolerance, as [`three_mf`] refuses its objects.
 pub(crate) fn within_triangles(triangles: u64) -> Result<(), Error> {
-    silico_protocol::check_export_triangles(triangles, silico_protocol::MAX_EXPORT_TRIANGLES)
+    silico_protocol::check_export_triangles(triangles, silico_protocol::MAX_EXPORT_TRIANGLES, false)
         .map_err(|refusal| {
             crate::worker::failure_error("ExportMesh", silico_protocol::Failure::new(refusal))
         })
@@ -1035,7 +1038,15 @@ mod tests {
             (e.code(), e.parameter()),
             (ErrorCode::InvalidInput, Some("tolerance"))
         );
-        assert!(e.message().contains("10000001"), "{e:?}");
+        // The export's own wording (the design's limits table), not the unraised mesh's.
+        assert_eq!(
+            (e.message(), e.suggestion()),
+            (
+                "an export's mesh has 10000001 triangles, more than the 10000000 an export may \
+                 have",
+                Some("export with a coarser tolerance, which makes fewer, or fewer parts at once")
+            )
+        );
     }
 
     #[test]

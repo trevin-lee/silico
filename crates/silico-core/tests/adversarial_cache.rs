@@ -13,6 +13,7 @@ use super::cache;
 use super::cache_format;
 use super::example;
 use super::model;
+use super::model::WAIT;
 use super::sweeps;
 
 use std::os::unix::fs::PermissionsExt;
@@ -109,7 +110,7 @@ fn entry_replaced_by_a_fifo_is_a_miss_not_a_hang() {
     assert!(made.success());
     let second = session(&dir.0);
     let run = second.start(checked(EXAMPLE));
-    let outcome = run.wait_timeout(Duration::from_secs(5));
+    let outcome = run.wait_timeout(WAIT);
     let hung = outcome.is_err();
     // Free a recompute blocked opening the FIFO, whatever happened, and close it, giving its
     // read end of file. Opened for reading and writing, a FIFO pairs with a reader or a
@@ -123,11 +124,11 @@ fn entry_replaced_by_a_fifo_is_a_miss_not_a_hang() {
             .open(&path),
     );
     if let Err(run) = outcome {
-        let _ = run.wait_timeout(Duration::from_secs(5));
+        let _ = run.wait_timeout(WAIT);
     }
     assert!(
         !hung,
-        "a FIFO in place of an entry hung the recompute (still waiting after 5 s)"
+        "a FIFO in place of an entry hung the recompute (still waiting after {WAIT:?})"
     );
 }
 
@@ -330,7 +331,7 @@ fn a_cache_directory_removed_while_a_step_runs_is_made_again() {
     let run = engine.start(checked(EXAMPLE));
     // Wait until the box, the pin, and its move are written, and no write is under way (the
     // cut, held, runs while its input's entry is written); the cut is held.
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + WAIT;
     loop {
         let all = subdirectory_files(&dir.0);
         let partial = |p: &PathBuf| p.to_string_lossy().contains(".partial-");
@@ -340,10 +341,10 @@ fn a_cache_directory_removed_while_a_step_runs_is_made_again() {
         assert!(std::time::Instant::now() < deadline, "{all:?}");
         std::thread::yield_now();
     }
-    assert!(engine.kernel().wait_running(1, Duration::from_secs(10)));
+    assert!(engine.kernel().wait_running(1, WAIT));
     std::fs::remove_dir_all(&dir.0).unwrap();
     hold.release();
-    let model = match run.wait_timeout(Duration::from_secs(10)) {
+    let model = match run.wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         _ => panic!("not published"),
     };
@@ -366,6 +367,97 @@ fn a_cache_directory_that_is_a_dangling_symlink_fails_nothing() {
     let model = published(&engine, checked(EXAMPLE));
     assert_eq!(hole(&model), HOLE);
     let _ = std::fs::remove_file(&dir.0);
+}
+
+/// The messages of the warnings logged in this process, in order: set as its subscriber, so
+/// each test that sets it needs a process of its own (nextest runs each in one).
+fn warnings_kept() -> Arc<std::sync::Mutex<Vec<String>>> {
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::layer::{Context, Layer, SubscriberExt as _};
+
+    struct Message(String);
+    impl Visit for Message {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0 = format!("{value:?}");
+            }
+        }
+    }
+    struct Warnings(Arc<std::sync::Mutex<Vec<String>>>);
+    impl<S: tracing::Subscriber> Layer<S> for Warnings {
+        fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+            if *event.metadata().level() == tracing::Level::WARN {
+                let mut message = Message(String::new());
+                event.record(&mut message);
+                self.0.lock().unwrap().push(message.0);
+            }
+        }
+    }
+    let kept = Arc::default();
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(Warnings(Arc::clone(&kept))),
+    )
+    .unwrap();
+    kept
+}
+
+#[test]
+fn subdirectories_planted_as_links_are_never_read_or_written_through_and_said_once() {
+    // Found by the M4 milestone's mutation run: a read whose entry's subdirectory is a link
+    // not checked for one, and the check saying no link ever, passed every test (each read
+    // missed anyway, and each write failed at the link). Every subdirectory name, `00` to
+    // `ff`, a link to a directory elsewhere: the example rebuilds whole, by the kernel,
+    // nothing is written elsewhere, and the cache says once, and only, that a directory of
+    // it is a link; never that it couldn't read or write an entry.
+    let dir = Scratch::new("subdirectory-links");
+    let elsewhere = Scratch::new("subdirectory-links-elsewhere");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    std::fs::create_dir_all(&elsewhere.0).unwrap();
+    for i in 0..=255 {
+        std::os::unix::fs::symlink(&elsewhere.0, dir.0.join(format!("{i:02x}"))).unwrap();
+    }
+    let warnings = warnings_kept();
+    let engine = session(&dir.0);
+    let model = published(&engine, checked(EXAMPLE));
+    assert_eq!(hole(&model), HOLE);
+    assert_eq!(
+        calls(&engine),
+        ["Cut", "MakeBox", "MakeCylinder", "Translate"]
+    );
+    assert_eq!(std::fs::read_dir(&elsewhere.0).unwrap().count(), 0);
+    assert_eq!(
+        *warnings.lock().unwrap(),
+        ["a directory of the cache is a link: keeping no results through it"]
+    );
+}
+
+#[test]
+fn subdirectories_planted_as_files_fail_each_read_and_write_and_each_is_said() {
+    // Found by the M4 milestone's mutation run (caught there only by a test that timed out
+    // under load): a read whose entry's subdirectory can't be opened, for any reason, taken
+    // silently as a link's passed every test. Every subdirectory name a file: the example
+    // rebuilds whole, by the kernel, each of its four steps (box, cylinder, move, cut)
+    // warned of once as unread and once as unwritten, for the system's reason, and nothing
+    // said of a link.
+    let dir = Scratch::new("subdirectory-files");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    for i in 0..=255 {
+        std::fs::write(dir.0.join(format!("{i:02x}")), b"a file").unwrap();
+    }
+    let warnings = warnings_kept();
+    let engine = session(&dir.0);
+    let model = published(&engine, checked(EXAMPLE));
+    assert_eq!(hole(&model), HOLE);
+    assert_eq!(
+        calls(&engine),
+        ["Cut", "MakeBox", "MakeCylinder", "Translate"]
+    );
+    let warnings = warnings.lock().unwrap().clone();
+    let said = |start: &str| warnings.iter().filter(|w| w.starts_with(start)).count();
+    let unread = "couldn't read a cache entry: Not a directory";
+    let unwritten = "couldn't write a cache entry: Not a directory";
+    assert_eq!((said(unread), said(unwritten)), (4, 4), "{warnings:?}");
+    assert_eq!(warnings.len(), 8, "{warnings:?}");
 }
 
 // ---------------------------------------------------------------------------------------
@@ -833,7 +925,7 @@ fn an_entry_written_by_a_superseded_recompute_is_sound() {
     let first = engine.start(checked(EXAMPLE));
     // Once the held Cut has started, so the steps before it have been written (waiting for
     // any request to run let the second start supersede the first before it wrote anything).
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + WAIT;
     while !engine.kernel().calls().iter().any(|c| c.op.name() == "Cut") {
         assert!(
             std::time::Instant::now() < deadline,
@@ -844,10 +936,10 @@ fn an_entry_written_by_a_superseded_recompute_is_sound() {
     let second = engine.start(example_with_pin("3"));
     hold.release();
     assert!(matches!(
-        first.wait_timeout(Duration::from_secs(10)),
+        first.wait_timeout(WAIT),
         Ok(Ok(RunOutcome::Superseded))
     ));
-    let model = match second.wait_timeout(Duration::from_secs(10)) {
+    let model = match second.wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         _ => panic!("not published"),
     };
@@ -1022,7 +1114,8 @@ fn a_kept_description_refusal_this_core_wouldnt_keep_is_described_again() {
             .iter()
             .filter(|call| call.op.name() == "Describe")
             .count();
-        assert_eq!(describes, 3, "{refusal:?}");
+        // The block (26 elements) described again in one request.
+        assert_eq!(describes, 1, "{refusal:?}");
         assert_eq!(
             again.description(&FeatureId::new("k7f2qx3m").unwrap()),
             block.description(),
@@ -1169,9 +1262,9 @@ fn a_kept_summary_no_shape_has_is_measured_again() {
 fn a_kept_description_no_worker_could_send_is_described_again_its_summary_kept() {
     // As a summary no shape has: a description the core would refuse from a worker (here a
     // face of area -1, its summary sound) isn't taken back from the cache. The summary is
-    // sound, so it's kept: the block is described again, a batch of each kind (6 faces, 12
-    // edges, 8 vertices, each under a batch), not summarized again, and the model holds the
-    // kernel's description, not the planted one, which is written over on disk.
+    // sound, so it's kept: the block is described again, in one request (its 26 elements
+    // within a batch), not summarized again, and the model holds the kernel's description,
+    // not the planted one, which is written over on disk.
     let dir = Scratch::new("bad-description");
     let model = seed(&dir.0);
     let (_, block) = built(&model, "k7f2qx3m");
@@ -1196,7 +1289,8 @@ fn a_kept_description_no_worker_could_send_is_described_again_its_summary_kept()
         .iter()
         .filter(|call| call.op.name() == "Describe")
         .count();
-    assert_eq!(describes, 3);
+    // The block (26 elements) described again in one request.
+    assert_eq!(describes, 1);
     assert!(again.drift().is_empty(), "{:?}", again.drift());
     let (_, remeasured) = built(&again, "k7f2qx3m");
     assert_eq!(remeasured.summary(), block.summary());

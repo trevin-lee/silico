@@ -639,8 +639,8 @@ fn commands_sent_while_an_open_is_held_wait_behind_it_and_run_once_it_opens() {
     assert!(answered(open).ok);
     let answers: Vec<Answered> = sent.into_iter().map(answered).collect();
     // By hand: the text is the file's, the check finds no problem, the published read reads
-    // s1 (its model, or none yet), the outline names the box, the close closes it, and the
-    // text after it names no session open.
+    // s1 (its model, or none yet) or is ended by the close, the outline names the box, the
+    // close closes it, and the text after it names no session open.
     assert_eq!(
         envelope(&answers[0])["result"]["text"],
         BOX,
@@ -649,13 +649,23 @@ fn commands_sent_while_an_open_is_held_wait_behind_it_and_run_once_it_opens() {
     );
     assert!(answers[1].ok, "{}", answers[1].text);
     assert_eq!(envelope(&answers[1])["result"]["problems_total"], 0);
+    // A published read is never queued: it's started as the session opens, beside the
+    // queue, and answers as of a session that closed if its session closes before it reads
+    // (`Session::close`; `published_now`'s check, on the read's own thread). So the close
+    // queued after it may end the session first: then it answers as any read of a session
+    // not open does (run 40512437858). Which comes is the threads' timing (M4.1 section 10,
+    // *The published model*); each is exactly one of these.
     let published = envelope(&answers[2]);
-    assert_eq!(published["session"]["id"], "s1", "{published}");
-    if !answers[2].ok {
-        assert_eq!(
-            published["errors"][0]["message"], "session s1 has published no model yet",
-            "{published}"
-        );
+    if published["session"].is_null() {
+        assert_unopened(&answers[2], "the published read the close ended");
+    } else {
+        assert_eq!(published["session"]["id"], "s1", "{published}");
+        if !answers[2].ok {
+            assert_eq!(
+                published["errors"][0]["message"], "session s1 has published no model yet",
+                "{published}"
+            );
+        }
     }
     assert!(answers[3].ok, "{}", answers[3].text);
     assert!(answers[3].text.contains("Block"), "{}", answers[3].text);

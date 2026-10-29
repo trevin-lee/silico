@@ -3,7 +3,6 @@
 //! by hand, never against a stored image (docs/design/m4.6-render.md, Tests; R5).
 
 use std::path::Path;
-use std::time::Duration;
 
 use silico_core::ErrorCode;
 use silico_core::worker::{Worker, WorkerKind};
@@ -14,8 +13,9 @@ use silico_protocol::{
 use silico_render::bench::{box_mesh, front_of_a_box};
 use silico_render::render::{BACKGROUND, BODY, HIGHLIGHT};
 
+use crate::common::WAIT;
+
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-render-worker");
-const TIMEOUT: Duration = Duration::from_secs(30);
 
 fn worker() -> Worker {
     Worker::spawn_as(Path::new(WORKER), WorkerKind::Render).unwrap()
@@ -76,7 +76,7 @@ fn decode(png: &[u8]) -> Image {
 
 fn render(w: &mut Worker, scene: RenderScene) -> (Image, Option<Vec<PixelId>>) {
     match w
-        .call(Generation(1), Op::Render(Box::new(scene)), TIMEOUT)
+        .call(Generation(1), Op::Render(Box::new(scene)), WAIT)
         .unwrap()
     {
         Reply::Rendered { png, ids } => (decode(&png), ids),
@@ -356,7 +356,7 @@ fn a_scene_that_fails_its_check_is_refused_naming_the_field_and_nothing_else_is_
     let mut w = worker();
     let mut scene = front(0, 48, vec![]);
     let e = w
-        .call(Generation(1), Op::Render(Box::new(scene.clone())), TIMEOUT)
+        .call(Generation(1), Op::Render(Box::new(scene.clone())), WAIT)
         .unwrap_err();
     assert_eq!(e.code(), ErrorCode::InvalidInput, "{e:?}");
     assert!(e.message().contains("width 0"), "{e:?}");
@@ -364,7 +364,7 @@ fn a_scene_that_fails_its_check_is_refused_naming_the_field_and_nothing_else_is_
     scene.bodies = vec![body(1, box_mesh([0.0; 3], [1.0; 3]))];
     scene.bodies[0].mesh.triangles[0] = [0, 1, 24];
     let e = w
-        .call(Generation(1), Op::Render(Box::new(scene)), TIMEOUT)
+        .call(Generation(1), Op::Render(Box::new(scene)), WAIT)
         .unwrap_err();
     assert_eq!(e.code(), ErrorCode::InvalidInput, "{e:?}");
     assert!(
@@ -381,7 +381,7 @@ fn a_scene_that_fails_its_check_is_refused_naming_the_field_and_nothing_else_is_
                 deflection: 0.1,
                 at_least_the_floor: false,
             },
-            TIMEOUT,
+            WAIT,
         )
         .unwrap_err();
     assert_eq!(e.code(), ErrorCode::Internal, "{e}");
@@ -396,7 +396,7 @@ fn a_scene_that_fails_its_check_is_refused_naming_the_field_and_nothing_else_is_
             Op::Echo {
                 data: Blob::inline(vec![5]),
             },
-            TIMEOUT,
+            WAIT,
         )
         .unwrap()
     {

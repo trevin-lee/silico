@@ -5,6 +5,7 @@
 
 use super::commands;
 use super::example;
+use super::model::WAIT;
 
 use commands::{check_bytes, engine, format_bytes};
 use example::EXAMPLE;
@@ -506,7 +507,7 @@ fn a_rebuild_superseded_by_another_is_none_not_an_error() {
         let older =
             scope.spawn(|| command::rebuild(&engine, command::gate(EXAMPLE.as_bytes()).unwrap()));
         // Once the older one is at the pin, held, a newer one supersedes it.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + WAIT;
         while !format!("{:?}", engine.kernel().calls()).contains("Cylinder") {
             assert!(
                 std::time::Instant::now() < deadline,

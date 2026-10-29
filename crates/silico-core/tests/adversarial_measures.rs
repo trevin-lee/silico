@@ -5,8 +5,9 @@
 //! snapshot agreeing), and a published read held in the kernel while the session goes on.
 //! The fake places each element at (n, 0, 0), n its number, so its distances are by hand.
 
+use super::model::{WAIT, promptly};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::example::EXAMPLE;
 use super::listing::{BOX, TWO_BODIES, answer, fixture, model_of};
@@ -16,8 +17,8 @@ use silico_core::ErrorCode;
 use silico_core::command::measure::{angle, distance};
 use silico_core::command::wire::measure::PairRequest;
 use silico_core::command::{ModelChoice, ReadCommand};
-use silico_core::document::Length;
 use silico_core::document::json::read;
+use silico_core::document::{ElementName, Length};
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::Op;
 use silico_core::recompute::Recompute;
@@ -242,7 +243,9 @@ fn a_megabyte_name_is_refused_at_once_and_shown_short() {
             "I k7f2qx3m.box.Face1, ".repeat(40_000)
         ),
     ] {
-        let started = Instant::now();
+        // Refused in this thread, before the kernel is asked: its CPU, which load doesn't
+        // change.
+        let started = cpu_time::ThreadTime::now();
         let refused = distance(
             &model,
             &kernel,
@@ -252,7 +255,7 @@ fn a_megabyte_name_is_refused_at_once_and_shown_short() {
         .unwrap_err();
         assert!(
             started.elapsed() < Duration::from_secs(5),
-            "{:?}",
+            "{:?} of CPU",
             started.elapsed()
         );
         assert_eq!(refused.total(), 1);
@@ -496,11 +499,12 @@ fn a_million_names_are_refused_by_their_count_at_once() {
         "[{}]",
         vec![r#""k7f2qx3m.box.Face1""#; 1_000_000].join(",")
     ));
-    let started = Instant::now();
+    // Read and refused in this thread: its CPU, which load doesn't change.
+    let started = cpu_time::ThreadTime::now();
     let refused = refusals(&text);
     assert!(
         started.elapsed() < Duration::from_secs(10),
-        "{:?}",
+        "{:?} of CPU",
         started.elapsed()
     );
     assert_eq!(
@@ -575,15 +579,15 @@ fn a_published_distance_held_in_the_kernel_holds_up_nothing_else_of_the_session(
         let listed = f
             .sessions
             .elements(&s, model, None, None, 10)
-            .wait_timeout(Duration::from_secs(5));
+            .wait_timeout(WAIT);
         assert!(listed.is_ok_and(|r| r.result.is_ok()), "{model:?}");
     }
-    let closed = f.sessions.close(&s).wait_timeout(Duration::from_secs(5));
+    let closed = f.sessions.close(&s).wait_timeout(WAIT);
     assert!(closed.is_ok_and(|r| r.result.is_ok()));
     // Closing it retired the read's kernel client (design §2: a read's client ends when
     // its session closes; from the measure council's architecture review), so the read
     // answers, without its hold being released, that the session closed.
-    let response = held.wait_timeout(Duration::from_secs(10)).ok().unwrap();
+    let response = held.wait_timeout(WAIT).ok().unwrap();
     let refused = response.result.unwrap_err();
     assert_eq!(
         refused.errors()[0].message(),
@@ -695,16 +699,11 @@ fn a_published_read_that_asks_the_kernel_after_its_session_closes_says_it_closed
     assert!(
         f.sessions
             .close(&s)
-            .wait_timeout(Duration::from_secs(5))
+            .wait_timeout(WAIT)
             .is_ok_and(|r| r.result.is_ok())
     );
     go.send(()).unwrap();
-    let refused = read
-        .wait_timeout(Duration::from_secs(10))
-        .ok()
-        .unwrap()
-        .result
-        .unwrap_err();
+    let refused = read.wait_timeout(WAIT).ok().unwrap().result.unwrap_err();
     assert_eq!(
         refused.errors()[0].message(),
         "the session closed before the kernel measured the distance"
@@ -737,7 +736,7 @@ fn a_held_read_released_before_its_session_closes_answers_its_distance() {
         assert!(
             f.sessions
                 .elements(&s, model, None, None, 10)
-                .wait_timeout(Duration::from_secs(5))
+                .wait_timeout(WAIT)
                 .is_ok_and(|r| r.result.is_ok())
         );
     }
@@ -746,7 +745,7 @@ fn a_held_read_released_before_its_session_closes_answers_its_distance() {
         Err(running) => running,
     };
     hold.release();
-    let response = held.wait_timeout(Duration::from_secs(10)).ok().unwrap();
+    let response = held.wait_timeout(WAIT).ok().unwrap();
     assert_eq!(response.result.unwrap().distance, mm(1));
 }
 
@@ -771,20 +770,11 @@ fn dropping_the_sessions_stops_a_current_read_held_in_the_kernel() {
         pair("k7f2qx3m.box.Face5", "k7f2qx3m.box.Face6"),
         None,
     );
-    assert!(f.kernel.wait_running(1, Duration::from_secs(10)));
-    let started = Instant::now();
-    drop(f.sessions);
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        started.elapsed()
-    );
-    let refused = reading
-        .wait_timeout(Duration::from_secs(5))
-        .ok()
-        .unwrap()
-        .result
-        .unwrap_err();
+    assert!(f.kernel.wait_running(1, WAIT));
+    // The held request is let go only at the end: a drop that waited for it never returns.
+    let sessions = f.sessions;
+    promptly("dropping the sessions", move || drop(sessions));
+    let refused = reading.wait_timeout(WAIT).ok().unwrap().result.unwrap_err();
     assert_eq!(
         refused.errors()[0].message(),
         "the session closed before the kernel measured the distance"
@@ -941,6 +931,15 @@ fn the_vertex_two_edges_meet_at_is_named_by_its_own_name_though_unstable() {
             shape: base.clone(),
             history: fuse.clone(),
         })),
+        // Every element at once: the edges given, the faces and vertices the fake's.
+        Op::DescribeAll { shape } => {
+            let fake = FakeKernel::described(shape)?;
+            Some(Reply::DescribedAll(Description {
+                faces: fake.faces,
+                edges: edges.clone(),
+                vertices: fake.vertices,
+            }))
+        }
         Op::Describe {
             kind: ElementKind::Edge,
             first,
@@ -991,11 +990,15 @@ fn the_vertex_two_edges_meet_at_is_named_by_its_own_name_though_unstable() {
     ] {
         let answer = angle(&model, &names, feature.as_ref()).unwrap();
         assert_eq!(
-            answer.vertex.as_deref(),
+            answer.vertex.as_ref().map(|v| v.as_str()),
             Some("rrrrrrrr.cut.Vertex1"),
             "{names:?}"
         );
-        assert_eq!(answer.vertex, Some(entry.name.to_string()), "{names:?}");
+        assert_eq!(
+            answer.vertex,
+            Some(ElementName::from(&*entry.name)),
+            "{names:?}"
+        );
         assert_eq!(answer.angle, Angle::from_ndeg(135_000_000_000), "{names:?}");
     }
 }

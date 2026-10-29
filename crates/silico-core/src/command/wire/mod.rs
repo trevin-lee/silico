@@ -49,9 +49,11 @@ use super::{
 use crate::document::json::{Member, Node, Plain, Value};
 use crate::document::write::{self, Out, text};
 use crate::document::{
-    Angle, Coordinate, Feature, FeatureId, Length, Measure, NumberError, PROBLEMS_LISTED, Position,
+    Angle, Coordinate, ElementName, Feature, FeatureId, Length, Measure, NumberError,
+    PROBLEMS_LISTED, Position,
 };
-use crate::{Error, ErrorCode};
+use crate::warnings::Warnings;
+use crate::{Error, ErrorCode, Said, Warning};
 
 pub use crate::document::write::{Layout, TooLong};
 
@@ -321,6 +323,13 @@ impl ToWire for FeatureId {
     }
 }
 
+impl ToWire for ElementName {
+    /// Its text, as written.
+    fn to_wire(&self) -> Json<'_> {
+        Json::str(self.as_str())
+    }
+}
+
 impl ToWire for ModelChoice {
     fn to_wire(&self) -> Json<'_> {
         Json::str(self.as_str())
@@ -345,7 +354,7 @@ impl ToWire for ModelRead {
     /// Its revision, whether it was the current or the published, and the kernel fault its
     /// rebuild met, if it met one, kept as the revision's outcome (decision 32): its
     /// suggestion the worker's own, if it has one, then how a session's client tries it
-    /// again, `check` with `fresh` (`kept_suggestion`, the design's section 6).
+    /// again, `check` with `fresh` (`fault_suggestion`, the design's section 6).
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("revision", self.revision.to_wire()),
@@ -353,7 +362,13 @@ impl ToWire for ModelRead {
             (
                 "fault",
                 Json::or_null(self.fault.as_ref(), |fault| {
-                    error_with(fault, Json::string(super::session::kept_suggestion(fault)))
+                    error_with(
+                        fault,
+                        Json::string(super::session::fault_suggestion(
+                            fault,
+                            super::session::TryAgainBy::CheckWithFresh,
+                        )),
+                    )
                 }),
             ),
         ])
@@ -369,23 +384,64 @@ impl ToWire for Error {
 
 /// `error` in the error contract's shape, `suggestion` its suggestion.
 fn error_with<'a>(error: &'a Error, suggestion: Json<'a>) -> Json<'a> {
+    said_as(error.said(), suggestion)
+}
+
+impl ToWire for Warning {
+    /// The error contract's shape, as an error's, its code a warning's (decision 17).
+    fn to_wire(&self) -> Json<'_> {
+        said_as(self.said(), Json::or_null(self.suggestion(), Json::str))
+    }
+}
+
+/// What an error or a warning says (`said`, taken whole, so a field it gains is one this
+/// must write) in the error contract's shape (`tests/contract/error-full.json`), in its
+/// order, `suggestion` written as its suggestion (a fault's, kept, is said its own way).
+fn said_as<'a>(said: Said<'a>, suggestion: Json<'a>) -> Json<'a> {
+    let Said {
+        code,
+        message,
+        feature,
+        elements,
+        elements_total,
+        parameter,
+        cause,
+        suggestion: _,
+        candidates,
+    } = said;
     Json::object([
-        ("code", Json::str(error.code().as_str())),
-        ("message", Json::str(error.message())),
-        ("feature", Json::or_null(error.feature(), Json::str)),
+        ("code", Json::str(code)),
+        ("message", Json::str(message)),
+        ("feature", Json::or_null(feature, Json::str)),
         (
             "elements",
-            Json::array(error.elements().iter().map(|e| Json::str(e))),
+            Json::array(elements.iter().map(|e| Json::str(e))),
         ),
-        ("elements_total", Json::whole(error.elements_total())),
-        ("parameter", Json::or_null(error.parameter(), Json::str)),
-        ("cause", Json::or_null(error.cause(), Json::str)),
+        ("elements_total", Json::whole(elements_total)),
+        ("parameter", Json::or_null(parameter, Json::str)),
+        ("cause", Json::or_null(cause, Json::str)),
         ("suggestion", suggestion),
         (
             "candidates",
-            Json::array(error.candidates().iter().map(|c| Json::str(c))),
+            Json::array(candidates.iter().map(|c| Json::str(c))),
         ),
     ])
+}
+
+/// A list of warnings as `check`'s result writes them: the first [`PROBLEMS_LISTED`], in the
+/// error contract's shape, and how many there are, listed or not (`warnings` and
+/// `warnings_total`).
+pub fn warnings(warnings: &Warnings) -> (Json<'_>, Json<'_>) {
+    listed(warnings.listed(), warnings.total())
+}
+
+/// The first [`PROBLEMS_LISTED`] of `items`, in the error contract's shape, and `total`, how
+/// many there are, listed or not: the one rule for problems and warnings alike.
+fn listed<T: ToWire>(items: &[T], total: u64) -> (Json<'_>, Json<'_>) {
+    (
+        Json::array(items.iter().take(PROBLEMS_LISTED).map(ToWire::to_wire)),
+        Json::whole(total),
+    )
 }
 
 /// A list of problems as a result or the envelope writes them: the first
@@ -393,16 +449,7 @@ fn error_with<'a>(error: &'a Error, suggestion: Json<'a>) -> Json<'a> {
 /// listed or not (`problems` and `problems_total` in a result, `errors` and `total` in a
 /// refusal).
 pub fn problems(problems: &Problems) -> (Json<'_>, Json<'_>) {
-    (
-        Json::array(
-            problems
-                .errors()
-                .iter()
-                .take(PROBLEMS_LISTED)
-                .map(ToWire::to_wire),
-        ),
-        Json::whole(problems.total()),
-    )
+    listed(problems.errors(), problems.total())
 }
 
 /// A command's response, in its envelope (section 2): `ok`, the session as the command left
@@ -756,6 +803,12 @@ impl<'a> RequestFields<'a> {
     /// fraction, exponent, or leading zero.
     fn whole_in(&mut self, key: &str, low: u64, high: u64) -> Option<u64> {
         let node = self.take(key)?;
+        self.whole_of(key, node, low, high, "")
+    }
+
+    /// `node`, `key`'s value, as [`whole_in`](RequestFields::whole_in) reads it, said to
+    /// take `or`, too (` or null`), if it's refused.
+    fn whole_of(&mut self, key: &str, node: &Node, low: u64, high: u64, or: &str) -> Option<u64> {
         let whole = match &node.value {
             Value::Number(text) => super::whole_number(text).filter(|n| (low..=high).contains(n)),
             _ => None,
@@ -763,11 +816,19 @@ impl<'a> RequestFields<'a> {
         if whole.is_none() {
             self.wrong(
                 key,
-                format_args!("a whole number from {low} to {high}"),
+                format_args!("a whole number from {low} to {high}{or}"),
                 node,
             );
         }
         whole
+    }
+
+    /// A whole number from 0 to `u64::MAX`, or `null`.
+    pub fn nullable_u64(&mut self, key: &str) -> Option<Option<u64>> {
+        match self.take_nullable(key)? {
+            None => Some(None),
+            Some(node) => self.whole_of(key, node, 0, u64::MAX, " or null").map(Some),
+        }
     }
 
     /// A whole number from 0 to `u32::MAX`.
@@ -1432,6 +1493,35 @@ pub struct ErrorSchema {
     pub candidates: Vec<String>,
 }
 
+/// Something `check` found that fails nothing: it never refuses a command, blocks a save, or
+/// sets an exit code. In the error contract's shape, each field as an error's: a code, a
+/// message, and, where they apply, the feature, the elements it's of (the first of them,
+/// and how many in all), the field it's of, the cause, what to do, and the names that might
+/// have been meant. Every field is always present: null, or empty, where it doesn't apply.
+#[derive(JsonSchema)]
+#[schemars(rename = "Warning", transform = wire_shape)]
+pub struct WarningSchema {
+    /// What kind of warning it is: one of Silico's warning codes, listed in
+    /// `warning-codes.txt`, such as `ends_not_joined`.
+    pub code: String,
+    /// What was found, in a sentence.
+    pub message: String,
+    /// The ID of the feature it's of, if one is.
+    pub feature: Option<String>,
+    /// The elements it's of, by name: the first of them, if there are many.
+    pub elements: Vec<String>,
+    /// How many elements it's of, listed or not.
+    pub elements_total: u64,
+    /// The field it's of, as a dotted path (`position.2`), if one is.
+    pub parameter: Option<String>,
+    /// What lay under it, if known.
+    pub cause: Option<String>,
+    /// What to do about it, if Silico can say.
+    pub suggestion: Option<String>,
+    /// What might have been meant, if anything.
+    pub candidates: Vec<String>,
+}
+
 /// The session as the command left it.
 #[derive(JsonSchema)]
 #[schemars(rename = "Session", transform = wire_shape)]
@@ -1600,6 +1690,9 @@ const fn snapshot_of(command: Command) -> MakeSnapshot {
         Command::Render => {
             command_schema::<render::RenderRequestSchema, render::RenderResultSchema>
         }
+        Command::ReadLogs => {
+            command_schema::<logs::ReadLogsRequestSchema, logs::ReadLogsResultSchema>
+        }
         Command::Export => {
             command_schema::<export::ExportRequestSchema, export::ExportResultSchema>
         }
@@ -1695,6 +1788,7 @@ pub mod cache;
 pub mod edits;
 pub mod elements;
 pub mod export;
+pub mod logs;
 pub mod measure;
 pub mod reads;
 pub mod render;

@@ -24,7 +24,7 @@ use silico_core::command::wire::schema::SchemaRequest;
 use silico_core::command::wire::{Layout, ToWire, write};
 use silico_core::command::{Problems, Revision};
 use silico_core::document::json::{Node, read};
-use silico_core::document::{Angle, Length, Measure};
+use silico_core::document::{Angle, ElementName, Length, Measure};
 use silico_core::kernel::ElementKind;
 
 fn parsed(text: &str) -> Node {
@@ -663,13 +663,17 @@ fn a_length_and_an_angle_bound_are_read_to_their_places_and_range() {
         "minor_radius",
     ] {
         assert_eq!(bound(measure, "9223372036854.775807"), length(i64::MAX));
+        assert_eq!(bound(measure, "-9223372036854.775807"), length(-i64::MAX));
         assert_eq!(bound(measure, "1e-6"), length(1));
-        let (message, suggestion) = bound(measure, "9223372036854.775808").unwrap_err();
-        assert!(message.ends_with("which is too large"), "{message}");
-        assert_eq!(
-            suggestion,
-            "a length is at most 9223372036854.775807 mm either way"
-        );
+        // One nanometre past the bound, either way.
+        for past in ["9223372036854.775808", "-9223372036854.775808"] {
+            let (message, suggestion) = bound(measure, past).unwrap_err();
+            assert!(message.ends_with("which is too large"), "{message}");
+            assert_eq!(
+                suggestion,
+                "a length is at most 9223372036854.775807 mm either way"
+            );
+        }
         let (_, suggestion) = bound(measure, "1e-7").unwrap_err();
         assert_eq!(
             suggestion,
@@ -679,6 +683,10 @@ fn a_length_and_an_angle_bound_are_read_to_their_places_and_range() {
         assert!(bound(measure, "0.000000001").is_err());
     }
     assert_eq!(bound("half_angle", "9223372036.854775807"), angle(i64::MAX));
+    assert_eq!(
+        bound("half_angle", "-9223372036.854775807"),
+        angle(-i64::MAX)
+    );
     assert_eq!(bound("half_angle", "1e-9"), angle(1));
     assert_eq!(bound("half_angle", "-90"), angle(-90_000_000_000));
     let (_, suggestion) = bound("half_angle", "1e-10").unwrap_err();
@@ -686,11 +694,13 @@ fn a_length_and_an_angle_bound_are_read_to_their_places_and_range() {
         suggestion,
         "round it to 9 decimals: angles are whole nanodegrees"
     );
-    let (_, suggestion) = bound("half_angle", "9223372036.854775808").unwrap_err();
-    assert_eq!(
-        suggestion,
-        "an angle is at most 9223372036.854775807 degrees either way"
-    );
+    for past in ["9223372036.854775808", "-9223372036.854775808"] {
+        let (_, suggestion) = bound("half_angle", past).unwrap_err();
+        assert_eq!(
+            suggestion,
+            "an angle is at most 9223372036.854775807 degrees either way"
+        );
+    }
     // A bound of the wrong kind says the measure's quantity.
     let (message, _) = bound("half_angle", "\"30\"").unwrap_err();
     assert_eq!(
@@ -868,12 +878,25 @@ fn within_is_read_as_any_angle_and_the_command_holds_it_from_0_to_180() {
         "-180",
         "360",
         "9223372036.854775807",
-        "-9223372036.854775808",
+        "-9223372036.854775807",
     ] {
+        // Read (an angle the reader holds), then held to 0 to 180° by the command.
+        assert!(
+            QueryRequest::read(&parsed(&facing("[0, 0, 1]", past))).is_ok(),
+            "{past}"
+        );
         assert_eq!(run(past), Err(vec!["facing.within".to_owned()]), "{past}");
     }
-    // Past an angle's range or places, or -0: the reader's.
-    for refused in ["9223372036.854775808", "1e-10", "-0", "\"90\"", "null"] {
+    // Past an angle's range (at most 9223372036.854775807 either way) or places, or -0: the
+    // reader's.
+    for refused in [
+        "9223372036.854775808",
+        "-9223372036.854775808",
+        "1e-10",
+        "-0",
+        "\"90\"",
+        "null",
+    ] {
         let problems = query_refused(&facing("[0, 0, 1]", refused));
         assert_eq!(params(&problems), ["facing.within"], "{refused}");
     }
@@ -892,7 +915,7 @@ fn an_elements_limit_and_cursor_revision_are_read_to_their_types_edges() {
         ElementsRequest::read(&parsed(&text("4294967295", "18446744073709551615"))).unwrap();
     assert_eq!(request.limit, u32::MAX);
     assert_eq!(request.after.as_ref().unwrap().revision.number(), u64::MAX);
-    assert_eq!(request.after.as_ref().unwrap().name, "");
+    assert_eq!(request.after.as_ref().unwrap().name.as_str(), "");
     let back = written(&request);
     assert_eq!(ElementsRequest::read(&parsed(&back)).unwrap(), request);
     for (limit, revision, want) in [
@@ -933,7 +956,7 @@ fn a_cursor_passed_back_as_the_result_wrote_it_is_read_to_itself() {
         let cursor = Cursor {
             revision: top,
             feature: silico_core::document::FeatureId::new("k7f2qx3m").unwrap(),
-            name: name.clone(),
+            name: ElementName::as_sent(name.as_str()),
         };
         for layout in [Layout::Canonical, Layout::OneLine] {
             let next = write(&cursor.to_wire(), layout).unwrap();
@@ -1008,6 +1031,7 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "distance",
                 "angle",
                 "render",
+                "read_logs",
                 "export"
             ]
         );
@@ -1219,11 +1243,12 @@ fn results_at_their_counts_edges_hold_to_their_snapshots() {
         };
         holds(&queried, &written(&result), "a query's result");
     }
-    // A facing of the largest angle an angle holds, and every order, written and read back.
+    // A facing of the largest angle a request holds (at most i64::MAX nanodegrees either
+    // way), and every order, written and read back.
     let q = Query {
         facing: Some(Facing {
             direction: [f64::MAX, -5e-324, 0.0],
-            within: Angle::from_ndeg(i64::MIN),
+            within: Angle::from_ndeg(-i64::MAX),
         }),
         ..Query::of(ElementKind::Face, 0)
     };

@@ -6,13 +6,13 @@
 //! pad's edge by name. Sketches are solved as stored, by the fake sketch solver.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::model::WAIT;
 use super::sweeps;
 
 use super::fixture;
 
 use std::f64::consts::PI;
 use std::sync::Arc;
-use std::time::Duration;
 
 use silico_core::cache::Cache;
 use silico_core::document::{Checked, read};
@@ -72,7 +72,7 @@ fn engine() -> Recompute<FakeKernel> {
 
 fn published(engine: &Recompute<FakeKernel>, features: &[&str]) -> Arc<Model> {
     let document = checked_document(features);
-    match engine.start(document).wait_timeout(Duration::from_secs(60)) {
+    match engine.start(document).wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("not published: {other:?}"),
         Err(_) => panic!("the recompute didn't finish"),
@@ -1387,14 +1387,14 @@ fn a_valid_chains_users_dont_wait_for_its_measures() {
         fillet,
     ]));
     assert!(
-        engine.kernel().wait_running(3, Duration::from_secs(30)),
+        engine.kernel().wait_running(3, WAIT),
         "the fillet didn't start while the measures were held: {:?}",
         names(&engine)
     );
     assert!(names(&engine).contains(&"Fillet"));
     drop(summaries);
     drop(fillets);
-    let Ok(Ok(RunOutcome::Published(model))) = run.wait_timeout(Duration::from_secs(60)) else {
+    let Ok(Ok(RunOutcome::Published(model))) = run.wait_timeout(WAIT) else {
         panic!("not published");
     };
     assert!(built(&model, "pppppppp") && built(&model, "ffffffff"));

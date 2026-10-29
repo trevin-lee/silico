@@ -17,6 +17,7 @@ use re_renderer::{
     PickingLayerInstanceId, PickingLayerObjectId, PickingLayerProcessor, RectInt, RenderConfig,
     RenderContext, Rgba, ScreenshotProcessor, Size,
 };
+use silico_protocol::vec3::{dot, sub};
 use silico_protocol::{Camera, EDGE_BIT, PixelId, Projection, RenderBody, RenderScene};
 
 /// The background: a flat light grey, sRGB.
@@ -228,14 +229,6 @@ fn lights(frame: &silico_protocol::Frame) -> ([f64; 3], [f64; 3]) {
         v.map(|c| c / l)
     };
     (toward(0.5, -0.5), toward(-0.3, 0.6))
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// In f32 on purpose: re_renderer draws in f32, after the reference is subtracted in f64.

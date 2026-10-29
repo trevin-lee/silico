@@ -3,6 +3,10 @@
 //! conflict, says to read it again.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/model.rs"]
+mod model;
+
+use model::WAIT;
 use silico_core::ErrorCode;
 
 /// `bytes` saved over `file`, which held `before` ([`silico_core::file::save_over`]): why
@@ -177,7 +181,7 @@ fn a_save_over_a_file_swapped_for_a_pipe_is_refused_not_waited_on() {
         let _ = tx.send(save(&f, b"", b"x"));
     });
     let error = rx
-        .recv_timeout(std::time::Duration::from_secs(5))
+        .recv_timeout(WAIT)
         .expect("save waited on a pipe")
         .unwrap_err();
     assert_eq!(error.code(), ErrorCode::IoFailed);
@@ -332,6 +336,158 @@ fn a_png_spelled_otherwise_than_a_held_document_on_disk_is_that_document_and_ref
         assert_eq!(wrote, std::fs::canonicalize(&other).unwrap());
         assert_eq!(std::fs::read(&held[0]).unwrap(), b"a document");
     }
+}
+
+#[test]
+fn a_hard_link_to_a_held_document_is_that_document_and_refused() {
+    // Another name of the held file (the same device and inode), on every file system: the
+    // document, whatever the name's spelling, refused and kept, replace or not.
+    let dir = Scratch::new("held-link");
+    let held = dir.0.join("Held.png");
+    std::fs::write(&held, b"a document").unwrap();
+    let alias = dir.0.join("Alias.png");
+    std::fs::hard_link(&held, &alias).unwrap();
+    let holding = [held.clone()];
+    for replace in [true, false] {
+        refused_output(
+            &alias,
+            &png_rules(None, &holding, replace),
+            "is a document a session holds",
+        );
+    }
+    assert_eq!(std::fs::read(&held).unwrap(), b"a document");
+    // A copy, another file, is no document: replaced.
+    let copy = dir.0.join("Copy.png");
+    std::fs::write(&copy, b"a document").unwrap();
+    silico_core::file::write_output(&copy, b"PNG", &png_rules(None, &holding, true)).unwrap();
+    assert_eq!(std::fs::read(&copy).unwrap(), b"PNG");
+    assert_eq!(std::fs::read(&held).unwrap(), b"a document");
+}
+
+/// Set to a directory holding two empty directories, `a` and `b`, each a fresh tmpfs, for
+/// [`devices_entry`].
+#[cfg(target_os = "linux")]
+const DEVICES_ENV: &str = "SILICO_FILE_TEST_DEVICES";
+
+/// Not a test of its own: run by
+/// [`a_file_on_another_device_with_a_held_documents_inode_is_another_file`] in a user and
+/// mount namespace of its own, with [`DEVICES_ENV`] set. Run normally, it does nothing.
+#[cfg(target_os = "linux")]
+#[test]
+fn devices_entry() {
+    use std::os::unix::fs::MetadataExt;
+    let Some(top) = std::env::var_os(DEVICES_ENV) else {
+        return;
+    };
+    let top = std::path::PathBuf::from(top);
+    let (a, b) = (top.join("a"), top.join("b"));
+    // Each the first file made on its tmpfs, so each has the tmpfs's first file's inode:
+    // the same number, on two devices.
+    let held = a.join("part.silico");
+    std::fs::write(&held, b"a document").unwrap();
+    let target = b.join("view.png");
+    std::fs::write(&target, b"theirs").unwrap();
+    let (h, t) = (
+        std::fs::metadata(&held).unwrap(),
+        std::fs::metadata(&target).unwrap(),
+    );
+    assert_ne!(h.dev(), t.dev(), "two tmpfs mounts, one device");
+    assert_eq!(
+        h.ino(),
+        t.ino(),
+        "the first files of two fresh tmpfs mounts have different inodes"
+    );
+    // The held check (file.rs's `output_target`): another device, so another file, though
+    // its inode is the held document's. Replaced, as any file there is with replace.
+    let holding = [held.clone()];
+    let checked = silico_core::file::check_output(&target, &png_rules(None, &holding, true));
+    assert_eq!(
+        checked.map_err(|e| e.to_string()),
+        Ok(std::fs::canonicalize(&target).unwrap())
+    );
+    // The check is live here: the target's own hard link, held, is the target (its device
+    // and inode both).
+    let twin = b.join("twin.silico");
+    std::fs::hard_link(&target, &twin).unwrap();
+    refused_output(
+        &target,
+        &png_rules(None, &[twin], true),
+        "is a document a session holds",
+    );
+    // `same_file` (the workspace's walk): the two mounts' roots are directories of one
+    // inode on two devices. In a workspace of `a`, the walk reaches `top` from above and
+    // goes on only through `a`, or another name of it: `b` isn't, so a path through it
+    // leads out of the workspace, whatever is there. Were `b` taken for `a`, the walk would
+    // go on in `a`, where `missing` isn't, and the path would be one that can't be reached.
+    let (ra, rb) = (
+        std::fs::metadata(&a).unwrap(),
+        std::fs::metadata(&b).unwrap(),
+    );
+    assert_ne!(ra.dev(), rb.dev(), "two tmpfs mounts, one device");
+    assert_eq!(
+        ra.ino(),
+        rb.ino(),
+        "the roots of two fresh tmpfs mounts have different inodes"
+    );
+    let workspace = silico_core::file::Workspace::new(&a).unwrap();
+    let rules = png_rules(Some(&workspace), &[], true);
+    refused_output(
+        &b.join("missing/view.png"),
+        &rules,
+        "is outside the workspace",
+    );
+    refused_output(
+        &a.join("missing/view.png"),
+        &rules,
+        "its directory can't be reached",
+    );
+    // Said only past every check, so the run outside can tell it from the early return; on
+    // stderr, since on stdout it would split libtest's own "test devices_entry ... ok".
+    let _ = std::io::Write::write_all(&mut std::io::stderr(), b"devices checked\n");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_file_on_another_device_with_a_held_documents_inode_is_another_file() {
+    // Inode numbers repeat across file systems, so a held document is its device and its
+    // inode both. Two fresh tmpfs mounts, in a user and mount namespace of the test's own
+    // (`unshare -Urm`, as an unprivileged user may), give their first files the same inode
+    // on two devices: the held document on one, an export's target on the other, which
+    // isn't the document. Run in [`devices_entry`], this binary run again inside the
+    // namespace, after the shell there mounts the two. A namespace that can't be made
+    // fails the test, saying why.
+    let dir = Scratch::new("devices");
+    for name in ["a", "b"] {
+        std::fs::create_dir(dir.0.join(name)).unwrap();
+    }
+    let me = std::env::current_exe().unwrap();
+    let run = std::process::Command::new("unshare")
+        .args(["-Urm", "sh", "-c"])
+        .arg(
+            "mount -t tmpfs none \"$1\" && mount -t tmpfs none \"$2\" && \
+             exec \"$0\" --exact devices_entry --nocapture --test-threads=1",
+        )
+        .arg(&me)
+        .arg(dir.0.join("a"))
+        .arg(dir.0.join("b"))
+        .env(DEVICES_ENV, &dir.0)
+        .output()
+        .unwrap_or_else(|e| panic!("unshare couldn't be run: {e}"));
+    let (out, err) = (
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert!(
+        run.status.success(),
+        "{}\nstdout:\n{out}\nstderr:\n{err}",
+        run.status
+    );
+    // It ran, and passed: not filtered out by its name, nor returned early for want of
+    // its variable.
+    assert!(
+        out.contains("test devices_entry ... ok") && err.contains("devices checked"),
+        "stdout:\n{out}\nstderr:\n{err}"
+    );
 }
 
 #[test]

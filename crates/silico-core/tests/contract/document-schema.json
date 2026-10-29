@@ -535,19 +535,16 @@
           "type": "array"
         },
         "edges": {
-          "format": "uint32",
           "maximum": 4294967295,
           "minimum": 0,
           "type": "integer"
         },
         "faces": {
-          "format": "uint32",
           "maximum": 4294967295,
           "minimum": 0,
           "type": "integer"
         },
         "vertices": {
-          "format": "uint32",
           "maximum": 4294967295,
           "minimum": 0,
           "type": "integer"

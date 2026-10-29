@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::running::{marking_worker, submit_running};
+use crate::wait::WAIT;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -86,7 +87,11 @@ fn a_request_refused_before_it_was_sent_lets_its_span_go() {
             &pool,
             &edit,
             &marker,
-            KernelRequest::debug(DebugOp::Sleep { millis: 30_000 }),
+            // A timeout no test reaches (the worker sleeps 600 s whatever it's asked): one left
+            // to run has no outcome within the wait, where the default minute would end it as
+            // superseded just inside it.
+            KernelRequest::debug(DebugOp::Sleep { millis: 600_000 })
+                .with_timeout(Duration::from_secs(600)),
         );
         pool.advance(Generation(2));
         let outcome = pending
@@ -98,11 +103,6 @@ fn a_request_refused_before_it_was_sent_lets_its_span_go() {
             sent.elapsed() >= stop_after,
             "superseded before it was sent: never stopped"
         );
-        // And it was stopped, not left to finish its sleep.
-        assert!(
-            sent.elapsed() < Duration::from_secs(10),
-            "it ran to the end: never stopped"
-        );
     }
     wait_closed(&closed, "hung_edit");
     drop(pool);
@@ -110,7 +110,7 @@ fn a_request_refused_before_it_was_sent_lets_its_span_go() {
 }
 
 fn wait_closed(closed: &Mutex<Vec<&'static str>>, name: &str) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + WAIT;
     while !closed.lock().unwrap().contains(&name) {
         assert!(Instant::now() < deadline, "{name}'s span is still held");
         std::thread::sleep(Duration::from_millis(10));

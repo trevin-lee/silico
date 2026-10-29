@@ -10,6 +10,7 @@
 //! closed. The fake's point distance is the point's from (n, 0, 0), the element's number n,
 //! so each value is by hand.
 
+use super::model::WAIT;
 use std::time::Duration;
 
 use super::forged::{
@@ -457,7 +458,7 @@ fn held_in_session(
         None,
     );
     // Its least distance answered, its centre's distance held.
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + WAIT;
     while !f
         .kernel
         .calls()
@@ -492,7 +493,7 @@ fn a_centres_distance_held_while_its_read_is_cancelled_answers_cancelled() {
         .result
         .unwrap();
     assert!(stop.stopped);
-    let response = reading.wait_timeout(Duration::from_secs(10)).ok().unwrap();
+    let response = reading.wait_timeout(WAIT).ok().unwrap();
     let refused = response.result.unwrap_err();
     assert_eq!(refused.errors()[0].code(), ErrorCode::Cancelled);
     hold.release();
@@ -519,10 +520,10 @@ fn a_centres_distance_held_while_its_session_closes_says_the_session_closed() {
     assert!(
         f.sessions
             .close(&s)
-            .wait_timeout(Duration::from_secs(5))
+            .wait_timeout(WAIT)
             .is_ok_and(|r| r.result.is_ok())
     );
-    let response = reading.wait_timeout(Duration::from_secs(10)).ok().unwrap();
+    let response = reading.wait_timeout(WAIT).ok().unwrap();
     let refused = response.result.unwrap_err();
     assert_eq!(
         refused.errors()[0].message(),

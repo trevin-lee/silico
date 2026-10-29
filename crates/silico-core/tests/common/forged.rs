@@ -96,9 +96,10 @@ pub fn other_edge(n: u32) -> EdgeDescription {
 }
 
 /// Answers every describe of a box (6 faces, 12 edges, 8 vertices) on `kernel` with its
-/// batch of `whole`.
+/// batch of `whole`, or, asked for every element at once, with `whole` itself.
 pub fn forge(kernel: &FakeKernel, whole: Description) {
     kernel.answer_instead(move |op| match op {
+        Op::DescribeAll { .. } => Some(Reply::DescribedAll(whole.clone())),
         Op::Describe {
             kind, first, count, ..
         } => {

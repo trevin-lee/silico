@@ -419,15 +419,17 @@ fn a_failed_cut_leaves_its_inputs_as_bodies_numbered_in_order_and_its_names_say_
         "{e:?}"
     );
     assert!(bench.renderer.sent().is_empty());
+    // A different face lit on each body, so each body's highlights are its own: the pin's
+    // Face2 (index 1) and the block's Face3 (index 2), named in the other order.
     request.highlight = vec![
-        "a91cw0de.cylinder.Face1".to_owned(),
-        "k7f2qx3m.box.Face1".to_owned(),
+        "a91cw0de.cylinder.Face2".to_owned(),
+        "k7f2qx3m.box.Face3".to_owned(),
     ];
     let done = bench.render(&request).unwrap();
     assert_eq!(bench.numbers(0), [1, 2]);
     let sent = &bench.renderer.sent()[0];
-    assert_eq!(sent.bodies[0].highlight_faces, [0]);
-    assert_eq!(sent.bodies[1].highlight_faces, [0]);
+    assert_eq!(sent.bodies[0].highlight_faces, [2]);
+    assert_eq!(sent.bodies[1].highlight_faces, [1]);
     // The view fits both: the block (0, 0, 0)-(40, 20, 10) and the pin's box (17.5, 7.5,
     // −1)-(22.5, 12.5, 11), so (0, 0, −1)-(40, 20, 11), centred at (20, 10, 5).
     assert_eq!(done.result.camera.camera().target, [20.0, 10.0, 5.0]);
@@ -625,9 +627,15 @@ fn a_thousand_highlights_exactly_are_taken_and_a_thousand_broken_each_found() {
     request.highlight = (1..=1000)
         .map(|n| format!("k7f2qx3m.box.Face{}", 100 + n))
         .collect();
-    let start = std::time::Instant::now();
+    // Refused in this thread, before the kernel or the renderer is asked: its CPU, which
+    // load doesn't change.
+    let started = cpu_time::ThreadTime::now();
     let problems = bench.render(&request).unwrap_err();
-    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    let spent = started.elapsed();
+    assert!(
+        spent < std::time::Duration::from_secs(10),
+        "{spent:?} of CPU"
+    );
     assert_eq!(problems.errors().len(), 100);
     assert_eq!(problems.total(), 1000);
     for (i, e) in problems.errors().iter().enumerate() {

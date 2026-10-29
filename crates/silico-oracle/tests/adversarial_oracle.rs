@@ -6,6 +6,9 @@
 //! built (`cargo nextest run --workspace` builds it).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "common/wait.rs"]
+mod wait;
+
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::os::unix::fs::PermissionsExt;
@@ -18,6 +21,7 @@ use silico_oracle::compare::Measured;
 use silico_oracle::{
     Case, Chamfer, Outcome, Shape, Tolerance, differences, generate, load, outcomes, run,
 };
+use wait::WAIT;
 
 const CASES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle");
 const CLI: &str = env!("CARGO_BIN_EXE_silico-oracle");
@@ -532,11 +536,11 @@ fn hung_freecad_oracle_times_out() {
             ("SILICO_FREECADCMD", &freecad),
             ("SILICO_ORACLE_CASE_DEADLINE", Path::new("2")),
         ],
-        Duration::from_secs(60),
+        WAIT,
     );
     assert!(
         ran.status.is_some(),
-        "the harness was still waiting for FreeCAD after 60 s"
+        "the harness was still waiting for FreeCAD after {WAIT:?}"
     );
     assert!(
         ran.stdout
@@ -569,11 +573,11 @@ fn a_freecad_that_keeps_printing_but_never_finishes_a_case_is_killed_at_the_dead
             ("SILICO_FREECADCMD", &freecad),
             ("SILICO_ORACLE_CASE_DEADLINE", Path::new("2")),
         ],
-        Duration::from_secs(30),
+        WAIT,
     );
     assert!(
         ran.status.is_some(),
-        "still waiting after 30 s, with a deadline of 2"
+        "still waiting after {WAIT:?}, with a deadline of 2"
     );
     assert!(
         ran.stdout.contains(
@@ -606,11 +610,11 @@ fn a_freecad_that_floods_its_output_is_killed_at_the_deadline() {
             ("SILICO_FREECADCMD", &freecad),
             ("SILICO_ORACLE_CASE_DEADLINE", Path::new("2")),
         ],
-        Duration::from_secs(15),
+        WAIT,
     );
     assert!(
         ran.status.is_some(),
-        "still waiting after 15 s, with a deadline of 2"
+        "still waiting after {WAIT:?}, with a deadline of 2"
     );
     assert!(
         ran.stdout
@@ -641,11 +645,11 @@ fn a_freecad_that_writes_text_that_isnt_utf8_then_goes_quiet_is_killed_at_the_de
             ("SILICO_FREECADCMD", &freecad),
             ("SILICO_ORACLE_CASE_DEADLINE", Path::new("2")),
         ],
-        Duration::from_secs(15),
+        WAIT,
     );
     assert!(
         ran.status.is_some(),
-        "still waiting after 15 s, with a deadline of 2"
+        "still waiting after {WAIT:?}, with a deadline of 2"
     );
     assert!(
         ran.stdout
@@ -675,11 +679,11 @@ fn a_freecad_that_closes_its_output_but_keeps_running_is_killed_at_the_deadline(
             ("SILICO_FREECADCMD", &freecad),
             ("SILICO_ORACLE_CASE_DEADLINE", Path::new("2")),
         ],
-        Duration::from_secs(15),
+        WAIT,
     );
     assert!(
         ran.status.is_some(),
-        "still waiting after 15 s, with a deadline of 2"
+        "still waiting after {WAIT:?}, with a deadline of 2"
     );
     assert!(
         ran.stdout.contains(
@@ -711,7 +715,7 @@ fn a_crash_report_keeps_the_last_20_lines_each_cut_to_1000_bytes() {
         dir,
         &["run", cases.to_str().unwrap()],
         &[("SILICO_FREECADCMD", &freecad)],
-        Duration::from_secs(60),
+        WAIT,
     );
     let kept: String = (7..=25).map(|n| format!("line {n}\n")).collect();
     let cut = format!("a{}", "é".repeat(499));
@@ -752,7 +756,7 @@ fn each_answer_restarts_freecads_deadline() {
             ("SILICO_FREECADCMD", &freecad),
             ("SILICO_ORACLE_CASE_DEADLINE", Path::new("4")),
         ],
-        Duration::from_secs(60),
+        WAIT,
     );
     let want: String = (0..6)
         .map(|n| format!("box_{n}: Silico built it; FreeCAD failed: stand-in\n"))
@@ -782,7 +786,7 @@ fn a_run_compares_each_case_at_its_shapes_tolerance() {
         dir,
         &["run", cases.to_str().unwrap()],
         &[("SILICO_FREECADCMD", &freecad)],
-        Duration::from_secs(60),
+        WAIT,
     );
     assert!(
         ran.stdout.starts_with("box: volume: Silico 6000")
@@ -807,12 +811,7 @@ fn a_case_both_sides_refuse_is_named_as_refused() {
     let cases = dir.join("cases");
     std::fs::create_dir_all(&cases).unwrap();
     write_cases(&cases, &[case("fillet_edge0", edge0)]);
-    let ran = cli(
-        dir,
-        &["run", cases.to_str().unwrap()],
-        &[],
-        Duration::from_secs(60),
-    );
+    let ran = cli(dir, &["run", cases.to_str().unwrap()], &[], WAIT);
     assert_eq!(
         ran.stdout, "0 of 1 cases differ from FreeCAD; both refused 1: fillet_edge0\n",
         "{}",
@@ -858,7 +857,7 @@ fn a_line_past_a_megabyte_is_cut_and_its_rest_dropped() {
         dir,
         &["run", cases.to_str().unwrap()],
         &[("SILICO_FREECADCMD", &freecad)],
-        Duration::from_secs(60),
+        WAIT,
     );
     assert!(
         ran.stdout.starts_with(
@@ -914,7 +913,7 @@ fn a_freecad_that_crashes_or_hangs_on_a_case_silico_refuses_is_a_difference() {
                 ("SILICO_FREECADCMD", &freecad),
                 ("SILICO_ORACLE_CASE_DEADLINE", Path::new("2")),
             ],
-            Duration::from_secs(30),
+            WAIT,
         );
         assert_eq!(
             ran.status.and_then(|s| s.code()),
@@ -957,7 +956,7 @@ fn a_crash_of_silicos_worker_on_a_case_freecad_refuses_is_a_difference() {
             ("SILICO_FREECADCMD", &freecad),
             ("SILICO_KERNEL_WORKER", &worker),
         ],
-        Duration::from_secs(60),
+        WAIT,
     );
     assert_eq!(ran.status.and_then(|s| s.code()), Some(1), "{}", ran.stdout);
     assert!(
@@ -991,7 +990,7 @@ fn a_freecad_crash_is_reported_with_how_it_ended_and_what_it_last_wrote() {
         dir,
         &["run", cases.to_str().unwrap()],
         &[("SILICO_FREECADCMD", &freecad)],
-        Duration::from_secs(60),
+        WAIT,
     );
     assert_eq!(
         ran.stdout,
@@ -1066,12 +1065,7 @@ fn sweep_of_more_cases_than_memory_holds_is_refused_not_a_crash() {
     let temp = scratch("huge-count");
     let dir = temp.path();
     for count in ["18446744073709551615", "1000000000000000"] {
-        let ran = cli(
-            dir,
-            &["sweep", "--count", count],
-            &[],
-            Duration::from_secs(60),
-        );
+        let ran = cli(dir, &["sweep", "--count", count], &[], WAIT);
         assert_eq!(
             ran.status.and_then(|s| s.code()),
             Some(2),
@@ -1100,21 +1094,11 @@ fn a_run_of_no_cases_is_an_error_not_a_pass() {
     std::fs::create_dir_all(cases.join("nested")).unwrap();
     std::fs::write(cases.join("upper.JSON"), "[]").unwrap();
     write_cases(&cases.join("nested"), &[case("box", block(1.0, 2.0, 3.0))]);
-    let ran = cli(
-        dir,
-        &["run", cases.to_str().unwrap()],
-        &[],
-        Duration::from_secs(60),
-    );
+    let ran = cli(dir, &["run", cases.to_str().unwrap()], &[], WAIT);
     let refused = "silico-oracle: there are no cases to compare\n";
     assert_eq!(ran.status.and_then(|s| s.code()), Some(2), "{}", ran.stdout);
     assert_eq!(ran.stderr, refused);
-    let ran = cli(
-        dir,
-        &["sweep", "--count", "0"],
-        &[],
-        Duration::from_secs(60),
-    );
+    let ran = cli(dir, &["sweep", "--count", "0"], &[], WAIT);
     assert_eq!(ran.status.and_then(|s| s.code()), Some(2), "{}", ran.stdout);
     assert_eq!(ran.stderr, refused);
 }
@@ -1134,12 +1118,7 @@ fn a_sweep_runs_the_cases_of_its_seed_and_count() {
          echo 'SILICO_ORACLE_CASE {\"failed\": \"stand-in\"}'\n",
     );
     let args = ["sweep", "--count", "2", "--seed", "5"];
-    let ran = cli(
-        dir,
-        &args,
-        &[("SILICO_FREECADCMD", &freecad)],
-        Duration::from_secs(60),
-    );
+    let ran = cli(dir, &args, &[("SILICO_FREECADCMD", &freecad)], WAIT);
     assert_eq!(
         ran.stdout,
         "generated_5_0: Silico built it; FreeCAD failed: stand-in\n\
@@ -1163,12 +1142,7 @@ fn a_run_of_more_than_one_directory_is_refused() {
     // passed on cases the user didn't ask for.
     let temp = scratch("two-dirs");
     let dir = temp.path();
-    let ran = cli(
-        dir,
-        &["run", CASES, "/nonexistent"],
-        &[],
-        Duration::from_secs(60),
-    );
+    let ran = cli(dir, &["run", CASES, "/nonexistent"], &[], WAIT);
     assert_eq!(ran.status.and_then(|s| s.code()), Some(2), "{}", ran.stdout);
     assert!(
         ran.stderr
@@ -1186,12 +1160,7 @@ fn a_corpus_of_no_step_files_is_an_error_not_a_pass() {
     let dir = temp.path();
     let corpus = dir.join("corpus");
     std::fs::create_dir_all(&corpus).unwrap();
-    let ran = cli(
-        dir,
-        &["corpus", corpus.to_str().unwrap()],
-        &[],
-        Duration::from_secs(60),
-    );
+    let ran = cli(dir, &["corpus", corpus.to_str().unwrap()], &[], WAIT);
     assert_eq!(ran.status.and_then(|s| s.code()), Some(2), "{}", ran.stdout);
     assert_eq!(ran.stderr, "silico-oracle: there are no cases to compare\n");
 }
@@ -1581,7 +1550,7 @@ fn freecad_that_never_starts_the_cases_is_an_error_not_a_pass() {
             dir,
             &["run", cases.to_str().unwrap()],
             &[("SILICO_FREECADCMD", &freecad)],
-            Duration::from_secs(60),
+            WAIT,
         );
         assert_eq!(ran.status.and_then(|s| s.code()), Some(2), "{name}");
         assert!(ran.stderr.contains(says), "{name}: {}", ran.stderr);

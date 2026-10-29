@@ -13,6 +13,9 @@ autotests = false
 # The test operations (sleeping, aborting, garbage, replies out of turn), answered by the
 # test worker only. This crate's own tests turn it on (the dev-dependency on itself).
 test_ops = ["silico-worker/test_ops"]
+# The render bench's scenes (`bench`) and its binary (`silico-render-bench`, CI's bench
+# workflow): left out of every other build. This crate's own tests turn it on.
+bench = []
 
 [dependencies]
 re_renderer.workspace = true
@@ -30,9 +33,10 @@ tracing.workspace = true
 # The core's worker client, to drive the worker as the core does (no OCCT: the core links
 # none).
 silico-core = { workspace = true, features = ["fake"] }
+cpu-time.workspace = true
 libm.workspace = true
 proptest.workspace = true
-silico-render = { path = ".", features = ["test_ops"] }
+silico-render = { path = ".", features = ["test_ops", "bench"] }
 
 [[bin]]
 name = "silico-render-worker"
@@ -41,6 +45,7 @@ path = "src/bin/silico-render-worker.rs"
 [[bin]]
 name = "silico-render-bench"
 path = "src/bin/silico-render-bench.rs"
+required-features = ["bench"]
 
 [[bin]]
 name = "silico-render-test-worker"

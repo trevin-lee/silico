@@ -6,6 +6,7 @@
 //! test in its own): it installs the process's global subscriber.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use crate::wait::WAIT;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -57,7 +58,7 @@ fn a_slot_that_panics_running_a_request_is_started_again_by_the_next() {
     // The first request's slot panics running it: the request ends (unanswered).
     assert!(
         pool.submit(Generation(1), echo(1))
-            .wait_timeout(Duration::from_secs(10))
+            .wait_timeout(WAIT)
             .is_ok(),
         "the first request never ended"
     );
@@ -65,7 +66,7 @@ fn a_slot_that_panics_running_a_request_is_started_again_by_the_next() {
     // The next, asked for before the slot is back, starts it again and is answered.
     let second = pool
         .submit(Generation(1), echo(2))
-        .wait_timeout(Duration::from_secs(10))
+        .wait_timeout(WAIT)
         .unwrap_or_else(|_| panic!("the next request waited: no slot took it"))
         .done()
         .expect("superseded")

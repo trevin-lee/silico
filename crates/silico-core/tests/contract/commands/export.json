@@ -95,7 +95,6 @@
           },
           "triangles": {
             "description": "The mesh's triangles; null for a format that writes no mesh (step).",
-            "format": "uint64",
             "minimum": 0,
             "type": [
               "integer",
@@ -104,7 +103,6 @@
           },
           "vertices": {
             "description": "The mesh's vertices; null for a format that writes no mesh (step).",
-            "format": "uint64",
             "minimum": 0,
             "type": [
               "integer",
@@ -149,7 +147,6 @@
     "properties": {
       "bytes": {
         "description": "The file's size, in bytes.",
-        "format": "uint64",
         "minimum": 0,
         "type": "integer"
       },

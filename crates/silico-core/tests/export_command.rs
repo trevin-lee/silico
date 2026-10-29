@@ -7,15 +7,16 @@
 //! export of them silico-cli's.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::model::WAIT;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::example::EXAMPLE;
-use super::export_report::{tetra, unasked};
+use super::export_report::{grid_box, tetra, unasked};
 
 use silico_core::command::export::{Export, ExportFormat, ExportOn, Exported, export};
 use silico_core::command::{self, Problems};
-use silico_core::document::{FeatureId, Length, Measure};
+use silico_core::document::{ElementName, FeatureId, Length, Measure};
 use silico_core::export::{Object, printable, three_mf};
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::Op;
@@ -67,9 +68,20 @@ impl Bench {
                 document: "part.silico",
                 workspace: None,
                 held: &[],
+                turns: &silico_core::command::export::MeshTurns::new(),
+                stopped: &|| false,
                 settle,
             },
         )
+    }
+
+    /// The export meshes submitted to the kernel so far, whether or not they started.
+    fn asked_meshes(&self) -> usize {
+        self.kernel
+            .asked()
+            .iter()
+            .filter(|c| matches!(c.op, Op::ExportMesh { .. }))
+            .count()
     }
 
     /// The export meshes asked of the kernel so far.
@@ -666,7 +678,11 @@ fn faces_bounding_no_material_are_left_out_and_named_by_the_features_element_map
     asked.features = Some(vec![id("k7f2qx3m")]);
     let done = bench.export(&asked).unwrap();
     assert_eq!(
-        done.objects[0].left_out,
+        done.objects[0]
+            .left_out
+            .iter()
+            .map(ElementName::as_str)
+            .collect::<Vec<_>>(),
         [
             face_name(&bench, "k7f2qx3m", 5),
             face_name(&bench, "k7f2qx3m", 6)
@@ -834,9 +850,9 @@ fn every_body_of_a_model_with_more_failures_than_listed_counts_every_one() {
 
 #[test]
 fn more_bodies_than_are_meshed_at_once_are_each_written_in_the_timelines_order() {
-    // The export asks as many meshes ahead as the machine runs at once: three more boxes than
-    // that, so the window is refilled past its first fill. Every box written, in order, each
-    // meshed once.
+    // Three more boxes than the machine runs at once (as many as an export once asked of the
+    // kernel ahead, each mesh now asked in turn): every box written, in order, each meshed
+    // once.
     let count = std::thread::available_parallelism().map_or(1, usize::from) + 3;
     let ids: Vec<String> = (0..count).map(|n| format!("b{n:07}")).collect();
     let features: Vec<String> = ids
@@ -870,6 +886,172 @@ fn more_bodies_than_are_meshed_at_once_are_each_written_in_the_timelines_order()
 }
 
 #[test]
+fn a_grid_box_is_a_printable_mesh_of_the_triangles_and_vertices_counted_by_hand() {
+    // A 2 × 3 × 4 mm box in 1 mm squares: faces of 2·3, 3·4, and 4·2 squares, two of each,
+    // two triangles a square: 4·(6 + 12 + 8) = 104 triangles. Each edge of the mesh on two
+    // triangles, 3·104 / 2 = 156 edges, so, a sphere's Euler characteristic being 2,
+    // 2 + 156 − 104 = 54 vertices; its volume 2·3·4 = 24 mm³.
+    let mesh = printable(&grid_box([2, 3, 4]), unasked, None).unwrap();
+    assert_eq!(mesh.triangles().len(), 104);
+    assert_eq!(mesh.vertices().len(), 54);
+    assert!((mesh.volume() - 24.0).abs() < 1e-12, "{}", mesh.volume());
+}
+
+#[test]
+fn ten_million_triangles_in_all_are_taken_and_the_first_solid_past_them_refused_naming_the_tolerance()
+ {
+    // The limits table (docs/design/m4.1-command-api.md, section 6): a 3MF export's
+    // triangles, 10,000,000 in all, counted over every part; past them, `invalid_input`
+    // naming `tolerance`, "a coarser one makes fewer, or export fewer parts". 100 boxes,
+    // each meshed as a 100 × 100 × 75 grid box, 4·(100·100 + 100·75 + 75·100) = 100,000
+    // triangles: 10,000,000 after the hundredth, which are taken, so the 101st box's mesh is
+    // asked for. It's a 1 mm cube, 4·(1 + 1 + 1) = 12 triangles: 10,000,012 in all, refused
+    // there (the command's own count, `export::within_triangles`), so the 102nd box's mesh
+    // is never asked for, and nothing is written. Were it asked (the count left to the
+    // archive's writer, which counts too), the kernel refuses it, so the export fails
+    // quickly, with another error, and never writes a file of ten million triangles.
+    // (Exactly 10,000,001 can't be reached: a closed mesh's edges are each on two
+    // triangles, 3·T = 2·E, so every solid's T is even, and so is the sum. The limit's own
+    // boundary, 10,000,000 against 10,000,001, is silico-protocol's check_export_triangles's
+    // unit test.) About 200 MB held at most: the 100 meshes kept for the file, 12 bytes a
+    // triangle and as many a vertex, half as many vertices as triangles.
+    let big = grid_box([100, 100, 75]);
+    assert_eq!(big.triangles.len(), 100_000);
+    let cube = grid_box([1, 1, 1]);
+    assert_eq!(cube.triangles.len(), 12);
+    let features: Vec<String> = (0..102)
+        .map(|n| {
+            let size = match n {
+                ..100 => r#""length": 100, "width": 100, "height": 75"#,
+                100 => r#""length": 1, "width": 1, "height": 1"#,
+                _ => r#""length": 2, "width": 2, "height": 2"#,
+            };
+            format!(
+                r#"{{"id": "b{n:07}", "type": "box", "v": 1, "name": "Box{n}", "position": [0, 0, 0], {size}}}"#
+            )
+        })
+        .collect();
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        features.join(", ")
+    );
+    let bench = Bench::with(&text, move |kernel| {
+        kernel.refuse(|op| match op {
+            Op::ExportMesh { shape, .. } if FakeKernel::describe(shape)? == "box(2, 2, 2)" => {
+                Some(Error::new(
+                    ErrorCode::KernelFailed,
+                    "the 102nd mesh was asked for, past ten million triangles",
+                ))
+            }
+            _ => None,
+        });
+        kernel.answer_instead(move |op| match op {
+            Op::ExportMesh { shape, .. } => {
+                let mesh = match FakeKernel::describe(shape)?.as_str() {
+                    "box(100, 100, 75)" => big.clone(),
+                    "box(1, 1, 1)" => cube.clone(),
+                    _ => return None,
+                };
+                Some(Reply::ExportMesh(Box::new(mesh)))
+            }
+            _ => None,
+        });
+    });
+    let dir = Scratch::new("ten-million");
+    let path = dir.0.join("out.3mf");
+    let problems = refused(bench.export(&request(&path)));
+    // The hundredth box's 10,000,000 were taken: the 101st was asked for, and the 102nd
+    // wasn't.
+    assert_eq!(bench.asked_meshes(), 101, "{problems:?}");
+    assert_eq!(problems.total(), 1);
+    let e = &problems.errors()[0];
+    assert_eq!(
+        (e.code(), e.parameter(), e.feature()),
+        (ErrorCode::InvalidInput, Some("tolerance"), None)
+    );
+    assert_eq!(
+        e.message(),
+        "an export's mesh has 10000012 triangles, more than the 10000000 an export may have"
+    );
+    assert_eq!(
+        e.suggestion(),
+        Some("export with a coarser tolerance, which makes fewer, or fewer parts at once")
+    );
+    assert!(dir.names().is_empty(), "{:?}", dir.names());
+}
+
+#[test]
+fn an_exports_meshes_are_asked_of_the_kernel_one_at_a_time() {
+    // A fine tolerance's mesh takes OCCT tens of seconds and gigabytes: one asked at a time,
+    // never one for each core. Two bodies, a kernel that runs two requests at once, the
+    // first mesh held: the second isn't asked, let alone run, until the first is done.
+    let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "b2b2b2b2", "type": "box", "v": 1, "name": "Other", "position": [100, 0, 0], "length": 1, "width": 2, "height": 3}]}"#;
+    let bench = Arc::new(Bench::of(text));
+    let hold = bench.kernel.hold(|op| matches!(op, Op::ExportMesh { .. }));
+    let dir = Scratch::new("one-at-a-time");
+    let path = dir.0.join("out.3mf");
+    let exporting = {
+        let bench = Arc::clone(&bench);
+        let path = path.clone();
+        std::thread::spawn(move || bench.export(&request(&path)))
+    };
+    assert!(bench.kernel.wait_running(1, WAIT));
+    // Long enough for a mesh asked ahead to start on the kernel's other thread.
+    assert!(
+        !bench
+            .kernel
+            .wait_running(2, std::time::Duration::from_millis(500))
+    );
+    assert_eq!(bench.asked_meshes(), 1);
+    hold.release();
+    let done = exporting.join().unwrap().unwrap();
+    let ids: Vec<&str> = done.objects.iter().map(|o| o.feature.as_str()).collect();
+    assert_eq!(ids, ["k7f2qx3m", "b2b2b2b2"]);
+    assert_eq!(bench.meshed(), 2);
+}
+
+/// Two boxes, two bodies: "Block" (k7f2qx3m) and "Other" (b2b2b2b2).
+const TWO_BOXES: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "b2b2b2b2", "type": "box", "v": 1, "name": "Other", "position": [100, 0, 0], "length": 1, "width": 2, "height": 3}]}"#;
+
+#[test]
+fn two_bodies_stopped_after_the_first_writes_no_partial_file() {
+    // The session closes while the second body waits its turn to mesh: the export answers
+    // the session closed, naming `session`, and writes nothing, never a file of the first
+    // body alone (decision 34).
+    let bench = Bench::of(TWO_BOXES);
+    let dir = Scratch::new("partial");
+    let path = dir.0.join("out.3mf");
+    // Each wait for a turn looks once before it takes a free one: open at the first body's
+    // look, closed from the second's on.
+    let looks = std::sync::atomic::AtomicUsize::new(0);
+    let result = export(
+        &bench.model,
+        &request(&path),
+        &ExportOn {
+            kernel: &bench.kernel,
+            step: &*bench.kernel,
+            document: "part.silico",
+            workspace: None,
+            held: &[],
+            turns: &silico_core::command::export::MeshTurns::new(),
+            stopped: &|| looks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 1,
+            settle: &|| Ok(()),
+        },
+    );
+    assert!(!path.exists(), "a partial file was written: {result:?}");
+    let problems = refused(result);
+    let e = &problems.errors()[0];
+    assert_eq!(
+        (e.code(), e.parameter(), e.feature()),
+        (ErrorCode::InvalidInput, Some("session"), None),
+        "{e:?}"
+    );
+    // The first body meshed, the second never asked.
+    assert_eq!(bench.asked_meshes(), 1);
+    assert!(dir.names().is_empty());
+}
+
+#[test]
 fn a_mesh_superseded_by_the_sessions_close_is_the_sessions_not_the_solids() {
     // The mesh held, the kernel's generation moved on (as a session's close moves its read's
     // client on), the mesh let go: superseded, so the export answers the session closed,
@@ -883,11 +1065,7 @@ fn a_mesh_superseded_by_the_sessions_close_is_the_sessions_not_the_solids() {
         let path = path.clone();
         std::thread::spawn(move || bench.export(&request(&path)))
     };
-    assert!(
-        bench
-            .kernel
-            .wait_running(1, std::time::Duration::from_secs(60))
-    );
+    assert!(bench.kernel.wait_running(1, WAIT));
     use silico_core::kernel::Kernel;
     let next = silico_protocol::Generation(bench.kernel.generation().0 + 1);
     bench.kernel.advance(next);
@@ -1046,7 +1224,11 @@ fn a_step_exports_faces_left_out_are_named_by_the_features_element_map() {
         .export(&step_request(&dir.0.join("out.step"), Some(&["k7f2qx3m"])))
         .unwrap();
     assert_eq!(
-        done.objects[0].left_out,
+        done.objects[0]
+            .left_out
+            .iter()
+            .map(ElementName::as_str)
+            .collect::<Vec<_>>(),
         [
             face_name(&bench, "k7f2qx3m", 5),
             face_name(&bench, "k7f2qx3m", 6)
@@ -1093,8 +1275,94 @@ fn a_step_reply_for_another_number_of_parts_is_the_workers_fault() {
         &dir.0.join("out.step"),
         Some(&["m3tq8v0z", "k7f2qx3m"]),
     )));
-    assert_eq!(problems.errors()[0].code(), ErrorCode::ProtocolError);
+    let e = &problems.errors()[0];
+    assert_eq!(e.code(), ErrorCode::ProtocolError);
+    // The STEP worker's fault, which sent it, and a new one starts for the next export.
+    assert_eq!(
+        e.message(),
+        "the STEP worker sent the faces left out of 1 parts, an element numbered 0, or a part \
+         past the last, for a STEP export of 2"
+    );
+    // A bug in that worker, which the next request's worker won't mend: report it.
+    assert_eq!(
+        e.suggestion(),
+        Some(
+            "this is a bug in Silico's STEP worker, not in the request: report it (the worker \
+             was stopped, and the next request starts another)"
+        )
+    );
     assert!(dir.names().is_empty());
+}
+
+#[test]
+fn a_step_export_answered_with_another_kind_of_reply_is_the_step_workers_bug() {
+    // Not a StepFile: the STEP worker's fault, named so, and reported, not retried.
+    let bench = Bench::with(EXAMPLE, |kernel| {
+        kernel.answer_instead(|op| matches!(op, Op::ExportStep(_)).then_some(Reply::Done));
+    });
+    let dir = Scratch::new("step-wrong-kind");
+    let problems =
+        refused(bench.export(&step_request(&dir.0.join("out.step"), Some(&["k7f2qx3m"]))));
+    let e = &problems.errors()[0];
+    assert_eq!(e.code(), ErrorCode::ProtocolError);
+    assert_eq!(
+        e.message(),
+        "the STEP worker answered ExportStep with the wrong kind of reply"
+    );
+    assert_eq!(
+        e.suggestion(),
+        Some(
+            "this is a bug in Silico's STEP worker, not in the request: report it (the worker \
+             was stopped, and the next request starts another)"
+        )
+    );
+    assert!(dir.names().is_empty());
+}
+
+#[test]
+fn a_step_check_lists_messages_each_once_and_as_many_as_it_names_elements() {
+    // 103 faces at fault: faces 1 and 3 with one message between them, not one after the
+    // other, said once where it's first given; face 2 and faces 4 to 103 each with a message
+    // of its own. 102 messages, once each: the first hundred said, in order, and how many
+    // more ("same", m2, m4 ... m101, then m102 and m103 unsaid).
+    let with = |faces: u32| {
+        let entries: Vec<silico_protocol::StepUnwritten> = (1..=faces)
+            .map(|n| silico_protocol::StepUnwritten {
+                part: Some(0),
+                element: Some(silico_protocol::ElementRef::face(n)),
+                messages: vec![if n == 1 || n == 3 {
+                    "same".to_owned()
+                } else {
+                    format!("m{n}")
+                }],
+            })
+            .collect();
+        let bench = step_answered(silico_protocol::StepFile {
+            step: silico_protocol::Blob::inline(b"STEP".to_vec()),
+            left_out: vec![vec![]],
+            unwritten: entries,
+            faces: WHOLE,
+            bounds: WHOLE,
+        });
+        let dir = Scratch::new("step-messages");
+        let problems =
+            refused(bench.export(&step_request(&dir.0.join("out.step"), Some(&["k7f2qx3m"]))));
+        assert_eq!(problems.total(), 1);
+        problems.errors()[0].cause().unwrap().to_owned()
+    };
+    let said = |last: u32| {
+        std::iter::once("same".to_owned())
+            .chain((2..=last).filter(|&n| n != 3).map(|n| format!("m{n}")))
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    assert_eq!(with(103), format!("{}; and 2 other messages", said(101)));
+    // 101 messages: one unsaid.
+    assert_eq!(with(102), format!("{}; and 1 other message", said(101)));
+    // A hundred: every one said.
+    assert_eq!(with(101), said(101));
+    // Three faces, the first and last one message: said once, before the second's.
+    assert_eq!(with(3), "same; m2");
 }
 
 #[test]
@@ -1311,4 +1579,119 @@ fn a_step_file_past_a_requests_time_suggests_exporting_fewer_features() {
         ),
         "{e:?}"
     );
+}
+
+/// Boxes `sizes` (each a cube of that edge, side by side), as a document.
+fn cubes(sizes: &[u32]) -> String {
+    let features: Vec<String> = sizes
+        .iter()
+        .enumerate()
+        .map(|(n, size)| {
+            format!(
+                r#"{{"id": "c{n:07}", "type": "box", "v": 1, "name": "Cube{n}", "position": [{}, 0, 0], "length": {size}, "width": {size}, "height": {size}}}"#,
+                n * 20
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        features.join(", ")
+    )
+}
+
+/// Each export mesh asked of `kernel` so far, in the order they started, by its cube's edge
+/// as `labels` names it (`("box(7", "B1")`: the cube of edge 7 is B1).
+fn meshes_started(kernel: &FakeKernel, labels: &[(&str, &str)]) -> Vec<String> {
+    kernel
+        .calls()
+        .iter()
+        .filter_map(|c| match &c.op {
+            Op::ExportMesh { shape, .. } => Some(FakeKernel::describe(shape).unwrap()),
+            _ => None,
+        })
+        .map(|made| {
+            labels
+                .iter()
+                .find(|(edge, _)| made.contains(edge))
+                .map_or(made.clone(), |(_, label)| (*label).to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn an_export_waiting_its_turn_to_mesh_is_served_before_the_export_ahead_takes_another() {
+    // Turns are served in the order they're asked for, as the kernel pool serves its clients
+    // in turn: an export of many bodies, its first mesh held, and another export waiting for
+    // a turn; once the first mesh is done, the waiting export meshes next, before the first
+    // export's second body, so a long export can't hold another session's export (and its
+    // whole queue) for its whole length. The first export A, of three cubes (edges 1, 2,
+    // and 3), the second, B, of one (edge 7), on one kernel, sharing the turns.
+    let a = Arc::new(Bench::of(&cubes(&[1, 2, 3])));
+    let b_model = command::rebuild(
+        &Recompute::new(Arc::clone(&a.kernel)),
+        command::gate(cubes(&[7]).as_bytes()).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let turns = Arc::new(silico_core::command::export::MeshTurns::new());
+    let dir = Arc::new(Scratch::new("first-come"));
+    let hold = a.kernel.hold(|op| matches!(op, Op::ExportMesh { .. }));
+    let first = {
+        let (a, turns, dir) = (Arc::clone(&a), Arc::clone(&turns), Arc::clone(&dir));
+        std::thread::spawn(move || {
+            export(
+                &a.model,
+                &request(&dir.0.join("a.3mf")),
+                &ExportOn {
+                    kernel: &a.kernel,
+                    step: &*a.kernel,
+                    document: "a.silico",
+                    workspace: None,
+                    held: &[],
+                    turns: &turns,
+                    stopped: &|| false,
+                    settle: &|| Ok(()),
+                },
+            )
+        })
+    };
+    assert!(a.kernel.wait_running(1, WAIT));
+    assert_eq!(a.asked_meshes(), 1);
+    // B's wait looks whether it was stopped, with the turns locked, before it waits: once
+    // it has looked, it's in the line before A's first mesh can give the turn back.
+    let (looked, looks) = std::sync::mpsc::channel();
+    let second = {
+        let (a, turns, dir) = (Arc::clone(&a), Arc::clone(&turns), Arc::clone(&dir));
+        std::thread::spawn(move || {
+            export(
+                &b_model,
+                &request(&dir.0.join("b.3mf")),
+                &ExportOn {
+                    kernel: &a.kernel,
+                    step: &*a.kernel,
+                    document: "b.silico",
+                    workspace: None,
+                    held: &[],
+                    turns: &turns,
+                    stopped: &|| {
+                        let _ = looked.send(());
+                        false
+                    },
+                    settle: &|| Ok(()),
+                },
+            )
+        })
+    };
+    looks.recv_timeout(WAIT).unwrap();
+    assert_eq!(a.asked_meshes(), 1);
+    hold.release();
+    first.join().unwrap().unwrap();
+    second.join().unwrap().unwrap();
+    let labels = [
+        ("box(1", "A1"),
+        ("box(2", "A2"),
+        ("box(3", "A3"),
+        ("box(7", "B1"),
+    ];
+    assert_eq!(meshes_started(&a.kernel, &labels), ["A1", "B1", "A2", "A3"]);
 }

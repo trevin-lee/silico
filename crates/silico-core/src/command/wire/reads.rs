@@ -13,7 +13,7 @@
 use schemars::JsonSchema;
 
 use super::elements::ModelChoiceSchema;
-use super::{ErrorSchema, Json, RequestFields, ToWire, problems, wire_shape};
+use super::{ErrorSchema, Json, RequestFields, ToWire, WarningSchema, problems, wire_shape};
 use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{
     CheckAnswer, CheckModel, ModelChoice, OutlineAnswer, Problems, SessionId, TextAnswer,
@@ -137,7 +137,7 @@ impl ToWire for CheckAnswer {
     /// The problems, the first 100 and how many, and the warnings, likewise.
     fn to_wire(&self) -> Json<'_> {
         let (problems, problems_total) = problems(&self.problems);
-        let (warnings, warnings_total) = super::problems(&self.warnings);
+        let (warnings, warnings_total) = super::warnings(&self.warnings);
         Json::object([
             ("problems", problems),
             ("problems_total", problems_total),
@@ -219,7 +219,7 @@ pub struct CheckResultSchema {
     /// The document's warnings, the first 100, in the error contract's shape: they never
     /// fail anything.
     #[schemars(length(max = PROBLEMS_LISTED))]
-    pub warnings: Vec<ErrorSchema>,
+    pub warnings: Vec<WarningSchema>,
     /// How many warnings there are, listed or not.
     pub warnings_total: u64,
 }

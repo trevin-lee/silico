@@ -4,7 +4,7 @@
 
 use proptest::prelude::*;
 use silico_protocol::{
-    Algorithm, DragBegin, Geometry, MeshAt, Moved, PointOf, PointPlace, PointValues,
+    Algorithm, DragBegin, Geometry, MeshAt, Moved, MovedOnce, PointOf, PointPlace, PointValues,
     SketchGeometry, SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value,
 };
 use silico_protocol::{
@@ -186,12 +186,35 @@ fn every_op() -> Vec<Op> {
                 }],
                 algorithms: vec![Algorithm::DogLeg],
             },
-            point: PointOf::End(Geometry(0)),
+            dragged: silico_protocol::Dragged::Point(PointOf::End(Geometry(0))),
         }),
         Op::DragMove {
             to: [-1e6, 3.000_000_000_000_000_4],
         },
         Op::DragEnd,
+        // One move, its target at the reach's edge and a coordinate an ulp from 3.
+        Op::MoveOnce {
+            begin: DragBegin {
+                system: SketchSystem {
+                    values: vec![-0.5, 2.0, 7.25, 2.0],
+                    unknowns: vec![Value(2), Value(3)],
+                    geometry: vec![SketchGeometry::Line {
+                        start: PointValues {
+                            x: Value(0),
+                            y: Value(1),
+                        },
+                        end: PointValues {
+                            x: Value(2),
+                            y: Value(3),
+                        },
+                    }],
+                    constraints: vec![],
+                    algorithms: vec![Algorithm::DogLeg],
+                },
+                dragged: silico_protocol::Dragged::Point(PointOf::End(Geometry(0))),
+            },
+            to: [1e6, 3.000_000_000_000_000_4],
+        },
         Op::MakeFaces(FaceRegions {
             plane: SketchPlane::Xz,
             regions: vec![
@@ -252,6 +275,9 @@ fn every_op() -> Vec<Op> {
             kind: ElementKind::Edge,
             first: 1001,
             count: u32::MAX,
+        },
+        Op::DescribeAll {
+            shape: ShapeData::checked(Blob::inline(vec![8, 9, 10]), false),
         },
         Op::ExportMesh {
             shape: ShapeData::checked(Blob::inline(vec![8]), true),
@@ -391,9 +417,11 @@ fn every_op() -> Vec<Op> {
             Op::Classify { .. } => 45,
             Op::PointDistance { .. } => 46,
             Op::ExportStep(_) => 47,
+            Op::DescribeAll { .. } => 48,
+            Op::MoveOnce { .. } => 49,
         })
         .collect();
-    assert_eq!(indices, (0..48).collect(), "an operation has no case");
+    assert_eq!(indices, (0..50).collect(), "an operation has no case");
     ops
 }
 
@@ -546,6 +574,14 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             status: SolveStatus::Failed,
             values: None,
         })),
+        Ok(Reply::MovedOnce(MovedOnce::Conflicting(vec![
+            Tag(2),
+            Tag(u32::MAX),
+        ]))),
+        Ok(Reply::MovedOnce(MovedOnce::Moved(Moved {
+            status: SolveStatus::Success,
+            values: Some(vec![-0.0, 5e-324, -1e6]),
+        }))),
         // A distance at extremes a frame must carry exactly: -0, subnormal, and the largest.
         Ok(Reply::Distance(Distance {
             distance: 5e-324,
@@ -554,6 +590,11 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             solutions: u32::MAX,
         })),
         // Every kind of surface and curve, at extremes a frame must carry exactly.
+        Ok(Reply::DescribedAll(Description {
+            faces: Vec::new(),
+            edges: Vec::new(),
+            vertices: vec![[f64::MIN_POSITIVE, -0.0, 1e300]],
+        })),
         Ok(Reply::Described {
             total: u32::MAX,
             description: Description {
@@ -737,6 +778,8 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
             Ok(Reply::Classified { .. }) => 21,
             Ok(Reply::MeshAt(_)) => 22,
             Ok(Reply::StepFile(_)) => 23,
+            Ok(Reply::DescribedAll(_)) => 24,
+            Ok(Reply::MovedOnce(_)) => 25,
             Err(failure) => match failure.kind() {
                 FailureKind::InvalidInput => 5,
                 FailureKind::KernelFailed => 6,
@@ -750,7 +793,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
         .collect();
     assert_eq!(
         indices,
-        (0..24).collect(),
+        (0..26).collect(),
         "a reply or failure kind has no case"
     );
     results
@@ -1019,6 +1062,34 @@ fn blob_gives_back_its_bytes_and_prints_its_length() {
     assert_eq!(format!("{blob:?}"), "Blob::Inline(3 bytes)");
 }
 
+#[test]
+fn a_copy_of_a_blob_shares_its_bytes_and_the_wire_carries_them_as_before() {
+    // A shape a describe asks of a worker a batch at a time is in every batch's request:
+    // each copy shares the one allocation, not a copy of a shape's megabytes.
+    let blob = Blob::inline(vec![1, 2, 3]);
+    let copies: Vec<Blob> = (0..4).map(|_| blob.clone()).collect();
+    for copy in &copies {
+        assert!(std::ptr::eq(copy.as_bytes(), blob.as_bytes()));
+    }
+    // Postcard writes the enum's variant index (0), the length (3), then the bytes: as
+    // `serde_bytes` wrote the `Vec<u8>` a blob held before.
+    let wire = postcard::to_allocvec(&blob).unwrap();
+    assert_eq!(wire, [0, 3, 1, 2, 3]);
+    let back: Blob = postcard::from_bytes(&wire).unwrap();
+    assert_eq!(back, blob);
+    // Taken while shared, the bytes are copied and the other copies keep theirs; taken
+    // alone, they're the allocation itself.
+    let held = copies[0].as_bytes().as_ptr();
+    let taken = copies.into_iter().next().unwrap().into_bytes();
+    assert_eq!(taken, [1, 2, 3]);
+    assert_ne!(taken.as_ptr(), held);
+    assert_eq!(blob.as_bytes(), [1, 2, 3]);
+    let alone = Blob::inline(vec![4, 5]);
+    let at = alone.as_bytes().as_ptr();
+    let bytes = alone.into_bytes();
+    assert_eq!(bytes.as_ptr(), at);
+}
+
 /// A reader that's interrupted (EINTR) before every chunk it hands out.
 struct Interrupting<'a> {
     data: &'a [u8],
@@ -1152,10 +1223,13 @@ fn every_op_has_its_own_name() {
             "DragBegin",
             "DragMove",
             "DragEnd",
+            "MoveOnce",
             "MakeFaces",
             "Prism",
             "PrismThroughAll",
             "Revolution",
+            "Describe",
+            // DescribeAll, a describe of every element at once, named as a batch is.
             "Describe",
             "ExportMesh",
             "Distance",
@@ -1344,4 +1418,39 @@ fn every_failure_counts_the_elements_it_names() {
         count: 2,
     };
     assert_eq!(few.elements_total(), 2);
+}
+
+#[test]
+fn each_failure_kinds_word_is_its_name_in_snake_case() {
+    // Every kind, by its place in a match that names each (a new kind fails to compile
+    // here until it's listed), its word checked against its derived Debug name.
+    let place = |kind: FailureKind| match kind {
+        FailureKind::InvalidInput => 0,
+        FailureKind::KernelFailed => 1,
+        FailureKind::InvalidResult => 2,
+        FailureKind::UnknownOp => 3,
+        FailureKind::Internal => 4,
+        FailureKind::ResourceExhausted => 5,
+        FailureKind::Unavailable => 6,
+    };
+    let all = [
+        FailureKind::InvalidInput,
+        FailureKind::KernelFailed,
+        FailureKind::InvalidResult,
+        FailureKind::UnknownOp,
+        FailureKind::Internal,
+        FailureKind::ResourceExhausted,
+        FailureKind::Unavailable,
+    ];
+    assert_eq!(all.map(place), [0, 1, 2, 3, 4, 5, 6]);
+    for kind in all {
+        let mut snake = String::new();
+        for (i, c) in format!("{kind:?}").chars().enumerate() {
+            if c.is_ascii_uppercase() && i > 0 {
+                snake.push('_');
+            }
+            snake.push(c.to_ascii_lowercase());
+        }
+        assert_eq!(kind.word(), snake);
+    }
 }

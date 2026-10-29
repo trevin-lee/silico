@@ -6,10 +6,10 @@ use super::imports;
 use super::kernel;
 use super::numbers;
 use super::oracle;
+use crate::wait::WAIT;
 
 use std::f64::consts::PI;
 use std::path::Path;
-use std::time::Duration;
 
 use kernel::kernel;
 use numbers::relative_error;
@@ -285,7 +285,7 @@ fn the_worker_refuses_invalid_params_itself() {
         for &parameter in parameters(primitive) {
             let p = with(primitive, parameter, f64::NAN);
             let err = w
-                .call(Generation(0), Op::MakePrimitive(p), Duration::from_secs(30))
+                .call(Generation(0), Op::MakePrimitive(p), WAIT)
                 .unwrap_err();
             assert_eq!(err.code(), ErrorCode::InvalidInput, "{p:?}: {err}");
             assert!(err.message().contains(parameter), "{p:?}: {err}");
@@ -302,10 +302,7 @@ fn the_worker_names_each_value_it_refuses_as_the_core_does() {
     // the suggestion the core gives a refused offset.
     use silico_protocol::{ChamferSize, Profile};
     let mut w = Worker::spawn(Path::new(WORKER)).unwrap();
-    let call = |w: &mut Worker, op| {
-        w.call(Generation(0), op, Duration::from_secs(30))
-            .unwrap_err()
-    };
+    let call = |w: &mut Worker, op| w.call(Generation(0), op, WAIT).unwrap_err();
     let shape = match w
         .call(
             Generation(0),
@@ -314,7 +311,7 @@ fn the_worker_names_each_value_it_refuses_as_the_core_does() {
                 dy: 1.0,
                 dz: 1.0,
             }),
-            Duration::from_secs(30),
+            WAIT,
         )
         .unwrap()
     {
@@ -729,12 +726,8 @@ fn shape() -> silico_core::kernel::ShapeData {
 /// A kernel on the test worker, told to misbehave in this way.
 fn misbehaving(how: Misbehavior) -> KernelWorker {
     let mut w = Worker::spawn(Path::new(TEST_WORKER)).unwrap();
-    w.call(
-        Generation(0),
-        Op::Debug(DebugOp::Misbehave(how)),
-        Duration::from_secs(30),
-    )
-    .unwrap();
+    w.call(Generation(0), Op::Debug(DebugOp::Misbehave(how)), WAIT)
+        .unwrap();
     KernelWorker::from_worker(w)
 }
 

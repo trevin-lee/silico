@@ -11,6 +11,7 @@
 
 use super::generate;
 use super::systems;
+use super::wait::WAIT;
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -29,6 +30,9 @@ use systems::{Builder, Rng};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
 const TEST_WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-test-worker");
+/// What the largest admitted drag's move may cost: the bound its test holds it to (a move
+/// answered in time), measured as its wall time over how much slower than a quiet machine
+/// this one ran it (`Share`); the call itself is allowed [`WAIT`].
 const TIMEOUT: Duration = Duration::from_secs(30);
 const CLOSE: f64 = 1e-9;
 
@@ -45,7 +49,11 @@ fn at(values: &[f64], p: PointValues) -> [f64; 2] {
 }
 
 fn begin(system: SketchSystem, point: PointOf) -> Drag {
-    let start = Drag::begin(&DragBegin { system, point }).unwrap();
+    let start = Drag::begin(&DragBegin {
+        system,
+        dragged: silico_protocol::Dragged::Point(point),
+    })
+    .unwrap();
     assert!(start.conflicting.is_empty(), "{:?}", start.conflicting);
     start.drag.unwrap()
 }
@@ -146,13 +154,13 @@ fn a_drag_ended_on_a_line_of_no_length_leaves_a_sketch_the_closing_solve_refuses
     // invalid input naming geometry 0. The user's last frame can't be kept.
     let (system, line) = line_from_the_origin(false);
     let mut w = Worker::spawn_as(Path::new(WORKER), WorkerKind::Sketch).unwrap();
-    let call = |w: &mut Worker, op| w.call(Generation(1), op, TIMEOUT);
+    let call = |w: &mut Worker, op| w.call(Generation(1), op, WAIT);
     assert!(matches!(
         call(
             &mut w,
             Op::DragBegin(DragBegin {
                 system: system.clone(),
-                point: PointOf::End(line),
+                dragged: silico_protocol::Dragged::Point(PointOf::End(line)),
             })
         ),
         Ok(Reply::DragStarted { dofs: 2, .. })
@@ -471,7 +479,7 @@ fn a_violated_dimension_between_fixed_points_beside_a_drag_is_named_or_refused()
     let system = b.system(Algorithm::DogLeg);
     let start = Drag::begin(&DragBegin {
         system,
-        point: PointOf::Point(free),
+        dragged: silico_protocol::Dragged::Point(PointOf::Point(free)),
     })
     .unwrap();
     match start.drag {
@@ -525,7 +533,7 @@ fn a_sketch_with_no_unknowns_says_what_any_fixed_point_says() {
     let system = b.system(Algorithm::DogLeg);
     let start = Drag::begin(&DragBegin {
         system: system.clone(),
-        point: PointOf::Point(fixed),
+        dragged: silico_protocol::Dragged::Point(PointOf::Point(fixed)),
     })
     .unwrap();
     let solved = silico_sketch::solve(&system).unwrap();
@@ -607,12 +615,12 @@ fn a_thousand_begins_in_one_state_each_replace_the_last() {
         let op = if i % 2 == 0 {
             Op::DragBegin(DragBegin {
                 system: line_system.clone(),
-                point: PointOf::End(line),
+                dragged: silico_protocol::Dragged::Point(PointOf::End(line)),
             })
         } else {
             Op::DragBegin(DragBegin {
                 system: arc_system.clone(),
-                point: PointOf::End(arc),
+                dragged: silico_protocol::Dragged::Point(PointOf::End(arc)),
             })
         };
         assert!(matches!(state.handle(op), Ok(Reply::DragStarted { .. })));
@@ -637,10 +645,10 @@ fn a_debug_op_between_moves_leaves_the_drag_alone_and_a_crash_ends_it() {
     // as the refusal's suggestion says ("when the sketch worker restarts").
     let (system, line) = line_from_the_origin(false);
     let mut w = Worker::spawn_as(Path::new(TEST_WORKER), WorkerKind::Sketch).unwrap();
-    let call = |w: &mut Worker, op| w.call(Generation(1), op, TIMEOUT);
+    let call = |w: &mut Worker, op| w.call(Generation(1), op, WAIT);
     let begin = Op::DragBegin(DragBegin {
         system,
-        point: PointOf::End(line),
+        dragged: silico_protocol::Dragged::Point(PointOf::End(line)),
     });
     assert!(matches!(
         call(&mut w, begin.clone()),
@@ -679,9 +687,9 @@ fn a_worker_killed_mid_drag_is_reported_and_its_successor_has_no_drag() {
             Generation(1),
             Op::DragBegin(DragBegin {
                 system,
-                point: PointOf::End(line),
+                dragged: silico_protocol::Dragged::Point(PointOf::End(line)),
             }),
-            TIMEOUT
+            WAIT
         ),
         Ok(Reply::DragStarted { .. })
     ));
@@ -692,7 +700,7 @@ fn a_worker_killed_mid_drag_is_reported_and_its_successor_has_no_drag() {
         .unwrap();
     assert!(status.success());
     let err = w
-        .call(Generation(1), Op::DragMove { to: [1.0, 1.0] }, TIMEOUT)
+        .call(Generation(1), Op::DragMove { to: [1.0, 1.0] }, WAIT)
         .unwrap_err();
     assert!(
         matches!(
@@ -703,7 +711,7 @@ fn a_worker_killed_mid_drag_is_reported_and_its_successor_has_no_drag() {
         err.code()
     );
     let mut w = Worker::spawn_as(Path::new(WORKER), WorkerKind::Sketch).unwrap();
-    let err = w.call(Generation(1), Op::DragEnd, TIMEOUT).unwrap_err();
+    let err = w.call(Generation(1), Op::DragEnd, WAIT).unwrap_err();
     assert_eq!(err.code(), ErrorCode::InvalidInput, "{err}");
 }
 
@@ -726,9 +734,9 @@ fn a_move_of_the_largest_part_a_drag_admits_is_answered_in_time() {
         Generation(1),
         Op::DragBegin(DragBegin {
             system,
-            point: PointOf::End(last),
+            dragged: silico_protocol::Dragged::Point(PointOf::End(last)),
         }),
-        TIMEOUT,
+        WAIT,
     ) {
         Ok(Reply::DragStarted { dofs, conflicting }) => {
             // 4 unknowns a link, 3 equations a link (its length, and the two joining it to
@@ -737,19 +745,25 @@ fn a_move_of_the_largest_part_a_drag_admits_is_answered_in_time() {
         }
         other => panic!("begin: {other:?}"),
     }
+    let share = crate::share::Share::start();
     let t = Instant::now();
     let moved = w.call(
         Generation(1),
         Op::DragMove {
             to: [-(links as f64) / 2.0, 10.0],
         },
-        TIMEOUT,
+        WAIT,
     );
-    let took = t.elapsed();
+    let (took, slowdown) = (t.elapsed(), share.finish().slowdown);
     match moved {
         Ok(Reply::Moved(_)) => {}
         other => panic!("a move of the largest admitted drag, after {took:?}: {other:?}"),
     }
+    assert!(
+        took.div_f64(slowdown) < TIMEOUT,
+        "a move of the largest admitted drag took {took:?}, the machine {slowdown:.2} times \
+         slower than a quiet one"
+    );
 }
 
 /// `n` unit links joined end to end in a zigzag, the first start held at the origin: one
@@ -833,7 +847,7 @@ fn a_drag_is_bounded_by_the_part_it_moves_not_the_whole_sketch() {
     assert_eq!(b.part(&[PointOf::End(last)]).unknowns.len(), 257);
     let err = DragBegin {
         system: b,
-        point: PointOf::End(last),
+        dragged: silico_protocol::Dragged::Point(PointOf::End(last)),
     }
     .check()
     .unwrap_err();
@@ -845,7 +859,7 @@ fn a_drag_is_bounded_by_the_part_it_moves_not_the_whole_sketch() {
     // At the limit: admitted.
     DragBegin {
         system,
-        point: PointOf::End(last),
+        dragged: silico_protocol::Dragged::Point(PointOf::End(last)),
     }
     .check()
     .unwrap();
@@ -863,7 +877,7 @@ fn a_drag_is_bounded_by_the_part_it_moves_not_the_whole_sketch() {
     assert_eq!(big.part(&[PointOf::Point(lone)]).unknowns.len(), 2);
     DragBegin {
         system: big,
-        point: PointOf::Point(lone),
+        dragged: silico_protocol::Dragged::Point(PointOf::Point(lone)),
     }
     .check()
     .unwrap();
@@ -902,7 +916,7 @@ fn a_drag_counts_every_part_its_pins_hold() {
     assert_eq!(system.part(&[PointOf::End(last)]).unknowns.len(), 260);
     let err = DragBegin {
         system,
-        point: PointOf::End(last),
+        dragged: silico_protocol::Dragged::Point(PointOf::End(last)),
     }
     .check()
     .unwrap_err();
@@ -938,7 +952,7 @@ fn a_drag_counts_every_part_its_pins_hold() {
     assert_eq!(system.part(&[PointOf::End(arc)]).unknowns.len(), 2);
     let begin = DragBegin {
         system,
-        point: PointOf::End(arc),
+        dragged: silico_protocol::Dragged::Point(PointOf::End(arc)),
     };
     // The end's 2, and the centre's with the chain's: 2 + 256 + 2.
     assert_eq!(begin.part().unknowns.len(), 260);
@@ -1173,7 +1187,7 @@ fn check_drag(seed: u64) -> Result<(), (Broken, String)> {
     let point = points[rng.below(points.len() as u64) as usize];
     let begin = DragBegin {
         system: system.clone(),
-        point,
+        dragged: silico_protocol::Dragged::Point(point),
     };
     let start = Drag::begin(&begin).map_err(|f| (Broken::Refused, format!("{f:?}")))?;
     if (start.dofs, &start.conflicting) != (diagnosis.dofs, &diagnosis.conflicting) {

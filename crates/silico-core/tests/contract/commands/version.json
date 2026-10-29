@@ -8,97 +8,125 @@
   },
   "result": {
     "$defs": {
+      "Length": {
+        "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+        "type": "number"
+      },
       "Limits": {
         "additionalProperties": false,
         "description": "The limits every command holds to (the design's section 6), each the value the commands\nuse. A request past one is refused, as `invalid_input`, unless its description says\notherwise.",
         "properties": {
           "document_bytes": {
             "description": "The most bytes a document's canonical text may be: past it, an edit, a commit, or an\n`open` is refused.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
           "elements": {
             "description": "The most entries an `elements` call lists: its `limit` at most.",
-            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "export_bytes": {
+            "description": "The most bytes one `3mf` export's archive may be (a plain zip's, with no ZIP64):\npast it, refused, naming `tolerance`.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "export_tolerance": {
+            "description": "The least and the most tolerance a `3mf` export takes, in millimetres.",
+            "items": {
+              "$ref": "#/$defs/Length"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "export_triangles": {
+            "description": "The most triangles one `3mf` export writes, every part's in all: past it, refused,\nnaming `tolerance`.",
             "minimum": 0,
             "type": "integer"
           },
           "highlight": {
             "description": "The most elements one `render` highlights.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
           "kernel_seconds": {
             "description": "How long one request to a kernel worker may take, in seconds: past it, the worker is\nstopped, a `worker_timeout`, which is the machine's fault, never the document's.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
           "listed": {
             "description": "How many errors (or problems, or warnings) a response lists: the rest are counted,\nnever refused.",
-            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "log_bytes": {
+            "description": "The most text a session's log buffer keeps, in bytes, counted as a read counts it:\nnot refused, the oldest events are dropped and counted.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "log_events": {
+            "description": "The most events a session's log buffer keeps: not refused, the oldest are dropped\nand counted (`read_logs`' `dropped`).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "log_read_bytes": {
+            "description": "The most text one `read_logs` returns, in bytes (its events' messages, spans, and\nfeatures): a read stops before the event that would pass it, its `next` saying where.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "log_read_events": {
+            "description": "The most events one `read_logs` returns: its `limit` at most.",
             "minimum": 0,
             "type": "integer"
           },
           "published_reads": {
             "description": "How many reads of the published model run at once in one session.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
           "query": {
             "description": "The most entries a `query` returns: its `limit` at most.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
           "query_measures": {
             "description": "The most ranges a `query`'s `measures` holds: one a measure.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
           "render_seconds": {
             "description": "How long one render may take, in seconds: past it, the render worker is stopped, a\n`worker_timeout`, which is the machine's fault, never the document's.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
           "render_side": {
             "description": "The most pixels a `render`'s image is across or high.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
           "request_bytes": {
             "description": "The most bytes a request may be, or a document's file `open` reads.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
           "request_depth": {
             "description": "How deeply a request's values (or a document's) may nest.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
           "response_bytes": {
             "description": "The most bytes a response may be: a command whose result would pass it is refused.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
           "sessions": {
             "description": "How many sessions one process holds open at once.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
           "sketch_seconds": {
             "description": "How long one sketch's solve may take, in seconds: past it, a `worker_timeout`.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           }
@@ -106,9 +134,16 @@
         "required": [
           "document_bytes",
           "elements",
+          "export_bytes",
+          "export_tolerance",
+          "export_triangles",
           "highlight",
           "kernel_seconds",
           "listed",
+          "log_bytes",
+          "log_events",
+          "log_read_bytes",
+          "log_read_events",
           "published_reads",
           "query",
           "query_measures",
@@ -129,13 +164,11 @@
     "properties": {
       "api": {
         "description": "The API's version: ask for it first. One more for each change to a shape that an\nolder client could misread.",
-        "format": "uint64",
         "minimum": 0,
         "type": "integer"
       },
       "format": {
         "description": "The document format's version, a document's `silico`.",
-        "format": "uint64",
         "minimum": 0,
         "type": "integer"
       },
@@ -144,7 +177,6 @@
       },
       "naming": {
         "description": "The naming scheme every element's name is in, a document's `naming`.",
-        "format": "uint64",
         "minimum": 0,
         "type": "integer"
       }

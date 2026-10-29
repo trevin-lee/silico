@@ -19,7 +19,7 @@ use crate::command::elements::{
 use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{ModelChoice, Problems, SessionId};
 use crate::document::json::Node;
-use crate::document::{Angle, FeatureId, Length, Measure};
+use crate::document::{Angle, ElementName, FeatureId, Length, Measure};
 use crate::kernel::ElementKind;
 
 /// The kinds a request names: a face, an edge, or a vertex.
@@ -62,7 +62,7 @@ impl ElementsRequest {
                 Some(Cursor {
                     revision: revision?,
                     feature: feature?,
-                    name: name?.to_owned(),
+                    name: ElementName::as_sent(name?),
                 })
             });
             let limit = f.u32("limit");
@@ -304,7 +304,7 @@ impl ToWire for Cursor {
         Json::object([
             ("revision", self.revision.to_wire()),
             ("feature", self.feature.to_wire()),
-            ("name", Json::str(&self.name)),
+            ("name", self.name.to_wire()),
         ])
     }
 }

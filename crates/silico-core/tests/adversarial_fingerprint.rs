@@ -205,13 +205,15 @@ fn any_fingerprint() -> impl Strategy<Value = Fingerprint> {
         any::<i128>().prop_filter("i128::MIN has no magnitude", |&m| m != i128::MIN),
         any::<i64>().prop_map(i128::from)
     ];
+    // A bounding box's lengths, as far as a document holds them: at most i64::MAX nm
+    // either way (i64::MIN, which only code can make, the reader refuses).
     let wide = prop_oneof![
-        Just(i64::MIN),
+        Just(-i64::MAX),
         Just(i64::MAX),
         Just(0i64),
         Just(-1i64),
         Just(1i64),
-        any::<i64>()
+        any::<i64>().prop_filter("at most i64::MAX either way", |&n| n != i64::MIN)
     ];
     let count = prop_oneof![Just(0u32), Just(u32::MAX), any::<u32>()];
     (

@@ -12,7 +12,7 @@
 use super::elements::summarized;
 use super::lookup::{Kinds, Lookup};
 use super::{ModelChoice, Problems, ReadCommand, Running, SessionId, Sessions};
-use crate::document::{Angle, FeatureId, Fingerprint, Length, Measure};
+use crate::document::{Angle, ElementName, FeatureId, Fingerprint, Length, Measure};
 use crate::kernel::{
     Clients, EdgeCurve, EdgeDescription, ElementKind, ElementRef, FaceDescription, Kernel,
     KernelRequest, ShapeData, Surface,
@@ -21,6 +21,7 @@ use crate::naming::ElementMap;
 use crate::pool::Outcome;
 use crate::recompute::Model;
 use crate::{Error, ErrorCode};
+use silico_protocol::vec3::{cross, dot, sub};
 
 impl<P: Clients + 'static> Sessions<P> {
     /// `mass_properties` (M4.5): the mass properties of the feature `feature`'s solid, or of
@@ -90,7 +91,8 @@ pub struct Bodies {
 /// `check` says it: the kernel's refusal of its values, or the worker's failure to measure
 /// it (`elements::summarized`).
 pub fn mass_properties(model: &Model, feature: Option<&FeatureId>) -> Result<Bodies, Problems> {
-    let _span = tracing::debug_span!("mass_properties", ?feature).entered();
+    let _span =
+        tracing::debug_span!("mass_properties", feature = feature.map(FeatureId::as_str)).entered();
     let mut refused = Problems::none();
     let mut bodies = Vec::new();
     let asked: Vec<(&FeatureId, bool)> = match feature {
@@ -169,7 +171,7 @@ pub struct DistanceAnswer {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AngleAnswer {
     pub angle: Angle,
-    pub vertex: Option<String>,
+    pub vertex: Option<ElementName>,
 }
 
 /// One of a measure's two elements, found by its name in a solid of the model.
@@ -269,7 +271,8 @@ pub fn distance<K: Kernel>(
     names: &[String; 2],
     feature: Option<&FeatureId>,
 ) -> Result<DistanceAnswer, Problems> {
-    let _span = tracing::debug_span!("distance", ?feature).entered();
+    let _span =
+        tracing::debug_span!("distance", feature = feature.map(FeatureId::as_str)).entered();
     let [a, b] = find(model, names, feature)?;
     let other = (a.feature != b.feature).then_some(b.shape);
     let request = KernelRequest::distance(a.shape, a.element, other, b.element)
@@ -663,7 +666,7 @@ pub fn angle(
     names: &[String; 2],
     feature: Option<&FeatureId>,
 ) -> Result<AngleAnswer, Problems> {
-    let _span = tracing::debug_span!("angle", ?feature).entered();
+    let _span = tracing::debug_span!("angle", feature = feature.map(FeatureId::as_str)).entered();
     let [a, b] = find(model, names, feature)?;
     let mut refused = Problems::none();
     let carriers = [&a, &b].map(|found| {
@@ -713,7 +716,7 @@ pub fn angle(
                     index,
                 })
             })
-            .map(|name| name.to_string());
+            .map(|name| ElementName::from(&*name));
         // A valid solid's edges sharing an end share its named vertex: one not found is a
         // bug, said, never a quiet change to the angle between the lines.
         let Some(vertex) = vertex else {
@@ -830,22 +833,6 @@ fn article(word: &str) -> String {
         Some('a' | 'e' | 'i' | 'o' | 'u') => format!("an {word}"),
         _ => format!("a {word}"),
     }
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 fn norm(a: [f64; 3]) -> f64 {

@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::classify::point_beyond;
+use crate::vec3::{dot, sub};
 use crate::{ElementKind, ElementRef, Refusal};
 
 /// What [`crate::Op::Distance`] found: the least distance between the two elements as
@@ -91,8 +92,8 @@ pub fn witness_within(
     precision: f64,
 ) -> Option<[[f64; 3]; 2]> {
     let apart = |[a, b]: &[[f64; 3]; 2]| {
-        let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+        let d = sub(*a, *b);
+        dot(d, d).sqrt()
     };
     let near: Vec<[[f64; 3]; 2]> = pairs
         .iter()

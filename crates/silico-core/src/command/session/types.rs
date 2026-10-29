@@ -12,13 +12,15 @@ use super::Sessions;
 use super::cancel::Ticket;
 use super::rebuilds::met_fault;
 use super::rebuilds::{Label, Newest};
-use super::transaction::Reached;
-use super::{Problems, ReadCommand, SessionCommand};
+use super::transaction::{Checking, Reached};
+use super::{Gated, Problems, ReadCommand, SessionCommand};
 #[cfg(doc)]
 use crate::document;
 use crate::document::json::Plain;
 use crate::document::{Feature, FeatureId};
 use crate::recompute::{Model, StepCount};
+use crate::timeline::{Entry, Excepted, Timeline, timeline};
+use crate::warnings::Warnings;
 use crate::{Error, ErrorCode};
 
 /// A session's ID as a request's schema gives it, the IDs [`SessionId::parse`] reads: `s`
@@ -153,6 +155,10 @@ pub struct Read<'a, C> {
     pub(super) stop: &'a Ticket,
     pub(super) kernel: &'a ReadClient<C>,
     pub(super) reached: &'a Reached,
+    /// The session as the read is answered: whether the model is its revision's, and
+    /// whether a transaction is open in it now, and, for an older model, its document now
+    /// ([`Checking::spared`]).
+    pub(super) checking: Checking,
 }
 
 impl<C> Read<'_, C> {
@@ -217,6 +223,22 @@ impl<C> Read<'_, C> {
         f(&read)
     }
 
+    /// `f` given whether the read was stopped (a cancel, or the session closing), `turns`
+    /// woken as it is: so an export waiting for its turn to mesh stops waiting then.
+    pub(crate) fn meshing<T>(
+        &self,
+        turns: &Arc<crate::command::export::MeshTurns>,
+        f: impl FnOnce(&dyn Fn() -> bool) -> T,
+    ) -> T {
+        let wait = Arc::new(TurnWait {
+            turns: Arc::clone(turns),
+            stopped: std::sync::atomic::AtomicBool::new(false),
+        });
+        let interrupt: Arc<dyn super::cancel::Interrupt> = Arc::clone(&wait) as _;
+        self.stop.interrupt_with(Arc::downgrade(&interrupt));
+        f(&|| wait.stopped.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
     /// `f` given `renderer`, its renders cancelled with the read: a cancel, or the session
     /// closing, cancels each render it asked for (a queued one never sent, a running one's
     /// worker killed).
@@ -263,6 +285,21 @@ struct StepExportStop(crate::step_worker::StepStop);
 impl super::cancel::Interrupt for StepExportStop {
     fn interrupt(&self, _why: super::cancel::Why) {
         self.0.stop();
+    }
+}
+
+/// A read's wait for a turn to mesh, as its stop interrupts it: stopped, and the waits woken
+/// to see it.
+struct TurnWait {
+    turns: Arc<crate::command::export::MeshTurns>,
+    stopped: std::sync::atomic::AtomicBool,
+}
+
+impl super::cancel::Interrupt for TurnWait {
+    fn interrupt(&self, _why: super::cancel::Why) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.turns.wake();
     }
 }
 
@@ -413,7 +450,7 @@ pub struct Stopper {
 
 impl Stopper {
     /// The stopper of a command that's never stopped, being answered at once when it's
-    /// waited on (`status`, `cancel`, `version`, `schema`, through `Sessions::call`), or
+    /// waited on (`status`, `cancel`, `read_logs`, `version`, `schema`, through `Sessions::call`), or
     /// refused before it ran: its [`cancel`](Self::cancel) stops nothing.
     pub(crate) const fn none() -> Self {
         Stopper { ticket: None }
@@ -550,23 +587,115 @@ pub struct OutlineAnswer {
 }
 
 /// What `check` answers: the document's problems, and its warnings, which never fail
-/// anything, and of which there are none yet (the first, M3's two curve ends at one place
-/// that aren't one point, comes with its code).
+/// anything (docs/design/m4.1-command-api.md, *Warnings*, decision 17;
+/// [`crate::warnings`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckAnswer {
     pub problems: Problems,
-    /// In the error contract's shape, as the wire writes them. Decision 17 gives warnings
-    /// codes of their own: this type changes with the first warning code, when warnings
-    /// are made.
-    pub warnings: Problems,
+    /// In the error contract's shape, as the wire writes them, each with a warning code of
+    /// its own: none for a document the gate refused, which has no model to find them in.
+    pub warnings: Warnings,
 }
 
 impl CheckAnswer {
-    /// The answer of a check that found `problems`, and no warnings (none are made yet).
-    pub(super) fn of(problems: Problems) -> Self {
+    /// The answer of a check of `model`, excepting what `excepted` does
+    /// ([`Checking::excepted`], which `timeline` marks by too): its problems, but the drift
+    /// of a feature the session's edits reached (decision 28), and its warnings, none of a
+    /// missing fingerprint for a feature spared: one an open transaction's edits reached
+    /// (its commit writes one, and `format` is refused there: decision 28), or one the
+    /// session's document stores a fingerprint for now ([`Checking::spared`]).
+    pub(super) fn of(model: &Model, excepted: &Excepted) -> Self {
+        CheckAnswer {
+            problems: crate::command::check_except(model, &excepted.drift),
+            warnings: crate::warnings::of(model, &excepted.spared),
+        }
+    }
+
+    /// The answer of a check of a document the gate refused: its problems, and no warnings,
+    /// since there's no model to find them in.
+    pub(super) fn refused(problems: Problems) -> Self {
         CheckAnswer {
             problems,
-            warnings: Problems::none(),
+            warnings: Warnings::none(),
+        }
+    }
+}
+
+/// What `timeline` answers (docs/design/m5.0-app.md, section 7, M5.1): the session's
+/// document's features in timeline order, each with the health the model read gave it
+/// ([`crate::timeline`]), so the browser and the timeline are drawn from a command, never
+/// from an outline's text or the model in Rust (decision 33, A8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimelineAnswer {
+    /// The session's revision, whose document the features are: newer than `model` where
+    /// the published model is an older revision's.
+    pub revision: Revision,
+    /// The revision of the model read, as the response's [`ModelRead`] names it, so a client
+    /// knows how stale the marks and the bodies are: the model whose marks the features
+    /// carry and whose solids `bodies` are. Always the response's model: none only where it
+    /// names none, a document the gate (or the reader) refused with nothing published, every
+    /// feature `unknown`. Under a refused document, a published model of an older revision
+    /// is named, its bodies given, and no feature marked by it: every one `unknown`.
+    pub model: Option<Revision>,
+    /// How many problems the gate (or the reader) found in the session's document: 0 for one
+    /// the gate took, whose model's problems `check` gives.
+    pub problems: u64,
+    /// The features, in timeline order, with their health; none if the text doesn't read as
+    /// a document.
+    pub features: Option<Vec<Entry>>,
+    /// The bodies the model has, in timeline order ([`Timeline::bodies`]): under a refused
+    /// document, those of the model's own document ([`crate::timeline::bodies`]), as a
+    /// client still draws them; none without a model.
+    pub bodies: Vec<FeatureId>,
+}
+
+impl TimelineAnswer {
+    /// The timeline of `read`'s model, excepting what a check of it excepts
+    /// ([`Checking::excepted`]): of the model's own document if it's of the session's
+    /// revision, or else of the session's document now, the features the model hasn't built
+    /// `unknown` ([`crate::timeline::timeline`]); or, if the session's document now is one
+    /// the gate (or the reader) refused, as [`refused`](Self::refused) gives it, but naming
+    /// the model and its bodies, which a client still draws.
+    pub(super) fn of<C>(read: &Read<'_, C>) -> Self {
+        let model = read.model();
+        let (revision, document) = match read.checking.now() {
+            None => (read.read.revision, model.document()),
+            Some((revision, Gated::Checked(checked))) => (revision, checked.document()),
+            Some((revision, refused)) => {
+                return TimelineAnswer {
+                    model: Some(read.read.revision),
+                    bodies: crate::timeline::bodies(model),
+                    ..Self::refused(revision, refused)
+                };
+            }
+        };
+        let Timeline { features, bodies } =
+            timeline(document, Some(model), &read.checking.excepted(read.reached));
+        TimelineAnswer {
+            revision,
+            model: Some(read.read.revision),
+            problems: 0,
+            features: Some(features),
+            bodies,
+        }
+    }
+
+    /// The timeline of a session at `revision` whose document the gate or the reader
+    /// refused, with no model to mark it (the design's *A refused document*): the document
+    /// as read, every feature `unknown`, and the gate's count of its problems; or, for text
+    /// that doesn't read as a document, no features, and the reader's count. No model, and
+    /// so no bodies.
+    pub(super) fn refused(revision: Revision, gated: &Gated) -> Self {
+        let features = gated
+            .document()
+            .ok()
+            .map(|document| timeline(document, None, &Excepted::default()).features);
+        TimelineAnswer {
+            revision,
+            model: None,
+            problems: gated.problems().total(),
+            features,
+            bodies: Vec::new(),
         }
     }
 }
@@ -612,6 +741,19 @@ pub struct Committed {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RolledBack {
     pub restored: Revision,
+}
+
+/// What `undo` and `redo` answer (docs/design/m5.0-app.md, section 7): the revision whose
+/// state the step restored, the session now at a new revision whose state equals it; how
+/// many edits are left to undo and to redo; and how many more of the transaction's edits
+/// this step left out of undo's reach, the stack's bound having dropped its oldest states
+/// (2 at the first drop, 1 for each after).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stepped {
+    pub restored: Revision,
+    pub undo: usize,
+    pub redo: usize,
+    pub dropped: usize,
 }
 
 impl Committed {

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use super::cancel::{Ticket, cancelled};
 use super::threads::Threads;
-use super::transaction::{Reached, Reaching};
+use super::transaction::{Checking, Reached, Reaching};
 use super::{
     Gated, ModelChoice, ModelRead, Problems, Progress, Published, Rebuild, RebuildState, Response,
     Revision, Session, SessionId, SessionInfo, not_open,
@@ -561,9 +561,16 @@ impl<C: Kernel + 'static> Session<C> {
         stop: &Ticket,
         reads: Reads,
     ) -> Result<Current, Unbuilt> {
-        let (revision, gated, reaching) = {
+        let (revision, gated, reaching, checking) = {
             let held = self.held.read();
-            (held.revision, Arc::clone(&held.gated), held.reaching())
+            (
+                held.revision,
+                Arc::clone(&held.gated),
+                held.reaching(),
+                Checking::Latest {
+                    open: held.transaction.is_some(),
+                },
+            )
         };
         let reached = Reached::of(reaching);
         match &*gated {
@@ -573,9 +580,13 @@ impl<C: Kernel + 'static> Session<C> {
                     read: ModelRead::of(revision, ModelChoice::Current, &model),
                     model,
                     reached,
+                    checking,
                 })
                 .map_err(Unbuilt::Unavailable),
-            refused => Err(Unbuilt::Gated(refused.problems())),
+            _ => Err(Unbuilt::Gated {
+                revision,
+                gated: Arc::clone(&gated),
+            }),
         }
     }
 
@@ -584,15 +595,19 @@ impl<C: Kernel + 'static> Session<C> {
     /// newest published model, if there's one, even when the gate refused the current
     /// revision's document (the model's revision says it's an older one's; the gate's problems
     /// are `check`'s); with none, the gate's (or the reader's) problems for a document it
-    /// refused, starting nothing.
+    /// refused, starting nothing. With the model, the session as a check of it finds it
+    /// ([`Checking`]): the session's revision, its document, and whether a transaction is
+    /// open, as the lock that gave `revision` held them, before the model was taken (never
+    /// newer).
     pub(super) fn published_now(
         self: &Arc<Self>,
-    ) -> (Option<SessionInfo>, Result<Published, Unbuilt>) {
-        let (info, revision, gated, reaching) = {
+    ) -> (Option<SessionInfo>, Result<(Published, Checking), Unbuilt>) {
+        let (info, revision, open, gated, reaching) = {
             let held = self.held.read();
             (
                 self.info_of(&held, false),
                 held.revision,
+                held.transaction.is_some(),
                 Arc::clone(&held.gated),
                 held.reaching(),
             )
@@ -608,12 +623,19 @@ impl<C: Kernel + 'static> Session<C> {
             Gated::Checked(checked) => self
                 .published_read(revision, checked, reaching)
                 .map_err(Unbuilt::Unavailable),
-            refused => lock(&self.rebuilds)
+            _ => lock(&self.rebuilds)
                 .published
                 .clone()
                 .filter(|published| published.revision <= revision)
-                .ok_or_else(|| Unbuilt::Gated(refused.problems())),
+                .ok_or_else(|| Unbuilt::Gated {
+                    revision,
+                    gated: Arc::clone(&gated),
+                }),
         };
+        let read = read.map(|published| {
+            let checking = Checking::of(open, revision, &gated, published.revision);
+            (published, checking)
+        });
         (Some(info), read)
     }
 
@@ -723,12 +745,20 @@ pub(super) struct Current {
     pub(super) read: ModelRead,
     /// What the session's edits reach at its revision.
     pub(super) reached: Reached,
+    /// The session as the revision was read: its model the revision's, and whether a
+    /// transaction was open.
+    pub(super) checking: Checking,
 }
 
 /// Why a session's model couldn't be read.
 pub(super) enum Unbuilt {
-    /// The gate refused the document: nothing is built of it, and these are its problems.
-    Gated(Problems),
+    /// The gate refused the document (or the reader did): nothing is built of it. The
+    /// session's revision, and its document as the reader and the gate found it, whose
+    /// problems are the refusal's.
+    Gated {
+        revision: Revision,
+        gated: Arc<Gated>,
+    },
     /// No model could be had: the session closed or was dropped, its recompute failed, or
     /// (a published read) nothing's been published.
     Unavailable(Problems),
@@ -737,33 +767,48 @@ pub(super) enum Unbuilt {
 impl Unbuilt {
     pub(super) fn problems(self) -> Problems {
         match self {
-            Unbuilt::Gated(problems) | Unbuilt::Unavailable(problems) => problems,
+            Unbuilt::Gated { gated, .. } => gated.problems(),
+            Unbuilt::Unavailable(problems) => problems,
         }
     }
 }
 
-/// A published read's response: `then` on the model read, if there was one, the response
-/// naming it; or why there wasn't.
+/// A published read's response: `then` on the model read, if there was one, and the session
+/// as a check of it finds it, the response naming it; or, with none for a document the gate
+/// (or the reader) refused, `refused` on the session's revision and that document, naming
+/// no model; or why there wasn't one.
 pub(super) fn published_answer<T>(
     info: Option<SessionInfo>,
-    read: Result<Published, Unbuilt>,
-    then: impl FnOnce(&Published, ModelRead) -> Result<T, Problems>,
+    read: Result<(Published, Checking), Unbuilt>,
+    then: impl FnOnce(&Published, Checking, ModelRead) -> Result<T, Problems>,
+    refused: impl FnOnce(Revision, &Gated) -> Result<T, Problems>,
 ) -> Response<T> {
     match read {
-        Ok(published) => {
+        Ok((published, checking)) => {
             let read = ModelRead::of(published.revision, ModelChoice::Published, &published.model);
             Response {
                 session: info,
-                result: then(&published, read.clone()),
+                result: then(&published, checking, read.clone()),
                 model: Some(read),
             }
         }
+        Err(Unbuilt::Gated { revision, gated }) => Response {
+            session: info,
+            model: None,
+            result: refused(revision, &gated),
+        },
         Err(unbuilt) => Response {
             session: info,
             model: None,
             result: Err(unbuilt.problems()),
         },
     }
+}
+
+/// The refusal of a read that answers nothing of a document the gate (or the reader)
+/// refused, with no model to read: its problems. Every read's but `timeline`'s.
+pub(super) fn gated_problems<T>(_: Revision, gated: &Gated) -> Result<T, Problems> {
+    Err(gated.problems())
 }
 
 /// What does `done` for a revision whose model holds a kernel fault, kept as its outcome
@@ -780,8 +825,8 @@ pub(in crate::command) fn retried(done: &str) -> String {
 /// A kernel fault as the model read holds it ([`ModelRead::fault`](super::ModelRead)): as
 /// it was met, its suggestion the worker's own, but a worker that couldn't be had, which
 /// says nothing of the feature that asked for it, naming none. A session's client words
-/// how to try again its own way: the wire, and a session command refused with it, with
-/// [`kept_fault`]; the CLI with its own.
+/// how to try again where it reads it: the wire, and a session command refused with it, with
+/// [`kept_fault`]; the CLI with [`fault_suggestion`] and its own command to run again.
 pub(in crate::command) fn met_fault(fault: &Error) -> Error {
     match fault.code() {
         ErrorCode::WorkerUnavailable => fault.clone().without_feature(),
@@ -792,50 +837,78 @@ pub(in crate::command) fn met_fault(fault: &Error) -> Error {
 /// A kernel fault as a session's client reads it (the envelope's `model.fault`, decision
 /// 32), and as a command that needs a faulted feature's solid is refused with it: kept as
 /// the revision's outcome, so its suggestion, the worker's own kept, goes on to say how to
-/// try again ([`kept_suggestion`]).
+/// try again ([`fault_suggestion`]).
 pub(in crate::command) fn kept_fault(fault: &Error) -> Error {
     let fault = met_fault(fault);
-    let suggestion = kept_suggestion(&fault);
-    fault.with_suggestion(suggestion)
+    let suggestion = fault_suggestion(&fault, TryAgainBy::CheckWithFresh);
+    fault.reworded(suggestion)
 }
 
-/// [`kept_fault`]'s suggestion (the design's section 6): reading the revision again won't try
-/// it again, so how to, keeping the worker's own advice, read as the data it was worded from
-/// ([`Advice`]), never by its words. A crash on a feature's values, which the same values
-/// would crash again, says to edit them (an edit makes a new revision, which rebuilds
-/// anyway), as the design's example does; with no feature named, the worker's advice alone.
-/// A timeout says to simplify the operation, or `check` with `fresh`: the time allowed isn't
-/// the command API's to give. Advice to try the request again says to `check` with `fresh`
-/// in its place, so a retry is said once. Any other advice of the worker's own (the memory
-/// it ran short of, its install), then `check` with `fresh`. With none of its own, a crash
-/// that met a feature says `check` with `fresh`, then the document reported if the same
-/// feature crashes the worker again; any other fault, `check` with `fresh` alone. (A fault
-/// is never known to have met the same feature twice running: each model holds the one its
-/// rebuild met.)
-pub(in crate::command) fn kept_suggestion(fault: &Error) -> String {
-    const FRESH: &str = "check with fresh to try it again";
+/// How a client tries a kernel fault again, which [`fault_suggestion`] words in: a
+/// session's client by `check` with `fresh` (reading the revision again won't), and the
+/// CLI by running its command again (each run is a new session, which rebuilds anew).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TryAgainBy<'a> {
+    /// A session's `check` with `fresh`: "check with fresh".
+    CheckWithFresh,
+    /// The CLI's command run again, named as its user types it (`check`, `fmt`, `export`):
+    /// "run `silico check`".
+    Running(&'a str),
+}
+
+impl TryAgainBy<'_> {
+    /// How to try it again, as a suggestion says it before "to try it again".
+    fn how(self) -> String {
+        match self {
+            TryAgainBy::CheckWithFresh => "check with fresh".to_owned(),
+            TryAgainBy::Running(command) => format!("run `silico {command}`"),
+        }
+    }
+}
+
+/// A kernel fault's suggestion for a client that tries it again `by`, worded once for every
+/// client (the design's section 6), keeping the worker's own advice, read as the data it was
+/// worded from ([`Advice`]), never by its words, and saying how to try again once.
+///
+/// - A crash on the request's values, which the same request would crash again: with a
+///   feature named, a session's client is told to edit its values (an edit makes a new
+///   revision, which rebuilds anyway), as the design's example does; the CLI, and any
+///   client with no feature named, the worker's advice alone. Trying again can't help.
+/// - A timeout: to simplify the operation, or try again; never "allow it more time", which
+///   no client can give.
+/// - Advice to try the request again: trying again `by`, in its place, so a retry is said
+///   once.
+/// - Any other advice of the worker's own (the memory it ran short of, its install): it,
+///   then trying again.
+/// - With none of its own: a crash that met a feature, trying again, then the document
+///   reported if the same feature crashes the worker again; any other fault, trying again
+///   alone. (A fault is never known to have met the same feature twice running: each model
+///   holds the one its rebuild met.)
+pub fn fault_suggestion(fault: &Error, by: TryAgainBy<'_>) -> String {
+    let how = by.how();
+    let again = format!("{how} to try it again");
     let Some(own) = fault.suggestion() else {
         return match (fault.code(), fault.feature()) {
             (ErrorCode::WorkerCrashed, Some(_)) => format!(
-                "{FRESH}; if the same feature crashes the worker again, report it with the \
+                "{again}; if the same feature crashes the worker again, report it with the \
                  document"
             ),
-            _ => FRESH.to_owned(),
+            _ => again,
         };
     };
-    match (fault.advice(), fault.feature()) {
-        (Some(Advice::ChangeTheValues { why }), Some(_)) => {
+    match (fault.advice(), fault.feature(), by) {
+        (Some(Advice::ChangeTheValues { why }), Some(_), TryAgainBy::CheckWithFresh) => {
             format!(
                 "edit the feature's values: {why}; an edit makes a new revision, which rebuilds it"
             )
         }
-        (Some(Advice::ChangeTheValues { .. }), None) => own.to_owned(),
-        (Some(Advice::SimplifyOrWait), _) => format!("simplify the operation, or {FRESH}"),
-        (Some(Advice::TryAgain { once_more, why }), _) => {
+        (Some(Advice::ChangeTheValues { .. }), _, _) => own.to_owned(),
+        (Some(Advice::SimplifyOrWait), _, _) => format!("simplify the operation, or {again}"),
+        (Some(Advice::TryAgain { once_more, why }), _, _) => {
             let again = if *once_more { "once more" } else { "again" };
-            format!("check with fresh to try it {again}: {why}")
+            format!("{how} to try it {again}: {why}")
         }
-        (Some(Advice::Other(_)) | None, _) => format!("{own}; then {FRESH}"),
+        (Some(Advice::Other(_)) | None, _, _) => format!("{own}; then {again}"),
     }
 }
 

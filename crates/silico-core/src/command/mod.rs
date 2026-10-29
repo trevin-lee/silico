@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use crate::Error;
 use crate::document::{
-    self, Checked, Document, Feature, FeatureId, Fingerprint, NamingScheme, Operation,
+    self, Checked, Document, Feature, FeatureId, Fingerprint, Length, NamingScheme, Operation,
 };
 use crate::kernel::Kernel;
 use crate::recompute::{Model, Recompute, RunOutcome, Save};
@@ -24,8 +24,10 @@ mod call;
 mod edit;
 pub mod elements;
 pub mod export;
+pub mod logs;
 mod lookup;
 pub mod measure;
+pub mod meshes;
 pub mod render;
 pub mod schema;
 mod session;
@@ -37,19 +39,19 @@ pub use session::{
     Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, FieldSet,
     MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, NOT_RELOADED, Opened, OutlineAnswer,
     Progress, Published, Read, ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced,
-    Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, Status, Stopper,
-    TOO_LONG, TextAnswer,
+    Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, Status, Stepped,
+    Stopper, TOO_LONG, TextAnswer, TimelineAnswer, TryAgainBy, fault_suggestion,
 };
 pub use session_command::{ReadCommand, SessionCommand};
+
+pub use crate::warnings::Warnings;
 
 /// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for
 /// each change to a request's or result's shape that an older client couldn't read.
 const API_VERSION: u32 = 1;
 
 /// What `version` answers: the API's version, the document format's and naming scheme's,
-/// and the limits (the design's section 6) of the commands built so far, as data. Each
-/// later step adds its own command's limits as it comes (renders with M4.6, logs with M4.7,
-/// exports with M4.8).
+/// and every command's limits (the design's section 6), as data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Version {
     pub api: u32,
@@ -88,6 +90,20 @@ pub struct Limits {
     pub render_side: u32,
     /// A render's time, in seconds, from when its scene is sent.
     pub render_seconds: u64,
+    /// The most events one `read_logs` returns, and the most its `limit` asks for.
+    pub log_read_events: u32,
+    /// The most text one `read_logs` returns, in bytes.
+    pub log_read_bytes: usize,
+    /// The most events a session's log buffer keeps.
+    pub log_events: usize,
+    /// The most text a session's log buffer keeps, in bytes.
+    pub log_bytes: usize,
+    /// The least and the most tolerance a 3MF export takes.
+    pub export_tolerance: [Length; 2],
+    /// The most triangles one 3MF export writes, in all.
+    pub export_triangles: u64,
+    /// The most bytes one 3MF export's archive may be.
+    pub export_bytes: u64,
     /// A kernel request's time, in seconds.
     pub kernel_seconds: u64,
     /// A sketch solve's time, in seconds.
@@ -113,6 +129,13 @@ pub const VERSION: Version = Version {
         highlight: render::MAX_HIGHLIGHTS,
         render_side: silico_protocol::MAX_RENDER_SIDE,
         render_seconds: crate::render::RENDER_TIMEOUT.as_secs(),
+        log_read_events: logs::LOG_READ_EVENTS,
+        log_read_bytes: logs::LOG_READ_BYTES,
+        log_events: logs::LOG_EVENTS,
+        log_bytes: logs::LOG_BYTES,
+        export_tolerance: export::TOLERANCES,
+        export_triangles: silico_protocol::MAX_EXPORT_TRIANGLES,
+        export_bytes: crate::export::MAX_ARCHIVE,
         kernel_seconds: crate::kernel::DEFAULT_TIMEOUT.as_secs(),
         sketch_seconds: crate::sketch::SKETCH_TIMEOUT.as_secs(),
     },

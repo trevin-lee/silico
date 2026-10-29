@@ -12,7 +12,8 @@ Every milestone ends with `/adversarial-review --milestone`, and the council mus
 | M1 – The kernel layer | [docs/roadmap/m1-kernel.md](docs/roadmap/m1-kernel.md) | Detailed |
 | M2 – Document and naming | [docs/roadmap/m2-document-naming.md](docs/roadmap/m2-document-naming.md) | Detailed |
 | M3 – Sketcher | [docs/roadmap/m3-sketcher.md](docs/roadmap/m3-sketcher.md) | Detailed |
-| M4, M5 | This file | Detailed when M3 ends |
+| M4 – MCP, before any UI | [docs/roadmap/m4-mcp.md](docs/roadmap/m4-mcp.md) | Detailed, with each step as built |
+| M5 | This file | Detailed when M4 ends |
 | FreeCAD file import | [docs/roadmap/freecad-import.md](docs/roadmap/freecad-import.md) | Outline, detailed when its prerequisites exist |
 
 **How to work through a plan:**
@@ -46,7 +47,7 @@ Can run in parallel with M2, except M3.6, which needs M2.7–M2.8. PlaneGCS in a
 **Done when** the ported FreeCAD sketcher tests pass, and the latency of interactive drags through the worker has been measured. That measurement settles the IPC transport question.
 
 ### M4 – MCP, before any UI
-The command API exposed over MCP: transactions, geometry queries that return stable names, measurement, offscreen PNG rendering, and `read_logs`. With it, a check's warnings, which M3 deferred here: M3.2's D2 warning for two curve ends at one place that aren't one point, and `silico fmt --merge-touching` to join them on request (docs/design/m3.2-sketch-format.md, D2).
+The command API exposed over MCP: transactions, geometry queries that return stable names, measurement, offscreen PNG rendering, and `read_logs`. With it, a check's warnings, which M3 deferred here: M3.2's D2 warning for two curve ends at one place that aren't one point, and M3.3's agreeing redundant constraints, now `check`'s warnings with a third, a feature saved without a fingerprint (docs/design/m4.1-command-api.md, decision 17); `silico fmt --merge-touching`, to join such ends on request (docs/design/m3.2-sketch-format.md, D2), waits for M5's sketch editing.
 
 **Done when** an agent designs a bracket headlessly and exports a printable 3MF.
 

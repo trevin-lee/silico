@@ -11,6 +11,8 @@
 mod cached;
 #[path = "../../silico-core/tests/common/example.rs"]
 mod example;
+#[path = "../../silico-core/tests/common/lateness.rs"]
+mod lateness;
 #[path = "common/measuring.rs"]
 mod measuring;
 #[path = "../../silico-core/tests/common/model.rs"]
@@ -19,6 +21,8 @@ mod model;
 mod running;
 #[path = "common/scripts.rs"]
 mod scripts;
+#[path = "common/wait.rs"]
+mod wait;
 
 #[path = "adversarial_cache.rs"]
 mod adversarial_cache;
@@ -34,6 +38,8 @@ mod adversarial_fingerprint;
 mod adversarial_mass_properties;
 #[path = "adversarial_measures.rs"]
 mod adversarial_measures;
+#[path = "adversarial_read_logs.rs"]
+mod adversarial_read_logs;
 #[path = "adversarial_recompute.rs"]
 mod adversarial_recompute;
 #[path = "cache.rs"]
@@ -50,6 +56,8 @@ mod fingerprint;
 mod mass_properties;
 #[path = "measures.rs"]
 mod measures;
+#[path = "meshes_read.rs"]
+mod meshes_read;
 #[path = "recompute.rs"]
 mod recompute;
 #[path = "recompute_spans_close.rs"]
@@ -60,5 +68,7 @@ mod recompute_tracing;
 mod recompute_tracing_lagging;
 #[path = "refused_span_closes.rs"]
 mod refused_span_closes;
+#[path = "session_logs.rs"]
+mod session_logs;
 #[path = "wire_examples.rs"]
 mod wire_examples;

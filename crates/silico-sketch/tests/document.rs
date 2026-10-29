@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::systems;
+use super::wait::WAIT;
 
 use super::fixture;
 
@@ -106,6 +107,46 @@ fn freecads_rectangle_is_fully_constrained_at_its_corners() {
     ] {
         assert_at(&s, p, want);
     }
+}
+
+#[test]
+fn a_midpoint_whose_equation_along_y_repeats_two_others_is_partially_redundant_as_in_freecad() {
+    // The port review's sketch (check's warnings, decision 17): line na000001 from (−5, 0)
+    // to (5, 0), its ends held by distances from the origin, and point pa000003 at (0, 0)
+    // held at the line's midpoint (k0000001), at y 0 (k0000002), and on the line
+    // (k0000003). FreeCAD 1.1.3, the same sketch, its constraints in the same order:
+    // solve() 0, RedundantConstraints [], PartiallyRedundantConstraints [1], fully
+    // constrained, the point at (0, 0). So here: the midpoint partially redundant, kept
+    // apart from the redundant (of which there are none), nothing free.
+    let doc = document(
+        &[
+            point("pa000001", -5.0, 0.0),
+            point("pa000002", 5.0, 0.0),
+            point("pa000003", 0.0, 0.0),
+        ],
+        &[line("na000001", "pa000001", "pa000002")],
+        &[],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "midpoint", "point": "pa000003", "line": "na000001"}"#,
+            r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "pa000003", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000003", "type": "on", "point": "pa000003", "curve": "na000001"}"#,
+            r#"{"id": "k0000004", "type": "distance_x", "a": "origin", "b": "pa000001", "value": -5, "driving": true}"#,
+            r#"{"id": "k0000005", "type": "distance_y", "a": "origin", "b": "pa000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000006", "type": "distance_x", "a": "origin", "b": "pa000002", "value": 5, "driving": true}"#,
+            r#"{"id": "k0000007", "type": "distance_y", "a": "origin", "b": "pa000002", "value": 0, "driving": true}"#,
+        ],
+    );
+    let s = solved(&doc, &mut worker()).unwrap();
+    assert!(s.redundant.is_empty(), "{s:?}");
+    assert_eq!(
+        s.partially_redundant.keys().collect::<Vec<_>>(),
+        [&id("k0000001")],
+        "{s:?}"
+    );
+    assert_eq!(s.dofs, 0);
+    assert!(s.free.is_empty(), "{s:?}");
+    assert_at(&s, "pa000003", [0.0, 0.0]);
 }
 
 #[test]
@@ -1119,7 +1160,7 @@ fn a_distrusted_sketch_worker_is_stopped_and_the_next_solve_starts_another() {
     let first = w.pid();
     assert!(systems::process_exists(first));
     w.distrust();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + WAIT;
     while systems::process_exists(first) {
         assert!(
             std::time::Instant::now() < deadline,
@@ -1152,7 +1193,7 @@ fn a_sketch_worker_killed_while_idle_is_started_again_for_the_next_solve() {
         let stat = String::from_utf8_lossy(&out.stdout).trim().to_owned();
         stat.is_empty() || stat.starts_with('Z')
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + WAIT;
     while !dead() {
         assert!(
             std::time::Instant::now() < deadline,

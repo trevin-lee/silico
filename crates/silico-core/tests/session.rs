@@ -903,6 +903,19 @@ fn version_gives_the_designs_numbers_and_limits() {
     assert_eq!(limits.highlight, 1000);
     assert_eq!(limits.render_side, 4096);
     assert_eq!(limits.render_seconds, 30);
+    // A read's 1,000 events and 1 MiB; a session's buffer's 10,000 events and 16 MiB.
+    assert_eq!(limits.log_read_events, 1000);
+    assert_eq!(limits.log_read_bytes, 1_048_576);
+    assert_eq!(limits.log_events, 10_000);
+    assert_eq!(limits.log_bytes, 16_777_216);
+    // A 3MF export's tolerance from 1e-5 to 1e8 mm, 10 million triangles, and a plain zip's
+    // 4 GiB less a byte.
+    assert_eq!(
+        limits.export_tolerance.map(|t| t.nm()),
+        [10, 100_000_000_000_000]
+    );
+    assert_eq!(limits.export_triangles, 10_000_000);
+    assert_eq!(limits.export_bytes, 4_294_967_295);
 }
 
 #[test]

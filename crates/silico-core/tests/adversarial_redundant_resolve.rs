@@ -9,10 +9,13 @@
 
 use super::stand_in;
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use silico_core::document::{Operation, read};
+use silico_core::document::{ElementId, Operation, Sketch, read};
 use silico_core::sketch::{Answer, MAX_LOAD_RESOLVES, SketchSolver, Translation};
+use silico_core::sketch_states::ConstraintState::{Redundant, Unsolved};
+use silico_core::sketch_states::{SketchState, states};
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{SolveStatus, Tag};
 use stand_in::{answer, by_start, conflict, dropping};
@@ -36,7 +39,7 @@ type Says = (Result<Vec<String>, (ErrorCode, Vec<String>)>, u64);
 fn save_and_load(t: &Translation, solver: &mut dyn SketchSolver) -> (Answer, Answer) {
     let save = t.solve(solver).unwrap();
     let mut load = t.clone();
-    load.system.values = save.solved.values.clone();
+    load.system.values = save.solved().values.clone();
     let loaded = load.solve(solver).unwrap();
     (save, loaded)
 }
@@ -44,7 +47,7 @@ fn save_and_load(t: &Translation, solver: &mut dyn SketchSolver) -> (Answer, Ans
 /// What `a` says.
 fn says(a: &Answer) -> Says {
     (
-        match &a.outcome {
+        match a.outcome() {
             Ok(s) => Ok(s
                 .redundant
                 .keys()
@@ -52,7 +55,7 @@ fn says(a: &Answer) -> Says {
                 .collect()),
             Err(e) => Err((e.code(), e.elements().to_vec())),
         },
-        a.solved.values[11].to_bits(),
+        a.solved().values[11].to_bits(),
     )
 }
 
@@ -112,7 +115,7 @@ fn a_solution_that_settles_one_load_past_the_bound_is_refused_as_not_settling() 
     let save = t.solve(&mut s).unwrap();
     assert_eq!(starts.lock().unwrap().len(), 1 + MAX_LOAD_RESOLVES);
     assert_eq!(
-        save.outcome.unwrap_err().code(),
+        save.into_outcome().unwrap_err().code(),
         ErrorCode::SolveFailed,
         "refused as not settling"
     );
@@ -129,7 +132,10 @@ fn a_solution_that_flips_between_two_places_is_bounded_and_refused() {
     });
     let save = t.solve(&mut s).unwrap();
     assert_eq!(*starts.lock().unwrap(), [3.0, 4.0, 5.0, 4.0]);
-    assert_eq!(save.outcome.unwrap_err().code(), ErrorCode::SolveFailed);
+    assert_eq!(
+        save.into_outcome().unwrap_err().code(),
+        ErrorCode::SolveFailed
+    );
 }
 
 #[test]
@@ -176,10 +182,16 @@ fn a_partially_redundant_constraint_alone_is_solved_again_too() {
     });
     let save = t.solve(&mut s).unwrap();
     assert_eq!(*starts.lock().unwrap(), [3.0, 4.0, 5.0]);
-    assert_eq!(
-        says(&save),
-        (Ok(vec!["k0000003".to_owned()]), 5f64.to_bits())
-    );
+    // Kept apart from the redundant: none of those, and it partially redundant.
+    assert_eq!(says(&save), (Ok(vec![]), 5f64.to_bits()));
+    let partly: Vec<&str> = save
+        .outcome()
+        .unwrap()
+        .partially_redundant
+        .keys()
+        .map(|id| id.as_str())
+        .collect();
+    assert_eq!(partly, ["k0000003"]);
 }
 
 #[test]
@@ -193,7 +205,90 @@ fn a_negative_zero_turned_positive_by_the_solve_again_settles_on_the_positive() 
         Ok(dropping(system, 3, if y == 3.0 { -0.0 } else { y + 0.0 }))
     });
     let (save, load) = save_and_load(&t, &mut s);
-    assert_eq!(save.solved.values[11].to_bits(), 0f64.to_bits());
+    assert_eq!(save.solved().values[11].to_bits(), 0f64.to_bits());
     assert_eq!(says(&save), says(&load));
     assert_eq!(starts.lock().unwrap().len(), 3 + 2);
+}
+
+/// The stand-in's drawing, as a sketch.
+fn drawing() -> Sketch {
+    let Operation::Sketch(s) = &read(stand_in::drawing().as_bytes()).unwrap().features[0].operation
+    else {
+        panic!("not a sketch")
+    };
+    s.clone()
+}
+
+#[test]
+fn a_load_that_never_settles_keeps_the_first_solves_diagnosis_beside_its_failure() {
+    // The first solve drops k0000003 and moves p3 from y 3 to 4; each load from there moves
+    // it a millimetre more, so none of the MAX_LOAD_RESOLVES (3) settles, and the solve
+    // fails, solve_failed, with no answer of the loads' own. The diagnosis beside that error
+    // is the first solve's: k0000003 redundant. So the sketch reads no_solution, its two
+    // constraints unsolved and the redundant one still redundant, not a diagnosis lost with
+    // the load (Answer::diagnosed an error) nor one of nothing.
+    let t = translation();
+    let (mut s, starts) = by_start(|system| {
+        let y = system.values[11];
+        Ok(dropping(system, 3, if y < 7.0 { y + 1.0 } else { y }))
+    });
+    let save = t.solve(&mut s).unwrap();
+    assert_eq!(*starts.lock().unwrap(), [3.0, 4.0, 5.0, 6.0]);
+    let read = save
+        .diagnosed()
+        .expect("the first solve's diagnosis is kept");
+    assert_eq!(read.outcome().unwrap_err().code(), ErrorCode::SolveFailed);
+    assert_eq!(read.diagnosis().redundant, ids(&["k0000003"]));
+    let got = states(&drawing(), read).unwrap();
+    assert_eq!(got.state, SketchState::NoSolution);
+    assert_eq!(
+        got.constraints.values().copied().collect::<Vec<_>>(),
+        [Unsolved, Unsolved, Redundant]
+    );
+}
+
+#[test]
+fn a_load_the_gate_refuses_keeps_the_first_solves_diagnosis_beside_its_refusal() {
+    // The first solve drops k0000003 and puts p2 1e-8 mm from p1, its residuals all met:
+    // line n1 is then shorter than the gate's 1e-7 mm, so the file can't be saved or
+    // loaded (`holdable`), and the solve is refused, invalid_result naming the line and its
+    // ends, before any load solves. The diagnosis beside it is the first solve's, k0000003
+    // redundant: the sketch reads invalid, its two constraints unsolved and the redundant
+    // one still redundant.
+    let t = translation();
+    assert_eq!(t.system.values[6..10], [0.0, 0.0, 10.0, 0.0], "p1, p2");
+    let (mut s, starts) = by_start(|system| {
+        let mut solved = dropping(system, 3, 3.0);
+        solved.values[8] = 1e-8;
+        Ok(solved)
+    });
+    let save = t.solve(&mut s).unwrap();
+    assert_eq!(*starts.lock().unwrap(), [3.0]);
+    let read = save
+        .diagnosed()
+        .expect("the first solve's diagnosis is kept");
+    let refusal = read.outcome().unwrap_err();
+    assert_eq!(
+        (refusal.code(), refusal.elements()),
+        (
+            ErrorCode::InvalidResult,
+            &[
+                "n0000001".to_owned(),
+                "p0000001".to_owned(),
+                "p0000002".to_owned()
+            ][..]
+        ),
+        "{refusal}"
+    );
+    assert_eq!(read.diagnosis().redundant, ids(&["k0000003"]));
+    let got = states(&drawing(), read).unwrap();
+    assert_eq!(got.state, SketchState::Invalid);
+    assert_eq!(
+        got.constraints.values().copied().collect::<Vec<_>>(),
+        [Unsolved, Unsolved, Redundant]
+    );
+}
+
+fn ids(list: &[&str]) -> BTreeSet<ElementId> {
+    list.iter().map(|s| ElementId::new(s).unwrap()).collect()
 }

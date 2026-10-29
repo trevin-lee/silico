@@ -8,6 +8,7 @@
 //! the workspace is refused as one, whether or not anything is there"), and the files'
 //! bytes as the tests wrote them.
 
+use crate::model::WAIT;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -19,7 +20,7 @@ use crate::calls::{
 };
 
 /// The longest a call that refuses a FIFO or a device may take: it never waits on one.
-const PROMPT: Duration = Duration::from_secs(10);
+const PROMPT: Duration = WAIT;
 
 impl Fixture {
     /// A render of session `session`'s current model, written to `to`.

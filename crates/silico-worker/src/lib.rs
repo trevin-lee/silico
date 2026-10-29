@@ -22,8 +22,9 @@ use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 
 use silico_protocol::{
-    Failure, FrameError, FrameReader, Generation, Op, REQUEST_DONE, Refusal, Reply, Request,
-    RequestId, Response, WORKER_FD, WORKER_FD_ENV, write_message, write_started,
+    Failure, FrameError, FrameReader, Generation, MAX_FRAME_LEN, Op, REQUEST_DONE, Refusal, Reply,
+    Request, RequestId, Response, WORKER_FD, WORKER_FD_ENV, encoded_len, write_message_within,
+    write_started,
 };
 
 #[cfg(feature = "test_ops")]
@@ -52,9 +53,9 @@ pub enum Traps {
         disable: fn() -> Result<(), String>,
     },
     /// Not read: a worker whose output is no result (the render worker's pixels), which
-    /// *Deterministic kernel*'s rules don't bind. Logged at startup at info level (seen with
-    /// `SILICO_LOG=info`; the default shows warnings), never stubbed as a mask of 0, which
-    /// would say every trap is off rather than that none was looked at.
+    /// *Deterministic kernel*'s rules don't bind. Logged at startup at info level (seen in
+    /// the app's log with `SILICO_LOG=info`; the default shows warnings), never stubbed as a
+    /// mask of 0, which would say every trap is off rather than that none was looked at.
     Unchecked,
 }
 
@@ -94,11 +95,102 @@ pub fn check_fp_trap_mask(mask: u32) -> Result<(), String> {
     }
 }
 
+/// How much of a worker's line a refusal's message may take, written as the line's JSON
+/// escapes it: half of the line the core reads ([`silico_protocol::MAX_LOG_LINE`]), the rest
+/// room for its time, level, target, and spans.
+const REFUSAL_LINE_ROOM: usize = silico_protocol::MAX_LOG_LINE / 2;
+
+/// `text`, or as much of it as fits in `room` bytes once JSON escapes it (a quote or a
+/// backslash two bytes, a control character two or six), cut at a character's boundary and
+/// ending in `…`.
+fn within_line(text: &str, room: usize) -> std::borrow::Cow<'_, str> {
+    const CUT: char = '…';
+    let escaped = |c: char| match c {
+        '"' | '\\' | '\u{8}' | '\u{c}' | '\n' | '\r' | '\t' => 2,
+        c if c < ' ' => 6,
+        c => c.len_utf8(),
+    };
+    if text.chars().map(escaped).sum::<usize>() <= room {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let room = room.saturating_sub(CUT.len_utf8());
+    let mut used = 0;
+    let mut end = 0;
+    for (at, c) in text.char_indices() {
+        used += escaped(c);
+        if used > room {
+            break;
+        }
+        end = at + c.len_utf8();
+    }
+    let mut cut = text[..end].to_owned();
+    cut.push(CUT);
+    std::borrow::Cow::Owned(cut)
+}
+
+/// A worker's log filter, from the `SILICO_LOG` it inherits: its directives, each one less
+/// than info (`warn`, `silico=error`, `[step]=off`) raised to info, and info for every target
+/// none names, so a worker always writes its info lines, whatever the app's log shows. The
+/// core filters what it re-emits to the app's log itself, by the same `SILICO_LOG`, and
+/// keeps each session's events at every level for `read_logs` (silico_core::command::logs),
+/// where a request's refusal, in the worker's words, is an info line. Unset, empty, or a
+/// filter it can't use (which the app reports, silico_core::logging), it's info.
+fn worker_filter(value: Option<&str>) -> tracing_subscriber::EnvFilter {
+    use tracing::level_filters::LevelFilter;
+    let level = |text: &str| text.trim().parse::<LevelFilter>().ok();
+    let raised = value.filter(|value| !value.trim().is_empty()).map(|value| {
+        let mut every_target = false;
+        // An empty one is none, as the app's filter reads it (`debug,`): never a level.
+        let mut directives: Vec<String> = value
+            .split(',')
+            .filter(|directive| !directive.trim().is_empty())
+            .map(|directive| match directive.rsplit_once('=') {
+                Some((what, at)) if level(at).is_some_and(|at| at < LevelFilter::INFO) => {
+                    format!("{what}=info")
+                }
+                Some(_) => directive.to_owned(),
+                None => match level(directive) {
+                    Some(at) => {
+                        every_target = true;
+                        if at < LevelFilter::INFO {
+                            "info".to_owned()
+                        } else {
+                            directive.to_owned()
+                        }
+                    }
+                    None => directive.to_owned(),
+                },
+            })
+            .collect();
+        if !every_target {
+            directives.push("info".to_owned());
+        }
+        directives.join(",")
+    });
+    raised
+        .and_then(|value| tracing_subscriber::EnvFilter::try_new(value).ok())
+        .unwrap_or_else(|| tracing_subscriber::EnvFilter::new("info"))
+}
+
 /// Serves requests from `socket` until the core closes it. `handle` performs each
 /// operation, given the request's id and generation, and may write to the socket directly
 /// (the test workers' garbage and out-of-turn operations do). Returns an error if the
 /// stream breaks or a request can't be read.
-pub fn serve<F>(socket: UnixStream, platform: &Platform, mut handle: F) -> Result<(), FrameError>
+pub fn serve<F>(socket: UnixStream, platform: &Platform, handle: F) -> Result<(), FrameError>
+where
+    F: FnMut(RequestId, Generation, Op, &mut dyn Write) -> Result<Reply, Failure>,
+{
+    serve_within(socket, platform, handle, MAX_FRAME_LEN)
+}
+
+/// As [`serve`], each reply at most `most` bytes: one past it is refused in its place
+/// ([`fitted`]), and the worker goes on to the next request.
+fn serve_within<F>(
+    socket: UnixStream,
+    platform: &Platform,
+    mut handle: F,
+    most: u32,
+) -> Result<(), FrameError>
 where
     F: FnMut(RequestId, Generation, Op, &mut dyn Write) -> Result<Reply, Failure>,
 {
@@ -129,6 +221,29 @@ where
                 op: name.to_owned(),
             }));
         }
+        let response = fitted(
+            Response {
+                id: request.id,
+                generation: request.generation,
+                result,
+            },
+            most,
+        )?;
+        // In the request's span, so the core files it under the call that asked: a
+        // session's logs hold the worker's own line for what it refused, its kind and OCCT's
+        // words. Not its elements: the worker knows them only by their places in its shapes,
+        // which aren't the document's names, and the core's line for the refusal names
+        // them (ARCHITECTURE.md, invariant 2: the core words a refusal).
+        if let Err(failure) = &response.result {
+            let kind = failure.refusal.kind().word();
+            // Its cause in the message: the core re-emits a worker's line by its message. Cut
+            // to fit the line the core reads: OCCT's words can be long.
+            let message = match &failure.cause {
+                Some(cause) => format!("{name} refused, {kind}: {cause}"),
+                None => format!("{name} refused, {kind}"),
+            };
+            tracing::info!("{}", within_line(&message, REFUSAL_LINE_ROOM));
+        }
         // The request's last log line, after any it logged and before its reply: the core
         // keeps the span the request was asked in until it has read this, so every line of
         // the request goes under it, and then lets it go.
@@ -136,16 +251,27 @@ where
             let mut log = std::io::stderr().lock();
             let _ = writeln!(log, "{{\"{REQUEST_DONE}\":{}}}", request.trace.0);
         }
-        write_message(
-            &mut writer,
-            &Response {
-                id: request.id,
-                generation: request.generation,
-                result,
-            },
-        )?;
+        write_message_within(&mut writer, &response, most)?;
     }
     Ok(())
+}
+
+/// `response`, or, if it encodes past the `most` bytes a frame carries, the request refused
+/// in its place ([`Refusal::ReplyTooLarge`]), measured before it's encoded: so the request
+/// is refused, logged as any refusal is, and the worker goes on, rather than ending as if it
+/// had crashed and being started again for no fault of its own.
+fn fitted(response: Response, most: u32) -> Result<Response, FrameError> {
+    let bytes = encoded_len(&response)?;
+    if bytes <= most as usize {
+        return Ok(response);
+    }
+    Ok(Response {
+        result: Err(Failure::new(Refusal::ReplyTooLarge {
+            bytes: bytes as u64,
+            limit: u64::from(most),
+        })),
+        ..response
+    })
 }
 
 /// The traps as a worker starts: switched off and checked off for [`Traps::Checked`] (or why
@@ -236,13 +362,7 @@ where
     F: FnMut(RequestId, Generation, Op, &mut dyn Write) -> Result<Reply, Failure>,
 {
     close_inherited_descriptors();
-    // The app reports a SILICO_LOG it can't use (silico_core::logging); a worker, which
-    // inherits it, quietly uses the same default.
-    let filter = std::env::var("SILICO_LOG")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .and_then(|value| tracing_subscriber::EnvFilter::try_new(value).ok())
-        .unwrap_or_else(|| tracing_subscriber::EnvFilter::new("warn"));
+    let filter = worker_filter(std::env::var("SILICO_LOG").ok().as_deref());
     let _ = tracing_subscriber::fmt()
         .json()
         .with_env_filter(filter)
@@ -277,11 +397,112 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use silico_protocol::{
-        DebugOp, Failure, FrameReader, Generation, Op, Refusal, Reply, Request, RequestId,
+        Blob, DebugOp, Failure, FrameReader, Generation, Op, Refusal, Reply, Request, RequestId,
         Response, TraceId, write_message,
     };
 
-    use super::{Platform, Traps, serve, traps_at_start};
+    use super::{
+        Platform, REFUSAL_LINE_ROOM, Traps, serve, traps_at_start, within_line, worker_filter,
+    };
+
+    #[test]
+    fn a_reply_past_what_a_frame_carries_is_refused_in_its_place_and_the_worker_goes_on() {
+        // A response's size encoded: its frame less the frame's 4-byte length.
+        let encoded = |response: &Response| {
+            let mut frame = Vec::new();
+            write_message(&mut frame, response).unwrap();
+            frame.len() - 4
+        };
+        let echo = |n: usize| {
+            Ok(Reply::Echo {
+                data: Blob::inline(vec![7; n]),
+            })
+        };
+        let echoed = |id, n| {
+            encoded(&Response {
+                id: RequestId(id),
+                generation: Generation(2),
+                result: echo(n),
+            })
+        };
+        // The frame's limit here: room for the refusal, and an echo of 64 bytes fits.
+        let limit = 64
+            + encoded(&Response {
+                id: RequestId(1),
+                generation: Generation(2),
+                result: Err(Failure::new(Refusal::ReplyTooLarge {
+                    bytes: 1 << 20,
+                    limit: 1 << 20,
+                })),
+            });
+        let past = (0..).find(|&n| echoed(1, n) > limit).unwrap();
+        // Three requests: an echo one byte past the limit, one at it, and one past it again;
+        // each answered in turn, the worker going on after each refusal.
+        let sizes = [past, past - 1, past];
+        let (core, worker) = UnixStream::pair().unwrap();
+        for id in 1..=3 {
+            let request = Request {
+                id: RequestId(id),
+                generation: Generation(2),
+                trace: TraceId(id),
+                op: Op::Debug(DebugOp::Sleep { millis: 0 }),
+            };
+            write_message(&mut &core, &request).unwrap();
+        }
+        core.shutdown(std::net::Shutdown::Write).unwrap();
+        let replies = std::thread::spawn(move || {
+            let mut frames = FrameReader::new(core);
+            frames.read_frame().unwrap();
+            let mut replies = Vec::new();
+            while let Some(response) = frames.read_message::<Response>().unwrap() {
+                replies.push(response);
+            }
+            replies
+        });
+        let log = Log::default();
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let platform = Platform {
+            built_from: "test",
+            traps: Traps::Unchecked,
+        };
+        tracing::subscriber::with_default(subscriber, || {
+            super::serve_within(
+                worker,
+                &platform,
+                |id, _, _, _| echo(sizes[id.0 as usize - 1]),
+                u32::try_from(limit).unwrap(),
+            )
+        })
+        .unwrap();
+        let refused = |id, n| Response {
+            id: RequestId(id),
+            generation: Generation(2),
+            result: Err(Failure::new(Refusal::ReplyTooLarge {
+                bytes: echoed(id, n) as u64,
+                limit: limit as u64,
+            })),
+        };
+        let at_limit = Response {
+            id: RequestId(2),
+            generation: Generation(2),
+            result: echo(past - 1),
+        };
+        assert_eq!(
+            replies.join().unwrap(),
+            [refused(1, past), at_limit, refused(3, past)]
+        );
+        // Each refusal logged in its request's span, as any refusal is.
+        let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            log.matches("DebugSleep refused, invalid_input").count(),
+            2,
+            "{log}"
+        );
+    }
 
     /// What a test's subscriber writes.
     #[derive(Clone, Default)]
@@ -329,6 +550,194 @@ mod tests {
         let response = frames.read_message::<Response>().unwrap().unwrap();
         let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
         (response, log)
+    }
+
+    #[test]
+    fn a_refusal_is_logged_at_info_in_its_requests_span_its_line_within_what_the_core_reads() {
+        // A refusal whose words grow with its request (OCCT's, here), in characters
+        // JSON escapes: its line, as the worker's JSON subscriber writes it, still fits.
+        let (core, worker) = UnixStream::pair().unwrap();
+        let request = Request {
+            id: RequestId(0),
+            generation: Generation(0),
+            trace: TraceId(7),
+            op: Op::Debug(DebugOp::Sleep { millis: 0 }),
+        };
+        write_message(&mut &core, &request).unwrap();
+        core.shutdown(std::net::Shutdown::Write).unwrap();
+        // Its reply, which names the op too, read as it's written, so the worker never
+        // waits on a full socket.
+        let replies = std::thread::spawn(move || {
+            let mut frames = FrameReader::new(core);
+            frames.read_frame().unwrap();
+            frames.read_message::<Response>().unwrap().unwrap()
+        });
+        let log = Log::default();
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_writer(move || writer.clone())
+            .finish();
+        // OCCT's words, which the line carries whole when they fit.
+        let cause = "\"\u{1}é\\".repeat(3000);
+        let platform = Platform {
+            traps: Traps::Unchecked,
+            built_from: "test",
+        };
+        tracing::subscriber::with_default(subscriber, || {
+            serve(worker, &platform, |_, _, _, _| {
+                Err(Failure {
+                    refusal: Refusal::OtherWorkersOp { op: "x".to_owned() },
+                    cause: Some(cause.clone()),
+                })
+            })
+        })
+        .unwrap();
+        assert!(replies.join().unwrap().result.is_err());
+        let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        let line = log
+            .lines()
+            .find(|line| line.contains("DebugSleep refused, "))
+            .unwrap_or_else(|| panic!("{log}"));
+        assert!(
+            line.len() <= silico_protocol::MAX_LOG_LINE,
+            "{}",
+            line.len()
+        );
+        let event: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(event["level"], "INFO");
+        assert_eq!(event["span"]["trace"], 7);
+        let message = event["fields"]["message"].as_str().unwrap();
+        assert!(message.ends_with('…'), "{message}");
+        assert!(
+            message.starts_with("DebugSleep refused, unknown_op: \"\u{1}é"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_line_is_cut_to_fit_as_json_escapes_it_at_a_characters_boundary() {
+        // Each cut checked against serde_json's own escaping, which the worker's JSON
+        // subscriber writes with.
+        let escaped = |text: &str| serde_json::to_string(text).unwrap().len() - 2;
+        for text in [
+            "plain",
+            // A space is one byte, as written: the first character not escaped.
+            "a b",
+            "\"quoted\" and \\ back",
+            "\u{1}\u{1f}\n\t\r\u{8}\u{c}",
+            "é🦀\u{7f}",
+            &"\"".repeat(100),
+            &"\u{1}".repeat(100),
+            &"🦀".repeat(100),
+        ] {
+            for room in [0, 1, 2, 3, 4, 5, 6, 7, 10, 64, 1000] {
+                let cut = within_line(text, room);
+                if escaped(text) <= room {
+                    assert_eq!(cut, text, "{text:?} in {room}");
+                    continue;
+                }
+                let kept = cut.strip_suffix('…').unwrap();
+                assert!(text.starts_with(kept), "{text:?} in {room}: {cut:?}");
+                assert!(escaped(&cut) <= room.max(3), "{text:?} in {room}: {cut:?}");
+                // As much as fits: one character more wouldn't have.
+                let more = text[kept.len()..].chars().next().unwrap();
+                assert!(
+                    escaped(kept) + escaped(&more.to_string()) + 3 > room,
+                    "{text:?} in {room}: {cut:?}"
+                );
+            }
+        }
+        const { assert!(REFUSAL_LINE_ROOM * 2 <= silico_protocol::MAX_LOG_LINE) };
+    }
+
+    #[test]
+    fn a_worker_writes_info_whatever_level_silico_log_gives_every_target() {
+        use tracing::level_filters::LevelFilter;
+        let hint = |value: Option<&str>| worker_filter(value).max_level_hint();
+        for value in [
+            None,
+            Some(""),
+            Some(" "),
+            Some("warn"),
+            Some("WARN"),
+            Some("error"),
+            Some("off"),
+            Some("info"),
+            Some("silico=loud"),
+        ] {
+            assert_eq!(hint(value), Some(LevelFilter::INFO), "{value:?}");
+        }
+        // Targets or spans alone (robustness's proof, round 1): every target none names is
+        // at info, and one named below info is raised to it.
+        for value in [
+            "silico_core=debug",
+            "silico=warn",
+            "[recompute_step]=debug",
+            "silico_worker=off",
+        ] {
+            let log = Log::default();
+            let writer = log.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .json()
+                .with_env_filter(worker_filter(Some(value)))
+                .with_writer(move || writer.clone())
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::info!(target: "silico_worker", "DebugSleep refused: x");
+                tracing::debug!(target: "silico_worker", "not this");
+            });
+            let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+            assert!(
+                log.contains("refused"),
+                "SILICO_LOG={value}: no info line: {log}"
+            );
+            assert!(!log.contains("not this"), "SILICO_LOG={value}: {log}");
+        }
+        assert_eq!(
+            worker_filter(Some("silico=warn")).to_string(),
+            "silico=info,info"
+        );
+        assert_eq!(hint(Some("silico_core=debug")), Some(LevelFilter::DEBUG));
+        // A level more verbose than info, as given: the lines written, not the filter's hint,
+        // which a directive overwritten by a later one keeps (tests round 2's proof), and an
+        // empty directive is none (robustness round 2's: `debug,` read `debug,info`).
+        for value in [
+            "debug",
+            "warn,debug",
+            "debug,",
+            ",debug",
+            "debug, ",
+            " ,debug",
+            "silico_worker=debug",
+        ] {
+            let log = Log::default();
+            let writer = log.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .json()
+                .with_env_filter(worker_filter(Some(value)))
+                .with_writer(move || writer.clone())
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::debug!(target: "silico_worker", "a debug line");
+                tracing::trace!(target: "silico_worker", "not this");
+            });
+            let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+            assert!(log.contains("a debug line"), "SILICO_LOG={value}: {log}");
+            assert!(!log.contains("not this"), "SILICO_LOG={value}: {log}");
+        }
+        assert_eq!(worker_filter(Some("debug,")).to_string(), "debug");
+        assert_eq!(worker_filter(Some("debug, ")).to_string(), "debug");
+        // More than info, or a target's own, as given.
+        assert_eq!(hint(Some("debug")), Some(LevelFilter::DEBUG));
+        assert_eq!(
+            hint(Some("warn,silico_kernel=trace")),
+            Some(LevelFilter::TRACE)
+        );
+        assert_eq!(
+            worker_filter(Some("warn,silico_kernel=trace")).to_string(),
+            "silico_kernel=trace,info"
+        );
     }
 
     #[test]
