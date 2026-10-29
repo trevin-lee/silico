@@ -44,10 +44,6 @@ pub struct SketchDrag {
     /// Where the dragged point began, or where an edge's press landed: a release there is a
     /// click, and changes nothing.
     origin: [f64; 2],
-    /// What's added to each cursor before the worker has it: for a line's edge, its
-    /// midpoint's offset from the press (FreeCAD's relative drag, in the absolute form the
-    /// worker takes); none otherwise.
-    shift: [f64; 2],
     /// Why the begin state is where the file draws the sketch, if its solve failed.
     unsolved: Option<Error>,
     stop: DragStop,
@@ -228,13 +224,12 @@ pub struct EdgeGrab<'a> {
 }
 
 /// A drag's begin, made on its solver: the begin state's translation, what its frames are
-/// read into, where a release is a click, the cursor's shift, and why the sketch didn't
+/// read into, where a release is a click, and why the sketch didn't
 /// solve, if it didn't.
 struct Prepared {
     translation: Translation,
     reading: Reading,
     origin: [f64; 2],
-    shift: [f64; 2],
     unsolved: Option<Error>,
 }
 
@@ -318,7 +313,7 @@ fn start(
                 .copied()
                 .unwrap_or(f64::NAN)
         };
-        let (begin, origin, shift) = match grab {
+        let (begin, origin) = match grab {
             Grab::Point(point) => {
                 let geometry = translation
                     .point_geometry(point)
@@ -329,7 +324,7 @@ fn start(
                     .point_values(PointOf::Point(geometry))
                     .map(|p| [value(p.x), value(p.y)])
                     .unwrap_or([f64::NAN; 2]);
-                (begin, origin, [0.0, 0.0])
+                (begin, origin)
             }
             Grab::Edge { curve, press } => {
                 let geometry = translation
@@ -337,17 +332,12 @@ fn start(
                     .ok_or_else(|| missing("curve", curve))?;
                 let begin = DragBegin {
                     system: translation.system.clone(),
-                    dragged: silico_protocol::Dragged::Edge(geometry),
+                    dragged: silico_protocol::Dragged::Edge {
+                        curve: geometry,
+                        press,
+                    },
                 };
-                // A line's midpoint where the drag begins, its offset from the press.
-                let shift = match begin.system.geometry.get(geometry.0 as usize) {
-                    Some(silico_protocol::SketchGeometry::Line { start, end }) => [
-                        (value(start.x) + value(end.x)) * 0.5 - press[0],
-                        (value(start.y) + value(end.y)) * 0.5 - press[1],
-                    ],
-                    _ => [0.0, 0.0],
-                };
-                (begin, press, shift)
+                (begin, press)
             }
         };
         let reading = reading(&translation, &begin);
@@ -355,7 +345,6 @@ fn start(
             translation,
             reading,
             origin,
-            shift,
             unsolved,
         });
         Ok(begin)
@@ -365,7 +354,6 @@ fn start(
         translation,
         reading,
         origin,
-        shift,
         unsolved,
     } = prepared.ok_or_else(|| {
         Error::new(ErrorCode::Internal, "a drag began with no begin state")
@@ -409,7 +397,6 @@ fn start(
             sketch: sketch.clone(),
             translation,
             origin,
-            shift,
             unsolved: unsolved.clone(),
             stop: stop.clone(),
         },
@@ -461,17 +448,12 @@ fn reading(translation: &Translation, begin: &DragBegin) -> Reading {
 impl SketchDrag {
     /// Sends a move to `to`, as [`DragSession::move_to`] does.
     pub fn move_to(&self, to: [f64; 2]) -> Result<FrameTicket, Error> {
-        let ticket = self.session.move_to(self.shifted(to))?;
+        let ticket = self.session.move_to(to)?;
         Ok(FrameTicket {
             ticket,
             to,
             reading: Arc::clone(&self.reading),
         })
-    }
-
-    /// `to`, the cursor, as the worker has it: shifted for a line's edge.
-    fn shifted(&self, to: [f64; 2]) -> [f64; 2] {
-        [to[0] + self.shift[0], to[1] + self.shift[1]]
     }
 
     /// Stops the move solving, as [`DragSession::cancel_move`] does.
@@ -507,9 +489,7 @@ impl SketchDrag {
         let _span =
             tracing::info_span!("drag_sketch_end", feature = self.feature.as_str()).entered();
         let named = |e: Error| e.with_feature(self.feature.as_str());
-        let to = to
-            .filter(|&to| to != self.origin)
-            .map(|to| self.shifted(to));
+        let to = to.filter(|&to| to != self.origin);
         let ended = self.session.release(to).map_err(named)?;
         let kept_begin = |why: Option<Error>| SketchEnded {
             kept: Kept::Begin,

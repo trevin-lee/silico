@@ -953,6 +953,6 @@ proptest! {
 fn dragged_geometry(begin: &silico_protocol::DragBegin) -> silico_protocol::Geometry {
     match begin.dragged {
         silico_protocol::Dragged::Point(point) => point.geometry(),
-        silico_protocol::Dragged::Edge(g) => g,
+        silico_protocol::Dragged::Edge { curve, .. } => curve,
     }
 }

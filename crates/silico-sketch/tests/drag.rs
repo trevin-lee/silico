@@ -845,11 +845,7 @@ fn the_cores_drag_client_drags_through_the_worker_and_ends_with_the_whole_sketch
 // note's table), and worked by hand.
 
 fn begin_edge(system: SketchSystem, edge: Geometry) -> Drag {
-    let start = Drag::begin(&DragBegin {
-        system,
-        dragged: silico_protocol::Dragged::Edge(edge),
-    })
-    .unwrap();
+    let start = Drag::begin(&DragBegin::edge(system, edge)).unwrap();
     assert!(start.conflicting.is_empty(), "{:?}", start.conflicting);
     start.drag.unwrap()
 }
@@ -987,10 +983,7 @@ fn a_points_edge_is_refused() {
     let mut b = Builder::default();
     let p = b.point_values(1.0, 2.0);
     let point = b.add(SketchGeometry::Point(p));
-    let begin = DragBegin {
-        system: b.system(Algorithm::DogLeg),
-        dragged: silico_protocol::Dragged::Edge(point),
-    };
+    let begin = DragBegin::edge(b.system(Algorithm::DogLeg), point);
     let e = begin.check().unwrap_err();
     assert!(e.message.contains("it's a point"), "{e:?}");
 }

@@ -532,11 +532,11 @@ pub struct DragBegin {
 pub enum Dragged {
     /// A point: a lone point, a curve's end, or a centre, held to the cursor.
     Point(PointOf),
-    /// A curve's edge (docs/ports/sketcher.md, *Dragging an edge*): a line moved whole, its
-    /// midpoint to the cursor and its ends with it (FreeCAD's absolute form; the core turns
-    /// a press and a cursor into it); a circle or an arc sized to pass through the cursor,
-    /// its centre pinned where it starts, more weakly.
-    Edge(Geometry),
+    /// A curve's edge, pressed at `press` in the sketch's coordinates (docs/ports/sketcher.md,
+    /// *Dragging an edge*): a line moved whole, each end following the cursor at its offset
+    /// from the press (FreeCAD's relative drag); a circle or an arc sized to pass through the
+    /// cursor, its centre pinned where it starts, more weakly (the press unused).
+    Edge { curve: Geometry, press: [f64; 2] },
 }
 
 impl From<PointOf> for Dragged {
@@ -593,6 +593,27 @@ impl DragBegin {
         }
     }
 
+    /// A drag of `curve`'s edge in `system`, pressed where FreeCAD's App form presses it: a
+    /// line at its midpoint (`moveGeometry` puts the midpoint at the cursor), a circle or an
+    /// arc at its centre (unused). Values not in `system` press at the origin.
+    pub fn edge(system: SketchSystem, curve: Geometry) -> Self {
+        let at = |v: Value| system.values.get(v.0 as usize).copied().unwrap_or(0.0);
+        let press = match system.geometry.get(curve.0 as usize) {
+            Some(SketchGeometry::Line { start, end }) => [
+                (at(start.x) + at(end.x)) * 0.5,
+                (at(start.y) + at(end.y)) * 0.5,
+            ],
+            Some(SketchGeometry::Circle { center, .. } | SketchGeometry::Arc { center, .. }) => {
+                [at(center.x), at(center.y)]
+            }
+            _ => [0.0, 0.0],
+        };
+        DragBegin {
+            system,
+            dragged: Dragged::Edge { curve, press },
+        }
+    }
+
     /// Whether the worker can start this drag: the system passes
     /// [`SketchSystem::check`], what's dragged is a point its geometry has (as a
     /// constraint's points must be) or a line's, circle's, or arc's edge, and the part of the
@@ -620,25 +641,32 @@ impl DragBegin {
         self.system.check()?;
         match self.dragged {
             Dragged::Point(point) => self.system.check_point(point, "point", "the drag"),
-            Dragged::Edge(g) => match self.system.geometry.get(g.0 as usize) {
-                Some(
-                    SketchGeometry::Line { .. }
-                    | SketchGeometry::Circle { .. }
-                    | SketchGeometry::Arc { .. },
-                ) => Ok(()),
-                Some(SketchGeometry::Point(_)) => Err(invalid(
-                    "point",
-                    format!("the drag names geometry {}'s edge, but it's a point", g.0),
-                )),
-                None => Err(invalid(
-                    "point",
-                    format!(
-                        "the drag names geometry {}, but there are {}",
-                        g.0,
-                        self.system.geometry.len()
-                    ),
-                )),
-            },
+            Dragged::Edge { curve: g, press } => {
+                // Where the press landed, as a cursor is: every move's offset is from it.
+                check_drag_target(press).map_err(|invalid| InvalidParameter {
+                    parameter: "press",
+                    message: invalid.message.replace("drag's target", "drag's press"),
+                })?;
+                match self.system.geometry.get(g.0 as usize) {
+                    Some(
+                        SketchGeometry::Line { .. }
+                        | SketchGeometry::Circle { .. }
+                        | SketchGeometry::Arc { .. },
+                    ) => Ok(()),
+                    Some(SketchGeometry::Point(_)) => Err(invalid(
+                        "curve",
+                        format!("the drag names geometry {}'s edge, but it's a point", g.0),
+                    )),
+                    None => Err(invalid(
+                        "curve",
+                        format!(
+                            "the drag names geometry {}, but there are {}",
+                            g.0,
+                            self.system.geometry.len()
+                        ),
+                    )),
+                }
+            }
         }
     }
 
@@ -648,8 +676,8 @@ impl DragBegin {
     ///   where it starts, a hundred times more weakly, so the end moves before the centre
     ///   does (`4d7a9435c1`);
     /// - a line's edge: both its ends, at full weight, each following the cursor at its
-    ///   offset from the line's midpoint where the drag began (the cursor being where the
-    ///   midpoint goes);
+    ///   offset from the press where the drag began (the cursor being where the press is
+    ///   dragged to);
     /// - a circle's or an arc's edge: a target held on its circle, at the cursor, and its
     ///   centre where it starts, as weakly.
     ///
@@ -667,24 +695,28 @@ impl DragBegin {
                 }
                 pins
             }
-            Dragged::Edge(g) => match self.system.geometry.get(g.0 as usize) {
+            Dragged::Edge { curve: g, press } => match self.system.geometry.get(g.0 as usize) {
                 Some(SketchGeometry::Line { start, end }) => {
                     let at = |p: PointValues| {
                         [p.x, p.y]
                             .map(|v| self.system.values.get(v.0 as usize).copied().unwrap_or(0.0))
                     };
-                    let (a, b) = (at(*start), at(*end));
-                    let half = [(b[0] - a[0]) * 0.5, (b[1] - a[1]) * 0.5];
+                    // Each end at its offset from the press: the cursor is where the press is
+                    // dragged to.
+                    let offset = |p: PointValues| {
+                        let [x, y] = at(p);
+                        [x - press[0], y - press[1]]
+                    };
                     vec![
                         Pin {
                             at: PinAt::Point(PointOf::Start(g)),
                             scale: 1.0,
-                            follows: Some([-half[0], -half[1]]),
+                            follows: Some(offset(*start)),
                         },
                         Pin {
                             at: PinAt::Point(PointOf::End(g)),
                             scale: 1.0,
-                            follows: Some(half),
+                            follows: Some(offset(*end)),
                         },
                     ]
                 }
