@@ -267,16 +267,22 @@ impl DiskWatch {
 /// finding kept if the session still holds them, and told if it changed.
 fn compare(shared: &Shared, counter: u64, held: &[u8]) {
     let _span = tracing::debug_span!("disk_compare").entered();
-    // However the read ends, a panic too (a test's reader), the comparison has: the next
-    // can start.
-    let _ended = Ended(shared);
+    // If the read panics (a test's reader), the comparison has ended all the same: the
+    // next can start.
+    let ended = Ended(shared);
     let found = match (shared.read)(&shared.path) {
         Found::Bytes(bytes) if bytes == held => Disk::Unchanged,
         Found::Bytes(_) => Disk::Changed,
         Found::Gone => Disk::Gone,
         Found::Unreadable => Disk::Unreadable,
     };
+    let now = (shared.now)();
     let mut state = lock(&shared.state);
+    // Ended in the step its finding is kept in, so no one who sees the finding sees the
+    // comparison running, or its end stamped after.
+    std::mem::forget(ended);
+    state.running = false;
+    state.ended = Some(now);
     // The session read or wrote since: this was against its bytes before.
     if state.counter != counter {
         return;
@@ -290,7 +296,7 @@ fn compare(shared: &Shared, counter: u64, held: &[u8]) {
     }
 }
 
-/// A comparison's end, however it ends: none running, and the time it ended.
+/// A comparison's end if its read panics: none running, and the time it ended.
 struct Ended<'a>(&'a Shared);
 
 impl Drop for Ended<'_> {

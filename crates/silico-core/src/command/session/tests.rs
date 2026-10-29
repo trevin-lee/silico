@@ -76,6 +76,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
         ),
         gate: Gate::default(),
         settled: Gate::default(),
+        written: Gate::default(),
     });
     (session, jobs)
 }
@@ -4037,7 +4038,12 @@ fn a_save_that_fails_leaves_the_sessions_file_unknown_until_it_is_compared_again
         let _ = std::fs::remove_file(&probe);
         return;
     }
-    assert!(f.sessions.commit(&f.id).wait().result.is_err());
+    let problems = f.sessions.commit(&f.id).wait().result.unwrap_err();
+    let refused = &problems.errors()[0];
+    assert_eq!(
+        (refused.code(), refused.parameter()),
+        (ErrorCode::IoFailed, Some("path"))
+    );
     assert_eq!(f.sessions.disk(&f.id).unwrap(), None);
     // Nothing was written: the next comparison finds the file as the session opened it.
     disk_reaches(&f, Disk::Unchanged);
@@ -4053,7 +4059,105 @@ fn the_disk_of_a_session_not_open_is_refused_naming_it() {
         (ErrorCode::InvalidInput, Some("session"))
     );
     f.sessions.close(&f.id).wait().result.unwrap();
-    assert!(f.sessions.disk(&f.id).is_err());
+    let refused = f.sessions.disk(&f.id).unwrap_err();
+    assert_eq!(
+        (refused.code(), refused.parameter()),
+        (ErrorCode::InvalidInput, Some("session"))
+    );
+}
+
+#[test]
+fn a_sessions_own_save_is_unknown_on_disk_from_before_its_file_is_written() {
+    let f = opened(STORED);
+    disk_reaches(&f, Disk::Unchanged);
+    f.begin();
+    f.edit(&longer());
+    let (started, was_started) = mpsc::channel();
+    let (through, wait) = mpsc::channel();
+    f.session().written.shut(started, wait);
+    let committing = f.sessions.commit(&f.id);
+    was_started.recv_timeout(WAIT).unwrap();
+    // The file holds the commit's text and the session doesn't yet: no finding, and no
+    // comparison starts to find one.
+    assert_ne!(f.file(), STORED);
+    for _ in 0..20 {
+        assert_eq!(f.sessions.disk(&f.id).unwrap(), None);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    through.send(()).unwrap();
+    assert!(committing.wait().result.unwrap().written);
+    assert_eq!(f.sessions.disk(&f.id).unwrap(), Some(Disk::Unchanged));
+}
+
+#[test]
+fn a_session_opened_through_a_link_watches_the_file_it_read_not_where_the_link_leads_later() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b, link) = (
+        dir.path().join("a.silico"),
+        dir.path().join("b.silico"),
+        dir.path().join("link.silico"),
+    );
+    std::fs::write(&a, BOX).unwrap();
+    std::fs::write(&b, BOX).unwrap();
+    std::os::unix::fs::symlink(&a, &link).unwrap();
+    let kernel = Arc::new(FakeKernel::new(2).unwrap());
+    let secret = dir.path().join("secret");
+    let sessions = Sessions::with_stand_ins(
+        kernel,
+        move |cache| Cache::with_secret(cache, &secret),
+        || Ok(Box::new(crate::fake::FakeSketches::new()) as Box<dyn SketchSolver>),
+    )
+    .checking_disk_every(Duration::ZERO);
+    let id = sessions.open(&link, false).wait().session.unwrap().id;
+    // The link leads to b, as the session first read a; a changed. Read where the session
+    // reads and saves, a, it's changed; where the link leads now, b, it would be unchanged.
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&b, &link).unwrap();
+    std::fs::write(&a, SPHERE).unwrap();
+    let deadline = std::time::Instant::now() + WAIT;
+    while sessions.disk(&id).unwrap() != Some(Disk::Changed) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a's change never found"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn each_sessions_disk_is_its_own_files() {
+    let f = opened(BOX);
+    let other = f.path.with_file_name("b.silico");
+    std::fs::write(&other, SPHERE).unwrap();
+    let second = f.sessions.open(&other, false).wait().session.unwrap().id;
+    disk_reaches(&f, Disk::Unchanged);
+    std::fs::write(&f.path, SPHERE).unwrap();
+    disk_reaches(&f, Disk::Changed);
+    let deadline = std::time::Instant::now() + WAIT;
+    let found = loop {
+        if let Some(found) = f.sessions.disk(&second).unwrap() {
+            break found;
+        }
+        assert!(std::time::Instant::now() < deadline, "no comparison ended");
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    assert_eq!(found, Disk::Unchanged);
+}
+
+#[test]
+fn a_sessions_disk_is_answered_while_its_command_waits() {
+    let f = opened(BOX);
+    disk_reaches(&f, Disk::Unchanged);
+    let (started, was_started) = mpsc::channel();
+    let (through, wait) = mpsc::channel();
+    f.session().gate.shut(started, wait);
+    let text = f.sessions.text(&f.id, None);
+    was_started.recv_timeout(WAIT).unwrap();
+    // A disk that waited on the command would never return.
+    std::fs::write(&f.path, SPHERE).unwrap();
+    disk_reaches(&f, Disk::Changed);
+    through.send(()).unwrap();
+    text.wait().result.unwrap();
 }
 
 // ---- Break-it (PR #269): the session's own saves, compared with no interval ----

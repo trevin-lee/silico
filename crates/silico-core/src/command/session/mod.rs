@@ -187,6 +187,10 @@ struct Session<C: Kernel + 'static> {
     /// crate's tests only.
     #[cfg(test)]
     settled: Gate,
+    /// Where a save waits once its file is written, before the session takes what it wrote,
+    /// in this crate's tests only.
+    #[cfg(test)]
+    written: Gate,
 }
 
 /// Where a file a command writes may go ([`Sessions::write_rules`]).
@@ -446,7 +450,12 @@ impl<P: Clients + 'static> Sessions<P> {
     /// as they're made: in this crate's tests, which don't wait out the second.
     #[cfg(test)]
     fn checking_disk_every(mut self, interval: std::time::Duration) -> Self {
-        if let Some(registry) = Arc::get_mut(&mut self.registry) {
+        let registry = Arc::get_mut(&mut self.registry);
+        assert!(
+            registry.is_some(),
+            "sessions are given their interval as they're made"
+        );
+        if let Some(registry) = registry {
             registry.disk_interval = interval;
         }
         self
