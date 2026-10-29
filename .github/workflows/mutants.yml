@@ -124,28 +124,34 @@ jobs:
           # shards then queue for the runners that frees, like any other run's.
           if [ -z "$FILLER" ]; then bash .github/cancel-filler.sh; fi
           # Enough shards that none runs past about 12 hours, half a job's limit (the shard's
-          # timeout-minutes, 24 hours): 80 mutants each, at 540 seconds a mutant, the most a
-          # loaded VM took (#242's run 40627599832, 2026-10-28: 450 and 520 seconds a mutant
-          # in silico-core, few unviable, on its two shards, each cut off at 24 hours with 134
-          # of its 492 mutants untested). Counted as the shards will list them, in a tree of
-          # the ref; past 16 shards' worth, a shard holds more. A filler run is cut off after
-          # an hour whatever it holds, so has the shards it asks for.
+          # timeout-minutes, 24 hours): 80 mutants each, at 540 seconds a mutant, a margin over
+          # the most a loaded VM took (#242's run 40627599832, 2026-10-28: 450 and 520 seconds
+          # a mutant in silico-core, few unviable, at 2 threads a shard, on its two shards, each
+          # cut off at 24 hours with 134 of its 492 mutants untested). Counted as the shards
+          # will list them, in a tree of the ref; past 16 shards' worth, a shard holds more. A
+          # filler run is cut off after an hour whatever it holds, so has the shards it asks
+          # for.
           shards=$SHARDS
           if [ -z "$FILLER" ]; then
             resolve() { git rev-parse --verify --quiet "origin/$1^{commit}" || git rev-parse --verify "$1^{commit}"; }
             commit=$(resolve "${REF:-HEAD}")
+            # Extracted, not a worktree: one left registered by a plan that stopped would fail
+            # every later plan on this runner. The runner empties RUNNER_TEMP after each job.
             tree=$RUNNER_TEMP/tree
-            git worktree add --detach "$tree" "$commit"
+            mkdir "$tree"
+            git archive -o "$RUNNER_TEMP/tree.tar" "$commit"
+            tar -xf "$RUNNER_TEMP/tree.tar" -C "$tree"
             args=(--list --dir "$tree")
             if [ -n "$BASE" ]; then
-              git diff "$(resolve "$BASE")...$commit" >"$RUNNER_TEMP/change.diff"
+              # On its own line, so a base that doesn't resolve stops the plan.
+              base=$(resolve "$BASE")
+              git diff "$base...$commit" >"$RUNNER_TEMP/change.diff"
               args+=(--in-diff "$RUNNER_TEMP/change.diff")
             fi
             for package in $PACKAGES; do args+=(-p "$package"); done
             for file in $FILES; do args+=(--file "$file"); done
             if [ -n "$RE" ]; then args+=("--re=$RE"); fi
             cargo mutants "${args[@]}" >"$RUNNER_TEMP/mutants.txt"
-            git worktree remove --force "$tree"
             mutants=$(grep -c . "$RUNNER_TEMP/mutants.txt" || true)
             needed=$(( (mutants + 79) / 80 ))
             shards=$(( needed > shards ? needed : shards ))
@@ -165,8 +171,11 @@ jobs:
     # waits for a long one to free the pool, but starts beside it, on those six at least (a
     # freed runner with both labels goes to whichever shard GitHub queued first).
     runs-on: ${{ inputs.filler != '' && fromJSON('["self-hosted", "linux", "x64", "filler"]') || inputs.long != '' && fromJSON('["self-hosted", "linux", "x64", "mutants"]') || fromJSON('["self-hosted", "linux", "x64", "mutants-pr"]') }}
-    # A whole-workspace run is about 2,300 mutants: hours, even sharded. A filler run stops
-    # after an hour: it fills idle time, and comes back to its work on a later turn.
+    # The plan gives a shard about 12 hours of mutants, but no more than 16 shards: a run past
+    # 1,280 mutants holds more, and a whole-workspace run (11,547 mutants on 2026-10-29,
+    # silico-core 8,557) is cut off here even at 16, so narrow it by package, file, or base.
+    # A filler run stops after an hour: it fills idle time, and comes back to its work on a
+    # later turn.
     timeout-minutes: ${{ inputs.filler != '' && 60 || 1440 }}
     strategy:
       fail-fast: false
@@ -186,8 +195,10 @@ jobs:
       # their own at a gate's CPU weight (silico-18, labelled `sweep`). The plan and summary
       # take seconds and run on the runners labelled control (silico-13, -14), so they never
       # queue behind shards. The runners share one VM, and free runners don't keep its CPU
-      # free: see the shard's share below.
-      max-parallel: 9
+      # free: see the shard's share below. A long run's at most seven at once, as many as its
+      # lane has runners: the plan may give it up to 16, and none should wait in the runners'
+      # queue through a sibling's whole run (GitHub cancels a job queued for 24 hours).
+      max-parallel: ${{ inputs.long != '' && 7 || 9 }}
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
