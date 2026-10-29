@@ -138,13 +138,17 @@ mod ffi {
         values: Vec<f64>,
     }
 
-    /// A point a drag pins (never `None` or `Geometry`), its geometry, and the weight of its
-    /// pin's two rows (1, or less to let it give way first). The first pin is the dragged
-    /// point, held to the cursor; the rest are held where they start.
+    /// What a drag pins: a point (`Point`, `Start`, `End`, or `Center` of `geometry`), or,
+    /// `Geometry`, a target held on that circle or arc; the weight of its rows (1, or less to
+    /// let it give way first); and whether its target follows the cursor, at the offset
+    /// (`dx`, `dy`) from it, or is held where it starts.
     struct Pin {
         position: Position,
         geometry: u32,
         scale: f64,
+        follows: bool,
+        dx: f64,
+        dy: f64,
     }
 
     /// What a diagnosis found: the degrees of freedom, and the tags of the constraints in
@@ -370,7 +374,7 @@ impl Drag {
 
     /// Builds and diagnoses `begin`'s sketch, checked, and, unless constraints conflict,
     /// holds `pins` where they are.
-    fn start(begin: &DragBegin, pins: Vec<(PointOf, f64)>) -> Result<DragStart, Failure> {
+    fn start(begin: &DragBegin, pins: Vec<silico_protocol::Pin>) -> Result<DragStart, Failure> {
         prepare_eigen();
         // The whole sketch's diagnosis, as FreeCAD's: a conflict anywhere refuses the drag.
         let whole = ffi::diagnose(&encode(&begin.system)).map_err(bridge_threw)?;
@@ -386,12 +390,19 @@ impl Drag {
         let part = begin.part();
         let pins: Vec<ffi::Pin> = pins
             .into_iter()
-            .map(|(p, scale)| {
-                let (position, geometry) = point(p);
+            .map(|pin| {
+                let (position, geometry) = match pin.at {
+                    silico_protocol::PinAt::Point(p) => point(p),
+                    silico_protocol::PinAt::OnCurve(g) => (ffi::Position::Geometry, g.0),
+                };
+                let [dx, dy] = pin.follows.unwrap_or([0.0, 0.0]);
                 ffi::Pin {
                     position,
                     geometry,
-                    scale,
+                    scale: pin.scale,
+                    follows: pin.follows.is_some(),
+                    dx,
+                    dy,
                 }
             })
             .collect();

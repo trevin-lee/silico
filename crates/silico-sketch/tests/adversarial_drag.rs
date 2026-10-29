@@ -49,7 +49,11 @@ fn at(values: &[f64], p: PointValues) -> [f64; 2] {
 }
 
 fn begin(system: SketchSystem, point: PointOf) -> Drag {
-    let start = Drag::begin(&DragBegin { system, point }).unwrap();
+    let start = Drag::begin(&DragBegin {
+        system,
+        dragged: silico_protocol::Dragged::Point(point),
+    })
+    .unwrap();
     assert!(start.conflicting.is_empty(), "{:?}", start.conflicting);
     start.drag.unwrap()
 }
@@ -156,7 +160,7 @@ fn a_drag_ended_on_a_line_of_no_length_leaves_a_sketch_the_closing_solve_refuses
             &mut w,
             Op::DragBegin(DragBegin {
                 system: system.clone(),
-                point: PointOf::End(line),
+                dragged: silico_protocol::Dragged::Point(PointOf::End(line)),
             })
         ),
         Ok(Reply::DragStarted { dofs: 2, .. })
@@ -475,7 +479,7 @@ fn a_violated_dimension_between_fixed_points_beside_a_drag_is_named_or_refused()
     let system = b.system(Algorithm::DogLeg);
     let start = Drag::begin(&DragBegin {
         system,
-        point: PointOf::Point(free),
+        dragged: silico_protocol::Dragged::Point(PointOf::Point(free)),
     })
     .unwrap();
     match start.drag {
@@ -529,7 +533,7 @@ fn a_sketch_with_no_unknowns_says_what_any_fixed_point_says() {
     let system = b.system(Algorithm::DogLeg);
     let start = Drag::begin(&DragBegin {
         system: system.clone(),
-        point: PointOf::Point(fixed),
+        dragged: silico_protocol::Dragged::Point(PointOf::Point(fixed)),
     })
     .unwrap();
     let solved = silico_sketch::solve(&system).unwrap();
@@ -611,12 +615,12 @@ fn a_thousand_begins_in_one_state_each_replace_the_last() {
         let op = if i % 2 == 0 {
             Op::DragBegin(DragBegin {
                 system: line_system.clone(),
-                point: PointOf::End(line),
+                dragged: silico_protocol::Dragged::Point(PointOf::End(line)),
             })
         } else {
             Op::DragBegin(DragBegin {
                 system: arc_system.clone(),
-                point: PointOf::End(arc),
+                dragged: silico_protocol::Dragged::Point(PointOf::End(arc)),
             })
         };
         assert!(matches!(state.handle(op), Ok(Reply::DragStarted { .. })));
@@ -644,7 +648,7 @@ fn a_debug_op_between_moves_leaves_the_drag_alone_and_a_crash_ends_it() {
     let call = |w: &mut Worker, op| w.call(Generation(1), op, WAIT);
     let begin = Op::DragBegin(DragBegin {
         system,
-        point: PointOf::End(line),
+        dragged: silico_protocol::Dragged::Point(PointOf::End(line)),
     });
     assert!(matches!(
         call(&mut w, begin.clone()),
@@ -683,7 +687,7 @@ fn a_worker_killed_mid_drag_is_reported_and_its_successor_has_no_drag() {
             Generation(1),
             Op::DragBegin(DragBegin {
                 system,
-                point: PointOf::End(line),
+                dragged: silico_protocol::Dragged::Point(PointOf::End(line)),
             }),
             WAIT
         ),
@@ -730,7 +734,7 @@ fn a_move_of_the_largest_part_a_drag_admits_is_answered_in_time() {
         Generation(1),
         Op::DragBegin(DragBegin {
             system,
-            point: PointOf::End(last),
+            dragged: silico_protocol::Dragged::Point(PointOf::End(last)),
         }),
         WAIT,
     ) {
@@ -843,7 +847,7 @@ fn a_drag_is_bounded_by_the_part_it_moves_not_the_whole_sketch() {
     assert_eq!(b.part(&[PointOf::End(last)]).unknowns.len(), 257);
     let err = DragBegin {
         system: b,
-        point: PointOf::End(last),
+        dragged: silico_protocol::Dragged::Point(PointOf::End(last)),
     }
     .check()
     .unwrap_err();
@@ -855,7 +859,7 @@ fn a_drag_is_bounded_by_the_part_it_moves_not_the_whole_sketch() {
     // At the limit: admitted.
     DragBegin {
         system,
-        point: PointOf::End(last),
+        dragged: silico_protocol::Dragged::Point(PointOf::End(last)),
     }
     .check()
     .unwrap();
@@ -873,7 +877,7 @@ fn a_drag_is_bounded_by_the_part_it_moves_not_the_whole_sketch() {
     assert_eq!(big.part(&[PointOf::Point(lone)]).unknowns.len(), 2);
     DragBegin {
         system: big,
-        point: PointOf::Point(lone),
+        dragged: silico_protocol::Dragged::Point(PointOf::Point(lone)),
     }
     .check()
     .unwrap();
@@ -912,7 +916,7 @@ fn a_drag_counts_every_part_its_pins_hold() {
     assert_eq!(system.part(&[PointOf::End(last)]).unknowns.len(), 260);
     let err = DragBegin {
         system,
-        point: PointOf::End(last),
+        dragged: silico_protocol::Dragged::Point(PointOf::End(last)),
     }
     .check()
     .unwrap_err();
@@ -948,7 +952,7 @@ fn a_drag_counts_every_part_its_pins_hold() {
     assert_eq!(system.part(&[PointOf::End(arc)]).unknowns.len(), 2);
     let begin = DragBegin {
         system,
-        point: PointOf::End(arc),
+        dragged: silico_protocol::Dragged::Point(PointOf::End(arc)),
     };
     // The end's 2, and the centre's with the chain's: 2 + 256 + 2.
     assert_eq!(begin.part().unknowns.len(), 260);
@@ -1183,7 +1187,7 @@ fn check_drag(seed: u64) -> Result<(), (Broken, String)> {
     let point = points[rng.below(points.len() as u64) as usize];
     let begin = DragBegin {
         system: system.clone(),
-        point,
+        dragged: silico_protocol::Dragged::Point(point),
     };
     let start = Drag::begin(&begin).map_err(|f| (Broken::Refused, format!("{f:?}")))?;
     if (start.dofs, &start.conflicting) != (diagnosis.dofs, &diagnosis.conflicting) {

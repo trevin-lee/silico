@@ -162,7 +162,9 @@ fn a_sketch_solve_or_drag_or_a_render_is_refused_as_another_workers() {
     };
     let begin = silico_protocol::DragBegin {
         system: system.clone(),
-        point: silico_protocol::PointOf::Point(silico_protocol::Geometry(0)),
+        dragged: silico_protocol::Dragged::Point(silico_protocol::PointOf::Point(
+            silico_protocol::Geometry(0),
+        )),
     };
     for (op, name) in [
         (Op::Solve(system), "Solve"),

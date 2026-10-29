@@ -58,7 +58,7 @@ fn two_points() -> DragBegin {
             constraints: vec![],
             algorithms: vec![Algorithm::DogLeg],
         },
-        point: PointOf::Point(Geometry(0)),
+        dragged: silico_protocol::Dragged::Point(PointOf::Point(Geometry(0))),
     }
 }
 
@@ -571,7 +571,7 @@ fn a_begin_that_fails_its_check_is_refused_naming_it_and_sends_nothing() {
     // before any solver is taken.
     let (solvers, started) = pool();
     let mut bad = two_points();
-    bad.point = PointOf::Point(Geometry(5));
+    bad.dragged = PointOf::Point(Geometry(5)).into();
     let e = match begin(&solvers, bad) {
         Err(e) => e,
         Ok(_) => panic!("began"),
@@ -689,7 +689,7 @@ fn a_begin_state_prepared_on_the_drags_solver_takes_no_second_worker() {
     let before = begins(&first);
     let e = match begin_with(&solvers, None, |_| {
         let mut bad = two_points();
-        bad.point = PointOf::Point(Geometry(5));
+        bad.dragged = PointOf::Point(Geometry(5)).into();
         Ok(bad)
     }) {
         Err(e) => e,
