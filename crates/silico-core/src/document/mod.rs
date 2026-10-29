@@ -224,9 +224,18 @@ pub fn schema() -> Result<String, Error> {
 }
 
 /// The JSON Schema of `T` (draft 2020-12), every object's keys sorted: the document's, and
-/// the command API's (`command::wire::snapshot_value`).
+/// the command API's (`command::wire::snapshot_value`). With no `format` keyword anywhere:
+/// schemars names a Rust integer's or float's type in `format` (`uint64`, `uint32`,
+/// `double`), which JSON Schema doesn't define (its formats are all strings', and Silico's
+/// strings have none), so strict validators warn of each (Ajv, the MCP SDKs': one warning
+/// for each such field a `tools/list` names). Each bound is its field's own `range`.
 pub(crate) fn schema_value_of<T: schemars::JsonSchema>() -> serde_json::Value {
     let schema = SchemaSettings::draft2020_12()
+        .with_transform(schemars::transform::RecursiveTransform(
+            |schema: &mut schemars::Schema| {
+                schema.remove("format");
+            },
+        ))
         .into_generator()
         .into_root_schema_for::<T>();
     sorted(schema.as_value())

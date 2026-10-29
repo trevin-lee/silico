@@ -64,7 +64,7 @@ fn moved(sketch: &Sketch, worker: &mut SketchWorker) -> Option<f64> {
         .unwrap()
         .solve(worker)
         .unwrap()
-        .outcome
+        .into_outcome()
         .ok()?;
     Some(
         sketch
@@ -129,7 +129,7 @@ fn side_held(sketch: &Sketch, worker: &mut SketchWorker) -> Option<(f64, f64)> {
         .unwrap()
         .solve(worker)
         .unwrap()
-        .outcome
+        .into_outcome()
         .ok()?;
     let at = |p: &str| solution.point(&id(p)).unwrap();
     let (p0, p7, q0) = (at("p0000000"), at("p0000007"), at("q0000000"));
@@ -204,7 +204,7 @@ fn an_added_conflicting_length_is_found_by_the_solve_naming_it() {
             .unwrap()
             .solve(worker)
             .unwrap()
-            .outcome
+            .into_outcome()
     };
     // Before the add, it solves.
     assert!(solve(&before, &mut worker).is_ok());

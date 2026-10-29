@@ -31,7 +31,6 @@
         },
         "elements_total": {
           "description": "How many elements are at fault, listed or not.",
-          "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
@@ -94,7 +93,6 @@
         },
         "revision": {
           "description": "The revision the model was rebuilt from.",
-          "format": "uint64",
           "minimum": 1,
           "type": "integer"
         }
@@ -196,7 +194,6 @@
         },
         "total": {
           "description": "How many reasons there are, listed or not.",
-          "format": "uint64",
           "minimum": 0,
           "type": "integer"
         }
@@ -228,7 +225,6 @@
         },
         "revision": {
           "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
-          "format": "uint64",
           "minimum": 1,
           "type": "integer"
         },

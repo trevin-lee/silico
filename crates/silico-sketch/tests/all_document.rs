@@ -43,5 +43,7 @@ mod drag;
 mod extend;
 #[path = "sketch_edit.rs"]
 mod sketch_edit;
+#[path = "sketch_states.rs"]
+mod sketch_states;
 #[path = "worker.rs"]
 mod worker;

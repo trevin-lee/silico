@@ -48,7 +48,6 @@
           "direction": {
             "description": "The direction, which needn't be a unit vector, but can't be zero.",
             "items": {
-              "format": "double",
               "type": "number"
             },
             "maxItems": 3,
@@ -185,7 +184,6 @@
       },
       "limit": {
         "description": "How many entries to return, before a tie at the cut.",
-        "format": "uint32",
         "maximum": 1000,
         "minimum": 1,
         "type": "integer"
@@ -480,7 +478,6 @@
           "normal": {
             "description": "A planar face's outward unit normal.",
             "items": {
-              "format": "double",
               "type": "number"
             },
             "maxItems": 3,
@@ -573,7 +570,6 @@
         "properties": {
           "direction": {
             "items": {
-              "format": "double",
               "type": "number"
             },
             "maxItems": 3,
@@ -614,7 +610,6 @@
         "properties": {
           "count": {
             "description": "How many entries are equal there.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
@@ -644,7 +639,6 @@
       },
       "matched": {
         "description": "How many entries matched the filter, before the limit.",
-        "format": "uint64",
         "minimum": 0,
         "type": "integer"
       },

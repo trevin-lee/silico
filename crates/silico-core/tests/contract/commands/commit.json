@@ -49,7 +49,6 @@
           },
           "elements_total": {
             "description": "How many elements are at fault, listed or not.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
@@ -116,7 +115,6 @@
       },
       "problems_total": {
         "description": "How many problems there are, listed or not.",
-        "format": "uint64",
         "minimum": 0,
         "type": "integer"
       },
