@@ -114,9 +114,9 @@ fn a_split_line_agrees_and_freecads_form_is_brought_to_decision_ones() {
         agrees(&v);
         assert!(v.excused.is_empty(), "{v:?}");
         // 1.1.3 joins line pieces with a Coincident, which becomes main's end-to-end
-        // Tangent (:458), and copies the horizontal (and the perpendicular and parallel) to
+        // Tangent (:471), and copies the horizontal (and the perpendicular and parallel) to
         // the second piece, which come off it (:133).
-        assert_eq!(v.modulo, [133, 458], "{}", p.name);
+        assert_eq!(v.modulo, [133, 471], "{}", p.name);
     }
 }
 
@@ -227,7 +227,7 @@ fn only_a_split_construction_circles_pieces_are_excused_their_construction() {
     ]);
     // 1.1.3's circle split drops construction from both arcs, where Silico's keep it (:150):
     // excused, each piece by name, and compared modulo that line, beside decision 3's
-    // joining of 1.1.3's two arcs (:460).
+    // joining of 1.1.3's two arcs (:473).
     let excuse = |piece: &str| {
         format!(
             "Silico's {piece} is construction, FreeCAD's isn't: FreeCAD 1.1.3's split of a construction circle drops it, where Silico's pieces keep it (docs/ports/sketch-edit.md:150)"
@@ -237,7 +237,7 @@ fn only_a_split_construction_circles_pieces_are_excused_their_construction() {
         let v = verdict(&prepared[i], theirs[i].as_ref());
         agrees(&v);
         assert_eq!(v.excused, [excuse("c0000002"), excuse("w0000002")], "{v:?}");
-        assert_eq!(v.modulo, [150, 460], "{v:?}");
+        assert_eq!(v.modulo, [150, 473], "{v:?}");
     }
     // A line's and an arc's pieces keep it in 1.1.3 too: nothing to excuse.
     for i in [1, 2] {
@@ -423,13 +423,13 @@ fn a_refusal_is_excused_only_where_the_note_gives_it() {
         "trim_arc_pick_outside_sweep",
     ]);
     // (2, 3.1) is |3.1 - 3| / √2 = 0.0707 mm off the line y = x + 1: Silico refuses it,
-    // FreeCAD splits at the projection, and decision 4 (:461) says so.
+    // FreeCAD splits at the projection, and decision 4 (:474) says so.
     let v = verdict(&prepared[0], theirs[0].as_ref());
     agrees(&v);
     assert_eq!(v.excused.len(), 1, "{v:?}");
     assert!(
         v.excused[0].starts_with("a split position 7.07106781")
-            && v.excused[0].contains("decision 4, docs/ports/sketch-edit.md:461"),
+            && v.excused[0].contains("decision 4, docs/ports/sketch-edit.md:474"),
         "{v:?}"
     );
     // The same refusal of a position on the line, (2.05, 3.05), far from its ends: nothing in
@@ -459,10 +459,10 @@ fn a_refusal_is_excused_only_where_the_note_gives_it() {
 fn a_cutters_end_freecad_joins_by_tolerance_is_compared_as_decision_five_has_it() {
     let (_, prepared, theirs) = both(&["trim_line_end_as_drawn", "trim_line_end_held"]);
     // Drawn only: FreeCAD's 5e-5 mm test joins the new end to the cutter's start, which
-    // becomes a point on the cutter, as Silico's (:462).
+    // becomes a point on the cutter, as Silico's (:475).
     let v = verdict(&prepared[0], theirs[0].as_ref());
     agrees(&v);
-    assert_eq!(v.modulo, [462]);
+    assert_eq!(v.modulo, [475]);
     // Held by an on: FreeCAD's coincidence is Silico's shared point, as it is.
     let v = verdict(&prepared[1], theirs[1].as_ref());
     agrees(&v);

@@ -917,7 +917,7 @@ pub const KNOWN: &[Known] = &[
     Known {
         case: "merge_two_locked_ends",
         difference: "FreeCAD refused (FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:53): solve -2 with conflicting [], redundant [3, 4], malformed []); Silico made the edit",
-        why: "the two locks agree once the points are one, so Silico's solve keeps them as redundant (M3.3's decision 5) and the merge stands (as the note's own merge tests have a lock merge, :439); FreeCAD's Coincident command rolls back a solve that finds new redundancy (:53); the note says only that a conflict refuses the merge (:277)",
+        why: "the two locks agree once the points are one, so Silico's solve keeps them as redundant (M3.3's decision 5) and the merge stands (as the note's own merge tests have a lock merge, :452); FreeCAD's Coincident command rolls back a solve that finds new redundancy (:53); the note says only that a conflict refuses the merge (:277)",
     },
 ];
 
@@ -1212,7 +1212,7 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
             if let (SilicoSide::Edited(s), Some(Theirs::Edited(fc))) = (&p.silico, theirs) {
                 if let Some(why) = contact_band(p) {
                     v.excused.push(why);
-                    v.modulo.push(463);
+                    v.modulo.push(476);
                     return finish(v);
                 }
                 let merged = merged_apart(p);
@@ -1242,20 +1242,20 @@ fn finish(mut v: Verdict) -> Verdict {
 pub enum Rule {
     /// Splitting a point: the gate's kinds (:153).
     SplitNotCurve,
-    /// A circle split at one position (decision 3, :460).
+    /// A circle split at one position (decision 3, :473).
     SplitCircleAtOne,
-    /// A split position farther than 1e-7 mm off the curve (decision 4, :461), by how far.
+    /// A split position farther than 1e-7 mm off the curve (decision 4, :474), by how far.
     SplitOffCurve(f64),
     /// A split position at, past, or within 1e-7 mm of an end (:153).
     SplitAtEnd,
     /// A split at the end of a curve held `tangent_on` the split one, with an edge `tangent`
     /// between the two, which would then share that end (:152): the constraint.
     SplitEdgeTangent(String),
-    /// Trimming a point (:317).
+    /// Trimming a point (:330).
     TrimPoint,
     /// A trim picked at a round's centre (:222).
     TrimAtCentre,
-    /// A trim leaving a constraint no piece can take (decision 2, :217, :459).
+    /// A trim leaving a constraint no piece can take (decision 2, :217, :472).
     NoPieceTakes(String),
     /// Unjoining a point no other curve shares (decision 9, :239).
     UnjoinUnshared,
@@ -1282,11 +1282,11 @@ impl Rule {
         match self {
             Rule::SplitNotCurve | Rule::SplitAtEnd => vec![153],
             Rule::SplitEdgeTangent(_) => vec![152],
-            Rule::SplitCircleAtOne => vec![460],
-            Rule::SplitOffCurve(_) => vec![461],
-            Rule::TrimPoint => vec![317],
+            Rule::SplitCircleAtOne => vec![473],
+            Rule::SplitOffCurve(_) => vec![474],
+            Rule::TrimPoint => vec![330],
             Rule::TrimAtCentre => vec![222],
-            Rule::NoPieceTakes(_) => vec![217, 459],
+            Rule::NoPieceTakes(_) => vec![217, 472],
             Rule::UnjoinUnshared => vec![239],
             Rule::MergeNamedTwice => vec![272],
             Rule::MergeCollapses => vec![273],
@@ -1574,10 +1574,10 @@ fn near_end(shape: &Shape, curve: &str, end: &str, position: [f64; 2]) -> bool {
 fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
     match rule {
         Rule::SplitCircleAtOne => Some(format!(
-            "a circle split at one position: Silico refuses it (decision 3, {NOTE}:460), FreeCAD makes one arc whose ends aren't joined (:121)"
+            "a circle split at one position: Silico refuses it (decision 3, {NOTE}:473), FreeCAD makes one arc whose ends aren't joined (:121)"
         )),
         Rule::SplitOffCurve(off) => Some(format!(
-            "a split position {off:e} mm off the curve: Silico refuses it (decision 4, {NOTE}:461), FreeCAD splits at its projection (:116)"
+            "a split position {off:e} mm off the curve: Silico refuses it (decision 4, {NOTE}:474), FreeCAD splits at its projection (:116)"
         )),
         Rule::SplitAtEnd => {
             let shortest = fc
@@ -1595,13 +1595,13 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
             "edge tangent {id} with a curve ending at the split point: Silico refuses the split ({NOTE}:152), where FreeCAD's split makes the pieces new ends and never shares the point"
         )),
         Rule::TrimPoint => Some(format!(
-            "a trim of a point: Silico refuses it ({NOTE}:317), FreeCAD 1.1.3 deletes it (:159)"
+            "a trim of a point: Silico refuses it ({NOTE}:330), FreeCAD 1.1.3 deletes it (:159)"
         )),
         Rule::NoPieceTakes(id) => {
             let dropped = !fc.constraints.iter().any(|c| c.name == fc_name(id));
             dropped.then(|| {
                 format!(
-                    "constraint {id} no piece can take: Silico refuses the trim (decision 2, {NOTE}:217, :459), FreeCAD drops it"
+                    "constraint {id} no piece can take: Silico refuses the trim (decision 2, {NOTE}:217, :472), FreeCAD drops it"
                 )
             })
         }
@@ -1639,7 +1639,7 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
 
 /// For a trim, a curve whose gap from the trimmed one, as a tangency, is in decision 6's
 /// band: Silico counts a contact within 1e-7 mm as a cut, FreeCAD 1.1.3's intersector one
-/// within 1e-12 (:463), so the two trim at different cuts and only their outcomes compare.
+/// within 1e-12 (:476), so the two trim at different cuts and only their outcomes compare.
 fn contact_band(p: &Prepared) -> Option<String> {
     let Edit::Trim { curve, .. } = &p.edit else {
         return None;
@@ -1671,7 +1671,7 @@ fn contact_band(p: &Prepared) -> Option<String> {
         };
         (gap > 1e-12 && gap <= LENGTH_TOLERANCE).then(|| {
             format!(
-                "{other} is {gap:e} mm from tangent to {curve}: Silico's trim counts that contact as a cut, FreeCAD 1.1.3's doesn't (decision 6, {NOTE}:463); only the outcomes compared"
+                "{other} is {gap:e} mm from tangent to {curve}: Silico's trim counts that contact as a cut, FreeCAD 1.1.3's doesn't (decision 6, {NOTE}:476); only the outcomes compared"
             )
         })
     })
