@@ -39,5 +39,7 @@ mod document_drag;
 mod drag;
 #[path = "extend.rs"]
 mod extend;
+#[path = "sketch_edit.rs"]
+mod sketch_edit;
 #[path = "worker.rs"]
 mod worker;

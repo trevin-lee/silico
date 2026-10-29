@@ -90,6 +90,17 @@ fn frame_at(begin: &DragBegin, xy: [f64; 2]) -> Moved {
     }
 }
 
+/// An error's code, message, parameter, elements, and suggestion, to compare whole.
+fn said(error: &Error) -> (ErrorCode, &str, Option<&str>, Vec<&str>, Option<&str>) {
+    (
+        error.code(),
+        error.message(),
+        error.parameter(),
+        error.elements().iter().map(String::as_str).collect(),
+        error.suggestion(),
+    )
+}
+
 /// A refusal of the input: InvalidInput, naming `parameter` and `curve`.
 #[track_caller]
 fn refused(result: Result<Edited, Error>, parameter: &str, curve: &str) -> Error {
@@ -498,10 +509,18 @@ fn a_drag_onto_a_neighbours_far_end_is_refused_naming_it_as_the_gate_would() {
         &mut fake,
     )
     .unwrap_err();
-    // Refused as the edit's, naming what the gate names: b0, and the curve extended.
-    assert_eq!(e.parameter(), Some("by"), "{e}");
-    assert!(e.elements().iter().any(|x| x == "b0000000"), "{e}");
-    assert!(e.message().contains("the gate refuses"), "{e}");
+    // Refused as the edit's: the curve extended first, then what the gate names (b0's ends,
+    // then b0), with the edit's suggestion. The fake puts p1 at (12, 0) exactly.
+    assert_eq!(
+        said(&e),
+        (
+            ErrorCode::InvalidInput,
+            "extending a0000000 there would leave a sketch the gate refuses: line b0000000 is 0 mm long, from point p0000001 at (12, 0) to p0000002 at (12, 0): lines and arcs are longer than 1e-7 mm between their ends, as the kernel measures them",
+            Some("by"),
+            vec!["a0000000", "p0000001", "p0000002", "b0000000"],
+            Some("extend it by less, or change what moves with its end"),
+        )
+    );
 }
 
 #[test]
@@ -530,10 +549,25 @@ fn an_arc_turned_onto_a_neighbours_far_end_is_refused_naming_it_as_the_gate_woul
         &mut fake,
     )
     .unwrap_err();
-    // Refused as the edit's, naming what the gate names: b0, and the curve extended.
-    assert_eq!(e.parameter(), Some("by"), "{e}");
-    assert!(e.elements().iter().any(|x| x == "b0000000"), "{e}");
-    assert!(e.message().contains("the gate refuses"), "{e}");
+    // Refused as the edit's: the curve extended first, then what the gate names (b0's ends,
+    // then b0), with the edit's suggestion. b0's length is rounding's, so the message is
+    // matched up to it.
+    let (code, message, parameter, elements, suggestion) = said(&e);
+    assert_eq!(
+        (code, parameter, elements, suggestion),
+        (
+            ErrorCode::InvalidInput,
+            Some("by"),
+            vec!["r0000000", "e0000000", "q0000000", "b0000000"],
+            Some("extend it by less, or change what moves with its end"),
+        )
+    );
+    assert!(
+        message.starts_with(
+            "extending r0000000 there would leave a sketch the gate refuses: line b0000000 is "
+        ),
+        "{message}"
+    );
 }
 
 #[test]

@@ -953,8 +953,9 @@ fn an_edge_tangent_with_a_curve_ending_at_the_split_point_is_refused_naming_it()
     // As the split property found (seed 20261021, the mutants run's): arc c about z0
     // (10, 10) starts at s0 (10, 0), held tangent on a there (k1) and edge tangent to a too
     // (k0, c's centre left of a). Split at s0, the pieces share it, so c and the start-side
-    // piece, which holds the contact, share an end: there an edge tangency is a tangent_at,
-    // as the merge refuses (open item 13 of docs/design/m5.0-app.md).
+    // piece, which holds the contact, share an end: there an edge tangency is a tangent_at.
+    // The split refuses it, where a merge that makes curves share an end converts one (open
+    // item 13 of docs/design/m5.0-app.md).
     let points = r#"{"id": "s0000000", "x": 10, "y": 0, "construction": false}, {"id": "z0000000", "x": 10, "y": 10, "construction": false}, {"id": "z0000001", "x": 20, "y": 10, "construction": false}"#;
     let before = a_line(
         points,
