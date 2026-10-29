@@ -630,9 +630,12 @@ pub struct TimelineAnswer {
     /// The session's revision, whose document the features are: newer than `model` where
     /// the published model is an older revision's.
     pub revision: Revision,
-    /// The revision of the model whose marks the features carry, as the response's
-    /// [`ModelRead`] names it, so a client knows how stale they are: none where none does
-    /// (a document the gate refused, or text that doesn't read), every feature `unknown`.
+    /// The revision of the model read, as the response's [`ModelRead`] names it, so a client
+    /// knows how stale the marks and the bodies are: the model whose marks the features
+    /// carry and whose solids `bodies` are. Always the response's model: none only where it
+    /// names none, a document the gate (or the reader) refused with nothing published, every
+    /// feature `unknown`. Under a refused document, a published model of an older revision
+    /// is named, its bodies given, and no feature marked by it: every one `unknown`.
     pub model: Option<Revision>,
     /// How many problems the gate (or the reader) found in the session's document: 0 for one
     /// the gate took, whose model's problems `check` gives.
@@ -640,8 +643,9 @@ pub struct TimelineAnswer {
     /// The features, in timeline order, with their health; none if the text doesn't read as
     /// a document.
     pub features: Option<Vec<Entry>>,
-    /// The bodies the model has, in timeline order ([`Timeline::bodies`]): none without a
-    /// model.
+    /// The bodies the model has, in timeline order ([`Timeline::bodies`]): under a refused
+    /// document, those of the model's own document ([`crate::timeline::bodies`]), as a
+    /// client still draws them; none without a model.
     pub bodies: Vec<FeatureId>,
 }
 
@@ -650,13 +654,20 @@ impl TimelineAnswer {
     /// ([`Checking::excepted`]): of the model's own document if it's of the session's
     /// revision, or else of the session's document now, the features the model hasn't built
     /// `unknown` ([`crate::timeline::timeline`]); or, if the session's document now is one
-    /// the gate (or the reader) refused, as [`refused`](Self::refused) gives it.
+    /// the gate (or the reader) refused, as [`refused`](Self::refused) gives it, but naming
+    /// the model and its bodies, which a client still draws.
     pub(super) fn of<C>(read: &Read<'_, C>) -> Self {
         let model = read.model();
         let (revision, document) = match read.checking.now() {
             None => (read.read.revision, model.document()),
             Some((revision, Gated::Checked(checked))) => (revision, checked.document()),
-            Some((revision, refused)) => return Self::refused(revision, refused),
+            Some((revision, refused)) => {
+                return TimelineAnswer {
+                    model: Some(read.read.revision),
+                    bodies: crate::timeline::bodies(model),
+                    ..Self::refused(revision, refused)
+                };
+            }
         };
         let Timeline { features, bodies } =
             timeline(document, Some(model), &read.checking.excepted(read.reached));
@@ -672,7 +683,8 @@ impl TimelineAnswer {
     /// The timeline of a session at `revision` whose document the gate or the reader
     /// refused, with no model to mark it (the design's *A refused document*): the document
     /// as read, every feature `unknown`, and the gate's count of its problems; or, for text
-    /// that doesn't read as a document, no features, and the reader's count.
+    /// that doesn't read as a document, no features, and the reader's count. No model, and
+    /// so no bodies.
     pub(super) fn refused(revision: Revision, gated: &Gated) -> Self {
         let features = gated
             .document()

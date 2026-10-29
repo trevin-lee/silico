@@ -593,8 +593,9 @@ fn a_commit_that_writes_nothing_keeps_the_model_at_the_new_revision() {
 // --- Concurrency ----------------------------------------------------------------------------
 
 /// What every timeline answer holds, whatever was running: of the session's revision, its
-/// model no newer and named by the response if it has one, every feature of a document
-/// with no model unknown.
+/// model no newer and named by the response if it has one, every feature of a refused
+/// document unknown (with no model, no bodies; under an older published model, its
+/// bodies).
 #[track_caller]
 fn sound(response: &Response<TimelineAnswer>, choice: ModelChoice) {
     let Ok(answer) = &response.result else {
@@ -613,7 +614,15 @@ fn sound(response: &Response<TimelineAnswer>, choice: ModelChoice) {
             if choice == ModelChoice::Current {
                 assert_eq!(model, answer.revision);
             }
-            assert_eq!(answer.problems, 0);
+            // A refused document under the published model of an older revision: named,
+            // its bodies given, nothing of the document marked.
+            if answer.problems > 0 {
+                assert_eq!(choice, ModelChoice::Published);
+                assert!(model < answer.revision, "{choice:?}");
+                for e in answer.features.iter().flatten() {
+                    assert_eq!((e.health, e.problems, e.warnings), (Health::Unknown, 0, 0));
+                }
+            }
         }
         None => {
             assert!(answer.problems >= 1, "{choice:?}");
@@ -996,15 +1005,24 @@ fn an_older_faulted_model_under_a_refused_document_marks_nothing_of_it() {
     assert_eq!(refused.revision, Revision::from_number(2).unwrap());
     assert_eq!((refused.model, refused.problems), (None, 1));
     // Read beside the queue: revision 1's model is the newest published, but it isn't of
-    // this document, so nothing of it is marked, and the answer is the refused one.
+    // this document, so nothing of it is marked: the refused answer, but naming revision 1's
+    // model, as the response does, and its body, the block (the lug faulted, and the fuse,
+    // stopped by it, built nothing), which a client still draws.
     let published = f.timeline(ModelChoice::Published);
     let read = published.model.clone().unwrap();
     assert_eq!(read.revision, Revision::OPENED);
-    assert_eq!(published.result.unwrap(), refused);
-    // SPEC QUESTION (not asserted either way): the response still names revision 1's model
-    // and its fault on the lug (`read.fault`), beside an answer whose `model` is none and
-    // which marks nothing of it; and the session's `check` of the published model gives
-    // revision 1's problems (none), where the timeline gives the gate's count (1).
+    assert_eq!(
+        published.result.unwrap(),
+        TimelineAnswer {
+            model: Some(Revision::OPENED),
+            bodies: bodies(&[BLOCK]),
+            ..refused
+        }
+    );
+    // SPEC QUESTION (not asserted either way): the response names revision 1's fault on the
+    // lug (`read.fault`) beside an answer that marks nothing of it; and the session's
+    // `check` of the published model gives revision 1's problems (none), where the timeline
+    // gives the gate's count (1).
     let check = f.check(CheckModel::Published);
     assert_eq!(
         check.model.as_ref().map(|m| m.revision),

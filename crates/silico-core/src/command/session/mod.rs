@@ -1091,11 +1091,13 @@ impl<P: Clients + 'static> Sessions<P> {
     /// during an open transaction, the drift and the missing fingerprints of what its edits
     /// reached, which its commit writes).
     ///
-    /// A document the gate refused, with no model to read (the current one, or nothing
-    /// published; or a published model of an older revision, which isn't of this document),
-    /// is answered, not refused: the document as read, every feature `unknown`, and the
-    /// gate's count of problems; text that doesn't read as a document gives no features,
-    /// and the reader's count. Otherwise refused as every read is.
+    /// A document the gate refused is answered, not refused: the document as read, every
+    /// feature `unknown`, and the gate's count of problems; text that doesn't read as a
+    /// document gives no features, and the reader's count. With no model to read (the
+    /// current one, or nothing published), it names none and has no bodies; under a
+    /// published model of an older revision, which marks nothing of this document, it names
+    /// that model and gives its bodies, as a client still draws them. Otherwise refused as
+    /// every read is.
     ///
     /// [`Checking::excepted`]: transaction::Checking::excepted
     pub fn timeline(&self, session: &SessionId, model: ModelChoice) -> Running<TimelineAnswer> {

@@ -279,18 +279,49 @@ fn a_document_the_gate_refuses_is_every_feature_unknown_with_the_gates_count() {
     for choice in ModelChoice::ALL {
         let response = f.timeline(choice);
         assert_eq!(response.model, None, "{choice:?}");
+        // The session the envelope says, beside the queue too: its revision, the answer's.
+        assert_eq!(
+            response.session.as_ref().unwrap().revision,
+            Revision(1),
+            "{choice:?}"
+        );
         assert_eq!(response.result.unwrap(), refused, "{choice:?}");
     }
     assert!(f.kernel.calls().is_empty());
 }
 
 #[test]
+fn a_refused_documents_count_is_every_problem_the_gate_found() {
+    // The block and the lug both 0 long: two problems, one each, `length`.
+    let f = opened(
+        &STORED.replace(r#""length": 40"#, r#""length": 0"#).replace(
+            r#""length": 10, "width": 10"#,
+            r#""length": 0, "width": 10"#,
+        ),
+    );
+    for choice in ModelChoice::ALL {
+        assert_eq!(
+            f.timeline(choice).result.unwrap(),
+            TimelineAnswer {
+                revision: Revision(1),
+                model: None,
+                problems: 2,
+                features: Some(stored([UNKNOWN; 3])),
+                bodies: vec![],
+            },
+            "{choice:?}"
+        );
+    }
+}
+
+#[test]
 fn a_document_refused_since_the_published_model_is_every_feature_unknown() {
     // Revision 1's model is published; the file is then changed outside the session to
     // leave the block 0 long, which the gate refuses, and the current timeline's command
-    // reloads it, at revision 2. The published model, revision 1's, isn't of this document:
-    // every feature is unknown, the result naming no model, and none of revision 1's marks
-    // (the block's drift) shown.
+    // reloads it, at revision 2: no model of it, so none named and no bodies. The published
+    // model, revision 1's, isn't of this document: every feature is unknown, none of
+    // revision 1's marks (the block's drift) shown; but the timeline names it, as the
+    // response does, and gives its body, the fuse, which a client still draws.
     let f = opened(STORED);
     assert_eq!(
         f.timeline(ModelChoice::Current).result.unwrap().model,
@@ -321,7 +352,14 @@ fn a_document_refused_since_the_published_model_is_every_feature_unknown() {
             fault: None,
         })
     );
-    assert_eq!(published.result.unwrap(), refused);
+    assert_eq!(
+        published.result.unwrap(),
+        TimelineAnswer {
+            model: Some(Revision(1)),
+            bodies: vec![id("f0000001")],
+            ..refused
+        }
+    );
 }
 
 #[test]
@@ -382,4 +420,91 @@ fn a_timeline_is_named_by_status_and_stopped_by_cancel_queued_or_read_beside_the
     // No transport names it yet.
     assert_eq!(SessionCommand::Timeline.command(), None);
     assert!(!ReadCommand::ALL.contains(&ReadCommand::Timeline));
+}
+
+/// The lug 20 long (revision 2), its model published by a current timeline, then the block
+/// 50 long (revision 3), its rebuild held, all in one transaction: so the published model is
+/// revision 2's, older than the session's, and what revision 2's edit reached (the lug and
+/// the fuse) is excepted as a check of it excepts it.
+fn older_with_the_lug_reached(f: &Fixture) -> crate::fake::Hold {
+    f.begin();
+    assert_eq!(f.edit(&longer()), Revision(2));
+    assert_eq!(
+        f.timeline(ModelChoice::Current).result.unwrap().model,
+        Some(Revision(2))
+    );
+    let hold = f.kernel.hold(
+        |op| matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx > 45.0 && *dx < 55.0),
+    );
+    assert_eq!(
+        f.edit(&longer().replace(r#""length": 40"#, r#""length": 50"#)),
+        Revision(3)
+    );
+    hold
+}
+
+#[test]
+fn an_older_published_model_excepts_what_its_revisions_edits_reached() {
+    // Revision 2's model under revision 3's document. Revision 2's check: the block drifts
+    // (8000.000001 stored, 8000 built); the lug's (1000 stored, 2000 built) and the fuse's
+    // (9000 stored, 10000 built) drift is excepted, revision 2's edit having reached them.
+    // Revision 3 changed the block, so it and the fuse that uses it are unknown; the lug,
+    // unchanged since, is as revision 2's check has it, healthy. The fuse, which revision 2
+    // built and nothing consumes, is the body.
+    let f = opened(STORED);
+    let hold = older_with_the_lug_reached(&f);
+    let check = f.sessions.check(&f.id, CheckModel::Published).wait();
+    assert_eq!(check.model.as_ref().unwrap().revision, Revision(2));
+    assert_eq!(
+        checked_as(&check.result.unwrap()),
+        (vec![(ErrorCode::Drift, "k7f2qx3m".to_owned())], vec![])
+    );
+    let response = f.timeline(ModelChoice::Published);
+    assert_eq!(response.model.as_ref().unwrap().revision, Revision(2));
+    assert_eq!(
+        response.result.unwrap(),
+        answer(3, 2, stored([UNKNOWN, HEALTHY, UNKNOWN]), &["f0000001"])
+    );
+    hold.release();
+}
+
+#[test]
+fn an_older_published_model_spares_a_fingerprint_the_document_stores_now() {
+    // Revision 1's model, built from a document with no fingerprint for the lug, under
+    // revision 2's, whose edit stores the lug's (1000, area 600, as the fake measures it:
+    // a fingerprint, which changes nothing the model builds) and makes the block 50 long
+    // (held, so revision 2's rebuild never publishes). Its check doesn't warn of the lug's
+    // missing fingerprint, which the session's document stores now: the lug is healthy, as
+    // revision 1's model marks it. The block changed since, so it and the fuse are unknown.
+    let f = opened(&unprinted());
+    assert_eq!(
+        f.timeline(ModelChoice::Current).result.unwrap(),
+        answer(
+            1,
+            1,
+            stored([DRIFTED, (Health::Warning, 0, 1), HEALTHY]),
+            &["f0000001"]
+        )
+    );
+    f.begin();
+    let hold = f.kernel.hold(
+        |op| matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx > 45.0 && *dx < 55.0),
+    );
+    assert_eq!(
+        f.edit(&STORED.replace(r#""length": 40"#, r#""length": 50"#)),
+        Revision(2)
+    );
+    let check = f.sessions.check(&f.id, CheckModel::Published).wait();
+    assert_eq!(check.model.as_ref().unwrap().revision, Revision(1));
+    assert_eq!(
+        checked_as(&check.result.unwrap()),
+        (vec![(ErrorCode::Drift, "k7f2qx3m".to_owned())], vec![])
+    );
+    let response = f.timeline(ModelChoice::Published);
+    assert_eq!(response.model.as_ref().unwrap().revision, Revision(1));
+    assert_eq!(
+        response.result.unwrap(),
+        answer(2, 1, stored([UNKNOWN, HEALTHY, UNKNOWN]), &["f0000001"])
+    );
+    hold.release();
 }
