@@ -64,6 +64,24 @@
           },
           "code": {
             "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+            "enum": [
+              "invalid_input",
+              "kernel_failed",
+              "worker_crashed",
+              "worker_timeout",
+              "protocol_error",
+              "internal",
+              "invalid_result",
+              "resource_exhausted",
+              "drift",
+              "io_failed",
+              "reference_broken",
+              "over_constrained",
+              "solve_failed",
+              "conflict",
+              "worker_unavailable",
+              "cancelled"
+            ],
             "type": "string"
           },
           "elements": {
@@ -137,6 +155,12 @@
           },
           "code": {
             "description": "What kind of warning it is: one of Silico's warning codes, listed in\n`warning-codes.txt`, such as `ends_not_joined`.",
+            "enum": [
+              "ends_not_joined",
+              "constraints_redundant",
+              "fingerprint_missing",
+              "constraints_partially_redundant"
+            ],
             "type": "string"
           },
           "elements": {

@@ -55,7 +55,7 @@ use crate::document::{
     NumberError, PROBLEMS_LISTED, Position, Sketch,
 };
 use crate::warnings::Warnings;
-use crate::{Error, ErrorCode, Said, Warning};
+use crate::{Error, ErrorCode, Said, Warning, WarningCode};
 
 pub use crate::document::write::{Layout, TooLong};
 
@@ -1495,6 +1495,28 @@ fn close(schema: &mut serde_json::Map<String, serde_json::Value>) {
     }
 }
 
+/// An error's `code`: one of Silico's error codes, every one, in their order
+/// ([`ErrorCode::ALL`], which `error-codes.txt` is checked against), so an agent finds them in
+/// the schema it reads, and a code appended there is in the schema with it.
+fn error_code_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    codes(ErrorCode::ALL.iter().map(|code| code.as_str()))
+}
+
+/// A warning's `code`: one of Silico's warning codes, every one, in their order
+/// ([`WarningCode::ALL`], which `warning-codes.txt` is checked against).
+fn warning_code_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    codes(WarningCode::ALL.iter().map(|code| code.as_str()))
+}
+
+/// A string schema of one of `codes`, in order.
+fn codes(codes: impl IntoIterator<Item = &'static str>) -> schemars::Schema {
+    let codes: Vec<&str> = codes.into_iter().collect();
+    schemars::json_schema!({
+        "type": "string",
+        "enum": codes,
+    })
+}
+
 /// Why a command was refused, or a problem it found, in Silico's error contract: a code, a
 /// message, and, where they apply, the feature, the elements at fault (the first of them, and
 /// how many in all), the request's field at fault, the cause, what to do, and the names that
@@ -1504,6 +1526,7 @@ fn close(schema: &mut serde_json::Map<String, serde_json::Value>) {
 #[schemars(rename = "Error", transform = wire_shape)]
 pub struct ErrorSchema {
     /// What kind of error it is: one of Silico's error codes, such as `invalid_input`.
+    #[schemars(schema_with = "error_code_schema")]
     pub code: String,
     /// What went wrong, in a sentence.
     pub message: String,
@@ -1533,6 +1556,7 @@ pub struct ErrorSchema {
 pub struct WarningSchema {
     /// What kind of warning it is: one of Silico's warning codes, listed in
     /// `warning-codes.txt`, such as `ends_not_joined`.
+    #[schemars(schema_with = "warning_code_schema")]
     pub code: String,
     /// What was found, in a sentence.
     pub message: String,

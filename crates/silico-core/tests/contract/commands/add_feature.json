@@ -1581,6 +1581,24 @@
           },
           "code": {
             "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+            "enum": [
+              "invalid_input",
+              "kernel_failed",
+              "worker_crashed",
+              "worker_timeout",
+              "protocol_error",
+              "internal",
+              "invalid_result",
+              "resource_exhausted",
+              "drift",
+              "io_failed",
+              "reference_broken",
+              "over_constrained",
+              "solve_failed",
+              "conflict",
+              "worker_unavailable",
+              "cancelled"
+            ],
             "type": "string"
           },
           "elements": {

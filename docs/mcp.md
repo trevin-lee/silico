@@ -82,7 +82,7 @@ Every tool answers with its command's envelope, as `structuredContent` and as th
 
 Each error says:
 
-- `code`: one of [the codes](../crates/silico-core/tests/contract/error-codes.txt), never renamed;
+- `code`: one of [the codes](../crates/silico-core/tests/contract/error-codes.txt), never renamed, which every tool's output schema lists (`enum`), as `check`'s lists the warnings' codes;
 - `message`;
 - the `feature` and the `elements` at fault (the first 100, with `elements_total`);
 - the request's `parameter` at fault;
