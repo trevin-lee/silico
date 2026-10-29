@@ -1290,6 +1290,81 @@ mod tests {
         assert_eq!(w.walk(&init.join("cwd")), Walked::Out);
     }
 
+    #[cfg(target_os = "linux")]
+    const BIND_ENV: &str = "SILICO_FILE_TEST_BIND";
+
+    /// Not a test of its own: run by [`the_way_to_the_root_by_a_bind_mount_of_it_goes_on_to_it`]
+    /// in a user and mount namespace of its own, with [`BIND_ENV`] set. Run normally, it does
+    /// nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bind_entry() {
+        use std::os::unix::fs::MetadataExt as _;
+        let Some(top) = std::env::var_os(BIND_ENV) else {
+            return;
+        };
+        let top = std::fs::canonicalize(top).unwrap();
+        let (root, alias) = (top.join("work"), top.join("alias"));
+        // `alias` is `work` mounted there: one directory, its device and inode, by two names.
+        let (r, a) = (
+            std::fs::symlink_metadata(&root).unwrap(),
+            std::fs::symlink_metadata(&alias).unwrap(),
+        );
+        assert_eq!(
+            (a.dev(), a.ino()),
+            (r.dev(), r.ino()),
+            "the bind mount isn't the workspace's directory"
+        );
+        let w = Workspace::new(&root).unwrap();
+        assert_eq!(w.walk(&alias.join("part.silico")), Walked::In);
+        assert_eq!(w.walk(&alias), Walked::In);
+        // Said only past every check, so the run outside can tell it from the early return.
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), b"bind checked\n");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_way_to_the_root_by_a_bind_mount_of_it_goes_on_to_it() {
+        // Found by the M4 milestone's mutation run: going on only by the root's own name (the
+        // device and inode check dropped, or required beside the name) passed every test.
+        // The workspace's directory bound at a second name, in a user and mount namespace of
+        // the test's own (`unshare -Urm`, as an unprivileged user may, as
+        // `a_file_on_another_device_with_a_held_documents_inode_is_another_file` does): the
+        // walk goes on through that name, the same directory, as through the root's own. Run
+        // in [`bind_entry`], this binary run again inside the namespace after the shell there
+        // makes the mount. A namespace that can't be made fails the test, saying why.
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["work", "alias"] {
+            std::fs::create_dir(dir.path().join(name)).unwrap();
+        }
+        let me = std::env::current_exe().unwrap();
+        let run = std::process::Command::new("unshare")
+            .args(["-Urm", "sh", "-c"])
+            .arg(
+                "mount --bind \"$1\" \"$2\" && \
+                 exec \"$0\" --exact file::tests::bind_entry --nocapture --test-threads=1",
+            )
+            .arg(&me)
+            .arg(dir.path().join("work"))
+            .arg(dir.path().join("alias"))
+            .env(BIND_ENV, dir.path())
+            .output()
+            .unwrap_or_else(|e| panic!("unshare couldn't be run: {e}"));
+        let (out, err) = (
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr),
+        );
+        assert!(
+            run.status.success(),
+            "{}\nstdout:\n{out}\nstderr:\n{err}",
+            run.status
+        );
+        assert!(
+            out.contains("test file::tests::bind_entry ... ok") && err.contains("bind checked"),
+            "stdout:\n{out}\nstderr:\n{err}"
+        );
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn the_way_to_the_root_by_another_spelling_of_the_same_directory_goes_on_to_it() {
