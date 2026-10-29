@@ -715,6 +715,33 @@ fn a_curve_tangent_to_itself_makes_no_pair_with_an_on_of_its_end_on_it() {
 }
 
 #[test]
+fn an_on_after_two_tangents_it_pairs_with_names_the_first() {
+    // Two edge tangents of nz and ca, the circle named first in the first, then the `on`
+    // holding nz's end on ca: refused once, at the `on`, naming the earlier tangent.
+    only(
+        &ending_on_the_circle(
+            r#"{"id": "k0000000", "type": "tangent", "a": "ca000000", "b": "nz000000", "side": "left"}, {"id": "k0000001", "type": "tangent", "a": "nz000000", "b": "ca000000", "side": "right"}, {"id": "k0000002", "type": "on", "point": "pt000000", "curve": "ca000000"}"#,
+        ),
+        "constraints.k0000002.point",
+        "which constraint k0000000 makes nz000000 edge tangent to",
+    );
+}
+
+#[test]
+fn a_tangent_after_both_of_its_lines_ends_held_on_the_curve_names_the_earliest_on() {
+    // nz's end pt held on ca (k0000000), then its start pz (k0000001), then the tangent:
+    // refused at the tangent, naming the earlier `on` and its point, though pz comes first
+    // among nz's ends.
+    only(
+        &ending_on_the_circle(
+            r#"{"id": "k0000000", "type": "on", "point": "pt000000", "curve": "ca000000"}, {"id": "k0000001", "type": "on", "point": "pz000000", "curve": "ca000000"}, {"id": "k0000002", "type": "tangent", "a": "nz000000", "b": "ca000000", "side": "right"}"#,
+        ),
+        "constraints.k0000002.b",
+        "a tangent's nz000000 ends at point pt000000, which constraint k0000000 puts on ca000000",
+    );
+}
+
+#[test]
 fn the_tangent_rule_answers_each_pair_among_thousands_of_tangents_and_ons() {
     // 2,000 lines n_i from p_i (-20, i) to q_i (0, i), each edge tangent to circle ca (k_i)
     // and with its start held on circle cb (m_i): no pair, since each `on` holds the line's

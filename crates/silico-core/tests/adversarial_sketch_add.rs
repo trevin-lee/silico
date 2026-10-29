@@ -651,7 +651,7 @@ fn batch() -> impl Strategy<Value = Batch> {
         prop::collection::vec((idp.clone(), r.clone(), r.clone()), 0..4),
         prop::collection::vec((idp.clone(), r.clone(), 0usize..64), 0..3),
         prop::collection::vec((idp.clone(), r.clone(), r.clone(), r.clone()), 0..3),
-        prop::collection::vec((idp, 0u8..9, r.clone(), r.clone(), r, 0usize..4), 0..6),
+        prop::collection::vec((idp, 0u8..9, r.clone(), r.clone(), r, 0usize..8), 0..6),
     )
         .prop_map(|(points, lines, circles, arcs, constraints)| Batch {
             points,
@@ -754,7 +754,7 @@ impl Batch {
             .enumerate()
             .map(|(n, &(idp, kind, x, y, z, v))| {
                 let k = member_id('k', n, idp);
-                let value = [3.0, 10.0, 0.0, 2_000_000.0][v % 4];
+                let value = [3.0, 10.0, 0.0, 2_000_000.0, 2.75, 81.370787, 0.5, 0.001][v];
                 let side = ["left", "right", "outside", "inside"][v % 4];
                 let direction = ["same", "opposite"][v % 2];
                 let (cx, cy, pz) = (c(x), c(y), p(z));

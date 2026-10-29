@@ -582,3 +582,101 @@ fn a_limit_the_batch_passes_is_refused_at_the_last_of_its_lists_that_added_to_it
     );
     assert_eq!(parameters(&two), ["circles"]);
 }
+
+#[test]
+fn values_that_arent_whole_millimetres_are_added_exactly() {
+    // A point off the whole millimetres, a circle of radius 0.75 about it, a length of
+    // 81.370787 mm on na, and a radius of 0.000001 mm (1 nm, the resolution) on the
+    // circle: each stored as given, to the nanometre and the bit.
+    let before = base();
+    let batch = members(
+        r#"{"id": "pz000001", "x": 12.345678901, "y": 0.1, "construction": false}"#,
+        "",
+        r#"{"id": "cz000001", "center": "pz000001", "radius": 0.75, "construction": false}"#,
+        "",
+        r#"{"id": "kz000001", "type": "length", "line": "na000000", "value": 81.370787, "driving": true}, {"id": "kz000002", "type": "radius", "curve": "cz000001", "value": 0.000001, "driving": true}"#,
+    );
+    let edited = add(sketch_of(&before), &batch).unwrap();
+    let after = gated(&before, &edited);
+    let sketch = sketch_of(&after);
+    let point = sketch
+        .points
+        .iter()
+        .find(|p| p.id == id("pz000001"))
+        .unwrap();
+    assert_eq!((point.x.mm(), point.y.mm()), (12.345678901, 0.1));
+    assert_eq!(sketch.circles[1].radius.mm(), 0.75);
+    let form = |k: &str| {
+        &sketch
+            .constraints
+            .iter()
+            .find(|c| c.id == id(k))
+            .unwrap()
+            .form
+    };
+    match form("kz000001") {
+        Form::Length { value, .. } => assert_eq!(value.nm(), 81_370_787),
+        other => panic!("{other:?}"),
+    }
+    match form("kz000002") {
+        Form::Radius { value, .. } => assert_eq!(value.nm(), 1),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn two_limits_passed_at_once_are_each_refused_at_the_list_that_added_to_it() {
+    // 511 points p0..p510 at (i, 0), line na from p0 to p1, and 8,900 driving lengths on na:
+    // 2 × 511 = 1,022 unknowns (the solver takes 1,024), 1,022 + 8,900 + 6 = 9,928 values
+    // (10,000), 8,900 constraints (10,000), 511 + 1 + 3 = 515 geometry (10,000): taken.
+    // Two points and 100 lengths more: 1,026 unknowns, past at `points`, the only list
+    // adding unknowns; and 1,026 + 9,000 + 6 = 10,032 values, past at `constraints`, the
+    // last list adding values. 9,000 constraints and 517 geometry stay within.
+    let points: Vec<String> = (0..511)
+        .map(|i| format!(r#"{{"id": "p{i:07}", "x": {i}, "y": 0, "construction": false}}"#))
+        .collect();
+    let lengths = |from: usize, n: usize, prefix: char| -> Vec<String> {
+        (from..from + n)
+            .map(|i| {
+                format!(
+                    r#"{{"id": "{prefix}{i:07}", "type": "length", "line": "na000000", "value": 1, "driving": true}}"#
+                )
+            })
+            .collect()
+    };
+    let before = read(
+        document(&fields(
+            &points.join(", "),
+            r#"{"id": "na000000", "from": "p0000000", "to": "p0000001", "construction": false}"#,
+            "",
+            "",
+            &lengths(0, 8_900, 'k').join(", "),
+        ))
+        .as_bytes(),
+    )
+    .unwrap();
+    validate(&before).unwrap();
+    let batch = members(
+        r#"{"id": "pz000001", "x": 0, "y": 1, "construction": false}, {"id": "pz000002", "x": 0, "y": 2, "construction": false}"#,
+        "",
+        "",
+        "",
+        &lengths(0, 100, 'm').join(", "),
+    );
+    let refused = refused(sketch_of(&before), &batch);
+    assert_eq!(parameters(&refused), ["points", "constraints"]);
+    assert!(
+        refused.errors[0]
+            .message()
+            .starts_with("the sketch has 1026 unknowns"),
+        "{}",
+        refused.errors[0].message()
+    );
+    assert!(
+        refused.errors[1]
+            .message()
+            .starts_with("the sketch has 10032 values"),
+        "{}",
+        refused.errors[1].message()
+    );
+}
