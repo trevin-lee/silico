@@ -860,7 +860,10 @@ impl Diagnosis {
     /// unknowns are 2 a point (x and y), 1 a circle (its radius), and 3 an arc (its radius r
     /// and angles a and b), each counted once by ID; `arc_rules_rank` gives the rank, and why.
     pub fn untranslated(sketch: &Sketch) -> Self {
-        let points: BTreeSet<&ElementId> = sketch.points.iter().map(|p| &p.id).collect();
+        let mut points: BTreeMap<&ElementId, [f64; 2]> = BTreeMap::new();
+        for p in &sketch.points {
+            points.entry(&p.id).or_insert([p.x.mm(), p.y.mm()]);
+        }
         let circles: BTreeSet<&ElementId> = sketch.circles.iter().map(|c| &c.id).collect();
         let mut arcs: BTreeMap<&ElementId, &SketchArc> = BTreeMap::new();
         for a in &sketch.arcs {
@@ -870,7 +873,7 @@ impl Diagnosis {
         // and 1 a circle, less the rank past those. That's never below 0 for a sketch the gate
         // has passed (`arc_rules_rank`); one it never saw, whose arcs name points it hasn't,
         // is held at 0. The gate holds a sketch to far fewer members than these count.
-        let rank = arc_rules_rank(arcs.values().copied());
+        let rank = arc_rules_rank(arcs.values().copied(), &points);
         let count = |n: usize| i64::try_from(n).unwrap_or(i64::MAX);
         let dofs = count(points.len())
             .saturating_mul(2)
@@ -878,7 +881,7 @@ impl Diagnosis {
             .saturating_sub(count(rank))
             .max(0);
         let free = points
-            .into_iter()
+            .into_keys()
             .chain(circles)
             .chain(arcs.into_keys())
             .cloned()
@@ -891,7 +894,17 @@ impl Diagnosis {
     }
 }
 
-/// The rank, past each arc's 3, of `arcs`' rules ([`Diagnosis::untranslated`]).
+/// PlaneGCS's threshold for a pivot of its diagnosis's QR to count toward the rank, beside
+/// the largest pivot: `qrpivotThreshold(1E-13)` in `System`'s constructor (GCS.cpp:490, in
+/// third_party/planegcs), set on the dense `FullPivHouseholderQR` of the transposed
+/// Jacobian (`qrJT.setThreshold`, :5086). PlaneGCS takes that QR below 1000 unknowns
+/// (`autoQRThreshold`, :4817), and a sparse one, with the same threshold, from there to the
+/// gate's 1024; the sparse one can miss a repetition the dense one finds (FreeCAD #10903),
+/// and Silico counts as the dense one does.
+const QR_PIVOT_THRESHOLD: f64 = 1e-13;
+
+/// The rank, past each arc's 3, of `arcs`' rules where `points` are drawn
+/// ([`Diagnosis::untranslated`]).
 ///
 /// An arc about centre C from S to E has 4 rules (`addConstraintArcRules`, two
 /// `CurveValue`s): S = C + r·u(a) and E = C + r·u(b), in x and y, u(t) = (cos t, sin t).
@@ -900,117 +913,130 @@ impl Diagnosis {
 /// free of all three, u(a)·(the first two) − u(b)·(the last two): the gradient of
 /// |S − C| − |E − C|, u(a) on S, −u(b) on E, and u(b) − u(a) on C. No other arc has a
 /// column in r, a, or b, so the rules' rank is 3 an arc and the rank of those
-/// combinations, and only they can repeat each other. Each angle is the direction its end is
-/// drawn in from the centre (`arc_from_points`), so each combination is
-/// d(C, S) − d(C, E), d the distance between two points: a difference of two distances,
-/// whichever arc it is. Two things make the combinations repeat:
+/// combinations, one row an arc, two columns a point; and only they can repeat each other.
+/// Each angle is the direction its end is drawn in from the centre (`arc_from_points`'s
+/// `atan2`, 0 for an end drawn on the centre). So two halves of a circle on three points,
+/// one from S to E about C and one from E back to S, give rows that sum to zero, an arc
+/// drawn twice repeats its own, and arcs about different centres repeat each other where
+/// their distances do, as the drawing has them: the rank is the matrix's, worked out as
+/// PlaneGCS works out its own ([`rank`]). An arc that names a point the sketch hasn't, which
+/// only a sketch the gate never saw can, counts its 4 rules, as a lone arc's; one of no
+/// radius, which the gate refuses, is counted as if it had one.
 ///
-/// - **One distance.** The combinations are differences of a potential along the edges of
-///   a graph whose vertices are distances, pairs of points {C, S} and {C, E}, and whose
-///   edges are the arcs. Around each cycle they sum to zero: two halves of a circle on three
-///   points, one from S to E about C and one from E back to S, are
-///   (d(C, S) − d(C, E)) + (d(C, E) − d(C, S)) = 0, and an arc drawn twice repeats its own.
-///   The pair is unordered: an arc about P through Q and one about Q through P share
-///   d(P, Q). So the graph's rank is its vertices less its components.
-/// - **Moving the points rigidly.** A translation or rotation of a set of points no arc
-///   joins to the rest, its arcs' angles turning with it, keeps every distance, and so
-///   every rule: each such set's combinations are at right angles to its 3 rigid motions,
-///   so their rank is at most 2 its points less 3. Five points, each the centre of three
-///   arcs that join the other four, give 10 distances in one component, a rank of 9 by
-///   the first, and PlaneGCS a rank of 7, 2·5 − 3 (silico-sketch's tests/sketch_states.rs).
-///
-/// The rank is the lesser of the two, for each set of points the arcs join. That's
-/// PlaneGCS's own wherever the distances the arcs read are independent of each other, as
-/// they are unless arcs read more distances among some n points than 2n − 3, and the drawing
-/// is in general position: the worker agrees on every generated drawing of up to five
-/// points and twelve arcs (silico-sketch's tests/sketch_states.rs). Past that, distances
-/// that repeat among a few points while the whole set is still free can repeat the
-/// combinations once more (six points and ten arcs can), and so can points drawn in line
-/// with a centre (an arc's end and another arc's centre in one direction from it); this
-/// count doesn't see those, and reads fewer degrees of freedom there than PlaneGCS does.
 /// So a lone arc counts 6 + 3 − (3 + 1) = 5, FreeCAD 1.1.3's DoF for it; two halves of
-/// a circle on three points, 6 + 6 − (6 + 1) = 5 (two distances, two edges: rank 1),
-/// FreeCAD's too; one arc drawn n times on its three points, 5 (two distances, rank 1);
-/// three arcs round one centre, end to end, 8 + 9 − (9 + 2) = 6, the centre, the radius,
-/// and the three points' angles. The rank is less than 2 a point the arcs name, so the
-/// diagnosis's `dofs` is never negative, as PlaneGCS's never is.
-fn arc_rules_rank<'a>(arcs: impl Iterator<Item = &'a SketchArc>) -> usize {
-    let pair = |p: &'a ElementId, q: &'a ElementId| if p <= q { (p, q) } else { (q, p) };
-    let mut distances = Forest::default();
-    let mut joined = Forest::default();
+/// a circle on three points, 6 + 6 − (6 + 1) = 5, FreeCAD's too; one arc drawn n times on
+/// its three points, 5; three arcs round one centre, end to end, 8 + 9 − (9 + 2) = 6, the
+/// centre, the radius, and the three points' angles. The rows never move a set of points
+/// rigidly, so their rank is less than 2 a point they name, and the diagnosis's `dofs` is
+/// never negative, as PlaneGCS's never is.
+fn arc_rules_rank<'a>(
+    arcs: impl Iterator<Item = &'a SketchArc>,
+    points: &BTreeMap<&'a ElementId, [f64; 2]>,
+) -> usize {
+    // One column of the transposed matrix an arc, as PlaneGCS transposes its Jacobian; one
+    // row each coordinate of the points the arcs name, in the order the arcs, by ID, name
+    // them.
+    let mut named: BTreeMap<&ElementId, usize> = BTreeMap::new();
+    let mut columns: Vec<[(usize, [f64; 2]); 3]> = Vec::new();
+    let mut unplaced = 0;
     for a in arcs {
-        distances.join(pair(&a.center, &a.start), pair(&a.center, &a.end));
-        joined.join(&a.center, &a.start);
-        joined.join(&a.center, &a.end);
+        let (Some(&c), Some(&s), Some(&e)) = (
+            points.get(&a.center),
+            points.get(&a.start),
+            points.get(&a.end),
+        ) else {
+            unplaced += 1;
+            continue;
+        };
+        let direction = |p: [f64; 2]| {
+            let t = libm::atan2(p[1] - c[1], p[0] - c[0]);
+            [libm::cos(t), libm::sin(t)]
+        };
+        let (us, ue) = (direction(s), direction(e));
+        let mut row = |id: &'a ElementId| {
+            let next = named.len();
+            *named.entry(id).or_insert(next)
+        };
+        columns.push([
+            (row(&a.start), us),
+            (row(&a.end), [-ue[0], -ue[1]]),
+            (row(&a.center), [ue[0] - us[0], ue[1] - us[1]]),
+        ]);
     }
-    // For each set of points the arcs join: its distances, the roots among them, and its
-    // points.
-    let mut sets: BTreeMap<&ElementId, (usize, BTreeSet<_>, BTreeSet<&ElementId>)> =
-        BTreeMap::new();
-    for d in distances.members() {
-        let set = sets.entry(joined.root(d.0)).or_default();
-        set.0 += 1;
-        set.1.insert(distances.root(d));
-        set.2.extend([d.0, d.1]);
-    }
-    sets.values()
-        .map(|(distances, roots, points)| {
-            (distances - roots.len()).min((2 * points.len()).saturating_sub(3))
+    let rows = 2 * named.len();
+    let matrix = columns
+        .iter()
+        .map(|entries| {
+            let mut column = vec![0.0; rows];
+            for &(point, [x, y]) in entries {
+                column[2 * point] += x;
+                column[2 * point + 1] += y;
+            }
+            column
         })
-        .sum()
+        .collect();
+    rank(matrix) + unplaced
 }
 
-/// A union–find over `K`s: each joined set's members, and a root that stands for it.
-struct Forest<K> {
-    /// Each member's parent; a root has none.
-    parents: BTreeMap<K, K>,
-    /// Each root's set's size, and each member that's been joined to anything.
-    sizes: BTreeMap<K, usize>,
-}
-
-impl<K> Default for Forest<K> {
-    fn default() -> Self {
-        Forest {
-            parents: BTreeMap::new(),
-            sizes: BTreeMap::new(),
+/// The rank of `matrix`, its columns each as long, as Eigen's `FullPivHouseholderQR` gives
+/// PlaneGCS its own: each step takes the largest entry left, moved to the diagonal (the
+/// first of equals, a column at a time), reflects the rest of its column away
+/// (Householder), and stops at a corner of zeros; the rank is the number of diagonal entries
+/// larger than [`QR_PIVOT_THRESHOLD`] times the largest pivot taken. One thread, in a fixed
+/// order, so the same matrix always gives the same rank.
+fn rank(mut matrix: Vec<Vec<f64>>) -> usize {
+    let rows = matrix.first().map_or(0, Vec::len);
+    let mut diagonal = Vec::new();
+    let mut largest = 0.0f64;
+    for k in 0..rows.min(matrix.len()) {
+        let mut pivot = (0.0, k, k);
+        for (c, column) in matrix.iter().enumerate().skip(k) {
+            for (r, v) in column.iter().enumerate().skip(k) {
+                if v.abs() > pivot.0 {
+                    pivot = (v.abs(), r, c);
+                }
+            }
         }
-    }
-}
-
-impl<K: Ord + Copy> Forest<K> {
-    /// `k`'s root, each member on the way pointed at it.
-    fn root(&mut self, k: K) -> K {
-        let mut root = k;
-        while let Some(&p) = self.parents.get(&root) {
-            root = p;
+        let (biggest, pr, pc) = pivot;
+        if biggest == 0.0 {
+            break;
         }
-        let mut v = k;
-        while let Some(&p) = self.parents.get(&v) {
-            self.parents.insert(v, root);
-            v = p;
+        largest = largest.max(biggest);
+        matrix.swap(k, pc);
+        for column in matrix.iter_mut().skip(k) {
+            column.swap(k, pr);
         }
-        root
-    }
-
-    /// `a`'s set and `b`'s, joined: the smaller under the larger.
-    fn join(&mut self, a: K, b: K) {
-        let (a, b) = (self.root(a), self.root(b));
-        let (na, nb) = (
-            *self.sizes.entry(a).or_insert(1),
-            *self.sizes.entry(b).or_insert(1),
-        );
-        if a == b {
-            return;
+        let Some((done, rest)) = matrix.split_at_mut_checked(k + 1) else {
+            break;
+        };
+        let Some(v) = done.last_mut().and_then(|c| c.get_mut(k..)) else {
+            break;
+        };
+        let norm = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let beta = if v.first().is_some_and(|&x| x >= 0.0) {
+            -norm
+        } else {
+            norm
+        };
+        if let Some(first) = v.first_mut() {
+            *first -= beta;
         }
-        let (small, large) = if na < nb { (a, b) } else { (b, a) };
-        self.parents.insert(small, large);
-        self.sizes.insert(large, na + nb);
+        let vv: f64 = v.iter().map(|x| x * x).sum();
+        for column in rest {
+            let Some(below) = column.get_mut(k..) else {
+                continue;
+            };
+            let f = 2.0 * below.iter().zip(&*v).map(|(a, x)| a * x).sum::<f64>() / vv;
+            for (a, x) in below.iter_mut().zip(&*v) {
+                *a -= f * x;
+            }
+        }
+        diagonal.push(beta.abs());
     }
-
-    /// Every member.
-    fn members(&self) -> Vec<K> {
-        self.sizes.keys().copied().collect()
-    }
+    diagonal
+        .iter()
+        .filter(|&&d| d > QR_PIVOT_THRESHOLD * largest)
+        .count()
 }
 
 /// A solve's [`Diagnosis`] and its outcome, paired by the core from one answer, so the states

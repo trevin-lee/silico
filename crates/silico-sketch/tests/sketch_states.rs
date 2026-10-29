@@ -2355,19 +2355,153 @@ fn an_arcs_rules_repeat_where_planegcs_finds_them_repeat_counted_by_hand() {
     }
 }
 
-/// Points, lines, circles, and arcs, no constraints, from `seed`: 2 to 5 points at random
-/// thousandths in a 20 mm square, and up to 12 arcs, each about one of them from a second to
-/// a third, so that arcs share their ends and centres and each other's distances.
+/// Each `(id, x, y)` a point, each `(id, centre, start, end)` an arc, by number: `p0000003`
+/// is 3, `a0000010` is 10.
+fn numbered(points: &[(f64, f64)], arcs: &[(u32, u32, u32, u32)]) -> Sketch {
+    let points: Vec<String> = points
+        .iter()
+        .enumerate()
+        .map(|(i, &(x, y))| point(&format!("p{i:07}"), x, y))
+        .collect();
+    let arcs: Vec<String> = arcs
+        .iter()
+        .map(|&(i, c, s, e)| {
+            arc(
+                &format!("a{i:07}"),
+                &format!("p{c:07}"),
+                &format!("p{s:07}"),
+                &format!("p{e:07}"),
+            )
+        })
+        .collect();
+    sketch_of(&points, &[], &[], &arcs, &[])
+}
+
+#[test]
+fn arcs_whose_distances_repeat_past_any_count_of_them_are_ranked_as_planegcs_ranks_them() {
+    // Drawings the generator found where a count from the arcs' graph alone (each centre's
+    // cycles, shared distances, and 2n − 3 a joined set of n points) reads a degree of
+    // freedom fewer than PlaneGCS: repetitions only the drawing's numbers show. Each want is
+    // PlaneGCS's, through the worker, diagnosed where drawn; the core must give it too.
+    let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    let cases = [
+        (
+            // Six points, ten arcs (the graph count: 3).
+            "six points",
+            numbered(
+                &[
+                    (-6.32, 9.48),
+                    (-6.797, 2.729),
+                    (-2.865, -3.819),
+                    (2.409, -1.526),
+                    (-9.963, -9.677),
+                    (-2.193, 3.969),
+                ],
+                &[
+                    (0, 5, 2, 3),
+                    (1, 2, 1, 3),
+                    (2, 1, 2, 5),
+                    (5, 3, 0, 1),
+                    (6, 1, 5, 3),
+                    (7, 5, 3, 0),
+                    (8, 2, 4, 5),
+                    (9, 2, 3, 5),
+                    (10, 1, 0, 2),
+                    (11, 1, 3, 5),
+                ],
+            ),
+            4,
+        ),
+        (
+            // Seven points, twelve arcs (the graph count: 4).
+            "seven points",
+            numbered(
+                &[
+                    (8.57, -7.217),
+                    (-7.009, -1.588),
+                    (-1.109, 6.793),
+                    (4.315, -6.874),
+                    (7.02, 9.101),
+                    (3.025, -9.053),
+                    (-5.959, -9.752),
+                ],
+                &[
+                    (1, 6, 4, 1),
+                    (3, 5, 1, 2),
+                    (4, 4, 5, 0),
+                    (5, 4, 6, 1),
+                    (6, 2, 6, 5),
+                    (7, 4, 1, 2),
+                    (8, 2, 6, 5),
+                    (13, 2, 1, 3),
+                    (14, 4, 2, 6),
+                    (16, 2, 1, 6),
+                    (17, 6, 2, 4),
+                    (18, 4, 0, 2),
+                ],
+            ),
+            5,
+        ),
+        (
+            // On the grid: p2, p3, and p4 in one line, x = 0, so from p4 the ends p2 and p3
+            // are one direction (the graph count: 3).
+            "points in line",
+            numbered(
+                &[
+                    (-4.0, -3.0),
+                    (1.0, 4.0),
+                    (0.0, 4.0),
+                    (0.0, 1.0),
+                    (0.0, -3.0),
+                ],
+                &[
+                    (0, 0, 1, 2),
+                    (5, 2, 4, 0),
+                    (7, 4, 2, 0),
+                    (8, 2, 1, 3),
+                    (9, 4, 0, 3),
+                    (10, 4, 1, 0),
+                    (11, 2, 0, 1),
+                ],
+            ),
+            4,
+        ),
+    ];
+    for (name, sketch, want) in cases {
+        assert_eq!(
+            planegcs_dofs(&sketch, &mut worker),
+            Some(want),
+            "{name}: PlaneGCS"
+        );
+        assert_eq!(
+            Diagnosis::untranslated(&sketch).dofs,
+            want,
+            "{name}: the core"
+        );
+    }
+}
+
+/// Points, lines, circles, and arcs, no constraints, from `seed`: 2 to 8 points, at random
+/// thousandths in a 20 mm square or, half the time, on a grid of whole millimetres, where
+/// points fall in line with each other; and up to 25 arcs, each about one of them from a
+/// second to a third, so that arcs share their ends and centres and each other's distances.
 fn geometry(seed: u64) -> Option<Sketch> {
     let mut rng = Rng(seed);
-    let n = 2 + rng.below(4) as usize;
+    let n = 2 + rng.below(7) as usize;
+    let grid = rng.below(2) == 0;
     let ids: Vec<String> = (0..n).map(|i| format!("p{i:07}")).collect();
-    let mut at = || (rng.range(-10.0, 10.0) * 1e3).round() / 1e3;
+    let mut at = || {
+        if grid {
+            rng.below(9) as f64 - 4.0
+        } else {
+            (rng.range(-10.0, 10.0) * 1e3).round() / 1e3
+        }
+    };
     let points: Vec<String> = ids.iter().map(|id| point(id, at(), at())).collect();
     let mut arcs = Vec::new();
     let mut lines = Vec::new();
     let mut circles = Vec::new();
-    for i in 0..rng.below(13) as usize {
+    for i in 0..rng.below(26) as usize {
         let (c, s, e) = (
             rng.below(n as u64) as usize,
             rng.below(n as u64) as usize,
