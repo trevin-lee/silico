@@ -40,8 +40,8 @@ on:
         description: "Only mutants whose names match this regex, cargo-mutants' --re, searched in each name (path:line:col: what was replaced, often ending ' in fn'); match a survivor by its description rather than its line, which moves; escape regex characters; no single quotes (write . for one) or newlines (empty: every mutant)"
         default: ""
       shards:
-        description: "Number of shards to share the work (1 to 16; up to nine run at once, one a runner: seven for a long run)"
-        default: "2"
+        description: "The fewest shards to share the work (1 to 16; up to nine run at once, one a runner: seven for a long run). The plan adds shards, up to 16, so none holds more than 80 mutants, about 12 hours on a loaded VM; a filler run has exactly these"
+        default: "1"
       long:
         description: "Empty (the default) for a run that gates a merge: its shards take any of the thirteen runners labelled mutants-pr. Set (true) for a long one, a milestone's or a whole crate's, hours long: its shards take only the seven labelled mutants, so a run that gates a merge never waits behind it, on silico-5 to -8, -20, and -21"
         default: ""
@@ -65,15 +65,21 @@ jobs:
     # On a runner labelled control (silico-13, -14), which runs only short jobs like this, so
     # a real run's plan never waits behind shards to cancel filler.
     runs-on: [self-hosted, linux, x64, control]
-    timeout-minutes: 5
+    timeout-minutes: 10
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
+      count: ${{ steps.plan.outputs.count }}
     steps:
+      # Every commit, to list the ref's mutants as its shards will find them.
       - uses: actions/checkout@v5
         with:
-          sparse-checkout: .github
+          fetch-depth: 0
+      - name: Toolchains
+        run: bash .github/tools.sh
       - id: plan
         env:
+          REF: ${{ inputs.ref }}
+          BASE: ${{ inputs.base }}
           SHARDS: ${{ inputs.shards }}
           PACKAGES: ${{ inputs.packages }}
           FILES: ${{ inputs.files }}
@@ -117,7 +123,37 @@ jobs:
           # A real run takes precedence over filler: it cancels every filler run. Its own
           # shards then queue for the runners that frees, like any other run's.
           if [ -z "$FILLER" ]; then bash .github/cancel-filler.sh; fi
-          echo "shards=[$(seq -s, 0 $((SHARDS - 1)))]" >>"$GITHUB_OUTPUT"
+          # Enough shards that none runs past about 12 hours, half a job's limit (the shard's
+          # timeout-minutes, 24 hours): 80 mutants each, at 540 seconds a mutant, the most a
+          # loaded VM took (#242's run 40627599832, 2026-10-28: 450 and 520 seconds a mutant
+          # in silico-core, few unviable, on its two shards, each cut off at 24 hours with 134
+          # of its 492 mutants untested). Counted as the shards will list them, in a tree of
+          # the ref; past 16 shards' worth, a shard holds more. A filler run is cut off after
+          # an hour whatever it holds, so has the shards it asks for.
+          shards=$SHARDS
+          if [ -z "$FILLER" ]; then
+            resolve() { git rev-parse --verify --quiet "origin/$1^{commit}" || git rev-parse --verify "$1^{commit}"; }
+            commit=$(resolve "${REF:-HEAD}")
+            tree=$RUNNER_TEMP/tree
+            git worktree add --detach "$tree" "$commit"
+            args=(--list --dir "$tree")
+            if [ -n "$BASE" ]; then
+              git diff "$(resolve "$BASE")...$commit" >"$RUNNER_TEMP/change.diff"
+              args+=(--in-diff "$RUNNER_TEMP/change.diff")
+            fi
+            for package in $PACKAGES; do args+=(-p "$package"); done
+            for file in $FILES; do args+=(--file "$file"); done
+            if [ -n "$RE" ]; then args+=("--re=$RE"); fi
+            cargo mutants "${args[@]}" >"$RUNNER_TEMP/mutants.txt"
+            git worktree remove --force "$tree"
+            mutants=$(grep -c . "$RUNNER_TEMP/mutants.txt" || true)
+            needed=$(( (mutants + 79) / 80 ))
+            shards=$(( needed > shards ? needed : shards ))
+            shards=$(( shards > 16 ? 16 : shards ))
+            echo "$mutants mutants: $shards shards ($SHARDS asked for)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "count=$shards" >>"$GITHUB_OUTPUT"
+          echo "shards=[$(seq -s, 0 $((shards - 1)))]" >>"$GITHUB_OUTPUT"
 
   shard:
     needs: plan
@@ -170,7 +206,7 @@ jobs:
           FILES: ${{ inputs.files }}
           RE: ${{ inputs.re }}
           SHARD: ${{ matrix.shard }}
-          SHARDS: ${{ inputs.shards }}
+          SHARDS: ${{ needs.plan.outputs.count }}
           FILLER: ${{ inputs.filler }}
         run: |
           # Branch names as they are on GitHub, and commits, abbreviated or not.
@@ -324,7 +360,7 @@ jobs:
           path: shards
       - name: Summary
         env:
-          SHARDS: ${{ inputs.shards }}
+          SHARDS: ${{ needs.plan.outputs.count }}
           SHARD_RESULT: ${{ needs.shard.result }}
           REF: ${{ inputs.ref || github.ref_name }}
           BASE: ${{ inputs.base }}
