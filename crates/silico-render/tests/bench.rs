@@ -28,7 +28,46 @@ fn the_bench_renders_on_lavapipe_from_a_cleared_environment() {
     assert!(found["adapter"].starts_with("llvmpipe"), "{found:?}");
     assert_eq!(found["size"], "64", "{found:?}");
     assert!(found["png_bytes"].parse::<u64>().unwrap() > 0, "{found:?}");
-    assert!(found.contains_key("memory_after_drop"), "{found:?}");
+    for key in ["peak_memory", "memory_with_context", "memory_after_drop"] {
+        assert_memory(&found, key);
+    }
+}
+
+/// A memory line's value as the bench writes it: on Linux, `/proc/self/status`'s, a count of
+/// kibibytes above 0 (proc(5): `VmHWM:     1234 kB`); elsewhere, with no such file, `unknown`.
+fn assert_memory(found: &BTreeMap<&str, &str>, key: &str) {
+    let value = found[key];
+    if cfg!(target_os = "linux") {
+        let kib = value
+            .strip_suffix(" kB")
+            .and_then(|n| n.parse::<u64>().ok());
+        assert!(kib.is_some_and(|n| n > 0), "{key} {value:?}");
+    } else {
+        assert_eq!(value, "unknown", "{key}");
+    }
+}
+
+#[test]
+fn the_bench_renders_without_holding_unless_asked_to() {
+    // Found by the M4 milestone's mutation run: refusing a run with no arguments past the
+    // size passed every test. The bench's interface (its module doc): no size is 400 pixels
+    // square; without --hold it writes no memory after a drop.
+    for (args, size) in [(&[][..], "400"), (&["64"][..], "64")] {
+        let out = run(args);
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {text}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let found: BTreeMap<&str, &str> = text.lines().filter_map(|l| l.split_once(' ')).collect();
+        assert!(found["adapter"].starts_with("llvmpipe"), "{found:?}");
+        assert_eq!(found["size"], size, "{found:?}");
+        assert!(found["png_bytes"].parse::<u64>().unwrap() > 0, "{found:?}");
+        assert_memory(&found, "peak_memory");
+        assert_memory(&found, "memory_with_context");
+        assert!(!found.contains_key("memory_after_drop"), "{found:?}");
+    }
 }
 
 #[test]
@@ -78,6 +117,11 @@ fn the_bench_refuses_arguments_it_cant_use_saying_why() {
             "--hold takes a number of seconds",
         ),
         (&["400", "500"], "unexpected arguments: [\"500\"]"),
+        // Only --hold is a flag: another before a number isn't taken as it.
+        (
+            &["400", "--wait", "0"],
+            "unexpected arguments: [\"--wait\", \"0\"]",
+        ),
     ] {
         let out = run(args);
         assert_eq!(out.status.code(), Some(1), "{args:?}");
