@@ -1713,6 +1713,40 @@ fn invalid(parameter: &'static str, message: String) -> InvalidParameter {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn an_edge_drag_begun_by_the_app_form_presses_a_circle_or_an_arc_at_its_centre() {
+        // A circle at (3, 4) and an arc at (-2, 7): each pressed at its centre, as
+        // FreeCAD's App form presses one, not at the origin.
+        let p = |x, y| PointValues {
+            x: Value(x),
+            y: Value(y),
+        };
+        let system = SketchSystem {
+            values: vec![3.0, 4.0, 1.0, -2.0, 7.0, 2.0, 0.0, 1.0, 0.0, 7.0, -2.0, 9.0],
+            unknowns: vec![],
+            geometry: vec![
+                SketchGeometry::Circle {
+                    center: p(0, 1),
+                    radius: Value(2),
+                },
+                SketchGeometry::Arc {
+                    center: p(3, 4),
+                    radius: Value(5),
+                    start_angle: Value(6),
+                    end_angle: Value(7),
+                    start: p(8, 9),
+                    end: p(10, 11),
+                },
+            ],
+            constraints: vec![],
+            algorithms: vec![Algorithm::DogLeg],
+        };
+        for (curve, press) in [(Geometry(0), [3.0, 4.0]), (Geometry(1), [-2.0, 7.0])] {
+            let begin = DragBegin::edge(system.clone(), curve);
+            assert_eq!(begin.dragged, Dragged::Edge { curve, press });
+        }
+    }
+
+    #[test]
     fn a_follower_moves_by_the_cursors_offset_from_its_press_in_freecads_order() {
         // FreeCAD's InitParameters + (toPoint - press): a cursor at the press gives the base
         // exactly. The other order, toPoint + (InitParameters - press), rounds this pair to
