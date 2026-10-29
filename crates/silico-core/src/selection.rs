@@ -148,7 +148,9 @@ pub fn resolve<S: AsRef<str>>(
 /// refusal, whatever the element it finds now and whatever that element's aliases: its text
 /// can survive while its element doesn't, so it could find another element now. Nothing is
 /// lost by it: [`resolve`] holds an element picked by an unstable name by its stable alias,
-/// if it had one then. The same threads may call it.
+/// if it had one then. Several unstable names of one element are each gone, each reported
+/// on its own: the check for an element already taken comes after. The same threads may
+/// call it.
 pub fn refresh<S: AsRef<str>>(
     model: &Model,
     names: &[S],
@@ -1281,5 +1283,157 @@ mod tests {
         assert_eq!(gone.why.errors()[0].parameter(), Some("selection.2"));
         // Again, the same answer.
         assert_eq!(resolve(&model, &names, "selection").unwrap(), resolved);
+    }
+
+    #[test]
+    fn the_first_stable_alias_is_stored() {
+        // The tests reviewer's proof. Three fuses: the numbering fuse's Face1, by its number,
+        // unstable; then the aliasing fuse with a 2 mm cube, whose Face1 joins it; then the
+        // aliasing fuse again with a 3 mm cube, whose Face1 joins it too. The face's names:
+        // its own, unstable, then the two cubes' Face1s, in the map's order, both stable.
+        // Picked by its own name, it's held and stored by the first stable alias, the 2 mm
+        // cube's, not the last; carried, that name is kept as it is.
+        let features = [
+            a_box("aaaaaaaa", 0, 1),
+            a_box("bbbbbbbb", 5, 1),
+            operation("rrrrrrrr", "fuse", "aaaaaaaa", "bbbbbbbb"),
+            a_box("cccccccc", 9, 2),
+            operation("ssssssss", "fuse", "rrrrrrrr", "cccccccc"),
+            a_box("dddddddd", 20, 3),
+            operation("tttttttt", "fuse", "ssssssss", "dddddddd"),
+        ];
+        let model = rebuilt(
+            &features,
+            forging(|tool| {
+                if tool.contains("box(1,") {
+                    Some(numbering_fuse())
+                } else {
+                    Some(aliasing_fuse())
+                }
+            }),
+        );
+        let map = model
+            .element_map(&FeatureId::new("tttttttt").unwrap())
+            .unwrap();
+        let names: Vec<String> = map
+            .names(element(ElementKind::Face, 1))
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "rrrrrrrr.fuse.Face1",
+                "cccccccc.box.Face1",
+                "dddddddd.box.Face1"
+            ]
+        );
+        let first = (
+            "cccccccc.box.Face1".to_owned(),
+            "tttttttt",
+            element(ElementKind::Face, 1),
+            Some("cccccccc.box.Face1".to_owned()),
+        );
+        let resolved = resolve(&model, &["rrrrrrrr.fuse.Face1"], "selection").unwrap();
+        assert_eq!(kept(&resolved), std::slice::from_ref(&first));
+        let held: Vec<String> = resolved.kept.iter().map(|s| s.name.to_string()).collect();
+        assert_eq!(kept(&refresh(&model, &held, "selection").unwrap()), [first]);
+    }
+
+    #[test]
+    fn each_bodys_unstable_edge_gets_its_own_bodys_candidates() {
+        // The tests reviewer's proof. Two bodies, each the duplicating fuse of two cubes:
+        // each has an unstable Edge1 (two edges came about alike), and a stable Edge3 sharing
+        // its Face1. Read in one call, each edge's refusal offers its own body's Edge3, never
+        // the other body's (the candidates are built once a body and kind, not once a kind).
+        // Carried, both are gone, each with the same refusal and candidates.
+        let features = [
+            a_box("aaaaaaaa", 0, 1),
+            a_box("bbbbbbbb", 5, 1),
+            operation("rrrrrrrr", "fuse", "aaaaaaaa", "bbbbbbbb"),
+            a_box("xxxxxxxx", 20, 1),
+            a_box("yyyyyyyy", 25, 1),
+            operation("qqqqqqqq", "fuse", "xxxxxxxx", "yyyyyyyy"),
+        ];
+        let model = rebuilt(&features, forging(|_| Some(duplicating_fuse())));
+        let names = [
+            "rrrrrrrr.fuse.Edge(G1/2 aaaaaaaa.box.Face1, G1/2 aaaaaaaa.box.Face6)",
+            "qqqqqqqq.fuse.Edge(G1/2 xxxxxxxx.box.Face1, G1/2 xxxxxxxx.box.Face6)",
+        ];
+        let want = [
+            vec!["rrrrrrrr.fuse.Edge(G aaaaaaaa.box.Face1, G aaaaaaaa.box.Face3)".to_owned()],
+            vec!["qqqqqqqq.fuse.Edge(G xxxxxxxx.box.Face1, G xxxxxxxx.box.Face3)".to_owned()],
+        ];
+        let resolved = resolve(&model, &names, "selection").unwrap();
+        let candidates: Vec<Vec<String>> = resolved
+            .kept
+            .iter()
+            .map(|s| s.stored.as_ref().unwrap_err().candidates().to_vec())
+            .collect();
+        assert_eq!(candidates, want);
+        let carried = refresh(&model, &names, "selection").unwrap();
+        assert!(carried.kept.is_empty(), "{carried:?}");
+        let candidates: Vec<Vec<String>> = carried
+            .gone
+            .iter()
+            .map(|g| g.why.errors()[0].candidates().to_vec())
+            .collect();
+        assert_eq!(candidates, want);
+    }
+
+    #[test]
+    fn several_unstable_names_of_one_element_are_each_gone_when_carried() {
+        // Two numbering fuses, each with a Face1 by its number, unstable, fused by the
+        // aliasing fuse so both are one face: its names are both, neither stable. Picked,
+        // the face is held once, by the first, flagged; carried, each name is gone, at its
+        // own place, neither taken as the other's element.
+        let features = [
+            a_box("aaaaaaaa", 0, 1),
+            a_box("bbbbbbbb", 5, 1),
+            operation("rrrrrrrr", "fuse", "aaaaaaaa", "bbbbbbbb"),
+            a_box("xxxxxxxx", 20, 2),
+            a_box("yyyyyyyy", 25, 3),
+            operation("qqqqqqqq", "fuse", "xxxxxxxx", "yyyyyyyy"),
+            operation("ssssssss", "fuse", "rrrrrrrr", "qqqqqqqq"),
+        ];
+        // The second fuse's tool is the first `qqqqqqqq` gives back: the 2 mm cube.
+        let model = rebuilt(
+            &features,
+            forging(|tool| {
+                Some(if tool.contains("box(2,") {
+                    aliasing_fuse()
+                } else {
+                    numbering_fuse()
+                })
+            }),
+        );
+        let names = ["rrrrrrrr.fuse.Face1", "qqqqqqqq.fuse.Face1"];
+        let map = model
+            .element_map(&FeatureId::new("ssssssss").unwrap())
+            .unwrap();
+        let held: Vec<String> = map
+            .names(element(ElementKind::Face, 1))
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(held, names);
+        let picked = resolve(&model, &names, "selection").unwrap();
+        assert_eq!(
+            kept(&picked),
+            [(
+                names[0].to_owned(),
+                "ssssssss",
+                element(ElementKind::Face, 1),
+                None
+            )]
+        );
+        let carried = refresh(&model, &names, "selection").unwrap();
+        assert!(carried.kept.is_empty(), "{carried:?}");
+        let gone: Vec<(&str, usize)> = carried
+            .gone
+            .iter()
+            .map(|g| (g.name.as_str(), g.place))
+            .collect();
+        assert_eq!(gone, [(names[0], 0), (names[1], 1)]);
     }
 }
