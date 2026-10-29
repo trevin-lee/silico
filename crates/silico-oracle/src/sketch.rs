@@ -524,7 +524,7 @@ pub struct Ours {
 pub fn silico_solve(case: &SketchCase, worker: &mut dyn SketchSolver) -> Result<Ours, String> {
     let translation = Translation::new(&case.sketch).map_err(|e| e.to_string())?;
     let answer = translation.solve(worker).map_err(|e| e.to_string())?;
-    let solved = &answer.solved;
+    let solved = answer.solved();
     let ids = |tags: &[Tag]| -> Vec<String> {
         tags.iter()
             .filter_map(|&t| {
@@ -534,12 +534,18 @@ pub fn silico_solve(case: &SketchCase, worker: &mut dyn SketchSolver) -> Result<
             })
             .collect()
     };
+    let (dofs, conflicting, redundant, partially_redundant) = (
+        solved.dofs,
+        ids(&solved.conflicting),
+        ids(&solved.redundant),
+        ids(&solved.partially_redundant),
+    );
     Ok(Ours {
-        dofs: solved.dofs,
-        conflicting: ids(&solved.conflicting),
-        redundant: ids(&solved.redundant),
-        partially_redundant: ids(&solved.partially_redundant),
-        outcome: answer.outcome,
+        dofs,
+        conflicting,
+        redundant,
+        partially_redundant,
+        outcome: answer.into_outcome(),
     })
 }
 

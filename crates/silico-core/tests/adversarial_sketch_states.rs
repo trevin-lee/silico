@@ -14,11 +14,11 @@ use fixture::{arc, circle, line, point};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
+use silico_core::ErrorCode;
 use silico_core::document::{ElementId, Operation, Sketch, read, validate};
 use silico_core::fake::FakeSketches;
 use silico_core::sketch::{Diagnosed, Diagnosis, Translation};
-use silico_core::sketch_states::{ConstraintState, MemberState, SketchState, SketchStates, states};
-use silico_core::{Error, ErrorCode};
+use silico_core::sketch_states::{ConstraintState, MemberState, SketchState, states};
 use silico_protocol::{Algorithm, SolveStatus, Solved, Tag, Value};
 
 use ConstraintState::{Conflicting, Redundant, Satisfied};
@@ -403,8 +403,8 @@ fn the_states_dont_depend_on_the_order_the_sketch_holds_its_lists() {
 fn a_sketch_the_gate_never_saw_is_stated_without_a_panic() {
     // Curves naming points it doesn't have, IDs held twice, a constraint on nothing: the
     // translation calls it the gate's bug (internal), which is no sketch state, so it has
-    // none; stated as a refused translation's anyway, every member is free once by ID, and
-    // nothing panics.
+    // none; its diagnosis of no equations counts every member once by ID, and nothing
+    // panics.
     let sketch = read_sketch(&text(
         &[point("p0000001", 0.0, 0.0), point("p0000001", 1.0, 0.0)],
         &[
@@ -418,34 +418,20 @@ fn a_sketch_the_gate_never_saw_is_stated_without_a_panic() {
         )],
     ));
     let refused = Translation::new(&sketch).unwrap_err();
-    // One point, one circle, one arc, each once: 2 + 1 + 3.
+    // One point, one circle, one arc, each once: 2 + 1 + 3, less the arc's 4 rules.
     assert_eq!(
         Diagnosis::no_equations(&sketch),
         Diagnosis {
-            dofs: 6,
+            dofs: 2,
             free: ids(&["a0000001", "c0000001", "p0000001"]),
             ..Diagnosis::default()
         }
     );
     assert_eq!(refused.code(), ErrorCode::Internal, "{refused}");
-    assert_eq!(
-        states(&sketch, &Diagnosed::untranslated(&sketch, refused.clone())),
-        Err(refused)
-    );
-    let invalid = Error::new(ErrorCode::InvalidInput, "refused");
-    let got: SketchStates =
-        states(&sketch, &Diagnosed::untranslated(&sketch, invalid.clone())).unwrap();
-    assert_eq!(got.points, members(&[("p0000001", Under)]));
-    assert_eq!(got.lines, members(&[("n0000001", Under)]));
-    assert_eq!(got.circles, members(&[("c0000001", Under)]));
-    assert_eq!(got.arcs, members(&[("a0000001", Under)]));
-    assert_eq!(
-        got.constraints,
-        members(&[("k0000001", ConstraintState::Unsolved)])
-    );
-    assert_eq!(got.dofs, 6);
-    assert_eq!(got.state, SketchState::Invalid);
-    assert_eq!(got.solve_problem, Some(invalid));
+    let read = Diagnosed::untranslated(&sketch).unwrap();
+    assert_eq!(read.outcome(), Err(&refused));
+    assert_eq!(read.diagnosis(), &Diagnosis::no_equations(&sketch));
+    assert_eq!(states(&sketch, &read), Err(refused));
 }
 
 /// `sketch` with its points moved by (dx, dy), and its circles' radii scaled by `scale`.
@@ -594,7 +580,7 @@ fn a_flagged_tangency_at_an_arcs_end_governs_what_its_equation_depends_on_not_th
     };
     let read = translation.read_diagnosed(&solved).unwrap();
     assert_eq!(
-        read.diagnosis().points_read[&id("k0000006")],
+        read.diagnosis().points_depended_on[&id("k0000006")],
         ids(&["p0000001", "p0000003", "p0000004"])
     );
     let got = states(&sketch, &read).unwrap();

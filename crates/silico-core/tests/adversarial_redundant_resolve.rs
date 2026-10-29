@@ -36,7 +36,7 @@ type Says = (Result<Vec<String>, (ErrorCode, Vec<String>)>, u64);
 fn save_and_load(t: &Translation, solver: &mut dyn SketchSolver) -> (Answer, Answer) {
     let save = t.solve(solver).unwrap();
     let mut load = t.clone();
-    load.system.values = save.solved.values.clone();
+    load.system.values = save.solved().values.clone();
     let loaded = load.solve(solver).unwrap();
     (save, loaded)
 }
@@ -44,7 +44,7 @@ fn save_and_load(t: &Translation, solver: &mut dyn SketchSolver) -> (Answer, Ans
 /// What `a` says.
 fn says(a: &Answer) -> Says {
     (
-        match &a.outcome {
+        match a.outcome() {
             Ok(s) => Ok(s
                 .redundant
                 .keys()
@@ -52,7 +52,7 @@ fn says(a: &Answer) -> Says {
                 .collect()),
             Err(e) => Err((e.code(), e.elements().to_vec())),
         },
-        a.solved.values[11].to_bits(),
+        a.solved().values[11].to_bits(),
     )
 }
 
@@ -112,7 +112,7 @@ fn a_solution_that_settles_one_load_past_the_bound_is_refused_as_not_settling() 
     let save = t.solve(&mut s).unwrap();
     assert_eq!(starts.lock().unwrap().len(), 1 + MAX_LOAD_RESOLVES);
     assert_eq!(
-        save.outcome.unwrap_err().code(),
+        save.into_outcome().unwrap_err().code(),
         ErrorCode::SolveFailed,
         "refused as not settling"
     );
@@ -129,7 +129,10 @@ fn a_solution_that_flips_between_two_places_is_bounded_and_refused() {
     });
     let save = t.solve(&mut s).unwrap();
     assert_eq!(*starts.lock().unwrap(), [3.0, 4.0, 5.0, 4.0]);
-    assert_eq!(save.outcome.unwrap_err().code(), ErrorCode::SolveFailed);
+    assert_eq!(
+        save.into_outcome().unwrap_err().code(),
+        ErrorCode::SolveFailed
+    );
 }
 
 #[test]
@@ -179,8 +182,7 @@ fn a_partially_redundant_constraint_alone_is_solved_again_too() {
     // Kept apart from the redundant: none of those, and it partially redundant.
     assert_eq!(says(&save), (Ok(vec![]), 5f64.to_bits()));
     let partly: Vec<&str> = save
-        .outcome
-        .as_ref()
+        .outcome()
         .unwrap()
         .partially_redundant
         .keys()
@@ -200,7 +202,7 @@ fn a_negative_zero_turned_positive_by_the_solve_again_settles_on_the_positive() 
         Ok(dropping(system, 3, if y == 3.0 { -0.0 } else { y + 0.0 }))
     });
     let (save, load) = save_and_load(&t, &mut s);
-    assert_eq!(save.solved.values[11].to_bits(), 0f64.to_bits());
+    assert_eq!(save.solved().values[11].to_bits(), 0f64.to_bits());
     assert_eq!(says(&save), says(&load));
     assert_eq!(starts.lock().unwrap().len(), 3 + 2);
 }

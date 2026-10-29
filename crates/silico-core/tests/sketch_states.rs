@@ -1,10 +1,11 @@
 //! Each sketch member's definition state (docs/ports/sketcher.md, *Definition states*, as M5's
 //! open item 32 decided it): `Translation::read_diagnosed` on answers the fake sketch
 //! solver gives on purpose, and `sketch_states::states`' rules on what it reads, and on
-//! sketches the translation refuses. Every value's place is worked out by hand from the translation's layout (the origin
-//! and the axes' ends, 0..6; each point's x and y, by ID; each circle's radius; each arc's
-//! radius and angles; then the dimensions' values), and every state from the rules. The same
-//! states through the sketch worker are silico-sketch's tests/sketch_states.rs.
+//! sketches the translation refuses. Every value's place is worked out by hand from the
+//! translation's layout (the origin and the axes' ends, 0..6; each point's x and y, by ID;
+//! each circle's radius; each arc's radius and angles; then the dimensions' values), and every
+//! state from the rules. The same states through the sketch worker are silico-sketch's
+//! tests/sketch_states.rs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::fixture;
@@ -59,8 +60,9 @@ fn solved_by(
     let translation = Translation::new(sketch).unwrap();
     let answer = translation.solve(&mut fake.clone()).unwrap();
     let read = answer.diagnosed().unwrap();
-    let got = states(sketch, &read).unwrap();
-    (translation, answer, read.diagnosis().clone(), got)
+    let got = states(sketch, read).unwrap();
+    let diagnosis = read.diagnosis().clone();
+    (translation, answer, diagnosis, got)
 }
 
 fn id(s: &str) -> ElementId {
@@ -103,12 +105,22 @@ fn an_empty_sketch_is_fully_defined_with_no_degrees_whatever_planegcs_counts() {
         solve_problem: None,
     };
     assert_eq!(got, empty);
-    // Even an outcome that's a sketch's error doesn't make an empty sketch anything else.
-    let refused = Error::new(ErrorCode::SolveFailed, "no solver could meet it");
+    // Even an outcome that's a sketch's error doesn't make an empty sketch anything else: no
+    // algorithm solving it, refused as solve_failed.
+    let (_, answer, _, got) = solved_by(&sketch, |system| Solved {
+        dofs: -1,
+        no_equations: true,
+        status: SolveStatus::Failed,
+        algorithm: None,
+        ..FakeSketches::as_sent(system)
+    });
     assert_eq!(
-        states(&sketch, &Diagnosed::untranslated(&sketch, refused)).unwrap(),
-        empty
+        answer.outcome().map_err(Error::code).unwrap_err(),
+        ErrorCode::SolveFailed
     );
+    assert_eq!(got, empty);
+    // And an empty sketch always translates: no refused translation to state.
+    assert_eq!(Diagnosed::untranslated(&sketch), None);
 }
 
 #[test]
@@ -146,10 +158,10 @@ fn two_lines_through_a_twice_placed_point_take_its_freedom_not_its_over_definiti
         status: SolveStatus::SolvedExceptRedundant,
         ..FakeSketches::as_sent(system)
     });
-    assert!(answer.outcome.is_ok(), "{:?}", answer.outcome);
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
     assert_eq!(diagnosis.redundant, ids(&["k0000003"]));
     assert_eq!(
-        diagnosis.points_read,
+        diagnosis.points_depended_on,
         BTreeMap::from([(id("k0000003"), ids(&["p0000001"]))])
     );
     assert_eq!(got.state, SketchState::OverDefined);
@@ -286,18 +298,18 @@ fn decision_5s_disagreeing_redundancy_goes_into_the_conflicting_list_the_read_un
         status: SolveStatus::SolvedExceptRedundant,
         ..FakeSketches::as_sent(system)
     });
-    let error = answer.outcome.as_ref().unwrap_err();
+    let error = answer.outcome().unwrap_err();
     assert_eq!(error.code(), ErrorCode::OverConstrained);
     assert_eq!(error.elements(), ["k0000005"]);
     // The read gives the same error it gave before the diagnosis was kept.
     assert_eq!(
-        translation.read(&answer.solved).as_ref().unwrap_err(),
+        translation.read(answer.solved()).as_ref().unwrap_err(),
         error
     );
     assert_eq!(diagnosis.conflicting, ids(&["k0000005"]));
     assert_eq!(diagnosis.redundant, ids(&["k0000005"]));
     assert_eq!(
-        diagnosis.points_read,
+        diagnosis.points_depended_on,
         BTreeMap::from([(id("k0000005"), ids(&["p0000001", "p0000002"]))])
     );
     assert_eq!(got.state, SketchState::OverDefined);
@@ -331,7 +343,7 @@ fn an_agreeing_redundancy_is_kept_and_read_redundant_not_conflicting() {
         status: SolveStatus::SolvedExceptRedundant,
         ..FakeSketches::as_sent(system)
     });
-    assert!(answer.outcome.is_ok(), "{:?}", answer.outcome);
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
     assert!(diagnosis.conflicting.is_empty());
     assert_eq!(got.state, SketchState::OverDefined);
     assert_eq!(got.solve_problem, None);
@@ -388,7 +400,7 @@ fn the_diagnosis_names_each_free_value_by_the_member_it_belongs_to() {
 }
 
 #[test]
-fn a_flagged_constraints_points_are_those_its_rows_read() {
+fn a_flagged_constraints_points_are_those_its_equations_depend_on() {
     // Two lines p1–p2 and p3–p4 and a circle about p5: a parallel reads both lines whole,
     // four points; a radius only the radius, none; an on of p5 on line 1 reads p5 and that
     // line's ends.
@@ -420,7 +432,7 @@ fn a_flagged_constraints_points_are_those_its_rows_read() {
     };
     let read = translation.read_diagnosed(&solved).unwrap();
     assert_eq!(
-        read.diagnosis().points_read,
+        read.diagnosis().points_depended_on,
         BTreeMap::from([
             (
                 id("k0000001"),
@@ -509,7 +521,7 @@ fn a_reference_dimension_is_never_flagged_satisfied_when_solved_and_unsolved_whe
     };
     let read = translation.read_diagnosed(&listed).unwrap();
     assert_eq!(
-        read.diagnosis().points_read,
+        read.diagnosis().points_depended_on,
         BTreeMap::from([(id("k0000001"), ids(&[]))])
     );
     let got = states(&sketch, &read).unwrap();
@@ -550,28 +562,89 @@ fn a_constraint_listed_redundant_and_partially_redundant_is_redundant() {
     assert_eq!(got.state, SketchState::OverDefined);
 }
 
+/// p1 and p2 both drawn at (3, 4), symmetric about p3 (0, 0), and a line from p1 to p3: the
+/// translation refuses the symmetry (the solver measures it by the line between p1 and p2),
+/// invalid_input naming it.
+fn collapsed_symmetry() -> Sketch {
+    sketch_of(
+        &[
+            point("p0000001", 3.0, 4.0),
+            point("p0000002", 3.0, 4.0),
+            point("p0000003", 0.0, 0.0),
+        ],
+        &[line("n0000001", "p0000001", "p0000003")],
+        &[],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "symmetric", "a": "p0000001", "b": "p0000002", "about": "p0000003"}"#,
+        ],
+    )
+}
+
 #[test]
 fn the_sketch_state_is_the_problems_code_then_the_flags_then_the_dofs() {
-    // Item 32's table, for one point with a driving y. The code first, whatever the
-    // diagnosis: a refused sketch's state is its code's, invalid_input (a translation's or a
-    // load's refusal of geometry that can't be held) invalid like an invalid result.
+    // Item 32's table, for one point with a driving y, each refusal read from a reply that
+    // gives it. The code first, whatever the diagnosis: every reply says 0 degrees left and
+    // nothing free, which solved would read fully defined, and the conflict's lists only its
+    // one constraint. p1's x is value 6.
     let sketch = referenced_point();
-    for (code, want) in [
-        (ErrorCode::OverConstrained, SketchState::OverDefined),
-        (ErrorCode::SolveFailed, SketchState::NoSolution),
-        (ErrorCode::InvalidResult, SketchState::Invalid),
-        (ErrorCode::InvalidInput, SketchState::Invalid),
+    let translation = Translation::new(&sketch).unwrap();
+    let as_sent = FakeSketches::as_sent(&translation.system);
+    let mut far = as_sent.values.clone();
+    // 2 km out: past the kilometre a solution may reach, so it can't be built.
+    far[6] = 2.0e6;
+    let solved = Solved {
+        dofs: 0,
+        free: Vec::new(),
+        ..as_sent
+    };
+    for (reply, code, want) in [
+        (
+            Solved {
+                conflicting: vec![Tag(2)],
+                ..solved.clone()
+            },
+            ErrorCode::OverConstrained,
+            SketchState::OverDefined,
+        ),
+        (
+            Solved {
+                status: SolveStatus::Failed,
+                algorithm: None,
+                ..solved.clone()
+            },
+            ErrorCode::SolveFailed,
+            SketchState::NoSolution,
+        ),
+        (
+            Solved {
+                values: far,
+                ..solved.clone()
+            },
+            ErrorCode::InvalidResult,
+            SketchState::Invalid,
+        ),
     ] {
-        let error = Error::new(code, "refused");
-        let got = states(&sketch, &Diagnosed::untranslated(&sketch, error.clone())).unwrap();
+        let read = translation.read_diagnosed(&reply).unwrap();
+        let got = states(&sketch, &read).unwrap();
         assert_eq!(got.state, want, "{code:?}");
-        assert_eq!(got.solve_problem.as_ref(), Some(&error));
-        // The point's 2 unknowns, no equations.
-        assert_eq!(got.dofs, 2);
+        assert_eq!(got.solve_problem.as_ref().map(Error::code), Some(code));
+        assert_eq!(got.solve_problem.as_ref(), read.outcome().err());
+        assert_eq!(got.dofs, 0, "{code:?}");
     }
+    // invalid_input, a translation's refusal of geometry that can't be held, is invalid like
+    // an invalid result: the collapsed symmetry, its 3 points' 6 unknowns, no equations.
+    let symmetric = collapsed_symmetry();
+    let read = Diagnosed::untranslated(&symmetric).unwrap();
+    let got = states(&symmetric, &read).unwrap();
+    assert_eq!(got.state, SketchState::Invalid);
+    assert_eq!(
+        got.solve_problem.as_ref().map(Error::code),
+        Some(ErrorCode::InvalidInput)
+    );
+    assert_eq!(got.dofs, 6);
     // A refusal with a constraint flagged reads its code's state, not over defined: no
     // algorithm solving, the y listed partially redundant.
-    let translation = Translation::new(&sketch).unwrap();
     let reply = |dofs, partially_redundant: Vec<Tag>, status| Solved {
         dofs,
         partially_redundant,
@@ -608,51 +681,51 @@ fn the_sketch_state_is_the_problems_code_then_the_flags_then_the_dofs() {
 #[test]
 fn an_error_that_is_no_sketch_state_has_no_states_and_is_the_error() {
     // A worker's, a reply the core can't read, a bug's: they say nothing about the sketch, so
-    // the read fails with them (item 32's addendum, D), never no_solution.
+    // the read fails with them (item 32's addendum, D), never no_solution. Each through the
+    // path that gives it. A worker that fails: the solve is the error, so there's no answer
+    // to diagnose.
     let sketch = referenced_point();
     for code in [
         ErrorCode::WorkerCrashed,
         ErrorCode::WorkerTimeout,
         ErrorCode::WorkerUnavailable,
-        ErrorCode::ProtocolError,
-        ErrorCode::Internal,
         ErrorCode::ResourceExhausted,
     ] {
-        let error = Error::new(code, "the worker went away");
-        let got = states(&sketch, &Diagnosed::untranslated(&sketch, error.clone()));
-        assert_eq!(got, Err(error), "{code:?}");
+        let fake = FakeSketches::new();
+        fake.answer(move |_| Err(Error::new(code, "the sketch worker went away")));
+        let error = Translation::new(&sketch)
+            .unwrap()
+            .solve(&mut fake.clone())
+            .unwrap_err();
+        assert_eq!(error.code(), code);
     }
-    // An empty sketch too: its state is decided before any solve, but a read of it that
-    // failed is still that failure.
-    let empty = sketch_of(&[], &[], &[], &[], &[]);
-    let crashed = Error::new(ErrorCode::WorkerCrashed, "gone");
-    assert_eq!(
-        states(&empty, &Diagnosed::untranslated(&empty, crashed.clone())),
-        Err(crashed)
-    );
-}
-
-#[test]
-fn a_worker_that_crashes_gives_no_answer_and_no_states() {
-    // The fake crashing: the solve is the error, so there's no answer to diagnose; the read
-    // of the sketch fails with that error, as the states of it would.
-    let sketch = referenced_point();
+    // A reply the core can't read (the worker calls its solution unbuildable, and every
+    // piece of it can be built): the answer's outcome is the protocol error, and it has no
+    // diagnosis, so no states.
     let fake = FakeSketches::new();
-    fake.answer(|_| {
-        Err(Error::new(
-            ErrorCode::WorkerCrashed,
-            "the sketch worker crashed",
-        ))
+    fake.answer(|system| {
+        Ok(Solved {
+            status: SolveStatus::SolvedInvalid,
+            algorithm: Some(silico_protocol::Algorithm::DogLeg),
+            ..FakeSketches::as_sent(system)
+        })
     });
-    let error = Translation::new(&sketch)
+    let answer = Translation::new(&sketch)
         .unwrap()
         .solve(&mut fake.clone())
-        .unwrap_err();
-    assert_eq!(error.code(), ErrorCode::WorkerCrashed);
-    assert_eq!(
-        states(&sketch, &Diagnosed::untranslated(&sketch, error.clone())),
-        Err(error)
-    );
+        .unwrap();
+    let error = answer.diagnosed().unwrap_err();
+    assert_eq!(error.code(), ErrorCode::ProtocolError, "{error}");
+    assert_eq!(answer.outcome(), Err(error));
+    // A bug's: a sketch that never passed the gate, a line to a point it doesn't have, which
+    // the translation refuses as internal. Stated as a refused translation's, the states
+    // refuse it, the error itself.
+    let mut broken = collapsed_symmetry();
+    broken.lines[0].to = id("p0000009");
+    let read = Diagnosed::untranslated(&broken).unwrap();
+    let refusal = read.outcome().unwrap_err();
+    assert_eq!(refusal.code(), ErrorCode::Internal, "{refusal}");
+    assert_eq!(states(&broken, &read).as_ref(), Err(refusal));
 }
 
 #[test]
@@ -661,19 +734,7 @@ fn a_sketch_the_translation_refuses_is_invalid_every_member_free_and_its_constra
     // both drawn at (3, 4), about p3: the translation refuses it, invalid_input. The
     // diagnosis of no equations: 3 points, 6 unknowns; every member under defined; the
     // symmetry unsolved.
-    let symmetric = sketch_of(
-        &[
-            point("p0000001", 3.0, 4.0),
-            point("p0000002", 3.0, 4.0),
-            point("p0000003", 0.0, 0.0),
-        ],
-        &[line("n0000001", "p0000001", "p0000003")],
-        &[],
-        &[],
-        &[
-            r#"{"id": "k0000001", "type": "symmetric", "a": "p0000001", "b": "p0000002", "about": "p0000003"}"#,
-        ],
-    );
+    let symmetric = collapsed_symmetry();
     let refusal = Translation::new(&symmetric).unwrap_err();
     assert_eq!(
         (refusal.code(), refusal.elements()),
@@ -687,11 +748,7 @@ fn a_sketch_the_translation_refuses_is_invalid_every_member_free_and_its_constra
             ..Diagnosis::default()
         }
     );
-    let got = states(
-        &symmetric,
-        &Diagnosed::untranslated(&symmetric, refusal.clone()),
-    )
-    .unwrap();
+    let got = states(&symmetric, &Diagnosed::untranslated(&symmetric).unwrap()).unwrap();
     assert_eq!(
         got,
         SketchStates {
@@ -711,7 +768,8 @@ fn a_sketch_the_translation_refuses_is_invalid_every_member_free_and_its_constra
     );
     // Then an arc from (10, 0) to (15, 0) about (5, 0), both ends at angle 0, so it sweeps
     // nothing, and a circle about its centre with its radius fixed: 3 points, 6 unknowns,
-    // the circle's radius 1, the arc's radius and angles 3: 10.
+    // the circle's radius 1, the arc's radius and angles 3, less the arc's 4 rules, which
+    // PlaneGCS always sends: 6 + 1 + 3 − 4 = 6.
     let arc_and_circle = sketch_of(
         &[
             point("p0000001", 5.0, 0.0),
@@ -732,16 +790,69 @@ fn a_sketch_the_translation_refuses_is_invalid_every_member_free_and_its_constra
     );
     let got = states(
         &arc_and_circle,
-        &Diagnosed::untranslated(&arc_and_circle, refusal.clone()),
+        &Diagnosed::untranslated(&arc_and_circle).unwrap(),
     )
     .unwrap();
     assert_eq!(got.state, SketchState::Invalid);
-    assert_eq!(got.dofs, 10);
+    assert_eq!(got.dofs, 6);
     assert_eq!(got.solve_problem, Some(refusal));
     assert_eq!(got.circles, members(&[("c0000001", Under)]));
     assert_eq!(got.arcs, members(&[("a0000001", Under)]));
     assert!(got.points.values().all(|&s| s == Under), "{got:#?}");
     assert_eq!(got.constraints, members(&[("k0000001", Unsolved)]));
+}
+
+#[test]
+fn a_lone_arc_that_sweeps_nothing_has_five_degrees_as_freecad_counts_a_lone_arc() {
+    // An arc about p1 (0, 0) from p2 (5, 0) to p3 (8, 0), both ends at angle 0: it sweeps
+    // nothing, so the translation refuses it and no solver sees it. By hand: its centre and
+    // ends, 3 points, 6 coordinates; its radius and two angles, 3; its 4 rules (each end on
+    // its circle at its angle, in x and y), which PlaneGCS always sends, tag 0, and
+    // makeReducedJacobian keeps: 6 + 3 − 4 = 5, FreeCAD 1.1.3's DoF for a lone arc. No
+    // circle beside it, so the count can't be one that forgets the rules (2·3 + 3 = 9), nor
+    // one that swaps a circle's count and an arc's (2·3 + 3·0 + 1 = 7).
+    let lone = sketch_of(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 5.0, 0.0),
+            point("p0000003", 8.0, 0.0),
+        ],
+        &[],
+        &[],
+        &[arc("a0000001", "p0000001", "p0000002", "p0000003")],
+        &[],
+    );
+    let refusal = Translation::new(&lone).unwrap_err();
+    assert_eq!(
+        (refusal.code(), refusal.elements()),
+        (ErrorCode::InvalidInput, &["a0000001".to_owned()][..])
+    );
+    assert_eq!(
+        Diagnosis::no_equations(&lone),
+        Diagnosis {
+            dofs: 5,
+            free: ids(&["a0000001", "p0000001", "p0000002", "p0000003"]),
+            ..Diagnosis::default()
+        }
+    );
+    let got = states(&lone, &Diagnosed::untranslated(&lone).unwrap()).unwrap();
+    assert_eq!(
+        got,
+        SketchStates {
+            state: SketchState::Invalid,
+            dofs: 5,
+            points: members(&[
+                ("p0000001", Under),
+                ("p0000002", Under),
+                ("p0000003", Under)
+            ]),
+            lines: BTreeMap::new(),
+            circles: BTreeMap::new(),
+            arcs: members(&[("a0000001", Under)]),
+            constraints: BTreeMap::new(),
+            solve_problem: Some(refusal),
+        }
+    );
 }
 
 #[test]
@@ -757,11 +868,11 @@ fn an_answer_pairs_its_own_diagnosis_with_its_outcome() {
         status: SolveStatus::SolvedExceptRedundant,
         ..FakeSketches::as_sent(system)
     });
-    let read = translation.read_diagnosed(&answer.solved).unwrap();
-    assert_eq!(answer.diagnosed().unwrap(), read);
-    assert_eq!(read.outcome(), answer.outcome.as_ref());
+    let read = translation.read_diagnosed(answer.solved()).unwrap();
+    assert_eq!(answer.diagnosed(), Ok(&read));
+    assert_eq!(read.outcome(), answer.outcome());
     assert_eq!(read.diagnosis().conflicting, ids(&["k0000005"]));
-    assert_eq!(translation.read(&answer.solved), answer.outcome);
+    assert_eq!(translation.read(answer.solved()).as_ref(), answer.outcome());
 }
 
 #[test]

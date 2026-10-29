@@ -761,7 +761,7 @@ pub fn solve(
     let translation = Translation::new(sketch).map_err(|e| e.with_feature(feature.as_str()))?;
     let named = |e: Error| e.with_feature(feature.as_str());
     let answer = translation.solve(solver).map_err(named)?;
-    answer.outcome.map_err(named)
+    answer.into_outcome().map_err(named)
 }
 
 /// Whether `file`, a sketch with a solve written back, is one the gate takes: a solve can be
@@ -844,14 +844,17 @@ pub struct Diagnosis {
     /// Each constraint listed above, with the points whose x or y its equations depend on
     /// ([`SketchSystem::depends_on`]): none, for one whose rows depend only on fixed values,
     /// radii, and angles.
-    pub points_read: BTreeMap<ElementId, BTreeSet<ElementId>>,
+    pub points_depended_on: BTreeMap<ElementId, BTreeSet<ElementId>>,
 }
 
 impl Diagnosis {
-    /// The diagnosis of `sketch` with no equations: every point, circle, and arc free, and
-    /// `dofs` its unknowns, 2 a point, 1 a circle (its radius), 3 an arc (its radius and
-    /// angles), each counted once by ID; nothing listed. What PlaneGCS gives a sketch none of
-    /// whose rows touch an unknown, and so the diagnosis of a sketch
+    /// The diagnosis of `sketch` with no equations of its constraints: every point, circle,
+    /// and arc free, and `dofs` its unknowns less its arcs' rules, 2 a point, 1 a circle (its
+    /// radius), 3 an arc (its radius and angles) less 4 (its rules, its ends each on its
+    /// circle at its angle, in x and y, which PlaneGCS always sends, tag 0, and
+    /// `makeReducedJacobian` keeps), each counted once by ID; nothing listed. So a lone arc
+    /// is 6 + 3 − 4 = 5, FreeCAD 1.1.3's DoF for it. What PlaneGCS gives a sketch none of
+    /// whose constraints' rows touch an unknown, and so the diagnosis of a sketch
     /// [`Translation::new`] refuses, which no solver sees (M5.0 open item 32: two points
     /// drawn at one place where a constraint is measured by the line between them, an arc
     /// that sweeps nothing).
@@ -859,7 +862,13 @@ impl Diagnosis {
         let points: BTreeSet<&ElementId> = sketch.points.iter().map(|p| &p.id).collect();
         let circles: BTreeSet<&ElementId> = sketch.circles.iter().map(|c| &c.id).collect();
         let arcs: BTreeSet<&ElementId> = sketch.arcs.iter().map(|a| &a.id).collect();
-        let unknowns = 2 * points.len() + circles.len() + 3 * arcs.len();
+        // 2 a point, 1 a circle, and 3 − 4 = −1 an arc. The gate holds a sketch to far fewer
+        // members than these count.
+        let count = |n: usize| i64::try_from(n).unwrap_or(i64::MAX);
+        let dofs = count(points.len())
+            .saturating_mul(2)
+            .saturating_add(count(circles.len()))
+            .saturating_sub(count(arcs.len()));
         let free = points
             .into_iter()
             .chain(circles)
@@ -867,8 +876,7 @@ impl Diagnosis {
             .cloned()
             .collect();
         Diagnosis {
-            // The gate holds a sketch to far fewer members than i32 counts.
-            dofs: i32::try_from(unknowns).unwrap_or(i32::MAX),
+            dofs: i32::try_from(dofs).unwrap_or(if dofs < 0 { i32::MIN } else { i32::MAX }),
             free,
             ..Diagnosis::default()
         }
@@ -878,7 +886,7 @@ impl Diagnosis {
 /// A solve's [`Diagnosis`] and its outcome, paired by the core from one answer, so the states
 /// ([`crate::sketch_states::states`]) never read a diagnosis beside another answer's outcome:
 /// [`Translation::read_diagnosed`]'s, an [`Answer`]'s ([`Answer::diagnosed`]), or a refused
-/// translation's ([`Diagnosed::untranslated`]).
+/// translation's ([`Diagnosed::untranslated`]). Only these make one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Diagnosed {
     diagnosis: Diagnosis,
@@ -886,15 +894,18 @@ pub struct Diagnosed {
 }
 
 impl Diagnosed {
-    /// `sketch`, which [`Translation::new`] refused with `refusal`, so no solver saw it: the
-    /// diagnosis of no equations ([`Diagnosis::no_equations`]), beside that error. Its states
-    /// are read as any refusal's: an `invalid_input` is `invalid`; an error that's no sketch
-    /// state (a worker's, a bug's) is refused by the states, as it would be from an answer.
-    pub fn untranslated(sketch: &Sketch, refusal: Error) -> Self {
-        Diagnosed {
+    /// `sketch`, if [`Translation::new`] refuses it, so no solver sees it: the diagnosis of
+    /// no equations ([`Diagnosis::no_equations`]), beside the translation's own refusal. None
+    /// if it translates: its states are then its answer's. Its states are read as any
+    /// refusal's: an `invalid_input` is `invalid`; an error that's no sketch state (an
+    /// `internal`, for a sketch that never passed the gate) is refused by the states, as it
+    /// would be from an answer.
+    pub fn untranslated(sketch: &Sketch) -> Option<Self> {
+        let refusal = Translation::new(sketch).err()?;
+        Some(Diagnosed {
             diagnosis: Diagnosis::no_equations(sketch),
             outcome: Err(refusal),
-        }
+        })
     }
 
     /// The diagnosis.
@@ -913,34 +924,39 @@ impl Diagnosed {
     }
 }
 
-/// What solving a [`Translation`] found: the worker's answer the outcome is read from, the
-/// outcome, and the answer's diagnosis, read with it.
+/// What solving a [`Translation`] found: the worker's answer the outcome is read from, and
+/// what reading it gave, its diagnosis and outcome paired, or, for a reply the core couldn't
+/// read, that error. Only [`Translation::solve`] makes one.
 #[derive(Debug, Clone)]
 pub struct Answer {
-    pub solved: Solved,
-    pub outcome: Result<SketchSolution, Error>,
-    /// The diagnosis of `solved`, read with the outcome; none when the read found a reply
-    /// it couldn't read (the outcome is then that error, which is no sketch state).
-    diagnosis: Option<Diagnosis>,
+    solved: Solved,
+    read: Result<Diagnosed, Error>,
 }
 
 impl Answer {
+    /// The worker's answer the outcome is read from.
+    pub fn solved(&self) -> &Solved {
+        &self.solved
+    }
+
+    /// The outcome: the solution, or why the solve was refused, a reply the core couldn't
+    /// read included.
+    pub fn outcome(&self) -> Result<&SketchSolution, &Error> {
+        match &self.read {
+            Ok(read) => read.outcome(),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The outcome, the rest dropped.
+    pub fn into_outcome(self) -> Result<SketchSolution, Error> {
+        self.read.and_then(Diagnosed::into_outcome)
+    }
+
     /// The answer's diagnosis and outcome, paired; or, for a reply the core couldn't read,
     /// that error: such an answer has no states.
-    pub fn diagnosed(&self) -> Result<Diagnosed, Error> {
-        match &self.diagnosis {
-            Some(diagnosis) => Ok(Diagnosed {
-                diagnosis: diagnosis.clone(),
-                outcome: self.outcome.clone(),
-            }),
-            None => Err(match &self.outcome {
-                Err(e) => e.clone(),
-                Ok(_) => Error::new(
-                    ErrorCode::Internal,
-                    "a sketch's answer solved without a diagnosis",
-                ),
-            }),
-        }
+    pub fn diagnosed(&self) -> Result<&Diagnosed, &Error> {
+        self.read.as_ref()
     }
 }
 
@@ -1727,7 +1743,7 @@ impl Translation {
         // A refusal writes no file, so its load solves the drawing again and refuses alike.
         // Only an over-constrained one is checked by loads (a diagnosis on the drawing): a load
         // from an invalid result would measure sides from where that result put them.
-        let checked_by_load = match &first.outcome {
+        let checked_by_load = match first.outcome() {
             Ok(_) => true,
             Err(e) => e.code() == ErrorCode::OverConstrained,
         };
@@ -1762,7 +1778,7 @@ impl Translation {
             // the load's error too, so a drawing that solved is refused with it.
             let here = match load.answer(solver) {
                 Ok(here) => here,
-                Err(e) if e.code() == ErrorCode::InvalidInput && first.outcome.is_err() => {
+                Err(e) if e.code() == ErrorCode::InvalidInput && first.outcome().is_err() => {
                     return Ok(first);
                 }
                 Err(e) => return Err(e),
@@ -1776,7 +1792,7 @@ impl Translation {
                 Err(e) => return Ok(refusal(first, Err(e))),
             };
             if settled {
-                return Ok(if here.outcome.is_ok() {
+                return Ok(if here.outcome().is_ok() {
                     here
                 } else {
                     refusal(first, Ok(here))
@@ -1804,15 +1820,8 @@ impl Translation {
             solver.distrust();
             return Err(e);
         }
-        let (outcome, diagnosis) = match self.read_diagnosed(&solved) {
-            Ok(read) => (read.outcome, Some(read.diagnosis)),
-            Err(e) => (Err(e), None),
-        };
-        Ok(Answer {
-            solved,
-            outcome,
-            diagnosis,
-        })
+        let read = self.read_diagnosed(&solved);
+        Ok(Answer { solved, read })
     }
 
     /// The points, circles' radii, and reference dimensions' measures at `values`.
@@ -1940,7 +1949,7 @@ impl Translation {
     /// its diagnosis, what it says of each member whatever the outcome
     /// (docs/ports/sketcher.md, *Definition states*). `solved` is one
     /// [`check_reply`](Self::check_reply) passed, for this translation or any other of the
-    /// same sketch, as a load's (an [`Answer`]'s `solved`): a translation decides its rows
+    /// same sketch, as a load's ([`Answer::solved`]): a translation decides its rows
     /// from the sketch's references alone, never from where it's drawn, so every translation
     /// of one sketch reads a reply alike.
     ///
@@ -1975,9 +1984,9 @@ impl Translation {
             .iter()
             .flat_map(|(id, p)| [(p.x, id), (p.y, id)])
             .collect();
-        let mut points_read: BTreeMap<ElementId, BTreeSet<ElementId>> = BTreeMap::new();
+        let mut points_depended_on: BTreeMap<ElementId, BTreeSet<ElementId>> = BTreeMap::new();
         for &tag in &listed {
-            points_read.insert(self.id(tag)?.clone(), BTreeSet::new());
+            points_depended_on.insert(self.id(tag)?.clone(), BTreeSet::new());
         }
         for row in &self.system.constraints {
             let Some(tag) = row.tag().filter(|t| listed.contains(t)) else {
@@ -1988,7 +1997,7 @@ impl Translation {
                 .depends_on(row)
                 .into_iter()
                 .filter_map(|v| owner.get(&v).map(|&id| id.clone()));
-            points_read
+            points_depended_on
                 .entry(self.id(tag)?.clone())
                 .or_default()
                 .extend(read);
@@ -2000,7 +2009,7 @@ impl Translation {
                 conflicting,
                 redundant,
                 partially_redundant,
-                points_read,
+                points_depended_on,
             },
             outcome,
         })
@@ -2733,15 +2742,18 @@ type Placed = (
 /// give back, so it stands as `load` ended: the last load's answer, or, where a load
 /// couldn't be made, checked, or settled, the first solve's values with that error.
 fn refusal(first: Answer, load: Result<Answer, Error>) -> Answer {
-    if first.outcome.is_err() {
+    if first.outcome().is_err() {
         return first;
     }
     match load {
         Ok(load) => load,
+        // The first solve's diagnosis, of the values it stands with, beside the load's error.
         Err(e) => Answer {
             solved: first.solved,
-            outcome: Err(e),
-            diagnosis: first.diagnosis,
+            read: first.read.map(|read| Diagnosed {
+                outcome: Err(e),
+                ..read
+            }),
         },
     }
 }

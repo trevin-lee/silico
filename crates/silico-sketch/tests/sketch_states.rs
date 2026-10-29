@@ -53,8 +53,9 @@ fn solved(sketch: &Sketch) -> (Answer, Diagnosis, SketchStates) {
     let translation = Translation::new(sketch).unwrap();
     let answer = translation.solve(&mut worker).unwrap();
     let read = answer.diagnosed().unwrap();
-    let states = states(sketch, &read).unwrap();
-    (answer, read.diagnosis().clone(), states)
+    let states = states(sketch, read).unwrap();
+    let diagnosis = read.diagnosis().clone();
+    (answer, diagnosis, states)
 }
 
 fn members<S: Copy>(list: &[(&str, S)]) -> BTreeMap<ElementId, S> {
@@ -161,7 +162,7 @@ fn a_free_line_and_its_ends_are_under_defined_two_degrees_a_point() {
     // No equations: every value free (FreeCAD's reading). Two points, 2 each: 4 (1.1.3: 4).
     let sketch = sketch_of(&line_points((10.0, 3.0)), &one_line(), &[], &[], &[]);
     let (answer, _, got) = solved(&sketch);
-    assert!(answer.outcome.is_ok());
+    assert!(answer.outcome().is_ok());
     expect(
         &got,
         Want {
@@ -284,7 +285,7 @@ fn a_repeated_horizontal_is_redundant_and_over_defines_the_line_and_both_its_end
         &constraints,
     );
     let (answer, _, got) = solved(&sketch);
-    let solution = answer.outcome.as_ref().unwrap();
+    let solution = answer.outcome().unwrap();
     assert_eq!(
         solution
             .redundant
@@ -531,7 +532,7 @@ fn an_arc_whose_centre_and_ends_are_all_placed_repeats_one_dimension_and_stays_f
         other => panic!("{other}"),
     };
     assert_eq!(
-        diagnosis.points_read[repeated]
+        diagnosis.points_depended_on[repeated]
             .iter()
             .map(ElementId::as_str)
             .collect::<Vec<_>>(),
@@ -625,7 +626,7 @@ fn two_lengths_that_conflict_over_define_their_line_and_leave_a_free_line_under_
     ];
     let sketch = sketch_of(&points, &lines, &[], &[], &constraints);
     let (answer, _, got) = solved(&sketch);
-    let error = answer.outcome.as_ref().unwrap_err();
+    let error = answer.outcome().unwrap_err();
     assert_eq!(error.code(), ErrorCode::OverConstrained);
     expect(
         &got,
@@ -678,9 +679,13 @@ fn a_redundant_length_that_disagrees_past_decision_5_conflicts_as_data() {
         &constraints,
     );
     let (answer, diagnosis, got) = solved(&sketch);
-    let error = answer.outcome.as_ref().unwrap_err();
+    let error = answer.outcome().unwrap_err();
     assert_eq!(error.code(), ErrorCode::OverConstrained);
-    assert!(answer.solved.conflicting.is_empty(), "{:?}", answer.solved);
+    assert!(
+        answer.solved().conflicting.is_empty(),
+        "{:?}",
+        answer.solved()
+    );
     assert_eq!(error.elements(), ["k0000005"]);
     assert_eq!(
         diagnosis
@@ -729,7 +734,7 @@ fn a_line_made_horizontal_and_vertical_is_invalid_its_members_from_the_diagnosis
         ],
     );
     let (answer, _, got) = solved(&sketch);
-    let error = answer.outcome.as_ref().unwrap_err();
+    let error = answer.outcome().unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidResult);
     assert!(
         error.elements().contains(&"n0000001".to_owned()),
@@ -776,7 +781,7 @@ fn a_triangle_whose_sides_cant_close_has_no_solution_and_can_still_turn() {
     ];
     let sketch = sketch_of(&points, &lines, &[], &[], &constraints);
     let (answer, _, got) = solved(&sketch);
-    let error = answer.outcome.as_ref().unwrap_err();
+    let error = answer.outcome().unwrap_err();
     assert_eq!(error.code(), ErrorCode::SolveFailed);
     expect(
         &got,
@@ -837,7 +842,7 @@ fn an_arcs_ends_mirrored_about_the_y_axis_its_centre_placed_there_repeat_the_cen
         let constraints = [FROM_AT_ORIGIN[0], FROM_AT_ORIGIN[1], mirrored.as_str()];
         let sketch = sketch_of(&points, &[], &[], &arcs, &constraints);
         let (answer, _, got) = solved(&sketch);
-        assert!(answer.outcome.is_ok(), "{:?}", answer.outcome);
+        assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
         expect(
             &got,
             Want {
@@ -927,7 +932,7 @@ fn a_point_on_two_circles_touching_at_it_is_over_defined_by_the_redundant_on() {
     ];
     let sketch = sketch_of(&points, &[], &circles, &[], &constraints);
     let (_, diagnosis, got) = solved(&sketch);
-    let read: Vec<&str> = diagnosis.points_read[&ElementId::new("k0000008").unwrap()]
+    let read: Vec<&str> = diagnosis.points_depended_on[&ElementId::new("k0000008").unwrap()]
         .iter()
         .map(ElementId::as_str)
         .collect();
@@ -975,7 +980,7 @@ fn a_doubled_radius_over_defines_its_circle_and_never_its_centre() {
         &constraints,
     );
     let (_, diagnosis, got) = solved(&sketch);
-    assert!(diagnosis.points_read[&ElementId::new("k0000004").unwrap()].is_empty());
+    assert!(diagnosis.points_depended_on[&ElementId::new("k0000004").unwrap()].is_empty());
     expect(
         &got,
         Want {
@@ -1116,7 +1121,7 @@ fn an_arcs_ends_mirrored_about_a_line_a_one_row_constraint_puts_its_centre_on_lo
         r#"{"id": "k0000005", "type": "vertical_points", "a": "p0000004", "b": "p0000001"}"#,
     );
     let (answer, _, got) = solved(&sketch);
-    assert!(answer.outcome.is_ok(), "{:?}", answer.outcome);
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
     expect(
         &got,
         Want {
@@ -1173,7 +1178,7 @@ fn an_arcs_ends_mirrored_about_a_line_a_midpoint_puts_its_centre_on_flag_the_sym
     ];
     let sketch = sketch_of(&points, &lines, &[], &arcs, &constraints);
     let (answer, _, got) = solved(&sketch);
-    assert!(answer.outcome.is_ok(), "{:?}", answer.outcome);
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
     expect(
         &got,
         Want {
@@ -1567,9 +1572,8 @@ fn generated(seed: u64) -> Option<Sketch> {
 /// solution says of the degrees of freedom, the free members, and the repetitions kept. A
 /// sketch the translation refuses reads as [`untranslated_invariants`] says.
 fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), String> {
-    let translation = match Translation::new(sketch) {
-        Ok(translation) => translation,
-        Err(refusal) => return untranslated_invariants(sketch, refusal),
+    let Ok(translation) = Translation::new(sketch) else {
+        return untranslated_invariants(sketch);
     };
     let answer = match translation.solve(worker) {
         Ok(answer) => answer,
@@ -1578,8 +1582,8 @@ fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), Str
     };
     let read = answer.diagnosed().map_err(|e| format!("diagnosis: {e}"))?;
     let diagnosis = read.diagnosis();
-    let got = states(sketch, &read).map_err(|e| format!("states: {e}"))?;
-    if let Ok(solution) = &answer.outcome {
+    let got = states(sketch, read).map_err(|e| format!("states: {e}"))?;
+    if let Ok(solution) = answer.outcome() {
         let kept = |m: &BTreeMap<ElementId, f64>| m.keys().cloned().collect::<BTreeSet<_>>();
         let partly: BTreeSet<ElementId> = diagnosis
             .partially_redundant
@@ -1624,7 +1628,7 @@ fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), Str
         }
         SketchState::NoSolution | SketchState::Invalid => {}
     }
-    if got.solve_problem.is_some() != answer.outcome.is_err() {
+    if got.solve_problem.is_some() != answer.outcome().is_err() {
         return fail("a problem exactly when refused");
     }
     if let Some(problem) = &got.solve_problem {
@@ -1646,9 +1650,9 @@ fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), Str
     } else if got.constraints.values().any(|&s| s == Unsolved) {
         return fail("unsolved on a solved sketch");
     }
-    if answer.outcome.is_ok() {
+    if answer.outcome().is_ok() {
         // Every satisfied driving constraint met where the solve put it.
-        let values = &answer.solved.values;
+        let values = &answer.solved().values;
         let xy: Vec<[f64; 2]> = translation
             .system
             .geometry
@@ -1675,7 +1679,7 @@ fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), Str
                 continue;
             }
             let tag = silico_protocol::Tag(i as u32 + 1);
-            let residual = answer.solved.residuals.iter().find(|(t, _)| *t == tag);
+            let residual = answer.solved().residuals.iter().find(|(t, _)| *t == tag);
             match residual {
                 Some((_, Some(r))) if r.abs() <= window => {}
                 other => return Err(format!("{} satisfied but {other:?} off: {got:#?}", c.id)),
@@ -1688,15 +1692,19 @@ fn invariants_hold(sketch: &Sketch, worker: &mut SketchWorker) -> Result<(), Str
 /// A sketch [`Translation::new`] refuses (two points drawn at one place where a constraint is
 /// measured by the line between them, an arc that sweeps nothing): `invalid`, the refusal as
 /// its problem, an `invalid_input`; every member under defined and every constraint
-/// unsolved; and `dofs` the sketch's unknowns, counted from its lists, 2 a point, 1 a
-/// circle, 3 an arc (M5.0 open item 32, the sketch the translation refuses).
-fn untranslated_invariants(sketch: &Sketch, refusal: silico_core::Error) -> Result<(), String> {
+/// unsolved; and `dofs` the sketch's unknowns less its arcs' rules, counted from its lists, 2
+/// a point, 1 a circle, 3 an arc less its 4 rules, which PlaneGCS always sends (M5.0 open
+/// item 32, the sketch the translation refuses).
+fn untranslated_invariants(sketch: &Sketch) -> Result<(), String> {
+    let read = Diagnosed::untranslated(sketch).ok_or("translated after all")?;
+    let refusal = read.outcome().err().ok_or("refused with a solution")?;
     if refusal.code() != ErrorCode::InvalidInput {
         return Err(format!("the translation refuses with {refusal:?}"));
     }
-    let got = states(sketch, &Diagnosed::untranslated(sketch, refusal.clone()))
-        .map_err(|e| format!("states: {e}"))?;
-    let unknowns = 2 * sketch.points.len() + sketch.circles.len() + 3 * sketch.arcs.len();
+    let got = states(sketch, &read).map_err(|e| format!("states: {e}"))?;
+    let unknowns =
+        2 * sketch.points.len() as i64 + sketch.circles.len() as i64 + 3 * sketch.arcs.len() as i64
+            - 4 * sketch.arcs.len() as i64;
     let all_under = got
         .points
         .values()
@@ -1705,8 +1713,8 @@ fn untranslated_invariants(sketch: &Sketch, refusal: silico_core::Error) -> Resu
         .chain(got.arcs.values())
         .all(|&s| s == Under);
     if got.state != SketchState::Invalid
-        || got.solve_problem.as_ref() != Some(&refusal)
-        || got.dofs != unknowns as i32
+        || got.solve_problem.as_ref() != Some(refusal)
+        || i64::from(got.dofs) != unknowns
         || !all_under
         || got.constraints.values().any(|&s| s != Unsolved)
         || got.constraints.len() != sketch.constraints.len()
@@ -1758,7 +1766,7 @@ fn the_generator_reaches_every_sketch_state_and_every_constraint_state() {
         let Ok(answer) = translation.solve(&mut worker) else {
             continue;
         };
-        let got = states(&sketch, &answer.diagnosed().unwrap()).unwrap();
+        let got = states(&sketch, answer.diagnosed().unwrap()).unwrap();
         sketch_states.insert(got.state);
         constraint_states.extend(got.constraints.values().copied());
     }
@@ -1804,8 +1812,8 @@ fn a_repeated_tangent_at_marks_the_lines_ends_the_arcs_centre_and_the_joint_not_
     ];
     let sketch = sketch_of(&points, &lines, &[], &arcs, &constraints);
     let (answer, diagnosis, got) = solved(&sketch);
-    assert!(answer.outcome.is_ok(), "{:?}", answer.outcome);
-    let read: BTreeSet<&str> = diagnosis.points_read[&ElementId::new("k0000002").unwrap()]
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    let read: BTreeSet<&str> = diagnosis.points_depended_on[&ElementId::new("k0000002").unwrap()]
         .iter()
         .map(ElementId::as_str)
         .collect();
@@ -1847,8 +1855,8 @@ fn a_repeated_equal_of_two_circles_marks_the_circles_and_neither_centre() {
     ];
     let sketch = sketch_of(&points, &[], &circles, &[], &constraints);
     let (answer, diagnosis, got) = solved(&sketch);
-    assert!(answer.outcome.is_ok(), "{:?}", answer.outcome);
-    assert!(diagnosis.points_read[&ElementId::new("k0000002").unwrap()].is_empty());
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
+    assert!(diagnosis.points_depended_on[&ElementId::new("k0000002").unwrap()].is_empty());
     expect(
         &got,
         Want {
@@ -2023,7 +2031,7 @@ fn pipes_circle_centred_on_the_root_point_with_a_diameter_is_fully_defined() {
         ],
     );
     let (answer, _, got) = solved(&sketch);
-    assert!(answer.outcome.is_ok(), "{:?}", answer.outcome);
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
     expect(
         &got,
         Want {
@@ -2060,7 +2068,7 @@ fn pipes_vertical_line_from_the_root_point_with_a_length_is_fully_defined() {
         ],
     );
     let (answer, _, got) = solved(&sketch);
-    assert!(answer.outcome.is_ok(), "{:?}", answer.outcome);
+    assert!(answer.outcome().is_ok(), "{:?}", answer.outcome());
     expect(
         &got,
         Want {

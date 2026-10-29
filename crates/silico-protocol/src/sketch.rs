@@ -1112,11 +1112,6 @@ impl SketchSystem {
                 .map(SketchGeometry::values)
                 .unwrap_or_default()
         };
-        let point = |p: PointOf| {
-            self.point_values(p)
-                .map(|v| vec![v.x, v.y])
-                .unwrap_or_default()
-        };
         // A circle's or arc's centre and radius.
         let round = |g: Geometry| match self.geometry.get(g.0 as usize) {
             Some(
@@ -1127,14 +1122,14 @@ impl SketchSystem {
         };
         match *c {
             SolverConstraint::ArcRules { arc } => geometry(arc),
-            SolverConstraint::Coincident { a, b, .. } => [point(a), point(b)].concat(),
+            SolverConstraint::Coincident { a, b, .. } => [self.xy_of(a), self.xy_of(b)].concat(),
             SolverConstraint::DistanceX { a, b, value, .. }
             | SolverConstraint::DistanceY { a, b, value, .. }
             | SolverConstraint::Distance { a, b, value, .. } => {
-                [point(a), point(b), vec![value]].concat()
+                [self.xy_of(a), self.xy_of(b), vec![value]].concat()
             }
             SolverConstraint::PointOnLine { point: q, line, .. } => {
-                [point(q), geometry(line)].concat()
+                [self.xy_of(q), geometry(line)].concat()
             }
             SolverConstraint::Horizontal { line, .. } | SolverConstraint::Vertical { line, .. } => {
                 geometry(line)
@@ -1146,25 +1141,21 @@ impl SketchSystem {
                 [geometry(a), geometry(b), vec![value]].concat()
             }
             SolverConstraint::Radius { circle, value, .. } => {
-                let radius = match self.geometry.get(circle.0 as usize) {
-                    Some(
-                        SketchGeometry::Circle { radius, .. } | SketchGeometry::Arc { radius, .. },
-                    ) => vec![*radius],
-                    _ => Vec::new(),
-                };
-                [radius, vec![value]].concat()
+                [self.radius_of(circle), vec![value]].concat()
             }
             SolverConstraint::HorizontalPoints { a, b, .. }
-            | SolverConstraint::VerticalPoints { a, b, .. } => [point(a), point(b)].concat(),
+            | SolverConstraint::VerticalPoints { a, b, .. } => {
+                [self.xy_of(a), self.xy_of(b)].concat()
+            }
             SolverConstraint::PointLineDistance {
                 point: q,
                 line,
                 value,
                 ..
-            } => [point(q), geometry(line), vec![value]].concat(),
+            } => [self.xy_of(q), geometry(line), vec![value]].concat(),
             SolverConstraint::PointOnCircle {
                 point: q, circle, ..
-            } => [point(q), round(circle)].concat(),
+            } => [self.xy_of(q), round(circle)].concat(),
             SolverConstraint::EqualRadius { a, b, .. }
             | SolverConstraint::TangentCircles { a, b, .. } => [round(a), round(b)].concat(),
             SolverConstraint::TangentLine { line, circle, .. } => {
@@ -1183,28 +1174,31 @@ impl SketchSystem {
                 point: q,
                 angle,
                 ..
-            } => [point(q), geometry(a), geometry(b), vec![angle]].concat(),
+            } => [self.xy_of(q), geometry(a), geometry(b), vec![angle]].concat(),
             SolverConstraint::SymmetricLine { a, b, line, .. }
             | SolverConstraint::MidpointOnLine { a, b, line, .. } => {
-                [point(a), point(b), geometry(line)].concat()
+                [self.xy_of(a), self.xy_of(b), geometry(line)].concat()
             }
             SolverConstraint::SymmetricPoint { a, b, center, .. } => {
-                [point(a), point(b), point(center)].concat()
+                [self.xy_of(a), self.xy_of(b), self.xy_of(center)].concat()
             }
         }
     }
 
     /// The values constraint `c`'s equations depend on: the support of their gradient, where
     /// [`reads`](Self::reads) gives PlaneGCS's parameter list, which takes a geometry whole.
-    /// The two are the same for every form but three, whose equations read less than their
-    /// list (M5.0 open item 32, docs/ports/sketcher.md, *Definition states*):
+    /// The two are the same for every form but three, whose equations can read less than
+    /// their list (M5.0 open item 32, docs/ports/sketcher.md, *Definition states*):
     /// - a tangency at an end ([`TangentOn`]) and an angle at a point ([`AngleViaPoint`]):
     ///   the point, the angle, and of each curve what its normal there reads
     ///   (`CalculateNormal` in 1.1.3's `Geo.cpp`): a line's both ends, a circle's or an arc's
     ///   centre; and, for [`TangentOn`]'s row holding the point on `b`, `b`'s radius when it's
     ///   round. Never an arc's ends or angles, whose columns are zero in every one of these
-    ///   rows;
-    /// - two radii equal ([`EqualRadius`]): the two radii, never the centres (`r1 − r2`).
+    ///   rows. So a tangency reads less whenever an arc is in it, and an angle whenever a
+    ///   circle or an arc is (it never reads a radius); a line's end tangent on a line or a
+    ///   circle reads its whole list;
+    /// - two radii equal ([`EqualRadius`]): the two radii, never the centres (`r1 − r2`), so
+    ///   always less.
     ///
     /// The diagnosis's flags are the Jacobian's, so what a flagged constraint governs is
     /// this; `reads` stays the parameter list, the safe side for the parts it's partitioned
@@ -1214,23 +1208,12 @@ impl SketchSystem {
     /// [`AngleViaPoint`]: SolverConstraint::AngleViaPoint
     /// [`EqualRadius`]: SolverConstraint::EqualRadius
     pub fn depends_on(&self, c: &SolverConstraint) -> Vec<Value> {
-        let point = |p: PointOf| {
-            self.point_values(p)
-                .map(|v| vec![v.x, v.y])
-                .unwrap_or_default()
-        };
         // What a curve's normal at a point reads: a line's both ends; a circle's or an arc's
         // centre.
         let normal = |g: Geometry| match self.geometry.get(g.0 as usize) {
             Some(SketchGeometry::Line { start, end }) => vec![start.x, start.y, end.x, end.y],
             Some(SketchGeometry::Circle { center, .. } | SketchGeometry::Arc { center, .. }) => {
                 vec![center.x, center.y]
-            }
-            _ => Vec::new(),
-        };
-        let radius = |g: Geometry| match self.geometry.get(g.0 as usize) {
-            Some(SketchGeometry::Circle { radius, .. } | SketchGeometry::Arc { radius, .. }) => {
-                vec![*radius]
             }
             _ => Vec::new(),
         };
@@ -1241,16 +1224,44 @@ impl SketchSystem {
                 b,
                 angle,
                 ..
-            } => [point(q), normal(a), normal(b), radius(b), vec![angle]].concat(),
+            } => [
+                self.xy_of(q),
+                normal(a),
+                normal(b),
+                self.radius_of(b),
+                vec![angle],
+            ]
+            .concat(),
             SolverConstraint::AngleViaPoint {
                 a,
                 b,
                 point: q,
                 angle,
                 ..
-            } => [point(q), normal(a), normal(b), vec![angle]].concat(),
-            SolverConstraint::EqualRadius { a, b, .. } => [radius(a), radius(b)].concat(),
+            } => [self.xy_of(q), normal(a), normal(b), vec![angle]].concat(),
+            SolverConstraint::EqualRadius { a, b, .. } => {
+                [self.radius_of(a), self.radius_of(b)].concat()
+            }
             _ => self.reads(c),
+        }
+    }
+
+    /// The x and y of the point `p` names, as [`reads`](Self::reads) and
+    /// [`depends_on`](Self::depends_on) list them: none if its geometry hasn't it.
+    fn xy_of(&self, p: PointOf) -> Vec<Value> {
+        self.point_values(p)
+            .map(|v| vec![v.x, v.y])
+            .unwrap_or_default()
+    }
+
+    /// The radius of geometry `g`, a circle's or an arc's, as [`reads`](Self::reads) and
+    /// [`depends_on`](Self::depends_on) list it: none for any other geometry.
+    fn radius_of(&self, g: Geometry) -> Vec<Value> {
+        match self.geometry.get(g.0 as usize) {
+            Some(SketchGeometry::Circle { radius, .. } | SketchGeometry::Arc { radius, .. }) => {
+                vec![*radius]
+            }
+            _ => Vec::new(),
         }
     }
 

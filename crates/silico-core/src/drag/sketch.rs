@@ -406,7 +406,7 @@ impl SketchDrag {
             // Refused by the worker for the sketch's values, not failed: the begin kept.
             Err(why) => return Ok(unsettled(why)),
         };
-        match answer.outcome {
+        match answer.into_outcome() {
             Ok(solution) => {
                 let sketch = solution.written(&self.sketch);
                 let changed = sketch != self.sketch;

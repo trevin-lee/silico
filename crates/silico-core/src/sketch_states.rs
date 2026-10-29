@@ -190,7 +190,7 @@ pub fn states(sketch: &Sketch, read: &Diagnosed) -> Result<SketchStates, Error> 
         if !constraints.get(&c.id).is_some_and(|s| s.flagged()) {
             continue;
         }
-        if let Some(read) = diagnosis.points_read.get(&c.id) {
+        if let Some(read) = diagnosis.points_depended_on.get(&c.id) {
             points_over.extend(read);
         }
         named.extend(
@@ -322,8 +322,8 @@ fn constraint_state(c: &SketchConstraint, diagnosis: &Diagnosis, solved: bool) -
 /// curves use it. So a point on two curves that touch at it, one `on` redundant at first
 /// order, is `over_defined`, its unusable freedom left in `dofs`; and an arc's far end, which
 /// a flagged tangency at its other end never depends on, keeps the state its freedom gives.
-fn point_state(read_by_flagged: bool, free: bool) -> MemberState {
-    if read_by_flagged {
+fn point_state(depended_on_by_flagged: bool, free: bool) -> MemberState {
+    if depended_on_by_flagged {
         MemberState::OverDefined
     } else if free {
         MemberState::UnderDefined
@@ -353,6 +353,9 @@ fn curve_state(named_by_flagged: bool, free: bool) -> MemberState {
 /// point is, and so is the repeated dimension. The alternative, over-defined whenever a point
 /// of it is, would redden every line through a twice-dimensioned corner and point at nothing
 /// removable.
+///
+/// It's the rule's hook, so the rule can change here alone: today a flagged constraint's
+/// naming the curve decides it, so it gives that back as it's given.
 fn curve_over_defined(named_by_flagged: bool) -> bool {
     named_by_flagged
 }

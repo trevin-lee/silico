@@ -2589,7 +2589,7 @@ fn after_a_solved_conflict_the_second_solve_stands_only_when_it_solves() {
             sent: Vec::new(),
             distrusted: 0,
         };
-        let got = t.solve(&mut s).map(|a| a.outcome);
+        let got = t.solve(&mut s).map(Answer::into_outcome);
         assert_eq!(
             s.distrusted,
             usize::from(matches!(&got, Err(e) if e.code() == ErrorCode::ProtocolError)),
@@ -2697,7 +2697,7 @@ fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
         (got, starts)
     };
     let redundant_of = |got: &Answer| {
-        let s = got.outcome.as_ref().unwrap();
+        let s = got.outcome().unwrap();
         (
             s.point(&silico_core::document::ElementId::new("p0000003").unwrap())
                 .unwrap()[1],
@@ -2736,7 +2736,7 @@ fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
     let mut other = conflict(5.0);
     other.conflicting = vec![Tag(3)];
     let (got, starts) = run(vec![conflict(4.0), conflict(5.0), other]);
-    let e = got.outcome.unwrap_err();
+    let e = got.into_outcome().unwrap_err();
     assert_eq!(
         (e.code(), e.elements()),
         (
@@ -2749,7 +2749,7 @@ fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
     // the load refuses it (break-it on the first solve again, which kept the first answer:
     // a save Ok whose every load was refused).
     let (got, starts) = run(vec![dropping(3, 4.0), conflict(4.0)]);
-    let e = got.outcome.unwrap_err();
+    let e = got.into_outcome().unwrap_err();
     assert_eq!(
         (e.code(), e.elements()),
         (
@@ -2765,7 +2765,7 @@ fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
         .map(|i| dropping(3, 4.0 + i as f64))
         .collect();
     let (got, starts) = run(moving);
-    let e = got.outcome.unwrap_err();
+    let e = got.into_outcome().unwrap_err();
     assert_eq!(e.code(), ErrorCode::SolveFailed);
     assert!(
         e.message()
@@ -2777,7 +2777,10 @@ fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
     let mut moving = vec![conflict(4.0)];
     moving.extend((1..=MAX_LOAD_RESOLVES).map(|i| conflict(4.0 + i as f64)));
     let (got, starts) = run(moving);
-    assert_eq!(got.outcome.unwrap_err().code(), ErrorCode::OverConstrained);
+    assert_eq!(
+        got.into_outcome().unwrap_err().code(),
+        ErrorCode::OverConstrained
+    );
     assert_eq!(starts.len(), 1 + MAX_LOAD_RESOLVES);
     // Solved Ok on the drawing, and the load from its solution reaches none: that load's
     // refusal stands, since it leaves the file as it is and every load gives it (break-it
@@ -2787,7 +2790,10 @@ fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
         dropping(3, 4.0),
         answer(&t, at(4.0), SolveStatus::Failed),
     ]);
-    assert_eq!(got.outcome.unwrap_err().code(), ErrorCode::SolveFailed);
+    assert_eq!(
+        got.into_outcome().unwrap_err().code(),
+        ErrorCode::SolveFailed
+    );
     assert_eq!(starts, [3.0, 4.0]);
     // Solved Ok on the drawing, moved and refused by the first load, and the load from
     // there reaches none: refused, as the last load refused it (break-it, when the first
@@ -2798,7 +2804,10 @@ fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
         conflict(5.0),
         answer(&t, at(5.0), SolveStatus::Failed),
     ]);
-    assert_eq!(got.outcome.unwrap_err().code(), ErrorCode::SolveFailed);
+    assert_eq!(
+        got.into_outcome().unwrap_err().code(),
+        ErrorCode::SolveFailed
+    );
     assert_eq!(starts, [3.0, 4.0, 5.0]);
     // A solve that leaves the drawing where it was is its own load: no solve again.
     let (got, starts) = run(vec![dropping(3, 3.0)]);
@@ -2809,7 +2818,10 @@ fn a_solve_stands_only_where_a_load_of_its_own_file_gives_it_back() {
     let mut flat = dropping(3, 4.0);
     flat.values[8] = 0.0;
     let (got, starts) = run(vec![flat]);
-    assert_eq!(got.outcome.unwrap_err().code(), ErrorCode::InvalidResult);
+    assert_eq!(
+        got.into_outcome().unwrap_err().code(),
+        ErrorCode::InvalidResult
+    );
     assert_eq!(starts, [3.0]);
 }
 
@@ -2848,7 +2860,7 @@ fn a_circles_solved_radius_is_where_the_solve_again_starts() {
         let got = t.solve(&mut s).unwrap();
         let starts: Vec<f64> = s.sent.iter().map(|system| system.values[radius]).collect();
         let solved = got
-            .outcome
+            .into_outcome()
             .unwrap()
             .radius(&silico_core::document::ElementId::new("c0000001").unwrap())
             .unwrap();
