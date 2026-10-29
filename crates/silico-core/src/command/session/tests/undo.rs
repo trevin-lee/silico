@@ -710,3 +710,38 @@ fn an_undo_is_named_by_status_and_stopped_by_cancel_before_it_changes_anything()
     assert_eq!(SessionCommand::Undo.command(), None);
     assert_eq!(SessionCommand::Check.command(), Some(Command::Check));
 }
+
+#[test]
+fn a_transaction_begun_from_text_that_didnt_read_undoes_back_to_it_and_redoes_its_mend() {
+    // A merge's conflict markers around the lug's length: `begin`'s text doesn't read. The
+    // mend (the lug 20 long, a ball added) reaches only the ball, whose ID the text hadn't;
+    // undone, the markers are back byte for byte and nothing is reached; redone, the ball is
+    // reached again, from the mend the transaction holds.
+    let markers = STORED.replace(
+        r#""length": 10, "width": 10"#,
+        "\n<<<<<<< ours\n\"length\": 10, \"width\": 10\n=======\n\"length\": 20, \"width\": 10\n>>>>>>> theirs\n",
+    );
+    let f = opened(&markers);
+    f.begin();
+    let ball = r#", {"id": "z0000001", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 50], "radius": 5}"#;
+    let mended = longer().replacen("\n]}", &format!("{ball}\n]}}"), 1);
+    let replaced = f.sessions.replace_text(&f.id, Revision(1), mended).wait();
+    assert!(replaced.result.unwrap().changed);
+    let mended = f.text();
+    assert_eq!(
+        f.session().held.read().reach(),
+        BTreeSet::from([id("z0000001")])
+    );
+    assert_eq!(stepped(f.undo(None)), (step(1, 0, 1, 0), Revision(3)));
+    assert_eq!(f.text(), markers);
+    assert!(matches!(*f.session().held.read().gated, Gated::Unread(_)));
+    assert!(f.session().held.read().reach().is_empty());
+    assert_eq!(stepped(f.redo(None)), (step(2, 1, 0, 0), Revision(4)));
+    assert_eq!(f.text(), mended);
+    assert_eq!(
+        f.session().held.read().reach(),
+        BTreeSet::from([id("z0000001")])
+    );
+    let committed = f.sessions.commit(&f.id).wait().result.unwrap();
+    assert_eq!(committed.refingerprinted, [id("z0000001")]);
+}

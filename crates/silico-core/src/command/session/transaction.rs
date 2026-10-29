@@ -584,12 +584,20 @@ impl<C: Kernel + 'static> Session<C> {
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
     ) -> Result<(Committed, Option<Arc<Gated>>), Problems> {
+        // Its features' texts are an undo stack's, and no transaction is open: let go now,
+        // not after its rebuild and save.
+        let Candidate {
+            text,
+            gated,
+            prepared,
+        } = candidate;
+        drop(prepared);
         let state = {
             let held = self.held.read();
             Saving {
                 path: held.path.clone(),
-                text: candidate.text,
-                gated: candidate.gated,
+                text,
+                gated,
                 revision: held.next()?,
                 carried: Arc::clone(&held.carried),
                 begun: held.snapshot(),
