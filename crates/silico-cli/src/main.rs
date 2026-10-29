@@ -40,7 +40,7 @@ const USAGE: &str = "usage: silico check [--json] [--fresh] [--] FILE...
        silico show [--] FILE
        silico cache clear [--] FILE...
        silico export [--tolerance=MM] [--features=ID,...] [--replace] [--] FILE OUT.3mf
-       silico export [--features=ID,...] [--replace] [--] FILE OUT.step
+       silico export [--features=ID,...] [--replace] [--] FILE OUT.step|OUT.stp
        silico textconv [--] FILE
        silico schema [NAME]
        silico serve [--workspace DIR]";

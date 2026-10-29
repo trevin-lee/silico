@@ -39,7 +39,8 @@ pub enum ExportFormat {
 }
 
 impl ExportFormat {
-    /// The format's word, as a request gives it, and its file's extension.
+    /// The format's word, as a request gives it (the first of its
+    /// [`extensions`](Self::extensions)).
     pub const fn name(self) -> &'static str {
         match self {
             ExportFormat::ThreeMf { .. } => "3mf",
