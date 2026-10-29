@@ -45,6 +45,8 @@ mod pool_slot_panics_in_run;
 mod pool_slot_panics_running;
 #[path = "pool_tracing.rs"]
 mod pool_tracing;
+#[path = "pool_warm_log.rs"]
+mod pool_warm_log;
 
 /// Every file in tests/ is built: this crate lists its test programs (`autotests = false`),
 /// so a new file must be added as a module of one, or as one, or it would never run.
