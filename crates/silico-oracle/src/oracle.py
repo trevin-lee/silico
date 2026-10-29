@@ -354,9 +354,9 @@ def flat(shape):
 def centre_to(shapes):
     """Where one element has a centre (a vertex's point, a circle's or arc's centre) and the
     other is a planar face or a straight edge, the centre made a vertex and its least
-    distance to the other, as Measurement::circleCenterDistance builds it
-    (BRepBuilderAPI_MakeVertex, then BRepExtrema_DistShapeShape; Measurement.cpp); else
-    None."""
+    distance to the other: a vertex's own least distance, or a circle's centre as
+    Measurement::circleCenterDistance builds it (BRepBuilderAPI_MakeVertex, then
+    BRepExtrema_DistShapeShape; Measurement.cpp); else None."""
     for this, other in (shapes, shapes[::-1]):
         point = centre(this)
         if point is not None and flat(other):

@@ -181,17 +181,6 @@ impl Element {
         )
     }
 
-    /// A cylinder face, whose centre is its axis.
-    fn is_cylinder(&self) -> bool {
-        matches!(
-            self,
-            Element::Face {
-                surface: "cylinder",
-                ..
-            }
-        )
-    }
-
     fn is_plane(&self) -> bool {
         matches!(
             self,
@@ -446,8 +435,9 @@ pub enum Theirs {
 /// distance, `MeasureDistance`'s distance and points, `distToShape`'s least distance, how
 /// far Silico's witness points are from the elements they're on, and, where one element is a
 /// vertex or a circle or arc and the other a planar face or a straight edge, the distance from
-/// its centre to the other as `Measurement::circleCenterDistance` builds it (the centre made a
-/// vertex, `distToShape` from it); for an angle, `MeasureAngle`'s.
+/// its centre to the other: a vertex's least distance, or a circle's centre as
+/// `Measurement::circleCenterDistance` builds it (the centre made a vertex, `distToShape` from
+/// it); for an angle, `MeasureAngle`'s.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Measured {
@@ -678,23 +668,19 @@ pub fn compare(case: &MeasureCase, rule: Rule, ours: &Ours, theirs: &Theirs) -> 
                     measured.distance,
                 )),
             }
-            // The centre's distance from the other element: FreeCAD's where it builds one,
-            // none on both sides where neither does. A cylinder's axis against a plane or a
-            // line is Silico's own (docs/ports/measure.md), which FreeCAD has no measure of:
-            // its number is checked by hand only ([`against_expected`]).
-            let [first, second] = [&ours.found[0].element, &ours.found[1].element];
-            let axis = |x: &Element, y: &Element| x.is_cylinder() && (y.is_plane() || y.is_line());
+            // The centre's distance from the other element, compared only where FreeCAD
+            // defines one: a vertex's least distance, or a circle's centre as
+            // circleCenterDistance builds it, to a plane or a line. Where FreeCAD has none (a
+            // cylinder's axis, Silico's own, docs/ports/measure.md), Silico's number is
+            // checked by hand only ([`against_expected`]); none of Silico's against one of
+            // FreeCAD's is a difference.
             match (d.center_to_element, measured.center_to_element) {
-                (None, None) => {}
-                (Some(_), None) if axis(first, second) || axis(second, first) => {}
-                (Some(centre), theirs @ Some(_)) => found.extend(length(
-                    "center_to_element (FreeCAD's circleCenterDistance)",
-                    centre.mm(),
-                    theirs,
-                )),
-                (centre, theirs) => found.push(format!(
-                    "Silico's center_to_element {:?} against FreeCAD's {theirs:?}",
-                    centre.map(Length::mm)
+                (_, None) => {}
+                (Some(centre), theirs @ Some(_)) => {
+                    found.extend(length("center_to_element (FreeCAD's)", centre.mm(), theirs))
+                }
+                (None, theirs) => found.push(format!(
+                    "Silico's center_to_element None against FreeCAD's {theirs:?}"
                 )),
             }
             // Silico's witness, on its elements as FreeCAD has them.

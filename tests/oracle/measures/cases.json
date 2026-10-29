@@ -325,7 +325,7 @@
   },
   {
     "name": "vertex_over_a_top",
-    "note": "docs/ports/measure.md's vertex 10 above the cube's top's middle: (5, 5, 20) to (5, 5, 10), 10 (FreeCAD 10). A vertex's point is its centre, but a plane has none, so no center_distance. Its center_to_element is the distance, 10: a vertex is its own centre, so its distance from the face is the pair's least distance (FreeCAD's circleCenterDistance, the vertex to the face).",
+    "note": "docs/ports/measure.md's vertex 10 above the cube's top's middle: (5, 5, 20) to (5, 5, 10), 10 (FreeCAD 10). A vertex's point is its centre, but a plane has none, so no center_distance. Its center_to_element is the distance, 10: a vertex is its own centre, so its distance from the face is the pair's least distance (FreeCAD's least distance from the vertex to the face).",
     "elements": ["vtx00001.box.Vertex2", "bxa00001.box.Face6"],
     "expected": {"distance": {"distance": 10, "center_distance": null, "normal_distance": null, "center_to_element": 10, "witness": [[5, 5, 20], [5, 5, 10]]}}
   },

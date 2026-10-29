@@ -520,51 +520,33 @@ fn center_to_element_is_compared_with_freecads_and_with_its_hand_value() {
     };
     let ours = rim_and_line(edge("circle"), edge("line"), Some(10.0));
     let against = |ours: &Ours, theirs| compare(&d, Rule::Least, ours, &freecad_centred(theirs));
-    // FreeCAD's circleCenterDistance, to LENGTH_TOLERANCE.
+    // FreeCAD's, to LENGTH_TOLERANCE.
     assert!(against(&ours, Some(10.0)).is_empty());
     assert!(against(&ours, Some(10.0 + 5e-7)).is_empty());
     assert_eq!(
         against(&ours, Some(10.0 + 2e-6)),
-        [
-            "Silico's center_to_element (FreeCAD's circleCenterDistance) 10 against FreeCAD's \
-          Some(10.000002)"
-        ]
+        ["Silico's center_to_element (FreeCAD's) 10 against FreeCAD's Some(10.000002)"]
     );
-    // A number on one side and none on the other, either way round.
-    assert_eq!(
-        against(&ours, None),
-        ["Silico's center_to_element Some(10.0) against FreeCAD's None"]
-    );
+    // Compared only where FreeCAD defines one: none of Silico's against FreeCAD's number is
+    // a difference; where FreeCAD has none, for any pair of elements alike (a cylinder's
+    // axis to a plane is Silico's own), Silico's number isn't compared with it, and is
+    // checked by hand only (below).
     let none = rim_and_line(edge("circle"), edge("line"), None);
     assert_eq!(
         against(&none, Some(10.0)),
         ["Silico's center_to_element None against FreeCAD's Some(10.0)"]
     );
     assert!(against(&none, None).is_empty());
-    // A cylinder's axis to a plane or a line is Silico's own, which FreeCAD has no measure
-    // of: Silico's number against FreeCAD's none is no difference there (it's checked by
-    // hand), but a number of FreeCAD's is still compared, and none of Silico's against one
-    // of FreeCAD's is still a difference.
-    for flat in [face("plane"), edge("line")] {
-        let axis = rim_and_line(face("cylinder"), flat.clone(), Some(10.0));
-        assert!(against(&axis, None).is_empty(), "{flat:?}");
-        let other_way = rim_and_line(flat.clone(), face("cylinder"), Some(10.0));
-        assert!(against(&other_way, None).is_empty(), "{flat:?}");
-        assert_eq!(against(&axis, Some(9.0)).len(), 1, "{flat:?}");
-        let none = rim_and_line(face("cylinder"), flat.clone(), None);
-        assert_eq!(against(&none, Some(10.0)).len(), 1, "{flat:?}");
-    }
-    // Only there: two cylinders, a cylinder and a curved face, and a circle's centre to a
-    // plane are compared.
     for (a, b) in [
-        (face("cylinder"), face("cylinder")),
+        (edge("circle"), edge("line")),
+        (face("cylinder"), face("plane")),
+        (edge("line"), face("cylinder")),
         (face("cylinder"), face("sphere")),
-        (face("cylinder"), edge("circle")),
-        (edge("circle"), face("plane")),
         (Element::Vertex { point: [0.0; 3] }, face("plane")),
     ] {
         let ours = rim_and_line(a.clone(), b.clone(), Some(10.0));
-        assert_eq!(against(&ours, None).len(), 1, "{a:?} and {b:?}");
+        assert!(against(&ours, None).is_empty(), "{a:?} and {b:?}");
+        assert_eq!(against(&ours, Some(9.0)).len(), 1, "{a:?} and {b:?}");
     }
 
     // The case's hand value: Silico's must be it, to the nanometre, null where it's null.
