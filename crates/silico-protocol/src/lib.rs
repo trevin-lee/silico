@@ -9,6 +9,7 @@
 
 mod chamfer;
 mod classify;
+mod copies;
 mod describe;
 mod distance;
 mod export;
@@ -30,6 +31,7 @@ use serde::{Deserialize, Serialize};
 
 pub use chamfer::ChamferSize;
 pub use classify::{MAX_CLASSIFY_COORDINATE, PointPlace, check_classify_point};
+pub use copies::{CopiesOp, CopiesRefused, MAX_COPIES, MAX_INSTANCES, Placement, check_copies};
 pub use describe::{
     DESCRIBE_BATCH, Description, EdgeCurve, EdgeDescription, FaceDescription, Quantity, Surface,
     What, batches, describe_in_batches,
