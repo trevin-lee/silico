@@ -1470,3 +1470,114 @@ fn a_line_joined_to_an_arcs_end_meets_the_curve_ahead_not_the_arc() {
         })
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// Off the axes: a line's y and an arc's centre count.
+
+#[test]
+fn a_vertical_line_meets_the_curve_ahead_of_each_end() {
+    // a0 from (3, −10) up to (3, −5); y = −2 (b0) ahead of its end, y = −15 (b1) behind
+    // its start. Every test along y = 0 left the y terms of the line's direction and of
+    // its halfway place untested.
+    let before = doc(
+        &[
+            p("p0000000", [3.0, -10.0]),
+            p("p0000001", [3.0, -5.0]),
+            p("q0000000", [0.0, -2.0]),
+            p("q0000001", [6.0, -2.0]),
+            p("q0000002", [0.0, -15.0]),
+            p("q0000003", [6.0, -15.0]),
+        ],
+        &[
+            line("a0000000", "p0000000", "p0000001"),
+            line("b0000000", "q0000000", "q0000001"),
+            line("b0000001", "q0000002", "q0000003"),
+        ],
+        &[],
+        &[],
+    );
+    assert_eq!(gate_of(&before), Vec::<String>::new());
+    let sketch = sketch_of(&before);
+    assert_eq!(
+        next_crossing(sketch, &id("a0000000"), End::End).unwrap(),
+        Some(Crossing {
+            curve: id("b0000000"),
+            at: xy(3.0, -2.0),
+        })
+    );
+    assert_eq!(
+        next_crossing(sketch, &id("a0000000"), End::Start).unwrap(),
+        Some(Crossing {
+            curve: id("b0000001"),
+            at: xy(3.0, -15.0),
+        })
+    );
+}
+
+#[test]
+fn a_vertical_line_overlapping_a_collinear_one_meets_nothing_along_it() {
+    // a0 from (3, 0) up to (3, 5); a1 from (3, 4) to (3, 9) overlaps its last millimetre.
+    // a1's far end (3, 9) is ahead, but halfway there, (3, 7), is on a1: the extension
+    // runs along it, so it isn't met.
+    let before = doc(
+        &[
+            p("p0000000", [3.0, 0.0]),
+            p("p0000001", [3.0, 5.0]),
+            p("q0000000", [3.0, 4.0]),
+            p("q0000001", [3.0, 9.0]),
+        ],
+        &[
+            line("a0000000", "p0000000", "p0000001"),
+            line("a0000001", "q0000000", "q0000001"),
+        ],
+        &[],
+        &[],
+    );
+    assert_eq!(gate_of(&before), Vec::<String>::new());
+    assert_eq!(
+        next_crossing(sketch_of(&before), &id("a0000000"), End::End).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn an_arc_about_a_centre_off_the_origin_meets_the_nearest_curve_around_it() {
+    // sketch_extend_to's arc and two lines moved by (100, −50): r0 about (100, −50), radius
+    // 10, from (110, −50) round to (100, −40); x = 94 (b0) and x = 106 (b1). The circle
+    // meets x = 94 at (94, −50 ± 8) and x = 106 at (106, −50 ± 8). On from the end (90°),
+    // (94, −42) is 36.87° on, nearest; back from the start (0°), (106, −58) is 53.13°
+    // back. Arcs centred at the origin left the centre's offset in the angle untested.
+    let before = doc(
+        &[
+            p("z0000000", [100.0, -50.0]),
+            p("s0000000", [110.0, -50.0]),
+            p("e0000000", [100.0, -40.0]),
+            p("q0000000", [94.0, -70.0]),
+            p("q0000001", [94.0, -30.0]),
+            p("q0000002", [106.0, -70.0]),
+            p("q0000003", [106.0, -30.0]),
+        ],
+        &[
+            line("b0000000", "q0000000", "q0000001"),
+            line("b0000001", "q0000002", "q0000003"),
+        ],
+        &[],
+        &[arc("r0000000", "z0000000", "s0000000", "e0000000")],
+    );
+    assert_eq!(gate_of(&before), Vec::<String>::new());
+    let sketch = sketch_of(&before);
+    assert_eq!(
+        next_crossing(sketch, &id("r0000000"), End::End).unwrap(),
+        Some(Crossing {
+            curve: id("b0000000"),
+            at: xy(94.0, -42.0),
+        })
+    );
+    assert_eq!(
+        next_crossing(sketch, &id("r0000000"), End::Start).unwrap(),
+        Some(Crossing {
+            curve: id("b0000001"),
+            at: xy(106.0, -58.0),
+        })
+    );
+}
