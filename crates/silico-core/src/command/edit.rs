@@ -21,17 +21,29 @@ use std::sync::Arc;
 
 use super::{Gated, Problems};
 use crate::document::json::{self, Member, Node, Plain, Value};
+use crate::document::undo::Prepared;
 use crate::document::{
     self, Checked, Document, ElementId, ElementKind, Feature, FeatureId, FeatureVersion,
     ID_ALPHABET, ID_LENGTH, NamingScheme, Operation, PROBLEMS_LISTED, Sketch,
 };
 use crate::{Error, ErrorCode};
 
-/// The state an accepted edit gives a session's document: its canonical text, and that
-/// text as the reader and the gate find it.
+/// The state an accepted edit gives a session's document: its canonical text, that text as
+/// the reader and the gate find it, and its features' canonical texts, which the text was
+/// assembled from, written once: what a transaction's undo stack keeps of it
+/// (`document::undo`), made here, off every lock. Made only by [`candidate`], so its text is
+/// always the one its features' texts assemble.
 pub(super) struct Candidate {
-    pub(super) text: Arc<Vec<u8>>,
-    pub(super) gated: Arc<Gated>,
+    text: Arc<Vec<u8>>,
+    gated: Arc<Gated>,
+    prepared: Prepared,
+}
+
+impl Candidate {
+    /// Its text, the gate's finding of it, and its features' canonical texts.
+    pub(super) fn into_parts(self) -> (Arc<Vec<u8>>, Arc<Gated>, Prepared) {
+        (self.text, self.gated, self.prepared)
+    }
 }
 
 /// `document`, edited, written in canonical form, and that text through the reader and the
@@ -41,7 +53,8 @@ pub(super) struct Candidate {
 /// text's; or the canonical text's errors, if the gate takes `document` as given. `field`
 /// is the request's field that holds the edit, which a document too long to write names.
 fn candidate(document: &Document, field: &str) -> Result<Candidate, Problems> {
-    let text = document::write(document).map_err(|e| e.with_parameter(field))?;
+    let prepared = Prepared::of(document).map_err(|e| e.with_parameter(field))?;
+    let text = prepared.text();
     let gated = Gated::of(text.as_bytes());
     if !matches!(gated, Gated::Checked(_)) {
         return Err(match Checked::try_new(document.clone()) {
@@ -52,6 +65,7 @@ fn candidate(document: &Document, field: &str) -> Result<Candidate, Problems> {
     Ok(Candidate {
         text: Arc::new(text.into_bytes()),
         gated: Arc::new(gated),
+        prepared,
     })
 }
 

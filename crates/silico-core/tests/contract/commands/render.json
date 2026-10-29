@@ -44,7 +44,6 @@
           "up": {
             "description": "Which way is up in the image: any vector with a part across the view, made\nperpendicular to the view and of unit length in a result.",
             "items": {
-              "format": "double",
               "type": "number"
             },
             "maxItems": 3,
@@ -138,7 +137,6 @@
       },
       "height": {
         "description": "The image's height in pixels.",
-        "format": "uint32",
         "maximum": 4096,
         "minimum": 1,
         "type": "integer"
@@ -183,7 +181,6 @@
       },
       "width": {
         "description": "The image's width in pixels.",
-        "format": "uint32",
         "maximum": 4096,
         "minimum": 1,
         "type": "integer"
@@ -248,7 +245,6 @@
           "up": {
             "description": "Which way is up in the image: any vector with a part across the view, made\nperpendicular to the view and of unit length in a result.",
             "items": {
-              "format": "double",
               "type": "number"
             },
             "maxItems": 3,
@@ -300,8 +296,8 @@
       },
       "height": {
         "description": "The image's height in pixels.",
-        "format": "uint32",
-        "minimum": 0,
+        "maximum": 4096,
+        "minimum": 1,
         "type": "integer"
       },
       "path": {
@@ -313,14 +309,13 @@
       },
       "png_bytes": {
         "description": "The PNG's size, in bytes. It depends on the machine (its renderer), so it isn't a\nresult to compare.",
-        "format": "uint64",
         "minimum": 0,
         "type": "integer"
       },
       "width": {
         "description": "The image's width in pixels.",
-        "format": "uint32",
-        "minimum": 0,
+        "maximum": 4096,
+        "minimum": 1,
         "type": "integer"
       }
     },

@@ -31,22 +31,30 @@ pub fn read(file: &Path) -> Result<Vec<u8>, Error> {
 
 /// `file`, opened, and as much of it as [`read`] reads, the rest left to read.
 pub fn opened_and_read(file: &Path) -> Result<(std::fs::File, Vec<u8>), Error> {
+    opened_and_read_io(file).map_err(unreadable)
+}
+
+/// [`opened_and_read`], its failure the system's own, its kind kept (no file at the path is
+/// `NotFound`; a file that isn't a regular one, `InvalidInput`): for a caller that tells
+/// them apart, as a disk comparison tells a file gone from one it can't read.
+pub(crate) fn opened_and_read_io(file: &Path) -> std::io::Result<(std::fs::File, Vec<u8>)> {
     // Opened without waiting (a pipe with no writer would block an open), then checked.
     let opened = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
-        .open(file)
-        .map_err(unreadable)?;
-    let metadata = opened.metadata().map_err(unreadable)?;
+        .open(file)?;
+    let metadata = opened.metadata()?;
     if !metadata.is_file() {
-        return Err(unreadable("it isn't a regular file"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "it isn't a regular file",
+        ));
     }
     let mut opened = opened;
     let mut bytes = Vec::new();
     (&mut opened)
         .take(MAX_INPUT_LEN as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(unreadable)?;
+        .read_to_end(&mut bytes)?;
     Ok((opened, bytes))
 }
 
@@ -1377,7 +1385,8 @@ fn output_target(
     // hard link's, or another case of its own on a case-insensitive file system, which
     // Linux's `realpath` keeps as given), it's the device and inode of one held. Both, since
     // inode numbers repeat across file systems: a file on another volume may have a held
-    // document's inode. The tests reach only one device, so the device's half is untested.
+    // document's inode. The device's half is tested on Linux only, where a test makes two
+    // file systems of its own (tests/file.rs, two tmpfs mounts in a namespace of its own).
     let there = std::fs::metadata(&target);
     if let Ok(meta) = &there
         && rules.held.iter().any(|held| {

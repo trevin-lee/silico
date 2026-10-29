@@ -40,13 +40,26 @@ M5's sketch mode needs them, and the draft M5 plan (#196) puts them in a step of
 ### Add a point, a curve, a constraint
 
 **What FreeCAD does:**
-- **`addGeometry`** (`SketchObjectGeometry.cpp:148-207`) checks nothing ("a sketchobject managed operation", :186). It copies the geometry with a fresh tag (`71a555a6bb`, so adding one Python object twice makes two curves) and appends it.
-  - Degenerate input is refused only by Part: a line's ends within `gp::Resolution` raise "Both points are equal" (`Part/Geometry.cpp:4822`).
+- **`addGeometry`** (`SketchObjectGeometry.cpp:148-207`) checks nothing ("a sketchobject managed operation", :150, :186). It copies each geometry with a fresh tag (`71a555a6bb`, so adding one Python object twice makes two curves, with two tags *(1.1.3)*) and appends it. The list form appends the whole list in one `setValues`.
+  - **Construction** is one flag for the call, so the list form sets it on every member *(1.1.3)*. Since `3db4633f9d` (2024) a point is construction only when asked; before it every new point was forced to construction *(1.1.3: a point added alone isn't)*.
+  - **Degenerate input** is refused only where Part won't make it: a line's ends within `gp::Resolution` raise "Both points are equal" (`Part/Geometry.cpp:4822`) before the sketch sees the line *(1.1.3)*. A circle of radius 0 and a line 1e-12 mm long are added, and the sketch solves them (status 0) *(1.1.3)*.
   - Since `0e174da56d` and `f32d5e5fd9` (2026), the Gui's tools refuse non-finite positions and zero-size rectangles before they add anything.
-  - `3db4633f9d` stopped forcing every new point to be construction.
-- **`addConstraint`** (`SketchObjectConstraints.cpp:930-962`) checks only index ranges (`evaluateConstraint`, :2172-2233; Python raises "Constraint has invalid indexes"). A constraint whose form doesn't fit is found later, by the solver, as malformed. That has been an error at recompute since `150e50c700`.
-  - It records a distance's or tangent's side, and the kind of tangency, **from the current geometry** (`setOrientation`, `AutoLockTangencyAndPerpty`, :948-951).
-  - Python's list forms skip items of the wrong type silently.
+- **Python's `addGeometry`** (`SketchObjectPyImp.cpp:69-196`) takes one geometry or a list:
+  - In a list, an item that isn't a geometry is **skipped silently**: `[line, 5, circle]` adds two curves *(1.1.3)*.
+  - A geometry of a type the sketch doesn't take (an unbounded `Part.Line`) raises `TypeError`, "Unsupported geometry type", **before any is added**, so that list adds nothing *(1.1.3)*.
+  - A `Part.Arc`, a trimmed circle, is taken as an arc of a circle (`d974d6897b`, #1713).
+- **`addConstraint`** (`SketchObjectConstraints.cpp:930-962`) and its list form **`addConstraints`** (:858-893) check nothing either. Each new constraint has its form completed **from the current geometry**:
+  - a tangency's or perpendicularity's kind at an end, 0 or π, by `AutoLockTangencyAndPerpty` (:2674, from `3838bddcdb`, 2014);
+  - on main only, a distance's or a line-circle tangent's side, by `setOrientation` (:1407; `3c8a254356`, 2025-12, for distances; `f432d1c6a7` and `5a6be36bc3`, 2026-04, for tangency, #29007). 1.1.3 records no side *(1.1.3: its `Constraint` has no orientation attribute)*.
+- **Python's `addConstraint`** (`SketchObjectPyImp.cpp:370-439`) checks index ranges (`evaluateConstraint`, `SketchObjectConstraints.cpp:2172-2233`), since `7d8b1f30c3` (2014, #1720: invalid sketches crashed FreeCAD):
+  - **One constraint** out of range raises `IndexError`, "Constraint has invalid indexes", and adds nothing *(1.1.3)*. A constraint can only name geometry the sketch already holds, so a shape's geometry and its constraints take two calls *(1.1.3: a `Horizontal` of geometry 0 on an empty sketch is refused)*.
+  - **A list is checked whole before any of it is added.** One constraint out of range refuses the whole list, with "The constraint has invalid index information and is malformed." (`0e85b24348`, 2023's wording) and one message for the list *(1.1.3: `[Horizontal(0), Horizontal(5)]` on a sketch of one line adds neither)*. Items that aren't constraints are skipped silently.
+  - **Only the range is checked.** A position a curve hasn't, like a line's `mid`, is added, and the solve then reports it malformed *(1.1.3: status −5, `MalformedConstraints` [1])*. That has been an error at recompute since `150e50c700`.
+  - **One constraint is solved as it's added,** so its geometry moves before the command is committed. `e1dd86f0a9` (2015, #2281) recomputes the initial solution after that solve. **A list isn't solved** *(1.1.3: a `Horizontal` on a line from (0, 0) to (10, 1) moves it at once when added alone, and added as a list leaves it at (10, 1) until the next solve)*.
+  - **A conflicting constraint is kept,** alone or in a list. The solve reports the conflict (status −3), and the sketch holds every constraint *(1.1.3: two `DistanceX` of 10 and 12 on one line)*. Only main's Coincident command rolls back a worse solve (`cb2780e2fa`, below).
+- **Setting the properties directly** (`sketch.Constraints = …`) is an "unmanaged" operation. Since `c35d8be9a3` (2020) its indices are checked too, and a bad constraint is shown empty, with an error in the report, but not refused.
+- **The Gui's tools** add a shape's geometry and its constraints in one transaction, and abort it on any exception (`Gui/DrawSketchHandlerLine.h:130-158`: "This prevents constraints from being applied on non existing geometry"). So a tool's batch is made whole or not at all.
+  - **Before they commit,** the tools drop the auto-constraints they inferred (a snap's coincidence, a tangency, a horizontal) that the solver finds redundant, and abort on a redundancy or conflict that isn't one of those: `removeRedundantAutoConstraints` and `diagnoseWithAutoConstraints` (`Gui/DrawSketchDefaultHandler.h:752-798`, from `677694b0ba`, 2023). Silico's add keeps a redundant constraint, which the edit's solve flags with a warning, so M5's drawing tools must carry the same filter before they send the batch.
 - **The Coincident command** (`Gui/CommandConstraints.cpp:5310-5782`, from `e38154474a`, `084379651a` and `cb2780e2fa`, 2025–2026) refuses:
   - points already coincident, even through other points ("already coincident");
   - a coincidence that would bring two ends of one curve together, directly or through a chain ("would collapse geometry to zero length", #20771);
@@ -54,13 +67,27 @@ M5's sketch mode needs them, and the draft M5 plan (#196) puts them in a step of
   - Its tests are the six in `SketcherTests/TestCoincidentCommandGui.py`.
 - **Tangency substitution:** adding a tangency between curves whose ends are joined gives an endpoint tangency, and adding a coincidence where an edge tangency exists does the same (`180d722a53`, `620188073e`, #3299).
 
-**What Silico does differently:**
-- Every add goes through the gate, so a wrong form, a dangling ID, a degenerate curve or a non-finite coordinate is refused when it's made, naming the field. FreeCAD finds these at the next solve or not at all.
-- Each new element gets a fresh ID, and the gate refuses duplicates.
-- `side` and `direction` are part of the request (D4: stored, never decided from geometry).
-- `construction` is as given, for points too (D7, `3db4633f9d`).
-- A batch of adds is checked whole before any is applied.
-- The tangency substitution is already the gate's rule (`tangent_at` where two curves share an end).
+**Edge cases:**
+- **An empty list** adds nothing, and both list forms return an empty tuple *(1.1.3)*.
+- **The same object added twice** gives two curves with different tags (`71a555a6bb`).
+- **A constraint before its geometry** is refused for its index (above).
+
+**What Silico does differently** (docs/design/m5.0-app.md, `sketch_add`):
+- **One batch of every kind,** as the document writes them: points, lines, circles, arcs and constraints, each member with its own ID. A constraint may name a member added in the same batch, because the batch is checked as the sketch it makes. FreeCAD's two calls, geometry then constraints, become one.
+- **Whole-batch checking.** The batch is checked whole before any of it is added, as Python's list `addConstraint` and the Gui's transactions do, but by every rule of the gate, not only index ranges:
+  - The gate runs on the sketch with every member added, and refuses it with **all** its errors at once.
+  - Each error names its field by ID path (`circles.cb000003.radius`). A new member has the same path in the sketch as in the request, so each error points at the request's own field.
+  - A wrong form, a dangling ID (with candidates), a curve of 1e-7 mm or less (the circle of radius 0 and the 1e-12 mm line that FreeCAD adds), a curve's own point constrained onto it, an edge `tangent` between curves that share an end, a value out of range: each is refused when it's made, never at the next solve. Nothing in the batch is skipped silently.
+- **ID paths.** A member's ID that the sketch already holds is refused at the request's field (`circles.cb000003.id`), naming the member that holds it (M4.1 §2, *An edit that repeats an ID*). An ID given twice in the batch is refused at the later member's place (`circles.1.id`), where the gate names a later holder. Both are checked before the gate, which would name the untouched member by its place. There is no tag to copy: the ID is the member's identity, so `71a555a6bb`'s rule becomes a refusal, not a renaming.
+- **Shared points** (M3.2's D2). A new line may run from a point the sketch already holds, so it's joined to that point's curves by construction, where FreeCAD adds a curve with ends of its own and a `Coincident`.
+- **D4.** `side` and `direction` are given, never recorded from the geometry as `setOrientation` and `AutoLockTangencyAndPerpty` record them. A `tangent` given `right` where the drawing shows the circle on the line's left is added as `right`. What the edit's solve then does depends on the form:
+  - **A line's `left` or `right`** (a `tangent`'s, a `point_line_distance`'s): the solve never moves the drawing across. 1.1.3's PlaneGCS measures a point's or a circle's distance from a line unsigned, so it solves the drawing on the side it's on, and M3.3 refuses the result as `invalid_result` (`wrong_sides`), naming the constraint.
+  - **`inside` or `outside`, and a `direction`**: the solve moves the drawing to the side given, or fails, refusing the edit (M3.3).
+- **`construction` is per member,** as given, for points too (D7; `3db4633f9d`).
+- **The add doesn't solve.** The command solves once, after the gate, as for every edit (the design's common rules), and a conflict that solve finds refuses the edit as data (M3.3). FreeCAD keeps a conflicting constraint and reports it. That check belongs to the command, around the edit, as it does for the merge (decision 10).
+- **An empty batch changes nothing:** nothing is added, and the sketch is as it was, so the command's `changed` is false, as for `set_field` to a field's own value. FreeCAD's empty lists add nothing too.
+- **`added`** lists the members by kind (points, lines, circles, arcs, constraints), each kind in the request's order, which is the order the edit makes them. `modified` and `removed` are empty.
+- **Tangency substitution** is already the gate's rule (`tangent_at` where two curves share an end), so an edge `tangent` added between curves that share an end is refused, naming its field, never converted.
 
 ### Remove a constraint
 
@@ -94,6 +121,7 @@ In Silico a constraint is removed by ID and nothing shifts. There's no coinciden
 **What Silico does differently:**
 - **Shared points do all of this by construction.** A point that another remaining curve uses survives, and every constraint on it stays as it is: no re-pointing and no transfer.
 - A `tangent_at` naming the deleted curve is removed, never moved onto a neighbour (`9ce5756011`'s intent).
+- **A deleted line's `midpoint` becomes a `symmetric`** of its ends about the point, while the point and both ends stay. FreeCAD stores a midpoint as a `Symmetric` of the line's ends, so deleting the line leaves it on the ends its neighbours keep *(1.1.3, the sketch-edit oracle: `remove_line_with_midpoint`)*. Silico's `midpoint` names the line, so it's rewritten, keeping its ID, as split rewrites one (§3).
 - Nothing depends on constraint order.
 - **What Silico has to decide** is what happens to a point **only** the deleted curve used. FreeCAD's end disappears with the curve. Recommended (decision 7): the same. A point no remaining curve uses is deleted with its constraints, as a line's endpoints go with it in SolidWorks, unless it was a standalone point before the curve used it. With shared points that can't be told apart, so the rule is simply "used by no curve after the edit".
 - **Batch delete:** deleting a set equals deleting its members one by one. It tolerates duplicates and members that depend on others in the set, and it's solved once (`41c91574cf`, `4ffb6c5e2a`).
@@ -117,7 +145,7 @@ FreeCAD has no "delete a point that curves end at". In Silico such a point *is* 
 4. **Near an end, nothing is refused:** a split 1e-12 mm from the start makes a 1e-12 mm line *(1.1.3)*.
 5. **Pieces.**
    - An open curve gives two pieces: the start side keeps the curve's index and geometry ID (`82610ca8fa`, a refactor that changed behavior), and the other is appended.
-   - **A circle gives one arc from the split angle to the same angle plus a full turn,** whose start and end are at one place and aren't joined *(1.1.3)*.
+   - **A circle gives one arc from the split angle to the same angle plus a full turn,** whose start and end are at one place and aren't joined *(1.1.3)*. At some angles it gives an arc with no sweep instead (first and last parameter 5.12777734235934 and 5.127777342359341, a circle split at about 293.8°), and a second split of it raises "Geom_TrimmedCurve::U1 == U2" *(1.1.3, the sketch-edit oracle's sweep, `edit_32_410`)*.
 6. **Constraints on the curve's ends** stay with the outer ends (`transferConstraints` with `doNotTransformTangencies`). The refactors `6c8cb8e58d` (lines, 2022) and `c6f5739763` (arcs, 2024) turned an end tangency into a coincidence, and `6d06b61c7e` fixed it on main; 1.1.3 still turns it into a `Coincident` *(1.1.3)*.
 7. **Constraints on the curve itself** go through `deriveConstraintsForPieces` (`SketchObjectConstraints.cpp:1506-1747`), shared with trim. The table below gives the rules.
 8. **The joint between two pieces:**
@@ -135,19 +163,20 @@ FreeCAD has no "delete a point that curves end at". In Silico such a point *is* 
 | `length` | `distance` between the outer ends | the same (`4d6b1f3eb8`, `2779f0b29f`) | `distance` between `from` and `to` |
 | `equal` on a line | dropped | dropped (`857190a20a`, #25008; `edb87a0663`) | dropped |
 | `radius`, `diameter`, `equal` on an arc or circle | first piece only | the same (`f0d30cb570`) | on one piece: the pieces share the centre, so their radii are equal anyway |
-| `on`, `point_line_distance` to the curve | **dropped** (#28240) | to the piece whose span holds the point's projection; outside every span, the nearer end's piece (`closestParameter`'s fallback, `Part/App/Geometry.cpp:1073-1083`) (`bbbff1f8f1`, `263331f6fb`) | as main. With decision 1 the pieces lie on the original's line, or share its circle, so the constraint means on either piece what it meant before |
+| `on`, `point_line_distance` to the curve | **dropped** (#28240) | to the piece whose span holds the point's projection; outside every span, the nearer end's piece (`closestParameter`'s fallback, `Part/App/Geometry.cpp:1073-1083`) (`bbbff1f8f1`, `263331f6fb`) | as main, but on an arc a point outside both spans goes to the nearer end's piece, where `closestParameter` takes its antipode when that's on the arc *(1.1.3: 330° on an arc from 0 to 270°, split at 90°, goes to 150°, the second piece)*. With decision 1 the pieces lie on the original's line, or share its circle, so the constraint means on either piece what it meant before |
 | edge `tangent` | on both pieces | to the piece that touches the other curve, else dropped (`6d06b61c7e`, `c823a6b270`) | to the piece whose span holds the contact; else the start-side piece, whose line or circle is the original's (decision 2) |
 | `midpoint` of the line | kept on the outer ends, as a `Symmetric` | the same | `symmetric` of `from` and `to` about the point |
 | `symmetric` about the line | dropped | dropped | on the start-side piece, whose line is the original's (decision 2) |
 | `tangent_at`, `tangent_on` at an end of the split curve (it's `a`) | made `Coincident` (the regressions above) | kept | kept: the end is the same point |
-| `tangent_on` onto the split curve (it's `b`: another curve's end `at` lies on it) | not probed | a point-located constraint goes to the piece holding its point (`findPieceContainingPoint`, :1490-1504; `0800791a0f` for an angle via a point) | `b` becomes the piece whose span holds `at`. When `at` is the split point itself, it becomes `tangent_at` between `a` and that piece, its `direction` mapped from the stored one, never derived, since the gate refuses a `tangent_on` whose `at` is an end of `b` |
+| `tangent_on` onto the split curve (it's `b`: another curve's end `at` lies on it) | on a line, on both pieces, one copy then redundant; on a circle or arc, dropped *(1.1.3, the sketch-edit oracle: `split_line_tangent_on_second_half`, `split_circle_tangent_on`)* | a point-located constraint goes to the piece holding its point (`findPieceContainingPoint`, :1490-1504; `0800791a0f` for an angle via a point) | `b` becomes the piece whose span holds `at`. When `at` is the split point itself, it becomes `tangent_at` between `a` and that piece, its `direction` mapped from the stored one, never derived, since the gate refuses a `tangent_on` whose `at` is an end of `b` |
 
 **What Silico does differently:**
 - **The pieces share one new point** at the split position, and two arc pieces share the original centre point. Nothing is added to join them, so there's no joint constraint.
 - Constraints on the original end points don't move, because those points are the pieces' outer ends.
 - **Splitting at a point the sketch already has** (a point held `on` the curve): the pieces share that point, and its `on` constraint is removed, since the gate refuses a curve's own point `on` it. A `tangent_on` whose `at` is that point becomes a `tangent_at` (the table's last row).
-- **The start-side piece keeps the curve's ID** (`82610ca8fa`): from `from` for a line, counter-clockwise from `start` for an arc. The other piece gets a new ID. Both keep `construction`, and so does the new point.
+- **The start-side piece keeps the curve's ID** (`82610ca8fa`): from `from` for a line, counter-clockwise from `start` for an arc. The other piece gets a new ID. Both keep `construction`, and so does the new point. FreeCAD 1.1.3 keeps it on a line's and an arc's pieces, but its circle split drops it: a construction circle gives a normal arc *(1.1.3, the sketch-edit oracle: `split_construction_circle`)*. Silico keeps it on every piece.
 - **A circle can't split as FreeCAD splits it,** since an arc whose start and end are one point is refused (decision 3).
+- **An edge `tangent` with a curve that ends at the split point** (that end held on the curve by a `tangent_on`; the gate already refuses an edge tangency beside an `on` of an end, `3a656d8597`) would leave two curves sharing an end with an edge tangency, which the gate refuses. The split is refused, naming it. A merge converts such a tangency (§6), but here the `tangent_on` beside it already becomes the `tangent_at` it would be (the table's last row), so the edge `tangent` only repeats it, perhaps the other way round. FreeCAD's split makes the pieces new ends and never shares the point, so it has no such case; it reports the input itself redundant *(1.1.3: `redundant [1]` before the split)*, and removing the edge `tangent` is the fix.
 - **Refusals, as data naming the curve:** a point (the gate's kinds); a split position at, beyond, or within 1e-7 mm of an end (`82633fb5df`'s rule restored, with the gate's size floor); a position farther than 1e-7 mm off the curve (decision 4).
 
 ## 4. Trim
@@ -177,10 +206,11 @@ FreeCAD has no "delete a point that curves end at". In Silico such a point *is* 
    - Otherwise it gets `PointOnObject` on the cutter.
    - A cutter end already held `PointOnObject` on the trimmed curve at that cut becomes the `Coincident` (`6e6a0ccfb4`).
 7. **A tangency between the cutter and the trimmed curve** (edge to edge) becomes an endpoint tangency at the new end (`dec01d1df0`). This applies only to the cutter at that cut: a tangency to an unrelated curve stays edge to edge (`08a66afbc8`, AstoCAD #24, `testTrimEndEffectOnUnrelatedTangent`).
+   - **A `Perpendicular` with the cutter** is treated the same way, by the same code (`transformPreexistingConstraintForTrim`, `SketchObjectOperations.cpp`): it becomes an end-to-edge perpendicular at the first cut by that cutter, on the piece whose end is there, and no other piece gets it *(1.1.3, the sketch-edit oracle: `trim_perpendicular_cutter`, `trim_perpendicular_cutter_into_two`)*.
 8. **Constraints on a kept end** move with it. Those on a removed end are dropped. A constraint naming **both** ends survives only if both do (`f0d30cb570`, `502b7b9a3f`; `testTrimEndEffectOnFullLengthConstraints`, `testTrimEndEffectOnSymmetricConstraints`).
    - Trimming away an end that a neighbour shares detaches the neighbour *(1.1.3)*.
 9. **Constraints on the curve itself:** as for split (§3's table), with three differences:
-   - `horizontal`, `vertical`, `parallel`, `perpendicular`, an edge `tangent` on a line, and `angle` go to **every** line piece (`assumeTangency = false`, :1547-1552) *(1.1.3: a `Perpendicular` to a line it doesn't touch is on both pieces)*. Nothing joins two line pieces, which haven't been collinear since `2d817128d0`.
+   - `horizontal`, `vertical`, `parallel`, `perpendicular` (but one with a cutter, item 7), an edge `tangent` on a line, and `angle` go to **every** line piece (`assumeTangency = false`, :1547-1552) *(1.1.3: a `Perpendicular` to a line it doesn't touch is on both pieces)*. Nothing joins two line pieces, which haven't been collinear since `2d817128d0`.
    - A `tangent_on` onto the trimmed curve goes to the piece holding `at`, and is dropped when `at` is on the removed part.
    - An `on` whose point lies on the removed part is dropped (`333ca836c0`).
    - Two arc pieces get coincident centres but **no `equal`** (`f0d30cb570`: it made constraints redundant), so the second arc's radius is free.
@@ -211,7 +241,12 @@ Picked at x = 5, the result is:
 - **FreeCAD's 5e-5 mm "at the cutter's end" test merges points that aren't the same.** That's the snapping Silico's exactness rule refuses (decision 5).
 - **Where intersections come from:** FreeCAD uses OCCT. Silico's curves are lines and circular arcs, whose intersections are closed-form (decision 6).
 - **Line pieces stay independent,** with direction constraints on each, as FreeCAD's trim does. Unlike split, nothing joins them.
-- **Where nothing can take a constraint,** because the trim's pieces really are independent (an arc's edge `tangent` that no piece touches, `symmetric` about the trimmed line), FreeCAD drops it; Silico refuses the trim, naming it (decision 2).
+- **Where nothing can take a constraint,** because the trim's pieces really are independent (an arc's edge `tangent` that no piece touches, `symmetric` about the trimmed line), FreeCAD drops it; Silico refuses the trim, naming it (decision 2). A contact past the arc's ends, on its circle beyond the arc, touches no piece either: it isn't taken by the nearer end's piece, as an `on` past the ends is.
+- **A `perpendicular` with a cutter** goes to the piece at that cut alone, as FreeCAD's does (item 7), and the new end gets its `on` the cutter as at any cut: D4's `perpendicular` is between two lines' directions, so the `on` and it together are FreeCAD's end-to-edge perpendicular. Copied to both pieces, it would be redundant when another direction constraint is on both.
+- **A line only shortened keeps a `symmetric` about it,** since the one piece is the same line. FreeCAD 1.1.3 drops it, because `deriveConstraintsForPieces` has no `Symmetric` case. Trimmed into two pieces, it's refused (decision 2).
+- **Of cuts within 1e-7 mm of one another, a cutter's end held on the curve is taken,** so the new end shares it. This replaces FreeCAD's 5e-5 mm merge (decision 5). Otherwise the nearest cut is taken.
+- **An arc's pick outside its sweep is placed at the end nearer in angle,** as its projection is. FreeCAD 1.1.3 removes a middle piece instead: on an arc from 0 to 270° cut at 90° and 180°, a pick at 300°, 315° or 359° removes 90°–180°.
+- **A pick at a round's centre is refused,** naming the pick. FreeCAD 1.1.3 throws "Unknown C++ exception".
 - **A `tangent` turned into an end tangency** needs a `direction` (`tangent_at` or `tangent_on`), which D4 stores and never derives from geometry (decision 8).
 
 ## 5. Pulling a shared point apart
@@ -223,7 +258,7 @@ Picked at x = 5, the result is:
   - That one curve's end leaves its group, and the rest stay joined, through re-pointed coincidences (`0358ff7ce2`, 2024: before it, every coincidence at the point was dropped, so a three-way joint fell apart).
   - The end's other constraints stay with that curve.
   - **The same commit also drops the curve's own length** (`Distance`, `DistanceX` or `DistanceY` on the whole curve) when it unjoins either end *(1.1.3)*. Nothing asked for that, and Silico doesn't port it.
-  - On a point with no coincidence it used to raise an error; since `bc4d463cdf` (#2275) it does nothing.
+  - On a point with no coincidence, main does nothing since `bc4d463cdf` (#2275); 1.1.3 raises "Not able to delete a constraint on point" *(1.1.3, the sketch-edit oracle)*. Silico refuses it either way (decision 9).
 
 **What Silico does differently.** Unjoining is an explicit edit: one curve's use of a shared point moves to a new point at the same coordinates. Recommended (decision 9):
 - The other curves keep the point and every constraint on it.
@@ -264,23 +299,48 @@ That is deliberately not Validate's 1e-4 box. Ends 1e-7 to 1e-4 mm apart, which 
   - points that are already one point (`cb2780e2fa`);
   - a merge after which a curve would use one point twice (a line's ends, an arc's centre and an end, or its two ends; `084379651a`, #20771, through any chain);
   - a merge after which a constraint would name one point twice (a `distance` or `horizontal_points` between merged points);
-  - an edge `tangent` between two curves that would then share an end (the gate's `tangent_at` rule, decision 8).
+- **An edge `tangent` between two curves that then share an end becomes a `tangent_at` there,** keeping its ID, listed in `modified` (docs/design/m5.0-app.md, open item 13), as FreeCAD's coincident command substitutes an endpoint tangency for an edge one (`620188073e`, *Endpoint to endpoint tangency was applied instead*; main's `substituteConstraintCombinationsCoincident`). Its `direction` keeps the tangent's `side` (decision 8): a round on the line's left, or two rounds one inside the other, turn the same way where they touch, an angle of 0 between the curves' own directions; on its right, or outside each other, π. That angle is written as the `direction` the solve reads it from, by which ends the point is. FreeCAD's edge tangency holds no side, so its command locks the angle the unmerged drawing shows at the point (`AutoLockTangencyAndPerpty`). Where the merged points touch, the point is the contact, and the two agree *(the sketch-edit oracle: `merge_leaves_edge_tangent`)*. Merged from apart, the drawing at the point can show the other side, and FreeCAD then flips it: a line from (0, 0) to (10, 0) and an arc about (10, 10) from (15, 1.3397) to (18.6603, 15), tangent `left`, merged with the arc's end kept, FreeCAD locks π, the arc on the line's right *(1.1.3, the port review's probe)*; Silico keeps `left`, as the file says (found by the robustness and port reviews; `a_line_merged_onto_an_arcs_far_end_keeps_the_side_freecad_would_flip`). Curves that would share both ends, which have no one point for it, stay refused, by the gate's `tangent_at` rule.
+- **The merged sketch is gated,** and refused as the merge's, naming the points and what the gate names: a merge places points by ID, so a curve it leaves with no size (a line's ends, or an arc's end and centre, drawn at one place) and a sketch its `tangent_at`s take past the solver's 10,000 values are the gate's to find (found by `/break-it`; main's merge returned the first as `Ok`).
 - **No automatic fix-up:** the solve after the merge is the edit's, and a conflict it finds refuses the edit as data (M3.3), as FreeCAD's command rolls back a worse solve.
+  - So does any refusal of the solve's result. Two cases come from points merged from apart, where FreeCAD's coincidences solve and Silico's placed point doesn't:
+    - a `tangent_at` or `tangent_on` whose side the solve would flip (decision 8), as when a corner moves to a circle's centre (the oracle's sweep, `edit_14_13`);
+    - a line the solve shortens to nothing, which M3.3's unbuildable result names with its length (`edit_32_154`). The up-front refusal covers only a curve made to use one point twice; one the constraints collapse is the solve's.
 
 ## 7. Extend
 
 **What FreeCAD does** (`extend`, `SketchObjectOperations.cpp:503-549`): lines and arcs only.
 - **Lines.** A line's chosen end moves by `increment` along the line, through the solver's drag, so constraints win: a line with a length of 10, extended by 5, slides instead of growing *(1.1.3)*.
 - **Arcs.** An arc's start or end angle moves by `increment` **radians**, written straight into the geometry, then solved.
-- **Unchecked:** a negative increment may shrink past the other end and flip a line *(1.1.3: −15 on a 10 mm line)*, or invert an arc.
+- **Unchecked:** a negative increment may shrink past the other end and flip a line *(1.1.3: −15 on a 10 mm line)*, or invert an arc. One that takes a free line to nothing (−10 on a 10 mm line) fails the drag ("Invalid solution from DogLeg solver"), leaves the sketch as it was, and still returns success *(1.1.3, the sketch-extend oracle: `extend_free_line_to_nothing`)*; so does a drag that would collapse a neighbour onto its far end (`extend_collapses_neighbour`). An arc also wraps past a whole turn, its range trimmed periodically by OCCT: a 90° arc's end on by 300° gives a 30° arc, and by −120° a 330° one *(1.1.3)*.
 - **Other kinds and the `mid` position.** 1.1 refused these. Main returns success and does nothing (`d8cf415e4f`, `a502762119`, 2026), a regression by reading.
-- The Gui extends to the cursor and then adds an auto-constraint (`on`) at the moved end. The App layer never looks for the next curve. FreeCAD has no App test of extend.
+- The Gui extends to the cursor and then adds the auto-constraints the cursor suggests at the moved end (`createAutoConstraints`, `DrawSketchHandlerExtend.h`: a coincidence, a point on a curve, a tangency, as the snap finds). The App layer never looks for the next curve. FreeCAD has no App test of extend.
 
 **What Silico does differently.** Moving an end is moving its point. Every curve that shares it follows, as FreeCAD's drag pulls a coincident neighbour. The order matters: dragging the end to its target and letting the solve follow gives FreeCAD's result, but writing the end there and then solving doesn't *(1.1.3: a 10 mm horizontal line with its length, extended by 5: (5,0)–(15,0) by the drag, (3.5706,0)–(13.5706,0) by write-then-solve)*. Recommended (decision 11):
-- A line's end goes through the sketch worker's drag session (M3.7's begin, move, end), as FreeCAD's `moveGeometry` does; an arc's range is written and the sketch solved, as FreeCAD does.
+- A line's end goes through the sketch worker's drag session (M3.7's begin, move, end), as FreeCAD's `moveGeometry` does; an arc's range is written and the sketch solved, as FreeCAD does. Where the arc's end is shared, writing it moves the shared point, so the neighbour's end moves with it before the solve; FreeCAD's `setRange` moves only the arc's end, and the solve then pulls the neighbour to it through their coincidence. After the solve the two agree where FreeCAD's result is the arc-first one (below); FreeCAD's own result there also varies from run to run *(1.1.3, the sketch-extend oracle: `extend_arc_start_with_tangent`)*. FreeCAD's arc result depends on the order its geometry was added: with the arc listed first, its end lands at the turned angle and a joined free line follows; listed after the line, the solve undoes most of the turn and moves the centre *(1.1.3: an arc of radius 10 from 0° to 90°, a line from its end to (−10, 10), the end on by 30°: (−5, 8.660254) arc first, (−0.0396, 9.9909) line first)*. Silico writes the point, so it takes the arc-first result whatever the order. (FreeCAD's arc branch also edits the geometry in place without marking the sketch for a solve, so a joined line stays where it was until an explicit `solve()` *(1.1.3)*: an upstream bug Silico doesn't carry.)
 - Refuse anything but a line or an arc, at anything but its two ends, as 1.1 did.
-- Refuse a result of size 1e-7 mm or less, or a flip.
-- Express an arc's increment as an angle (`Angle`, exact) and a line's as a `Length`.
+- Refuse a result of size 1e-7 mm or less, or a flip: the request's own (an increment that would take the line or arc there, before any drag) and the drag's.
+- Express an arc's increment as an angle (`Angle`, exact) and a line's as a `Length`, or either's target as a point on its carrier (`To`, below).
+
+**Built** (`silico_core::extend`, a core function with no command yet; docs/design/m5.0-app.md, open item 12, pending Trevin). Its result is a function of the sketch as stored and the increment (or the point) alone: the drag begins from the stored sketch, moves once to FreeCAD's target (the other end, along the line, plus the new length), and ends, all in one request to the sketch worker (`MoveOnce`). An extend isn't a drag, so it's held to a solve's limits and time, as FreeCAD's `extend` has no cap of its own, not to `MAX_DRAG_UNKNOWNS`, which bounds each of a drag's many moves for the cursor's sake (a chain of 282 unknowns extends; its real-worker test). The frame's values are the edited sketch's coordinates, and the edit's solve settles them, as a drag's end does. Every point the drag moved is `modified`. The 1.1.3 probe above is its real-worker test: (5,0)–(15,0). Beyond the recommendations, it also refuses:
+- an increment of 0, since it changes nothing;
+- a frame that isn't a success, as an invalid result, where FreeCAD leaves the sketch as it was and returns success (above);
+- an increment whose target is 1e-7 mm or less from the other end, or past it, before any drag, whatever the line's constraints would make of it. FreeCAD drags toward that target and keeps what its constraints leave, which can be a valid line short of it *(the extend oracle's sweep, seed 32, nine of 500: `extend_32_129` and others)*; Silico refuses what the request asks for, a line shortened to nothing or flipped, rather than taking a result the request didn't name;
+- a drag that leaves the line 1e-7 mm or less, or flipped;
+- an arc swept a whole turn or more.
+
+Each result is checked by the gate before it's returned: a neighbour the move collapses, or an arc's radius that rounding far from the origin takes to the floor, is refused as the edit's, naming what the gate names. `modified` lists the points moved, then a circle whose radius the drag changed, then a reference dimension it re-measured. A line's end its constraints hold where it is, and an arc's end a turn too small to move, are refused as changing nothing, where FreeCAD reports success.
+
+**Extend to the next curve** (`next_crossing` and `By::To`; docs/design/m5.0-app.md, open item 12c). SolidWorks' Extend Entities extends a line or an arc to the nearest curve it meets. FreeCAD has nothing like it: its Extend tool takes the cursor through its snap manager and sends the increment printed to six places (`DrawSketchHandlerExtend.h:293`), and its App layer never looks for the next curve (above). So this follows SolidWorks.
+- `next_crossing` gives the nearest crossing past the end: along a line's line, or around an arc's circle short of its other end. It finds it from the stored coordinates in closed form, with trim's carriers and `crossings`, so it counts what trim cuts at (decision 6). That's every other curve, construction too, where the carriers cross on it, or touch within 1e-7 mm, or where one of its ends is within 1e-7 mm of the carrier. In that last case the end's stored point is the answer, so the extended end lands on it exactly.
+- Past the end means farther than 1e-7 mm from it, and from the curve's other end. A crossing past the sketch's reach isn't offered.
+- A curve the extension would run along to the point isn't met there: one within 1e-7 mm of the halfway place, on it. That's a collinear neighbour, whose far end extending to would collapse it or overlap it, or a round the curve runs into nearly tangent, whose contact lies a few microns on (found by `/break-it`).
+- A curve built on the moving end's point isn't met: one that starts or ends there, or a round about it. It moves with the end, so its crossing does too; offered, the edit would drag it onto itself or cut it short (found by the port review).
+- The nearest wins: a line's by distance, an arc's by angle. At the same distance, the least ID wins.
+- `By::To` puts the end at a point within 1e-7 mm of the carrier, exactly. For a line, that's the line's one move sent there, and its constraints win, as for a length. For an arc, the end is put there.
+- `By::To` measures the carrier as `next_crossing` does (trim's), so it takes every point `next_crossing` gives. That includes an arc whose end a solve left off its start's radius, and a line's start, whose foot is found from the same end.
+- The edit adds nothing to hold the end where it lands, as FreeCAD's App `extend` adds nothing: an `on` to the curve met, or a shared point with an end it lands on, is the tool's or the caller's, as FreeCAD's Gui adds its auto-constraints after the edit (docs/design/m5.0-app.md, automatic relations). Until one is added, an end landing on another curve's end is two points `ends_not_joined` reports.
+- An increment couldn't do this. `Length` is whole nanometres and `Angle` whole nanodegrees, so an end moved by the nearest increment misses the other curve by up to half of one, more than the 1e-7 mm the gate and trim count as touching.
+- `By::To` is refused for a point past the reach (before anything else is measured), a point farther from the carrier, the end's own point (nothing changes, a zero of either sign alike), and a point that leaves the curve 1e-7 mm or less, or a line flipped. Both refuse an arc whose ends are at one angle from its centre, which has no circle to go around. Its tests are hand-computed crossings that land on exact binary values, plus a real-worker line taken to a circle at an irrational crossing, which it then touches within 1e-7 mm.
 
 ## 8. Bug fixes from FreeCAD's history
 
@@ -340,6 +400,12 @@ The fixes that set a rule the port must carry, newest first within each operatio
 | `150e50c700` | 2021-01 | Malformed constraints silently ignored | The gate refuses every malformed form |
 | `71a555a6bb` | 2017-04 | One object added twice gave two curves one tag | Fresh IDs; duplicates refused |
 | `180d722a53`, `620188073e` | 2018-01, #3299 | A tangency plus a joint at the same ends | The gate's `tangent_at` rule; decision 8 |
+| `f432d1c6a7`, `5a6be36bc3`, `3c8a254356` | 2026-04, #29007; 2025-12 | A tangent's or a distance's side recorded from the geometry when added (main only) | `side` given, never recorded (D4); test a side given against the drawing |
+| `0e85b24348` | 2023-05 | A list with a bad index refused with one message | Every problem in the batch at once, each at its path |
+| `c35d8be9a3` | 2020-06 | Constraints set directly bypassed the index check | One gate for every edit and every file |
+| `e1dd86f0a9` | 2015-10, #2281 | A solve inside `addConstraint` left a stale initial solution | The add doesn't solve; the command solves once, after the gate |
+| `7d8b1f30c3` | 2014-12, #1720 | A constraint with indices out of range crashed FreeCAD; a list is now checked whole first | Every reference checked by the gate, the whole batch before any is added |
+| `3838bddcdb` | 2014-11 | An end tangency's kind locked from the geometry | `direction` given (D4) |
 | **Missing coincidences** | | | |
 | `c036128aa0` | 2022-02 | Grouping made transitive; also made every constraint count as a join | Carry the grouping (built in #189); not the bug |
 | `5696ee821c` | 2024-05, #14240 | Fix acted on a different analysis from Find | The merge acts on the same check of the same document state |
@@ -376,6 +442,15 @@ FreeCAD's split and trim tests count curves and `Coincident` and `PointOnObject`
 | `testSplitCircle` | one arc (index unchanged) | decision 3 |
 | `testSplitArcOfCircle` | 1 arc added, 2 `Coincident` (end and centres) | 1 arc added; the shared end and centre are points, with no constraints |
 
+For adding, from `SketcherTests/TestSketcherSolver.py`:
+
+| Test | Checks | Silico |
+|---|---|---|
+| `testBoxCase` (`CreateBoxSketchSet`) | four lines, four `Coincident`s, two `Horizontal`, two `Vertical`, two lengths, added one by one, then solved | the box added in one batch: four lines through four shared points, with the six constraints; the gate takes it, and `added` lists it by kind |
+| `testCircleLineTangentOriented` (#29007), `testPointToLineDistanceSigned` | main records each side from the drawing as it's added, and the solve keeps it | the side is the request's (D4): a `tangent` given against the drawing is added as given, and the edit's solve then refuses a line's `left` or `right` as `invalid_result` (it never moves the drawing across) |
+
+FreeCAD has no test of a list refused whole; the 1.1.3 probe above (`[Horizontal(0), Horizontal(5)]`) becomes one: a batch with one bad member adds nothing.
+
 Others:
 - `SketcherTests/TestCoincidentCommandGui.py`'s six tests become the merge command's tests: already one point, collapsing a curve (directly and through a chain), and a merge whose solve conflicts, refused.
 - `TestSketchValidateCoincidents.testSingleMissingCoincidentCase` and `TestSketcherSolver.testThreeLinesWithCoincidences_1`/`_2` are already ported for `ends_not_joined` (#189). They become the merge's cases too: merging the found cluster leaves no warning.
@@ -403,6 +478,16 @@ FreeCAD has no test for how constraints move on split, for extend, or for most o
   - a point `on` the line's extension beyond `to` goes to the end piece;
   - refused, naming the curve: a split at `from`, at `to`, beyond an end, within 1e-7 mm of one, off the curve, or of a point;
   - after a split of a fully constrained sketch, every untouched point keeps its exact coordinates.
+- **Add:**
+  - a batch of each kind, `added` by kind and in the request's order;
+  - a line from a point the sketch already has (shared points);
+  - a batch with one bad member refused whole, nothing added, every problem at its ID path;
+  - an ID the sketch has, at the request's field; one given twice in the batch, at the later member's place;
+  - a constraint naming a member of the same batch; one naming no member, with candidates;
+  - `construction` kept, on points too;
+  - `side` and `direction` as given, against the drawing;
+  - an empty batch changes nothing;
+  - a conflicting constraint is added, and the sketch's solve then finds the conflict (the real worker).
 - **Delete:**
   - at a three-way joint every other curve still shares the point;
   - with a `tangent_at` to the deleted curve listed first or last, the result is the same (1.1.3 differs);
@@ -418,7 +503,7 @@ FreeCAD has no test for how constraints move on split, for extend, or for most o
 - **Merge:**
   - ends with a `horizontal_points`, an `on` to another curve, or a lock still warn and merge (1.1.3 reports 0 missing);
   - a merge that collapses a line through a chain is refused;
-  - a merge that would leave an edge `tangent` at a shared end is refused (decision 8).
+  - a merge that leaves an edge `tangent` at a shared end makes it a `tangent_at` keeping the tangent's `side`, at every end and either way round, merged touching or from apart, which the real worker then solves keeping the side (the other `direction` gives the other side, or moves it).
 - **Trim:**
   - a tangent line cuts a circle, and one off by more than decision 6's contact tolerance doesn't (both sides of it, and of the end-on-curve tolerance);
   - collinear overlapping lines cut at the overlap's ends;
@@ -442,7 +527,7 @@ Open: none is decided. Each has a recommendation, for M5.0's design to propose a
 5. **Trim's "the cut is the cutter's end".** FreeCAD merges at 5e-5 mm. **Recommended: share the cutter's point only when the cutter's end is held on the trimmed curve by a constraint** (an `on`, a `tangent_on` with the trimmed curve as `b`, which then becomes `tangent_at` by decision 8, or the end is already a point of the trimmed curve). Then it's exact, and the `on` is removed as implied. Otherwise the piece gets a new point `on` the cutter. A cutter end that's merely drawn there leaves two points at one place, which `ends_not_joined` names when they're within 1e-7 mm and `--merge-touching` merges. Likewise "two cuts at one place" means within 1e-7 mm, not 5e-5. This departs from five of FreeCAD's trim tests, whose cutters are only drawn (§9).
 6. **Where trim finds intersections.** **Recommended: in the core, in closed form,** with the libm shim's math, the same on every platform. Lines and circular arcs are the only curves, so no worker is needed and nothing depends on OCCT's intersector. FreeCAD's three sources of cuts (crossings, tangent contacts and overlaps, other curves' ends on the curve) each become a case of that computation, with tests. Each needs a stated tolerance, since exact comparison finds a solved tangency only when rounding falls the right way. FreeCAD's intersector cuts a circle by a line at y = 5 + δ for δ = 1e-12 but not 1e-10 *(1.1.3, radius 5)*, and takes another curve's end within 1e-7 mm (`e10068a648`). Recommended: a tangent contact or an overlap counts when the gap is at most 1e-7 mm (`LENGTH_TOLERANCE`, the gate's floor), and so does an end on the curve, each tested on both sides. `x_axis` and `y_axis` don't cut, as by default in FreeCAD (main's opt-in, `196da068a0`, isn't in 1.1.3).
 7. **Deleting points.** **Recommended:** deleting a curve deletes each of its points that no curve uses afterwards, with their constraints. Deleting a point is allowed only when no curve uses it; otherwise it's refused, naming the curves.
-8. **A tangency at a new or merged shared end.** Trim turns the cutter's edge tangency into an end tangency, and a merge can make an edge `tangent` illegal (the gate's `tangent_at` rule). Both forms carry a `direction` that D4 stores and never derives. **Recommended:** the edit writes the `direction` the sketch as last solved shows. That is an act of the edit, done once, the way FreeCAD's tool records it, and stored. The edit's solve must then agree, or the edit is refused as M3.3 refuses a side that flips.
+8. **A tangency at a new or merged shared end.** Trim turns the cutter's edge tangency into an end tangency, and a merge can make an edge `tangent` illegal (the gate's `tangent_at` rule). Both forms carry a `direction` that D4 stores and never derives. **Recommended:** the edit writes the `direction`, an act of the edit, done once, and stored. Where an edge `tangent` with a `side` becomes it (a merge, §6), the `side` decides it: what the file says, whatever the merge moves. Where no side says it (trim's cutter, whose new end lies at the contact on the sketch as last solved), the edit writes what the sketch as last solved shows, the way FreeCAD's tool records it. At a contact the two agree. Merged from apart, FreeCAD's lock reads the unmerged drawing and can flip the side (§6); Silico keeps it. The edit's solve must then agree, or the edit is refused as M3.3 refuses a side that flips.
 9. **Unjoining.** **Recommended** (§5): the curves that stay keep the shared point and every constraint on it. The detached curve's end gets a new point at the same coordinates with none. A `tangent_at` between the detached curve and another at that point is removed. Unjoining a point no other curve shares is refused.
-10. **Merging.** **Recommended** (§6): the request names the points (or `--merge-touching` names each `ends_not_joined` cluster). The first point named survives at its own coordinates (`--merge-touching`: the cluster's least ID, its points being within 1e-7 mm); the others' curves and constraints are re-pointed to it. Refused, naming them: points already one, a curve using one point twice, a constraint naming one point twice, and an edge `tangent` left at a now-shared end (decision 8). The edit's solve decides the rest, and a conflict refuses it.
-11. **Extend.** **Recommended:** a line's end is dragged by a `Length` along the line through the sketch worker's drag session (M3.7), so constraints win as in FreeCAD; an arc's start or end moves by an `Angle`, written, then the sketch solves. Refused: other kinds, the `center`, and a result of 1e-7 mm or less or flipped (FreeCAD doesn't check). Extending to the next curve, as SolidWorks's Extend Entities does, is a client's computation of the increment, as in FreeCAD's Gui.
+10. **Merging.** **Recommended** (§6): the request names the points (or `--merge-touching` names each `ends_not_joined` cluster). The first point named survives at its own coordinates (`--merge-touching`: the cluster's least ID, its points being within 1e-7 mm); the others' curves and constraints are re-pointed to it. Refused, naming them: points already one, a curve using one point twice, a constraint naming one point twice. An edge `tangent` left at a now-shared end becomes a `tangent_at` there, keeping its `side` (decision 8; FreeCAD `620188073e`). The edit's solve decides the rest, and a merge whose solve is worse than the one before it is refused: a constraint it finds redundant, conflicting, or malformed that the solve before didn't, naming it, or a solve that fails. That's main's Coincident command, which rolls such a merge back (`shouldRejectCoincidentSolve`, `Gui/CommandConstraints.cpp`, from `cb2780e2fa`, 2026-09, after 1.2 branched). 1.1.3's command has no rollback: merging two locked ends, it makes the merge, and its solve lists the second lock redundant *(1.1.3, the sketch-edit oracle: `merge_two_locked_ends`)*. Silico follows main. It's the command's check, around the edit: the merge itself doesn't solve.
+11. **Extend.** **Recommended:** a line's end is dragged by a `Length` along the line through the sketch worker's drag session (M3.7), so constraints win as in FreeCAD; an arc's start or end moves by an `Angle`, written, then the sketch solves. Refused: other kinds, the `center`, and a result of 1e-7 mm or less or flipped (FreeCAD doesn't check). Extending to the next curve, as SolidWorks's Extend Entities does, is the core's: `next_crossing` finds the point and `By::To` puts the end there, since an increment can't reach it within 1e-7 mm (§7).

@@ -5,6 +5,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::cancel::Ticket;
+#[cfg(doc)]
+use super::transaction::Held;
 use super::{Committed, Gated, ModelRead, Problems, Revision, Session, SessionId, shown_path};
 use crate::command::edit::Candidate;
 use crate::document::Document;
@@ -14,13 +16,24 @@ use crate::{Error, ErrorCode};
 impl<C: Kernel + 'static> Session<C> {
     /// An accepted edit's `candidate` held as the session's document, at a new revision,
     /// carrying what was carried: how an edit inside a transaction is applied (the design's
-    /// section 4), starting no rebuild (decision 13). As the command `stop` stops.
+    /// section 4), starting no rebuild (decision 13), and pushed on the transaction's undo
+    /// stack, which drops its redo states (M5.0's A3), as [`Held::hold`] keeps it. Only the
+    /// stack's compare and copy of what changed runs under the lock: the features' texts
+    /// were written as the candidate was made. As the command `stop` stops.
     pub(super) fn hold(&self, stop: &Ticket, candidate: Candidate) -> Result<Revision, Problems> {
         let held = self.held.read();
         let next = held.next()?;
         let mut held = held.changing(stop)?;
-        let carried = Arc::clone(&held.carried);
-        held.change(next, candidate.text, candidate.gated, carried);
+        if let Some(pushed) = held.hold(next, candidate)
+            && pushed.dropped > 0
+        {
+            tracing::info!(
+                session = %self.id,
+                revision = next.number(),
+                dropped = pushed.dropped,
+                "the undo stack passed its bound: its oldest edits are out of undo's reach"
+            );
+        }
         Ok(next)
     }
 
@@ -50,7 +63,12 @@ impl<C: Kernel + 'static> Session<C> {
                     .last_reload
                     .filter(|reloaded| *reloaded > revision)
                     .map(|_| held.path.as_str());
-                return Err(Problems::from(stale(revision, held.revision, reloaded)));
+                return Err(Problems::from(stale(
+                    Stale::Edit,
+                    revision,
+                    held.revision,
+                    reloaded,
+                )));
             }
             (
                 Arc::clone(&held.text),
@@ -163,22 +181,37 @@ pub(super) fn as_committed<U>(
     })
 }
 
-/// The refusal of an edit made against revision `made`, the session being at `at`
+/// What was made against a revision the session has moved on from ([`stale`]): an edit, or
+/// an `undo` or a `redo`.
+#[derive(Clone, Copy)]
+pub(super) enum Stale {
+    Edit,
+    Undo,
+    Redo,
+}
+
+/// The refusal of what `what` names made against revision `made`, the session being at `at`
 /// (decision 12): a conflict, so an agent that read the document before it changed never
-/// writes over the change; its cause, if a reload of the file at `reloaded` (as `open` was
-/// given it) moved the session on since `made`, says so.
-fn stale(made: Revision, at: Revision, reloaded: Option<&str>) -> Error {
+/// writes over the change, nor steps back from a state it never saw; its cause, if a reload
+/// of the file at `reloaded` (as `open` was given it) moved the session on since `made`,
+/// says so.
+pub(super) fn stale(what: Stale, made: Revision, at: Revision, reloaded: Option<&str>) -> Error {
+    let (name, again) = match what {
+        Stale::Edit => ("edit", "make the edit"),
+        Stale::Undo => ("undo", "undo"),
+        Stale::Redo => ("redo", "redo"),
+    };
     let error = Error::new(
         ErrorCode::Conflict,
         format!(
-            "the edit was made against revision {}, and the session is at revision {}",
+            "the {name} was made against revision {}, and the session is at revision {}",
             made.number(),
             at.number()
         ),
     )
     .with_parameter("revision")
     .with_suggestion(format!(
-        "read the document again (text or outline), then make the edit against revision {}",
+        "read the document again (text or outline), then {again} against revision {}",
         at.number()
     ));
     match reloaded {

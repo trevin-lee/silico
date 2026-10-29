@@ -249,7 +249,7 @@ const SKETCH_AND_BOX: &str = r#"{
 /// `silico export` again.
 const NO_SKETCH_WORKER: &str = "worker_unavailable: SILICO_SKETCH_WORKER names \"/nowhere\", \
      which isn't a file. Suggestion: point SILICO_SKETCH_WORKER at the silico-sketch-worker \
-     binary, or unset it to use the one beside Silico; run `silico export` again to retry it.";
+     binary, or unset it to use the one beside Silico; then run `silico export` to try it again.";
 
 #[test]
 fn a_kernel_fault_beside_an_export_is_said_once_after_it_and_fails_the_command() {

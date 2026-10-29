@@ -522,22 +522,141 @@ pub struct DragBegin {
     /// algorithms aren't used (but are checked, as a solve's are): a drag solves with
     /// DogLeg alone, as FreeCAD's does.
     pub system: SketchSystem,
-    /// The point dragged.
-    pub point: PointOf,
+    /// What's dragged: a point, or a curve's edge.
+    pub dragged: Dragged,
+}
+
+/// What a drag drags (FreeCAD's `GeoElementId` given `initMove`: a point, or a curve's
+/// edge, its position `none`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum Dragged {
+    /// A point: a lone point, a curve's end, or a centre, held to the cursor.
+    Point(PointOf),
+    /// A curve's edge, pressed at `press` in the sketch's coordinates (docs/ports/sketcher.md,
+    /// *Dragging an edge*): a line moved whole, each end following the cursor at its offset
+    /// from the press (FreeCAD's relative drag); a circle or an arc sized to pass through the
+    /// cursor, its centre pinned where it starts, more weakly (the press unused).
+    Edge { curve: Geometry, press: [f64; 2] },
+}
+
+impl From<PointOf> for Dragged {
+    fn from(point: PointOf) -> Self {
+        Dragged::Point(point)
+    }
+}
+
+/// Where a drag's pin holds: a point to its target, or a target held on a curve (a circle's
+/// or an arc's, FreeCAD's `addConstraintPointOnCircle` and `PointOnArc`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PinAt {
+    Point(PointOf),
+    OnCurve(Geometry),
+}
+
+/// One of a drag's pins: where it holds, the weight of its rows (1, or less to give way
+/// first), and, if it follows the cursor, how ([`Follow`]); one that doesn't is held where it
+/// starts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pin {
+    pub at: PinAt,
+    pub scale: f64,
+    pub follows: Option<Follow>,
+}
+
+/// How a pin's target follows the cursor: `base` plus the cursor's offset from `from`,
+/// computed in that order, as FreeCAD's relative drag computes each target
+/// (`InitParameters[i] + (toPoint − press)`), so a cursor back at `from` gives `base`
+/// exactly. The cursor itself is a `base` and `from` of zero.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Follow {
+    pub base: [f64; 2],
+    pub from: [f64; 2],
+}
+
+impl Follow {
+    /// The cursor itself.
+    pub const CURSOR: Follow = Follow {
+        base: [0.0, 0.0],
+        from: [0.0, 0.0],
+    };
+
+    /// The target for the cursor at `to`.
+    pub fn at(self, to: [f64; 2]) -> [f64; 2] {
+        [
+            self.base[0] + (to[0] - self.from[0]),
+            self.base[1] + (to[1] - self.from[1]),
+        ]
+    }
+}
+
+impl Pin {
+    /// Held to the cursor itself, at full weight.
+    fn cursor(at: PinAt) -> Self {
+        Pin {
+            at,
+            scale: 1.0,
+            follows: Some(Follow::CURSOR),
+        }
+    }
+
+    /// A centre held where it starts, a hundred times more weakly, so what it centres moves
+    /// before it does (`4d7a9435c1`).
+    fn centre(g: Geometry) -> Self {
+        Pin {
+            at: PinAt::Point(PointOf::Center(g)),
+            scale: 0.01,
+            follows: None,
+        }
+    }
 }
 
 impl DragBegin {
+    /// A drag of `point` in `system`.
+    pub fn point(system: SketchSystem, point: PointOf) -> Self {
+        DragBegin {
+            system,
+            dragged: Dragged::Point(point),
+        }
+    }
+
+    /// A drag of `curve`'s edge in `system`, pressed where FreeCAD's App form presses it: a
+    /// line at its midpoint (`moveGeometry` puts the midpoint at the cursor), a circle or an
+    /// arc at its centre (unused). Values not in `system` press at the origin. For tests and
+    /// the App form's moves; a client's drag gives its own press (`Dragged::Edge`).
+    pub fn edge(system: SketchSystem, curve: Geometry) -> Self {
+        let at = |v: Value| system.values.get(v.0 as usize).copied().unwrap_or(0.0);
+        let press = match system.geometry.get(curve.0 as usize) {
+            Some(SketchGeometry::Line { start, end }) => [
+                (at(start.x) + at(end.x)) * 0.5,
+                (at(start.y) + at(end.y)) * 0.5,
+            ],
+            Some(SketchGeometry::Circle { center, .. } | SketchGeometry::Arc { center, .. }) => {
+                [at(center.x), at(center.y)]
+            }
+            _ => [0.0, 0.0],
+        };
+        DragBegin {
+            system,
+            dragged: Dragged::Edge { curve, press },
+        }
+    }
+
     /// Whether the worker can start this drag: the system passes
-    /// [`SketchSystem::check`], the point is one its geometry has, as a constraint's points
-    /// must be, and the part of the sketch its pins hold ([`DragBegin::pins`],
-    /// [`SketchSystem::part`]) has at most [`MAX_DRAG_UNKNOWNS`] unknowns.
+    /// [`SketchSystem::check`], what's dragged is a point its geometry has (as a
+    /// constraint's points must be) or a line's, circle's, or arc's edge, and the part of the
+    /// sketch its pins hold ([`DragBegin::shared_pins`], [`SketchSystem::part`]) has at most
+    /// [`MAX_DRAG_UNKNOWNS`] unknowns.
     pub fn check(&self) -> Result<(), InvalidParameter> {
-        self.system.check()?;
-        self.system.check_point(self.point, "point", "the drag")?;
+        self.check_move()?;
         let n = self.part().unknowns.len();
         if n > MAX_DRAG_UNKNOWNS {
+            // What the request named: the point dragged, or the curve whose edge is.
+            let parameter = match self.dragged {
+                Dragged::Point(_) => "point",
+                Dragged::Edge { .. } => "curve",
+            };
             return Err(invalid(
-                "point",
+                parameter,
                 format!(
                     "the part of the sketch the drag moves has {n} unknowns, and a drag takes at most {MAX_DRAG_UNKNOWNS} there: each move of a larger part takes too long"
                 ),
@@ -546,27 +665,158 @@ impl DragBegin {
         Ok(())
     }
 
-    /// The points the drag pins, with their weights, as FreeCAD's `Sketch::initMove` pins
-    /// one point: the point itself, held to the cursor; and for an arc's start or end, the
-    /// arc's centre too, where it starts, a hundred times more weakly, so the end moves
-    /// before the centre does (`4d7a9435c1`).
-    pub fn pins(&self) -> Vec<(PointOf, f64)> {
-        let mut pins = vec![(self.point, 1.0)];
-        if let (Some(SketchGeometry::Arc { .. }), PointOf::Start(g) | PointOf::End(g)) = (
-            self.system.geometry.get(self.point.geometry().0 as usize),
-            self.point,
-        ) {
-            pins.push((PointOf::Center(g), 0.01));
+    /// Whether the worker can make one move of this ([`crate::Op::MoveOnce`]): the system
+    /// passes [`SketchSystem::check`], a solve's limits, and what's dragged is a point its
+    /// geometry has or a curve's edge. A single move isn't held to [`MAX_DRAG_UNKNOWNS`],
+    /// which bounds each of a drag's many moves for the cursor's sake.
+    pub fn check_move(&self) -> Result<(), InvalidParameter> {
+        self.system.check()?;
+        match self.dragged {
+            Dragged::Point(point) => self.system.check_point(point, "point", "the drag"),
+            Dragged::Edge { curve: g, press } => {
+                // Where the press landed, as a cursor is: every move's offset is from it.
+                check_drag_target(press).map_err(|invalid| InvalidParameter {
+                    parameter: "press",
+                    message: invalid.message.replace("drag's target", "drag's press"),
+                })?;
+                match self.system.geometry.get(g.0 as usize) {
+                    Some(
+                        SketchGeometry::Line { .. }
+                        | SketchGeometry::Circle { .. }
+                        | SketchGeometry::Arc { .. },
+                    ) => Ok(()),
+                    Some(SketchGeometry::Point(_)) => Err(invalid(
+                        "curve",
+                        format!("the drag names geometry {}'s edge, but it's a point", g.0),
+                    )),
+                    None => Err(invalid(
+                        "curve",
+                        format!(
+                            "the drag names geometry {}, but there are {}",
+                            g.0,
+                            self.system.geometry.len()
+                        ),
+                    )),
+                }
+            }
+        }
+    }
+
+    /// The pins of the drag, as FreeCAD's `Sketch::initMove` pins what it's given:
+    ///
+    /// - a point, held to the cursor; for an arc's start or end, the arc's centre too,
+    ///   where it starts, a hundred times more weakly, so the end moves before the centre
+    ///   does (`4d7a9435c1`);
+    /// - a line's edge: both its ends, at full weight, each following the cursor at its
+    ///   offset from the press where the drag began (the cursor being where the press is
+    ///   dragged to);
+    /// - a circle's or an arc's edge: a target held on its circle, at the cursor, and its
+    ///   centre where it starts, as weakly.
+    ///
+    /// By geometry, as FreeCAD's `moveGeometry` pins the geometry it's given: a move of a
+    /// line's end pins no arc's centre, though an arc ends there too (extend's one move, as
+    /// FreeCAD's `extend`).
+    pub fn pins(&self) -> Vec<Pin> {
+        match self.dragged {
+            Dragged::Point(point) => {
+                let mut pins = vec![Pin::cursor(PinAt::Point(point))];
+                if let (Some(SketchGeometry::Arc { .. }), PointOf::Start(g) | PointOf::End(g)) =
+                    (self.system.geometry.get(point.geometry().0 as usize), point)
+                {
+                    pins.push(Pin::centre(g));
+                }
+                pins
+            }
+            Dragged::Edge { curve: g, press } => match self.system.geometry.get(g.0 as usize) {
+                Some(SketchGeometry::Line { start, end }) => {
+                    let at = |p: PointValues| {
+                        [p.x, p.y]
+                            .map(|v| self.system.values.get(v.0 as usize).copied().unwrap_or(0.0))
+                    };
+                    // Each end moved by the cursor's offset from the press.
+                    let offset = |p: PointValues| Follow {
+                        base: at(p),
+                        from: press,
+                    };
+                    vec![
+                        Pin {
+                            at: PinAt::Point(PointOf::Start(g)),
+                            scale: 1.0,
+                            follows: Some(offset(*start)),
+                        },
+                        Pin {
+                            at: PinAt::Point(PointOf::End(g)),
+                            scale: 1.0,
+                            follows: Some(offset(*end)),
+                        },
+                    ]
+                }
+                Some(SketchGeometry::Circle { .. } | SketchGeometry::Arc { .. }) => {
+                    vec![Pin::cursor(PinAt::OnCurve(g)), Pin::centre(g)]
+                }
+                Some(SketchGeometry::Point(_)) | None => Vec::new(),
+            },
+        }
+    }
+
+    /// The pins a drag session holds (M5.0's open item 16): [`pins`](Self::pins), and, for
+    /// a point, for each arc whose start or end is that point by its values, the arc's
+    /// centre too, as weakly. A sketch point that arcs share as an end (the core's, M3.2's
+    /// D2) has no picked arc, as FreeCAD's vertex has, so every such arc's centre is pinned:
+    /// each once, in the order of the arcs' geometry, however many arcs share it, and
+    /// never the dragged point itself. Each pins the same part as [`pins`](Self::pins): an
+    /// arc's rules join its centre to its ends. An edge's pins are [`pins`](Self::pins)'.
+    pub fn shared_pins(&self) -> Vec<Pin> {
+        let Dragged::Point(point) = self.dragged else {
+            return self.pins();
+        };
+        let mut pins = vec![Pin::cursor(PinAt::Point(point))];
+        let Some(dragged) = self.system.point_values(point) else {
+            return pins;
+        };
+        let mut centres = vec![dragged];
+        for (i, g) in self.system.geometry.iter().enumerate() {
+            if let SketchGeometry::Arc {
+                center, start, end, ..
+            } = *g
+                && (start == dragged || end == dragged)
+                && !centres.contains(&center)
+                && let Ok(i) = u32::try_from(i)
+            {
+                centres.push(center);
+                pins.push(Pin::centre(Geometry(i)));
+            }
         }
         pins
     }
 
     /// The part of the sketch the drag moves: the system reduced to the part its pins are
-    /// in ([`SketchSystem::part`]). Each move solves only that, so no other part is solved
+    /// in ([`SketchSystem::part`]), a session's ([`shared_pins`](Self::shared_pins), which
+    /// hold every point [`pins`](Self::pins) holds; a pin on a curve holds its centre's and
+    /// its radius's parts). Each move solves only that, so no other part is solved
     /// again each frame; the rest stays where the drag began.
     pub fn part(&self) -> SketchSystem {
-        let points: Vec<PointOf> = self.pins().into_iter().map(|(p, _)| p).collect();
-        self.system.part(&points)
+        let values: Vec<Value> = self
+            .shared_pins()
+            .into_iter()
+            .flat_map(|pin| match pin.at {
+                PinAt::Point(p) => self
+                    .system
+                    .point_values(p)
+                    .map(|v| vec![v.x, v.y])
+                    .unwrap_or_default(),
+                // The curve's centre and radius: a circle's radius is joined to nothing
+                // else but the pin, which isn't one of the sketch's constraints.
+                PinAt::OnCurve(g) => match self.system.geometry.get(g.0 as usize) {
+                    Some(
+                        SketchGeometry::Circle { center, radius }
+                        | SketchGeometry::Arc { center, radius, .. },
+                    ) => vec![center.x, center.y, *radius],
+                    _ => Vec::new(),
+                },
+            })
+            .collect();
+        self.system.part_of(&values)
     }
 }
 
@@ -1030,13 +1280,18 @@ impl SketchSystem {
     /// held where it is, as a fixed value. Points that don't name a point their geometry
     /// has join nothing.
     pub fn part(&self, points: &[PointOf]) -> SketchSystem {
-        let parts = self.parts();
-        let mut wanted: Vec<Part> = points
+        let values: Vec<Value> = points
             .iter()
             .filter_map(|&p| self.point_values(p))
             .flat_map(|v| [v.x, v.y])
-            .filter_map(|v| parts.of(v))
             .collect();
+        self.part_of(&values)
+    }
+
+    /// The part of the system `values` are in, as [`part`](Self::part) finds a point's.
+    pub fn part_of(&self, values: &[Value]) -> SketchSystem {
+        let parts = self.parts();
+        let mut wanted: Vec<Part> = values.iter().filter_map(|&v| parts.of(v)).collect();
         wanted.sort_unstable();
         wanted.dedup();
         let in_part = |v: Value| {
@@ -1063,17 +1318,14 @@ impl SketchSystem {
         }
     }
 
-    /// The values constraint `c` reads, as PlaneGCS's rows for it do.
-    fn reads(&self, c: &SolverConstraint) -> Vec<Value> {
+    /// The values constraint `c` reads, as PlaneGCS's rows for it do, its fixed values too: a
+    /// row that takes a geometry whole reads all of it (a line's both ends; an arc's centre,
+    /// radius, angles, and ends).
+    pub fn reads(&self, c: &SolverConstraint) -> Vec<Value> {
         let geometry = |g: Geometry| {
             self.geometry
                 .get(g.0 as usize)
                 .map(SketchGeometry::values)
-                .unwrap_or_default()
-        };
-        let point = |p: PointOf| {
-            self.point_values(p)
-                .map(|v| vec![v.x, v.y])
                 .unwrap_or_default()
         };
         // A circle's or arc's centre and radius.
@@ -1086,14 +1338,14 @@ impl SketchSystem {
         };
         match *c {
             SolverConstraint::ArcRules { arc } => geometry(arc),
-            SolverConstraint::Coincident { a, b, .. } => [point(a), point(b)].concat(),
+            SolverConstraint::Coincident { a, b, .. } => [self.xy_of(a), self.xy_of(b)].concat(),
             SolverConstraint::DistanceX { a, b, value, .. }
             | SolverConstraint::DistanceY { a, b, value, .. }
             | SolverConstraint::Distance { a, b, value, .. } => {
-                [point(a), point(b), vec![value]].concat()
+                [self.xy_of(a), self.xy_of(b), vec![value]].concat()
             }
             SolverConstraint::PointOnLine { point: q, line, .. } => {
-                [point(q), geometry(line)].concat()
+                [self.xy_of(q), geometry(line)].concat()
             }
             SolverConstraint::Horizontal { line, .. } | SolverConstraint::Vertical { line, .. } => {
                 geometry(line)
@@ -1105,25 +1357,21 @@ impl SketchSystem {
                 [geometry(a), geometry(b), vec![value]].concat()
             }
             SolverConstraint::Radius { circle, value, .. } => {
-                let radius = match self.geometry.get(circle.0 as usize) {
-                    Some(
-                        SketchGeometry::Circle { radius, .. } | SketchGeometry::Arc { radius, .. },
-                    ) => vec![*radius],
-                    _ => Vec::new(),
-                };
-                [radius, vec![value]].concat()
+                [self.radius_of(circle), vec![value]].concat()
             }
             SolverConstraint::HorizontalPoints { a, b, .. }
-            | SolverConstraint::VerticalPoints { a, b, .. } => [point(a), point(b)].concat(),
+            | SolverConstraint::VerticalPoints { a, b, .. } => {
+                [self.xy_of(a), self.xy_of(b)].concat()
+            }
             SolverConstraint::PointLineDistance {
                 point: q,
                 line,
                 value,
                 ..
-            } => [point(q), geometry(line), vec![value]].concat(),
+            } => [self.xy_of(q), geometry(line), vec![value]].concat(),
             SolverConstraint::PointOnCircle {
                 point: q, circle, ..
-            } => [point(q), round(circle)].concat(),
+            } => [self.xy_of(q), round(circle)].concat(),
             SolverConstraint::EqualRadius { a, b, .. }
             | SolverConstraint::TangentCircles { a, b, .. } => [round(a), round(b)].concat(),
             SolverConstraint::TangentLine { line, circle, .. } => {
@@ -1142,19 +1390,99 @@ impl SketchSystem {
                 point: q,
                 angle,
                 ..
-            } => [point(q), geometry(a), geometry(b), vec![angle]].concat(),
+            } => [self.xy_of(q), geometry(a), geometry(b), vec![angle]].concat(),
             SolverConstraint::SymmetricLine { a, b, line, .. }
             | SolverConstraint::MidpointOnLine { a, b, line, .. } => {
-                [point(a), point(b), geometry(line)].concat()
+                [self.xy_of(a), self.xy_of(b), geometry(line)].concat()
             }
             SolverConstraint::SymmetricPoint { a, b, center, .. } => {
-                [point(a), point(b), point(center)].concat()
+                [self.xy_of(a), self.xy_of(b), self.xy_of(center)].concat()
             }
         }
     }
 
+    /// The values constraint `c`'s equations depend on: the support of their gradient, where
+    /// [`reads`](Self::reads) gives PlaneGCS's parameter list, which takes a geometry whole.
+    /// The two are the same for every form but three, whose equations can read less than
+    /// their list (M5.0 open item 32, docs/ports/sketcher.md, *Definition states*):
+    /// - a tangency at an end ([`TangentOn`]) and an angle at a point ([`AngleViaPoint`]):
+    ///   the point, the angle, and of each curve what its normal there reads
+    ///   (`CalculateNormal` in 1.1.3's `Geo.cpp`): a line's both ends, a circle's or an arc's
+    ///   centre; and, for [`TangentOn`]'s row holding the point on `b`, `b`'s radius when it's
+    ///   round. Never an arc's ends or angles, whose columns are zero in every one of these
+    ///   rows. So a tangency reads less whenever an arc is in it, and an angle whenever a
+    ///   circle or an arc is (it never reads a radius); a line's end tangent on a line or a
+    ///   circle reads its whole list;
+    /// - two radii equal ([`EqualRadius`]): the two radii, never the centres (`r1 − r2`), so
+    ///   always less.
+    ///
+    /// The diagnosis's flags are the Jacobian's, so what a flagged constraint governs is
+    /// this; `reads` stays the parameter list, the safe side for the parts it's partitioned
+    /// into (PlaneGCS's partition is by its parameter lists).
+    ///
+    /// [`TangentOn`]: SolverConstraint::TangentOn
+    /// [`AngleViaPoint`]: SolverConstraint::AngleViaPoint
+    /// [`EqualRadius`]: SolverConstraint::EqualRadius
+    pub fn depends_on(&self, c: &SolverConstraint) -> Vec<Value> {
+        // What a curve's normal at a point reads: a line's both ends; a circle's or an arc's
+        // centre.
+        let normal = |g: Geometry| match self.geometry.get(g.0 as usize) {
+            Some(SketchGeometry::Line { start, end }) => vec![start.x, start.y, end.x, end.y],
+            Some(SketchGeometry::Circle { center, .. } | SketchGeometry::Arc { center, .. }) => {
+                vec![center.x, center.y]
+            }
+            _ => Vec::new(),
+        };
+        match *c {
+            SolverConstraint::TangentOn {
+                a,
+                point: q,
+                b,
+                angle,
+                ..
+            } => [
+                self.xy_of(q),
+                normal(a),
+                normal(b),
+                self.radius_of(b),
+                vec![angle],
+            ]
+            .concat(),
+            SolverConstraint::AngleViaPoint {
+                a,
+                b,
+                point: q,
+                angle,
+                ..
+            } => [self.xy_of(q), normal(a), normal(b), vec![angle]].concat(),
+            SolverConstraint::EqualRadius { a, b, .. } => {
+                [self.radius_of(a), self.radius_of(b)].concat()
+            }
+            _ => self.reads(c),
+        }
+    }
+
+    /// The x and y of the point `p` names, as [`reads`](Self::reads) and
+    /// [`depends_on`](Self::depends_on) list them: none if its geometry hasn't it.
+    fn xy_of(&self, p: PointOf) -> Vec<Value> {
+        self.point_values(p)
+            .map(|v| vec![v.x, v.y])
+            .unwrap_or_default()
+    }
+
+    /// The radius of geometry `g`, a circle's or an arc's, as [`reads`](Self::reads) and
+    /// [`depends_on`](Self::depends_on) list it: none for any other geometry.
+    fn radius_of(&self, g: Geometry) -> Vec<Value> {
+        match self.geometry.get(g.0 as usize) {
+            Some(SketchGeometry::Circle { radius, .. } | SketchGeometry::Arc { radius, .. }) => {
+                vec![*radius]
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// The values of the point `p` names, if its geometry has it.
-    fn point_values(&self, p: PointOf) -> Option<PointValues> {
+    pub fn point_values(&self, p: PointOf) -> Option<PointValues> {
         match (self.geometry.get(p.geometry().0 as usize)?, p) {
             (SketchGeometry::Point(v), PointOf::Point(_)) => Some(*v),
             (
@@ -1371,6 +1699,21 @@ pub fn arc_from_points(center: [f64; 2], start: [f64; 2], end: [f64; 2]) -> Opti
     (sweep > 0.0 && sweep < std::f64::consts::TAU).then_some([radius, start_angle, end_angle])
 }
 
+/// An arc's radius and angles as [`arc_from_points`] gives them, or, for an arc it gives none
+/// (its ends at one angle from its centre), the radius and its start's angle as both angles.
+///
+/// It exists for one diagnosis: of a sketch's geometry alone, whose translation the core
+/// refuses (silico-core's `Diagnosis::untranslated`), so that its degrees of freedom are
+/// PlaneGCS's own, from the worker. An arc's rules, each end on its circle at its angle, are
+/// well defined where the two angles are one, so PlaneGCS can diagnose such an arc; it's
+/// never sent to be solved as a sketch's arc, which [`arc_from_points`] still refuses.
+pub fn arc_from_points_or_unswept(center: [f64; 2], start: [f64; 2], end: [f64; 2]) -> [f64; 3] {
+    arc_from_points(center, start, end).unwrap_or_else(|| {
+        let angle = libm::atan2(start[1] - center[1], start[0] - center[0]);
+        [squared_distance(center, start).sqrt(), angle, angle]
+    })
+}
+
 impl SolverConstraint {
     /// The tag it's reported by: every constraint but an arc's rules has one.
     pub fn tag(&self) -> Option<Tag> {
@@ -1457,6 +1800,60 @@ fn invalid(parameter: &'static str, message: String) -> InvalidParameter {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_edge_drag_begun_by_the_app_form_presses_a_circle_or_an_arc_at_its_centre() {
+        // A circle at (3, 4) and an arc at (-2, 7): each pressed at its centre, as
+        // FreeCAD's App form presses one, not at the origin.
+        let p = |x, y| PointValues {
+            x: Value(x),
+            y: Value(y),
+        };
+        let system = SketchSystem {
+            values: vec![3.0, 4.0, 1.0, -2.0, 7.0, 2.0, 0.0, 1.0, 0.0, 7.0, -2.0, 9.0],
+            unknowns: vec![],
+            geometry: vec![
+                SketchGeometry::Circle {
+                    center: p(0, 1),
+                    radius: Value(2),
+                },
+                SketchGeometry::Arc {
+                    center: p(3, 4),
+                    radius: Value(5),
+                    start_angle: Value(6),
+                    end_angle: Value(7),
+                    start: p(8, 9),
+                    end: p(10, 11),
+                },
+            ],
+            constraints: vec![],
+            algorithms: vec![Algorithm::DogLeg],
+        };
+        for (curve, press) in [(Geometry(0), [3.0, 4.0]), (Geometry(1), [-2.0, 7.0])] {
+            let begin = DragBegin::edge(system.clone(), curve);
+            assert_eq!(begin.dragged, Dragged::Edge { curve, press });
+        }
+    }
+
+    #[test]
+    fn a_follower_moves_by_the_cursors_offset_from_its_press_in_freecads_order() {
+        // FreeCAD's InitParameters + (toPoint - press): a cursor at the press gives the base
+        // exactly. The other order, toPoint + (InitParameters - press), rounds this pair to
+        // -31.002554775011955.
+        let follow = Follow {
+            base: [-31.00255477501196, 2.0],
+            from: [9.710164596515956, 0.5],
+        };
+        assert_eq!(
+            follow.at([9.710164596515956, 0.5]),
+            [-31.00255477501196, 2.0]
+        );
+        assert_eq!(
+            follow.at([10.710164596515956, 3.5]),
+            [-30.00255477501196, 5.0]
+        );
+        assert_eq!(Follow::CURSOR.at([3.25, -7.5]), [3.25, -7.5]);
+    }
+
     use super::*;
 
     /// A line from (0, 0) to (10, 0), a circle at (0, 5) of radius 2, and an arc; the
@@ -2062,7 +2459,7 @@ mod tests {
     fn drag(point: PointOf) -> DragBegin {
         DragBegin {
             system: system(),
-            point,
+            dragged: Dragged::Point(point),
         }
     }
 
@@ -2521,6 +2918,33 @@ mod tests {
     }
 
     #[test]
+    fn an_arc_that_sweeps_nothing_is_diagnosed_at_its_starts_angle() {
+        use std::f64::consts::{FRAC_PI_2, PI};
+        // A swept arc is arc_from_points' own: the quarter from (1, 0) to (0, 1).
+        assert_eq!(
+            arc_from_points_or_unswept([0.0, 0.0], [1.0, 0.0], [0.0, 2.0]),
+            [1.0, 0.0, FRAC_PI_2]
+        );
+        // The end further out along the start's direction, at π/2 about (1, 1): the start's
+        // radius, 2, and its angle, π/2, at both ends.
+        assert_eq!(
+            arc_from_points_or_unswept([1.0, 1.0], [1.0, 3.0], [1.0, 5.0]),
+            [2.0, FRAC_PI_2, FRAC_PI_2]
+        );
+        // Either side of −0 on the far side: the start's π, not the end's −π.
+        assert_eq!(
+            arc_from_points_or_unswept([0.0, 0.0], [-1.0, 0.0], [-2.0, -0.0]),
+            [1.0, PI, PI]
+        );
+        assert_eq!(
+            arc_from_points_or_unswept([0.0, 0.0], [-1.0, -0.0], [-2.0, 0.0]),
+            [1.0, -PI, -PI]
+        );
+        // And arc_from_points still refuses them.
+        assert_eq!(arc_from_points([1.0, 1.0], [1.0, 3.0], [1.0, 5.0]), None);
+    }
+
+    #[test]
     fn a_distance_or_a_tangency_on_a_round_curve_between_points_at_one_place_is_refused() {
         // A distance's gradient is the line between its points, and a round curve's
         // direction at a point the line from its centre: none for two at one place (the M3
@@ -2774,5 +3198,193 @@ mod tests {
             s.unbuildable(&values),
             [Geometry(0), Geometry(1), Geometry(2)]
         );
+    }
+
+    #[test]
+    fn a_drag_session_pins_the_centre_of_every_arc_its_point_ends_once_each() {
+        // P at values 0 and 1, shared as arc A's start and arc B's end, the core's way
+        // (one point, its values in every curve that uses it). C, a third arc about A's
+        // centre, also starts at P: that centre is pinned once. D, about B's centre, runs
+        // from A's end, and a line from A's end to P pins nothing.
+        let p = |x: u32, y: u32| PointValues {
+            x: Value(x),
+            y: Value(y),
+        };
+        let shared = p(0, 1);
+        let arc = |center, start, end| SketchGeometry::Arc {
+            center,
+            radius: Value(2),
+            start_angle: Value(3),
+            end_angle: Value(4),
+            start,
+            end,
+        };
+        let system = SketchSystem {
+            values: vec![0.0; 13],
+            unknowns: (0..13).map(Value).collect(),
+            geometry: vec![
+                SketchGeometry::Point(shared),
+                arc(p(5, 6), shared, p(7, 8)),
+                SketchGeometry::Line {
+                    start: p(7, 8),
+                    end: shared,
+                },
+                arc(p(9, 10), p(11, 12), shared),
+                arc(p(5, 6), shared, p(11, 12)),
+                arc(p(9, 10), p(7, 8), p(11, 12)),
+            ],
+            constraints: vec![],
+            algorithms: vec![Algorithm::DogLeg],
+        };
+        let pins = |point| {
+            DragBegin {
+                system: system.clone(),
+                dragged: Dragged::Point(point),
+            }
+            .shared_pins()
+            .into_iter()
+            .map(|pin| {
+                let PinAt::Point(at) = pin.at else {
+                    panic!("a point's drag pins no curve")
+                };
+                (at, pin.scale)
+            })
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            pins(PointOf::Point(Geometry(0))),
+            [
+                (PointOf::Point(Geometry(0)), 1.0),
+                (PointOf::Center(Geometry(1)), 0.01),
+                (PointOf::Center(Geometry(3)), 0.01),
+            ]
+        );
+        // An arc's own end, by its geometry, pins the same centres.
+        assert_eq!(
+            pins(PointOf::End(Geometry(3))),
+            [
+                (PointOf::End(Geometry(3)), 1.0),
+                (PointOf::Center(Geometry(1)), 0.01),
+                (PointOf::Center(Geometry(3)), 0.01),
+            ]
+        );
+        // A centre dragged pins nothing else.
+        assert_eq!(
+            pins(PointOf::Center(Geometry(1))),
+            [(PointOf::Center(Geometry(1)), 1.0)]
+        );
+        // D's start is A's end (and the line's start): both arcs' centres, A's first, as
+        // the geometry orders them.
+        assert_eq!(
+            pins(PointOf::Start(Geometry(5))),
+            [
+                (PointOf::Start(Geometry(5)), 1.0),
+                (PointOf::Center(Geometry(1)), 0.01),
+                (PointOf::Center(Geometry(5)), 0.01),
+            ]
+        );
+        // FreeCAD's pins, by geometry: the point alone, or an arc's end and its own
+        // centre, whatever else ends there.
+        let by_geometry = |point| {
+            DragBegin {
+                system: system.clone(),
+                dragged: Dragged::Point(point),
+            }
+            .pins()
+            .into_iter()
+            .map(|pin| {
+                let PinAt::Point(at) = pin.at else {
+                    panic!("a point's drag pins no curve")
+                };
+                (at, pin.scale)
+            })
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            by_geometry(PointOf::Point(Geometry(0))),
+            [(PointOf::Point(Geometry(0)), 1.0)]
+        );
+        assert_eq!(
+            by_geometry(PointOf::End(Geometry(3))),
+            [
+                (PointOf::End(Geometry(3)), 1.0),
+                (PointOf::Center(Geometry(3)), 0.01),
+            ]
+        );
+        assert_eq!(
+            by_geometry(PointOf::End(Geometry(2))),
+            [(PointOf::End(Geometry(2)), 1.0)]
+        );
+    }
+
+    #[test]
+    fn what_a_tangency_and_equal_radii_depend_on_is_less_than_their_parameter_lists() {
+        // On system()'s layout: the line's ends 0, 1 and 2, 3; the circle's centre 4, 5 and
+        // radius 6; the arc's centre 7, 8, radius 9, angles 10, 11, start 12, 13, end 14, 15;
+        // 16 a fixed angle. Written out from 1.1.3's gradients: a curve's normal at a point
+        // reads a line's both ends or a round curve's centre (Geo.cpp, CalculateNormal), the
+        // point on a round curve its centre and radius too; equal radii r1 − r2.
+        let s = system();
+        let v = |list: &[u32]| list.iter().copied().map(Value).collect::<Vec<_>>();
+        let (line, circle, arc) = (Geometry(0), Geometry(1), Geometry(2));
+        let cases = [
+            // An arc's end tangent on the line: the end, the arc's centre, the line's ends.
+            (
+                SolverConstraint::TangentOn {
+                    tag: Tag(4),
+                    a: arc,
+                    point: PointOf::End(arc),
+                    b: line,
+                    angle: Value(16),
+                },
+                v(&[14, 15, 7, 8, 0, 1, 2, 3, 16]),
+                true,
+            ),
+            // The line's end tangent on the circle: the circle's radius too, for the point on
+            // it, so its whole list (a circle has no ends or angles).
+            (
+                SolverConstraint::TangentOn {
+                    tag: Tag(4),
+                    a: line,
+                    point: PointOf::End(line),
+                    b: circle,
+                    angle: Value(16),
+                },
+                v(&[2, 3, 0, 1, 2, 3, 4, 5, 6, 16]),
+                false,
+            ),
+            // The line and the arc meeting at the arc's start: no radius, no angle of the arc.
+            (
+                SolverConstraint::AngleViaPoint {
+                    tag: Tag(4),
+                    a: line,
+                    b: arc,
+                    point: PointOf::Start(arc),
+                    angle: Value(16),
+                },
+                v(&[12, 13, 0, 1, 2, 3, 7, 8, 16]),
+                true,
+            ),
+            (
+                SolverConstraint::EqualRadius {
+                    tag: Tag(4),
+                    a: circle,
+                    b: arc,
+                },
+                v(&[6, 9]),
+                true,
+            ),
+        ];
+        for (c, want, less) in cases {
+            assert_eq!(s.depends_on(&c), want, "{c:?}");
+            let reads: std::collections::BTreeSet<Value> = s.reads(&c).into_iter().collect();
+            let want: std::collections::BTreeSet<Value> = want.into_iter().collect();
+            assert!(want.is_subset(&reads), "{c:?}");
+            assert_eq!(want != reads, less, "{c:?}");
+        }
+        // Every other form: its parameter list.
+        for c in &s.constraints {
+            assert_eq!(s.depends_on(c), s.reads(c), "{c:?}");
+        }
     }
 }

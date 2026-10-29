@@ -7,11 +7,12 @@
 //! export of them silico-cli's.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::model::WAIT;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::example::EXAMPLE;
-use super::export_report::{tetra, unasked};
+use super::export_report::{grid_box, tetra, unasked};
 
 use silico_core::command::export::{Export, ExportFormat, ExportOn, Exported, export};
 use silico_core::command::{self, Problems};
@@ -885,6 +886,101 @@ fn more_bodies_than_are_meshed_at_once_are_each_written_in_the_timelines_order()
 }
 
 #[test]
+fn a_grid_box_is_a_printable_mesh_of_the_triangles_and_vertices_counted_by_hand() {
+    // A 2 × 3 × 4 mm box in 1 mm squares: faces of 2·3, 3·4, and 4·2 squares, two of each,
+    // two triangles a square: 4·(6 + 12 + 8) = 104 triangles. Each edge of the mesh on two
+    // triangles, 3·104 / 2 = 156 edges, so, a sphere's Euler characteristic being 2,
+    // 2 + 156 − 104 = 54 vertices; its volume 2·3·4 = 24 mm³.
+    let mesh = printable(&grid_box([2, 3, 4]), unasked, None).unwrap();
+    assert_eq!(mesh.triangles().len(), 104);
+    assert_eq!(mesh.vertices().len(), 54);
+    assert!((mesh.volume() - 24.0).abs() < 1e-12, "{}", mesh.volume());
+}
+
+#[test]
+fn ten_million_triangles_in_all_are_taken_and_the_first_solid_past_them_refused_naming_the_tolerance()
+ {
+    // The limits table (docs/design/m4.1-command-api.md, section 6): a 3MF export's
+    // triangles, 10,000,000 in all, counted over every part; past them, `invalid_input`
+    // naming `tolerance`, "a coarser one makes fewer, or export fewer parts". 100 boxes,
+    // each meshed as a 100 × 100 × 75 grid box, 4·(100·100 + 100·75 + 75·100) = 100,000
+    // triangles: 10,000,000 after the hundredth, which are taken, so the 101st box's mesh is
+    // asked for. It's a 1 mm cube, 4·(1 + 1 + 1) = 12 triangles: 10,000,012 in all, refused
+    // there (the command's own count, `export::within_triangles`), so the 102nd box's mesh
+    // is never asked for, and nothing is written. Were it asked (the count left to the
+    // archive's writer, which counts too), the kernel refuses it, so the export fails
+    // quickly, with another error, and never writes a file of ten million triangles.
+    // (Exactly 10,000,001 can't be reached: a closed mesh's edges are each on two
+    // triangles, 3·T = 2·E, so every solid's T is even, and so is the sum. The limit's own
+    // boundary, 10,000,000 against 10,000,001, is silico-protocol's check_export_triangles's
+    // unit test.) About 200 MB held at most: the 100 meshes kept for the file, 12 bytes a
+    // triangle and as many a vertex, half as many vertices as triangles.
+    let big = grid_box([100, 100, 75]);
+    assert_eq!(big.triangles.len(), 100_000);
+    let cube = grid_box([1, 1, 1]);
+    assert_eq!(cube.triangles.len(), 12);
+    let features: Vec<String> = (0..102)
+        .map(|n| {
+            let size = match n {
+                ..100 => r#""length": 100, "width": 100, "height": 75"#,
+                100 => r#""length": 1, "width": 1, "height": 1"#,
+                _ => r#""length": 2, "width": 2, "height": 2"#,
+            };
+            format!(
+                r#"{{"id": "b{n:07}", "type": "box", "v": 1, "name": "Box{n}", "position": [0, 0, 0], {size}}}"#
+            )
+        })
+        .collect();
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        features.join(", ")
+    );
+    let bench = Bench::with(&text, move |kernel| {
+        kernel.refuse(|op| match op {
+            Op::ExportMesh { shape, .. } if FakeKernel::describe(shape)? == "box(2, 2, 2)" => {
+                Some(Error::new(
+                    ErrorCode::KernelFailed,
+                    "the 102nd mesh was asked for, past ten million triangles",
+                ))
+            }
+            _ => None,
+        });
+        kernel.answer_instead(move |op| match op {
+            Op::ExportMesh { shape, .. } => {
+                let mesh = match FakeKernel::describe(shape)?.as_str() {
+                    "box(100, 100, 75)" => big.clone(),
+                    "box(1, 1, 1)" => cube.clone(),
+                    _ => return None,
+                };
+                Some(Reply::ExportMesh(Box::new(mesh)))
+            }
+            _ => None,
+        });
+    });
+    let dir = Scratch::new("ten-million");
+    let path = dir.0.join("out.3mf");
+    let problems = refused(bench.export(&request(&path)));
+    // The hundredth box's 10,000,000 were taken: the 101st was asked for, and the 102nd
+    // wasn't.
+    assert_eq!(bench.asked_meshes(), 101, "{problems:?}");
+    assert_eq!(problems.total(), 1);
+    let e = &problems.errors()[0];
+    assert_eq!(
+        (e.code(), e.parameter(), e.feature()),
+        (ErrorCode::InvalidInput, Some("tolerance"), None)
+    );
+    assert_eq!(
+        e.message(),
+        "an export's mesh has 10000012 triangles, more than the 10000000 an export may have"
+    );
+    assert_eq!(
+        e.suggestion(),
+        Some("export with a coarser tolerance, which makes fewer, or fewer parts at once")
+    );
+    assert!(dir.names().is_empty(), "{:?}", dir.names());
+}
+
+#[test]
 fn an_exports_meshes_are_asked_of_the_kernel_one_at_a_time() {
     // A fine tolerance's mesh takes OCCT tens of seconds and gigabytes: one asked at a time,
     // never one for each core. Two bodies, a kernel that runs two requests at once, the
@@ -899,11 +995,7 @@ fn an_exports_meshes_are_asked_of_the_kernel_one_at_a_time() {
         let path = path.clone();
         std::thread::spawn(move || bench.export(&request(&path)))
     };
-    assert!(
-        bench
-            .kernel
-            .wait_running(1, std::time::Duration::from_secs(60))
-    );
+    assert!(bench.kernel.wait_running(1, WAIT));
     // Long enough for a mesh asked ahead to start on the kernel's other thread.
     assert!(
         !bench
@@ -973,11 +1065,7 @@ fn a_mesh_superseded_by_the_sessions_close_is_the_sessions_not_the_solids() {
         let path = path.clone();
         std::thread::spawn(move || bench.export(&request(&path)))
     };
-    assert!(
-        bench
-            .kernel
-            .wait_running(1, std::time::Duration::from_secs(60))
-    );
+    assert!(bench.kernel.wait_running(1, WAIT));
     use silico_core::kernel::Kernel;
     let next = silico_protocol::Generation(bench.kernel.generation().0 + 1);
     bench.kernel.advance(next);
@@ -1567,7 +1655,7 @@ fn an_export_waiting_its_turn_to_mesh_is_served_before_the_export_ahead_takes_an
             )
         })
     };
-    assert!(a.kernel.wait_running(1, std::time::Duration::from_secs(60)));
+    assert!(a.kernel.wait_running(1, WAIT));
     assert_eq!(a.asked_meshes(), 1);
     // B's wait looks whether it was stopped, with the turns locked, before it waits: once
     // it has looked, it's in the line before A's first mesh can give the turn back.
@@ -1594,9 +1682,7 @@ fn an_export_waiting_its_turn_to_mesh_is_served_before_the_export_ahead_takes_an
             )
         })
     };
-    looks
-        .recv_timeout(std::time::Duration::from_secs(60))
-        .unwrap();
+    looks.recv_timeout(WAIT).unwrap();
     assert_eq!(a.asked_meshes(), 1);
     hold.release();
     first.join().unwrap().unwrap();

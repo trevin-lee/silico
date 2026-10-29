@@ -6,6 +6,7 @@
 //! Only the work its users alone need is left out.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::model::WAIT;
 use super::sweeps;
 
 use std::collections::BTreeSet;
@@ -21,10 +22,7 @@ use silico_protocol::Op;
 use sweeps::*;
 
 fn published(engine: &Recompute<FakeKernel>, features: &[&str]) -> Arc<Model> {
-    match engine
-        .start(checked_document(features))
-        .wait_timeout(Duration::from_secs(60))
-    {
+    match engine.start(checked_document(features)).wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("not published: {other:?}"),
         Err(_) => panic!("the recompute didn't finish"),
@@ -220,7 +218,7 @@ fn a_refused_pockets_faces_and_sweep_still_queued_when_its_cached_cuts_measure_l
     let pending = second.start(checked_document(&refs(&filleted)));
     // The faces are held; the cut's measure runs beside them and is judged, refusing the
     // pocket, and its entry is written measured (after that), before they're let go.
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + WAIT;
     while std::fs::read(cut).is_ok_and(|bytes| bytes == unmeasured) {
         assert!(
             std::time::Instant::now() < deadline,
@@ -237,7 +235,7 @@ fn a_refused_pockets_faces_and_sweep_still_queued_when_its_cached_cuts_measure_l
         "the sweep started before the verdict"
     );
     hold.release();
-    let model = match pending.wait_timeout(Duration::from_secs(60)) {
+    let model = match pending.wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("not published: {other:?}"),
         Err(_) => panic!("the recompute didn't finish"),

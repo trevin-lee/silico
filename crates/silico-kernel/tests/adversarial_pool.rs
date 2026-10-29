@@ -9,13 +9,22 @@
 //! `pool.rs` they assume one test per process (nextest, which `pixi run test` uses).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "../../silico-core/tests/common/lateness.rs"]
+mod lateness;
 #[path = "common/launches.rs"]
 mod launches;
 #[path = "common/pool.rs"]
 mod pool;
 #[path = "common/process.rs"]
 mod process;
+#[path = "../../silico-core/tests/common/share.rs"]
+mod share;
+#[path = "common/wait.rs"]
+mod wait;
 
+use crate::wait::{UNREACHED, WAIT, promptly};
+use lateness::{Lateness, allowance};
+use share::Share;
 use std::collections::BTreeSet;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
@@ -639,6 +648,9 @@ fn a_stopped_worker_times_out_and_is_replaced_and_reaped() {
     let pool = pool(TEST_WORKER, 1);
     let pid = pool.pids()[0];
     signal("STOP", pid);
+    // Its 300 ms, then a kill and a reap: 5 s on a quiet machine, and the wakes on the way
+    // as late as this machine runs them.
+    let lateness = Lateness::start();
     let start = Instant::now();
     let err = done(pool.submit(
         Generation(1),
@@ -647,7 +659,7 @@ fn a_stopped_worker_times_out_and_is_replaced_and_reaped() {
     .unwrap_err();
     assert_eq!(err.code(), ErrorCode::WorkerTimeout, "{err}");
     assert!(
-        start.elapsed() < Duration::from_secs(5),
+        start.elapsed() < allowance(Duration::from_secs(5), lateness.most()),
         "{:?}",
         start.elapsed()
     );
@@ -665,17 +677,12 @@ fn dropping_a_pool_whose_worker_is_stopped_is_quick() {
         signal("STOP", pid);
     }
     let pending: Vec<_> = (0..4)
-        .map(|_| pool.submit(Generation(1), echo(&[1])))
+        // Each its time no test reaches: a drop that waited for them to time out never returns.
+        .map(|_| pool.submit(Generation(1), echo(&[1]).with_timeout(UNREACHED)))
         .collect();
     std::thread::sleep(Duration::from_millis(100));
-    let start = Instant::now();
-    drop(pool);
+    promptly("dropping the pool", move || drop(pool));
     assert_reaped(&pids, "after the drop");
-    assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        start.elapsed()
-    );
     for p in pending {
         assert_eq!(done(p).unwrap_err().code(), ErrorCode::Internal);
     }
@@ -745,7 +752,7 @@ fn dropping_pools_leaks_no_threads() {
     for _ in 0..20 {
         drop(pool(TEST_WORKER, 1));
     }
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + WAIT;
     while threads() > before && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -773,7 +780,7 @@ fn replacing_workers_leaks_no_threads_descriptors_or_processes() {
     }
     let pids = wait_full(&pool, 1, &BTreeSet::new());
     // The old workers' reader threads end when their sockets close; give them a moment.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + WAIT;
     while (open_fds() > fds || threads() > threads_before) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -816,14 +823,14 @@ const STDERR_FD: i32 = 2;
 /// descriptor 3, which it may copy). One listing can miss a worker's socket for a moment
 /// (on Linux, `lsof` reads `/proc/net/unix` in chunks, and an entry is skipped when a
 /// socket before it closes in between; the socket is then listed as `sock`, not `unix`),
-/// so the listing is taken again, for up to five seconds, until it shows every worker's
+/// so the listing is taken again, for up to [`WAIT`], until it shows every worker's
 /// socket.
 fn not_allowed(
     round: usize,
     pids: &[u32],
     allowed: impl Fn(&Descriptor, Option<&String>) -> bool,
 ) -> Vec<Descriptor> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + WAIT;
     let open = loop {
         let open = sockets_and_pipes(pids);
         let listed = pids
@@ -898,15 +905,15 @@ fn sockets_and_pipes(pids: &[u32]) -> Vec<Descriptor> {
     found
 }
 
-/// Starts a pool on another thread, failing the test if it hasn't started within ten
-/// seconds (a pool of a few workers starts in well under one).
+/// Starts a pool on another thread, failing the test if it hasn't started within [`WAIT`]
+/// (a pool of a few workers starts in well under a second).
 fn start_within(exe: &Path, size: usize) -> KernelPool {
     let (tx, rx) = std::sync::mpsc::channel();
     let exe = exe.to_owned();
     std::thread::spawn(move || {
         let _ = tx.send(KernelPool::start_workers(&exe, size));
     });
-    match rx.recv_timeout(Duration::from_secs(10)) {
+    match rx.recv_timeout(WAIT) {
         Ok(pool) => pool.unwrap(),
         Err(_) => panic!("starting a pool of {size} workers hung"),
     }
@@ -922,14 +929,14 @@ fn running_workers_hold_only_their_own_descriptors() {
     // held), and nothing the app holds without close-on-exec (a test runner's jobserver
     // pipe, say). Workers now start one at a time, and close what they inherit when they
     // run. Pools as large as `KernelPool::start` makes on this machine, started 40 times;
-    // each worker is given up to five seconds to start running.
+    // each worker is given up to `WAIT` to start running.
     let size = std::thread::available_parallelism()
         .map_or(8, usize::from)
         .max(8);
     for round in 0..40 {
         let pool = start_within(Path::new(WORKER), size);
         let pids = pool.pids();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + WAIT;
         loop {
             let extra = not_allowed(round, &pids, |o, socket| {
                 o.fd == STDERR_FD
@@ -957,7 +964,9 @@ fn workers_started_together_inherit_no_siblings_socket() {
     // at once after the pool starts, holds only its own: and no start hangs.
     let dir = scratch_dir("noclose");
     let exe = dir.join("worker");
-    write_executable(&exe, "#!/bin/sh\nexec sleep 30\n");
+    // It sleeps past `WAIT`, so a start hung on a sibling's pipe isn't released by that
+    // sibling ending within it.
+    write_executable(&exe, "#!/bin/sh\nexec sleep 600\n");
     let size = std::thread::available_parallelism()
         .map_or(8, usize::from)
         .max(8);
@@ -986,7 +995,7 @@ fn running_workers_close_what_the_app_left_open() {
     }
     let pool = start_within(Path::new(WORKER), 2);
     let pids = pool.pids();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + WAIT;
     loop {
         let kept: Vec<_> = sockets_and_pipes(&pids)
             .into_iter()
@@ -1024,7 +1033,8 @@ fn a_killer_ends_a_call_at_once_and_is_harmless_after_the_worker_is_gone() {
             Duration::from_secs(60),
         )
         .unwrap();
-    let start = Instant::now();
+    // A sleep no test reaches, and a call allowed `WAIT`: a kill that didn't end the call
+    // would end it as a timeout, not the crash asserted below.
     let err = std::thread::scope(|scope| {
         scope.spawn(|| {
             std::thread::sleep(Duration::from_millis(150));
@@ -1033,18 +1043,15 @@ fn a_killer_ends_a_call_at_once_and_is_harmless_after_the_worker_is_gone() {
         worker
             .call(
                 Generation(0),
-                Op::Debug(DebugOp::Sleep { millis: 20_000 }),
-                Duration::from_secs(60),
+                Op::Debug(DebugOp::Sleep {
+                    millis: UNREACHED.as_millis() as u64,
+                }),
+                WAIT,
             )
             .unwrap_err()
     });
     assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
     assert!(err.cause().unwrap().contains("SIGKILL"), "{err}");
-    assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        start.elapsed()
-    );
     assert!(worker.is_stopped());
     // Killed and reaped: the killer, used again, signals nothing, and the worker has exited.
     killer.kill();
@@ -1185,6 +1192,9 @@ fn every_worker_crashing_at_once_leaves_a_full_pool_every_time() {
 #[test]
 fn twenty_thousand_small_requests_all_come_back_right() {
     let pool = pool(WORKER, 4);
+    // Their wall time over how much slower than a quiet machine this one ran them (`Share`),
+    // which load doesn't move.
+    let share = Share::start();
     let start = Instant::now();
     let pending: Vec<_> = (0..20_000u32)
         .map(|i| (i, pool.submit(Generation(1), echo(&i.to_le_bytes()))))
@@ -1196,10 +1206,11 @@ fn twenty_thousand_small_requests_all_come_back_right() {
             "{i}"
         );
     }
+    let wall = start.elapsed();
+    let slowdown = share.finish().slowdown;
     assert!(
-        start.elapsed() < Duration::from_secs(30),
-        "{:?}",
-        start.elapsed()
+        wall.div_f64(slowdown) < Duration::from_secs(30),
+        "{wall:?}, the machine {slowdown:.2} times slower than a quiet one"
     );
 }
 
@@ -1231,6 +1242,7 @@ fn requests_whose_callers_stopped_waiting_dont_jam_the_pool() {
     let unwaited: Vec<_> = (0..40)
         .map(|_| pool.submit(Generation(1), sleep(10)))
         .collect();
+    let lateness = Lateness::start();
     let start = Instant::now();
     assert_eq!(
         done(pool.submit(Generation(1), echo(&[4]))).unwrap(),
@@ -1238,28 +1250,35 @@ fn requests_whose_callers_stopped_waiting_dont_jam_the_pool() {
     );
     // 40 × 10 ms on two workers: a jammed pool would never answer, and one that stalls on
     // each abandoned request would take seconds. (Bounds are against what they rule out, not
-    // how fast a loaded machine is.)
+    // how fast a loaded machine is, and allow for how late it wakes threads.)
     assert!(
-        start.elapsed() < Duration::from_secs(10),
+        start.elapsed() < allowance(Duration::from_secs(10), lateness.most()),
         "{:?}",
         start.elapsed()
     );
     drop(unwaited);
     // And `advance` drops what's still queued, their `Pending`s kept so only it can: a
-    // request after it waits at most for the two sleeps already running, where the queue
-    // would take 40 × 500 ms on two workers, 10 s.
+    // request after it waits at most for the two sleeps already running (stopped once they've
+    // run the stop-after), where the queue would take 40 × 4 s on two workers, 80 s, past
+    // the wait `done` allows.
     let unwaited: Vec<_> = (0..40)
-        .map(|_| pool.submit(Generation(1), sleep(500)))
+        .map(|_| pool.submit(Generation(1), sleep(4_000)))
         .collect();
     pool.advance(Generation(2));
-    let start = Instant::now();
-    done(pool.submit(Generation(2), echo(&[5]))).unwrap();
+    // Dropped by the advance itself, before any slot looks at them: all but the two running,
+    // superseded already.
+    let (superseded, waiting): (Vec<_>, Vec<_>) = unwaited
+        .into_iter()
+        .map(|p| p.try_take())
+        .partition(|taken| matches!(taken, Ok(Outcome::Superseded)));
     assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        start.elapsed()
+        superseded.len() >= 38,
+        "{} of 40 superseded by the advance, {} not",
+        superseded.len(),
+        waiting.len()
     );
-    drop(unwaited);
+    done(pool.submit(Generation(2), echo(&[5]))).unwrap();
+    drop(waiting);
 }
 
 #[test]
@@ -1824,6 +1843,112 @@ fn requests_one_after_another_on_demand_start_one_worker_and_one_slot() {
 }
 
 #[test]
+fn a_warm_start_starts_the_workers_it_says_and_a_request_after_takes_one_of_them() {
+    // Warmed, two slots of four start their workers ahead of any request, up once the warm
+    // start returns; a request then runs on one of them, starting no slot or worker more.
+    let pool = on_demand(TEST_WORKER, 4);
+    assert_eq!(pool.warm(2), 2);
+    let warmed = pool.pids();
+    assert_eq!(warmed.len(), 2, "{warmed:?}");
+    let before = threads();
+    done(pool.submit(Generation(1), sleep(0))).unwrap();
+    assert_eq!(pool.pids(), warmed);
+    assert_eq!(threads(), before);
+}
+
+#[test]
+fn a_request_while_a_warmed_worker_starts_waits_for_it_rather_than_starting_another() {
+    // From the tests review: the order fixed. A worker that takes half a second to start
+    // (a script that waits, then becomes the test worker). A warm start of one returns once
+    // its process is started; a request then comes while the worker is still starting: the
+    // slot, started and free, takes it once its worker is up, and the pool doesn't grow.
+    // (Were a warming slot not counted free, the request would start a second.)
+    let dir = scratch_dir("warm-slow");
+    let exe = dir.join("worker");
+    write_executable(
+        &exe,
+        &format!("#!/bin/sh\nsleep 0.5\nexec '{TEST_WORKER}' \"$@\"\n"),
+    );
+    for _ in 0..3 {
+        let pool = on_demand(exe.to_str().unwrap(), 4);
+        assert_eq!(pool.warm(1), 1);
+        let warmed = pool.pids();
+        assert_eq!(warmed.len(), 1, "{warmed:?}");
+        done(pool.submit(Generation(1), sleep(0))).unwrap();
+        assert_eq!(pool.pids(), warmed);
+    }
+}
+
+#[test]
+fn warm_starts_of_a_few_from_many_threads_at_once_stop_at_the_number_asked_for() {
+    // From #263's mutants: eight threads at once each warm two slots of a pool of eight.
+    // Each reads its budget before the others start any, so only the count checked as
+    // each slot is taken holds them to two between them.
+    let pool = std::sync::Arc::new(on_demand(TEST_WORKER, 8));
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            let (pool, barrier) = (
+                std::sync::Arc::clone(&pool),
+                std::sync::Arc::clone(&barrier),
+            );
+            std::thread::spawn(move || {
+                barrier.wait();
+                pool.warm(2)
+            })
+        })
+        .collect();
+    let started: usize = threads.into_iter().map(|t| t.join().unwrap()).sum();
+    assert_eq!(started, 2);
+    assert_eq!(pool.pids().len(), 2, "{:?}", pool.pids());
+}
+
+#[test]
+fn sessions_warm_their_pool_and_their_sketch_solvers_and_a_second_warm_starts_none() {
+    // The app's call: both halves at once, each up when it returns; called again, none
+    // more.
+    use silico_core::sketch::SketchSolver;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let pool = std::sync::Arc::new(on_demand(TEST_WORKER, 4));
+    let starts = std::sync::Arc::new(AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&starts);
+    let sessions = silico_core::command::Sessions::with_stand_ins(
+        std::sync::Arc::clone(&pool),
+        |dir: &std::path::Path| silico_core::cache::Cache::unsealed(dir),
+        move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(silico_core::fake::FakeSketches::new()) as Box<dyn SketchSolver>)
+        },
+    );
+    // Counts that differ, so neither half can take the other's.
+    assert_eq!(sessions.warm(2, 1), (2, 1));
+    assert_eq!(pool.pids().len(), 2);
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    assert_eq!(sessions.warm(2, 1), (0, 0));
+    assert_eq!(pool.pids().len(), 2);
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_warm_start_starts_only_the_slots_not_yet_started() {
+    let pool = on_demand(TEST_WORKER, 2);
+    assert_eq!(pool.warm(5), 2);
+    assert_eq!(pool.warm(1), 0);
+    wait_full(&pool, 2, &BTreeSet::new());
+    // A request first starts one slot on demand; a warm start then starts the other.
+    let pool = on_demand(TEST_WORKER, 2);
+    done(pool.submit(Generation(1), sleep(0))).unwrap();
+    assert_eq!(pool.warm(2), 1);
+    wait_full(&pool, 2, &BTreeSet::new());
+    // A pool that refuses every request has no slot to start.
+    let refusing = KernelPool::refusing(silico_core::Error::new(
+        ErrorCode::WorkerCrashed,
+        "no kernel worker",
+    ));
+    assert_eq!(refusing.warm(1), 0);
+}
+
+#[test]
 fn a_request_after_one_that_crashed_its_worker_waits_for_the_slot_not_a_new_one() {
     // Requests one after another, every other one crashing its worker: the slot replaces it
     // (a new process) after the crash is reported, free, so the next request, submitted the
@@ -2034,20 +2159,20 @@ fn dropping_an_on_demand_pool_while_its_slots_start_stops_at_once() {
     // still kill every worker at once (a worker started after the drop listed the killers
     // is never given its request), end every request without a result, and leave no
     // process behind.
-    const SLEEP: Duration = Duration::from_secs(30);
+    // A sleep no test reaches: a drop that waited for one never returns within `WAIT`.
+    const SLEEP: Duration = UNREACHED;
     for attempt in 0..40u32 {
         let pool = on_demand(TEST_WORKER, 8);
         let pending: Vec<_> = (0..8)
-            .map(|_| pool.submit(Generation(1), sleep(SLEEP.as_millis() as u64)))
+            .map(|_| {
+                pool.submit(
+                    Generation(1),
+                    sleep(SLEEP.as_millis() as u64).with_timeout(UNREACHED),
+                )
+            })
             .collect();
         spin(Duration::from_micros(u64::from(attempt) * 250));
-        let start = Instant::now();
-        drop(pool);
-        let took = start.elapsed();
-        assert!(
-            took < Duration::from_secs(10),
-            "attempt {attempt}: the drop took {took:?}"
-        );
+        promptly(&format!("attempt {attempt}: the drop"), move || drop(pool));
         for p in pending {
             let err = done(p).unwrap_err();
             assert_eq!(err.code(), ErrorCode::Internal, "attempt {attempt}: {err}");
@@ -2248,7 +2373,7 @@ fn drop_within(pool: KernelPool, within: Duration, fifo: &Path) -> bool {
     if !in_time {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let feeder = feed_fifo(fifo.to_owned(), std::sync::Arc::clone(&stop));
-        let _ = dropped.recv_timeout(Duration::from_secs(30));
+        let _ = dropped.recv_timeout(WAIT);
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         feeder.join().unwrap();
     }
@@ -2676,19 +2801,22 @@ fn a_clients_own_advance_stops_its_running_request_and_no_others() {
 
 #[test]
 fn dropping_a_client_mid_request_stops_its_work_and_no_others() {
-    // On a pool of two, `a`'s 30 s sleep and `b`'s 1 s sleep run at once, and a second sleep
-    // of `a`'s waits. `a` is dropped: its waiting sleep is superseded at once, and its
-    // running one stopped once it has run the stop-after (well before its 30 s), its worker
-    // replaced (a third launch). `b`'s sleep runs to its end on its worker, which the pool
+    // On a pool of two, `a`'s sleep (one no test reaches) and `b`'s 1 s sleep run at once,
+    // and a second sleep of `a`'s waits. `a` is dropped: its waiting sleep is superseded at
+    // once, and its running one stopped once it has run the stop-after (a sleep left to run
+    // has no outcome within the wait `outcome` allows), its worker replaced (a third
+    // launch). `b`'s sleep runs to its end on its worker, which the pool
     // still holds.
     let (pool, log) = logged_pool("drop-client", 2);
     let first = pool.pids();
     let (a, b) = (pool.client(), pool.client());
-    let long = a.submit(Generation(0), sleep(30_000));
+    let long = a.submit(
+        Generation(0),
+        sleep(UNREACHED.as_millis() as u64).with_timeout(UNREACHED),
+    );
     let other = b.submit(Generation(0), sleep(1_000));
     let queued = a.submit(Generation(0), echo(&[1]));
     std::thread::sleep(Duration::from_millis(200));
-    let start = Instant::now();
     drop(a);
     assert!(
         matches!(queued.try_take(), Ok(Outcome::Superseded)),
@@ -2696,11 +2824,6 @@ fn dropping_a_client_mid_request_stops_its_work_and_no_others() {
     );
     let stopped = outcome(long);
     assert!(matches!(stopped, Outcome::Superseded), "{stopped:?}");
-    assert!(
-        start.elapsed() < Duration::from_secs(10),
-        "a's sleep ran on {:?} after a was dropped",
-        start.elapsed()
-    );
     let ran = outcome(other);
     assert!(matches!(ran, Outcome::Done(Ok(()))), "{ran:?}");
     wait_launches(&log, 3);
@@ -2758,7 +2881,7 @@ fn a_clients_submits_racing_its_pools_drop_leave_no_worker_or_thread_behind() {
         });
         drop(client);
         // `ps` can list a thread an instant after it's joined.
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + WAIT;
         while threads() > before && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -2769,4 +2892,94 @@ fn a_clients_submits_racing_its_pools_drop_leave_no_worker_or_thread_behind() {
         );
     }
     wait_no_children("after the pools and their clients");
+}
+
+// break-it (warm start): warm starts racing each other and requests, of workers that can't
+// start or whose binary changed after the pool opened.
+
+#[test]
+fn warm_starts_from_many_threads_at_once_start_each_slot_once_and_no_more() {
+    let pool = std::sync::Arc::new(on_demand(TEST_WORKER, 4));
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            let pool = std::sync::Arc::clone(&pool);
+            std::thread::spawn(move || pool.warm(usize::MAX))
+        })
+        .collect();
+    let started: usize = threads.into_iter().map(|t| t.join().unwrap()).sum();
+    assert_eq!(started, 4, "eight warm starts at once of a pool of four");
+    let warmed = wait_full(&pool, 4, &BTreeSet::new());
+    // Eight requests at once run on the four: no slot or worker more.
+    let pending: Vec<_> = (0..8u8)
+        .map(|i| pool.submit(Generation(1), echo(&[i])))
+        .collect();
+    for (i, p) in pending.into_iter().enumerate() {
+        assert_eq!(
+            done(p).unwrap(),
+            Blob::inline(vec![u8::try_from(i).unwrap()])
+        );
+    }
+    assert_eq!(pool.pids(), warmed);
+    assert_eq!(pool.warm(usize::MAX), 0);
+}
+
+#[test]
+fn a_warm_start_of_a_worker_that_exits_at_once_leaves_a_request_failed_not_waiting() {
+    let dir = scratch_dir("warm-exits");
+    let exe = dir.join("worker");
+    write_executable(&exe, "#!/bin/sh\nexit 3\n");
+    let pool = on_demand(exe.to_str().unwrap(), 1);
+    // Its process starts and exits: counted started or not, as the exit is seen before or
+    // after the start; the requests fail promptly either way, which is what's checked.
+    pool.warm(1);
+    for byte in 0..3u8 {
+        let err = pool
+            .submit(Generation(1), echo(&[byte]))
+            .wait_timeout(WAIT)
+            .unwrap_or_else(|_| panic!("request {byte} waited on a warm start that can't start"))
+            .done()
+            .expect("superseded")
+            .unwrap_err();
+        assert!(
+            matches!(
+                err.code(),
+                ErrorCode::WorkerCrashed | ErrorCode::WorkerUnavailable
+            ),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn a_warm_start_after_the_workers_binary_changed_leaves_each_request_failed_promptly() {
+    let dir = scratch_dir("warm-changed");
+    let exe = dir.join("worker");
+    std::fs::copy(TEST_WORKER, &exe).unwrap();
+    let pool = on_demand(exe.to_str().unwrap(), 1);
+    // Another build put in its place after the pool opened: the warm start's worker isn't
+    // taken, and each request fails at once rather than waiting on it.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&exe)
+        .unwrap()
+        .write_all(b"\0")
+        .unwrap();
+    // The changed binary's worker isn't taken: none warmed.
+    assert_eq!(pool.warm(1), 0);
+    let err = pool
+        .submit(Generation(1), echo(&[1]))
+        .wait_timeout(WAIT)
+        .unwrap_or_else(|_| panic!("the request waited on a warm start that can't start"))
+        .done()
+        .expect("superseded")
+        .unwrap_err();
+    assert!(!err.to_string().is_empty());
+    // And the next, as promptly: no worker of the changed binary is ever taken.
+    pool.submit(Generation(1), echo(&[2]))
+        .wait_timeout(WAIT)
+        .unwrap_or_else(|_| panic!("the second request waited"))
+        .done()
+        .expect("superseded")
+        .unwrap_err();
+    assert!(pool.pids().is_empty(), "{:?}", pool.pids());
 }

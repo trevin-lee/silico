@@ -62,8 +62,8 @@ use std::time::{Duration, Instant};
 
 use silico_protocol::vec3::{dot, sub};
 use silico_protocol::{
-    Algorithm, DESCRIBE_BATCH, Description, EdgeCurve, EdgeDescription, FaceDescription,
-    PointPlace, Reply, ShapeSummary, SketchSystem, SolveStatus, Solved, Surface, Tag,
+    Algorithm, DESCRIBE_BATCH, Description, DragBegin, EdgeCurve, EdgeDescription, FaceDescription,
+    Moved, PointPlace, Reply, ShapeSummary, SketchSystem, SolveStatus, Solved, Surface, Tag,
     area_and_perimeter, loop_area,
 };
 
@@ -74,7 +74,7 @@ use crate::kernel::{
     cone_caps, primitive_counts,
 };
 use crate::pool::{ClientQueues, ClientTask, MAX_WORKERS, Outcome, Pending, deliver};
-use crate::sketch::{SketchSolver, SolveStopper};
+use crate::sketch::{DragStarted, SketchSolver, SolveStopper};
 use crate::worker::lock;
 use crate::worker::thread_error;
 use crate::{Error, ErrorCode};
@@ -2715,9 +2715,29 @@ struct SketchShared {
 /// How the fake answers a sketch.
 type SketchAnswer = Arc<dyn Fn(&SketchSystem) -> Result<Solved, Error> + Send + Sync>;
 
+/// How the fake answers a drag's move, from the drag's begin and the cursor.
+type MoveAnswer = Arc<dyn Fn(&DragBegin, [f64; 2]) -> Result<Moved, Error> + Send + Sync>;
+
+/// A drag request the fake was sent ([`FakeSketches::drag_calls`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DragCall {
+    Begin(DragBegin),
+    Move([f64; 2]),
+    End,
+}
+
 #[derive(Default)]
 struct SketchState {
     requests: Vec<SketchSystem>,
+    /// Every drag request, in order, and the drag under way.
+    drag_calls: Vec<DragCall>,
+    drag: Option<DragBegin>,
+    /// Constraints a drag's begin finds in conflict, so it starts none.
+    drag_conflicting: Vec<Tag>,
+    /// How a move is answered, if not by [`FakeSketches::dragged`].
+    move_answer: Option<MoveAnswer>,
+    /// The time each move was given, in order.
+    move_timeouts: Vec<Duration>,
     answer: Option<SketchAnswer>,
     held: bool,
     /// Solves waiting in a hold now.
@@ -2738,6 +2758,82 @@ impl FakeSketches {
     /// Every sketch it was asked to solve, in order.
     pub fn requests(&self) -> Vec<SketchSystem> {
         lock(&self.shared.state).requests.clone()
+    }
+
+    /// Every drag request it was sent, in order.
+    pub fn drag_calls(&self) -> Vec<DragCall> {
+        lock(&self.shared.state).drag_calls.clone()
+    }
+
+    /// The time each drag move was given, in order.
+    pub fn move_timeouts(&self) -> Vec<Duration> {
+        lock(&self.shared.state).move_timeouts.clone()
+    }
+
+    /// Finds `tags` in conflict at each drag's begin from now on, so it starts none.
+    pub fn conflicting_drags(&self, tags: Vec<Tag>) {
+        lock(&self.shared.state).drag_conflicting = tags;
+    }
+
+    /// Answers each drag's move from now on with `answer`'s.
+    pub fn answer_moves(
+        &self,
+        answer: impl Fn(&DragBegin, [f64; 2]) -> Result<Moved, Error> + Send + Sync + 'static,
+    ) {
+        lock(&self.shared.state).move_answer = Some(Arc::new(answer));
+    }
+
+    /// A move of `begin`'s drag to `to`, as the fake answers one: from the begin state
+    /// alone, each point a pin holds to the cursor (the dragged point; a line's ends) at the
+    /// cursor and its offset, nudged by a thousandth of where it began, so a drag begun again
+    /// from a later frame answers otherwise; every other value as it began (a target on a
+    /// curve moves nothing).
+    pub fn dragged(begin: &DragBegin, to: [f64; 2]) -> Moved {
+        let mut values = begin.system.values.clone();
+        for pin in begin.pins() {
+            let (silico_protocol::PinAt::Point(point), Some(follow)) = (pin.at, pin.follows) else {
+                continue;
+            };
+            let Some(p) = begin.system.point_values(point) else {
+                continue;
+            };
+            let (x, y) = (p.x.0 as usize, p.y.0 as usize);
+            if let (Some(&bx), Some(&by)) = (begin.system.values.get(x), begin.system.values.get(y))
+            {
+                let [tx, ty] = follow.at(to);
+                values[x] = tx + bx / 1000.0;
+                values[y] = ty + by / 1000.0;
+            }
+        }
+        Moved {
+            status: SolveStatus::Success,
+            values: Some(values),
+        }
+    }
+
+    /// Waits as a held solve does: until released or stopped. Whether it was stopped.
+    fn held_until<'a>(
+        &'a self,
+        mut state: std::sync::MutexGuard<'a, SketchState>,
+        solve: u64,
+    ) -> (std::sync::MutexGuard<'a, SketchState>, bool) {
+        if state.held {
+            state.waiting += 1;
+            self.shared.changed.notify_all();
+            while state.held && state.stopped < solve {
+                state = self
+                    .shared
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+            state.waiting -= 1;
+        }
+        let stopped = state.stopped >= solve;
+        if stopped {
+            state.stops += 1;
+        }
+        (state, stopped)
     }
 
     /// Answers each sketch from now on with `answer`'s.
@@ -2808,6 +2904,76 @@ impl FakeSketches {
 }
 
 impl SketchSolver for FakeSketches {
+    fn drag_begin(&mut self, begin: DragBegin) -> Result<DragStarted, Error> {
+        let mut state = lock(&self.shared.state);
+        state.solves += 1;
+        state.drag_calls.push(DragCall::Begin(begin.clone()));
+        let conflicting = state.drag_conflicting.clone();
+        state.drag = conflicting.is_empty().then_some(begin);
+        Ok(DragStarted {
+            dofs: 1,
+            conflicting,
+        })
+    }
+
+    fn drag_move(&mut self, to: [f64; 2], timeout: Duration) -> Result<Moved, Error> {
+        let mut state = lock(&self.shared.state);
+        state.solves += 1;
+        let solve = state.solves;
+        state.drag_calls.push(DragCall::Move(to));
+        state.move_timeouts.push(timeout);
+        let (mut state, stopped) = self.held_until(state, solve);
+        if stopped {
+            // Stopped as a worker is, its session with it.
+            state.drag = None;
+            return Err(Error::new(
+                ErrorCode::WorkerCrashed,
+                "the fake sketch solver was stopped mid-move",
+            ));
+        }
+        let Some(begin) = state.drag.clone() else {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                "the fake sketch solver has no drag under way",
+            ));
+        };
+        let answer = state.move_answer.clone();
+        drop(state);
+        match answer {
+            Some(answer) => answer(&begin, to),
+            None => Ok(Self::dragged(&begin, to)),
+        }
+    }
+
+    /// One move as the worker's `MoveOnce`: its begin, the move under no time but the
+    /// solver's own (`Duration::MAX`), and its end, whatever the move did.
+    fn move_once(
+        &mut self,
+        begin: DragBegin,
+        to: [f64; 2],
+    ) -> Result<crate::sketch::MovedOnce, Error> {
+        let started = self.drag_begin(begin)?;
+        if !started.conflicting.is_empty() {
+            return Ok(crate::sketch::MovedOnce::Conflicting(started.conflicting));
+        }
+        let moved = self.drag_move(to, Duration::MAX);
+        let _ = self.drag_end();
+        Ok(crate::sketch::MovedOnce::Moved(moved?))
+    }
+
+    fn drag_end(&mut self) -> Result<(), Error> {
+        let mut state = lock(&self.shared.state);
+        state.solves += 1;
+        state.drag_calls.push(DragCall::End);
+        match state.drag.take() {
+            Some(_) => Ok(()),
+            None => Err(Error::new(
+                ErrorCode::InvalidInput,
+                "the fake sketch solver has no drag under way",
+            )),
+        }
+    }
+
     fn stopper(&mut self) -> Result<Option<SolveStopper>, Error> {
         let shared = Arc::clone(&self.shared);
         let solve = lock(&self.shared.state).solves + 1;
@@ -2825,20 +2991,10 @@ impl SketchSolver for FakeSketches {
         state.solves += 1;
         let solve = state.solves;
         state.requests.push(system.clone());
-        if state.held {
-            state.waiting += 1;
-            self.shared.changed.notify_all();
-            while state.held && state.stopped < solve {
-                state = self
-                    .shared
-                    .changed
-                    .wait(state)
-                    .unwrap_or_else(PoisonError::into_inner);
-            }
-            state.waiting -= 1;
-        }
-        if state.stopped >= solve {
-            state.stops += 1;
+        // A solve ends any drag under way, as the worker's does.
+        state.drag = None;
+        let (state, stopped) = self.held_until(state, solve);
+        if stopped {
             return Err(Error::new(
                 ErrorCode::WorkerCrashed,
                 "the fake sketch solver was stopped mid-solve",

@@ -11,10 +11,14 @@ mod test_programs;
 mod fixture;
 #[path = "common/generate.rs"]
 mod generate;
+#[path = "../../silico-core/tests/common/lateness.rs"]
+mod lateness;
 #[path = "common/saves.rs"]
 mod saves;
 #[path = "common/systems.rs"]
 mod systems;
+#[path = "common/wait.rs"]
+mod wait;
 
 #[path = "adversarial_decision5_bridge.rs"]
 mod adversarial_decision5_bridge;

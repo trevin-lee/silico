@@ -18,10 +18,14 @@ use model::{WAIT, checked, described, id, published};
 use recompute::{calls_since, document, engine};
 use silico_core::document::{Checked, FeatureId, Measure};
 use silico_core::fake::FakeKernel;
-use silico_core::kernel::{Clients, Generation, Kernel, KernelRequest, Op, Primitive};
+use silico_core::kernel::{
+    BooleanOp, BuiltData, Clients, ElementCounts, ElementFate, Generation, History, InputHistory,
+    Kernel, KernelRequest, Op, Primitive, Topology,
+};
 use silico_core::pool::Pending;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome, StepCount};
 use silico_core::{Error, ErrorCode};
+use silico_protocol::Reply;
 
 fn ids(texts: &[&str]) -> Vec<FeatureId> {
     texts.iter().map(|t| id(t)).collect()
@@ -378,6 +382,126 @@ fn steps_that_cant_run_are_counted_done_before_any_runs() {
     );
     // Kept, not run: the block's box alone was made, and no cylinder was asked for again.
     assert_eq!(calls_since(&engine, before), ["MakeBox"]);
+}
+
+#[test]
+fn a_step_only_a_feature_refused_mid_run_needs_is_counted_done_unrun_while_another_branch_is_held()
+{
+    // Two unit boxes 5 mm apart, fused: solids that don't touch fuse to two solids, as
+    // OCCT's fuse gives them (the fake can't model a split, so its fuse is answered so by
+    // hand). The fuse's own check (one solid at most: design S5) refuses it once its step
+    // is made, mid-run. A 2 mm box cut from the fuse: the cut's step serves the cut alone,
+    // made from the refused fuse, so it comes off the ready queue after the fuse is judged
+    // (its last input, made in the same lock) and is settled without running. A cylinder,
+    // held, on a branch of its own, keeps the run going meanwhile. Its steps, by hand: the
+    // unit box (1: the first's, at the origin, and the second's are the same step, as
+    // `identical_steps_run_once` has it), the second's move (1), the fuse (1), the 2 mm box
+    // (1), the cut (1), and the cylinder (1): six. While the cylinder is held, the other
+    // five are settled, the cut's among them: four ran, one never will.
+    let engine = engine(2);
+    let fates = |first: u32, n: u32| -> Vec<ElementFate> {
+        (first..first + n)
+            .map(|k| ElementFate {
+                kept: Some(k),
+                ..ElementFate::default()
+            })
+            .collect()
+    };
+    // Each box's 6 faces, 12 edges, and 8 vertices kept, the second's numbered after the
+    // first's: 12, 24, and 16 in two solids.
+    let split = History {
+        inputs: vec![
+            InputHistory {
+                faces: fates(1, 6),
+                edges: fates(1, 12),
+                vertices: fates(1, 8),
+            },
+            InputHistory {
+                faces: fates(7, 6),
+                edges: fates(13, 12),
+                vertices: fates(9, 8),
+            },
+        ],
+        result: ElementCounts {
+            faces: 12,
+            edges: 24,
+            vertices: 16,
+            solids: 2,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![vec![]; 12],
+            outer_edges: vec![vec![]; 12],
+            edge_vertices: vec![vec![]; 24],
+        },
+    };
+    split.validate(2).unwrap();
+    engine.kernel().answer_instead(move |op| match op {
+        Op::Boolean {
+            op: BooleanOp::Fuse,
+            base,
+            ..
+        } => Some(Reply::Built(BuiltData {
+            shape: base.clone(),
+            history: split.clone(),
+        })),
+        _ => None,
+    });
+    let hold = hold_cylinders(&engine);
+    let run = engine.start(document(&[
+        r#"{"id": "aaaaaaaa", "type": "box", "v": 1, "name": "First", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}"#,
+        r#"{"id": "bbbbbbbb", "type": "box", "v": 1, "name": "Second", "position": [5, 0, 0], "length": 1, "width": 1, "height": 1}"#,
+        r#"{"id": "ffffffff", "type": "fuse", "v": 1, "name": "Apart", "base": "aaaaaaaa", "tool": "bbbbbbbb"}"#,
+        r#"{"id": "cccccccc", "type": "box", "v": 1, "name": "Cutter", "position": [0, 0, 0], "length": 2, "width": 2, "height": 2}"#,
+        r#"{"id": "dddddddd", "type": "cut", "v": 1, "name": "Cut", "base": "ffffffff", "tool": "cccccccc"}"#,
+        r#"{"id": "pppppppp", "type": "cylinder", "v": 1, "name": "Pin", "position": [0, 0, 0], "radius": 1, "height": 1}"#,
+    ]));
+    let progress = run.progress();
+    until_counted(
+        &progress,
+        &StepCount {
+            done: 5,
+            steps: 6,
+            running: Some("pppppppp cylinder".to_owned()),
+            ended: false,
+        },
+    );
+    // Counted while held: the cut was never asked for, so it was counted as it was skipped,
+    // not by a run.
+    assert!(!calls_since(&engine, 0).contains(&"Cut"));
+    hold.release();
+    let Ok(RunOutcome::Published(model)) = run.wait() else {
+        panic!("not published")
+    };
+    assert_eq!(
+        progress.now(),
+        StepCount {
+            done: 6,
+            steps: 6,
+            running: None,
+            ended: true,
+        }
+    );
+    // The fuse refused in its own words (design S5, as tests/sweep_refusals.rs pins them),
+    // the cut blocked on it, and never run.
+    let Some(FeatureOutcome::Failed(refused)) = model.outcome(&id("ffffffff")) else {
+        panic!("{model:?}")
+    };
+    assert_eq!(refused.code(), ErrorCode::KernelFailed);
+    assert_eq!(
+        refused.message(),
+        "fuse ffffffff makes 2 solids: its base aaaaaaaa and tool bbbbbbbb don't touch, or meet only along an edge or at a point"
+    );
+    assert_eq!(
+        model.outcome(&id("dddddddd")),
+        Some(&FeatureOutcome::Blocked { on: id("ffffffff") })
+    );
+    let mut calls = calls_since(&engine, 0);
+    calls.sort_unstable();
+    assert_eq!(
+        calls,
+        ["Fuse", "MakeBox", "MakeBox", "MakeCylinder", "Translate"]
+    );
 }
 
 #[test]
@@ -921,7 +1045,7 @@ fn a_solid_made_is_measured_at_once_while_what_uses_it_runs() {
             .count()
     };
     let until = |what: &str, done: &dyn Fn() -> bool| {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + WAIT;
         while !done() {
             assert!(std::time::Instant::now() < deadline, "{what}");
             std::thread::sleep(Duration::from_millis(5));

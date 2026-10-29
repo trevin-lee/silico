@@ -5,9 +5,9 @@
 //! gate's and the rebuild's words for them.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::model::WAIT;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::Duration;
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
@@ -43,7 +43,7 @@ fn id(text: &str) -> FeatureId {
 
 fn published(engine: &Recompute<FakeKernel>, text: &str) -> Arc<Model> {
     let document = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
-    match engine.start(document).wait_timeout(Duration::from_secs(60)) {
+    match engine.start(document).wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         Ok(other) => panic!("not published: {other:?}"),
         Err(_) => panic!("the recompute didn't finish in a minute"),
@@ -544,8 +544,13 @@ fn a_hundred_type_words_of_garbage_around_a_name_are_refused_promptly() {
     // every place, so the reader must still stop at the first that isn't a kind.
     let text = format!("aaaaaaaa.{}Edge1", "chamfer.".repeat(100_000));
     let any = |_: &FeatureId| Some(Maker::By(OpCode::Chamfer));
-    let started = std::time::Instant::now();
+    // Its CPU, in this thread, which load doesn't change.
+    let started = cpu_time::ThreadTime::now();
     let error = Name::parse(&text, &any).unwrap_err();
-    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "{:?} of CPU",
+        started.elapsed()
+    );
     assert_eq!(error.column, 18, "{error}");
 }

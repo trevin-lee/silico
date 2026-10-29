@@ -7,11 +7,11 @@
 //! (tests/sketch_feature_names.rs in silico-kernel pins the real kernel's).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::model::WAIT;
 use super::sweeps;
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::Duration;
 
 use silico_core::document::{ElementId, read};
 use silico_core::fake::{FakeKernel, FakeSketches};
@@ -24,10 +24,7 @@ use sweeps::*;
 
 fn published(features: &[&str]) -> Arc<Model> {
     let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new());
-    match engine
-        .start(checked_document(features))
-        .wait_timeout(Duration::from_secs(60))
-    {
+    match engine.start(checked_document(features)).wait_timeout(WAIT) {
         Ok(Ok(RunOutcome::Published(model))) => model,
         other => panic!("not published: {:?}", other.ok()),
     }

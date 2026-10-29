@@ -1420,7 +1420,7 @@ pub(crate) enum Reached {
 
 /// What a worker's crash or timeout advises, as data: the error's suggestion is worded from
 /// it ([`Error::with_advice`], [`Advice::words`]), and a client that words it its own way (a
-/// session's kept fault, `command::session`'s `kept_suggestion`) reads what it says, never
+/// session's kept fault and the CLI's, `command::fault_suggestion`) reads what it says, never
 /// its words.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Advice {
@@ -1934,8 +1934,9 @@ mod tests {
 
     #[test]
     fn a_crash_and_a_timeout_say_their_advice_as_data_beside_its_words() {
-        // What a session words its own way (`kept_suggestion`) it reads from the advice as
-        // data, so each real end of a worker sets it, with the words the suggestion gives.
+        // What a session and the CLI word their own way (`command::fault_suggestion`) they read
+        // from the advice as data, so each real end of a worker sets it, with the words the
+        // suggestion gives.
         use super::Advice;
         use std::time::Duration;
         let echo = || silico_protocol::Op::Echo {
@@ -1968,6 +1969,22 @@ mod tests {
                  would crash it again"
             )
         );
+        // The one fault the same request would meet again: a client's "try again" is left
+        // out for it (docs/cli.md, `check`), read from the advice, never the words. Reworded
+        // by anything but a session's wording of it, the advice is gone with the words.
+        assert!(crashed.would_crash_again(), "{crashed}");
+        let reworded = crashed
+            .clone()
+            .with_suggestion("the same words, said otherwise");
+        assert!(!reworded.would_crash_again());
+        assert!(!crate::Error::new(ErrorCode::WorkerCrashed, "no advice").would_crash_again());
+        // The words alone, without the advice, say nothing: it's read from the data.
+        assert!(
+            !crate::Error::new(ErrorCode::WorkerCrashed, "crashed")
+                .with_suggestion(crashed.suggestion().unwrap())
+                .would_crash_again(),
+            "the same words without the advice"
+        );
         // Started, and never answering: past its time.
         let dir = scratch("advice-late");
         let path = script(&dir, "printf '\\0\\0\\0\\0' >&3\nexec sleep 600");
@@ -1988,6 +2005,7 @@ mod tests {
         assert_eq!(late.code(), ErrorCode::WorkerTimeout, "{late}");
         assert_eq!(late.cause(), None, "{late}");
         assert_eq!(late.advice(), Some(&Advice::SimplifyOrWait), "{late}");
+        assert!(!late.would_crash_again(), "{late}");
         assert_eq!(
             late.suggestion(),
             Some("simplify the operation, or allow it more time")
@@ -2008,6 +2026,7 @@ mod tests {
         assert_eq!(late.code(), ErrorCode::WorkerTimeout, "{late}");
         assert_eq!(late.cause(), None, "{late}");
         assert_eq!(late.advice(), Some(&Advice::SimplifyOrWait), "{late}");
+        assert!(!late.would_crash_again(), "{late}");
         assert_eq!(
             late.suggestion(),
             Some("simplify the operation, or allow it more time")
@@ -2030,6 +2049,7 @@ mod tests {
             ),
             "{unstarted}"
         );
+        assert!(!unstarted.would_crash_again(), "{unstarted}");
         assert_eq!(
             unstarted.suggestion(),
             Some(
@@ -3361,14 +3381,24 @@ mod tests {
         // The guard `Worker::spawn` holds until a worker is set up: an early return must not
         // leave the process running.
         let child = std::process::Command::new("sleep")
-            .arg("30")
+            .arg("600")
             .spawn()
             .unwrap();
         let pid = child.id().to_string();
-        // Killed, not only waited for: `sleep` would end on its own after 30 s.
-        let start = std::time::Instant::now();
-        drop(KillOnDrop(Some(child)));
-        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        // Killed, not only waited for: `sleep` would end on its own only after 600 s, so a
+        // guard that waited for it doesn't return within the minute the tests allow for
+        // anything expected, however loaded the machine.
+        let (done, dropped) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(KillOnDrop(Some(child)));
+            let _ = done.send(());
+        });
+        assert!(
+            dropped
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .is_ok(),
+            "the guard's drop didn't return in 60 s"
+        );
         // Gone and reaped: `kill -0` finds no such process.
         let found = std::process::Command::new("kill")
             .args(["-0", &pid])

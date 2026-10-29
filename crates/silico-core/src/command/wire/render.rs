@@ -324,8 +324,10 @@ pub struct RenderResultSchema {
     /// Where the PNG was written, as the request gave it; null if `to` was.
     pub path: Option<String>,
     /// The image's width in pixels.
+    #[schemars(range(min = 1, max = silico_protocol::MAX_RENDER_SIDE))]
     pub width: u32,
     /// The image's height in pixels.
+    #[schemars(range(min = 1, max = silico_protocol::MAX_RENDER_SIDE))]
     pub height: u32,
     /// The camera it was taken with: the one given, or the named view's, its up made
     /// perpendicular to the view and of unit length.

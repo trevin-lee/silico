@@ -179,6 +179,7 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
         | Op::DragBegin(_)
         | Op::DragMove { .. }
         | Op::DragEnd
+        | Op::MoveOnce { .. }
         | Op::Render(_)
         | Op::ExportStep(_) => Err(Failure::new(Refusal::OtherWorkersOp {
             op: op.name().to_owned(),

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "silico": {
+      "command": "/path/to/silico/target/release/silico",
+      "args": ["serve", "--workspace", "/path/to/workspace"],
+      "env": {"SILICO_LOG": "info"}
+    }
+  }
+}

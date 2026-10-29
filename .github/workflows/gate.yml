@@ -38,7 +38,8 @@ jobs:
         # A quarter of the runner VM (30 vCPUs) for its builds and tests. Each gate building
         # with Cargo's default (every vCPU) and testing on 15 threads, beside other gates and
         # mutants shards, left CPU pressure averaging 25% and failed tests held to CPU time.
-        # Eight gates at once now ask for 56 threads, against 240 while building before.
+        # Four gates at once (silico-1 to -4, the runners labelled gate) ask for 28 threads,
+        # against 240 while building before; past four, they'd oversubscribe the VM (2026-10-28).
         # Set here because a nextest profile can't say "a quarter of the CPUs" (it takes a
         # number), and Cargo has no CI-only config; CMake (OCCT, on a cache miss) takes the
         # same share. Kernel pool tests sized by the CPU count, and the linker, still burst.
