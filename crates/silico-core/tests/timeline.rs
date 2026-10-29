@@ -217,10 +217,50 @@ fn a_feature_edited_since_the_models_revision_and_what_uses_it_are_unknown() {
     assert_eq!(mark("aaaaaaaa"), (Health::Healthy, 0, 0));
     assert_eq!(mark("j0000001"), (Health::Error, 1, 0));
     assert_eq!(mark("eeeeeeee"), (Health::Warning, 0, 1));
-    assert!(!got.bodies.contains(&id("bbbbbbbb")));
     // A rename or a note isn't an edit the model would build otherwise.
     let mut renamed = model.document().clone();
     renamed.features[0].name = silico_core::document::Name::new("Other").unwrap();
     let got = timeline(&renamed, Some(&model), &Excepted::default());
     assert_eq!(got.features[0].health, Health::Healthy);
+}
+
+#[test]
+fn bodies_are_the_documents_built_solids_that_nothing_in_it_consumes() {
+    // From #265's round 2: bodies judged by the session's document, not the model's: a
+    // solid no feature consumes that the model built or hasn't built yet. (A solid whose
+    // consumer failed is a body still: the first test's blocks under the refused fuse.)
+    let text = document(&[
+        &block("aaaaaaaa"),
+        &block("bbbbbbbb"),
+        &fuse("j0000001", "aaaaaaaa", "bbbbbbbb"),
+    ]);
+    let engine = engine();
+    let fused = published(
+        &engine,
+        Checked::new(read(text.as_bytes()).unwrap()).unwrap(),
+    );
+    let got = |document: &Document, model: &Model| {
+        timeline(document, Some(model), &Excepted::default()).bodies
+    };
+    assert_eq!(got(fused.document(), &fused), [id("j0000001")]);
+    // The fuse removed since: its blocks are bodies again.
+    let mut unfused = fused.document().clone();
+    unfused.features.truncate(2);
+    assert_eq!(got(&unfused, &fused), [id("aaaaaaaa"), id("bbbbbbbb")]);
+    // A model of the blocks alone, and the fuse added since: they're consumed, and the fuse
+    // isn't built yet.
+    let blocks = published(
+        &engine,
+        Checked::new(read(document(&[&block("aaaaaaaa"), &block("bbbbbbbb")]).as_bytes()).unwrap())
+            .unwrap(),
+    );
+    assert!(got(fused.document(), &blocks).is_empty());
+    // A body edited since stays, marked unknown.
+    let mut grown = fused.document().clone();
+    if let Operation::Box { length, .. } = &mut grown.features[0].operation {
+        *length = silico_core::document::Length::rounded(3.0).unwrap();
+    }
+    let t = timeline(&grown, Some(&fused), &Excepted::default());
+    assert_eq!(t.bodies, [id("j0000001")]);
+    assert_eq!(t.features[2].health, Health::Unknown);
 }

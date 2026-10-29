@@ -83,12 +83,14 @@ pub struct Excepted {
 }
 
 /// `document`'s features, each with the health `model` gave it, if there's a model, and
-/// the bodies it has that `document` has too, unchanged; `excepted` as the session's check
+/// its bodies (below); `excepted` as the session's check
 /// excepts (so a feature has a problem here exactly where that check has one on it). The
 /// features come from `document`, the session's at its revision; the model may be of an
 /// older one, and a feature it hasn't built is `unknown`: one it hasn't, one whose values
 /// changed since its document, and every feature that uses one of those (an edit's reach,
-/// [`net_reach`](crate::document::net_reach)).
+/// [`net_reach`](crate::document::net_reach)). A fingerprint edited since isn't an edit the
+/// model builds otherwise: until the next model, the drift is the old fingerprint's, as the
+/// session's check of that model says too.
 pub fn timeline(document: &Document, model: Option<&Model>, excepted: &Excepted) -> Timeline {
     let _span = tracing::info_span!("timeline").entered();
     let marks = model
@@ -97,6 +99,8 @@ pub fn timeline(document: &Document, model: Option<&Model>, excepted: &Excepted)
     // What the model hasn't built: each feature that changed since its document (added, or
     // its values other), and every feature that uses one, as an edit's reach is found.
     let unbuilt = model
+        // The current model's document is the session's: nothing to compare.
+        .filter(|model| !std::ptr::eq(model.document(), document))
         .map(|model| {
             crate::document::net_reach(
                 crate::document::Before::Read(model.document()),
@@ -130,19 +134,40 @@ pub fn timeline(document: &Document, model: Option<&Model>, excepted: &Excepted)
             }
         })
         .collect();
-    let present: BTreeSet<&FeatureId> = document.features.iter().map(|f| &f.id).collect();
-    Timeline {
-        features,
-        bodies: model
-            .map(|m| {
-                m.bodies()
-                    .iter()
-                    .filter(|b| present.contains(b) && !unbuilt.contains(*b))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default(),
-    }
+    // The bodies: the document's features, in its order, that the model built a solid for
+    // and no feature of the document consumes (below). One edited since stays (marked unknown), so
+    // a body doesn't vanish while its rebuild runs; one a feature added since consumes, or
+    // whose consumer was removed since, is judged by the document.
+    // Consumed: by a feature the model built, or one it hasn't built yet (whose build will).
+    // A solid whose consumer failed is a body still, as the model has it.
+    let consumed: BTreeSet<&FeatureId> = model
+        .map(|model| {
+            document
+                .features
+                .iter()
+                .filter(|f| {
+                    unbuilt.contains(&f.id)
+                        || matches!(model.outcome(&f.id), Some(FeatureOutcome::Built { .. }))
+                })
+                .flat_map(|f| f.operation.inputs().into_iter().map(|(_, id)| id))
+                .collect()
+        })
+        .unwrap_or_default();
+    let bodies = model
+        .map(|model| {
+            document
+                .features
+                .iter()
+                .map(|f| &f.id)
+                .filter(|id| {
+                    !consumed.contains(id)
+                        && matches!(model.outcome(id), Some(FeatureOutcome::Built { .. }))
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    Timeline { features, bodies }
 }
 
 /// What the model marks a feature with.
