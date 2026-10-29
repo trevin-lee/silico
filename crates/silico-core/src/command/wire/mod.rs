@@ -1612,8 +1612,8 @@ pub struct RanSchema {
 pub struct RefusedSchema {
     #[schemars(extend("const" = false))]
     pub ok: bool,
-    /// The session as the command left it: null for a command that takes no session, or a
-    /// session that isn't open.
+    /// The session as the command left it: null for a command that takes no session, a
+    /// session that isn't open, or a request whose session can't be read.
     pub session: Option<SessionSchema>,
     /// The model the command read: null if it read none.
     pub model: Option<ModelSchema>,

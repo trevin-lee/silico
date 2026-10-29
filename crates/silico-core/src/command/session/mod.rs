@@ -2114,6 +2114,14 @@ impl<P: Clients + 'static> WeakSessions<P> {
         }
     }
 
+    /// `session`'s state, as a refusal of one of its commands carries it: none if it isn't
+    /// open, or the sessions are dropped. Read as `status` reads it, on the asking thread,
+    /// from what the session holds, never taking a place in its queue.
+    pub(crate) fn info(&self, session: &SessionId) -> Option<SessionInfo> {
+        let registry = self.0.upgrade()?;
+        find_in(&registry, session).map(|found| found.info(false))
+    }
+
     /// [`Sessions::read_logs`].
     pub(crate) fn read_logs(&self, session: &SessionId, query: &LogQuery) -> Response<Logs> {
         match self.0.upgrade() {

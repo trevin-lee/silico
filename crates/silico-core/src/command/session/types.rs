@@ -108,7 +108,7 @@ pub struct SessionInfo {
 }
 
 /// A command's answer: the session as the command left it (none for an `open` that failed,
-/// or a session that isn't open), the model it read, if it read one, and the command's
+/// a session that isn't open, or a request whose session can't be read), the model it read, if it read one, and the command's
 /// result, or every reason it was refused, in the order found, the first
 /// [`document::PROBLEMS_LISTED`] listed and all counted.
 #[derive(Debug, Clone, PartialEq)]
