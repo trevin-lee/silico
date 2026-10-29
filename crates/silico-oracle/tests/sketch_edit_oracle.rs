@@ -724,7 +724,15 @@ fn a_merge_the_gate_refuses_is_the_notes_where_its_placement_collapses_a_line() 
     // merge_apart_onto_a_lines_other_end: p0000004, at the line's start, named first, so the
     // line's end goes there and the line is 0 mm long: the gate refuses the merge (:276).
     // FreeCAD's Coincident command rolls back its solve, so both refuse.
-    let (_, prepared, theirs) = both(&["merge_apart_onto_a_lines_other_end"]);
+    let (_, prepared, theirs) = both(&["merge_apart_onto_a_lines_other_end", "merge_line_ends"]);
+    // A merge of a line's own ends is the collapse rule's (:273), not this one's, though it
+    // names the line last too.
+    assert_eq!(
+        rule(&prepared[1]),
+        Some(Rule::MergeCollapses),
+        "{:?}",
+        prepared[1].silico
+    );
     let p = &prepared[0];
     assert!(
         matches!(rule(p), Some(Rule::MergeGated(c)) if c == "n0000003"),
