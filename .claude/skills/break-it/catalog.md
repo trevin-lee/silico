@@ -86,6 +86,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A save's answer against its load's, whole: solve, write through the file, read, solve again, and compare Ok-ness, bits, and the redundant constraints named; an answer's outcome depends on where it was diagnosed, not only its values (a solution Ok from the drawing that PlaneGCS calls conflicting from itself), and a "solve again from the solution" that starts from the solver's values rather than what a load derives from the file (an arc's radius and angles from its points) isn't a load
 - Redundancies that agree held by an angle at micrometre scale: the solver's absolute convergence on lengths (1e-10) is a relative 1e-8 on a 1.6 µm side, past a scale-free angle tolerance
 - Tolerances taken over parts that the dropped row itself joins: a redundant row bridging two rigid, linearly held points far apart gets the bridged box's extent though PlaneGCS solved each apart exactly (5 nm kept at 10 m, refused at 1 mm); and per-part windows each recomputed over every constraint (512 parts × 9,000 rows: 0.4 s a read in release, 13× one part's)
+- Drag frames that pass the worker's build check but not the next solve's system check (a free circle's centre dragged past its point-on-circle, or that point across the centre: radius 9e-16, the point exactly on the centre): the drag's end solves from the frame and is refused in the solver's indices; feed every Success frame to `SketchSystem::check`
+- A drag released exactly where it began (a click): the begin state meets every pin, but SQP still steps on float residuals (an arc ending at angle π, sin π ≠ 0) and the end rewrites coordinates by 1e-17; compare the end of a zero-length drag with the file, bit for bit
 
 - A drag whose frame moves more than points (a circle's radius through an `on`, a reference dimension measured again): a list of what changed built by comparing points alone misses them; and a drag of a point its constraints hold completely, which PlaneGCS answers with Success and nothing moved (FreeCAD's extend reports success too)
 
@@ -165,6 +167,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Timeline edits checked one way and not the other: move a tool chain's last feature back up its chain, then try to move it back; the inverse of an allowed move can be refused
 - Edits whose results are diffed against the document before by a scan per feature (what each rewired, each feature's consumer, each candidate's consumer): quadratic in the timeline; time one edit of a document at the size limit against the gate's time for it
 - Refusals that list every candidate (every earlier solid nothing consumes): 20,000 boxes give a 20,000-entry error where others list five or the first hundred
+- Per-feature views of a model (a timeline's health and counts) beside the document-wide `check`: compare them under an open transaction (drift `check` excepts), with a kernel fault on only a feature's measure, and for a feature blocked by both a fault and a real failure, in each operand order
 - Functions over a document that take `&Document`, not the gate's `Checked`: a feature that is its own base is its own consumer, and a walk down the chain from it starts past the end of the timeline without it
 
 ## Files
@@ -195,6 +198,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Apostrophes before `,` or `)` in a STEP string (`'Bracket ''A'', left'`): OCCT's lexer ends a string at an apostrophe followed by either, so the name is cut short or the entity misread, from FreeCAD's own export too
 - Writers quadratic in a string's length (OCCT's STEP writer copies the rest of a long string at each 72-column wrap): a 4 MiB name takes 36 s, an 8 MiB one runs past the worker's 60 s
 - A size limit summed from parts that leave a separator or closing out (each feature's `[\n` or `,\n`, not the `\n  ]\n}\n` after the last): a whole 1 to 7 bytes past the limit passes; build a document exactly 1 and 7 bytes past it
+- A file classified by a `stat` then read by an `open` (gone, or its bytes): a file deleted between the two reads as unreadable, not gone; churn remove-and-write on another thread while polling, which hits it within milliseconds
 
 ## Command line
 
@@ -271,6 +275,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A refusal from a worker that keeps its session (a drag's frame solved out of reach) taken by the client as the worker failing: send one refused frame, then a good one; the client mustn't end what the worker still holds
 - A worker killed while idle mid-session (a drag): a client that readies (restarts) its worker before each request sends the next to a fresh worker with no session, and the crash comes back as the worker's "no session" `invalid_input`
 - A session's replies (a drag's frames, its closing solve) passed up unchecked where one-shot replies are checked: forge a frame or solution of the wrong length, a fixed value moved, NaN, a value out of reach
+- A resource counted taken (a slot "started", so free) before the thread or process that backs it exists, by a path other than the one that grows on demand: a request queued in between starts nothing, and if the start then fails the count is put back without growing again or failing the waiters; run it with threads exhausted (`pool_slot_spawn_fails`) and sweep the request across the start with a spin lead
 
 ## Recompute and scheduling
 
@@ -282,6 +287,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A superseded recompute that ends after the newer one: both keep their results by key, the last wins, and the older one's copy (its measure superseded, so unmeasured) overwrites the newer's measured or refused one; hold the older one's requests, start the newer, and loop a few hundred rounds, since which keeps last is a race
 - A measure made of several requests (a summary, then batches of a description): refuse, crash, supersede, or cancel at a later batch after the earlier ones came back; nothing partial may be published, kept in memory, or written, and the retry starts from the first request
 - Features alike in every value but their IDs (two identical boxes each pocketed alike, or a refused feature deleted and re-added under a new ID): the deduplicated step, or the refusal kept by its key, carries the first feature's words, so the second is told another feature and base failed
+- A count of work "on its way" that callers wait on (`warming`), set from a caller's unbounded argument: `usize::MAX` with starts that fail keeps every waiter waiting for ever, and the count plus what's idle overflows on the next call
+- A watch that drops findings against a superseded counter, told of the session's own write after it lands or before: a comparison that reads the new bytes and ends between the write and `held` (or reads the old ones between `held` and the write) is kept as changed; gate a stand-in reader and try both orders
+- A background job's "running" flag cleared only after a callback returns (a reader, a solver): a callback that panics leaves it set, and no job ever starts again
 
 ## Oracles and comparisons
 

@@ -10,6 +10,8 @@
 # apart only by how many there are: a key missed more times than it's listed here is new,
 # and all its misses are listed. Add a mutant with the PR that argues it; remove its line
 # when a test kills it or its code goes.
+crates/silico-core/src/document/sketch_edit/split.rs | Pieces<'_>::carry | replace match guard a == curve || b == curve with true | #240
+crates/silico-core/src/document/sketch_edit/split.rs | Pieces<'_>::carry | replace match guard a == curve || b == curve with true | #240
 crates/silico-core/src/document/chain.rs | move_feature | replace > with >= | #241
 crates/silico-core/src/document/validate.rs | bytes_key | replace | with ^ | #84
 crates/silico-core/src/document/validate.rs | validate | replace > with >= | #84
@@ -209,3 +211,18 @@ crates/silico-core/src/extend.rs | extend_line | replace < with <= | #259
 crates/silico-core/src/extend.rs | extend_arc | replace || with && | #259
 crates/silico-core/src/extend.rs | extend_arc | replace * with + | #259
 crates/silico-core/src/extend.rs | extend_arc | replace > with >= | #259
+crates/silico-core/src/document/sketch_edit/trim.rs | trim | replace > with >= | #242
+crates/silico-core/src/document/sketch_edit/trim.rs | joins_constraint | replace match guard join.tangent.is_some() with true | #242
+crates/silico-core/src/document/sketch_edit/trim.rs | carry | replace match guard a == curve || b == curve with true | #242
+crates/silico-core/src/document/sketch_edit/trim.rs | crossings | replace > with == | #242
+crates/silico-core/src/document/sketch_edit/trim.rs | crossings | replace > with >= | #242
+crates/silico-core/src/document/sketch_edit/trim.rs | crossings | replace > with >= | #242
+crates/silico-core/src/document/sketch_edit/trim.rs | crossings | replace < with <= | #242
+crates/silico-core/src/document/sketch_edit/trim.rs | crossings | replace < with <= | #242
+# A warm start's equivalents: a kernel's default warm already starts none; and Warming's
+# drop with nothing left subtracts nothing, its notify only waking waiters to look again (#263).
+crates/silico-core/src/kernel.rs | Clients::warm | replace Clients::warm -> usize with 0 | #263
+crates/silico-core/src/recompute.rs | <impl Drop for Warming<'_>>::drop | replace > with >= | #263
+# A point's coordinates are always in one part: every constraint that reads a point reads
+# both, and the core makes both unknowns, so either free means both are (#262).
+crates/silico-core/src/drag/sketch.rs | reading | replace || with && | #262

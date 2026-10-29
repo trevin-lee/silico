@@ -19,6 +19,8 @@ mod systems;
 #[path = "common/wait.rs"]
 mod wait;
 
+#[path = "adversarial_document_drag.rs"]
+mod adversarial_document_drag;
 #[path = "adversarial_drag.rs"]
 mod adversarial_drag;
 #[path = "adversarial_drag_session.rs"]
@@ -31,6 +33,8 @@ mod adversarial_load_path;
 mod adversarial_stored_coordinates;
 #[path = "document.rs"]
 mod document;
+#[path = "document_drag.rs"]
+mod document_drag;
 #[path = "drag.rs"]
 mod drag;
 #[path = "extend.rs"]

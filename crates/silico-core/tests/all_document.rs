@@ -58,6 +58,8 @@ mod adversarial_call;
 mod adversarial_center_to_element;
 #[path = "adversarial_command.rs"]
 mod adversarial_command;
+#[path = "adversarial_disk.rs"]
+mod adversarial_disk;
 #[path = "adversarial_document.rs"]
 mod adversarial_document;
 #[path = "adversarial_fingerprint.rs"]
@@ -74,6 +76,8 @@ mod adversarial_read_logs;
 mod adversarial_references;
 #[path = "adversarial_render_command.rs"]
 mod adversarial_render_command;
+#[path = "adversarial_timeline.rs"]
+mod adversarial_timeline;
 #[path = "adversarial_type_words.rs"]
 mod adversarial_type_words;
 #[path = "adversarial_warnings.rs"]
@@ -94,6 +98,8 @@ mod call;
 mod check_warnings;
 #[path = "command.rs"]
 mod command;
+#[path = "disk.rs"]
+mod disk;
 #[path = "document.rs"]
 mod document;
 #[path = "fingerprint.rs"]

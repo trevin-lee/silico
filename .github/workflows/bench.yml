@@ -13,9 +13,9 @@ on:
         description: "Branch, tag, or commit to measure (empty: the branch this runs on)"
         default: ""
       bench:
-        description: "What to measure: drag (the sketch worker's drag latency) or render (M4.6's bench: a 4096 by 4096 render on lavapipe through the worker's renderer, its time and memory)"
+        description: "What to measure: drag (the sketch worker's drag latency), render (M4.6's bench: a 4096 by 4096 render on lavapipe through the worker's renderer, its time and memory), or warm (M5.3's: a first rebuild with and without the workers' warm start)"
         type: choice
-        options: [drag, render]
+        options: [drag, render, warm]
         default: drag
 
 permissions:
@@ -42,7 +42,7 @@ jobs:
   drag:
     needs: yield
     # Even if the yield failed: the bench is the point.
-    if: ${{ !cancelled() && inputs.bench != 'render' }}
+    if: ${{ !cancelled() && (inputs.bench == 'drag' || inputs.bench == '') }}
     runs-on: [self-hosted, linux, x64, sweep]
     # A full solve a frame at the largest sizes takes seconds: each mode stops after a
     # minute, so the whole run is some minutes, after the build.
@@ -108,5 +108,33 @@ jobs:
             echo
             echo '```'
             cat "$RUNNER_TEMP/render.txt"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  warm:
+    needs: yield
+    # Even if the yield failed: the bench is the point.
+    if: ${{ !cancelled() && inputs.bench == 'warm' }}
+    runs-on: [self-hosted, linux, x64, sweep]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Toolchains
+        run: bash .github/tools.sh
+      - name: Warm start bench
+        run: |
+          echo "Measuring $(git log -1 --format='%h %s')"
+          pixi run occt
+          pixi run cargo build --release -p silico-sketch --bin silico-sketch-worker
+          set -o pipefail
+          SILICO_SKETCH_WORKER="$PWD/target/release/silico-sketch-worker" \
+            pixi run cargo bench -p silico-kernel --bench warm | tee "$RUNNER_TEMP/warm.txt"
+          {
+            echo "## Warm start: $(git log -1 --format='%h %s')"
+            echo
+            echo '```'
+            grep -A4 '^first rebuild' "$RUNNER_TEMP/warm.txt"
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"

@@ -221,7 +221,8 @@ fn a_lines_length_and_midpoint_become_its_outer_ends_and_its_equal_is_dropped() 
     // §3's table: a length, a distance of the outer ends (4d6b1f3eb8); a midpoint, a
     // symmetric of them about the point; an equal on a line, dropped (857190a20a, #25008);
     // an angle and a perpendicular to a line neither piece touches stay on the start-side
-    // piece (decision 1; main drops the perpendicular, a bug).
+    // piece (decision 1; main drops the perpendicular, a bug). Another line's length stays
+    // as it is, and an equal naming a second, dropped as well.
     let points = r#"{"id": "m0000000", "x": 16, "y": 0, "construction": false}, {"id": "r0000000", "x": 30, "y": 5, "construction": false}, {"id": "r0000001", "x": 30, "y": 15, "construction": false}"#;
     let lines = [
         line("e0000000", "q0000000", "q0000002"),
@@ -233,7 +234,7 @@ fn a_lines_length_and_midpoint_become_its_outer_ends_and_its_equal_is_dropped() 
         &lines,
         "",
         "",
-        r#"{"id": "k0000000", "type": "length", "line": "a0000000", "value": 32, "driving": true}, {"id": "k0000001", "type": "midpoint", "point": "m0000000", "line": "a0000000"}, {"id": "k0000002", "type": "equal", "a": "a0000000", "b": "e0000000"}, {"id": "k0000003", "type": "angle", "a": "a0000000", "b": "e0000000", "value": 0, "driving": false}, {"id": "k0000004", "type": "perpendicular", "a": "a0000000", "b": "f0000000"}"#,
+        r#"{"id": "k0000000", "type": "length", "line": "a0000000", "value": 32, "driving": true}, {"id": "k0000001", "type": "midpoint", "point": "m0000000", "line": "a0000000"}, {"id": "k0000002", "type": "equal", "a": "a0000000", "b": "e0000000"}, {"id": "k0000003", "type": "angle", "a": "a0000000", "b": "e0000000", "value": 0, "driving": false}, {"id": "k0000004", "type": "perpendicular", "a": "a0000000", "b": "f0000000"}, {"id": "k0000005", "type": "length", "line": "e0000000", "value": 10, "driving": true}, {"id": "k0000006", "type": "equal", "a": "f0000000", "b": "a0000000"}"#,
     );
     let done = split(
         sketch_of(&before),
@@ -276,10 +277,15 @@ fn a_lines_length_and_midpoint_become_its_outer_ends_and_its_equal_is_dropped() 
         }
     );
     assert_eq!(
+        form(&sketch, "k0000005"),
+        form(sketch_of(&before), "k0000005")
+    );
+    assert!(!sketch.constraints.iter().any(|c| c.id == id("k0000006")));
+    assert_eq!(
         done.edited.modified,
         ids(&["a0000000", "k0000000", "k0000001"])
     );
-    assert_eq!(done.edited.removed, ids(&["k0000002"]));
+    assert_eq!(done.edited.removed, ids(&["k0000002", "k0000006"]));
 }
 
 #[test]
@@ -437,7 +443,8 @@ fn a_tangent_on_whose_point_lies_on_the_second_piece_moves_to_it() {
 fn an_edge_tangent_goes_to_the_piece_whose_span_holds_the_contact() {
     // Circles of radius 10 resting on a: c0 about (30, 10) touches at 30, the second
     // piece; c1 about (5, 10), listed as a, at 5, the first; c2 about (60, 10) at 60, past
-    // p4 (at 32), the nearer end's piece (decision 2).
+    // p4 (at 32), the nearer end's piece (decision 2); and arc r about q2 (20, 10), from q0
+    // (10, 10) round under it to z0 (30, 10), listed as a, at 20, the second.
     let points = r#"{"id": "z0000000", "x": 30, "y": 10, "construction": false}, {"id": "z0000001", "x": 5, "y": 10, "construction": false}, {"id": "z0000002", "x": 60, "y": 10, "construction": false}"#;
     let circles = [
         circle("c0000000", "z0000000", 10.0),
@@ -449,8 +456,8 @@ fn an_edge_tangent_goes_to_the_piece_whose_span_holds_the_contact() {
         points,
         "",
         &circles,
-        "",
-        r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "c0000000", "side": "left"}, {"id": "k0000001", "type": "tangent", "a": "c1000000", "b": "a0000000", "side": "left"}, {"id": "k0000002", "type": "tangent", "a": "a0000000", "b": "c2000000", "side": "left"}"#,
+        &arc("r0000000", "q0000002", "q0000000", "z0000000"),
+        r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "c0000000", "side": "left"}, {"id": "k0000001", "type": "tangent", "a": "c1000000", "b": "a0000000", "side": "left"}, {"id": "k0000002", "type": "tangent", "a": "a0000000", "b": "c2000000", "side": "left"}, {"id": "k0000003", "type": "tangent", "a": "r0000000", "b": "a0000000", "side": "left"}"#,
     );
     let done = split(
         sketch_of(&before),
@@ -465,16 +472,17 @@ fn an_edge_tangent_goes_to_the_piece_whose_span_holds_the_contact() {
         other => panic!("{other:?}"),
     };
     assert_eq!(
-        ["k0000000", "k0000001", "k0000002"].map(pair),
+        ["k0000000", "k0000001", "k0000002", "k0000003"].map(pair),
         [
             ("b1000000".to_owned(), "c0000000".to_owned()),
             ("c1000000".to_owned(), "a0000000".to_owned()),
             ("b1000000".to_owned(), "c2000000".to_owned()),
+            ("r0000000".to_owned(), "b1000000".to_owned()),
         ]
     );
     assert_eq!(
         done.edited.modified,
-        ids(&["a0000000", "k0000000", "k0000002"])
+        ids(&["a0000000", "k0000000", "k0000002", "k0000003"])
     );
 }
 
@@ -1318,4 +1326,339 @@ fn of_two_points_held_at_the_split_the_least_id_is_shared() {
         ("p0000000".to_owned(), "s0000000".to_owned())
     );
     assert_eq!(done.edited.removed, ids(&["k0000001"]));
+}
+
+// ---- the mutants': points held elsewhere, rounds off the origin, and the ends' feet
+
+#[test]
+fn a_point_held_at_the_split_on_another_curve_isnt_the_split_point() {
+    // The vertical line e (x = 10) crosses a at (10, 0): s0 there is held on e (k0), and
+    // arc x about (5, 0) starts at t0 there, tangent on e (k1: leaving its start along +y,
+    // as e runs). Neither is held on a, so a split of a at (10, 0) makes a new point, and
+    // k0 and k1 stay as they were.
+    let points = [
+        point("s0000000", 10.0, 0.0),
+        point("t0000000", 10.0, 0.0),
+        point("v0000000", 10.0, -5.0),
+        point("v0000001", 10.0, 5.0),
+        point("z0000000", 5.0, 0.0),
+        point("w0000000", 5.0, 5.0),
+    ]
+    .join(", ");
+    let before = a_line(
+        &points,
+        &line("e0000000", "v0000000", "v0000001"),
+        "",
+        &arc("x0000000", "z0000000", "t0000000", "w0000000"),
+        r#"{"id": "k0000000", "type": "on", "point": "s0000000", "curve": "e0000000"}, {"id": "k0000001", "type": "tangent_on", "a": "x0000000", "at": "t0000000", "b": "e0000000", "direction": "same"}"#,
+    );
+    let done = split(
+        sketch_of(&before),
+        &id("a0000000"),
+        &[[10.0, 0.0]],
+        &ids(&["n0000000", "b1000000", "j0000000"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(at(&sketch, "n0000000"), (10.0, 0.0, false));
+    assert_eq!(
+        ends(&sketch, "a0000000"),
+        ("p0000000".to_owned(), "n0000000".to_owned())
+    );
+    assert_eq!(
+        ends(&sketch, "b1000000"),
+        ("n0000000".to_owned(), "p0000004".to_owned())
+    );
+    for name in ["k0000000", "k0000001"] {
+        assert_eq!(
+            form(&sketch, name),
+            form(sketch_of(&before), name),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        done.edited.added,
+        ids(&["n0000000", "b1000000", "j0000000"])
+    );
+    assert_eq!(done.edited.modified, ids(&["a0000000"]));
+    assert!(done.edited.removed.is_empty());
+}
+
+#[test]
+fn a_circle_split_at_two_points_held_on_it_shares_them_both() {
+    // s0 (10, 0) and s1 (−10, 0) held on c, split at their places: each is a split point,
+    // so the split makes no point, only the second arc, and both ons go as implied.
+    let points = [
+        point("z0000000", 0.0, 0.0),
+        point("s0000000", 10.0, 0.0),
+        point("s0000001", -10.0, 0.0),
+    ]
+    .join(", ");
+    let before = doc(
+        &points,
+        "",
+        &circle("c0000000", "z0000000", 10.0),
+        "",
+        r#"{"id": "k0000000", "type": "on", "point": "s0000000", "curve": "c0000000"}, {"id": "k0000001", "type": "on", "point": "s0000001", "curve": "c0000000"}"#,
+    );
+    let done = split(
+        sketch_of(&before),
+        &id("c0000000"),
+        &[[10.0, 0.0], [-10.0, 0.0]],
+        &ids(&["c1000000"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        arc_points(&sketch, "c0000000"),
+        ["z0000000", "s0000000", "s0000001"]
+    );
+    assert_eq!(
+        arc_points(&sketch, "c1000000"),
+        ["z0000000", "s0000001", "s0000000"]
+    );
+    assert_eq!(sketch.points.len(), 3);
+    assert!(sketch.constraints.is_empty());
+    assert_eq!(done.edited.added, ids(&["c1000000"]));
+    assert_eq!(done.edited.modified, ids(&["c0000000"]));
+    assert_eq!(done.edited.removed, ids(&["k0000000", "k0000001"]));
+}
+
+#[test]
+fn a_point_held_at_a_lines_ends_foot_farther_than_1e_7_mm_from_it_isnt_past_it() {
+    // q = 2^-33, an ulp of the coordinates here. Line a from p0 (700000, 600000) to p4
+    // (700005.25, 600107.25), along (42, 858)/8; s0 at p0 + q(−858, 42), held on a, is
+    // square to it from p0 ((−858, 42)·(42, 858) = 0, every product exact), so its
+    // parameter along a is exactly 0, and it's q√737928 = 1.0000395e-7 mm from p0. The
+    // position p0 + (0, q) projects onto itself (exactly, p0 + q(0.0488, 0.9977), rounded
+    // to the ulp), q√(858² + 41²) = q√737845 = 9.99983e-8 mm from s0: s0 is the split point.
+    // At p0's foot, s0 isn't past p0, and it's farther than 1e-7 from it: the split takes
+    // it, the start-side piece 1.0000395e-7 mm long. So with a drawn the other way, s0 at
+    // parameter exactly 1, p0 its far end.
+    let q = 1.0 / 8_589_934_592.0;
+    let s0 = [700_000.0 - 858.0 * q, 600_000.0 + 42.0 * q];
+    assert_eq!(s0, [699_999.999_999_900_1, 600_000.000_000_004_9]);
+    let points = [
+        point("p0000000", 700_000.0, 600_000.0),
+        point("p0000004", 700_005.25, 600_107.25),
+        point("s0000000", s0[0], s0[1]),
+    ]
+    .join(", ");
+    for (from, to) in [("p0000000", "p0000004"), ("p0000004", "p0000000")] {
+        let before = doc(
+            &points,
+            &line("a0000000", from, to),
+            "",
+            "",
+            r#"{"id": "k0000000", "type": "on", "point": "s0000000", "curve": "a0000000"}"#,
+        );
+        let done = split(
+            sketch_of(&before),
+            &id("a0000000"),
+            &[[700_000.0, 600_000.0 + q]],
+            &ids(&["b1000000", "j0000000"]),
+        )
+        .unwrap_or_else(|e| panic!("{from} to {to}: {e:?}"));
+        let sketch = gated(&before, &done);
+        assert_eq!(
+            [ends(&sketch, "a0000000"), ends(&sketch, "b1000000")],
+            [
+                (from.to_owned(), "s0000000".to_owned()),
+                ("s0000000".to_owned(), to.to_owned())
+            ]
+        );
+        assert_eq!(done.edited.added, ids(&["b1000000", "j0000000"]));
+        assert_eq!(done.edited.removed, ids(&["k0000000"]));
+    }
+}
+
+#[test]
+fn points_on_an_arc_about_a_centre_off_the_origin_go_to_the_piece_holding_them() {
+    // Arc a about z0 (40, 30), radius 25, counter-clockwise from e0 (55, 50), at 53.13°, to
+    // e1 (64, 23), at 343.74°; split at (25, 10), 233.13°. s0 (33, 6), at 253.74°, is on b;
+    // s1 (15, 30), at 180°, on a.
+    let points = [
+        point("z0000000", 40.0, 30.0),
+        point("e0000000", 55.0, 50.0),
+        point("e0000001", 64.0, 23.0),
+        point("s0000000", 33.0, 6.0),
+        point("s0000001", 15.0, 30.0),
+    ]
+    .join(", ");
+    let before = doc(
+        &points,
+        "",
+        "",
+        &arc("a0000000", "z0000000", "e0000000", "e0000001"),
+        r#"{"id": "k0000000", "type": "on", "point": "s0000000", "curve": "a0000000"}, {"id": "k0000001", "type": "on", "point": "s0000001", "curve": "a0000000"}"#,
+    );
+    let done = split(
+        sketch_of(&before),
+        &id("a0000000"),
+        &[[25.0, 10.0]],
+        &ids(&["n0000000", "b1000000"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    let on = |name: &str| match form(&sketch, name) {
+        Form::On { curve, .. } => curve.to_string(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(["k0000000", "k0000001"].map(on), ["b1000000", "a0000000"]);
+    assert_eq!(done.edited.modified, ids(&["a0000000", "k0000000"]));
+}
+
+#[test]
+fn points_on_a_circle_off_the_origin_and_a_lines_tangency_go_to_the_piece_holding_them() {
+    // Circle c about z0 (40, 30), radius 5, split at (44, 33), 36.87°, and (36, 33),
+    // 143.13°: c keeps the arc between them through 90°, the new one the rest. Held on c:
+    // s1 (40, 35) at 90°, s6 (43, 34) at 53.13°, and s7 (37, 34) at 126.87° on c; s2 (45, 30)
+    // at 0°, s3 (35, 30) at 180°, s4 (37, 26) at 233.13°, and s5 (44, 27) at 323.13° on the
+    // new one. The line m, y = 35, touches c at its centre's foot, (40, 35), 90°: on c.
+    let points = [
+        point("z0000000", 40.0, 30.0),
+        point("s0000001", 40.0, 35.0),
+        point("s0000002", 45.0, 30.0),
+        point("s0000003", 35.0, 30.0),
+        point("s0000004", 37.0, 26.0),
+        point("s0000005", 44.0, 27.0),
+        point("s0000006", 43.0, 34.0),
+        point("s0000007", 37.0, 34.0),
+        point("y0000000", 30.0, 35.0),
+        point("y0000001", 50.0, 35.0),
+    ]
+    .join(", ");
+    let constraints = (1..8)
+        .map(|i| {
+            format!(r#"{{"id": "k000000{i}", "type": "on", "point": "s000000{i}", "curve": "c0000000"}}"#)
+        })
+        .chain(std::iter::once(
+            r#"{"id": "k0000000", "type": "tangent", "a": "c0000000", "b": "m0000000", "side": "right"}"#.to_owned(),
+        ))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let before = doc(
+        &points,
+        &line("m0000000", "y0000000", "y0000001"),
+        &circle("c0000000", "z0000000", 5.0),
+        "",
+        &constraints,
+    );
+    let done = split(
+        sketch_of(&before),
+        &id("c0000000"),
+        &[[44.0, 33.0], [36.0, 33.0]],
+        &ids(&["n0000000", "n0000001", "c1000000"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    let on = |i: usize| match form(&sketch, &format!("k000000{i}")) {
+        Form::On { curve, .. } => curve.to_string(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        [1, 2, 3, 4, 5, 6, 7].map(on),
+        [
+            "c0000000", "c1000000", "c1000000", "c1000000", "c1000000", "c0000000", "c0000000"
+        ]
+    );
+    assert_eq!(
+        form(&sketch, "k0000000"),
+        form(sketch_of(&before), "k0000000")
+    );
+    assert_eq!(
+        done.edited.modified,
+        ids(&["c0000000", "k0000002", "k0000003", "k0000004", "k0000005"])
+    );
+}
+
+#[test]
+fn a_circles_tangencies_with_circles_go_to_the_piece_touching_them() {
+    // Circle c about z0 (40, 30), radius 25, split at (47, 54), 73.74°, then (60, 45),
+    // 36.87°: the new arc runs between them, through 53.13°, where c touches each circle
+    // here, at (55, 50) = z0 + (15, 20), so each tangency goes to it. With s = 2^-30: g1
+    // about (43, 34), 5 from z0 along (3, 4), radius 20, inside c; g2 about z0 + s(3, 4),
+    // radius 25 − 5s, inside c too; g3 about z0 − s(3, 4), radius 25 + 5s, holding c inside
+    // it, so the contact is on c's side away from g3's centre; and g4 about (46, 38), radius
+    // 25, as large as c, drawn 10 from it: neither is inside the other, so the contact is
+    // toward g4's centre. Each tangency is inside. (g2's and g3's centres are so near z0
+    // that a contact scaled by s², not by 1/s, would round onto z0, at 0°, on c.)
+    let s = 1.0 / 1_073_741_824.0;
+    let points = [
+        point("z0000000", 40.0, 30.0),
+        point("y0000001", 43.0, 34.0),
+        point("y0000002", 40.0 + 3.0 * s, 30.0 + 4.0 * s),
+        point("y0000003", 40.0 - 3.0 * s, 30.0 - 4.0 * s),
+        point("y0000004", 46.0, 38.0),
+    ]
+    .join(", ");
+    let circles = [
+        circle("c0000000", "z0000000", 25.0),
+        circle("g0000001", "y0000001", 20.0),
+        circle("g0000002", "y0000002", 25.0 - 5.0 * s),
+        circle("g0000003", "y0000003", 25.0 + 5.0 * s),
+        circle("g0000004", "y0000004", 25.0),
+    ]
+    .join(", ");
+    let constraints = (1..5)
+        .map(|i| {
+            format!(r#"{{"id": "k000000{i}", "type": "tangent", "a": "c0000000", "b": "g000000{i}", "side": "inside"}}"#)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let before = doc(&points, "", &circles, "", &constraints);
+    let done = split(
+        sketch_of(&before),
+        &id("c0000000"),
+        &[[47.0, 54.0], [60.0, 45.0]],
+        &ids(&["n0000000", "n0000001", "c1000000"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    for i in 1..5 {
+        assert_eq!(
+            form(&sketch, &format!("k000000{i}")),
+            &Form::Tangent {
+                a: element("c1000000"),
+                b: element(&format!("g000000{i}")),
+                side: TangentSide::Inside,
+            },
+            "k000000{i}"
+        );
+    }
+    assert_eq!(
+        done.edited.modified,
+        ids(&["c0000000", "k0000001", "k0000002", "k0000003", "k0000004"])
+    );
+}
+
+#[test]
+fn an_arcs_tangent_at_at_its_far_end_goes_to_the_new_piece_named_second_too() {
+    // testSplitArcOfCircle's arc at (−4, 2) again, its tangent_ats naming it second: the one
+    // at its start r0 stays, the one at its end r1 goes with that end to the new piece.
+    let before = the_arc(
+        r#"{"id": "k0000001", "type": "tangent_at", "a": "e0000000", "b": "a0000000", "at": "r0000000", "direction": "same"}, {"id": "k0000002", "type": "tangent_at", "a": "f0000000", "b": "a0000000", "at": "r0000001", "direction": "same"}"#,
+    );
+    let done = split(
+        sketch_of(&before),
+        &id("a0000000"),
+        &[[-4.0, 2.0]],
+        &ids(&["n0000000", "b1000000"]),
+    )
+    .unwrap();
+    let sketch = gated(&before, &done);
+    assert_eq!(
+        form(&sketch, "k0000001"),
+        form(sketch_of(&before), "k0000001")
+    );
+    assert_eq!(
+        form(&sketch, "k0000002"),
+        &Form::TangentAt {
+            a: element("f0000000"),
+            b: element("b1000000"),
+            at: element("r0000001"),
+            direction: Direction::Same,
+        }
+    );
+    assert_eq!(done.edited.modified, ids(&["a0000000", "k0000002"]));
 }

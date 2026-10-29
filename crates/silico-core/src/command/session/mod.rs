@@ -373,6 +373,27 @@ impl<P: Clients + 'static> Sessions<P> {
         Self::build(kernel, Box::new(open), SketchSolvers::workers())
     }
 
+    /// Starts up to `kernel` kernel workers and `sketches` sketch workers ahead of any
+    /// rebuild, the two at once, and waits until each has started or failed: an app's warm
+    /// start at launch (M5.0's decision 10), run off its UI thread. A rebuild that comes
+    /// meanwhile waits for them rather than starting more; one that comes after starts none.
+    /// How many of each it started.
+    pub fn warm(&self, kernel: usize, sketches: usize) -> (usize, usize) {
+        let registry = &self.registry;
+        std::thread::scope(|scope| {
+            let kernel_warm = std::thread::Builder::new()
+                .name("silico-warm-kernel".to_owned())
+                .spawn_scoped(scope, || registry.kernel.warm(kernel));
+            let sketches_started = registry.sketches.warm(sketches);
+            let kernel_started = match kernel_warm {
+                Ok(thread) => thread.join().unwrap_or(0),
+                // No thread to spare: one after the other, here.
+                Err(_) => registry.kernel.warm(kernel),
+            };
+            (kernel_started, sketches_started)
+        })
+    }
+
     /// Sessions on `kernel` with stand-ins, for tests: each directory's cache opened with
     /// `open`, as [`with_cache_opener`](Self::with_cache_opener) does, and sketches solved
     /// with what `start` starts (`fake::FakeSketches`), rather than the sketch worker: the

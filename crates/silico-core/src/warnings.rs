@@ -139,19 +139,46 @@ pub fn of(model: &Model, spared: &BTreeSet<FeatureId>) -> Warnings {
     let mut warnings = Warnings::none();
     // The model's features are its document's, in order.
     for (feature, (_, outcome)) in model.document().features.iter().zip(model.features()) {
-        match (&feature.operation, outcome) {
-            (Operation::Sketch(sketch), FeatureOutcome::Sketch(solution)) => {
-                ends_not_joined(&feature.id, sketch, solution, &mut warnings);
-                constraints_redundant(&feature.id, solution, &mut warnings);
-            }
-            (_, FeatureOutcome::Built { built, .. }) if !spared.contains(&feature.id) => {
-                fingerprint_missing(feature, built, &mut warnings);
-            }
-            _ => {}
-        }
+        of_feature(feature, outcome, spared, &mut warnings);
     }
     tracing::debug!(total = warnings.total(), "warned");
     warnings
+}
+
+/// How many warnings `model` has on each of its features, in its timeline order, each
+/// counted whole (where [`of`] lists the document's first [`PROBLEMS_LISTED`]): what the
+/// timeline marks each feature with. `spared` as [`of`]'s.
+pub fn per_feature(model: &Model, spared: &BTreeSet<FeatureId>) -> Vec<(FeatureId, u64)> {
+    model
+        .document()
+        .features
+        .iter()
+        .zip(model.features())
+        .map(|(feature, (_, outcome))| {
+            let mut warnings = Warnings::none();
+            of_feature(feature, outcome, spared, &mut warnings);
+            (feature.id.clone(), warnings.total())
+        })
+        .collect()
+}
+
+/// `feature`'s warnings, built as `outcome` says, added to `warnings`.
+fn of_feature(
+    feature: &Feature,
+    outcome: &FeatureOutcome,
+    spared: &BTreeSet<FeatureId>,
+    warnings: &mut Warnings,
+) {
+    match (&feature.operation, outcome) {
+        (Operation::Sketch(sketch), FeatureOutcome::Sketch(solution)) => {
+            ends_not_joined(&feature.id, sketch, solution, warnings);
+            constraints_redundant(&feature.id, solution, warnings);
+        }
+        (_, FeatureOutcome::Built { built, .. }) if !spared.contains(&feature.id) => {
+            fingerprint_missing(feature, built, warnings);
+        }
+        _ => {}
+    }
 }
 
 /// The distance between two points as FreeCAD measures it when it joins a sketch's wires
