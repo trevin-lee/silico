@@ -1369,3 +1369,25 @@ fn a_format_undone_then_redone_is_changed_again_and_the_commit_writes_its_text()
     assert!(committed.written);
     assert_eq!(f.file(), canonical);
 }
+
+#[test]
+fn an_edit_after_a_format_keeps_the_format_when_redone() {
+    // Formatted, then the length set to 41 and back to 40: the file's document laid out
+    // in canonical form, a change the format asked for. Undone to 41 and redone to 40, the
+    // state is still the format's: changed, and the commit writes canonical form.
+    let f = opened(&block(40));
+    answer(f.sessions.begin(&f.id)).result.unwrap();
+    answer(f.sessions.format(&f.id, None, true)).result.unwrap();
+    f.set_length("41");
+    f.set_length("40");
+    let canonical = f.text();
+    assert_ne!(canonical, block(40));
+    assert!(f.transaction().changed);
+    assert!(f.undo(None).result.is_ok());
+    assert!(f.redo(None).result.is_ok());
+    assert_eq!(f.text(), canonical);
+    assert!(f.transaction().changed);
+    let committed = answer(f.sessions.commit(&f.id)).result.unwrap();
+    assert!(committed.written);
+    assert_eq!(f.file(), canonical);
+}
