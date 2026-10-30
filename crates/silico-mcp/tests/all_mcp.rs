@@ -7,6 +7,7 @@ mod client;
 
 mod adversarial_server;
 mod adversarial_timeline_commands;
+mod adversarial_undo_commands;
 mod calls;
 mod contract;
 mod errors;

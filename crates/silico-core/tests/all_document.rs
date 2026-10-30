@@ -86,6 +86,8 @@ mod adversarial_session_undo;
 mod adversarial_timeline;
 #[path = "adversarial_type_words.rs"]
 mod adversarial_type_words;
+#[path = "adversarial_undo_commands.rs"]
+mod adversarial_undo_commands;
 #[path = "adversarial_warnings.rs"]
 mod adversarial_warnings;
 #[path = "adversarial_wire_commands.rs"]

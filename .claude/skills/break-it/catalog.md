@@ -306,6 +306,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A watch that drops findings against a superseded counter, told of the session's own write after it lands or before: a comparison that reads the new bytes and ends between the write and `held` (or reads the old ones between `held` and the write) is kept as changed; gate a stand-in reader and try both orders
 - A save bracketed for a watch, ended every way a save ends (a conflict, a cancel before it writes, a directory that won't take the file, a file it can't read to check): after each, the finding goes back to what's on disk, never stuck unknown and never the session's own text where nothing was written; then a save that works is its own
 - A background job's "running" flag cleared only after a callback returns (a reader, a solver): a callback that panics leaves it set, and no job ever starts again
+- A change made in two locked sections with slow work between (an undo's stack stepped, then the restored text gated, then the document and revision set): a `status` that reads both under the lock sees the first half's counts beside the second's old revision; poll it from a thread through steps of a long document and check each answer is one revision's
 
 ## Oracles and comparisons
 
