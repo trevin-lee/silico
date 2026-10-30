@@ -310,7 +310,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
         // The text typed, kept for this document's feature alone (two documents may hold
         // features of one ID), and only while it's ahead of the document: the document's
         // value again once that moves other than by this field's own edits (an undo, a
-        // revert, a reload, a refusal).
+        // redo, a revert, a reload). A refusal keeps what was typed, the refusal said.
         let mut field = match self.name.take() {
             Some(field) if field.keeps(tab.id, &entry.id, &entry.name, tab.resets) => field,
             _ => NameField {
@@ -329,11 +329,15 @@ impl<P: Clients + 'static> Panes<'_, P> {
             let label = ui.label("Name");
             // An ID of its own, the document's and the feature's, so its cursor and focus
             // stay put however the panel above it changes.
-            ui.add(egui::TextEdit::singleline(&mut text).id_salt((
-                "name",
-                tab.id.to_string(),
-                entry.id.as_str(),
-            )))
+            // Off while the tab closes: an edit then would be dropped (#298's review).
+            ui.add_enabled(
+                !tab.closing(),
+                egui::TextEdit::singleline(&mut text).id_salt((
+                    "name",
+                    tab.id.to_string(),
+                    entry.id.as_str(),
+                )),
+            )
             .labelled_by(label.id);
         });
         if text != typed {
