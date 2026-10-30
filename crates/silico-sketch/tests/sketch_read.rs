@@ -982,7 +982,10 @@ fn a_sketch_kept_from_an_earlier_rebuild_or_carried_by_a_save_reads_as_its_first
         json!({"session": "s1", "revision": 2, "feature": "b0000001", "field": "length", "value": 14}),
     );
     reads_alike(3, "the box edited in a transaction");
-    call("commit", json!({"session": "s1"}));
+    call(
+        "commit",
+        json!({"session": "s1", "path": null, "replace": false}),
+    );
     reads_alike(4, "committed");
     assert!(
         std::fs::read_to_string(&path)
