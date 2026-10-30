@@ -702,8 +702,8 @@ fn an_edges_failed_end_leaves_the_pool_able_to_drag_again() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
-    /// A free line pressed anywhere along it (or off it), released anywhere: it ends moved
-    /// by the release's offset from the press, its load giving it back.
+    /// A free line pressed anywhere along it, released anywhere: it ends moved by the
+    /// release's offset from the press, its load giving it back; pressed off it, refused.
     #[test]
     fn a_lines_edge_ends_moved_by_the_releases_offset_from_the_press(
         t in prop_oneof![Just(0.0), Just(1.0), Just(0.5), 0.0..1.0f64],
@@ -713,7 +713,17 @@ proptest! {
         let solvers = solvers();
         let doc = free(false);
         let press = [10.0 * t, off];
-        let Opened { drag, .. } = edge(&solvers, &doc, "ne000001", press).unwrap();
+        let begun = edge(&solvers, &doc, "ne000001", press);
+        // Off the line by more than the length tolerance, the press is refused, naming it
+        // (#307: a pick lands on its edge); `t` keeps it within the line's ends, so `off` is
+        // its distance.
+        if off.abs() > silico_protocol::LENGTH_TOLERANCE {
+            let refused = begun.err().unwrap();
+            prop_assert_eq!(refused.code(), ErrorCode::InvalidInput);
+            prop_assert_eq!(refused.parameter(), Some("press"));
+            return Ok(());
+        }
+        let Opened { drag, .. } = begun.unwrap();
         let ended = drag.end(Some([cx, cy])).unwrap();
         check_end(&doc, &ended, "line");
         if [cx, cy] == press {
