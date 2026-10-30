@@ -18,7 +18,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use silico_app::App;
 use silico_app::app::IDLE_FRAME;
 use silico_core::cache::Cache;
-use silico_core::command::{CheckModel, ModelChoice, Sessions};
+use silico_core::command::{CheckAnswer, CheckModel, ModelChoice, Running, Sessions};
 use silico_core::disk::{Clock, Found, Reader};
 use silico_core::fake::never_waits;
 use silico_core::fake::{FakeKernel, FakeSketches, Hold};
@@ -50,6 +50,7 @@ type AppHarness = Harness<'static, App<Fake>>;
 struct Fixture {
     dir: TempDir,
     kernel: Fake,
+    sketches: FakeSketches,
     sessions: Arc<Sessions<Fake>>,
 }
 
@@ -65,10 +66,11 @@ fn fixture_reading(read: Option<Reader>) -> Fixture {
     let secret = dir.path().join("secret");
     let kernel = Arc::new(FakeKernel::new(2).unwrap());
     let sketches = FakeSketches::new();
+    let solver = sketches.clone();
     let sessions = Sessions::with_stand_ins(
         Arc::clone(&kernel),
         move |cache| Cache::with_secret(cache, &secret),
-        move || Ok(Box::new(sketches.clone()) as Box<dyn SketchSolver>),
+        move || Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>),
     );
     let sessions = match read {
         None => sessions,
@@ -80,6 +82,7 @@ fn fixture_reading(read: Option<Reader>) -> Fixture {
     Fixture {
         dir,
         kernel,
+        sketches,
         sessions: Arc::new(sessions),
     }
 }
@@ -200,7 +203,8 @@ fn select(h: &mut AppHarness, name: &str) {
     step_until(h, "its properties", |h| {
         h.get_by_role_and_label(Role::Pane, "Properties")
             .query_by_role(Role::TextInput)
-            .is_some()
+            .and_then(|field| field.value())
+            .is_some_and(|value| value.ends_with(name))
     });
 }
 
@@ -268,7 +272,7 @@ fn opening_the_m2_1_example_shows_its_three_features_in_order_and_its_body() {
 }
 
 #[test]
-fn a_failing_feature_is_marked_with_its_errors_text_on_its_timeline_and_browser_entries() {
+fn a_failing_feature_is_marked_on_its_timeline_entry_and_opened_says_its_errors_text() {
     let f = fixture();
     f.kernel.refuse(|op| {
         matches!(op, Op::Boolean { .. })
@@ -276,10 +280,38 @@ fn a_failing_feature_is_marked_with_its_errors_text_on_its_timeline_and_browser_
     });
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     // What the core's own check says of the cut, as an agent reads it.
-    let checked = f
-        .sessions
-        .open(f.file("copy.silico", EXAMPLE), false)
-        .wait();
+    let want = format!("error: {}", core_says(&f, EXAMPLE, "m3tq8v0z"));
+    // Marked at once; its text read only when the person opens the mark (section 3).
+    step_until(&mut h, "the cut's mark", |h| {
+        showing(h, "Timeline", "error").is_some_and(|text| text == "error")
+    });
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(
+        h.state().tabs()[0].said.is_empty(),
+        "read before it was opened"
+    );
+    select(&mut h, "Hole");
+    step_until(&mut h, "its text", |h| {
+        showing(h, "Timeline", "error:").is_some_and(|text| text == want)
+    });
+    assert!(shows(&h, "Properties", want.trim_start_matches("error: ")));
+    // The browser lists the model's bodies, the block and the pin, whose consumer failed;
+    // the cut built none, and the core's timeline reports none for it, so it isn't listed.
+    let browser = h.get_by_role_and_label(Role::Pane, "Browser");
+    let bodies = browser.get_by_role_and_label(Role::Group, "Bodies");
+    assert!(bodies.query_by_label("Block").is_some());
+    assert!(bodies.query_by_label("Pin").is_some());
+    assert!(bodies.query_by_label("Hole").is_none());
+    assert_eq!(std::fs::read_to_string(path).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// What the core's own check says of `feature` of `text`, opened in a session of its own.
+fn core_says(f: &Fixture, text: &str, feature: &str) -> String {
+    let name = format!("copy-{feature}.silico");
+    let checked = f.sessions.open(f.file(&name, text), false).wait();
     let copy = checked.session.unwrap().id;
     let answer = f
         .sessions
@@ -287,31 +319,21 @@ fn a_failing_feature_is_marked_with_its_errors_text_on_its_timeline_and_browser_
         .wait()
         .result
         .unwrap();
-    let error = answer
+    answer
         .problems
         .errors()
         .iter()
-        .find(|error| error.feature() == Some("m3tq8v0z"))
-        .unwrap();
-    let want = format!("error: {}", error.message());
-    step_until(&mut h, "the cut's mark", |h| {
-        showing(h, "Timeline", "error:").is_some_and(|text| text == want)
-    });
-    // On its browser entry too: the cut built nothing, so its body is listed, marked.
-    let browser = h.get_by_role_and_label(Role::Pane, "Browser");
-    let bodies = browser.get_by_role_and_label(Role::Group, "Bodies");
-    assert!(bodies.query_by_label("Hole").is_some());
-    assert!(bodies.query_by_label(&want).is_some());
-    // The block and the pin, whose consumer failed, are bodies as the model has them,
-    // unmarked.
-    assert!(bodies.query_by_label("Block").is_some());
-    assert_eq!(
-        bodies.query_all_by_label_contains("error:").count(),
-        1,
-        "only the cut is marked"
-    );
-    assert_eq!(std::fs::read_to_string(path).unwrap(), EXAMPLE);
-    assert_eq!(never_waits::waits(), 0);
+        .map(|error| (error.feature(), error.message().to_owned()))
+        .chain(
+            answer
+                .warnings
+                .listed()
+                .iter()
+                .map(|warning| (warning.feature(), warning.message().to_owned())),
+        )
+        .find(|(of, _)| *of == Some(feature))
+        .map(|(_, message)| message)
+        .unwrap()
 }
 
 #[test]
@@ -674,5 +696,640 @@ fn the_waker_asks_a_frame_as_a_held_command_answers_and_idle_frames_come_each_in
         step(&mut h);
     }
     assert!(idle(delay(&h)), "{:?}", delay(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- #298's review ----
+
+/// The names `path`'s file holds, in order.
+fn names_in(path: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(path).unwrap();
+    text.split(r#""name": ""#)
+        .skip(1)
+        .map(|rest| rest.split('"').next().unwrap().to_owned())
+        .collect()
+}
+
+/// The queue of the session of `h`'s tab `at` held behind a check whose rebuild the fake
+/// holds (every step built anew), until the hold is released: an edit sent now waits.
+fn hold_queue(f: &Fixture, h: &AppHarness, at: usize) -> (Hold, Running<CheckAnswer>) {
+    let hold = f.kernel.hold(|_| true);
+    let id = h.state().tabs()[at].id;
+    let check = f.sessions.check(&id, CheckModel::Current { fresh: true });
+    assert!(f.kernel.wait_running(1, WAIT));
+    (hold, check)
+}
+
+/// The window asked to close, as its close button asks.
+fn close_window(h: &mut AppHarness) {
+    let root = eframe::egui::ViewportId::ROOT;
+    h.input_mut()
+        .viewports
+        .get_mut(&root)
+        .unwrap()
+        .events
+        .push(eframe::egui::ViewportEvent::Close);
+    step(h);
+    h.input_mut()
+        .viewports
+        .get_mut(&root)
+        .unwrap()
+        .events
+        .clear();
+}
+
+/// Whether the last frame told the window to close, or to cancel a close.
+fn told(h: &AppHarness, close: bool) -> bool {
+    let want = if close {
+        eframe::egui::ViewportCommand::Close
+    } else {
+        eframe::egui::ViewportCommand::CancelClose
+    };
+    h.output()
+        .viewport_output
+        .get(&eframe::egui::ViewportId::ROOT)
+        .is_some_and(|viewport| viewport.commands.contains(&want))
+}
+
+#[test]
+fn the_close_questions_save_writes_the_edit_then_closes() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    select(&mut h, "Hole");
+    type_name(&mut h, "S");
+    step_until(&mut h, "unsaved", |h| h.state().tabs()[0].transaction);
+    h.get_by_label("Close example.silico").click();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to example.silico before closing?")
+    });
+    // The question's Save, not the application bar's.
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    assert_eq!(names_in(&path), ["Block", "Pin", "SHole"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_save_and_close_saves_every_edit_made_before_it_even_one_still_waiting() {
+    // "Bl", then "Blo" while "Bl" waits behind a held command: the save waits for both, so
+    // the file holds "Blo", and the close comes after.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    select(&mut h, "Block");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the transaction begun", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    // Two keystrokes while the queue is held: the first's edit in flight, the second's
+    // waiting. (The field's cursor stays at its start in the harness, so each keystroke
+    // goes before the last: the value it held last is what's asserted.)
+    type_name(&mut h, "l");
+    let first = name_field(&h).value().unwrap();
+    type_name(&mut h, "o");
+    let last = name_field(&h).value().unwrap();
+    assert_ne!(first, last);
+    h.get_by_label("Close example.silico").click();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to example.silico before closing?")
+    });
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    assert_eq!(names_in(&path), [last.as_str(), "Pin", "Hole"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn quitting_with_two_changed_documents_and_save_all_saves_both_then_closes_the_window() {
+    let f = fixture();
+    let (mut h, a) = f.opened("a.silico", EXAMPLE);
+    let b = f.file("b.silico", EXAMPLE);
+    h.state_mut().open(b.to_str().unwrap(), false);
+    step_until(&mut h, "two tabs", |h| {
+        h.state().tabs().len() == 2 && h.state().tabs()[1].timeline.is_some()
+    });
+    for name in ["a.silico", "b.silico"] {
+        h.get_by_label(name).click();
+        step(&mut h);
+        step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+        select(&mut h, "Pin");
+        type_name(&mut h, "Q");
+        step_until(&mut h, "unsaved", |h| anywhere(h, &format!("{name} *")));
+    }
+    close_window(&mut h);
+    assert!(told(&h, false), "a close with edits held wasn't cancelled");
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    // The saves held behind a check of the first: a second close while they run is
+    // cancelled too, the quit closing the window only once every tab has gone.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.get_by_role_and_label(Role::Button, "Save all")
+        .click_accesskit();
+    step(&mut h);
+    step(&mut h);
+    assert!(!h.state().tabs().is_empty());
+    close_window(&mut h);
+    assert!(
+        told(&h, false),
+        "a close while the saves ran wasn't cancelled"
+    );
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the window closing", |h| told(h, true));
+    assert!(h.state().tabs().is_empty());
+    for path in [&a, &b] {
+        assert_eq!(names_in(path), ["Block", "QPin", "Hole"]);
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_quit_whose_save_is_a_conflict_keeps_that_document_and_the_window_open() {
+    let f = fixture();
+    let (mut h, a) = f.opened("a.silico", EXAMPLE);
+    let b = f.file("b.silico", EXAMPLE);
+    h.state_mut().open(b.to_str().unwrap(), false);
+    step_until(&mut h, "two tabs", |h| {
+        h.state().tabs().len() == 2 && h.state().tabs()[1].timeline.is_some()
+    });
+    for name in ["a.silico", "b.silico"] {
+        h.get_by_label(name).click();
+        step(&mut h);
+        step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+        select(&mut h, "Pin");
+        type_name(&mut h, "Q");
+        step_until(&mut h, "unsaved", |h| anywhere(h, &format!("{name} *")));
+    }
+    // An agent's commit to a.silico meanwhile: its save is a conflict.
+    let theirs = EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Theirs""#);
+    std::fs::write(&a, &theirs).unwrap();
+    close_window(&mut h);
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    h.get_by_role_and_label(Role::Button, "Save all")
+        .click_accesskit();
+    step_until(&mut h, "b closed and the quit stopped", |h| {
+        h.state().tabs().len() == 1
+            && h.query_by_label_contains("Quit stopped: a.silico")
+                .is_some()
+    });
+    for _ in 0..20 {
+        step(&mut h);
+        assert!(
+            !told(&h, true),
+            "the window closed with a.silico's edits held"
+        );
+    }
+    assert_eq!(h.state().tabs()[0].name(), "a.silico");
+    assert!(h.state().tabs()[0].transaction, "a.silico's edits dropped");
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), theirs);
+    assert_eq!(names_in(&b), ["Block", "QPin", "Hole"]);
+    // A second close of the window asks again: never closes it silently.
+    close_window(&mut h);
+    assert!(told(&h, false));
+    step_until(&mut h, "asked again", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "the question gone", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_none()
+    });
+    // Its tab closed by hand, without saving: the window stays, the quit having stopped.
+    h.get_by_label("Close a.silico").click();
+    step_until(&mut h, "the close question", |h| {
+        anywhere(h, "Save changes to a.silico before closing?")
+    });
+    h.get_by_role_and_label(Role::Button, "Don't save")
+        .click_accesskit();
+    step_until(&mut h, "a closed", |h| h.state().tabs().is_empty());
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(!told(&h, true), "the stopped quit closed the window");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn closing_the_first_of_three_tabs_closes_that_document_whatever_is_shown() {
+    let f = fixture();
+    let (mut h, first) = f.opened("one.silico", EXAMPLE);
+    for name in ["two.silico", "three.silico"] {
+        let path = f.file(name, EXAMPLE);
+        h.state_mut().open(path.to_str().unwrap(), false);
+    }
+    step_until(&mut h, "three tabs", |h| h.state().tabs().len() == 3);
+    h.get_by_label("one.silico").click();
+    step(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "W");
+    step_until(&mut h, "unsaved", |h| anywhere(h, "one.silico *"));
+    // The third shown, then the first's close asked: the question is the first's.
+    h.get_by_label("three.silico").click();
+    step(&mut h);
+    h.get_by_label("Close one.silico").click();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to one.silico before closing?")
+    });
+    h.get_by_role_and_label(Role::Button, "Don't save")
+        .click_accesskit();
+    step_until(&mut h, "the first closed", |h| h.state().tabs().len() == 2);
+    let names: Vec<&str> = h.state().tabs().iter().map(|tab| tab.name()).collect();
+    assert_eq!(names, ["two.silico", "three.silico"]);
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_restores_the_text_byte_for_byte_and_redo_the_edit() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "A");
+    step_until(&mut h, "one edit", |h| {
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "APin")
+    });
+    let id = h.state().tabs()[0].id;
+    let after_one = f.sessions.text(&id, None).wait().result.unwrap().text;
+    type_name(&mut h, "B");
+    step_until(&mut h, "two edits", |h| shows(h, "Timeline", "BAPin"));
+    h.get_by_role_and_label(Role::Button, "Undo").click();
+    step_until(&mut h, "undone", |h| shows(h, "Timeline", "APin"));
+    assert_eq!(
+        f.sessions.text(&id, None).wait().result.unwrap().text,
+        after_one
+    );
+    h.get_by_role_and_label(Role::Button, "Redo").click();
+    step_until(&mut h, "redone", |h| shows(h, "Timeline", "BAPin"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_s_saves() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    step_until(&mut h, "unsaved", |h| h.state().tabs()[0].transaction);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step_until(&mut h, "saved", |h| !anywhere(h, "example.silico *"));
+    assert_eq!(names_in(&path), ["Block", "KPin", "Hole"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_stops_the_command_waiting_on_a_held_rebuild() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let (hold, check) = hold_queue(&f, &h, 0);
+    step_until(&mut h, "the check running", |h| {
+        h.state().tabs()[0]
+            .status
+            .as_ref()
+            .and_then(|status| status.running)
+            .is_some()
+    });
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    let answered = check.wait_timeout(WAIT).ok().unwrap();
+    assert_eq!(
+        answered.result.unwrap_err().errors()[0].code(),
+        ErrorCode::Cancelled
+    );
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn keep_my_edits_hides_the_banner_and_the_save_is_then_a_conflict() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "E");
+    step_until(&mut h, "unsaved", |h| h.state().tabs()[0].transaction);
+    let theirs = EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Theirs""#);
+    std::fs::write(&path, &theirs).unwrap();
+    let said = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the banner", |h| anywhere(h, said));
+    h.get_by_role_and_label(Role::Button, "Keep my edits")
+        .click();
+    step(&mut h);
+    for _ in 0..30 {
+        step(&mut h);
+        assert!(!anywhere(&h, said), "the banner came back");
+    }
+    h.get_by_role_and_label(Role::Button, "Save").click();
+    step_until(&mut h, "the conflict said", |h| {
+        h.query_by_label_contains("changed outside this session")
+            .is_some()
+    });
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), theirs);
+    assert!(h.state().tabs()[0].transaction);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_file_deleted_with_edits_held_is_announced_as_gone() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "G");
+    step_until(&mut h, "unsaved", |h| h.state().tabs()[0].transaction);
+    std::fs::remove_file(&path).unwrap();
+    step_until(&mut h, "the banner", |h| {
+        anywhere(
+            h,
+            "example.silico is gone from disk while you have unsaved edits.",
+        )
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edits_of_two_features_made_while_one_waits_both_land() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Block");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the transaction begun", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_name(&mut h, "y");
+    select(&mut h, "Pin");
+    type_name(&mut h, "z");
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "both answered", |h| {
+        h.state().tabs()[0].edits.idle()
+    });
+    h.get_by_role_and_label(Role::Button, "Save").click();
+    step_until(&mut h, "saved", |h| !anywhere(h, "example.silico *"));
+    let names = names_in(&path);
+    assert_eq!(names[1], "zPin", "{names:?}");
+    assert!(
+        names[0].contains('x') && names[0].contains('y'),
+        "{names:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn two_documents_each_show_their_own_features() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let other = f.file(
+        "other.silico",
+        &EXAMPLE
+            .replace(r#""name": "Block""#, r#""name": "Plate""#)
+            .replace(r#""name": "Hole""#, r#""name": "Bore""#),
+    );
+    h.state_mut().open(other.to_str().unwrap(), false);
+    step_until(&mut h, "the other's features", |h| {
+        shows(h, "Timeline", "Bore")
+    });
+    assert!(!shows(&h, "Timeline", "Hole"));
+    h.get_by_label("example.silico").click();
+    step_until(&mut h, "the first's features", |h| {
+        shows(h, "Timeline", "Hole")
+    });
+    assert!(!shows(&h, "Timeline", "Bore"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn new_through_its_dialog_makes_the_file_and_open_cancelled_opens_nothing() {
+    let f = fixture();
+    let mut h = f.app();
+    h.get_by_label("File").click();
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Open…").click();
+    step_until(&mut h, "the dialog", |h| anywhere(h, "Open document"));
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "the dialog gone", |h| !anywhere(h, "Open document"));
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs().is_empty());
+    let made = f.dir.path().join("new.silico");
+    h.get_by_label("File").click();
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "New…").click();
+    step_until(&mut h, "the dialog", |h| anywhere(h, "New document"));
+    h.get_by_role(Role::TextInput).focus();
+    step(&mut h);
+    h.get_by_role(Role::TextInput)
+        .type_text(made.to_str().unwrap());
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Create")
+        .click_accesskit();
+    step_until(&mut h, "its tab", |h| anywhere(h, "new.silico"));
+    assert!(made.is_file());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketchs_warning_is_marked_in_the_sketches_group_and_its_eye_hides_it() {
+    // A sketch whose rectangle's last side ends at a point of its own where the first
+    // begins (`ends_not_joined`, a warning), and a pad of it.
+    const SKETCHED: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "Profile", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 4, "y": 0, "construction": false}, {"id": "pa000003", "x": 4, "y": 2, "construction": false}, {"id": "pa000004", "x": 0, "y": 2, "construction": false}, {"id": "pa000005", "x": 0, "y": 0, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000005", "construction": false}], "circles": [], "arcs": [], "constraints": []}, {"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}]}"#;
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    let _ = &f.sketches;
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Profile"));
+    let sketches = || {
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .get_by_role_and_label(Role::Group, "Sketches")
+            .query_all_by_label_contains("warning")
+            .count()
+    };
+    assert_eq!(sketches(), 1);
+    // Opened: its text, the core's.
+    let want = format!("warning: {}", core_says(&f, SKETCHED, "s0000001"));
+    select(&mut h, "Profile");
+    step_until(&mut h, "its text", |h| {
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .get_by_role_and_label(Role::Group, "Sketches")
+            .query_by_label(&want)
+            .is_some()
+    });
+    h.get_by_label("Hide Profile").click();
+    step(&mut h);
+    step(&mut h);
+    assert!(anywhere(&h, "Show Profile"));
+    assert!(!anywhere(&h, "Hide Profile"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_waiting_command_on_another_marked_thread_isnt_this_ones() {
+    // Counted for the thread that waited, never for another test's.
+    let f = fixture();
+    let path = f.file("example.silico", EXAMPLE);
+    let id = f.sessions.open(&path, false).wait().session.unwrap().id;
+    let sessions = Arc::clone(&f.sessions);
+    let there = std::thread::spawn(move || {
+        let _marked = never_waits::marked();
+        sessions.text(&id, None).wait().result.unwrap();
+        never_waits::waits()
+    })
+    .join()
+    .unwrap();
+    assert_eq!(there, 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn stop_says_a_cancel_the_core_refuses() {
+    // Asked to stop a command that has answered since status said it ran: the core's
+    // refusal is said in the tab.
+    use silico_app::tab::Tab;
+    use silico_core::command::{RunningCommand, SessionCommand};
+    let f = fixture();
+    let path = f.file("example.silico", EXAMPLE);
+    let opened = f.sessions.open(&path, false).wait();
+    let id = opened.session.unwrap().id;
+    let mut tab = Tab::opened(
+        id,
+        path.to_str().unwrap().to_owned(),
+        &opened.result.unwrap().problems,
+    );
+    let mut status = f.sessions.status(&id).result.unwrap();
+    status.running = Some(RunningCommand::Command(SessionCommand::Check));
+    tab.status = Some(status);
+    assert!(tab.stoppable());
+    tab.stop(&f.sessions);
+    let said = tab.message.clone().unwrap();
+    assert!(said.contains("no check is running in session"), "{said}");
+    // The session's own reload running: nothing to stop, the stop off.
+    if let Some(status) = &mut tab.status {
+        status.running = Some(RunningCommand::Reload);
+    }
+    assert!(!tab.stoppable());
+}
+
+#[test]
+fn an_emptied_name_is_sent_and_the_cores_answer_said() {
+    // The property panel sends every change of its Name, an empty one too (#298's review),
+    // through the tab's edits: the core takes it or refuses it, and a refusal is said.
+    use silico_app::tab::{Edit, Tab};
+    let f = fixture();
+    let path = f.file("example.silico", EXAMPLE);
+    let opened = f.sessions.open(&path, false).wait();
+    let id = opened.session.unwrap().id;
+    let mut tab = Tab::opened(
+        id,
+        path.to_str().unwrap().to_owned(),
+        &opened.result.unwrap().problems,
+    );
+    tab.edit(
+        &f.sessions,
+        Edit {
+            feature: silico_core::document::FeatureId::new("a91cw0de").unwrap(),
+            field: "name".to_owned(),
+            value: silico_core::document::json::read(b"\"\"").unwrap(),
+        },
+    );
+    let deadline = Instant::now() + WAIT;
+    while !(tab.edits.idle() && tab.edits.sent == 1) {
+        assert!(Instant::now() < deadline, "never answered");
+        tab.poll(&f.sessions);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let text = f.sessions.text(&id, None).wait().result.unwrap().text;
+    assert!(
+        tab.message.is_some() || text.contains(r#""name": """#),
+        "neither applied nor said: {text}"
+    );
+}
+
+#[test]
+fn the_window_for_missing_workers_says_each_and_quits() {
+    use silico_app::missing::Missing;
+    let lines = vec![
+        "there's no sketch worker, so no sketch can be solved: here".to_owned(),
+        "there's no STEP worker, so nothing can be exported as STEP: there".to_owned(),
+    ];
+    let mut h = Harness::builder().with_size((800.0, 400.0)).build_ui_state(
+        |ui, app: &mut Missing| app.frame(ui),
+        Missing::new(lines.clone()),
+    );
+    for line in &lines {
+        assert!(h.query_by_label(line).is_some(), "{line}");
+    }
+    h.get_by_role_and_label(Role::Button, "Quit").click();
+    h.step();
+    assert!(
+        h.output()
+            .viewport_output
+            .get(&eframe::egui::ViewportId::ROOT)
+            .is_some_and(|viewport| viewport
+                .commands
+                .contains(&eframe::egui::ViewportCommand::Close))
+    );
+}
+
+#[test]
+fn revert_drops_an_edit_still_waiting_so_nothing_is_saved_after_it() {
+    // One edit in flight behind a held command, the next waiting, then Revert: the waiting
+    // one is dropped, never sent once the rollback has ended the transaction (where it
+    // would be saved at once).
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the transaction begun", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_name(&mut h, "y");
+    type_name(&mut h, "z");
+    h.get_by_label("File").click();
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Revert").click();
+    step(&mut h);
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "reverted", |h| {
+        !h.state().tabs()[0].transaction && h.state().tabs()[0].edits.idle()
+    });
+    for _ in 0..30 {
+        step(&mut h);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    let id = h.state().tabs()[0].id;
+    assert_eq!(
+        f.sessions.text(&id, None).wait().result.unwrap().text,
+        EXAMPLE
+    );
     assert_eq!(never_waits::waits(), 0);
 }

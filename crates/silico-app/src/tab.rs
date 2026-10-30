@@ -15,6 +15,7 @@ use silico_core::disk::Disk;
 use silico_core::document::FeatureId;
 use silico_core::document::json::Node;
 use silico_core::kernel::Clients;
+use silico_core::timeline::{Entry, Health};
 
 /// What a feature's mark says: its first problem's (or warning's) message, and its
 /// suggestion, from a `check` of the model the timeline's marks came from.
@@ -77,6 +78,15 @@ enum Under {
     Close(Running<Closed>),
 }
 
+/// What waits for the tab's edits to answer before it's sent (#298's review): a save
+/// commits only once every edit made before it is the transaction's, and an undo or a redo
+/// steps only past them, never between an edit and the next it replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pending {
+    Save { then_close: bool },
+    Step { undo: bool },
+}
+
 /// The choice offered for a file changed on disk while edits are held (section 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiskChoice {
@@ -88,26 +98,47 @@ pub enum DiskChoice {
     Kept,
 }
 
+/// A row of the browser (section 8, *The browser*): a feature, by its ID and name, with the
+/// health it's marked with and the feature whose mark it is (a body's, the worst of its
+/// chain's).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    pub id: FeatureId,
+    pub name: String,
+    pub health: Health,
+    pub marked_by: Option<FeatureId>,
+}
+
+/// The browser's rows, worked out once for each timeline read, never each frame.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Browser {
+    pub bodies: Vec<Row>,
+    pub sketches: Vec<Row>,
+}
+
 /// One open document.
 pub struct Tab {
     pub id: SessionId,
     /// The path, as it was opened.
     pub path: String,
-    /// The session's revision and whether a transaction is open, as last answered.
+    /// The session's revision and whether a transaction is open, as last answered: never
+    /// moved back by an answer that comes after a newer one.
     pub revision: Revision,
     pub transaction: bool,
     /// The newest `status`.
     pub status: Option<Status>,
     /// The revision of the newest model published, if there's one.
     pub published: Option<Revision>,
-    /// The newest `timeline`, and the revisions it was asked at.
+    /// The newest `timeline`, and the browser's rows worked out from it.
     pub timeline: Option<TimelineAnswer>,
+    pub browser: Browser,
     timeline_read: Option<Running<TimelineAnswer>>,
     timeline_asked: Option<(Revision, Option<Revision>)>,
     /// A published timeline was refused, nothing being published: the next is read of the
     /// current model, which waits for its rebuild (off the UI thread).
     nothing_published: bool,
-    /// What `check` says of each feature, and of the document (the gate's problems).
+    /// What `check` says of each feature (read when the person opens a mark, section 3),
+    /// and of the document (the gate's problems).
     pub said: BTreeMap<String, Said>,
     pub document_problems: Vec<Said>,
     /// A `check` read, and whether it's of a document the gate refused (whose problems are
@@ -116,6 +147,7 @@ pub struct Tab {
     checked: Option<(Revision, Option<Revision>)>,
     pub edits: Edits,
     under: Vec<Under>,
+    pending: Option<Pending>,
     /// A `begin` sent and not yet answered: the next edit begins none.
     beginning: bool,
     pub disk_choice: DiskChoice,
@@ -126,6 +158,9 @@ pub struct Tab {
     pub hidden: std::collections::BTreeSet<String>,
     /// The last refusal a command of the tab's answered, as said to the person.
     pub message: Option<String>,
+    /// A save or a revert that was to close the tab was refused: the tab stays, and a quit
+    /// waiting on it stops ([`take_close_refused`](Self::take_close_refused)).
+    close_refused: bool,
     /// The session has closed: the tab goes.
     pub closed: bool,
 }
@@ -152,6 +187,7 @@ impl Tab {
             status: None,
             published: None,
             timeline: None,
+            browser: Browser::default(),
             timeline_read: None,
             timeline_asked: None,
             nothing_published: false,
@@ -168,11 +204,13 @@ impl Tab {
             checked: None,
             edits: Edits::default(),
             under: Vec::new(),
+            pending: None,
             beginning: false,
             disk_choice: DiskChoice::None,
             selected: None,
             hidden: std::collections::BTreeSet::new(),
             message: None,
+            close_refused: false,
             closed: false,
         }
     }
@@ -185,17 +223,32 @@ impl Tab {
             .unwrap_or(&self.path)
     }
 
-    /// Whether it holds unsaved edits: a transaction is open (decision 1: begun at the first
-    /// edit), or an edit is under way.
+    /// Whether the document differs from the file: a transaction open (decision 1: begun at
+    /// the first edit). Once `status.transaction.changed` is on the wire (#300), it's that,
+    /// false again once undone back to what `begin` saw: this one line.
+    fn changed(&self) -> bool {
+        self.transaction
+    }
+
+    /// Whether it holds unsaved edits: the document changed, or an edit under way.
     pub fn unsaved(&self) -> bool {
-        self.transaction || self.beginning || !self.edits.idle()
+        self.changed() || self.beginning || !self.edits.idle()
+    }
+
+    /// Whether a save or a revert that was to close it was refused since this was last asked.
+    pub fn take_close_refused(&mut self) -> bool {
+        std::mem::take(&mut self.close_refused)
     }
 
     /// The session's state as it is now (`status` and the published model, each answered at
     /// once), every command under way polled, and the reads a change needs started.
     pub fn poll<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         let status = sessions.status(&self.id);
-        self.took_session(&status);
+        // Answered at once, of the session as it is: its revision and transaction are now.
+        if let Some(session) = &status.session {
+            self.revision = session.revision;
+            self.transaction = session.transaction;
+        }
         match status.result {
             Ok(status) => self.status = Some(status),
             // Its session isn't open any more: the tab goes.
@@ -215,9 +268,11 @@ impl Tab {
         self.read_check(sessions);
     }
 
-    /// The session as `response` left it.
+    /// The session as `response` left it, if that's no older than what the tab knows.
     fn took_session<T>(&mut self, response: &Response<T>) {
-        if let Some(session) = &response.session {
+        if let Some(session) = &response.session
+            && session.revision >= self.revision
+        {
             self.revision = session.revision;
             self.transaction = session.transaction;
         }
@@ -227,16 +282,7 @@ impl Tab {
         if let Some(read) = self.timeline_read.take() {
             match read.try_take() {
                 Ok(response) => match response.result {
-                    Ok(timeline) => {
-                        // Marks read again only for a timeline with any; none, none said.
-                        if !marked(&timeline) {
-                            self.said.clear();
-                        }
-                        if timeline.problems == 0 {
-                            self.document_problems.clear();
-                        }
-                        self.timeline = Some(timeline);
-                    }
+                    Ok(timeline) => self.took_timeline(timeline),
                     Err(problems) => {
                         // Nothing published yet: read the current model's, which waits for
                         // its rebuild, next.
@@ -270,6 +316,19 @@ impl Tab {
             self.under.push(Under::Close(sessions.close(&self.id)));
         }
         self.take_edit(sessions);
+        self.send_pending(sessions);
+    }
+
+    /// A timeline read: kept, and the browser's rows worked out from it once.
+    fn took_timeline(&mut self, timeline: TimelineAnswer) {
+        if !marked(&timeline) {
+            self.said.clear();
+        }
+        if timeline.problems == 0 {
+            self.document_problems.clear();
+        }
+        self.browser = browser(&timeline);
+        self.timeline = Some(timeline);
     }
 
     /// `under` polled: none if it answered (what it changed taken), or it back.
@@ -292,13 +351,7 @@ impl Tab {
             } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
-                    match response.result {
-                        Ok(_) => {
-                            self.disk_choice = DiskChoice::None;
-                            *close |= then_close;
-                        }
-                        Err(problems) => self.message = Some(said(&problems)),
-                    }
+                    self.ended(response.result.map(|_| ()), then_close, close);
                     None
                 }
                 Err(running) => Some(Under::Commit {
@@ -312,13 +365,7 @@ impl Tab {
             } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
-                    match response.result {
-                        Ok(_) => {
-                            self.disk_choice = DiskChoice::None;
-                            *close |= then_close;
-                        }
-                        Err(problems) => self.message = Some(said(&problems)),
-                    }
+                    self.ended(response.result.map(|_| ()), then_close, close);
                     None
                 }
                 Err(running) => Some(Under::Rollback {
@@ -340,12 +387,30 @@ impl Tab {
                 Ok(response) => {
                     match response.result {
                         Ok(Closed) => self.closed = true,
-                        Err(problems) => self.message = Some(said(&problems)),
+                        Err(problems) => {
+                            self.message = Some(said(&problems));
+                            self.close_refused = true;
+                        }
                     }
                     None
                 }
                 Err(running) => Some(Under::Close(running)),
             },
+        }
+    }
+
+    /// A save's or a revert's answer: the transaction ended, then closed if `then_close`; or
+    /// refused, said, and, if it was to close, the tab kept and that said too.
+    fn ended(&mut self, result: Result<(), Problems>, then_close: bool, close: &mut bool) {
+        match result {
+            Ok(()) => {
+                self.disk_choice = DiskChoice::None;
+                *close |= then_close;
+            }
+            Err(problems) => {
+                self.message = Some(said(&problems));
+                self.close_refused |= then_close;
+            }
         }
     }
 
@@ -380,6 +445,28 @@ impl Tab {
         ));
     }
 
+    /// What waits for the edits sent once they've all answered and none waits.
+    fn send_pending<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if !self.edits.idle() || self.beginning {
+            return;
+        }
+        match self.pending.take() {
+            Some(Pending::Save { then_close }) => self.under.push(Under::Commit {
+                running: sessions.commit(&self.id),
+                then_close,
+            }),
+            Some(Pending::Step { undo }) => {
+                let running = if undo {
+                    sessions.undo(&self.id, self.revision, None)
+                } else {
+                    sessions.redo(&self.id, self.revision, None)
+                };
+                self.under.push(Under::Step(running));
+            }
+            None => {}
+        }
+    }
+
     /// `edit` made by the person: inside the tab's transaction, begun first if none is open
     /// (decision 1), and sent now if no edit is in flight, or else waiting (section 3).
     pub fn edit<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, edit: Edit) {
@@ -391,18 +478,20 @@ impl Tab {
         self.take_edit(sessions);
     }
 
-    /// Save (`commit`), then, if `then_close`, close.
+    /// Save (`commit`), then, if `then_close`, close: once every edit made before it has
+    /// answered, so the commit saves them all.
     pub fn save<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
-        self.under.push(Under::Commit {
-            running: sessions.commit(&self.id),
-            then_close,
-        });
+        self.pending = Some(Pending::Save { then_close });
+        self.send_pending(sessions);
     }
 
     /// Revert (`rollback`): the file's text, byte for byte; then, if `then_close`, close.
-    /// Also how a file changed on disk is reloaded with edits held: the session reloads it
-    /// once the transaction has ended (section 4).
+    /// The edits waiting are dropped (one in flight answers first, and the rollback undoes
+    /// it). Also how a file changed on disk is reloaded with edits held: the session reloads
+    /// it once the transaction has ended (section 4).
     pub fn revert<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
+        self.edits.waiting.clear();
+        self.pending = None;
         self.under.push(Under::Rollback {
             running: sessions.rollback(&self.id),
             then_close,
@@ -410,31 +499,41 @@ impl Tab {
     }
 
     /// Close, its edits saved or dropped first (`close` is refused inside a transaction,
-    /// decision 22).
+    /// decision 22); any waiting dropped.
     pub fn close<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        self.edits.waiting.clear();
+        self.pending = None;
         self.under.push(Under::Close(sessions.close(&self.id)));
     }
 
-    /// Undo or redo one edit of the transaction.
+    /// Undo or redo one edit of the transaction, once the edits made before it have
+    /// answered.
     pub fn step<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, undo: bool) {
-        let running = if undo {
-            sessions.undo(&self.id, self.revision, None)
-        } else {
-            sessions.redo(&self.id, self.revision, None)
-        };
-        self.under.push(Under::Step(running));
+        self.pending = Some(Pending::Step { undo });
+        self.send_pending(sessions);
+    }
+
+    /// Whether the stop can stop what's running: a command a client sent, never the
+    /// session's own reload, which nothing cancels (section 3).
+    pub fn stoppable(&self) -> bool {
+        self.status
+            .as_ref()
+            .and_then(|status| status.running)
+            .and_then(RunningCommand::command)
+            .is_some()
     }
 
     /// Stop what's running (`cancel`), if a command a client sent is: never the session's
-    /// own reload, which nothing cancels.
+    /// own reload, which nothing cancels. A refusal is said.
     pub fn stop<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         if let Some(command) = self
             .status
             .as_ref()
             .and_then(|status| status.running)
             .and_then(RunningCommand::command)
+            && let Err(problems) = sessions.cancel(&self.id, command).result
         {
-            let _ = sessions.cancel(&self.id, command);
+            self.message = Some(said(&problems));
         }
     }
 
@@ -467,18 +566,25 @@ impl Tab {
         self.timeline_read = Some(sessions.timeline(&self.id, model));
     }
 
-    /// The text of the marks read once a timeline says there are problems or warnings:
-    /// from a `check` of the published model, or, for a document the gate refused, of the
-    /// current one, which answers with the gate's problems.
+    /// The problems' text read (section 3, *When the app reads*): a document the gate
+    /// refused, whose problems the property panel shows, as it's read; a feature's marks
+    /// only once the person opens one (selects a marked feature), from a `check` of the
+    /// published model.
     fn read_check<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         let Some(timeline) = &self.timeline else {
             return;
         };
         let asked = (timeline.revision, timeline.model);
-        if self.check_read.is_some() || self.checked == Some(asked) || !marked(timeline) {
+        let gate = timeline.problems > 0;
+        let opened =
+            self.selected.as_ref().is_some_and(|selected| {
+                timeline.features.iter().flatten().any(|entry| {
+                    &entry.id == selected && (entry.problems > 0 || entry.warnings > 0)
+                })
+            });
+        if self.check_read.is_some() || self.checked == Some(asked) || !(gate || opened) {
             return;
         }
-        let gate = timeline.problems > 0;
         let model = if gate || timeline.model.is_none() {
             CheckModel::Current { fresh: false }
         } else {
@@ -529,4 +635,72 @@ fn marked(timeline: &TimelineAnswer) -> bool {
                 .iter()
                 .any(|entry| entry.problems > 0 || entry.warnings > 0)
         })
+}
+
+/// The browser's rows of `timeline` (section 8): its bodies, the model's (`bodies`; a chain
+/// whose last feature failed built no body there, and the core's timeline doesn't report
+/// one, so none is listed for it), each marked by the worst of its chain's features (the
+/// first in error, else the first with a warning); and its sketches, each marked by its own.
+/// Each feature found by its ID once, through a map.
+pub fn browser(timeline: &TimelineAnswer) -> Browser {
+    let entries = timeline.features.as_deref().unwrap_or_default();
+    let place: BTreeMap<&FeatureId, usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(at, entry)| (&entry.id, at))
+        .collect();
+    let row = |entry: &Entry, worst: Option<usize>| Row {
+        id: entry.id.clone(),
+        name: entry.name.clone(),
+        health: worst.map_or(Health::Healthy, |at| entries[at].health),
+        marked_by: worst.map(|at| entries[at].id.clone()),
+    };
+    let bodies = timeline
+        .bodies
+        .iter()
+        .filter_map(|id| place.get(id).copied())
+        .map(|at| {
+            let chain = chain(entries, &place, at);
+            let worst = chain
+                .iter()
+                .copied()
+                .find(|&i| entries[i].health == Health::Error)
+                .or_else(|| {
+                    chain
+                        .iter()
+                        .copied()
+                        .find(|&i| entries[i].health == Health::Warning)
+                });
+            row(&entries[at], worst)
+        })
+        .collect();
+    let sketches = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.kind == "sketch")
+        .map(|(at, entry)| {
+            let marked = matches!(entry.health, Health::Error | Health::Warning);
+            row(entry, marked.then_some(at))
+        })
+        .collect();
+    Browser { bodies, sketches }
+}
+
+/// The places of the features `entries[at]` is built from (its inputs, and theirs), with
+/// its own, in timeline order.
+fn chain(entries: &[Entry], place: &BTreeMap<&FeatureId, usize>, at: usize) -> Vec<usize> {
+    let mut found = std::collections::BTreeSet::new();
+    let mut to_visit = vec![at];
+    while let Some(next) = to_visit.pop() {
+        if !found.insert(next) {
+            continue;
+        }
+        to_visit.extend(
+            entries[next]
+                .inputs
+                .iter()
+                .filter_map(|input| place.get(input)),
+        );
+    }
+    found.into_iter().collect()
 }

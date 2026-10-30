@@ -14,9 +14,26 @@ fn main() -> ExitCode {
     let workers = match silico_core::workers::find() {
         Ok(workers) => workers,
         Err(missing) => {
-            let mut stderr = std::io::stderr().lock();
-            for why in missing {
-                let _ = writeln!(stderr, "silico-app: {why}");
+            {
+                let mut stderr = std::io::stderr().lock();
+                for why in &missing {
+                    let _ = writeln!(stderr, "silico-app: {why}");
+                }
+            }
+            // Shown in a window too, which needs no worker, for a launch with no terminal.
+            let shown = eframe::run_native(
+                "Silico",
+                options(),
+                Box::new(move |creation| {
+                    silico_app::theme::apply(&creation.egui_ctx);
+                    Ok(Box::new(silico_app::missing::Missing::new(missing)))
+                }),
+            );
+            if let Err(e) = shown {
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "silico-app: the window failed: {e}"
+                );
             }
             return ExitCode::from(2);
         }
@@ -33,16 +50,9 @@ fn main() -> ExitCode {
     if let Err(e) = warm {
         tracing::warn!("the workers can't be warmed ahead of the first rebuild: {e}");
     }
-    let options = eframe::NativeOptions {
-        renderer: eframe::Renderer::Wgpu,
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("Silico")
-            .with_inner_size([1280.0, 800.0]),
-        ..Default::default()
-    };
     let ran = eframe::run_native(
         "Silico",
-        options,
+        options(),
         Box::new(move |creation| {
             silico_app::theme::apply(&creation.egui_ctx);
             Ok(Box::new(App::new(sessions)))
@@ -57,5 +67,16 @@ fn main() -> ExitCode {
             );
             ExitCode::from(1)
         }
+    }
+}
+
+/// The window's options: drawn by eframe on wgpu.
+fn options() -> eframe::NativeOptions {
+    eframe::NativeOptions {
+        renderer: eframe::Renderer::Wgpu,
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_title("Silico")
+            .with_inner_size([1280.0, 800.0]),
+        ..Default::default()
     }
 }

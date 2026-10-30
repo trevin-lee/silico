@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, RichText, Ui};
-use silico_core::command::{Opened, RebuildState, Running, RunningCommand, Sessions};
+use silico_core::command::{Opened, RebuildState, Running, RunningCommand, SessionId, Sessions};
 use silico_core::disk::{DISK_CHECK_INTERVAL, Disk};
 use silico_core::document::FeatureId;
 use silico_core::kernel::Clients;
@@ -34,8 +34,9 @@ pub const IDLE_FRAME: Duration = DISK_CHECK_INTERVAL.saturating_add(IDLE_MARGIN)
 enum Asking {
     /// A path to open, or (`create`) to make a new document at (open item 30).
     Path { create: bool },
-    /// Whether to save a changed document before closing it (docs/ux/solidworks.md, §6).
-    Close(usize),
+    /// Whether to save a changed document before closing it (docs/ux/solidworks.md, §6),
+    /// by its session, whatever opens or closes meanwhile.
+    Close(SessionId),
     /// Whether to save the changed documents before quitting.
     Quit,
 }
@@ -44,14 +45,15 @@ enum Asking {
 pub struct App<P: Clients + 'static> {
     sessions: Arc<Sessions<P>>,
     tabs: Vec<Tab>,
-    active: usize,
+    /// The tab shown, by its session.
+    active: Option<SessionId>,
     opening: Vec<(String, Running<Opened>)>,
     asking: Option<Asking>,
     /// The path field's text, while a path is asked for.
     path: String,
     tree: egui_tiles::Tree<Pane>,
     /// The property panel's name field, while it's typed in.
-    name: Option<(FeatureId, String)>,
+    name: Option<(SessionId, FeatureId, String)>,
     /// The last refusal not of a tab's (an open's), as said to the person.
     message: Option<String>,
     /// Quitting: once every tab has closed, the window does.
@@ -69,7 +71,7 @@ impl<P: Clients + 'static> App<P> {
         App {
             sessions,
             tabs: Vec::new(),
-            active: 0,
+            active: None,
             opening: Vec::new(),
             asking: None,
             path: String::new(),
@@ -129,16 +131,16 @@ impl<P: Clients + 'static> App<P> {
         self.status_bar(ui, &mut started);
         self.disk_banner(ui, &mut started);
         egui::CentralPanel::default().show(ui, |ui| {
+            let active = self.active_place();
             let App {
                 tree,
                 tabs,
-                active,
                 sessions,
                 name,
                 ..
             } = self;
             let mut panes = Panes {
-                tab: tabs.get_mut(*active),
+                tab: active.and_then(|at| tabs.get_mut(at)),
                 sessions,
                 name,
                 started: &mut started,
@@ -149,13 +151,16 @@ impl<P: Clients + 'static> App<P> {
         if self.quitting && self.tabs.is_empty() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
+        // The window never closes while a tab holds edits: the person is asked, unless a
+        // quit is already closing them, which closes the window once every tab has gone.
         if ui.ctx().input(|input| input.viewport().close_requested())
-            && !self.quitting
             && self.tabs.iter().any(Tab::unsaved)
         {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.asking = Some(Asking::Quit);
+            if !self.quitting {
+                self.asking = Some(Asking::Quit);
+            }
         }
         if started {
             // Polled next frame, even if it answered at once.
@@ -174,7 +179,7 @@ impl<P: Clients + 'static> App<P> {
                     Ok(opened) => {
                         self.tabs
                             .push(Tab::opened(opened.session, path, &opened.problems));
-                        self.active = self.tabs.len() - 1;
+                        self.active = Some(opened.session);
                         self.message = None;
                     }
                     Err(problems) => self.message = Some(said(&problems)),
@@ -184,11 +189,23 @@ impl<P: Clients + 'static> App<P> {
         }
         for tab in &mut self.tabs {
             tab.poll(&self.sessions);
+            if tab.take_close_refused() && self.quitting {
+                // A tab's save or revert was refused: it stays, holding its edits, and the
+                // quit stops, said.
+                self.quitting = false;
+                self.message = Some(format!("Quit stopped: {} wasn't closed", tab.name()));
+            }
         }
         self.tabs.retain(|tab| !tab.closed);
-        if self.active >= self.tabs.len() {
-            self.active = self.tabs.len().saturating_sub(1);
+        if self.active_place().is_none() {
+            self.active = self.tabs.last().map(|tab| tab.id);
         }
+    }
+
+    /// The place among the tabs of the one shown, if one is.
+    fn active_place(&self) -> Option<usize> {
+        let active = self.active?;
+        self.tabs.iter().position(|tab| tab.id == active)
     }
 
     /// Ctrl+S saves, Ctrl+W closes, Ctrl+Z and Ctrl+Y undo and redo (docs/ux/solidworks.md,
@@ -209,7 +226,7 @@ impl<P: Clients + 'static> App<P> {
             pressed(Key::Y),
         );
         let stop = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
-        let Some(tab) = self.tabs.get_mut(self.active) else {
+        let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return false;
         };
         let sessions = &self.sessions;
@@ -225,19 +242,19 @@ impl<P: Clients + 'static> App<P> {
         if stop {
             tab.stop(sessions);
         }
-        if close {
-            self.close(self.active);
+        if close && let Some(id) = self.active {
+            self.close(id);
         }
         save || undo || redo || stop || close
     }
 
-    /// Close the tab at `at`: asking first if it holds edits (decision 1).
-    fn close(&mut self, at: usize) {
-        let Some(tab) = self.tabs.get_mut(at) else {
+    /// Close the tab of session `id`: asking first if it holds edits (decision 1).
+    fn close(&mut self, id: SessionId) {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
             return;
         };
         if tab.unsaved() {
-            self.asking = Some(Asking::Close(at));
+            self.asking = Some(Asking::Close(id));
         } else {
             tab.close(&self.sessions);
         }
@@ -252,8 +269,8 @@ impl<P: Clients + 'static> App<P> {
                 ui.horizontal_centered(|ui| {
                     let open = !self.tabs.is_empty();
                     let transaction = self
-                        .tabs
-                        .get(self.active)
+                        .active_place()
+                        .and_then(|at| self.tabs.get(at))
                         .is_some_and(|tab| tab.transaction);
                     ui.menu_button("File", |ui| {
                         if ui.button("New…").clicked() {
@@ -268,19 +285,23 @@ impl<P: Clients + 'static> App<P> {
                             .add_enabled(transaction, egui::Button::new("Revert"))
                             .clicked()
                         {
-                            if let Some(tab) = self.tabs.get_mut(self.active) {
+                            if let Some(tab) =
+                                self.active_place().and_then(|at| self.tabs.get_mut(at))
+                            {
                                 tab.revert(&self.sessions, false);
                                 *started = true;
                             }
                             ui.close();
                         }
                         if ui.add_enabled(open, egui::Button::new("Close")).clicked() {
-                            self.close(self.active);
+                            if let Some(id) = self.active {
+                                self.close(id);
+                            }
                             *started = true;
                             ui.close();
                         }
                     });
-                    let tab = self.tabs.get_mut(self.active);
+                    let tab = self.active_place().and_then(|at| self.tabs.get_mut(at));
                     if ui
                         .add_enabled(transaction, egui::Button::new("Save"))
                         .clicked()
@@ -293,7 +314,8 @@ impl<P: Clients + 'static> App<P> {
                         if ui
                             .add_enabled(transaction, egui::Button::new(word))
                             .clicked()
-                            && let Some(tab) = self.tabs.get_mut(self.active)
+                            && let Some(tab) =
+                                self.active_place().and_then(|at| self.tabs.get_mut(at))
                         {
                             tab.step(&self.sessions, undo);
                             *started = true;
@@ -301,14 +323,17 @@ impl<P: Clients + 'static> App<P> {
                     }
                     ui.separator();
                     let mut close = None;
-                    for (at, tab) in self.tabs.iter().enumerate() {
+                    for tab in &self.tabs {
                         let title = if tab.unsaved() {
                             format!("{} *", tab.name())
                         } else {
                             tab.name().to_owned()
                         };
-                        if ui.selectable_label(at == self.active, &title).clicked() {
-                            self.active = at;
+                        if ui
+                            .selectable_label(Some(tab.id) == self.active, &title)
+                            .clicked()
+                        {
+                            self.active = Some(tab.id);
                         }
                         let x = ui.add(egui::Button::new("×").frame(false));
                         let closing = format!("Close {}", tab.name());
@@ -316,11 +341,11 @@ impl<P: Clients + 'static> App<P> {
                             egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &closing)
                         });
                         if x.clicked() {
-                            close = Some(at);
+                            close = Some(tab.id);
                         }
                     }
-                    if let Some(at) = close {
-                        self.close(at);
+                    if let Some(id) = close {
+                        self.close(id);
                         *started = true;
                     }
                 });
@@ -353,7 +378,7 @@ impl<P: Clients + 'static> App<P> {
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     let message = self.message.clone();
-                    let Some(tab) = self.tabs.get_mut(self.active) else {
+                    let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
                         if let Some(message) = message {
                             ui.colored_label(ui.visuals().error_fg_color, message);
                         }
@@ -379,7 +404,7 @@ impl<P: Clients + 'static> App<P> {
                         (_, None) => String::new(),
                     };
                     ui.label(said);
-                    let stoppable = running.and_then(RunningCommand::command).is_some();
+                    let stoppable = tab.stoppable();
                     if ui
                         .add_enabled(stoppable, egui::Button::new("Stop"))
                         .clicked()
@@ -387,7 +412,7 @@ impl<P: Clients + 'static> App<P> {
                         tab.stop(&self.sessions);
                         *started = true;
                     }
-                    if let Some(message) = tab.message.clone().or(message) {
+                    for message in [message, tab.message.clone()].into_iter().flatten() {
                         ui.colored_label(ui.visuals().error_fg_color, message);
                     }
                 });
@@ -397,7 +422,7 @@ impl<P: Clients + 'static> App<P> {
     /// A file changed on disk while edits are held (section 4): Reload (`rollback`, after
     /// which the session reloads it) or keep the edits (a commit is then a conflict).
     fn disk_banner(&mut self, ui: &mut Ui, started: &mut bool) {
-        let Some(tab) = self.tabs.get_mut(self.active) else {
+        let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return;
         };
         let DiskChoice::Offered(disk) = tab.disk_choice else {
@@ -455,8 +480,12 @@ impl<P: Clients + 'static> App<P> {
                     }
                 });
             }
-            Asking::Close(at) => {
-                let name = self.tabs.get(at).map(|tab| tab.name().to_owned());
+            Asking::Close(id) => {
+                let name = self
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id == id)
+                    .map(|tab| tab.name().to_owned());
                 ui.label(format!(
                     "Save changes to {} before closing?",
                     name.as_deref().unwrap_or("the document")
@@ -464,14 +493,14 @@ impl<P: Clients + 'static> App<P> {
                 ui.horizontal(|ui| {
                     let sessions = &self.sessions;
                     if ui.button("Save").clicked() {
-                        if let Some(tab) = self.tabs.get_mut(at) {
+                        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
                             tab.save(sessions, true);
                         }
                         *started = true;
                         done = true;
                     }
                     if ui.button("Don't save").clicked() {
-                        if let Some(tab) = self.tabs.get_mut(at) {
+                        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
                             tab.revert(sessions, true);
                         }
                         *started = true;

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Color32, RichText, Sense, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType};
 use egui_tiles::{Tile, TileId, Tiles, Tree, UiResponse};
-use silico_core::command::Sessions;
+use silico_core::command::{SessionId, Sessions};
 use silico_core::document::FeatureId;
 use silico_core::document::json::Node;
 use silico_core::kernel::Clients;
@@ -66,7 +66,7 @@ pub struct Panes<'a, P: Clients + 'static> {
     pub sessions: &'a Arc<Sessions<P>>,
     /// The property panel's name field, while it's being typed in: the feature, and the
     /// text.
-    pub name: &'a mut Option<(FeatureId, String)>,
+    pub name: &'a mut Option<(SessionId, FeatureId, String)>,
     /// Whether a command was started: the frame after polls it.
     pub started: &'a mut bool,
 }
@@ -172,9 +172,8 @@ fn mark(ui: &mut Ui, health: Health, text: Option<&str>) {
 
 impl<P: Clients + 'static> Panes<'_, P> {
     /// The browser (section 8, *The browser*): Origin, Bodies, and Sketches, each row with a
-    /// visibility eye, its name, and its mark. A body is a chain's last feature, marked by the
-    /// worst of its chain; one the model couldn't build (its last feature failed) is listed
-    /// too, marked, since a failed feature's mark is on its browser entry (section 9).
+    /// visibility eye, its name, and its mark, from the rows the tab worked out as its
+    /// timeline was read ([`crate::tab::browser`]).
     fn browser(&mut self, ui: &mut Ui) {
         ui.label(RichText::new("BROWSER").small().strong());
         let Some(tab) = self.tab.as_deref_mut() else {
@@ -186,46 +185,38 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 row(ui, &mut tab.hidden, name, None, Health::Healthy, None);
             }
         });
-        let Some(timeline) = tab.timeline.clone() else {
+        if tab.timeline.is_none() {
             ui.weak("Building…");
             return;
-        };
-        let entries = timeline.features.clone().unwrap_or_default();
-        let bodies = browser_bodies(&entries, &timeline.bodies);
+        }
         let mut selected = tab.selected.clone();
-        group(ui, "Bodies", |ui| {
-            for &(body, worst) in &bodies {
-                let said = worst.and_then(|at| tab.said.get(entries[at].id.as_str()));
-                let health = worst.map_or(Health::Healthy, |at| entries[at].health);
-                let id = &entries[body].id;
-                let name = entries[body].name.clone();
-                if row(
-                    ui,
-                    &mut tab.hidden,
-                    &name,
-                    Some(selected.as_ref() == Some(id)),
-                    health,
-                    said.map(|said| said.message.as_str()),
-                ) {
-                    selected = Some(id.clone());
+        let crate::tab::Tab {
+            browser,
+            hidden,
+            said,
+            ..
+        } = &mut *tab;
+        for (name, rows) in [("Bodies", &browser.bodies), ("Sketches", &browser.sketches)] {
+            group(ui, name, |ui| {
+                for each in rows {
+                    let text = each
+                        .marked_by
+                        .as_ref()
+                        .and_then(|by| said.get(by.as_str()))
+                        .map(|said| said.message.as_str());
+                    if row(
+                        ui,
+                        hidden,
+                        &each.name,
+                        Some(selected.as_ref() == Some(&each.id)),
+                        each.health,
+                        text,
+                    ) {
+                        selected = Some(each.id.clone());
+                    }
                 }
-            }
-        });
-        group(ui, "Sketches", |ui| {
-            for entry in entries.iter().filter(|entry| entry.kind == "sketch") {
-                let said = tab.said.get(entry.id.as_str());
-                if row(
-                    ui,
-                    &mut tab.hidden,
-                    &entry.name,
-                    Some(selected.as_ref() == Some(&entry.id)),
-                    entry.health,
-                    said.map(|said| said.message.as_str()),
-                ) {
-                    selected = Some(entry.id.clone());
-                }
-            }
-        });
+            });
+        }
         tab.selected = selected;
     }
 
@@ -292,18 +283,27 @@ impl<P: Clients + 'static> Panes<'_, P> {
             ui.weak("Select a feature on the timeline or in the browser");
             return;
         };
+        // The text typed, kept for this document's feature alone: two documents may hold
+        // features of one ID.
         let typed = match self.name.take() {
-            Some((id, text)) if id == entry.id => text,
+            Some((session, id, text)) if session == tab.id && id == entry.id => text,
             _ => entry.name.clone(),
         };
         let mut text = typed.clone();
         ui.horizontal(|ui| {
             let label = ui.label("Name");
-            ui.add(egui::TextEdit::singleline(&mut text))
-                .labelled_by(label.id);
+            // An ID of its own, the document's and the feature's, so its cursor and focus
+            // stay put however the panel above it changes.
+            ui.add(egui::TextEdit::singleline(&mut text).id_salt((
+                "name",
+                tab.id.to_string(),
+                entry.id.as_str(),
+            )))
+            .labelled_by(label.id);
         });
-        if text != typed && !text.is_empty() {
-            // Each change an edit, coalesced in the tab (section 3).
+        if text != typed {
+            // Each change an edit, coalesced in the tab (section 3); an empty name too, for
+            // the core to refuse and the tab to say why.
             if let Ok(value) = name_value(&text) {
                 tab.edit(
                     self.sessions,
@@ -316,7 +316,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 *self.started = true;
             }
         }
-        *self.name = Some((entry.id.clone(), text));
+        *self.name = Some((tab.id, entry.id.clone(), text));
         ui.label(format!("Type: {}", entry.kind));
         if let Some(said) = tab.said.get(entry.id.as_str()) {
             let colour = match entry.health {
@@ -395,65 +395,6 @@ fn row(
     .inner
 }
 
-/// The bodies the browser lists, in timeline order, each a chain's last feature, its place
-/// among `entries`, with the place of the worst-marked feature of its chain (the first in
-/// error, else the first with a warning): the model's bodies, and each chain's last feature
-/// the model couldn't build, which a failed feature leaves.
-fn browser_bodies(entries: &[Entry], bodies: &[FeatureId]) -> Vec<(usize, Option<usize>)> {
-    let place = |id: &FeatureId| entries.iter().position(|entry| &entry.id == id);
-    let consumed: std::collections::BTreeSet<&FeatureId> = entries
-        .iter()
-        .filter(|entry| entry.kind != "sketch")
-        .flat_map(|entry| entry.inputs.iter())
-        .collect();
-    let mut listed: Vec<usize> = bodies.iter().filter_map(place).collect();
-    for (at, entry) in entries.iter().enumerate() {
-        if entry.kind != "sketch"
-            && entry.health == Health::Error
-            && !consumed.contains(&entry.id)
-            && !listed.contains(&at)
-        {
-            listed.push(at);
-        }
-    }
-    listed.sort_unstable();
-    listed
-        .into_iter()
-        .map(|at| {
-            let chain = chain(entries, at);
-            let worst = chain
-                .iter()
-                .copied()
-                .find(|&i| entries[i].health == Health::Error)
-                .or_else(|| {
-                    chain
-                        .iter()
-                        .copied()
-                        .find(|&i| entries[i].health == Health::Warning)
-                });
-            (at, worst)
-        })
-        .collect()
-}
-
-/// The places of the features `entries[at]` is built from (its inputs, and theirs), with
-/// its own, in timeline order.
-fn chain(entries: &[Entry], at: usize) -> Vec<usize> {
-    let mut found = std::collections::BTreeSet::new();
-    let mut to_visit = vec![at];
-    while let Some(next) = to_visit.pop() {
-        if !found.insert(next) {
-            continue;
-        }
-        for input in &entries[next].inputs {
-            if let Some(place) = entries.iter().position(|entry| &entry.id == input) {
-                to_visit.push(place);
-            }
-        }
-    }
-    found.into_iter().collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,31 +412,75 @@ mod tests {
         }
     }
 
+    fn timeline(entries: &[Entry], bodies: &[&str]) -> silico_core::command::TimelineAnswer {
+        silico_core::command::TimelineAnswer {
+            revision: silico_core::command::Revision::OPENED,
+            model: Some(silico_core::command::Revision::OPENED),
+            problems: 0,
+            features: Some(entries.to_vec()),
+            bodies: bodies.iter().map(|b| FeatureId::new(b).unwrap()).collect(),
+        }
+    }
+
+    fn rows(browser: &[crate::tab::Row]) -> Vec<(String, Health, Option<String>)> {
+        browser
+            .iter()
+            .map(|row| {
+                (
+                    row.id.as_str().to_owned(),
+                    row.health,
+                    row.marked_by.as_ref().map(|by| by.as_str().to_owned()),
+                )
+            })
+            .collect()
+    }
+
     #[test]
-    fn a_failed_last_feature_is_listed_and_a_chain_is_marked_by_its_first_error() {
-        // The M2.1 example with its cut failed: the model's bodies are the block and the
-        // pin, whose consumer failed; the cut, which built nothing, is listed too, marked.
+    fn the_browsers_bodies_are_the_models_each_marked_by_the_first_worst_of_its_chain() {
+        // The M2.1 example with its cut failed: the model's bodies, the block and the pin,
+        // whose consumer failed, and nothing more (the cut built none); healthy.
         let entries = [
             entry("k7f2qx3m", "box", &[], Health::Healthy),
             entry("a91cw0de", "cylinder", &[], Health::Healthy),
             entry("m3tq8v0z", "cut", &["k7f2qx3m", "a91cw0de"], Health::Error),
         ];
-        let bodies = [
-            FeatureId::new("k7f2qx3m").unwrap(),
-            FeatureId::new("a91cw0de").unwrap(),
-        ];
-        let listed = browser_bodies(&entries, &bodies);
-        assert_eq!(listed, [(0, None), (1, None), (2, Some(2))]);
-        // Built, the cut is the one body, unmarked.
+        let failed = crate::tab::browser(&timeline(&entries, &["k7f2qx3m", "a91cw0de"]));
+        assert_eq!(
+            rows(&failed.bodies),
+            [
+                ("k7f2qx3m".to_owned(), Health::Healthy, None),
+                ("a91cw0de".to_owned(), Health::Healthy, None)
+            ]
+        );
+        // Built, the cut is the one body, unmarked; a warning upstream marks it, an error
+        // before it marks it so instead.
         let mut built = entries.clone();
         built[2].health = Health::Healthy;
-        let cut = [FeatureId::new("m3tq8v0z").unwrap()];
-        assert_eq!(browser_bodies(&built, &cut), [(2, None)]);
-        // A warning upstream marks the body, an error before it marks it so instead.
+        let body = |entries: &[Entry]| {
+            rows(&crate::tab::browser(&timeline(entries, &["m3tq8v0z"])).bodies)
+        };
+        assert_eq!(
+            body(&built),
+            [("m3tq8v0z".to_owned(), Health::Healthy, None)]
+        );
         built[0].health = Health::Warning;
-        assert_eq!(browser_bodies(&built, &cut), [(2, Some(0))]);
+        assert_eq!(
+            body(&built),
+            [(
+                "m3tq8v0z".to_owned(),
+                Health::Warning,
+                Some("k7f2qx3m".to_owned())
+            )]
+        );
         built[1].health = Health::Error;
-        assert_eq!(browser_bodies(&built, &cut), [(2, Some(1))]);
+        assert_eq!(
+            body(&built),
+            [(
+                "m3tq8v0z".to_owned(),
+                Health::Error,
+                Some("a91cw0de".to_owned())
+            )]
+        );
     }
 
     #[test]
