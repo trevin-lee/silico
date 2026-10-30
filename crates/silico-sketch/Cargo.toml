@@ -37,9 +37,13 @@ harness = false
 cpu-time.workspace = true
 libm.workspace = true
 proptest.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
-silico-core.workspace = true
+# The sketch edits' tests (tests/session_sketch_edits.rs): sessions on the fake kernel, their
+# sketches solved by this crate's worker.
+silico-core = { workspace = true, features = ["fake"] }
 silico-sketch = { path = ".", features = ["test_ops"] }
+tempfile.workspace = true
 
 [build-dependencies]
 cxx-build.workspace = true

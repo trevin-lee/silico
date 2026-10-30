@@ -4,6 +4,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 // Shared by the files below, each loaded once.
+#[path = "../../silico-core/tests/common/bracket.rs"]
+mod bracket;
 #[path = "../../silico-core/tests/common/sketch.rs"]
 mod fixture;
 #[path = "common/generate.rs"]
@@ -41,6 +43,8 @@ mod document_drag;
 mod drag;
 #[path = "extend.rs"]
 mod extend;
+#[path = "session_sketch_edits.rs"]
+mod session_sketch_edits;
 #[path = "sketch_edit.rs"]
 mod sketch_edit;
 #[path = "sketch_states.rs"]

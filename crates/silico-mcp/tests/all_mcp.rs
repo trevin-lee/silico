@@ -14,4 +14,5 @@ mod exact;
 mod handshake;
 mod hostile;
 mod lines;
+mod sketch_edits;
 mod timeline_commands;

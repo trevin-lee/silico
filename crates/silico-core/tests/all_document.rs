@@ -8,6 +8,8 @@
 // Shared by the files below, each loaded once.
 #[path = "common/bound.rs"]
 mod bound;
+#[path = "common/bracket.rs"]
+mod bracket;
 #[path = "common/cache.rs"]
 mod cache;
 #[path = "common/cache_control.rs"]
@@ -144,6 +146,8 @@ mod session_rebuild;
 mod session_reload;
 #[path = "session_render.rs"]
 mod session_render;
+#[path = "session_sketch_edits.rs"]
+mod session_sketch_edits;
 #[path = "session_tracing.rs"]
 mod session_tracing;
 #[path = "session_transactions.rs"]
