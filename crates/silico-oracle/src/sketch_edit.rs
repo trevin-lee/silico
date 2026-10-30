@@ -949,11 +949,12 @@ pub enum Shows {
     /// This report ([`Verdict::how`], joined by "; "), exactly.
     Difference(&'static str),
     /// Whatever it shows, where Silico's side is still a refusal by this rule (its kind;
-    /// what it names isn't compared): FreeCAD 1.1.3
+    /// what it names isn't compared), or, none, still by no rule (Silico made the edit, or
+    /// refused it for a reason no rule names): FreeCAD 1.1.3
     /// doesn't answer the case the same every run, so its answer is no oracle, and the case
     /// is shown as known, its report with it, never as an agreement or a difference. Silico's
     /// side otherwise is compared, and the known case a problem.
-    Varies(Rule),
+    Varies(Option<Rule>),
 }
 
 /// The case file's differences the note doesn't explain, each reported with its judgment;
@@ -969,27 +970,38 @@ pub const KNOWN: &[Known] = &[
     // `sketch-edit-sweep --seed 43 --count 500`'s case 6.
     Known {
         case: "edit_43_6",
-        shows: Shows::Varies(Rule::MergeHoldsOwn(String::new())),
+        shows: Shows::Varies(Some(Rule::MergeHoldsOwn(String::new()))),
         why: "FreeCAD 1.1.3 isn't the same run to run here: a merge after which a symmetric would mirror an end of n0000005 about n0000005 itself, which Silico refuses (:31, :303); FreeCAD's merge finds 14 constraints redundant (-2) on macOS, 10 of 10 runs, its solved geometry different in each, and on Linux (CI) one conflicting as well (-3). Either way its Coincident command rolls it back (:66), but an answer that varies is no oracle",
     },
     // `sketch-edit-sweep --seed 43 --count 500`'s case 229.
     Known {
         case: "edit_43_229",
-        shows: Shows::Varies(Rule::MergeSolveConflicts),
-        why: "FreeCAD 1.1.3 isn't the same run to run here, and its success isn't one: points merged from apart, p0000003 kept, its place 33 mm from where p0000001's distance_x and distance_y hold it. FreeCAD's merge solve reports success (0, 10 of 10 runs) with its geometry different in each run, and in one read here its merged places still 33 mm apart. Silico's merge solve starts from the kept point's place (:297) and fails (solve_failed, every solver converging short of the constraints), where started near the lock it solves to the sketch FreeCAD's coincidence should give, 21 degrees of freedom. Whether the merge starts its solve elsewhere is pending a decision",
+        shows: Shows::Varies(Some(Rule::MergeSolveFails)),
+        why: "FreeCAD 1.1.3 isn't the same run to run here, and its success isn't one: points merged from apart, p0000003 kept, its place 33 mm from where p0000001's distance_x and distance_y hold it. FreeCAD's merge solve reports success (0, 10 of 10 runs) with its geometry different in each run, and in one read here its merged places still 33 mm apart. Silico's merge solve starts from the kept point's place (:297) and fails (solve_failed, every solver converging short of the constraints), a refusal the note gives (:305, :307): named the other way round, the held point first, the merge solves, 21 degrees of freedom",
+    },
+    // `sketch-edit-sweep --seed 45 --count 500`'s case 93.
+    Known {
+        case: "edit_45_93",
+        shows: Shows::Varies(None),
+        why: "FreeCAD 1.1.3 isn't the same run to run here: a merge after which a tangent_on would put n0000005's end on c0000019, which the edge tangent k0000020 already makes it tangent to, a sketch the gate refuses (#290) and Silico refuses as the merge's (:303). FreeCAD makes the merge, its solve succeeding (0) in 8 of 10 runs, at a different place nearly every run, and failing (-1) in 2. The note gives #290's rule for a merge only through :303's merged sketch being gated",
     },
     // `sketch-edit-sweep --seed 32 --count 500`'s case 154.
     Known {
         case: "edit_32_154",
-        shows: Shows::Varies(Rule::MergeSolveUnbuildable),
+        shows: Shows::Varies(Some(Rule::MergeSolveUnbuildable)),
         why: "FreeCAD 1.1.3 isn't the same run to run here (:305): points merged from apart, whose solve shortens a line to nothing, which Silico refuses (:307); FreeCAD's solve mostly succeeds, its line 5e-13 mm long, and now and then (about 4 of 36 runs) fails (-1), which its Coincident command rolls back; alone in a script, it failed 3 of 20 runs and its 17 solves landed in three different places. Either outcome is the note's, but an answer that varies is no oracle",
     },
 ];
 
 /// Whether Silico's refusal was by a rule of `want`'s kind, whatever it names (a constraint's
-/// ID, which a constant can't hold).
-fn same_kind(rule: Option<&Rule>, want: &Rule) -> bool {
-    rule.is_some_and(|r| std::mem::discriminant(r) == std::mem::discriminant(want))
+/// ID, which a constant can't hold); or, `want` none, whether no rule's (Silico made the
+/// edit, or refused it for a reason no rule names).
+fn same_kind(rule: Option<&Rule>, want: Option<&Rule>) -> bool {
+    match (rule, want) {
+        (Some(r), Some(w)) => std::mem::discriminant(r) == std::mem::discriminant(w),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 /// `verdicts` less the [`KNOWN`] differences that showed: the cases that differ, a line for
@@ -1005,7 +1017,7 @@ pub fn without_known(
         };
         let difference = match &k.shows {
             Shows::Difference(difference) => *difference,
-            Shows::Varies(rule) if same_kind(v.rule.as_ref(), rule) => continue,
+            Shows::Varies(rule) if same_kind(v.rule.as_ref(), rule.as_ref()) => continue,
             Shows::Varies(rule) => {
                 missing.push(format!(
                     "{}: FreeCAD varies run to run here, but Silico's side is no longer the note's rule {rule:?} ({}); it now reads: {}",
@@ -1035,7 +1047,7 @@ pub fn without_known(
     }
     for v in verdicts {
         match known.iter().find(|k| k.case == v.case) {
-            Some(k) if matches!(&k.shows, Shows::Varies(rule) if same_kind(v.rule.as_ref(), rule)) =>
+            Some(k) if matches!(&k.shows, Shows::Varies(rule) if same_kind(v.rule.as_ref(), rule.as_ref())) =>
             {
                 let report = if v.how.is_empty() {
                     "agreed this run".to_owned()
@@ -1295,7 +1307,14 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
                     None => true,
                     // A merge FreeCAD's solve fails, which its Coincident command rolls back:
                     // one of the two outcomes the note gives it (:305).
-                    Some(Pinned::SolvesOrRollsBack) => rolled_back(p, theirs),
+                    // A failure (-1) leaves FreeCAD's geometry where it was, so its places are
+                    // checked; a solve worse otherwise (constraints redundant, -2) can move it
+                    // before the command's rollback, so they aren't.
+                    Some(Pinned::SolvesOrRollsBack) => {
+                        rolled_back(p, theirs)
+                            || (!matches!(theirs, Some(Theirs::Edited(fc)) if fc.after.code == -1)
+                                && rolled_back_worse(p, theirs))
+                    }
                     Some(Pinned::RollsBack) => rolled_back_worse(p, theirs),
                     Some(Pinned::Raises(text)) => raised(text),
                     // 1.1.3's vertex Delete raises only on an end with no coincidence (:261).
@@ -1436,6 +1455,8 @@ pub enum Rule {
     MergeNamesTwice(String),
     /// A merge whose solve conflicts (:304).
     MergeSolveConflicts,
+    /// A merge whose solve fails, from the kept point's place (:305, :307).
+    MergeSolveFails,
     /// A merge from apart whose solve's result Silico can't take (:305-307).
     MergeSolveUnbuildable,
     /// A merge whose sketch the gate refuses, its curve left 1e-7 mm or less where Silico
@@ -1466,6 +1487,7 @@ impl Rule {
             Rule::MergeNamesTwice(_) => vec![301],
             Rule::MergeSolveConflicts => vec![304],
             Rule::MergeSolveUnbuildable => vec![305, 306, 307],
+            Rule::MergeSolveFails => vec![305, 307],
             Rule::MergeGated(_) => vec![303],
             Rule::MergeHoldsOwn(_) => vec![31, 303],
             Rule::RemovePointInUse => vec![134, 136],
@@ -1488,7 +1510,7 @@ impl Rule {
             | Rule::SplitOffCurve(_)
             | Rule::TrimPoint
             | Rule::NoPieceTakes(_) => Some(Pinned::Edits),
-            Rule::MergeSolveUnbuildable => Some(Pinned::SolvesOrRollsBack),
+            Rule::MergeSolveUnbuildable | Rule::MergeSolveFails => Some(Pinned::SolvesOrRollsBack),
             Rule::MergeHoldsOwn(_) => Some(Pinned::RollsBack),
             Rule::RemovePointInUse => Some(Pinned::UnjoinsVertex),
             _ => None,
@@ -1511,9 +1533,10 @@ pub enum Pinned {
     Raises(&'static str),
     /// It makes the edit, and its result is what the note says, which the excusal checks.
     Edits,
-    /// It makes the merge, and its solve either succeeds, which the excusal checks, or fails
-    /// (-1), which its Coincident command rolls back, the sketch as it was before
-    /// ([`rolled_back`]): FreeCAD 1.1.3 isn't the same every run here (:305).
+    /// It makes the merge, and its solve either succeeds, which the excusal checks, or is
+    /// worse than before, which its Coincident command rolls back: a failure (-1), the sketch
+    /// as it was before ([`rolled_back`]), or constraints found redundant (-2, `edit_44_310`;
+    /// [`rolled_back_worse`]) (:305).
     SolvesOrRollsBack,
     /// Its Coincident command rolls the merge back as a worse solve (:66), nothing else of the
     /// sketch changed ([`rolled_back_worse`]).
@@ -1558,9 +1581,8 @@ pub fn rule(p: &Prepared) -> Option<Rule> {
                 return None;
             }
             return match e.code() {
-                silico_core::ErrorCode::OverConstrained | silico_core::ErrorCode::SolveFailed => {
-                    Some(Rule::MergeSolveConflicts)
-                }
+                silico_core::ErrorCode::OverConstrained => Some(Rule::MergeSolveConflicts),
+                silico_core::ErrorCode::SolveFailed => Some(Rule::MergeSolveFails),
                 silico_core::ErrorCode::InvalidResult if merged_apart(p).is_some() => {
                     Some(Rule::MergeSolveUnbuildable)
                 }
@@ -1885,6 +1907,11 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
             "points merged from apart, whose solve Silico refuses as a result it can't take ({NOTE}:305-307), where FreeCAD's coincidences solve"
         ))
         }
+        Rule::MergeSolveFails => (fc.after.code == 0 && merged_by_freecad(p, fc)).then(|| {
+            format!(
+                "a merge whose solve fails from the kept point's place: Silico refuses it ({NOTE}:305, :307), where FreeCAD's coincidences solve"
+            )
+        }),
         Rule::RemovePointInUse => {
             vertex_unjoined(p, fc).then(|| format!(
                 "removing a point curves use: Silico refuses it ({NOTE}:136, decision 7), FreeCAD's Delete on the vertex unjoins that curve's end and deletes no curve (:132-134)"

@@ -701,14 +701,22 @@ def edit_split(s, e, applied):
         which = lambda point: g if original.parameter(point) < ts else piece
         span = lambda t: g if 0 <= t <= ts else (piece if ts < t <= original.LastParameter else g)
         param = lambda point: original.parameter(point)
+    elif kind == "circle":
+        # A circle's two arcs, by angle about its centre, whatever range each one's
+        # parameters run over (the second's needn't run on from the first's): the
+        # start-side piece holds an angle within its sweep, the other piece the rest.
+        def within(geo, t):
+            a0, a1 = geo.FirstParameter, geo.LastParameter
+            return (t - a0) % (2 * math.pi) <= (a1 - a0) % (2 * math.pi)
+
+        param = lambda point: math.atan2(point.y - original.Center.y, point.x - original.Center.x)
+        which = lambda point: g if within(s.Geometry[g], param(point)) else piece
+        span = lambda t: g if within(s.Geometry[g], t) else piece
     else:
         first = s.Geometry[g].FirstParameter
         last = s.Geometry[piece].LastParameter
         ts = s.Geometry[g].LastParameter
-        if kind == "circle":
-            which = lambda point: g if round_parameter(original, point, first) < ts else piece
-        else:
-            which = lambda point: g if original.parameter(point) < ts else piece
+        which = lambda point: g if original.parameter(point) < ts else piece
         param = lambda point: round_parameter(original, point, first)
         span = lambda t: g if t <= ts else (piece if t <= last else g)
     if kind == "circle":
