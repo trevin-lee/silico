@@ -12,7 +12,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator};
 use super::elements::ModelChoiceSchema;
 use super::{ErrorSchema, Json, RequestFields, ToWire, close, wire_shape, words};
 use crate::command::session::SESSION_ID_PATTERN;
-use crate::command::sketch::{Region, SketchRead};
+use crate::command::sketch::{Region, SketchRead, state_word};
 use crate::command::{ModelChoice, Problems, SessionId};
 use crate::document::json::Node;
 use crate::document::{Coordinate, ElementId, ElementKind, FeatureId, Form, PROBLEMS_LISTED};
@@ -61,16 +61,13 @@ impl ToWire for SketchRead {
     fn to_wire(&self) -> Json<'_> {
         let frame = silico_protocol::SketchPlane::from(self.plane);
         let states = &self.states;
+        // Every member has one: a read whose member had none was refused as a bug
+        // (`command::sketch`'s `unstated`), so none is ever written null.
         let state = |kind: ElementKind, id: &ElementId| {
-            let word = match kind {
-                ElementKind::Point => states.points.get(id).map(|s| s.as_str()),
-                ElementKind::Line => states.lines.get(id).map(|s| s.as_str()),
-                ElementKind::Circle => states.circles.get(id).map(|s| s.as_str()),
-                ElementKind::Arc => states.arcs.get(id).map(|s| s.as_str()),
-                ElementKind::Constraint => states.constraints.get(id).map(|s| s.as_str()),
-            };
-            // Every member has one (`sketch_states::states` gives each a state).
-            vec![("state", Json::or_null(word, Json::str))]
+            state_word(states, kind, id)
+                .map(|word| ("state", Json::str(word)))
+                .into_iter()
+                .collect()
         };
         let [points, lines, circles, arcs, constraints] =
             Json::sketch_lists(&self.members, state).map(|(_, list)| list);

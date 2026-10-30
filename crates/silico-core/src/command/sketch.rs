@@ -12,7 +12,7 @@
 
 use super::elements::worded;
 use super::{ModelChoice, Problems, ReadCommand, Running, SessionId, Sessions};
-use crate::document::{ElementId, FeatureId, Operation, Plane, Sketch};
+use crate::document::{ElementId, ElementKind, FeatureId, Operation, Plane, Sketch};
 use crate::kernel::Clients;
 use crate::profile::{self, Profile};
 use crate::recompute::Model;
@@ -116,6 +116,7 @@ fn read_sketch(model: &Model, id: &FeatureId) -> Result<SketchRead, Problems> {
         }
         Err(_) => (sketch.clone(), Vec::new(), (Vec::new(), 0)),
     };
+    every_member_stated(id, &members, &states)?;
     Ok(SketchRead {
         sketch: id.clone(),
         plane: sketch.plane,
@@ -125,6 +126,46 @@ fn read_sketch(model: &Model, id: &FeatureId) -> Result<SketchRead, Problems> {
         profile_problems,
         profile_problems_total,
     })
+}
+
+/// The state `states` gives the member `id` of `kind`, as its word: none only if it gives
+/// that member none.
+pub(super) fn state_word(
+    states: &SketchStates,
+    kind: ElementKind,
+    id: &ElementId,
+) -> Option<&'static str> {
+    match kind {
+        ElementKind::Point => states.points.get(id).map(|s| s.as_str()),
+        ElementKind::Line => states.lines.get(id).map(|s| s.as_str()),
+        ElementKind::Circle => states.circles.get(id).map(|s| s.as_str()),
+        ElementKind::Arc => states.arcs.get(id).map(|s| s.as_str()),
+        ElementKind::Constraint => states.constraints.get(id).map(|s| s.as_str()),
+    }
+}
+
+/// Whether `states` gives every member of `members`, the sketch `id`'s, a state, as
+/// [`sketch_states::states`] gives each one. The first in the format's order that has none is
+/// a bug: an `internal` error naming it and the sketch, so the read is refused rather than
+/// written with a member that has no state.
+fn every_member_stated(
+    id: &FeatureId,
+    members: &Sketch,
+    states: &SketchStates,
+) -> Result<(), Error> {
+    match members
+        .elements()
+        .find(|&(member, kind)| state_word(states, kind, member).is_none())
+    {
+        None => Ok(()),
+        Some((member, kind)) => Err(Error::new(
+            ErrorCode::Internal,
+            format!("the sketch's {} {member} was given no state", kind.noun()),
+        )
+        .with_feature(id.as_str())
+        .with_elements([member.as_str()])
+        .with_suggestion(SILICO_BUG)),
+    }
 }
 
 /// Why the model holds no solve of its sketch `id`: what became of it, as `check` reports
@@ -190,4 +231,93 @@ fn regions(profile: &Profile) -> Vec<Region> {
             holes: r.holes.iter().map(curves).collect(),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{Coordinate, SketchLine, SketchPoint};
+    use crate::sketch::Dependencies;
+    use crate::sketch_states::{MemberState, SketchState};
+
+    fn point(id: &str) -> SketchPoint {
+        SketchPoint {
+            id: ElementId::new(id).unwrap(),
+            x: Coordinate::new(0.0).unwrap(),
+            y: Coordinate::new(1.0).unwrap(),
+            construction: false,
+        }
+    }
+
+    #[test]
+    fn a_member_given_no_state_refuses_the_read_naming_the_first_in_the_formats_order() {
+        // Two points and a line; the states give the first point one and nothing else.
+        // The line comes after every point in the format's order, so the second point is
+        // named first; with it stated, the line; with that, nothing.
+        let sketch = Sketch {
+            plane: Plane::Xy,
+            points: vec![point("p0000001"), point("p0000002")],
+            lines: vec![SketchLine {
+                id: ElementId::new("n0000001").unwrap(),
+                from: ElementId::new("p0000001").unwrap(),
+                to: ElementId::new("p0000002").unwrap(),
+                construction: false,
+            }],
+            circles: Vec::new(),
+            arcs: Vec::new(),
+            constraints: Vec::new(),
+        };
+        let id = FeatureId::new("k7f2qx3m").unwrap();
+        let p1 = ElementId::new("p0000001").unwrap();
+        let p2 = ElementId::new("p0000002").unwrap();
+        let mut states = SketchStates {
+            state: SketchState::UnderDefined,
+            dofs: 4,
+            points: [(p1, MemberState::UnderDefined)].into(),
+            lines: Default::default(),
+            circles: Default::default(),
+            arcs: Default::default(),
+            constraints: Default::default(),
+            dependencies: Dependencies::default(),
+            solve_problem: None,
+        };
+        let refused = |states: &SketchStates| {
+            every_member_stated(&id, &sketch, states).map_err(|e| {
+                (
+                    e.code(),
+                    e.message().to_owned(),
+                    e.feature().map(str::to_owned),
+                    e.elements().to_vec(),
+                    e.suggestion().map(str::to_owned),
+                )
+            })
+        };
+        let bug = Some(SILICO_BUG.to_owned());
+        assert_eq!(
+            refused(&states),
+            Err((
+                ErrorCode::Internal,
+                "the sketch's point p0000002 was given no state".to_owned(),
+                Some("k7f2qx3m".to_owned()),
+                vec!["p0000002".to_owned()],
+                bug.clone(),
+            ))
+        );
+        states.points.insert(p2, MemberState::UnderDefined);
+        assert_eq!(
+            refused(&states),
+            Err((
+                ErrorCode::Internal,
+                "the sketch's line n0000001 was given no state".to_owned(),
+                Some("k7f2qx3m".to_owned()),
+                vec!["n0000001".to_owned()],
+                bug,
+            ))
+        );
+        states.lines.insert(
+            ElementId::new("n0000001").unwrap(),
+            MemberState::UnderDefined,
+        );
+        assert_eq!(refused(&states), Ok(()));
+    }
 }
