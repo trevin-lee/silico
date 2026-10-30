@@ -1,0 +1,1 @@
+{"code": "invalid_input", "message": "line na000002 can't extend to (61, 10): the point is 1 mm from its line, farther than 1e-7 mm", "feature": "s0000001", "elements": ["na000002"], "elements_total": 1, "parameter": "by", "cause": null, "suggestion": "give a point on its line, such as where it meets another curve", "candidates": []}

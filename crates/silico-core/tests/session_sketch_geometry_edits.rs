@@ -1,4 +1,4 @@
-//! `sketch_split`, `sketch_trim`, `sketch_unjoin`, and `sketch_merge` (docs/design/m5.0-app.md,
+//! `sketch_split`, `sketch_trim`, `sketch_unjoin`, `sketch_merge`, and `sketch_extend` (docs/design/m5.0-app.md,
 //! section 7, *The sketch edits*), through the sessions' own command called by name, as a
 //! transport calls it (`Sessions::call`), on the fake kernel and the fake sketch solver.
 //! Expected values: the design's examples, byte for byte (each file the design's own block);
@@ -15,12 +15,16 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use silico_core::cache::Cache;
 use silico_core::command::wire::sketch_edits::{
-    SketchMergeRequest, SketchSplitRequest, SketchTrimRequest, SketchUnjoinRequest,
+    SketchExtendRequest, SketchMergeRequest, SketchSplitRequest, SketchTrimRequest,
+    SketchUnjoinRequest,
 };
 use silico_core::command::wire::{Layout, ToWire, write};
-use silico_core::command::{Answered, Call, Revision, SessionCommand, SessionId, Sessions};
+use silico_core::command::{
+    Answered, Call, ExtendBy, Revision, SessionCommand, SessionId, Sessions,
+};
 use silico_core::document::json::{Node, read};
-use silico_core::document::{ElementId, FeatureId};
+use silico_core::document::{ElementId, FeatureId, Length};
+use silico_core::extend::End;
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::sketch::SketchSolver;
 use silico_protocol::{SketchGeometry, SketchSystem, SolveStatus, Solved};
@@ -410,7 +414,7 @@ fn the_geometry_edits_examples_are_the_designs_own_text() {
         (
             "sketch_merge",
             "#### `sketch_merge`",
-            "## 8. The layout",
+            "#### `sketch_extend`",
             &["request", "result", "refused-both-ends"],
         ),
     ] {
@@ -1823,6 +1827,590 @@ fn a_split_of_an_arc_or_a_circle_lists_the_features_storing_a_name_made_from_it_
         ),
     );
     assert_eq!(result["references"], json!(["f000000c"]), "{result}");
+}
+
+// ------------------------------------------------------------------ sketch_extend
+
+fn extend(revision: u64, sketch: &str, curve: &str, end: &str, by: Value) -> String {
+    json!({"session": "s1", "revision": revision, "sketch": sketch, "curve": curve, "end": end, "by": by}).to_string()
+}
+
+#[test]
+fn the_extends_examples_are_the_designs_own_text_and_its_requests_read_and_write_back() {
+    let files = [
+        "request",
+        "result",
+        "request-next-curve",
+        "refused-no-next-curve",
+        "refused-not-a-line-or-arc",
+        "refused-zero",
+        "refused-to-nothing",
+        "refused-off-line",
+        "refused-held",
+    ];
+    let blocks = design("#### `sketch_extend`", "## 8. The layout");
+    assert_eq!(blocks.len(), files.len());
+    for (block, file) in blocks.iter().zip(files) {
+        assert_eq!(
+            format!("{block}\n"),
+            example(&format!("sketch_extend/{file}")),
+            "{file}"
+        );
+    }
+    let mut found: Vec<String> = std::fs::read_dir(contract("commands/examples/sketch_extend"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    found.sort();
+    let mut want: Vec<String> = files.iter().map(|f| format!("{f}.json")).collect();
+    want.sort();
+    assert_eq!(found, want);
+    // Each request, read and written back, held by the schema.
+    let schema = schema_of("sketch_extend", "request");
+    let text = example("sketch_extend/request");
+    let request = SketchExtendRequest::read(&parsed(&text)).unwrap();
+    assert_eq!(
+        request,
+        SketchExtendRequest {
+            session: s1(),
+            revision: revision(13),
+            sketch: fid("s0000001"),
+            curve: eid("na000002"),
+            end: End::End,
+            by: ExtendBy::Length(Length::from_nm(2_000_000)),
+        }
+    );
+    assert_eq!(written(&request), text);
+    holds(&schema, &text, "extend");
+    let text = example("sketch_extend/request-next-curve");
+    let request = SketchExtendRequest::read(&parsed(&text)).unwrap();
+    assert_eq!(request.by, ExtendBy::NextCurve);
+    assert_eq!(written(&request), text);
+    holds(&schema, &text, "extend to the next curve");
+    for by in [
+        r#"{"type": "angle", "angle": -12.5}"#,
+        r#"{"type": "point", "point": [0.1, -3]}"#,
+    ] {
+        let text = format!(
+            r#"{{"session": "s1", "revision": 2, "sketch": "s0000001", "curve": "na000002", "end": "start", "by": {by}}}"#
+        );
+        let request = SketchExtendRequest::read(&parsed(&text)).unwrap();
+        assert_eq!(request.end, End::Start);
+        // Written back as the API writes it, its nested `by` breaking the object onto
+        // lines, and read again as the same request.
+        let again = SketchExtendRequest::read(&parsed(&written(&request))).unwrap();
+        assert_eq!(again, request);
+        assert!(written(&request).contains(&format!("\n  \"by\": {by}\n")));
+        holds(&schema, &text, by);
+    }
+    for bad in [
+        r#""end": "mid", "by": {"type": "next_curve"}"#,
+        r#""end": "end", "by": {"type": "length"}"#,
+        r#""end": "end", "by": {"type": "length", "length": 2, "angle": 3}"#,
+        r#""end": "end", "by": {"type": "point", "point": [1]}"#,
+        r#""end": "end", "by": 2"#,
+    ] {
+        let text = format!(
+            r#"{{"session": "s1", "revision": 2, "sketch": "s0000001", "curve": "na000002", {bad}}}"#
+        );
+        fails(&schema, &text, bad);
+    }
+    let result = example("sketch_extend/result");
+    let schema = schema_of("sketch_extend", "result");
+    holds(&schema, &result, "extend's result");
+    assert_eq!(schema["title"], "SketchExtendResult");
+    let value: Value = serde_json::from_str(&result).unwrap();
+    for (key, bad) in [
+        ("modified", json!(["PA000003"])),
+        ("changed", json!(1)),
+        ("commit", json!({})),
+    ] {
+        let mut wrong = value.clone();
+        wrong[key] = bad;
+        fails(&schema, &wrong.to_string(), key);
+    }
+    for file in &files[3..] {
+        holds(
+            &error_schema(),
+            &example(&format!("sketch_extend/{file}")),
+            file,
+        );
+    }
+}
+
+#[test]
+fn an_extend_writes_its_end_exactly_where_named_whatever_the_fakes_frame_says() {
+    // The fake's frame nudges the dragged point a thousandth of where it began off the
+    // cursor (`FakeSketches::dragged`): the end is written at the target, (60, 7), exactly,
+    // the frame seeding only the rest (Fable, 2026-10-29), and the edit's solve then asked.
+    let f = opened(&bracket());
+    f.checked();
+    f.begin();
+    let solves = f.sketches.requests().len();
+    let result = f.ran(
+        "sketch_extend",
+        &extend(
+            1,
+            "s0000001",
+            "na000002",
+            "end",
+            json!({"type": "length", "length": 2}),
+        ),
+    );
+    assert_eq!(
+        result,
+        json!({"sketch": "s0000001", "added": [], "modified": ["pa000003"], "removed": [], "changed": true, "commit": null})
+    );
+    assert_eq!(
+        member(&f.sketch("s0000001"), "points", "pa000003"),
+        &json!({"id": "pa000003", "x": 60, "y": 7, "construction": false})
+    );
+    // The begin's solve, the move, and the edit's solve.
+    assert_eq!(f.sketches.requests().len(), solves + 2);
+    assert!(!f.sketches.drag_calls().is_empty());
+}
+
+#[test]
+fn an_extend_whose_solve_conflicts_or_fails_is_refused_leaving_the_text_byte_for_byte() {
+    for inside in [true, false] {
+        let f = opened(&bracket());
+        f.checked();
+        if inside {
+            f.begin();
+        }
+        let text = f.text();
+        let file = std::fs::read(f.path()).unwrap();
+        let request = extend(
+            1,
+            "s0000001",
+            "na000002",
+            "end",
+            json!({"type": "length", "length": 2}),
+        );
+        // Only the extended sketch's solve conflicts (the begin's is the sketch's as it was):
+        // the edit's solve is worse than before, refusing it.
+        answering_edits(&f, conflicting);
+        let refused = f.refused("sketch_extend", &request);
+        assert_eq!(
+            refused,
+            json!([error(
+                "over_constrained",
+                "after the extend, the sketch's constraints conflict: these 1 can't all hold",
+                Some("s0000001"),
+                &["ka000001"],
+                None,
+                Some(WORSE),
+                Some("remove or change one of the constraints named")
+            )]),
+            "inside: {inside}"
+        );
+        answering_edits(&f, failing);
+        let refused = f.refused("sketch_extend", &request);
+        assert_eq!(refused[0]["code"], "solve_failed", "{refused}");
+        assert_eq!(
+            refused[0]["message"],
+            "after the extend, no solver could meet the sketch's constraints"
+        );
+        assert_eq!((f.text(), f.revision()), (text.clone(), revision(1)));
+        assert_eq!(std::fs::read(f.path()).unwrap(), file);
+        f.sketches
+            .answer(|system| Ok(FakeSketches::as_sent(system)));
+        let result = f.ran("sketch_extend", &request);
+        assert_eq!(result["changed"], true);
+        assert_eq!(result["commit"].is_null(), inside, "{result}");
+    }
+}
+
+#[test]
+fn cancel_naming_sketch_extend_stops_its_begin_solve_and_leaves_the_session_as_it_was() {
+    let f = opened(&bracket());
+    f.checked();
+    f.begin();
+    let text = f.text();
+    f.sketches.hold();
+    let request = extend(
+        1,
+        "s0000001",
+        "na000002",
+        "end",
+        json!({"type": "length", "length": 2}),
+    );
+    let running = match f.sessions.call("sketch_extend", &request) {
+        Call::Running(calling) => calling,
+        Call::Unknown => panic!("no sketch_extend"),
+    };
+    assert!(f.sketches.wait_held(HANG), "the extend's solve never came");
+    let cancelled = f
+        .sessions
+        .cancel(&s1(), SessionCommand::SketchExtend)
+        .result
+        .unwrap();
+    assert!(cancelled.stopped);
+    let Ok(answered) = running.wait_timeout(HANG) else {
+        panic!("sketch_extend didn't answer in {HANG:?}")
+    };
+    let envelope: Value = serde_json::from_str(&answered.text).unwrap();
+    assert_eq!(
+        envelope["errors"],
+        json!([error(
+            "cancelled",
+            "sketch_extend was cancelled before it finished",
+            None,
+            &[],
+            None,
+            None,
+            Some(
+                "run it again when you want its answer; every rebuild step that finished is kept in the cache"
+            )
+        )])
+    );
+    assert!(f.sketches.stops() >= 1);
+    f.sketches.release();
+    assert_eq!((f.text(), f.revision()), (text, revision(1)));
+    assert_eq!(f.ran("sketch_extend", &request)["changed"], true);
+}
+
+#[test]
+fn cancel_naming_sketch_extend_stops_its_move_and_leaves_the_session_as_it_was() {
+    // The begin's solve answers, and holds what comes after it: the line's one move, which
+    // the cancel then stops (the fake's held move failing as a killed worker does).
+    let f = opened(&bracket());
+    f.checked();
+    f.begin();
+    let text = f.text();
+    let solves = f.sketches.requests().len();
+    let holding = f.sketches.clone();
+    f.sketches.answer(move |system| {
+        holding.hold();
+        Ok(FakeSketches::as_sent(system))
+    });
+    let request = extend(
+        1,
+        "s0000001",
+        "na000002",
+        "end",
+        json!({"type": "length", "length": 2}),
+    );
+    let running = match f.sessions.call("sketch_extend", &request) {
+        Call::Running(calling) => calling,
+        Call::Unknown => panic!("no sketch_extend"),
+    };
+    assert!(f.sketches.wait_held(HANG), "the extend's move never came");
+    let cancelled = f
+        .sessions
+        .cancel(&s1(), SessionCommand::SketchExtend)
+        .result
+        .unwrap();
+    assert!(cancelled.stopped);
+    let Ok(answered) = running.wait_timeout(HANG) else {
+        panic!("sketch_extend didn't answer in {HANG:?}")
+    };
+    let envelope: Value = serde_json::from_str(&answered.text).unwrap();
+    assert_eq!(
+        envelope["errors"],
+        json!([error(
+            "cancelled",
+            "sketch_extend was cancelled before it finished",
+            None,
+            &[],
+            None,
+            None,
+            Some(
+                "run it again when you want its answer; every rebuild step that finished is kept in the cache"
+            )
+        )])
+    );
+    // The begin's solve alone was asked, and the move was what stopped.
+    assert_eq!(f.sketches.requests().len(), solves + 1);
+    assert!(
+        f.sketches
+            .drag_calls()
+            .iter()
+            .any(|c| matches!(c, silico_core::fake::DragCall::Move(_)))
+    );
+    assert_eq!(f.sketches.stops(), 1);
+    f.sketches
+        .answer(|system| Ok(FakeSketches::as_sent(system)));
+    f.sketches.release();
+    assert_eq!((f.text(), f.revision()), (text, revision(1)));
+    assert_eq!(f.ran("sketch_extend", &request)["changed"], true);
+}
+
+#[test]
+fn an_extend_whose_solve_or_move_its_sessions_close_stops_answers_not_open_as_a_closed_session() {
+    // The sessions dropped while the extend's begin solve, or its line's one move, is held:
+    // its session closes, which stops it. No client stopped it, so the extend answers as
+    // every command of a session that isn't open does (the design's `close`), never
+    // `cancelled`, nor the drag's words for a stopped solve.
+    for at_move in [false, true] {
+        let f = opened(&bracket());
+        f.checked();
+        f.begin();
+        if at_move {
+            let holding = f.sketches.clone();
+            f.sketches.answer(move |system| {
+                holding.hold();
+                Ok(FakeSketches::as_sent(system))
+            });
+        } else {
+            f.sketches.hold();
+        }
+        let request = extend(
+            1,
+            "s0000001",
+            "na000002",
+            "end",
+            json!({"type": "length", "length": 2}),
+        );
+        let running = match f.sessions.call("sketch_extend", &request) {
+            Call::Running(calling) => calling,
+            Call::Unknown => panic!("no sketch_extend"),
+        };
+        assert!(f.sketches.wait_held(HANG), "the extend's solve never came");
+        let Fixture {
+            dir,
+            sketches,
+            sessions,
+        } = f;
+        let dropper = std::thread::spawn(move || drop(sessions));
+        let Ok(answered) = running.wait_timeout(HANG) else {
+            panic!("sketch_extend didn't answer in {HANG:?}")
+        };
+        let envelope: Value = serde_json::from_str(&answered.text).unwrap();
+        assert_eq!(
+            envelope["errors"],
+            json!([error(
+                "invalid_input",
+                "no session s1 is open",
+                None,
+                &[],
+                Some("session"),
+                None,
+                Some(
+                    "open the document again: a session ends when it's closed or its client goes away"
+                )
+            )]),
+            "at the move: {at_move}: {envelope}"
+        );
+        assert_eq!(sketches.stops(), 1, "at the move: {at_move}");
+        assert_eq!(
+            sketches
+                .drag_calls()
+                .iter()
+                .any(|c| matches!(c, silico_core::fake::DragCall::Move(_))),
+            at_move
+        );
+        dropper.join().unwrap();
+        sketches.release();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("bracket.silico")).unwrap(),
+            bracket()
+        );
+    }
+}
+
+#[test]
+fn an_extend_whose_begin_solve_crashes_is_refused_as_the_crash_not_begun_from_the_file() {
+    // The begin's solve is the worker's crash: the extend is refused as it, not begun from
+    // the file's coordinates as a sketch whose solve fails for the sketch is.
+    let f = opened(&bracket());
+    f.checked();
+    f.begin();
+    let text = f.text();
+    let answered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = Arc::clone(&answered);
+    f.sketches.answer(move |system| {
+        if count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            Err(silico_core::Error::new(
+                silico_core::ErrorCode::WorkerCrashed,
+                "the sketch worker crashed",
+            ))
+        } else {
+            Ok(FakeSketches::as_sent(system))
+        }
+    });
+    let request = extend(
+        1,
+        "s0000001",
+        "na000002",
+        "end",
+        json!({"type": "length", "length": 2}),
+    );
+    let refused = f.refused("sketch_extend", &request);
+    assert_eq!(
+        refused,
+        json!([error(
+            "worker_crashed",
+            "the sketch worker crashed",
+            Some("s0000001"),
+            &[],
+            None,
+            None,
+            None
+        )])
+    );
+    assert_eq!(answered.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(f.sketches.drag_calls().is_empty());
+    assert_eq!((f.text(), f.revision()), (text, revision(1)));
+}
+
+#[test]
+fn an_extend_whose_move_the_worker_cant_reach_names_the_line_its_end_and_the_increment() {
+    let f = opened(&bracket());
+    f.checked();
+    f.begin();
+    let text = f.text();
+    f.sketches.answer_moves(|_, _| {
+        Err(silico_core::Error::new(
+            silico_core::ErrorCode::KernelFailed,
+            "the drag's frame is out of the solver's reach",
+        ))
+    });
+    let refused = f.refused(
+        "sketch_extend",
+        &extend(
+            1,
+            "s0000001",
+            "na000002",
+            "end",
+            json!({"type": "length", "length": 2}),
+        ),
+    );
+    assert_eq!(
+        refused,
+        json!([error(
+            "kernel_failed",
+            "the drag's frame is out of the solver's reach",
+            Some("s0000001"),
+            &["na000002", "pa000003"],
+            Some("by"),
+            None,
+            Some("extend it by less, or change what moves with its end")
+        )])
+    );
+    assert_eq!((f.text(), f.revision()), (text, revision(1)));
+}
+
+#[test]
+fn extends_are_undone_and_redone_byte_for_byte_and_a_stale_one_is_a_conflict() {
+    let f = opened(&bracket());
+    f.begin();
+    let opened = f.text();
+    f.ran(
+        "sketch_extend",
+        &extend(
+            1,
+            "s0000001",
+            "na000002",
+            "end",
+            json!({"type": "length", "length": 2}),
+        ),
+    );
+    let extended = f.text();
+    assert_ne!(extended, opened);
+    let refused = f.refused(
+        "sketch_extend",
+        &extend(
+            1,
+            "s0000001",
+            "na000002",
+            "end",
+            json!({"type": "length", "length": 1}),
+        ),
+    );
+    assert_eq!(refused[0]["code"], "conflict");
+    assert_eq!(refused[0]["parameter"], "revision");
+    answer(f.sessions.undo(&s1(), revision(2), None))
+        .result
+        .unwrap();
+    assert_eq!(f.text(), opened);
+    answer(f.sessions.redo(&s1(), revision(3), None))
+        .result
+        .unwrap();
+    assert_eq!(f.text(), extended);
+}
+
+#[test]
+fn an_extend_of_what_isnt_a_sketch_or_a_malformed_one_is_refused_exactly() {
+    let f = opened(&bracket());
+    let text = f.text();
+    let refused = f.refused(
+        "sketch_extend",
+        &extend(
+            1,
+            "p0000001",
+            "na000002",
+            "end",
+            json!({"type": "next_curve"}),
+        ),
+    );
+    assert_eq!(
+        refused,
+        json!([with_candidates(
+            error(
+                "invalid_input",
+                "p0000001 is a pad, not a sketch",
+                None,
+                &[],
+                Some("sketch"),
+                None,
+                Some("name a sketch of the document, by its ID")
+            ),
+            &["s0000001", "s0000002", "s0000003"]
+        )])
+    );
+    let refused = f.refused(
+        "sketch_extend",
+        &extend(
+            1,
+            "s0000001",
+            "na00000z",
+            "end",
+            json!({"type": "next_curve"}),
+        ),
+    );
+    assert_eq!(
+        refused,
+        json!([error(
+            "invalid_input",
+            "the sketch has no member na00000z",
+            Some("s0000001"),
+            &[],
+            Some("curve"),
+            None,
+            Some("name a line or an arc of this sketch by its ID")
+        )])
+    );
+    let refused = f.refused(
+        "sketch_extend",
+        r#"{"session": "s1", "revision": 1, "sketch": "s0000001", "curve": "na000002", "end": "mid", "by": {"type": "length", "length": 1}}"#,
+    );
+    assert_eq!(refused[0]["parameter"], "end", "{refused}");
+    assert_eq!(
+        refused[0]["candidates"],
+        json!(["start", "end"]),
+        "{refused}"
+    );
+    let refused = f.refused(
+        "sketch_extend",
+        r#"{"session": "s1", "revision": 1, "sketch": "s0000001", "curve": "na000002", "end": "end", "by": {"type": "far"}}"#,
+    );
+    assert_eq!(refused[0]["parameter"], "by.type", "{refused}");
+    assert_eq!(
+        refused[0]["candidates"],
+        json!(["length", "angle", "point", "next_curve"])
+    );
+    let refused = f.refused(
+        "sketch_extend",
+        r#"{"session": "s1", "revision": 1, "sketch": "s0000001", "curve": "na000002", "end": "end", "by": {"type": "point", "point": [1, "x"]}}"#,
+    );
+    assert_eq!(refused[0]["parameter"], "by.point.1", "{refused}");
+    let refused = f.refused(
+        "sketch_extend",
+        r#"{"session": "s1", "revision": 1, "sketch": "s0000001", "curve": "na000002", "end": "end", "by": {"type": "length", "length": 1.0000001}}"#,
+    );
+    assert_eq!(refused[0]["parameter"], "by.length", "{refused}");
+    assert_eq!(f.text(), text);
 }
 
 #[test]

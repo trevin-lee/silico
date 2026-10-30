@@ -46,6 +46,7 @@ pub enum SessionCommand {
     SketchTrim,
     SketchUnjoin,
     SketchMerge,
+    SketchExtend,
     Undo,
     Redo,
 }
@@ -53,7 +54,7 @@ pub enum SessionCommand {
 impl SessionCommand {
     /// Every command that runs in a session that a transport names, in the design's order
     /// (M4.1's, then M5.0's): all but `undo` and `redo`, which none names yet.
-    pub const ALL: [SessionCommand; 29] = [
+    pub const ALL: [SessionCommand; 30] = [
         SessionCommand::Close,
         SessionCommand::Begin,
         SessionCommand::Commit,
@@ -83,6 +84,7 @@ impl SessionCommand {
         SessionCommand::SketchTrim,
         SessionCommand::SketchUnjoin,
         SessionCommand::SketchMerge,
+        SessionCommand::SketchExtend,
     ];
 
     /// The command it is, of every command a transport names ([`Command`]): none for `undo`
@@ -135,6 +137,7 @@ impl SessionCommand {
             SessionCommand::SketchTrim => Command::SketchTrim,
             SessionCommand::SketchUnjoin => Command::SketchUnjoin,
             SessionCommand::SketchMerge => Command::SketchMerge,
+            SessionCommand::SketchExtend => Command::SketchExtend,
             SessionCommand::Undo => return Err("undo"),
             SessionCommand::Redo => return Err("redo"),
         })

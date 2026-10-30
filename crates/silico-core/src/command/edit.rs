@@ -22,7 +22,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use super::{Gated, NewMembers, Problems};
+use super::{ExtendBy, Gated, NewMembers, Problems};
 use crate::document::chain::{self, Rewired};
 use crate::document::json::{self, Member, Node, Plain, Value};
 use crate::document::undo::Prepared;
@@ -31,8 +31,11 @@ use crate::document::{
     ID_ALPHABET, ID_LENGTH, NamingScheme, Operation, PROBLEMS_LISTED, Reference, Sketch,
     sketch_edit,
 };
+use crate::drag::DragStop;
+use crate::extend;
 use crate::naming::{Maker, Name};
 use crate::references::CANDIDATES;
+use crate::sketch::SketchSolver;
 use crate::{Error, ErrorCode};
 
 /// The state an accepted edit gives a session's document: its canonical text, that text as
@@ -1034,6 +1037,69 @@ pub(super) fn sketch_merge(
     let (index, _, sketch) = sketch_of(document, id)?;
     let edited = sketch_edit::merge(sketch, points).map_err(|e| one(id, e))?;
     sketch_edited(document, index, sketch, edited)
+}
+
+/// `curve`'s `end` of the sketch `id` of `document` extended `by` (docs/design/m5.0-app.md,
+/// section 7, `sketch_extend`; open item 12c), on `solver` under `stop`: from the sketch as
+/// solved and written back (M3.4), as a drag begins, or from its file's coordinates if its
+/// solve fails otherwise; to the next curve as [`extend::next_crossing`] finds it there,
+/// placed as a point is. What it changed, and the state it leads to, through the gate. The
+/// session's solve then judges it (SD7). Refused for a feature that isn't a sketch, naming
+/// `sketch`; with what the extend refuses, or a next curve there's none of, naming the
+/// sketch; and, stopped, as `cancelled`.
+pub(super) fn sketch_extend(
+    document: &Checked,
+    id: &FeatureId,
+    curve: &ElementId,
+    end: extend::End,
+    by: ExtendBy,
+    solver: &mut dyn SketchSolver,
+    stop: &DragStop,
+) -> Result<(SketchChanges, Option<Candidate>), Problems> {
+    let (index, _, sketch) = sketch_of(document.document(), id)?;
+    let (from, _) = crate::drag::sketch::solved_or_drawn(document, id, sketch, solver, stop)
+        .map_err(|error| Problems::from(error.with_feature(id.as_str())))?;
+    let by = match by {
+        ExtendBy::Length(length) => extend::By::Length(length),
+        ExtendBy::Angle(angle) => extend::By::Angle(angle),
+        ExtendBy::Point(point) => extend::By::To(point),
+        ExtendBy::NextCurve => match extend::next_crossing(&from, curve, end) {
+            Ok(Some(crossing)) => extend::By::To(crossing.at),
+            Ok(None) => return Err(one(id, no_next_curve(&from, curve, end))),
+            Err(error) => return Err(one(id, error)),
+        },
+    };
+    let mut edited =
+        extend::extend_under(&from, curve, end, by, solver, stop).map_err(|e| one(id, e))?;
+    // Begun from the solve written back, the edit writes every value the solve moved too:
+    // each change is listed against the sketch the document held, not the solved copy.
+    edited.modified = extend::changed(sketch, &edited.sketch);
+    sketch_edited(document.document(), index, sketch, edited)
+}
+
+/// The refusal of a next curve for `curve`'s `end` of `sketch` to meet, where there's none.
+fn no_next_curve(sketch: &Sketch, curve: &ElementId, end: extend::End) -> Error {
+    let (noun, carrier, increment) = if sketch.arcs.iter().any(|a| &a.id == curve) {
+        ("arc", "circle", "an angle")
+    } else {
+        ("line", "line", "a length")
+    };
+    let which = match end {
+        extend::End::Start => "start",
+        extend::End::End => "end",
+    };
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!("{noun} {curve} meets no other curve past its {which}"),
+    )
+    .with_elements([curve.to_string()])
+    .with_parameter("by")
+    .with_cause(format!(
+        "the next curve is the nearest that the {noun}, extended, crosses or touches past its {which}, as trim finds its cuts"
+    ))
+    .with_suggestion(format!(
+        "extend it by {increment}, or to a point on its {carrier}"
+    ))
 }
 
 /// A sketch edit's one refusal, naming the sketch `id` if it names no feature.

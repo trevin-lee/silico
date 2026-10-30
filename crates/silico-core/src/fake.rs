@@ -3350,18 +3350,23 @@ impl SketchSolver for FakeSketches {
     }
 
     /// One move as the worker's `MoveOnce`: its begin, the move under no time but the
-    /// solver's own (`Duration::MAX`), and its end, whatever the move did.
+    /// solver's own (`Duration::MAX`), and its end, whatever the move did. One request, as
+    /// the worker's is, so one solve to a stopper: a stopper given out before it stops its
+    /// move, held or not, as a killed worker ends the request.
     fn move_once(
         &mut self,
         begin: DragBegin,
         to: [f64; 2],
     ) -> Result<crate::sketch::MovedOnce, Error> {
+        let before = lock(&self.shared.state).solves;
         let started = self.drag_begin(begin)?;
         if !started.conflicting.is_empty() {
             return Ok(crate::sketch::MovedOnce::Conflicting(started.conflicting));
         }
+        lock(&self.shared.state).solves = before;
         let moved = self.drag_move(to, Duration::MAX);
         let _ = self.drag_end();
+        lock(&self.shared.state).solves = before + 1;
         Ok(crate::sketch::MovedOnce::Moved(moved?))
     }
 

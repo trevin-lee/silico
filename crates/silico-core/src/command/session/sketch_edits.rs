@@ -7,8 +7,8 @@
 //!   solves the sketch, nor is refused for what its solve finds (SD7): once the gate takes
 //!   the edit, it's applied, and the rebuild's verdict, a conflict, a redundancy, or no
 //!   solution, is the sketch's state, which `check` reports and its features fail by.
-//! - **What writes geometry**, `sketch_split`, `sketch_trim`, `sketch_unjoin`, and
-//!   `sketch_merge`, writes exactly what its request names into the sketch as stored, and
+//! - **What writes geometry**, `sketch_split`, `sketch_trim`, `sketch_unjoin`,
+//!   `sketch_merge`, and `sketch_extend`, writes exactly what its request names into the sketch as stored, and
 //!   the sketch's ordinary solve from that written sketch (M3.4, FreeCAD's order) is the
 //!   edit's solve (Fable, 2026-10-29): run here, on one of the sessions' sketch solvers,
 //!   before the edit is held or committed, stopped by the command's `cancel`. An edit whose
@@ -28,8 +28,8 @@ use std::sync::{Arc, Mutex, Weak};
 
 use super::cancel::{Interrupt, Ticket, Why};
 use super::{
-    NewMembers, Problems, Running, SessionCommand, SessionId, Sessions, SketchCut, SketchEdited,
-    not_open, reclaim,
+    ExtendBy, NewMembers, Problems, Running, SessionCommand, SessionId, Sessions, SketchCut,
+    SketchEdited, not_open, reclaim,
 };
 use crate::command::Gated;
 use crate::command::Revision;
@@ -37,6 +37,7 @@ use crate::command::edit::{self, Candidate, Cut, FeatureIds, SketchChanges};
 use crate::document::sketch_edit::NewIds;
 use crate::document::{Checked, ElementId, FeatureId, Operation, Reference};
 use crate::drag::DragStop;
+use crate::extend::End;
 use crate::kernel::Clients;
 use crate::recompute::SketchSolvers;
 use crate::sketch::{Diagnosis, SketchSolution, Translation};
@@ -311,6 +312,73 @@ impl<P: Clients + 'static> Sessions<P> {
             },
         )
     }
+
+    /// Extends `curve`'s `end` of `session`'s sketch `sketch` `by` a length (a line's), an
+    /// angle (an arc's), to a point on its carrier, or to the next curve it meets (the
+    /// design's `sketch_extend`; sketch-edit 11, open item 12c), as an edit made against
+    /// `revision`: from the revision's sketch as solved and written back, as a drag begins,
+    /// a line's end through one move of a drag, its constraints winning, the end then written
+    /// where the request named; an arc's written turned. On one of the sessions' sketch
+    /// solvers, the move and the solves stopped by the command's `cancel`. Judged by its
+    /// solve as [`sketch_split`](Self::sketch_split) is; refused, too, for what the extend
+    /// refuses (a curve that isn't a line or an arc, the wrong kind of increment, one of 0, a
+    /// result too short, flipped, or a whole turn, a point off the carrier, an end its
+    /// constraints hold, a frame that can't be built) and a next curve there's none of.
+    pub fn sketch_extend(
+        &self,
+        session: &SessionId,
+        revision: Revision,
+        sketch: FeatureId,
+        curve: ElementId,
+        end: End,
+        by: ExtendBy,
+    ) -> Running<SketchEdited> {
+        let registry = Arc::downgrade(&self.registry);
+        let solvers = self.registry.sketches.clone();
+        self.queued(
+            session,
+            SessionCommand::SketchExtend,
+            move |session, stop, model| {
+                let _span = tracing::info_span!(
+                    "sketch_extend",
+                    sketch = sketch.as_str(),
+                    curve = curve.as_str()
+                )
+                .entered();
+                let id = session.id;
+                let edited = session.edit(
+                    stop,
+                    revision,
+                    |base| {
+                        let checked = base.checked()?;
+                        let halt = Arc::new(SolveStop(DragStop::new()));
+                        stop.interrupt_with(Arc::downgrade(&halt) as Weak<dyn Interrupt>);
+                        let mut solver = solvers.take().map_err(Problems::from)?;
+                        let made = edit::sketch_extend(
+                            checked,
+                            &sketch,
+                            &curve,
+                            end,
+                            by,
+                            solver.as_mut(),
+                            &halt.0,
+                        );
+                        solvers.give_back(solver);
+                        // Its session's close, which stops the drag, is the session's: never
+                        // the drag's words. A cancel answers `cancelled` whatever the extend
+                        // returns (`Ticket::answer`).
+                        if stop.closed() {
+                            return Err(Problems::from(not_open(base.id)));
+                        }
+                        judged(&solvers, stop, base.id, checked, &sketch, EXTEND, made?)
+                    },
+                    model,
+                    &|resolved| reclaim(&registry, id, resolved),
+                )?;
+                Ok(sketch_edited(sketch, edited))
+            },
+        )
+    }
 }
 
 /// A sketch edit's result: what it changed, as the edit found it (a commit's save changes no
@@ -391,6 +459,10 @@ const TRIM: Edit = Edit {
 };
 const UNJOIN: Edit = Edit {
     name: "unjoin",
+    lever: None,
+};
+const EXTEND: Edit = Edit {
+    name: "extend",
     lever: None,
 };
 /// A merge's solve starts from the kept point's place, by the request's order (Fable,

@@ -36,8 +36,8 @@
 //! `move_feature`; [`reads`], for `text`, `outline`, `check`, and `timeline`; [`cache`], for `cache_clear`;
 //! [`elements`], for `elements` and `query`; [`schema`]; [`measure`], for `mass_properties`,
 //! `distance`, and `angle`; [`render`]; [`export`]; [`sketch`]; and [`sketch_edits`], for
-//! `sketch_add`, `sketch_remove`, `sketch_split`, `sketch_trim`, `sketch_unjoin`, and
-//! `sketch_merge`).
+//! `sketch_add`, `sketch_remove`, `sketch_split`, `sketch_trim`, `sketch_unjoin`,
+//! `sketch_merge`, and `sketch_extend`).
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -685,6 +685,14 @@ impl<'a> RequestFields<'a> {
                 });
                 None
             }
+        }
+    }
+
+    /// Every key not taken yet, taken unread: for an object whose tag was refused (`type`),
+    /// so the fields the tag would have decided aren't each refused as unknown too.
+    fn take_rest(&mut self) {
+        for taken in &mut self.taken {
+            *taken = true;
         }
     }
 
@@ -1769,6 +1777,12 @@ const fn snapshot_of(command: Command) -> MakeSnapshot {
             command_schema::<
                 sketch_edits::SketchMergeRequestSchema,
                 sketch_edits::SketchMergeResultSchema,
+            >
+        }
+        Command::SketchExtend => {
+            command_schema::<
+                sketch_edits::SketchExtendRequestSchema,
+                sketch_edits::SketchExtendResultSchema,
             >
         }
     }

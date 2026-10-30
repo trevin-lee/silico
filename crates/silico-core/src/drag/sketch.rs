@@ -408,7 +408,8 @@ fn start(
 
 /// The sketch as solved on `solver` under `stop`, as its file would hold it; or, where the
 /// solve fails for the sketch (not the solver, nor a stop), as its file draws it, and why.
-fn solved_or_drawn(
+/// A drag begins from it, and so does an extend (`command::edit::sketch_extend`).
+pub(crate) fn solved_or_drawn(
     document: &Checked,
     feature: &FeatureId,
     sketch: &Sketch,

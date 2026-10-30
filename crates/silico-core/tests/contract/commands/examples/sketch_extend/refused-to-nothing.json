@@ -1,0 +1,1 @@
+{"code": "invalid_input", "message": "extending line na000002 that far would leave it 0 mm long or flipped: a line must be longer than 1e-7 mm and keep its direction", "feature": "s0000001", "elements": ["na000002"], "elements_total": 1, "parameter": "by", "cause": null, "suggestion": "shorten it by less", "candidates": []}

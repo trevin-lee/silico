@@ -37,12 +37,12 @@ pub mod wire;
 
 pub use call::{Answered, Call, Calling, Command};
 pub use session::{
-    Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, FieldSet,
-    MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, Moved, NOT_RELOADED, NewMembers,
-    Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild, RebuildState,
-    Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running, SessionId,
-    SessionInfo, Sessions, SketchCut, SketchEdited, Status, Stepped, Stopper, TOO_LONG, TextAnswer,
-    TimelineAnswer, TryAgainBy, fault_suggestion,
+    Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, ExtendBy,
+    FieldSet, MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, Moved, NOT_RELOADED,
+    NewMembers, Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild,
+    RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
+    SessionId, SessionInfo, Sessions, SketchCut, SketchEdited, Status, Stepped, Stopper, TOO_LONG,
+    TextAnswer, TimelineAnswer, TryAgainBy, fault_suggestion,
 };
 pub use session_command::{ReadCommand, RunningCommand, SessionCommand};
 

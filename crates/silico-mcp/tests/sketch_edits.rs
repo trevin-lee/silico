@@ -385,3 +385,93 @@ fn the_geometry_edit_tools_are_listed_as_edits() {
         assert_eq!(tool["inputSchema"]["required"], required, "{name}");
     }
 }
+
+/// The calls: the L's first line extended at its end by 2, then to a point on its line, a
+/// curve that isn't a line or an arc named (the box isn't a sketch), and a malformed `by`.
+const EXTEND_CALLS: [(&str, &str); 6] = [
+    ("open", r#"{"path": "part.silico", "create": false}"#),
+    ("begin", r#"{"session": "s1"}"#),
+    (
+        "sketch_extend",
+        r#"{"session": "s1", "revision": 1, "sketch": "k7f2qx3m", "curve": "n0000001", "end": "start", "by": {"type": "length", "length": 2}}"#,
+    ),
+    (
+        "sketch_extend",
+        r#"{"session": "s1", "revision": 2, "sketch": "k7f2qx3m", "curve": "n0000001", "end": "start", "by": {"type": "point", "point": [-5, 0]}}"#,
+    ),
+    (
+        "sketch_extend",
+        r#"{"session": "s1", "revision": 3, "sketch": "b7f2qx3m", "curve": "n0000001", "end": "end", "by": {"type": "next_curve"}}"#,
+    ),
+    (
+        "sketch_extend",
+        r#"{"session": "s1", "revision": 3, "sketch": "k7f2qx3m", "curve": "n0000001", "end": "end", "by": {"type": "far"}}"#,
+    ),
+];
+
+#[test]
+fn the_extend_tool_answers_with_the_cores_envelope_byte_for_byte_and_is_listed_as_an_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = std::fs::canonicalize(dir.path()).unwrap().join("work");
+    std::fs::create_dir(&work).unwrap();
+    std::fs::write(work.join("part.silico"), ELL).unwrap();
+    let secret = dir.path().join("secret");
+    let sessions = Sessions::with_stand_ins(
+        Arc::new(FakeKernel::new(2).unwrap()),
+        move |c: &std::path::Path| Cache::with_secret(c, &secret),
+        || Ok(Box::new(FakeSketches::new()) as Box<dyn SketchSolver>),
+    )
+    .rendering(FakeRenderer::new())
+    .in_workspace(&work)
+    .unwrap();
+    let core: Vec<(String, bool)> = EXTEND_CALLS
+        .iter()
+        .map(|(name, arguments)| match sessions.call(name, arguments) {
+            Call::Running(calling) => {
+                let answered = calling.wait_timeout(HANG).ok().unwrap();
+                (answered.text, !answered.ok)
+            }
+            Call::Unknown => panic!("{name}"),
+        })
+        .collect();
+    let mut c = Client::initialized_solving(FakeSketches::new());
+    c.file("part.silico", ELL);
+    for (at, ((name, arguments), core)) in EXTEND_CALLS.iter().zip(&core).enumerate() {
+        let id = at as u64 + 1;
+        c.send_call(id, name, arguments);
+        let (line, _) = c.reply_line(&id.to_string());
+        let (text, is_error) = structured(&line);
+        assert_eq!((&text, is_error), (&core.0, core.1), "{name} {arguments}");
+    }
+    let envelope = |n: usize| serde_json::from_str::<Value>(&core[n].0).unwrap();
+    for n in [2, 3] {
+        assert_eq!(
+            envelope(n)["result"],
+            json!({"sketch": "k7f2qx3m", "added": [], "modified": ["p0000001"], "removed": [], "changed": true, "commit": null}),
+            "{n}"
+        );
+    }
+    assert_eq!(envelope(4)["errors"][0]["parameter"], "sketch");
+    assert_eq!(envelope(5)["errors"][0]["parameter"], "by.type");
+    assert_eq!(c.read_file("part.silico"), ELL);
+    // Listed as an edit, its fields required.
+    let listed = c.request(100, "tools/list", "{}");
+    let tool = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "sketch_extend")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (
+            &tool["annotations"]["readOnlyHint"],
+            &tool["annotations"]["destructiveHint"]
+        ),
+        (&json!(false), &json!(true))
+    );
+    assert_eq!(
+        tool["inputSchema"]["required"],
+        json!(["by", "curve", "end", "revision", "session", "sketch"])
+    );
+}

@@ -18,7 +18,7 @@ use super::{Gated, Problems, ReadCommand, RunningCommand, SessionCommand};
 use crate::document;
 use crate::document::chain::Rewired;
 use crate::document::json::{Node, Plain};
-use crate::document::{ElementId, Feature, FeatureId};
+use crate::document::{Angle, Coordinate, ElementId, Feature, FeatureId, Length};
 use crate::recompute::{Model, StepCount};
 use crate::timeline::{Entry, Excepted, Timeline, timeline};
 use crate::warnings::Warnings;
@@ -895,6 +895,18 @@ pub struct SketchEdited {
     pub removed: Vec<ElementId>,
     pub changed: bool,
     pub commit: Option<Committed>,
+}
+
+/// How far a `sketch_extend` takes its curve's end, or to where (docs/design/m5.0-app.md,
+/// section 7, `sketch_extend`): a line's by a length along it; an arc's by an angle around
+/// its circle, in degrees; to a point on the curve's carrier, put there exactly; or to the
+/// next curve it meets past the end, which the core finds (`extend::next_crossing`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtendBy {
+    Length(Length),
+    Angle(Angle),
+    Point([Coordinate; 2]),
+    NextCurve,
 }
 
 /// What a split or a trim did (`sketch_split`, `sketch_trim`: docs/design/m5.0-app.md,

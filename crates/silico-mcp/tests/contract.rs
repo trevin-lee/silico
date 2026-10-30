@@ -133,6 +133,7 @@ fn the_tools_are_the_commands_in_their_order_each_with_mcps_fields() {
         "sketch_trim",
         "sketch_unjoin",
         "sketch_merge",
+        "sketch_extend",
     ];
     for tool in sent["tools"].as_array().unwrap() {
         let name = tool["name"].as_str().unwrap();
@@ -183,6 +184,7 @@ fn the_tools_are_the_commands_in_their_order_each_with_mcps_fields() {
         "sketch_trim",
         "sketch_unjoin",
         "sketch_merge",
+        "sketch_extend",
     ] {
         assert!(said(name, "Edit inside a transaction"), "{name}");
         assert!(said(name, "`model: \"current\"`"), "{name}");
@@ -368,8 +370,8 @@ fn every_example_holds_to_its_tools_schemas() {
     // add_feature's 4 for `before`, remove_feature's result with `rewired`, move_feature's
     // 4, and timeline's 2; and M5.10's 8: sketch's 2, sketch_add's 2, and sketch_remove's 4;
     // and its geometry edits' 14: sketch_split's 4, sketch_trim's 3, sketch_unjoin's 3, and
-    // sketch_merge's 3.
-    assert_eq!(seen, 140);
+    // sketch_merge's 3; and sketch_extend's 9.
+    assert_eq!(seen, 149);
 }
 
 #[test]

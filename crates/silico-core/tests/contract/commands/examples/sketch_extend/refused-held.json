@@ -1,0 +1,1 @@
+{"code": "invalid_result", "message": "extending line na000001 by 5 mm changes nothing: its constraints hold its end pa000002 where it is", "feature": "s0000001", "elements": ["na000001", "pa000002"], "elements_total": 2, "parameter": "by", "cause": null, "suggestion": "remove or change the constraints that hold the line's end", "candidates": []}
