@@ -77,8 +77,7 @@ fn parsed(text: &str) -> Node {
 
 /// The committed snapshot `of`'s `part`, `request` or `result`.
 fn schema_of(of: &str, part: &str) -> Value {
-    serde_json::from_str::<Value>(&committed(&format!("commands/{of}.json"))).unwrap()[part]
-        .clone()
+    serde_json::from_str::<Value>(&committed(&format!("commands/{of}.json"))).unwrap()[part].clone()
 }
 
 /// The error contract's shape, the envelope's `Error`.
@@ -158,7 +157,8 @@ fn document(features: &[&str]) -> String {
 /// before held on it, joining its radius to the part. A part of two unknowns a point, and
 /// the circle's radius one more.
 fn chain(points: usize, circle: bool) -> String {
-    let point = |n: usize| format!(r#"{{"id": "p{n:07}", "x": {n}, "y": 0, "construction": false}}"#);
+    let point =
+        |n: usize| format!(r#"{{"id": "p{n:07}", "x": {n}, "y": 0, "construction": false}}"#);
     let line = |n: usize| {
         format!(
             r#"{{"id": "n{n:07}", "from": "p{n:07}", "to": "p{:07}", "construction": false}}"#,
@@ -166,7 +166,9 @@ fn chain(points: usize, circle: bool) -> String {
         )
     };
     let length = |n: usize| {
-        format!(r#"{{"id": "k{n:07}", "type": "length", "line": "n{n:07}", "value": 1, "driving": true}}"#)
+        format!(
+            r#"{{"id": "k{n:07}", "type": "length", "line": "n{n:07}", "value": 1, "driving": true}}"#
+        )
     };
     let mut constraints: Vec<String> = (1..points).map(length).collect();
     let circles = if circle {
@@ -505,7 +507,10 @@ fn a_begin_grabs_a_point_or_a_curve_and_its_press_and_is_refused_otherwise() {
     );
     // A move's cursor alike.
     assert_eq!(
-        refusals(DragMoveRequest::read, r#"{"session": "s1", "to": [true, 1]}"#),
+        refusals(
+            DragMoveRequest::read,
+            r#"{"session": "s1", "to": [true, 1]}"#
+        ),
         one("to.0", "to.0 must be a number, got true or false")
     );
     assert_eq!(
@@ -516,8 +521,8 @@ fn a_begin_grabs_a_point_or_a_curve_and_its_press_and_is_refused_otherwise() {
         )
     );
     // A number past the largest `f64` is read, as infinite, for the drag's own check.
-    let far = DragMoveRequest::read(&parsed(r#"{"session": "s1", "to": [1e999, -1e999]}"#))
-        .unwrap();
+    let far =
+        DragMoveRequest::read(&parsed(r#"{"session": "s1", "to": [1e999, -1e999]}"#)).unwrap();
     assert_eq!(far.to, [f64::INFINITY, f64::NEG_INFINITY]);
     // The schemas hold the same: a request of both, or a press with a point, doesn't hold.
     let schema = schema_of("drag_begin", "request");
@@ -536,9 +541,11 @@ fn the_designs_results_and_refusals_are_written_as_the_design_gives_them() {
         sketch: fid("s0000001"),
         grab: DragGrab::Point(eid("pa000003")),
         dofs: 1,
-        moves: ["pa000001", "pa000002", "pa000003", "pa000004", "pa000005", "pa000006"]
-            .map(eid)
-            .to_vec(),
+        moves: [
+            "pa000001", "pa000002", "pa000003", "pa000004", "pa000005", "pa000006",
+        ]
+        .map(eid)
+        .to_vec(),
     };
     assert_eq!(written(&begun), example("drag_begin/result"));
     holds(
@@ -758,7 +765,12 @@ fn outside_a_transaction_the_release_is_its_own_commit() {
     assert!(commit.written);
     assert_eq!(f.revision(), revision(2));
     // The file holds the release, with pa000003 at (60, 7).
-    assert!(f.file().contains(r#"{"id": "pa000003", "x": 60, "y": 7, "construction": false}"#), "{}", f.file());
+    assert!(
+        f.file()
+            .contains(r#"{"id": "pa000003", "x": 60, "y": 7, "construction": false}"#),
+        "{}",
+        f.file()
+    );
 }
 
 #[test]
@@ -785,7 +797,14 @@ fn an_edges_drag_moves_its_line_by_the_cursors_offset_from_the_press() {
     // (60 + 0.06, 2).
     let frame = f.moved([30.0, 2.0]).result.unwrap();
     assert_eq!(frame.frame, FrameEnd::Solved);
-    let at = |id: &str| frame.points.iter().find(|(p, _)| p.as_str() == id).unwrap().1;
+    let at = |id: &str| {
+        frame
+            .points
+            .iter()
+            .find(|(p, _)| p.as_str() == id)
+            .unwrap()
+            .1
+    };
     assert_eq!(at("pa000001"), [0.0, 2.0]);
     assert_eq!(at("pa000002"), [60.0 + 60.0 / 1000.0, 2.0]);
     assert_eq!(at("pa000003"), [60.0, 5.0]);
@@ -824,7 +843,9 @@ fn an_esc_ends_the_drag_with_nothing_changed_and_a_move_after_is_refused() {
         );
         assert_eq!(
             error.cause(),
-            Some("a drag ends at drag_end, at a new revision of the session, or when its worker restarts")
+            Some(
+                "a drag ends at drag_end, at a new revision of the session, or when its worker restarts"
+            )
         );
     };
     refused(the_error(&f.moved([1.0, 1.0])));
@@ -950,7 +971,12 @@ fn a_part_of_256_unknowns_is_dragged_and_one_of_257_refused() {
     let f = opened(&chain(128, true));
     let error = the_error(&f.begin_point("p0000001"));
     assert_eq!(
-        (error.code(), error.parameter(), error.feature(), error.message()),
+        (
+            error.code(),
+            error.parameter(),
+            error.feature(),
+            error.message()
+        ),
         (
             ErrorCode::InvalidInput,
             Some("point"),
@@ -1004,13 +1030,13 @@ fn a_move_past_its_time_is_a_worker_timeout_and_ends_the_drag() {
     f.sketches
         .answer_moves(|begin, to| Ok(FakeSketches::dragged(begin, to)));
     f.begin_point("pa000003").result.unwrap();
-    assert_eq!(
-        f.moved([62.5, 7.0]).result.unwrap().frame,
-        FrameEnd::Solved
-    );
+    assert_eq!(f.moved([62.5, 7.0]).result.unwrap().frame, FrameEnd::Solved);
     // An Esc after a failure keeps the begin state, as asked.
     f.sketches.answer_moves(|_, _| {
-        Err(Error::new(ErrorCode::WorkerCrashed, "the sketch worker crashed"))
+        Err(Error::new(
+            ErrorCode::WorkerCrashed,
+            "the sketch worker crashed",
+        ))
     });
     assert_eq!(
         the_error(&f.moved([1.0, 1.0])).code(),
@@ -1036,7 +1062,10 @@ fn a_cancel_of_drag_move_stops_the_move_solving_and_ends_the_drag() {
     let moving = f.sessions.drag_move(&s1(), [62.5, 7.0]);
     assert!(f.sketches.wait_held(HANG));
     assert_eq!(
-        f.sessions.cancel(&s1(), SessionCommand::DragMove).result.unwrap(),
+        f.sessions
+            .cancel(&s1(), SessionCommand::DragMove)
+            .result
+            .unwrap(),
         Cancelled {
             command: SessionCommand::DragMove,
             stopped: true,
@@ -1096,10 +1125,7 @@ fn a_cursor_that_isnt_finite_or_is_out_of_reach_is_refused_naming_to() {
     let far = f.envelope("drag_move", r#"{"session": "s1", "to": [1e999, 0]}"#);
     assert_eq!(far["errors"][0]["parameter"], "to", "{far}");
     assert!(f.drag().is_some());
-    assert_eq!(
-        f.moved([62.5, 7.0]).result.unwrap().frame,
-        FrameEnd::Solved
-    );
+    assert_eq!(f.moved([62.5, 7.0]).result.unwrap().frame, FrameEnd::Solved);
     // A release at one: refused, the drag ended with nothing changed.
     let error = the_error(&f.ended(Some([f64::NAN, 1.0])));
     assert_eq!(error.parameter(), Some("to"));
@@ -1160,9 +1186,10 @@ fn a_move_sent_before_its_begin_answers_is_told_the_begin_may_be_queued() {
     let f = opened(&bracket());
     // A check of the current model holds the queue, its sketch's solve held.
     f.sketches.hold();
-    let check = f
-        .sessions
-        .check(&s1(), silico_core::command::CheckModel::Current { fresh: false });
+    let check = f.sessions.check(
+        &s1(),
+        silico_core::command::CheckModel::Current { fresh: false },
+    );
     assert!(f.sketches.wait_held(HANG));
     let begin = f
         .sessions
@@ -1172,22 +1199,23 @@ fn a_move_sent_before_its_begin_answers_is_told_the_begin_may_be_queued() {
         (error.message(), error.cause()),
         (
             "no drag is open in session s1",
-            Some("a drag_begin sent to the session hasn't answered yet: it may still be queued, and its drag opens when it runs")
+            Some(
+                "a drag_begin sent to the session hasn't answered yet: it may still be queued, and its drag opens when it runs"
+            )
         )
     );
     f.sketches.release();
     answer(check).result.unwrap();
     answer(begin).result.unwrap();
     // Answered: a move is sent.
-    assert_eq!(
-        f.moved([62.5, 7.0]).result.unwrap().frame,
-        FrameEnd::Solved
-    );
+    assert_eq!(f.moved([62.5, 7.0]).result.unwrap().frame, FrameEnd::Solved);
     // And once it's answered, the cause is the plain one again.
     f.ended(None).result.unwrap();
     assert_eq!(
         the_error(&f.moved([1.0, 1.0])).cause(),
-        Some("a drag ends at drag_end, at a new revision of the session, or when its worker restarts")
+        Some(
+            "a drag ends at drag_end, at a new revision of the session, or when its worker restarts"
+        )
     );
 }
 
@@ -1195,10 +1223,10 @@ fn a_move_sent_before_its_begin_answers_is_told_the_begin_may_be_queued() {
 fn a_begin_takes_the_published_models_solve_when_it_solved_the_sketch() {
     let f = opened(&bracket());
     // Rebuilt: the model holds the profile's solve.
-    answer(
-        f.sessions
-            .check(&s1(), silico_core::command::CheckModel::Current { fresh: false }),
-    )
+    answer(f.sessions.check(
+        &s1(),
+        silico_core::command::CheckModel::Current { fresh: false },
+    ))
     .result
     .unwrap();
     let solves = f.sketches.requests().len();
@@ -1295,4 +1323,89 @@ fn call_by_name_answers_as_each_typed_method_does() {
     // Esc were refused.
     assert_eq!(ran, 4);
     assert_eq!(named.text(), typed.text());
+}
+
+#[test]
+fn each_drag_snapshot_has_the_names_an_agent_reads() {
+    let defs = |root: &Value| -> Vec<String> {
+        root["$defs"]
+            .as_object()
+            .map(|defs| defs.keys().cloned().collect())
+            .unwrap_or_default()
+    };
+    for (of, request, request_defs, result, result_defs) in [
+        (
+            "drag_begin",
+            "DragBeginRequest",
+            &["Coordinate", "ElementId", "FeatureId"][..],
+            "DragBeginResult",
+            &["Coordinate", "ElementId", "FeatureId"][..],
+        ),
+        (
+            "drag_move",
+            "DragMoveRequest",
+            &["Coordinate"],
+            "DragMoveResult",
+            &[
+                "Coordinate",
+                "ElementId",
+                "FrameEnd",
+                "FramePoint",
+                "FrameRadius",
+            ],
+        ),
+        (
+            "drag_end",
+            "DragEndRequest",
+            &["Coordinate"],
+            "DragEndResult",
+            &["CommitResult", "Error", "FeatureId", "Kept"],
+        ),
+    ] {
+        let (req, res) = (schema_of(of, "request"), schema_of(of, "result"));
+        assert_eq!(
+            (req["title"].as_str(), defs(&req)),
+            (
+                Some(request),
+                request_defs.iter().map(|d| d.to_string()).collect()
+            ),
+            "{of}"
+        );
+        assert_eq!(
+            (res["title"].as_str(), defs(&res)),
+            (
+                Some(result),
+                result_defs.iter().map(|d| d.to_string()).collect()
+            ),
+            "{of}"
+        );
+        // One object at each root, every field required: an MCP tool's input schema.
+        assert_eq!(req["type"], "object", "{of}");
+        assert!(
+            req.get("anyOf").is_none() && req.get("oneOf").is_none(),
+            "{of}"
+        );
+    }
+    // Each request's fields, by hand: every one required, none optional.
+    assert_eq!(
+        schema_of("drag_begin", "request")["required"],
+        json!(["curve", "point", "press", "session", "sketch"])
+    );
+    assert_eq!(
+        schema_of("drag_move", "request")["required"],
+        json!(["session", "to"])
+    );
+    assert_eq!(
+        schema_of("drag_end", "request")["required"],
+        json!(["session", "to"])
+    );
+    // The frame's words and the kept state's, the design's.
+    assert_eq!(
+        schema_of("drag_move", "result")["$defs"]["FrameEnd"]["enum"],
+        json!(["solved", "failed", "invalid", "dropped"])
+    );
+    assert_eq!(
+        schema_of("drag_end", "result")["$defs"]["Kept"]["enum"],
+        json!(["cursor", "begin"])
+    );
 }

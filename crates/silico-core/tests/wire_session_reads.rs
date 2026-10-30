@@ -1037,7 +1037,11 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
             "StatusResult",
             &[
                 "BeginResult",
+                "Coordinate",
                 "Disk",
+                "DragOpen",
+                "ElementId",
+                "FeatureId",
                 "PublishedRead",
                 "Rebuild",
                 "RebuildState",

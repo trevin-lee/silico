@@ -468,12 +468,9 @@ impl<C: Kernel + 'static> Session<C> {
             revision: began,
             ..
         } = open;
-        let _span = tracing::info_span!(
-            "drag_end",
-            sketch = sketch.as_str(),
-            cursor = to.is_some()
-        )
-        .entered();
+        let _span =
+            tracing::info_span!("drag_end", sketch = sketch.as_str(), cursor = to.is_some())
+                .entered();
         // Ended by a revision since (a reload before this command): no drag.
         if began != revision {
             if let Err(why) = drag.end(None) {
@@ -516,8 +513,7 @@ impl<C: Kernel + 'static> Session<C> {
             stop,
             revision,
             |base| {
-                let candidate =
-                    edit::sketch_replaced(base.checked()?.document(), &sketch, after)?;
+                let candidate = edit::sketch_replaced(base.checked()?.document(), &sketch, after)?;
                 Ok(((), candidate))
             },
             read,
@@ -554,13 +550,17 @@ impl<P: Clients + 'static> Sessions<P> {
     ) -> Running<DragBegun> {
         let solvers = self.registry.sketches.clone();
         let queued = self.find(session).map(|found| QueuedBegin::counted(&found));
-        self.queued(session, SessionCommand::DragBegin, move |session, stop, _| {
-            let _span = tracing::info_span!("drag_begin", sketch = sketch.as_str()).entered();
-            let begun = session.begin_drag(stop, &solvers, sketch, grab);
-            // Answered: no longer queued, the drag (if it began) already the session's.
-            drop(queued);
-            begun
-        })
+        self.queued(
+            session,
+            SessionCommand::DragBegin,
+            move |session, stop, _| {
+                let _span = tracing::info_span!("drag_begin", sketch = sketch.as_str()).entered();
+                let begun = session.begin_drag(stop, &solvers, sketch, grab);
+                // Answered: no longer queued, the drag (if it began) already the session's.
+                drop(queued);
+                begun
+            },
+        )
     }
 
     /// Moves `session`'s drag's cursor to `to` (docs/design/m5.0-app.md, `drag_move`), in
@@ -647,11 +647,15 @@ impl<P: Clients + 'static> Sessions<P> {
     /// gate's errors for the sketch, the drag ended with no edit.
     pub fn drag_end(&self, session: &SessionId, to: Option<[f64; 2]>) -> Running<DragEnded> {
         let registry = Arc::downgrade(&self.registry);
-        self.queued(session, SessionCommand::DragEnd, move |session, stop, model| {
-            let id = session.id;
-            session.end_drag_with(stop, to, model, &|resolved| {
-                reclaim(&registry, id, resolved);
-            })
-        })
+        self.queued(
+            session,
+            SessionCommand::DragEnd,
+            move |session, stop, model| {
+                let id = session.id;
+                session.end_drag_with(stop, to, model, &|resolved| {
+                    reclaim(&registry, id, resolved);
+                })
+            },
+        )
     }
 }

@@ -352,8 +352,9 @@ fn every_example_holds_to_its_tools_schemas() {
     // export's 8 (#182), cache_clear's 2 (#183), STEP export's 4 (#186), check's
     // warning (#189), and read_logs' 3 and version's result (#194); M5.1's 11:
     // add_feature's 4 for `before`, remove_feature's result with `rewired`, move_feature's
-    // 4, and timeline's 2; and M5.10's 8: sketch's 2, sketch_add's 2, and sketch_remove's 4.
-    assert_eq!(seen, 127);
+    // 4, and timeline's 2; M5.3's 13: drag_begin's 6, drag_move's 4, and drag_end's 3; and
+    // M5.10's 8: sketch's 2, sketch_add's 2, and sketch_remove's 4.
+    assert_eq!(seen, 140);
 }
 
 #[test]

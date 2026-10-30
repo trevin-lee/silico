@@ -265,7 +265,7 @@ fn an_unknown_tool_or_arguments_that_arent_an_object_are_invalid_params_naming_t
         assert!(message.contains(said), "{params}: {message}");
         assert_eq!(error["parameter"], parameter, "{params}");
         if parameter == "name" {
-            assert_eq!(error["candidates"], json!(TOOLS), "{params}");
+            assert_eq!(error["candidates"], json!(TOOLS.as_slice()), "{params}");
         }
     }
     // A tools/call with no params names no tool.
