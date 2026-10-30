@@ -1460,8 +1460,8 @@ impl<P: Clients + 'static> Sessions<P> {
     /// elements, and those left with an input they need and nothing unsuppressed up its
     /// chain (SolidWorks' children: docs/ux/solidworks.md, §5); a feature suppressed passes
     /// its base through, so what consumes it builds on the nearest unsuppressed feature up
-    /// its chain, and its users are reached (M5.0's A10), its own fingerprint dropped by the
-    /// save. Unsuppressing a feature unsuppresses its sketch, each suppressed maker of a name
+    /// its chain, and its users are reached (M5.0's A10), its own stored fingerprint carried
+    /// as stored, never checked or rewritten. Unsuppressing a feature unsuppresses its sketch, each suppressed maker of a name
     /// it stores, and, for an input it needs with nothing unsuppressed up its chain, that
     /// chain's root, recursively; what depends on it stays suppressed. Suppressing a feature
     /// suppressed already, or unsuppressing one that isn't, changes nothing: no new

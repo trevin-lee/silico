@@ -140,14 +140,15 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
             .map(|&(_, kind)| kind)
     };
 
-    // What stands for each feature's solid, suppressed features passing their base's
-    // through (`suppression::standing`), each reference followed only to a feature before
-    // the one making it.
-    let place = |id: &FeatureId| holder(id);
-    let standing = super::suppression::standing(features, &place);
+    // Every feature that has to be suppressed with those the text suppresses, to a fixed
+    // point, so a hand edit's every dependent is refused in one check, by place.
     let links = super::suppression::Links::of(features);
-    let is_suppressed = |p: usize| features.get(p).is_some_and(|f| f.suppressed);
-    let walk = super::suppression::any_tool_suppressed(features, &is_suppressed);
+    let (_, dependents) = super::suppression::dependents(
+        features,
+        &links,
+        features.iter().map(|f| f.suppressed).collect(),
+    );
+    let mut dependents = dependents.into_iter().peekable();
 
     let mut problems = Problems::default();
     // The feature that consumed each feature's solid, if one has.
@@ -481,21 +482,22 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
 
         // A feature that depends on a suppressed one is suppressed with it (the M5.0
         // design's `suppress_feature`): its sketch, a maker of a name it stores, or an input
-        // it needs with nothing unsuppressed up its chain.
-        if !feature.suppressed
-            && let Some((parent, cause)) = super::suppression::suppressed_parent(
-                features,
-                &links,
-                index,
-                &is_suppressed,
-                &standing,
-                walk,
+        // it needs with nothing unsuppressed up its chain; or one of those has to be.
+        while dependents.next_if(|d| d.at < index).is_some() {}
+        if let Some(dependent) = dependents.next_if(|d| d.at == index)
+            && let (Some(parent), Some(origin)) = (
+                features.get(dependent.parent),
+                features.get(dependent.origin),
             )
-            && let Some(parent) = features.get(parent)
         {
             problems.add(|| {
-                let (parameter, message, suggestion) =
-                    super::suppression::unsuppressed_dependent(features, feature, parent, cause);
+                let (parameter, message, suggestion) = super::suppression::unsuppressed_dependent(
+                    features,
+                    feature,
+                    parent,
+                    dependent.cause,
+                    origin,
+                );
                 refuse(&parameter, message, suggestion)
             });
         }

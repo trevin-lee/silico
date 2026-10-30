@@ -780,8 +780,8 @@ pub struct SuppressFeatureResultSchema {
     /// Whether the document changed: false for a feature suppressed already, or unsuppressed
     /// that isn't, which makes no new revision and writes nothing.
     pub changed: bool,
-    /// Outside a transaction, the commit that saved the edit (which writes no fingerprint
-    /// for a suppressed feature, and a fresh one for each feature that uses it); null inside
-    /// one, or if nothing changed.
+    /// Outside a transaction, the commit that saved the edit (which carries a suppressed
+    /// feature's stored fingerprint as stored, never checked or rewritten, and writes a fresh
+    /// one for each feature that uses it); null inside one, or if nothing changed.
     pub commit: Option<CommitResultSchema>,
 }

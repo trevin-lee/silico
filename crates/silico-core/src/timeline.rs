@@ -219,11 +219,24 @@ fn marks(model: &Model, excepted: &Excepted) -> BTreeMap<FeatureId, Mark> {
     let warnings: BTreeMap<FeatureId, u64> = crate::warnings::per_feature(model, &excepted.spared)
         .into_iter()
         .collect();
-    let uses: BTreeMap<&FeatureId, Vec<&FeatureId>> = model
-        .document()
-        .features
+    // What each feature uses as it builds: what stands for each of its inputs, a suppressed
+    // one's base passed through (`document::suppression`), and the sketch it sweeps. A
+    // feature blocked through a suppressed one is blocked by what that one passes through.
+    let features = &model.document().features;
+    let links = crate::document::suppression::Links::of(features);
+    let place = |id: &FeatureId| links.place(id);
+    let standing = crate::document::suppression::standing(features, &place);
+    let uses: BTreeMap<&FeatureId, Vec<&FeatureId>> = features
         .iter()
-        .map(|f| (&f.id, f.operation.uses().collect()))
+        .enumerate()
+        .map(|(at, f)| {
+            let inputs =
+                crate::document::suppression::effective_inputs(features, &standing, &place, at)
+                    .into_iter()
+                    .filter_map(|(_, stands)| stands.and_then(|s| features.get(s)))
+                    .map(|stand| &stand.id);
+            (&f.id, inputs.chain(f.operation.sketch()).collect())
+        })
         .collect();
     // What each failed or blocked feature comes to, in timeline order: a feature's inputs
     // come before it.

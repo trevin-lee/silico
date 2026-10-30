@@ -147,7 +147,10 @@ impl<'a> Links<'a> {
 /// Whether any of `features` that `suppressed` says is suppressed consumes a `tool`: only
 /// then can a stored name be lost to a suppression ([`Cause::Lost`]), so only then is it
 /// looked for.
-pub(crate) fn any_tool_suppressed(features: &[Feature], suppressed: &dyn Fn(usize) -> bool) -> bool {
+pub(crate) fn any_tool_suppressed(
+    features: &[Feature],
+    suppressed: &dyn Fn(usize) -> bool,
+) -> bool {
     features
         .iter()
         .enumerate()
@@ -304,36 +307,112 @@ fn makers(
     found
 }
 
+/// A feature that has to be suppressed, though it isn't: its place, the suppressed feature it
+/// depends on (by place) and why, and the feature the text suppresses that it goes with: its
+/// parent, if the text suppresses it, or else its parent's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Dependent {
+    pub at: usize,
+    pub parent: usize,
+    pub cause: Cause,
+    pub origin: usize,
+}
+
+/// Every feature that has to be suppressed with those `flags` says are, to a fixed point in
+/// timeline order (each dependent comes after what it depends on, so one pass reaches it):
+/// the flags after, and each feature they took, in timeline order. What `suppress` adds, and
+/// what the gate refuses, all at once, so a hand edit's every dependent is named in one check.
+pub(crate) fn dependents(
+    features: &[Feature],
+    links: &Links,
+    mut flags: Vec<bool>,
+) -> (Vec<bool>, Vec<Dependent>) {
+    let mut walk = any_tool_suppressed(features, &|p| flags.get(p).copied().unwrap_or(false));
+    let mut origins: Vec<usize> = (0..features.len()).collect();
+    let mut standing: Vec<Option<usize>> = Vec::with_capacity(features.len());
+    let mut found = Vec::new();
+    for (i, feature) in features.iter().enumerate() {
+        let suppressed = |p: usize| flags.get(p).copied().unwrap_or(false);
+        if !suppressed(i)
+            && let Some((parent, cause)) =
+                suppressed_parent(features, links, i, &suppressed, &standing, walk)
+        {
+            let origin = origins.get(parent).copied().unwrap_or(parent);
+            if let Some(flag) = flags.get_mut(i) {
+                *flag = true;
+            }
+            if let Some(slot) = origins.get_mut(i) {
+                *slot = origin;
+            }
+            walk |= has_tool(&feature.operation);
+            found.push(Dependent {
+                at: i,
+                parent,
+                cause,
+                origin,
+            });
+        }
+        // What stands for it, now that whether it's suppressed is settled: those before it
+        // are.
+        let stands = if !feature.operation.makes_solid() {
+            None
+        } else if !flags.get(i).copied().unwrap_or(false) {
+            Some(i)
+        } else {
+            base_of(&feature.operation)
+                .and_then(|b| links.place(b))
+                .filter(|&b| b < i)
+                .and_then(|b| standing.get(b).copied().flatten())
+        };
+        standing.push(stands);
+    }
+    (flags, found)
+}
+
 /// The refusal of a document in which `dependent` isn't suppressed though `parent`, which it
-/// can't do without, is (the gate's), naming both, in the words of `cause`.
+/// can't do without, is or has to be (the gate's), naming both, in the words of `cause`;
+/// `origin` is the feature the text suppresses that the parent goes with.
 pub(crate) fn unsuppressed_dependent(
     features: &[Feature],
     dependent: &Feature,
     parent: &Feature,
     cause: Cause,
+    origin: &Feature,
 ) -> (String, String, String) {
-    let (d, p) = (&dependent.id, &parent.id);
+    let (d, p, o) = (&dependent.id, &parent.id, &origin.id);
     let what = dependent.operation.type_name();
+    // The parent's state: suppressed in the text, or to be, with the feature that is.
+    let is = if parent.suppressed {
+        "is suppressed".to_owned()
+    } else {
+        format!("has to be suppressed with {o}")
+    };
     let (parameter, why) = match cause {
-        Cause::Sketch => ("sketch".to_owned(), format!("its sketch {p} is suppressed")),
+        Cause::Sketch => ("sketch".to_owned(), format!("its sketch {p} {is}")),
         Cause::Names(i) => (
             format!("edges.{i}"),
-            format!("edges.{i} names an element of {p}, which is suppressed"),
+            format!("edges.{i} names an element of {p}, which {is}"),
         ),
         Cause::Lost { edge, maker } => {
             let maker = features.get(maker).map_or("", |f| f.id.as_str());
             (
                 format!("edges.{edge}"),
                 format!(
-                    "edges.{edge} names an element of {maker}, which reaches its base only as {p}'s tool, and {p} is suppressed"
+                    "edges.{edge} names an element of {maker}, which reaches its base only as {p}'s tool, and {p} {is}"
                 ),
             )
         }
         Cause::Chain(field) => (
             field.to_owned(),
-            format!(
-                "its {field} {p} is suppressed with every feature up its chain, and a {what} needs its {field}"
-            ),
+            if parent.suppressed {
+                format!(
+                    "its {field} {p} is suppressed with every feature up its chain, and a {what} needs its {field}"
+                )
+            } else {
+                format!(
+                    "its {field} {p} has to be suppressed with {o}, with every feature up its chain, and a {what} needs its {field}"
+                )
+            },
         ),
     };
     (
@@ -341,9 +420,7 @@ pub(crate) fn unsuppressed_dependent(
         format!(
             "{d} isn't suppressed, but {why}: a feature that depends on a suppressed one is suppressed with it"
         ),
-        format!(
-            "suppress {d} too, or unsuppress {p} (suppress_feature does either with what goes with it)"
-        ),
+        format!(r#"add "suppressed": true to {d}, or take it off {o}"#),
     )
 }
 
@@ -391,39 +468,19 @@ pub fn suppress(checked: &Checked, id: &FeatureId) -> Result<Suppression, Error>
     if flags.get(at).copied().unwrap_or(true) {
         return Ok(unchanged(document));
     }
-    let place = |id: &FeatureId| checked.place(id);
-    let links = Links::of(features);
-    let mut walk = any_tool_suppressed(features, &|p| flags.get(p).copied().unwrap_or(false));
-    let mut standing: Vec<Option<usize>> = Vec::with_capacity(features.len());
-    let mut newly = Vec::new();
-    for (i, feature) in features.iter().enumerate() {
-        let suppressed = |p: usize| flags.get(p).copied().unwrap_or(false);
-        if i == at
-            || (i > at
-                && !feature.suppressed
-                && suppressed_parent(features, &links, i, &suppressed, &standing, walk)
-                    .is_some())
-        {
-            if let Some(flag) = flags.get_mut(i) {
-                *flag = true;
-            }
-            walk |= has_tool(&feature.operation);
-            newly.push(feature.id.clone());
-        }
-        // What stands for it, now that whether it's suppressed is settled: those before it
-        // are.
-        let stands = if !feature.operation.makes_solid() {
-            None
-        } else if !flags.get(i).copied().unwrap_or(false) {
-            Some(i)
-        } else {
-            base_of(&feature.operation)
-                .and_then(place)
-                .filter(|&b| b < i)
-                .and_then(|b| standing.get(b).copied().flatten())
-        };
-        standing.push(stands);
+    if let Some(flag) = flags.get_mut(at) {
+        *flag = true;
     }
+    let links = Links::of(features);
+    let (flags, taken) = dependents(features, &links, flags);
+    let mut newly: Vec<usize> = std::iter::once(at)
+        .chain(taken.iter().map(|d| d.at))
+        .collect();
+    newly.sort_unstable();
+    let newly = newly
+        .into_iter()
+        .filter_map(|p| features.get(p).map(|f| f.id.clone()))
+        .collect();
     Ok(Suppression {
         document: flagged(document, &flags),
         suppressed: newly,
@@ -679,6 +736,23 @@ mod tests {
         ]);
         assert!(needs(&cut.features[2].operation, "base"));
         assert!(needs(&cut.features[2].operation, "tool"));
+        // A revolve's base is optional as a pad's; a groove's and a pocket's are needed.
+        let turned = |kind: &str| -> Operation {
+            let text = format!(
+                r#"{{"id": "v0000001", "type": "{kind}", "v": 1, "name": "V", "base": "b0000001", "sketch": "s0000001", "axis": "x_axis", "extent": {{"type": "one_side", "angle": 90, "reversed": false}}}}"#
+            );
+            document(&[BOX, SKETCH, &text]).features[2]
+                .operation
+                .clone()
+        };
+        assert!(!needs(&turned("revolve"), "base"));
+        assert!(needs(&turned("groove"), "base"));
+        let pocket = document(&[
+            BOX,
+            SKETCH,
+            r#"{"id": "k0000001", "type": "pocket", "v": 1, "name": "K", "base": "b0000001", "sketch": "s0000001", "extent": {"type": "through_all", "reversed": false}}"#,
+        ]);
+        assert!(needs(&pocket.features[2].operation, "base"));
     }
 
     #[test]
@@ -693,7 +767,14 @@ mod tests {
         let st = standing(&d.features, &place);
         let suppressed = |p: usize| d.features[p].suppressed;
         assert_eq!(
-            suppressed_parent(&d.features, &Links::of(&d.features), 2, &suppressed, &st, true),
+            suppressed_parent(
+                &d.features,
+                &Links::of(&d.features),
+                2,
+                &suppressed,
+                &st,
+                true
+            ),
             Some((0, Cause::Names(0)))
         );
         // Named elsewhere (a sketch's element can't be, so a second box), c2's only cause
@@ -706,7 +787,14 @@ mod tests {
         let st = standing(&d.features, &place);
         let suppressed = |p: usize| d.features[p].suppressed;
         assert_eq!(
-            suppressed_parent(&d.features, &Links::of(&d.features), 3, &suppressed, &st, true),
+            suppressed_parent(
+                &d.features,
+                &Links::of(&d.features),
+                3,
+                &suppressed,
+                &st,
+                true
+            ),
             Some((2, Cause::Chain("base")))
         );
         // b back: c1 passes it through, so c2 has none.
@@ -715,7 +803,14 @@ mod tests {
         let st = standing(&back.features, &place);
         let suppressed = |p: usize| back.features[p].suppressed;
         assert_eq!(
-            suppressed_parent(&back.features, &Links::of(&back.features), 3, &suppressed, &st, true),
+            suppressed_parent(
+                &back.features,
+                &Links::of(&back.features),
+                3,
+                &suppressed,
+                &st,
+                true
+            ),
             None
         );
     }

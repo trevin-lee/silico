@@ -148,7 +148,8 @@ fn not_held<'a>(
 /// in `before` (its type and values, or its version: anything but its name, its note, its
 /// fingerprint, and whether it's suppressed), each suppressed or unsuppressed since (M5.0's
 /// A10: every feature that uses it builds on another base now, and one unsuppressed is
-/// rebuilt; one suppressed is saved with no fingerprint, whatever reaches it), and each it
+/// rebuilt; a suppressed one's stored fingerprint is carried as stored, never checked or
+/// rewritten, whatever reaches it), and each it
 /// added (one whose ID `before` hasn't). A removed feature is none of them: a feature that
 /// used it either changed what it uses, and is one, or is refused by the gate. What uses
 /// them is reached too ([`with_users`]), as [`net_reach`] adds.

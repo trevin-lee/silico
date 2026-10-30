@@ -824,8 +824,8 @@ impl Model {
         errors
     }
 
-    /// Its document as `silico fmt` writes it: each feature's fingerprint as it rebuilt (none
-    /// for a suppressed one), and each sketch as it solved (its points, circles' radii, and reference dimensions'
+    /// Its document as `silico fmt` writes it: each feature's fingerprint as it rebuilt (a
+    /// suppressed one's as stored), and each sketch as it solved (its points, circles' radii, and reference dimensions'
     /// values: [`SketchSolution::written`]). A feature that didn't rebuild or solve, or whose
     /// solid couldn't be measured or written, keeps what's stored with it: there's nothing to
     /// put in its place, and a failure that passes (a worker that hung, say) mustn't lose the
@@ -844,8 +844,8 @@ impl Model {
     }
 
     /// Its document as a save writes it, each feature as `how` says ([`Save`]), but a
-    /// suppressed one, saved with no fingerprint whatever `how` says: the one place the rule
-    /// is held. A session's commit saves the features its edits reached as
+    /// suppressed one, whose stored fingerprint is carried as stored, never checked or
+    /// rewritten, whatever `how` says: the one place the rule is held. A session's commit saves the features its edits reached as
     /// rebuilt and every other as stored (decision 28); its `format` saves the reached ones
     /// as rebuilt, those whose drift it isn't told to accept as stored, and the rest as
     /// recorded (decision 31); [`saved`](Self::saved), every feature as recorded.
@@ -853,11 +853,10 @@ impl Model {
         let mut document = self.document().clone();
         // The model's features are its document's, in order.
         for (feature, (_, outcome)) in document.features.iter_mut().zip(&self.features) {
-            // A suppressed feature carries no fingerprint, however it came to be suppressed
-            // (by command, by hand, by a merge), so what it holds is the text's alone
-            // (M5.0's A10); and a suppressed sketch keeps its coordinates, unsolved.
+            // A suppressed feature's stored fingerprint is carried as stored, never checked
+            // or rewritten (M5.0's A10, as amended), whatever reached it; and a suppressed
+            // sketch keeps its coordinates, unsolved.
             if feature.suppressed {
-                feature.fingerprint = None;
                 continue;
             }
             let how = how(&feature.id);

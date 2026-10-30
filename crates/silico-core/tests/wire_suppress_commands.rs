@@ -444,7 +444,7 @@ fn an_edit_that_changes_nothing_makes_no_revision_and_refusals_hold_to_the_error
 }
 
 #[test]
-fn suppressing_the_first_hole_drops_its_fingerprint_and_refingerprints_its_users_and_back() {
+fn suppressing_the_first_hole_keeps_its_fingerprint_and_refingerprints_its_users_and_back() {
     // Outside a transaction: each edit its own commit.
     let original = fingerprinted();
     let f = opened(&original);
@@ -454,11 +454,16 @@ fn suppressing_the_first_hole_drops_its_fingerprint_and_refingerprints_its_users
     let commit = result.commit.unwrap();
     assert!(commit.written);
     // The test plan's: h0000002 and f0000001 written fresh (they build on the pad now), and
-    // h0000001's dropped.
+    // h0000001's carried as stored, never checked or rewritten (A10, as amended).
     assert_eq!(commit.refingerprinted, ids(&["h0000002", "f0000001"]));
     assert_eq!(
         f.fingerprinted(),
-        ids(&["p0000001", "h0000002", "f0000001"])
+        ids(&["p0000001", "h0000001", "h0000002", "f0000001"])
+    );
+    let stored = document::read(original.as_bytes()).unwrap();
+    assert_eq!(
+        document::read(f.file().as_bytes()).unwrap().features[3].fingerprint,
+        stored.features[3].fingerprint
     );
     let saved = document::read(f.file().as_bytes()).unwrap();
     assert!(saved.features[3].suppressed);
@@ -486,12 +491,13 @@ fn suppressing_the_first_hole_drops_its_fingerprint_and_refingerprints_its_users
     assert_eq!(features[5].inputs, ids(&["h0000001", "s0000003"]));
     assert_eq!(timeline.bodies, ids(&["f0000001"]));
 
-    // Unsuppressed and committed: the file byte for byte as it was.
+    // Unsuppressed and committed: the file byte for byte as it was. h0000001 is written
+    // fresh, the same as it was stored, so only its users' are listed as changed.
     let back = f.suppress("h0000001", false).result.unwrap();
     assert_eq!(back.unsuppressed, ids(&["h0000001"]));
     assert_eq!(
         back.commit.unwrap().refingerprinted,
-        ids(&["h0000001", "h0000002", "f0000001"])
+        ids(&["h0000002", "f0000001"])
     );
     assert_eq!(f.file(), original);
 }
@@ -571,28 +577,28 @@ fn unsuppressing_by_command_after_a_hand_edit_reports_drift_only_where_the_hand_
 }
 
 #[test]
-fn the_root_suppressed_holds_no_fingerprints_and_the_fillet_unsuppressed_takes_back_the_pad() {
+fn the_root_suppressed_keeps_its_fingerprints_and_the_fillet_unsuppressed_takes_back_the_pad() {
     let f = opened(&fingerprinted());
     let done = f.suppress("p0000001", true).result.unwrap();
     assert_eq!(
         done.suppressed,
         ids(&["p0000001", "h0000001", "h0000002", "f0000001"])
     );
-    // A10: none of the four carries a fingerprint; the sketches never did.
-    assert!(f.fingerprinted().is_empty());
+    // A10, as amended: the four carry their stored fingerprints; the sketches never had any.
+    assert_eq!(
+        f.fingerprinted(),
+        ids(&["p0000001", "h0000001", "h0000002", "f0000001"])
+    );
     let published = answer(f.sessions.timeline(&f.id, ModelChoice::Current))
         .result
         .unwrap();
     assert!(published.bodies.is_empty());
-    // Unsuppressing the fillet: the pad with it, no drift, both written.
+    // Unsuppressing the fillet: the pad with it, no drift, both written fresh: the pad as
+    // stored, the fillet anew (it builds on the pad through both pockets now).
     let back = f.suppress("f0000001", false).result.unwrap();
     assert_eq!(back.unsuppressed, ids(&["p0000001", "f0000001"]));
-    assert_eq!(
-        back.commit.unwrap().refingerprinted,
-        ids(&["p0000001", "f0000001"])
-    );
+    assert_eq!(back.commit.unwrap().refingerprinted, ids(&["f0000001"]));
     assert_eq!(f.drift(), (Vec::new(), 0));
-    assert_eq!(f.fingerprinted(), ids(&["p0000001", "f0000001"]));
 }
 
 #[test]
@@ -600,15 +606,16 @@ fn a_suppression_and_its_undoing_outside_a_transaction_leave_another_suppressed_
     let f = opened(&fingerprinted());
     f.suppress("h0000002", true).result.unwrap();
     let before = f.file();
-    assert!(!f.fingerprinted().contains(&id("h0000002")));
+    assert!(f.fingerprinted().contains(&id("h0000002")));
     f.suppress("h0000001", true).result.unwrap();
     f.suppress("h0000001", false).result.unwrap();
     assert_eq!(f.file(), before);
 }
 
 #[test]
-fn an_edit_of_a_suppressed_features_extent_committed_leaves_it_with_no_fingerprint() {
-    let f = opened(&fingerprinted());
+fn an_edit_of_a_suppressed_features_extent_committed_carries_its_fingerprint_as_stored() {
+    let original = fingerprinted();
+    let f = opened(&original);
     f.suppress("h0000001", true).result.unwrap();
     let set = answer(f.sessions.set_field(
         &f.id,
@@ -620,7 +627,110 @@ fn an_edit_of_a_suppressed_features_extent_committed_leaves_it_with_no_fingerpri
     set.result.unwrap();
     let saved = document::read(f.file().as_bytes()).unwrap();
     assert!(saved.features[3].suppressed);
-    assert!(saved.features[3].fingerprint.is_none());
+    assert_eq!(
+        saved.features[3].fingerprint,
+        document::read(original.as_bytes()).unwrap().features[3].fingerprint
+    );
+}
+
+/// The golden plate's first three features, as `tests/golden/plate-with-holes.silico`
+/// holds them (read only: built here), its cut, c0000001, last, so nothing uses it.
+const PLATE: [&str; 3] = [
+    r#"{"id": "pppppppp", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, 0], "length": 60, "width": 30, "height": 5, "fingerprint": {"volume": 9000, "area": 4500, "bbox": [0, 0, 0, 60, 30, 5], "faces": 6, "edges": 12, "vertices": 8}}"#,
+    r#"{"id": "y0000001", "type": "cylinder", "v": 1, "name": "Pin 1", "position": [15, 15, -1], "radius": 1.5, "height": 7, "fingerprint": {"volume": 49.480084, "area": 80.110613, "bbox": [13.5, 13.5, -1, 16.5, 16.5, 6], "faces": 3, "edges": 3, "vertices": 2}}"#,
+    r#"{"id": "c0000001", "type": "cut", "v": 1, "name": "Hole 1", "base": "pppppppp", "tool": "y0000001", "fingerprint": {"volume": 8964.657083, "area": 4532.986723, "bbox": [0, 0, 0, 60, 30, 5], "faces": 7, "edges": 15, "vertices": 10}}"#,
+];
+
+/// The lines `after` has that `before` hasn't, and those `before` has that `after` hasn't,
+/// each with its place, by a line-for-line walk that takes one line inserted or changed.
+fn lines_changed(before: &str, after: &str) -> (Vec<String>, Vec<String>) {
+    let (b, a): (Vec<&str>, Vec<&str>) = (before.lines().collect(), after.lines().collect());
+    let start = b.iter().zip(&a).take_while(|(x, y)| x == y).count();
+    let end = b
+        .iter()
+        .rev()
+        .zip(a.iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count()
+        .min(b.len().min(a.len()) - start);
+    (
+        a[start..a.len() - end]
+            .iter()
+            .map(|l| (*l).to_owned())
+            .collect(),
+        b[start..b.len() - end]
+            .iter()
+            .map(|l| (*l).to_owned())
+            .collect(),
+    )
+}
+
+#[test]
+fn suppressing_the_plates_cut_adds_one_line_and_nothing_else() {
+    // Main's: the file otherwise byte for byte, the cut's fingerprint carried as stored (a
+    // drop would take its fingerprint's line too, and fold the cut onto one line, D7).
+    let original = text_of(&PLATE);
+    let f = opened(&original);
+    let done = f.suppress("c0000001", true).result.unwrap();
+    assert_eq!(done.suppressed, ids(&["c0000001"]));
+    assert!(done.commit.unwrap().refingerprinted.is_empty());
+    let (added, removed) = lines_changed(&original, &f.file());
+    assert_eq!(added, [r#"      "suppressed": true,"#]);
+    assert!(removed.is_empty(), "{removed:?}");
+    // In its place: right after the cut's name.
+    assert!(
+        f.file().contains(
+            "      \"name\": \"Hole 1\",\n      \"suppressed\": true,\n      \"base\": \"pppppppp\""
+        ),
+        "{}",
+        f.file()
+    );
+}
+
+#[test]
+fn editing_a_suppressed_boxs_width_changes_that_line_alone() {
+    // Main's: a fingerprinted box suppressed, then its width set: the width's line is the
+    // one that changes; its fingerprint, stored, stays (a drop would remove its line).
+    let f = opened(&text_of(&[PLATE[0]]));
+    f.suppress("pppppppp", true).result.unwrap();
+    let suppressed = f.file();
+    let set = answer(f.sessions.set_field(
+        &f.id,
+        f.revision(),
+        id("pppppppp"),
+        "width".to_owned(),
+        parsed("31"),
+    ));
+    assert!(set.result.unwrap().changed);
+    let (added, removed) = lines_changed(&suppressed, &f.file());
+    assert_eq!(added, [r#"      "width": 31,"#]);
+    assert_eq!(removed, [r#"      "width": 30,"#]);
+}
+
+#[test]
+fn a_stale_fingerprint_carried_while_suppressed_is_drift_once_unsuppressed_by_hand() {
+    // Main's: h0000001 suppressed and its extent changed, committed (its fingerprint, the
+    // old extent's, carried as stored); then its `suppressed` line removed by hand: a check
+    // reports its drift loudly. Were the fingerprint dropped while suppressed, there'd be
+    // nothing to hold the rebuild to, and no drift.
+    let f = opened(&fingerprinted());
+    f.suppress("h0000001", true).result.unwrap();
+    answer(f.sessions.set_field(
+        &f.id,
+        f.revision(),
+        id("h0000001"),
+        "extent".to_owned(),
+        parsed(r#"{"type": "one_side", "length": 3, "reversed": true}"#),
+    ))
+    .result
+    .unwrap();
+    let saved = f.file();
+    let hand = saved.replacen("      \"suppressed\": true,\n", "", 1);
+    assert_ne!(hand, saved);
+    answer(f.sessions.close(&f.id)).result.unwrap();
+    let g = opened(&hand);
+    let (drift, _) = g.drift();
+    assert!(drift.contains(&id("h0000001")), "{drift:?}");
 }
 
 #[test]

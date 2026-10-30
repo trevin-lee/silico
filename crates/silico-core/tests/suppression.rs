@@ -407,10 +407,9 @@ fn the_gate_refuses_a_dependent_of_a_suppressed_feature_left_unsuppressed_naming
             "h0000001 isn't suppressed, but its sketch s0000002 is suppressed: a feature that depends on a suppressed one is suppressed with it".to_owned()
         )]
     );
-    // The root suppressed, the rest not: the first pocket's chain, and the fillet's name of
-    // the pad's edge (its first cause), one refusal a feature. h0000002's base, h0000001,
-    // isn't suppressed, so it has no cause of its own: what it builds on is h0000001's to
-    // mend.
+    // The root suppressed, the rest not: every dependent, to a fixed point, in one check:
+    // the first pocket's chain; the second's, through the first, which has to go with the
+    // pad; and the fillet's name of the pad's edge (its first cause), one refusal a feature.
     assert_eq!(
         refusals(&with_suppressed(&bracket(), &["p0000001"])),
         [
@@ -418,6 +417,11 @@ fn the_gate_refuses_a_dependent_of_a_suppressed_feature_left_unsuppressed_naming
                 "h0000001".to_owned(),
                 "base".to_owned(),
                 "h0000001 isn't suppressed, but its base p0000001 is suppressed with every feature up its chain, and a pocket needs its base: a feature that depends on a suppressed one is suppressed with it".to_owned()
+            ),
+            (
+                "h0000002".to_owned(),
+                "base".to_owned(),
+                "h0000002 isn't suppressed, but its base h0000001 has to be suppressed with p0000001, with every feature up its chain, and a pocket needs its base: a feature that depends on a suppressed one is suppressed with it".to_owned()
             ),
             (
                 "f0000001".to_owned(),
@@ -441,9 +445,7 @@ fn the_gate_refuses_a_dependent_of_a_suppressed_feature_left_unsuppressed_naming
         .clone();
     assert_eq!(
         error.suggestion(),
-        Some(
-            "suppress h0000001 too, or unsuppress s0000002 (suppress_feature does either with what goes with it)"
-        )
+        Some(r#"add "suppressed": true to h0000001, or take it off s0000002"#)
     );
     // What a suppression gives, the gate takes.
     for f in [
@@ -579,23 +581,244 @@ fn a_suppressed_sketch_isnt_solved_nor_a_suppressed_fillet_made() {
 }
 
 #[test]
-fn a_save_drops_a_suppressed_features_fingerprint_whatever_reaches_it() {
-    // A fingerprinted bracket with h0000001 suppressed by hand, its fingerprint left:
-    // saved, it carries none (A10), and nothing else's is dropped.
+fn a_save_carries_a_suppressed_features_fingerprint_as_stored_whatever_reaches_it() {
+    // A fingerprinted bracket with h0000001 suppressed by hand, its fingerprint left, and
+    // made stale (its extent changed): saved, its fingerprint is carried as stored, never
+    // checked or rewritten (A10, as amended), however the save writes the others.
     let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new());
     let fingerprinted = published(&engine, checked(&bracket())).saved();
-    assert!(fingerprinted.features[3].fingerprint.is_some());
-    let hand = with_suppressed(&fingerprinted, &["h0000001"]);
+    let stored = fingerprinted.features[3].fingerprint;
+    assert!(stored.is_some());
+    let mut hand = with_suppressed(&fingerprinted, &["h0000001"]);
+    if let silico_core::document::Operation::Pocket { extent, .. } = &mut hand.features[3].operation
+    {
+        *extent = silico_core::document::PocketExtent::OneSide {
+            length: silico_core::document::Length::from_nm(3_000_000),
+            reversed: true,
+        };
+    }
     let model = published(&engine, checked(&hand));
+    for how in [
+        silico_core::recompute::Save::Recorded,
+        silico_core::recompute::Save::AsRebuilt,
+        silico_core::recompute::Save::Stored,
+    ] {
+        let saved = model.saved_as(|_| how);
+        assert_eq!(saved.features[3].fingerprint, stored, "{how:?}");
+    }
+    // The others as the save says: recorded, each as rebuilt.
     let saved = model.saved();
-    assert!(saved.features[3].fingerprint.is_none());
     for at in [1, 5, 6] {
         assert!(saved.features[at].fingerprint.is_some(), "{at}");
     }
-    // Saved as stored (an unreached feature at commit), it's dropped too.
-    let stored = model.saved_as(|_| silico_core::recompute::Save::Stored);
-    assert!(stored.features[3].fingerprint.is_none());
-    assert!(stored.features[5].fingerprint == fingerprinted.features[5].fingerprint);
     // A suppressed feature is never drift, whatever it stores.
     assert!(model.drifted().iter().all(|(f, _)| f != &id("h0000001")));
+}
+
+#[test]
+fn a_name_whose_inner_maker_is_suppressed_takes_its_feature() {
+    // The tests review's: b, c1 chamfers b's Edge1, c2 on c1 chamfers b's Edge7 (so c2
+    // builds on b through c1 when c1 is suppressed: not a dependent), and f3 on c2 names an
+    // edge c2 modified from one c1 generated. Its name's makers are c2 and c1: with c1
+    // suppressed, the element f3 names can't exist, so f3 goes with c1 (every feature its
+    // parsed name holds, not only the outermost).
+    let b = r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#;
+    let c1 = r#"{"id": "c0000001", "type": "chamfer", "v": 1, "name": "C1", "base": "b0000001", "edges": ["b0000001.box.Edge1"], "size": {"distance": 1}}"#;
+    let c2 = r#"{"id": "c0000002", "type": "chamfer", "v": 1, "name": "C2", "base": "c0000001", "edges": ["b0000001.box.Edge7"], "size": {"distance": 1}}"#;
+    let f3 = r#"{"id": "f0000003", "type": "fillet", "v": 1, "name": "F3", "base": "c0000002", "edges": ["c0000002.chamfer.Edge(M c0000001.chamfer.Edge(G b0000001.box.Edge1))"], "radius": 0.5}"#;
+    let d = document(&[b, c1, c2, f3]);
+    validate(&d).unwrap();
+    assert_eq!(
+        suppress(&d, "c0000001").suppressed,
+        ids(&["c0000001", "f0000003"])
+    );
+    let refused = refusals(&with_suppressed(&d, &["c0000001"]));
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert_eq!(
+        (refused[0].0.as_str(), refused[0].1.as_str()),
+        ("f0000003", "edges.0")
+    );
+}
+
+#[test]
+fn a_booleans_tool_passes_through_a_suppressed_feature() {
+    // The tests review's: b, t, a chamfer tc of t (suppressed), and a boolean of b by tc: tc
+    // passes t through, so each boolean is built exactly as the boolean of b and t.
+    let b = r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#;
+    let t = r#"{"id": "t0000001", "type": "box", "v": 1, "name": "T", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}"#;
+    let tc = r#"{"id": "c0000001", "type": "chamfer", "v": 1, "name": "C", "suppressed": true, "base": "t0000001", "edges": ["t0000001.box.Edge1"], "size": {"distance": 0.1}}"#;
+    for kind in ["cut", "fuse", "common"] {
+        let through = format!(
+            r#"{{"id": "m0000001", "type": "{kind}", "v": 1, "name": "U", "base": "b0000001", "tool": "c0000001"}}"#
+        );
+        let direct = format!(
+            r#"{{"id": "m0000001", "type": "{kind}", "v": 1, "name": "U", "base": "b0000001", "tool": "t0000001"}}"#
+        );
+        let suppressed = document(&[b, t, tc, &through]);
+        validate(&suppressed).unwrap();
+        let engine = Recompute::new(FakeKernel::new(2).unwrap());
+        let model = published(&engine, checked(&suppressed));
+        let other = Recompute::new(FakeKernel::new(2).unwrap());
+        let without = published(&other, checked(&document(&[b, t, &direct])));
+        assert!(
+            matches!(
+                model.outcome(&id("m0000001")),
+                Some(FeatureOutcome::Built { .. })
+            ),
+            "{kind}: {:?}",
+            model.outcome(&id("m0000001"))
+        );
+        assert_eq!(
+            described(&model, "m0000001"),
+            described(&without, "m0000001"),
+            "{kind}"
+        );
+        assert_eq!(model.bodies(), ids(&["m0000001"]), "{kind}");
+    }
+}
+
+#[test]
+fn a_revolve_whose_root_is_suppressed_builds_alone_and_a_groove_on_it_needs_it() {
+    // As the pad's: a pad root r, a revolve v on it (about the profile's own x axis edge),
+    // and a groove g on v. The revolve's base is optional, the groove's isn't.
+    let r = r#"{"id": "r0000001", "type": "pad", "v": 1, "name": "Root", "sketch": "s0000001", "extent": {"type": "one_side", "length": 40, "reversed": true}}"#;
+    let v = r#"{"id": "v0000001", "type": "revolve", "v": 1, "name": "Turn", "base": "r0000001", "sketch": "s0000001", "axis": "x_axis", "extent": {"type": "one_side", "angle": 90, "reversed": false}}"#;
+    let g = r#"{"id": "g0000001", "type": "groove", "v": 1, "name": "Cut", "base": "v0000001", "sketch": "s0000001", "axis": "x_axis", "extent": {"type": "one_side", "angle": 45, "reversed": false}}"#;
+    let d = document(&[S0000001, r, v, g]);
+    validate(&d).unwrap();
+    let root_off = suppress(&d, "r0000001");
+    assert_eq!(root_off.suppressed, ids(&["r0000001"]));
+    let both = suppress(&root_off.document, "v0000001");
+    assert_eq!(both.suppressed, ids(&["v0000001", "g0000001"]));
+    assert_eq!(
+        unsuppress(&both.document, "v0000001").unsuppressed,
+        ids(&["v0000001"])
+    );
+    // The revolve built alone, as one with no base is.
+    let mut rootless = document(&[S0000001, v]);
+    if let silico_core::document::Operation::Revolve { base, .. } =
+        &mut rootless.features[1].operation
+    {
+        *base = None;
+    }
+    let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new());
+    let model = published(&engine, checked(&root_off.document));
+    let other = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new());
+    let alone = published(&other, checked(&rootless));
+    assert_eq!(described(&model, "v0000001"), described(&alone, "v0000001"));
+}
+
+#[test]
+fn the_refusal_names_the_edge_whose_maker_is_suppressed() {
+    // A fillet of two edges, the second a chamfer's: the chamfer suppressed by hand, the
+    // refusal names edges.1, not edges.0.
+    let b = r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#;
+    let c1 = r#"{"id": "c0000001", "type": "chamfer", "v": 1, "name": "C1", "base": "b0000001", "edges": ["b0000001.box.Edge3"], "size": {"distance": 1}}"#;
+    let f = r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "F", "base": "c0000001", "edges": ["b0000001.box.Edge1", "c0000001.chamfer.Edge(G b0000001.box.Edge3)"], "radius": 0.5}"#;
+    let d = document(&[b, c1, f]);
+    validate(&d).unwrap();
+    assert_eq!(
+        refusals(&with_suppressed(&d, &["c0000001"])),
+        [(
+            "f0000001".to_owned(),
+            "edges.1".to_owned(),
+            "f0000001 isn't suppressed, but edges.1 names an element of c0000001, which is suppressed: a feature that depends on a suppressed one is suppressed with it".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn a_hand_edit_three_deep_is_refused_once_naming_all_three() {
+    // A box suppressed by hand, three chamfers on it in a chain, each naming another box's
+    // edge (so each depends on it by its chain alone): one check names all three, the
+    // deeper ones as having to go with the box, and each suggestion is one a refused
+    // document can take (an edit of its text).
+    let b = r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "suppressed": true, "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#;
+    let o = r#"{"id": "w0000001", "type": "box", "v": 1, "name": "O", "position": [20, 0, 0], "length": 1, "width": 1, "height": 1}"#;
+    let chamfer = |id: &str, base: &str| {
+        format!(
+            r#"{{"id": "{id}", "type": "chamfer", "v": 1, "name": "C", "base": "{base}", "edges": ["w0000001.box.Edge1"], "size": {{"distance": 0.1}}}}"#
+        )
+    };
+    let (c1, c2, c3) = (
+        chamfer("c0000001", "b0000001"),
+        chamfer("c0000002", "c0000001"),
+        chamfer("c0000003", "c0000002"),
+    );
+    let d = document(&[b, o, &c1, &c2, &c3]);
+    let invalid = validate(&d).unwrap_err();
+    assert_eq!(invalid.total(), 3);
+    let said: Vec<(&str, &str, &str)> = invalid
+        .errors()
+        .iter()
+        .map(|e| (e.feature().unwrap(), e.message(), e.suggestion().unwrap()))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            (
+                "c0000001",
+                "c0000001 isn't suppressed, but its base b0000001 is suppressed with every feature up its chain, and a chamfer needs its base: a feature that depends on a suppressed one is suppressed with it",
+                r#"add "suppressed": true to c0000001, or take it off b0000001"#
+            ),
+            (
+                "c0000002",
+                "c0000002 isn't suppressed, but its base c0000001 has to be suppressed with b0000001, with every feature up its chain, and a chamfer needs its base: a feature that depends on a suppressed one is suppressed with it",
+                r#"add "suppressed": true to c0000002, or take it off b0000001"#
+            ),
+            (
+                "c0000003",
+                "c0000003 isn't suppressed, but its base c0000002 has to be suppressed with b0000001, with every feature up its chain, and a chamfer needs its base: a feature that depends on a suppressed one is suppressed with it",
+                r#"add "suppressed": true to c0000003, or take it off b0000001"#
+            ),
+        ]
+    );
+    // Each edit the suggestions name mends it at once: all three suppressed, or none.
+    validate(&with_suppressed(&d, &["c0000001", "c0000002", "c0000003"])).unwrap();
+    let mut off = d.clone();
+    off.features[0].suppressed = false;
+    validate(&off).unwrap();
+}
+
+#[test]
+fn a_feature_blocked_through_a_suppressed_one_is_marked_as_its_roots_failure() {
+    // b, a chamfer c1 naming an edge of another box o (so its reference breaks: the
+    // document's error), m on c1 (suppressed), and y on m: y builds on c1 through m, is
+    // blocked on c1, and the timeline marks it `error`, as it does with m built, never
+    // `unknown`, which says a kernel fault.
+    use silico_core::timeline::{Excepted, Health, timeline};
+    let b = r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#;
+    let o = r#"{"id": "w0000001", "type": "box", "v": 1, "name": "O", "position": [20, 0, 0], "length": 1, "width": 1, "height": 1}"#;
+    let c1 = r#"{"id": "c0000001", "type": "chamfer", "v": 1, "name": "C1", "base": "b0000001", "edges": ["w0000001.box.Edge1"], "size": {"distance": 1}}"#;
+    let m = r#"{"id": "m0000001", "type": "chamfer", "v": 1, "name": "M", "base": "c0000001", "edges": ["b0000001.box.Edge2"], "size": {"distance": 1}}"#;
+    let y = r#"{"id": "y0000001", "type": "chamfer", "v": 1, "name": "Y", "base": "m0000001", "edges": ["b0000001.box.Edge3"], "size": {"distance": 1}}"#;
+    for suppressed in [false, true] {
+        let mut d = document(&[b, o, c1, m, y]);
+        d.features[3].suppressed = suppressed;
+        let engine = Recompute::new(FakeKernel::new(2).unwrap());
+        let model = published(&engine, checked(&d));
+        assert!(matches!(
+            model.outcome(&id("y0000001")),
+            Some(FeatureOutcome::Blocked { on }) if on == &id("c0000001")
+        ));
+        let marked = timeline(&d, Some(&model), &Excepted::default());
+        let health = |f: &str| {
+            marked
+                .features
+                .iter()
+                .find(|e| e.id == id(f))
+                .unwrap()
+                .health
+        };
+        assert_eq!(health("c0000001"), Health::Error, "{suppressed}");
+        assert_eq!(health("y0000001"), Health::Error, "{suppressed}");
+        assert_eq!(
+            health("m0000001"),
+            if suppressed {
+                Health::Suppressed
+            } else {
+                Health::Error
+            }
+        );
+    }
 }

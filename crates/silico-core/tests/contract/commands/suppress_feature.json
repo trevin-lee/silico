@@ -187,7 +187,7 @@
             "type": "null"
           }
         ],
-        "description": "Outside a transaction, the commit that saved the edit (which writes no fingerprint\nfor a suppressed feature, and a fresh one for each feature that uses it); null inside\none, or if nothing changed."
+        "description": "Outside a transaction, the commit that saved the edit (which carries a suppressed\nfeature's stored fingerprint as stored, never checked or rewritten, and writes a fresh\none for each feature that uses it); null inside one, or if nothing changed."
       },
       "feature": {
         "$ref": "#/$defs/FeatureId",
