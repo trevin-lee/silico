@@ -384,13 +384,7 @@ fn meshed<K: Kernel>(
         };
         // A mesh that took past a kernel request's time is the tolerance's to change (M4.1's
         // `export`).
-        let at_feature = |e: Error| {
-            let e = match e.code() {
-                ErrorCode::WorkerTimeout => e.with_suggestion(TIMED_OUT),
-                _ => e,
-            };
-            super::of_solid(solid.id, e)
-        };
+        let at_feature = |e: Error| super::of_solid(solid.id, timed_out(e, TIMED_OUT));
         let pending = on.kernel.submit(on.kernel.generation(), request);
         let mesh = super::done(pending.wait(), session_closed).map_err(|p| p.map(at_feature))?;
         // Asked by `printable` only when a face was raised.
@@ -455,10 +449,7 @@ fn stepped<K: Kernel>(
     };
     let (file, writer) = on.step.export_step(export, &|_| {}).map_err(|e| {
         // A file that took past a request's time is the bodies' to split.
-        let e = match e.code() {
-            ErrorCode::WorkerTimeout => e.with_suggestion(STEP_TIMED_OUT),
-            _ => e,
-        };
+        let e = timed_out(e, STEP_TIMED_OUT);
         Problems::from(match solids {
             // One part: whatever the writer refused is its.
             [solid] => super::of_solid(solid.id, e),
@@ -486,6 +477,20 @@ fn stepped<K: Kernel>(
         .collect::<Result<Vec<_>, Error>>()
         .map_err(Problems::from)?;
     Ok((file.step.into_bytes(), objects))
+}
+
+/// `e`, a worker's error, with `simpler`, how this export is made simpler, as its suggestion
+/// if it's a timeout of a worker that had started (its advice to simplify the operation, or
+/// allow more time, which this says the export's way): the advice kept, since the words
+/// still say it. Any other error as the worker said it, a timeout of a worker that hadn't
+/// started too (its advice to try again: a simpler export wouldn't help).
+fn timed_out(e: Error, simpler: &str) -> Error {
+    match (e.code(), e.advice()) {
+        (ErrorCode::WorkerTimeout, Some(crate::worker::Advice::SimplifyOrWait)) => {
+            e.reworded(simpler)
+        }
+        _ => e,
+    }
 }
 
 /// What a STEP export that took past a request's time suggests.
@@ -824,6 +829,104 @@ fn unwritten(
 /// The answer of an export stopped by its session closing, as `render` answers one.
 fn session_closed() -> Error {
     super::session_closed("the export finished", "export")
+}
+
+#[cfg(test)]
+#[cfg(feature = "fake")]
+mod timeouts {
+    use std::sync::Arc;
+
+    use super::{Export, ExportFormat, ExportOn, MeshTurns, export};
+    use crate::document::Length;
+    use crate::fake::FakeKernel;
+    use crate::kernel::Op;
+    use crate::recompute::Recompute;
+    use crate::worker::{WorkerKind, timeout_advice};
+    use crate::{Error, ErrorCode};
+
+    const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
+
+    /// The export of the box as `format`, its kernel's `step` request (`ExportStep` for
+    /// STEP, `ExportMesh` for 3MF) timed out on a worker that had `started` or hadn't, as
+    /// the worker client advises it: the one error.
+    fn timed_out(format: ExportFormat, started: bool) -> Error {
+        let kernel = Arc::new(FakeKernel::new(2).unwrap());
+        kernel.refuse(move |op| {
+            matches!(op, Op::ExportMesh { .. } | Op::ExportStep(_)).then(|| {
+                Error::new(ErrorCode::WorkerTimeout, "the kernel worker didn't answer")
+                    .with_advice(timeout_advice(WorkerKind::Kernel, started))
+            })
+        });
+        let engine = Recompute::new(Arc::clone(&kernel));
+        let model = crate::command::rebuild(&engine, crate::command::gate(BOX.as_bytes()).unwrap())
+            .unwrap()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let request = Export {
+            format,
+            path: dir.path().join(match format {
+                ExportFormat::Step => "out.step",
+                ExportFormat::ThreeMf { .. } => "out.3mf",
+            }),
+            replace: false,
+            features: None,
+        };
+        let problems = export(
+            &model,
+            &request,
+            &ExportOn {
+                kernel: &kernel,
+                step: &*kernel,
+                document: "part.silico",
+                workspace: None,
+                held: &[],
+                turns: &MeshTurns::new(),
+                stopped: &|| false,
+                settle: &|| Ok(()),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(problems.total(), 1);
+        problems.errors()[0].clone()
+    }
+
+    #[test]
+    fn a_timeout_is_said_the_exports_way_only_where_its_worker_advised_simplifying() {
+        // A worker that had started and ran past its time advised simplifying the operation
+        // (`simplify_or_wait`): said as this export is made simpler (a coarser tolerance;
+        // fewer features at once), the advice kept. One that hadn't started advised trying
+        // again (`try_again`): as the worker said it, since a simpler export wouldn't help.
+        let mesh = || ExportFormat::ThreeMf {
+            tolerance: Length::rounded(0.1).unwrap(),
+        };
+        for (format, simpler) in [
+            (
+                mesh(),
+                "export with a coarser tolerance: a finer one makes a larger mesh, which \
+                 takes longer",
+            ),
+            (
+                ExportFormat::Step,
+                "export fewer features at once: the STEP writer writes every body in one \
+                 request",
+            ),
+        ] {
+            let started = timed_out(format, true);
+            assert_eq!(
+                (started.said().advice, started.suggestion()),
+                (Some("simplify_or_wait"), Some(simpler)),
+                "{started:?}"
+            );
+            assert_eq!(started.feature(), Some("k7f2qx3m"));
+            let unstarted = timed_out(format, false);
+            assert_eq!(unstarted.said().advice, Some("try_again"), "{unstarted:?}");
+            assert_eq!(
+                unstarted.suggestion(),
+                Some(timeout_advice(WorkerKind::Kernel, false).words().as_str()),
+                "{unstarted:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
