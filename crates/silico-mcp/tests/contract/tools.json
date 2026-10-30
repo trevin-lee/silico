@@ -15969,6 +15969,15 @@
               }
             ]
           },
+          "SketchDependency": {
+            "description": "One dependent group: its constraints' IDs, sorted.",
+            "items": {
+              "$ref": "#/$defs/ElementId"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "type": "array"
+          },
           "SketchFrame": {
             "additionalProperties": false,
             "description": "The sketch's plane in global coordinates: its origin, and the directions of its x, its y,\nand its normal (x × y, about which counter-clockwise turns), each a unit vector.",
@@ -16176,6 +16185,14 @@
                     },
                     "type": "array"
                   },
+                  "dependencies": {
+                    "description": "Each dependent group of constraints, as the solver's diagnosis finds them: the\nconstraint IDs of one linear dependency among the sketch's equations, sorted, the\ngroups sorted. Removing any one constraint of a group resolves it; which is the\nuser's choice. A driving dimension in any group reads `redundant` and over-defines,\nwhichever constraint the solver dropped. The first 100 groups are listed, each its\nfirst 100 constraints. Empty for an empty sketch, and for one whose constraints the\nsolver never took (geometry that can't be held, before any constraint).",
+                    "items": {
+                      "$ref": "#/$defs/SketchDependency"
+                    },
+                    "maxItems": 100,
+                    "type": "array"
+                  },
                   "dofs": {
                     "description": "The degrees of freedom left, as PlaneGCS counts them: 0 when nothing is free,\nnegative when constraints conflict. 0 for an empty sketch.",
                     "type": "integer"
@@ -16235,6 +16252,7 @@
                   "arcs",
                   "circles",
                   "constraints",
+                  "dependencies",
                   "dofs",
                   "lines",
                   "plane",

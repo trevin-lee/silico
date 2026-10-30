@@ -2094,24 +2094,14 @@ fn m5_design(from: &str, to: &str) -> Vec<String> {
         .collect()
 }
 
-/// The design's line for `dependencies` in its `sketch` result: the read gives no
-/// `dependencies` yet (the dependent groups come with the diagnosis that finds them, #282),
-/// rather than an empty list, which would say a sketch has none when it has.
-const DEPENDENCIES_LINE: &str = "  \"dependencies\": [],\n";
-
 #[test]
-fn the_sketch_examples_are_the_designs_own_text_but_its_dependencies() {
+fn the_sketch_examples_are_the_designs_own_text() {
     // docs/design/m5.0-app.md's `sketch` section: its request, and its result, the bracket's
-    // base holes, without the `dependencies` line it doesn't give yet.
+    // base holes.
     let blocks = m5_design("### `sketch` (M5.10)", "### The sketch edits (M5.10)");
     assert_eq!(blocks.len(), 2);
     assert_eq!(format!("{}\n", blocks[0]), example("sketch/request"));
-    let result = format!("{}\n", blocks[1]);
-    assert_eq!(result.matches(DEPENDENCIES_LINE).count(), 1);
-    assert_eq!(
-        result.replace(DEPENDENCIES_LINE, ""),
-        example("sketch/result")
-    );
+    assert_eq!(format!("{}\n", blocks[1]), example("sketch/result"));
 }
 
 #[test]
@@ -2180,6 +2170,22 @@ fn a_sketch_request_is_read_written_back_and_holds_to_its_schema_and_its_result_
             "a hole of one curve, not a loop",
         ),
         (r#""dofs": 0"#, r#""dofs": 0.5"#, "half a degree of freedom"),
+        (
+            r#""dependencies": []"#,
+            r#""dependencies": [[]]"#,
+            "a dependency of no constraint",
+        ),
+        (
+            r#""dependencies": []"#,
+            r#""dependencies": ["kb000001"]"#,
+            "a dependency not a group",
+        ),
+        (
+            r#"  "dependencies": [],
+"#,
+            "",
+            "no dependencies",
+        ),
     ] {
         assert_eq!(result.matches(from).count(), 1, "{what}");
         fails(&schema, &result.replacen(from, to, 1), what);
@@ -2195,6 +2201,10 @@ fn a_sketch_request_is_read_written_back_and_holds_to_its_schema_and_its_result_
         (
             r#""cb000002", "state": "satisfied""#,
             r#""cb000002", "state": "partially_redundant""#,
+        ),
+        (
+            r#""dependencies": []"#,
+            r#""dependencies": [["kb000001", "kb000002"], ["kb000003"]]"#,
         ),
     ] {
         holds(&schema, &result.replacen(from, to, 1), to);

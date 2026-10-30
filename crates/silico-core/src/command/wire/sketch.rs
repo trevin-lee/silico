@@ -96,6 +96,16 @@ impl ToWire for SketchRead {
                 Json::array(self.regions.iter().map(ToWire::to_wire)),
             ),
             (
+                "dependencies",
+                Json::array(
+                    states
+                        .dependencies
+                        .groups
+                        .iter()
+                        .map(|group| curves(&group.constraints)),
+                ),
+            ),
+            (
                 "profile_problems",
                 Json::array(self.profile_problems.iter().map(ToWire::to_wire)),
             ),
@@ -116,7 +126,7 @@ impl ToWire for Region {
     }
 }
 
-/// Curves by their IDs, in order.
+/// Curves, or constraints, by their IDs, in order.
 fn curves(ids: &[ElementId]) -> Json<'_> {
     Json::array(ids.iter().map(|id| Json::str(id.as_str())))
 }
@@ -161,6 +171,15 @@ pub struct SketchResultSchema {
     /// sweeps), by their outer loops' smallest curve IDs: none if the sketch makes no
     /// profile, or wasn't solved.
     pub regions: Vec<SketchRegionSchema>,
+    /// Each dependent group of constraints, as the solver's diagnosis finds them: the
+    /// constraint IDs of one linear dependency among the sketch's equations, sorted, the
+    /// groups sorted. Removing any one constraint of a group resolves it; which is the
+    /// user's choice. A driving dimension in any group reads `redundant` and over-defines,
+    /// whichever constraint the solver dropped. The first 100 groups are listed, each its
+    /// first 100 constraints. Empty for an empty sketch, and for one whose constraints the
+    /// solver never took (geometry that can't be held, before any constraint).
+    #[schemars(length(max = 100))]
+    pub dependencies: Vec<SketchDependencySchema>,
     /// Why the solved sketch makes no profile, each as an error (the first 100, in the
     /// order they're checked): none if it makes one, or wasn't solved (`solve_problem` says
     /// why).
@@ -242,6 +261,11 @@ pub struct SketchRegionSchema {
     /// smallest curve IDs.
     pub holes: Vec<Vec<ElementId>>,
 }
+
+/// One dependent group: its constraints' IDs, sorted.
+#[derive(JsonSchema)]
+#[schemars(rename = "SketchDependency")]
+pub struct SketchDependencySchema(#[schemars(length(min = 1, max = 100))] pub Vec<ElementId>);
 
 /// A constraint, as the document writes it (its ID, its type, and its form's fields, a
 /// reference dimension's value as the solve measured it), with its state.

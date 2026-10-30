@@ -25,6 +25,7 @@
     {"outer": ["cb000001"], "holes": []},
     {"outer": ["cb000002"], "holes": []}
   ],
+  "dependencies": [],
   "profile_problems": [],
   "solve_problem": null
 }
