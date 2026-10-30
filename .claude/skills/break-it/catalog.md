@@ -227,6 +227,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Malformed JSON, wrong types, missing fields, unexpected extra fields, out-of-range enum values
 - Huge strings and arrays
 - Many concurrent calls, calls made during recompute, cancellation partway through an operation
+- An anchor a UI takes from a pick, given freely by an agent (a drag's press off its curve, at a circle's centre): the pick's guarantee (the press lies on the edge) is gone, so the shortcuts built on it (a release at the press is a click, keeping the begin state) disagree with what a move to the same cursor showed
 - Element references by stale, misspelled, or made-up names
 - Calls in the wrong order (editing before opening a document, committing a transaction that was never started)
 - One call wrong in many ways at once (a field of every kind wrong, a list of 150 bad members, a kind that makes the others meaningless, a bad limit with a feature that's a sketch): check every reason is given, the first hundred listed and all counted, none hidden behind an early return or behind the one checked first
@@ -308,6 +309,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A watch that drops findings against a superseded counter, told of the session's own write after it lands or before: a comparison that reads the new bytes and ends between the write and `held` (or reads the old ones between `held` and the write) is kept as changed; gate a stand-in reader and try both orders
 - A save bracketed for a watch, ended every way a save ends (a conflict, a cancel before it writes, a directory that won't take the file, a file it can't read to check): after each, the finding goes back to what's on disk, never stuck unknown and never the session's own text where nothing was written; then a save that works is its own
 - A background job's "running" flag cleared only after a callback returns (a reader, a solver): a callback that panics leaves it set, and no job ever starts again
+- A command of several phases whose stop reaches only some (a drag release's final move on the drag's thread, then its whole solve under the command's stop): hold each phase in turn and cancel, then close the session; a cancel that says `stopped` but answers only when the uncovered phase ends, and a close that waits on it
 
 - Reads that redo work a model already did (a sketch read solving its sketch again) on a shared pool whose take starts a worker whenever none is idle: N reads at once start N workers, kept idle for ever; count the starts against the design's bound on workers
 - Reads that redo a model's step against a model whose step failed transiently (a worker crash under the rebuild): the read answers a result the model never had, beside the envelope's fault naming the same feature
