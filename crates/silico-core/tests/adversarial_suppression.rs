@@ -198,7 +198,11 @@ fn a_boolean_the_cascade_suppresses_loses_its_tools_names_too() {
     // and c's name of t2's edge reaches m only through j's and m's tools: lost, so c goes.
     let d = fused_twice();
     validate(&d).unwrap();
-    assert_eq!(troubles(&d, &rebuilt(&d)), Vec::<String>::new(), "the control");
+    assert_eq!(
+        troubles(&d, &rebuilt(&d)),
+        Vec::<String>::new(),
+        "the control"
+    );
     let done = suppression::suppress(&checked(&d), &id("a0000002")).unwrap();
     assert_eq!(
         done.suppressed,
