@@ -993,6 +993,8 @@ fn bytes_a_reload_refused_come_back_after_another_reload_and_are_tried_again() {
     f.status_reaches(|status, revision| {
         revision == Revision(2) && status.disk == Some(Disk::Unchanged)
     });
+    // Any reload taken forgets the refusal.
+    assert!(lock(&f.session().reloads).refused.is_none());
     // The refused bytes back: tried again, not passed over.
     link();
     f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
@@ -1031,4 +1033,36 @@ fn a_comparison_stuck_reading_keeps_no_waker_alive_past_the_sessions() {
         "the stuck comparison holds the waker"
     );
     reader.release();
+}
+
+#[test]
+fn a_refused_reload_isnt_tried_again_while_the_session_holding_its_file_only_reads_it() {
+    // The claim that refused it unchanged (its holder's own commands claim the file it
+    // holds again, which changes no hands): no reload is queued again, however many
+    // comparisons find the file changed.
+    let f = opened(BOX);
+    f.status_reaches(|status, _| status.disk == Some(Disk::Unchanged));
+    let other = f.path.with_file_name("b.silico");
+    std::fs::write(&other, SPHERE).unwrap();
+    let second = f.sessions.open(&other, false).wait().session.unwrap().id;
+    let (started, through) = shut(&f.session().reloading);
+    std::fs::remove_file(&f.path).unwrap();
+    std::os::unix::fs::symlink(&other, &f.path).unwrap();
+    f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
+    started.recv_timeout(WAIT).unwrap();
+    through.send(()).unwrap();
+    f.status_reaches(|status, _| status.running.is_none());
+    for _ in 0..20 {
+        // The holder busy: each command reads its file, claiming it again.
+        f.sessions.text(&second, None).wait().result.unwrap();
+        f.status();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        started.try_recv().is_err(),
+        "the refused reload was tried again"
+    );
+    open_gate(&f.session().reloading);
+    drop(through);
+    assert_eq!(f.at(), Revision::OPENED);
 }

@@ -522,11 +522,11 @@ fn reload_job<P: Clients + 'static>(
                 // The sessions are being dropped: no claim is kept.
                 None => Ok(()),
             };
-            let reloaded = session.reload(Rereads::Always, &claimed);
-            // The claims as the reload left them: a refusal is kept until they change.
+            // The claims as the reload found them: a refusal is kept until they change.
             let claims = registry
                 .upgrade()
                 .map_or(0, |registry| lock(&registry.book).claims);
+            let reloaded = session.reload(Rereads::Always, &claimed);
             session.reloaded_itself(reloaded, found, claims)
         };
         lock(&session.command).take();

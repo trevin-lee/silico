@@ -126,8 +126,9 @@ pub(super) struct Book<C: Kernel + 'static> {
     pub(super) released: Threads,
     /// The sessions are being dropped: an open that finishes now doesn't open.
     pub(super) stopping: bool,
-    /// How many times the files sessions claim have changed (a session released, a file
-    /// claimed anew): a reload its file's claim refused may be taken after a change.
+    /// How many times the files sessions claim have changed hands (a session released, a
+    /// file claimed anew), never for a claim made again of what's held: a reload a claim
+    /// refused may be taken after a change, and only then.
     pub(super) claims: u64,
 }
 
@@ -144,9 +145,21 @@ impl<C: Kernel + 'static> Book<C> {
             self.released.extend(watchers);
         }
         self.opening.remove(&id);
+        let (files, paths) = (self.files.len(), self.paths.len());
         self.files.retain(|_, (holder, _)| *holder != id);
         self.paths.retain(|_, holder| *holder != id);
-        self.claims = self.claims.wrapping_add(1);
+        if (files, paths) != (self.files.len(), self.paths.len()) {
+            self.claims = self.claims.wrapping_add(1);
+        }
+    }
+
+    /// The files session `id` claims, by what they are.
+    fn held_by(&self, id: SessionId) -> Vec<FileId> {
+        self.files
+            .iter()
+            .filter(|(_, (holder, _))| *holder == id)
+            .map(|(file, _)| *file)
+            .collect()
     }
 
     /// The threads that have ended, joined.
@@ -571,11 +584,14 @@ pub(super) fn claim<P: Clients + 'static>(
     match holder {
         Some(holder) => Err(Unclaimed::Held(holder)),
         None => {
+            let had_path = book.paths.get(resolved) == Some(&id);
+            let moved = book.held_by(id) != [file];
             book.files.retain(|_, (holder, _)| *holder != id);
             book.files.insert(file, (id, opened));
-            book.claims = book.claims.wrapping_add(1);
             book.paths.insert(resolved.to_owned(), id);
-            book.claims = book.claims.wrapping_add(1);
+            if moved || !had_path {
+                book.claims = book.claims.wrapping_add(1);
+            }
             Ok(())
         }
     }
@@ -649,9 +665,12 @@ pub(super) fn reclaim<P: Clients + 'static>(
     match opened {
         Ok((file, opened)) => {
             let mut book = lock(&registry.book);
+            let moved = book.held_by(id) != [file];
             book.files.retain(|_, (holder, _)| *holder != id);
             book.files.insert(file, (id, opened));
-            book.claims = book.claims.wrapping_add(1);
+            if moved {
+                book.claims = book.claims.wrapping_add(1);
+            }
         }
         Err(error) => tracing::warn!(
             session = %id,
