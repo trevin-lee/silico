@@ -897,6 +897,23 @@ pub struct SketchEdited {
     pub commit: Option<Committed>,
 }
 
+/// What a split or a trim did (`sketch_split`, `sketch_trim`: docs/design/m5.0-app.md,
+/// section 7): as [`SketchEdited`] says it, with the curve's pieces left, the start-side one
+/// first, which keeps the curve's ID (none when a trim removes the curve whole), and the
+/// features that store a name made from the curve's ID or its points' IDs, in timeline
+/// order, each of which now finds what the start-side piece makes (open item 11).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SketchCut {
+    pub sketch: FeatureId,
+    pub pieces: Vec<ElementId>,
+    pub added: Vec<ElementId>,
+    pub modified: Vec<ElementId>,
+    pub removed: Vec<ElementId>,
+    pub references: Vec<FeatureId>,
+    pub changed: bool,
+    pub commit: Option<Committed>,
+}
+
 /// What `status` says of a session, from what it holds: how many features its document has
 /// (none if its text doesn't read as one), whether the gate took it, the transaction open,
 /// if one is (the revision it began from, which `rollback` returns to), what's running on

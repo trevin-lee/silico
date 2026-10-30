@@ -154,6 +154,8 @@ mod session_render;
 mod session_sketch;
 #[path = "session_sketch_edits.rs"]
 mod session_sketch_edits;
+#[path = "session_sketch_geometry_edits.rs"]
+mod session_sketch_geometry_edits;
 #[path = "session_tracing.rs"]
 mod session_tracing;
 #[path = "session_transactions.rs"]

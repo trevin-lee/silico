@@ -3901,6 +3901,57 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
         SessionCommand::SketchRemove,
         Box::new(move || erased(s.sketch_remove(at, Revision::OPENED, id("k7f2qx3m"), vec![]))),
     ));
+    let member = |text: &str| crate::document::ElementId::new(text).unwrap();
+    queued.push((
+        SessionCommand::SketchSplit,
+        Box::new(move || {
+            erased(s.sketch_split(
+                at,
+                Revision::OPENED,
+                id("k7f2qx3m"),
+                member("na000001"),
+                vec![[0.0, 0.0]],
+                None,
+            ))
+        }),
+    ));
+    queued.push((
+        SessionCommand::SketchTrim,
+        Box::new(move || {
+            erased(s.sketch_trim(
+                at,
+                Revision::OPENED,
+                id("k7f2qx3m"),
+                member("na000001"),
+                [0.0, 0.0],
+                None,
+            ))
+        }),
+    ));
+    queued.push((
+        SessionCommand::SketchUnjoin,
+        Box::new(move || {
+            erased(s.sketch_unjoin(
+                at,
+                Revision::OPENED,
+                id("k7f2qx3m"),
+                member("pa000001"),
+                member("na000001"),
+                None,
+            ))
+        }),
+    ));
+    queued.push((
+        SessionCommand::SketchMerge,
+        Box::new(move || {
+            erased(s.sketch_merge(
+                at,
+                Revision::OPENED,
+                id("k7f2qx3m"),
+                vec![member("pa000001"), member("pa000002")],
+            ))
+        }),
+    ));
     // `cache_clear`, which reads no model, after `check`, as the design lists it.
     let after_check = queued
         .iter()
