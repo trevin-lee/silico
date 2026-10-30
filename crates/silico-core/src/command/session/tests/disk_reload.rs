@@ -841,16 +841,39 @@ fn a_published_read_wakes_the_client_once_as_it_answers() {
 
 #[test]
 fn an_open_wakes_the_client_as_it_answers_and_so_does_one_refused() {
-    let f = opened(BOX);
-    let count = counting(&f.sessions);
-    let other = f.path.with_file_name("b.silico");
-    std::fs::write(&other, BOX).unwrap();
-    let opening = f.sessions.open(&other, false);
-    reaches(&count, 1);
-    opening.try_take().ok().unwrap().result.unwrap();
-    let refused = f.sessions.open(f.path.with_file_name("none.silico"), false);
-    reaches(&count, 2);
-    assert!(refused.try_take().ok().unwrap().result.is_err());
+    // Counted from before the first open, so each open's wake is counted, whenever it
+    // comes: the wake follows the answer on the open's own thread, so a count installed
+    // after an open answered could meet that open's wake late (a loaded machine) and count
+    // it as the next one's. Each open waited for by its wake, then the sessions dropped,
+    // which joins every session's thread: no wake can come after, so the count is exact.
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let sessions = Sessions::with_stand_ins(
+        Arc::new(FakeKernel::new(2).unwrap()),
+        move |cache| Cache::with_secret(cache, &secret),
+        || Ok(Box::new(crate::fake::FakeSketches::new()) as Box<dyn SketchSolver>),
+    )
+    .checking_disk_every(Duration::ZERO);
+    let count = counting(&sessions);
+    let woken = |want: usize| {
+        let deadline = Instant::now() + WAIT;
+        while count.load(Ordering::SeqCst) < want {
+            assert!(Instant::now() < deadline, "never woken {want} times");
+            std::thread::yield_now();
+        }
+    };
+    for (n, name) in ["a.silico", "b.silico"].into_iter().enumerate() {
+        let path = dir.path().join(name);
+        std::fs::write(&path, BOX).unwrap();
+        sessions.open(&path, false).wait().result.unwrap();
+        woken(n + 1);
+    }
+    let refused = sessions.open(dir.path().join("none.silico"), false).wait();
+    assert!(refused.result.is_err());
+    woken(3);
+    drop(sessions);
+    // One wake an open, and none besides.
+    assert_eq!(count.load(Ordering::SeqCst), 3);
 }
 
 /// A cache opener held, while it's held, as a session opens: the open waits in it.
