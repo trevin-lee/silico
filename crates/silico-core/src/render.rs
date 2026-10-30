@@ -132,6 +132,21 @@ impl RenderTicket {
         }
     }
 
+    /// A ticket of a render queued and never sent, which only its cancel answers
+    /// (`cancelled`, as a render still queued answers one): a test's renderer that holds
+    /// what it's sent.
+    #[cfg(feature = "fake")]
+    pub(crate) fn queued() -> Self {
+        let (sender, outcome_of) = mpsc::channel();
+        RenderTicket {
+            job: Arc::new(JobState {
+                stage: Mutex::new(Stage::default()),
+                outcome: sender,
+            }),
+            outcome: outcome_of,
+        }
+    }
+
     /// A handle that cancels the render from another thread, while this one waits on it.
     pub fn canceller(&self) -> RenderCancel {
         RenderCancel(Arc::clone(&self.job))

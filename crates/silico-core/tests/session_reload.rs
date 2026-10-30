@@ -251,8 +251,8 @@ fn a_change_keeping_the_files_size_and_time_is_reloaded_before_the_next_command(
     let after = std::fs::metadata(&f.path).unwrap();
     assert_eq!(after.len(), before.len());
     assert_eq!(after.modified().unwrap(), before.modified().unwrap());
-    // `status` and published reads never read the file.
-    assert_eq!(Fixture::after(&f.sessions.status(&f.id)), (1, false));
+    // Published reads never read the file. (`status` compares it, off its caller's thread,
+    // and the session then reloads it itself: M5.0's A3, the disk tests'.)
     assert_eq!(Fixture::after(&f.sessions.published(&f.id)), (1, false));
     let read = answer(f.sessions.read_model(
         &f.id,

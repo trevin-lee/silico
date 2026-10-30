@@ -298,10 +298,11 @@ const SIGNAL_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 /// stdout closes, or SIGTERM, its sessions in the workspace `DIR` (or the current
 /// directory), on one kernel pool, sketch solver, and render worker. `/` (or a drive's
 /// root) is refused: some MCP clients start servers there, which would make the whole disk
-/// the workspace. A kernel worker that isn't there (or can't be read) is refused too (exit 2,
-/// before the handshake: one there that can't be run is met at the first rebuild, as its
-/// fault); a sketch, render, or STEP worker that isn't there is warned of, and the server
-/// runs. Logs go to stderr; stdout holds nothing but MCP's messages. A second
+/// the workspace. It starts with all four of its workers (kernel, sketch, render, STEP) or
+/// not at all: any that isn't there (or can't be read) is said, each in one message on
+/// stderr naming where it looked, and it exits 2 before the handshake (one there that can't
+/// be run is met when it's first asked, as its fault). Logs go to stderr; stdout holds
+/// nothing but MCP's messages. A second
 /// SIGTERM, while the first is still ending it, ends it at once (exit 1).
 fn serve(workspace: Option<&Path>) -> Ended {
     let root = match workspace.map_or_else(std::env::current_dir, |dir| Ok(dir.to_owned())) {
@@ -328,32 +329,46 @@ fn serve(workspace: Option<&Path>) -> Ended {
         );
         return Ended::Failed;
     }
-    // The workers, found before the handshake. Without a kernel worker nothing builds, so a
-    // server that ran would only answer every read with its fault: it's a broken install,
-    // said here, and the server doesn't start. Without another, the commands that need it
-    // are refused with its fault as data (sketches solved, STEP exported, renders drawn),
-    // and the rest work: each is said here, and the server runs.
+    // The workers, found before the handshake, all four or none: a missing one is a broken
+    // install, said here, every one of them at once, rather than met by the agent at the
+    // command that first needs it.
     let pool = KernelPool::start();
+    let mut missing = Vec::new();
     if let Some(why) = pool.refused() {
-        say!("silico serve: there's no kernel worker it can use, so nothing can be built: {why}");
-        return Ended::Failed;
+        missing.push(format!(
+            "silico serve: there's no kernel worker it can use, so nothing can be built: {why}"
+        ));
     }
     if let Err(e) = silico_core::sketch::worker_path() {
-        tracing::warn!("sketches are refused: there's no sketch worker: {e}");
+        missing.push(format!(
+            "silico serve: there's no sketch worker, so no sketch can be solved: {e}"
+        ));
     }
     if let Err(e) = silico_core::step_worker::worker_path() {
-        tracing::warn!("STEP export is refused: there's no STEP worker: {e}");
+        missing.push(format!(
+            "silico serve: there's no STEP worker, so nothing can be exported as STEP: {e}"
+        ));
     }
-    let mut sessions = Sessions::new(pool);
-    match silico_core::render::worker_path().and_then(|exe| {
+    let renderer = silico_core::render::worker_path().and_then(|exe| {
         silico_core::render::RenderClient::start(
             &exe,
             silico_core::render::RenderSettings::default(),
         )
-    }) {
-        Ok(renderer) => sessions = sessions.rendering(renderer),
-        Err(e) => tracing::warn!("render is refused: there's no render worker: {e}"),
-    }
+    });
+    let renderer = match renderer {
+        Ok(renderer) => Some(renderer),
+        Err(e) => {
+            missing.push(format!(
+                "silico serve: there's no render worker, so nothing can be rendered: {e}"
+            ));
+            None
+        }
+    };
+    let (Some(renderer), true) = (renderer, missing.is_empty()) else {
+        say!("{}", missing.join("\n"));
+        return Ended::Failed;
+    };
+    let sessions = Sessions::new(pool).rendering(renderer);
     let sessions = match sessions.in_workspace(&root) {
         Ok(sessions) => sessions,
         Err(e) => {

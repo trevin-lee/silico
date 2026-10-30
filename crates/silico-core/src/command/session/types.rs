@@ -13,7 +13,7 @@ use super::cancel::Ticket;
 use super::rebuilds::met_fault;
 use super::rebuilds::{Label, Newest};
 use super::transaction::{Checking, Reached};
-use super::{Gated, Problems, ReadCommand, SessionCommand};
+use super::{Gated, Problems, ReadCommand, RunningCommand, SessionCommand};
 #[cfg(doc)]
 use crate::document;
 use crate::document::chain::Rewired;
@@ -869,17 +869,20 @@ pub struct Replaced {
 
 /// What `status` says of a session, from what it holds: how many features its document has
 /// (none if its text doesn't read as one), whether the gate took it, the transaction open,
-/// if one is (the revision it began from, which `rollback` returns to), the queued command
-/// running, if one is, the published reads running, in the order they started, and its
-/// current revision's rebuild.
+/// if one is (the revision it began from, which `rollback` returns to), what's running on
+/// its thread, if anything is (a queued command, or its own reload), the published reads
+/// running, in the order they started, its current revision's rebuild, and what the last
+/// comparison of its file on disk found (docs/design/m5.0-app.md, section 6): none before
+/// one has ended, while its own save runs, and after a save that failed until the next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     pub features: Option<usize>,
     pub gated: bool,
     pub transaction: Option<Begun>,
-    pub running: Option<SessionCommand>,
+    pub running: Option<RunningCommand>,
     pub reads: Vec<ReadCommand>,
     pub rebuild: Rebuild,
+    pub disk: Option<crate::disk::Disk>,
 }
 
 /// A session's current revision's rebuild, as `status` gives it: the revision, what's

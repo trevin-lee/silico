@@ -14,7 +14,7 @@ use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::{
     Cancelled, CheckModel, ModelChoice, Progress, ReadCommand, Rebuild, RebuildState, Response,
-    Revision, SessionCommand, SessionId, Sessions,
+    Revision, RunningCommand, SessionCommand, SessionId, Sessions,
 };
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::{Op, Primitive};
@@ -128,7 +128,10 @@ fn cancel_naming_the_running_check_stops_its_rebuild_and_the_check_answers_cance
             .check(&f.id, CheckModel::Current { fresh: false })
     });
     let status = f.sessions.status(&f.id).result.unwrap();
-    assert_eq!(status.running, Some(SessionCommand::Check));
+    assert_eq!(
+        status.running,
+        Some(RunningCommand::Command(SessionCommand::Check))
+    );
     // One box, one step, held: none done, the box's running.
     assert_eq!(
         status.rebuild,
@@ -231,7 +234,10 @@ fn cancel_naming_another_command_is_refused_with_whats_running_as_the_candidate(
     // done, the block's running, shown as the session's revision's until the edit saves.
     // Then it's stopped by name: it saved nothing, so it left no trace.
     let status = f.sessions.status(&f.id).result.unwrap();
-    assert_eq!(status.running, Some(SessionCommand::SetField));
+    assert_eq!(
+        status.running,
+        Some(RunningCommand::Command(SessionCommand::SetField))
+    );
     assert_eq!(status.rebuild.revision, Revision::OPENED);
     assert_eq!(
         status.rebuild.progress,

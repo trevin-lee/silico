@@ -75,9 +75,12 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
             Duration::ZERO,
             None,
         ),
+        reloads: Mutex::default(),
+        waker: Arc::default(),
         gate: Gate::default(),
         settled: Gate::default(),
         writing: Gate::default(),
+        reloading: Gate::default(),
     });
     (session, jobs)
 }
@@ -3923,7 +3926,12 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
         assert_eq!((status.running, status.reads), (None, vec![]), "{command}");
     };
     for (command, start) in &queued {
-        stops(*command, start, Some(*command), vec![]);
+        stops(
+            *command,
+            start,
+            Some(RunningCommand::Command(*command)),
+            vec![],
+        );
     }
     for (read, start) in &reads(ModelChoice::Published) {
         stops(SessionCommand::from(*read), start, None, vec![*read]);
@@ -3999,6 +4007,8 @@ fn disk_reaches(f: &Fixture, want: Disk) {
 fn a_sessions_file_is_unchanged_as_it_opened_it_and_changed_or_gone_as_another_leaves_it() {
     let f = opened(BOX);
     disk_reaches(&f, Disk::Unchanged);
+    // Inside a transaction, where nothing's reloaded, so each finding stays to be read.
+    f.begin();
     std::fs::write(&f.path, SPHERE).unwrap();
     disk_reaches(&f, Disk::Changed);
     std::fs::remove_file(&f.path).unwrap();
@@ -4018,7 +4028,9 @@ fn a_sessions_own_commit_is_what_its_file_is_compared_with_from_then_on() {
     assert_ne!(saved, STORED);
     // At once: what it wrote is what it holds.
     assert_eq!(f.sessions.disk(&f.id).unwrap(), Some(Disk::Unchanged));
-    // The text it opened, written back by another, is a change; what it saved isn't.
+    // The text it opened, written back by another, is a change; what it saved isn't. (In a
+    // transaction again, where the change isn't reloaded.)
+    f.begin();
     std::fs::write(&f.path, STORED).unwrap();
     disk_reaches(&f, Disk::Changed);
     std::fs::write(&f.path, &saved).unwrap();
@@ -4029,18 +4041,20 @@ fn a_sessions_own_commit_is_what_its_file_is_compared_with_from_then_on() {
 fn a_reload_is_what_the_sessions_file_is_compared_with_from_then_on() {
     let f = opened(BOX);
     disk_reaches(&f, Disk::Unchanged);
+    // Held behind a command, so the change is found before the session reloads it.
+    let (started, was_started) = mpsc::channel();
+    let (through, wait) = mpsc::channel();
+    f.session().gate.shut(started, wait);
+    let text = f.sessions.text(&f.id, None);
+    was_started.recv_timeout(WAIT).unwrap();
     std::fs::write(&f.path, SPHERE).unwrap();
     disk_reaches(&f, Disk::Changed);
-    assert!(
-        f.sessions
-            .text(&f.id, None)
-            .wait()
-            .session
-            .unwrap()
-            .reloaded
-    );
+    *lock(&f.session().gate.0) = None;
+    through.send(()).unwrap();
+    assert!(text.wait().session.unwrap().reloaded);
     // At once, though the comparisons before it found the file changed.
     assert_eq!(f.sessions.disk(&f.id).unwrap(), Some(Disk::Unchanged));
+    f.begin();
     std::fs::write(&f.path, BOX).unwrap();
     disk_reaches(&f, Disk::Changed);
     std::fs::write(&f.path, SPHERE).unwrap();
@@ -4132,6 +4146,8 @@ fn a_session_opened_through_a_link_watches_the_file_it_read_not_where_the_link_l
     )
     .checking_disk_every(Duration::ZERO);
     let id = sessions.open(&link, false).wait().session.unwrap().id;
+    // Inside a transaction, where nothing's reloaded, so a's change stays to be found.
+    sessions.begin(&id).wait().result.unwrap();
     // The link leads to b, as the session first read a; a changed. Read where the session
     // reads and saves, a, it's changed; where the link leads now, b, it would be unchanged.
     std::fs::remove_file(&link).unwrap();
@@ -4154,6 +4170,7 @@ fn each_sessions_disk_is_its_own_files() {
     std::fs::write(&other, SPHERE).unwrap();
     let second = f.sessions.open(&other, false).wait().session.unwrap().id;
     disk_reaches(&f, Disk::Unchanged);
+    f.begin();
     std::fs::write(&f.path, SPHERE).unwrap();
     disk_reaches(&f, Disk::Changed);
     let deadline = std::time::Instant::now() + WAIT;
@@ -4233,6 +4250,7 @@ fn asked_without_pause_through_many_commits_the_sessions_own_saves_never_read_as
     disk_reaches(&f, Disk::Unchanged);
 }
 
+mod disk_reload;
 mod timeline;
 mod undo;
 mod undo_adversarial;
