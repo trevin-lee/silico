@@ -843,16 +843,8 @@ Kind kind_of(TopAbs_ShapeEnum type) {
   }
 }
 
-// Reports what `maker` did to input `input` (`source`): for each of its faces, edges, and
-// vertices, whether the result has it unchanged (the same sub-shape: TShape and location),
-// and what OCCT says it was modified into and generated, each numbered in the result
-// (0 when the result doesn't have it) with its position in OCCT's list. Facts only; Rust
-// decides what to keep. For each element the Kept entry comes first: Rust relies on it.
-// OCCT's IsDeleted isn't asked: it's wrong for fillets (docs/ports/history.md).
-//
-// `results` is the result's elements, mapped once for the operation however many inputs it
-// has: a copies boolean has up to a thousand, and mapping its result for each was most of
-// its time.
+// A result's elements, mapped once for its operation however many inputs it has: a
+// copies boolean has up to a thousand, and mapping its result for each was most of its time.
 struct ResultMaps {
   // Indexed by Kind's values, which lib.rs fixes at Vertex 0, Edge 1, Face 2, Solid 3.
   static_assert(static_cast<uint8_t>(Kind::Vertex) == 0 && static_cast<uint8_t>(Kind::Edge) == 1 &&
@@ -867,6 +859,12 @@ struct ResultMaps {
   }
 };
 
+// Reports what `maker` did to input `input` (`source`): for each of its faces, edges, and
+// vertices, whether the result has it unchanged (the same sub-shape: TShape and location),
+// and what OCCT says it was modified into and generated, each numbered in the result
+// (0 when the result doesn't have it) with its position in OCCT's list. Facts only; Rust
+// decides what to keep. For each element the Kept entry comes first: Rust relies on it.
+// OCCT's IsDeleted isn't asked: it's wrong for fillets (docs/ports/history.md).
 void capture_history(BRepBuilderAPI_MakeShape &maker, uint32_t input,
                      const TopoDS_Shape &source, const ResultMaps &maps,
                      rust::Vec<HistoryEntry> &history) {
