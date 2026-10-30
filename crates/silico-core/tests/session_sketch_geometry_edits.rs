@@ -1855,3 +1855,203 @@ fn a_clean_edit_asks_the_solver_once_never_for_the_sketchs_solve_before_it() {
         assert_eq!(f.sketches.requests().len(), solves + 1, "{command}");
     }
 }
+
+/// The bracket's L profile with two construction circles: ca000001 about pa000004, the
+/// corner whose vertex the fillet f0000001 names, and ca000002 about a point of its own,
+/// pa000007, clear of the profile.
+fn with_circles() -> String {
+    let sketch = S0000001
+        .replace(
+            r#"{"id": "pa000006", "x": 0, "y": 50, "construction": false}]"#,
+            r#"{"id": "pa000006", "x": 0, "y": 50, "construction": false}, {"id": "pa000007", "x": 30, "y": 25, "construction": true}]"#,
+        )
+        .replace(
+            r#""circles": []"#,
+            r#""circles": [{"id": "ca000001", "center": "pa000004", "radius": 2, "construction": true}, {"id": "ca000002", "center": "pa000007", "radius": 3, "construction": true}]"#,
+        );
+    assert_ne!(sketch, S0000001);
+    document(&[
+        &sketch, P0000001, S0000002, H0000001, S0000003, H0000002, F0000001,
+    ])
+}
+
+#[test]
+fn a_circles_split_reaches_its_own_centre_never_another_circles() {
+    // The fillet names a vertex made from pa000004, ca000001's centre: a split of ca000002,
+    // about pa000007, reaches no name the document stores; one of ca000001 reaches the
+    // fillet's.
+    let f = opened(&with_circles());
+    f.begin();
+    let result = f.ran(
+        "sketch_split",
+        &split(
+            1,
+            "s0000001",
+            "ca000002",
+            json!([[33, 25], [27, 25]]),
+            json!(null),
+        ),
+    );
+    assert_eq!(result["references"], json!([]), "{result}");
+    let result = f.ran(
+        "sketch_split",
+        &split(
+            2,
+            "s0000001",
+            "ca000001",
+            json!([[7, 5], [3, 5]]),
+            json!(null),
+        ),
+    );
+    assert_eq!(result["references"], json!(["f0000001"]), "{result}");
+}
+
+#[test]
+fn an_edit_whose_result_the_file_cant_hold_asks_the_solver_once() {
+    // A result the file can't hold is refused whatever the sketch's solve before it found:
+    // so that solve is never asked for.
+    let f = opened(&bracket());
+    f.checked();
+    f.begin();
+    let text = f.text();
+    f.sketches.answer(|system| Ok(collapsed(system)));
+    for (command, request) in [
+        (
+            "sketch_split",
+            split(1, "s0000001", "na000001", json!([[30, 0]]), json!(null)),
+        ),
+        (
+            "sketch_unjoin",
+            unjoin(1, "s0000001", "pa000004", "na000004", json!(null)),
+        ),
+    ] {
+        let solves = f.sketches.requests().len();
+        let refused = f.refused(command, &request);
+        assert_eq!(refused[0]["code"], "invalid_result", "{refused}");
+        assert_eq!(f.sketches.requests().len(), solves + 1, "{command}");
+        assert_eq!((f.text(), f.revision()), (text.clone(), revision(1)));
+    }
+}
+
+#[test]
+fn a_split_whose_solve_fails_as_the_sketchs_did_before_it_is_made() {
+    // No solver meets the sketch before the split nor after it, and neither flags a
+    // constraint: the split's solve is no worse (FreeCAD's rollback, same rank), so it's
+    // made, both solves asked.
+    let f = opened(&bracket());
+    f.checked();
+    f.begin();
+    f.sketches.answer(|system| Ok(failing(system)));
+    let solves = f.sketches.requests().len();
+    let result = f.ran(
+        "sketch_split",
+        &split(
+            1,
+            "s0000001",
+            "na000001",
+            json!([[30, 0]]),
+            json!(["pa000007", "na000007", "ka00000d"]),
+        ),
+    );
+    assert_eq!(result["changed"], true, "{result}");
+    assert_eq!(
+        result["pieces"],
+        json!(["na000001", "na000007"]),
+        "{result}"
+    );
+    assert_eq!(f.sketches.requests().len(), solves + 2);
+    assert_eq!(f.revision(), revision(2));
+    assert_eq!(
+        member(&f.sketch("s0000001"), "lines", "na000007")["to"],
+        "pa000002"
+    );
+}
+
+#[test]
+fn a_solver_that_crashes_in_an_edits_solve_refuses_it_as_the_crash() {
+    let f = opened(&bracket());
+    f.checked();
+    f.begin();
+    let text = f.text();
+    f.sketches.answer(|_| {
+        Err(silico_core::Error::new(
+            silico_core::ErrorCode::WorkerCrashed,
+            "the fake sketch worker crashed",
+        ))
+    });
+    for (command, request) in [
+        (
+            "sketch_split",
+            split(1, "s0000001", "na000001", json!([[30, 0]]), json!(null)),
+        ),
+        (
+            "sketch_merge",
+            merge(1, "s0000001", &["pa000001", "pa000003"]),
+        ),
+    ] {
+        let refused = f.refused(command, &request);
+        assert_eq!(
+            refused,
+            json!([error(
+                "worker_crashed",
+                "the fake sketch worker crashed",
+                Some("s0000001"),
+                &[],
+                None,
+                None,
+                None
+            )]),
+            "{command}"
+        );
+        assert_eq!((f.text(), f.revision()), (text.clone(), revision(1)));
+    }
+}
+
+#[test]
+fn an_edit_whose_solve_its_sessions_close_stops_answers_cancelled_as_the_command() {
+    // The sessions dropped while the split's solve is held: its session closes, which stops
+    // the solve (not a cancel of the command), and the split answers as its own stop, never
+    // as the drag's words for a stopped solve.
+    let f = opened(&bracket());
+    f.checked();
+    f.begin();
+    f.sketches.hold();
+    let request = split(1, "s0000001", "na000001", json!([[30, 0]]), json!(null));
+    let running = match f.sessions.call("sketch_split", &request) {
+        Call::Running(calling) => calling,
+        Call::Unknown => panic!("no sketch_split"),
+    };
+    assert!(f.sketches.wait_held(HANG), "the edit's solve never came");
+    let Fixture {
+        dir,
+        sketches,
+        sessions,
+    } = f;
+    let dropper = std::thread::spawn(move || drop(sessions));
+    let Ok(answered) = running.wait_timeout(HANG) else {
+        panic!("sketch_split didn't answer in {HANG:?}")
+    };
+    let envelope: Value = serde_json::from_str(&answered.text).unwrap();
+    assert_eq!(
+        envelope["errors"],
+        json!([error(
+            "cancelled",
+            "sketch_split was cancelled before it finished",
+            None,
+            &[],
+            None,
+            None,
+            Some(
+                "run it again when you want its answer; every rebuild step that finished is kept in the cache"
+            )
+        )]),
+        "{envelope}"
+    );
+    assert!(sketches.stops() >= 1);
+    dropper.join().unwrap();
+    sketches.release();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("bracket.silico")).unwrap(),
+        bracket()
+    );
+}
