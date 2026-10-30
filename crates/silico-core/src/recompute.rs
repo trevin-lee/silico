@@ -4373,6 +4373,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_step_counts_change_is_waited_for_and_nothing_else_ends_the_wait() {
+        // `changed_since`: a waiter returns once `steps` or `done` moves, or the count
+        // ends; never while nothing changes (the watcher would spin, waking for nothing).
+        let counter = StepCounter::default();
+        let (said, answer) = mpsc::channel();
+        let waiting = counter.clone();
+        let waiter = std::thread::spawn(move || {
+            let mut seen = waiting.now();
+            for _ in 0..3 {
+                seen = waiting.changed_since(&seen);
+                let _ = said.send(seen.clone());
+            }
+        });
+        let quiet = Duration::from_millis(200);
+        let wait = Duration::from_secs(60);
+        assert!(
+            answer.recv_timeout(quiet).is_err(),
+            "returned with nothing changed"
+        );
+        counter.planned(2, 0, BTreeMap::new());
+        let planned = answer.recv_timeout(wait).unwrap();
+        assert_eq!((planned.done, planned.steps, planned.ended), (0, 2, false));
+        assert!(
+            answer.recv_timeout(quiet).is_err(),
+            "returned with nothing changed"
+        );
+        let key = Key([7; 32]);
+        counter.started(key);
+        assert!(
+            answer.recv_timeout(quiet).is_err(),
+            "a step's start moved neither count"
+        );
+        counter.settled(key, true);
+        let settled = answer.recv_timeout(wait).unwrap();
+        assert_eq!((settled.done, settled.steps), (1, 2));
+        counter.ended(true);
+        let ended = answer.recv_timeout(wait).unwrap();
+        assert_eq!((ended.done, ended.steps, ended.ended), (2, 2, true));
+        waiter.join().unwrap();
+    }
+
+    #[test]
     fn a_describe_timed_out_before_its_worker_started_is_asked_again_and_one_after_is_kept() {
         // A box's description refused as a timeout, twice recomputed on one engine: one whose
         // worker hadn't started (advised to try again) says nothing about the solid, so the

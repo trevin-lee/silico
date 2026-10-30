@@ -213,3 +213,21 @@ impl From<ReadCommand> for SessionCommand {
         read.command()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_runs_is_a_command_cancel_can_name_or_the_reload_it_cant() {
+        // `cancel` stops only what a client sent: each command is its own, the session's
+        // reload none.
+        for command in SessionCommand::ALL {
+            let running = RunningCommand::Command(command);
+            assert_eq!(running.command(), Some(command));
+            assert_eq!(running.as_str(), command.as_str());
+        }
+        assert_eq!(RunningCommand::Reload.command(), None);
+        assert_eq!(RunningCommand::Reload.as_str(), "reload");
+    }
+}
